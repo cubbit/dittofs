@@ -1,0 +1,4 @@
+# Accepted divergences between the Samba reference and DittoFS (RFC 31 §12.2).
+# One entry per signature; each needs a reason, and an issue unless the reason
+# is that DittoFS differs by design, citing the rule.
+divergences: []

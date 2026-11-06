@@ -1,0 +1,14 @@
+# The Samba reference of RFC 31 §3.2, on the AD-DC fixture's image: a member
+# server needs winbind's NSS module so smbd can map domain users to uids.
+FROM dittofs-ad-dc-test
+RUN set -eu; \
+    for i in 1 2 3; do \
+        apt-get update \
+          && apt-get install -y --no-install-recommends libnss-winbind \
+          && rm -rf /var/lib/apt/lists/* \
+          && break; \
+        sleep 5; \
+    done; \
+    sed -i -E 's/^(passwd|group):.*/\1: files winbind/' /etc/nsswitch.conf
+COPY --chmod=0755 ref.sh /ref.sh
+ENTRYPOINT ["/ref.sh"]
