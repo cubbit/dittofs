@@ -139,8 +139,8 @@ func (c *comparer) compare(s Step, ref, dut Reply) (*Divergence, []string) {
 			}
 		}
 	case "readdir":
-		if !slices.Equal(ro.Dir, do.Dir) {
-			return div(s, "listing", fmtDir(ro.Dir), fmtDir(do.Dir)), nil
+		if rd, dd := sillyNames(ro.Dir), sillyNames(do.Dir); !slices.Equal(rd, dd) {
+			return div(s, "listing", fmtDir(rd), fmtDir(dd)), nil
 		}
 	case "stat", "lstat", "fstat":
 		if ro.Stat == nil || do.Stat == nil {
@@ -318,6 +318,21 @@ func (c *comparer) formatSD(b []byte) string {
 		return "unparseable:" + hex.EncodeToString(b)
 	}
 	return c.res.Format(d)
+}
+
+// sillyNames replaces the counter in the name the kernel client gives a file
+// unlinked while open (".__smb005B"): the counter is the client's, not the
+// server's, and differs between the two mounts.
+func sillyNames(es []DirEnt) []DirEnt {
+	out := make([]DirEnt, len(es))
+	for i, e := range es {
+		if strings.HasPrefix(e.Name, ".__smb") {
+			e.Name = ".__smb*"
+		}
+		out[i] = e
+	}
+	slices.SortStableFunc(out, func(a, b DirEnt) int { return strings.Compare(a.Name, b.Name) })
+	return out
 }
 
 func fmtDir(es []DirEnt) string {
