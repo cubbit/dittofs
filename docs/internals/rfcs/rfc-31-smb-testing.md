@@ -357,8 +357,15 @@ the profile, and every combination is valid (`ntlm`/`krb5` × `sd`/`posix`):
 The two reach the user's groups through different code in DittoFS, so a plan that passes under
 one and diverges under the other points at identity, not at the file operation. Kerberos
 needs the client to name each server by the name its principal carries, so the mounts use the
-DNS names of §3.1, never an address, and the client's `krb5.conf` is the one the DC fixture
-writes.
+DNS names of §3.1, never an address.
+
+`cifs.upcall`, which gets the service tickets, reads only the host's own `/etc/krb5.conf` and
+looks the calling uid up in the password database before it reads that uid's credential
+cache. Under `krb5` the fixture therefore changes the client host, and `fixture down` undoes
+each change: it writes `/etc/krb5.conf` only when the host has none, adds the servers' names
+in a marked block of `/etc/hosts`, and creates a system user per worker uid. Each worker's
+ticket comes from its keytab through the domain controller's own `kinit`, so the client needs
+no Kerberos tools of its own; a credential cache is portable and is copied to the worker's.
 
 ### 3.6 Probes before round 1
 
@@ -366,9 +373,11 @@ The fixture **MUST** check, before any round, and stop with "not run" if any che
 
 1. each of alice, bob, carol and Administrator has a working session on both mounts (each
    worker creates and removes a file in a probe directory);
-2. on both shares, alice cannot read a file whose DACL denies her read even though its mode
-   would allow it, and can read one whose DACL allows it even though its mode would not —
-   that is what proves `ignore system acls` and `noperm` took effect;
+2. on the reference, alice cannot read a file whose DACL denies her read even though its mode
+   would allow it, and bob can read one whose DACL allows him — that is what proves
+   `ignore system acls` and `noperm` took effect. DittoFS is not probed for it: the mount
+   options are the same for both, so a DittoFS that lets alice in is a divergence for the
+   rounds to find, not a broken fixture;
 3. a `getxattr("system.cifs_ntsd")` on the probe directory returns a parseable descriptor on
    both sides (not `ntsd_full`: reading a SACL is under test, and DittoFS refuses it today,
    §7.6);

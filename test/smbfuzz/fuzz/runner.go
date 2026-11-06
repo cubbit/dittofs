@@ -61,6 +61,8 @@ type Hooks interface {
 	// DutAlive reports whether the DittoFS process is running, and a log
 	// tail when it is not.
 	DutAlive() (bool, string)
+	// Ticket writes a Kerberos credential cache for account at path.
+	Ticket(account, path string) error
 }
 
 // Runner executes plans.
@@ -206,14 +208,15 @@ func (r *Runner) worker(user string) (*workerProc, error) {
 	return w, nil
 }
 
-// kinit fills the user's credential cache from its keytab, where
-// cifs.upcall looks for the calling uid's tickets (RFC 31 §4.2).
+// kinit fills the user's credential cache, where cifs.upcall looks for the
+// calling uid's tickets (RFC 31 §4.2).
 func (r *Runner) kinit(c UserCred) error {
+	if r.hooks == nil {
+		return fmt.Errorf("krb5 needs the fixture's hooks")
+	}
 	cc := fmt.Sprintf("/tmp/krb5cc_%d", c.UID)
-	principal := c.Account + "@" + r.env.Realm
-	out, err := exec.Command("kinit", "-k", "-t", c.Keytab, "-c", "FILE:"+cc, principal).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("kinit %s: %v: %s", principal, err, out)
+	if err := r.hooks.Ticket(c.Account, cc); err != nil {
+		return err
 	}
 	return os.Chown(cc, c.UID, c.GID)
 }

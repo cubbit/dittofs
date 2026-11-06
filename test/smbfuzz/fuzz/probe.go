@@ -11,6 +11,16 @@ import (
 
 const lockRefused = -100
 
+// refOnly are the probes that check the client and the reference, not
+// DittoFS: whether the server, rather than the client, decides access is a
+// property of the mount options, the same for both, and of Samba's
+// configuration. On DittoFS the same behaviour is under test, so a failure
+// there is a divergence for the rounds to find, not a broken fixture.
+var refOnly = map[string]bool{
+	"the server refuses alice a read the mode would allow": true,
+	"the server lets bob read":                             true,
+}
+
 // Probe runs RFC 31 §3.6's checks. A failed check means the fixture cannot
 // tell the two servers apart for the reason it was written for, so nothing
 // may run.
@@ -33,7 +43,11 @@ func (r *Runner) Probe() error {
 		return d.Marshal()
 	}
 	expect := func(what, user string, req Request, want int) error {
-		for _, side := range sides {
+		on := sides
+		if refOnly[what] {
+			on = []string{SideRef}
+		}
+		for _, side := range on {
 			q := req
 			q.Side = side
 			q.Path = filepath.Join(r.root(side), dir, req.Path)
