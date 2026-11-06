@@ -30,6 +30,10 @@ type Config struct {
 	// worker with no lock held, so it must not wait on a Sync.
 	Resolved func(stream uint32, seg core.SegmentID)
 
+	// Index is the placement index the layer lifts retained content out of
+	// when a sync completes. It is required.
+	Index *index.Index
+
 	// Dir is the journal's directory, the key of its per-process loss state.
 	Dir string
 
@@ -41,12 +45,14 @@ type Config struct {
 	// required.
 	MarkLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error)
 
-	// Account receives the delta MarkLoss returned, once per marker left
-	// and only when MarkLoss succeeded, so the change reaches the share's
-	// byte accounts. It is optional: nil discards the delta. Lose calls it
-	// on the caller's goroutine, right after MarkLoss returns, holding none
-	// of the layer's locks and no file append domain, so it may call back
-	// into the layer.
+	// Account, when set, is handed every change the layer makes to the index
+	// as a held delta, so the byte counters kept above it see it: the delta
+	// MarkLoss returned (once per marker left, only when MarkLoss succeeded),
+	// and the ones a lift or a failed window made. Nil discards the deltas.
+	// Lose calls it on the caller's goroutine holding none of the layer's
+	// locks and no file append domain; a lift or a failed window calls it with
+	// the changed file's append domain held. It must therefore not wait on a
+	// Sync or take a file's append domain.
 	Account func(index.HeldDelta)
 }
 
@@ -89,6 +95,8 @@ type Durability struct {
 	domains Domains
 	tracer  core.Tracer
 	log     *slog.Logger
+
+	index *index.Index
 
 	dir      *dirState
 	counters *index.Counters
@@ -194,7 +202,7 @@ type Durability struct {
 	wg   sync.WaitGroup
 }
 
-// New returns a Durability. A nil Clock, Domains, Counters or MarkLoss is a
+// New returns a Durability. A nil Clock, Domains, Index, Counters or MarkLoss is a
 // caller bug and panics; the error is that of resolving Dir.
 func New(cfg Config) (*Durability, error) {
 	if cfg.Clock == nil {
@@ -202,6 +210,9 @@ func New(cfg Config) (*Durability, error) {
 	}
 	if cfg.Domains == nil {
 		panic("durability: the layer needs the file append domains")
+	}
+	if cfg.Index == nil {
+		panic("durability: the layer needs the index it lifts through")
 	}
 	if cfg.Counters == nil || cfg.MarkLoss == nil {
 		panic("durability: the layer needs its counters and loss marker")
@@ -220,6 +231,7 @@ func New(cfg Config) (*Durability, error) {
 		tracer:   cfg.Tracer,
 		log:      log,
 		resolved: cfg.Resolved,
+		index:    cfg.Index,
 		made:     map[uint32]*stream{},
 		done:     make(chan struct{}),
 		change:   make(chan struct{}),
@@ -550,16 +562,18 @@ type work struct {
 }
 
 // pending reports whether the record at loc is in a pending window, or still in
-// the ledger and no sync covers it. A record gone from both was covered and completed, so
-// the answer does not depend on the segment's synced offset, which the worker
-// forgets once a segment has no entries. The caller holds mu.
+// the ledger and not completed: no sync covers it, or one does and the worker
+// has not yet finished with it, which lifts what it superseded. A record gone
+// from both was covered and completed, so the answer does not depend on the
+// segment's synced offset, which the worker forgets once a segment has no
+// entries. The caller holds mu.
 //
 // ponytail: a linear scan, O(ledger) per target. Upgrade to a per-file index
 // when a profile shows the scan.
 func (st *stream) pending(loc segment.Location) bool {
 	for i := len(st.ledger) - 1; i >= 0; i-- {
 		if st.ledger[i].w.Loc == loc {
-			return !st.covered(loc)
+			return !st.covered(loc) || !st.ledger[i].done
 		}
 	}
 	// A record of a pending window is pending whatever the segment's synced
@@ -744,6 +758,11 @@ func (st *stream) check(targets []target, failFast bool) (bool, error) {
 			continue
 		}
 		pending = true
+		if st.covered(t.loc) && !st.inWindowLocked(t.loc) {
+			// A sync covers it and the worker is lifting what it superseded:
+			// the wait is for that, which another sync does not hasten.
+			continue
+		}
 		if err, bad := st.failed[t.loc.Segment]; bad {
 			if failFast && failErr == nil {
 				failSeg, failErr = t.loc.Segment, err
