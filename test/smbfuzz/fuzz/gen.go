@@ -79,6 +79,7 @@ type genState struct {
 	slots  []slotRef
 	paths  []string
 	locks  []lockRef
+	writes []lockRef         // ranges pwrite and fallocate named, per path
 	slotOf map[string]string // slot -> path
 }
 
@@ -218,6 +219,47 @@ func (g *genState) rangeFor(slot string) (string, string) {
 	return g.offset(), g.length()
 }
 
+// readRange draws a pread's off and len. On a file an earlier pwrite or
+// fallocate named, by any user through any slot, it starts with probability
+// 0.6 where that range starts (0.5), one byte into it (0.25) or at its last
+// byte (0.25), and reads that range's length or a fresh one with probability
+// 0.5 each. Otherwise it is rangeFor's draw.
+func (g *genState) readRange(slot string) (string, string) {
+	path := g.slotOf[slot]
+	var mine []lockRef
+	for _, w := range g.writes {
+		if w.path == path && path != "" {
+			mine = append(mine, w)
+		}
+	}
+	if len(mine) == 0 || !g.r.Chance(0.6) {
+		return g.rangeFor(slot)
+	}
+	w := Pick(g.r, mine)
+	off := w.off
+	switch g.r.Below(4) {
+	case 0, 1:
+	case 2:
+		off = w.off + "+1"
+	default:
+		if last := w.off + "+" + w.len + "-1"; mustEval(last) >= 0 {
+			off = last
+		}
+	}
+	if g.r.Chance(0.5) {
+		return off, w.len
+	}
+	return off, g.length()
+}
+
+func mustEval(expr string) int64 {
+	v, err := EvalSize(expr)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
 func (g *genState) data() string { return Pick(g.r, DataPatterns) }
 
 func (g *genState) time() string {
@@ -247,11 +289,12 @@ func (g *genState) step(user, op string) Step {
 		handle()
 	case "pread":
 		slot := handle()
-		a["off"], a["len"] = g.rangeFor(slot)
+		a["off"], a["len"] = g.readRange(slot)
 	case "pwrite":
 		slot := handle()
 		a["off"], a["len"] = g.rangeFor(slot)
 		a["data"] = g.data()
+		g.writes = append(g.writes, lockRef{g.slotOf[slot], a["off"], a["len"]})
 	case "write":
 		handle()
 		a["len"] = g.length()
@@ -271,6 +314,7 @@ func (g *genState) step(user, op string) Step {
 		a["mode"] = PickW(r, []WeightedChoice[string]{{"0", 20}, {"KEEP_SIZE", 15}, {"PUNCH_HOLE|KEEP_SIZE", 30},
 			{"ZERO_RANGE", 15}, {"ZERO_RANGE|KEEP_SIZE", 10}, {"COLLAPSE_RANGE", 5}, {"INSERT_RANGE", 5}})
 		a["off"], a["len"] = g.rangeFor(slot)
+		g.writes = append(g.writes, lockRef{g.slotOf[slot], a["off"], a["len"]})
 	case "setsparse":
 		s.User = "admin"
 		a["path"] = g.path()

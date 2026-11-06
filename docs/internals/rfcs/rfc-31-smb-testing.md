@@ -528,12 +528,16 @@ model of results (it does not know whether the open or the lock succeeded):
   path of §6.3;
 - a data, truncate or lock operation on a file some earlier step locked picks, with
   probability 0.5, an offset and length that overlap that lock: the same range, a range
-  starting inside it, or one ending inside it.
+  starting inside it, or one ending inside it;
+- a `pread` on a file an earlier `pwrite` or `fallocate` named, by any user, starts with
+  probability 0.6 where one of those ranges starts, one byte into it, or at its last byte, and
+  reads that range's length or a fresh one, so reads land on written data rather than mostly on
+  holes and past the end of the file.
 
 - a handle operation drawn before any step of the plan opened a slot becomes an `open`, with
   probability 0.8.
 
-All four probabilities are generator constants (part of `gen`), not settings.
+All five probabilities are generator constants (part of `gen`), not settings.
 
 ## 6. Domains
 

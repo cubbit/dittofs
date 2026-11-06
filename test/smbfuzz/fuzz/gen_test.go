@@ -79,7 +79,7 @@ func TestGeneratorV1IsFrozen(t *testing.T) {
 		h.Write([]byte(p.Format()))
 	}
 	got := hex.EncodeToString(h.Sum(nil))
-	const want = "e5b8bfa14f8c556b069cc23f3b4c50ed71e8ba02bd7b58a18fc68b6bfa3f35f3"
+	const want = "633184438c4172a1c6b92b20a184eae60d938650042fef4f6c491788f94a8bc6"
 	if got != want {
 		t.Fatalf("generator 1 changed: hash %s, pinned %s", got, want)
 	}
