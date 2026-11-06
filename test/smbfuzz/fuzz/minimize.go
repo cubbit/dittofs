@@ -123,11 +123,14 @@ func simplerValues(op, key, v string) []string {
 	switch key {
 	case "off", "off2", "len":
 		// Drop one term of a sum, then try the smallest points.
-		terms := strings.Split(v, "+")
+		terms := SizeTerms(v)
 		if len(terms) > 1 {
 			for i := range terms {
 				rest := append(append([]string(nil), terms[:i]...), terms[i+1:]...)
-				add(strings.Join(rest, "+"))
+				c := JoinSizeTerms(rest)
+				if n, err := EvalSize(c); err == nil && n >= 0 {
+					add(c)
+				}
 			}
 		}
 		for _, p := range []string{"0", "1", "4096"} {

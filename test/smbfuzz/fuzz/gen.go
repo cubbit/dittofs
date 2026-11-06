@@ -173,13 +173,22 @@ func (g *genState) point(maxValue int64) string {
 	return PickW(g.r, w)
 }
 
-// size draws one point (0.75) or a sum of two (0.25).
+// size draws one point (0.5) or a sum of two (0.5). The second term of a sum
+// is 1 or -1 with probability 0.25 each, so every point is as likely to be
+// met by its neighbours as alone. 0 stays alone: a sum with it is another
+// point, or below zero.
 func (g *genState) size(maxPoint int64) string {
 	a := g.point(maxPoint)
-	if g.r.Chance(0.25) {
-		return a + "+" + g.point(maxPoint)
+	if a == "0" || !g.r.Chance(0.5) {
+		return a
 	}
-	return a
+	switch x := g.r.Float(); {
+	case x < 0.25:
+		return a + MinusOne.Name
+	case x < 0.5:
+		return a + "+1"
+	}
+	return a + "+" + g.point(maxPoint)
 }
 
 func (g *genState) offset() string { return g.size(1 << 62) }

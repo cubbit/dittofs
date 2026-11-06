@@ -591,11 +591,11 @@ Values are drawn from named **points**. The generic points:
 | Point | Value | Note |
 |---|---|---|
 | `0`, `1`, `2` | 0, 1, 2 | |
-| `4095`, `4096`, `4097` | | around one page and the reference's ext4 block |
+| `4096` | 4 KiB | one page and the reference's ext4 block |
 | `2^13`, `2^14`, `2^15` | 8 KiB, 16 KiB, 32 KiB | |
 | `2^20`, `2^21` | 1 MiB, 2 MiB | `2^20` is also the mount's `rsize`/`wsize` (§3.4), so the largest single SMB request |
 
-DittoFS's own size boundaries, each with its neighbours `−1` and `+1`:
+DittoFS's own size boundaries:
 
 | Point | Value at generator version 1 | What changes at that size |
 |---|---|---|
@@ -607,8 +607,11 @@ DittoFS's own size boundaries, each with its neighbours `−1` and `+1`:
 | `block` | 8 MiB | the block size of the block store |
 | `rfc2.min`, `rfc2.target`, `rfc2.max` | 64 KiB, 256 KiB, 1 MiB | the chunk bounds [RFC 2](rfc-2-carver.md) specifies, which the code is moving to |
 
-A value is one point (probability 0.75) or the sum of two (0.25): `2^20+2^13`, `4096+1`,
-`block-1`, `chunk.max+1` are all reachable. The boundaries are the defaults of the build when
+No point has its neighbours as points of its own. A value is one point (probability 0.5) or the
+sum of two (0.5), and the second term of a sum is `1` or `-1` with probability 0.25 each, so
+`4096-1`, `block+1` and `2^20+2^13` are all reachable and every point is met as often at its
+neighbours as on itself. `-1` is only ever a second term, and `0` is never summed, so a value is
+never negative. The boundaries are the defaults of the build when
 the generator version was released; the fixture runs DittoFS with default sizes (§3.3), and a
 change of a default is a new generator version (§5.1), so a plan never silently tests a
 boundary that has moved.

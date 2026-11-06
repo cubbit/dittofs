@@ -72,13 +72,18 @@ const (
 	mib = int64(1) << 20
 )
 
-// genericPoints are powers of two and their neighbours.
+// genericPoints are small values and powers of two. Neighbours are not
+// points of their own: a sum with the 1 or -1 point reaches them
+// (genState.size).
 var genericPoints = []Point{
 	{"0", 0}, {"1", 1}, {"2", 2},
-	{"4095", 4095}, {"4096", 4096}, {"4097", 4097},
-	{"2^13", 8 * kib}, {"2^14", 16 * kib}, {"2^15", 32 * kib},
+	{"4096", 4096}, {"2^13", 8 * kib}, {"2^14", 16 * kib}, {"2^15", 32 * kib},
 	{"2^20", mib}, {"2^21", 2 * mib},
 }
+
+// MinusOne is the one negative point. It is only ever the second term of a
+// sum, so an expression never evaluates below zero.
+var MinusOne = Point{"-1", -1}
 
 // dittoBoundaries are DittoFS's own size boundaries at generator version 1:
 // the largest SMB I/O it advertises (one journal record per write piece),
@@ -91,15 +96,8 @@ var dittoBoundaries = []Point{
 	{"rfc2.min", 64 * kib}, {"rfc2.target", 256 * kib}, {"rfc2.max", mib},
 }
 
-// AllPoints lists every point, the boundaries with their -1 and +1
-// neighbours, in a fixed order.
-var AllPoints = func() []Point {
-	out := append([]Point(nil), genericPoints...)
-	for _, b := range dittoBoundaries {
-		out = append(out, Point{b.Name + "-1", b.Value - 1}, b, Point{b.Name + "+1", b.Value + 1})
-	}
-	return out
-}()
+// AllPoints lists every non-negative point in a fixed order.
+var AllPoints = append(append([]Point(nil), genericPoints...), dittoBoundaries...)
 
 var pointByName = func() map[string]int64 {
 	m := map[string]int64{}
@@ -109,28 +107,48 @@ var pointByName = func() map[string]int64 {
 	return m
 }()
 
-// EvalSize evaluates an offset or length expression: terms joined by '+',
-// each a point name, a point name followed by "-1", or a decimal number.
-// "chunk.max+1" therefore evaluates as chunk.max plus 1, which is the point
-// of the same name.
+// SizeTerms splits an offset or length expression into its signed terms:
+// "chunk.max-1" is ["chunk.max", "-1"], "2^20+2^13" is ["2^20", "+2^13"].
+// Point names hold no '+' or '-', so either sign starts a term.
+func SizeTerms(expr string) []string {
+	var out []string
+	start := 0
+	for i := 1; i < len(expr); i++ {
+		if expr[i] == '+' || expr[i] == '-' {
+			out = append(out, expr[start:i])
+			start = i
+		}
+	}
+	return append(out, expr[start:])
+}
+
+// JoinSizeTerms is SizeTerms' inverse; a leading '+' is dropped.
+func JoinSizeTerms(terms []string) string {
+	return strings.TrimPrefix(strings.Join(terms, ""), "+")
+}
+
+// EvalSize evaluates an offset or length expression: point names or decimal
+// numbers, each preceded by '+' or '-' but the first.
 func EvalSize(expr string) (int64, error) {
 	var total int64
-	for _, term := range strings.Split(expr, "+") {
-		if v, ok := pointByName[term]; ok {
-			total += v
-			continue
+	for _, term := range SizeTerms(expr) {
+		sign := int64(1)
+		name := term
+		switch {
+		case strings.HasPrefix(term, "+"):
+			name = term[1:]
+		case strings.HasPrefix(term, "-"):
+			sign, name = -1, term[1:]
 		}
-		if base, ok := strings.CutSuffix(term, "-1"); ok {
-			if v, ok := pointByName[base]; ok {
-				total += v - 1
-				continue
+		v, ok := pointByName[name]
+		if !ok {
+			n, err := strconv.ParseInt(name, 10, 64)
+			if err != nil || name == "" {
+				return 0, fmt.Errorf("bad size term %q in %q", term, expr)
 			}
+			v = n
 		}
-		v, err := strconv.ParseInt(term, 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("bad size term %q in %q", term, expr)
-		}
-		total += v
+		total += sign * v
 	}
 	return total, nil
 }

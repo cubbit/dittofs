@@ -79,7 +79,7 @@ func TestGeneratorV1IsFrozen(t *testing.T) {
 		h.Write([]byte(p.Format()))
 	}
 	got := hex.EncodeToString(h.Sum(nil))
-	const want = "e0f63f031f24563b6692061a8b94f1bcedb79b5bd1d0449b8fb52a5a493b500c"
+	const want = "e5b8bfa14f8c556b069cc23f3b4c50ed71e8ba02bd7b58a18fc68b6bfa3f35f3"
 	if got != want {
 		t.Fatalf("generator 1 changed: hash %s, pinned %s", got, want)
 	}
@@ -89,6 +89,7 @@ func TestEvalSize(t *testing.T) {
 	for expr, want := range map[string]int64{
 		"0": 0, "4096+1": 4097, "2^20+2^13": 1<<20 + 8192, "chunk.max+1": 16<<20 + 1,
 		"chunk.max-1": 16<<20 - 1, "block-1+4097": 8<<20 - 1 + 4097,
+		"4096-1": 4095, "2^20+2^13-1": 1<<20 + 8191,
 	} {
 		got, err := EvalSize(expr)
 		if err != nil || got != want {
