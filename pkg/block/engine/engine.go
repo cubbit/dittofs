@@ -42,7 +42,7 @@ type Engine struct {
 	// share table and the fields below, never across I/O, and no content call
 	// takes it.
 	mu       sync.Mutex
-	journals []Journal                   // the journals open, one per device; Start opens them
+	journals []*versionLimit             // the journals open, one per device; Start opens them
 	busy     map[entity.ShareID]struct{} // the shares with a lifecycle call in progress
 	raised   map[entity.ShardID]struct{} // the shards whose incarnation this process raised
 	starting bool                        // a Start runs: a lifecycle call answers ErrDelay
@@ -67,6 +67,9 @@ type Engine struct {
 	// is the seam where a clone is rebuilt from its marker, and nil does
 	// nothing.
 	cloneMarker cloneMarkerFunc
+
+	block   uint64 // the versions one raise of the version limit covers
+	raising raises // the version limit raises running
 }
 
 // New checks d and builds the engine. It takes no settings, opens nothing and
@@ -100,9 +103,11 @@ func New(d Deps) (*Engine, error) {
 		instance: instanceID(),
 		busy:     map[entity.ShareID]struct{}{},
 		raised:   map[entity.ShardID]struct{}{},
+		block:    versionBlock,
 	}
 	e.sample = e.verifier
 	e.conflictBound.Store(int64(time.Second))
+	e.raising.ctx, e.raising.cancel = context.WithCancel(context.Background())
 
 	return e, nil
 }
@@ -172,7 +177,7 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 	e.shares.Store(&t)
 
 	if o.journal != nil {
-		e.journals = []Journal{o.journal}
+		e.journals = []*versionLimit{o.journal}
 	}
 
 	for _, id := range o.raised {
@@ -213,6 +218,8 @@ func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
 	if err := e.replay(ctx, &o); err != nil {
 		return opened{}, u.unwind(err)
 	}
+
+	u.push(e.stopRaises)
 
 	return o, nil
 }
