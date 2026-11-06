@@ -190,7 +190,8 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 		if l.Reason != core.LossSuperseded {
 			d.dir.addFailed(l.Seq)
 		}
-		if refused || errors.Is(recErr, core.ErrNoSpace) {
+		if refused || errors.Is(recErr, core.ErrNoSpace) || errors.Is(recErr, core.ErrClosed) ||
+			errors.Is(recErr, segment.ErrStreamStopped) || errors.Is(recErr, segment.ErrStreamClosed) {
 			d.log.Debug("a loss record was not appended", "file", l.File, "seq", l.Seq, "err", recErr)
 		} else {
 			d.log.Error("a loss record was not appended", "file", l.File, "seq", l.Seq, "err", recErr)
