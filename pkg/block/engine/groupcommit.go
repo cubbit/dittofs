@@ -36,7 +36,10 @@ type groupCommit struct {
 	nextAt   time.Time     // when the loop's timer fires; zero, none is set
 	losses   losses
 	failing  map[entity.FileID]*failure
-	marks    marks
+	// wideBackoff is the last backoff after a failure that blamed no file;
+	// zero once a batch commits.
+	wideBackoff time.Duration
+	marks       marks
 
 	wake   chan struct{} // a file became due sooner than the timer, or now
 	stop   chan struct{}
@@ -407,11 +410,30 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 	if h := g.e.hooks.captured.Load(); h != nil {
 		(*h)()
 	}
-	failed, alone := g.e.syncAndCommit(ctx, g, batch, last)
+	failed, alone, syncErr := g.e.syncAndCommit(ctx, g, batch, last)
+	// A failed sync or a store-wide failure blames no file: the files keep
+	// their batch and wait out one backoff the whole group commit shares
+	// (RFC 8 §5.2).
+	wide := syncErr != nil
+	for _, err := range failed {
+		wide = wide || storeWide(err)
+	}
+	var shared time.Time
+	if wide {
+		shared = g.widen()
+	} else if len(batch) > 0 {
+		g.mu.Lock()
+		g.wideBackoff = 0
+		g.mu.Unlock()
+	}
 	var dones []func()
 	for _, c := range batch {
-		retry := g.outcome(c.f, failed[c.f], len(batch) == 1 || alone[c.f])
-		dones = append(dones, g.e.settle(g, c, failed[c.f] == nil, retry)...)
+		err := failed[c.f]
+		retry := shared
+		if err == nil || (syncErr == nil && !storeWide(err)) {
+			retry = g.outcome(c.f, err, len(batch) == 1 || alone[c.f])
+		}
+		dones = append(dones, g.e.settle(g, c, err == nil, retry)...)
 	}
 	g.mu.Lock()
 	g.inFlight = false
@@ -424,6 +446,16 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 	for _, d := range dones {
 		d()
 	}
+}
+
+// widen backs the whole group commit off after a failure that blames no
+// file, doubling from backoffMin to backoffMax, and answers when its files
+// may be taken again.
+func (g *groupCommit) widen() time.Time {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.wideBackoff = min(max(2*g.wideBackoff, backoffMin), backoffMax)
+	return g.e.d.Clock.Now().Add(g.wideBackoff)
 }
 
 // outcome records f's commit in a batch of one file or more: a success clears
@@ -517,12 +549,12 @@ func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool
 // syncAndCommit syncs the batch's files in the journal, one Sync per share,
 // then commits their existence in one Existence.Commit, which splits by the
 // key budget itself, carrying the journal's sync marks, read after the syncs,
-// when withMarks. A sync that fails fails the batch: nothing is committed
-// that the journal did not make recoverable.
-func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []captured, withMarks bool) (failed map[entity.FileID]error, alone map[entity.FileID]bool) {
+// when withMarks. A sync that fails fails the batch, answered as syncErr:
+// nothing is committed that the journal did not make recoverable.
+func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []captured, withMarks bool) (failed map[entity.FileID]error, alone map[entity.FileID]bool, syncErr error) {
 	failed, alone = map[entity.FileID]error{}, map[entity.FileID]bool{}
 	if len(batch) == 0 {
-		return failed, alone
+		return failed, alone, nil
 	}
 	byShare := map[*binding][]journal.FileID{}
 	for _, c := range batch {
@@ -533,7 +565,7 @@ func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []capt
 			for _, c := range batch {
 				failed[c.f] = err
 			}
-			return failed, alone
+			return failed, alone, err
 		}
 	}
 	pending := make([]kvstore.PendingExistence, len(batch))
@@ -553,7 +585,7 @@ func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []capt
 		g.marksFailed(mw, err)
 	}
 	end(nil)
-	return failed, alone
+	return failed, alone, nil
 }
 
 // readMarks is the journal's sync marks as a marks write of its current

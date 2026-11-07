@@ -856,3 +856,80 @@ func TestMarksNotWrittenAreRetriedAlone(t *testing.T) {
 	u.clock.Advance(time.Second) // past the backoff
 	eventually(t, "the marks are recorded alone", func() bool { return len(u.j.Recorded()) == 1 })
 }
+
+// syncFailing is a handle whose syncs, once on, fail, logging how many files
+// each names.
+type syncFailing struct {
+	engine.Handle
+	on  *atomic.Bool
+	log *callLog
+}
+
+func (h syncFailing) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
+	h.log.mu.Lock()
+	h.log.commits = append(h.log.commits, make([]entity.FileID, len(ids)))
+	h.log.mu.Unlock()
+	if h.on.Load() {
+		return nil, errors.New("the device failed")
+	}
+	return h.Handle.Sync(ctx, ids...)
+}
+
+// RFC 8 §5.2: a store-wide failure, or a failed sync, blames no file. The
+// batch is retried whole after one shared backoff, never split into a call
+// per file, and no file is named by existence_commit_failing.
+func TestAFailureThatBlamesNoFileRetriesTheBatchWhole(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  func(log *callLog) (unitConfig, *atomic.Bool)
+	}{
+		{"the store closed", func(log *callLog) (unitConfig, *atomic.Bool) {
+			c := &closedStore{}
+			return unitConfig{deps: []func(*engine.Deps){func(d *engine.Deps) {
+				c.Existence = d.Existence
+				d.Existence = loggedExistence{c, log}
+			}}}, &c.on
+		}},
+		{"a failed sync", func(log *callLog) (unitConfig, *atomic.Bool) {
+			on := &atomic.Bool{}
+			return unitConfig{wrap: func(h engine.Handle) engine.Handle { return syncFailing{h, on, log} }}, on
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &callLog{}
+			cfg, on := tc.cfg(log)
+			u := newUnitWith(t, cfg)
+			if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 16, CloneMaxLen: 1 << 30}); err != nil {
+				t.Fatal(err)
+			}
+			var fs []entity.FileID
+			for i := range 8 {
+				f := u.create(t, string(rune('a'+i)))
+				u.write(t, f, 0, []byte("x"))
+				fs = append(fs, f)
+			}
+			on.Store(true)
+			calls := func() int { log.mu.Lock(); defer log.mu.Unlock(); return len(log.commits) }
+			u.clock.Advance(time.Second)
+			for want := 1; want <= 3; want++ {
+				eventually(t, "the batch is tried again", func() bool { return calls() >= want })
+				u.clock.Advance(time.Minute) // past any backoff
+			}
+			log.mu.Lock()
+			for i, c := range log.commits[:3] {
+				if len(c) != 8 {
+					t.Errorf("call %d named %d files, want the batch's 8", i, len(c))
+				}
+			}
+			log.mu.Unlock()
+			for _, f := range fs {
+				if u.e.Failing(u.rec, f) {
+					t.Errorf("existence_commit_failing names %v, which the failure did not blame", f)
+				}
+			}
+			on.Store(false)
+			u.clock.Advance(time.Minute)
+			eventually(t, "every file is committed once the failure ends", func() bool { return u.e.FileEntries() == 0 })
+		})
+	}
+}
