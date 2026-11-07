@@ -501,9 +501,9 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 	g.inFlight = false
 	// Every batch that took a file changed the due set, so its waiters look
 	// again. A taken file no batch can capture went back as due one
-	// existence_age later. While every first operation is a write that holds:
-	// a first operation a batch cannot capture would have commitThrough and
-	// commitAll, which make a file due now after each batch, wake in a loop.
+	// existence_age later, and commitThrough and commitAll wait on the guard
+	// of a removal holding a file rather than make it due now again, so no
+	// waiter is woken in a loop.
 	close(g.returned)
 	g.returned = make(chan struct{})
 	g.mu.Unlock()
