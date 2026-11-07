@@ -57,14 +57,17 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 		}
 		return v, nil
 	}
+	// Refused once the engine closed or the journal's device was lost: the
+	// write is answered unavailable and its Done is not called, as for any
+	// write Write refuses. A file's first pending write also makes it due.
 	if len(fe.ops) == 0 {
-		// Refused once the engine closed or the journal's device was lost:
-		// the write is answered unavailable and its Done is not called, as for
-		// any write Write refuses.
-		if err := b.gc.note(b, f, now); err != nil {
-			e.files.unlock(f, fe)
-			return vfserr.Verifier{}, err
-		}
+		err = b.gc.note(b, f, now)
+	} else {
+		err = b.gc.refused()
+	}
+	if err != nil {
+		e.files.unlock(f, fe)
+		return vfserr.Verifier{}, err
 	}
 	fe.insert(pendingOp{
 		version:   ver,

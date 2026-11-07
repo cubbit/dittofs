@@ -216,13 +216,9 @@ func (e *Engine) closeGroupCommits() {
 func (g *groupCommit) note(b *binding, f entity.FileID, oldest time.Time) error {
 	age, _ := g.e.groupSettings()
 	g.mu.Lock()
-	if g.closed {
+	if err := g.refusedLocked(); err != nil {
 		g.mu.Unlock()
-		return errClosed
-	}
-	if g.halted {
-		g.mu.Unlock()
-		return errLost
+		return err
 	}
 	if g.due[f] == nil {
 		g.due[f] = &dueFile{b: b, oldest: oldest}
@@ -231,6 +227,25 @@ func (g *groupCommit) note(b *binding, f entity.FileID, oldest time.Time) error 
 	g.mu.Unlock()
 	if sooner {
 		g.poke()
+	}
+	return nil
+}
+
+// refused is the error a write is refused with once the group commit closed
+// or its journal's device was lost, or nil while it accepts writes.
+func (g *groupCommit) refused() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.refusedLocked()
+}
+
+// refusedLocked is refused; the caller holds g.mu.
+func (g *groupCommit) refusedLocked() error {
+	switch {
+	case g.closed:
+		return errClosed
+	case g.halted:
+		return errLost
 	}
 	return nil
 }

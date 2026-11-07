@@ -974,3 +974,16 @@ func TestMarksRideOnABatchWhileFilesStayReady(t *testing.T) {
 		t.Errorf("the Commit returned only after %d batches, once the writes stopped: the marks waited for the ready set to empty", n)
 	}
 }
+
+// After the group commit closes, a write to a file that still has pending
+// writes is refused too, not accepted with nothing left to commit it or run
+// its Done.
+func TestAWriteToAFileWithPendingWritesIsRefusedAfterClose(t *testing.T) {
+	u := newUnit(t)
+	f := u.create(t, "a")
+	u.write(t, f, 0, []byte("x"))
+	u.e.CloseGroupCommits()
+	if _, err := u.e.Write(t.Context(), u.share.ID, f, 1, []byte("y"), engine.WriteOpts{Done: func() {}}); !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Errorf("a write after Close to a file with pending writes: %v, want ErrUnavailable", err)
+	}
+}
