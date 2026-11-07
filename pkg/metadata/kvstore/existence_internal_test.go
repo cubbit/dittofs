@@ -598,22 +598,9 @@ func TestAWritesOverLeavesAnOverwriteRecord(t *testing.T) {
 	f.exist(file, write(1, 0, 8*mib), newer)
 	var got []overwrite
 	if err := f.s.kv.View(context.Background(), func(r kv.Reader) error {
-		pre := overwritesPrefix(f.share, file)
-		for row, err := range r.Scan(pre, nil) {
-			if err != nil {
-				return err
-			}
-			start, _, err := keys.ReadUint64(row.Key[len(pre):])
-			if err != nil {
-				return err
-			}
-			o, err := decodeOverwrite(int64(start), row.Value)
-			if err != nil {
-				return err
-			}
-			got = append(got, o)
-		}
-		return nil
+		var err error
+		got, err = overwritesOver(r, f.share, file, entity.Extent{Length: entity.EndOfFile}, 0)
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}

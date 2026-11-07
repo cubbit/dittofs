@@ -38,7 +38,7 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 	// during the sync is the next stability point's. Withdraw this once the
 	// journal's Sync returns the version it reached.
 	through, runs := e.pendingIn(f, off, n)
-	overwrote := false // a pending write in the extent overwrites committed content
+	var over bool // a pending write in the extent overwrites committed content
 	sctx, end := e.d.Tracer(ctx, "engine.sync")
 	marks, err := e.syncMarks(sctx, b, fileID(f))
 	end(err)
@@ -57,18 +57,17 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 		// for the marks wait when its pending writes overwrite nothing but
 		// the extent may still cover committed content. Keep the committed
 		// size and holes in the entry if those reads show in a profile.
-		over, err := e.overwrites(ctx, b, s, f, runs)
+		over, err = e.overwrites(ctx, b, s, f, runs)
 		if err != nil {
 			return vfserr.Verifier{}, 0, err
 		}
-		overwrote = over
 		if over {
 			if err := e.commitThrough(ctx, b, f, through); err != nil {
 				return vfserr.Verifier{}, 0, e.waitErr(b, f, err)
 			}
 		}
 	}
-	if err := e.marksWait(ctx, b, s, f, off, n, marks, overwrote); err != nil {
+	if err := e.marksWait(ctx, b, s, f, off, n, marks, over); err != nil {
 		return vfserr.Verifier{}, 0, err
 	}
 	return e.sample(b), e.LossSeq(s, f), nil

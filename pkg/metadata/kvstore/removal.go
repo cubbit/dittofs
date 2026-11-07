@@ -357,7 +357,7 @@ func chargedIn(r kv.Reader, share entity.ShareID, file entity.FileID, f entity.F
 		}
 	}
 	n := e.Length
-	for _, x := range mergeExtents(free) {
+	for _, x := range entity.MergeExtents(free) {
 		n -= x.Intersect(e).Length
 	}
 	return n, false, nil

@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -172,16 +171,7 @@ func superseded(ops []pendingOp, i int) []entity.Extent {
 			runs = append(runs, r)
 		}
 	}
-	slices.SortFunc(runs, func(a, b entity.Extent) int { return cmp.Compare(a.Offset, b.Offset) })
-	var merged []entity.Extent
-	for _, r := range runs {
-		if n := len(merged); n > 0 && r.Offset <= merged[n-1].End() {
-			merged[n-1] = entity.ExtentOf(merged[n-1].Offset, max(merged[n-1].End(), r.End()))
-			continue
-		}
-		merged = append(merged, r)
-	}
-	return merged
+	return entity.MergeExtents(runs)
 }
 
 // groupCommitFor is journal j's group commit, started on first use. Once
