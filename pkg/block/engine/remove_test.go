@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -450,5 +451,44 @@ func TestAGroupCommitStopsAtARetriedRemoval(t *testing.T) {
 	}
 	if n := u.size(t, f); n != 12 {
 		t.Errorf("after the write's commit the size is %d, want 12", n)
+	}
+}
+
+// removeOps records the pending operations each Remove commits in its
+// phase 1.
+type removeOps struct {
+	engine.Existence
+	mu  sync.Mutex
+	ops []kvstore.PendingOp
+}
+
+func (x *removeOps) Remove(ctx context.Context, s entity.ShareID, f entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+	x.mu.Lock()
+	x.ops = append(x.ops, pending...)
+	x.mu.Unlock()
+	return x.Existence.Remove(ctx, s, f, epoch, op, pending)
+}
+
+// RFC 8 §5.1, R48: a removal's phase 1 commits the writes pending below it
+// with the runs each supersedes, as the group commit does.
+func TestARemovalsPhaseOnePassesTheRunsEachWriteSupersedes(t *testing.T) {
+	x := &removeOps{}
+	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	f := u.create(t, "a")
+	u.write(t, f, 0, make([]byte, 8))
+	u.write(t, f, 2, make([]byte, 4))
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
+		t.Fatal(err)
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	want := [][]entity.Extent{nil, {entity.ExtentOf(2, 6)}}
+	if len(x.ops) != len(want) {
+		t.Fatalf("phase 1 committed %d operations, want the %d writes", len(x.ops), len(want))
+	}
+	for i, op := range x.ops {
+		if !slices.Equal(op.Over, want[i]) {
+			t.Errorf("write %d passed Over %v, want %v", i, op.Over, want[i])
+		}
 	}
 }

@@ -487,7 +487,7 @@ func (e *Engine) claimed(r *removal) []kvstore.PendingOp {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
 	var out []kvstore.PendingOp
-	for _, op := range fe.ops {
+	for i, op := range fe.ops {
 		if !op.claimed || op.dropped {
 			continue
 		}
@@ -495,7 +495,9 @@ func (e *Engine) claimed(r *removal) []kvstore.PendingOp {
 		if op.setsMtime {
 			mtime = op.at
 		}
-		out = append(out, storeOp(op, mtime))
+		ps := storeOp(op, mtime)
+		ps.Over = superseded(fe.ops, i)
+		out = append(out, ps)
 	}
 	return out
 }
