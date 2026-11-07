@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // isProcessRunning reads a PID from the given file and checks whether
@@ -88,11 +89,18 @@ func startDaemon() error {
 		return fmt.Errorf("failed to secure log file %s: %w", logPath, err)
 	}
 
+	// The log is appended to, so note where this run's output begins.
+	var logOffset int64
+	if fi, err := lf.Stat(); err == nil {
+		logOffset = fi.Size()
+	}
+
 	cmd := exec.Command(executable, args...)
 	cmd.Stdout = lf
 	cmd.Stderr = lf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
+	launched := time.Now()
 	if err := cmd.Start(); err != nil {
 		_ = lf.Close()
 		return fmt.Errorf("failed to start daemon: %w", err)
@@ -107,9 +115,5 @@ func startDaemon() error {
 		return fmt.Errorf("failed to write PID file: %w", err)
 	}
 
-	fmt.Printf("DittoFS server started (PID: %d)\n", cmd.Process.Pid)
-	fmt.Printf("Log file: %s\n", logPath)
-	fmt.Printf("PID file: %s\n", pidPath)
-
-	return nil
+	return awaitDaemonStart(cmd, pidPath, logPath, logOffset, launched)
 }
