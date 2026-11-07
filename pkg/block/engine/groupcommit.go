@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -1058,18 +1059,35 @@ func (e *Engine) commitAll(ctx context.Context, j Journal) error {
 			g.mu.Unlock()
 			return errClosed
 		}
-		for _, d := range g.due {
-			d.now = true
-		}
-		done := len(g.due) == 0 && !g.inFlight
+		files := slices.Collect(maps.Keys(g.due))
+		done := len(files) == 0 && !g.inFlight
 		returned := g.returned
 		g.mu.Unlock()
 		if done {
 			return nil
 		}
-		g.poke()
+		// A file a removal's guard holds is committed by that removal's own
+		// phase 1, and a batch would only skip it: wait for the guard rather
+		// than ask for batch after batch.
+		var guard <-chan struct{}
+		asked := false
+		for _, f := range files {
+			if ch := e.guardOf(f); ch != nil {
+				guard = ch
+				continue
+			}
+			g.mu.Lock()
+			if d := g.due[f]; d != nil {
+				d.now, asked = true, true
+			}
+			g.mu.Unlock()
+		}
+		if asked {
+			g.poke()
+		}
 		select {
 		case <-returned:
+		case <-guard:
 		case <-ctx.Done():
 			return ctx.Err()
 		}

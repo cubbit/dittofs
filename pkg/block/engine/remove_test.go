@@ -492,3 +492,48 @@ func TestARemovalsPhaseOnePassesTheRunsEachWriteSupersedes(t *testing.T) {
 		}
 	}
 }
+
+// stalledRemove holds each Remove, once entered is closed, until release is.
+type stalledRemove struct {
+	engine.Existence
+	entered, release chan struct{}
+	once             sync.Once
+}
+
+func (x *stalledRemove) Remove(ctx context.Context, s entity.ShareID, f entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+	x.once.Do(func() { close(x.entered) })
+	<-x.release
+	return x.Existence.Remove(ctx, s, f, epoch, op, pending)
+}
+
+// commitAll over a file whose removal holds its guard waits for the guard
+// rather than asking for batch after batch that each skip the file.
+func TestCommitAllWaitsForARemovalsGuardWithoutSpinning(t *testing.T) {
+	x := &stalledRemove{entered: make(chan struct{}), release: make(chan struct{})}
+	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	f := u.create(t, "a")
+	u.write(t, f, 0, make([]byte, 8))
+	truncated := make(chan error, 1)
+	go func() { truncated <- u.e.Truncate(context.Background(), u.share.ID, f, 4) }()
+	<-x.entered
+	var takes atomic.Int64
+	u.e.OnTake(func() { takes.Add(1) })
+	all := make(chan error, 1)
+	go func() { all <- u.e.CommitAll(context.Background(), u.rec) }()
+	time.Sleep(100 * time.Millisecond)
+	if n := takes.Load(); n > 5 {
+		t.Errorf("%d batches in 100 ms while a removal held the only due file", n)
+	}
+	close(x.release)
+	if err := <-truncated; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-all:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("commitAll did not return once the removal's guard was released")
+	}
+}
