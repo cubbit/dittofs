@@ -524,3 +524,37 @@ func FuzzLifecycleValues(f *testing.F) {
 		}
 	})
 }
+
+// A journal recorded over another at the same device removes the other's
+// open generation and sync marks with its row; recorded again at its own
+// device, a journal keeps its own.
+func TestRecordJournalDropsTheReplacedJournalsMarks(t *testing.T) {
+	ctx := context.Background()
+	s := lifecycleStore(t, nil)
+	node, dev := entity.NodeID{1}, entity.JournalDir("/j/1")
+	old, next := [16]byte{1}, [16]byte{2}
+	if err := s.RecordJournal(ctx, old, node, dev); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.kv.Update(ctx, func(tx kv.Txn) error {
+		if err := tx.Set(openGenKey(old), []byte{1}); err != nil {
+			return err
+		}
+		return tx.Set(syncMarkKey(old, 0), []byte{1})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	under := func() int { return len(keysUnder(t, s, journalKey(old))) }
+	if err := s.RecordJournal(ctx, old, node, dev); err != nil {
+		t.Fatal(err)
+	}
+	if n := under(); n != 3 {
+		t.Errorf("recorded again at its own device, the journal keeps %d of its 3 keys", n)
+	}
+	if err := s.RecordJournal(ctx, next, node, dev); err != nil {
+		t.Fatal(err)
+	}
+	if n := under(); n != 0 {
+		t.Errorf("the journal recorded over it left %d of the replaced journal's keys", n)
+	}
+}
