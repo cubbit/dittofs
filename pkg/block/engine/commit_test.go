@@ -486,3 +486,67 @@ func TestACommitWhoseExtentOverflowsIsInvalid(t *testing.T) {
 		t.Errorf("a Commit of [1, 1+MaxInt64): %v, want ErrInvalid", err)
 	}
 }
+
+// overwritesStore counts the store's Overwrites reads and, once stall is
+// set, holds each until its context ends.
+type overwritesStore struct {
+	engine.Existence
+	reads atomic.Int64
+	stall atomic.Bool
+}
+
+func (x *overwritesStore) Overwrites(ctx context.Context, s entity.ShareID, f entity.FileID, xs []entity.Extent) (bool, error) {
+	x.reads.Add(1)
+	if x.stall.Load() {
+		<-ctx.Done()
+		return false, ctx.Err()
+	}
+	return x.Existence.Overwrites(ctx, s, f, xs)
+}
+
+// A Commit over an overwrite of committed content reads the store once: the
+// marks wait, held here by marks the store refuses, reuses that answer rather
+// than asking it again for the extent.
+func TestACommitOverAnOverwriteReadsTheStoreOnce(t *testing.T) {
+	x := &overwritesStore{}
+	m := &refusingMarks{err: kvstore.ErrSyncMarks}
+	u := newUnit(t, func(d *engine.Deps) {
+		m.Existence = d.Existence
+		x.Existence = m
+		d.Existence = x
+	})
+	f := u.create(t, "a")
+	u.write(t, f, 0, []byte("committed"))
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	m.on.Store(true)
+	u.write(t, f, 0, []byte("over"))
+	x.reads.Store(0)
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	if _, _, err := u.e.Commit(ctx, u.share.ID, f, 0, 0); err == nil {
+		t.Fatal("a Commit whose marks the store refuses succeeded")
+	}
+	if n := x.reads.Load(); n != 1 {
+		t.Errorf("the Commit read the store %d times, want once", n)
+	}
+}
+
+// RFC 8 §11.2: under a store that answers nothing, a Commit's read of what it
+// overwrites ends at the caller's deadline as ErrDelay, never the context's
+// error.
+func TestACommitWhoseOverwritesReadStallsAnswersErrDelay(t *testing.T) {
+	x := &overwritesStore{}
+	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	f := u.create(t, "a")
+	u.write(t, f, 0, []byte("x"))
+	x.stall.Store(true)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	_, _, err := u.e.Commit(ctx, u.share.ID, f, 0, 0)
+	var d *vfserr.Delay
+	if !errors.As(err, &d) {
+		t.Errorf("a Commit under a stalled store: %v, want ErrDelay", err)
+	}
+}

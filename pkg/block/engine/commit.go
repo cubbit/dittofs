@@ -38,6 +38,7 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 	// during the sync is the next stability point's. Withdraw this once the
 	// journal's Sync returns the version it reached.
 	through, runs := e.pendingIn(f, off, n)
+	overwrote := false // a pending write in the extent overwrites committed content
 	sctx, end := e.d.Tracer(ctx, "engine.sync")
 	marks, err := e.syncMarks(sctx, b, fileID(f))
 	end(err)
@@ -51,37 +52,54 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 		// overwrite of committed content, which recovery cannot tell from
 		// the content under it, waits for its commit.
 		//
-		// ponytail: a stable write's Commit reads the store once to learn
-		// whether it overwrites committed content, one read per Commit.
-		// Keep the committed size and holes in the entry if that read shows
-		// in a profile.
-		over, err := e.d.Existence.Overwrites(ctx, s, f, runs)
+		// ponytail: a stable write's Commit reads the store to learn
+		// whether it overwrites committed content: one read, and a second
+		// for the marks wait when its pending writes overwrite nothing but
+		// the extent may still cover committed content. Keep the committed
+		// size and holes in the entry if those reads show in a profile.
+		over, err := e.overwrites(ctx, b, s, f, runs)
 		if err != nil {
-			return vfserr.Verifier{}, 0, e.storeErr(err)
+			return vfserr.Verifier{}, 0, err
 		}
+		overwrote = over
 		if over {
 			if err := e.commitThrough(ctx, b, f, through); err != nil {
 				return vfserr.Verifier{}, 0, e.waitErr(b, f, err)
 			}
 		}
 	}
-	if err := e.marksWait(ctx, b, s, f, off, n, marks); err != nil {
+	if err := e.marksWait(ctx, b, s, f, off, n, marks, overwrote); err != nil {
 		return vfserr.Verifier{}, 0, err
 	}
 	return e.sample(b), e.LossSeq(s, f), nil
 }
 
+// overwrites reports whether xs, extents of file f of share s, cover
+// committed content. A read the caller's deadline ends answers ErrDelay, as
+// the waits it guards do, never the context's error.
+func (e *Engine) overwrites(ctx context.Context, b *binding, s entity.ShareID, f entity.FileID, xs []entity.Extent) (bool, error) {
+	over, err := e.d.Existence.Overwrites(ctx, s, f, xs)
+	switch {
+	case err == nil:
+		return over, nil
+	case errors.Is(err, context.DeadlineExceeded):
+		return false, e.waitErr(b, f, err)
+	}
+	return false, e.storeErr(err)
+}
+
 // marksWait returns once recorded sync marks cover marks, those f's sync
 // returned, or at once when [off, off+n), n 0 the whole file, covers no
-// committed content: the journal's proof of a synced record is in-process,
+// committed content, which over, a pending write in it overwriting committed
+// content, already shows it does: the journal's proof of a synced record is in-process,
 // and only a recorded mark carries it to disk. A write the lazy commit
 // already committed, or whose group commit's marks failed, is covered by
 // nothing else. It asks the group commit for marks read after the sync; when
 // those still cover none, the record's segment ended meanwhile and its copy
 // lies in another, so it syncs f again for the copy's mark.
-func (e *Engine) marksWait(ctx context.Context, b *binding, s entity.ShareID, f entity.FileID, off, n int64, marks []entity.SyncMark) error {
+func (e *Engine) marksWait(ctx context.Context, b *binding, s entity.ShareID, f entity.FileID, off, n int64, marks []entity.SyncMark, over bool) error {
 	g := b.gc
-	checked := false
+	checked := over
 	for {
 		g.mu.Lock()
 		read, ok := g.marks.reads, covered(marks, g.marks.recorded)
@@ -94,9 +112,9 @@ func (e *Engine) marksWait(ctx context.Context, b *binding, s entity.ShareID, f 
 			if n == 0 {
 				x.Length = math.MaxInt64 - off
 			}
-			over, err := e.d.Existence.Overwrites(ctx, s, f, []entity.Extent{x})
+			over, err := e.overwrites(ctx, b, s, f, []entity.Extent{x})
 			if err != nil {
-				return e.storeErr(err)
+				return err
 			}
 			if !over {
 				return nil
