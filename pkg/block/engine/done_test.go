@@ -127,9 +127,9 @@ func TestEveryAcceptedWriteGetsOneDone(t *testing.T) {
 	u.e.LostWhole(u.rec)
 	close(stop)
 	wg.Wait()
-	if n := res.Outstanding(); n != 0 {
-		t.Errorf("%d accepted writes never got their Done", n)
-	}
+	// A batch in flight when LostWhole began runs its Dones once it returns,
+	// after the writers have stopped.
+	eventually(t, "every accepted write gets its Done", func() bool { return res.Outstanding() == 0 })
 }
 
 // A batch whose window drops one of its writes and whose commit then fails
