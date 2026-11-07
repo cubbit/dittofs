@@ -912,12 +912,14 @@ func TestAFailureThatBlamesNoFileRetriesTheBatchWhole(t *testing.T) {
 			calls := func() int { log.mu.Lock(); defer log.mu.Unlock(); return len(log.commits) }
 			u.clock.Advance(time.Second)
 			for want := 1; want <= 3; want++ {
-				eventually(t, "the batch is tried again", func() bool { return calls() >= want })
-				u.clock.Advance(time.Minute) // past any backoff
+				eventually(t, "the batch is tried again", func() bool {
+					u.clock.Advance(time.Minute) // past any backoff, read after the call
+					return calls() >= want
+				})
 			}
 			log.mu.Lock()
 			for i, c := range log.commits[:3] {
-				if len(c) != 8 {
+				if len(c) != 8 && len(c) != 0 { // a call of no file carries the marks alone
 					t.Errorf("call %d named %d files, want the batch's 8", i, len(c))
 				}
 			}
@@ -928,8 +930,12 @@ func TestAFailureThatBlamesNoFileRetriesTheBatchWhole(t *testing.T) {
 				}
 			}
 			on.Store(false)
-			u.clock.Advance(time.Minute)
-			eventually(t, "every file is committed once the failure ends", func() bool { return u.e.FileEntries() == 0 })
+			// The backoff reads the clock after the call is logged, so the
+			// clock moves inside the wait, not once before it.
+			eventually(t, "every file is committed once the failure ends", func() bool {
+				u.clock.Advance(time.Minute)
+				return u.e.FileEntries() == 0
+			})
 		})
 	}
 }
@@ -1129,4 +1135,42 @@ func TestABatchPassesEachWritesSupersededRuns(t *testing.T) {
 			t.Errorf("write %d passed Over %v, want %v", i, op.Over, want[i])
 		}
 	}
+}
+
+// slowStore takes per for each file of an existence commit, or until the
+// call's context ends.
+type slowStore struct {
+	engine.Existence
+	per time.Duration
+}
+
+func (x slowStore) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+	select {
+	case <-time.After(time.Duration(len(p)) * x.per):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return x.Existence.Commit(ctx, p, marks)
+}
+
+// A healthy store slower than the commit's bound for a whole batch still
+// commits it: a batch that timed out is halved until one fits the bound,
+// where retrying it whole would time out for good.
+func TestABatchSlowerThanTheBoundIsHalvedUntilItCommits(t *testing.T) {
+	engine.SetConflictBound(100 * time.Millisecond)
+	t.Cleanup(func() { engine.SetConflictBound(time.Second) })
+	u := newUnitWith(t, unitConfig{deps: []func(*engine.Deps){func(d *engine.Deps) {
+		d.Existence = slowStore{d.Existence, 40 * time.Millisecond}
+	}}})
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 16, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 4 {
+		u.write(t, u.create(t, string(rune('a'+i))), 0, []byte("x"))
+	}
+	u.clock.Advance(time.Second)
+	eventually(t, "every file is committed by a store slower than the bound", func() bool {
+		u.clock.Advance(time.Minute) // past any backoff
+		return u.e.FileEntries() == 0
+	})
 }
