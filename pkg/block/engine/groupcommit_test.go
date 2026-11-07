@@ -1088,3 +1088,45 @@ func TestTheGroupCommitsStoreCallsCarryTheRetryingOwnerMark(t *testing.T) {
 		}
 	}
 }
+
+// pendingStore records the operations of every existence commit.
+type pendingStore struct {
+	engine.Existence
+	mu  sync.Mutex
+	ops []kvstore.PendingOp
+}
+
+func (x *pendingStore) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+	x.mu.Lock()
+	for _, pe := range p {
+		x.ops = append(x.ops, pe.Ops...)
+	}
+	x.mu.Unlock()
+	return x.Existence.Commit(ctx, p, marks)
+}
+
+// RFC 8 §5.1, R48: writes committed in one batch pass, each, the runs where
+// it overlaps an earlier of them, merged, so the store writes an overwrite
+// record over what each supersedes.
+func TestABatchPassesEachWritesSupersededRuns(t *testing.T) {
+	x := &pendingStore{}
+	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	f := u.create(t, "a")
+	u.write(t, f, 0, make([]byte, 8)) // [0, 8)
+	u.write(t, f, 2, make([]byte, 4)) // [2, 6): supersedes [2, 6)
+	u.write(t, f, 5, make([]byte, 5)) // [5, 10): supersedes [5, 8) of the first and [5, 6) of the second
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	want := [][]entity.Extent{nil, {entity.ExtentOf(2, 6)}, {entity.ExtentOf(5, 8)}}
+	if len(x.ops) != len(want) {
+		t.Fatalf("%d operations committed, want %d", len(x.ops), len(want))
+	}
+	for i, op := range x.ops {
+		if !slices.Equal(op.Over, want[i]) {
+			t.Errorf("write %d passed Over %v, want %v", i, op.Over, want[i])
+		}
+	}
+}

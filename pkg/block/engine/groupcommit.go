@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -128,7 +129,7 @@ func (e *Engine) pending(c captured) kvstore.PendingExistence {
 	e.files.lock(c.fe)
 	defer c.fe.mu.Unlock()
 	p := kvstore.PendingExistence{Share: c.b.share.ID, File: c.f}
-	for _, op := range c.fe.ops {
+	for i, op := range c.fe.ops {
 		if !op.claimed || op.dropped {
 			continue
 		}
@@ -146,9 +147,39 @@ func (e *Engine) pending(c captured) kvstore.PendingExistence {
 			Extent:  entity.Extent{Offset: op.extent.Off, Length: op.extent.Len},
 			Mtime:   mtime,
 			Ctime:   op.at,
+			Over:    superseded(c.fe.ops, i),
 		})
 	}
 	return p
+}
+
+// superseded is where ops[i], a write, overlaps an earlier write pending in
+// ops, its file's entry, merged and in offset order: the runs whose older
+// bytes it supersedes. They are computed from the writes the engine holds,
+// never asked of the journal, whose index the older write may have left by
+// the commit (RFC 8 §5.1). Every existence commit that passes pending writes
+// takes its Over from here.
+func superseded(ops []pendingOp, i int) []entity.Extent {
+	x := entity.Extent{Offset: ops[i].extent.Off, Length: ops[i].extent.Len}
+	var runs []entity.Extent
+	for _, op := range ops[:i] {
+		if op.kind != opWrite || op.dropped {
+			continue
+		}
+		if r := x.Intersect(entity.Extent{Offset: op.extent.Off, Length: op.extent.Len}); !r.IsEmpty() {
+			runs = append(runs, r)
+		}
+	}
+	slices.SortFunc(runs, func(a, b entity.Extent) int { return cmp.Compare(a.Offset, b.Offset) })
+	var merged []entity.Extent
+	for _, r := range runs {
+		if n := len(merged); n > 0 && r.Offset <= merged[n-1].End() {
+			merged[n-1] = entity.ExtentOf(merged[n-1].Offset, max(merged[n-1].End(), r.End()))
+			continue
+		}
+		merged = append(merged, r)
+	}
+	return merged
 }
 
 // groupCommitFor is journal j's group commit, started on first use. Once

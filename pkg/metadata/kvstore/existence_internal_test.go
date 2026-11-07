@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -583,5 +584,41 @@ func TestAConflictOnMarksAloneIsErrSyncMarks(t *testing.T) {
 	_, err := f.s.Existence().Commit(context.Background(), []PendingExistence{{Share: f.share, File: file, Ops: []PendingOp{write(1, 0, mib)}}}, mw)
 	if errors.Is(err, ErrSyncMarks) || !errors.Is(err, ErrConflict) {
 		t.Errorf("marks beside a file, conflicting: %v, want the conflict alone", err)
+	}
+}
+
+// RFC 8 §5.1: a write committed beside an earlier write of the file that it
+// overlaps leaves an overwrite record at its version over the runs its Over
+// names, though neither write's content was committed before the commit.
+func TestAWritesOverLeavesAnOverwriteRecord(t *testing.T) {
+	f := newContentFix(t, nil)
+	file := f.file(0)
+	newer := write(2, 2*mib, 4*mib)
+	newer.Over = []entity.Extent{{Offset: 2 * mib, Length: 4 * mib}}
+	f.exist(file, write(1, 0, 8*mib), newer)
+	var got []overwrite
+	if err := f.s.kv.View(context.Background(), func(r kv.Reader) error {
+		pre := overwritesPrefix(f.share, file)
+		for row, err := range r.Scan(pre, nil) {
+			if err != nil {
+				return err
+			}
+			start, _, err := keys.ReadUint64(row.Key[len(pre):])
+			if err != nil {
+				return err
+			}
+			o, err := decodeOverwrite(int64(start), row.Value)
+			if err != nil {
+				return err
+			}
+			got = append(got, o)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []overwrite{{Extent: entity.Extent{Offset: 2 * mib, Length: 4 * mib}, Version: entity.VersionOf(2)}}
+	if !slices.Equal(got, want) {
+		t.Errorf("overwrite records %+v, want %+v", got, want)
 	}
 }

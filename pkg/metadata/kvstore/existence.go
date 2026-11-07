@@ -45,6 +45,11 @@ type PendingOp struct {
 	Size    int64         // OpGrow
 	Mtime   time.Time     // the modification time it sets; zero when its open suspended it
 	Ctime   time.Time     // the change time it sets
+	// Over is, for an OpWrite or OpLost, the runs where it overlaps an earlier
+	// write of the file pending in the same commit, which an overwrite record
+	// at its version covers: content committed before the commit is found by
+	// the store itself (RFC 8 §5.1).
+	Over []entity.Extent
 }
 
 // PendingExistence is one file's operations to commit, in version order.
@@ -71,6 +76,7 @@ var ErrNotContent = errors.New("kvstore: file holds no content")
 // it grows size, shrinks the holes a write fills, makes a hole of the gap a
 // write past size or a truncate up leaves, writes an overwrite record over
 // every run of a write that covers content committed before the commit, and
+// over each run of its Over, where it supersedes an earlier pending write, and
 // sets the times and applied. Operations at or below applied are skipped, so
 // a replay after a crash is harmless. A file whose operations need more than
 // the budget commits over several transactions in version order, applied
@@ -373,7 +379,8 @@ func (s *existState) bound(op PendingOp) (int, error) {
 			n++
 		}
 	}
-	return n, nil
+	// Each run it supersedes writes a record and may split one at each edge.
+	return n + 3*len(op.Over), nil
 }
 
 // load reads the holes and overwrite records over w that are not already
@@ -425,6 +432,11 @@ func (s *existState) apply(op PendingOp) error {
 		}
 		for _, run := range s.committedRuns(e) {
 			s.overwrite(run, op.Version)
+		}
+		for _, run := range op.Over {
+			if run = run.Intersect(e); !run.IsEmpty() {
+				s.overwrite(run, op.Version)
+			}
 		}
 		if e.Offset > s.f.Size {
 			s.addHole(entity.ExtentOf(s.f.Size, e.Offset), op.Version)
