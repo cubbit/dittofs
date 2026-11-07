@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"math"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -472,5 +473,16 @@ func TestACallRacingAFilesFirstWriteFindsNothingPending(t *testing.T) {
 			u.e.OnLookup(func() { once.Do(func() { tc.call(u, f) }) })
 			u.write(t, f, 0, []byte("x"))
 		})
+	}
+}
+
+// A Commit whose extent ends past the largest offset is refused as invalid,
+// not clamped to a negative end that skips the overwrite wait.
+func TestACommitWhoseExtentOverflowsIsInvalid(t *testing.T) {
+	u := newUnit(t)
+	f := u.create(t, "a")
+	u.write(t, f, 0, []byte("x"))
+	if _, _, err := u.e.Commit(t.Context(), u.share.ID, f, 1, math.MaxInt64); !errors.Is(err, vfserr.ErrInvalid) {
+		t.Errorf("a Commit of [1, 1+MaxInt64): %v, want ErrInvalid", err)
 	}
 }

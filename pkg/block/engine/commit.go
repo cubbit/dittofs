@@ -24,7 +24,7 @@ import (
 // that commits nothing either wait answers ErrDelay at the caller's deadline,
 // never success.
 func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) (vfserr.Verifier, uint64, error) {
-	if off < 0 || n < 0 {
+	if off < 0 || n < 0 || n > math.MaxInt64-off {
 		return vfserr.Verifier{}, 0, vfserr.ErrInvalid
 	}
 	b, err := e.bindingOf(s)
