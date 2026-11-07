@@ -244,6 +244,12 @@ func (e *Engine) markLost(l *losses, f entity.FileID, ev journal.LossEvent) (don
 		}
 		found = true
 		if ev.Reason != journal.LossFailedWindow {
+			// decision: a corrupt loss of part of a pending write marks the
+			// whole write lost, so its good bytes commit uncharged and read
+			// back only while the journal holds them. Splitting the write
+			// needs the store to take two operations of one file at one
+			// version, which Existence.Commit refuses; lift this once it can,
+			// or once PendingOp carries the lost runs of a write.
 			op.lost = true
 			continue
 		}
