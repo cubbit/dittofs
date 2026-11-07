@@ -37,9 +37,11 @@ type groupCommit struct {
 	nextAt   time.Time     // when the loop's timer fires; zero, none is set
 	losses   losses
 	failing  map[entity.FileID]*failure
-	// wideBackoff is the last backoff after a failure that blamed no file;
-	// zero once a batch commits.
+	// wideBackoff is the last backoff after a failure that blamed no file,
+	// and wideCap the most files a batch takes after one that timed out;
+	// both zero once a batch commits.
 	wideBackoff time.Duration
+	wideCap     int
 	marks       marks
 
 	wake   chan struct{} // a file became due sooner than the timer, or now
@@ -402,6 +404,9 @@ func (g *groupCommit) take() (batch []taken, last bool, wait time.Duration) {
 		}
 		return a.oldest.Compare(b.oldest)
 	})
+	if g.wideCap > 0 {
+		maxFiles = min(maxFiles, g.wideCap)
+	}
 	if len(ready) > 0 && ready[0].alone {
 		maxFiles = 1
 	}
@@ -463,17 +468,18 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 	// A failed sync or a store-wide failure blames no file: the files keep
 	// their batch and wait out one backoff the whole group commit shares
 	// (RFC 8 §5.2).
-	wide := syncErr != nil
+	wide, timedOut := syncErr, false
 	for _, err := range failed {
-		wide = wide || storeWide(err)
+		if storeWide(err) {
+			wide = err
+			timedOut = timedOut || (ctx.Err() == nil && !errors.Is(err, kvstore.ErrClosed))
+		}
 	}
 	var shared time.Time
-	if wide {
-		shared = g.widen()
+	if wide != nil {
+		shared = g.widen(wide, len(batch), timedOut)
 	} else if len(batch) > 0 {
-		g.mu.Lock()
-		g.wideBackoff = 0
-		g.mu.Unlock()
+		g.narrowed()
 	}
 	var dones []func()
 	for _, c := range batch {
@@ -500,11 +506,30 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 // widen backs the whole group commit off after a failure that blames no
 // file, doubling from backoffMin to backoffMax, and answers when its files
 // may be taken again.
-func (g *groupCommit) widen() time.Time {
+func (g *groupCommit) widen(err error, files int, timedOut bool) time.Time {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.wideBackoff == 0 {
+		g.e.d.Logger.Warn("existence_commit_failing", "batch", files, "err", err)
+	}
 	g.wideBackoff = min(max(2*g.wideBackoff, backoffMin), backoffMax)
+	if timedOut {
+		// A store slower than the bound for this batch may still commit a
+		// smaller one: halve it, so a healthy slow store makes progress
+		// where retrying the batch whole would time out for good.
+		g.wideCap = max(1, files/2)
+	}
 	return g.e.d.Clock.Now().Add(g.wideBackoff)
+}
+
+// narrowed ends a failure that blamed no file once a batch commits.
+func (g *groupCommit) narrowed() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.wideBackoff != 0 {
+		g.e.d.Logger.Warn("existence_commit_failing cleared")
+	}
+	g.wideBackoff, g.wideCap = 0, 0
 }
 
 // outcome records f's commit in a batch of one file or more: a success clears
@@ -781,17 +806,11 @@ func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExist
 		}
 		return mw != nil, nil
 	}
-	if mw != nil && ctx.Err() == nil && !errors.Is(err, kvstore.ErrConflict) && !storeWide(err) {
-		// A whole-call failure that is no conflict sends the marks alone,
-		// once, at once, and the files go on without them, so none is backed
-		// off without having been tried without the marks (RFC 8 §5.2).
-		//
-		// decision: a store-wide failure is left out, though §5.2's sentence
-		// can be read to cover it: the same section retries a store-wide
-		// batch whole at the next group commit, and sending the marks and the
-		// files again at once would meet the same stalled or closed store.
-		// The marks then back off as any failed marks write does. Overturned
-		// if the RFC says the marks go alone at once on a store-wide failure.
+	if mw != nil && ctx.Err() == nil && !errors.Is(err, kvstore.ErrConflict) {
+		// A whole-call failure that is no conflict, a store-wide one
+		// included, sends the marks alone, once, at once, and the files go on
+		// without them, so none is backed off without having been tried
+		// without the marks (RFC 8 §5.2).
 		merr := e.commitMarksAlone(ctx, mw)
 		_, _ = e.commitSplit(ctx, pending, nil, failed, alone) // no marks: it reports through failed
 		return merr == nil, merr

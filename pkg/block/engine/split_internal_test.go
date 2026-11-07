@@ -114,7 +114,9 @@ func TestTheSplit(t *testing.T) {
 // Every failure shape on a batch carrying the marks: one call at a time
 // carries them, through a split on its first half, until they commit; beside
 // a file failing alone they go in a call of their own; a marks error has the
-// batch retried at once without them and splits nothing.
+// batch retried at once without them and splits nothing; any other whole-call
+// failure, a store-wide one included, sends them alone at once and has the
+// batch go on without them, a store-wide one unsplit.
 func TestTheSplitCarriesTheMarks(t *testing.T) {
 	for _, c := range []struct {
 		name         string
@@ -128,7 +130,7 @@ func TestTheSplitCarriesTheMarks(t *testing.T) {
 		{"a whole-call error", "", "d", []string{"abcd*", "ab*", "cd", "c", "d"}, "d", true},
 		{"two failing files", "", "bd", []string{"abcd*", "ab*", "a*", "b", "cd", "c", "d"}, "bd", true},
 		{"every file failing", "", "abcd", []string{"abcd*", "ab*", "a*", "*", "b", "cd", "c", "d"}, "abcd", true},
-		{"the store closed", "", "d", []string{"abcd*"}, "abcd", false},
+		{"the store closed", "", "d", []string{"abcd*", "*", "abcd"}, "abcd", true},
 		{"marks not written", "", "", []string{"abcd*", "abcd"}, "", false},
 		{"the open generation moved", "c", "", []string{"abcd*", "abcd"}, "c", false},
 	} {
