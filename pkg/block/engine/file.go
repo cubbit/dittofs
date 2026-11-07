@@ -120,8 +120,10 @@ func (fs *files) entryFor(f entity.FileID) *fileEntry {
 	return fe
 }
 
-// lockOf is f's entry, locked, or nil when f has none: for a call that only
-// reads.
+// lockOf is f's entry, locked, or nil when f has nothing pending: for a call
+// that only reads. An entry a lockFor inserted and has not locked yet holds
+// nothing, so it answers nil too, and removes it: that lockFor then finds it
+// dead and inserts another.
 func (fs *files) lockOf(f entity.FileID) *fileEntry {
 	for {
 		fe := fs.entryOf(f)
@@ -129,10 +131,15 @@ func (fs *files) lockOf(f entity.FileID) *fileEntry {
 			return nil
 		}
 		fs.lock(fe)
-		if !fe.dead {
-			return fe
+		if fe.dead {
+			fe.mu.Unlock()
+			continue
 		}
-		fe.mu.Unlock()
+		if fe.empty() {
+			fs.unlock(f, fe)
+			return nil
+		}
+		return fe
 	}
 }
 

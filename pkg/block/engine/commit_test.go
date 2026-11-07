@@ -453,3 +453,24 @@ func TestAFailedMarksWriteBacksOff(t *testing.T) {
 		t.Errorf("once the backoff passed: %v", err)
 	}
 }
+
+// A call that only reads a file's entry, run while a first write has inserted
+// the entry and not yet locked it, finds nothing pending rather than an entry
+// with no operations.
+func TestACallRacingAFilesFirstWriteFindsNothingPending(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(u *unit, f entity.FileID)
+	}{
+		{"Commit", func(u *unit, f entity.FileID) { _, _, _ = u.e.Commit(context.Background(), u.share.ID, f, 0, 0) }},
+		{"commitNow", func(u *unit, f entity.FileID) { _ = u.e.CommitNow(context.Background(), u.share.ID, f) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newUnit(t)
+			f := u.create(t, "a")
+			var once sync.Once
+			u.e.OnLookup(func() { once.Do(func() { tc.call(u, f) }) })
+			u.write(t, f, 0, []byte("x"))
+		})
+	}
+}
