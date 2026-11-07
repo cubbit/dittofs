@@ -933,3 +933,44 @@ func TestAFailureThatBlamesNoFileRetriesTheBatchWhole(t *testing.T) {
 		})
 	}
 }
+
+// RFC 8 §5.2, R43: a stability point waiting for the sync marks gets them
+// on the next batch even while more files stay ready than one batch takes,
+// so a group commit that never ends does not hold them back.
+func TestMarksRideOnABatchWhileFilesStayReady(t *testing.T) {
+	u, _ := newLoggedUnit(t, time.Millisecond, 1)
+	a := u.create(t, "a")
+	u.write(t, a, 0, []byte("committed"))
+	u.clock.Advance(time.Millisecond)
+	eventually(t, "a's write is committed", func() bool { return u.e.FileEntries() == 0 })
+	var pool []entity.FileID
+	for i := range 8 {
+		pool = append(pool, u.create(t, string(rune('p'+i))))
+	}
+	var takes atomic.Int64
+	var stop atomic.Bool
+	const most = 500
+	u.e.OnTake(func() {
+		// Two writes per batch of one keep more files ready than it takes.
+		if n := takes.Add(1); n < most && !stop.Load() {
+			for k := range 2 {
+				_, _ = u.e.Write(context.Background(), u.share.ID, pool[(2*int(n)+k)%len(pool)], 0, []byte("x"), engine.WriteOpts{Done: func() {}})
+			}
+			u.clock.Advance(time.Millisecond)
+		}
+	})
+	u.write(t, pool[0], 0, []byte("x"))
+	u.write(t, pool[1], 0, []byte("x"))
+	u.write(t, a, 9, []byte(" and appended"))
+	u.clock.Advance(time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, _, err := u.e.Commit(ctx, u.share.ID, a, 0, 0)
+	stop.Store(true)
+	if err != nil {
+		t.Fatalf("a Commit over committed content: %v", err)
+	}
+	if n := takes.Load(); n >= most {
+		t.Errorf("the Commit returned only after %d batches, once the writes stopped: the marks waited for the ready set to empty", n)
+	}
+}

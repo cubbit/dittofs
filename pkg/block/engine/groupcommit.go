@@ -255,7 +255,10 @@ func (g *groupCommit) run() {
 			(*h)()
 		}
 		if len(batch) > 0 {
-			g.commit(g.ctx, batch, last)
+			// The marks ride on the batch that ends the group commit, or on
+			// any batch while a stability point waits for them, so a ready set
+			// that never empties does not hold them back.
+			g.commit(g.ctx, batch, last || g.marksDue() == 0)
 			continue
 		}
 		switch mw := g.marksDue(); {
