@@ -29,19 +29,24 @@ type pendingOp struct {
 	extent    journal.Extent // a truncate's Off is the size it sets, its Len zero
 	at        time.Time      // the clock's time when staged: the file's change time
 	setsMtime bool           // the operation moves the file's modification time
+	lost      bool           // the journal dropped it after its sync: its existence commits lost
+	claimed   bool           // a batch claimed it: no other path commits it or calls its Done
+	dropped   bool           // a failed window dropped it while claimed: it no longer exists, its Done has run
 	done      func()         // the write's WriteOpts.Done, called once its existence commits or it is dropped
 }
 
 // fileEntry is one file's state: its pending operations in version order.
 // It exists only while it holds something.
 type fileEntry struct {
-	mu   sync.Mutex
-	dead bool // removed from its shard: a caller that finds it so looks again
-	ops  []pendingOp
+	mu        sync.Mutex
+	dead      bool // removed from its shard: a caller that finds it so looks again
+	ops       []pendingOp
+	inBatch   bool          // a group commit batch claimed its leading operations
+	batchDone chan struct{} // closed when that batch returns
 }
 
 // empty reports the entry holds nothing. The caller holds mu.
-func (fe *fileEntry) empty() bool { return len(fe.ops) == 0 }
+func (fe *fileEntry) empty() bool { return len(fe.ops) == 0 && !fe.inBatch }
 
 // fileShards is the count of shards the entry map is split into, each with
 // its own lock held only to look up, insert or remove.
@@ -63,9 +68,10 @@ type fileShard struct {
 // Bound it explicitly, with eviction of idle entries, if a count of per-file
 // states grows with the namespace rather than the working set.
 type files struct {
-	shards [fileShards]fileShard
-	clock  Clock
-	waits  lockWaits // area file_state
+	shards      [fileShards]fileShard
+	clock       Clock
+	waits       lockWaits // area file_state
+	afterLookup func()    // a test's seam: between lockFor's lookup and its lock
 	// removals is bumped under an entry's lock whenever committed operations
 	// leave it, so a reader that read block metadata and an entry apart can
 	// tell a commit landed between them.
@@ -114,8 +120,10 @@ func (fs *files) entryFor(f entity.FileID) *fileEntry {
 	return fe
 }
 
-// lockOf is f's entry, locked, or nil when f has none: for a call that only
-// reads.
+// lockOf is f's entry, locked, or nil when f has nothing pending: for a call
+// that only reads. An entry a lockFor inserted and has not locked yet holds
+// nothing, so it answers nil too, and removes it: that lockFor then finds it
+// dead and inserts another.
 func (fs *files) lockOf(f entity.FileID) *fileEntry {
 	for {
 		fe := fs.entryOf(f)
@@ -123,10 +131,15 @@ func (fs *files) lockOf(f entity.FileID) *fileEntry {
 			return nil
 		}
 		fs.lock(fe)
-		if !fe.dead {
-			return fe
+		if fe.dead {
+			fe.mu.Unlock()
+			continue
 		}
-		fe.mu.Unlock()
+		if fe.empty() {
+			fs.unlock(f, fe)
+			return nil
+		}
+		return fe
 	}
 }
 
@@ -135,6 +148,9 @@ func (fs *files) lockOf(f entity.FileID) *fileEntry {
 func (fs *files) lockFor(f entity.FileID) *fileEntry {
 	for {
 		fe := fs.entryFor(f)
+		if fs.afterLookup != nil {
+			fs.afterLookup()
+		}
 		fs.lock(fe)
 		if !fe.dead {
 			return fe

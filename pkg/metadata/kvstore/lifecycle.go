@@ -177,7 +177,16 @@ func (s *Store) RecordJournal(
 				return err
 			}
 
-			if err := tx.Delete(journalKey(old)); err != nil {
+			// A journal this one replaces takes its open generation and sync
+			// marks with it, at most one key per stream; recorded again, a
+			// journal keeps its own.
+			if old == id {
+				err = tx.Delete(journalKey(old))
+			} else {
+				err = deleteUnder(tx, journalKey(old))
+			}
+
+			if err != nil {
 				return err
 			}
 		}
