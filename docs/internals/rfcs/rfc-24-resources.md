@@ -865,13 +865,19 @@ counts nothing about holds. This RFC fixes which pool holds the bytes:
   buffer class and per-request overhead, as charged at frame — from the hold
   pool and, only once that succeeds, releases the receive reservation, so the
   charge is never absent. Failing, it refuses the call, and the receive
-  reservation is released with it. The charge never shrinks: the buffer it
+  reservation is released with it — except a call the interim timer finds
+  still in the service, which is not refused and keeps its receive
+  reservation, since it may still apply
+  ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)). The charge
+  never shrinks: the buffer it
   backs is not shrunk by being held, so a 100 KiB write in a transfer-class
   buffer charges the hold pool about 1 MiB.
 - The adapter's per-connection floors in requests and bytes count the write's
   bytes, at least 64 KiB; that is a logical count of what a connection may have
   held, and it is kept apart from the hold pool, which counts memory. Past
-  both, the adapter refuses the request at once and holds nothing.
+  both, a request whose hold starts on an `ErrDelay` the service returned is
+  refused at once and nothing is held for it; a call still in the service is
+  not refused, as above.
 - A held call holds no reply reservation between attempts; each re-run takes one
   as a new call would (§3.3).
 
@@ -1258,7 +1264,7 @@ once cannot fill a pool.
 | R6 | At the receive ceiling the socket is not read; no request is read that cannot be reserved, and a record in several fragments is reserved at its protocol's largest class before its first fragment is read. | An RPC record in three fragments whose first is 1 KiB: assert the receive pool is charged the transfer class before the first fragment is read, and a fragment past the cap closes the connection with the reservation released. A fuzz over record marks and fragment sequences asserts no reservation leaks and the cap holds. |
 | R7 | No client key is granted bytes of the receive or reply pool that take it past three quarters while another key waits; waiting keys are granted in turns. | A unit property test of `Budget`: for random waiters of random classes over N keys, with random releases, a visit grants a key no more bytes than its deficit holds; a waiting key below the cap whose head fits the free bytes is granted before any other key is visited twice; and no key past three quarters is granted while another waits. As a smoke test, one address with 16 connections at their caps of 1 MiB writes and 20 other addresses sending `GETATTR`: assert each other address is served, and the busy address is granted nothing further while above three quarters of the receive pool. |
 | R8 | While the receive or reply pool is more than half full and another share holds bytes of it, no call is admitted that would take its share past three quarters of it, counting the call's own reservations and checked atomically with their charge; it is refused with `DelayResources` at once. A call that only releases or reclaims state is exempt (§4.2). | `builds`'s remote black-holed, build01 reading cold at depth 64 on four connections, alice-pc writing to `profiles`: assert `builds` holds at most three quarters of the reply pool, build01 is answered `NFS3ERR_JUKEBOX` and `memory_pool_refusals_total{reason="share_cap"}` rises. With `builds` one call below its cap, 64 1 MiB reads on new connections arriving at once: assert `builds` still holds at most three quarters. Close an open and unlock a range on `builds`: assert both succeed. Stop alice-pc and let `builds` alone fill the pool: assert none of its calls is refused by the cap. On the reference box, alice-pc's p99 write latency stays within twice its unloaded figure. |
-| R9 | A held call past its connection's floor holds its bytes in the hold pool, not the receive pool, charged its whole receive reservation — buffer class and overhead — never less. | With the receive pool at 64 MiB, freeze `profiles` and hold 300 64 KiB writes on one connection: assert the receive pool holds the floor's 256 and the hold pool the rest. Repeat with 100 KiB writes: assert the hold pool is charged a transfer-class buffer and its overhead per write past the floor. |
+| R9 | A held call past its connection's floor holds its bytes in the hold pool, not the receive pool, charged its whole receive reservation — buffer class and overhead — never less; a call the interim timer finds still in the service, past the floor with the hold pool unable to take it, is not refused and keeps its receive reservation ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)). | With the receive pool at 64 MiB, freeze `profiles` and hold 300 64 KiB writes on one connection: assert the receive pool holds the floor's 256 and the hold pool the rest. Repeat with 100 KiB writes: assert the hold pool is charged a transfer-class buffer and its overhead per write past the floor. |
 | R10 | No address holds more than a quarter of the connection limit. | One address opening connections in a loop: assert it is held at a quarter of the limit and another address still connects. |
 | R11 | A close, unlock, grant return, or reclaim of durable state is never refused for memory; a reclaim of volatile state is refused, retry-later, only once the open-state pool holds twice its ceiling. | Fill the open-state pool to nine tenths, restart with half the *L*, reclaim: assert every reclaim succeeds and a new open is `DelayResources` until the pool falls. Then have one eligible NFSv4.0 client reclaim opens it never held: assert its reclaims are refused `DelayResources` once the pool reaches twice its ceiling, resident memory stays under *L*, and a persistent open's reconnect still succeeds. |
 | R12 | No held request, blocked lock, queued transfer, work item or waiting reader has a goroutine of its own. | Covered by R2's assertion that the goroutine count stays within §6.1's bounds. |

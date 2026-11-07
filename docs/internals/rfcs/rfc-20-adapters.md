@@ -611,7 +611,8 @@ Every adapter runs through the same four states, driven by the node
   Requests already handed to the service run to their answer, and their
   replies are sent. A parked request — a waiting lock, a change notification —
   is cancelled as draining begins and answered as its table answers the drain's
-  error, so none waits for the deadline (§4.7's `Park`). Draining ends when none is left
+  error, or success if it took effect, so none waits for the deadline (§4.7's
+  `Park`). Draining ends when none is left
   or at the drain deadline, whichever is first; the drain deadline is at least
   the break deadline (35 s) plus the request deadline, so a request held on a
   break can finish.
@@ -1546,16 +1547,20 @@ it holds — the service counts nothing about holds:
   checked when a hold starts on an `ErrDelay` the service returned, and in
   `Park`; past it the request is answered at once with `ErrTooManyPending`. A
   call the interim timer finds still in the service goes pending past it, and
-  past the hold floor; its interim then grants no credits.
+  past the hold floor with the hold pool full; its interim then grants no
+  credits, and its final reply grants them instead.
 
 > decision: a call the interim timer finds in the service goes pending past the
-> ceiling and the floor, because answering it at once could report a failure
-> for a call that applies a moment later (§4.7's `Pends` decision). Its interim
-> grants no credits (`HoldCodec.Interim`), so the client sends nothing more
-> until a final reply returns some: the overshoot is at most the credits the
-> client held when the ceiling or the floor was reached, and its write data is already in
-> the receive pool (RFC 24 §3.2), which bounds the bytes. Withdraw it if the
-> service gains a way to withdraw a call it has not applied.
+> ceiling, and past the floor with the hold pool full, because answering it at
+> once could report a failure for a call that applies a moment later (§4.7's
+> `Pends` decision). Its interim grants no credits and its final reply grants
+> them instead (`HoldCodec.Interim`, `HoldCodec.Final`), so the client sends
+> nothing more until that final reply returns some: the overshoot is at most
+> the credits the client held when the ceiling, or the floor with the pool
+> full, was reached. Past the floor with the pool full the call is not refused
+> and keeps its receive reservation, where its write data already is (RFC 24
+> §3.2, §4.3), which bounds the bytes. Withdraw it if the service gains a way
+> to withdraw a call it has not applied.
 
 > decision: a parked request is off the hold floor, which counts held requests
 > and their write data, because it holds neither: a waiting lock or a change
@@ -1926,8 +1931,8 @@ func (c *Conn) Close(err error)
 // cancels that early.
 type HoldCodec interface {
 	Key(h Header) uint64
-	Interim(h Header, grant bool, out *Buf) error // STATUS_PENDING; grants the request's credits if grant (false past MaxPending or the hold floor, §4.6)
-	Final(h Header) Header                  // the final reply's header: the async ID, no credits
+	Interim(h Header, grant bool, out *Buf) error // STATUS_PENDING; grants the request's credits if grant (false for a call in the service past MaxPending, or past the hold floor with the hold pool full, §4.6)
+	Final(h Header, grant bool) Header            // the final reply's header: the async ID; grants the request's credits if grant (true only when its interim granted none)
 	Cancels(h Header) (key uint64, ok bool) // a CANCEL ends the hold it names and gets no reply
 	// Pends says whether a chain member before the last, answered ErrDelay
 	// with cause, goes pending (true) or is answered at once as ErrNotLast.

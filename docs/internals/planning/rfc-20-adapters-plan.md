@@ -156,10 +156,10 @@ what those tests stand on:
   target's reply, gone after 5 s; a drain that cancels a parked operation and leaves it
   unanswered, serves a context operation and a read before a releasing one, and stops a chain
   at a member it leaves unanswered while a member before it that went pending still gets its
-  final reply; a cancel or a drain racing a grant, answered success; a member before the last
-  answered `ErrDelay` and not pending, answered as `ErrNotLast`; a call in the service past the
-  pending ceiling going pending with an interim that grants nothing; `Park` refused when the
-  reply pool is full; an expired credential refusing a lock and a write under a break and
+  final reply; a cancel or a drain racing a grant (§4.7's `Park`); a member before the last
+  answered `ErrDelay` (§4.7's `Pends`); a call the interim timer finds in the service past the
+  ceiling, and one past the floor with the hold pool full (§4.6); `Park` with the reply pool
+  full (§4.7's `Park`); an expired credential refusing a lock and a write under a break and
   passing an unlock; a parked operation already past its interim sending no second one; a
   cacheable reply under a wrapping `Security`, replayed twice, decoding both times; a connection
   closed on a scripted violation.
@@ -631,11 +631,8 @@ RFC sections: §6.10's codec and pipeline rows.
 - T8.1 The `unit/adapter-allocs` cell runs every allocation gate on `feat/storage-v2`; any
   missing registration fixed.
 - T8.2 The ledger's rows copied into the RFC 21, RFC 22, RFC 18 and RFC 24 plans, or into #3119
-  for those with no plan yet, each linked back. The RFC 22 plan also gets the smbtorture cases
-  that prove RFC 20 §4.6 and §4.7 end to end, for its acceptance list: `smb2.session.expire2s`
-  (the expiry gate), `smb2.lock.cancel` (a cancel racing a grant), `smb2.compound.interim2` (a
-  chain member pending), `smb2.notify.tcon` (a parked notification ended by the server) and
-  `smb2.credits.1conn_ipc_max_async_credits` (the pending ceiling).
+  for those with no plan yet, each linked back. The RFC 22 plan's acceptance list names RFC 22
+  §18's rows for RFC 20 §4.4, §4.6 and §4.7.
 
 ## 6. Risks, open points and what is deferred
 
