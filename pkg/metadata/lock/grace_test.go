@@ -398,11 +398,9 @@ func TestGracePeriod_Close(t *testing.T) {
 }
 
 func TestGracePeriod_NoExpectedClients_NoEarlyExit(t *testing.T) {
-	callbackCalled := make(chan struct{})
-
-	gpm := NewGracePeriodManager(100*time.Millisecond, func() {
-		close(callbackCalled)
-	})
+	// A 5 s period, so a stalled runner cannot end it by the timer before
+	// the check; TestGracePeriod_ExpiresAfterDuration covers the timer.
+	gpm := NewGracePeriodManager(5*time.Second, nil)
 	defer gpm.Close()
 
 	// Enter with no expected clients
@@ -415,8 +413,6 @@ func TestGracePeriod_NoExpectedClients_NoEarlyExit(t *testing.T) {
 	if gpm.GetState() != GraceStateActive {
 		t.Error("should still be active when no expected clients defined")
 	}
-
-	waitEnd(t, callbackCalled, "timer should have expired")
 }
 
 func TestGracePeriod_GetDuration(t *testing.T) {
