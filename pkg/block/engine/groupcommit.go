@@ -1068,11 +1068,12 @@ func (e *Engine) commitAll(ctx context.Context, j Journal) error {
 		}
 		// A file a removal's guard holds is committed by that removal's own
 		// phase 1, and a batch would only skip it: wait for the guard rather
-		// than ask for batch after batch.
+		// than ask for batch after batch. Under the test seam a batch takes
+		// it, so it is asked for like any other.
 		var guard <-chan struct{}
 		asked := false
 		for _, f := range files {
-			if ch := e.guardOf(f); ch != nil {
+			if ch := e.guardOf(f); ch != nil && !e.noGuardSkip.Load() {
 				guard = ch
 				continue
 			}
