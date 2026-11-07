@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -224,5 +225,36 @@ func TestALossBeforeTheWritesInsertCommitsItLost(t *testing.T) {
 	}
 	if n := dones.Load(); n != 1 {
 		t.Errorf("Done ran %d times, want once", n)
+	}
+}
+
+// A journal device lost whole drops every failing file, and each that
+// existence_commit_failing named is logged cleared, as any clear is.
+func TestALostDeviceLogsEachFailingFileCleared(t *testing.T) {
+	c := &conflicting{}
+	logs := newLogRecorder()
+	u := newUnit(t, func(d *engine.Deps) {
+		c.Existence = d.Existence
+		d.Existence = c
+		d.Logger = slog.New(logs)
+	})
+	f := committedFile(t, u, "a", 4)
+	c.on.Store(true)
+	u.write(t, f, 0, []byte("over"))
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	_ = u.e.CommitNow(ctx, u.share.ID, f)
+	if !u.e.Failing(u.rec, f) {
+		t.Fatal("existence_commit_failing does not name the failing file")
+	}
+	u.e.LostWhole(u.rec)
+	cleared := 0
+	for _, r := range logs.warnings() {
+		if r.Message == "existence_commit_failing cleared" {
+			cleared++
+		}
+	}
+	if cleared != 1 {
+		t.Errorf("%d cleared warnings after the device was lost, want one for the failing file", cleared)
 	}
 }
