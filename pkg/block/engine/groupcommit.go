@@ -750,6 +750,21 @@ func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExist
 		}
 		return mw != nil, nil
 	}
+	if mw != nil && ctx.Err() == nil && !errors.Is(err, kvstore.ErrConflict) && !storeWide(err) {
+		// A whole-call failure that is no conflict sends the marks alone,
+		// once, at once, and the files go on without them, so none is backed
+		// off without having been tried without the marks (RFC 8 §5.2).
+		//
+		// decision: a store-wide failure is left out, though §5.2's sentence
+		// can be read to cover it: the same section retries a store-wide
+		// batch whole at the next group commit, and sending the marks and the
+		// files again at once would meet the same stalled or closed store.
+		// The marks then back off as any failed marks write does. Overturned
+		// if the RFC says the marks go alone at once on a store-wide failure.
+		merr := e.commitMarksAlone(ctx, mw)
+		_, _ = e.commitSplit(ctx, pending, nil, failed, alone) // no marks: it reports through failed
+		return merr == nil, merr
+	}
 	if len(pending) == 1 || ctx.Err() != nil || storeWide(err) {
 		for _, p := range pending {
 			failed[p.File] = err

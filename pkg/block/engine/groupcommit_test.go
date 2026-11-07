@@ -987,3 +987,50 @@ func TestAWriteToAFileWithPendingWritesIsRefusedAfterClose(t *testing.T) {
 		t.Errorf("a write after Close to a file with pending writes: %v, want ErrUnavailable", err)
 	}
 }
+
+// failsOnceWithMarks fails the first call that carries marks beside files
+// with an error that is no conflict.
+type failsOnceWithMarks struct {
+	engine.Existence
+	done atomic.Bool
+}
+
+func (x *failsOnceWithMarks) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+	if marks != nil && len(p) > 0 && x.done.CompareAndSwap(false, true) {
+		return nil, errors.New("the store failed the call")
+	}
+	return x.Existence.Commit(ctx, p, marks)
+}
+
+// RFC 8 §5.2: on a whole-call failure that is no conflict, the marks leave the
+// batch and go alone, once, at once, and the files go on without them; no
+// half of a split keeps them.
+func TestMarksGoAloneAfterAFailureThatIsNoConflict(t *testing.T) {
+	x := &failsOnceWithMarks{}
+	log := &callLog{}
+	u := newUnitWith(t, unitConfig{deps: []func(*engine.Deps){func(d *engine.Deps) {
+		x.Existence = d.Existence
+		d.Existence = loggedExistence{x, log}
+	}}})
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 16, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 4 {
+		u.write(t, u.create(t, string(rune('a'+i))), 0, []byte("x"))
+	}
+	u.clock.Advance(time.Second)
+	eventually(t, "every file is committed", func() bool { return u.e.FileEntries() == 0 })
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	if len(log.commits) < 3 {
+		t.Fatalf("%d calls, want the failed one, the marks alone and the files", len(log.commits))
+	}
+	if len(log.commits[1]) != 0 || log.marks[1] == nil {
+		t.Errorf("the call after the failure named %d files with marks %v, want the marks alone", len(log.commits[1]), log.marks[1] != nil)
+	}
+	for i := 2; i < len(log.commits); i++ {
+		if log.marks[i] != nil {
+			t.Errorf("call %d, of %d files, carried the marks again", i, len(log.commits[i]))
+		}
+	}
+}
