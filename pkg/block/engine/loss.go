@@ -35,8 +35,8 @@ type losses struct {
 	// and keptMu, taken after that lock, guards the map itself.
 	//
 	// ponytail: an event of a file never written again, as of a write
-	// already committed, stays until the process ends. Prune it with the
-	// store-side loss path (#3734), which takes the events of committed writes.
+	// already committed, stays until the process ends. Prune it once a loss of
+	// a committed write is recorded in the store, which takes those events.
 	keptMu sync.Mutex
 	kept   map[entity.FileID][]journal.LossEvent
 }
