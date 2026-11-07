@@ -895,16 +895,15 @@ tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#
    file's loss sequence).
 
    > decision: the reconcile finds a superseded piece only where metadata keeps a
-   > version over it. Two commits keep none: a write that superseded content whose
-   > own existence had not committed yet (an append v5 overwritten by v9 before one
-   > group commit carries both, which writes no overwrite record), and a refill
-   > after a removal whose metadata record was since pruned. If the newer record is
-   > then lost in a range that names no record, the older content is served as
-   > current. That takes a supersede inside one commit window, or a removal
-   > already pruned, plus corruption of exactly the newer record where no catalog
-   > verifies. Closing it means an overwrite record for every run whose content
-   > superseded anything, a metadata write on the commit path of appends and fills.
-   > Overturned if the fault record shows a stale read traced to this case.
+   > version over it. A write that supersedes content whose existence commits in
+   > the same commit keeps one, since the commit carries supersession within
+   > itself ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). One commit keeps none: a refill after a removal whose
+   > metadata record was since pruned. If the newer record is then lost in a
+   > range that names no record, the older content is served as current. That
+   > takes a removal already pruned plus corruption of exactly the newer record
+   > where no catalog verifies. Closing it means a record of the removal's extent
+   > that outlives its prune. Overturned if the fault record shows a stale read
+   > traced to this case.
 
    `ponytail:` `newest` is the highest version over the whole chunk, so a piece
    below it that the ref holds unchanged is dropped as superseded too, with a loss
