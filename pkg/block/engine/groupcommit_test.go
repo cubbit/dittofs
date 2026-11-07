@@ -1034,3 +1034,57 @@ func TestMarksGoAloneAfterAFailureThatIsNoConflict(t *testing.T) {
 		}
 	}
 }
+
+// markedStore records, for each store call, whether its context carries the
+// retrying-owner mark.
+type markedStore struct {
+	engine.Existence
+	mu      sync.Mutex
+	commits []bool
+	reads   []bool
+}
+
+func (x *markedStore) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+	x.mu.Lock()
+	x.commits = append(x.commits, engine.RetryingOwner(ctx))
+	x.mu.Unlock()
+	return x.Existence.Commit(ctx, p, marks)
+}
+
+func (x *markedStore) Overwrites(ctx context.Context, s entity.ShareID, f entity.FileID, xs []entity.Extent) (bool, error) {
+	x.mu.Lock()
+	x.reads = append(x.reads, engine.RetryingOwner(ctx))
+	x.mu.Unlock()
+	return x.Existence.Overwrites(ctx, s, f, xs)
+}
+
+// Every store call the group commit makes, and retries itself, carries the
+// retrying-owner mark; a stability point's own read of the store does not.
+func TestTheGroupCommitsStoreCallsCarryTheRetryingOwnerMark(t *testing.T) {
+	x := &markedStore{}
+	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	f := u.create(t, "a")
+	u.write(t, f, 0, []byte("committed"))
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	u.write(t, f, 0, []byte("over"))
+	if _, _, err := u.e.Commit(t.Context(), u.share.ID, f, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if len(x.commits) == 0 || len(x.reads) == 0 {
+		t.Fatalf("%d commits and %d reads, want both", len(x.commits), len(x.reads))
+	}
+	for i, marked := range x.commits {
+		if !marked {
+			t.Errorf("the group commit's call %d is not marked as a retrying owner's", i)
+		}
+	}
+	for i, marked := range x.reads {
+		if marked {
+			t.Errorf("the stability point's read %d is marked as a retrying owner's", i)
+		}
+	}
+}

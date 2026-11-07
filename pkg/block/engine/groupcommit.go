@@ -169,7 +169,7 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 	}
-	g.ctx, g.cancel = context.WithCancel(context.Background())
+	g.ctx, g.cancel = context.WithCancel(withRetryingOwner(context.Background()))
 	if e.gcsClosed {
 		g.closed = true
 		g.cancel()
@@ -792,6 +792,27 @@ func (e *Engine) commitMarksAlone(ctx context.Context, mw *kvstore.MarksWrite) e
 	defer cancel()
 	_, err := e.d.Existence.Commit(cctx, nil, mw)
 	return err
+}
+
+// retryingOwner marks a context whose store calls their caller retries
+// itself, the group commit's, so the self-fence counts a whole-call failure
+// of one as failing and a file's own failure not (RFC 8 §11.2).
+type retryingOwner struct{}
+
+// withRetryingOwner is ctx with the retrying-owner mark.
+func withRetryingOwner(ctx context.Context) context.Context {
+	return context.WithValue(ctx, retryingOwner{}, true)
+}
+
+// isRetryingOwner reports whether ctx carries the retrying-owner mark.
+//
+// decision: only tests read the mark until the self-fence that counts by it
+// is built; it lands here with its first setter so that every store call the
+// group commit retries carries it from the start. Remove it if the
+// self-fence comes to count failures some other way.
+func isRetryingOwner(ctx context.Context) bool {
+	marked, _ := ctx.Value(retryingOwner{}).(bool)
+	return marked
 }
 
 // storeWide reports that err fails every file alike, so halving the batch

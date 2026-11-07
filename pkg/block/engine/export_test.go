@@ -303,3 +303,6 @@ func (e *Engine) Failing(j Journal, f entity.FileID) bool {
 
 // SetConflictBound sets how long one existence commit may run.
 func SetConflictBound(d time.Duration) { conflictBound.Store(d) }
+
+// RetryingOwner reports whether ctx carries the retrying-owner mark.
+func RetryingOwner(ctx context.Context) bool { return isRetryingOwner(ctx) }
