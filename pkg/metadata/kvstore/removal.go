@@ -192,6 +192,23 @@ func (e Existence) Remove(ctx context.Context, share entity.ShareID, file entity
 	if op.Kind != entity.RemoveTruncate && op.Kind != entity.RemoveDeallocate && op.Kind != entity.RemoveRelease {
 		return merrs.NewInvalidArgumentError("Remove takes a truncate, a deallocate or a release")
 	}
+	if op.Kind == entity.RemoveRelease && len(pending) > 0 {
+		// decision: a release asks its holders before it commits the file's
+		// pending writes, so one a holder refuses leaves them uncommitted.
+		// A holder arriving between this read and phase 1 still aborts the
+		// release, after the writes committed; close that by committing them
+		// inside phase 1's transaction if such aborts are seen.
+		var refused bool
+		if err := e.s.kv.View(ctx, func(r kv.Reader) (err error) {
+			refused, err = held(r, share, file)
+			return err
+		}); err != nil {
+			return err
+		}
+		if refused {
+			return ErrHeld
+		}
+	}
 	if len(pending) > 0 {
 		failed, err := e.Commit(ctx, []PendingExistence{{Share: share, File: file, Epoch: epoch, Ops: pending}}, nil)
 		if err != nil {
@@ -231,7 +248,15 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 	ext := op.Extent
 	if op.Kind == entity.RemoveTruncate {
 		if ext.Offset > f.Size {
-			return merrs.NewInvalidArgumentError("a truncate up is a grow")
+			// A truncate the writer took for a removal can land above the
+			// size, as when a failed sync window dropped a write it counted:
+			// it sets the size whichever way, the gap a hole, removing nothing.
+			h, back, err := mergedHole(tx, share, file, f, ms, entity.ExtentOf(f.Size, ext.Offset), op.Version, 0, entity.ExtentOf(0, entity.EndOfFile))
+			if err != nil {
+				return err
+			}
+			f.Charged += back
+			f.MaxSpan = max(f.MaxSpan, h.Length)
 		}
 		ext = entity.ExtentOf(ext.Offset, entity.EndOfFile)
 	}

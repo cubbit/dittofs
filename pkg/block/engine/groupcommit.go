@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -48,6 +49,8 @@ type groupCommit struct {
 	done   chan struct{}
 	ctx    context.Context // the batches' context, cancelled at stop
 	cancel context.CancelFunc
+
+	removals *removalLoop // the journal's removal work
 }
 
 // marks is what a group commit knows of its journal's sync marks.
@@ -138,18 +141,9 @@ func (e *Engine) pending(c captured) kvstore.PendingExistence {
 		if op.setsMtime {
 			mtime = op.at
 		}
-		kind := kvstore.OpWrite
-		if op.lost {
-			kind = kvstore.OpLost
-		}
-		p.Ops = append(p.Ops, kvstore.PendingOp{
-			Version: entity.JournalVersion(op.version.Bytes()),
-			Kind:    kind,
-			Extent:  entity.Extent{Offset: op.extent.Off, Length: op.extent.Len},
-			Mtime:   mtime,
-			Ctime:   op.at,
-			Over:    superseded(c.fe.ops, i),
-		})
+		ps := storeOp(op, mtime)
+		ps.Over = superseded(c.fe.ops, i)
+		p.Ops = append(p.Ops, ps)
 	}
 	return p
 }
@@ -174,6 +168,25 @@ func superseded(ops []pendingOp, i int) []entity.Extent {
 	return entity.MergeExtents(runs)
 }
 
+// storeOp is op as the store commits it: a write, a write the journal lost,
+// or a truncate up.
+func storeOp(op pendingOp, mtime time.Time) kvstore.PendingOp {
+	o := kvstore.PendingOp{
+		Version: entity.JournalVersion(op.version.Bytes()),
+		Kind:    kvstore.OpWrite,
+		Extent:  entity.Extent{Offset: op.extent.Off, Length: op.extent.Len},
+		Mtime:   mtime,
+		Ctime:   op.at,
+	}
+	switch {
+	case op.grow:
+		o.Kind, o.Extent, o.Size = kvstore.OpGrow, entity.Extent{}, op.extent.Off
+	case op.lost:
+		o.Kind = kvstore.OpLost
+	}
+	return o
+}
+
 // groupCommitFor is journal j's group commit, started on first use. Once
 // the engine's group commits are closed it starts none: it answers a closed
 // one, which runs no goroutine and notes no file.
@@ -193,10 +206,12 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 		done:     make(chan struct{}),
 	}
 	g.ctx, g.cancel = context.WithCancel(withRetryingOwner(context.Background()))
+	g.removals = newRemovalLoop(e)
 	if e.gcsClosed {
 		g.closed = true
 		g.cancel()
 		close(g.done)
+		g.removals.closed = true // never started: nothing to join
 		return g
 	}
 	if e.gcs == nil {
@@ -204,6 +219,7 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 	}
 	e.gcs[j] = g
 	go g.run()
+	go g.removals.run()
 	return g
 }
 
@@ -227,6 +243,7 @@ func (e *Engine) closeGroupCommits() {
 		close(g.returned) // wakes every waiter, which then finds the group commit closed
 		g.returned = make(chan struct{})
 		g.mu.Unlock()
+		g.removals.close()
 	}
 }
 
@@ -484,9 +501,9 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 	g.inFlight = false
 	// Every batch that took a file changed the due set, so its waiters look
 	// again. A taken file no batch can capture went back as due one
-	// existence_age later. While every first operation is a write that holds:
-	// a first operation a batch cannot capture would have commitThrough and
-	// commitAll, which make a file due now after each batch, wake in a loop.
+	// existence_age later, and commitThrough and commitAll wait on the guard
+	// of a removal holding a file rather than make it due now again, so no
+	// waiter is woken in a loop.
 	close(g.returned)
 	g.returned = make(chan struct{})
 	g.mu.Unlock()
@@ -587,19 +604,36 @@ func (e *Engine) failCause(b *binding, f entity.FileID) vfserr.DelayCause {
 
 // capture claims f's leading writes in place under its entry's lock and marks
 // the entry in-batch: the operations stay in the entry, so Overlay and Read
-// keep answering them until the batch returns. A file with no write at the
-// front of its entry is not captured: its operations are a removal's, which
-// commits them itself.
+// keep answering them until the batch returns. The claim runs in version
+// order and stops at the first operation that is not a write or a grow: a
+// removal, whose phase 1 commits it, so no batch raises applied or settles
+// the journal at or above a removal whose phase 1 has not committed, and a
+// file with no write at the front of its entry is not captured.
+//
+// decision: a file whose guard a removal holds is skipped without its
+// entry's lock, which a truncate holds across its journal call, and is taken
+// in a later batch: no file's commit waits on another's removal, and the
+// removal's phase 1 commits the writes below it itself. Correctness never
+// rests on the skip, which only spares a retried phase 1 a batch claiming
+// beside it: the stop at the removal is what keeps applied and every Settle
+// below it.
 func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool) {
+	skip := !e.noGuardSkip.Load()
+	if fe := e.files.entryOf(f); skip && fe != nil && fe.guarded.Load() {
+		return captured{}, false, true
+	}
 	fe := e.files.lockOf(f)
 	if fe == nil {
 		return captured{}, false, false
 	}
 	defer e.files.unlock(f, fe)
+	if skip && fe.guarded.Load() {
+		return captured{}, false, true
+	}
 	c = captured{b: b, f: f, fe: fe}
 	for i := range fe.ops {
-		if fe.ops[i].kind != opWrite {
-			break
+		if fe.ops[i].kind != opWrite && !fe.ops[i].grow {
+			break // a removal: nothing at or above it commits before its phase 1
 		}
 		fe.ops[i].claimed = true
 		c.n++
@@ -837,7 +871,7 @@ func (e *Engine) commitMarksAlone(ctx context.Context, mw *kvstore.MarksWrite) e
 }
 
 // retryingOwner marks a context whose store calls their caller retries
-// itself, the group commit's, so the self-fence counts a whole-call failure
+// itself, the group commit's and the removal loop's, so the self-fence counts a whole-call failure
 // of one as failing and a file's own failure not (RFC 8 §11.2).
 type retryingOwner struct{}
 
@@ -946,6 +980,10 @@ func (e *Engine) commitNow(ctx context.Context, b *binding, f entity.FileID) err
 	if fe == nil {
 		return nil
 	}
+	if len(fe.ops) == 0 { // alive for an admitted write or a registration only
+		e.files.unlock(f, fe)
+		return nil
+	}
 	target := fe.ops[len(fe.ops)-1].version
 	e.files.unlock(f, fe)
 	return e.commitThrough(ctx, b, f, target)
@@ -971,6 +1009,17 @@ func (e *Engine) commitThrough(ctx context.Context, b *binding, f entity.FileID,
 		}
 		if lost {
 			return errLost
+		}
+		// A removal holding f's guard commits f's operations below it in its
+		// own phase 1, and no batch captures f meanwhile: wait for the guard
+		// rather than asking a batch that would only skip f again.
+		if ch := e.guardOf(f); ch != nil {
+			select {
+			case <-ch:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 		g.mu.Lock()
 		d := g.due[f]
@@ -1010,18 +1059,36 @@ func (e *Engine) commitAll(ctx context.Context, j Journal) error {
 			g.mu.Unlock()
 			return errClosed
 		}
-		for _, d := range g.due {
-			d.now = true
-		}
-		done := len(g.due) == 0 && !g.inFlight
+		files := slices.Collect(maps.Keys(g.due))
+		done := len(files) == 0 && !g.inFlight
 		returned := g.returned
 		g.mu.Unlock()
 		if done {
 			return nil
 		}
-		g.poke()
+		// A file a removal's guard holds is committed by that removal's own
+		// phase 1, and a batch would only skip it: wait for the guard rather
+		// than ask for batch after batch. Under the test seam a batch takes
+		// it, so it is asked for like any other.
+		var guard <-chan struct{}
+		asked := false
+		for _, f := range files {
+			if ch := e.guardOf(f); ch != nil && !e.noGuardSkip.Load() {
+				guard = ch
+				continue
+			}
+			g.mu.Lock()
+			if d := g.due[f]; d != nil {
+				d.now, asked = true, true
+			}
+			g.mu.Unlock()
+		}
+		if asked {
+			g.poke()
+		}
 		select {
 		case <-returned:
+		case <-guard:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -1049,10 +1116,12 @@ func (e *Engine) waitBatch(ctx context.Context, f entity.FileID) error {
 	}
 }
 
-// dropShare takes share s's files off the due set of journal j and returns
-// once no batch is in flight there, so none of them is committed after.
+// dropShare takes share s's files off the due set of journal j and its
+// items off the journal's removal loop, ending each, and returns once no
+// batch is in flight there, so none of them is committed after.
 func (e *Engine) dropShare(ctx context.Context, j Journal, s entity.ShareID) error {
 	g := e.groupCommitFor(j)
+	g.removals.dropShare(s)
 	for {
 		g.mu.Lock()
 		for f, d := range g.due {

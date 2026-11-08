@@ -68,6 +68,13 @@ var ErrConflict = kv.ErrConflict
 // ErrClosed is a view's call on a store whose backend closed.
 var ErrClosed = kv.ErrClosed
 
+// Refused reports that the store refused a call as invalid: the same call
+// fails the same way, so retrying it changes nothing.
+func Refused(err error) bool {
+	var s *merrs.StoreError
+	return errors.As(err, &s) && s.Code == merrs.ErrInvalidArgument
+}
+
 // ErrNotContent is an existence commit for a file that holds no content.
 var ErrNotContent = errors.New("kvstore: file holds no content")
 
@@ -637,6 +644,18 @@ func (e Existence) Applied(ctx context.Context, share entity.ShareID, file entit
 		return err
 	})
 	return v, err
+}
+
+// Size is the file's committed size, in one read transaction: a truncate
+// replays the file's uncommitted operations over it to tell a grow from a
+// removal.
+func (e Existence) Size(ctx context.Context, share entity.ShareID, file entity.FileID) (size int64, err error) {
+	err = e.s.kv.View(ctx, func(r kv.Reader) error {
+		f, err := fileIn(r, share, file)
+		size = f.Size
+		return err
+	})
+	return size, err
 }
 
 // Overwrites reports whether any run covers content whose existence is

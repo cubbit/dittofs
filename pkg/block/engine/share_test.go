@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -128,6 +129,13 @@ func (l logRecorder) WithAttrs([]slog.Attr) slog.Handler {
 
 func (l logRecorder) WithGroup(string) slog.Handler {
 	return l
+}
+
+// records is every record logged.
+func (l logRecorder) records() []slog.Record {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(*l.recs)
 }
 
 // warnings is every record logged at Warn.

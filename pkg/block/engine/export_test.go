@@ -306,3 +306,120 @@ func SetConflictBound(d time.Duration) { conflictBound.Store(d) }
 
 // RetryingOwner reports whether ctx carries the retrying-owner mark.
 func RetryingOwner(ctx context.Context) bool { return isRetryingOwner(ctx) }
+
+// SetAfterRegister makes h run once each clone's registrations are
+// installed, before the clone's next step.
+func (e *Engine) SetAfterRegister(h func()) { e.afterRegister = h }
+
+// Registrations is the count of f's source and destination registrations.
+func (e *Engine) Registrations(f entity.FileID) (src, dst int) {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return 0, 0
+	}
+	defer e.files.unlock(f, fe)
+	for _, r := range fe.regs {
+		if r.dst {
+			dst++
+		} else {
+			src++
+		}
+	}
+	return src, dst
+}
+
+// Admitted is the count of f's writes admitted and not yet in its entry.
+func (e *Engine) Admitted(f entity.FileID) int {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return 0
+	}
+	defer e.files.unlock(f, fe)
+	return len(fe.writing)
+}
+
+// PendingWrites is the count of f's pending writes overlapping [off, end).
+func (e *Engine) PendingWrites(f entity.FileID, off, end int64) int {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return 0
+	}
+	defer e.files.unlock(f, fe)
+	n := 0
+	for _, op := range fe.ops {
+		if op.kind == opWrite && op.extent.Off < end && off < op.extent.Off+op.extent.Len {
+			n++
+		}
+	}
+	return n
+}
+
+// OnStaged runs f in each removal between its journal step and its phase 1.
+func (e *Engine) OnStaged(f func()) { e.hooks.staged.Store(&f) }
+
+// GuardHeld reports whether a removal holds f's guard.
+func (e *Engine) GuardHeld(f entity.FileID) bool {
+	fe := e.files.entryOf(f)
+	return fe != nil && fe.guarded.Load()
+}
+
+// RemovalStalled reports whether f has an item removal_stalled on a loop.
+func (e *Engine) RemovalStalled(f entity.FileID) bool {
+	e.gcMu.Lock()
+	defer e.gcMu.Unlock()
+	for _, g := range e.gcs {
+		if g.removals.stalledOn(f) {
+			return true
+		}
+	}
+	return false
+}
+
+// RemovalsPending is engine_removals_pending over every loop.
+func (e *Engine) RemovalsPending() int {
+	e.gcMu.Lock()
+	defer e.gcMu.Unlock()
+	n := 0
+	for _, g := range e.gcs {
+		k, _ := g.removals.pending()
+		n += k
+	}
+	return n
+}
+
+// NoGuardSkip has every capture take a file whose guard a removal holds,
+// as one would with the guard's skip removed.
+func (e *Engine) NoGuardSkip() { e.noGuardSkip.Store(true) }
+
+// StopRemovalLoops ends every journal's removal loop, as Close's stop of
+// the work queue does before its last group commit, and leaves the group
+// commits running.
+func (e *Engine) StopRemovalLoops() {
+	e.gcMu.Lock()
+	gs := make([]*groupCommit, 0, len(e.gcs))
+	for _, g := range e.gcs {
+		gs = append(gs, g)
+	}
+	e.gcMu.Unlock()
+	for _, g := range gs {
+		g.removals.close()
+	}
+}
+
+// StageGrow stages on f, at the journal's next version, a grow to size,
+// which the store refuses as a truncate down when size is below the file's
+// committed size: a pending operation the store will not commit.
+func (e *Engine) StageGrow(s entity.ShareID, f entity.FileID, size int64) error {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return err
+	}
+	v, err := b.j.Draw()
+	if err != nil {
+		return err
+	}
+	fe := e.files.lockFor(f)
+	defer e.files.unlock(f, fe)
+	fe.insert(pendingOp{version: v, kind: opTruncate, extent: journal.Extent{Off: size}, grow: true})
+	return nil
+}
