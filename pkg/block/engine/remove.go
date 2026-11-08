@@ -23,6 +23,9 @@ type removal struct {
 	kind entity.RemovalKind
 	v    journal.Version
 	at   time.Time
+	// through, above v, is the newest version phase 1 committed with it, which
+	// release settles through: a clone's copies and the writes above it.
+	through journal.Version
 }
 
 // guard takes file f's guard for a removal of x and marks x in flight,
@@ -81,11 +84,7 @@ func (fe *fileEntry) refuseRemoval(kind entity.RemovalKind, x extent) error {
 			return errRegistered
 		}
 	default:
-		for _, r := range fe.regs {
-			if r.dst || r.overlaps(x.off, x.end) {
-				return delayClone()
-			}
-		}
+		return fe.refuseChange(x)
 	}
 	return nil
 }
@@ -121,7 +120,11 @@ func (e *Engine) release(r *removal, settle bool) {
 	}
 	e.files.unlock(r.f, fe)
 	if settle {
-		r.b.h.Settle(fileID(r.f), r.v)
+		v := r.v
+		if v.Compare(r.through) < 0 {
+			v = r.through
+		}
+		r.b.h.Settle(fileID(r.f), v)
 	}
 	if !oldest.IsZero() && !r.b.gc.removals.isDropped(r.b.share.ID) {
 		_ = r.b.gc.note(r.b, r.f, oldest) // refused only once closed or lost, when nothing commits

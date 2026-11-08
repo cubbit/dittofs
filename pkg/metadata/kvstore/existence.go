@@ -709,6 +709,20 @@ func (e Existence) Size(ctx context.Context, share entity.ShareID, file entity.F
 	return size, err
 }
 
+// CloneFree answers ErrDelay, in one read transaction, while a clone's phase 1
+// would: a clone not done still writes into the destination, or over the
+// source extent. A clone checks it before its journal step, past which
+// nothing may refuse it.
+func (e Existence) CloneFree(ctx context.Context, op CloneOp) error {
+	sp := op.Spec
+	return e.s.kv.View(ctx, func(r kv.Reader) error {
+		if err := destinationFree(r, op.Share, op.File); err != nil {
+			return err
+		}
+		return noCloneOver(r, sp.SrcShare, sp.Src, entity.ExtentOf(sp.SrcOff, sp.SrcOff+sp.Len))
+	})
+}
+
 // Overwrites reports whether any run covers content whose existence is
 // committed — below size, outside the holes — in one read transaction: a
 // stability point waits for the existence commit of exactly such a write.

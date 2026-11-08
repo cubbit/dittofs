@@ -58,6 +58,20 @@ func (fe *fileEntry) refuseRead(o, e int64) error {
 	return nil
 }
 
+// refuseChange answers delayClone() if a change to x of the file, a clone
+// into it or a truncate or deallocate of it, meets a clone registered on it:
+// one overlapping x, source or destination, or any clone into the file,
+// which holds one clone into it at a time and must not change under it. The
+// caller holds the entry's lock.
+func (fe *fileEntry) refuseChange(x extent) error {
+	for _, r := range fe.regs {
+		if r.dst || r.overlaps(x.off, x.end) {
+			return delayClone()
+		}
+	}
+	return nil
+}
+
 // leave removes x, one admitted write, from those writing, and wakes a
 // registration waiting for it. The caller holds the entry's lock.
 func (fe *fileEntry) leave(x extent) {
@@ -93,10 +107,26 @@ func (fe *fileEntry) writingInto(x extent) bool {
 // nothing, if ctx ends first.
 func (e *Engine) register(ctx context.Context, f entity.FileID, r *reg) error {
 	fe := e.files.lockFor(f)
-	// A removal in flight over the extent is waited out: it checked the
-	// file's registrations before this one, so its phase 1 must end before
-	// the clone reads the file.
-	for fe.removing != nil && fe.removing.overlaps(r.off, r.end) {
+	for {
+		// The registrations are checked before any wait, so an extent a
+		// running clone holds, whose guard that clone may hold, is answered
+		// at once rather than behind the guard.
+		var err error
+		if r.dst {
+			err = fe.refuseChange(r.extent)
+		} else {
+			err = fe.refuseRead(r.off, r.end)
+		}
+		if err != nil {
+			e.files.unlock(f, fe)
+			return err
+		}
+		// A removal in flight over the extent is waited out: it checked the
+		// file's registrations before this one, so its phase 1 must end
+		// before the clone reads the file.
+		if fe.removing == nil || !fe.removing.overlaps(r.off, r.end) {
+			break
+		}
 		ch := fe.guardDone
 		e.files.unlock(f, fe)
 		select {
@@ -105,21 +135,6 @@ func (e *Engine) register(ctx context.Context, f entity.FileID, r *reg) error {
 			return ctx.Err()
 		}
 		fe = e.files.lockFor(f)
-	}
-	var err error
-	if r.dst {
-		err = fe.refuseWrite(r.off, r.end)
-		for _, o := range fe.regs {
-			if o.dst {
-				err = delayClone() // a file holds one clone into it at a time
-			}
-		}
-	} else {
-		err = fe.refuseRead(r.off, r.end)
-	}
-	if err != nil {
-		e.files.unlock(f, fe)
-		return err
 	}
 	fe.regs = append(fe.regs, r)
 	if fe.writingInto(r.extent) {
@@ -177,7 +192,9 @@ func (fe *fileEntry) drop(r *reg) {
 // step 1 on the call (prepare), whose refusal undoes both registrations and
 // changes nothing, then from the journal step on its own goroutine
 // (runClone), where it never fails; the call waits for it within its own
-// context, a deadline answering DelayClone and leaving the clone running.
+// context, whose end, a deadline or a cancel, answers DelayClone and leaves
+// the clone running, as the clone may already have changed the destination
+// and only a call that changed nothing answers refused.
 //
 // decision: a clone between two shares on one node is admitted, as both
 // shards are this node's and no failover or handover can split them while
@@ -235,6 +252,10 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		// phase 2 and its done signal are not built, as nothing could answer
 		// one past its journal step: a test of admission alone runs its hook
 		// first, and a test's stand-in for the done signal lets it run on.
+		//
+		// decision: everything past this gate, step 1, the journal step, the
+		// copies and phase 1, runs only under the test's stand-in, never in a
+		// served engine. Withdraw it when the done signal is built.
 		if h != nil {
 			h()
 		}
@@ -253,10 +274,7 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	case <-c.done:
 		return c.err
 	case <-ctx.Done():
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return delayClone()
-		}
-		return ctx.Err()
+		return delayClone() // it may have changed the destination: never answered as refused
 	}
 }
 
@@ -283,7 +301,9 @@ const copyBuf = 1 << 20
 
 // prepare is the clone's step 1, on the call: the source's pending existence
 // committed, which syncs it; a source extent past the source's committed end
-// refused ErrInvalid; then the sizing pass and the reservation (size).
+// refused ErrInvalid; a clone not done into the destination or over the
+// source extent, by the store's own read, DelayClone; then the sizing pass
+// and the reservation (size).
 // Nothing it does changes the destination.
 func (e *Engine) prepare(ctx context.Context, c *cloneRun, x vfserr.Extent) error {
 	if err := e.commitNow(ctx, c.sb, c.src); err != nil {
@@ -295,6 +315,13 @@ func (e *Engine) prepare(ctx context.Context, c *cloneRun, x vfserr.Extent) erro
 	}
 	if x.SrcOff+x.Len > size {
 		return vfserr.ErrInvalid
+	}
+	// The store's phase 1 delays a clone while one not done still writes
+	// into the destination or over the source extent; read here, it delays
+	// the call instead, as nothing may refuse the clone past its journal step.
+	if err := e.d.Existence.CloneFree(ctx, kvstore.CloneOp{Share: c.db.share.ID, File: c.dst,
+		Spec: entity.CloneSpec{SrcShare: c.sb.share.ID, Src: c.src, SrcOff: x.SrcOff, DstOff: x.DstOff, Len: x.Len}}); err != nil {
+		return e.storeErr(err)
 	}
 	c.spec = journal.CloneSpec{SrcShare: journal.ShareID(c.sb.share.ID), Src: fileID(c.src),
 		SrcOff: x.SrcOff, DstOff: x.DstOff, Len: x.Len}
@@ -414,8 +441,19 @@ func (e *Engine) attempt(ctx context.Context, c *cloneRun, r *removal) answer {
 		e.cloned(c)
 		return itemDone
 	case errors.Is(err, entity.ErrStale):
-		e.cloneEnded(c, r, err)
-		return itemDone
+		// The store answers stale for either file gone; only the
+		// destination's end ends the clone, its record gone with it.
+		if _, serr := e.d.Existence.Size(ctx, c.db.share.ID, c.dst); errors.Is(serr, entity.ErrStale) {
+			e.cloneEnded(c, r, err)
+			return itemDone
+		}
+		// decision: a source gone after the journal step is retried, the
+		// guard held, as nothing may fail past it; a clone's hold on its
+		// source keeps it from going, so only a path this part lacks, that
+		// hold not built, reaches it. Withdraw it once the hold is built.
+		e.d.Logger.Error("a clone's source went after its journal step: retried", "src", c.src, "dst", c.dst, "err", err)
+	case errors.Is(err, entity.ErrDelay):
+		e.d.Logger.Warn("a clone's phase 1 was delayed by a clone not done: retried", "src", c.src, "dst", c.dst, "err", err)
 	case kvstore.Refused(err):
 		e.d.Logger.Error("a clone's phase 1 was refused after its journal step: retried", "src", c.src, "dst", c.dst, "err", err)
 	}
@@ -441,13 +479,10 @@ func (e *Engine) copyAll(ctx context.Context, c *cloneRun) error {
 		}
 		c.res = nil
 	}
-	if err != nil {
-		return err
-	}
 	if c.newest.Compare(newest) < 0 {
-		c.newest = newest
+		c.newest = newest // a failed attempt's copies are committed too, by the one that succeeds
 	}
-	return nil
+	return err
 }
 
 // copyRuns copies every source run size found held into the destination,
@@ -500,8 +535,8 @@ func (e *Engine) copyRuns(ctx context.Context, c *cloneRun) (journal.Version, er
 // operations claimed, the copies and the clone's own aside, the destination
 // synced, and the store's Clone handed them; once it commits, they leave the
 // entry with the clone's operation and its copies, the guard is released and
-// the journal settled through the clone's version, and the claimed writes'
-// Dones run. A failure releases the claim and keeps the guard.
+// the journal settled through the newest version it committed, and the
+// claimed writes' Dones run. A failure releases the claim and keeps the guard.
 func (e *Engine) tryClonePhase1(ctx context.Context, c *cloneRun, r *removal) error {
 	if err := e.claimAll(ctx, r); err != nil {
 		return err
@@ -519,6 +554,9 @@ func (e *Engine) tryClonePhase1(ctx context.Context, c *cloneRun, r *removal) er
 		return err
 	}
 	dones := e.committed(r)
+	if r.through.Compare(c.newest) < 0 {
+		r.through = c.newest
+	}
 	e.release(r, true)
 	for _, d := range dones {
 		d()
@@ -531,12 +569,19 @@ func (e *Engine) tryClonePhase1(ctx context.Context, c *cloneRun, r *removal) er
 // still in the journal: the guard keeps every batch off the file, and a
 // write staged between the clone's version and its copies' newest, still
 // unclaimed when the store's Clone sets applied past it, would be skipped as
-// applied by every later commit. No new write is admitted while the entry's
-// lock is held between waits.
+// applied by every later commit. No new write is admitted while it waits,
+// as stage holds them, so a stream of writes cannot hold phase 1 off.
 func (e *Engine) claimAll(ctx context.Context, r *removal) error {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
+	defer func() {
+		if fe.staging {
+			fe.staging = false
+			fe.staged.Broadcast()
+		}
+	}()
 	if len(fe.writing) > 0 {
+		fe.staging = true
 		stop := context.AfterFunc(ctx, func() {
 			fe.mu.Lock()
 			fe.staged.Broadcast()
@@ -554,6 +599,9 @@ func (e *Engine) claimAll(ctx context.Context, r *removal) error {
 		op := &fe.ops[i]
 		if !op.dropped && !op.copy && op.version != r.v {
 			op.claimed = true
+			if r.through.Compare(op.version) < 0 {
+				r.through = op.version
+			}
 		}
 	}
 	return nil
@@ -565,14 +613,16 @@ func (e *Engine) claimAll(ctx context.Context, r *removal) error {
 // clone. A destination found gone ends it; the loop's end leaves it to the
 // next start.
 //
-// decision: the store's phase 1 refuses an overlap, a source past its end,
-// two namespaces and a destination already cloning, after the journal step
-// RFC 8 §9.1 says no refusal may follow. Admission refuses each first, so
-// one is met here only when the store changed under a registered extent by
-// a path this part does not have; met anyway, it is logged at Error,
-// retried and never fails or undoes. A refusal that never clears pins the
-// destination's guard, which a group commit's capture skips. Withdraw it if
-// the store's checks move to a read at admission.
+// decision: the store's phase 1 refuses an overlap, a source past its end
+// and two namespaces, and delays a clone not done into the destination or
+// over the source extent, after the journal step RFC 8 §9.1 says no refusal
+// may follow. Admission refuses the first three and step 1 reads the last
+// two (CloneFree), so one is met here only when the store changed under a
+// registered extent by a path this part does not have, the rebuild at start
+// among them; met anyway, it is logged, counted a failed batch toward
+// removal_stalled, retried and never fails or undoes. One that never clears
+// pins the destination's guard, which a group commit's capture skips.
+// Withdraw it once phase 1 runs no check admission does not run first.
 func (e *Engine) retryClone(c *cloneRun, r *removal) {
 	c.db.gc.removals.enqueue(&loopItem{b: c.db, f: c.dst, kind: entity.RemoveClone,
 		run: func(ctx context.Context) answer { return e.attempt(ctx, c, r) },

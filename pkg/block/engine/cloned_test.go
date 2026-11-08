@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -1030,4 +1031,96 @@ func TestAllocationReadsAgainAfterAClonesPhase1BetweenItsReads(t *testing.T) {
 		u.write(t, dst, 5*mib, fill(2*kib, 'l'))
 	}
 	u.allocations(t, dst, run{2 * mib, 8 * kib, false})
+}
+
+// A store answering stale at phase 1 for a source gone, the destination
+// still there, does not end the clone past its journal step: it is retried,
+// and once phase 1 commits the destination reads the source's bytes.
+func TestAStaleSourceAtPhase1IsRetried(t *testing.T) {
+	x := &refusingClone{err: fmt.Errorf("the source: %w", entity.ErrStale)}
+	x.left.Store(1)
+	u := clonedUnit(t, func(d *engine.Deps) {
+		x.Existence = d.Existence
+		d.Existence = x
+	})
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.create(t, "dst")
+	u.clone(t, src, dst, vfserr.Extent{Len: mib})
+	if n := x.calls.Load(); n != 2 {
+		t.Errorf("phase 1 ran %d times, want the stale one retried once", n)
+	}
+	if got := u.read(t, dst, 0, mib); !bytes.Equal(got, fill(mib, 's')) {
+		t.Error("the destination does not read the source's bytes")
+	}
+}
+
+// A clone into a destination whose earlier clone the store still records
+// as not done is answered DelayClone before its journal step, rather than
+// taking it and retrying phase 1 with the destination's guard held.
+func TestACloneIntoADestinationStillCloningIsDelayedBeforeItsJournalStep(t *testing.T) {
+	u := clonedUnit(t)
+	src := u.committedFile(t, "src", fill(2*mib, 's'))
+	dst := u.create(t, "dst")
+	u.clone(t, src, dst, vfserr.Extent{Len: mib}) // its phase 2 is not built: the store keeps it not done
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	err := u.e.Clone(ctx, u.share.ID, src, u.share.ID, dst, vfserr.Extent{SrcOff: mib, DstOff: mib, Len: mib})
+	if !isDelay(err, vfserr.DelayClone) {
+		t.Fatalf("a second clone into the destination: %v, want DelayClone", err)
+	}
+	if n := len(u.j.CloneTargets()); n != 1 {
+		t.Errorf("the journal saw %d CloneTargets, want the first clone's alone", n)
+	}
+	if err := u.e.Truncate(ctx, u.share.ID, dst, 4*mib); err != nil {
+		t.Errorf("a grow of the destination: %v, want its guard free", err)
+	}
+}
+
+// A clone from a running clone's destination extent is answered DelayClone
+// at once, not behind that clone's guard.
+func TestACloneFromARunningClonesDestinationAnswersAtOnce(t *testing.T) {
+	u := clonedUnit(t)
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.create(t, "dst")
+	other := u.create(t, "other")
+	release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{Len: mib})
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := u.e.Clone(ctx, u.share.ID, dst, u.share.ID, other, vfserr.Extent{Len: mib}); !isDelay(err, vfserr.DelayClone) {
+		t.Errorf("a clone from the running clone's destination: %v, want DelayClone", err)
+	}
+	release()
+	if err := <-answer; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A call cancelled once its clone took the journal step answers DelayClone,
+// never the cancel, which would read as refused with nothing changed: the
+// clone runs on and changes the destination.
+func TestACancelledCloneCallAnswersDelayClone(t *testing.T) {
+	u := clonedUnit(t)
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.create(t, "dst")
+	held, hold := make(chan struct{}), make(chan struct{})
+	var once atomic.Bool
+	u.e.OnStaged(func() {
+		if once.CompareAndSwap(false, true) {
+			close(held)
+			<-hold
+		}
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	errc := make(chan error, 1)
+	go func() { errc <- u.e.Clone(ctx, u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: mib}) }()
+	<-held
+	cancel()
+	if err := <-errc; !isDelay(err, vfserr.DelayClone) {
+		t.Errorf("a clone call cancelled past its journal step: %v, want DelayClone", err)
+	}
+	close(hold)
+	u.until(t, "the clone's phase 1", func() bool { _, d := u.e.Registrations(dst); return d == 0 })
+	if got := u.read(t, dst, 0, mib); !bytes.Equal(got, fill(mib, 's')) {
+		t.Error("the destination does not read the source's bytes")
+	}
 }
