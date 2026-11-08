@@ -1,0 +1,78 @@
+name: Release asset
+description: >
+  Fetch one asset of a GitHub release, from the Actions cache when a push run
+  saved it and otherwise from the release with the job's token, and check it
+  against its pinned SHA-256. An anonymous download shares GitHub's limits and
+  incidents with every anonymous client.
+
+inputs:
+  repo:
+    description: The repository that publishes the release, as owner/name.
+    required: true
+  tag:
+    description: The release's tag.
+    required: true
+  asset:
+    description: The asset's file name, as the release lists it.
+    required: true
+  sha256:
+    description: The asset's SHA-256. Checked on every run, from the cache or not.
+    required: true
+
+outputs:
+  path:
+    description: The asset's path, once its checksum matched.
+    value: ${{ steps.check.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    # The checksum is in the key, so a new pin never restores the old file.
+    - name: Restore from the cache
+      id: restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/release-assets/${{ inputs.asset }}
+        key: release-asset-${{ inputs.asset }}-${{ inputs.sha256 }}
+
+    # gh doesn't retry, and one failed download in a merge queue run drops the
+    # pull request. --clobber lets a retry overwrite what a failed try left.
+    - name: Download from the release
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ inputs.repo }}
+        TAG: ${{ inputs.tag }}
+        ASSET: ${{ inputs.asset }}
+      run: |
+        for wait in 0 10 20; do
+          sleep "$wait"
+          gh release download "$TAG" --repo "$REPO" --pattern "$ASSET" \
+            --dir "$RUNNER_TEMP/release-assets" --clobber && exit 0
+        done
+        exit 1
+
+    # On a hit too: the pin, not the cache, decides what the job installs.
+    - name: Check the SHA-256
+      id: check
+      shell: bash
+      env:
+        FILE: ${{ runner.temp }}/release-assets/${{ inputs.asset }}
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        echo "$SHA256  $FILE" | sha256sum --check --strict
+        echo "path=$FILE" >> "$GITHUB_OUTPUT"
+
+    # Only a push run saves: a pull request run reads its base branch's entries
+    # and every run reads the default branch's, while what a pull request or
+    # merge queue run saves only that run's re-runs can read. Saved here, not
+    # by the post step of actions/cache, which saves only when the whole job
+    # passes.
+    - name: Save to the cache
+      if: steps.restore.outputs.cache-hit != 'true' && github.event_name == 'push'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ runner.temp }}/release-assets/${{ inputs.asset }}
+        key: ${{ steps.restore.outputs.cache-primary-key }}

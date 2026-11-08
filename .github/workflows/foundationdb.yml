@@ -42,6 +42,7 @@ jobs:
               - 'go.mod'
               - 'go.sum'
               - '.github/actions/fdb-client/**'
+              - '.github/actions/release-asset/**'
               - '.github/workflows/foundationdb.yml'
 
       - name: Set up Go
