@@ -42,7 +42,10 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	// registration is checked and installed, and stays counted until its
 	// operation is in the entry, so a registration waits for it.
 	x := extent{off, off + int64(len(p))}
-	fe := e.files.lockFor(f)
+	fe, err := e.admitAfterStaging(ctx, f)
+	if err != nil {
+		return vfserr.Verifier{}, err
+	}
 	if err := fe.refuseWrite(x.off, x.end); err != nil {
 		e.files.unlock(f, fe)
 		return vfserr.Verifier{}, err
@@ -93,6 +96,33 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	})
 	e.files.unlock(f, fe)
 	return v, nil
+}
+
+// admitAfterStaging is f's entry, locked, once no removal is waiting out the
+// writes admitted before it, so a write admitted now reaches the journal
+// after that removal. An entry that died during the wait is looked up again.
+func (e *Engine) admitAfterStaging(ctx context.Context, f entity.FileID) (*fileEntry, error) {
+	fe := e.files.lockFor(f)
+	for fe.staging {
+		stop := context.AfterFunc(ctx, func() {
+			fe.mu.Lock()
+			fe.staged.Broadcast()
+			fe.mu.Unlock()
+		})
+		for fe.staging && ctx.Err() == nil {
+			fe.staged.Wait()
+		}
+		stop()
+		if err := ctx.Err(); err != nil {
+			e.files.unlock(f, fe)
+			return nil, err
+		}
+		if fe.dead {
+			fe.mu.Unlock()
+			fe = e.files.lockFor(f)
+		}
+	}
+	return fe, nil
 }
 
 // Draw is the next version of the journal holding file f of share s, for a

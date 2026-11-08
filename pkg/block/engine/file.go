@@ -47,6 +47,7 @@ type fileEntry struct {
 	inBatch   bool          // a group commit batch claimed its leading operations
 	batchDone chan struct{} // closed when that batch returns
 	writing   []extent      // admitted writes not yet inserted, one per write
+	staging   bool          // a removal waits out the writes admitted before it: no other is admitted meanwhile
 	regs      []*reg        // the clones registered on the file
 	guarded   atomic.Bool   // a removal holds the file's guard: read without mu by a capture
 	guardDone chan struct{} // non-nil while guarded, closed when the guard is released

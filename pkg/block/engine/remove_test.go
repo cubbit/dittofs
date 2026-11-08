@@ -537,3 +537,80 @@ func TestCommitAllWaitsForARemovalsGuardWithoutSpinning(t *testing.T) {
 		t.Fatal("commitAll did not return once the removal's guard was released")
 	}
 }
+
+// A truncate waits only for the writes admitted before it: writes arriving
+// while it waits wait for it in turn, so writers overlapping each other do
+// not hold it, and its guard, to its deadline.
+func TestATruncateWaitsOnlyForTheWritesAdmittedBeforeIt(t *testing.T) {
+	u := newUnit(t)
+	f := u.create(t, "a")
+	u.e.OnWritten(func() { time.Sleep(5 * time.Millisecond) }) // each write stays admitted a while
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for w := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(time.Duration(w) * time.Millisecond) // staggered, so one is always admitted
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_, _ = u.e.Write(context.Background(), u.share.ID, f, int64(8*w), make([]byte, 8), engine.WriteOpts{Done: func() {}})
+			}
+		}()
+	}
+	defer func() { close(stop); wg.Wait() }()
+	time.Sleep(20 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := u.e.Truncate(ctx, u.share.ID, f, 4); err != nil {
+		t.Fatalf("a truncate among overlapping writers: %v", err)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("the truncate took %v among overlapping writers, waiting on writes admitted after it", took)
+	}
+}
+
+// A write arriving while a truncate waits out an earlier write reaches the
+// journal after the truncate, never ahead of it with a lower version, so the
+// truncate does not cut it.
+func TestAWriteArrivingWhileATruncateWaitsLandsAfterIt(t *testing.T) {
+	u := newUnit(t)
+	f := u.create(t, "a")
+	hold, held := make(chan struct{}), make(chan struct{})
+	var first sync.Once
+	u.e.OnWritten(func() { first.Do(func() { close(held); <-hold }) })
+	wrote := make(chan error, 2)
+	go func() {
+		_, err := u.e.Write(context.Background(), u.share.ID, f, 0, make([]byte, 8), engine.WriteOpts{Done: func() {}})
+		wrote <- err
+	}()
+	<-held // the first write is admitted and in the journal, not yet inserted
+	truncated := make(chan error, 1)
+	go func() { truncated <- u.e.Truncate(context.Background(), u.share.ID, f, 4) }()
+	time.Sleep(20 * time.Millisecond) // the truncate waits out the first write
+	go func() {
+		_, err := u.e.Write(context.Background(), u.share.ID, f, 8, make([]byte, 8), engine.WriteOpts{Done: func() {}})
+		wrote <- err
+	}()
+	time.Sleep(20 * time.Millisecond) // the second write arrives while the truncate waits
+	close(hold)
+	for range 2 {
+		if err := <-wrote; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := <-truncated; err != nil {
+		t.Fatal(err)
+	}
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	if n := u.size(t, f); n != 16 {
+		t.Errorf("size %d, want 16: the write that arrived while the truncate waited was cut by it", n)
+	}
+}

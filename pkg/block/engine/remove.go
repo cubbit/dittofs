@@ -288,9 +288,19 @@ func (e *Engine) stage(ctx context.Context, r *removal, j func(*fileEntry) (jour
 	defer e.files.unlock(r.f, fe)
 	// A write the journal staged before the removal is in the entry before
 	// the removal decides or is staged: a write admitted and not yet inserted
-	// is waited out, as a clone's registration waits it out, while no new
-	// write is admitted, since the entry's lock is held between waits.
+	// is waited out, as a clone's registration waits it out. The wait
+	// releases the lock, so no other write is admitted until the removal is
+	// staged: one admitted meanwhile would reach the journal first, below the
+	// removal's version, and a stream of them would hold the removal, and its
+	// guard, to its deadline.
+	defer func() {
+		if fe.staging {
+			fe.staging = false
+			fe.staged.Broadcast()
+		}
+	}()
 	if len(fe.writing) > 0 {
+		fe.staging = true
 		stop := context.AfterFunc(ctx, func() {
 			fe.mu.Lock()
 			fe.staged.Broadcast()
