@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -432,7 +431,7 @@ func (e *Engine) attempt(ctx context.Context, c *cloneRun, r *removal) answer {
 		c.copied = true
 		e.staged()
 	}
-	pctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+	pctx, cancel := e.bounded(ctx)
 	defer cancel()
 	err := e.tryClonePhase1(pctx, c, r)
 	e.count(err)

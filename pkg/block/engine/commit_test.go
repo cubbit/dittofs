@@ -207,35 +207,31 @@ func TestCommitWaitsOnlyBelowItsSyncsVersion(t *testing.T) {
 	}
 }
 
-// stalledExistence is a store whose existence commits, once stalled, wait
-// until release.
-type stalledExistence struct {
-	engine.Existence
-	stalled atomic.Bool
-	release chan struct{}
-}
-
-func (x *stalledExistence) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
-	if x.stalled.Load() {
-		select {
-		case <-x.release:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+// stalledWhile has every existence commit wait, while stalled, until
+// release is closed or its context ends.
+func stalledWhile(stalled *atomic.Bool, release chan struct{}) commitFn {
+	return func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+		if stalled.Load() {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
+		return next.Commit(ctx, p, marks)
 	}
-	return x.Existence.Commit(ctx, p, marks)
 }
 
 // Under a store that commits nothing, an append's Commit still answers after
 // its sync, and an overwrite's answers ErrDelay with DelayCommit at its
 // deadline, never success.
 func TestCommitUnderAStalledStore(t *testing.T) {
-	stall := &stalledExistence{release: make(chan struct{})}
-	u := newUnit(t, func(d *engine.Deps) { stall.Existence = d.Existence; d.Existence = stall })
-	t.Cleanup(func() { close(stall.release) }) // before the group commit is closed
+	stalled, release := new(atomic.Bool), make(chan struct{})
+	u := newUnit(t, onCommit(stalledWhile(stalled, release)))
+	t.Cleanup(func() { close(release) }) // before the group commit is closed
 	over := committedFile(t, u, "over", 4)
 	app := committedFile(t, u, "append", 4)
-	stall.stalled.Store(true)
+	stalled.Store(true)
 
 	u.write(t, over, 0, []byte("over"))
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
@@ -345,11 +341,11 @@ func TestCommitWaitsForTheMarksOverCommittedContent(t *testing.T) {
 // content and a new append answers ErrDelay at its deadline, and one whose
 // sync a mark recorded before the stall covers is answered.
 func TestTheMarksWaitUnderAStalledStore(t *testing.T) {
-	stall := &stalledExistence{release: make(chan struct{})}
-	u := newUnit(t, func(d *engine.Deps) { stall.Existence = d.Existence; d.Existence = stall })
-	t.Cleanup(func() { close(stall.release) }) // before the group commit is closed
+	stalled, release := new(atomic.Bool), make(chan struct{})
+	u := newUnit(t, onCommit(stalledWhile(stalled, release)))
+	t.Cleanup(func() { close(release) }) // before the group commit is closed
 	f := committedFile(t, u, "a", 4)
-	stall.stalled.Store(true)
+	stalled.Store(true)
 
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
@@ -412,30 +408,21 @@ func TestTheMarksWaitSyncsAgainWhenTheSegmentEnded(t *testing.T) {
 	}
 }
 
-// failingMarks is a store whose calls of marks alone, once on, fail,
-// counting them.
-type failingMarks struct {
-	engine.Existence
-	on    atomic.Bool
-	calls atomic.Int32
-}
-
-func (x *failingMarks) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
-	if len(p) == 0 && x.on.Load() {
-		x.calls.Add(1)
-		return nil, kvstore.ErrSyncMarks
-	}
-	return x.Existence.Commit(ctx, p, marks)
-}
-
 // A write of marks alone that fails is retried only once its backoff has
 // passed, and the Commit waiting on it answers ErrDelay meanwhile.
 func TestAFailedMarksWriteBacksOff(t *testing.T) {
-	x := &failingMarks{}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	var on atomic.Bool // calls of marks alone fail, counted
+	var calls atomic.Int32
+	u := newUnit(t, onCommit(func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+		if len(p) == 0 && on.Load() {
+			calls.Add(1)
+			return nil, kvstore.ErrSyncMarks
+		}
+		return next.Commit(ctx, p, marks)
+	}))
 	f := committedFile(t, u, "a", 4)
 	u.write(t, f, 4, []byte("tail"))
-	x.on.Store(true)
+	on.Store(true)
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	_, _, err := u.e.Commit(ctx, u.share.ID, f, 0, 0)
@@ -443,10 +430,10 @@ func TestAFailedMarksWriteBacksOff(t *testing.T) {
 	if !errors.As(err, &d) {
 		t.Errorf("a Commit whose marks fail: %v, want ErrDelay", err)
 	}
-	if n := x.calls.Load(); n != 1 {
+	if n := calls.Load(); n != 1 {
 		t.Errorf("the marks were tried %d times within their backoff, want once", n)
 	}
-	x.on.Store(false)
+	on.Store(false)
 	u.clock.Advance(time.Second) // past the backoff
 	ctx, cancel = context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()

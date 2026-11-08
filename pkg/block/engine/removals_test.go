@@ -161,10 +161,9 @@ func (x *stalledResume) Resume(ctx context.Context, share entity.ShareID, file e
 // A phase 2 whose store never answers is cut at the conflict bound, so the
 // loop moves on: another file's removal is pruned meanwhile.
 func TestAStalledPhase2HoldsNoOther(t *testing.T) {
-	engine.SetConflictBound(10 * time.Millisecond)
-	t.Cleanup(func() { engine.SetConflictBound(time.Second) })
 	x := &stalledResume{resuming: newResuming()}
 	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x })
+	u.e.SetConflictBound(10 * time.Millisecond)
 	f, g := u.create(t, "f"), u.create(t, "g")
 	x.stalled = f
 	for _, id := range []entity.FileID{f, g} {

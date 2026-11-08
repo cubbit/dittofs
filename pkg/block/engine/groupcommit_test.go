@@ -156,26 +156,23 @@ func TestDueFilesCommitInBoundedBatches(t *testing.T) {
 	}
 }
 
-// closedStore is a store whose existence commits, once on, answer it closed.
-type closedStore struct {
-	engine.Existence
-	on atomic.Bool
-}
-
-func (x *closedStore) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
-	if x.on.Load() {
-		return nil, kvstore.ErrClosed
+// closedWhile answers every existence commit with the store closed while on.
+func closedWhile(on *atomic.Bool) commitFn {
+	return func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+		if on.Load() {
+			return nil, kvstore.ErrClosed
+		}
+		return next.Commit(ctx, p, marks)
 	}
-	return x.Existence.Commit(ctx, p, marks)
 }
 
 // Marks whose call failed are not handed to the journal as recorded.
 func TestMarksOfAFailedCallAreNotRecorded(t *testing.T) {
-	c := &closedStore{}
-	u := newUnit(t, func(d *engine.Deps) { c.Existence = d.Existence; d.Existence = c })
+	on := new(atomic.Bool)
+	u := newUnit(t, onCommit(closedWhile(on)))
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("a"))
-	c.on.Store(true)
+	on.Store(true)
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 	if err := u.e.CommitNow(ctx, u.share.ID, f); err == nil {
@@ -371,12 +368,19 @@ func TestASoonerFileWakesTheLoop(t *testing.T) {
 // A store that never answers does not hold Close: the batch's context is
 // cancelled and the loop joins.
 func TestCloseCancelsAStalledBatch(t *testing.T) {
-	stall := &ctxStall{entered: make(chan struct{}, 1)}
-	u := newUnit(t, func(d *engine.Deps) { stall.Existence = d.Existence; d.Existence = stall })
+	entered := make(chan struct{}, 1)
+	u := newUnit(t, onCommit(func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}))
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("abc"))
 	go func() { _ = u.e.CommitNow(context.Background(), u.share.ID, f) }()
-	<-stall.entered
+	<-entered
 	closed := make(chan struct{})
 	go func() { u.e.CloseGroupCommits(); close(closed) }()
 	select {
@@ -384,21 +388,6 @@ func TestCloseCancelsAStalledBatch(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close waited on a store that never answers")
 	}
-}
-
-// ctxStall is a store whose existence commits wait for their context's end.
-type ctxStall struct {
-	engine.Existence
-	entered chan struct{}
-}
-
-func (x *ctxStall) Commit(ctx context.Context, _ []kvstore.PendingExistence, _ *kvstore.MarksWrite) (map[entity.FileID]error, error) {
-	select {
-	case x.entered <- struct{}{}:
-	default:
-	}
-	<-ctx.Done()
-	return nil, ctx.Err()
 }
 
 // After Close no group commit starts again: a share bound after it answers
@@ -636,10 +625,9 @@ func (c conflictingKV) Update(ctx context.Context, fn func(kv.Txn) error) error 
 // overwrite's Commit answers DelayConflict at its deadline, and once the
 // conflict clears the journal's group commit commits again.
 func TestAConflictTheStoreKeepsRetryingHoldsNoBatch(t *testing.T) {
-	engine.SetConflictBound(50 * time.Millisecond)
-	t.Cleanup(func() { engine.SetConflictBound(time.Second) })
 	on := new(atomic.Bool)
 	u := newUnitOver(t, func(k kv.KV) kv.KV { return conflictingKV{k, on} })
+	u.e.SetConflictBound(50 * time.Millisecond)
 	f := committedFile(t, u, "a", 4)
 	on.Store(true)
 	u.write(t, f, 0, []byte("over"))
@@ -659,37 +647,26 @@ func TestAConflictTheStoreKeepsRetryingHoldsNoBatch(t *testing.T) {
 	}
 }
 
-// conflictingFile is a store whose existence commits conflict whenever they
-// hold file x, counting those calls.
-type conflictingFile struct {
-	engine.Existence
-	x     entity.FileID
-	calls atomic.Int32
-}
-
-func (s *conflictingFile) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
-	for _, pe := range p {
-		if pe.File == s.x {
-			s.calls.Add(1)
-			return nil, errors.Join(kvstore.ErrConflict, context.DeadlineExceeded)
-		}
-	}
-	return s.Existence.Commit(ctx, p, marks)
-}
-
 // A file a split left failing alone has already failed alone: it backs off
 // at once, with no further solo try, and existence_commit_failing names it.
 func TestASplitLeafBacksOffAtOnce(t *testing.T) {
-	s := &conflictingFile{}
-	u := newUnit(t, func(d *engine.Deps) { s.Existence = d.Existence; d.Existence = s })
-	a, x := u.create(t, "a"), u.create(t, "x")
-	s.x = x
+	var x entity.FileID // every existence commit holding x conflicts, counted
+	var calls atomic.Int32
+	u := newUnit(t, onCommit(func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+		if slices.ContainsFunc(p, func(pe kvstore.PendingExistence) bool { return pe.File == x }) {
+			calls.Add(1)
+			return nil, errors.Join(kvstore.ErrConflict, context.DeadlineExceeded)
+		}
+		return next.Commit(ctx, p, marks)
+	}))
+	a := u.create(t, "a")
+	x = u.create(t, "x")
 	u.write(t, a, 0, []byte("a"))
 	u.write(t, x, 0, []byte("x"))
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
 	_ = u.e.CommitAll(ctx, u.rec)
-	if n := s.calls.Load(); n != 2 {
+	if n := calls.Load(); n != 2 {
 		t.Errorf("x was sent %d times, want twice: with a, then alone by the split", n)
 	}
 	if !u.e.Failing(u.rec, x) {
@@ -884,11 +861,10 @@ func TestAFailureThatBlamesNoFileRetriesTheBatchWhole(t *testing.T) {
 		cfg  func(log *callLog) (unitConfig, *atomic.Bool)
 	}{
 		{"the store closed", func(log *callLog) (unitConfig, *atomic.Bool) {
-			c := &closedStore{}
+			on := new(atomic.Bool)
 			return unitConfig{deps: []func(*engine.Deps){func(d *engine.Deps) {
-				c.Existence = d.Existence
-				d.Existence = loggedExistence{c, log}
-			}}}, &c.on
+				d.Existence = loggedExistence{commitHook{d.Existence, closedWhile(on)}, log}
+			}}}, on
 		}},
 		{"a failed sync", func(log *callLog) (unitConfig, *atomic.Bool) {
 			on := &atomic.Bool{}
@@ -994,29 +970,19 @@ func TestAWriteToAFileWithPendingWritesIsRefusedAfterClose(t *testing.T) {
 	}
 }
 
-// failsOnceWithMarks fails the first call that carries marks beside files
-// with an error that is no conflict.
-type failsOnceWithMarks struct {
-	engine.Existence
-	done atomic.Bool
-}
-
-func (x *failsOnceWithMarks) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
-	if marks != nil && len(p) > 0 && x.done.CompareAndSwap(false, true) {
-		return nil, errors.New("the store failed the call")
-	}
-	return x.Existence.Commit(ctx, p, marks)
-}
-
 // RFC 8 §5.2: on a whole-call failure that is no conflict, the marks leave the
 // batch and go alone, once, at once, and the files go on without them; no
 // half of a split keeps them.
 func TestMarksGoAloneAfterAFailureThatIsNoConflict(t *testing.T) {
-	x := &failsOnceWithMarks{}
+	var failed atomic.Bool // the first call carrying marks beside files fails, with no conflict
 	log := &callLog{}
 	u := newUnitWith(t, unitConfig{deps: []func(*engine.Deps){func(d *engine.Deps) {
-		x.Existence = d.Existence
-		d.Existence = loggedExistence{x, log}
+		d.Existence = loggedExistence{commitHook{d.Existence, func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+			if marks != nil && len(p) > 0 && failed.CompareAndSwap(false, true) {
+				return nil, errors.New("the store failed the call")
+			}
+			return next.Commit(ctx, p, marks)
+		}}, log}
 	}}})
 	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 16, CloneMaxLen: 1 << 30}); err != nil {
 		t.Fatal(err)
@@ -1095,28 +1061,20 @@ func TestTheGroupCommitsStoreCallsCarryTheRetryingOwnerMark(t *testing.T) {
 	}
 }
 
-// pendingStore records the operations of every existence commit.
-type pendingStore struct {
-	engine.Existence
-	mu  sync.Mutex
-	ops []kvstore.PendingOp
-}
-
-func (x *pendingStore) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
-	x.mu.Lock()
-	for _, pe := range p {
-		x.ops = append(x.ops, pe.Ops...)
-	}
-	x.mu.Unlock()
-	return x.Existence.Commit(ctx, p, marks)
-}
-
 // RFC 8 §5.1, R48: writes committed in one batch pass, each, the runs where
 // it overlaps an earlier of them, merged, so the store writes an overwrite
 // record over what each supersedes.
 func TestABatchPassesEachWritesSupersededRuns(t *testing.T) {
-	x := &pendingStore{}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	var mu sync.Mutex
+	var ops []kvstore.PendingOp // the operations of every existence commit
+	u := newUnit(t, onCommit(func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+		mu.Lock()
+		for _, pe := range p {
+			ops = append(ops, pe.Ops...)
+		}
+		mu.Unlock()
+		return next.Commit(ctx, p, marks)
+	}))
 	f := u.create(t, "a")
 	u.write(t, f, 0, make([]byte, 8)) // [0, 8)
 	u.write(t, f, 2, make([]byte, 4)) // [2, 6): supersedes [2, 6)
@@ -1124,44 +1082,32 @@ func TestABatchPassesEachWritesSupersededRuns(t *testing.T) {
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
-	x.mu.Lock()
-	defer x.mu.Unlock()
+	mu.Lock()
+	defer mu.Unlock()
 	want := [][]entity.Extent{nil, {entity.ExtentOf(2, 6)}, {entity.ExtentOf(5, 8)}}
-	if len(x.ops) != len(want) {
-		t.Fatalf("%d operations committed, want %d", len(x.ops), len(want))
+	if len(ops) != len(want) {
+		t.Fatalf("%d operations committed, want %d", len(ops), len(want))
 	}
-	for i, op := range x.ops {
+	for i, op := range ops {
 		if !slices.Equal(op.Over, want[i]) {
 			t.Errorf("write %d passed Over %v, want %v", i, op.Over, want[i])
 		}
 	}
 }
 
-// slowStore takes per for each file of an existence commit, or until the
-// call's context ends.
-type slowStore struct {
-	engine.Existence
-	per time.Duration
-}
-
-func (x slowStore) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
-	select {
-	case <-time.After(time.Duration(len(p)) * x.per):
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	return x.Existence.Commit(ctx, p, marks)
-}
-
 // A healthy store slower than the commit's bound for a whole batch still
 // commits it: a batch that timed out is halved until one fits the bound,
 // where retrying it whole would time out for good.
 func TestABatchSlowerThanTheBoundIsHalvedUntilItCommits(t *testing.T) {
-	engine.SetConflictBound(100 * time.Millisecond)
-	t.Cleanup(func() { engine.SetConflictBound(time.Second) })
-	u := newUnitWith(t, unitConfig{deps: []func(*engine.Deps){func(d *engine.Deps) {
-		d.Existence = slowStore{d.Existence, 40 * time.Millisecond}
-	}}})
+	u := newUnit(t, onCommit(func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+		select { // 40 ms for each file, or until the call's context ends
+		case <-time.After(time.Duration(len(p)) * 40 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return next.Commit(ctx, p, marks)
+	}))
+	u.e.SetConflictBound(100 * time.Millisecond)
 	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 16, CloneMaxLen: 1 << 30}); err != nil {
 		t.Fatal(err)
 	}

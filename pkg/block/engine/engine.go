@@ -12,6 +12,7 @@ import (
 	"maps"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
@@ -50,7 +51,8 @@ type Engine struct {
 
 	gcMu            sync.Mutex
 	gcs             map[Journal]*groupCommit                                                   // each journal's group commit
-	gcsClosed       bool                                                                       // closeGroupCommits ran: none starts again
+	gcsClosed       bool                                                                       // the group commits were closed: none starts again
+	conflictBound   atomic.Int64                                                               // nanoseconds: see bounded
 	splits          atomic.Int64                                                               // engine_group_commit_splits_total
 	stabilityPoints atomic.Int64                                                               // engine_stability_points_total
 	removalBatches  removalSeries                                                              // engine_removal_batches_total
@@ -94,6 +96,7 @@ func New(d Deps) (*Engine, error) {
 		raised:   map[entity.ShardID]struct{}{},
 	}
 	e.sample = e.verifier
+	e.conflictBound.Store(int64(time.Second))
 
 	return e, nil
 }

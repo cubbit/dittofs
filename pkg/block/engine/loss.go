@@ -338,8 +338,7 @@ func (e *Engine) lostWhole(j Journal) {
 		e.files.unlock(f, fe)
 	}
 	g.mu.Lock()
-	close(g.returned) // wakes every waiter, which then finds the journal lost
-	g.returned = make(chan struct{})
+	g.broadcastLocked() // every waiter then finds the journal lost
 	g.mu.Unlock()
 	for _, d := range dones {
 		d()

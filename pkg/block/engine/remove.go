@@ -527,7 +527,7 @@ func (e *Engine) unstage(r *removal, err error) {
 // answers false, the claim released and the guard held, when the commit
 // failed otherwise.
 func (e *Engine) commitBelow(ctx context.Context, r *removal) bool {
-	ctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+	ctx, cancel := e.bounded(ctx)
 	defer cancel()
 	e.claimBelow(r)
 	err := e.sync(ctx, r.b, fileID(r.f))

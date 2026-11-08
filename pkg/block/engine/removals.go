@@ -191,31 +191,6 @@ func (l *removalLoop) close() {
 	}
 }
 
-// dropShare takes share s's items off the loop, ending each; one running
-// now is ended when its run returns, and none of the share's is enqueued
-// after.
-func (l *removalLoop) dropShare(s entity.ShareID) {
-	l.mu.Lock()
-	if l.dropped == nil {
-		l.dropped = map[entity.ShareID]bool{}
-	}
-	l.dropped[s] = true
-	var dropped []*loopItem
-	l.items = slices.DeleteFunc(l.items, func(it *loopItem) bool {
-		if it.b.share.ID == s {
-			dropped = append(dropped, it)
-			return true
-		}
-		return false
-	})
-	l.mu.Unlock()
-	for _, it := range dropped {
-		if it.end != nil {
-			it.end()
-		}
-	}
-}
-
 // isDropped reports whether share s was dropped: nothing of it is noted for
 // a commit again.
 func (l *removalLoop) isDropped(s entity.ShareID) bool {
@@ -272,7 +247,7 @@ func (e *Engine) phase2(r *removal) *loopItem {
 		// still finishes, from its cursor, but counts each bounded run as a
 		// failure: removal_stalled after five, though it advances. Bound
 		// each batch, or count a run that advanced, once Resume reports one.
-		ctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+		ctx, cancel := e.bounded(ctx)
 		defer cancel()
 		err := e.d.Content.Resume(ctx, share, r.f)
 		if err == nil {
@@ -314,7 +289,7 @@ func (e *Engine) retryLater(r *removal, op kvstore.RemoveOp, outcome func(error)
 	}
 	r.b.gc.removals.enqueue(&loopItem{b: r.b, f: r.f, kind: r.kind,
 		run: func(ctx context.Context) answer {
-			ctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+			ctx, cancel := e.bounded(ctx)
 			defer cancel()
 			err := e.tryPhase1(ctx, r, op)
 			e.count(err)

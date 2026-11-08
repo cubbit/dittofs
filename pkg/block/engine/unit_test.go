@@ -18,6 +18,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
@@ -433,4 +434,22 @@ func TestAPendingOperationHoldsNoBytes(t *testing.T) {
 			t.Errorf("pending operation field %s is %s: a copy of the payload", f.Name, f.Type)
 		}
 	}
+}
+
+// commitFn answers an existence commit in place of the store, next.
+type commitFn func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error)
+
+// commitHook is the store with its existence commits answered by f.
+type commitHook struct {
+	engine.Existence
+	f commitFn
+}
+
+func (x commitHook) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+	return x.f(ctx, x.Existence, p, marks)
+}
+
+// onCommit has f answer the unit's existence commits.
+func onCommit(f commitFn) func(*engine.Deps) {
+	return func(d *engine.Deps) { d.Existence = commitHook{d.Existence, f} }
 }

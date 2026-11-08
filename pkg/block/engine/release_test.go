@@ -132,9 +132,8 @@ func TestAStalledReleaseIsPending(t *testing.T) {
 func TestAStalledReleaseEndedByAnAbort(t *testing.T) {
 	x := &stalling{}
 	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
-	engine.SetConflictBound(10 * time.Millisecond) // each retry stalls this long, not a second
-	t.Cleanup(func() { engine.SetConflictBound(time.Second) })
-	f := u.create(t, "a") // linked: its name holds it, so phase 1 aborts once it runs
+	u.e.SetConflictBound(10 * time.Millisecond) // each retry stalls this long, not a second
+	f := u.create(t, "a")                       // linked: its name holds it, so phase 1 aborts once it runs
 	u.write(t, f, 0, fill(8, 'a'))
 	x.on.Store(true)
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
