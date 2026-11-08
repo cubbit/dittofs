@@ -871,7 +871,7 @@ func (e *Engine) commitMarksAlone(ctx context.Context, mw *kvstore.MarksWrite) e
 }
 
 // retryingOwner marks a context whose store calls their caller retries
-// itself, the group commit's, so the self-fence counts a whole-call failure
+// itself, the group commit's and the removal loop's, so the self-fence counts a whole-call failure
 // of one as failing and a file's own failure not (RFC 8 §11.2).
 type retryingOwner struct{}
 

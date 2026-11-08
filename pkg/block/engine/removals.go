@@ -70,7 +70,7 @@ type removalSeries struct{ ok, conflict, failed atomic.Int64 }
 
 func newRemovalLoop(e *Engine) *removalLoop {
 	l := &removalLoop{e: e, wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
-	l.ctx, l.cancel = context.WithCancel(context.Background())
+	l.ctx, l.cancel = context.WithCancel(withRetryingOwner(context.Background()))
 	return l
 }
 

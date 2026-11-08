@@ -663,3 +663,48 @@ func TestARemovalRefusedForAnOperationBelowItEnds(t *testing.T) {
 		t.Errorf("%d logs of the refused operations dropped as lost, want one", lost)
 	}
 }
+
+// markedRemove records, for each Remove, whether its context carries the
+// retrying-owner mark, conflicting while on is set.
+type markedRemove struct {
+	engine.Existence
+	on     atomic.Bool
+	mu     sync.Mutex
+	marked []bool
+}
+
+func (x *markedRemove) Remove(ctx context.Context, s entity.ShareID, f entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+	x.mu.Lock()
+	x.marked = append(x.marked, engine.RetryingOwner(ctx))
+	x.mu.Unlock()
+	if x.on.Load() {
+		return kvstore.ErrConflict
+	}
+	return x.Existence.Remove(ctx, s, f, epoch, op, pending)
+}
+
+// The removal loop's store calls, a retried phase 1 among them, carry the
+// retrying-owner mark; the call's own first try does not.
+func TestTheRemovalLoopsStoreCallsCarryTheRetryingOwnerMark(t *testing.T) {
+	x := &markedRemove{}
+	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	f := u.create(t, "a")
+	u.write(t, f, 0, fill(16, 'a'))
+	x.on.Store(true)
+	_ = u.e.Truncate(t.Context(), u.share.ID, f, 4)
+	x.on.Store(false)
+	u.until(t, "the loop committing phase 1", func() bool { return !u.e.GuardHeld(f) })
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if len(x.marked) < 2 {
+		t.Fatalf("%d Remove calls, want the call's try and the loop's", len(x.marked))
+	}
+	if x.marked[0] {
+		t.Error("the call's own phase 1 is marked as a retrying owner's")
+	}
+	for i, m := range x.marked[1:] {
+		if !m {
+			t.Errorf("the loop's Remove %d is not marked as a retrying owner's", i+1)
+		}
+	}
+}

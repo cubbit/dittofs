@@ -503,6 +503,14 @@ func (e *Engine) dropClaimed(r *removal) (dones []func()) {
 // claimBelow claims r's file's live operations below r's version, writes and
 // grows, for phase 1. The guard keeps every batch off the file, so none is
 // claimed already.
+//
+// decision: phase 1 and a batch share one claimed flag, so this rests on the
+// group commit skipping a guarded file, narrower than "correctness never
+// rests on the skip": without it, a batch capturing the file after the claim
+// and failing would release phase 1's claim, and phase 1 would commit without
+// those operations, at an applied above them. A claim of phase 1's own,
+// which capture and settle leave alone, would lift it; do that if the skip is
+// ever relaxed.
 func (e *Engine) claimBelow(r *removal) {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
