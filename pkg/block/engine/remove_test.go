@@ -310,6 +310,47 @@ func TestATruncateIntoARegistrationIsDelayClone(t *testing.T) {
 	}
 }
 
+// A deallocate inside an extent a clone registered as its source, or
+// anywhere in a file holding its destination, answers DelayClone; one
+// starting a byte past the source extent is served.
+func TestADeallocateIntoARegistrationIsDelayClone(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		onDst   bool
+		off     int64
+		refused bool
+	}{
+		{"inside the source extent", false, 2, true},
+		{"a byte past the source extent", false, 8, false},
+		{"in the destination, outside its extent", true, 0, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			u := cloneUnit(t)
+			src, dst := u.create(t, "src"), u.create(t, "dst")
+			u.write(t, src, 0, fill(16, 's'))
+			in, out := make(chan struct{}), make(chan struct{})
+			u.e.SetAfterRegister(func() { close(in); <-out })
+			cloned := u.startClone(context.Background(), src, dst, vfserr.Extent{DstOff: 1 << 20, Len: 8})
+			<-in
+			f := src
+			if c.onDst {
+				f = dst
+			}
+			err := u.e.Deallocate(t.Context(), u.share.ID, f, c.off, 4)
+			close(out)
+			if err := <-cloned; !errors.Is(err, engine.ErrUnbuilt) {
+				t.Errorf("clone: %v, want the unbuilt answer", err)
+			}
+			if c.refused && !isDelay(err, vfserr.DelayClone) {
+				t.Errorf("deallocate: %v, want ErrDelay(DelayClone)", err)
+			}
+			if !c.refused && err != nil {
+				t.Errorf("deallocate: %v, want it served", err)
+			}
+		})
+	}
+}
+
 // A truncate at or above the size the file's operations leave is a grow: no
 // phase 1, and the group commit commits the new size.
 func TestATruncateUpIsAGrow(t *testing.T) {

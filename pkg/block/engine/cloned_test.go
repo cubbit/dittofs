@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -152,8 +153,10 @@ func TestARefusedReservationChangesNothing(t *testing.T) {
 	if n := len(u.j.CloneTargets()); n != 0 {
 		t.Errorf("%d CloneTarget calls after a refused reservation, want none", n)
 	}
-	if s, d := u.e.Registrations(src); s+d != 0 {
-		t.Errorf("registrations left on the source: %d, %d", s, d)
+	for _, f := range []entity.FileID{src, dst} {
+		if s, d := u.e.Registrations(f); s+d != 0 {
+			t.Errorf("registrations left on %v: %d source, %d destination", f, s, d)
+		}
 	}
 	if _, err := u.e.Write(t.Context(), u.share.ID, src, 0, []byte("x"), engine.WriteOpts{Done: func() {}}); err != nil {
 		t.Errorf("a write into the source extent after the refusal: %v, want served", err)
@@ -243,17 +246,39 @@ func TestACloneReservesItsCopiesAndWritesThemAboveItsVersion(t *testing.T) {
 // While the clone is held between its copies and its phase 1, the
 // destination's guard keeps its operations out of every batch: a group
 // commit asked for then commits none of them, and the clone then commits.
+// With the guard's skip removed a batch may commit the write below the
+// clone, but stops at the clone's operation: the destination's applied and
+// every Settle of it stay below the clone's version.
 func TestTheGuardKeepsACloneOutOfEveryBatch(t *testing.T) {
-	u := clonedUnit(t)
+	for _, skip := range []bool{true, false} {
+		t.Run(fmt.Sprint("skip ", skip), func(t *testing.T) { guardKeepsACloneOut(t, skip) })
+	}
+}
+
+func guardKeepsACloneOut(t *testing.T, skip bool) {
+	u, h := clonedHookedUnit(t)
+	if !skip {
+		u.e.NoGuardSkip()
+	}
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	u.write(t, dst, 4*mib, fill(10, 'w')) // below the clone, outside its extent
 	release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{Len: mib})
+	v := u.j.CloneTargets()[0].Version
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	_ = u.e.CommitAll(ctx, u.rec)
 	cancel()
-	if applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst); !applied.IsZero() {
+	applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst)
+	switch {
+	case skip && !applied.IsZero():
 		t.Errorf("a batch committed the destination's write at %v while the clone held its guard", applied)
+	case !applied.Less(entity.JournalVersion(v.Bytes())):
+		t.Errorf("a batch raised the destination's applied to %v, at or above the held clone's %v", applied, v)
+	}
+	for _, s := range h.settleLog() {
+		if s.v.Compare(v) >= 0 {
+			t.Errorf("settled at %v while the clone at %v is held before its phase 1", s.v, v)
+		}
 	}
 	release()
 	if err := <-answer; err != nil {
@@ -261,6 +286,31 @@ func TestTheGuardKeepsACloneOutOfEveryBatch(t *testing.T) {
 	}
 	if got := u.read(t, dst, 4*mib, 10); !bytes.Equal(got, fill(10, 'w')) {
 		t.Error("the destination's earlier write did not survive the clone")
+	}
+}
+
+// R42: phase 1 passes each pending write of the destination with the runs
+// where it overlaps an earlier one, as a batch does: a write outside the
+// extent and an overwrite of part of it, both pending below the clone, leave
+// an overwrite record over the overlapped run once phase 1 commits, whose
+// edges cut the destination's committed runs.
+func TestAClonesPhase1PassesTheRunsEachWriteSupersedes(t *testing.T) {
+	u := clonedUnit(t)
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.create(t, "dst")
+	u.write(t, dst, 4*mib, fill(10, 'a'))
+	u.write(t, dst, 4*mib+2, fill(4, 'b')) // supersedes [2, 6) of the first
+	u.clone(t, src, dst, vfserr.Extent{Len: mib})
+	var runs []entity.Extent
+	for sp, err := range u.fs.Store.Content().Covering(t.Context(), u.share.ID, dst, 4*mib, 10) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		runs = append(runs, sp.Extent)
+	}
+	want := []entity.Extent{entity.ExtentOf(4*mib, 4*mib+2), entity.ExtentOf(4*mib+2, 4*mib+6), entity.ExtentOf(4*mib+6, 4*mib+10)}
+	if !slices.Equal(runs, want) {
+		t.Errorf("the destination's committed runs over the writes: %v, want them cut by an overwrite record at %v", runs, want[1])
 	}
 }
 
