@@ -342,6 +342,30 @@ func TestMandatoryLocksRefuseIO(t *testing.T) {
 	}
 }
 
+// A zero-length read or write touches no byte, so no mandatory lock refuses
+// it, though a zero-length range at 5 ends at 4 and so overlaps a lock
+// holding both 4 and 5.
+func TestZeroLengthIOCrossesNoLock(t *testing.T) {
+	f := newFixture(t)
+	s, n := f.caller(t, smb("pc")), f.caller(t, nfs("host-n", 1, entity.NewUser()))
+	file := anyFile()
+	os := f.mustOpen(t, s, file, OpenRequest{Access: rd | wr})
+	on := f.mustOpen(t, n, file, OpenRequest{Access: rd | wr})
+	f.mustLock(t, s, file, LockReq{Owner: smbOwner(s, os), Open: refOf(os), Ranges: []LockRange{x(0, 10)}})
+	for _, c := range []struct {
+		what string
+		who  Caller
+		o    OpenRef
+	}{{"another open's", n, refOf(on)}, {"an anonymous", Caller{}, none}} {
+		c.o.Handle = handle(file.ID)
+		for _, write := range []bool{false, true} {
+			if err := f.Checks().CheckIO(ctx, c.who, file, c.o, br(5, 0), ioWant(write)); err != nil {
+				t.Errorf("%s zero-length I/O (write %v) at 5 under an exclusive lock: %v, want nil", c.what, write, err)
+			}
+		}
+	}
+}
+
 // Waiters are served first in, first out, and a waiter bars a request that
 // conflicts with it from the locks that block it, so shared locks cannot
 // starve an exclusive waiter. No LockWaitOver runs under a table lock: a Sink
