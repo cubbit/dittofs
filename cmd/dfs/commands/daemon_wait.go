@@ -1,19 +1,20 @@
 package commands
 
 import (
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/cli/health"
 	"github.com/cubbit/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/controlplane/api"
 )
 
 const (
@@ -24,7 +25,8 @@ const (
 	daemonStartTimeout = 30 * time.Second
 
 	// daemonStartGrace is how long the child must stay alive when /health cannot
-	// be probed (the API is served over TLS), which only catches early exits.
+	// be probed (the API requires a client certificate), which only catches
+	// early exits.
 	daemonStartGrace = 3 * time.Second
 
 	daemonStartPoll = 100 * time.Millisecond
@@ -66,27 +68,37 @@ func waitForDaemon(exited <-chan error, ready func() bool, timeout, poll time.Du
 }
 
 // healthProbe returns a function that reports whether the API server of the
-// process launched at `since` answers /health. A server that was already
+// process being launched now answers /health. A server that was already
 // running on the same port answers too, so the reported started_at must not
 // predate the launch; otherwise a port clash would look like a successful
-// start. It returns nil when the API is served over TLS, where a plain probe
-// cannot be made.
-func healthProbe(since time.Time) func() bool {
+// start.
+//
+// ponytail: an API that requires a client certificate (mTLS) is not probed, so
+// nil is returned and the caller falls back to the short liveness grace. A
+// probe would need the operator's client certificate; withdraw this when
+// `dfs start` has one to present.
+func healthProbe() func() bool {
+	launched := time.Now()
 	cfg, err := config.Load(GetConfigFile())
-	if err != nil || cfg.ControlPlane.TLS.CertFile != "" {
+	if err != nil || cfg.ControlPlane.TLS.ClientCA != "" {
 		return nil
 	}
-	host := cfg.ControlPlane.Host
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
+	scheme := "http"
+	client := &http.Client{Timeout: time.Second}
+	if cfg.ControlPlane.TLS.Enabled() {
+		scheme = "https"
+		// The probe sends no credentials and reads only started_at, so it does
+		// not need to verify the server certificate (it may be self-signed or
+		// issued for another name than localhost).
+		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // see above
 	}
-	return healthReadyFunc("http://"+net.JoinHostPort(host, strconv.Itoa(cfg.ControlPlane.Port))+"/health", since)
+	addr := api.DisplayAddr(cfg.ControlPlane.Host, cfg.ControlPlane.Port)
+	return healthReadyFunc(client, scheme+"://"+addr+"/health", launched)
 }
 
-// healthReadyFunc reports whether url answers 200 with a started_at not before
-// since.
-func healthReadyFunc(url string, since time.Time) func() bool {
-	client := &http.Client{Timeout: time.Second}
+// healthReadyFunc reports whether url answers 200 with a started_at that is
+// not before since.
+func healthReadyFunc(client *http.Client, url string, since time.Time) func() bool {
 	// started_at has one-second resolution.
 	since = since.Truncate(time.Second)
 
@@ -108,14 +120,17 @@ func healthReadyFunc(url string, since time.Time) func() bool {
 	}
 }
 
-// awaitDaemonStart blocks until the background server `cmd` is up or has
-// failed, and prints the outcome. It returns an error, so that `dfs start`
-// exits non-zero, when the process exits first.
-func awaitDaemonStart(cmd *exec.Cmd, pidPath, logPath string, logOffset int64, launched time.Time) error {
+// awaitDaemonStart blocks until the background server `cmd` is ready or has
+// failed. ready is the readiness probe, or nil to only watch for an early exit.
+// log is a read handle on the file the child writes to, positioned where this
+// run's output begins. When the child exits first, the PID file is removed, the
+// tail of the log is written to stderr and the returned *exitStatus carries the
+// child's exit code, so that `dfs start` exits with it.
+func awaitDaemonStart(cmd *exec.Cmd, ready func() bool, pidPath, logPath string, log *os.File, stderr io.Writer) error {
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 
-	ready, timeout := healthProbe(launched), daemonStartTimeout
+	timeout := daemonStartTimeout
 	if ready == nil {
 		timeout = daemonStartGrace
 	}
@@ -123,37 +138,44 @@ func awaitDaemonStart(cmd *exec.Cmd, pidPath, logPath string, logOffset int64, l
 	outcome, waitErr := waitForDaemon(exited, ready, timeout, daemonStartPoll)
 	if outcome == daemonExited {
 		_ = os.Remove(pidPath)
+		code := 1
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) && exitErr.ExitCode() > 0 {
+			code = exitErr.ExitCode()
+		}
 		msg := "DittoFS server failed to start"
 		if waitErr != nil {
 			msg += fmt.Sprintf(" (%v)", waitErr)
 		}
-		if tail := readLogTail(logPath, logOffset, daemonLogTailLines); tail != "" {
+		if tail := readLogTail(log, daemonLogTailLines); tail != "" {
 			msg += ":\n" + tail
 		}
-		return fmt.Errorf("%s\nLog file: %s", msg, logPath)
+		_, _ = fmt.Fprintf(stderr, "Error: %s\nLog file: %s\n", msg, logPath)
+		return &exitStatus{code: code}
 	}
 
-	fmt.Printf("DittoFS server started (PID: %d)\n", cmd.Process.Pid)
+	// decision: a server that is alive but has not answered /health when the
+	// wait runs out is not reported as failed. A large store can legitimately
+	// take longer than this to open, and failing the command would make
+	// supervisors retry a start that is still in progress. The message says
+	// "still starting" instead of "started", so nobody reads it as ready. Withdraw
+	// this if slow starts that later die turn out to be common.
+	if outcome == daemonAlive && ready != nil {
+		fmt.Printf("DittoFS server is still starting (PID: %d); it did not answer /health within %s\n", cmd.Process.Pid, timeout)
+	} else {
+		fmt.Printf("DittoFS server started (PID: %d)\n", cmd.Process.Pid)
+	}
 	fmt.Printf("Log file: %s\n", logPath)
 	fmt.Printf("PID file: %s\n", pidPath)
-	if outcome == daemonAlive && ready != nil {
-		fmt.Fprintf(os.Stderr, "Warning: the server did not answer /health within %s; it is still starting. Check the log file.\n", timeout)
-	}
 	return nil
 }
 
-// readLogTail returns the last n lines written to path after offset, so output
-// from earlier runs in an appended log is not mistaken for this one's.
-func readLogTail(path string, offset int64, n int) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return ""
-	}
-	data, err := io.ReadAll(f)
+// readLogTail returns the last n lines available from the current position of
+// log. Reading through the handle opened before the child started, not the
+// path, keeps the tail correct if the log is rotated during startup, and the
+// position keeps output from earlier runs out of it.
+func readLogTail(log *os.File, n int) string {
+	data, err := io.ReadAll(log)
 	if err != nil {
 		return ""
 	}

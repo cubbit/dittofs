@@ -4,10 +4,10 @@ package commands
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"syscall"
-	"time"
 )
 
 // isProcessRunning reads a PID from the given file and checks whether
@@ -89,10 +89,17 @@ func startDaemon() error {
 		return fmt.Errorf("failed to secure log file %s: %w", logPath, err)
 	}
 
-	// The log is appended to, so note where this run's output begins.
-	var logOffset int64
-	if fi, err := lf.Stat(); err == nil {
-		logOffset = fi.Size()
+	// A read handle on the log, positioned where this run's output begins, for
+	// the tail shown if the server fails to start.
+	rf, err := os.Open(logPath)
+	if err != nil {
+		_ = lf.Close()
+		return fmt.Errorf("failed to open log file %s: %w", logPath, err)
+	}
+	defer func() { _ = rf.Close() }()
+	if _, err := rf.Seek(0, io.SeekEnd); err != nil {
+		_ = lf.Close()
+		return fmt.Errorf("failed to read log file %s: %w", logPath, err)
 	}
 
 	cmd := exec.Command(executable, args...)
@@ -100,7 +107,8 @@ func startDaemon() error {
 	cmd.Stderr = lf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	launched := time.Now()
+	// Taken before the start, so a server that predates it can be told apart.
+	ready := healthProbe()
 	if err := cmd.Start(); err != nil {
 		_ = lf.Close()
 		return fmt.Errorf("failed to start daemon: %w", err)
@@ -115,5 +123,5 @@ func startDaemon() error {
 		return fmt.Errorf("failed to write PID file: %w", err)
 	}
 
-	return awaitDaemonStart(cmd, pidPath, logPath, logOffset, launched)
+	return awaitDaemonStart(cmd, ready, pidPath, logPath, rf, os.Stderr)
 }
