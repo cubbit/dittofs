@@ -3,7 +3,9 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -625,5 +627,39 @@ func TestAWriteArrivingWhileATruncateWaitsLandsAfterIt(t *testing.T) {
 	}
 	if n := u.size(t, f); n != 16 {
 		t.Errorf("size %d, want 16: the write that arrived while the truncate waited was cut by it", n)
+	}
+}
+
+// A removal whose phase 1 the store refuses for a pending operation below it,
+// a grow under the committed size here, through the real store, ends: the
+// refused operations leave the entry, logged as lost, and the guard is
+// released, rather than committing the same operations again forever with
+// the guard held.
+func TestARemovalRefusedForAnOperationBelowItEnds(t *testing.T) {
+	logs := newLogRecorder()
+	u := newUnit(t, func(d *engine.Deps) { d.Logger = slog.New(logs) })
+	f := u.create(t, "a")
+	u.write(t, f, 0, make([]byte, 100))
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.e.StageGrow(u.share.ID, f, 10); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	_ = u.e.Truncate(ctx, u.share.ID, f, 4)
+	eventually(t, "the refused removal releases the guard", func() bool { return !u.e.GuardHeld(f) })
+	if n := u.e.FileEntries(); n != 0 {
+		t.Errorf("%d entries left: the refused operations stayed pending", n)
+	}
+	lost := 0
+	for _, r := range logs.records() {
+		if strings.Contains(r.Message, "dropped as lost") {
+			lost++
+		}
+	}
+	if lost != 1 {
+		t.Errorf("%d logs of the refused operations dropped as lost, want one", lost)
 	}
 }

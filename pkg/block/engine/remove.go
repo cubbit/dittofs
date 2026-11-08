@@ -443,8 +443,9 @@ func (e *Engine) unstage(r *removal, err error) {
 // once r ended unapplied, then releases the guard and settles the journal
 // through r: the settle then drops no write's or loss's record that metadata
 // never recorded (RFC 1 §3.10). A file found gone settles with nothing
-// committed. It answers false, the claim released and the guard held, when
-// the commit failed.
+// committed, and operations the store refuses are dropped as lost. It
+// answers false, the claim released and the guard held, when the commit
+// failed otherwise.
 func (e *Engine) commitBelow(ctx context.Context, r *removal) bool {
 	ctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
 	defer cancel()
@@ -469,9 +470,34 @@ func (e *Engine) commitBelow(ctx context.Context, r *removal) bool {
 		e.unclaim(r)
 		e.release(r, true)
 		return true
+	case kvstore.Refused(err):
+		// The store refuses these operations themselves, so committing them
+		// again fails the same way: they leave the entry, logged as lost, and
+		// the journal settles through r without them.
+		e.d.Logger.Error("pending operations below a removal refused by the store, dropped as lost", "file", r.f, "kind", r.kind.String(), "err", err)
+		dones := e.dropClaimed(r)
+		e.release(r, true)
+		for _, d := range dones {
+			d()
+		}
+		return true
 	}
 	e.unclaim(r)
 	return false
+}
+
+// dropClaimed removes from r's file's entry the operations r claimed, which
+// the store refused, and answers their Dones, charging nothing.
+func (e *Engine) dropClaimed(r *removal) (dones []func()) {
+	fe := e.files.lockFor(r.f)
+	defer e.files.unlock(r.f, fe)
+	fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool {
+		if op.claimed && !op.dropped && op.done != nil {
+			dones = append(dones, op.done)
+		}
+		return op.claimed
+	})
+	return dones
 }
 
 // claimBelow claims r's file's live operations below r's version, writes and

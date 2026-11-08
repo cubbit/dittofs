@@ -405,3 +405,21 @@ func (e *Engine) StopRemovalLoops() {
 		g.removals.close()
 	}
 }
+
+// StageGrow stages on f, at the journal's next version, a grow to size,
+// which the store refuses as a truncate down when size is below the file's
+// committed size: a pending operation the store will not commit.
+func (e *Engine) StageGrow(s entity.ShareID, f entity.FileID, size int64) error {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return err
+	}
+	v, err := b.j.Draw()
+	if err != nil {
+		return err
+	}
+	fe := e.files.lockFor(f)
+	defer e.files.unlock(f, fe)
+	fe.insert(pendingOp{version: v, kind: opTruncate, extent: journal.Extent{Off: size}, grow: true})
+	return nil
+}
