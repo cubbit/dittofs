@@ -2,9 +2,11 @@ package entity
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/binary"
 	"encoding/hex"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -50,6 +52,25 @@ func (v JournalVersion) IsZero() bool    { return v == JournalVersion{} }
 func (v JournalVersion) Compare(o JournalVersion) int { return bytes.Compare(v[:], o[:]) }
 
 func (v JournalVersion) Less(o JournalVersion) bool { return v.Compare(o) < 0 }
+
+// SyncMark is where a journal's append stream had proven its records synced
+// at one of its syncs: the stream, as its segments' headers number it, the
+// segment, the stream's synced-through offset there, and the end and
+// sequence number of the newest record that sync covered. The journal
+// returns them from its syncs, and the group commit records them in
+// metadata, keyed by stream.
+type SyncMark struct {
+	Stream   uint32
+	Segment  uint64
+	Through  int64
+	Offset   int64
+	Sequence uint64
+}
+
+// Covers reports that m, a recorded mark, proves the records r, a mark a sync
+// returned, names: both lie in one segment, and m is synced through r's
+// newest record. A mark proves nothing in another segment.
+func (m SyncMark) Covers(r SyncMark) bool { return m.Segment == r.Segment && m.Through >= r.Offset }
 
 func MaxVersion(a, b JournalVersion) JournalVersion {
 	if a.Less(b) {
@@ -102,6 +123,22 @@ func (e Extent) Intersect(o Extent) Extent {
 
 // ExtentOf is the extent [start, end).
 func ExtentOf(start, end int64) Extent { return Extent{Offset: start, Length: end - start} }
+
+// MergeExtents is es without its empty extents, sorted by offset, with every
+// overlapping or touching pair merged into one.
+func MergeExtents(es []Extent) []Extent {
+	es = slices.DeleteFunc(slices.Clone(es), func(e Extent) bool { return e.IsEmpty() })
+	slices.SortFunc(es, func(a, b Extent) int { return cmp.Compare(a.Offset, b.Offset) })
+	var out []Extent
+	for _, e := range es {
+		if n := len(out); n > 0 && out[n-1].End() >= e.Offset {
+			out[n-1] = ExtentOf(out[n-1].Offset, max(out[n-1].End(), e.End()))
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
 
 // ChunkRef says these bytes of this file are that run of that chunk's bytes:
 // [Skip, Skip+Length) of Chunk, at Offset in the file. A zero Chunk is a zero

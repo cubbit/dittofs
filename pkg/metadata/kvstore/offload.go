@@ -315,7 +315,7 @@ func commitFile(tx kv.Txn, ns entity.NamespaceID, fc FileCommit, delta counts) (
 			done = append(done, applied...)
 		}
 	}
-	return mergeExtents(done), nil
+	return entity.MergeExtents(done), nil
 }
 
 // generationOf is the generation the share counts its content in ns under.
@@ -377,12 +377,12 @@ func replaceRefs(tx kv.Txn, ns entity.NamespaceID, share entity.ShareID, nr enti
 	if cursor < nr.End() {
 		write = append(write, entity.ExtentOf(cursor, nr.End()))
 	}
-	for _, w := range mergeExtents(write) {
+	for _, w := range entity.MergeExtents(write) {
 		if err := putRef(tx, ns, share, nr.Clip(w), delta); err != nil {
 			return nil, err
 		}
 	}
-	return mergeExtents(append(write, committed...)), nil
+	return entity.MergeExtents(append(write, committed...)), nil
 }
 
 // cutRef removes the part over of an existing ref, keeping what lies on
@@ -547,19 +547,4 @@ func newStamp() uint64 {
 	var b [8]byte
 	rand.Read(b[:])
 	return binary.BigEndian.Uint64(b[:])
-}
-
-// mergeExtents sorts extents and joins those that touch or overlap.
-func mergeExtents(es []entity.Extent) []entity.Extent {
-	es = slices.DeleteFunc(slices.Clone(es), func(e entity.Extent) bool { return e.IsEmpty() })
-	slices.SortFunc(es, func(a, b entity.Extent) int { return cmp.Compare(a.Offset, b.Offset) })
-	var out []entity.Extent
-	for _, e := range es {
-		if n := len(out); n > 0 && out[n-1].End() >= e.Offset {
-			out[n-1] = entity.ExtentOf(out[n-1].Offset, max(out[n-1].End(), e.End()))
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
 }
