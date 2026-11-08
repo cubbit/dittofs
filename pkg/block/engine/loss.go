@@ -253,7 +253,7 @@ func (e *Engine) markLost(l *losses, f entity.FileID, ev journal.LossEvent) (don
 			dones = append(dones, op.done)
 			op.done = nil
 		}
-		if op.claimed {
+		if op.claimed || op.held {
 			op.dropped = true
 			continue
 		}

@@ -527,7 +527,7 @@ func (e *Engine) claimAll(ctx context.Context, r *removal) error {
 	for i := range fe.ops {
 		op := &fe.ops[i]
 		if !op.dropped && !op.copy && op.version != r.v {
-			op.claimed = true
+			op.held = true
 			r.through = newer(r.through, op.version)
 		}
 	}

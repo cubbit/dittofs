@@ -33,8 +33,9 @@ type pendingOp struct {
 	setsMtime bool           // the operation moves the file's modification time
 	grow      bool           // a truncate at or above the replayed size: committed by the group commit, no phase 1
 	lost      bool           // the journal dropped it after its sync: its existence commits lost
-	claimed   bool           // a batch claimed it: no other path commits it or calls its Done
-	dropped   bool           // a failed window dropped it while claimed: it no longer exists, its Done has run
+	claimed   bool           // a batch claimed it: that batch's settle releases the claim
+	held      bool           // a removal's phase 1 claimed it: no batch's settle releases it
+	dropped   bool           // a failed window dropped it while claimed or held: it no longer exists, its Done has run
 	copy      bool           // a clone's copy of a source run: its clone's phase 1 records it, through Copied
 	done      func()         // the write's WriteOpts.Done, called once its existence commits or it is dropped
 }

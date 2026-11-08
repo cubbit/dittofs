@@ -554,25 +554,19 @@ func (e *Engine) dropClaimed(r *removal) (dones []func()) {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
 	fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool {
-		if op.claimed && !op.dropped && op.done != nil {
+		if op.held && !op.dropped && op.done != nil {
 			dones = append(dones, op.done)
 		}
-		return op.claimed
+		return op.held
 	})
 	return dones
 }
 
-// claimBelow claims r's file's live operations below r's version, writes and
-// grows, for phase 1. The guard keeps every batch off the file, so none is
-// claimed already.
-//
-// decision: phase 1 and a batch share one claimed flag, so this rests on the
-// group commit skipping a guarded file, narrower than "correctness never
-// rests on the skip": without it, a batch capturing the file after the claim
-// and failing would release phase 1's claim, and phase 1 would commit without
-// those operations, at an applied above them. A claim of phase 1's own,
-// which capture and settle leave alone, would lift it; do that if the skip is
-// ever relaxed.
+// claimBelow holds r's file's live operations below r's version, writes and
+// grows, for phase 1. The hold is phase 1's own, apart from a batch's claim:
+// a batch that captures a held operation, and fails, releases its claim and
+// leaves the hold, so phase 1 still commits it; one that commits it first
+// leaves phase 1's commit to skip it as applied.
 func (e *Engine) claimBelow(r *removal) {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
@@ -582,19 +576,19 @@ func (e *Engine) claimBelow(r *removal) {
 			break
 		}
 		if !op.dropped {
-			op.claimed = true
+			op.held = true
 		}
 	}
 }
 
-// claimed is r's claimed operations as the store commits them, read after
+// claimed is r's held operations as the store commits them, read after
 // the sync, so a loss its drain marked commits lost.
 func (e *Engine) claimed(r *removal) []kvstore.PendingOp {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
 	var out []kvstore.PendingOp
 	for i, op := range fe.ops {
-		if !op.claimed || op.dropped {
+		if !op.held || op.dropped {
 			continue
 		}
 		var mtime time.Time
@@ -608,13 +602,13 @@ func (e *Engine) claimed(r *removal) []kvstore.PendingOp {
 	return out
 }
 
-// unclaim releases r's claim after a failed phase 1: the operations stay
-// pending.
+// unclaim releases r's hold after a failed phase 1: the operations stay
+// pending, and a batch's claim on any is left to that batch.
 func (e *Engine) unclaim(r *removal) {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
 	for i := range fe.ops {
-		fe.ops[i].claimed = false
+		fe.ops[i].held = false
 	}
 }
 
@@ -629,7 +623,7 @@ func (e *Engine) committed(r *removal) (dones []func()) {
 	kept := fe.ops[:0]
 	for _, op := range fe.ops {
 		switch {
-		case op.claimed:
+		case op.held:
 			if !op.dropped {
 				if op.done != nil {
 					dones = append(dones, op.done)

@@ -28,6 +28,7 @@ type hookedHandle struct {
 	truncate    func() // run inside Truncate, after the journal's removal
 	settle      func() // run inside Settle, before the journal's
 	cloneTarget armed  // run inside CloneTarget, after the journal's, once set
+	sync        armed  // run inside Sync, before the journal's, once set
 	writes      atomic.Int32
 	deletes     atomic.Int32
 	mu          sync.Mutex
@@ -52,6 +53,11 @@ func (h *hookedHandle) CloneTarget(ctx context.Context, id journal.FileID, spec 
 	v, err := h.Handle.CloneTarget(ctx, id, spec)
 	h.cloneTarget.run()
 	return v, err
+}
+
+func (h *hookedHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
+	h.sync.run()
+	return h.Handle.Sync(ctx, ids...)
 }
 
 func (h *hookedHandle) Delete(ctx context.Context, id journal.FileID) (journal.Version, error) {
@@ -502,6 +508,51 @@ func TestAGroupCommitStopsAtARetriedRemoval(t *testing.T) {
 	}
 	if n := u.size(t, f); n != 12 {
 		t.Errorf("after the write's commit the size is %d, want 12", n)
+	}
+}
+
+// Phase 1's hold on the writes below its removal is its own, the guard's
+// skip removed: a batch that captures the file during phase 1's sync and
+// fails releases its claim alone, and phase 1 still commits the write below
+// the truncate with it, charged. Were the two one claim, the failed batch
+// would release phase 1's too, and phase 1 would commit the truncate alone,
+// at an applied above the write, which no later commit then records.
+func TestAFailedBatchDuringPhaseOneLeavesItsHold(t *testing.T) {
+	c := &conflicting{}
+	u, h := newHookedUnit(t, onCommit(c.commit))
+	u.e.NoGuardSkip()
+	fh, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
+	f := made.ID
+	u.write(t, f, 0, fill(16, 'a'))
+	var first atomic.Bool
+	h.truncate = func() {
+		h.sync.set(func() {
+			if !first.CompareAndSwap(false, true) {
+				return // the batch's own sync
+			}
+			// Phase 1's sync, its hold taken: a batch captures the file and fails.
+			c.on.Store(true)
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			_ = u.e.CommitAll(ctx, u.rec)
+			cancel()
+			c.on.Store(false)
+		})
+	}
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 8); err != nil {
+		t.Fatal(err)
+	}
+	if c.calls.Load() == 0 {
+		t.Fatal("no batch captured the file during phase 1")
+	}
+	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, fh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Size != 8 || got.Charged != 8 {
+		t.Errorf("size %d, charged %d; want the write below the truncate committed with it, size 8 charging 8", got.Size, got.Charged)
+	}
+	if p := u.e.Pending(f); len(p) != 0 {
+		t.Errorf("pending %+v after phase 1, want nothing", p)
 	}
 }
 
