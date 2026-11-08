@@ -451,9 +451,9 @@ type fencedContent struct {
 	crashed *atomic.Bool
 }
 
-func (c fencedContent) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) error {
+func (c fencedContent) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) (bool, error) {
 	if c.crashed.Load() {
-		return errCrashed
+		return false, errCrashed
 	}
 	return c.Content.Resume(ctx, share, file)
 }

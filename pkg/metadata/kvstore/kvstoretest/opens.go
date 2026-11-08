@@ -179,7 +179,8 @@ func testCloneHold(t *testing.T, kvo Opener) {
 	if d := f.durable(src.Shard); !slices.Contains(d, kvstore.DurableOpen{File: src.ID, Open: got[0].ID}) {
 		t.Errorf("index %+v", d)
 	}
-	must(t, f.s.Content().Resume(ctx, f.share.ID, dst.ID))
+	_, err = f.s.Content().Resume(ctx, f.share.ID, dst.ID)
+	must(t, err)
 	if got, err := f.s.Opens().Of(ctx, f.share.ID, src.ID); err != nil || len(got) != 0 {
 		t.Errorf("the hold after the clone is done %+v, %v", got, err)
 	}

@@ -392,7 +392,7 @@ func TestAnUncarvedSourceRunReadsLostInTheDestination(t *testing.T) {
 	u.lose(src, mib, mib)
 	dst := u.create(t, "dst")
 	u.clone(t, src, dst, vfserr.Extent{Len: 3 * mib})
-	if err := u.fs.Store.Content().Resume(t.Context(), u.share.ID, dst); err != nil {
+	if _, err := u.fs.Store.Content().Resume(t.Context(), u.share.ID, dst); err != nil {
 		t.Fatal(err)
 	}
 	if got := u.read(t, dst, 0, mib); !bytes.Equal(got, fill(mib, 's')) {

@@ -35,7 +35,7 @@ func (f *fixture) cloned(t *testing.T, src, dst FileKey) CloneSource {
 // hold on the source.
 func (f *fixture) lastBatch(t *testing.T, dst FileKey) {
 	t.Helper()
-	if err := f.fs.Store.Content().Resume(ctx, dst.Share, dst.ID); err != nil {
+	if _, err := f.fs.Store.Content().Resume(ctx, dst.Share, dst.ID); err != nil {
 		t.Fatal(err)
 	}
 }

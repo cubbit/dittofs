@@ -100,9 +100,10 @@ func scripted(t *testing.T, answers ...answer) (l *removalLoop, f entity.FileID,
 		return answers[n-1]
 	}})
 	steps := int32(0)
-	settled := func(n int32) bool { // run n has finished and the item is back, or gone
+	settled := func(n int32) bool { // run n has finished and the item is back, or gone; an advance runs again at once
 		k, _ := l.pending()
-		return runs.Load() == n && (k == 1 || answers[n-1] == itemDone)
+		r := runs.Load()
+		return r > n || r == n && (k == 1 || answers[n-1] == itemDone)
 	}
 	wait := func(n int32) {
 		deadline := time.Now().Add(5 * time.Second)
@@ -151,6 +152,23 @@ func TestAnItemStallsAfterFiveFailures(t *testing.T) {
 	step()
 	if !strings.Contains(log.String(), "removal_stalled cleared") {
 		t.Errorf("the run that finished it logged no clearing: %s", log.String())
+	}
+}
+
+// A run that advanced resets the count: four failures, an advance and four
+// more raise nothing, and a fifth failure in a row then stalls the item.
+func TestAnAdvanceResetsTheCount(t *testing.T) {
+	l, f, step, _ := scripted(t, itemRetry, itemRetry, itemRetry, itemRetry, itemAdvanced,
+		itemRetry, itemRetry, itemRetry, itemRetry, itemRetry, itemDone)
+	for range 9 {
+		step()
+	}
+	if l.stalledOn(f) {
+		t.Fatal("stalled after four failures, an advance and four more")
+	}
+	step()
+	if !l.stalledOn(f) {
+		t.Fatal("not stalled after five failures in a row")
 	}
 }
 

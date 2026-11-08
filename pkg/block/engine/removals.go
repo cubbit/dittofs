@@ -20,6 +20,7 @@ const (
 	itemDone           answer = iota + 1 // the item is finished
 	itemRetry                            // it failed: retried after the backoff, counted toward a stall
 	itemRetryUncounted                   // it is held by something outside it: retried, never counted
+	itemAdvanced                         // it advanced and has more to do: run again at once, its failures reset
 )
 
 // stallAfter is the count of consecutive failures after which an item is
@@ -139,7 +140,7 @@ func (l *removalLoop) next() (*loopItem, time.Duration) {
 
 // step runs it once, under a root span, and puts it back at the loop's end
 // unless it finished, raising removal_stalled after five failures in a row
-// and clearing it once it finishes.
+// and clearing it once it finishes or advances.
 func (l *removalLoop) step(it *loopItem) {
 	ctx, end := l.e.d.Tracer(l.ctx, "engine.removal_batch", slog.String("kind", it.kind.String()))
 	a := it.run(ctx)
@@ -147,11 +148,14 @@ func (l *removalLoop) step(it *loopItem) {
 	l.steps.Add(1)
 	log := l.e.d.Logger
 	switch a {
-	case itemDone:
+	case itemDone, itemAdvanced:
 		if it.stalled {
 			log.Warn("removal_stalled cleared", "file", it.f, "kind", it.kind)
 		}
-		return
+		if a == itemDone {
+			return
+		}
+		it.fails, it.stalled = 0, false
 	case itemRetry:
 		it.fails++
 		if it.fails >= stallAfter && !it.stalled {
@@ -159,7 +163,10 @@ func (l *removalLoop) step(it *loopItem) {
 			log.Warn("removal_stalled", "file", it.f, "kind", it.kind)
 		}
 	}
-	it.notBefore = l.e.d.Clock.Now().Add(loopBackoff)
+	it.notBefore = l.e.d.Clock.Now()
+	if a != itemAdvanced {
+		it.notBefore = it.notBefore.Add(loopBackoff)
+	}
 	l.mu.Lock()
 	ended := l.closed || l.dropped[it.b.share.ID]
 	if !ended {
@@ -227,26 +234,26 @@ func (l *removalLoop) stalledOn(f entity.FileID) bool {
 
 // phase2 is the item that drops r's masked records and prunes its removal
 // record: the store's Resume runs every batch of the file's removals not
-// done, and the prune, with no pass in flight, is at r's own version.
+// done, and the prune, with no pass in flight, is at r's own version. One
+// bound covers a run; a run the bound cuts after a batch committed advanced,
+// so a removal larger than one bound's worth of batches is never counted
+// toward removal_stalled while each run moves its cursor.
 func (e *Engine) phase2(r *removal) *loopItem {
 	share, v := r.b.share.ID, entity.JournalVersion(r.v.Bytes())
 	return &loopItem{b: r.b, f: r.f, kind: r.kind, run: func(ctx context.Context) answer {
-		// decision: one bound covers every batch Resume runs, as Resume
-		// answers neither per batch nor with progress. Each batch commits on
-		// its own, so a removal larger than the bound's worth of batches
-		// still finishes, from its cursor, but counts each bounded run as a
-		// failure: removal_stalled after five, though it advances. Bound
-		// each batch, or count a run that advanced, once Resume reports one.
 		ctx, cancel := e.bounded(ctx)
 		defer cancel()
-		err := e.d.Content.Resume(ctx, share, r.f)
+		advanced, err := e.d.Content.Resume(ctx, share, r.f)
 		if err == nil {
 			err = e.d.Content.PruneRemovals(ctx, share, r.f, v)
 		}
-		if err != nil {
-			return itemRetry
+		switch {
+		case err == nil:
+			return itemDone
+		case advanced:
+			return itemAdvanced
 		}
-		return itemDone
+		return itemRetry
 	}}
 }
 

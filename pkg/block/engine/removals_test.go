@@ -32,13 +32,13 @@ func newResuming() *resuming {
 	return &resuming{failing: map[entity.FileID]bool{}, resumes: map[entity.FileID]int{}, pruned: map[entity.FileID]entity.JournalVersion{}}
 }
 
-func (x *resuming) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) error {
+func (x *resuming) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) (bool, error) {
 	x.mu.Lock()
 	x.resumes[file]++
 	fail := x.failing[file]
 	x.mu.Unlock()
 	if fail {
-		return errors.New("an injected phase 2 failure")
+		return false, errors.New("an injected phase 2 failure")
 	}
 	return x.Content.Resume(ctx, share, file)
 }
@@ -150,10 +150,10 @@ type stalledResume struct {
 	stalled entity.FileID
 }
 
-func (x *stalledResume) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) error {
+func (x *stalledResume) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) (bool, error) {
 	if file == x.stalled {
 		<-ctx.Done()
-		return ctx.Err()
+		return false, ctx.Err()
 	}
 	return x.resuming.Resume(ctx, share, file)
 }
@@ -179,6 +179,46 @@ func TestAStalledPhase2HoldsNoOther(t *testing.T) {
 		t.Fatal(err)
 	}
 	u.until(t, "g's removal is pruned while f's phase 2 stalls", func() bool { _, ok := x.prunedAt(g); return ok })
+}
+
+// cutResume is the store's content view whose first cut phase 2 runs of
+// the file it names each commit a batch and are cut at the bound with more
+// to do, as runs of a removal larger than one bound's worth of batches.
+type cutResume struct {
+	*resuming
+	f   entity.FileID
+	cut atomic.Int32
+}
+
+func (x *cutResume) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) (bool, error) {
+	if file == x.f && x.cut.Add(-1) >= 0 {
+		return true, context.DeadlineExceeded
+	}
+	return x.resuming.Resume(ctx, share, file)
+}
+
+// A removal whose phase 2 needs more runs than removal_stalled allows
+// failures, each advancing, is never reported stalled, and finishes.
+func TestAnAdvancingPhase2IsNotStalled(t *testing.T) {
+	x := &cutResume{resuming: newResuming()}
+	logs := newLogRecorder()
+	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x; d.Logger = slog.New(logs) })
+	f := u.create(t, "f")
+	x.f = f
+	x.cut.Store(8)
+	u.write(t, f, 0, fill(16, 'a'))
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
+		t.Fatal(err)
+	}
+	u.until(t, "f's removal is pruned", func() bool { _, ok := x.prunedAt(f); return ok })
+	for _, r := range logs.records() {
+		if strings.HasPrefix(r.Message, "removal_stalled") {
+			t.Errorf("logged %q for a phase 2 that advanced on every run", r.Message)
+		}
+	}
 }
 
 // refused has the store refuse every removal as invalid, as it refuses an
