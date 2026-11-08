@@ -81,6 +81,7 @@ type Existence interface {
 	Allocation(ctx context.Context, share entity.ShareID, file entity.FileID, off int64) (run entity.Extent, hole bool, err error)
 	Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error
 	Clone(ctx context.Context, op kvstore.CloneOp, pending []kvstore.PendingOp) error
+	CloneFree(ctx context.Context, op kvstore.CloneOp) error
 }
 
 // Content is block metadata's content view, as the engine calls it.
