@@ -12,15 +12,10 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// extent is a run of bytes [off, end) of one file.
-type extent struct{ off, end int64 }
-
-func (x extent) overlaps(o, e int64) bool { return x.off < e && o < x.end }
-
 // reg is one running clone's registration on a file: the extent it holds,
 // and whether the file is the clone's destination or its source.
 type reg struct {
-	extent
+	entity.Extent
 	dst bool
 }
 
@@ -33,24 +28,24 @@ type reg struct {
 // Withdraw it if RFC 17 moves that hold into the engine.
 func delayClone() error { return &vfserr.Delay{Cause: vfserr.DelayClone} }
 
-// refuseWrite answers delayClone() if [o, e) of the file overlaps an extent a
+// refuseWrite answers delayClone() if x of the file overlaps an extent a
 // clone registered on it, source or destination; nil otherwise. The caller
 // holds the entry's lock.
-func (fe *fileEntry) refuseWrite(o, e int64) error {
+func (fe *fileEntry) refuseWrite(x entity.Extent) error {
 	for _, r := range fe.regs {
-		if r.overlaps(o, e) {
+		if r.Overlaps(x) {
 			return delayClone()
 		}
 	}
 	return nil
 }
 
-// refuseRead answers delayClone() if [o, e) of the file overlaps an extent a
+// refuseRead answers delayClone() if x of the file overlaps an extent a
 // clone registered on it as its destination, whose content the clone is
 // changing; a source extent reads as it is. The caller holds the entry's lock.
-func (fe *fileEntry) refuseRead(o, e int64) error {
+func (fe *fileEntry) refuseRead(x entity.Extent) error {
 	for _, r := range fe.regs {
-		if r.dst && r.overlaps(o, e) {
+		if r.dst && r.Overlaps(x) {
 			return delayClone()
 		}
 	}
@@ -62,9 +57,9 @@ func (fe *fileEntry) refuseRead(o, e int64) error {
 // one overlapping x, source or destination, or any clone into the file,
 // which holds one clone into it at a time and must not change under it. The
 // caller holds the entry's lock.
-func (fe *fileEntry) refuseChange(x extent) error {
+func (fe *fileEntry) refuseChange(x entity.Extent) error {
 	for _, r := range fe.regs {
-		if r.dst || r.overlaps(x.off, x.end) {
+		if r.dst || r.Overlaps(x) {
 			return delayClone()
 		}
 	}
@@ -73,25 +68,11 @@ func (fe *fileEntry) refuseChange(x extent) error {
 
 // leave removes x, one admitted write, from those writing, and wakes a
 // registration waiting for it. The caller holds the entry's lock.
-func (fe *fileEntry) leave(x extent) {
-	for i, w := range fe.writing {
-		if w == x {
-			fe.writing = append(fe.writing[:i], fe.writing[i+1:]...)
-			break
-		}
+func (fe *fileEntry) leave(x entity.Extent) {
+	if i := slices.Index(fe.writing, x); i >= 0 {
+		fe.writing = slices.Delete(fe.writing, i, i+1)
 	}
 	fe.staged.Broadcast()
-}
-
-// writingInto reports whether an admitted write not yet inserted overlaps x.
-// The caller holds the entry's lock.
-func (fe *fileEntry) writingInto(x extent) bool {
-	for _, w := range fe.writing {
-		if w.overlaps(x.off, x.end) {
-			return true
-		}
-	}
-	return false
 }
 
 // register installs r on f's entry and waits until every write admitted
@@ -112,9 +93,9 @@ func (e *Engine) register(ctx context.Context, f entity.FileID, r *reg) error {
 		// at once rather than behind the guard.
 		var err error
 		if r.dst {
-			err = fe.refuseChange(r.extent)
+			err = fe.refuseChange(r.Extent)
 		} else {
-			err = fe.refuseRead(r.off, r.end)
+			err = fe.refuseRead(r.Extent)
 		}
 		if err != nil {
 			e.files.unlock(f, fe)
@@ -123,37 +104,20 @@ func (e *Engine) register(ctx context.Context, f entity.FileID, r *reg) error {
 		// A removal in flight over the extent is waited out: it checked the
 		// file's registrations before this one, so its phase 1 must end
 		// before the clone reads the file.
-		if fe.removing == nil || !fe.removing.overlaps(r.off, r.end) {
+		if fe.removing == nil || !fe.removing.Overlaps(r.Extent) {
 			break
 		}
-		ch := fe.guardDone
-		e.files.unlock(f, fe)
-		select {
-		case <-ch:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		fe = e.files.lockFor(f)
-	}
-	fe.regs = append(fe.regs, r)
-	if fe.writingInto(r.extent) {
-		stop := context.AfterFunc(ctx, func() {
-			fe.mu.Lock()
-			fe.staged.Broadcast()
-			fe.mu.Unlock()
-		})
-		for fe.writingInto(r.extent) && ctx.Err() == nil {
-			fe.staged.Wait()
-		}
-		stop()
-		if err := ctx.Err(); err != nil {
-			fe.drop(r)
-			e.files.unlock(f, fe)
+		if fe, err = e.awaitGuard(ctx, f, fe); err != nil {
 			return err
 		}
 	}
+	fe.regs = append(fe.regs, r)
+	err := fe.awaitWrites(ctx, func() bool { return slices.ContainsFunc(fe.writing, r.Overlaps) })
+	if err != nil {
+		fe.drop(r)
+	}
 	e.files.unlock(f, fe)
-	return nil
+	return err
 }
 
 // unregister removes r from f's entry, which it kept alive.
@@ -168,11 +132,8 @@ func (e *Engine) unregister(f entity.FileID, r *reg) {
 
 // drop removes r from the entry's registrations. The caller holds its lock.
 func (fe *fileEntry) drop(r *reg) {
-	for i, x := range fe.regs {
-		if x == r {
-			fe.regs = append(fe.regs[:i], fe.regs[i+1:]...)
-			return
-		}
+	if i := slices.Index(fe.regs, r); i >= 0 {
+		fe.regs = slices.Delete(fe.regs, i, i+1)
 	}
 }
 
@@ -218,7 +179,7 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		return fmt.Errorf("engine: no settings applied: %w", vfserr.ErrUnavailable)
 	case x.Len <= 0 || x.SrcOff < 0 || x.DstOff < 0 || x.Len > entity.EndOfFile-max(x.SrcOff, x.DstOff):
 		return vfserr.ErrInvalid
-	case src == dst && extent{x.SrcOff, x.SrcOff + x.Len}.overlaps(x.DstOff, x.DstOff+x.Len):
+	case src == dst && entity.Extent{Offset: x.SrcOff, Length: x.Len}.Overlaps(entity.Extent{Offset: x.DstOff, Length: x.Len}):
 		return vfserr.ErrInvalid
 	case x.Len > st.CloneMaxLen:
 		return vfserr.ErrInvalid
@@ -237,8 +198,8 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	if sb.share.Namespace != db.share.Namespace {
 		return &vfserr.CrossError{Kind: vfserr.CrossNamespace}
 	}
-	rs := &reg{extent: extent{x.SrcOff, x.SrcOff + x.Len}}
-	rd := &reg{extent: extent{x.DstOff, x.DstOff + x.Len}, dst: true}
+	rs := &reg{Extent: entity.Extent{Offset: x.SrcOff, Length: x.Len}}
+	rd := &reg{Extent: entity.Extent{Offset: x.DstOff, Length: x.Len}, dst: true}
 	if err := e.register(ctx, src, rs); err != nil {
 		return err
 	}
@@ -383,13 +344,8 @@ func (e *Engine) size(ctx context.Context, c *cloneRun) (journal.Version, error)
 // retries, Unbind and Close join, replaces it.
 func (e *Engine) runClone(c *cloneRun) {
 	ctx := c.db.gc.removals.ctx
-	r, err := e.guard(ctx, c.db, c.dst, entity.RemoveClone, c.rd.extent)
+	r, err := e.begin(ctx, c.db, c.dst, entity.RemoveClone, c.rd.Extent)
 	if err != nil {
-		e.cloneFailed(c, err)
-		return
-	}
-	if err := e.waitBatch(ctx, c.dst); err != nil {
-		e.release(r, false)
 		e.cloneFailed(c, err)
 		return
 	}
@@ -408,8 +364,8 @@ func (e *Engine) runClone(c *cloneRun) {
 
 // attempt runs what the clone has left past its journal step: its copies
 // and the destination's sync, unless done, then its phase 1, bounded by the
-// conflict bound and counted as a removal batch. It answers itemDone once
-// the clone finished or ended, itemRetry for the loop to run it again.
+// conflict bound. It answers itemDone once the clone finished or ended,
+// itemRetry for the loop to run it again.
 //
 // decision: once the journal step dropped the destination extent no undo
 // exists, so a copy, a sync or a phase 1 that fails is retried by the loop
@@ -434,7 +390,6 @@ func (e *Engine) attempt(ctx context.Context, c *cloneRun, r *removal) answer {
 	pctx, cancel := e.bounded(ctx)
 	defer cancel()
 	err := e.tryClonePhase1(pctx, c, r)
-	e.count(err)
 	switch {
 	case err == nil:
 		e.cloned(c)
@@ -573,26 +528,9 @@ func (e *Engine) tryClonePhase1(ctx context.Context, c *cloneRun, r *removal) er
 func (e *Engine) claimAll(ctx context.Context, r *removal) error {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
-	defer func() {
-		if fe.staging {
-			fe.staging = false
-			fe.staged.Broadcast()
-		}
-	}()
-	if len(fe.writing) > 0 {
-		fe.staging = true
-		stop := context.AfterFunc(ctx, func() {
-			fe.mu.Lock()
-			fe.staged.Broadcast()
-			fe.mu.Unlock()
-		})
-		for len(fe.writing) > 0 && ctx.Err() == nil {
-			fe.staged.Wait()
-		}
-		stop()
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+	defer fe.endStaging()
+	if err := fe.stageAfterWrites(ctx); err != nil {
+		return err
 	}
 	for i := range fe.ops {
 		op := &fe.ops[i]

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/binary"
 	"sync"
 	"sync/atomic"
@@ -46,19 +47,58 @@ type fileEntry struct {
 	staged    sync.Cond // signalled, under mu, as an admitted write leaves writing
 	dead      bool      // removed from its shard: a caller that finds it so looks again
 	ops       []pendingOp
-	inBatch   bool          // a group commit batch claimed its leading operations
-	batchDone chan struct{} // closed when that batch returns
-	writing   []extent      // admitted writes not yet inserted, one per write
-	staging   bool          // a removal waits out the writes admitted before it: no other is admitted meanwhile
-	regs      []*reg        // the clones registered on the file
-	guarded   atomic.Bool   // a removal holds the file's guard: read without mu by a capture
-	guardDone chan struct{} // non-nil while guarded, closed when the guard is released
-	removing  *extent       // the extent of the removal in flight, until its phase 1 ends
+	inBatch   bool            // a group commit batch claimed its leading operations
+	batchDone chan struct{}   // closed when that batch returns
+	writing   []entity.Extent // admitted writes not yet inserted, one per write
+	staging   bool            // a removal waits out the writes admitted before it: no other is admitted meanwhile
+	regs      []*reg          // the clones registered on the file
+	guarded   atomic.Bool     // a removal holds the file's guard: read without mu by a capture
+	guardDone chan struct{}   // non-nil while guarded, closed when the guard is released
+	removing  *entity.Extent  // the extent of the removal in flight, until its phase 1 ends
 }
 
 // empty reports the entry holds nothing. The caller holds mu.
 func (fe *fileEntry) empty() bool {
 	return len(fe.ops) == 0 && !fe.inBatch && len(fe.writing) == 0 && len(fe.regs) == 0 && fe.guardDone == nil
+}
+
+// awaitWrites waits until busy, a test of the writes admitted to the file,
+// answers false, the entry's lock released while it waits, or until ctx
+// ends, answering its error. The caller holds the entry's lock.
+func (fe *fileEntry) awaitWrites(ctx context.Context, busy func() bool) error {
+	if !busy() {
+		return nil
+	}
+	stop := context.AfterFunc(ctx, func() {
+		fe.mu.Lock()
+		fe.staged.Broadcast()
+		fe.mu.Unlock()
+	})
+	defer stop()
+	for busy() && ctx.Err() == nil {
+		fe.staged.Wait()
+	}
+	return ctx.Err()
+}
+
+// stageAfterWrites waits out every write admitted to the file, as
+// awaitWrites does, admitting no other meanwhile, so an operation staged
+// next goes in after them and a stream of writes cannot hold it off. The
+// caller defers endStaging.
+func (fe *fileEntry) stageAfterWrites(ctx context.Context) error {
+	if len(fe.writing) > 0 {
+		fe.staging = true
+	}
+	return fe.awaitWrites(ctx, func() bool { return len(fe.writing) > 0 })
+}
+
+// endStaging admits writes again after stageAfterWrites, waking those held.
+// The caller holds the entry's lock.
+func (fe *fileEntry) endStaging() {
+	if fe.staging {
+		fe.staging = false
+		fe.staged.Broadcast()
+	}
 }
 
 // fileShards is the count of shards the entry map is split into, each with

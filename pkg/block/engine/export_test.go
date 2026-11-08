@@ -333,16 +333,6 @@ func (e *Engine) Registrations(f entity.FileID) (src, dst int) {
 	return src, dst
 }
 
-// Admitted is the count of f's writes admitted and not yet in its entry.
-func (e *Engine) Admitted(f entity.FileID) int {
-	fe := e.files.lockOf(f)
-	if fe == nil {
-		return 0
-	}
-	defer e.files.unlock(f, fe)
-	return len(fe.writing)
-}
-
 // PendingWrites is the count of f's pending writes overlapping [off, end).
 func (e *Engine) PendingWrites(f entity.FileID, off, end int64) int {
 	fe := e.files.lockOf(f)

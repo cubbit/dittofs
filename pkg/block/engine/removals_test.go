@@ -181,26 +181,25 @@ func TestAStalledPhase2HoldsNoOther(t *testing.T) {
 	u.until(t, "g's removal is pruned while f's phase 2 stalls", func() bool { _, ok := x.prunedAt(g); return ok })
 }
 
-// refusing is the store's existence view refusing every removal as
-// invalid, as the store refuses an operation it cannot apply.
-type refusing struct {
-	engine.Existence
-	on bool
-}
-
-func (x *refusing) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
-	if x.on {
-		op.Kind = 0 // a kind the store refuses as invalid
-	}
-	return x.Existence.Remove(ctx, share, file, epoch, op, pending)
+// refused has the store refuse every removal as invalid, as it refuses an
+// operation it cannot apply.
+func refused(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+	op.Kind = 0 // a kind the store refuses as invalid
+	return next.Remove(ctx, s, file, epoch, op, pending)
 }
 
 // A phase 1 the store refuses as invalid ends at once: the call answers an
 // error, the guard is released and the truncate's operation leaves the
 // entry, so the next removal of the file is not held behind it.
 func TestARefusedPhase1EndsAndReleasesTheGuard(t *testing.T) {
-	x := &refusing{on: true}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	var on atomic.Bool // every removal is refused while on
+	on.Store(true)
+	u := newUnit(t, onRemove(func(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+		if on.Load() {
+			return refused(ctx, next, s, file, epoch, op, pending)
+		}
+		return next.Remove(ctx, s, file, epoch, op, pending)
+	}))
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
@@ -213,7 +212,7 @@ func TestARefusedPhase1EndsAndReleasesTheGuard(t *testing.T) {
 		t.Fatalf("after the refusal: guard %v, pending %+v, loop items %d; want none",
 			u.e.GuardHeld(f), u.e.Pending(f), u.e.RemovalsPending())
 	}
-	x.on = false
+	on.Store(false)
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	if err := u.e.Truncate(ctx, u.share.ID, f, 2); err != nil {
@@ -225,13 +224,11 @@ func TestARefusedPhase1EndsAndReleasesTheGuard(t *testing.T) {
 // without the removal, so no later start re-applies it, and logs the loss
 // of a file that still exists (RFC 8 §8.1).
 func TestARefusedPhase1SettlesItsMarker(t *testing.T) {
-	x := &refusing{on: true}
 	var logged lockedBuffer
 	var log *settlesLog
 	u := newUnitWith(t, unitConfig{
 		deps: []func(*engine.Deps){func(d *engine.Deps) {
-			x.Existence = d.Existence
-			d.Existence = x
+			d.Existence = removeHook{d.Existence, refused}
 			d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
 		}},
 		wrap: func(h engine.Handle) engine.Handle {
@@ -289,8 +286,7 @@ type endingStore struct {
 }
 
 func (x *endingStore) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
-	op.Kind = 0 // a kind the store refuses as invalid
-	return x.Existence.Remove(ctx, share, file, epoch, op, pending)
+	return refused(ctx, x.Existence, share, file, epoch, op, pending)
 }
 
 func (x *endingStore) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {

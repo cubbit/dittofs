@@ -66,9 +66,6 @@ type removalLoop struct {
 	cancel  context.CancelFunc
 }
 
-// removalSeries is engine_removal_batches_total, by result.
-type removalSeries struct{ ok, conflict, failed atomic.Int64 }
-
 func newRemovalLoop(e *Engine) *removalLoop {
 	l := &removalLoop{e: e, wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
 	l.ctx, l.cancel = context.WithCancel(withRetryingOwner(context.Background()))
@@ -223,18 +220,6 @@ func (l *removalLoop) stalledOn(f entity.FileID) bool {
 	return false
 }
 
-// count records one batch's result in engine_removal_batches_total.
-func (e *Engine) count(err error) {
-	switch {
-	case err == nil:
-		e.removalBatches.ok.Add(1)
-	case errors.Is(err, kvstore.ErrConflict):
-		e.removalBatches.conflict.Add(1)
-	default:
-		e.removalBatches.failed.Add(1)
-	}
-}
-
 // phase2 is the item that drops r's masked records and prunes its removal
 // record: the store's Resume runs every batch of the file's removals not
 // done, and the prune, with no pass in flight, is at r's own version.
@@ -253,7 +238,6 @@ func (e *Engine) phase2(r *removal) *loopItem {
 		if err == nil {
 			err = e.d.Content.PruneRemovals(ctx, share, r.f, v)
 		}
-		e.count(err)
 		if err != nil {
 			return itemRetry
 		}
@@ -292,7 +276,6 @@ func (e *Engine) retryLater(r *removal, op kvstore.RemoveOp, outcome func(error)
 			ctx, cancel := e.bounded(ctx)
 			defer cancel()
 			err := e.tryPhase1(ctx, r, op)
-			e.count(err)
 			switch {
 			case err == nil:
 				tell(nil)

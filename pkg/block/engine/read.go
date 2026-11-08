@@ -31,7 +31,7 @@ func (e *Engine) Read(ctx context.Context, s entity.ShareID, f entity.FileID, of
 		return 0, err
 	}
 	if fe := e.files.lockOf(f); fe != nil {
-		err := fe.refuseRead(off, off+int64(len(dst)))
+		err := fe.refuseRead(entity.Extent{Offset: off, Length: int64(len(dst))})
 		e.files.unlock(f, fe)
 		if err != nil {
 			return 0, err

@@ -470,68 +470,51 @@ func TestAGroupCommitStopsAtARetriedRemoval(t *testing.T) {
 	}
 }
 
-// removeOps records the pending operations each Remove commits in its
-// phase 1.
-type removeOps struct {
-	engine.Existence
-	mu  sync.Mutex
-	ops []kvstore.PendingOp
-}
-
-func (x *removeOps) Remove(ctx context.Context, s entity.ShareID, f entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
-	x.mu.Lock()
-	x.ops = append(x.ops, pending...)
-	x.mu.Unlock()
-	return x.Existence.Remove(ctx, s, f, epoch, op, pending)
-}
-
 // RFC 8 §5.1, R48: a removal's phase 1 commits the writes pending below it
 // with the runs each supersedes, as the group commit does.
 func TestARemovalsPhaseOnePassesTheRunsEachWriteSupersedes(t *testing.T) {
-	x := &removeOps{}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	var mu sync.Mutex
+	var ops []kvstore.PendingOp // the pending operations each Remove commits
+	u := newUnit(t, onRemove(func(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+		mu.Lock()
+		ops = append(ops, pending...)
+		mu.Unlock()
+		return next.Remove(ctx, s, file, epoch, op, pending)
+	}))
 	f := u.create(t, "a")
 	u.write(t, f, 0, make([]byte, 8))
 	u.write(t, f, 2, make([]byte, 4))
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
 		t.Fatal(err)
 	}
-	x.mu.Lock()
-	defer x.mu.Unlock()
+	mu.Lock()
+	defer mu.Unlock()
 	want := [][]entity.Extent{nil, {entity.ExtentOf(2, 6)}}
-	if len(x.ops) != len(want) {
-		t.Fatalf("phase 1 committed %d operations, want the %d writes", len(x.ops), len(want))
+	if len(ops) != len(want) {
+		t.Fatalf("phase 1 committed %d operations, want the %d writes", len(ops), len(want))
 	}
-	for i, op := range x.ops {
+	for i, op := range ops {
 		if !slices.Equal(op.Over, want[i]) {
 			t.Errorf("write %d passed Over %v, want %v", i, op.Over, want[i])
 		}
 	}
 }
 
-// stalledRemove holds each Remove, once entered is closed, until release is.
-type stalledRemove struct {
-	engine.Existence
-	entered, release chan struct{}
-	once             sync.Once
-}
-
-func (x *stalledRemove) Remove(ctx context.Context, s entity.ShareID, f entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
-	x.once.Do(func() { close(x.entered) })
-	<-x.release
-	return x.Existence.Remove(ctx, s, f, epoch, op, pending)
-}
-
 // commitAll over a file whose removal holds its guard waits for the guard
 // rather than asking for batch after batch that each skip the file.
 func TestCommitAllWaitsForARemovalsGuardWithoutSpinning(t *testing.T) {
-	x := &stalledRemove{entered: make(chan struct{}), release: make(chan struct{})}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	entered, release := make(chan struct{}), make(chan struct{}) // each Remove, once entered is closed, holds until release is
+	var once sync.Once
+	u := newUnit(t, onRemove(func(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+		once.Do(func() { close(entered) })
+		<-release
+		return next.Remove(ctx, s, file, epoch, op, pending)
+	}))
 	f := u.create(t, "a")
 	u.write(t, f, 0, make([]byte, 8))
 	truncated := make(chan error, 1)
 	go func() { truncated <- u.e.Truncate(context.Background(), u.share.ID, f, 4) }()
-	<-x.entered
+	<-entered
 	var takes atomic.Int64
 	u.e.OnTake(func() { takes.Add(1) })
 	all := make(chan error, 1)
@@ -540,7 +523,7 @@ func TestCommitAllWaitsForARemovalsGuardWithoutSpinning(t *testing.T) {
 	if n := takes.Load(); n > 5 {
 		t.Errorf("%d batches in 100 ms while a removal held the only due file", n)
 	}
-	close(x.release)
+	close(release)
 	if err := <-truncated; err != nil {
 		t.Fatal(err)
 	}
@@ -667,56 +650,40 @@ func TestARemovalRefusedForAnOperationBelowItEnds(t *testing.T) {
 	}
 }
 
-// markedRemove records, for each Remove, whether its context carries the
-// retrying-owner mark, conflicting while on is set.
-type markedRemove struct {
-	engine.Existence
-	on     atomic.Bool
-	mu     sync.Mutex
-	marked []bool
-}
-
-func (x *markedRemove) Remove(ctx context.Context, s entity.ShareID, f entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
-	x.mu.Lock()
-	x.marked = append(x.marked, engine.RetryingOwner(ctx))
-	x.mu.Unlock()
-	if x.on.Load() {
-		return kvstore.ErrConflict
-	}
-	return x.Existence.Remove(ctx, s, f, epoch, op, pending)
-}
-
 // The removal loop's store calls, a retried phase 1 among them, carry the
 // retrying-owner mark; the call's own first try does not.
 func TestTheRemovalLoopsStoreCallsCarryTheRetryingOwnerMark(t *testing.T) {
-	x := &markedRemove{}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	var on atomic.Bool // each Remove conflicts while on
+	var mu sync.Mutex
+	var marked []bool // for each Remove, whether its context carries the mark
+	u := newUnit(t, onRemove(func(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+		mu.Lock()
+		marked = append(marked, engine.RetryingOwner(ctx))
+		mu.Unlock()
+		if on.Load() {
+			return kvstore.ErrConflict
+		}
+		return next.Remove(ctx, s, file, epoch, op, pending)
+	}))
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
-	x.on.Store(true)
+	on.Store(true)
 	_ = u.e.Truncate(t.Context(), u.share.ID, f, 4)
-	x.on.Store(false)
+	on.Store(false)
 	u.until(t, "the loop committing phase 1", func() bool { return !u.e.GuardHeld(f) })
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	if len(x.marked) < 2 {
-		t.Fatalf("%d Remove calls, want the call's try and the loop's", len(x.marked))
+	mu.Lock()
+	defer mu.Unlock()
+	if len(marked) < 2 {
+		t.Fatalf("%d Remove calls, want the call's try and the loop's", len(marked))
 	}
-	if x.marked[0] {
+	if marked[0] {
 		t.Error("the call's own phase 1 is marked as a retrying owner's")
 	}
-	for i, m := range x.marked[1:] {
+	for i, m := range marked[1:] {
 		if !m {
 			t.Errorf("the loop's Remove %d is not marked as a retrying owner's", i+1)
 		}
 	}
-}
-
-// goneRemove answers every Remove as the file being gone.
-type goneRemove struct{ engine.Existence }
-
-func (goneRemove) Remove(context.Context, entity.ShareID, entity.FileID, uint64, kvstore.RemoveOp, []kvstore.PendingOp) error {
-	return entity.ErrStale
 }
 
 // A release of a file already gone succeeds, whether it had writes pending
@@ -724,7 +691,9 @@ func (goneRemove) Remove(context.Context, entity.ShareID, entity.FileID, uint64,
 func TestAReleaseOfAGoneFileSucceeds(t *testing.T) {
 	for _, pending := range []bool{false, true} {
 		t.Run(fmt.Sprint("pending writes ", pending), func(t *testing.T) {
-			u := newUnit(t, func(d *engine.Deps) { d.Existence = goneRemove{d.Existence} })
+			u := newUnit(t, onRemove(func(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+				return entity.ErrStale // every Remove finds the file gone
+			}))
 			f := u.create(t, "a")
 			if pending {
 				u.write(t, f, 0, fill(8, 'a'))
