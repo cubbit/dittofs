@@ -192,6 +192,68 @@ func TestALossMarksOnlyItsRecordsWrite(t *testing.T) {
 	}
 }
 
+// A corrupt loss of part of a pending write marks only that part lost: the
+// write commits whole at its version, size 8, charging the 4 bytes the
+// journal kept, which read back, while the lost runs read as lost. Two losses
+// of one write, or one drained before the write's insert, mark their runs
+// alike.
+func TestAPartialLossMarksOnlyItsRuns(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		lost  [][2]int64 // the runs lost, as offset and length
+		early bool       // the loss is drained between WriteAt and the insert
+	}{
+		{"one run", [][2]int64{{4, 4}}, false},
+		{"two runs", [][2]int64{{0, 2}, {6, 2}}, false},
+		{"before the insert", [][2]int64{{4, 4}}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			u := newUnit(t)
+			h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
+			f := made.ID
+			lose := func() {
+				for _, r := range c.lost {
+					u.lose(f, r[0], r[1])
+				}
+				u.e.LossSeq(u.share.ID, f) // drains the losses
+			}
+			if c.early {
+				var once sync.Once
+				u.e.OnWritten(func() { once.Do(lose) })
+			}
+			u.write(t, f, 0, []byte("12345678"))
+			if !c.early {
+				lose()
+			}
+			if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+				t.Fatal(err)
+			}
+			got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Size != 8 || got.Charged != 4 {
+				t.Errorf("size %d, charged %d; want size 8 charging the 4 bytes kept", got.Size, got.Charged)
+			}
+			at := int64(0)
+			for _, r := range append(c.lost, [2]int64{8, 0}) {
+				if r[0] > at {
+					p := make([]byte, r[0]-at)
+					if _, err := u.e.Read(t.Context(), u.share.ID, f, at, p); err != nil || string(p) != "12345678"[at:r[0]] {
+						t.Errorf("read [%d, %d): %q, %v; want the bytes kept", at, r[0], p, err)
+					}
+				}
+				if r[1] > 0 {
+					if _, err := u.e.Read(t.Context(), u.share.ID, f, r[0], make([]byte, r[1])); !errors.Is(err, vfserr.ErrLost) {
+						t.Errorf("read of the lost run [%d, %d): %v, want ErrLost", r[0], r[0]+r[1], err)
+					}
+				}
+				at = r[0] + r[1]
+			}
+		})
+	}
+}
+
 // A corrupt loss drained between a write's WriteAt and its insert finds no
 // pending write to mark, so the insert applies it: the batch commits the
 // write lost, charging nothing, a read answers ErrLost, and Done runs once.

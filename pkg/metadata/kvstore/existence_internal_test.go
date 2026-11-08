@@ -402,6 +402,30 @@ func TestExistenceCommitLost(t *testing.T) {
 	}
 }
 
+// A write with lost runs is one operation at its version that charges only
+// the bytes it kept: a run lost where it grows the file and one lost where it
+// fills a hole each charge nothing, and the rest charges as written. Lost
+// runs that overlap are refused, so none is uncharged twice.
+func TestExistenceCommitLostRuns(t *testing.T) {
+	const kib = 1 << 10
+	f := newContentFix(t, nil)
+	file := f.file(0)
+	f.exist(file, grow(1, 512*kib)) // a hole over [0, 512K)
+	w := write(2, 0, mib)
+	w.Lost = []entity.Extent{{Offset: 256 * kib, Length: 4 * kib}, {Offset: 768 * kib, Length: 4 * kib}}
+	f.exist(file, w)
+	got := f.get(file)
+	if got.Size != mib || got.Charged != mib-8*kib || got.Applied != w.Version {
+		t.Errorf("size %d, charged %d, applied %d; want size %d, charged %d, applied %d",
+			got.Size, got.Charged, got.Applied.Counter(), mib, mib-8*kib, w.Version.Counter())
+	}
+	bad := write(3, 0, mib)
+	bad.Lost = []entity.Extent{{Offset: 0, Length: 8 * kib}, {Offset: 4 * kib, Length: 8 * kib}}
+	if failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{{Share: f.share, File: file, Ops: []PendingOp{bad}}}, nil); err != nil || failed[file] == nil {
+		t.Errorf("overlapping lost runs: %v, %v; want the file refused", failed, err)
+	}
+}
+
 // marksOf reads journal j's every stored sync mark, by the stream its key
 // names.
 func (f *cfix) marksOf(j [16]byte) map[uint32]entity.SyncMark {
