@@ -158,11 +158,10 @@ func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
 	if _, err := r.streams.For(f).Append(h, format.RecordBody{Payload: []byte("r2"), MTime: 1}); err == nil {
 		t.Fatal("the append into the new segment was expected to fail")
 	}
-	// The failed seal ended the first segment, so r1 left the ledger for that
-	// segment's window and the new segment tracks nothing.
-	if n := r.ledgerLen(0); n != 0 {
-		t.Fatalf("the ledger holds %d entries, want none", n)
-	}
+	// The failed seal ended the first segment, so r1 leaves the ledger for
+	// that segment's window, which the worker takes after the seal returns,
+	// and the new segment tracks nothing.
+	eventually(t, "the ledger to hold no entry", func() bool { return r.ledgerLen(0) == 0 })
 
 	r.clock.Advance(core.SyncBound)
 	// A Sync waiter on r1 leads the same way the timer does; it ends at the
