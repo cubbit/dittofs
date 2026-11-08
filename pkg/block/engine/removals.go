@@ -256,6 +256,12 @@ func (e *Engine) count(err error) {
 func (e *Engine) phase2(r *removal) *loopItem {
 	share, v := r.b.share.ID, entity.JournalVersion(r.v.Bytes())
 	return &loopItem{b: r.b, f: r.f, kind: r.kind, run: func(ctx context.Context) answer {
+		// decision: one bound covers every batch Resume runs, as Resume
+		// answers neither per batch nor with progress. Each batch commits on
+		// its own, so a removal larger than the bound's worth of batches
+		// still finishes, from its cursor, but counts each bounded run as a
+		// failure: removal_stalled after five, though it advances. Bound
+		// each batch, or count a run that advanced, once Resume reports one.
 		ctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
 		defer cancel()
 		err := e.d.Content.Resume(ctx, share, r.f)

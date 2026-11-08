@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -648,7 +649,9 @@ func TestARemovalRefusedForAnOperationBelowItEnds(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
-	_ = u.e.Truncate(ctx, u.share.ID, f, 4)
+	if err := u.e.Truncate(ctx, u.share.ID, f, 4); !errors.Is(err, vfserr.ErrInvalid) {
+		t.Errorf("a truncate the store refuses: %v, want ErrInvalid, as a retry fails the same way", err)
+	}
 	eventually(t, "the refused removal releases the guard", func() bool { return !u.e.GuardHeld(f) })
 	if n := u.e.FileEntries(); n != 0 {
 		t.Errorf("%d entries left: the refused operations stayed pending", n)
@@ -706,5 +709,38 @@ func TestTheRemovalLoopsStoreCallsCarryTheRetryingOwnerMark(t *testing.T) {
 		if !m {
 			t.Errorf("the loop's Remove %d is not marked as a retrying owner's", i+1)
 		}
+	}
+}
+
+// goneRemove answers every Remove as the file being gone.
+type goneRemove struct{ engine.Existence }
+
+func (goneRemove) Remove(context.Context, entity.ShareID, entity.FileID, uint64, kvstore.RemoveOp, []kvstore.PendingOp) error {
+	return entity.ErrStale
+}
+
+// A release of a file already gone succeeds, whether it had writes pending
+// or not: the file is released already.
+func TestAReleaseOfAGoneFileSucceeds(t *testing.T) {
+	for _, pending := range []bool{false, true} {
+		t.Run(fmt.Sprint("pending writes ", pending), func(t *testing.T) {
+			u := newUnit(t, func(d *engine.Deps) { d.Existence = goneRemove{d.Existence} })
+			f := u.create(t, "a")
+			if pending {
+				u.write(t, f, 0, fill(8, 'a'))
+			}
+			if retry, err := u.e.Delete(t.Context(), u.share.ID, f); err != nil || retry != nil {
+				t.Errorf("a release of a gone file: %v, %v; want nil", retry, err)
+			}
+		})
+	}
+}
+
+// A deallocate of no byte on a share not bound is refused like any other,
+// not answered done before the binding is looked up.
+func TestAnEmptyDeallocateOnAnUnboundShareIsRefused(t *testing.T) {
+	u := newUnit(t)
+	if err := u.e.Deallocate(t.Context(), entity.NewShareID(), u.create(t, "a"), 0, 0); err == nil {
+		t.Error("an empty deallocate on a share not bound succeeded")
 	}
 }

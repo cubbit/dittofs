@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -48,6 +49,10 @@ func (e *Engine) guard(ctx context.Context, b *binding, f entity.FileID, kind en
 		}
 		fe = e.files.lockFor(f)
 	}
+	// decision: a release does not check the clones registered on the file,
+	// though RFC 8 §9.1 has a release wait for a clone of its file before
+	// the journal's Delete: no clone gets past its registration yet, so none
+	// can be reading the file. Check them here once a clone runs its copy.
 	if kind != entity.RemoveRelease {
 		for _, r := range fe.regs {
 			if r.dst || r.overlaps(x.off, x.end) {
@@ -148,15 +153,12 @@ func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID
 // it and phase 1 records the extent's merged hole at once, staging no zeros.
 // A zero length removes nothing.
 func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) error {
-	switch {
-	case off < 0 || n < 0 || n > entity.EndOfFile-off:
+	if off < 0 || n < 0 || n > entity.EndOfFile-off {
 		return vfserr.ErrInvalid
-	case n == 0:
-		return nil
 	}
 	b, err := e.bindingOf(s)
-	if err != nil {
-		return err
+	if err != nil || n == 0 {
+		return err // a share not bound refuses even an empty extent
 	}
 	r, err := e.guard(ctx, b, f, entity.RemoveDeallocate, extent{off, off + n})
 	if err != nil {
@@ -226,9 +228,12 @@ func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 		return nil, nil
 	case errors.Is(err, kvstore.ErrHeld):
 		return nil, e.abort(r)
+	case errors.Is(err, entity.ErrStale):
+		e.unstage(r, err)
+		return nil, nil // a file already gone is released already, its writes pending or not
 	case terminal(err):
 		e.unstage(r, err)
-		return nil, e.storeErr(err)
+		return nil, terminalErr(err)
 	}
 	ch := make(chan error, 1) // buffered: the loop never blocks on a caller gone
 	e.retryLater(r, op, func(err error) { ch <- err })
@@ -361,7 +366,7 @@ func (e *Engine) phase1(ctx context.Context, r *removal, op kvstore.RemoveOp) er
 		return nil
 	case terminal(err):
 		e.unstage(r, err)
-		return e.storeErr(err)
+		return terminalErr(err)
 	}
 	// decision: once the journal has removed the extent, a phase 1 the call
 	// cannot commit is not failed: the journal's loop retries it, keeping the
@@ -401,6 +406,16 @@ func (e *Engine) tryPhase1(ctx context.Context, r *removal, op kvstore.RemoveOp)
 // gone, or the removal refused as invalid.
 func terminal(err error) bool {
 	return errors.Is(err, entity.ErrStale) || kvstore.Refused(err)
+}
+
+// terminalErr answers a call whose phase 1 ended on err, terminal: the file
+// gone is stale, and a refusal, which unstage logged, is invalid rather than
+// unavailable, as retrying it fails the same way.
+func terminalErr(err error) error {
+	if errors.Is(err, entity.ErrStale) {
+		return fmt.Errorf("engine: removal: %v: %w", err, vfserr.ErrStale)
+	}
+	return fmt.Errorf("engine: removal refused: %v: %w", err, vfserr.ErrInvalid)
 }
 
 // unstage ends removal r whose phase 1 will not commit: its own pending
