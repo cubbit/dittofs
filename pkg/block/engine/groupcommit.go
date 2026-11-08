@@ -479,9 +479,7 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 	// woken in a loop.
 	g.broadcastLocked()
 	g.mu.Unlock()
-	for _, d := range dones {
-		d()
-	}
+	runAll(dones)
 }
 
 // widen backs the whole group commit off after a failure that blames no

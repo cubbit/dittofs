@@ -67,7 +67,6 @@ func TestCloneAdmission(t *testing.T) {
 	if err := u.e.Bind(t.Context(), u.share); err != nil {
 		t.Fatal(err)
 	}
-	u.e.SetAfterRegister(func() {}) // an admitted clone stops once registered
 	f, g := entity.NewFileID(), entity.NewFileID()
 	same := u.bindShare(t, "same", entity.NamespaceID{})
 	other := u.bindShare(t, "other", entity.NewNamespaceID())
@@ -203,10 +202,7 @@ func heldClone(t *testing.T, u *unit, src, dst entity.FileID) (release func()) {
 			<-hold
 		}
 	})
-	done := make(chan error, 1)
-	go func() {
-		done <- u.e.Clone(context.Background(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{SrcOff: 0, DstOff: 8 * mib, Len: 4 * mib})
-	}()
+	done := u.startClone(context.Background(), src, dst, vfserr.Extent{SrcOff: 0, DstOff: 8 * mib, Len: 4 * mib})
 	select {
 	case <-registered:
 	case err := <-done:
@@ -354,10 +350,7 @@ func TestARegistrationWaitsForAnAdmittedWrite(t *testing.T) {
 		}
 		sizes <- o.Size
 	})
-	done := make(chan error, 1)
-	go func() {
-		done <- u.e.Clone(context.Background(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: 4 * mib})
-	}()
+	done := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: 4 * mib})
 	select {
 	case s := <-sizes:
 		t.Fatalf("the registration returned with the admitted write unstaged (overlay size %d)", s)
@@ -383,12 +376,9 @@ func TestARegistrationCutShortLeavesNone(t *testing.T) {
 	src, dst := u.create(t, "src"), u.create(t, "dst")
 	open, staged := u.gateFirstWrite(t, g, src, 0)
 	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
 	var opened sync.Once
 	defer opened.Do(open)
-	go func() {
-		done <- u.e.Clone(ctx, u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: 4 * mib})
-	}()
+	done := u.startClone(ctx, src, dst, vfserr.Extent{Len: 4 * mib})
 	// Once a write into the source extent is refused, the registration is
 	// installed and waiting for the held write: only the cancel wakes it.
 	for {

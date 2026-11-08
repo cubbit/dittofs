@@ -101,6 +101,22 @@ func (fe *fileEntry) endStaging() {
 	}
 }
 
+// newer is the newer of two versions.
+func newer(a, b journal.Version) journal.Version {
+	if a.Compare(b) < 0 {
+		return b
+	}
+	return a
+}
+
+// runAll runs each of fs, in order: the Dones of operations that left an
+// entry, called once its lock is released.
+func runAll(fs []func()) {
+	for _, f := range fs {
+		f()
+	}
+}
+
 // fileShards is the count of shards the entry map is split into, each with
 // its own lock held only to look up, insert or remove.
 const fileShards = 64

@@ -207,7 +207,7 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		e.unregister(src, rs)
 		return err
 	}
-	if h := e.afterRegister; h != nil || !e.fakeCloneDone.Load() {
+	if !e.fakeCloneDone.Load() {
 		// A clone stops once registered while its hold on the source, its
 		// phase 2 and its done signal are not built, as nothing could answer
 		// one past its journal step: a test of admission alone runs its hook
@@ -216,7 +216,7 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		// decision: everything past this gate, step 1, the journal step, the
 		// copies and phase 1, runs only under the test's stand-in, never in a
 		// served engine. Withdraw it when the done signal is built.
-		if h != nil {
+		if h := e.afterRegister; h != nil {
 			h()
 		}
 		e.unregister(dst, rd)
@@ -225,8 +225,7 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	}
 	c := &cloneRun{sb: sb, db: db, src: src, dst: dst, rs: rs, rd: rd, done: make(chan struct{})}
 	if err := e.prepare(ctx, c, x); err != nil {
-		e.unregister(dst, rd)
-		e.unregister(src, rs)
+		e.endClone(c, err)
 		return err
 	}
 	go e.runClone(c)
@@ -317,9 +316,7 @@ func (e *Engine) size(ctx context.Context, c *cloneRun) (journal.Version, error)
 			n += h.Extent.Len
 		}
 		c.runs = append(c.runs, held...)
-		if asOf.Compare(at) < 0 {
-			asOf = at
-		}
+		asOf = newer(asOf, at)
 	}
 	if len(c.runs) > 0 {
 		res, err := c.db.h.Reserve(n, len(c.runs))
@@ -345,16 +342,19 @@ func (e *Engine) size(ctx context.Context, c *cloneRun) (journal.Version, error)
 func (e *Engine) runClone(c *cloneRun) {
 	ctx := c.db.gc.removals.ctx
 	r, err := e.begin(ctx, c.db, c.dst, entity.RemoveClone, c.rd.Extent)
-	if err != nil {
-		e.cloneFailed(c, err)
-		return
+	if err == nil {
+		dx := journal.Extent{Off: c.spec.DstOff, Len: c.spec.Len}
+		if _, err = e.stage(ctx, r, func(*fileEntry) (journal.Version, error) {
+			return c.db.h.CloneTarget(ctx, fileID(c.dst), c.spec)
+		}, opClone, dx, nil); err != nil {
+			e.release(r, false)
+		}
 	}
-	dx := journal.Extent{Off: c.spec.DstOff, Len: c.spec.Len}
-	if _, err := e.stage(ctx, r, func(*fileEntry) (journal.Version, error) {
-		return c.db.h.CloneTarget(ctx, fileID(c.dst), c.spec)
-	}, opClone, dx, nil); err != nil {
-		e.release(r, false)
-		e.cloneFailed(c, err)
+	if err != nil { // before the journal step: nothing changed
+		if errors.Is(err, context.Canceled) {
+			err = errLoopEnded
+		}
+		e.endClone(c, err)
 		return
 	}
 	if e.attempt(ctx, c, r) == itemRetry {
@@ -392,7 +392,7 @@ func (e *Engine) attempt(ctx context.Context, c *cloneRun, r *removal) answer {
 	err := e.tryClonePhase1(pctx, c, r)
 	switch {
 	case err == nil:
-		e.cloned(c)
+		e.endClone(c, nil)
 		return itemDone
 	case errors.Is(err, entity.ErrStale):
 		// The store answers stale for either file gone; only the
@@ -433,9 +433,7 @@ func (e *Engine) copyAll(ctx context.Context, c *cloneRun) error {
 		}
 		c.res = nil
 	}
-	if c.newest.Compare(newest) < 0 {
-		c.newest = newest // a failed attempt's copies are committed too, by the one that succeeds
-	}
+	c.newest = newer(c.newest, newest) // a failed attempt's copies are committed too, by the one that succeeds
 	return err
 }
 
@@ -477,9 +475,7 @@ func (e *Engine) copyRuns(ctx context.Context, c *cloneRun) (journal.Version, er
 			fe.insert(pendingOp{version: v, kind: opWrite, extent: journal.Extent{Off: off, Len: h.Extent.Len},
 				at: now, setsMtime: true, copy: true})
 			e.files.unlock(c.dst, fe)
-			if newest.Compare(v) < 0 {
-				newest = v
-			}
+			newest = newer(newest, v)
 		}
 	}
 	return newest, nil
@@ -508,13 +504,9 @@ func (e *Engine) tryClonePhase1(ctx context.Context, c *cloneRun, r *removal) er
 		return err
 	}
 	dones := e.committed(r)
-	if r.through.Compare(c.newest) < 0 {
-		r.through = c.newest
-	}
+	r.through = newer(r.through, c.newest)
 	e.release(r, true)
-	for _, d := range dones {
-		d()
-	}
+	runAll(dones)
 	return nil
 }
 
@@ -536,9 +528,7 @@ func (e *Engine) claimAll(ctx context.Context, r *removal) error {
 		op := &fe.ops[i]
 		if !op.dropped && !op.copy && op.version != r.v {
 			op.claimed = true
-			if r.through.Compare(op.version) < 0 {
-				r.through = op.version
-			}
+			r.through = newer(r.through, op.version)
 		}
 	}
 	return nil
@@ -567,15 +557,6 @@ func (e *Engine) retryClone(c *cloneRun, r *removal) {
 	})
 }
 
-// cloned is the clone after its phase 1. Its hold on the source, its phase 2
-// and its done signal are not built: a test's stand-in drops the
-// registrations and raises the done signal.
-func (e *Engine) cloned(c *cloneRun) {
-	e.unregister(c.dst, c.rd)
-	e.unregister(c.src, c.rs)
-	close(c.done)
-}
-
 // cloneEnded ends a clone whose phase 1 will not commit: the destination
 // gone, err its store error, or its loop ended first, err nil. A destination
 // gone loses the clone's copies with its own operation: committed as writes,
@@ -588,37 +569,28 @@ func (e *Engine) cloned(c *cloneRun) {
 // short phase 1 is left (RFC 8 §2.5 step 2). Both registrations go, and the
 // call answers why.
 func (e *Engine) cloneEnded(c *cloneRun, r *removal, err error) {
+	if err == nil {
+		e.endClone(c, errLoopEnded)
+		return
+	}
+	fe := e.files.lockFor(c.dst)
+	fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool { return op.copy })
+	e.files.unlock(c.dst, fe)
+	e.unstage(r, err)
+	e.endClone(c, e.storeErr(err))
+}
+
+// endClone ends c, answering err: its reservation, when one is held, is
+// given back and both registrations go. A clone past its phase 1 ends with
+// a nil err: its hold on the source, its phase 2 and its done signal are not
+// built, and a test's stand-in ends it there.
+func (e *Engine) endClone(c *cloneRun, err error) {
 	if c.res != nil {
 		_ = c.res.Close()
 		c.res = nil
 	}
-	if err != nil {
-		fe := e.files.lockFor(c.dst)
-		fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool { return op.copy })
-		e.files.unlock(c.dst, fe)
-		e.unstage(r, err)
-	}
 	e.unregister(c.dst, c.rd)
 	e.unregister(c.src, c.rs)
-	if err != nil {
-		c.err = e.storeErr(err)
-	} else {
-		c.err = errLoopEnded
-	}
-	close(c.done)
-}
-
-// cloneFailed fails a clone before its journal step: nothing changed, the
-// reservation is given back and both registrations go.
-func (e *Engine) cloneFailed(c *cloneRun, err error) {
-	if c.res != nil {
-		_ = c.res.Close()
-	}
-	e.unregister(c.dst, c.rd)
-	e.unregister(c.src, c.rs)
-	if errors.Is(err, context.Canceled) {
-		err = errLoopEnded
-	}
 	c.err = err
 	close(c.done)
 }

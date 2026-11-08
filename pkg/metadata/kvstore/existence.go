@@ -328,49 +328,6 @@ func newExistState(tx kv.Txn, p PendingExistence, f entity.File, fenced bool) (*
 		dirtyH: map[int64]bool{}, dirtyO: map[int64]bool{}}, nil
 }
 
-// applyAll applies p's operations, in its version order, and writes the
-// result. With skip false it applies each whatever the file's applied, for
-// operations a caller knows are not yet recorded though applied is above
-// them; with skip true it skips those at or below applied, as a commit
-// does, and writes nothing when none is left.
-func applyAll(tx kv.Txn, p PendingExistence, skip bool) error {
-	fenced, err := existenceFence(tx, p)
-	if err != nil {
-		return err
-	}
-	f, err := fileIn(tx, p.Share, p.File)
-	if err != nil {
-		return err
-	}
-	st, err := newExistState(tx, p, f, fenced)
-	if err != nil {
-		return err
-	}
-	applied := 0
-	for i, op := range p.Ops {
-		if i > 0 && !p.Ops[i-1].Version.Less(op.Version) {
-			return merrs.NewInvalidArgumentError("operations not in version order")
-		}
-		if skip && !st.f.Applied.Less(op.Version) {
-			continue
-		}
-		applied++
-		if _, err := st.bound(op); err != nil { // loads the records op touches
-			return err
-		}
-		if err := st.apply(op); err != nil {
-			if ff, ok := err.(fileFailure); ok {
-				return ff.err
-			}
-			return err
-		}
-	}
-	if applied == 0 {
-		return nil
-	}
-	return st.flush()
-}
-
 // existenceFence reads the file's existence fence, tracked, reporting
 // whether the file has one; the commit writes it at its epoch when not. On a
 // single node its epoch is not compared.

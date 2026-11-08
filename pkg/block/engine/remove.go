@@ -144,11 +144,7 @@ func (e *Engine) release(r *removal, settle bool) {
 	}
 	e.files.unlock(r.f, fe)
 	if settle {
-		v := r.v
-		if v.Compare(r.through) < 0 {
-			v = r.through
-		}
-		r.b.h.Settle(fileID(r.f), v)
+		r.b.h.Settle(fileID(r.f), newer(r.v, r.through))
 	}
 	if !oldest.IsZero() && !r.b.gc.removals.isDropped(r.b.share.ID) {
 		_ = r.b.gc.note(r.b, r.f, oldest) // refused only once closed or lost, when nothing commits
@@ -350,9 +346,7 @@ func (e *Engine) abort(r *removal) error {
 	l.mu.Unlock()
 	e.d.Logger.Error("a release was aborted by a holder: the file's content is lost", "file", r.f)
 	e.release(r, true)
-	for _, d := range dones {
-		d()
-	}
+	runAll(dones)
 	return vfserr.ErrFileOpen
 }
 
@@ -457,9 +451,7 @@ func (e *Engine) tryPhase1(ctx context.Context, r *removal, op kvstore.RemoveOp)
 	}
 	dones := e.committed(r)
 	e.finish(r)
-	for _, d := range dones {
-		d()
-	}
+	runAll(dones)
 	return nil
 }
 
@@ -536,9 +528,7 @@ func (e *Engine) commitBelow(ctx context.Context, r *removal) bool {
 	case err == nil:
 		dones := e.committed(r)
 		e.release(r, true)
-		for _, d := range dones {
-			d()
-		}
+		runAll(dones)
 		return true
 	case errors.Is(err, entity.ErrStale):
 		e.unclaim(r)
@@ -551,9 +541,7 @@ func (e *Engine) commitBelow(ctx context.Context, r *removal) bool {
 		e.d.Logger.Error("pending operations below a removal refused by the store, dropped as lost", "file", r.f, "kind", r.kind.String(), "err", err)
 		dones := e.dropClaimed(r)
 		e.release(r, true)
-		for _, d := range dones {
-			d()
-		}
+		runAll(dones)
 		return true
 	}
 	e.unclaim(r)

@@ -24,12 +24,14 @@ import (
 // log of its Settles, each with whether the file's guard was held then.
 type hookedHandle struct {
 	engine.Handle
-	e        *engine.Engine
-	truncate func() // run inside Truncate, after the journal's removal
-	settle   func() // run inside Settle, before the journal's
-	writes   atomic.Int32
-	mu       sync.Mutex
-	settles  []settled
+	e           *engine.Engine
+	truncate    func() // run inside Truncate, after the journal's removal
+	settle      func() // run inside Settle, before the journal's
+	cloneTarget armed  // run inside CloneTarget, after the journal's, once set
+	writes      atomic.Int32
+	deletes     atomic.Int32
+	mu          sync.Mutex
+	settles     []settled
 }
 
 type settled struct {
@@ -44,6 +46,17 @@ func (h *hookedHandle) Truncate(ctx context.Context, id journal.FileID, size int
 		h.truncate()
 	}
 	return v, err
+}
+
+func (h *hookedHandle) CloneTarget(ctx context.Context, id journal.FileID, spec journal.CloneSpec) (journal.Version, error) {
+	v, err := h.Handle.CloneTarget(ctx, id, spec)
+	h.cloneTarget.run()
+	return v, err
+}
+
+func (h *hookedHandle) Delete(ctx context.Context, id journal.FileID) (journal.Version, error) {
+	h.deletes.Add(1)
+	return h.Handle.Delete(ctx, id)
 }
 
 func (h *hookedHandle) WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error) {
