@@ -320,7 +320,7 @@ func (e *Engine) stage(ctx context.Context, r *removal, j func(*fileEntry) (jour
 		return false, e.journalErr(err)
 	}
 	r.v = v
-	fe.insert(pendingOp{version: v, kind: kind, extent: x, at: r.at, grow: g})
+	fe.insert(pendingOp{version: v, kind: kind, extent: x, at: r.at, grow: g, setsMtime: g}) // a size change moves mtime, up as down
 	return g, nil
 }
 

@@ -299,8 +299,12 @@ func TestATruncateIntoARegistrationIsDelayClone(t *testing.T) {
 func TestATruncateUpIsAGrow(t *testing.T) {
 	x := &removing{}
 	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
-	f := u.create(t, "a")
+	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
+	f := made.ID
+	u.clock.Advance(time.Since(u.clock.Now()) + time.Hour) // past the store's own time of the create
 	u.write(t, f, 0, fill(4, 'a'))
+	u.clock.Advance(time.Minute)
+	at := u.clock.Now()
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 100); err != nil {
 		t.Fatal(err)
 	}
@@ -312,6 +316,15 @@ func TestATruncateUpIsAGrow(t *testing.T) {
 	}
 	if n := u.size(t, f); n != 100 {
 		t.Errorf("size %d, want 100", n)
+	}
+	// POSIX ftruncate moves both times whenever the size changes, up as well
+	// as down.
+	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Modify.Equal(at) || !got.Change.Equal(at) {
+		t.Errorf("modify %v, change %v; want both the truncate's %v", got.Modify, got.Change, at)
 	}
 }
 
