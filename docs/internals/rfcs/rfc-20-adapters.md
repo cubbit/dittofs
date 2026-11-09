@@ -1853,7 +1853,7 @@ err = reserveReply(ctx, inv.Bound()) // RFC 24 §3.3
 err = inv.Resolve(r)
 role := roleOf(op, inv, r) // inv.Role(r), or op.Role where nil
 if err == nil && expired(r) && !op.Expired && role != RoleRelease { err = ErrExpired } // §4.4
-if err == nil && draining && role == RoleNone { err = drainErr } // §3.1: ErrMoved or ErrDraining
+if err == nil && draining && role == RoleNone { err = drainErr } // §3.1: ErrMoved or ErrDraining; never per operation in a single-reply compound (below)
 if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve when tbl.Holds
 st, send := tbl.Errors.Map(err, op, h.Version())
 if !send { if tbl.Holds { conn.write(interim(h, true)) }; freeReply(); return } // a NoReply row: no final reply; where the table holds (SMB) an interim grants the request's credits back (HoldCodec.Interim)
@@ -1901,16 +1901,28 @@ An NFSv4 `COMPOUND` has one reply, and a results array cut short under
 `NFS4_OK` is malformed (RFC 8881 §16.2.3), so a `NoReply` refusal in it leaves
 the whole RPC unanswered. **While draining, the runner judges a single-reply
 compound whole, before any operation runs**: it decodes every operation and
-takes each one's role — `Op.Role`, or `Invocation.Role` over its decoded
-arguments and the state its stateids name — and if any would be refused with
-a `NoReply` row, it answers nothing and runs nothing. No operation is applied,
+takes each one's role from the operation and its own arguments alone, never
+from state an earlier operation in the compound would set — `Op.Role`, or
+`Invocation.Role` over its decoded arguments and the state an explicit
+stateid among them names as the compound arrives. An operation naming the
+current stateid takes `Op.Role`, as does any whose role would turn on the
+current filehandle: a `CLOSE`, an unlock or a `DELEGRETURN` is a release
+whatever it names, and a `WRITE` or `LOCK` that flushes only under a
+delegation or a recall is refused, and sent again once the client has moved.
+If any would be refused with a `NoReply` row, it answers nothing and runs
+nothing. No operation is applied,
 and the NFSv4.1 slot keeps its previous sequence ID and reply, so a
 retransmission on the same slot and sequence ID runs again, is never answered
 `NFS4ERR_RETRY_UNCACHED_REP`, and never repeats a `CLOSE` an earlier attempt
 applied. Any other compound runs as usual and is answered, an error included:
 one whose refusal has a reply (`NFS4ERR_MOVED`) runs to it and is answered
-there. Its operations are not judged again as they run. An operation that does
-not decode counts as refused with a `NoReply` row.
+there. The runner reads whether it is draining once per single-reply
+compound, before its first operation, and its operations are not judged again
+as they run: a compound that began while serving runs whole. Judged per
+operation, a drain starting between its `CLOSE` and its `READ` would apply the
+`CLOSE` and leave the reply unsent, with the slot unchanged, so the
+retransmission would meet `NFS4ERR_BAD_STATEID`. An operation that does not
+decode counts as refused with a `NoReply` row.
 
 > decision: `Pends` is asked only for an `ErrDelay` the service returned. A
 > call still in the service can apply after any answer, so answering it at

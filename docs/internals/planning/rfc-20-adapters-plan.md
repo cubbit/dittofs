@@ -156,7 +156,7 @@ what those tests stand on:
   at a member it refuses with an interim that grants its credits and the later members', and no final,
   while a member before it that went pending still gets its final reply, and judges a single-reply compound whole before
   any member runs, leaving one with a refused member unanswered with nothing applied (a release before the refused member
-  included), nothing cached and the slot's sequence ID where it was, and running one whose every member is served; a cancel or a drain racing a grant (§4.7's `Park`); a member before the last
+  included), nothing cached and the slot's sequence ID where it was, and running one whose every member is served, or that began before the drain, whole; a cancel or a drain racing a grant (§4.7's `Park`); a member before the last
   answered `ErrDelay` (§4.7's `Pends`); a call the interim timer finds in the service past the
   ceiling, and one past the floor with the hold pool full, each read on the credit balance (§4.6); `Park` with the reply pool
   full (§4.7's `Park`); an expired credential refusing a lock and a write under a break and
@@ -556,7 +556,7 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   joined with `HeaderCodec.Chain`, a related member routed from the one before it; the drain
   decision per request through `Invocation.Role`, and a member the drain refuses stopping the
   chain, the members before it answered in a chain with the refused member's interim, and a single-reply compound
-  judged whole before any member runs: one with a refused member runs nothing, answers and caches nothing, and keeps its
+  judged whole before any member runs, by each member's operation and own arguments, never the current stateid or filehandle, with the drain read once and no per-member check: one with a refused member runs nothing, answers and caches nothing, and keeps its
   slot's previous sequence ID so a retransmission runs (RFC 20 §4.7); on `testproto`'s chained frames, not on the runner's
   internals alone.
 - T5.5 Held requests: interim timer and `HoldCodec.Interim`, the final reply under

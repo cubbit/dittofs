@@ -492,6 +492,7 @@ flight.
   pipe for the next `READ`, as a `READ` that does not park does. A parked
   pipe `READ` of more than 4 KiB is a test row (§16.6).
 - **A connection puts at most 511 requests pending**, held and parked together,
+  a drain's refusals aside,
   one fewer than the credit target, as `MaxAsyncCredits` minus one bounds them
   today; past it a new one is answered `STATUS_INSUFFICIENT_RESOURCES` at once.
   A call still in the service when its interim goes out is never refused, by
@@ -2507,7 +2508,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrCross` (`CrossNamespace`) — a copy or clone between shares in different namespaces (§10) | `STATUS_NOT_SUPPORTED` at once; the client copies the bytes itself |
 | `ErrLost` on `FLUSH` — a loss of the file's acknowledged writes since this open last flushed (§9.4) | `STATUS_UNEXPECTED_IO_ERROR`, once per open |
 | `ErrState` (`NoReclaim`) — a reconnect whose open is gone, an administrator's revoke included ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)) | `STATUS_OBJECT_NAME_NOT_FOUND` (§6.4) |
-| `ErrState` (`NoGrace`) — a reclaim the shard no longer takes ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | not met: SMB reclaims only by `Reconnect`, which is never refused `NoGrace`; were it met, `STATUS_OBJECT_NAME_NOT_FOUND` as for `NoReclaim` |
+| `ErrState` (`NoGrace`) — a reclaim from a client with nothing left to reclaim ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | not met: SMB reclaims only by `Reconnect`, which is never refused `NoGrace`; were it met, `STATUS_OBJECT_NAME_NOT_FOUND` as for `NoReclaim` |
 | `ErrState` (`ReclaimConflict`) — a reclaim that conflicts with one already reclaimed in the same grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | not met: a reconnect reclaims a persistent open its durable record holds, which no other reclaim can hold; were it met, `STATUS_OBJECT_NAME_NOT_FOUND` as for `NoReclaim` |
 | `ErrState` (`StaleState`) — a FileId whose open was lost with its shard's open state ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_FILE_CLOSED` |
 | `ErrState` (`Revoked`) — a FileId whose open an administrator revoked, its client kept ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_FILE_CLOSED`: SMB has no revoked status, and the client reopens. Once it has so answered a FileId, the adapter calls `FreeState` for it ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)), as SMB has no `FREE_STATEID`; a later use is `ErrState` (`BadState`) |

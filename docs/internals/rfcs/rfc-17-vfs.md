@@ -1381,8 +1381,8 @@ moved share's, never issued), `NoReclaim` (one reclaim refused while its
 client still owes reclaims: a shard the client's record does not list, or state
 the shard does not hold; or a reconnect whose open is gone),
 `NoGrace` (a reclaim from a client with nothing left to reclaim: no shard its
-record lists is in a grace instance it has not finished, or the reclaim's shard
-is in one it has, an administrator's revoke having emptied its list included,
+record lists is in a grace instance it has not finished, an administrator's
+revoke having emptied its list included,
 [RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)),
 `ReclaimConflict` (a reclaim that conflicts with one already reclaimed in the
 same grace), `LocksHeld` (a lock owner released, or a lock state freed, while
