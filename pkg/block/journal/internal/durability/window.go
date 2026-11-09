@@ -65,7 +65,10 @@ type window struct {
 	// record, or by Corrupt before it answers the window's failure for a
 	// record it took out. Either raise is the window's one. A read-only
 	// journal raises once for its entry instead (raiseOnce), whatever the
-	// window says.
+	// window says, so both can land for one window there: a spare raise,
+	// an extra one and never a missing one, which only makes a client
+	// resend. Overturned if that costs something; takeCorrupt would then
+	// call the entry's raiseOnce when Admit() != nil to share one raise.
 	raised bool
 }
 

@@ -95,7 +95,13 @@ type CorruptOutcome struct {
 // whatever the pieces, when it answers a failed window's report for the record
 // (a mark, or a report owed to a window not yet taken), since a failed window
 // raises before any Sync it fails returns. A record in a pending window shares
-// the window's one raise with the worker's failure of it (window.raised). A
+// the window's one raise with the worker's failure of it (window.raised). In a
+// read-only journal that window raise and the read-only entry's raiseOnce can
+// both land for the same window, as a spare raise: an extra raise, never a
+// missing one, since a raise only makes a client resend and the generation
+// must be raised before any Sync it fails returns. Overturned if a spare raise
+// is ruled to cost something; takeCorrupt would then call the entry's
+// raiseOnce when Admit() != nil, so the two share one raise. A
 // record the index no longer names, overwritten or already dropped, raises
 // nothing outside a failed window.
 //
@@ -343,6 +349,16 @@ func (st *stream) takeCorrupt(c Corruption, dirty bool) (synced, lost bool) {
 			// once it has left the window. A read-only journal fails every
 			// window's records with its refusal (failReadOnly), so the record
 			// is reported with it too.
+			//
+			// decision: the error reported for a window's file can differ by
+			// when the mark lands. A failWindow that started before the
+			// journal turned read-only, or an owed mark that takeWindow
+			// turns into a mark after the entry, reports the segment's own
+			// error, while Corrupt after the entry reports the read-only
+			// refusal. For one file and window the first mark wins
+			// (markLocked), and every outcome is a *core.SyncError with the
+			// generation already raised, so only the wrapped error differs.
+			// Overturned if a caller must tell the two apart.
 			err := w.err
 			if ro := st.d.Admit(); ro != nil {
 				err = ro

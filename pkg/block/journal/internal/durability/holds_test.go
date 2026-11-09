@@ -625,9 +625,10 @@ func TestReadOnlyCopyStaysPut(t *testing.T) {
 	})
 	rs := cr.reappendTogether(t, file(1), file(2))
 	cr.register(rs...)
-	// The records the copies serve for are synced before the copies are
-	// registered, so the read-only pass, which fails what no sync covered,
-	// leaves them.
+	// Registering the copies is in memory only; what matters is that the
+	// records they serve for are synced before the journal enters read-only,
+	// because the read-only pass fails every unsynced record and leaves a
+	// synced one.
 	if err := cr.d.Sync(context.Background(), file(1), file(2)); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}

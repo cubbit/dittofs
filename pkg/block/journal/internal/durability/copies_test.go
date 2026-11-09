@@ -235,8 +235,9 @@ func TestCorruptCopyVerifyingInReadOnly(t *testing.T) {
 	f := file(1)
 	r := cr.reappend(t, f, 0, "aaaa")
 	cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
-	// The record a copy serves for is synced before the copy is registered, so
-	// the read-only pass, which fails what no sync covered, leaves it.
+	// Registering the copy is in memory only; what matters is that the record
+	// it serves for is synced before the journal enters read-only, because
+	// the read-only pass fails every unsynced record and leaves a synced one.
 	if err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
