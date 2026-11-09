@@ -6,6 +6,7 @@ import (
 	"errors"
 	"runtime"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -35,6 +36,16 @@ func within[T any](t *testing.T, ch <-chan T, what string) T {
 	}
 	var zero T
 	return zero
+}
+
+// releaser returns a function that closes ch once, and registers it to run
+// when the test ends, so a test that fails while a hook waits on ch leaves no
+// write or read parked for the core's cleanup to wait on.
+func releaser(t *testing.T, ch chan struct{}) func() {
+	var once sync.Once
+	release := func() { once.Do(func() { close(ch) }) }
+	t.Cleanup(release)
+	return release
 }
 
 // readResult is everything one ReadAt returned.
@@ -158,82 +169,93 @@ func TestReadRacingSegmentRetirement(t *testing.T) {
 	data := pattern(4<<10, 21)
 	f := testFile(1)
 
-	// The read reads a record's header and then its body, each through its
-	// own segment reference. Its body read holds its reference while that
-	// read is held at storage, and the retirement waits for it before it
-	// unlinks: the read serves the record, from storage not yet freed.
-	t.Run("retired while the body read holds its reference", func(t *testing.T) {
-		c, seam := newTestCore(t)
+	// The read reads a record's header and then its body through one segment
+	// reference. With either read held at storage, the retirement's drain
+	// begins behind that reference and waits for it before it unlinks: the
+	// read serves the record, from storage not yet freed, and the body read
+	// that follows a held header read is not refused by the drain begun before
+	// it.
+	for _, held := range []struct {
+		name string
+		nth  int // the read of the segment held: 1 the header's, 2 the body's
+	}{{"header", 1}, {"body", 2}} {
+		t.Run("retired while the "+held.name+" read holds the reference", func(t *testing.T) {
+			c, seam := newTestCore(t)
+			s := mustShare(t, c, 1)
+			orig := sealedRecord(t, c, s, f, data)
+			name := format.SegmentName(orig.Record.Segment)
+
+			hold := seam.HoldFirst(t, kit.OpRead, name)
+			p := sentinels(len(data))
+			read := readAsync(c, s, f, 0, p)
+			within(t, hold.Reached(), "the read's header read")
+			if held.nth == 2 {
+				// The header read already passed the hold it matched, so the
+				// next read of the segment, the body's, is the one this stops.
+				body := seam.HoldFirst(t, kit.OpRead, name)
+				hold.Release()
+				within(t, body.Reached(), "the read's body read")
+				hold = body
+			}
+
+			retired := make(chan error, 1)
+			go func() {
+				_, err := newRetirer(c, seam).Retire(orig.Record.Segment, segment.NotHeld)
+				retired <- err
+			}()
+			waitDraining(t, c, orig.Record.Segment)
+			if n := seam.CallsFor(kit.OpRemove, name); n != 0 {
+				t.Fatalf("the segment was unlinked %d times while a read held a reference to it", n)
+			}
+			select {
+			case err := <-retired:
+				t.Fatalf("the retirement returned (%v) while a read held a reference to its segment", err)
+			default:
+			}
+
+			hold.Release()
+			served(t, within(t, read, "the held read"), p, data, orig.Version)
+			if err := within(t, retired, "the retirement"); err != nil {
+				t.Fatalf("Retire: %v", err)
+			}
+			if seam.CallsFor(kit.OpRemove, name) == 0 {
+				t.Fatal("the retirement did not unlink the segment")
+			}
+		})
+	}
+
+	// The read is held after its resolve and before it takes its reference,
+	// while the retirement runs to its end beside it: the read then finds the
+	// segment gone. It either serves the record or reports the extent missing
+	// with p untouched; with the index still naming the gone segment, its one
+	// further resolve finds it gone too, so it reports the extent missing.
+	t.Run("retired before the read takes its reference", func(t *testing.T) {
+		parked, resume := make(chan struct{}), make(chan struct{})
+		var armed atomic.Bool
+		c, seam := newTestCore(t, func(o *coreOptions) {
+			o.beforeRead = func() {
+				if armed.CompareAndSwap(true, false) {
+					close(parked)
+					<-resume
+				}
+			}
+		})
+		release := releaser(t, resume)
 		s := mustShare(t, c, 1)
 		orig := sealedRecord(t, c, s, f, data)
-		name := format.SegmentName(orig.Record.Segment)
 
-		header := seam.HoldFirst(t, kit.OpRead, name)
+		armed.Store(true)
 		p := sentinels(len(data))
 		read := readAsync(c, s, f, 0, p)
-		within(t, header.Reached(), "the read's header read")
-		// The header read already passed the hold it matched, so the next read
-		// of the segment, the body's, is the one this hold stops.
-		body := seam.HoldFirst(t, kit.OpRead, name)
-		header.Release()
-		within(t, body.Reached(), "the read's body read")
+		within(t, parked, "the read up to its storage reads")
+		retire(t, c, seam, orig.Record.Segment)
+		release()
 
-		retired := make(chan error, 1)
-		go func() {
-			_, err := newRetirer(c, seam).Retire(orig.Record.Segment, segment.NotHeld)
-			retired <- err
-		}()
-		waitDraining(t, c, orig.Record.Segment)
-		if n := seam.CallsFor(kit.OpRemove, name); n != 0 {
-			t.Fatalf("the segment was unlinked %d times while a read held a reference to it", n)
+		r := within(t, read, "the read")
+		if r.err == nil && r.n == len(data) && bytes.Equal(p, data) {
+			return
 		}
-		select {
-		case err := <-retired:
-			t.Fatalf("the retirement returned (%v) while a read held a reference to its segment", err)
-		default:
-		}
-
-		body.Release()
-		served(t, within(t, read, "the held read"), p, data, orig.Version)
-		if err := within(t, retired, "the retirement"); err != nil {
-			t.Fatalf("Retire: %v", err)
-		}
-		if seam.CallsFor(kit.OpRemove, name) == 0 {
-			t.Fatal("the retirement did not unlink the segment")
-		}
-	})
-
-	// The header read holds its reference while it is held, and the
-	// retirement's drain begins behind it. The body read that follows takes a
-	// new reference and finds the segment gone; the index still names it, so
-	// the one further resolve finds it gone too and the read reports the
-	// extent missing, with p untouched.
-	t.Run("retired between the header read and the body read", func(t *testing.T) {
-		c, seam := newTestCore(t)
-		s := mustShare(t, c, 1)
-		orig := sealedRecord(t, c, s, f, data)
-		name := format.SegmentName(orig.Record.Segment)
-
-		header := seam.HoldFirst(t, kit.OpRead, name)
-		p := sentinels(len(data))
-		read := readAsync(c, s, f, 0, p)
-		within(t, header.Reached(), "the read's header read")
-
-		retired := make(chan error, 1)
-		go func() {
-			_, err := newRetirer(c, seam).Retire(orig.Record.Segment, segment.NotHeld)
-			retired <- err
-		}()
-		waitDraining(t, c, orig.Record.Segment)
-		if n := seam.CallsFor(kit.OpRemove, name); n != 0 {
-			t.Fatalf("the segment was unlinked %d times while a read held a reference to it", n)
-		}
-
-		header.Release()
-		servedNothing(t, within(t, read, "the held read"), p, []core.Extent{{Off: 0, Len: int64(len(data))}})
-		if err := within(t, retired, "the retirement"); err != nil {
-			t.Fatalf("Retire: %v", err)
-		}
+		servedNothing(t, r, p, []core.Extent{{Off: 0, Len: int64(len(data))}})
 	})
 
 	// readRetired builds a core whose read, once it resolved f's span, runs

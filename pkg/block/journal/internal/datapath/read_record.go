@@ -47,14 +47,24 @@ const (
 // changes nothing. A segment that is gone comes back as an error matching
 // segment.ErrSegmentGone or fs.ErrNotExist, which segmentGone tells apart.
 //
-// Each call is one or two reads, each taking and dropping its own segment
-// reference, so nothing is held when it returns.
+// Each call takes one segment reference, makes its one or two reads through
+// it and releases it, so nothing is held when it returns: a retirement of the
+// segment that begins while the record is read waits for the reference, and
+// one that began before finds the read refused with segment.ErrSegmentGone.
 func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileID, at index.RecordAt, pieces []index.Placed) (payload []byte, h format.RecordHeader, verdict recordVerdict, err error) {
 	if err = ctx.Err(); err != nil {
 		return nil, format.RecordHeader{}, 0, err
 	}
+	ref, err := st.AcquireRead(at.Segment)
+	if err != nil {
+		return nil, format.RecordHeader{}, 0, fmt.Errorf("datapath: reading the record at segment %d offset %d: %w", at.Segment, at.Offset, err)
+	}
+	// The one reference is released before readRecord returns, so before the
+	// caller hands a record that fails a check to Corrupt, whose append domain
+	// ranks above the storage guard.
+	defer ref.Release()
 	hb := make([]byte, format.RecordHeaderSize)
-	if err = readFull(st, at.Segment, hb, int64(at.Offset)); err != nil {
+	if err = readFull(ref, at.Segment, hb, int64(at.Offset)); err != nil {
 		return nil, format.RecordHeader{}, 0, err
 	}
 	identity := st.Identity()
@@ -66,7 +76,7 @@ func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileI
 		return nil, h, recordMismatch, nil
 	}
 	body := make([]byte, h.BodySize())
-	if err = readFull(st, at.Segment, body, int64(at.Offset)+format.RecordHeaderSize); err != nil {
+	if err = readFull(ref, at.Segment, body, int64(at.Offset)+format.RecordHeaderSize); err != nil {
 		return nil, format.RecordHeader{}, 0, err
 	}
 	rb, verr := format.VerifyRecordBody(body, identity, h)
@@ -96,11 +106,11 @@ func headerMatches(h format.RecordHeader, id core.FileID, pieces []index.Placed)
 	return true
 }
 
-// readFull reads len(b) bytes of seg at off through st. A read that fills b
-// and also reports io.EOF read every byte asked for; a read that does not fill
-// b is an io.ErrUnexpectedEOF.
-func readFull(st *segment.Stream, seg core.SegmentID, b []byte, off int64) error {
-	n, err := st.ReadAt(seg, b, off)
+// readFull reads len(b) bytes of seg at off through ref, a reference to seg.
+// A read that fills b and also reports io.EOF read every byte asked for; a
+// read that does not fill b is an io.ErrUnexpectedEOF.
+func readFull(ref segment.Ref, seg core.SegmentID, b []byte, off int64) error {
+	n, err := ref.ReadAt(b, off)
 	if n == len(b) && errors.Is(err, io.EOF) {
 		err = nil
 	}
