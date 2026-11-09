@@ -871,11 +871,6 @@ func withRetryingOwner(ctx context.Context) context.Context {
 }
 
 // isRetryingOwner reports whether ctx carries the retrying-owner mark.
-//
-// decision: only tests read the mark until the self-fence that counts by it
-// is built; it lands here with its first setter so that every store call the
-// group commit retries carries it from the start. Remove it if the
-// self-fence comes to count failures some other way.
 func isRetryingOwner(ctx context.Context) bool {
 	marked, _ := ctx.Value(retryingOwner{}).(bool)
 	return marked

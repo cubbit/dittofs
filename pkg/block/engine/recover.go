@@ -475,10 +475,9 @@ func (u *undo) unwind(err error) error {
 
 // The version limit while the journal serves (RFC 8 §2.7).
 const (
-	rateWindow          = 60               // the seconds the peak version rate looks back over
-	fenceAfter          = 30 * time.Second // the self-fence's window (RFC 8 §11.2)
-	triggerSampling     = time.Second      // the trigger's own sampling
-	defaultExistenceAge = time.Second      // RFC 13's proposed existence_age, with no settings
+	rateWindow          = 60          // the seconds the peak version rate looks back over
+	triggerSampling     = time.Second // the trigger's own sampling
+	defaultExistenceAge = time.Second // RFC 13's proposed existence_age, with no settings
 	retryFirst          = 10 * time.Millisecond
 	retryMost           = time.Second
 )

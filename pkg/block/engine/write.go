@@ -18,9 +18,13 @@ import (
 // f's entry before Write answers, so a read that starts after reflects it. A
 // zero-length write stages nothing and calls o.Done once; a refused one never
 // calls it. A range below zero or past the largest offset is ErrInvalid.
+// While the self-fence holds it answers ErrDelay with DelayCommit.
 func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, off int64, p []byte, o WriteOpts) (vfserr.Verifier, error) {
 	if off < 0 || int64(len(p)) > math.MaxInt64-off {
 		return vfserr.Verifier{}, vfserr.ErrInvalid
+	}
+	if err := e.fence.gate(); err != nil {
+		return vfserr.Verifier{}, err
 	}
 	b, err := e.bindingOf(s)
 	if err != nil {
