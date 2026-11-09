@@ -90,9 +90,9 @@ func (ix *Index) FileEntries(id core.FileID) []Entry { return ix.fs.inspect(id) 
 
 // AsOf returns the change version a read of id reports.
 //
-// decision: exported ahead of its caller, for the datapath tests that observe
-// the bucket raise of RaiseFloor. It is withdrawn if the read path does not
-// take it.
+// It takes the file's lock shared and creates no entry. A caller that needs
+// the version to never name a change its span did not see reads it with the
+// file's append domain held.
 func (ix *Index) AsOf(id core.FileID) core.Version { return ix.fs.asOf(id) }
 
 // RaiseFloor raises every floor bucket to floor's counter, clamped to the

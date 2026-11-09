@@ -56,6 +56,9 @@ type coreOptions struct {
 	// afterAppend runs in WriteAt right after a record is appended and before
 	// it is published, with the file's append domain held.
 	afterAppend func()
+	// beforeResolve runs in ReadAt after the as-of is read and the file's
+	// append domain released, before the span is resolved.
+	beforeResolve func()
 	// noLimit keeps the test helper's generous version limit off the core, so
 	// a test can hold a fresh core that issues nothing until it sets one.
 	noLimit bool
@@ -90,6 +93,11 @@ type Core struct {
 	// New with no options. It is a field of the core and not of Deps so that no
 	// production wiring can set it.
 	afterAppend func()
+
+	// beforeResolve is a test seam that holds a read between reading its
+	// as-of and resolving its span. It is nil outside tests, for the same
+	// reason afterAppend is.
+	beforeResolve func()
 
 	// registry is the open handles, replaced whole under registryMu and read
 	// through the pointer alone. See shares.go.
@@ -138,7 +146,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy, afterAppend: o.afterAppend}
+	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)
