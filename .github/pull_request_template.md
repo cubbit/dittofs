@@ -7,8 +7,10 @@ The description should fit on one screen without scrolling. Delete any section t
 would be empty or obvious. If the PR cannot be explained in one screen, it is probably
 too big: say so and suggest how to split it.
 
-Writing rules for PRs, review comments and replies:
-.github/instructions/pr-writing.instructions.md
+How to open a PR (base, assignee, auto-merge, stacking):
+.github/instructions/pr-opening.instructions.md
+Writing rules for review comments and replies:
+.github/instructions/pr-commenting.instructions.md
 -->
 
 # Description

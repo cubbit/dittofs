@@ -325,16 +325,10 @@ go run ./cmd/gendocs      # rewrites docs/guide/cli.md
 
 ## 8. Open the PR
 
-Rebase onto current `origin/develop` — never merge `develop` in.
+Follow the `pr-opening` skill: rebase, push, base, assignee, auto-merge and
+stacking all live there.
 
-```bash
-git fetch origin && git rebase origin/develop
-git push -u origin fix/<issue>-<slug>
-gh pr create --base develop --assignee marmos91 --title "..." --body "..."
-```
-
-The PR body must contain a closing keyword (`Closes #<N>`). `develop` is the
-default branch, so GitHub's native auto-close fires on merge and the issue closes
+The body's `Closes #<N>` matters here: `develop` is the default branch, so GitHub's native auto-close fires on merge and the issue closes
 itself — do not also close it by hand. `gh issue close --comment` on an
 already-closed issue exits 0 and silently discards the comment, so verification
 notes posted that way are lost; use `gh issue comment` for those.
@@ -344,7 +338,6 @@ safety net for keywords that appear in a commit message but not a PR body.
 Write the body for a reviewer who has not read the issue: what was actually
 wrong, why the obvious fix is wrong if it is, and what evidence you have. If you
 refuted the issue's premise, lead with that. Include the reproduction output.
-Never mention Claude Code, AI tooling, or add `Co-Authored-By` lines for AI.
 
 ## 9. Babysit the PR
 
@@ -377,12 +370,12 @@ else that is red gets fixed, on this branch, and the loop returns to step 6.
 
 ## 10. Merge and close
 
-When CI is green and every Copilot comment is addressed:
+Auto-merge, enabled when the PR was opened, puts it in the merge queue once it is
+approved and green, so do not merge by hand — but every Copilot comment must be
+addressed before the approval lands. The issue closes itself on merge (step 8).
+Once merged:
 
 ```bash
-gh pr merge <PR> --squash --delete-branch
-gh issue close <N> --comment "Fixed in #<PR>."     # manual — see step 8
-
 # Refresh the graph in the MAIN checkout, on the merged code — not in the worktree
 cd "$(git worktree list --porcelain | head -1 | cut -d' ' -f2)"   # the main checkout
 git checkout develop && git pull
@@ -390,9 +383,6 @@ graphify update .                                   # AST-only, no API cost
 
 git worktree remove ~/dittofs-worktrees/<slug>
 ```
-
-Closing is manual because that automation only fires when work reaches `main` at
-release time. An issue left open here stays open for weeks.
 
 Order matters in that block. `graphify-out/` lives in the main checkout, so
 `graphify update .` run from the worktree either builds a throwaway graph that

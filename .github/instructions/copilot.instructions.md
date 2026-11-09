@@ -240,5 +240,5 @@ metadataStore.CheckPermissions(authCtx, handle, requested)
 
 ## Writing the review
 
-Follow [`pr-writing.instructions.md`](pr-writing.instructions.md) for what to check, the
+Follow [`pr-commenting.instructions.md`](pr-commenting.instructions.md) for what to check, the
 review body, the comments and the replies.
