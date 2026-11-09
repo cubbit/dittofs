@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"time"
 )
 
 // ErrorTable maps a service error to a Status. Map takes the most specific
@@ -20,7 +21,12 @@ type ErrorRow struct {
 	// signal fits); a table that Holds sends an interim granting the
 	// request's credits. Status is unused.
 	NoReply bool
-	Status  Status
+	// Hold, only in a table that Holds (NewOpTable refuses it elsewhere): a
+	// request whose latest attempt maps here is held and re-driven until the
+	// deadline Hold returns, counted from the hold's start, and is then
+	// answered Status. nil: answered Status at once.
+	Hold   func(err error, start time.Time) time.Time
+	Status Status
 }
 
 // NewErrorTable builds a table answering an error no row matches with fault,

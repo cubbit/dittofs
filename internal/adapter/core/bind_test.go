@@ -27,13 +27,14 @@ type row struct {
 
 func (w *row) bind(withHooks bool) func([]byte, core.Version) (core.Invocation, int, error) {
 	w.seen = map[string]*args{}
-	dec := func(b []byte, v core.Version, a *args) error {
+	// dec consumes one byte: the bytes after it are the next member's.
+	dec := func(b []byte, v core.Version, a *args) (int, error) {
 		w.decodes++
 		if len(b) == 0 {
-			return errBadArgs
+			return 0, errBadArgs
 		}
 		w.decoded, w.version, a.n = a, v, b[0]
-		return nil
+		return 1, nil
 	}
 	bound := func(a *args) int { w.seen["Bound"] = a; return int(a.n) }
 	h := func(_ context.Context, _ *core.Request, a *args) (*reply, error) {
@@ -60,8 +61,8 @@ func TestBindHandsEveryClosureTheDecodedRequest(t *testing.T) {
 	ctx, r := context.Background(), &core.Request{}
 	var w row
 	inv, n, err := w.bind(true)([]byte{42, 7}, 3)
-	if err != nil || n != 2 {
-		t.Fatalf("decode: n %d, err %v; want 2, nil", n, err)
+	if err != nil || n != 1 {
+		t.Fatalf("decode: n %d, err %v; want the decoder's 1, nil", n, err)
 	}
 	if inv.Count != 0 {
 		t.Errorf("Count %d on a row that is no compound, want 0", inv.Count)

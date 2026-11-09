@@ -108,14 +108,8 @@ type Handler[Req, Rep any] func(ctx context.Context, r *Request, req *Req) (*Rep
 // Resolve, Role, Handle, Call and Encode the one request dec decoded, and
 // Encode the reply the last Call produced; a decode error builds no
 // Invocation.
-//
-// decision: the Decode Bind returns reports the whole body consumed, since
-// dec reports no length. That serves every row but a compound's members,
-// whose runner moves on by the bytes each consumed; a members' table needs
-// its decoders to report their length, through a dec that returns it, when
-// the first compound protocol binds its members.
 func Bind[Req, Rep any](
-	dec func(b []byte, v Version, req *Req) error,
+	dec func(b []byte, v Version, req *Req) (n int, err error), // n: the bytes of b it consumed, which Decode returns
 	bound func(req *Req) int,
 	resolve func(r *Request, req *Req) error, // nil: the operation names no wire ID
 	role func(r *Request, req *Req) Role, // nil: Op.Role decides alone
@@ -125,7 +119,8 @@ func Bind[Req, Rep any](
 ) func([]byte, Version) (Invocation, int, error) {
 	return func(b []byte, v Version) (Invocation, int, error) {
 		req := new(Req)
-		if err := dec(b, v, req); err != nil {
+		n, err := dec(b, v, req)
+		if err != nil {
 			return Invocation{}, 0, err
 		}
 		var rep *Rep
@@ -152,11 +147,12 @@ func Bind[Req, Rep any](
 		if handle != nil {
 			inv.Handle = func() (vfs.Handle, bool) { return handle(req) }
 		}
-		return inv, len(b), nil
+		return inv, n, nil
 	}
 }
 
-// NewOpTable builds a table and checks it: codes unique, ranges well formed.
+// NewOpTable builds a table and checks it: codes unique, ranges well formed,
+// and no ErrorRow.Hold unless holds.
 func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
 	panic("not implemented")
 }

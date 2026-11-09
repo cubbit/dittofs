@@ -19,7 +19,7 @@ var surface = []string{
 	"Dispatcher", "Dispatcher.Dispatch", "Dispatcher.Drain",
 	"ErrDraining", "ErrExpired", "ErrMoved", "ErrNoFH", "ErrNoSession", "ErrNoTree", "ErrNotLast",
 	"ErrNotNegotiated", "ErrNotSupported", "ErrParked", "ErrTooLong", "ErrTooManyPending", "ErrVersion",
-	"ErrorRow", "ErrorRow.Err", "ErrorRow.NoReply", "ErrorRow.Ops", "ErrorRow.Status", "ErrorRow.Versions",
+	"ErrorRow", "ErrorRow.Err", "ErrorRow.Hold", "ErrorRow.NoReply", "ErrorRow.Ops", "ErrorRow.Status", "ErrorRow.Versions",
 	"ErrorTable", "ErrorTable.Map", "Errors",
 	"FlowControl", "FlowControl.Admit", "Framer", "Framer.BodyLen", "Framer.HeaderLen",
 	"Handler", "Header", "Header.Next", "Header.Op", "Header.Related", "Header.Version",

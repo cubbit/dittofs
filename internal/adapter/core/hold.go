@@ -4,7 +4,6 @@ import (
 	"errors"
 
 	"github.com/cubbit/dittofs/pkg/resources"
-	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // HoldCodec is the stage a table that Holds needs. The key doubles as the
@@ -47,16 +46,15 @@ type HoldCodec interface {
 	// what the interim granted of them; otherwise none.
 	Final(h Header, grant bool) Header
 	Cancels(h Header) (key uint64, ok bool) // a CANCEL ends the hold it names and gets no reply
-	// Pends says whether a chain member before the last, answered ErrDelay
-	// with cause, goes pending (true) or is answered at once as ErrNotLast.
+	// Pends says whether a chain member before the last, answered err whose
+	// row holds, goes pending (true) or is answered at once as ErrNotLast.
 	//
-	// decision: Pends is asked only for an ErrDelay the service returned; a
-	// member the interim timer finds still in the service always pends. A
-	// call still in the service can apply after any answer, so answering it
-	// at once could report a failed WRITE whose data lands a moment later.
-	// Withdraw it only if the service gains a way to withdraw a call it has
-	// not yet applied.
-	Pends(h Header, cause vfs.DelayCause) bool
+	// decision: Pends is asked only for an error the service returned; a
+	// member the interim timer finds still in the service always pends, since
+	// it can apply after any answer, and answering it at once could report a
+	// failed WRITE whose data lands a moment later. Withdraw it only if the
+	// service gains a way to withdraw a call it has not yet applied.
+	Pends(h Header, err error) bool
 }
 
 // ErrParked is what a handler returns, with its reply value, after Park: it
