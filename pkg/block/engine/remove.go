@@ -19,7 +19,7 @@ import (
 type removal struct {
 	b    *binding
 	f    entity.FileID
-	x    extent
+	x    entity.Extent
 	kind entity.RemovalKind
 	v    journal.Version
 	at   time.Time
@@ -42,7 +42,7 @@ type removal struct {
 // registering while the mark is set waits until the removal's phase 1 ends.
 // Withdraw it only with a clone that reads the source through the journal's
 // own snapshot.
-func (e *Engine) guard(ctx context.Context, b *binding, f entity.FileID, kind entity.RemovalKind, x extent) (*removal, error) {
+func (e *Engine) guard(ctx context.Context, b *binding, f entity.FileID, kind entity.RemovalKind, x entity.Extent) (*removal, error) {
 	fe := e.files.lockFor(f)
 	for {
 		// The registrations are checked before any wait, so a removal of a
@@ -55,14 +55,10 @@ func (e *Engine) guard(ctx context.Context, b *binding, f entity.FileID, kind en
 		if fe.guardDone == nil {
 			break
 		}
-		ch := fe.guardDone
-		e.files.unlock(f, fe)
-		select {
-		case <-ch:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		var err error
+		if fe, err = e.awaitGuard(ctx, f, fe); err != nil {
+			return nil, err
 		}
-		fe = e.files.lockFor(f)
 	}
 	fe.guardDone = make(chan struct{})
 	fe.guarded.Store(true)
@@ -76,7 +72,7 @@ func (e *Engine) guard(ctx context.Context, b *binding, f entity.FileID, kind en
 // delayClone() for a truncate or deallocate overlapping a source extent or
 // of a file holding a destination extent; nil for a clone's own guard. The
 // caller holds the entry's lock.
-func (fe *fileEntry) refuseRemoval(kind entity.RemovalKind, x extent) error {
+func (fe *fileEntry) refuseRemoval(kind entity.RemovalKind, x entity.Extent) error {
 	switch kind {
 	case entity.RemoveClone:
 	case entity.RemoveRelease:
@@ -87,6 +83,34 @@ func (fe *fileEntry) refuseRemoval(kind entity.RemovalKind, x extent) error {
 		return fe.refuseChange(x)
 	}
 	return nil
+}
+
+// awaitGuard releases fe, f's entry, and waits for its guard's release,
+// answering the entry locked again, or, at ctx's end, its error.
+func (e *Engine) awaitGuard(ctx context.Context, f entity.FileID, fe *fileEntry) (*fileEntry, error) {
+	ch := fe.guardDone
+	e.files.unlock(f, fe)
+	select {
+	case <-ch:
+		return e.files.lockFor(f), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// begin takes f's guard for a removal of kind over x, as guard does, then
+// waits out a batch in flight on f, so no commit that starts after it
+// overtakes that batch; the guard is released again if the wait ends first.
+func (e *Engine) begin(ctx context.Context, b *binding, f entity.FileID, kind entity.RemovalKind, x entity.Extent) (*removal, error) {
+	r, err := e.guard(ctx, b, f, kind, x)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.waitBatch(ctx, f); err != nil {
+		e.release(r, false)
+		return nil, err
+	}
+	return r, nil
 }
 
 // guardOf is the channel closed when f's guard is released, nil when no
@@ -120,11 +144,7 @@ func (e *Engine) release(r *removal, settle bool) {
 	}
 	e.files.unlock(r.f, fe)
 	if settle {
-		v := r.v
-		if v.Compare(r.through) < 0 {
-			v = r.through
-		}
-		r.b.h.Settle(fileID(r.f), v)
+		r.b.h.Settle(fileID(r.f), newer(r.v, r.through))
 	}
 	if !oldest.IsZero() && !r.b.gc.removals.isDropped(r.b.share.ID) {
 		_ = r.b.gc.note(r.b, r.f, oldest) // refused only once closed or lost, when nothing commits
@@ -148,12 +168,8 @@ func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID
 	if err != nil {
 		return err
 	}
-	r, err := e.guard(ctx, b, f, entity.RemoveTruncate, extent{size, entity.EndOfFile})
+	r, err := e.begin(ctx, b, f, entity.RemoveTruncate, entity.ExtentOf(size, entity.EndOfFile))
 	if err != nil {
-		return err
-	}
-	if err := e.waitBatch(ctx, f); err != nil {
-		e.release(r, false)
 		return err
 	}
 	committed, err := e.d.Existence.Size(ctx, s, f)
@@ -171,7 +187,7 @@ func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID
 		return err
 	}
 	e.staged()
-	return e.phase1(ctx, r, kvstore.RemoveOp{Kind: entity.RemoveTruncate, Extent: entity.ExtentOf(size, entity.EndOfFile)})
+	return e.phase1(ctx, r, kvstore.RemoveOp{Kind: entity.RemoveTruncate, Extent: r.x})
 }
 
 // Deallocate makes [off, off+n) of file f a hole: the journal stops holding
@@ -185,12 +201,8 @@ func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 	if err != nil || n == 0 {
 		return err // a share not bound refuses even an empty extent
 	}
-	r, err := e.guard(ctx, b, f, entity.RemoveDeallocate, extent{off, off + n})
+	r, err := e.begin(ctx, b, f, entity.RemoveDeallocate, entity.Extent{Offset: off, Length: n})
 	if err != nil {
-		return err
-	}
-	if err := e.waitBatch(ctx, f); err != nil {
-		e.release(r, false)
 		return err
 	}
 	x := journal.Extent{Off: off, Len: n}
@@ -201,7 +213,7 @@ func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 		return err
 	}
 	e.staged()
-	return e.phase1(ctx, r, kvstore.RemoveOp{Kind: entity.RemoveDeallocate, Extent: entity.Extent{Offset: off, Length: n}})
+	return e.phase1(ctx, r, kvstore.RemoveOp{Kind: entity.RemoveDeallocate, Extent: r.x})
 }
 
 // Delete is file f's release, never the journal's eviction: the guard, the
@@ -232,15 +244,11 @@ func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 	if err != nil {
 		return nil, err
 	}
-	r, err := e.guard(ctx, b, f, entity.RemoveRelease, extent{0, entity.EndOfFile})
+	r, err := e.begin(ctx, b, f, entity.RemoveRelease, entity.ExtentOf(0, entity.EndOfFile))
 	if errors.Is(err, errRegistered) {
 		return e.behindClone(b, f), nil
 	}
 	if err != nil {
-		return nil, err
-	}
-	if err := e.waitBatch(ctx, f); err != nil {
-		e.release(r, false)
 		return nil, err
 	}
 	v, err := b.h.Delete(ctx, fileID(f))
@@ -250,8 +258,7 @@ func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 	}
 	r.v = v
 	e.staged()
-	op := kvstore.RemoveOp{Kind: entity.RemoveRelease, Extent: entity.ExtentOf(0, entity.EndOfFile),
-		Version: entity.JournalVersion(v.Bytes()), Time: r.at}
+	op := kvstore.RemoveOp{Kind: entity.RemoveRelease, Extent: r.x, Version: entity.JournalVersion(v.Bytes()), Time: r.at}
 	switch err := e.tryPhase1(ctx, r, op); {
 	case err == nil:
 		return nil, nil
@@ -339,9 +346,7 @@ func (e *Engine) abort(r *removal) error {
 	l.mu.Unlock()
 	e.d.Logger.Error("a release was aborted by a holder: the file's content is lost", "file", r.f)
 	e.release(r, true)
-	for _, d := range dones {
-		d()
-	}
+	runAll(dones)
 	return vfserr.ErrFileOpen
 }
 
@@ -365,26 +370,9 @@ func (e *Engine) stage(ctx context.Context, r *removal, j func(*fileEntry) (jour
 	// staged: one admitted meanwhile would reach the journal first, below the
 	// removal's version, and a stream of them would hold the removal, and its
 	// guard, to its deadline.
-	defer func() {
-		if fe.staging {
-			fe.staging = false
-			fe.staged.Broadcast()
-		}
-	}()
-	if len(fe.writing) > 0 {
-		fe.staging = true
-		stop := context.AfterFunc(ctx, func() {
-			fe.mu.Lock()
-			fe.staged.Broadcast()
-			fe.mu.Unlock()
-		})
-		for len(fe.writing) > 0 && ctx.Err() == nil {
-			fe.staged.Wait()
-		}
-		stop()
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
+	defer fe.endStaging()
+	if err := fe.stageAfterWrites(ctx); err != nil {
+		return false, err
 	}
 	g := grow != nil && grow(fe)
 	v, err := j(fe)
@@ -463,9 +451,7 @@ func (e *Engine) tryPhase1(ctx context.Context, r *removal, op kvstore.RemoveOp)
 	}
 	dones := e.committed(r)
 	e.finish(r)
-	for _, d := range dones {
-		d()
-	}
+	runAll(dones)
 	return nil
 }
 
@@ -527,7 +513,7 @@ func (e *Engine) unstage(r *removal, err error) {
 // answers false, the claim released and the guard held, when the commit
 // failed otherwise.
 func (e *Engine) commitBelow(ctx context.Context, r *removal) bool {
-	ctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+	ctx, cancel := e.bounded(ctx)
 	defer cancel()
 	e.claimBelow(r)
 	err := e.sync(ctx, r.b, fileID(r.f))
@@ -542,9 +528,7 @@ func (e *Engine) commitBelow(ctx context.Context, r *removal) bool {
 	case err == nil:
 		dones := e.committed(r)
 		e.release(r, true)
-		for _, d := range dones {
-			d()
-		}
+		runAll(dones)
 		return true
 	case errors.Is(err, entity.ErrStale):
 		e.unclaim(r)
@@ -557,9 +541,7 @@ func (e *Engine) commitBelow(ctx context.Context, r *removal) bool {
 		e.d.Logger.Error("pending operations below a removal refused by the store, dropped as lost", "file", r.f, "kind", r.kind.String(), "err", err)
 		dones := e.dropClaimed(r)
 		e.release(r, true)
-		for _, d := range dones {
-			d()
-		}
+		runAll(dones)
 		return true
 	}
 	e.unclaim(r)

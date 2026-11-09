@@ -463,12 +463,33 @@ func TestImagesUseTheModuleToolchain(t *testing.T) {
 	}
 	want := regexp.MustCompile(`golangci-lint@(v[0-9.]+)`).FindSubmatch(files["test/harness/docker/dev.Dockerfile"])[1]
 	for f, pin := range map[string]string{
-		".github/workflows/tests.yml":   `(?m)^\s+version: (v[0-9.]+)\r?$`,
+		".github/workflows/tests.yml":   `(?m)^\s+repo: golangci/golangci-lint\r?\n\s+tag: (v[0-9.]+)\r?$`,
 		"k8s/dittofs-operator/Makefile": `(?m)^GOLANGCI_LINT_VERSION \?= (v[0-9.]+)\r?$`,
 	} {
 		if m := regexp.MustCompile(pin).FindSubmatch(read(f)); m == nil || !bytes.Equal(m[1], want) {
 			t.Errorf("%s does not pin golangci-lint %s", f, want)
 		}
+	}
+}
+
+// The envtest the operator cell gets in CI is the Kubernetes minor of the
+// operator's k8s.io/api, the one a local make test picks, so a bump of either
+// alone fails here instead of testing against another API server.
+func TestEnvtestFollowsTheOperatorsKubernetes(t *testing.T) {
+	read := func(path string) []byte {
+		data, err := os.ReadFile(filepath.Join("..", "..", "..", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	api := regexp.MustCompile(`(?m)^\s+k8s\.io/api v0\.(\d+)\.`).FindSubmatch(read("k8s/dittofs-operator/go.mod"))
+	tag := regexp.MustCompile(`(?m)^\s+tag: envtest-v1\.(\d+)\.\d+\r?$`).FindSubmatch(read(".github/workflows/tests.yml"))
+	if api == nil || tag == nil {
+		t.Fatalf("k8s.io/api in the operator's go.mod: %q; envtest's tag in tests.yml: %q", api, tag)
+	}
+	if !bytes.Equal(api[1], tag[1]) {
+		t.Errorf("tests.yml fetches envtest 1.%s, but the operator's k8s.io/api is 1.%s", tag[1], api[1])
 	}
 }
 

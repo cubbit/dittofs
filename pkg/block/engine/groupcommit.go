@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -111,13 +109,15 @@ const (
 	backoffMax = 30 * time.Second
 )
 
-// captured is one file of a batch: its share and the operations the capture
-// claimed, the entry's first n, which stay there until the batch returns.
+// nextBackoff is the backoff after one of d: doubled, within the bounds.
+func nextBackoff(d time.Duration) time.Duration { return min(max(2*d, backoffMin), backoffMax) }
+
+// captured is one file of a batch: its share and its entry, whose claimed
+// operations stay there until the batch returns.
 type captured struct {
 	b  *binding
 	f  entity.FileID
 	fe *fileEntry
-	n  int
 }
 
 // pending is c's claimed operations as the store commits them, read under the
@@ -207,6 +207,11 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 	}
 	g.ctx, g.cancel = context.WithCancel(withRetryingOwner(context.Background()))
 	g.removals = newRemovalLoop(e)
+	// decision: only a test helper sets gcsClosed, until Close is built, so
+	// this branch serves tests alone. It is the shape Close needs: Close
+	// sets it, and the helper goes, once built. Delete the field and the
+	// branch if Close keeps a journal's group commit from starting some
+	// other way.
 	if e.gcsClosed {
 		g.closed = true
 		g.cancel()
@@ -221,30 +226,6 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 	go g.run()
 	go g.removals.run()
 	return g
-}
-
-// closeGroupCommits stops every journal's group commit and joins its
-// goroutine: a batch in flight has its context cancelled, and no batch
-// starts after it.
-func (e *Engine) closeGroupCommits() {
-	e.gcMu.Lock()
-	gs := e.gcs
-	e.gcs = nil
-	e.gcsClosed = true
-	e.gcMu.Unlock()
-	for _, g := range gs {
-		g.mu.Lock()
-		g.closed = true
-		g.mu.Unlock()
-		g.cancel()
-		close(g.stop)
-		<-g.done
-		g.mu.Lock()
-		close(g.returned) // wakes every waiter, which then finds the group commit closed
-		g.returned = make(chan struct{})
-		g.mu.Unlock()
-		g.removals.close()
-	}
 }
 
 // note puts f on the due set, its oldest uncommitted operation staged at
@@ -418,9 +399,6 @@ func (g *groupCommit) take() (batch []taken, last bool, wait time.Duration) {
 		maxFiles = 1
 	}
 	for _, c := range ready[:min(len(ready), maxFiles)] {
-		if c.alone && len(batch) > 0 {
-			break
-		}
 		batch = append(batch, taken{c.f, g.due[c.f].b})
 		delete(g.due, c.f)
 	}
@@ -505,18 +483,15 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 	// between a batch's settle and these calls, may still return first;
 	// closing that needs the settle to keep the file uncovered until its
 	// Dones ran. Do it if a caller is seen to rely on the order there too.
-	for _, d := range dones {
-		d()
-	}
+	runAll(dones)
 	g.mu.Lock()
 	g.inFlight = false
 	// Every batch that took a file changed the due set, so its waiters look
 	// again. A taken file no batch can capture went back as due one
-	// existence_age later, and commitThrough and commitAll wait on the guard
-	// of a removal holding a file rather than make it due now again, so no
-	// waiter is woken in a loop.
-	close(g.returned)
-	g.returned = make(chan struct{})
+	// existence_age later, and commitThrough waits on the guard of a removal
+	// holding a file rather than make it due now again, so no waiter is
+	// woken in a loop.
+	g.broadcastLocked()
 	g.mu.Unlock()
 }
 
@@ -529,7 +504,7 @@ func (g *groupCommit) widen(err error, files int, timedOut bool) time.Time {
 	if g.wideBackoff == 0 {
 		g.e.d.Logger.Warn("existence_commit_failing", "batch", files, "err", err)
 	}
-	g.wideBackoff = min(max(2*g.wideBackoff, backoffMin), backoffMax)
+	g.wideBackoff = nextBackoff(g.wideBackoff)
 	if timedOut {
 		// A store slower than the bound for this batch may still commit a
 		// smaller one: halve it, so a healthy slow store makes progress
@@ -573,7 +548,7 @@ func (g *groupCommit) outcome(f entity.FileID, err error, alone bool) (retry tim
 		fl.alone = true
 		return time.Time{}
 	}
-	fl.backoff = min(max(2*fl.backoff, backoffMin), backoffMax)
+	fl.backoff = nextBackoff(fl.backoff)
 	if !fl.raised {
 		fl.raised = true
 		g.e.d.Logger.Warn("existence_commit_failing", "file", f, "err", err)
@@ -638,20 +613,19 @@ func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool
 	if skip && fe.guarded.Load() {
 		return captured{}, false, true
 	}
-	c = captured{b: b, f: f, fe: fe}
-	for i := range fe.ops {
-		if fe.ops[i].kind != opWrite && !fe.ops[i].grow {
+	n := 0
+	for ; n < len(fe.ops); n++ {
+		if fe.ops[n].kind != opWrite && !fe.ops[n].grow {
 			break // a removal: nothing at or above it commits before its phase 1
 		}
-		fe.ops[i].claimed = true
-		c.n++
+		fe.ops[n].claimed = true
 	}
-	if c.n == 0 {
+	if n == 0 {
 		return captured{}, false, true
 	}
 	fe.inBatch = true
 	fe.batchDone = make(chan struct{})
-	return c, true, true
+	return captured{b: b, f: f, fe: fe}, true, true
 }
 
 // syncAndCommit syncs the batch's files in the journal, one Sync per share,
@@ -744,7 +718,7 @@ func (g *groupCommit) marksFailed(mw *kvstore.MarksWrite, err error) {
 		return
 	}
 	g.marks.ask = true
-	g.marks.backoff = min(max(2*g.marks.backoff, backoffMin), backoffMax)
+	g.marks.backoff = nextBackoff(g.marks.backoff)
 	g.marks.notBefore = g.e.d.Clock.Now().Add(g.marks.backoff)
 }
 
@@ -772,9 +746,14 @@ func (g *groupCommit) commitMarks(ctx context.Context) {
 		}
 	}
 	g.mu.Lock()
+	g.broadcastLocked()
+	g.mu.Unlock()
+}
+
+// broadcastLocked wakes every waiter on returned; the caller holds g.mu.
+func (g *groupCommit) broadcastLocked() {
 	close(g.returned)
 	g.returned = make(chan struct{})
-	g.mu.Unlock()
 }
 
 // awaitMarks returns once a committed transaction recorded marks read after
@@ -808,9 +787,8 @@ func (g *groupCommit) awaitMarks(ctx context.Context, read uint64) error {
 // failed: those the store names in its map, the others having committed in
 // the same call, and, for an error of the whole call that is not store-wide,
 // each file the halves leave failing alone, which alone records as already
-// failed alone. Each call
-// to the store is bounded by conflictBound, past which a conflict the store
-// keeps retrying is answered as one. A conflict or any other failure of one
+// failed alone. Each call to the store is bounded, past which a conflict the
+// store keeps retrying is answered as one. A conflict or any other failure of one
 // file therefore fails no other, and no conflict holds the journal's batches.
 //
 // A non-nil mw rides on the first call, and through a split on the first
@@ -824,7 +802,7 @@ func (g *groupCommit) awaitMarks(ctx context.Context, read uint64) error {
 // if the store's failure shapes grow beyond a file in the map and a whole
 // call.
 func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExistence, mw *kvstore.MarksWrite, failed map[entity.FileID]error, alone map[entity.FileID]bool) (recorded bool, err error) {
-	cctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+	cctx, cancel := e.bounded(ctx)
 	m, err := e.d.Existence.Commit(cctx, pending, mw)
 	cancel()
 	if mw != nil && (errors.Is(err, kvstore.ErrOpenGenMoved) || errors.Is(err, kvstore.ErrSyncMarks)) {
@@ -872,7 +850,7 @@ func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExist
 // commitMarksAlone writes mw in a call with no pending existence, under the
 // bound every existence commit runs under.
 func (e *Engine) commitMarksAlone(ctx context.Context, mw *kvstore.MarksWrite) error {
-	cctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+	cctx, cancel := e.bounded(ctx)
 	defer cancel()
 	_, err := e.d.Existence.Commit(cctx, nil, mw)
 	return err
@@ -909,15 +887,16 @@ func storeWide(err error) bool {
 		(errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, kvstore.ErrConflict))
 }
 
-// conflictBound bounds each existence commit, so a conflict the store keeps
-// retrying is answered to the group commit as one.
+// bounded is ctx cut at the conflict bound, which bounds each store call the
+// engine retries itself, an existence commit's, a phase 1's or a phase 2's,
+// so a conflict the store keeps retrying is answered to the caller as one.
 //
-// ponytail: one bound, a second, for every commit, a slow one's included.
+// ponytail: one bound, a second, for every such call, a slow one's included.
 // Make it a setting, or derive it from the store's transaction limits, when a
 // healthy commit is seen to take near it.
-var conflictBound atomic.Value // time.Duration
-
-func init() { conflictBound.Store(time.Second) }
+func (e *Engine) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, time.Duration(e.conflictBound.Load()))
+}
 
 // settle ends c's part in its batch under its entry's lock: a committed file
 // loses the operations the batch claimed, whose Dones it returns, is settled
@@ -1056,53 +1035,6 @@ func (e *Engine) covered(f entity.FileID, v journal.Version) bool {
 	return len(fe.ops) == 0 || fe.ops[0].version.Compare(v) > 0
 }
 
-// commitAll commits the pending existence of every file of journal j, as
-// commitNow does for one: it marks every due file due now and returns once
-// the due set is empty and no batch is in flight, or at ctx's end.
-func (e *Engine) commitAll(ctx context.Context, j Journal) error {
-	g := e.groupCommitFor(j)
-	for {
-		g.mu.Lock()
-		if g.closed {
-			g.mu.Unlock()
-			return errClosed
-		}
-		files := slices.Collect(maps.Keys(g.due))
-		done := len(files) == 0 && !g.inFlight
-		returned := g.returned
-		g.mu.Unlock()
-		if done {
-			return nil
-		}
-		// A file a removal's guard holds is committed by that removal's own
-		// phase 1, and a batch would only skip it: wait for the guard rather
-		// than ask for batch after batch. Under the test seam a batch takes
-		// it, so it is asked for like any other.
-		var guard <-chan struct{}
-		asked := false
-		for _, f := range files {
-			if ch := e.guardOf(f); ch != nil && !e.noGuardSkip.Load() {
-				guard = ch
-				continue
-			}
-			g.mu.Lock()
-			if d := g.due[f]; d != nil {
-				d.now, asked = true, true
-			}
-			g.mu.Unlock()
-		}
-		if asked {
-			g.poke()
-		}
-		select {
-		case <-returned:
-		case <-guard:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
-
 // waitBatch returns once f is in no batch, or at ctx's end: a commit of f
 // that starts after it cannot overtake one in flight.
 func (e *Engine) waitBatch(ctx context.Context, f entity.FileID) error {
@@ -1118,33 +1050,6 @@ func (e *Engine) waitBatch(ctx context.Context, f entity.FileID) error {
 		e.files.unlock(f, fe)
 		select {
 		case <-ch:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
-
-// dropShare takes share s's files off the due set of journal j and its
-// items off the journal's removal loop, ending each, and returns once no
-// batch is in flight there, so none of them is committed after.
-func (e *Engine) dropShare(ctx context.Context, j Journal, s entity.ShareID) error {
-	g := e.groupCommitFor(j)
-	g.removals.dropShare(s)
-	for {
-		g.mu.Lock()
-		for f, d := range g.due {
-			if d.b.share.ID == s {
-				delete(g.due, f)
-				g.clearFailingLocked(f)
-			}
-		}
-		inFlight, returned := g.inFlight && !g.closed, g.returned
-		g.mu.Unlock()
-		if !inFlight {
-			return nil
-		}
-		select {
-		case <-returned:
 		case <-ctx.Done():
 			return ctx.Err()
 		}

@@ -344,3 +344,40 @@ func TestACloneReplayAppliesTheWritesAboveApplied(t *testing.T) {
 		t.Errorf("after the replay: size %d applied %v; want 7 MiB and 9, the new write recorded", got.Size, got.Applied)
 	}
 }
+
+// A clone skipped as applied before raises applied no further than the
+// operations it commits: the copies' version is not recorded with it, so a
+// later commit of the copy at that version is not skipped.
+func TestASkippedCloneLeavesAppliedAlone(t *testing.T) {
+	f := newContentFix(t, nil)
+	src, dst := f.file(0), f.file(0)
+	f.exist(src, write(1, 0, 4*mib))
+	f.exist(dst, write(6, 0, mib))
+	op := f.cloneOp(src, dst, 0, 0, mib, 5)
+	op.Copied = entity.VersionOf(7)
+	f.clone(op)
+	if got := f.get(dst).Applied; got != entity.VersionOf(6) {
+		t.Fatalf("applied %v after a skipped clone, want 6", got)
+	}
+	f.exist(dst, write(7, 3*mib, mib))
+	if got := f.get(dst); got.Size != 4*mib || got.Applied != entity.VersionOf(7) {
+		t.Errorf("the copy's commit was skipped: size %d applied %v", got.Size, got.Applied)
+	}
+}
+
+// An operation at the clone's own version is refused, not dropped, and
+// before anything changes.
+func TestAnOperationAtTheClonesVersionIsRefused(t *testing.T) {
+	f := newContentFix(t, nil)
+	src, dst := f.file(0), f.file(0)
+	f.exist(src, write(1, 0, 4*mib))
+	before := f.get(dst)
+	err := f.s.Existence().Clone(context.Background(), f.cloneOp(src, dst, 0, 0, mib, 5),
+		[]PendingOp{write(3, 2*mib, mib), write(5, 3*mib, mib)})
+	if !isInvalid(err) {
+		t.Fatalf("an operation at the clone's version: %v", err)
+	}
+	if got := f.get(dst); got.Applied != before.Applied || got.Size != before.Size {
+		t.Errorf("a refused clone changed the destination: %+v, was %+v", got, before)
+	}
+}

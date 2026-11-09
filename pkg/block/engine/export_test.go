@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -229,9 +231,6 @@ func (e *Engine) ReadSeconds() (int64, time.Duration) {
 	return e.reads.count.Load(), time.Duration(e.reads.total.Load())
 }
 
-// CloseGroupCommits stops every journal's group commit, as Close will.
-func (e *Engine) CloseGroupCommits() { e.closeGroupCommits() }
-
 // OnCapture runs f after each batch's capture, before its sync.
 func (e *Engine) OnCapture(f func()) { e.hooks.captured.Store(&f) }
 
@@ -255,14 +254,6 @@ func (e *Engine) OnLookup(f func()) { e.files.afterLookup = f }
 
 // OnTake runs f after each batch's take, before its capture.
 func (e *Engine) OnTake(f func()) { e.hooks.taken.Store(&f) }
-
-// DropShare is dropShare on journal j.
-func (e *Engine) DropShare(ctx context.Context, j Journal, s entity.ShareID) error {
-	return e.dropShare(ctx, j, s)
-}
-
-// CommitAll is commitAll on journal j.
-func (e *Engine) CommitAll(ctx context.Context, j Journal) error { return e.commitAll(ctx, j) }
 
 // Due reports whether f is on journal j's due set.
 func (e *Engine) Due(j Journal, f entity.FileID) bool {
@@ -301,8 +292,8 @@ func (e *Engine) Failing(j Journal, f entity.FileID) bool {
 	return g.failing[f] != nil && g.failing[f].raised
 }
 
-// SetConflictBound sets how long one existence commit may run.
-func SetConflictBound(d time.Duration) { conflictBound.Store(d) }
+// SetConflictBound sets how long one store call the engine retries may run.
+func (e *Engine) SetConflictBound(d time.Duration) { e.conflictBound.Store(int64(d)) }
 
 // RetryingOwner reports whether ctx carries the retrying-owner mark.
 func RetryingOwner(ctx context.Context) bool { return isRetryingOwner(ctx) }
@@ -340,16 +331,6 @@ func (e *Engine) Registrations(f entity.FileID) (src, dst int) {
 		}
 	}
 	return src, dst
-}
-
-// Admitted is the count of f's writes admitted and not yet in its entry.
-func (e *Engine) Admitted(f entity.FileID) int {
-	fe := e.files.lockOf(f)
-	if fe == nil {
-		return 0
-	}
-	defer e.files.unlock(f, fe)
-	return len(fe.writing)
 }
 
 // PendingWrites is the count of f's pending writes overlapping [off, end).
@@ -436,4 +417,131 @@ func (e *Engine) StageGrow(s entity.ShareID, f entity.FileID, size int64) error 
 	defer e.files.unlock(f, fe)
 	fe.insert(pendingOp{version: v, kind: opTruncate, extent: journal.Extent{Off: size}, grow: true})
 	return nil
+}
+
+// The calls below are what Close and Drop will run once built; until then
+// only tests call them, so they live here rather than in the engine.
+
+// CloseGroupCommits stops every journal's group commit and joins its
+// goroutine, as Close will: a batch in flight has its context cancelled, and
+// no batch starts after it.
+func (e *Engine) CloseGroupCommits() {
+	e.gcMu.Lock()
+	gs := e.gcs
+	e.gcs = nil
+	e.gcsClosed = true
+	e.gcMu.Unlock()
+	for _, g := range gs {
+		g.mu.Lock()
+		g.closed = true
+		g.mu.Unlock()
+		g.cancel()
+		close(g.stop)
+		<-g.done
+		g.mu.Lock()
+		g.broadcastLocked() // every waiter then finds the group commit closed
+		g.mu.Unlock()
+		g.removals.close()
+	}
+}
+
+// CommitAll commits the pending existence of every file of journal j, as
+// commitNow does for one, and as Close's last group commit will: it marks
+// every due file due now and returns once the due set is empty and no batch
+// is in flight, or at ctx's end.
+func (e *Engine) CommitAll(ctx context.Context, j Journal) error {
+	g := e.groupCommitFor(j)
+	for {
+		g.mu.Lock()
+		if g.closed {
+			g.mu.Unlock()
+			return errClosed
+		}
+		files := slices.Collect(maps.Keys(g.due))
+		done := len(files) == 0 && !g.inFlight
+		returned := g.returned
+		g.mu.Unlock()
+		if done {
+			return nil
+		}
+		// A file a removal's guard holds is committed by that removal's own
+		// phase 1, and a batch would only skip it: wait for the guard rather
+		// than ask for batch after batch. Under the test seam a batch takes
+		// it, so it is asked for like any other.
+		var guard <-chan struct{}
+		asked := false
+		for _, f := range files {
+			if ch := e.guardOf(f); ch != nil && !e.noGuardSkip.Load() {
+				guard = ch
+				continue
+			}
+			g.mu.Lock()
+			if d := g.due[f]; d != nil {
+				d.now, asked = true, true
+			}
+			g.mu.Unlock()
+		}
+		if asked {
+			g.poke()
+		}
+		select {
+		case <-returned:
+		case <-guard:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// DropShare takes share s's files off the due set of journal j and its
+// items off the journal's removal loop, ending each, as Drop will, and
+// returns once no batch is in flight there, so none of them is committed
+// after.
+func (e *Engine) DropShare(ctx context.Context, j Journal, s entity.ShareID) error {
+	g := e.groupCommitFor(j)
+	g.removals.dropShare(s)
+	for {
+		g.mu.Lock()
+		for f, d := range g.due {
+			if d.b.share.ID == s {
+				delete(g.due, f)
+				g.clearFailingLocked(f)
+			}
+		}
+		inFlight, returned := g.inFlight && !g.closed, g.returned
+		g.mu.Unlock()
+		if !inFlight {
+			return nil
+		}
+		select {
+		case <-returned:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// dropShare takes share s's items off the loop, ending each; one running
+// now is ended when its run returns, and none of the share's is enqueued
+// after.
+func (l *removalLoop) dropShare(s entity.ShareID) {
+	l.mu.Lock()
+	if l.dropped == nil {
+		l.dropped = map[entity.ShareID]bool{}
+	}
+	l.dropped[s] = true
+	var dropped []*loopItem
+	l.items = slices.DeleteFunc(l.items, func(it *loopItem) bool {
+		if it.b.share.ID == s {
+			dropped = append(dropped, it)
+			return true
+		}
+		return false
+	})
+	l.mu.Unlock()
+	for _, it := range dropped {
+		if it.end != nil {
+			it.end()
+		}
+	}
 }

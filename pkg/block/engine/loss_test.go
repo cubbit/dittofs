@@ -233,11 +233,7 @@ func TestALossBeforeTheWritesInsertCommitsItLost(t *testing.T) {
 func TestALostDeviceLogsEachFailingFileCleared(t *testing.T) {
 	c := &conflicting{}
 	logs := newLogRecorder()
-	u := newUnit(t, func(d *engine.Deps) {
-		c.Existence = d.Existence
-		d.Existence = c
-		d.Logger = slog.New(logs)
-	})
+	u := newUnit(t, onCommit(c.commit), func(d *engine.Deps) { d.Logger = slog.New(logs) })
 	f := committedFile(t, u, "a", 4)
 	c.on.Store(true)
 	u.write(t, f, 0, []byte("over"))
