@@ -42,6 +42,7 @@ var (
 // raised.
 type opened struct {
 	journal *versionLimit
+	id      journal.JournalID // the journal's identity as the store records it
 	table   bindings
 	stats   Stats
 	raised  []entity.ShardID
@@ -95,6 +96,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 	vl := newVersionLimit(j)
 	o := opened{
 		journal: vl,
+		id:      expect,
 		table:   removedBindings(tags),
 		stats:   newStats(),
 	}

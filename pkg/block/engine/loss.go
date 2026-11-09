@@ -2,9 +2,10 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 
-	"errors"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"slices"
@@ -121,6 +122,27 @@ func (l *losses) raiseAll() {
 //
 // A journal whose device was lost whole is synced no more: the sync answers
 // the journal closed, so no Commit answers a verifier past the loss.
+//
+// A read-only journal's sync is refused: once the drain finds the journal
+// read-only, the sync answers the journal's own refusal when its Sync
+// answered one, and otherwise its own, errSyncRefused, which also matches
+// journal.ErrJournalReadOnly and wraps the cause the journal entered with, so
+// nothing commits existence or a removal over it (RFC 8 §2.5, §11.2). The two
+// are told apart by undid: the journal refuses bare only a Sync of a file
+// whose removal it undid.
+//
+// decision: the refusal does not rest on the Sync's own answer. The journal
+// answers nil to a Sync whose records were all synced before the transition,
+// and a failed window's SyncError only once, so the group commit, a
+// removal's phase 1 and a stability point would go on committing over a
+// journal that refuses every write, which RFC 8 §2.5 rules out: its reopen
+// rebuilds pending existence from the journal rather than commit it. This is
+// the one place every sync passes, so the state is read here, after the
+// Sync. A sync that covered every record before the transition is refused
+// too: its writes stay pending and its removal is retried with the guard
+// held, though the journal holds them, until a reopen's recovery commits
+// them. Overturned by a journal whose Sync answers which records it covered
+// before the transition.
 func (e *Engine) sync(ctx context.Context, b *binding, ids ...journal.FileID) error {
 	_, err := e.syncMarks(ctx, b, ids...)
 	return err
@@ -136,9 +158,12 @@ func (e *Engine) syncMarks(ctx context.Context, b *binding, ids ...journal.FileI
 	}
 	for {
 		marks, err := b.h.Sync(ctx, ids...)
-		e.drain(b)
+		ro := e.drain(b)
 		var failed *journal.SyncError
 		if !errors.As(err, &failed) {
+			if ro.ReadOnly && !errors.Is(err, journal.ErrJournalReadOnly) {
+				return nil, readOnly(ro)
+			}
 			return marks, err
 		}
 		// decision: a file the SyncError names that no failed-window event
@@ -162,6 +187,24 @@ func (e *Engine) syncMarks(ctx context.Context, b *binding, ids ...journal.FileI
 			return nil, err
 		}
 	}
+}
+
+// errSyncRefused is the engine's refusal of a sync of a read-only journal
+// whose Sync did not refuse it: see sync.
+var errSyncRefused = errors.New("sync refused")
+
+// readOnly is the refusal of a sync of a journal in state ro: it matches
+// errSyncRefused and journal.ErrJournalReadOnly and wraps the cause the
+// journal entered with.
+func readOnly(ro journal.ReadOnlyState) error {
+	return fmt.Errorf("%w: %w: %w", errSyncRefused, journal.ErrJournalReadOnly, ro.Err)
+}
+
+// undid reports whether err is the journal's own read-only refusal of a
+// sync, which it answers, bare, only for a file whose removal it undid when
+// it turned read-only, and not the engine's errSyncRefused.
+func undid(err error) bool {
+	return errors.Is(err, journal.ErrJournalReadOnly) && !errors.Is(err, errSyncRefused)
 }
 
 // drain applies the loss events the journal reported since the last drain,
@@ -196,14 +239,17 @@ func (e *Engine) syncMarks(ctx context.Context, b *binding, ids ...journal.FileI
 // and committed lost, and a failed window's as of an unsynced one, dropped,
 // since the journal's loss event says why but not whether the write was
 // synced. Revisit when the event says it.
-func (e *Engine) drain(b *binding) {
+//
+// It answers the journal's read-only state, read with the ring.
+func (e *Engine) drain(b *binding) journal.ReadOnlyState {
 	l := &b.gc.losses
 	var dones []func()
 	defer func() { runAll(dones) }()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var lost []journal.LossEvent
-	for _, ev := range b.j.Stats().Losses {
+	st := b.j.Stats()
+	for _, ev := range st.Losses {
 		if ev.SeqNum <= l.seq {
 			continue
 		}
@@ -235,6 +281,8 @@ func (e *Engine) drain(b *binding) {
 	for _, ev := range lost {
 		dones = append(dones, e.markLost(l, entity.FileID(ev.File.Bytes()), ev)...)
 	}
+	e.noteReadOnly(st.ReadOnly.ReadOnly, st.ReadOnly.Err)
+	return st.ReadOnly
 }
 
 // markLost applies ev to the pending write of f whose record it dropped, the

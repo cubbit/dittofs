@@ -94,7 +94,7 @@ func (r *reader) window(ctx context.Context, off int64, dst []byte) (int, error)
 func (r *reader) pass(ctx context.Context, off int64, dst []byte) (n int, again bool, err error) {
 	_, missing, _, asOf, err := r.b.h.ReadAt(ctx, fileID(r.f), off, dst)
 	if err != nil {
-		return 0, false, r.e.journalErr(err)
+		return 0, false, r.e.journalReadErr(err)
 	}
 	if len(missing) == 0 {
 		return len(dst), false, nil

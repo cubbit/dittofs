@@ -385,7 +385,14 @@ func (e *Engine) runClone(c *cloneRun) {
 func (e *Engine) attempt(ctx context.Context, c *cloneRun, r *removal) answer {
 	if !c.copied {
 		if err := e.copyAll(ctx, c); err != nil {
-			if ctx.Err() == nil {
+			switch {
+			case ctx.Err() != nil:
+			case errors.Is(err, journal.ErrJournalReadOnly):
+				// Refused until the journal is reopened: noteReadOnly logs
+				// the state once, not once per retry.
+				e.noteReadOnly(true, err)
+				e.d.Logger.Debug("a clone's copies refused by the read-only journal: retried", "src", c.src, "dst", c.dst, "err", err)
+			default:
 				e.d.Logger.Error("a clone's copies failed after its journal step: retried", "src", c.src, "dst", c.dst, "err", err)
 			}
 			return itemRetry
