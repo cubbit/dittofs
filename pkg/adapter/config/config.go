@@ -10,13 +10,9 @@
 package config
 
 import (
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/netip"
-	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -78,16 +74,26 @@ type SMB struct {
 	}
 }
 
-// Settings is NFS or SMB: its one method is unexported, so no other type
-// satisfies it. Reconfigure takes it so that a protocol's own live settings
+// Settings is NFS or SMB. Its one method is unexported, but a type embedding
+// either satisfies it too, as does a pointer to either: Validate,
+// RestartRequired and AdapterOf refuse any type but the NFS and SMB values. Reconfigure takes it so that a protocol's own live settings
 // reach it; Reconfigure refuses the other protocol's shape.
 type Settings interface{ common() Adapter }
 
 func (s NFS) common() Adapter { return s.Adapter }
 func (s SMB) common() Adapter { return s.Adapter }
 
-// AdapterOf returns the Adapter s embeds.
-func AdapterOf(s Settings) Adapter { return s.common() }
+// AdapterOf returns the Adapter s embeds. It is called on settings Validate
+// accepted, and returns the zero Adapter for any type but NFS and SMB.
+func AdapterOf(s Settings) Adapter {
+	switch v := s.(type) {
+	case NFS:
+		return v.Adapter
+	case SMB:
+		return v.Adapter
+	}
+	return Adapter{}
+}
 
 // The drain deadline's floor: SMB's break deadline plus the request deadline.
 const (
@@ -103,8 +109,9 @@ var (
 
 // Validate checks every field of s against its rule and returns an error
 // naming the field and the rule; it never clamps or defaults. New,
-// Reconfigure and the control plane call it. It loads NFS's TLS certificate,
-// key and client CA, so one that does not load is refused at configured.
+// Reconfigure and the control plane call it. It reads no file: the control
+// plane validates on hosts that hold no certificate, so the NFS constructor
+// loads the TLS files.
 func Validate(s Settings) error {
 	var errs []error
 	refuse := func(field, format string, args ...any) {
@@ -120,16 +127,16 @@ func Validate(s Settings) error {
 		if t.MinVersion != "1.3" {
 			refuse("TLS.MinVersion", "%q is not 1.3, the floor of NFS over TLS", t.MinVersion)
 		}
-		if (t.CertFile == "") != (t.KeyFile == "") {
-			refuse("TLS.KeyFile", "CertFile and KeyFile are set together or not at all")
+		switch {
+		case t.CertFile != "" && t.KeyFile == "":
+			refuse("TLS.KeyFile", "empty while CertFile is set")
+		case t.KeyFile != "" && t.CertFile == "":
+			refuse("TLS.CertFile", "empty while KeyFile is set")
+		case t.Mode == "require" && t.CertFile == "":
+			refuse("TLS.CertFile", "empty while Mode is require")
 		}
 		if t.ClientCA != "" && t.CertFile == "" {
 			refuse("TLS.ClientCA", "set while TLS is off (CertFile empty)")
-		}
-		if t.CertFile != "" && t.KeyFile != "" {
-			if field, err := loadTLS(t.CertFile, t.KeyFile, t.ClientCA); err != nil {
-				refuse(field, "%v", err)
-			}
 		}
 	case SMB:
 		validateAdapter(v.Adapter, refuse)
@@ -149,44 +156,26 @@ func Validate(s Settings) error {
 	return errors.Join(errs...)
 }
 
-// loadTLS loads the certificate, its key and the client CA, and names the
-// field of the first that does not load.
-func loadTLS(certFile, keyFile, clientCA string) (field string, err error) {
-	certPEM, err := os.ReadFile(certFile)
-	if err != nil {
-		return "TLS.CertFile", err
-	}
-	if block, _ := pem.Decode(certPEM); block == nil {
-		return "TLS.CertFile", fmt.Errorf("%s holds no PEM certificate", certFile)
-	} else if _, err := x509.ParseCertificate(block.Bytes); err != nil {
-		return "TLS.CertFile", fmt.Errorf("%s: %w", certFile, err)
-	}
-	keyPEM, err := os.ReadFile(keyFile)
-	if err != nil {
-		return "TLS.KeyFile", err
-	}
-	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
-		return "TLS.KeyFile", fmt.Errorf("%s: %w", keyFile, err)
-	}
-	if clientCA == "" {
-		return "", nil
-	}
-	caPEM, err := os.ReadFile(clientCA)
-	if err != nil {
-		return "TLS.ClientCA", err
-	}
-	if !x509.NewCertPool().AppendCertsFromPEM(caPEM) {
-		return "TLS.ClientCA", fmt.Errorf("%s holds no PEM certificate", clientCA)
-	}
-	return "", nil
-}
-
 func validateAdapter(a Adapter, refuse func(field, format string, args ...any)) {
+	// An IPv4-mapped IPv6 address is its IPv4 address, and an unspecified
+	// address already binds every other address of its family.
 	for i, addr := range a.Addrs {
+		field := fmt.Sprintf("Addrs[%d]", i)
 		if !addr.IsValid() {
-			refuse(fmt.Sprintf("Addrs[%d]", i), "not a valid address")
-		} else if slices.Contains(a.Addrs[:i], addr) {
-			refuse(fmt.Sprintf("Addrs[%d]", i), "%s is listed twice", addr)
+			refuse(field, "not a valid address")
+			continue
+		}
+		addr = addr.Unmap()
+		for _, prev := range a.Addrs[:i] {
+			prev = prev.Unmap()
+			if prev == addr {
+				refuse(field, "%s is listed twice", addr)
+				break
+			}
+			if prev.Is4() == addr.Is4() && (prev.IsUnspecified() || addr.IsUnspecified()) {
+				refuse(field, "%s and %s overlap: an unspecified address binds its whole family", prev, addr)
+				break
+			}
 		}
 	}
 	if floor := breakDeadline + requestDeadline; a.DrainDeadline < floor {
@@ -221,8 +210,9 @@ var ErrRestartRequired = errors.New("config: restart required")
 
 // RestartRequired compares two shapes of one protocol, field by field. It
 // returns nil when no field tagged restart:"true" differs, and otherwise an
-// error wrapping ErrRestartRequired that names each one that does. Two
-// protocols' shapes are refused with an error that does not wrap it.
+// error wrapping ErrRestartRequired that names each one that does. Any pair
+// but two NFS or two SMB values is refused with an error that does not wrap
+// it.
 //
 // decision: no adapter field is restart-only today. Every adapter setting is
 // live, and Addrs, restart-only in the bootstrap file, is live here; so
@@ -231,9 +221,22 @@ var ErrRestartRequired = errors.New("config: restart required")
 // mechanism. Tag one when a setting is found that a connection accepted after
 // Reconfigure cannot pick up.
 func RestartRequired(old, next Settings) error {
-	if old == nil || next == nil || reflect.TypeOf(old) != reflect.TypeOf(next) {
-		return fmt.Errorf("config: %T and %T are not one protocol's settings", old, next)
+	switch old.(type) {
+	case NFS:
+		if _, ok := next.(NFS); ok {
+			return restartRequired(old, next)
+		}
+	case SMB:
+		if _, ok := next.(SMB); ok {
+			return restartRequired(old, next)
+		}
 	}
+	return fmt.Errorf("config: %T and %T are not one protocol's settings", old, next)
+}
+
+// restartRequired is RestartRequired's comparison over two values of one
+// struct type.
+func restartRequired(old, next any) error {
 	var changed []string
 	restartFields(reflect.ValueOf(old), reflect.ValueOf(next), "", &changed)
 	if len(changed) == 0 {

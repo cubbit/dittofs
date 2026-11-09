@@ -2,8 +2,13 @@ package config
 
 import (
 	"errors"
+	"go/parser"
+	"go/token"
+	"maps"
 	"net/netip"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -44,13 +49,8 @@ var rfc13 = map[reflect.Type]map[string]field{
 }
 
 func with(a, b map[string]field) map[string]field {
-	m := map[string]field{}
-	for k, v := range a {
-		m[k] = v
-	}
-	for k, v := range b {
-		m[k] = v
-	}
+	m := maps.Clone(a)
+	maps.Copy(m, b)
 	return m
 }
 
@@ -139,6 +139,11 @@ func TestValidateRefusesNamingTheField(t *testing.T) {
 	}{
 		{"Addrs[0]", nfs(func(s *NFS) { s.Addrs = []netip.Addr{{}} })},
 		{"Addrs[1]", nfs(func(s *NFS) { s.Addrs = append(s.Addrs, s.Addrs[0]) })},
+		{"Addrs[1]", nfs(func(s *NFS) { s.Addrs = append(s.Addrs, netip.MustParseAddr("::ffff:127.0.0.1")) })},
+		{"Addrs[1]", smb(func(s *SMB) { s.Addrs = append(s.Addrs, netip.IPv4Unspecified()) })},
+		{"Addrs[1]", smb(func(s *SMB) {
+			s.Addrs = []netip.Addr{netip.IPv6Unspecified(), netip.MustParseAddr("fd00::1")}
+		})},
 		{"DrainDeadline", nfs(func(s *NFS) { s.DrainDeadline = 0 })},
 		{"IdleTimeout", nfs(func(s *NFS) { s.IdleTimeout = -time.Second })},
 		{"WriteDeadline", smb(func(s *SMB) { s.WriteDeadline = 0 })},
@@ -149,6 +154,8 @@ func TestValidateRefusesNamingTheField(t *testing.T) {
 		{"TLS.Mode", nfs(func(s *NFS) { s.TLS.Mode = "" })},
 		{"TLS.MinVersion", nfs(func(s *NFS) { s.TLS.MinVersion = "1.2" })},
 		{"TLS.KeyFile", nfs(func(s *NFS) { s.TLS.CertFile = "tls.crt" })},
+		{"TLS.CertFile", nfs(func(s *NFS) { s.TLS.KeyFile = "tls.key" })},
+		{"TLS.CertFile", nfs(func(s *NFS) { s.TLS.Mode = "require" })},
 		{"TLS.ClientCA", nfs(func(s *NFS) { s.TLS.ClientCA = "ca.crt" })},
 		{"Dialects.Min", smb(func(s *SMB) { s.Dialects.Min = "2.0.2" })},
 		{"Dialects.Max", smb(func(s *SMB) { s.Dialects.Max = "3.2" })},
@@ -176,7 +183,8 @@ func TestDrainDeadlineFloor(t *testing.T) {
 }
 
 // tagged is a test-only shape with a restart-only field, since no adapter
-// field is restart-only today.
+// field is restart-only today; RestartRequired takes only NFS and SMB, so it
+// is compared through the comparison RestartRequired runs.
 type tagged struct {
 	Adapter
 	Nested struct {
@@ -185,18 +193,16 @@ type tagged struct {
 	Live int
 }
 
-func (s tagged) common() Adapter { return s.Adapter }
-
 func TestRestartRequiredReadsTheTag(t *testing.T) {
 	var old, next tagged
 	next.Nested.Port = 1
-	err := RestartRequired(old, next)
+	err := restartRequired(old, next)
 	if !errors.Is(err, ErrRestartRequired) || !strings.Contains(err.Error(), "Nested.Port") {
 		t.Errorf("restart-only Nested.Port changed: %v, want ErrRestartRequired naming Nested.Port", err)
 	}
 	next = tagged{Live: 1}
 	next.DrainDeadline = time.Minute
-	if err := RestartRequired(old, next); err != nil {
+	if err := restartRequired(old, next); err != nil {
 		t.Errorf("only live fields changed: %v, want nil", err)
 	}
 	a, b := validNFS(), validNFS()
@@ -215,10 +221,56 @@ func TestRestartRequiredRefusesTheOtherProtocol(t *testing.T) {
 	}
 }
 
-func TestAdapterOf(t *testing.T) {
+// foreign satisfies Settings by embedding NFS; a *NFS by its method set.
+type foreign struct{ NFS }
+
+// Only NFS and SMB values are settings: a pointer, nil or a type embedding
+// one is refused by Validate and RestartRequired, and AdapterOf returns the
+// zero Adapter for it, none of them panicking.
+func TestOnlyNFSAndSMBValuesAreSettings(t *testing.T) {
+	n := validNFS()
+	for _, s := range []Settings{&n, nil, foreign{n}} {
+		if err := Validate(s); err == nil {
+			t.Errorf("Validate(%T): nil, want refused", s)
+		}
+		if err := RestartRequired(s, s); err == nil || errors.Is(err, ErrRestartRequired) {
+			t.Errorf("RestartRequired(%T, %T): %v, want refused, not as a restart", s, s, err)
+		}
+		if err := RestartRequired(n, s); err == nil {
+			t.Errorf("RestartRequired(NFS, %T): nil, want refused", s)
+		}
+		if a := AdapterOf(s); !reflect.DeepEqual(a, Adapter{}) {
+			t.Errorf("AdapterOf(%T) = %+v, want the zero Adapter", s, a)
+		}
+	}
+	if a := AdapterOf(n); !reflect.DeepEqual(a, n.Adapter) {
+		t.Errorf("AdapterOf(NFS) = %+v, want its Adapter", a)
+	}
 	s := validSMB()
-	s.IdleTimeout = time.Hour
-	if got := AdapterOf(s); got.IdleTimeout != time.Hour {
-		t.Errorf("AdapterOf: IdleTimeout %s, want 1h", got.IdleTimeout)
+	if a := AdapterOf(s); !reflect.DeepEqual(a, s.Adapter) {
+		t.Errorf("AdapterOf(SMB) = %+v, want its Adapter", a)
+	}
+}
+
+// pkg/adapter/config is a leaf: it imports only the standard library.
+func TestImportsOnlyTheStandardLibrary(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), f, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, imp := range file.Imports {
+			p, _ := strconv.Unquote(imp.Path.Value)
+			if strings.Contains(strings.Split(p, "/")[0], ".") {
+				t.Errorf("%s imports %s; pkg/adapter/config imports only the standard library", f, p)
+			}
+		}
 	}
 }
