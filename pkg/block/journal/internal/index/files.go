@@ -260,6 +260,18 @@ func (fs *files) openBuckets(start core.Version) {
 // raise took higher stays there, and it is safe beside readers and drops. It
 // leaves opened alone, so an entry changed since open is still checked
 // against its own version.
+//
+// decision: a raise refuses a stale fill for a file with no entry and for an
+// entry not changed since open, but not for an entry whose change version c
+// satisfies opened < c < the raised counter: that entry is checked against
+// its own version, not the raised bucket. It holds because a fill is checked
+// against the file's own tag first, and a share attaching after open
+// normally owns no entry changed before the attach. Overturned by an attach
+// of a tag that still holds entries in this index: a closed handle leaves its
+// tag's extents held, so a later attach of the same tag with a floor above
+// such an entry can accept a fill whose asOf came from another version space.
+// Withdraw the rule by raising opened, an atomic on the read path, if that
+// re-attach is reachable with such an asOf.
 func (fs *files) raiseBuckets(counter uint64) {
 	for i := range fs.buckets {
 		raise(&fs.buckets[i], counter)
@@ -270,7 +282,9 @@ func (fs *files) raiseBuckets(counter uint64) {
 // own change version when it has changed since open, and its floor bucket
 // otherwise — the top of the range the bucket-start rule allows, which keeps
 // a read that began before the open from filling a file that has an entry
-// too. The caller holds f's lock.
+// too. The caller holds f's lock. A raise of the buckets after open does not
+// move opened, so an entry changed since open keeps answering with its own
+// version; see the decision at raiseBuckets.
 func (fs *files) checkedAgainst(f *file, id core.FileID) core.Version {
 	if c := f.change.Counter; c > fs.opened {
 		return f.change
