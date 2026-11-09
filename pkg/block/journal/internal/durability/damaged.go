@@ -83,6 +83,12 @@ func (d *Durability) countUnproduced(seg core.SegmentID, delta int) {
 // next read of the record tries the repoint again. Overturned if a corrupt
 // record can stay in the index past its Corrupt call some other way, which
 // would then have to be counted here too.
+//
+// The ceiling is a drop the index refused: when dropCorrupt's FailWindow
+// fails and drops nothing, the index may still name the record, and nothing
+// counts it, so its segment reads unblocked. That holds while nothing selects
+// segments for reclamation; once something does, count such a record as
+// unproduced where dropCorrupt sees the refusal.
 func (d *Durability) blocksLocked(seg core.SegmentID, r *damagedRow) bool {
 	return !r.retired && d.unproduced[seg] > 0
 }
