@@ -238,21 +238,21 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the read-only state, the probe and the reopen.'
+  reason: 'No journal yet: the fixture fails at Init. Needs the read-only state, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
   issue: '#3748'
   message: 'fixture:'
 - test: TestRFC1B_ReadOnlyProbe
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the read-only state, the probe and the reopen.'
+  reason: 'No journal yet: the fixture fails at Init. Needs the read-only state, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
   issue: '#3748'
   message: 'fixture:'
 - test: TestRFC1B_ReadOnlyStopsTheDrain
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the read-only state, the probe and the reopen.'
+  reason: 'No journal yet: the fixture fails at Init. Needs the read-only state, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
   issue: '#3748'
   message: 'fixture:'
 - test: TestRFC1B_ReclaimNotStarved
