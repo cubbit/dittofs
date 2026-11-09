@@ -7,7 +7,8 @@ description: >
 runs:
   using: composite
   steps:
-    - name: Install foundationdb-clients
+    - name: Pick the package for this machine
+      id: pick
       shell: bash
       run: |
         set -euo pipefail
@@ -18,8 +19,23 @@ runs:
           arm64) arch=aarch64 sum=b3a5dd972ffd37c1d5dc0c29ffa00e2169bcac62c0186571acced8b006af7cc2 ;;
           *) echo "::error::no foundationdb-clients package for $(dpkg --print-architecture)"; exit 1 ;;
         esac
-        deb="$RUNNER_TEMP/foundationdb-clients_${version}-1_${arch}.deb"
-        curl -fsSL --retry 5 -o "$deb" \
-          "https://github.com/apple/foundationdb/releases/download/${version}/foundationdb-clients_${version}-1_${arch}.deb"
-        echo "$sum  $deb" | sha256sum -c -
-        sudo dpkg -i "$deb"
+        {
+          echo "version=$version"
+          echo "deb=foundationdb-clients_${version}-1_${arch}.deb"
+          echo "sum=$sum"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Fetch foundationdb-clients
+      id: fetch
+      uses: ./.github/actions/release-asset
+      with:
+        repo: apple/foundationdb
+        tag: ${{ steps.pick.outputs.version }}
+        asset: ${{ steps.pick.outputs.deb }}
+        sha256: ${{ steps.pick.outputs.sum }}
+
+    - name: Install foundationdb-clients
+      shell: bash
+      env:
+        DEB: ${{ steps.fetch.outputs.path }}
+      run: sudo dpkg -i "$DEB"

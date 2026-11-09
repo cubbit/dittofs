@@ -15,7 +15,8 @@ import (
 )
 
 // A write a batch claimed whose window then fails leaves the batch: the size
-// the batch commits excludes it, and its Done runs once, from the drop.
+// the batch commits excludes it, and its Done runs once, from the drop. The
+// other's runs before CommitNow returns, however slow the Done.
 func TestAFailedWindowTakesAWriteOutOfItsBatch(t *testing.T) {
 	u := newUnit(t)
 	res := enginetest.NewReservations(t)
@@ -23,6 +24,8 @@ func TestAFailedWindowTakesAWriteOutOfItsBatch(t *testing.T) {
 	f := made.ID
 	for _, off := range []int64{0, 4} {
 		o, answered := res.Opts()
+		done := o.Done
+		o.Done = func() { time.Sleep(5 * time.Millisecond); done() }
 		_, err := u.e.Write(t.Context(), u.share.ID, f, off, []byte("four"), o)
 		answered(err)
 	}
@@ -47,6 +50,8 @@ func TestARetriedBatchCallsEachDoneOnce(t *testing.T) {
 	res := enginetest.NewReservations(t)
 	f := u.create(t, "a")
 	o, answered := res.Opts()
+	done := o.Done
+	o.Done = func() { time.Sleep(5 * time.Millisecond); done() } // slow, so a waiter woken before it fails
 	_, err := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("abc"), o)
 	answered(err)
 	c.on.Store(true)
@@ -143,6 +148,8 @@ func TestABatchRetriesAfterADrop(t *testing.T) {
 	f := made.ID
 	for _, off := range []int64{0, 4} {
 		o, answered := res.Opts()
+		done := o.Done
+		o.Done = func() { time.Sleep(5 * time.Millisecond); done() } // slow, so a waiter woken before it fails
 		_, err := u.e.Write(t.Context(), u.share.ID, f, off, []byte("four"), o)
 		answered(err)
 	}
