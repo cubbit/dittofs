@@ -381,9 +381,9 @@ func (s *Server) mTLSEnabled() bool {
 	return s.tlsConfig != nil && s.tlsConfig.ClientAuth == tls.RequireAndVerifyClientCert
 }
 
-// DisplayAddr returns a host:port that is routable for example/log URLs. A
-// wildcard bind (0.0.0.0, ::, or empty) is a listen address, not a
-// destination, so it is shown as localhost.
+// DisplayAddr returns a host:port to reach the server at, for example and log
+// URLs and for `dfs start`'s health probe. A wildcard bind (0.0.0.0, ::, or
+// empty) is a listen address, not a destination, so it becomes localhost.
 func DisplayAddr(host string, port int) string {
 	switch host {
 	case "", "0.0.0.0", "::", "[::]":

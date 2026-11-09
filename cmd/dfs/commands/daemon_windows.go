@@ -4,7 +4,6 @@ package commands
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 
@@ -85,16 +84,8 @@ func startDaemon() error {
 
 	// A read handle on the log, positioned where this run's output begins, for
 	// the tail shown if the server fails to start.
-	rf, err := os.Open(logPath)
-	if err != nil {
-		_ = lf.Close()
-		return fmt.Errorf("failed to open log file %s: %w", logPath, err)
-	}
+	rf := openLogTail(logPath)
 	defer func() { _ = rf.Close() }()
-	if _, err := rf.Seek(0, io.SeekEnd); err != nil {
-		_ = lf.Close()
-		return fmt.Errorf("failed to read log file %s: %w", logPath, err)
-	}
 
 	cmd := exec.Command(executable, args...)
 	cmd.Stdout = lf
