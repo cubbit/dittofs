@@ -11,6 +11,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // TestClock_WallJumpMovesNoTimer checks that the journal times its waits on
@@ -25,7 +26,7 @@ import (
 func TestClock_WallJumpMovesNoTimer(t *testing.T) {
 	f := journaltest.New(t)
 	h := f.Share(0)
-	syncs := f.Seam.Hold(t, journaltest.OpSync, "*.seg")
+	syncs := f.Seam.Hold(t, kit.OpSync, "*.seg")
 
 	// The write runs aside, so a journal that syncs inside it parks at the
 	// hold rather than stopping the test. The jump waits for the write to
@@ -79,14 +80,14 @@ func TestClock_WallJumpMovesNoTimer(t *testing.T) {
 	// hold, since nothing at the seam marks a released call as done.
 	var synced string
 	for _, name := range segmentFiles(t, f) {
-		if f.Seam.CallsFor(journaltest.OpSync, name) != 0 && bytes.Contains(liveBytes(t, f, name), before) {
+		if f.Seam.CallsFor(kit.OpSync, name) != 0 && bytes.Contains(liveBytes(t, f, name), before) {
 			synced = name
 		}
 	}
 	if synced == "" {
 		var counts []string
 		for _, name := range segmentFiles(t, f) {
-			counts = append(counts, fmt.Sprintf("%s synced %d times", name, f.Seam.CallsFor(journaltest.OpSync, name)))
+			counts = append(counts, fmt.Sprintf("%s synced %d times", name, f.Seam.CallsFor(kit.OpSync, name)))
 		}
 
 		t.Fatalf("the sync within the bound is on no segment whose live bytes hold the bounded write: %s", strings.Join(counts, ", "))

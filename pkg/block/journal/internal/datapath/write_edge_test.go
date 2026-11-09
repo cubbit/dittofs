@@ -12,12 +12,12 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // fileWrites returns the write records of f on disk, in segment and offset
 // order.
-func fileWrites(t *testing.T, seam *journaltest.Seam, f core.FileID) []onDisk {
+func fileWrites(t *testing.T, seam *kit.Seam, f core.FileID) []onDisk {
 	t.Helper()
 	var out []onDisk
 	for _, r := range readRecords(t, seam) {
@@ -318,7 +318,7 @@ func TestWriteAt_ThreePiecesAcrossTwoRolls(t *testing.T) {
 func TestWriteAt_LaterPieceFails(t *testing.T) {
 	var armed atomic.Bool
 	var c *Core
-	var seam *journaltest.Seam
+	var seam *kit.Seam
 	boom := errors.New("injected write failure")
 	f := testFile(12)
 	c, seam = newTestCore(t, func(o *coreOptions) {
@@ -333,9 +333,9 @@ func TestWriteAt_LaterPieceFails(t *testing.T) {
 			if !ok {
 				return
 			}
-			var rules []journaltest.Rule
+			var rules []kit.Rule
 			for id := p.Record.Segment + 1; id <= p.Record.Segment+8; id++ {
-				rules = append(rules, journaltest.Failing(journaltest.OpWrite, format.SegmentName(id), 0, boom))
+				rules = append(rules, kit.Failing(kit.OpWrite, format.SegmentName(id), 0, boom))
 			}
 			if err := seam.Schedule(rules...); err != nil {
 				panic(err)

@@ -1,4 +1,4 @@
-package journaltest
+package kit
 
 import "github.com/cubbit/dittofs/pkg/sim"
 

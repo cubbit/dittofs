@@ -11,14 +11,14 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // failSyncOf schedules one failing sync of the segment's file at the seam.
 func (r *rig) failSyncOf(t *testing.T, seg core.SegmentID, err error) {
 	t.Helper()
-	if e := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(seg), 1, err)); e != nil {
+	if e := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(seg), 1, err)); e != nil {
 		t.Fatal(e)
 	}
 }
@@ -157,7 +157,7 @@ func TestASyncOfAnEndedSegmentIsNotAFailure(t *testing.T) {
 	f, g := file(1), file(2)
 	a := r.appendWrite(t, f, 0, "a")
 
-	hold := r.seam.HoldFirst(t, journaltest.OpWrite, format.SegmentName(a.Segment))
+	hold := r.seam.HoldFirst(t, kit.OpWrite, format.SegmentName(a.Segment))
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -166,7 +166,7 @@ func TestASyncOfAnEndedSegmentIsNotAFailure(t *testing.T) {
 		_, _ = r.streams.For(g).Append(h, format.RecordBody{Payload: []byte("g"), MTime: 1})
 	}()
 	<-hold.Reached()
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpWrite, format.SegmentName(a.Segment), 1, errors.New("write boom"))); err != nil {
+	if err := r.seam.Schedule(kit.Failing(kit.OpWrite, format.SegmentName(a.Segment), 1, errors.New("write boom"))); err != nil {
 		t.Fatal(err)
 	}
 	r.appendFailing(t, f, 1)

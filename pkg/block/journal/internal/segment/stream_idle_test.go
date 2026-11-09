@@ -7,12 +7,12 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // The clock the idle checks drive by hand is the shared double,
-// journaltest.NewStopwatchClock — a *sim.TestClock carried through
+// kit.NewStopwatchClock — a *sim.TestClock carried through
 // journaltest, which the import rule lets reach pkg/sim, so this package
 // never imports it itself. Elapsed moves only when a test advances it, and
 // every After channel is closed by the Advance that reaches its deadline,
@@ -31,12 +31,12 @@ import (
 // the build returns, so the first append never races the refill; the pool
 // comes back with them, for a check whose second roll takes the spare the
 // first roll's refill owes settles it the same way before it takes. The
-// clock comes from each check's own journaltest.NewStopwatchClock, held in
+// clock comes from each check's own kit.NewStopwatchClock, held in
 // a := so no name of pkg/sim reaches this package.
-func idleOver(t *testing.T, cap int64, clock core.Clock) (*Stream, *journaltest.Seam, *Set, *Pool) {
+func idleOver(t *testing.T, cap int64, clock core.Clock) (*Stream, *kit.Seam, *Set, *Pool) {
 	t.Helper()
 
-	seam, err := journaltest.NewSeam(t.TempDir())
+	seam, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
@@ -111,7 +111,7 @@ func idleLastAppend(s *Stream) time.Duration {
 func TestStreamIdleDueRefusesEveryStreamThatIsNoCandidate(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	c := journaltest.NewStopwatchClock()
+	c := kit.NewStopwatchClock()
 	s, _, _, _ := idleOver(t, 64<<10, c)
 
 	// No segment yet: never a candidate.
@@ -169,7 +169,7 @@ func TestStreamIdleDueRefusesEveryStreamThatIsNoCandidate(t *testing.T) {
 func TestStreamIdleDueAnswersTheExactRemainingWait(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	c := journaltest.NewStopwatchClock()
+	c := kit.NewStopwatchClock()
 	s, _, _, _ := idleOver(t, 64<<10, c)
 	// Two records, so the stream holds 128 payload bytes past its header:
 	// a candidate at any positive threshold below that. The appends sit 5 s
@@ -197,7 +197,7 @@ func TestStreamIdleDueAnswersTheExactRemainingWait(t *testing.T) {
 func TestStreamIdleDueComesAtExactlyTheIdleAge(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	c := journaltest.NewStopwatchClock()
+	c := kit.NewStopwatchClock()
 	s, _, _, _ := idleOver(t, 64<<10, c)
 	idleAppend(t, s, 64, 0)
 	c.Advance(core.IdleSealAge - time.Nanosecond)
@@ -218,7 +218,7 @@ func TestStreamIdleDueComesAtExactlyTheIdleAge(t *testing.T) {
 func TestStreamWatchIdleStampsAWatchingStreamJustActive(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	c := journaltest.NewStopwatchClock()
+	c := kit.NewStopwatchClock()
 	s, _, _, _ := idleOver(t, 64<<10, c)
 	idleAppend(t, s, 64, 0)
 	c.Advance(10 * time.Second)
@@ -228,7 +228,7 @@ func TestStreamWatchIdleStampsAWatchingStreamJustActive(t *testing.T) {
 
 	// A second clock, installed at its own later reading of Elapsed: the
 	// stream counts as just active from that reading.
-	later := journaltest.NewStopwatchClock()
+	later := kit.NewStopwatchClock()
 	later.Advance(11 * time.Second)
 	s.watchIdle(later)
 	if due, wait := s.idleDue(later.Elapsed(), 8); due || wait != core.IdleSealAge {
@@ -246,7 +246,7 @@ func TestStreamWatchIdleStampsAWatchingStreamJustActive(t *testing.T) {
 func TestStreamARefusedAppendDoesNotMoveTheStamp(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	c := journaltest.NewStopwatchClock()
+	c := kit.NewStopwatchClock()
 	s, _, _, _ := idleOver(t, 64<<10, c)
 	idleAppend(t, s, 64, 0)
 	if err := s.Close(); err != nil {
@@ -271,7 +271,7 @@ func TestStreamARefusedAppendDoesNotMoveTheStamp(t *testing.T) {
 func TestStreamAnAppendThatReservedAfterThePeekKeepsTheSegmentOpen(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	c := journaltest.NewStopwatchClock()
+	c := kit.NewStopwatchClock()
 	s, _, set, _ := idleOver(t, 64<<10, c)
 	w := idleAppend(t, s, 64, 0)
 	threshold := w.Loc.Len - 8
@@ -304,7 +304,7 @@ func TestStreamAnAppendThatReservedAfterThePeekKeepsTheSegmentOpen(t *testing.T)
 func TestStreamSealIdleSealsADueSegmentEarly(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	c := journaltest.NewStopwatchClock()
+	c := kit.NewStopwatchClock()
 	s, _, _, _ := idleOver(t, 64<<10, c)
 	w := idleAppend(t, s, 64, 0)
 	c.Advance(2 * core.IdleSealAge)
@@ -352,7 +352,7 @@ func TestStreamSealIdleSealsADueSegmentEarly(t *testing.T) {
 func TestStreamSealIdleRefusesAStreamSomeoneElseSealed(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	c := journaltest.NewStopwatchClock()
+	c := kit.NewStopwatchClock()
 	s, _, _, _ := idleOver(t, 64<<10, c)
 	w := idleAppend(t, s, 64, 0)
 	if _, err := s.Seal(false); err != nil {

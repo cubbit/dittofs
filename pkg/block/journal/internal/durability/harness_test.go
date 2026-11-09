@@ -1,6 +1,7 @@
 package durability_test
 
 import (
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"log/slog"
 	"math"
 	"sync"
@@ -12,7 +13,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -35,7 +35,7 @@ type marked struct {
 type env struct {
 	t        *testing.T
 	dir      string
-	seam     *journaltest.Seam
+	seam     *kit.Seam
 	streams  *segment.Streams
 	pool     *segment.Pool
 	cache    *segment.Descriptors
@@ -84,7 +84,7 @@ func buildEnvWith(t *testing.T, targets segment.Targets, max int64) *env {
 	t.Helper()
 
 	dir := t.TempDir()
-	seam, err := journaltest.NewSeam(dir)
+	seam, err := kit.NewSeam(dir)
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
@@ -161,7 +161,7 @@ func (e *env) newDurabilityAt(dir string) *durability.Durability {
 		}
 	}
 	d, err := durability.New(durability.Config{
-		Clock:    journaltest.NewStopwatchClock(),
+		Clock:    kit.NewStopwatchClock(),
 		Domains:  noDomains{},
 		Index:    index.New(1 << 20),
 		Dir:      dir,

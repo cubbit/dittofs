@@ -12,7 +12,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 const (
@@ -36,7 +36,7 @@ const limitCount = uint64(1) << 40
 // writing without naming one; a State that carries its own Counters gets none,
 // and the noLimit option keeps the fresh core limitless too, so a test can hold
 // a core that issues nothing until it sets a limit itself.
-func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *journaltest.Seam) {
+func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *kit.Seam) {
 	t.Helper()
 	var o coreOptions
 	for _, f := range opts {
@@ -55,16 +55,16 @@ func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *journaltest.
 
 // buildCore is newTestCore before the limit is set: the core and the seam it
 // is built over, closed when the test ends, with its spares awaited.
-func buildCore(t *testing.T, o coreOptions) (*Core, *journaltest.Seam) {
+func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 	t.Helper()
-	seam, err := journaltest.NewSeam(t.TempDir())
+	seam, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
 
 	c, err := newCore(Deps{
 		FS:          seam.FS(),
-		Clock:       journaltest.NewStopwatchClock(),
+		Clock:       kit.NewStopwatchClock(),
 		Dir:         t.TempDir(),
 		Identity:    testIdentity,
 		Streams:     testStreams,

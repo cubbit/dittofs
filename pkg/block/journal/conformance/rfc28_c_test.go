@@ -14,6 +14,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -258,7 +259,7 @@ func TestRFC28C_BadCopyDoesNotMaskAGoodOne(t *testing.T) {
 		t.Fatalf("precondition: the synced record landed in segment %d and A in %d, want both in one", keptSeg, loc.Segment)
 	}
 
-	f.FailNext(journaltest.OpSync, name, 1)
+	f.FailNext(kit.OpSync, name, 1)
 	err := h.Sync(t.Context(), id)
 	stub(t, "Sync", err)
 	// decision: a journal may resolve a failed window by failing it, and this
@@ -297,7 +298,7 @@ func TestRFC28C_BadCopyDoesNotMaskAGoodOne(t *testing.T) {
 	loc = entryAt(t, g, id, 0).Location
 	name = segmentName(loc.Segment)
 
-	g.FailNext(journaltest.OpSync, name, 1)
+	g.FailNext(kit.OpSync, name, 1)
 	_, err = h.Truncate(t.Context(), id, 4096)
 	stub(t, "Truncate", err)
 	if err != nil {
@@ -365,7 +366,7 @@ func writeRec(t *testing.T, f *journaltest.Fixture, s, i int, off int64, size in
 // return; the fixture's crash runs last, because closing the dead journal
 // waits for its calls in flight. The fixture's crash repeats the seam's,
 // which then finds nothing pending to drop.
-func crashHeld(t *testing.T, f *journaltest.Fixture, h *journaltest.Hold) {
+func crashHeld(t *testing.T, f *journaltest.Fixture, h *kit.Hold) {
 	t.Helper()
 
 	if err := f.Seam.Crash(); err != nil {
@@ -403,7 +404,7 @@ func TestRFC28C_Rebuild(t *testing.T) {
 		tail[loc.Segment] = max(tail[loc.Segment], loc.Offset)
 	}
 
-	held := f.Seam.Hold(t, journaltest.OpWrite, "*.seg")
+	held := f.Seam.Hold(t, kit.OpWrite, "*.seg")
 	wrote := make(chan error, 1)
 	go func() {
 		_, err := f.Share(0).WriteAt(t.Context(), journaltest.File(0), 6*size, pattern("mid", size), 0)
@@ -452,7 +453,7 @@ func TestRFC28C_TornTailCutOff(t *testing.T) {
 
 	// Only X's segment is torn: its last unsynced write is cut in half,
 	// whatever the journal wrote elsewhere since.
-	f.Crash(journaltest.TornIn(segmentName(xSeg), 32<<10))
+	f.Crash(kit.TornIn(segmentName(xSeg), 32<<10))
 
 	if got := f.J.Stats().Counters.TornTails; got != 1 {
 		t.Fatalf("TornTails = %d after a torn record, want 1", got)
@@ -637,7 +638,7 @@ func TestRFC28C_BitsSurviveRestart(t *testing.T) {
 	g := journaltest.NewUnwatched(t)
 	h = g.Share(0)
 	d := writeSynced(t, g, 0, 0, 0, 64<<10)
-	g.Drop(journaltest.OpSync, segmentName(entryAt(t, g, d.id, 0).Location.Segment))
+	g.Drop(kit.OpSync, segmentName(entryAt(t, g, d.id, 0).Location.Segment))
 	mark(t, h, d.id, d.extent, d.version)
 
 	g.Crash()
@@ -1054,7 +1055,7 @@ type retiredAs struct {
 func retirement(t *testing.T, f *journaltest.Fixture, name string, files []string) retiredAs {
 	t.Helper()
 
-	removed, renamed := f.Seam.CallsFor(journaltest.OpRemove, name), f.Seam.CallsFor(journaltest.OpRename, name)
+	removed, renamed := f.Seam.CallsFor(kit.OpRemove, name), f.Seam.CallsFor(kit.OpRename, name)
 	switch {
 	case removed == 1 && renamed == 0:
 		return retiredAs{}
@@ -1107,7 +1108,7 @@ func awaitSpare(t *testing.T, f *journaltest.Fixture, roll func()) {
 	t.Helper()
 
 	before := segmentFiles(t, f)
-	held := f.Seam.Hold(t, journaltest.OpSyncDir, "*")
+	held := f.Seam.Hold(t, kit.OpSyncDir, "*")
 	defer held.Release()
 
 	roll()
@@ -1131,7 +1132,7 @@ func poolNow(t *testing.T, f *journaltest.Fixture) pool {
 	t.Helper()
 
 	s := f.J.Stats()
-	return pool{spareNames(t, f), f.Seam.Calls(journaltest.OpCreate), f.Seam.Calls(journaltest.OpAllocate), s.UsedBytes, s.HeadroomBytes, s.RepackReserveBytes}
+	return pool{spareNames(t, f), f.Seam.Calls(kit.OpCreate), f.Seam.Calls(kit.OpAllocate), s.UsedBytes, s.HeadroomBytes, s.RepackReserveBytes}
 }
 
 // wantReadopted fails the test unless, after an open, every spare of before
@@ -1223,14 +1224,14 @@ func TestRFC28C_SparesAreReAdopted(t *testing.T) {
 	g := journaltest.NewUnwatched(t)
 	other := writeSynced(t, g, 1, 1, 0, 64<<10)
 	before = poolNow(t, g)
-	held := g.Seam.Hold(t, journaltest.OpCreate, "*.spare.tmp")
+	held := g.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
 	taken := rollSynced(t, g)
 	if err := g.Seam.Crash(); err != nil {
 		t.Fatalf("crash: %v", err)
 	}
 
 	held.Release()
-	before.creates, before.allocates = g.Seam.Calls(journaltest.OpCreate), g.Seam.Calls(journaltest.OpAllocate)
+	before.creates, before.allocates = g.Seam.Calls(kit.OpCreate), g.Seam.Calls(kit.OpAllocate)
 	g.Crash()
 
 	if !slices.Contains(spareNames(t, g), segmentName(taken)) {
@@ -1243,7 +1244,7 @@ func TestRFC28C_SparesAreReAdopted(t *testing.T) {
 
 // spareSteps are the seam calls that make a spare, in order, every one on the
 // spare's temporary name: create, allocate, zero-fill, sync, rename.
-var spareSteps = []string{journaltest.OpCreate, journaltest.OpAllocate, journaltest.OpWrite, journaltest.OpSync, journaltest.OpRename}
+var spareSteps = []string{kit.OpCreate, kit.OpAllocate, kit.OpWrite, kit.OpSync, kit.OpRename}
 
 // wantWholeOrAbsent fails the test unless the directory holds no temporary
 // spare, every spare is at its cap, and the storage allocated covers every
@@ -1300,9 +1301,9 @@ func TestRFC28C_SpareIsWholeOrAbsent(t *testing.T) {
 			// which parks at the step under test. File 0 is synced so
 			// nothing is torn at the crash and no segment is cut at
 			// recovery.
-			holds := []*journaltest.Hold{f.Seam.Hold(t, op, "*.spare.tmp")}
-			if op == journaltest.OpWrite {
-				holds = append(holds, f.Seam.Hold(t, journaltest.OpSync, "*.spare.tmp"))
+			holds := []*kit.Hold{f.Seam.Hold(t, op, "*.spare.tmp")}
+			if op == kit.OpWrite {
+				holds = append(holds, f.Seam.Hold(t, kit.OpSync, "*.spare.tmp"))
 			}
 
 			recs, _ := fillSegment(t, f, 0, 0, size)
@@ -1334,7 +1335,7 @@ func TestRFC28C_SpareIsWholeOrAbsent(t *testing.T) {
 			// A release at a full filesystem: the stream rolls into a
 			// re-adopted spare first, so the record lands in one.
 			fillSegment(t, f, 0, 0, size)
-			schedule(t, f, journaltest.Failing(journaltest.OpCreate, "*", 0, syscall.ENOSPC), journaltest.Failing(journaltest.OpAllocate, "*", 0, syscall.ENOSPC))
+			schedule(t, f, kit.Failing(kit.OpCreate, "*", 0, syscall.ENOSPC), kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC))
 			wantRelease(t, f.Share(1), a.id, a.extent, true)
 			f.Seam.SetFault(nil)
 		})
@@ -1345,7 +1346,7 @@ func TestRFC28C_SpareIsWholeOrAbsent(t *testing.T) {
 		// full segment, whichever way it goes, syncs the directory and so
 		// makes the temporary name's entry durable.
 		g := journaltest.NewUnwatched(t)
-		held := g.Seam.Hold(t, journaltest.OpRename, "*.spare.tmp")
+		held := g.Seam.Hold(t, kit.OpRename, "*.spare.tmp")
 		recs, seg := fillSegment(t, g, 0, 0, size)
 		other := writeSynced(t, g, 1, 1, 0, size)
 		syncFiles(t, g.Share(0), recs[0].id)
@@ -1358,9 +1359,9 @@ func TestRFC28C_SpareIsWholeOrAbsent(t *testing.T) {
 		tmp := tmps[0]
 
 		releaseRecs(t, g, recs)
-		syncs := g.Seam.Calls(journaltest.OpSyncDir)
+		syncs := g.Seam.Calls(kit.OpSyncDir)
 		r := retire(t, g, seg)
-		if g.Seam.Calls(journaltest.OpSyncDir) == syncs {
+		if g.Seam.Calls(kit.OpSyncDir) == syncs {
 			t.Fatalf("precondition: the retirement synced the directory no time; the temporary spare's entry is not durable")
 		}
 
@@ -1369,7 +1370,7 @@ func TestRFC28C_SpareIsWholeOrAbsent(t *testing.T) {
 		}
 
 		crashHeld(t, g, held)
-		if got := g.Seam.CallsFor(journaltest.OpRemove, tmp); got != 1 {
+		if got := g.Seam.CallsFor(kit.OpRemove, tmp); got != 1 {
 			t.Fatalf("the open removed %s %d times, want once", tmp, got)
 		}
 
@@ -1379,7 +1380,7 @@ func TestRFC28C_SpareIsWholeOrAbsent(t *testing.T) {
 
 		// The pool is whole, so the next spare is made for the next roll,
 		// and it is held at its rename while its name is read.
-		next := g.Seam.Hold(t, journaltest.OpRename, "*.spare.tmp")
+		next := g.Seam.Hold(t, kit.OpRename, "*.spare.tmp")
 		fillSegment(t, g, 0, 0, size)
 		<-next.Reached()
 		tmps = tmpNames(t, g)
@@ -1504,7 +1505,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	// the old records' bytes still between them. Both streams roll, so the
 	// pool is empty and the recycled segment is the next take.
 	f := journaltest.New(t)
-	held := f.Seam.Hold(t, journaltest.OpCreate, "*.spare.tmp")
+	held := f.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
 	recs, seg := fillSegment(t, f, 0, 0, size)
 	others, _ := fillSegment(t, f, 1, 1, size)
 	syncFiles(t, f.Share(0), recs[0].id)
@@ -1534,7 +1535,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	if got := f.Allocated(); got != allocated {
 		t.Fatalf("Allocated = %d after a recycle, want %d unchanged: a recycle allocates nothing", got, allocated)
 	}
-	if f.Seam.CallsFor(journaltest.OpSync, r.name) == 0 {
+	if f.Seam.CallsFor(kit.OpSync, r.name) == 0 {
 		t.Fatalf("the recycled segment %s was never synced after its slots were zeroed", r.name)
 	}
 
@@ -1570,7 +1571,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	// again, so unlinked: the pool is read at the retirement, never at the
 	// seal.
 	k := journaltest.NewUnwatched(t)
-	held = k.Seam.Hold(t, journaltest.OpCreate, "*.spare.tmp")
+	held = k.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
 	recs, seg = fillSegment(t, k, 0, 0, size)
 	syncFiles(t, k.Share(0), recs[0].id)
 	awaitSpare(t, k, held.Release)
@@ -1590,7 +1591,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	if got := int64(len(durable(t, m, segmentName(seg)))); got >= capBytes {
 		t.Fatalf("segment %d, sealed early, is %d bytes, want it truncated below its cap %d", seg, got, capBytes)
 	}
-	held = m.Seam.Hold(t, journaltest.OpCreate, "*.spare.tmp")
+	held = m.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
 	fillSegment(t, m, 1, 1, size)
 	if r := retire(t, m, seg); r.recycled {
 		t.Fatalf("segment %d, sealed early, was recycled as %s, want it unlinked", seg, r.name)
@@ -1602,7 +1603,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	// still carries the old header, records and trailer under a name none
 	// of them verifies for, and is re-adopted as a spare.
 	e := journaltest.NewUnwatched(t)
-	held = e.Seam.Hold(t, journaltest.OpCreate, "*.spare.tmp")
+	held = e.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
 	recs, seg = fillSegment(t, e, 0, 0, size)
 	others, _ = fillSegment(t, e, 1, 1, size)
 	syncFiles(t, e.Share(0), recs[0].id)
@@ -1610,7 +1611,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	name = segmentName(seg)
 	releaseRecs(t, e, recs)
 	files := segmentFiles(t, e)
-	sync := e.Seam.Hold(t, journaltest.OpSync, "*.seg")
+	sync := e.Seam.Hold(t, kit.OpSync, "*.seg")
 	done := make(chan error, 1)
 	go func() {
 		_, err := e.J.Repack(t.Context(), journaltest.FixtureSegmentCap, journal.RepackScope{Segments: []journal.SegmentID{seg}})
@@ -1622,7 +1623,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 		stub(t, "Repack", err)
 		t.Fatalf("repack returned (%v) without syncing a segment", err)
 	}
-	if got := e.Seam.CallsFor(journaltest.OpRename, name); got != 1 {
+	if got := e.Seam.CallsFor(kit.OpRename, name); got != 1 {
 		t.Fatalf("precondition: the held sync is not the recycle's: %s was renamed %d times by then", name, got)
 	}
 
@@ -1648,11 +1649,11 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	// the pool short. A is written and not synced, so the failing sync
 	// covers it, and the journal either re-appends it or fails the window.
 	n := journaltest.NewUnwatched(t)
-	held = n.Seam.Hold(t, journaltest.OpCreate, "*.spare.tmp")
+	held = n.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
 	fillSegment(t, n, 1, 1, size)
 	a = writeRec(t, n, 0, 0, 0, size)
 	seg = entryAt(t, n, a.id, 0).Location.Segment
-	n.FailNext(journaltest.OpSync, segmentName(seg), 1)
+	n.FailNext(kit.OpSync, segmentName(seg), 1)
 	err := n.Share(0).Sync(t.Context(), a.id)
 	stub(t, "Sync", err)
 	var se *journal.SyncError
@@ -1679,7 +1680,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	// No spare ready: the roll is refused at once, naming the pool, while
 	// spare-making is still parked, and a header-only record still appends.
 	o := journaltest.NewUnwatched(t)
-	held = o.Seam.Hold(t, journaltest.OpCreate, "*.spare.tmp")
+	held = o.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
 	err = writeUntilRefused(t, o, 0)
 	wantNoSpace(t, err, journal.LimitSpare, "a roll with no spare ready")
 	if held.Waiting() == 0 {
@@ -1715,7 +1716,7 @@ func recycledSegment(t *testing.T, f *journaltest.Fixture) recycled {
 	t.Helper()
 
 	const size = 64 << 10
-	held := f.Seam.Hold(t, journaltest.OpCreate, "*.spare.tmp")
+	held := f.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
 	recs, seg := fillSegment(t, f, 0, 0, size)
 	others, _ := fillSegment(t, f, 1, 1, size)
 	syncFiles(t, f.Share(0), recs[0].id)
@@ -1727,7 +1728,7 @@ func recycledSegment(t *testing.T, f *journaltest.Fixture) recycled {
 	// The writes after the rename are the zeroing of the two slots, and
 	// are dropped, so the recycle's sync makes nothing of them durable.
 	files := segmentFiles(t, f)
-	rename := f.Seam.Hold(t, journaltest.OpRename, name)
+	rename := f.Seam.Hold(t, kit.OpRename, name)
 	done := make(chan error, 1)
 	go func() {
 		_, err := f.J.Repack(t.Context(), journaltest.FixtureSegmentCap, journal.RepackScope{Segments: []journal.SegmentID{seg}})
@@ -1739,8 +1740,8 @@ func recycledSegment(t *testing.T, f *journaltest.Fixture) recycled {
 		stub(t, "Repack", err)
 		t.Fatalf("repack returned (%v) without renaming the segment", err)
 	}
-	f.Drop(journaltest.OpWrite, "*.seg")
-	writes := f.Seam.Calls(journaltest.OpWrite)
+	f.Drop(kit.OpWrite, "*.seg")
+	writes := f.Seam.Calls(kit.OpWrite)
 	rename.Release()
 	err := <-done
 	stub(t, "Repack", err)
@@ -1753,8 +1754,8 @@ func recycledSegment(t *testing.T, f *journaltest.Fixture) recycled {
 	if !r.recycled {
 		t.Fatalf("segment %d was unlinked with the pool empty, want it recycled", seg)
 	}
-	if n := f.Seam.Calls(journaltest.OpWrite) - writes; n < 2 || n != f.Seam.CallsFor(journaltest.OpWrite, r.name) {
-		t.Fatalf("%d writes after the rename, %d of them to %s, want at least two and all of them there", n, f.Seam.CallsFor(journaltest.OpWrite, r.name), r.name)
+	if n := f.Seam.Calls(kit.OpWrite) - writes; n < 2 || n != f.Seam.CallsFor(kit.OpWrite, r.name) {
+		t.Fatalf("%d writes after the rename, %d of them to %s, want at least two and all of them there", n, f.Seam.CallsFor(kit.OpWrite, r.name), r.name)
 	}
 	if !endsInTrailer(durable(t, f, r.name)) {
 		t.Fatalf("the trailer slot of %s is not the old trailer on the device; the zeroing was not dropped", r.name)
@@ -1921,7 +1922,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 		}
 		rs[i] = r
 	}
-	h.FailNext(journaltest.OpWrite, rc.name, 1)
+	h.FailNext(kit.OpWrite, rc.name, 1)
 	_, err := rs[0].WriteAt(t.Context(), id, off, pattern(fmtTag("x", 0, 2, off), size), 0)
 	stub(t, "WriteAt", err)
 	if !errors.Is(err, syscall.EIO) {
@@ -1957,7 +1958,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 	// A short write into a fresh segment: the one the stream moved to.
 	pre := writeSynced(t, h, 0, 2, off+3*size, size)
 	fresh := entryAt(t, h, pre.id, pre.extent.Off).Location.Segment
-	schedule(t, h, journaltest.Tearing(journaltest.OpWrite, segmentName(fresh), 1, 4096, syscall.EIO))
+	schedule(t, h, kit.Tearing(kit.OpWrite, segmentName(fresh), 1, 4096, syscall.EIO))
 	_, err = tryWrite(t, h.Share(0), id, off+4*size, pattern(fmtTag("z", 0, 2, off+4*size), size))
 	h.Seam.SetFault(nil)
 	stub(t, "WriteAt", err)
@@ -1971,7 +1972,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 	k := journaltest.NewUnwatched(t)
 	rc = recycledSegment(t, k)
 	off = rc.first.extent.Off + size
-	schedule(t, k, journaltest.Dropping(journaltest.OpWrite, rc.name, 1))
+	schedule(t, k, kit.Dropping(kit.OpWrite, rc.name, 1))
 	w1 := writeRec(t, k, 0, 2, off, size)
 	w2 := writeRec(t, k, 0, 2, off+size, size)
 	k.Seam.SetFault(nil)
@@ -2362,7 +2363,7 @@ func wantLeftAlone(t *testing.T, f *journaltest.Fixture, name string, b []byte, 
 	if !bytes.Equal(durable(t, f, name), b) {
 		t.Fatalf("%s was changed; it was to be left alone", name)
 	}
-	for _, op := range []string{journaltest.OpWrite, journaltest.OpTruncate, journaltest.OpRename, journaltest.OpRemove} {
+	for _, op := range []string{kit.OpWrite, kit.OpTruncate, kit.OpRename, kit.OpRemove} {
 		if got := f.Seam.CallsFor(op, name); got != before[op] {
 			t.Fatalf("%s was %sd %d times; it was to be left alone", name, op, got-before[op])
 		}
@@ -2579,13 +2580,13 @@ func TestRFC28C_FormatFile(t *testing.T) {
 	for _, leg := range legs {
 		leg.edit()
 		before := callsFor(f, "format")
-		creates := f.Seam.CallsFor(journaltest.OpCreate, "format.tmp")
+		creates := f.Seam.CallsFor(kit.OpCreate, "format.tmp")
 		err := f.TryReopen()
 		stub(t, "Open", err)
 		if !slices.ContainsFunc(leg.want, func(want error) bool { return errors.Is(err, want) }) {
 			t.Fatalf("opening with a format file of %s returned %v, want one of %v", leg.name, err, leg.want)
 		}
-		if got := callsFor(f, "format"); got[journaltest.OpWrite] != before[journaltest.OpWrite] || got[journaltest.OpTruncate] != before[journaltest.OpTruncate] || f.Seam.CallsFor(journaltest.OpCreate, "format.tmp") != creates {
+		if got := callsFor(f, "format"); got[kit.OpWrite] != before[kit.OpWrite] || got[kit.OpTruncate] != before[kit.OpTruncate] || f.Seam.CallsFor(kit.OpCreate, "format.tmp") != creates {
 			t.Fatalf("the open wrote to the format file of %s; it is never repaired or upgraded in silence (RFC 28 section 2.1)", leg.name)
 		}
 
@@ -2597,9 +2598,9 @@ func TestRFC28C_FormatFile(t *testing.T) {
 	// A restamp crashed before the rename of the new file, then one crashed
 	// after the rename and before the directory sync.
 	other := journal.InstallationID{'o', 't', 'h', 'e', 'r'}
-	for _, step := range []struct{ op, key string }{{journaltest.OpRename, "format.tmp"}, {journaltest.OpSyncDir, "*"}} {
+	for _, step := range []struct{ op, key string }{{kit.OpRename, "format.tmp"}, {kit.OpSyncDir, "*"}} {
 		f.Shutdown()
-		renames := f.Seam.CallsFor(journaltest.OpRename, "format.tmp")
+		renames := f.Seam.CallsFor(kit.OpRename, "format.tmp")
 		held := f.Seam.Hold(t, step.op, step.key)
 		done := make(chan error, 1)
 		go func() { done <- f.TryRestamp(other) }()
@@ -2609,8 +2610,8 @@ func TestRFC28C_FormatFile(t *testing.T) {
 			stub(t, "Restamp", err)
 			t.Fatalf("restamp returned (%v) without reaching its %s", err, step.op)
 		}
-		if step.op == journaltest.OpSyncDir && f.Seam.CallsFor(journaltest.OpRename, "format.tmp") != renames+1 {
-			t.Fatalf("the held directory sync is not the one after the rename: format.tmp was renamed %d times by then", f.Seam.CallsFor(journaltest.OpRename, "format.tmp")-renames)
+		if step.op == kit.OpSyncDir && f.Seam.CallsFor(kit.OpRename, "format.tmp") != renames+1 {
+			t.Fatalf("the held directory sync is not the one after the rename: format.tmp was renamed %d times by then", f.Seam.CallsFor(kit.OpRename, "format.tmp")-renames)
 		}
 		crashHeld(t, f, held)
 		<-done // a call the crash took; what it returned means nothing

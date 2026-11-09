@@ -14,7 +14,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
@@ -58,7 +58,7 @@ type Fixture struct {
 	E     *engine.Engine   // the engine running now; Restart and Crash replace it
 	FS    *kvstoretest.FS  // the store, its share and the share's root
 	Opens *openstate.Table // the open-state table running now, replaced with E
-	Seam  *journaltest.Seam
+	Seam  *kit.Seam
 	Clock *sim.TestClock
 	Share engine.Share // the share as the engine binds it
 	// Second is a second share of the store, on the same journal, which no
@@ -91,7 +91,7 @@ func (f *Fixture) Stall() { f.stalled.Store(true) }
 // belongs to fails.
 func (f *Fixture) FailNextSync() {
 	f.t.Helper()
-	if err := f.Seam.Schedule(journaltest.Failing(journaltest.OpSync, "*", 1, errors.New("fixture: an injected sync failure"))); err != nil {
+	if err := f.Seam.Schedule(kit.Failing(kit.OpSync, "*", 1, errors.New("fixture: an injected sync failure"))); err != nil {
 		f.t.Fatalf("fixture: schedule a sync failure: %v", err)
 	}
 }
@@ -107,7 +107,7 @@ func New(t *testing.T) *Fixture {
 	prof.Watch(t, prof.Options{})
 
 	dir := t.TempDir()
-	seam, err := journaltest.NewSeam(dir)
+	seam, err := kit.NewSeam(dir)
 	if err != nil {
 		t.Fatalf("fixture: seam: %v", err)
 	}
@@ -202,7 +202,7 @@ func (f *Fixture) Reinit() journal.JournalID {
 // crash is closed through a view of the seam the crash ended, so nothing it
 // does while closing reaches the directory. opts are the seam's crash
 // variants.
-func (f *Fixture) Crash(opts ...journaltest.CrashOption) {
+func (f *Fixture) Crash(opts ...kit.CrashOption) {
 	f.t.Helper()
 	f.crashed.Store(true) // before the crash, so nothing the old engine runs meanwhile reaches the store
 	if err := f.Seam.Crash(opts...); err != nil {

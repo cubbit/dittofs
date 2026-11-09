@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // The mixed-durability protocol against fakes: the proof half of the rebuilt
@@ -184,7 +184,7 @@ type fakeCase struct {
 // segment names — alone.
 type fakeMixed struct {
 	design mixedDesign
-	gate   *journaltest.SimGate
+	gate   *kit.SimGate
 	opts   fakeCase
 
 	mu sync.Mutex
@@ -250,7 +250,7 @@ func newFakeCase(c fakeCase) *fakeMixed {
 
 // Install takes the gate the protocol parks its syncs at, as the seam's
 // fault does for a real journal.
-func (f *fakeMixed) Install(gate *journaltest.SimGate) {
+func (f *fakeMixed) Install(gate *kit.SimGate) {
 	f.gate = gate
 }
 
@@ -264,7 +264,7 @@ func (f *fakeMixed) Install(gate *journaltest.SimGate) {
 func (f *fakeMixed) fsync(name string) {
 	f.inFlight++
 	f.mu.Unlock()
-	f.gate.At(journaltest.OpSync, []byte(name))
+	f.gate.At(kit.OpSync, []byte(name))
 	if f.design == designSlowRoll {
 		time.Sleep(fakeSlowFsync)
 	}

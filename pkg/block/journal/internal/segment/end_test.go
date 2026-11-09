@@ -10,7 +10,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -126,14 +126,14 @@ func endZeroSlotScenario(t *testing.T) (e streamEnv, id core.SegmentID, b, c, d 
 
 	// B's write parks at the seam: its slot is reserved — the lowest of the
 	// three — but its bytes have not landed.
-	holdB := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+	holdB := e.seam.HoldFirst(t, kit.OpWrite, seg)
 	bDone := endAppend(e, 2, 64, 0x55)
 	<-holdB.Reached()
 
 	// C's write parks at the second one-shot hold: the first is spent on
 	// B's write, so the next write the seam sees — C's, reserved after B's
 	// while B's is parked — is the one it stops.
-	holdC := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+	holdC := e.seam.HoldFirst(t, kit.OpWrite, seg)
 	cDone := endAppend(e, 3, 128, 0x7d)
 	<-holdC.Reached()
 
@@ -150,7 +150,7 @@ func endZeroSlotScenario(t *testing.T) (e streamEnv, id core.SegmentID, b, c, d 
 	// consults it — C's, resumed here. C's slot is the third record slot of
 	// the segment, right past B's: the lowest slot the failure found still
 	// unwritten above the synced record A.
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	holdC.Release()
@@ -223,8 +223,8 @@ func TestEndTheZeroSlotRowWriteHalf(t *testing.T) {
 	// The segment takes no seal marker: the bytes at the next free slot are
 	// zeros after the next append rolls, and the seam saw no further write
 	// or sync of the segment past the three records' own.
-	writesBefore := e.seam.CallsFor(journaltest.OpWrite, streamSegName(id))
-	syncsBefore := e.seam.CallsFor(journaltest.OpSync, streamSegName(id))
+	writesBefore := e.seam.CallsFor(kit.OpWrite, streamSegName(id))
+	syncsBefore := e.seam.CallsFor(kit.OpSync, streamSegName(id))
 	nextDone := endAppend(e, 5, 0, 0x3c)
 	nextRes := <-nextDone
 	if nextRes.err != nil {
@@ -236,10 +236,10 @@ func TestEndTheZeroSlotRowWriteHalf(t *testing.T) {
 	if hdr := endHeaderOf(t, e, nextRes.p.Loc.Segment); hdr.Predecessor != 0 {
 		t.Fatalf("the new segment names predecessor %d, want none: a failed append ends its segment, and the stream continues in a segment naming no predecessor", hdr.Predecessor)
 	}
-	if got := e.seam.CallsFor(journaltest.OpWrite, streamSegName(id)); got != writesBefore {
+	if got := e.seam.CallsFor(kit.OpWrite, streamSegName(id)); got != writesBefore {
 		t.Fatalf("the ended segment took %d writes in all, want it at %d and still: no seal marker is written into a segment a failure ended", got, writesBefore)
 	}
-	if got := e.seam.CallsFor(journaltest.OpSync, streamSegName(id)); got != syncsBefore {
+	if got := e.seam.CallsFor(kit.OpSync, streamSegName(id)); got != syncsBefore {
 		t.Fatalf("the ended segment took %d syncs in all, want it at %d and still", got, syncsBefore)
 	}
 
@@ -315,13 +315,13 @@ func TestEndAnEndedSegmentTakesNoSealAndNoAppend(t *testing.T) {
 
 	// The ended segment takes no seal of either kind, and answers
 	// ErrSegmentEnded for each, writing nothing.
-	writesBefore := e.seam.CallsFor(journaltest.OpWrite, seg)
+	writesBefore := e.seam.CallsFor(kit.OpWrite, seg)
 	for _, early := range []bool{false, true} {
 		if _, err := e.s.Seal(early); !errors.Is(err, segment.ErrSegmentEnded) {
 			t.Fatalf("Seal(%v) of the ended segment = %v, want ErrSegmentEnded", early, err)
 		}
 	}
-	if got := e.seam.CallsFor(journaltest.OpWrite, seg); got != writesBefore {
+	if got := e.seam.CallsFor(kit.OpWrite, seg); got != writesBefore {
 		t.Fatalf("the seals wrote %d more writes into the ended segment, want none", got-writesBefore)
 	}
 
@@ -363,7 +363,7 @@ func endFailedAppendEnv(t *testing.T) streamEnv {
 	if err := e.s.Sync(); err != nil {
 		t.Fatalf("the first Sync: %v", err)
 	}
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	bPayload := streamTestBody(64, 0x55)
@@ -397,7 +397,7 @@ func TestEndTheEndedSegmentStaysAtItsCap(t *testing.T) {
 	if err := e.s.Sync(); err != nil {
 		t.Fatalf("the first Sync: %v", err)
 	}
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	bPayload := streamTestBody(64, 0x55)
@@ -465,13 +465,13 @@ func TestEndARecordCompletingAfterTheEndIsCharged(t *testing.T) {
 	}
 
 	// B's write parks: its reservation is placed, its bytes are not.
-	holdB := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+	holdB := e.seam.HoldFirst(t, kit.OpWrite, seg)
 	bDone := endAppend(e, 2, 64, 0x55)
 	<-holdB.Reached()
 
 	// C's write fails, ending the segment in the ledger while B is still
 	// in flight.
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	cDone := endAppend(e, 3, 128, 0x7d)
@@ -505,7 +505,7 @@ func TestEndARecycledSegmentsFailedAppend(t *testing.T) {
 	// zeroed, adopted into the content class before the pool starts, so
 	// the stream's first take is the adopted spare.
 	const adopted = core.SegmentID(1)
-	seam, err := journaltest.NewSeam(t.TempDir())
+	seam, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
@@ -570,7 +570,7 @@ func TestEndARecycledSegmentsFailedAppend(t *testing.T) {
 	}
 
 	// The next write fails there, and the recycled segment is ended.
-	if err := seam.Schedule(journaltest.Failing(journaltest.OpWrite, streamSegName(adopted), 1, syscall.EIO)); err != nil {
+	if err := seam.Schedule(kit.Failing(kit.OpWrite, streamSegName(adopted), 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	bPayload := streamTestBody(64, 0x55)

@@ -1,12 +1,12 @@
 package segment
 
 import (
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -27,7 +27,7 @@ import (
 func TestAppendParkedAtTheLoopTopWaitsARunningSeal(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	seam, err := journaltest.NewSeam(t.TempDir())
+	seam, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}

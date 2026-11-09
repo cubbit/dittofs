@@ -33,6 +33,7 @@ var allowed = map[string][]string{
 	// unit tests' start failure tests put the fault-injecting kv.KV under that
 	// store.
 	module + "pkg/block/journal/journaltest":      {"enginetest"},
+	module + "pkg/block/journal/journaltest/kit":  {"enginetest"},
 	module + "pkg/block/journal/journaltest/prof": {"enginetest", unitTests},
 	module + "pkg/metadata/kv":                    {"enginetest", unitTests},
 	module + "pkg/metadata/kv/badgerkv":           {"enginetest", unitTests},

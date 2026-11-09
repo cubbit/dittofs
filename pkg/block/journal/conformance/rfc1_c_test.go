@@ -18,6 +18,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -141,7 +142,7 @@ func TestRFC1C_ReleaseRecordLost(t *testing.T) {
 		t.Fatalf("release the last held extent: %v", err)
 	}
 
-	hold := f.Seam.HoldFirst(t, journaltest.OpSync, "*.seg")
+	hold := f.Seam.HoldFirst(t, kit.OpSync, "*.seg")
 	done := make(chan error, 1)
 	go func() { done <- h.Sync(t.Context(), id) }()
 	<-hold.Reached()
@@ -157,7 +158,7 @@ func TestRFC1C_ReleaseRecordLost(t *testing.T) {
 	if !listed(t, f, name) {
 		t.Fatalf("segment %s was unlinked before the sync of its last release record made that safe", name)
 	}
-	if got := f.Seam.CallsFor(journaltest.OpRemove, name); got != 0 {
+	if got := f.Seam.CallsFor(kit.OpRemove, name); got != 0 {
 		t.Fatalf("%d removes of the sealed segment were attempted before the sync", got)
 	}
 	r := read(t, f.Share(0), id, 0, size)
@@ -698,7 +699,7 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 
 		// No segment is looked up first, since the file holds nothing to
 		// find one with: the hold is on any segment's write.
-		hold := f.Seam.HoldFirst(t, journaltest.OpWrite, "*.seg")
+		hold := f.Seam.HoldFirst(t, kit.OpWrite, "*.seg")
 		ctx, cancel := context.WithCancel(t.Context())
 		type wrote struct {
 			v   journal.Version
@@ -738,8 +739,8 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		seg := segmentOf(t, f, id, 0)
 		name := segmentName(seg)
 
-		f.FailNext(journaltest.OpSync, name, 1)
-		hold := f.Seam.HoldFirst(t, journaltest.OpSync, name)
+		f.FailNext(kit.OpSync, name, 1)
+		hold := f.Seam.HoldFirst(t, kit.OpSync, name)
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
 		go func() { done <- h.Sync(ctx, id) }()
@@ -769,7 +770,7 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		// segment the first failure never touched; the failed segment takes
 		// no further append, so the fault is armed on any segment.
 		write(t, h, id, 0, distinct(0, size))
-		f.FailNext(journaltest.OpSync, "*.seg", 1)
+		f.FailNext(kit.OpSync, "*.seg", 1)
 		before := f.J.Stats().Counters.SyncFailures
 		f.Advance(journal.SyncBound)
 		eventually(t, "the background sync of the sync bound hits the failing one", func() bool {
@@ -1417,7 +1418,7 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 	// with the release record still unsynced beside it. The fault stays armed
 	// through the Sync that resolves the window, so a journal that retries
 	// the same segment either way cannot pass a failed window as clean.
-	f.FailNext(journaltest.OpSync, name, 2)
+	f.FailNext(kit.OpSync, name, 2)
 	f.Seam.StaleReads(name)
 	err := h.Release(t.Context(), bid, []journal.Extent{ext(0, size)})
 	stub(t, "Release", err)
@@ -1453,7 +1454,7 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 		t.Fatalf("%d bytes were re-appended after the failed sync, want the window's two header-only records: %d at least", got, 2*raw.RecordHeaderSize)
 	}
 	after := segmentCalls(t, f)
-	prefix := journaltest.OpWrite + " "
+	prefix := kit.OpWrite + " "
 	suffix := " " + name
 	rose := false
 	for key, n := range after {
@@ -1464,7 +1465,7 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 	if !rose {
 		t.Fatalf("no record of the window was re-appended outside segment %d: %v, want %v with a write count risen", seg, after, before)
 	}
-	writesFailed := after[journaltest.OpWrite+" "+name]
+	writesFailed := after[kit.OpWrite+" "+name]
 
 	// No record of the window is failed: neither file gains a loss event,
 	// whatever names them, and the removals the two records describe still
@@ -1503,7 +1504,7 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 	// failed-sync semantics' "takes no further append" requires, even one
 	// that resolves inline.
 	write(t, f.Share(0), aid, size, distinct(2, 512))
-	if got := f.Seam.CallsFor(journaltest.OpWrite, name); got != writesFailed {
+	if got := f.Seam.CallsFor(kit.OpWrite, name); got != writesFailed {
 		t.Fatalf("%d writes were appended to the failed segment once its window resolved, want the %d it held at the failure", got, writesFailed)
 	}
 

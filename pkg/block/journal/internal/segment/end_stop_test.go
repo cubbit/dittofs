@@ -10,7 +10,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -46,7 +46,7 @@ func endStopEndsSegment(t *testing.T, e rollEnv, rec *endRecorder, fail error) c
 	aPayload := streamTestBody(64, 0x42)
 	ah, abody := streamWriteHeader(streamFileID(1), 0, aPayload, 7, core.Version{Counter: 1})
 	placed := streamAppendWrite(t, se, ah, abody)
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg, 1, fail)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg, 1, fail)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	bPayload := streamTestBody(64, 0x55)
@@ -87,7 +87,7 @@ func TestEndASecondFailureInARowStopsTheStream(t *testing.T) {
 	// the segment has succeeded, the fault landing before any, so a failure
 	// there is the second segment in a row (RFC 1 §5.4).
 	seg2 := streamSegName(2)
-	holdH := e.seam.HoldFirst(t, journaltest.OpWrite, seg2)
+	holdH := e.seam.HoldFirst(t, kit.OpWrite, seg2)
 	appendDone := make(chan error, 1)
 	cPayload := streamTestBody(64, 0x7d)
 	ch, cbody := streamWriteHeader(streamFileID(3), 0, cPayload, 7, core.Version{Counter: 3})
@@ -96,7 +96,7 @@ func TestEndASecondFailureInARowStopsTheStream(t *testing.T) {
 		appendDone <- err
 	}()
 	<-holdH.Reached()
-	if err := e.seam.Schedule(journaltest.FailingFrom(journaltest.OpWrite, seg2, 2, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.FailingFrom(kit.OpWrite, seg2, 2, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	holdH.Release()
@@ -106,7 +106,7 @@ func TestEndASecondFailureInARowStopsTheStream(t *testing.T) {
 	if err := e.seam.Schedule(); err != nil {
 		t.Fatalf("disarming the write fault: %v", err)
 	}
-	if got := e.seam.CallsFor(journaltest.OpWrite, seg2); got != 2 {
+	if got := e.seam.CallsFor(kit.OpWrite, seg2); got != 2 {
 		t.Fatalf("segment 2 saw %d writes in all, want the header's and the failed record's one alone", got)
 	}
 	// The counts the stop's appends must leave untouched, pinned once the
@@ -114,9 +114,9 @@ func TestEndASecondFailureInARowStopsTheStream(t *testing.T) {
 	// refill, for this env's maker maximum is open and the pool keeps
 	// refilling behind its takes.
 	sparesBefore := e.pool.Counters().Spares
-	createsBefore := e.seam.Calls(journaltest.OpCreate)
+	createsBefore := e.seam.Calls(kit.OpCreate)
 	writes := 0
-	for _, op := range []string{journaltest.OpCreate, journaltest.OpWrite, journaltest.OpOpen, journaltest.OpAllocate} {
+	for _, op := range []string{kit.OpCreate, kit.OpWrite, kit.OpOpen, kit.OpAllocate} {
 		writes += e.seam.Calls(op)
 	}
 
@@ -158,14 +158,14 @@ func TestEndASecondFailureInARowStopsTheStream(t *testing.T) {
 	if got := e.pool.Counters().Spares; got < sparesBefore {
 		t.Fatalf("the pool holds %d ready spares after the stop's appends, want at least the %d the takes left: no third spare is taken", got, sparesBefore)
 	}
-	if got := e.seam.Calls(journaltest.OpCreate); got < createsBefore {
+	if got := e.seam.Calls(kit.OpCreate); got < createsBefore {
 		t.Fatalf("the seam saw %d creates after the stop's appends, want at least the %d the two takes made", got, createsBefore)
 	}
 	// The four ops' totals may rise behind the stop the same way — a
 	// worker refill makes, writes and opens its own — but the stop's own
 	// appends made none, which the two counts above already witness.
 	after := 0
-	for _, op := range []string{journaltest.OpCreate, journaltest.OpWrite, journaltest.OpOpen, journaltest.OpAllocate} {
+	for _, op := range []string{kit.OpCreate, kit.OpWrite, kit.OpOpen, kit.OpAllocate} {
 		after += e.seam.Calls(op)
 	}
 	if after < writes {
@@ -208,7 +208,7 @@ func TestEndAFailureAfterTheSparesFirstSyncRolls(t *testing.T) {
 	// The failure there: not the second in a row, for the spare's first
 	// sync succeeded.
 	seg2 := streamSegName(2)
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg2, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg2, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	fPayload := streamTestBody(64, 0x7d)
@@ -261,7 +261,7 @@ func TestEndASealWhoseRecordSyncSucceededInTheSpareIsNotASecondRefusal(t *testin
 
 	// The seal's record sync (the spare's first) passes; its marker sync
 	// (the second) fails.
-	if err := e.seam.Schedule(journaltest.FailingFrom(journaltest.OpSync, streamSegName(2), 2, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.FailingFrom(kit.OpSync, streamSegName(2), 2, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	if _, err := e.s.Seal(false); !errors.Is(err, segment.ErrSegmentEnded) {
@@ -301,7 +301,7 @@ func TestEndEROFSStopsTheStream(t *testing.T) {
 
 	// The second write carries EROFS: the device is read-only, so the
 	// stream stops with this very end.
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg1, 1, syscall.EROFS)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg1, 1, syscall.EROFS)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	bPayload := streamTestBody(64, 0x55)
@@ -330,7 +330,7 @@ func TestEndEROFSStopsTheStream(t *testing.T) {
 	// and takes no spare: the counts are pinned after the failure has
 	// settled, so the worker's own refill is not read as the stream's.
 	sparesBefore := e.pool.Counters().Spares
-	createsBefore := e.seam.Calls(journaltest.OpCreate)
+	createsBefore := e.seam.Calls(kit.OpCreate)
 	cPayload := streamTestBody(64, 0x66)
 	ch, cbody := streamWriteHeader(streamFileID(3), 0, cPayload, 7, core.Version{Counter: 3})
 	_, err := e.s.Append(ch, cbody)
@@ -346,7 +346,7 @@ func TestEndEROFSStopsTheStream(t *testing.T) {
 	if got := e.pool.Counters().Spares; got < sparesBefore {
 		t.Fatalf("the pool holds %d ready spares after the stop, want at least the %d it held: a stopped stream takes none", got, sparesBefore)
 	}
-	if got := e.seam.Calls(journaltest.OpCreate); got < createsBefore {
+	if got := e.seam.Calls(kit.OpCreate); got < createsBefore {
 		t.Fatalf("the seam saw %d creates after the stop, want at least the %d before it: a stopped stream makes no spare", got, createsBefore)
 	}
 	if state, serr := e.set.State(landed.Loc.Segment); serr != nil || state != segment.Ended {
@@ -369,7 +369,7 @@ func TestEndASealThatFoundAnEROFSSyncStopsTheStream(t *testing.T) {
 	ah, ab := streamWriteHeader(streamFileID(1), 0, streamTestBody(64, 0x42), 7, core.Version{Counter: 1})
 	streamAppendWrite(t, se, ah, ab)
 
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, seg1, 1, syscall.EROFS)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpSync, seg1, 1, syscall.EROFS)); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.s.Sync(); !errors.Is(err, syscall.EROFS) {
@@ -439,7 +439,7 @@ func TestEndAFailedSuccessorHeaderStopsTheStream(t *testing.T) {
 	// the next append rolls. Its refusal is the second the stream meets
 	// leaving the ended segment, so the stream stops.
 	seg2 := streamSegName(2)
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg2, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg2, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	cPayload := streamTestBody(64, 0x7d)
@@ -463,7 +463,7 @@ func TestEndAFailedSuccessorHeaderStopsTheStream(t *testing.T) {
 	// write's own refusal, and no further spare is taken: the two takes
 	// spent two of the maker's spares and the count says so.
 	sparesBefore := e.pool.Counters().Spares
-	createsBefore := e.seam.Calls(journaltest.OpCreate)
+	createsBefore := e.seam.Calls(kit.OpCreate)
 	dPayload := streamTestBody(64, 0x13)
 	dh, dbody := streamWriteHeader(streamFileID(4), 0, dPayload, 7, core.Version{Counter: 4})
 	_, err := e.s.Append(dh, dbody)
@@ -476,7 +476,7 @@ func TestEndAFailedSuccessorHeaderStopsTheStream(t *testing.T) {
 	if got := e.pool.Counters().Spares; got < sparesBefore {
 		t.Fatalf("the pool holds %d ready spares after the stop, want at least the %d before it: no further spare is taken", got, sparesBefore)
 	}
-	if got := e.seam.Calls(journaltest.OpCreate); got < createsBefore {
+	if got := e.seam.Calls(kit.OpCreate); got < createsBefore {
 		t.Fatalf("the seam saw %d creates after the stop, want at least the %d before it", got, createsBefore)
 	}
 	// The next spare never entered the ledger as a segment: State answers
@@ -507,7 +507,7 @@ func TestEndRequestedSecondFailureStops(t *testing.T) {
 		t.Fatalf("the spare's first append landed in segment %d, want the taken spare 2", p.Loc.Segment)
 	}
 	syncFault := fmt.Errorf("the failed sync: %w", syscall.EIO)
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, seg2, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpSync, seg2, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	if err := e.s.Sync(); !errors.Is(err, syscall.EIO) {
@@ -602,7 +602,7 @@ func TestEndAppenderAlreadyInsideTheRollIsStoppedAtTheLoopTop(t *testing.T) {
 	// segment, the second refusal in a row, and the stream stops while Y
 	// sits parked at the loop top.
 	seg2 := streamSegName(2)
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg2, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg2, 1, syscall.EIO)); err != nil {
 		t.Fatal(err)
 	}
 	zDone := endAppend(se, 5, 128, 3)
@@ -651,10 +651,10 @@ func TestEndCloseDuringTheRollsInstallWait(t *testing.T) {
 	// segment ends while B is still in flight.
 	ah, ab := streamWriteHeader(streamFileID(1), 0, streamTestBody(64, 0x42), 7, core.Version{Counter: 1})
 	streamAppendWrite(t, se, ah, ab)
-	holdB := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+	holdB := e.seam.HoldFirst(t, kit.OpWrite, seg)
 	bDone := endAppend(se, 2, 64, 0x55)
 	<-holdB.Reached()
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg, 1, syscall.EIO)); err != nil {
 		t.Fatal(err)
 	}
 	if c := <-endAppend(se, 3, 128, 0x7d); !errors.Is(c.err, syscall.EIO) {
@@ -668,7 +668,7 @@ func TestEndCloseDuringTheRollsInstallWait(t *testing.T) {
 	// parks at the install wait, held there by B's still-parked write.
 	dDone := endAppend(se, 4, 192, 0x11)
 	deadline := time.Now().Add(10 * time.Second)
-	for e.seam.CallsFor(journaltest.OpWrite, streamSegName(2)) < 1 {
+	for e.seam.CallsFor(kit.OpWrite, streamSegName(2)) < 1 {
 		if time.Now().After(deadline) {
 			t.Fatal("the roll never wrote the successor's header")
 		}
@@ -729,18 +729,18 @@ func endStopHeldPair(t *testing.T, second error) (e rollEnv, rec *endRecorder, b
 	// Both writes are reserved before either fails: B parks at the first
 	// hold and C at the second, so the slot order B < C is fixed and each
 	// consults the fault only at its own release.
-	holdB := e.seam.HoldFirst(t, journaltest.OpWrite, seg1)
+	holdB := e.seam.HoldFirst(t, kit.OpWrite, seg1)
 	bDone := endAppend(se, 2, 64, 0x55)
 	<-holdB.Reached()
-	holdC := e.seam.HoldFirst(t, journaltest.OpWrite, seg1)
+	holdC := e.seam.HoldFirst(t, kit.OpWrite, seg1)
 	cDone := endAppend(se, 3, 128, 0x7d)
 	<-holdC.Reached()
 
 	// Two rules over the same writes: the first consult — C's, released
 	// first — meets the EIO, the second — B's — meets second.
 	if err := e.seam.Schedule(
-		journaltest.Failing(journaltest.OpWrite, seg1, 1, syscall.EIO),
-		journaltest.FailingFrom(journaltest.OpWrite, seg1, 2, 1, second),
+		kit.Failing(kit.OpWrite, seg1, 1, syscall.EIO),
+		kit.FailingFrom(kit.OpWrite, seg1, 2, 1, second),
 	); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
@@ -780,7 +780,7 @@ func TestEndAnEROFSOnAStragglerOfAnEndedSegmentStopsTheStream(t *testing.T) {
 	}
 
 	sparesBefore := e.pool.Counters().Spares
-	createsBefore := e.seam.Calls(journaltest.OpCreate)
+	createsBefore := e.seam.Calls(kit.OpCreate)
 	dh, dbody := streamWriteHeader(streamFileID(4), 0, streamTestBody(64, 0x66), 7, core.Version{Counter: 4})
 	_, err := e.s.Append(dh, dbody)
 	if !errors.Is(err, segment.ErrStreamStopped) {
@@ -792,7 +792,7 @@ func TestEndAnEROFSOnAStragglerOfAnEndedSegmentStopsTheStream(t *testing.T) {
 	if got := e.pool.Counters().Spares; got < sparesBefore {
 		t.Fatalf("the pool holds %d ready spares after the stop, want at least the %d it held: a stopped stream takes none", got, sparesBefore)
 	}
-	if got := e.seam.Calls(journaltest.OpCreate); got < createsBefore {
+	if got := e.seam.Calls(kit.OpCreate); got < createsBefore {
 		t.Fatalf("the seam saw %d creates after the stop, want at least the %d before it: a stopped stream makes no spare", got, createsBefore)
 	}
 	// Segment 2 would be the first spare a roll takes: the stop took none.
@@ -852,7 +852,7 @@ func TestEndSyncInFlightAcrossAFailureRollOwnsItsOwnSegment(t *testing.T) {
 	streamAppendWrite(t, se, a2h, a2b)
 
 	// A Sync of segment 1 parks at the seam.
-	holdS := e.seam.HoldFirst(t, journaltest.OpSync, seg1)
+	holdS := e.seam.HoldFirst(t, kit.OpSync, seg1)
 	syncDone := make(chan error, 1)
 	go func() { syncDone <- e.s.Sync() }()
 	<-holdS.Reached()
@@ -860,7 +860,7 @@ func TestEndSyncInFlightAcrossAFailureRollOwnsItsOwnSegment(t *testing.T) {
 	// C's write fails, ending segment 1 while the sync is in flight. The
 	// event and the roll wait for the sync, so it returns first; then the
 	// event hands over, and D rolls onto segment 2 and lands there.
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg1, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg1, 1, syscall.EIO)); err != nil {
 		t.Fatal(err)
 	}
 	if c := <-endAppend(se, 3, 1024, 0x7d); !errors.Is(c.err, syscall.EIO) {
@@ -892,7 +892,7 @@ func TestEndSyncInFlightAcrossAFailureRollOwnsItsOwnSegment(t *testing.T) {
 	// The straddling sync's success does not reach the second-refusal word
 	// either: a failure in segment 2 before any sync of it has succeeded is
 	// the second refusal in a row, and the event must say the stream stopped.
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, streamSegName(2), 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, streamSegName(2), 1, syscall.EIO)); err != nil {
 		t.Fatal(err)
 	}
 	if f := <-endAppend(se, 6, 0, 0x33); !errors.Is(f.err, syscall.EIO) {
@@ -923,7 +923,7 @@ func TestEndTheStraddlingSyncsFailureMarksItsOwnSegmentAlone(t *testing.T) {
 
 	ah, ab := streamWriteHeader(streamFileID(1), 0, streamTestBody(64, 0x42), 7, core.Version{Counter: 1})
 	streamAppendWrite(t, se, ah, ab)
-	holdS := e.seam.HoldFirst(t, journaltest.OpSync, seg1)
+	holdS := e.seam.HoldFirst(t, kit.OpSync, seg1)
 	syncDone := make(chan error, 1)
 	go func() { syncDone <- e.s.Sync() }()
 	<-holdS.Reached()
@@ -934,8 +934,8 @@ func TestEndTheStraddlingSyncsFailureMarksItsOwnSegmentAlone(t *testing.T) {
 	// spends its round on C's write, the next matching write, and the sync
 	// rule's round is spent on the fsync the release lets run.
 	if err := e.seam.Schedule(
-		journaltest.Failing(journaltest.OpWrite, seg1, 1, syscall.EIO),
-		journaltest.Failing(journaltest.OpSync, seg1, 1, syscall.EIO),
+		kit.Failing(kit.OpWrite, seg1, 1, syscall.EIO),
+		kit.Failing(kit.OpSync, seg1, 1, syscall.EIO),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -994,7 +994,7 @@ func TestEndSyncedSegmentBeforeItsFailureStopsOnTheSecondRefusal(t *testing.T) {
 	if err := e.s.Sync(); err != nil {
 		t.Fatalf("the first segment's Sync: %v", err)
 	}
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg1, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg1, 1, syscall.EIO)); err != nil {
 		t.Fatal(err)
 	}
 	bh, bb := streamWriteHeader(streamFileID(2), 64, streamTestBody(64, 0x55), 7, core.Version{Counter: 2})
@@ -1015,7 +1015,7 @@ func TestEndSyncedSegmentBeforeItsFailureStopsOnTheSecondRefusal(t *testing.T) {
 	// From 2 — so the parked header passes and the record write, the second
 	// matching call, takes the fault, as the first stop check stages it.
 	seg2 := streamSegName(2)
-	holdH := e.seam.HoldFirst(t, journaltest.OpWrite, seg2)
+	holdH := e.seam.HoldFirst(t, kit.OpWrite, seg2)
 	appendDone := make(chan error, 1)
 	ch, cb := streamWriteHeader(streamFileID(3), 0, streamTestBody(64, 0x7d), 7, core.Version{Counter: 3})
 	go func() {
@@ -1023,7 +1023,7 @@ func TestEndSyncedSegmentBeforeItsFailureStopsOnTheSecondRefusal(t *testing.T) {
 		appendDone <- err
 	}()
 	<-holdH.Reached()
-	if err := e.seam.Schedule(journaltest.FailingFrom(journaltest.OpWrite, seg2, 2, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.FailingFrom(kit.OpWrite, seg2, 2, 1, syscall.EIO)); err != nil {
 		t.Fatal(err)
 	}
 	holdH.Release()
@@ -1071,7 +1071,7 @@ func TestEndEROFSOnASuccessorHeaderWriteStopsTheStream(t *testing.T) {
 	// rolling wherever it meets it, here on a stream that never held a
 	// failed segment at all.
 	seg1 := streamSegName(1)
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg1, 1, syscall.EROFS)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg1, 1, syscall.EROFS)); err != nil {
 		t.Fatal(err)
 	}
 	h, b := streamWriteHeader(streamFileID(1), 0, streamTestBody(64, 0x42), 7, core.Version{Counter: 1})
@@ -1092,7 +1092,7 @@ func TestEndEROFSOnASuccessorHeaderWriteStopsTheStream(t *testing.T) {
 	// write's own refusal, no event hands over for the spared take, and the
 	// next append answers ErrStreamStopped with no further spare taken.
 	sparesBefore := e.pool.Counters().Spares
-	createsBefore := e.seam.Calls(journaltest.OpCreate)
+	createsBefore := e.seam.Calls(kit.OpCreate)
 	nh, nb := streamWriteHeader(streamFileID(3), 0, streamTestBody(64, 0x13), 7, core.Version{Counter: 3})
 	_, err = e.s.Append(nh, nb)
 	if !errors.Is(err, segment.ErrStreamStopped) {
@@ -1104,7 +1104,7 @@ func TestEndEROFSOnASuccessorHeaderWriteStopsTheStream(t *testing.T) {
 	if got := e.pool.Counters().Spares; got < sparesBefore {
 		t.Fatalf("the pool holds %d ready spares after the stop, want at least the %d it held", got, sparesBefore)
 	}
-	if got := e.seam.Calls(journaltest.OpCreate); got < createsBefore {
+	if got := e.seam.Calls(kit.OpCreate); got < createsBefore {
 		t.Fatalf("the seam saw %d creates after the stop, want at least the %d before it", got, createsBefore)
 	}
 	endEventsStable(t, rec, "the appends past the EROFS stop")

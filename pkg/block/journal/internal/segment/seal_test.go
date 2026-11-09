@@ -15,7 +15,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -41,10 +41,10 @@ type sealCounters struct {
 
 func sealCountersOf(e streamEnv, seg string) sealCounters {
 	return sealCounters{
-		writes:    e.seam.CallsFor(journaltest.OpWrite, seg),
-		syncs:     e.seam.CallsFor(journaltest.OpSync, seg),
-		truncates: e.seam.CallsFor(journaltest.OpTruncate, seg),
-		opens:     e.seam.CallsFor(journaltest.OpOpen, seg),
+		writes:    e.seam.CallsFor(kit.OpWrite, seg),
+		syncs:     e.seam.CallsFor(kit.OpSync, seg),
+		truncates: e.seam.CallsFor(kit.OpTruncate, seg),
+		opens:     e.seam.CallsFor(kit.OpOpen, seg),
 	}
 }
 
@@ -128,7 +128,7 @@ func sealNotYet[T any](t *testing.T, ch <-chan T, window time.Duration, what str
 // call that never came. A hold armed before the operation it parks can never
 // lose it; a hold armed after another was released can (see the Close test's
 // comment), so every arm-before-use wait goes through here.
-func sealReached(t *testing.T, h *journaltest.Hold, call string) {
+func sealReached(t *testing.T, h *kit.Hold, call string) {
 	t.Helper()
 
 	select {
@@ -453,11 +453,11 @@ func TestSealStepsRunInOrder(t *testing.T) {
 			var syncs, writes, truncates []int
 			for i, op := range log {
 				switch op {
-				case journaltest.OpSync:
+				case kit.OpSync:
 					syncs = append(syncs, i)
-				case journaltest.OpWrite:
+				case kit.OpWrite:
 					writes = append(writes, i)
-				case journaltest.OpTruncate:
+				case kit.OpTruncate:
 					truncates = append(truncates, i)
 				default:
 					t.Fatalf("an unexpected op in the seal's log: %q in %v", op, log)
@@ -569,7 +569,7 @@ func TestSealACrashAtEveryDurableStateLeavesThePromisedBytes(t *testing.T) {
 		defer func() { _ = e.s.Close() }()
 
 		placed := sealAppended(t, e)
-		f := &sealNthFault{seg: seg, op: journaltest.OpSync, n: 2, err: syscall.EIO}
+		f := &sealNthFault{seg: seg, op: kit.OpSync, n: 2, err: syscall.EIO}
 		e.seam.SetFault(f)
 		if _, err := e.s.Seal(true); !errors.Is(err, segment.ErrSegmentEnded) || !errors.Is(err, syscall.EIO) {
 			t.Fatalf("the Seal whose step-2 sync failed = %v, want ErrSegmentEnded carrying the EIO", err)
@@ -628,7 +628,7 @@ func TestSealACrashAtEveryDurableStateLeavesThePromisedBytes(t *testing.T) {
 					// point both step-2 writes are issued and unsynced,
 					// so the crash keeps one and loses the other by the
 					// mask.
-					gate := newSealGateFault(e, seg, journaltest.OpSync, 2)
+					gate := newSealGateFault(e, seg, kit.OpSync, 2)
 					synced := make(chan error, 1)
 					go func() {
 						_, err := e.s.Seal(false)
@@ -642,7 +642,7 @@ func TestSealACrashAtEveryDurableStateLeavesThePromisedBytes(t *testing.T) {
 					if n := e.seam.Unsynced(); n != 2 {
 						t.Fatalf("the seal left %d unsynced writes, want the two of step 2", n)
 					}
-					if err := e.seam.Crash(journaltest.Keeping(tc.mask)); err != nil {
+					if err := e.seam.Crash(kit.Keeping(tc.mask)); err != nil {
 						t.Fatalf("the crash keeping %#x: %v", tc.mask, err)
 					}
 					gate.Gate()
@@ -656,7 +656,7 @@ func TestSealACrashAtEveryDurableStateLeavesThePromisedBytes(t *testing.T) {
 					// the two — holds the seal where the single step-2
 					// write is issued and unsynced, so the crash tears
 					// it inside itself.
-					gate := newSealGateFault(e, seg, journaltest.OpSync, 2)
+					gate := newSealGateFault(e, seg, kit.OpSync, 2)
 					synced := make(chan error, 1)
 					go func() {
 						_, err := e.s.Seal(true)
@@ -670,7 +670,7 @@ func TestSealACrashAtEveryDurableStateLeavesThePromisedBytes(t *testing.T) {
 					if n := e.seam.Unsynced(); n != 1 {
 						t.Fatalf("the seal left %d unsynced writes, want the one write of step 2", n)
 					}
-					if err := e.seam.Crash(journaltest.TornIn(seg, 40)); err != nil {
+					if err := e.seam.Crash(kit.TornIn(seg, 40)); err != nil {
 						t.Fatalf("the torn crash: %v", err)
 					}
 					gate.Gate()
@@ -738,7 +738,7 @@ func TestSealACrashAtEveryDurableStateLeavesThePromisedBytes(t *testing.T) {
 		// returns with a nil error and TailErr carrying the truncation's
 		// crashed-handle failure — the seal is complete after its second
 		// step, and a failed truncation does not end the segment.
-		h := e.seam.HoldFirst(t, journaltest.OpTruncate, seg)
+		h := e.seam.HoldFirst(t, kit.OpTruncate, seg)
 		res := make(chan segment.SealResult, 1)
 		serr := make(chan error, 1)
 		go func() {
@@ -827,12 +827,12 @@ func TestSealAFailedSyncOrWriteEndsTheSegment(t *testing.T) {
 		err   error
 		early bool
 	}{
-		{"the record sync", journaltest.OpSync, 1, syscall.EIO, true},
+		{"the record sync", kit.OpSync, 1, syscall.EIO, true},
 		// The step-2 write: the full seal writes the marker and footer,
 		// then the trailer, so its first step-2 write is the first write
 		// after the fault is armed.
-		{"the step-2 write", journaltest.OpWrite, 1, syscall.EIO, false},
-		{"the step-2 sync", journaltest.OpSync, 2, syscall.EIO, false},
+		{"the step-2 write", kit.OpWrite, 1, syscall.EIO, false},
+		{"the step-2 sync", kit.OpSync, 2, syscall.EIO, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			prof.Watch(t, prof.Options{})
@@ -875,11 +875,11 @@ func TestSealAFailedSyncOrWriteEndsTheSegment(t *testing.T) {
 			// ErrSegmentEnded: the take that would move the stream on is
 			// the roll's, below, so the segment's own half is checked
 			// before any append could hand it over.
-			returned := sealResult{writes: e.seam.CallsFor(journaltest.OpWrite, seg), syncs: e.seam.CallsFor(journaltest.OpSync, seg), truncates: e.seam.CallsFor(journaltest.OpTruncate, seg)}
+			returned := sealResult{writes: e.seam.CallsFor(kit.OpWrite, seg), syncs: e.seam.CallsFor(kit.OpSync, seg), truncates: e.seam.CallsFor(kit.OpTruncate, seg)}
 			if _, err := e.s.Seal(true); !errors.Is(err, segment.ErrSegmentEnded) {
 				t.Fatalf("the second Seal after the failed %s = %v, want ErrSegmentEnded", tc.name, err)
 			}
-			now := sealResult{writes: e.seam.CallsFor(journaltest.OpWrite, seg), syncs: e.seam.CallsFor(journaltest.OpSync, seg), truncates: e.seam.CallsFor(journaltest.OpTruncate, seg)}
+			now := sealResult{writes: e.seam.CallsFor(kit.OpWrite, seg), syncs: e.seam.CallsFor(kit.OpSync, seg), truncates: e.seam.CallsFor(kit.OpTruncate, seg)}
 			if now != returned {
 				t.Fatalf("the second Seal after the failed %s moved the seam: %+v, want %+v", tc.name, now, returned)
 			}
@@ -919,8 +919,8 @@ func TestSealAFailedTruncationLeavesItSealedAtItsCap(t *testing.T) {
 		name string
 		op   string
 	}{
-		{"the truncation", journaltest.OpTruncate},
-		{"the truncation's sync", journaltest.OpSync},
+		{"the truncation", kit.OpTruncate},
+		{"the truncation's sync", kit.OpSync},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			prof.Watch(t, prof.Options{})
@@ -931,12 +931,12 @@ func TestSealAFailedTruncationLeavesItSealedAtItsCap(t *testing.T) {
 
 			sealAppended(t, e)
 			before := e.set.Counters()
-			if tc.op == journaltest.OpSync {
+			if tc.op == kit.OpSync {
 				// Fail the truncation's own sync — the seal's third,
 				// counted from the appends: the first two pass and the
 				// truncation runs, so the fault fires on the third sync
 				// it sees.
-				e.seam.SetFault(&sealNthFault{seg: seg, op: journaltest.OpSync, n: 3, err: syscall.EIO})
+				e.seam.SetFault(&sealNthFault{seg: seg, op: kit.OpSync, n: 3, err: syscall.EIO})
 				r, err := e.s.Seal(true)
 				if err != nil {
 					t.Fatalf("the early Seal whose tail sync failed = %v, want nil: the truncation is the tail's", err)
@@ -950,7 +950,7 @@ func TestSealAFailedTruncationLeavesItSealedAtItsCap(t *testing.T) {
 
 			// The truncation itself: the fault fails the seal's only
 			// truncation call.
-			e.seam.SetFault(&sealNthFault{seg: seg, op: journaltest.OpTruncate, n: 1, err: syscall.EIO})
+			e.seam.SetFault(&sealNthFault{seg: seg, op: kit.OpTruncate, n: 1, err: syscall.EIO})
 
 			r, err := e.s.Seal(true)
 			if err != nil {
@@ -1110,7 +1110,7 @@ func TestSealWaitsForTheInFlightAppends(t *testing.T) {
 	wh, wbody := streamWriteHeader(streamFileID(1), 0, warm, 7, core.Version{Counter: 1})
 	warmPlaced := streamAppendWrite(t, e, wh, wbody)
 
-	h := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+	h := e.seam.HoldFirst(t, kit.OpWrite, seg)
 	heldDone := make(chan segment.Placed, 1)
 	go func() {
 		payload := streamTestBody(64, 0x3c)
@@ -1130,9 +1130,9 @@ func TestSealWaitsForTheInFlightAppends(t *testing.T) {
 		r, err := e.s.Seal(false)
 		sealed <- sealRace{r: r, err: err}
 	}()
-	syncsBefore := e.seam.CallsFor(journaltest.OpSync, seg)
+	syncsBefore := e.seam.CallsFor(kit.OpSync, seg)
 	time.Sleep(50 * time.Millisecond)
-	if got := e.seam.CallsFor(journaltest.OpSync, seg); got != syncsBefore {
+	if got := e.seam.CallsFor(kit.OpSync, seg); got != syncsBefore {
 		t.Fatalf("the seal made a sync while an append was still in flight: %d syncs, want still %d", got, syncsBefore)
 	}
 
@@ -1308,7 +1308,7 @@ func TestSealAnEarlierFailureEndsInsteadOfSealing(t *testing.T) {
 			// The next record's write fails with the seam's EIO: the
 			// fault is armed once the warm record has landed, and
 			// fires on the write that follows its own arming.
-			e.seam.SetFault(&sealNthFault{seg: seg, op: journaltest.OpWrite, n: 1, err: syscall.EIO})
+			e.seam.SetFault(&sealNthFault{seg: seg, op: kit.OpWrite, n: 1, err: syscall.EIO})
 			payload := streamTestBody(64, 0x31)
 			h, body := streamWriteHeader(streamFileID(2), 64, payload, 7, core.Version{Counter: 2})
 			if _, err := e.s.Append(h, body); !errors.Is(err, syscall.EIO) {
@@ -1319,7 +1319,7 @@ func TestSealAnEarlierFailureEndsInsteadOfSealing(t *testing.T) {
 			if err := e.s.Sync(); err != nil {
 				t.Fatalf("the warm Sync: %v", err)
 			}
-			e.seam.SetFault(&sealNthFault{seg: seg, op: journaltest.OpSync, n: 1, err: syscall.EIO})
+			e.seam.SetFault(&sealNthFault{seg: seg, op: kit.OpSync, n: 1, err: syscall.EIO})
 			if err := e.s.Sync(); !errors.Is(err, syscall.EIO) {
 				t.Fatalf("the faulted Sync = %v, want the EIO", err)
 			}
@@ -1781,15 +1781,15 @@ func TestSealTheStreamEdges(t *testing.T) {
 
 		// The worker's spare makes are counted from the build, so the
 		// refusal is judged on the delta: what the Seal alone moved.
-		syncs := e.seam.Calls(journaltest.OpSync)
-		writes := e.seam.Calls(journaltest.OpWrite)
+		syncs := e.seam.Calls(kit.OpSync)
+		writes := e.seam.Calls(kit.OpWrite)
 		if _, err := e.s.Seal(true); !errors.Is(err, segment.ErrNoSegment) {
 			t.Fatalf("the Seal of a segment-less stream = %v, want ErrNoSegment", err)
 		}
-		if got := e.seam.Calls(journaltest.OpSync) - syncs; got != 0 {
+		if got := e.seam.Calls(kit.OpSync) - syncs; got != 0 {
 			t.Fatalf("the refusal made %d syncs, want none", got)
 		}
-		if got := e.seam.Calls(journaltest.OpWrite) - writes; got != 0 {
+		if got := e.seam.Calls(kit.OpWrite) - writes; got != 0 {
 			t.Fatalf("the refusal made %d writes, want none", got)
 		}
 	})
@@ -1856,11 +1856,11 @@ func TestSealTheStreamEdges(t *testing.T) {
 		if _, err := e.s.Seal(false); err != nil {
 			t.Fatalf("the full Seal: %v", err)
 		}
-		syncs := e.seam.CallsFor(journaltest.OpSync, streamSegName(1))
+		syncs := e.seam.CallsFor(kit.OpSync, streamSegName(1))
 		if err := e.s.Sync(); err != nil {
 			t.Fatalf("the Sync after the seal: %v", err)
 		}
-		if got := e.seam.CallsFor(journaltest.OpSync, streamSegName(1)); got != syncs {
+		if got := e.seam.CallsFor(kit.OpSync, streamSegName(1)); got != syncs {
 			t.Fatalf("the Sync after the seal made an fsync: %d syncs, want still %d", got, syncs)
 		}
 	})
@@ -1925,7 +1925,7 @@ func TestSealCloseWaitsForAnInFlightSeal(t *testing.T) {
 	// are already on the file, so the marker, footer and trailer are the
 	// next write the segment sees — and the seal must be past its record
 	// sync to make it.
-	h := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+	h := e.seam.HoldFirst(t, kit.OpWrite, seg)
 	sealed := make(chan sealRace, 1)
 	go func() {
 		r, err := e.s.Seal(true)
@@ -1984,7 +1984,7 @@ func TestSealCloseRacingADrainedSealRefusesWholeAndEnds(t *testing.T) {
 	warm := streamTestBody(64, 0x5a)
 	wh, wbody := streamWriteHeader(streamFileID(1), 0, warm, 7, core.Version{Counter: 1})
 	streamAppendWrite(t, e, wh, wbody)
-	h := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+	h := e.seam.HoldFirst(t, kit.OpWrite, seg)
 	inFlightDone := make(chan error, 1)
 	go func() {
 		payload := streamTestBody(64, 0x3c)
@@ -2088,7 +2088,7 @@ func TestSealAnAppendArrivingMidSealParksAndRolls(t *testing.T) {
 		placed := sealAppended(t, e)
 		wantMarker := pEnd(placed[len(placed)-1])
 
-		h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
+		h := e.seam.HoldFirst(t, kit.OpSync, seg)
 		sealed := make(chan sealRace, 1)
 		go func() {
 			r, err := e.s.Seal(false)
@@ -2102,7 +2102,7 @@ func TestSealAnAppendArrivingMidSealParksAndRolls(t *testing.T) {
 		// seal settles, and this segment's write count never moves.
 		payload := streamTestBody(64, 0x77)
 		hh, body := streamWriteHeader(streamFileID(9), 512, payload, 7, core.Version{Counter: 99})
-		writes := e.seam.CallsFor(journaltest.OpWrite, seg)
+		writes := e.seam.CallsFor(kit.OpWrite, seg)
 		appended := make(chan segment.Placed, 1)
 		appErr := make(chan error, 1)
 		go func() {
@@ -2117,7 +2117,7 @@ func TestSealAnAppendArrivingMidSealParksAndRolls(t *testing.T) {
 			t.Fatalf("the append while the seal ran returned %v before the seal settled, want it parked", err)
 		case <-time.After(50 * time.Millisecond):
 		}
-		if got := e.seam.CallsFor(journaltest.OpWrite, seg); got != writes {
+		if got := e.seam.CallsFor(kit.OpWrite, seg); got != writes {
 			t.Fatalf("the parked append made %d writes of the sealing segment, want none: nothing is written past a seal", got-writes)
 		}
 
@@ -2175,7 +2175,7 @@ func TestSealAnAppendArrivingMidSealParksAndRolls(t *testing.T) {
 
 		// Park a record write the seal must wait out, then start the
 		// seal: it takes the segment and parks on the drain.
-		h := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+		h := e.seam.HoldFirst(t, kit.OpWrite, seg)
 		heldDone := make(chan segment.Placed, 1)
 		go func() {
 			payload := streamTestBody(64, 0x3c)
@@ -2276,7 +2276,7 @@ func TestSealADrainedSyncFailureEndsTheSegment(t *testing.T) {
 	// steps — the window the drain must close. The one-shot EIO fails the
 	// held Sync; the drain then empties, the seal's ended-check sees the
 	// failure, and the segment is ended before anything is written.
-	h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
+	h := e.seam.HoldFirst(t, kit.OpSync, seg)
 	syncErr := make(chan error, 1)
 	go func() { syncErr <- e.s.Sync() }()
 	sealReached(t, h, "stream sync")
@@ -2287,9 +2287,9 @@ func TestSealADrainedSyncFailureEndsTheSegment(t *testing.T) {
 		sealed <- sealRace{r: r, err: err}
 	}()
 	time.Sleep(50 * time.Millisecond) // the seal is parked in its drain
-	writes := e.seam.CallsFor(journaltest.OpWrite, seg)
+	writes := e.seam.CallsFor(kit.OpWrite, seg)
 
-	e.seam.SetFault(&sealNthFault{seg: seg, op: journaltest.OpSync, n: 1, err: syscall.EIO})
+	e.seam.SetFault(&sealNthFault{seg: seg, op: kit.OpSync, n: 1, err: syscall.EIO})
 	h.Release()
 	if err := sealWaitFor(t, syncErr, "the parked sync's return"); !errors.Is(err, syscall.EIO) {
 		t.Fatalf("the parked Sync = %v, want the fault's EIO", err)
@@ -2299,7 +2299,7 @@ func TestSealADrainedSyncFailureEndsTheSegment(t *testing.T) {
 	if race.err == nil || !errors.Is(race.err, segment.ErrSegmentEnded) {
 		t.Fatalf("the Seal over a failed sync window = %+v, %v, want ErrSegmentEnded: the segment is ended, never sealed", race.r, race.err)
 	}
-	if got := e.seam.CallsFor(journaltest.OpWrite, seg); got != writes {
+	if got := e.seam.CallsFor(kit.OpWrite, seg); got != writes {
 		t.Fatalf("the refused Seal made %d writes, want none: nothing is written over a failed sync window", got-writes)
 	}
 	if state, err := e.set.State(1); err != nil || state != segment.Ended {
@@ -2345,14 +2345,14 @@ func TestSealASyncOnItParksUntilItCompletes(t *testing.T) {
 
 	// Park the seal inside its first sync, then start a Sync: it must not
 	// reach the seam while the seal runs.
-	h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
+	h := e.seam.HoldFirst(t, kit.OpSync, seg)
 	sealed := make(chan sealRace, 1)
 	go func() {
 		r, err := e.s.Seal(true)
 		sealed <- sealRace{r: r, err: err}
 	}()
 	sealReached(t, h, "seal's first sync")
-	syncsAtPark := e.seam.CallsFor(journaltest.OpSync, seg)
+	syncsAtPark := e.seam.CallsFor(kit.OpSync, seg)
 
 	syncErr := make(chan error, 1)
 	go func() { syncErr <- e.s.Sync() }()
@@ -2360,7 +2360,7 @@ func TestSealASyncOnItParksUntilItCompletes(t *testing.T) {
 	// pending while the seal is parked, and the counts it would have
 	// moved are the assertion that it never ran.
 	sealNotYet(t, syncErr, 50*time.Millisecond, "the Sync returned while the seal was still in its own steps, want it parked on the drain until the seal settles")
-	if got := e.seam.CallsFor(journaltest.OpSync, seg); got != syncsAtPark {
+	if got := e.seam.CallsFor(kit.OpSync, seg); got != syncsAtPark {
 		t.Fatalf("a Sync racing the seal issued %d syncs of its own, want none: its fsync must not run beside the seal's", got-syncsAtPark)
 	}
 
@@ -2380,7 +2380,7 @@ func TestSealASyncOnItParksUntilItCompletes(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the parked Sync did not return after the seal completed")
 	}
-	if got := e.seam.CallsFor(journaltest.OpSync, seg); got != syncsAtPark+2 {
+	if got := e.seam.CallsFor(kit.OpSync, seg); got != syncsAtPark+2 {
 		t.Fatalf("the whole early seal plus the parked Sync issued %d syncs past the held one, want the seal's two alone", got-syncsAtPark)
 	}
 }
@@ -2423,15 +2423,15 @@ func TestSealAFullSealThatFillsTheSegmentWritesOnce(t *testing.T) {
 		t.Fatalf("the fill leaves %d bytes of room, want the seal's %d: the trailer must begin where the footer ends", room, format.SealMarkerSize+records*format.CatalogEntrySize+format.TrailerSize)
 	}
 
-	syncs := e.seam.CallsFor(journaltest.OpSync, seg)
-	writes := e.seam.CallsFor(journaltest.OpWrite, seg)
+	syncs := e.seam.CallsFor(kit.OpSync, seg)
+	writes := e.seam.CallsFor(kit.OpWrite, seg)
 	if _, err := e.s.Seal(false); err != nil {
 		t.Fatalf("the full Seal of a filled segment: %v", err)
 	}
-	if got := e.seam.CallsFor(journaltest.OpSync, seg) - syncs; got != 2 {
+	if got := e.seam.CallsFor(kit.OpSync, seg) - syncs; got != 2 {
 		t.Fatalf("the full seal issued %d syncs, want the two of its floor", got)
 	}
-	if got := e.seam.CallsFor(journaltest.OpWrite, seg) - writes; got != 1 {
+	if got := e.seam.CallsFor(kit.OpWrite, seg) - writes; got != 1 {
 		t.Fatalf("the full seal of a filled segment issued %d writes, want the one its contiguous ranges allow", got)
 	}
 
@@ -2507,7 +2507,7 @@ func TestSealRefusesAnAppendResumedFromTheRollGate(t *testing.T) {
 	// while the records and the seal itself run at full speed.
 	spare := format.SpareName(core.SegmentID(1))
 	e := streamOver(t, streamCap, func(env streamEnv) {
-		env.seam.SetFault(&sealDelayFault{names: []string{spare}, ops: []string{journaltest.OpCreate, journaltest.OpAllocate}, beat: 20 * time.Millisecond})
+		env.seam.SetFault(&sealDelayFault{names: []string{spare}, ops: []string{kit.OpCreate, kit.OpAllocate}, beat: 20 * time.Millisecond})
 	})
 	e.cacheBuilt(t)
 	defer func() { _ = e.s.Close() }()
