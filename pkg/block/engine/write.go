@@ -204,6 +204,16 @@ func (e *Engine) journalErr(err error) error {
 		return fmt.Errorf("engine: journal closed: %w", vfserr.ErrUnavailable)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return err
+	case errors.Is(err, syscall.EIO):
+		// decision: any EIO the journal returns is ErrIO, answered at once
+		// and never retried here, the bytes kept. The RFC names the
+		// journal's ErrUnreadable, a read its bounded retry could not
+		// complete (RFC 8 §12.1, RFC 17 §4.3); the journal exports no such
+		// error yet, and a read it fails on the device ends in EIO. A
+		// read-only journal's refusal wrapping an EIO is matched above, as
+		// retry-later. Match ErrUnreadable here once the journal exports it.
+		e.d.Logger.Error("journal device I/O error", "err", err)
+		return fmt.Errorf("engine: %v: %w", err, vfserr.ErrIO)
 	}
 	e.d.Logger.Error("journal call failed", "err", err)
 	return fmt.Errorf("engine: %v: %w", err, vfserr.ErrUnavailable)

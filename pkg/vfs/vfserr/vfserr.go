@@ -44,6 +44,7 @@ var (
 	ErrLost        = errors.New("vfs: acknowledged writes lost")
 	ErrUnavailable = errors.New("vfs: unavailable")
 	ErrCorrupt     = errors.New("vfs: content corrupt")
+	ErrIO          = errors.New("vfs: the local device failed a read") // answered at once, the bytes kept
 
 	ErrPastEnd = errors.New("vfs: offset at or past the end of the file")
 )
