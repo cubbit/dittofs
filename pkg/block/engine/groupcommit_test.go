@@ -688,13 +688,28 @@ func (s *conflictingFile) Commit(ctx context.Context, p []kvstore.PendingExisten
 func TestASplitLeafBacksOffAtOnce(t *testing.T) {
 	s := &conflictingFile{}
 	u := newUnit(t, func(d *engine.Deps) { s.Existence = d.Existence; d.Existence = s })
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
 	a, x := u.create(t, "a"), u.create(t, "x")
 	s.x = x
 	u.write(t, a, 0, []byte("a"))
 	u.write(t, x, 0, []byte("x"))
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
-	defer cancel()
-	_ = u.e.CommitAll(ctx, u.rec)
+	// a and x come due at one instant by their age, so the first batch takes
+	// both: asked for one by one, as CommitAll asks, a batch could take x
+	// alone, and x would back off without a split. The clock moves in steps
+	// shorter than the shortest backoff until the store is called, so a step
+	// taken after the split cannot let x's backoff run out and send it again.
+	deadline := time.Now().Add(5 * time.Second)
+	for s.calls.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("never: the first batch")
+		}
+		u.clock.Advance(10 * time.Millisecond)
+		time.Sleep(time.Millisecond)
+	}
+	// The split commits a and fails x in either order: wait for both.
+	eventually(t, "a committed and x named failing", func() bool { return !u.e.HasEntry(a) && u.e.Failing(u.rec, x) })
 	if n := s.calls.Load(); n != 2 {
 		t.Errorf("x was sent %d times, want twice: with a, then alone by the split", n)
 	}
