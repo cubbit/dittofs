@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -68,6 +69,27 @@ func TestARemovalOverAReadOnlyJournalFails(t *testing.T) {
 			}
 			if u.e.GuardHeld(f) {
 				t.Error("the guard is still held")
+			}
+		})
+	}
+}
+
+// A write to a read-only journal is ErrReadOnly when EROFS entered the state,
+// and retry-later for any other cause.
+func TestAWriteToAReadOnlyJournal(t *testing.T) {
+	for _, c := range []struct {
+		cause error
+		want  func(error) bool
+	}{
+		{fmt.Errorf("write segment: %w", syscall.EROFS), func(err error) bool { return errors.Is(err, vfserr.ErrReadOnly) }},
+		{syscall.EIO, func(err error) bool { var d *vfserr.Delay; return errors.As(err, &d) }},
+	} {
+		t.Run(c.cause.Error(), func(t *testing.T) {
+			u := newUnit(t)
+			f := u.create(t, "a")
+			u.j.ReadOnly(c.cause)
+			if _, err := u.e.Write(t.Context(), u.share.ID, f, 0, fill(4, 'a'), engine.WriteOpts{Done: func() {}}); !c.want(err) {
+				t.Errorf("Write: %v", err)
 			}
 		})
 	}
