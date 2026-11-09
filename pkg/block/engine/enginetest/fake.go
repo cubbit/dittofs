@@ -209,10 +209,11 @@ func (j *FakeJournal) Close() error {
 // window's also raise the loss generation, a stale one does not. A loss of
 // nothing held records nothing.
 //
-// ponytail: a failed window's loss cuts the extent and raises the generation
-// once per call, where RFC 1 holds again what the failed writes superseded
-// and raises the generation once per window. Model both once a test drops
-// several extents in one window or reads what a failed write overwrote.
+// ponytail: an unsynced loss (a failed window's, or a corrupt one with
+// synced false) cuts the extent and raises the generation once per call,
+// where RFC 1 holds again what the dropped record superseded and raises once
+// per window. Model both once a test drops several extents in one window or
+// reads what an unsynced write overwrote.
 func (j *FakeJournal) Lose(id journal.FileID, e journal.Extent, why journal.LossReason, synced bool) {
 	j.LoseLater(id, e, why, synced)()
 }
