@@ -118,7 +118,11 @@ type Histogram struct {
 // Part is the layer's report, read from counters kept at each sync.
 type Part struct {
 	Syncs, SyncFailures uint64
-	SyncDuration        Histogram
+	// ReappendedBytes counts the bytes of the records a failed window's
+	// re-append, or a held copy's, placed again: the length each record has at
+	// its new place. An append the stream refused counts nothing.
+	ReappendedBytes uint64
+	SyncDuration    Histogram
 	// LastSyncError is the most recent sync failure across the streams, nil
 	// when none has failed.
 	LastSyncError *SyncFailure
@@ -579,7 +583,8 @@ type stream struct {
 
 	// The counters have one writer, the worker, and are read by Stats
 	// without mu, so a poll never waits on a lock an append takes.
-	syncs, failures atomic.Uint64
+	// reappended counts the bytes of the records placed again, as placed.
+	syncs, failures, reappended atomic.Uint64
 	// lastFail is the last sync failure, stored by the worker and read by
 	// Stats without mu.
 	lastFail atomic.Pointer[failStamp]
@@ -780,6 +785,7 @@ func (d *Durability) Stats() Part {
 		}
 		p.Syncs += st.syncs.Load()
 		p.SyncFailures += st.failures.Load()
+		p.ReappendedBytes += st.reappended.Load()
 		p.SyncDuration.Sum += time.Duration(st.sum.Load())
 		for i := range st.buckets {
 			p.SyncDuration.Counts[i] += st.buckets[i].Load()

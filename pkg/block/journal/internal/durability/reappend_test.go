@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -268,7 +269,8 @@ func TestReappendIntoAStoppedStreamFailsTheRecordReadOnly(t *testing.T) {
 func TestReappendOfARecordThatCannotBeAppendedIsRetriedByTheNextPass(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	// No worker runs, so the test takes the window and resolves it itself.
-	r := newRigUnstarted(t, 1)
+	logs := &errorCounter{}
+	r := newRigLogging(t, 1, nil, slog.New(logs))
 	st := r.d.made[0]
 	// Start binds the stream; the test does the same without the worker.
 	st.s = r.streams.Stream(0)
@@ -289,6 +291,7 @@ func TestReappendOfARecordThatCannotBeAppendedIsRetriedByTheNextPass(t *testing.
 		return len(st.ends) == 1
 	})
 	r.d.takeWindows(st)
+	logged := logs.n.Load()
 
 	// The kept bytes no longer verify, as a record the stream cannot place.
 	st.mu.Lock()
@@ -297,7 +300,7 @@ func TestReappendOfARecordThatCannotBeAppendedIsRetriedByTheNextPass(t *testing.
 	bad[format.RecordHeaderSize-1] ^= 0xff
 	st.windows[0].entries[0].w.Bytes = bad
 	st.mu.Unlock()
-	for range 2 {
+	for range 3 {
 		r.d.resolveWindows(st)
 		if ws := r.windowsOf(0); len(ws) != 1 || len(ws[0].locs) != 1 {
 			t.Fatalf("windows = %+v after a refused pass, want the record pending", ws)
@@ -310,10 +313,20 @@ func TestReappendOfARecordThatCannotBeAppendedIsRetriedByTheNextPass(t *testing.
 		}
 	}
 
+	if got := r.d.Stats().ReappendedBytes; got != 0 {
+		t.Errorf("ReappendedBytes = %d after refused passes, want 0", got)
+	}
+	// The same refusal on every pass is logged at Error once.
+	if got := logs.n.Load() - logged; got != 1 {
+		t.Errorf("%d Error logs over 3 refused passes of one record, want 1", got)
+	}
 	st.mu.Lock()
 	st.windows[0].entries[0].w.Bytes = good
 	st.mu.Unlock()
 	r.d.resolveWindows(st)
+	if got, want := r.d.Stats().ReappendedBytes, uint64(a.Len); got != want {
+		t.Errorf("ReappendedBytes = %d after the retry, want %d", got, want)
+	}
 	if ws := r.windowsOf(0); len(ws) != 0 {
 		t.Fatalf("windows = %+v after the retry, want none", ws)
 	}
@@ -1899,6 +1912,11 @@ func TestAHeldReappendWhoseSyncFailsIsReappendedAgain(t *testing.T) {
 	if got := []core.SegmentID{fr.awaitResolved(t), fr.awaitResolved(t)}; got[0] != a.Segment || got[1] != b {
 		t.Fatalf("resolved segments %v, want %d then %d", got, a.Segment, b)
 	}
+	// The window's re-append, the hold's and the re-append of the hold's own
+	// failed window each placed the record once.
+	if got, want := fr.d.Stats().ReappendedBytes, 3*uint64(a.Len); got != want {
+		t.Errorf("ReappendedBytes = %d, want %d", got, want)
+	}
 	if got := fr.d.Generation() - before; got != 0 {
 		t.Errorf("the generation rose by %d, want 0", got)
 	}
@@ -1907,5 +1925,35 @@ func TestAHeldReappendWhoseSyncFailsIsReappendedAgain(t *testing.T) {
 	}
 	if recs := fr.lossRecordsOnDisk(t); len(recs) != 0 {
 		t.Errorf("durable loss records = %+v, want none", recs)
+	}
+}
+
+// TestSyncReappendedBytesCountsWhatWasReappended covers a failed window of a
+// content record that re-appends, one that does not verify and a removal: the
+// counter holds the bytes of the two records placed again and none of the
+// failed one, and is read while a stream's lock is held, so no lock a write
+// needs stands behind it.
+func TestSyncReappendedBytesCountsWhatWasReappended(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr, seam := newRereadRig(t)
+	f, g, h := file(1), file(2), file(3)
+	a, _ := fr.publish(t, f, 0, "aaaa")
+	b, _ := fr.publish(t, g, 0, "bbbbbbbb")
+	del := fr.appendHeaderOnly(t, h, format.KindDelete, core.Extent{}, 130, core.Version{Counter: 40}, format.RecordBody{})
+	seam.set(b, func([]byte) (int, error) { return 0, syscall.EIO })
+	if got := fr.d.Stats().ReappendedBytes; got != 0 {
+		t.Fatalf("ReappendedBytes = %d before any failure, want 0", got)
+	}
+	fr.failSyncOf(t, a.Segment, errors.New("sync boom"))
+	wantSyncError(t, mustReturn(t, "Sync of g", fr.syncAsync(context.Background(), g)), a.Segment, g)
+	fr.awaitResolved(t)
+
+	want := uint64(a.Len) + uint64(del.Len)
+	st := fr.d.made[0]
+	st.mu.Lock()
+	got := fr.d.Stats().ReappendedBytes
+	st.mu.Unlock()
+	if got != want {
+		t.Errorf("ReappendedBytes = %d, want %d (the content record %d and the removal %d, not the failed %d)", got, want, a.Len, del.Len, b.Len)
 	}
 }

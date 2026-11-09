@@ -247,7 +247,8 @@ func segmentGone(set *segment.Set, seg core.SegmentID) bool {
 
 // holdsDueLocked reports whether a hold waits on a retry the worker's tick
 // makes: an owed claim, or, when a re-append is installed (always, outside a
-// test that removes it), a claimed record not yet re-appended. The caller holds mu.
+// test that removes it), a claimed record not yet re-appended. The caller
+// holds mu.
 func (st *stream) holdsDueLocked(reappend bool) bool {
 	for _, h := range st.holds {
 		if h.owed || (reappend && len(h.records) != 0) {

@@ -67,7 +67,15 @@ func (d *Durability) reappendWindow(st *stream, w *window) (refused bool) {
 			unverified = append(unverified, e)
 			continue
 		}
-		d.log.Error("journal could not re-append a failed window's record", "stream", st.no, "window", w.id, "seq", e.w.Seq, "kind", e.w.Kind, "err", err)
+		// A record the stream keeps refusing is logged at Error once and at
+		// Debug on each pass after, so a stranded record does not repeat it on
+		// every tick.
+		if w.refused && w.refusedAt == e.w.Loc {
+			d.log.Debug("journal still cannot re-append a failed window's record", "stream", st.no, "window", w.id, "seq", e.w.Seq, "kind", e.w.Kind, "err", err)
+		} else {
+			d.log.Error("journal could not re-append a failed window's record", "stream", st.no, "window", w.id, "seq", e.w.Seq, "kind", e.w.Kind, "err", err)
+			w.refused, w.refusedAt = true, e.w.Loc
+		}
 		refused = true
 		break
 	}
@@ -145,6 +153,7 @@ func (d *Durability) appendAgain(st *stream, h format.RecordHeader, body format.
 	if err != nil {
 		return segment.Placed{}, err
 	}
+	st.reappended.Add(uint64(p.Loc.Len))
 	if d.afterAppend != nil {
 		d.afterAppend()
 	}
@@ -345,9 +354,10 @@ func (st *stream) leaveWindowLocked(w *window, e entry, to segment.Location) {
 		return
 	}
 	w.entries = slices.Delete(w.entries, i, i+1)
-	// The new record may already be synced and completed, which clears its
-	// entry: then nothing is left to follow, and the old place, in no window
-	// or ledger, reads as done.
+	// The new place's ledger entry may be gone by now: Corrupt took the record
+	// out, or a failure moved it into a window or the lost set. Then nothing
+	// is left to follow, and the old place, in no window or ledger, reads as
+	// done.
 	if st.heldLocked(to) {
 		st.moved[e.w.Loc] = to
 	}

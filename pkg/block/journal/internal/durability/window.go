@@ -51,6 +51,11 @@ type window struct {
 	cause   segment.EndCause
 	err     error   // why the segment ended
 	entries []entry // moved from the ledger, in Track order
+
+	// refusedAt is the place of the record whose refusal the worker last
+	// logged at Error, valid when refused is set. Only the worker reads it.
+	refusedAt segment.Location
+	refused   bool
 	// readOnly marks a window failReadOnly made of a segment's unsynced
 	// records once the journal turned read-only: the segment did not fail,
 	// so resolving the window announces nothing and keeps the segment's
