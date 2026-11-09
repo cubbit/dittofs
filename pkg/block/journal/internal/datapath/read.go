@@ -37,9 +37,9 @@ import (
 // between the resolve and the read is resolved again once, and what the index
 // then names is served or reported missing.
 //
-// An I/O error is returned as itself and changes nothing; so is a refusal of
-// a record whose header did not decode and whose sequence number nothing
-// knows, which wraps core.ErrCorrupt. On any error n and held still describe
+// An I/O error is returned wrapped and changes nothing; so is a refusal of a
+// record whose sequence number nothing trustworthy names, which wraps
+// core.ErrCorrupt. On any error n and held, in offset order, still describe
 // what was copied into p before it, and missing is nil.
 func (c *Core) ReadAt(ctx context.Context, s *Share, id core.FileID, off int64, p []byte) (n int, missing []core.Extent, held []core.Held, asOf core.Version, err error) {
 	if err = ctx.Err(); err != nil {
@@ -67,10 +67,11 @@ func (c *Core) ReadAt(ctx context.Context, s *Share, id core.FileID, off int64, 
 	placed, gaps := c.index.Span(id, core.Extent{Off: off, Len: int64(len(p))})
 
 	r := reading{c: c, ctx: ctx, id: id, st: c.streams.For(id), off: off, p: p, missing: gaps}
-	if err = r.serve(placed, true); err != nil {
+	err = r.serve(placed, true)
+	slices.SortFunc(r.held, func(a, b core.Held) int { return cmp.Compare(a.Extent.Off, b.Extent.Off) })
+	if err != nil {
 		return r.n, nil, r.held, asOf, err
 	}
-	slices.SortFunc(r.held, func(a, b core.Held) int { return cmp.Compare(a.Extent.Off, b.Extent.Off) })
 	return r.n, coalesce(r.missing), r.held, asOf, nil
 }
 
@@ -183,26 +184,26 @@ func (r *reading) serveRecord(g recordPieces, again bool) error {
 // corruption names g's record for Corrupt. The record's version is the one
 // the index entries carry. Its sequence number, extent and share come from
 // the stream's ledger while it still holds the record, which is what the
-// writer reported and no damage on disk can change; otherwise from the
-// header, when it decodes.
+// writer reported for that place and no damage on disk can change; otherwise
+// from the header, when the header decodes and is still this record's: it
+// names this file and the version the index entries carry, and disagrees with
+// them, if at all, only in its extent.
 //
-// decision: a record whose header does not decode, and which the ledger no
-// longer holds, is refused with an error wrapping core.ErrCorrupt instead of
-// handed to Corrupt. Corrupt needs the record's sequence number to find its
-// copy and to name the loss, a header that fails its checksum cannot supply
-// it, and the index keeps none per record; dropping it under a wrong number
-// would miss its copy and could merge its loss with another's. The read
-// serves nothing of it, reports nothing missing for it and changes nothing,
-// so every read of that range fails until an open finds the record. Withdraw
-// this when the index records a sequence number per record, or when the loss
-// key and the loss record accept an unknown one.
-//
-// decision: a header that decodes but disagrees with the index has its
-// sequence number and extent taken as found when the ledger no longer holds
-// the record, since nothing else names them; the version stays the index's.
-// Only the journal writes a header that verifies under its seed, so the
-// number is one the journal issued. Overturned by a sequence number kept per
-// index entry.
+// decision: a record the ledger no longer holds is refused with an error
+// wrapping core.ErrCorrupt instead of handed to Corrupt when its header
+// cannot name its sequence number: a header that does not decode, or one
+// that decodes but names another file or another version. Corrupt needs the
+// record's own sequence number to find its copy and to name the loss, and the
+// index keeps none per record. A header that fails its checksum supplies
+// none; one for another file or version supplies the number of the record it
+// describes, not of the one the index meant, and handed to Corrupt that number
+// can find the other record's copy and repoint this file's entries to it, so
+// the record is never dropped and its loss never recorded. The read serves
+// nothing of it, reports nothing missing for it and changes nothing, so every
+// read of that range fails until an open finds the record. Withdraw this when
+// the index records a sequence number per record, or when the loss key and
+// the loss record accept an unknown one and Corrupt is then called without a
+// number.
 func (r *reading) corruption(g recordPieces, h format.RecordHeader, verdict recordVerdict) (durability.Corruption, error) {
 	cr := durability.Corruption{
 		File:    r.id,
@@ -213,7 +214,8 @@ func (r *reading) corruption(g recordPieces, h format.RecordHeader, verdict reco
 		cr.Share, cr.Seq, cr.Extent = w.Tag, w.Seq, w.Extent
 		return cr, nil
 	}
-	if verdict == recordHeaderDamaged {
+	ours := verdict != recordHeaderDamaged && h.File == r.id && h.Version == cr.Version
+	if !ours {
 		return durability.Corruption{}, fmt.Errorf("datapath: the record of file %v at segment %d offset %d does not verify and its sequence number is unknown: %w", r.id, g.at.Segment, g.at.Offset, core.ErrCorrupt)
 	}
 	cr.Share, cr.Seq, cr.Extent = h.Tag, h.Seq, h.Extent
@@ -225,8 +227,10 @@ func (r *reading) corruption(g recordPieces, h format.RecordHeader, verdict reco
 // It resolves once: when again is false the pieces are reported missing, and
 // what the one resolve finds gone too is reported missing by serve.
 //
-// decision: a gone segment is resolved again only once per read, so a read
-// racing repeated retirements reports the extent missing rather than looping.
+// decision: the pieces of a record whose segment is gone are resolved again
+// only once, and what that resolve names is read with no further resolve, so
+// a read racing repeated retirements reports the extent missing rather than
+// looping.
 // A segment is retired only once the index names nothing in it, so one
 // resolve finds where its pieces went. Overturned if a read must keep
 // retrying.

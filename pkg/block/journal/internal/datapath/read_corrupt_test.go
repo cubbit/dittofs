@@ -109,27 +109,13 @@ func TestReadByteFlippedAtRecordEndServesNothing(t *testing.T) {
 	}
 }
 
-func TestReadHeaderForAnotherFileIsCorruption(t *testing.T) {
-	c, seam := newTestCore(t)
-	s := mustShare(t, c, 1)
-	f, g := testFile(1), testFile(2)
-	data := pattern(4<<10, 6)
-	if _, err := c.WriteAt(context.Background(), s, f, 0, data, 1); err != nil {
-		t.Fatal(err)
-	}
-	syncFiles(t, c, f)
-	r := recordOf(t, c, f, 0).Record
-
-	// The header is rewritten to name g, with both checksums valid: the
-	// record verifies on its own, and only the index entry that sent the read
-	// there tells it is not f's.
-	raw := segmentBytes(t, seam, r.Segment, int64(r.Offset), format.RecordHeaderSize)
-	h, err := format.DecodeRecordHeader(raw, testIdentity, r.Segment, int64(r.Offset))
-	if err != nil {
-		t.Fatalf("DecodeRecordHeader: %v", err)
-	}
-	h.File = g
-	forged := format.AppendRecord(nil, testIdentity, h, format.RecordBody{Payload: data, MTime: 1})
+// forgeHeader rewrites the header of the record at r as h, re-encoded with
+// both checksums valid over body, and checks that the forged record decodes
+// and verifies on its own at r's place.
+func forgeHeader(t *testing.T, seam *kit.Seam, r index.RecordAt, h format.RecordHeader, body format.RecordBody) {
+	t.Helper()
+	h.Segment, h.Offset = r.Segment, int64(r.Offset)
+	forged := format.AppendRecord(nil, testIdentity, h, body)
 	overwrite(t, seam, r.Segment, int64(r.Offset), forged[:format.RecordHeaderSize])
 	whole := segmentBytes(t, seam, r.Segment, int64(r.Offset), int(h.Size()))
 	fh, err := format.DecodeRecordHeader(whole[:format.RecordHeaderSize], testIdentity, r.Segment, int64(r.Offset))
@@ -139,10 +125,72 @@ func TestReadHeaderForAnotherFileIsCorruption(t *testing.T) {
 	if _, err := format.VerifyRecordBody(whole[format.RecordHeaderSize:format.RecordHeaderSize+fh.BodySize()], testIdentity, fh); err != nil {
 		t.Fatalf("the forged record does not verify: %v", err)
 	}
+}
+
+// headerAt decodes the header of the record at r.
+func headerAt(t *testing.T, seam *kit.Seam, r index.RecordAt) format.RecordHeader {
+	t.Helper()
+	raw := segmentBytes(t, seam, r.Segment, int64(r.Offset), format.RecordHeaderSize)
+	h, err := format.DecodeRecordHeader(raw, testIdentity, r.Segment, int64(r.Offset))
+	if err != nil {
+		t.Fatalf("DecodeRecordHeader: %v", err)
+	}
+	return h
+}
+
+func TestReadHeaderForAnotherExtentIsCorruption(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	data := pattern(4<<10, 6)
+	if _, err := c.WriteAt(context.Background(), s, f, 0, data, 1); err != nil {
+		t.Fatal(err)
+	}
+	syncFiles(t, c, f)
+	r := recordOf(t, c, f, 0).Record
+
+	// The header is rewritten to name another extent of the same file and
+	// version, with both checksums valid: the record verifies on its own, and
+	// only the index entry that sent the read there tells it is wrong. It is
+	// still f's record, so its sequence number is trusted and Corrupt drops it.
+	h := headerAt(t, seam, r)
+	h.Extent.Off += 8 << 10
+	forgeHeader(t, seam, r, h, format.RecordBody{Payload: data, MTime: 1})
 
 	readUntouched(t, c, s, f, 0, 4<<10, []core.Extent{{Off: 0, Len: 4 << 10}})
 	if _, ok := c.Index().Lookup(f, 0); ok {
-		t.Fatal("the record whose header names another file is still held")
+		t.Fatal("the record whose header names another extent is still held")
+	}
+}
+
+func TestReadHeaderOfAnotherFilesRecordIsRefusedNotRepointed(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f, g := testFile(1), testFile(2)
+	gdata := pattern(4<<10, 12)
+	// g's record has a registered copy, so a Corrupt that took g's sequence
+	// number would find that copy and serve or repoint f's entries to it.
+	gp, _ := writeWithCopy(t, c, seam, s, g, gdata)
+	// f holds the same bytes, so g's header verifies over f's body too.
+	if _, err := c.WriteAt(context.Background(), s, f, 0, gdata, 1); err != nil {
+		t.Fatal(err)
+	}
+	syncFiles(t, c, f)
+	before := recordOf(t, c, f, 0)
+
+	// f's record now carries g's header, valid at f's place.
+	forgeHeader(t, seam, before.Record, headerAt(t, seam, gp.Record), format.RecordBody{Payload: gdata, MTime: 1})
+
+	p := sentinels(4 << 10)
+	n, missing, held, _, err := c.ReadAt(context.Background(), s, f, 0, p)
+	if !errors.Is(err, core.ErrCorrupt) {
+		t.Fatalf("err = %v, want core.ErrCorrupt", err)
+	}
+	if n != 0 || len(held) != 0 || len(missing) != 0 || !bytes.Equal(p, sentinels(4<<10)) {
+		t.Fatalf("the refused read reports %d bytes, held %v, missing %v", n, held, missing)
+	}
+	if after := recordOf(t, c, f, 0); after != before || !c.Index().Names(f, before.Record) {
+		t.Fatalf("f's entry changed: %+v, was %+v", after, before)
 	}
 }
 
@@ -286,5 +334,67 @@ func TestReadCopyThatFailsAfterCorruptIsMissing(t *testing.T) {
 	// still held, though this read could not verify what it named.
 	if _, ok := c.Index().Lookup(f, 0); !ok {
 		t.Fatal("the extent was dropped: Corrupt did not answer with the copy")
+	}
+}
+
+// corruptPayload flips a payload byte of the record holding off of f.
+func corruptPayload(t *testing.T, c *Core, seam *kit.Seam, f core.FileID, off int64) {
+	t.Helper()
+	r := recordOf(t, c, f, off).Record
+	flip(t, seam, r.Segment, payloadStart(r)+10)
+}
+
+func TestReadDroppedPiecesJoinNeighbouringGaps(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	for i, off := range []int64{100, 200} {
+		if _, err := c.WriteAt(context.Background(), s, f, off, pattern(100, byte(i)), 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	syncFiles(t, c, f)
+	if recordOf(t, c, f, 100).Record == recordOf(t, c, f, 200).Record {
+		t.Fatal("the two writes share a record")
+	}
+	corruptPayload(t, c, seam, f, 100)
+	corruptPayload(t, c, seam, f, 200)
+
+	// A gap, two dropped records, a gap: one exact extent, no wider.
+	readUntouched(t, c, s, f, 50, 300, []core.Extent{{Off: 50, Len: 300}})
+}
+
+func TestReadDroppedRecordBetweenHeldPieces(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	var vs []core.Version
+	for i, off := range []int64{0, 100, 200} {
+		v, err := c.WriteAt(context.Background(), s, f, off, pattern(100, byte(i)), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vs = append(vs, v)
+	}
+	syncFiles(t, c, f)
+	corruptPayload(t, c, seam, f, 100)
+
+	p := sentinels(300)
+	n, missing, held, _, err := c.ReadAt(context.Background(), s, f, 0, p)
+	if err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	if want := []core.Extent{{Off: 100, Len: 100}}; !slices.Equal(missing, want) {
+		t.Fatalf("missing = %v, want %v", missing, want)
+	}
+	wantHeld := []core.Held{
+		{Extent: core.Extent{Off: 0, Len: 100}, Version: vs[0]},
+		{Extent: core.Extent{Off: 200, Len: 100}, Version: vs[2]},
+	}
+	if n != 200 || !slices.Equal(held, wantHeld) {
+		t.Fatalf("n = %d held %v, want 200 and %v", n, held, wantHeld)
+	}
+	if !bytes.Equal(p[:100], pattern(100, 0)) || !bytes.Equal(p[200:], pattern(100, 2)) || !bytes.Equal(p[100:200], sentinels(100)) {
+		t.Fatal("p does not hold the two held pieces around the untouched dropped one")
 	}
 }
