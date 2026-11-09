@@ -33,7 +33,7 @@ type recHolds struct {
 	releases []entity.OpenID
 	ids      entity.OpenID
 	onHold   func(ctx context.Context) error
-	onRel    func() error
+	onRel    func(ctx context.Context) error
 }
 
 func (h *recHolds) Hold(ctx context.Context, src engine.CloneSrc) (entity.OpenID, error) {
@@ -61,7 +61,7 @@ func (h *recHolds) Release(ctx context.Context, o entity.OpenID) error {
 	on := h.onRel
 	h.mu.Unlock()
 	if on != nil {
-		if err := on(); err != nil {
+		if err := on(ctx); err != nil {
 			return err
 		}
 	}
@@ -113,7 +113,7 @@ func TestAClonesHoldSpansItsPhase2(t *testing.T) {
 		}
 	}
 	h.onHold = func(context.Context) error { log("Hold"); return nil }
-	h.onRel = func() error { log("Release"); return nil }
+	h.onRel = func(context.Context) error { log("Release"); return nil }
 	u = clonedUnitWith(t, unitConfig{unbound: true, deps: []func(*engine.Deps){
 		func(d *engine.Deps) { d.Holds = h },
 		onResume(func(ctx context.Context, next engine.Content, s entity.ShareID, file entity.FileID) (bool, error) {
@@ -215,14 +215,22 @@ func TestARefusedHoldRunsPhase2WithoutARelease(t *testing.T) {
 // A Hold that never answers is cut at the conflict bound and counted: five
 // in a row raise removal_stalled for the destination, with no phase 2 run,
 // another file's removal on the same journal runs meanwhile, and once Hold
-// answers the clone runs its phase 2 and releases the hold.
-func TestAHungHoldIsCutAndCounted(t *testing.T) {
+// answers the clone runs its phase 2. A Release that never answers is cut
+// so too, and retried.
+func TestAHungHoldOrReleaseIsCutAndCounted(t *testing.T) {
 	x := newResuming()
 	h := &recHolds{}
 	var hung atomic.Bool
 	hung.Store(true)
 	h.onHold = func(ctx context.Context) error {
 		if hung.Load() {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+	h.onRel = func(ctx context.Context) error {
+		if _, releases := h.counts(); releases == 1 {
 			<-ctx.Done()
 			return ctx.Err()
 		}
@@ -247,8 +255,8 @@ func TestAHungHoldIsCutAndCounted(t *testing.T) {
 	if err := u.answered(t, "the clone", errc); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
-	if _, releases := h.counts(); releases != 1 || x.resumed(dst) == 0 {
-		t.Errorf("%d Releases, Resume run %d times; want the hold released once after phase 2", releases, x.resumed(dst))
+	if _, releases := h.counts(); releases != 2 || x.resumed(dst) == 0 {
+		t.Errorf("%d Releases, Resume run %d times; want the hung one cut and the hold released after phase 2", releases, x.resumed(dst))
 	}
 }
 
@@ -259,7 +267,7 @@ func TestAFailedReleaseRetriesOnlyTheRelease(t *testing.T) {
 	h := &recHolds{}
 	var fails atomic.Int32
 	fails.Store(3)
-	h.onRel = func() error {
+	h.onRel = func(context.Context) error {
 		if fails.Add(-1) >= 0 {
 			return errors.New("an injected release failure")
 		}
@@ -490,7 +498,7 @@ func TestASourceUnlinkedBeforeTheHoldIsReleasedAfterTheClone(t *testing.T) {
 func TestASourceUnlinkedDuringPhase2IsAnOrphanAfterRelease(t *testing.T) {
 	h := &recHolds{}
 	var released atomic.Bool
-	h.onRel = func() error { released.Store(true); return nil }
+	h.onRel = func(context.Context) error { released.Store(true); return nil }
 	var dst entity.FileID
 	entered, open := make(chan struct{}), make(chan struct{})
 	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h },
