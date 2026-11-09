@@ -66,10 +66,10 @@ runs:
         echo "path=$FILE" >> "$GITHUB_OUTPUT"
 
     # Only a push run saves: a pull request run reads its base branch's entries
-    # and every run reads the default branch's, while what a pull request or
-    # merge queue run saves only that run's re-runs can read. Saved here, not
-    # by the post step of actions/cache, which saves only when the whole job
-    # passes.
+    # and every run reads the default branch's, while what a pull request run
+    # saves only that pull request's runs can read, and a merge queue run's
+    # only its own re-runs. Saved here, not by the post step of actions/cache,
+    # which saves only when the whole job passes.
     - name: Save to the cache
       if: steps.restore.outputs.cache-hit != 'true' && github.event_name == 'push'
       uses: actions/cache/save@v6
