@@ -2,6 +2,8 @@ package durability
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -184,4 +186,51 @@ func TestCorruptRacingItsWindowsFailureRaisesOnce(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCorruptOfAnOverwrittenRecordOfAFailedSegmentRaises covers a record of a
+// failed segment, overwritten before the worker took the segment's window, so
+// the index names nothing of it: the read still answers the window's report
+// owed to its file, so the generation is up by the time the drop is visible to
+// a Sync, and the Sync that takes the report returns with it up.
+func TestCorruptOfAnOverwrittenRecordOfAFailedSegmentRaises(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	hook, reached, release := gate(t)
+	var taken atomic.Bool
+	var atTake atomic.Uint64
+	cr := newCorruptRig(t, func(cr *corruptRig) {
+		cr.d.beforeTakeWindow = hook
+		cr.d.afterCorruptTake = func() {
+			atTake.Store(cr.d.Generation())
+			taken.Store(true)
+		}
+	})
+	t.Cleanup(release)
+	f := file(1)
+	old := cr.write(t, f, 0, "aaaa")
+	if nw := cr.write(t, f, 0, "bbbb"); nw.loc.Segment != old.loc.Segment {
+		t.Fatal("the overwrite landed in another segment")
+	}
+	// A seal whose sync fails ends the segment with no failure the worker
+	// counted, so the queued end event is all that names the failure.
+	cr.failSyncOf(t, old.loc.Segment, errors.New("sync boom"))
+	if _, err := cr.streams.For(f).Seal(false); err == nil {
+		t.Fatal("the seal's sync did not fail")
+	}
+	<-reached
+	before := cr.d.Generation()
+
+	cr.corrupt(t, old.c)
+	if !taken.Load() {
+		t.Fatal("Corrupt never took the record out of the ledger")
+	}
+	if got := atTake.Load(); got <= before {
+		t.Fatalf("the generation is %d once the drop is visible to a Sync, want above %d", got, before)
+	}
+	release()
+	wantSyncError(t, mustReturn(t, "first Sync", cr.syncAsync(context.Background(), f)), old.loc.Segment, f)
+	if got := cr.d.Generation(); got <= before {
+		t.Fatalf("the generation is %d once the Sync took the report, want above %d", got, before)
+	}
+	cr.wantNilSync(t, f)
 }
