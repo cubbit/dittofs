@@ -482,25 +482,25 @@ func (e *Engine) copyRuns(ctx context.Context, c *cloneRun) (journal.Version, er
 }
 
 // tryClonePhase1 runs the clone's phase 1 once: the destination's pending
-// operations claimed, the copies and the clone's own aside, the destination
+// operations held, the copies and the clone's own aside, the destination
 // synced, and the store's Clone handed them; once it commits, they leave the
 // entry with the clone's operation and its copies, the guard is released and
 // the journal settled through the newest version it committed, and the
-// claimed writes' Dones run. A failure releases the claim and keeps the guard.
+// held writes' Dones run. A failure releases the hold and keeps the guard.
 func (e *Engine) tryClonePhase1(ctx context.Context, c *cloneRun, r *removal) error {
-	if err := e.claimAll(ctx, r); err != nil {
+	if err := e.holdAll(ctx, r); err != nil {
 		return err
 	}
 	if err := e.sync(ctx, c.db, fileID(c.dst)); err != nil {
-		e.unclaim(r)
+		e.unhold(r)
 		return err
 	}
 	op := kvstore.CloneOp{Share: c.db.share.ID, File: c.dst, Version: entity.JournalVersion(r.v.Bytes()),
 		Copied: entity.JournalVersion(c.newest.Bytes()), Time: r.at,
 		Spec: entity.CloneSpec{SrcShare: c.sb.share.ID, Src: c.src, SrcOff: c.spec.SrcOff, DstOff: c.spec.DstOff,
 			Len: c.spec.Len, AsOf: entity.JournalVersion(c.spec.AsOf.Bytes())}}
-	if err := e.d.Existence.Clone(ctx, op, e.claimed(r)); err != nil {
-		e.unclaim(r)
+	if err := e.d.Existence.Clone(ctx, op, e.held(r)); err != nil {
+		e.unhold(r)
 		return err
 	}
 	dones := e.committed(r)
@@ -510,14 +510,14 @@ func (e *Engine) tryClonePhase1(ctx context.Context, c *cloneRun, r *removal) er
 	return nil
 }
 
-// claimAll claims r's file's live operations but r's own and a clone's
+// holdAll holds r's file's live operations but r's own and a clone's
 // copies, for a clone's phase 1, once no write admitted to the file is
-// still in the journal: the guard keeps every batch off the file, and a
-// write staged between the clone's version and its copies' newest, still
-// unclaimed when the store's Clone sets applied past it, would be skipped as
-// applied by every later commit. No new write is admitted while it waits,
+// still in the journal. A write staged between the clone's version and its
+// copies' newest that phase 1 did not hold would be skipped as applied by
+// every later commit once the store's Clone sets applied past it; the hold
+// is what has phase 1 commit it. No new write is admitted while it waits,
 // as stage holds them, so a stream of writes cannot hold phase 1 off.
-func (e *Engine) claimAll(ctx context.Context, r *removal) error {
+func (e *Engine) holdAll(ctx context.Context, r *removal) error {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
 	defer fe.endStaging()

@@ -401,14 +401,14 @@ func replaySize(committed int64, ops []pendingOp) int64 {
 }
 
 // phase1 is the removal r's first metadata transaction, op at r's version,
-// run once the caller waited out a batch in flight on the file: it claims the file's pending
+// run once the caller waited out a batch in flight on the file: it holds the file's pending
 // operations below the removal, syncs the file, and hands them to the
-// store's Remove with the removal. Once that commits, the claimed operations
+// store's Remove with the removal. Once that commits, the held operations
 // and the removal's own leave the entry and their Dones run, and the guard
-// is released; a failure releases the claim and answers the store's error,
+// is released; a failure releases the hold and answers the store's error,
 // a conflict at ctx's end DelayConflict.
 //
-// decision: phase 1 claims only the operations below the removal's version.
+// decision: phase 1 holds only the operations below the removal's version.
 // One staged between the journal's removal and phase 1 is above it and stays
 // pending: the store's Remove skips a removal at or below the version the
 // file has applied, so committing an operation above it first would lose the
@@ -435,18 +435,18 @@ func (e *Engine) phase1(ctx context.Context, r *removal, op kvstore.RemoveOp) er
 	return &vfserr.Delay{Cause: vfserr.DelayCommit}
 }
 
-// tryPhase1 runs r's phase 1 once: the claim, the sync, the store's Remove,
-// then, once it commits, the claimed operations and the removal's own out
-// of the entry, r finished and the Dones run. A failure releases the claim
+// tryPhase1 runs r's phase 1 once: the hold, the sync, the store's Remove,
+// then, once it commits, the held operations and the removal's own out
+// of the entry, r finished and the Dones run. A failure releases the hold
 // and keeps the guard.
 func (e *Engine) tryPhase1(ctx context.Context, r *removal, op kvstore.RemoveOp) error {
-	e.claimBelow(r)
+	e.holdBelow(r)
 	if err := e.sync(ctx, r.b, fileID(r.f)); err != nil {
-		e.unclaim(r)
+		e.unhold(r)
 		return err
 	}
-	if err := e.d.Existence.Remove(ctx, r.b.share.ID, r.f, 0, op, e.claimed(r)); err != nil {
-		e.unclaim(r)
+	if err := e.d.Existence.Remove(ctx, r.b.share.ID, r.f, 0, op, e.held(r)); err != nil {
+		e.unhold(r)
 		return err
 	}
 	dones := e.committed(r)
@@ -510,14 +510,14 @@ func (e *Engine) unstage(r *removal, err error) {
 // through r: the settle then drops no write's or loss's record that metadata
 // never recorded (RFC 1 §3.10). A file found gone settles with nothing
 // committed, and operations the store refuses are dropped as lost. It
-// answers false, the claim released and the guard held, when the commit
+// answers false, the hold released and the guard held, when the commit
 // failed otherwise.
 func (e *Engine) commitBelow(ctx context.Context, r *removal) bool {
 	ctx, cancel := e.bounded(ctx)
 	defer cancel()
-	e.claimBelow(r)
+	e.holdBelow(r)
 	err := e.sync(ctx, r.b, fileID(r.f))
-	if ops := e.claimed(r); err == nil && len(ops) > 0 {
+	if ops := e.held(r); err == nil && len(ops) > 0 {
 		var failed map[entity.FileID]error
 		failed, err = e.d.Existence.Commit(ctx, []kvstore.PendingExistence{{Share: r.b.share.ID, File: r.f, Ops: ops}}, nil)
 		if err == nil {
@@ -531,7 +531,7 @@ func (e *Engine) commitBelow(ctx context.Context, r *removal) bool {
 		runAll(dones)
 		return true
 	case errors.Is(err, entity.ErrStale):
-		e.unclaim(r)
+		e.unhold(r)
 		e.release(r, true)
 		return true
 	case kvstore.Refused(err):
@@ -539,18 +539,18 @@ func (e *Engine) commitBelow(ctx context.Context, r *removal) bool {
 		// again fails the same way: they leave the entry, logged as lost, and
 		// the journal settles through r without them.
 		e.d.Logger.Error("pending operations below a removal refused by the store, dropped as lost", "file", r.f, "kind", r.kind.String(), "err", err)
-		dones := e.dropClaimed(r)
+		dones := e.dropHeld(r)
 		e.release(r, true)
 		runAll(dones)
 		return true
 	}
-	e.unclaim(r)
+	e.unhold(r)
 	return false
 }
 
-// dropClaimed removes from r's file's entry the operations r claimed, which
+// dropHeld removes from r's file's entry the operations r held, which
 // the store refused, and answers their Dones, charging nothing.
-func (e *Engine) dropClaimed(r *removal) (dones []func()) {
+func (e *Engine) dropHeld(r *removal) (dones []func()) {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
 	fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool {
@@ -562,12 +562,12 @@ func (e *Engine) dropClaimed(r *removal) (dones []func()) {
 	return dones
 }
 
-// claimBelow holds r's file's live operations below r's version, writes and
+// holdBelow holds r's file's live operations below r's version, writes and
 // grows, for phase 1. The hold is phase 1's own, apart from a batch's claim:
 // a batch that captures a held operation, and fails, releases its claim and
 // leaves the hold, so phase 1 still commits it; one that commits it first
 // leaves phase 1's commit to skip it as applied.
-func (e *Engine) claimBelow(r *removal) {
+func (e *Engine) holdBelow(r *removal) {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
 	for i := range fe.ops {
@@ -581,9 +581,9 @@ func (e *Engine) claimBelow(r *removal) {
 	}
 }
 
-// claimed is r's held operations as the store commits them, read after
+// held is r's held operations as the store commits them, read after
 // the sync, so a loss its drain marked commits lost.
-func (e *Engine) claimed(r *removal) []kvstore.PendingOp {
+func (e *Engine) held(r *removal) []kvstore.PendingOp {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
 	var out []kvstore.PendingOp
@@ -602,9 +602,9 @@ func (e *Engine) claimed(r *removal) []kvstore.PendingOp {
 	return out
 }
 
-// unclaim releases r's hold after a failed phase 1: the operations stay
+// unhold releases r's hold after a failed phase 1: the operations stay
 // pending, and a batch's claim on any is left to that batch.
-func (e *Engine) unclaim(r *removal) {
+func (e *Engine) unhold(r *removal) {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
 	for i := range fe.ops {
@@ -613,9 +613,9 @@ func (e *Engine) unclaim(r *removal) {
 }
 
 // committed removes from r's file's entry, after its phase 1 committed, the
-// operations it claimed and its own, and a clone's copies, which its phase 1
+// operations it held and its own, and a clone's copies, which its phase 1
 // recorded through Copied, before the guard is released, so no batch
-// captures any: it answers the claimed writes' Dones. A claimed
+// captures any: it answers the held writes' Dones. A held
 // write a failed window dropped leaves too, its Done having run then.
 func (e *Engine) committed(r *removal) (dones []func()) {
 	fe := e.files.lockFor(r.f)
