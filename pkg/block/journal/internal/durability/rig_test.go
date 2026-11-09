@@ -1,7 +1,7 @@
 package durability
 
 import (
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
+	"errors"
 	"log/slog"
 	"slices"
 	"sync"
@@ -14,6 +14,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 const rigCap = int64(64 << 10)
@@ -197,6 +198,11 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	t.Cleanup(func() { _ = streams.Close() })
 	t.Cleanup(d.Stop)
 	r := newRigOver(d, streams, seam, clock, domains, pool, set, n, sinks, c, acct)
+	// The re-append of a held record is pinned to one that always fails, so a
+	// hold a test made stays held and its segment claimed while the test reads
+	// the state; a test of the re-append itself installs d.reappendHeld before
+	// the layer starts.
+	d.reappend = func(*stream, ownedCopy) error { return errPinnedHold }
 	// This seam is the read of both readCopy and the re-read of a failed
 	// window, so production's st.s.ReadAt branch runs only in a test that sets
 	// d.readCopyAt to nil before Start, as
@@ -255,6 +261,9 @@ func testConfig(t testing.TB, clock core.Clock, domains Domains) Config {
 }
 
 // file returns a file id distinguished by b.
+// errPinnedHold is what the rig's pinned re-append of a held record returns.
+var errPinnedHold = errors.New("the test pinned the hold")
+
 func file(b byte) core.FileID { return core.NewFileID([16]byte{b}) }
 
 // appendWrite appends one write record of the file and returns its location.

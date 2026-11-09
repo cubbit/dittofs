@@ -110,21 +110,9 @@ func (d *Durability) reappendEntry(st *stream, w *window, e entry) error {
 	if !in {
 		return nil
 	}
-	// The stream fills in the segment, offset and synced-through.
-	nh := format.RecordHeader{
-		Kind:    h.Kind,
-		File:    h.File,
-		Extent:  h.Extent,
-		Seq:     h.Seq,
-		Version: h.Version,
-		Tag:     h.Tag,
-	}
-	p, err := st.s.Append(nh, body)
+	p, err := d.appendAgain(st, h, body)
 	if err != nil {
 		return err
-	}
-	if d.afterAppend != nil {
-		d.afterAppend()
 	}
 	if isContent(e.w) {
 		d.repointReappended(st, e, p.Loc)
@@ -135,6 +123,97 @@ func (d *Durability) reappendEntry(st *stream, w *window, e entry) error {
 	st.mu.Lock()
 	st.leaveWindowLocked(w, e, p.Loc)
 	st.mu.Unlock()
+	return nil
+}
+
+// appendAgain appends the verified record h, body to the stream's current
+// segment under the sequence number, version, file, extent and tag it already
+// has: the same operation at a new place. The stream fills in the segment, the
+// offset and the synced-through. It holds no lock of this layer.
+func (d *Durability) appendAgain(st *stream, h format.RecordHeader, body format.RecordBody) (segment.Placed, error) {
+	nh := format.RecordHeader{
+		Kind:    h.Kind,
+		File:    h.File,
+		Extent:  h.Extent,
+		Seq:     h.Seq,
+		Version: h.Version,
+		Tag:     h.Tag,
+	}
+	p, err := st.s.Append(nh, body)
+	if err != nil {
+		return segment.Placed{}, err
+	}
+	if d.afterAppend != nil {
+		d.afterAppend()
+	}
+	return p, nil
+}
+
+// reappendHeld appends again the record the held copy c names, from that copy
+// to the stream's current segment, and repoints the index from the copy to the
+// new place. It is the re-append the worker calls for a held record, with the
+// copy's segment claimed and the index already naming the copy. The copy is
+// read at c.Copy and verified against the checksum the copy table kept for the
+// record's sequence number, never the one read back with it, so bytes that
+// agree only with themselves are refused; the record then keeps its sequence
+// number and version, as for a failed window's record. No file domain is held
+// across the read or the append, and nothing waits on a sync: the new record
+// is tracked and synced by the worker like any other, and a failure of that
+// sync starts a window of its own.
+//
+// decision: a copy that no longer verifies, or one the table no longer
+// knows, is an error, and the record stays held for the worker's next pass: it
+// verified when the read was served from it and its segment has been claimed
+// since, so a failure now is a transient read or a table entry a retirement
+// removed, and a loss decided here would drop a record the claim still backs.
+// The ceiling is a copy that went bad after the read served it, which is then
+// retried on every pass with no backoff and keeps its segment claimed.
+// Overturned by a ruling that a held copy which fails verification is a loss.
+//
+// The record's file domain is taken only for the repoint, and only if the
+// index still names the copy: a write over the record since it was held has
+// the extent itself, the repoint then moves only what is still the record's,
+// and the hold ends all the same.
+func (d *Durability) reappendHeld(st *stream, c ownedCopy) error {
+	cp, ok := d.copyOf(c.Seq)
+	if !ok {
+		return fmt.Errorf("durability: no kept checksum for the held copy of seq %d at %+v", c.Seq, c.Copy)
+	}
+	e := entry{w: segment.Written{
+		Loc:        c.Copy,
+		Seq:        c.Seq,
+		Version:    c.Version,
+		File:       c.File,
+		Kind:       format.KindWrite,
+		Extent:     c.Extent,
+		Tag:        c.Share,
+		PayloadCRC: cp.checksum,
+	}}
+	h, body, err := d.rereadRecord(st, e)
+	if err != nil {
+		return err
+	}
+	p, err := d.appendAgain(st, h, body)
+	if err != nil {
+		return err
+	}
+
+	from := index.RecordAt{Segment: c.Copy.Segment, Offset: uint32(c.Copy.Off)}
+	to := index.RecordAt{Segment: p.Loc.Segment, Offset: uint32(p.Loc.Off)}
+	unlock := d.domains.Lock(c.File)
+	if d.index.Names(c.File, from) {
+		_, hd, err := d.index.RepointRecord(c.File, from, to)
+		d.accountDelta(hd)
+		if err != nil {
+			unlock()
+			return fmt.Errorf("durability: repointing the held record of seq %d: %w", c.Seq, err)
+		}
+	}
+	unlock()
+	st.mu.Lock()
+	st.want = true
+	st.mu.Unlock()
+	st.wake()
 	return nil
 }
 

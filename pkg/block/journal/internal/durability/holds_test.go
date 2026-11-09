@@ -796,3 +796,45 @@ func TestReadAfterAnotherReadsRepointServesTheCopy(t *testing.T) {
 	}
 	cr.wantNoLoss(t)
 }
+
+// TestHeldRecordIsReappendedAndHoldsEnd covers a record served from a copy
+// with the layer's own re-append installed: the worker appends the record
+// again under its own number and version, the index names that place and not
+// the copy, the hold ends and releases the segment's claim, the segment is
+// announced resolved once, and the record that was not read stays where it is.
+func TestHeldRecordIsReappendedAndHoldsEnd(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cr := newCorruptRig(t, func(cr *corruptRig) { cr.d.reappend = cr.d.reappendHeld })
+	rs := cr.reappendTogether(t, file(1), file(2))
+	cr.register(rs...)
+	seg := rs[0].orig.Segment
+
+	cr.useCopy(t, rs[0])
+	eventually(t, "the hold to end", func() bool { return !cr.holdOf(seg).held })
+	if got := cr.awaitResolved(t); got != seg {
+		t.Fatalf("resolved segment %d, want %d", got, seg)
+	}
+	cr.wantRetirable(t, seg)
+
+	f := rs[0].c.File
+	got := cr.placedAt(t, f, 0)
+	if got == copyAt(rs[0]) || got == placeAt(rs[0].again) {
+		t.Fatalf("the extent is served from %+v, want a new place outside the copy and the corrupt record", got)
+	}
+	if err := cr.d.Sync(context.Background(), f); err != nil {
+		t.Fatalf("Sync = %v", err)
+	}
+	hs, _ := cr.durableHeaders(t)
+	if !slices.ContainsFunc(hs, func(h format.RecordHeader) bool {
+		return h.Seq == rs[0].c.Seq && h.Version == rs[0].c.Version && h.File == f && placeOf(h) == got
+	}) {
+		t.Errorf("no durable record of seq %d, version %+v sits at %+v", rs[0].c.Seq, rs[0].c.Version, got)
+	}
+	if got := cr.placedAt(t, rs[1].c.File, 0); got != placeAt(rs[1].again) {
+		t.Errorf("the record nothing read is served from %+v, want %+v", got, placeAt(rs[1].again))
+	}
+	if ev := cr.lossesOf(f); len(ev) != 0 {
+		t.Errorf("loss events = %+v, want none", ev)
+	}
+	cr.noResolved(t)
+}

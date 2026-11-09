@@ -178,11 +178,12 @@ func (d *Durability) readCopy(st *stream, c copyEntry) (copyVerdict, error) {
 // read-only, it is failed by the worker as any other, and although the index
 // names the copy and nothing is dropped, the worker still writes a
 // failed-window loss record for it (a read-only journal only tries to),
-// publishes the event, raises the generation and marks the file, while the
-// copy goes on being served. A copy the re-append registers can reach it, as
+// publishes the event, raises the generation and marks the file, although the
+// copy is served until the hold's re-append moves it, which a read-only
+// journal never makes. A copy the re-append registers can reach it, as
 // RegisterCopy is called before the new place is synced. Overturned by
-// re-appending such a record from the copy that verified, as a held record's
-// re-append does.
+// re-appending such a record from the copy that verified, as reappendHeld
+// does for a held record, when its re-read from the window fails.
 func (d *Durability) useCopy(st *stream, c Corruption, cp copyEntry) (CorruptOutcome, bool) {
 	synced := c.Synced
 	if !c.AtOpen {
@@ -262,14 +263,23 @@ func (d *Durability) useCopy(st *stream, c Corruption, cp copyEntry) (CorruptOut
 }
 
 // syncedAt reports whether the record at r was synced: one in the ledger
-// that a sync covered, or one in neither the ledger, a pending window nor the
-// lost set, as takeCorrupt decides it. It changes nothing.
+// that a sync covered, or one in none of the ledger, a pending window, the
+// lost set and the moves, as takeCorrupt decides it. A record re-appended out
+// of its window is the old place of a copy and was never synced there. It
+// changes nothing.
 //
 // ponytail: a linear scan of the ledger, the pending windows and the lost
 // set, as takeCorrupt's, and upgraded with it.
 func (st *stream) syncedAt(r index.RecordAt) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	// A record re-appended out of its window, whose copy has not completed,
+	// was never synced where it was: its old place leads to the copy.
+	for loc := range st.moved {
+		if loc.Segment == r.Segment && loc.Off == int64(r.Offset) {
+			return false
+		}
+	}
 	for i := range st.ledger {
 		if recordAt(st.ledger[i].w) == r {
 			return st.covered(st.ledger[i].w.Loc)
