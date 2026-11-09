@@ -37,10 +37,12 @@ import (
 // between the resolve and the read is resolved again once, and what the index
 // then names is served or reported missing.
 //
-// An I/O error is returned wrapped and changes nothing; so is a refusal of a
-// record whose sequence number nothing trustworthy names, which wraps
-// core.ErrCorrupt. On any error n and held, in offset order, still describe
-// what was copied into p before it, and missing is nil.
+// An I/O error is returned wrapped and changes nothing. So is a segment
+// reference refused under descriptor pressure, wrapping
+// segment.ErrNoDescriptor, which the caller may retry. So is a refusal of a
+// record the index still names whose sequence number nothing trustworthy
+// names, which wraps core.ErrCorrupt. On any error n and held, in offset
+// order, still describe what was copied into p before it, and missing is nil.
 func (c *Core) ReadAt(ctx context.Context, s *Share, id core.FileID, off int64, p []byte) (n int, missing []core.Extent, held []core.Held, asOf core.Version, err error) {
 	if err = ctx.Err(); err != nil {
 		return 0, nil, nil, core.Version{}, err
@@ -142,9 +144,15 @@ func (r *reading) serveRecord(g recordPieces, again bool) error {
 		return nil
 	}
 
-	cr, err := r.corruption(g, h, verdict)
-	if err != nil {
-		return err
+	cr, known := r.corruption(g, h, verdict)
+	if !known {
+		// A record the index no longer names was dropped or repointed by
+		// another read's Corrupt since this read resolved it: what the index
+		// names now is resolved instead of refusing a record nothing serves.
+		if !r.c.index.Names(r.id, g.at) {
+			return r.resolveAgain(g, again)
+		}
+		return fmt.Errorf("datapath: the record of file %v at segment %d offset %d does not verify and its sequence number is unknown: %w", r.id, g.at.Segment, g.at.Offset, core.ErrCorrupt)
 	}
 	// readRecord released its segment reference before it returned,
 	// and the read holds no domain: Corrupt takes the file's append domain
@@ -184,30 +192,34 @@ func (r *reading) serveRecord(g recordPieces, again bool) error {
 	return nil
 }
 
-// corruption names g's record for Corrupt. The record's version is the one
-// the index entries carry. Its sequence number, extent and share come from
-// the stream's ledger while it still holds the record, which is what the
-// writer reported for that place and no damage on disk can change; otherwise
-// from the header, when the header decodes and is still this record's: it
-// names this file and the version the index entries carry, and disagrees with
-// them, if at all, only in its extent.
+// corruption names g's record for Corrupt, and reports false when nothing
+// trustworthy names its sequence number. The record's version is the one the
+// index entries carry. Its sequence number, extent and share come from the
+// stream's ledger while it still holds the record, which is what the writer
+// reported for that place and no damage on disk can change; otherwise from
+// the header, when the header decodes and is still this record's: a write or
+// a fill of this file at the version the index entries carry, disagreeing
+// with them, if at all, only in its extent.
 //
-// decision: a record the ledger no longer holds is refused with an error
-// wrapping core.ErrCorrupt instead of handed to Corrupt when its header
-// cannot name its sequence number: a header that does not decode, or one
-// that decodes but names another file or another version. Corrupt needs the
+// decision: a record the ledger no longer holds, and the index still names,
+// is refused with an error wrapping core.ErrCorrupt instead of handed to
+// Corrupt when its header cannot name its sequence number: a header that does
+// not decode or overruns its segment, or one that decodes but is of another
+// kind, file or version. Corrupt needs the
 // record's own sequence number to find its copy and to name the loss, and the
 // index keeps none per record. A header that fails its checksum supplies
-// none; one for another file or version supplies the number of the record it
-// describes, not of the one the index meant, and handed to Corrupt that number
-// can find the other record's copy and repoint this file's entries to it, so
-// the record is never dropped and its loss never recorded. The read serves
-// nothing of it, reports nothing missing for it and changes nothing, so every
-// read of that range fails until an open finds the record. Withdraw this when
+// none; one of another kind, file or version supplies the number of the
+// record it describes, not of the one the index meant, and handed to Corrupt
+// that number can find the other record's copy and repoint this file's
+// entries to it, so the record is never dropped and its loss never recorded.
+// The read serves nothing of it, reports nothing missing for it and changes
+// nothing, so every read of that range fails until an open finds the record.
+// A record the index no longer names is resolved again instead: another
+// read's Corrupt took it after this read resolved it. Withdraw this when
 // the index records a sequence number per record, or when the loss key and
 // the loss record accept an unknown one and Corrupt is then called without a
 // number.
-func (r *reading) corruption(g recordPieces, h format.RecordHeader, verdict recordVerdict) (durability.Corruption, error) {
+func (r *reading) corruption(g recordPieces, h format.RecordHeader, verdict recordVerdict) (durability.Corruption, bool) {
 	cr := durability.Corruption{
 		File:    r.id,
 		Record:  g.at,
@@ -215,14 +227,15 @@ func (r *reading) corruption(g recordPieces, h format.RecordHeader, verdict reco
 	}
 	if w, ok := r.c.dur.Tracked(r.id, g.at); ok {
 		cr.Share, cr.Seq, cr.Extent = w.Tag, w.Seq, w.Extent
-		return cr, nil
+		return cr, true
 	}
-	ours := verdict != recordHeaderDamaged && h.File == r.id && h.Version == cr.Version
+	ours := verdict != recordHeaderDamaged && (h.Kind == format.KindWrite || h.Kind == format.KindFill) &&
+		h.File == r.id && h.Version == cr.Version
 	if !ours {
-		return durability.Corruption{}, fmt.Errorf("datapath: the record of file %v at segment %d offset %d does not verify and its sequence number is unknown: %w", r.id, g.at.Segment, g.at.Offset, core.ErrCorrupt)
+		return durability.Corruption{}, false
 	}
 	cr.Share, cr.Seq, cr.Extent = h.Tag, h.Seq, h.Extent
-	return cr, nil
+	return cr, true
 }
 
 // resolveAgain serves g's pieces from what the index names for them now,

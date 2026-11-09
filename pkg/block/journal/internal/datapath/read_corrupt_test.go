@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
@@ -465,4 +466,65 @@ func TestReadHeaderOverrunningItsSegmentIsDamaged(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReadHeaderOfAnotherKindIsRefused(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	if _, err := c.WriteAt(context.Background(), s, f, 0, pattern(4<<10, 15), 1); err != nil {
+		t.Fatal(err)
+	}
+	syncFiles(t, c, f)
+	before := recordOf(t, c, f, 0)
+
+	// A loss record's header of the same file and version at the write's
+	// place: it is not the write the index named, so its sequence number is
+	// not trusted.
+	h := headerAt(t, seam, before.Record)
+	h.Kind = format.KindLoss
+	forgeHeaderOnly(t, seam, before.Record, h, format.RecordBody{Loss: format.Loss{Dropped: h.Seq, Reason: format.LossCorrupt}})
+
+	p := sentinels(4 << 10)
+	n, missing, held, _, err := c.ReadAt(context.Background(), s, f, 0, p)
+	if !errors.Is(err, core.ErrCorrupt) {
+		t.Fatalf("err = %v, want core.ErrCorrupt", err)
+	}
+	if n != 0 || len(held) != 0 || len(missing) != 0 || !bytes.Equal(p, sentinels(4<<10)) {
+		t.Fatalf("the refused read reports %d bytes, held %v, missing %v", n, held, missing)
+	}
+	if after := recordOf(t, c, f, 0); after != before {
+		t.Fatalf("the index changed: %+v, was %+v", after, before)
+	}
+}
+
+func TestReadUnknownSeqRecordNoLongerNamedResolvesAgain(t *testing.T) {
+	var c *Core
+	var seam *kit.Seam
+	var drop durability.Corruption
+	c, seam = newTestCore(t, func(o *coreOptions) {
+		o.beforeRead = func() {
+			// Another reader that knew the record's number drops it after this
+			// read resolved it and before this read reads it.
+			if drop.Seq == 0 {
+				return
+			}
+			if _, err := c.Durability().Corrupt(context.Background(), drop); err != nil {
+				t.Errorf("Corrupt: %v", err)
+			}
+			drop.Seq = 0
+		}
+	})
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	if _, err := c.WriteAt(context.Background(), s, f, 0, pattern(4<<10, 16), 1); err != nil {
+		t.Fatal(err)
+	}
+	syncFiles(t, c, f)
+	pc := recordOf(t, c, f, 0)
+	h := headerAt(t, seam, pc.Record)
+	drop = durability.Corruption{Share: h.Tag, File: f, Record: pc.Record, Seq: h.Seq, Version: h.Version, Extent: h.Extent}
+	flip(t, seam, pc.Record.Segment, int64(pc.Record.Offset)+50)
+
+	readUntouched(t, c, s, f, 0, 4<<10, []core.Extent{{Off: 0, Len: 4 << 10}})
 }
