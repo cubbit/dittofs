@@ -20,6 +20,13 @@ func (ix *Index) RepointRecord(id core.FileID, from, to RecordAt) (moved int, hd
 	return moved, hd, err
 }
 
+// Names reports whether a held or a retained piece of id sits at record r. It
+// takes the file's lock shared and creates no entry.
+func (ix *Index) Names(id core.FileID, r RecordAt) bool {
+	var at bool
+	return ix.fs.view(id, func(f *file) { at = f.sitsAt(r) }) && at
+}
+
 // sitsAt reports whether any held or retained piece of f is at record r.
 func (f *file) sitsAt(r RecordAt) bool {
 	found := false

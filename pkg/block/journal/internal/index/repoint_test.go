@@ -128,3 +128,27 @@ func TestRepointRecordAccountsSegments(t *testing.T) {
 	}
 	checkSegments(t, 0, &ix.fs, 1, 2, 3)
 }
+
+// TestNamesReadsHeldAndRetainedPieces: a record is named while a held or a
+// retained piece sits at it, and not once nothing does, nor for a file with no
+// entry, for which no entry is created.
+func TestNamesReadsHeldAndRetainedPieces(t *testing.T) {
+	ix := New(1 << 20)
+	if ix.Names(testFile, rec(1, 0)) {
+		t.Fatal("a record of a file with no entry is named")
+	}
+	if ix.fs.view(testFile, func(*file) {}) {
+		t.Fatal("Names created an entry")
+	}
+	writeRetained(t, ix, write(0, 4096, rec(1, 0), 5))
+	if !ix.Names(testFile, rec(1, 0)) {
+		t.Fatal("a held record is not named")
+	}
+	writeRetained(t, ix, write(0, 4096, rec(2, 0), 10)) // retains v5 whole
+	if !ix.Names(testFile, rec(1, 0)) {
+		t.Fatal("a retained record is not named")
+	}
+	if ix.Names(testFile, rec(3, 0)) {
+		t.Fatal("a record no piece sits at is named")
+	}
+}
