@@ -592,11 +592,12 @@ func TestAConflictAtTheDeadlineIsDelayConflict(t *testing.T) {
 // A file the store names in its map is retried alone in the next batch, even
 // with another file due beside it.
 func TestAFailedFileIsRetriedAlone(t *testing.T) {
-	u, log := newLoggedUnit(t, 24*time.Hour, 64)
+	u, log := newLoggedUnit(t, time.Second, 64)
 	_, dir := u.fs.Create(t, u.fs.Admin, u.fs.Root, "d", kvstore.Dir(0o755))
 	d, a, c := dir.ID, u.create(t, "a"), u.create(t, "c")
 	u.write(t, d, 0, []byte("not content"))
 	u.write(t, a, 0, []byte("a"))
+	eventually(t, "the group commit's timer is set", func() bool { return u.clock.Pending() > 0 })
 	var once sync.Once
 	u.e.OnCapture(func() {
 		once.Do(func() {
@@ -605,13 +606,19 @@ func TestAFailedFileIsRetriedAlone(t *testing.T) {
 			eventually(t, "c is due now", func() bool { return u.e.Due(u.rec, c) })
 		})
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
-	defer cancel()
-	_ = u.e.CommitAll(ctx, u.rec)
+	// d and a come due at one instant by their age, so the first batch takes
+	// both: asked for one by one, as CommitAll asks, a batch could take d
+	// before a was asked for, and d would fail alone and back off instead.
+	u.clock.Advance(time.Second)
+	eventually(t, "the batch and the retry", func() bool {
+		log.mu.Lock()
+		defer log.mu.Unlock()
+		return len(log.commits) >= 2
+	})
 	log.mu.Lock()
 	defer log.mu.Unlock()
-	if len(log.commits) < 2 {
-		t.Fatalf("%d commits, want the batch and the retry", len(log.commits))
+	if b := log.commits[0]; len(b) != 2 || !slices.Contains(b, d) || !slices.Contains(b, a) {
+		t.Fatalf("the first batch holds %v, want d and a", b)
 	}
 	if r := log.commits[1]; len(r) != 1 || r[0] != d {
 		t.Errorf("the retry's batch holds %d files, want d alone", len(r))
