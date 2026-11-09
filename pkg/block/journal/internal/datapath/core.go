@@ -73,8 +73,8 @@ type coreOptions struct {
 	noLimit bool
 }
 
-// Core is the journal's assembled write path: the placement index, the
-// segment streams, the durability layer over them, and the counters that
+// Core is the journal's assembled write and read paths: the placement index,
+// the segment streams, the durability layer over them, and the counters that
 // follow the index's held-state deltas.
 //
 // decision: a Core owns no lock of its own. The one domain it uses is the file
@@ -90,6 +90,11 @@ type Core struct {
 	streams  *segment.Streams
 	dur      *durability.Durability
 	domains  durability.Domains
+
+	// segmentCap is the size a segment is accounted at: no record ends past
+	// it, so a read refuses a header that says one does before it reads the
+	// body.
+	segmentCap int64
 
 	held, dirty, retained atomic.Int64
 	writtenBytes          atomic.Uint64
@@ -165,7 +170,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt}
+	c := &Core{segmentCap: deps.SegmentCap, index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)

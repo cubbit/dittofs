@@ -398,3 +398,71 @@ func TestReadDroppedRecordBetweenHeldPieces(t *testing.T) {
 		t.Fatal("p does not hold the two held pieces around the untouched dropped one")
 	}
 }
+
+// forgeHeaderOnly rewrites the header of the record at r as h, re-encoded with
+// a valid header checksum over a body of the right size, and checks that the
+// header decodes at r's place. The record's body on disk is left as it was.
+func forgeHeaderOnly(t *testing.T, seam *kit.Seam, r index.RecordAt, h format.RecordHeader, body format.RecordBody) {
+	t.Helper()
+	h.Segment, h.Offset = r.Segment, int64(r.Offset)
+	forged := format.AppendRecord(nil, testIdentity, h, body)
+	overwrite(t, seam, r.Segment, int64(r.Offset), forged[:format.RecordHeaderSize])
+	if _, err := format.DecodeRecordHeader(segmentBytes(t, seam, r.Segment, int64(r.Offset), format.RecordHeaderSize), testIdentity, r.Segment, int64(r.Offset)); err != nil {
+		t.Fatalf("the forged header does not decode: %v", err)
+	}
+}
+
+func TestReadHeaderOverrunningItsSegmentIsDamaged(t *testing.T) {
+	for _, synced := range []bool{true, false} {
+		name := "unsynced"
+		if synced {
+			name = "synced"
+		}
+		t.Run(name, func(t *testing.T) {
+			c, seam := newTestCore(t)
+			s := mustShare(t, c, 1)
+			f := testFile(1)
+			if !synced {
+				// The ledger keeps the record, so its sequence number is known.
+				seam.Hold(t, kit.OpSync, "*")
+			}
+			if _, err := c.WriteAt(context.Background(), s, f, 0, pattern(4<<10, 14), 1); err != nil {
+				t.Fatal(err)
+			}
+			if synced {
+				syncFiles(t, c, f)
+			}
+			before := recordOf(t, c, f, 0)
+
+			// A header of this file and version, valid under its checksum, whose
+			// length runs the record past the end of its segment.
+			h := headerAt(t, seam, before.Record)
+			h.Extent.Len = testSegmentCap
+			forgeHeaderOnly(t, seam, before.Record, h, format.RecordBody{Payload: make([]byte, testSegmentCap), MTime: 1})
+
+			p := sentinels(4 << 10)
+			n, missing, held, _, err := c.ReadAt(context.Background(), s, f, 0, p)
+			if n != 0 || len(held) != 0 || !bytes.Equal(p, sentinels(4<<10)) {
+				t.Fatalf("the read served %d bytes, held %v, of a header that overruns its segment", n, held)
+			}
+			if synced {
+				if !errors.Is(err, core.ErrCorrupt) || len(missing) != 0 {
+					t.Fatalf("err = %v, missing %v: want the refusal of a damaged header with no known sequence number", err, missing)
+				}
+				if after := recordOf(t, c, f, 0); after != before {
+					t.Fatalf("the index changed: %+v, was %+v", after, before)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReadAt: %v", err)
+			}
+			if want := []core.Extent{{Off: 0, Len: 4 << 10}}; !slices.Equal(missing, want) {
+				t.Fatalf("missing = %v, want %v", missing, want)
+			}
+			if _, ok := c.Index().Lookup(f, 0); ok {
+				t.Fatal("the record whose header overruns its segment is still held")
+			}
+		})
+	}
+}

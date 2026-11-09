@@ -72,6 +72,19 @@ func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileI
 	if derr != nil {
 		return nil, format.RecordHeader{}, recordHeaderDamaged, nil
 	}
+	// The overrun check comes before the body is sized from the header: a
+	// record whose body the segment cannot hold is bad on its header alone,
+	// as the scan rules it.
+	//
+	// decision: the bound is the segment size this core accounts segments
+	// at, not the size of the segment's file, which the read does not learn.
+	// It holds because that size is fixed for a journal's life: segments
+	// written under a larger one would have their records past this one
+	// refused as damaged. Overturned by a segment size that can change
+	// between opens, which would bound by the segment's own recorded size.
+	if int64(at.Offset)+h.Size() > c.segmentCap {
+		return nil, format.RecordHeader{}, recordHeaderDamaged, nil
+	}
 	if !headerMatches(h, id, pieces) {
 		return nil, h, recordMismatch, nil
 	}
