@@ -28,7 +28,8 @@ import (
 // Config chooses what the fixture builds.
 type Config struct {
 	State   string // state directory
-	Repo    string // repository root, to build dfs and the DC image
+	Repo    string // repository root, to build the DC and reference images
+	DFS     string // the dfs binary to start, built as the user: root never runs go build
 	Auth    string // ntlm | krb5
 	Profile string // sd | posix
 	Log     io.Writer
@@ -124,6 +125,9 @@ var users = []struct {
 
 // Up builds everything and writes env.json.
 func Up(ctx context.Context, c Config) (*fuzz.Env, error) {
+	if c.DFS == "" {
+		return nil, errors.New("fixture up needs --dfs, the dfs binary to start")
+	}
 	if err := stateDir(c.State, true); err != nil {
 		return nil, err
 	}
@@ -314,12 +318,6 @@ func (c Config) startDFS(ctx context.Context) error {
 	if err := os.MkdirAll(c.dfsDir(), 0o755); err != nil {
 		return err
 	}
-	bin := filepath.Join(c.State, "dfs-bin")
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/dfs/")
-	build.Dir = c.Repo
-	if out, err := build.CombinedOutput(); err != nil {
-		return fmt.Errorf("build dfs: %v\n%s", err, out)
-	}
 	cfg := filepath.Join(c.dfsDir(), "config.yaml")
 	if err := os.WriteFile(cfg, []byte(c.dfsConfig()), 0o600); err != nil {
 		return err
@@ -329,7 +327,7 @@ func (c Config) startDFS(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(bin, "start", "--foreground", "--config", cfg, "--pid-file", filepath.Join(c.State, "dfs.pid"))
+	cmd := exec.Command(c.DFS, "start", "--foreground", "--config", cfg, "--pid-file", filepath.Join(c.State, "dfs.pid"))
 	cmd.Env = append(os.Environ(), "DITTOFS_ADMIN_INITIAL_PASSWORD="+dfsAdmin)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

@@ -267,9 +267,9 @@ Rules:
 
 ### 3.3 DittoFS
 
-DittoFS is built from the checkout under test and started by the harness's fixture code
-([RFC 29 §4.2](../../docs/internals/rfcs/rfc-29-test-harness.md#4.2%20Fixtures%3A%20the%20DittoFS%20a%20suite%20runs%20against)),
-joined to the same domain:
+DittoFS is built from the checkout under test, as the user, by `dt` into `{bin}`
+([RFC 29 §3](../../docs/internals/rfcs/rfc-29-test-harness.md#Getting%20%60dt%60): root never runs `go build`),
+and started by `fixture up --dfs`, joined to the same domain:
 
 - NTLM authentication passed through to the DC over NETLOGON with the `dittofs$` machine
   account, `netbios_domain = DITTOFS`;
@@ -1220,7 +1220,7 @@ under the same rule.
 ### 12.1 The command
 
 ```
-smbfuzz fixture up [--auth ntlm|krb5] [--profile sd|posix]   # §3, state in /var/tmp/smbfuzz
+smbfuzz fixture up --dfs BIN [--auth ntlm|krb5] [--profile sd|posix]   # §3, state in /var/tmp/smbfuzz
 smbfuzz run   --from 1 --count 500 [--gen 1] [--minimise=false] [--stop]
 smbfuzz run   --plan FILE              # one plan, e.g. a minimised one or a corpus entry
 smbfuzz plan  --round 4242 [--gen 1]   # print, don't run

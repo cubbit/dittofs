@@ -99,7 +99,9 @@ func fixtureCmd(args []string) error {
 		usage()
 	}
 	fs := flag.NewFlagSet("fixture", flag.ExitOnError)
+	dfs := fs.String("dfs", "", "the dfs binary fixture up starts, built as the user")
 	c := fixtureConfig(fs, args[1:])
+	c.DFS = *dfs
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	switch args[0] {

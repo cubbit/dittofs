@@ -11,17 +11,20 @@ Linux only, as root, with `docker` (or `podman`), `mount.cifs` and `keyutils`; `
 `--auth krb5`.
 
 ```sh
-go build -o /var/tmp/smbfuzz-bin ./test/smbfuzz/cmd/smbfuzz
+go build -o /var/tmp/smbfuzz-bin ./test/smbfuzz/cmd/smbfuzz   # as yourself, not root
+go build -o /var/tmp/smbfuzz-dfs ./cmd/dfs
 
-/var/tmp/smbfuzz-bin fixture up                 # DC + Samba member + DittoFS + both cifs mounts
+/var/tmp/smbfuzz-bin fixture up --dfs /var/tmp/smbfuzz-dfs   # DC + Samba member + DittoFS + both cifs mounts
 /var/tmp/smbfuzz-bin plan --round 42            # print test 42 without running it
 /var/tmp/smbfuzz-bin run --from 1 --count 200   # run tests 1..200
 /var/tmp/smbfuzz-bin run --plan smbfuzz-reports/round-42/minimized.plan
 /var/tmp/smbfuzz-bin fixture down
 ```
 
-The workers run the binary under the domain users' uids, so it goes where they can run it, as
-`dt`'s `smb-fuzz` suite puts it.
+Build both as yourself: the rest runs as root, and root running `go build` would leave root's
+files in your Go caches. The workers run the fuzzer under the domain users' uids, so it goes
+where they can run it. `dt`'s `smb-fuzz` suite has `dt` build both into `{bin}` and copies the
+fuzzer out to the same place.
 
 `fixture up` takes `--auth ntlm|krb5` and `--profile sd|posix`; `run` reads them back from
 the fixture's state (`/var/tmp/smbfuzz` unless `--state`).
