@@ -72,6 +72,18 @@ type Config struct {
 	// back only what the record's own publish removed and is still owed, never
 	// a piece of a record the index no longer holds.
 	Undo func(w segment.Written) index.HeldDelta
+
+	// Check runs the checks open makes of the journal's mount and directory.
+	// The read-only probe calls it every core.ProbeInterval, from its own
+	// goroutine with no lock held. Nil means there is no check.
+	Check func() error
+
+	// MakeSpare makes one spare segment and keeps it for the reopen. The probe
+	// calls it only while no spare is held and the check passes, from its own
+	// goroutine with no lock held. An EROFS it returns reaches Enter only if
+	// the maker's storage is wrapped by Observe. Nil means the probe can make
+	// no spare.
+	MakeSpare func() error
 }
 
 // SyncDurationBounds are the upper bounds of the sync duration histogram's
@@ -241,6 +253,17 @@ type Durability struct {
 	cmu    sync.Mutex
 	change chan struct{}
 
+	// check and makeSpare are Config.Check and Config.MakeSpare.
+	check     func() error
+	makeSpare func() error
+
+	// probe is the state of the read-only probe goroutine: probeIdle until
+	// Enter starts it, probeRunning while it runs and probeStopped once Stop
+	// has run. A single compare-and-swap decides between the first Enter and
+	// Stop, so no probe starts after Stop and Stop joins the one that did.
+	probe     atomic.Int32
+	probeDone chan struct{}
+
 	done chan struct{}
 	stop sync.Once
 	wg   sync.WaitGroup
@@ -280,6 +303,10 @@ func New(cfg Config) (*Durability, error) {
 		made:     map[uint32]*stream{},
 		done:     make(chan struct{}),
 		change:   make(chan struct{}),
+
+		check:     cfg.Check,
+		makeSpare: cfg.MakeSpare,
+		probeDone: make(chan struct{}),
 
 		dir:      dir,
 		counters: cfg.Counters,
@@ -630,6 +657,7 @@ func (d *Durability) Stop() {
 		d.mu.Unlock()
 		made := d.snapshot()
 		close(d.done)
+		d.stopProbe()
 		for _, st := range made {
 			st.mu.Lock()
 			st.closed = true

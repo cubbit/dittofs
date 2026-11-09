@@ -49,6 +49,7 @@ func (d *Durability) Enter(cause error) {
 			break
 		}
 	}
+	d.startProbe()
 	// Loaded after the swap, while Start stores the workers before it reads
 	// the state, so a worker started meanwhile is woken by one of the two.
 	if ws := d.workers.Load(); ws != nil {
