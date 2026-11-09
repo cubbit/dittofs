@@ -475,6 +475,20 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 		}
 		dones = append(dones, g.e.settle(g, c, err == nil, retry)...)
 	}
+	// The Dones run before the waiters wake, so a commitNow this batch
+	// answers returns with its writes' reservations released, not still
+	// held beside the usage the batch charged.
+	//
+	// decision: a commitNow that finds its writes covered without waiting,
+	// between a batch's settle and these calls, may still return first, and
+	// so may a waitBatch caller (a removal's begin, a clone's journal step),
+	// since settle closes the file's batchDone before these run. Either sees
+	// the batch's reservations still held beside the usage it charged, which
+	// counts the bytes twice for that moment and errs strict, never lets a
+	// write past quota. Closing it needs the settle to keep the file
+	// uncovered until its Dones ran. Do it if a caller is seen to rely on
+	// the order there.
+	runAll(dones)
 	g.mu.Lock()
 	g.inFlight = false
 	// Every batch that took a file changed the due set, so its waiters look
@@ -484,7 +498,6 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 	// woken in a loop.
 	g.broadcastLocked()
 	g.mu.Unlock()
-	runAll(dones)
 }
 
 // widen backs the whole group commit off after a failure that blames no
