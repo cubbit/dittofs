@@ -2176,6 +2176,13 @@ one value per protocol; the matrix is a function of the two.
 A caching grant is recalled by the server in the holder's own protocol, whatever
 protocol caused the conflict ([RFC 17](rfc-17-vfs.md)'s callbacks).
 
+A read or write of no byte conflicts with no grant and no byte-range lock: it
+starts no recall for a grant or lock conflict and crosses no lock ([§2.3](#2.3%20Lock)), as
+MS-FSA answers a read or write of `ByteCount` zero before its oplock break check
+(2.1.5.3, 2.1.5.4; 2.1.4.12) and RFC 8881 lets a count of 0 succeed subject to
+its access checks (§18.22.3, §18.32.3). The access check and the deny-mode
+check, with its handle-caching break, still apply to it.
+
 ### 7.1 Writers that do not coordinate
 
 Two clients that write one file without a lock, a deny mode or a grant are
