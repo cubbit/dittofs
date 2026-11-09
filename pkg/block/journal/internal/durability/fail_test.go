@@ -197,6 +197,26 @@ func TestAFailedWindowServesTheLastSyncedWriteAndNamesTheLostOne(t *testing.T) {
 	}
 }
 
+// TestAFailedWindowsLossEventIsUnsynced pins that the event of a record a
+// failed window dropped says it was not synced.
+func TestAFailedWindowsLossEventIsUnsynced(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr := newFailRig(t, nil)
+	f := file(1)
+	loc, _ := fr.publish(t, f, 0, "aaaa")
+
+	fr.failSegmentOf(t, loc.Segment, f)
+	fr.awaitResolved(t)
+
+	evs := fr.events()
+	if len(evs) != 1 {
+		t.Fatalf("%d loss events, want 1: %+v", len(evs), evs)
+	}
+	if ev := evs[0]; ev.Reason != core.LossFailedWindow || ev.Synced {
+		t.Fatalf("event = %+v, want a failed window's, Synced false", ev)
+	}
+}
+
 // TestALossEventNamesTheExtentOfThePieceTheFailureDropped pins that the event
 // carries the piece the window's record still held, not the record's header
 // extent: a newer synced record covers the first half, so the loss is [4,8).

@@ -354,6 +354,31 @@ func TestCorruptUnsyncedGetsUnsyncedLossRecordSyncedGetsSynced(t *testing.T) {
 	}
 }
 
+// TestCorruptEventSaysWhetherTheDroppedRecordWasSynced pins the Synced bit of
+// the event a corrupt drop publishes: set for a record found after its sync,
+// clear for one found before it.
+func TestCorruptEventSaysWhetherTheDroppedRecordWasSynced(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cr := newCorruptRig(t, nil)
+	f, g := file(1), file(2)
+	u := cr.write(t, f, 0, "aaaa")
+	cr.corrupt(t, u.c)
+	eventually(t, "the unsynced drop's event", func() bool { return len(cr.lossesOf(f)) == 1 })
+	if ev := cr.lossesOf(f)[0]; ev.Reason != core.LossCorrupt || ev.Synced {
+		t.Errorf("event of an unsynced corrupt record = %+v, want corrupt and Synced false", ev)
+	}
+
+	s := cr.write(t, g, 0, "bbbb")
+	if err := cr.d.Sync(context.Background(), g); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	cr.corrupt(t, s.c)
+	eventually(t, "the synced drop's event", func() bool { return len(cr.lossesOf(g)) == 1 })
+	if ev := cr.lossesOf(g)[0]; ev.Reason != core.LossCorrupt || !ev.Synced {
+		t.Errorf("event of a synced corrupt record = %+v, want corrupt and Synced true", ev)
+	}
+}
+
 // TestCorruptSyncedLossMasksWhatItSuperseded covers a synced record found
 // corrupt over an older synced one: the extent reads missing, never the older.
 func TestCorruptSyncedLossMasksWhatItSuperseded(t *testing.T) {
