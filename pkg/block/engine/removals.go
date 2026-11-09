@@ -147,15 +147,18 @@ func (l *removalLoop) step(it *loopItem) {
 	end(nil)
 	l.steps.Add(1)
 	log := l.e.d.Logger
+	backoff := loopBackoff
 	switch a {
-	case itemDone, itemAdvanced:
+	case itemDone:
 		if it.stalled {
 			log.Warn("removal_stalled cleared", "file", it.f, "kind", it.kind)
 		}
-		if a == itemDone {
-			return
+		return
+	case itemAdvanced:
+		if it.stalled {
+			log.Warn("removal_stalled cleared", "file", it.f, "kind", it.kind)
 		}
-		it.fails, it.stalled = 0, false
+		it.fails, it.stalled, backoff = 0, false, 0
 	case itemRetry:
 		it.fails++
 		if it.fails >= stallAfter && !it.stalled {
@@ -163,10 +166,7 @@ func (l *removalLoop) step(it *loopItem) {
 			log.Warn("removal_stalled", "file", it.f, "kind", it.kind)
 		}
 	}
-	it.notBefore = l.e.d.Clock.Now()
-	if a != itemAdvanced {
-		it.notBefore = it.notBefore.Add(loopBackoff)
-	}
+	it.notBefore = l.e.d.Clock.Now().Add(backoff)
 	l.mu.Lock()
 	ended := l.closed || l.dropped[it.b.share.ID]
 	if !ended {
