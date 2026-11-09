@@ -82,10 +82,17 @@ func startDaemon() error {
 		return fmt.Errorf("failed to open log file %s: %w", logPath, err)
 	}
 
+	// A read handle on the log, positioned where this run's output begins, for
+	// the tail shown if the server fails to start.
+	rf := openLogTail(logPath)
+	defer func() { _ = rf.Close() }()
+
 	cmd := exec.Command(executable, args...)
 	cmd.Stdout = lf
 	cmd.Stderr = lf
 
+	// Taken before the start, so a server that predates it can be told apart.
+	ready := healthProbe()
 	if err := cmd.Start(); err != nil {
 		_ = lf.Close()
 		return fmt.Errorf("failed to start daemon: %w", err)
@@ -100,9 +107,5 @@ func startDaemon() error {
 		return fmt.Errorf("failed to write PID file: %w", err)
 	}
 
-	fmt.Printf("DittoFS server started (PID: %d)\n", cmd.Process.Pid)
-	fmt.Printf("Log file: %s\n", logPath)
-	fmt.Printf("PID file: %s\n", pidPath)
-
-	return nil
+	return awaitDaemonStart(cmd, ready, pidPath, logPath, rf, os.Stderr)
 }

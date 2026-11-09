@@ -7,16 +7,12 @@
 # always runs, and is the check that decides. post, after a merge and on the
 # schedule, posts the blocking cells' failures to the develop-status issue.
 #
-# The suites move in from their own workflows one at a time. A conformance
-# suite runs here beside its old job until their results match on 5
-# consecutive runs; a suite whose old job ran the commands dt runs moves in at
-# once. plan keeps only the cells of the suites that have moved, the ones its
-# select names. A suite joins by being added to the select in plan, with any
-# step its cells need that run doesn't give yet, such as another service; the
-# select goes once every suite runs here.
+# Every suite runs here. plan keeps every cell but the dedicated host's, which
+# that host runs itself and reports as its own commit status.
 #
 # The suites with a job of their own, named as the checks the develop ruleset
-# requires, run in the jobs after non-blocking, which gate waits for too.
+# requires beside gate, run in the jobs after non-blocking, which gate waits
+# for too.
 name: Tests
 
 on:
@@ -115,10 +111,7 @@ jobs:
         run: |
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json |
-            jq -c --arg suite "$SUITE" '[(.cells // [])[] | select($suite == "" or .suite == $suite) | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
-                or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
-                or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest" or .suite == "fio-verify"
-                or IN(.name; "unit/windows", "unit/nonrace", "integration/ad-dc", "bench-smoke"))
+            jq -c --arg suite "$SUITE" '[(.cells // [])[] | select($suite == "" or .suite == $suite) | select(.place != "dedicated")
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))
               | .job_timeout_minutes = .timeout_minutes + 15]' > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
@@ -160,8 +153,12 @@ jobs:
           --health-retries 10
 
     steps: &cell
+      # The unit cell of a pull request compares with origin/<base>, which
+      # only a full checkout has.
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && matrix.name == 'unit' && '0' || '1' }}
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -204,12 +201,14 @@ jobs:
 
       # A namespaced client runs rpcbind and rpc.statd, and a second one sshd.
       # cthon04's general group compiles against libtirpc on the mount and
-      # shells out to time(1); nfstest captures packets with tcpdump.
+      # shells out to time(1); nfstest captures packets with tcpdump. The
+      # rpcbind need asks for it running, as integration/portmap's tests do.
       - name: Install the namespaced clients' tools
         if: contains(matrix.needs, 'rpcbind')
         run: |
           sudo apt-get update
           sudo apt-get install -y rpcbind openssh-server libtirpc-dev pkg-config time tcpdump
+          sudo systemctl start rpcbind || sudo rpcbind
 
       # mount.cifs for the smb-client need and smbclient for its own; the other
       # places' own clients are there already.
@@ -249,10 +248,45 @@ jobs:
         id: build
         run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
 
+      # The services a cell's needs name, which dt run checks answer before
+      # the tests start, as integration's do.
+      - name: Start PostgreSQL and PyKMIP
+        if: contains(matrix.needs, 'service:postgres') || contains(matrix.needs, 'service:kmip')
+        run: '"$RUNNER_TEMP/dt" services up postgres kmip'
+
+      # The operator's tests run envtest's binaries, which setup-envtest would
+      # download from a release without a token. With ENVTEST_USE_ENV set and
+      # the three binaries in KUBEBUILDER_ASSETS, it returns that path and goes
+      # to no network. The tag follows the minor of the operator's k8s.io/api,
+      # as make test's own pick does; a harness test checks the two match.
+      - name: Fetch envtest
+        id: envtest
+        if: matrix.suite == 'operator'
+        uses: ./.github/actions/release-asset
+        with:
+          repo: kubernetes-sigs/controller-tools
+          tag: envtest-v1.37.0
+          asset: envtest-v1.37.0-linux-amd64.tar.gz
+          sha256: f03faedfc68d2a78cee5cb02618bb44e7f67044f4c5fc957f72d3307fda61a9c
+
+      - name: Install envtest
+        if: matrix.suite == 'operator'
+        env:
+          TARBALL: ${{ steps.envtest.outputs.path }}
+        run: |
+          mkdir "$RUNNER_TEMP/envtest"
+          tar -xzf "$TARBALL" -C "$RUNNER_TEMP/envtest" --strip-components=2
+          echo "KUBEBUILDER_ASSETS=$RUNNER_TEMP/envtest" >> "$GITHUB_ENV"
+          echo "ENVTEST_USE_ENV=true" >> "$GITHUB_ENV"
+
+      # decision: a pull request's unit cell tests only the packages it
+      # changed; the merge queue and a push test every one, so nothing lands
+      # untested.
       - name: Run ${{ matrix.name }}
         env:
           CELL: ${{ matrix.name }}
-        run: '"$RUNNER_TEMP/dt" run "$CELL" --tier "$TIER" --ci --retry "$RETRY"'
+          CHANGED: ${{ github.event_name == 'pull_request' && matrix.name == 'unit' && 'true' || '' }}
+        run: '"$RUNNER_TEMP/dt" run "$CELL" --tier "$TIER" --ci --retry "$RETRY" ${CHANGED:+"--changed"}'
 
       # What a failed e2e run left running, such as a hung mount helper or
       # server, to tell a wedge from a test failure.
@@ -277,6 +311,19 @@ jobs:
             !test/harness/results/*/bin/
             !test/harness/results/*/tools/
           if-no-files-found: ignore
+
+      # The coverage profile the unit cell writes. A retry rewrites it with the
+      # retried tests' alone, and a pull request's holds only the packages it
+      # changed, so neither uploads one.
+      - name: Upload coverage to Codecov
+        if: github.event_name != 'pull_request' && matrix.name == 'unit' && hashFiles('test/harness/results/*/unit/go-test-*-retry-*.json') == ''
+        uses: codecov/codecov-action@v7
+        with:
+          files: test/harness/results/*/unit/coverage.txt
+          flags: unittests
+          name: codecov-unit-tests
+          token: ${{ secrets.CODECOV_TOKEN }}
+        continue-on-error: true
 
   # Reported and annotated like the blocking cells, and a failed one shows as
   # failed on the pull request, but gate doesn't wait for it, and it doesn't
@@ -314,30 +361,34 @@ jobs:
 
       # Its Go problem matcher turns vet and golangci-lint findings in dt's
       # output into annotations on the pull request.
-      - &go
-        name: Set up Go
+      - name: Set up Go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
       - *download
 
-      - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v9
+      - name: Fetch golangci-lint
+        id: golangci-lint
+        uses: ./.github/actions/release-asset
         with:
-          version: v2.15.0
-          install-only: true
-          # Analyse cold every run. The action restores and saves its analysis
-          # cache even when it only installs, and dt's run reads it. Its cache
-          # key covers go.mod, but its restore-key fallback does not: when a
-          # dependency bump changes go.mod the run misses its own key, restores
-          # the pre-bump analysis cache, and then saves a fact set built from it
-          # under the new key. Every later run gets an exact hit on that entry,
-          # and staticcheck loses the cross-package fact that t.Fatal never
-          # returns, which turns every `if x == nil { t.Fatal(...) }` guard into
-          # a spurious SA5011 nil-dereference report. Restoring is what breaks
-          # it, so the cache is skipped rather than pinned: costs ~20s.
-          skip-cache: true
+          repo: golangci/golangci-lint
+          tag: v2.15.0
+          asset: golangci-lint-2.15.0-linux-amd64.tar.gz
+          sha256: 9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea
+
+      # Analyse cold every run: no step restores golangci-lint's analysis
+      # cache. One restored across a go.mod change keeps facts built before it,
+      # and staticcheck then loses the cross-package fact that t.Fatal never
+      # returns, which turns every `if x == nil { t.Fatal(...) }` guard into a
+      # spurious SA5011 nil-dereference report. Costs ~20s.
+      - name: Install golangci-lint
+        env:
+          TARBALL: ${{ steps.golangci-lint.outputs.path }}
+        run: |
+          mkdir "$RUNNER_TEMP/golangci-lint"
+          tar -xzf "$TARBALL" -C "$RUNNER_TEMP/golangci-lint" --strip-components=1
+          echo "$RUNNER_TEMP/golangci-lint" >> "$GITHUB_PATH"
 
       - &build
         name: Build dt
@@ -403,111 +454,36 @@ jobs:
 
       # Pinned by version and checksum, so a new release can't turn the job
       # red on its own.
+      - name: Fetch ShellCheck
+        id: shellcheck
+        uses: ./.github/actions/release-asset
+        with:
+          repo: koalaman/shellcheck
+          tag: v0.11.0
+          asset: shellcheck-v0.11.0.linux.x86_64.tar.xz
+          sha256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+
+      # Without the tarball's versioned top directory, so a bump edits only
+      # the pin above.
       - name: Install ShellCheck
         env:
-          VERSION: v0.11.0
-          SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          TARBALL: ${{ steps.shellcheck.outputs.path }}
         run: |
-          curl -fsSLo "$RUNNER_TEMP/shellcheck.tar.xz" \
-            "https://github.com/koalaman/shellcheck/releases/download/$VERSION/shellcheck-$VERSION.linux.x86_64.tar.xz"
-          echo "$SHA256  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
-          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/shellcheck-$VERSION" >> "$GITHUB_PATH"
+          mkdir "$RUNNER_TEMP/shellcheck"
+          tar -xJf "$TARBALL" -C "$RUNNER_TEMP/shellcheck" --strip-components=1
+          echo "$RUNNER_TEMP/shellcheck" >> "$GITHUB_PATH"
 
       - *build
       - *suite
-      - *report
-      - *upload
-
-  # unit and integration skip when the plan has no cell of theirs, as for a
-  # docs-only change, and a skipped job passes the check the ruleset requires.
-  # decision: they run when plan fails, so a check the ruleset requires never
-  # passes on a plan that wasn't made.
-  # decision: their names keep "1.26.x", the check names the ruleset requires;
-  # both run go.mod's toolchain.
-  unit:
-    name: Unit Tests (1.26.x)
-    needs: plan
-    if: ${{ !cancelled() && (needs.plan.result != 'success' || contains(fromJSON(needs.plan.outputs.fixed), 'unit')) }}
-    runs-on: ubuntu-latest
-    # go test caps itself at 25m; this catches a wedged setup.
-    timeout-minutes: 35
-    steps:
-      - *checkout
-      - *go
-      - *download
-      - *build
-      - *suite
-      - *report
-      - *upload
-
-      # A retry rewrites the coverage profile with the retried tests' alone,
-      # so a run that retried uploads none.
-      - name: Upload coverage to Codecov
-        if: hashFiles('test/harness/results/*/unit/go-test-*-retry-*.json') == ''
-        uses: codecov/codecov-action@v7
-        with:
-          files: test/harness/results/*/unit/coverage.txt
-          flags: unittests
-          name: codecov-unit-tests
-          token: ${{ secrets.CODECOV_TOKEN }}
-        continue-on-error: true
-
-  integration:
-    name: Integration Tests (1.26.x)
-    needs: plan
-    if: ${{ !cancelled() && (needs.plan.result != 'success' || contains(fromJSON(needs.plan.outputs.fixed), 'integration')) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - *checkout
-      - *go
-      - *download
-      - *build
-
-      # The services its needs name, which dt run checks answer before the
-      # tests start.
-      - name: Start PostgreSQL and PyKMIP
-        run: '"$RUNNER_TEMP/dt" services up postgres kmip'
-
-      - *suite
-
-      # decision: integration's Kerberos and portmap options run as steps of
-      # the job the ruleset requires, after the suite, rather than as run
-      # cells, which only gate waits for. They go back to being plan cells when
-      # the ruleset requires gate. Each runs even when a step before it
-      # failed, so the job reports every failure.
-      - name: Run integration/kerberos
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: '"$RUNNER_TEMP/dt" run integration/kerberos --tier "$TIER" --ci --retry "$RETRY"'
-
-      # The image has no rpcbind. apt and needrestart both prompt on a machine
-      # without a terminal if left to their defaults, and a prompt blocks with
-      # no output until the job's limit.
-      - name: Install rpcbind
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        env:
-          DEBIAN_FRONTEND: noninteractive
-          NEEDRESTART_MODE: a
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y rpcbind
-          sudo systemctl start rpcbind || sudo rpcbind
-
-      - name: Run integration/portmap
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: '"$RUNNER_TEMP/dt" run integration/portmap --tier "$TIER" --ci --retry "$RETRY"'
-
       - *report
       - *upload
 
   # Fails unless plan passed and every other job it needs passed or skipped:
-  # a run job passes only when its cell's dt run exited 0, and a fixed job
-  # skips when the plan has no cell of its suite. A plan with no blocking
-  # cell, as a docs-only change gives, passes.
+  # a run job passes only when its cell's dt run exited 0. A plan with no
+  # blocking cell, as a docs-only change gives, passes.
   gate:
     name: gate
-    needs: [plan, run, lint-go, lint-repo, shellcheck, unit, integration]
+    needs: [plan, run, lint-go, lint-repo, shellcheck]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
