@@ -352,22 +352,27 @@ jobs:
         name: Install the FoundationDB client
         uses: ./.github/actions/fdb-client
 
-      - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v9
+      - name: Fetch golangci-lint
+        id: golangci-lint
+        uses: ./.github/actions/release-asset
         with:
-          version: v2.15.0
-          install-only: true
-          # Analyse cold every run. The action restores and saves its analysis
-          # cache even when it only installs, and dt's run reads it. Its cache
-          # key covers go.mod, but its restore-key fallback does not: when a
-          # dependency bump changes go.mod the run misses its own key, restores
-          # the pre-bump analysis cache, and then saves a fact set built from it
-          # under the new key. Every later run gets an exact hit on that entry,
-          # and staticcheck loses the cross-package fact that t.Fatal never
-          # returns, which turns every `if x == nil { t.Fatal(...) }` guard into
-          # a spurious SA5011 nil-dereference report. Restoring is what breaks
-          # it, so the cache is skipped rather than pinned: costs ~20s.
-          skip-cache: true
+          repo: golangci/golangci-lint
+          tag: v2.15.0
+          asset: golangci-lint-2.15.0-linux-amd64.tar.gz
+          sha256: 9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea
+
+      # Analyse cold every run: no step restores golangci-lint's analysis
+      # cache. One restored across a go.mod change keeps facts built before it,
+      # and staticcheck then loses the cross-package fact that t.Fatal never
+      # returns, which turns every `if x == nil { t.Fatal(...) }` guard into a
+      # spurious SA5011 nil-dereference report. Costs ~20s.
+      - name: Install golangci-lint
+        env:
+          TARBALL: ${{ steps.golangci-lint.outputs.path }}
+        run: |
+          mkdir "$RUNNER_TEMP/golangci-lint"
+          tar -xzf "$TARBALL" -C "$RUNNER_TEMP/golangci-lint" --strip-components=1
+          echo "$RUNNER_TEMP/golangci-lint" >> "$GITHUB_PATH"
 
       - &build
         name: Build dt
