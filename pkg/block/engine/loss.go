@@ -189,7 +189,7 @@ func (e *Engine) syncMarks(ctx context.Context, b *binding, ids ...journal.FileI
 
 // errSyncRefused is the engine's refusal of a sync of a read-only journal
 // whose Sync did not refuse it: see sync.
-var errSyncRefused = errors.New("engine: sync refused")
+var errSyncRefused = errors.New("sync refused")
 
 // readOnly is the refusal of a sync of a journal in state ro: it matches
 // errSyncRefused and journal.ErrJournalReadOnly and wraps the cause the

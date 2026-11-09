@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -284,5 +285,36 @@ func TestAReadOnlyJournalIsLoggedOnce(t *testing.T) {
 	}
 	if n := errs.Load(); n != 1 {
 		t.Errorf("%d records at Error, want 1", n)
+	}
+}
+
+// A clone past its journal step whose copies the read-only journal refuses
+// is retried without logging at Error each retry: the transition is logged
+// once.
+func TestACloneRetriedOverAReadOnlyJournalLogsOnce(t *testing.T) {
+	var errs atomic.Int64
+	u, h := clonedHookedUnit(t, func(d *engine.Deps) { d.Logger = slog.New(countHandler{errors: &errs}) })
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.create(t, "dst")
+	h.cloneTarget.set(func() { u.j.ReadOnly(syscall.EIO) }) // after the clone's journal step
+	_ = u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
+	for range 20 {
+		u.clock.Advance(time.Second)
+		time.Sleep(time.Millisecond)
+	}
+	if n := errs.Load(); n != 1 {
+		t.Errorf("%d records at Error, want 1", n)
+	}
+}
+
+// A refused sync reads "engine:" once.
+func TestARefusedSyncNamesTheEngineOnce(t *testing.T) {
+	u := newUnit(t)
+	f := u.create(t, "a")
+	u.write(t, f, 0, fill(4, 'a'))
+	u.j.ReadOnly(fmt.Errorf("write segment: %w", syscall.EROFS))
+	_, _, err := u.e.Commit(t.Context(), u.share.ID, f, 0, 4)
+	if err == nil || strings.Count(err.Error(), "engine:") != 1 {
+		t.Errorf("Commit: %v, want one engine: prefix", err)
 	}
 }
