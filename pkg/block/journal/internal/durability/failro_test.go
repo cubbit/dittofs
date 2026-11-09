@@ -800,3 +800,29 @@ func TestContentOnBothSidesOfAnUndoneRecordIsAccountedBack(t *testing.T) {
 		}
 	}
 }
+
+// TestEnterFailsTheUnsyncedRecordsOfAStreamNoSyncWaitsOn covers Enter's wake
+// of every worker: the second stream holds an unsynced write, nothing waits
+// on it and its worker is idle, so only Enter's own wake of that worker can
+// fail it. Its loss event and its listed sequence number are the proof.
+func TestEnterFailsTheUnsyncedRecordsOfAStreamNoSyncWaitsOn(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r, _ := newRORig(t, 2, "")
+	f := r.fileOn(t, 1)
+	_, v := r.publish(t, f, 0, "bbbb")
+	seq := core.Seq(r.lastSeq.Load())
+	// The pass that stamps the write has taken the Track's wake, and the
+	// clock does not move, so the worker's timer never fires.
+	r.stamped(t, 1)
+
+	r.d.Enter(syscall.EROFS)
+	eventually(t, "the second stream's write to be failed", func() bool {
+		return slices.ContainsFunc(r.events(), func(ev core.LossEvent) bool { return ev.File == f && ev.Version == v })
+	})
+	if !slices.Contains(r.d.Failed(), seq) {
+		t.Errorf("Failed() = %v, want the write's seq %d", r.d.Failed(), seq)
+	}
+	if got := r.ledgerLen(1); got != 0 {
+		t.Errorf("the second stream's ledger holds %d entries, want none", got)
+	}
+}
