@@ -149,3 +149,55 @@ func TestGrantMarkedAsItsOpen(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// A revoked reference keeps the mark of the state it named: a call with no
+// session presenting one created on a session is ErrNotYoursSessioned, not
+// ErrRevoked, whether an admin revoked it or a recall ran past its deadline.
+// On a session it is ErrRevoked.
+func TestRevokedRefKeepsMark(t *testing.T) {
+	revoked := func(t *testing.T, f *fixture, on Caller, refs ...StateRef) {
+		t.Helper()
+		bare := on
+		bare.Sessioned = false
+		for _, ref := range refs {
+			if err := f.Recovery().TestState(ctx, bare, []StateRef{ref})[0]; !errors.Is(err, ErrNotYoursSessioned) {
+				t.Errorf("revoked %v with no session: %v, want ErrNotYoursSessioned", ref.Type, err)
+			}
+			var rev *RevokedError
+			if err := f.Recovery().TestState(ctx, on, []StateRef{ref})[0]; !errors.As(err, &rev) {
+				t.Errorf("revoked %v on a session: %v, want ErrRevoked", ref.Type, err)
+			}
+		}
+	}
+	t.Run("admin", func(t *testing.T) {
+		f := newFixture(t)
+		a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+		a.Sessioned = true
+		file := anyFile()
+		o, d := f.grantOpen(t, a, file, OpenRequest{Access: rd, Want: GrantRead, Session: s1})
+		if d == nil {
+			t.Fatal("no delegation granted")
+		}
+		if err := f.Revoke(ctx, a.Client); err != nil {
+			t.Fatal(err)
+		}
+		revoked(t, f, a, o.Ref, d.ID.ref())
+	})
+	t.Run("recall deadline", func(t *testing.T) {
+		f := newFixture(t)
+		a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+		a.Sessioned = true
+		b := f.caller(t, nfs("host-b", 1, entity.NewUser()))
+		file := anyFile()
+		_, d := f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Want: rw, Session: s1})
+		if d == nil {
+			t.Fatal("no delegation granted")
+		}
+		if _, err := f.open(b, file, OpenRequest{Access: rd}); delayedFor(err) != DelayRecall {
+			t.Fatalf("a conflicting open: %v, want ErrDelay(DelayRecall)", err)
+		}
+		f.pass(t, leasePeriod, a.Client, b.Client)
+		f.mustOpen(t, b, file, OpenRequest{Access: rd})
+		revoked(t, f, a, d.ID.ref())
+	})
+}
