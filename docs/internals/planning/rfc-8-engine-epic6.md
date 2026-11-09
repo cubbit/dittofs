@@ -84,8 +84,8 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
   past an acknowledged loss goes with that step (§9 point 14).
 - The salvage export of a stranded tag and its `Forget` while serving (`salvage.path`): the
   second part. Here a stranded tag stays stranded until the next start.
-- A read-only journal reopened in place (RFC 8 §2.5, E42): it needs RFC 1 §5.4's read-only
-  state, spares and probe, which `journal` does not have. No epic of this part owns it
+- A read-only journal reopened in place (RFC 8 §2.5, E42): RFC 1 §5.4's read-only state,
+  spares and probe are built in `journal`, but no epic of this part owns the reopen yet
   (§9 point 8).
 - `Bind` with `State: Closing` (a re-home's finish, RFC 27) and `Fenced` (RFC 8 §11.2's
   copied-image row): out, and epic 7 for the self-fence, which is not a share state.
@@ -1106,10 +1106,12 @@ and PR 4.
    estimates include them. E2's fault-injecting `kv.KV` (its T2.3) is not built either.
    T6.4 and T6.7 depend on it, and its days stay in E2's estimate.
 8. **A read-only journal reopened in place** (RFC 8 §2.5, E42, and §15.2's read-only row) is
-   in no epic of this part. It needs RFC 1 §5.4's read-only state, which `journal` does not
-   have yet; once it does, it is a subtask of this epic or of the second part. That subtask
-   also adds the drain's closing mark to epic 4's group commit (RFC 8 §2.5) and passes
-   §15.2's "the marks fence is per open" row.
+   in no epic of this part. RFC 1 §5.4's read-only state is now built in `journal`, and the
+   engine already refuses writes and syncs while it holds (RFC 8 §2.5, §11.2): until the
+   reopen, a read-only journal stays read-only until a restart. The reopen is a subtask
+   still to schedule, in this epic or the second part. It also adds the drain's closing
+   mark to epic 4's group commit (RFC 8 §2.5) and passes §15.2's "the marks fence is per
+   open" row.
 9. **`Unbind` with `keepHolds`** is refused: no snapshot exists in this part. A removal that
    keeps snapshots is RFC 12's, out.
 10. **No row over the real journal turns green in this epic** until `journal`'s `Init`,
