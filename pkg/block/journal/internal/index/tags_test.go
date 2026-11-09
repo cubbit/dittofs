@@ -38,12 +38,16 @@ func TestCheckTagRefusesOtherOwner(t *testing.T) {
 	before := ix.FileEntries(testFile)
 
 	err := ix.CheckTag(testTag+1, testFile)
-	want := &core.OtherShareError{File: testFile, Tag: testTag + 1, Owner: testTag}
-	if err == nil || *err.(*core.OtherShareError) != *want {
-		t.Fatalf("CheckTag(%d, %v) = %v, want %+v", testTag+1, testFile, err, want)
+	want := core.OtherShareError{File: testFile, Tag: testTag + 1, Owner: testTag}
+	var got *core.OtherShareError
+	if !errors.Is(err, core.ErrOtherShare) {
+		t.Fatalf("CheckTag(%d, %v) = %v, want ErrOtherShare", testTag+1, testFile, err)
 	}
-	if got := ix.FileEntries(testFile); len(got) != len(before) {
-		t.Fatalf("a refused check changed the file's entries: %+v -> %+v", before, got)
+	if !errors.As(err, &got) || *got != want {
+		t.Fatalf("CheckTag(%d, %v) = %v, want %+v", testTag+1, testFile, err, &want)
+	}
+	if n := ix.FileEntries(testFile); len(n) != len(before) {
+		t.Fatalf("a refused check changed the file's entries: %+v -> %+v", before, n)
 	}
 	if n := ix.fs.len(); n != 1 {
 		t.Fatalf("entries = %d, want 1: the check created one", n)

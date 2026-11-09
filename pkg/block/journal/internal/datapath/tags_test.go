@@ -281,16 +281,15 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 			tagOnly(t)
 		})
 
-		t.Run("same_on_a_rebuilt_index", func(t *testing.T) {
-			c, a, _, f := tagOnly(t)
-			// A rebuild claims the file's tag from the records on disk, so
-			// it answers as this journal does. The rebuilder itself is the
-			// index package's own and unreachable here — the index's rebuild
-			// tests pin that a file whose records name one tag claims that
-			// tag — so what this half pins is the datapath's: the check over
-			// an index a journal continues from, which is the state a second
-			// core built over the same index reaches, gives the same refusal
-			// and the same owner.
+		t.Run("same_through_a_second_core", func(t *testing.T) {
+			c, _, _, f := tagOnly(t)
+			// This is not a rebuild: the second core continues from the same
+			// index object, so what it pins is the carried tag-only life
+			// answering through another core exactly as it does through the
+			// first. A rebuild is pinned at the index level, where the
+			// rebuilder is reachable: TestTagConflictsFromRebuild and its
+			// neighbours in index/tags_test.go hold that a file whose records
+			// name one tag claims that tag, a rivalled one its conflict.
 			c2, _ := newTestCore(t, func(o *coreOptions) { o.state = State{Index: c.Index()} })
 			a2, b2 := twoHandles(t, c2)
 			if _, err := c2.WriteAt(context.Background(), b2, f, 4, []byte("bb"), 1); !errors.Is(err, core.ErrOtherShare) {
@@ -299,7 +298,6 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 			if _, err := c2.WriteAt(context.Background(), a2, f, 4, []byte("cc"), 1); err != nil {
 				t.Fatalf("A's write of the carried tag-only file: %v", err)
 			}
-			_ = a
 		})
 
 		t.Run("segment_gone_claims", func(t *testing.T) {

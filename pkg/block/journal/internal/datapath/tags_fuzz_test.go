@@ -215,7 +215,7 @@ var tagSeeds = [][]byte{
 	// A's zero-length write of unowned file 0 claims nothing, so B's write of
 	// it serves and claims it, and A's zero-length write of B's file is then
 	// refused — the wrong handle never reaches the shape's clean return.
-	{0x04, 0, 0x00, 'a', 0x01, 0, 0x00, 'b', 0x06, 0, 0x00, 'a'},
+	{0x04, 0, 0x00, 'a', 0x01, 0, 0x00, 'b', 0x04, 0, 0x00, 'a'},
 
 	// Both handles write every file: each file's first writer claims it and
 	// every other handle's write of it is refused. Eight operations, all four
