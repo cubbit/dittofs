@@ -416,6 +416,9 @@ type cloneHold struct {
 
 func (h cloneHold) Hold(ctx context.Context, src engine.CloneSrc) (entity.OpenID, error) {
 	id, err := h.opens.CloneOpen(ctx, openstate.FileKey{Share: src.Share, Shard: src.Shard, ID: src.File}, openstate.CloneSource{Dst: src.Dst, Version: src.AsOf})
+	if errors.Is(err, openstate.ErrBadState) {
+		return 0, entity.ErrStale // the source holds no open of the clone's
+	}
 	return id, holdErr(err)
 }
 

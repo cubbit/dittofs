@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
@@ -208,6 +209,110 @@ func TestARefusedHoldRunsPhase2WithoutARelease(t *testing.T) {
 	}
 	if errs != 1 {
 		t.Errorf("%d Error lines, want the failed hold's one", errs)
+	}
+}
+
+// A Hold that never answers is cut at the conflict bound and counted: five
+// in a row raise removal_stalled for the destination, with no phase 2 run,
+// another file's removal on the same journal runs meanwhile, and once Hold
+// answers the clone runs its phase 2 and releases the hold.
+func TestAHungHoldIsCutAndCounted(t *testing.T) {
+	x := newResuming()
+	h := &recHolds{}
+	var hung atomic.Bool
+	hung.Store(true)
+	h.onHold = func(ctx context.Context) error {
+		if hung.Load() {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h; x.Content = d.Content; d.Content = x })
+	u.e.SetConflictBound(10 * time.Millisecond)
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.create(t, "dst")
+	g := u.committedFile(t, "g", fill(16, 'g'))
+	errc := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
+	u.until(t, "the clone's hold asked", func() bool { n, _ := h.counts(); return n > 0 })
+	if err := u.e.Truncate(t.Context(), u.share.ID, g, 4); err != nil {
+		t.Fatal(err)
+	}
+	u.until(t, "another file's removal pruned while the hold hangs", func() bool { _, ok := x.prunedAt(g); return ok })
+	u.until(t, "removal_stalled for the destination", func() bool { return u.e.RemovalStalled(dst) })
+	if n, _ := h.counts(); n < 5 || x.resumed(dst) != 0 {
+		t.Errorf("stalled after %d Holds with Resume run %d times; want five failures first and no phase 2", n, x.resumed(dst))
+	}
+	hung.Store(false)
+	if err := u.answered(t, "the clone", errc); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	if _, releases := h.counts(); releases != 1 || x.resumed(dst) == 0 {
+		t.Errorf("%d Releases, Resume run %d times; want the hold released once after phase 2", releases, x.resumed(dst))
+	}
+}
+
+// A Release that fails is retried alone: phase 2 is not run again, so
+// engine_removal_runs_total{result="done"} moves once, and the clone is
+// answered only once a Release succeeds.
+func TestAFailedReleaseRetriesOnlyTheRelease(t *testing.T) {
+	h := &recHolds{}
+	var fails atomic.Int32
+	fails.Store(3)
+	h.onRel = func() error {
+		if fails.Add(-1) >= 0 {
+			return errors.New("an injected release failure")
+		}
+		return nil
+	}
+	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h })
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.create(t, "dst")
+	before := u.e.RemovalRunsDone(u.share.ID)
+	if err := u.answered(t, "the clone", u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	if _, releases := h.counts(); releases != 4 {
+		t.Errorf("%d Releases, want three failed and the fourth answered", releases)
+	}
+	if got := u.e.RemovalRunsDone(u.share.ID) - before; got != 1 {
+		t.Errorf("engine_removal_runs_total{done} moved by %d, want 1 for the clone's one phase 2", got)
+	}
+}
+
+// A clone whose loop ends after its hold was taken releases the hold: a
+// share dropped while its phase 2 runs ends the clone, unavailable, with
+// the hold released, so open state keeps no open of the clone's.
+func TestALoopEndReleasesTheClonesHold(t *testing.T) {
+	h := &recHolds{}
+	var dst entity.FileID
+	entered, open := make(chan struct{}), make(chan struct{})
+	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h },
+		onResume(func(ctx context.Context, next engine.Content, s entity.ShareID, file entity.FileID) (bool, error) {
+			if file != dst {
+				return next.Resume(ctx, s, file)
+			}
+			select {
+			case <-entered:
+			default:
+				close(entered)
+			}
+			<-open
+			return false, errors.New("an injected phase 2 failure")
+		}))
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst = u.create(t, "dst")
+	errc := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
+	<-entered
+	if err := u.e.DropShare(t.Context(), u.rec, u.share.ID); err != nil {
+		t.Fatal(err)
+	}
+	close(open)
+	if err := u.answered(t, "the dropped clone", errc); !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Errorf("a clone of a dropped share: %v, want ErrUnavailable", err)
+	}
+	if holds, releases := h.counts(); holds != 1 || releases != 1 {
+		t.Errorf("%d Holds, %d Releases; want the hold released once", holds, releases)
 	}
 }
 

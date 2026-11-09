@@ -316,6 +316,16 @@ func (e *Engine) LoopSteps(s entity.ShareID) int64 {
 	return b.gc.removals.steps.Load()
 }
 
+// RemovalRunsDone is engine_removal_runs_total{result="done"} on the share's
+// journal's loop.
+func (e *Engine) RemovalRunsDone(s entity.ShareID) int64 {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return 0
+	}
+	return b.gc.removals.runs[runDone].Load()
+}
+
 // Registrations is the count of f's source and destination registrations.
 func (e *Engine) Registrations(f entity.FileID) (src, dst int) {
 	fe := e.files.lockOf(f)
