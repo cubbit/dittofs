@@ -205,13 +205,11 @@ func (e *Engine) endCall(id entity.ShareID) {
 // publishes nothing; the incarnation and the limit, once raised, stay raised,
 // as neither is ever lowered.
 //
-// decision: the incarnation is raised before the limit write, outside the
-// journal's raise lock, so a Bind waiting on the store for it never holds up
-// another share's Bind on the same journal. RFC 8 §2.5 asks only that the
-// incarnation is raised before the publish, and RFC 0 §1.4 lists the attach
-// steps without fixing their order; the lock still covers the limit write and
-// the publish, the window in which a raise must not run. Overturned if an RFC
-// orders the limit write before the incarnation raise.
+// The incarnation is raised before the limit write, outside the journal's
+// raise lock, so a Bind waiting on the store for it never holds up another
+// share's Bind on the same journal; RFC 8 §2.5 and RFC 0 §1.4 allow either
+// order. The lock still covers the limit write and the publish, the window in
+// which a raise must not run.
 //
 // decision: a share with no record in the store is bound like any other, not
 // refused. A share has no record only once its removal has finished (RFC 16
@@ -249,6 +247,13 @@ func (e *Engine) attach(ctx context.Context, s Share, vl *versionLimit, raised b
 	}
 
 	if err != nil {
+		// The counter Share raised stays raised, and a journal at its limit
+		// issues no version to evaluate the trigger: hand the raise to the
+		// journal's raise, which retries until it commits (RFC 8 §2.7).
+		if e.stillDue(vl) {
+			e.wake(vl)
+		}
+
 		if cerr := h.Close(); cerr != nil {
 			return errors.Join(err, e.journalErr(cerr))
 		}
@@ -262,7 +267,8 @@ func (e *Engine) attach(ctx context.Context, s Share, vl *versionLimit, raised b
 // limitAndPublish writes share s's limit at the journal's and publishes its
 // binding, holding the journal's raise lock across both, from its first line
 // to its return, so no raise in between passes the journal a limit above the
-// new share's (RFC 1 §4.3).
+// new share's (RFC 1 §4.3). The wait for the lock ends at ctx, as a raise may
+// hold it across a store call (RFC 0 §10.3).
 func (e *Engine) limitAndPublish(
 	ctx context.Context,
 	s Share,
@@ -270,9 +276,11 @@ func (e *Engine) limitAndPublish(
 	h Handle,
 	inc uint64,
 ) error {
-	vl.lock.Lock()
+	if err := vl.acquire(ctx); err != nil {
+		return err
+	}
 
-	defer vl.lock.Unlock()
+	defer vl.release()
 
 	if err := e.attachLimit(ctx, s, vl); err != nil {
 		return err

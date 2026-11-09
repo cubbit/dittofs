@@ -92,9 +92,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 		return opened{}, err
 	}
 
-	vl := &versionLimit{
-		j: j,
-	}
+	vl := newVersionLimit(j)
 	o := opened{
 		journal: vl,
 		table:   removedBindings(tags),
@@ -505,10 +503,11 @@ type versionLimit struct {
 	last atomic.Uint64 // the counter of the limit last passed with SetVersionLimit
 	rate rateBuckets
 
-	// lock is the raise lock: a raise holds it from its read of the counter
-	// to its SetVersionLimit, and an attach from its limit write to its
-	// publish.
-	lock  sync.Mutex
+	// lock is the raise lock, a one-slot channel so that a wait for it can
+	// end at a context (RFC 0 §10.3): a raise holds it from its read of the
+	// counter to its SetVersionLimit, across a store call, and an attach from
+	// its limit write to its publish.
+	lock  chan struct{}
 	state atomic.Int32 // raiseIdle, raiseRunning or raisePending
 
 	// refused is set once the journal refuses a limit: no raise changes
@@ -517,9 +516,29 @@ type versionLimit struct {
 	refused atomic.Bool
 }
 
+// newVersionLimit is the version limit of journal j, its raise lock free.
+func newVersionLimit(j Journal) *versionLimit {
+	return &versionLimit{j: j, lock: make(chan struct{}, 1)}
+}
+
+// acquire takes the raise lock, or gives up with ctx's error when ctx ends
+// first. The caller releases it with release.
+func (vl *versionLimit) acquire(ctx context.Context) error {
+	select {
+	case vl.lock <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// release frees the raise lock.
+func (vl *versionLimit) release() { <-vl.lock }
+
 // raises is the version limit raises running: the context they run under,
 // which stopping cancels, and the group that joins them. count and started,
-// nil in production, count the raise goroutines alive and every one started
+// nil in production, count the raise goroutines alive and every one started,
+// and timers holds the clock channel each raise waiting to retry waits on,
 // once a test sets them.
 type raises struct {
 	ctx     context.Context
@@ -527,6 +546,7 @@ type raises struct {
 	wg      sync.WaitGroup
 	count   *atomic.Int32
 	started *atomic.Int64
+	timers  *sync.Map
 }
 
 // rateBuckets counts the versions drawn in each of the last rateWindow
@@ -728,7 +748,6 @@ func (e *Engine) raiseLoop(vl *versionLimit) {
 
 	ctx := e.raising.ctx
 	wait := retryFirst
-	extra := false
 
 	for {
 		// A raise woken before the journal refused a limit runs no store
@@ -741,24 +760,9 @@ func (e *Engine) raiseLoop(vl *versionLimit) {
 
 		// A wake that came before this pass reads the counter is taken
 		// here, so the pass covers it and the end of the pass does not run
-		// the raise once more for it. This only saves an extra pass: a wake
-		// left pending is seen by again either way, so none is lost.
+		// the raise once more for it. A wake left pending is seen by again
+		// either way, so none is lost.
 		vl.state.CompareAndSwap(raisePending, raiseRunning)
-
-		// The pass a wake during the last raise asked for raises only if
-		// the trigger still holds: while a raise runs the limit has not
-		// moved, so every version issued meanwhile wakes it, and raising
-		// for each of those would spend a block and a store transaction
-		// the versions left do not need (RFC 8 §2.7).
-		if extra && !e.stillDue(vl) {
-			if vl.state.CompareAndSwap(raiseRunning, raiseIdle) {
-				return
-			}
-
-			continue
-		}
-
-		extra = false
 
 		err := e.raiseOnce(ctx, vl)
 		switch {
@@ -768,8 +772,6 @@ func (e *Engine) raiseLoop(vl *versionLimit) {
 			if !vl.again() {
 				return
 			}
-
-			extra = true
 
 			continue
 		case errors.Is(err, errLimitRefused):
@@ -814,19 +816,36 @@ func (e *Engine) stillDue(vl *versionLimit) bool {
 // retryWait waits d on the clock before a retry, and reports false when ctx
 // ends first.
 func (e *Engine) retryWait(ctx context.Context, d time.Duration) bool {
+	after := e.d.Clock.After(d)
+
+	if m := e.raising.timers; m != nil {
+		key := new(byte)
+		m.Store(key, after)
+
+		defer m.Delete(key)
+	}
+
 	select {
-	case <-e.d.Clock.After(d):
+	case <-after:
 		return true
 	case <-ctx.Done():
 		return false
 	}
 }
 
-// raiseOnce is one raise of vl under its raise lock.
+// raiseOnce is one raise of vl under its raise lock, when the trigger still
+// holds once the lock is taken: a Bind's raise, or one that ended while this
+// one waited, may have covered it, or had the journal refuse a limit.
 func (e *Engine) raiseOnce(ctx context.Context, vl *versionLimit) error {
-	vl.lock.Lock()
+	if err := vl.acquire(ctx); err != nil {
+		return err
+	}
 
-	defer vl.lock.Unlock()
+	defer vl.release()
+
+	if vl.refused.Load() || !e.stillDue(vl) {
+		return nil
+	}
 
 	return e.raiseLocked(ctx, vl, nil)
 }
@@ -896,16 +915,6 @@ func (e *Engine) attachLimit(ctx context.Context, s Share, vl *versionLimit) err
 	if err := e.d.Lifecycle.RaiseVersionLimits(ctx, to); err != nil {
 		return storeErr(err)
 	}
-
-	return nil
-}
-
-// stopRaises cancels the version limit raises running and joins them, then
-// readies a new context for a later Start's raises.
-func (e *Engine) stopRaises() error {
-	e.raising.cancel()
-	e.raising.wg.Wait()
-	e.raising.ctx, e.raising.cancel = context.WithCancel(context.Background())
 
 	return nil
 }

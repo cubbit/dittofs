@@ -27,8 +27,12 @@ func TestPeakOver60Seconds(t *testing.T) {
 		t.Errorf("peak at second 59 = %d, want 100 from second 0", got)
 	}
 
+	if got := r.peak(60); got != 1 {
+		t.Errorf("peak read at second 60 = %d, want 1: second 0 has left the window", got)
+	}
+
 	if got := r.add(60); got != 1 {
-		t.Errorf("peak at second 60 = %d, want 1: second 0 has left the window", got)
+		t.Errorf("peak at second 60 = %d, want 1: its bucket starts from zero", got)
 	}
 }
 
@@ -112,7 +116,7 @@ func (stillClock) After(time.Duration) <-chan struct{} {
 // The trigger with no version drawn is half a block, 8 here: with the limit
 // last passed at 1000, a journal whose next version is 992 has 8 versions
 // left and is not due, 993 leaves 7 and is due, and 991 leaves 9. stillDue,
-// which the extra pass of a raise calls as is, answers so, and Bind's limit
+// which a raise calls under its lock as is, answers so, and Bind's limit
 // write raises every share exactly when it is due.
 func TestStillDueBoundary(t *testing.T) {
 	share := entity.ShareID{1}
@@ -136,9 +140,7 @@ func TestStillDueBoundary(t *testing.T) {
 			},
 			block: 16,
 		}
-		vl := &versionLimit{
-			j: j,
-		}
+		vl := newVersionLimit(j)
 		vl.last.Store(1000)
 
 		if got := e.stillDue(vl); got != c.due {

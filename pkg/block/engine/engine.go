@@ -219,8 +219,6 @@ func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
 		return opened{}, u.unwind(err)
 	}
 
-	u.push(e.stopRaises)
-
 	return o, nil
 }
 

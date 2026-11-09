@@ -14,7 +14,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -230,7 +229,8 @@ func bindThird(s *starter, sh engine.Share, done chan<- error, finished chan<- s
 }
 
 // waitingInLock reports, once it knows, whether a goroutine waits to take a
-// sync.Mutex that caller, a function named as the stack names it, locks.
+// journal's raise lock that caller, a function named as the stack names it,
+// takes.
 // It reports false as soon as stop holds. It spins on the scheduler, never
 // on the clock, so it ends either way.
 func waitingInLock(caller string, stop func() bool) bool {
@@ -253,8 +253,8 @@ func waitingInLock(caller string, stop func() bool) bool {
 	}
 }
 
-// lockedBy reports whether goroutine stack g waits in sync.(*Mutex).Lock
-// called straight from caller.
+// lockedBy reports whether goroutine stack g waits in the raise lock's
+// acquire called straight from caller.
 func lockedBy(g, caller string) bool {
 	var funcs []string
 
@@ -265,7 +265,7 @@ func lockedBy(g, caller string) bool {
 	}
 
 	for i, f := range funcs {
-		if strings.HasPrefix(f, "sync.(*Mutex).Lock(") && i+1 < len(funcs) {
+		if strings.Contains(f, "engine.(*versionLimit).acquire(") && i+1 < len(funcs) {
 			return strings.Contains(funcs[i+1], caller)
 		}
 	}
@@ -385,6 +385,73 @@ func TestBindWaitsForARaiseInFlight(t *testing.T) {
 
 	if got, want := limitOf(t, s, third.ID), s.j.Stats().VersionLimit.Counter; got < want {
 		t.Errorf("the bound share holds %d, below the journal's limit %d", got, want)
+	}
+}
+
+// A Bind that fails after its Share moved the journal's counter to the
+// limit hands the raise to the journal's raise, which commits it: another
+// share's draw is served again, and no share waits for a later Bind.
+func TestFailedBindHandsTheRaiseToTheJournal(t *testing.T) {
+	s := newRaiser(t, time.Second, withSpare())
+	l0 := marks(s)[0].Counter
+	setLimit(t, s, s.spare.ID, l0+3*testBlock)
+	s.lc.failRaises(errors.New("store down"))
+
+	if err := s.e.Bind(t.Context(), s.spare); err == nil {
+		t.Fatal("Bind passed a failing limit raise")
+	}
+
+	s.e.WaitRaises(t)
+
+	if got := s.j.Stats().VersionLimit.Counter; got <= l0+3*testBlock {
+		t.Errorf("the journal's limit is %d, want one above the share's %d", got, l0+3*testBlock)
+	}
+
+	if _, err := s.e.Draw(t.Context(), s.one.ID, drawFile); err != nil {
+		t.Errorf("a draw after the failed Bind = %v, want it served", err)
+	}
+}
+
+// A Bind waiting for the raise lock ends at its context while a raise holds
+// the lock across a store call (RFC 0 §10.3).
+func TestBindWaitEndsAtItsContext(t *testing.T) {
+	s := newRaiser(t, time.Second, withSpare())
+	g := newGate(t)
+	s.lc.hold.Store(&heldRaise{g: g})
+
+	drawWhileHeld(t, s, 125, g)
+	waitForRaise(t, g)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+
+	t.Cleanup(func() {
+		g.open()
+		<-finished
+	})
+
+	go func() {
+		defer close(finished)
+
+		done <- s.e.Bind(ctx, s.spare)
+	}()
+
+	deadline := time.Now().Add(waitBound)
+
+	if !waitingInLock("engine.(*Engine).limitAndPublish", func() bool { return time.Now().After(deadline) }) {
+		t.Fatal("the Bind does not wait on the raise lock")
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Bind = %v, want its context's error", err)
+		}
+	case <-time.After(waitBound):
+		t.Error("Bind still waits for the raise lock after its context ended")
 	}
 }
 
@@ -549,8 +616,8 @@ func TestLateShareBindRaisesItself(t *testing.T) {
 	}
 }
 
-// The raise falls due on the draw that crosses the trigger, with the clock
-// standing still: the trigger is evaluated on every version, never on a
+// The raise falls due on the version that crosses the trigger, a write's
+// here, with the clock standing still: the trigger is evaluated on every version, never on a
 // timer.
 func TestRaiseDueOnNextDraw(t *testing.T) {
 	s := newRaiser(t, time.Second)
@@ -564,12 +631,15 @@ func TestRaiseDueOnNextDraw(t *testing.T) {
 		t.Fatalf("raised with %d versions left at a peak of 122 a second: %d limits", left(s), n)
 	}
 
-	drawN(t, s, 1)
+	if err := s.write(t, s.one.ID); err != nil {
+		t.Fatalf("the write that crosses the trigger: %v", err)
+	}
+
 	s.e.WaitRaises(t)
 
 	if got, want := s.j.Stats().VersionLimit.Counter, l0+testBlock; got != want {
 		t.Errorf(
-			"the journal's limit is %d after the draw that crossed the trigger, want %d",
+			"the journal's limit is %d after the write that crossed the trigger, want %d",
 			got,
 			want,
 		)
@@ -693,6 +763,10 @@ func TestRaiseSkipsRemovedBinding(t *testing.T) {
 		t.Fatalf("the journal was given %d limits, want 2", len(m))
 	}
 
+	if calls := s.lc.raiseCalls(); slices.Contains(calls[len(calls)-1].shares, removed) {
+		t.Errorf("the raise names the removed share %v", removed)
+	}
+
 	for _, id := range []entity.ShareID{s.one.ID, s.two.ID} {
 		if got := limitOf(t, s, id); got < m[1].Counter {
 			t.Errorf("share %v holds %d below the raised limit %d", id, got, m[1].Counter)
@@ -794,7 +868,7 @@ func TestRaiseRetriesWithBackoff(t *testing.T) {
 }
 
 // A limit the journal refuses is not retried and is logged once at Error;
-// the versions issued past the trigger after it wake no raise, and a write
+// the versions issued past the trigger after it wake no raise, and a draw
 // at the limit is answered retry-later, never as a full device.
 func TestRefusedLimitIsNotRetried(t *testing.T) {
 	s := newRaiser(t, time.Second)
@@ -866,6 +940,10 @@ func TestRefusalEndsARaiseWaitingToRetry(t *testing.T) {
 
 	if err := s.e.Bind(t.Context(), s.spare); err == nil {
 		t.Fatal("Bind passed a limit the journal refuses")
+	}
+
+	if n := len(logsAt(s, slog.LevelError)); n != 1 {
+		t.Errorf("%d records at Error for the Bind's refused limit, want 1", n)
 	}
 
 	base := len(s.lc.raiseCalls())
@@ -1125,11 +1203,11 @@ func TestSetJournalsForTestSeedsTheLimit(t *testing.T) {
 	}
 }
 
-// With three times K shares served, one raise makes one store call that
+// With many shares served, one raise makes one store call that
 // names every one, a share being removed included, and the others get the
 // limit.
 func TestOneRaiseCarriesEveryShare(t *testing.T) {
-	s := newRaiser(t, time.Second, withShares(19), withSmallK())
+	s := newRaiser(t, time.Second, withShares(19))
 	all := append([]engine.Share{s.one, s.two}, s.more...)
 	removing := s.more[0].ID
 
@@ -1166,25 +1244,4 @@ func TestOneRaiseCarriesEveryShare(t *testing.T) {
 			t.Errorf("share %v holds %d below the raised limit %d", sh.ID, got, mark)
 		}
 	}
-}
-
-// smallKV is an in-memory kv.KV whose entry limit makes the store's key
-// budget K seven keys a batch.
-func smallKV(tb testing.TB) kv.KV {
-	return limitedKV{
-		KV: memKV(tb),
-	}
-}
-
-// limitedKV is a kv.KV reporting a transaction entry limit of 12, which the
-// store's key budget turns into K = 7.
-type limitedKV struct {
-	kv.KV
-}
-
-func (l limitedKV) Limits() kv.TxnLimits {
-	lim := l.KV.Limits()
-	lim.TxnEntries = 12
-
-	return lim
 }

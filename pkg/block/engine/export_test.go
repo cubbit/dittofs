@@ -5,6 +5,7 @@ import (
 	"maps"
 	"runtime"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,9 +35,7 @@ func (e *Engine) SetJournalsForTest(js ...Journal) {
 	vls := make([]*versionLimit, 0, len(js))
 
 	for _, j := range js {
-		vl := &versionLimit{
-			j: j,
-		}
+		vl := newVersionLimit(j)
 		vl.last.Store(j.Stats().VersionLimit.Counter)
 		vls = append(vls, vl)
 	}
@@ -52,12 +51,13 @@ func (e *Engine) SetBlockForTest(n uint64) {
 	e.block = n
 }
 
-// TrackRaisesForTest counts the version limit raise goroutines alive, for
-// WaitRaises, and every one started, for RaisesStarted. Call it before Start
-// or Bind.
+// TrackRaisesForTest counts the version limit raise goroutines alive and
+// keeps the clock channels they wait on to retry, for WaitRaises, and counts
+// every one started, for RaisesStarted. Call it before Start or Bind.
 func (e *Engine) TrackRaisesForTest() {
 	e.raising.count = &atomic.Int32{}
 	e.raising.started = &atomic.Int64{}
+	e.raising.timers = &sync.Map{}
 }
 
 // RaisesStarted is how many raise goroutines started since
@@ -69,23 +69,17 @@ func (e *Engine) RaisesStarted() int64 {
 // WaitRaises returns once every version limit raise has ended or waits on
 // the test clock to retry, so a test reads what the raises did. It fails the
 // test when a raise does neither within 5 s, which only wrong code reaches.
-// A raise is the engine's only caller of Clock.After, so each wait the clock
-// holds is a raise waiting to retry; this no longer holds once anything else
-// in the engine waits on the clock.
+// A raise counts as waiting while the clock channel it waits on is still
+// open: one the clock has closed but whose raise has not run yet is not, so a
+// test that advances the clock then waits for the retry. Other waits on the
+// clock, as the group commit's, are not counted.
 func (e *Engine) WaitRaises(t testing.TB) {
 	t.Helper()
 
-	count := e.raising.count
+	count, timers := e.raising.count, e.raising.timers
 
 	if count == nil {
 		t.Fatal("WaitRaises: TrackRaisesForTest was not called")
-	}
-
-	clock, ok := e.d.Clock.(interface {
-		Pending() int
-	})
-	if !ok {
-		t.Fatal("WaitRaises: the engine's clock reports no pending waits")
 	}
 
 	// Correct raises settle at once; the deadline is met only by a raise
@@ -95,7 +89,7 @@ func (e *Engine) WaitRaises(t testing.TB) {
 	for {
 		n := count.Load()
 
-		if n == 0 || int(n) <= clock.Pending() {
+		if n == 0 || int(n) <= openTimers(timers) {
 			return
 		}
 
@@ -672,4 +666,22 @@ func (e *Engine) EntryLocked(f entity.FileID) bool {
 	}
 	fe.mu.Unlock()
 	return false
+}
+
+// openTimers is how many of the raises' clock channels the clock has not
+// closed yet.
+func openTimers(timers *sync.Map) int {
+	n := 0
+
+	timers.Range(func(_, v any) bool {
+		select {
+		case <-v.(<-chan struct{}):
+		default:
+			n++
+		}
+
+		return true
+	})
+
+	return n
 }

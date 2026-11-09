@@ -69,7 +69,6 @@ type openCall struct {
 type starterConfig struct {
 	noRecord bool
 	noApply  bool
-	smallK   bool
 	spare    bool
 	shares   int
 	deps     func(*engine.Deps)
@@ -123,13 +122,6 @@ func withSpare() starterOption {
 	}
 }
 
-// withSmallK makes the store's key budget K seven keys a batch.
-func withSmallK() starterOption {
-	return func(c *starterConfig) {
-		c.smallK = true
-	}
-}
-
 // withStartDeps changes the engine's Deps before New.
 func withStartDeps(f func(*engine.Deps)) starterOption {
 	return func(c *starterConfig) {
@@ -161,10 +153,6 @@ func newStarter(t *testing.T, opts ...starterOption) *starter {
 
 	if c.store != nil {
 		open = c.store
-	}
-
-	if c.smallK {
-		open = smallKV
 	}
 
 	s.fs = kvstoretest.NewFS(t, open)
