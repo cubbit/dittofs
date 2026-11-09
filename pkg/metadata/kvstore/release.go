@@ -2,6 +2,7 @@ package kvstore
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -37,33 +38,9 @@ func releasePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch ui
 	if !f.Applied.Less(op.Version) {
 		return nil
 	}
-	if f.Nlink != 0 || f.Parent == f.ID && f.IsDir() {
-		return ErrHeld
-	}
-	if _, ok, err := get(tx, releaseKey(share, file)); err != nil {
-		return err
-	} else if !ok {
-		return ErrHeld
-	}
-	streams, err := streamsOf(tx, share, file)
+	streams, err := holders(tx, tx.GuardRange, share, file, f)
 	if err != nil {
 		return err
-	}
-	// An unfinished clone onto the file holds it, as an open does. Its
-	// removal records are found by scan, so their range is guarded: a clone
-	// whose phase 1 commits after this snapshot aborts the release.
-	if err := tx.GuardRange(removalsPrefix(share, file)); err != nil {
-		return err
-	}
-	if cloning, err := cloneRunning(tx, share, file); err != nil {
-		return err
-	} else if cloning {
-		return ErrHeld
-	}
-	for _, id := range append([]entity.FileID{file}, streams...) {
-		if err := noDurableOpen(tx, share, id); err != nil {
-			return err
-		}
 	}
 
 	for _, p := range [][]byte{xattrsPrefix(share, file), streamsPrefix(share, file)} {
@@ -108,28 +85,49 @@ func held(r kv.Reader, share entity.ShareID, file entity.FileID) (bool, error) {
 	if err != nil || !live {
 		return false, err
 	}
-	if f.Nlink != 0 || f.Parent == f.ID && f.IsDir() {
+	_, err = holders(r, func([]byte) error { return nil }, share, file, f)
+	if errors.Is(err, ErrHeld) {
 		return true, nil
 	}
-	if _, ok, err := get(r, releaseKey(share, file)); err != nil || !ok {
-		return !ok, err
+	return false, err
+}
+
+// holders answers ErrHeld when something holds file, f, that a release
+// would remove: a link, no pending release recorded, a clone onto it not
+// done, or a durable open of it or of one of its streams; else its streams.
+// guard range-guards what is found by scan, the file's removal records and
+// the opens, so that in releasePhase1 a clone's phase 1 or an open
+// committing after the snapshot aborts the release.
+func holders(r kv.Reader, guard func(prefix []byte) error, share entity.ShareID, file entity.FileID, f entity.File) ([]entity.FileID, error) {
+	if f.Nlink != 0 || f.Parent == f.ID && f.IsDir() {
+		return nil, ErrHeld
 	}
-	if cloning, err := cloneRunning(r, share, file); err != nil || cloning {
-		return cloning, err
+	if _, ok, err := get(r, releaseKey(share, file)); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, ErrHeld
 	}
 	streams, err := streamsOf(r, share, file)
 	if err != nil {
-		return false, err
+		return nil, err
+	}
+	// An unfinished clone onto the file holds it, as an open does.
+	if err := guard(removalsPrefix(share, file)); err != nil {
+		return nil, err
+	}
+	if cloning, err := cloneRunning(r, share, file); err != nil || cloning {
+		return nil, cmp.Or(err, ErrHeld)
 	}
 	for _, id := range append([]entity.FileID{file}, streams...) {
-		for _, err := range r.Scan(opensPrefix(share, id), nil) {
-			if err != nil {
-				return false, err
-			}
-			return true, nil
+		pre := opensPrefix(share, id)
+		if err := guard(pre); err != nil {
+			return nil, err
+		}
+		for _, err := range r.Scan(pre, nil) {
+			return nil, cmp.Or(err, ErrHeld)
 		}
 	}
-	return false, nil
+	return streams, nil
 }
 
 // streamsOf lists a file's named streams.
@@ -147,23 +145,6 @@ func streamsOf(r kv.Reader, share entity.ShareID, file entity.FileID) ([]entity.
 		out = append(out, entity.FileID(id))
 	}
 	return out, nil
-}
-
-// noDurableOpen refuses a file with a durable open, guarding the range of
-// its open records: the scan alone is untracked, and an open committing
-// after the scan must abort the release.
-func noDurableOpen(tx kv.Txn, share entity.ShareID, file entity.FileID) error {
-	pre := opensPrefix(share, file)
-	if err := tx.GuardRange(pre); err != nil {
-		return err
-	}
-	for _, err := range tx.Scan(pre, nil) {
-		if err != nil {
-			return err
-		}
-		return ErrHeld
-	}
-	return nil
 }
 
 // deleteUnder deletes every key under prefix. The callers' prefixes are

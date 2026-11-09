@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
-	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -89,32 +88,22 @@ func TestASyncErrorWithNoEventRaisesItsFile(t *testing.T) {
 	}
 }
 
-// durableAtCommit is a store that records, for each existence commit, any
-// file it commits that the fake journal does not hold durable.
-type durableAtCommit struct {
-	engine.Existence
-	j     *enginetest.FakeJournal
-	mu    sync.Mutex
-	early []entity.FileID
-}
-
-func (x *durableAtCommit) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
-	x.mu.Lock()
-	for _, pe := range p {
-		if !x.j.Durable(journal.NewFileID(pe.File)) {
-			x.early = append(x.early, pe.File)
-		}
-	}
-	x.mu.Unlock()
-	return x.Existence.Commit(ctx, p, marks)
-}
-
 // A failed window promises nothing durable, the other files' writes
 // included: the group commit syncs again before it commits any of them.
 func TestAFailedWindowIsSyncedAgain(t *testing.T) {
-	x := &durableAtCommit{}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
-	x.j = u.j
+	var mu sync.Mutex
+	var u *unit
+	var early []entity.FileID // the files committed that the journal does not hold durable
+	u = newUnit(t, onCommit(func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+		mu.Lock()
+		for _, pe := range p {
+			if !u.j.Durable(journal.NewFileID(pe.File)) {
+				early = append(early, pe.File)
+			}
+		}
+		mu.Unlock()
+		return next.Commit(ctx, p, marks)
+	}))
 	a, b := u.create(t, "a"), u.create(t, "b")
 	u.write(t, a, 0, []byte("lost"))
 	u.write(t, b, 0, []byte("kept"))
@@ -122,10 +111,10 @@ func TestAFailedWindowIsSyncedAgain(t *testing.T) {
 	if err := u.e.CommitAll(t.Context(), u.rec); err != nil {
 		t.Fatal(err)
 	}
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	if len(x.early) > 0 {
-		t.Errorf("%d files committed before their writes were durable", len(x.early))
+	mu.Lock()
+	defer mu.Unlock()
+	if len(early) > 0 {
+		t.Errorf("%d files committed before their writes were durable", len(early))
 	}
 	if u.e.HasEntry(b) {
 		t.Error("b was not committed")

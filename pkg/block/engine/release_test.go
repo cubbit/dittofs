@@ -14,19 +14,16 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// stalling is the store's existence view whose removals, while on, hold
-// until their context ends, as a store that commits nothing does.
-type stalling struct {
-	engine.Existence
-	on atomic.Bool
-}
-
-func (x *stalling) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
-	if x.on.Load() {
-		<-ctx.Done()
-		return ctx.Err()
+// removalStalledWhile has every removal, while on, hold until its context ends,
+// as under a store that commits nothing.
+func removalStalledWhile(on *atomic.Bool) removeFn {
+	return func(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+		if on.Load() {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return next.Remove(ctx, s, file, epoch, op, pending)
 	}
-	return x.Existence.Remove(ctx, share, file, epoch, op, pending)
 }
 
 // unlinked creates a file with a pending write and unlinks its only name, so
@@ -94,18 +91,18 @@ func TestAnAbortedReleaseAnswersErrFileOpen(t *testing.T) {
 // answers a channel and nil, and the channel yields nil once, after the
 // store recovers and the loop's retry commits, the journal settled.
 func TestAStalledReleaseIsPending(t *testing.T) {
-	x := &stalling{}
-	u, h := newHookedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	on := new(atomic.Bool)
+	u, h := newHookedUnit(t, onRemove(removalStalledWhile(on)))
 	res := enginetest.NewReservations(t)
 	f := u.unlinked(t, res)
-	x.on.Store(true)
+	on.Store(true)
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	ch, err := u.e.Delete(ctx, u.share.ID, f)
 	if ch == nil || err != nil {
 		t.Fatalf("Delete: %v, %v; want a channel and nil", ch, err)
 	}
-	x.on.Store(false)
+	on.Store(false)
 	var got error
 	u.until(t, "the channel yields", func() bool {
 		select {
@@ -130,13 +127,12 @@ func TestAStalledReleaseIsPending(t *testing.T) {
 // that ends it clears it and its channel yields ErrFileOpen, not
 // ErrUnavailable.
 func TestAStalledReleaseEndedByAnAbort(t *testing.T) {
-	x := &stalling{}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
-	engine.SetConflictBound(10 * time.Millisecond) // each retry stalls this long, not a second
-	t.Cleanup(func() { engine.SetConflictBound(time.Second) })
-	f := u.create(t, "a") // linked: its name holds it, so phase 1 aborts once it runs
+	on := new(atomic.Bool)
+	u := newUnit(t, onRemove(removalStalledWhile(on)))
+	u.e.SetConflictBound(10 * time.Millisecond) // each retry stalls this long, not a second
+	f := u.create(t, "a")                       // linked: its name holds it, so phase 1 aborts once it runs
 	u.write(t, f, 0, fill(8, 'a'))
-	x.on.Store(true)
+	on.Store(true)
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	ch, err := u.e.Delete(ctx, u.share.ID, f)
@@ -144,7 +140,7 @@ func TestAStalledReleaseEndedByAnAbort(t *testing.T) {
 		t.Fatalf("Delete: %v, %v; want a channel and nil", ch, err)
 	}
 	u.until(t, "the release is removal_stalled", func() bool { return u.e.RemovalStalled(f) })
-	x.on.Store(false)
+	on.Store(false)
 	var got error
 	u.until(t, "the channel yields", func() bool {
 		select {
@@ -191,7 +187,7 @@ func TestAnAbortKeepsTheWritesAboveIt(t *testing.T) {
 // the last group commit commit the write above it, and settle past it.
 func TestALoopEndingLeavesARetriedPhase1ForRecovery(t *testing.T) {
 	x := &conflictingRemove{}
-	u, h := newHookedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u, h := newHookedUnit(t, onRemove(x.remove))
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a')) // due, and below the truncate
 	tv := u.retriedTruncate(t, x, f, 3, 8, 4)

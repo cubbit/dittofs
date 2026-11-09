@@ -501,13 +501,24 @@ jobs:
     # go test caps itself at 25m; this catches a wedged setup.
     timeout-minutes: 35
     steps:
-      - *checkout
+      # A pull request's run compares with origin/<base>, which only a full
+      # checkout has.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
       - *go
       - *download
       # The tests compile fdbkv, which links libfdb_c on Linux.
       - *fdb
       - *build
-      - *suite
+
+      # decision: a pull request tests only the packages it changed; the merge
+      # queue and a push test every one, so nothing lands untested.
+      - name: Run the suite
+        env:
+          CHANGED: ${{ github.event_name == 'pull_request' && 'true' || '' }}
+        run: '"$RUNNER_TEMP/dt" run "$GITHUB_JOB" --tier "$TIER" --ci --retry "$RETRY" ${CHANGED:+"--changed"}'
 
       # decision: the journal index's allocation checks, which skip under
       # -race, and its planted split run as steps of the job the ruleset
@@ -532,9 +543,10 @@ jobs:
       - *upload
 
       # A retry rewrites the coverage profile with the retried tests' alone,
-      # so a run that retried uploads none.
+      # and a pull request's holds only the packages it changed, so neither
+      # uploads one.
       - name: Upload coverage to Codecov
-        if: hashFiles('test/harness/results/*/unit/go-test-*-retry-*.json') == ''
+        if: github.event_name != 'pull_request' && hashFiles('test/harness/results/*/unit/go-test-*-retry-*.json') == ''
         uses: codecov/codecov-action@v7
         with:
           files: test/harness/results/*/unit/coverage.txt

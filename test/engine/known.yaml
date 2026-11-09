@@ -79,6 +79,13 @@
   category: feature
   reason: 'Epic 6: start and stop; also the verifier (epic 4). Fails at the fixture until the journal has Init, Open and WriteAt.'
   issue: '#3589'
+- test: TestRFC8A_IncarnationAtStart
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: a restart raises the incarnation of every served shard and opens a new grace instance on it. Fails at the fixture until the journal has Init and Open, and the engine has Close (T6.8).'
+  issue: '#3589'
 - test: TestRFC8C_DeclaredInterfaces
   message: 'the engine never calls'
   status: fail
@@ -135,3 +142,17 @@
   category: feature
   reason: 'Epic 6: a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Fails at the fixture until the journal has Init, Open and WriteAt (#3765).'
   issue: '#3589'
+- test: TestRFC8A_Clone
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 8: a clone keeps the writes outside its extent, never waits, and a refused reservation leaves the destination (§9.1); a clone answers once its done signal is built. Fails at the fixture until the journal has Init, Open, WriteAt, ReadAt, Sync, Reserve and CloneTarget.'
+  issue: '#3591'
+- test: TestRFC8A_RemovalsOfACloningDestination
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 8: the source''s clone-kind open is gone once the clone is answered (§9.1); the removals held behind the clone are the rest of the row. Fails at the fixture until the journal has Init, Open, WriteAt, ReadAt, Sync, Reserve and CloneTarget, then at Clone (ErrUnbuilt) until a clone answers once the joins of a running clone are built.'
+  issue: '#3591'

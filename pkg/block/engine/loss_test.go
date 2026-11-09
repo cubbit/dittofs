@@ -72,6 +72,32 @@ func TestALossBeforeTheBatchsSyncCommitsTheWriteLost(t *testing.T) {
 	}
 }
 
+// A corrupt loss whose event the journal publishes after a drain saw the
+// generation it raised is still applied by the next drain: the write commits
+// lost, charging nothing, and its file's sequence is raised.
+func TestALossPublishedAfterItsGenerationIsDrained(t *testing.T) {
+	u := newUnit(t)
+	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
+	f := made.ID
+	u.write(t, f, 0, []byte("lost"))
+	publish := u.j.LoseLater(journal.NewFileID(f), journal.Extent{Len: 4}, journal.LossCorrupt)
+	_ = u.e.LossSeq(u.share.ID, f) // a drain between the raise and the event
+	publish()
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Size != 4 || got.Charged != 0 {
+		t.Errorf("size %d, charged %d; want size 4 charging nothing", got.Size, got.Charged)
+	}
+	if s := u.e.LossSeq(u.share.ID, f); s != 1 {
+		t.Errorf("f's sequence after its loss is %d, want 1", s)
+	}
+}
+
 // A journal's device lost whole, with writers running: every write accepted
 // gets its Done exactly once, none is left pending, a write after the loss is
 // answered unavailable with no Done, and every file's sequence is raised.
@@ -141,8 +167,8 @@ func TestADeviceLostWhole(t *testing.T) {
 	}
 }
 
-// A drain that finds the generation already applied by a drain still
-// marking its writes waits for it: the batch's own drain cannot run ahead
+// A drain that finds the events already applied by a drain still marking
+// their writes waits for it: the batch's own drain cannot run ahead
 // and commit a write that drain marks lost as written.
 func TestAConcurrentDrainWaitsForTheMarks(t *testing.T) {
 	u := newUnit(t)
@@ -158,7 +184,7 @@ func TestAConcurrentDrainWaitsForTheMarks(t *testing.T) {
 			time.Sleep(50 * time.Millisecond) // the batch's sync and drain run meanwhile
 		})
 	})
-	_ = u.e.LossSeq(u.share.ID, f) // the first drain, held after it applied the generation
+	_ = u.e.LossSeq(u.share.ID, f) // the first drain, held after it read the ring
 	if err := <-committed; err != nil {
 		t.Fatal(err)
 	}
@@ -189,6 +215,69 @@ func TestALossMarksOnlyItsRecordsWrite(t *testing.T) {
 	}
 	if got.Size != 8 || got.Charged != 8 {
 		t.Errorf("size %d, charged %d; want the older write committed as written, size 8 charging 8", got.Size, got.Charged)
+	}
+}
+
+// A corrupt loss of part of a pending write marks only that part lost: the
+// write commits whole at its version, size 8, charging the 4 bytes the
+// journal kept, which read back, while the lost runs read as lost. Two losses
+// of one write, or one drained before the write's insert, mark their runs
+// alike.
+func TestAPartialLossMarksOnlyItsRuns(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		lost  [][2]int64 // the runs lost, as offset and length
+		early bool       // the loss is drained between WriteAt and the insert
+	}{
+		{"one run", [][2]int64{{4, 4}}, false},
+		{"two runs", [][2]int64{{0, 2}, {6, 2}}, false},
+		{"before the insert", [][2]int64{{4, 4}}, true},
+		{"two runs before the insert", [][2]int64{{0, 2}, {6, 2}}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			u := newUnit(t)
+			h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
+			f := made.ID
+			lose := func() {
+				for _, r := range c.lost {
+					u.lose(f, r[0], r[1])
+				}
+				u.e.LossSeq(u.share.ID, f) // drains the losses
+			}
+			if c.early {
+				var once sync.Once
+				u.e.OnWritten(func() { once.Do(lose) })
+			}
+			u.write(t, f, 0, []byte("12345678"))
+			if !c.early {
+				lose()
+			}
+			if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+				t.Fatal(err)
+			}
+			got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Size != 8 || got.Charged != 4 {
+				t.Errorf("size %d, charged %d; want size 8 charging the 4 bytes kept", got.Size, got.Charged)
+			}
+			at := int64(0)
+			for _, r := range append(c.lost, [2]int64{8, 0}) {
+				if r[0] > at {
+					p := make([]byte, r[0]-at)
+					if _, err := u.e.Read(t.Context(), u.share.ID, f, at, p); err != nil || string(p) != "12345678"[at:r[0]] {
+						t.Errorf("read [%d, %d): %q, %v; want the bytes kept", at, r[0], p, err)
+					}
+				}
+				if r[1] > 0 {
+					if _, err := u.e.Read(t.Context(), u.share.ID, f, r[0], make([]byte, r[1])); !errors.Is(err, vfserr.ErrLost) {
+						t.Errorf("read of the lost run [%d, %d): %v, want ErrLost", r[0], r[0]+r[1], err)
+					}
+				}
+				at = r[0] + r[1]
+			}
+		})
 	}
 }
 
@@ -233,11 +322,7 @@ func TestALossBeforeTheWritesInsertCommitsItLost(t *testing.T) {
 func TestALostDeviceLogsEachFailingFileCleared(t *testing.T) {
 	c := &conflicting{}
 	logs := newLogRecorder()
-	u := newUnit(t, func(d *engine.Deps) {
-		c.Existence = d.Existence
-		d.Existence = c
-		d.Logger = slog.New(logs)
-	})
+	u := newUnit(t, onCommit(c.commit), func(d *engine.Deps) { d.Logger = slog.New(logs) })
 	f := committedFile(t, u, "a", 4)
 	c.on.Store(true)
 	u.write(t, f, 0, []byte("over"))

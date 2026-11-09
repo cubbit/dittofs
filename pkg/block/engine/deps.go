@@ -87,7 +87,9 @@ type Existence interface {
 // Content is block metadata's content view, as the engine calls it.
 type Content interface {
 	Covering(ctx context.Context, share entity.ShareID, file entity.FileID, off, n int64) iter.Seq2[entity.Span, error]
-	Resume(ctx context.Context, share entity.ShareID, file entity.FileID) error
+	// Resume runs the file's removal from its cursor. advanced reports that a
+	// batch committed and the cursor moved, whether or not err is set.
+	Resume(ctx context.Context, share entity.ShareID, file entity.FileID) (advanced bool, err error)
 	PruneRemovals(ctx context.Context, share entity.ShareID, file entity.FileID, atOrBelow entity.JournalVersion) error
 	UnfinishedRemovals(ctx context.Context, share entity.ShareID, shard uint64) iter.Seq2[kvstore.UnfinishedRemoval, error]
 	VersionFloor(ctx context.Context, shares []entity.ShareID) (entity.JournalVersion, error)
@@ -115,7 +117,10 @@ type Lifecycle interface {
 // types, so the engine imports no open state; the root adapts the open-state
 // table to it, its errors included: a shard not yet served here or a table
 // not running answers ErrDelay with DelayFrozen, which holds the clone for a
-// retry, and Release of a hold already gone answers nil.
+// retry, uncounted; Hold of a source holding no open of the clone's answers
+// entity.ErrStale, the one refusal the clone gives the hold up on; any other
+// error, its context's end included, is retried as a failed run; and Release
+// of a hold already gone answers nil.
 type CloneHold interface {
 	// Hold takes over the source open the clone's first phase wrote, before
 	// its second phase runs: open state's CloneOpen.

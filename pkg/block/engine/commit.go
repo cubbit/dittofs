@@ -109,7 +109,7 @@ func (e *Engine) marksWait(ctx context.Context, b *binding, s entity.ShareID, f 
 		if !checked {
 			x := entity.Extent{Offset: off, Length: n}
 			if n == 0 {
-				x.Length = math.MaxInt64 - off
+				x.Length = entity.EndOfFile - off
 			}
 			over, err := e.overwrites(ctx, b, s, f, []entity.Extent{x})
 			if err != nil {
@@ -164,11 +164,9 @@ func (e *Engine) pendingIn(f entity.FileID, off, n int64) (journal.Version, []en
 		}
 		x := entity.Extent{Offset: op.extent.Off, Length: op.extent.Len}
 		if n > 0 {
-			lo, hi := max(x.Offset, off), min(x.End(), off+n)
-			if lo >= hi {
+			if x = x.Intersect(entity.Extent{Offset: off, Length: n}); x.IsEmpty() {
 				continue
 			}
-			x = entity.ExtentOf(lo, hi)
 		}
 		runs = append(runs, x)
 	}

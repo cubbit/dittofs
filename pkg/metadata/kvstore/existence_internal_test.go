@@ -385,13 +385,13 @@ func TestExistenceCommitSuspendedModify(t *testing.T) {
 	}
 }
 
-// A lost write exists as a write does, uncarved past the old size, and
-// charges nothing.
+// A write lost whole exists as a write does, uncarved past the old size,
+// and charges nothing.
 func TestExistenceCommitLost(t *testing.T) {
 	f := newContentFix(t, nil)
 	file := f.file(0)
 	lost := write(2, mib, mib)
-	lost.Kind = OpLost
+	lost.Lost = []entity.Extent{lost.Extent}
 	f.exist(file, write(1, 0, mib), lost)
 	got := f.get(file)
 	if got.Size != 2*mib || got.Charged != mib {
@@ -399,6 +399,30 @@ func TestExistenceCommitLost(t *testing.T) {
 	}
 	if l := f.layout(file); l != "uncarved[0,2)" {
 		t.Errorf("layout %s, want uncarved[0,2)", l)
+	}
+}
+
+// A write with lost runs is one operation at its version that charges only
+// the bytes it kept: a run lost where it grows the file and one lost where it
+// fills a hole each charge nothing, and the rest charges as written. Lost
+// runs that overlap are refused, so none is uncharged twice.
+func TestExistenceCommitLostRuns(t *testing.T) {
+	const kib = 1 << 10
+	f := newContentFix(t, nil)
+	file := f.file(0)
+	f.exist(file, grow(1, 512*kib)) // a hole over [0, 512K)
+	w := write(2, 0, mib)
+	w.Lost = []entity.Extent{{Offset: 256 * kib, Length: 4 * kib}, {Offset: 768 * kib, Length: 4 * kib}}
+	f.exist(file, w)
+	got := f.get(file)
+	if got.Size != mib || got.Charged != mib-8*kib || got.Applied != w.Version {
+		t.Errorf("size %d, charged %d, applied %d; want size %d, charged %d, applied %d",
+			got.Size, got.Charged, got.Applied.Counter(), mib, mib-8*kib, w.Version.Counter())
+	}
+	bad := write(3, 0, mib)
+	bad.Lost = []entity.Extent{{Offset: 0, Length: 8 * kib}, {Offset: 4 * kib, Length: 8 * kib}}
+	if failed, err := f.s.Existence().Commit(context.Background(), []PendingExistence{{Share: f.share, File: file, Ops: []PendingOp{bad}}}, nil); err != nil || failed[file] == nil {
+		t.Errorf("overlapping lost runs: %v, %v; want the file refused", failed, err)
 	}
 }
 

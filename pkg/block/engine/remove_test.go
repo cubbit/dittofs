@@ -24,12 +24,15 @@ import (
 // log of its Settles, each with whether the file's guard was held then.
 type hookedHandle struct {
 	engine.Handle
-	e        *engine.Engine
-	truncate func() // run inside Truncate, after the journal's removal
-	settle   func() // run inside Settle, before the journal's
-	writes   atomic.Int32
-	mu       sync.Mutex
-	settles  []settled
+	e           *engine.Engine
+	truncate    func() // run inside Truncate, after the journal's removal
+	settle      func() // run inside Settle, before the journal's
+	cloneTarget armed  // run inside CloneTarget, after the journal's, once set
+	sync        armed  // run inside Sync, before the journal's, once set
+	writes      atomic.Int32
+	deletes     atomic.Int32
+	mu          sync.Mutex
+	settles     []settled
 }
 
 type settled struct {
@@ -44,6 +47,22 @@ func (h *hookedHandle) Truncate(ctx context.Context, id journal.FileID, size int
 		h.truncate()
 	}
 	return v, err
+}
+
+func (h *hookedHandle) CloneTarget(ctx context.Context, id journal.FileID, spec journal.CloneSpec) (journal.Version, error) {
+	v, err := h.Handle.CloneTarget(ctx, id, spec)
+	h.cloneTarget.run()
+	return v, err
+}
+
+func (h *hookedHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
+	h.sync.run()
+	return h.Handle.Sync(ctx, ids...)
+}
+
+func (h *hookedHandle) Delete(ctx context.Context, id journal.FileID) (journal.Version, error) {
+	h.deletes.Add(1)
+	return h.Handle.Delete(ctx, id)
 }
 
 func (h *hookedHandle) WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error) {
@@ -93,17 +112,16 @@ func newHookedUnit(t *testing.T, deps ...func(*engine.Deps)) (*unit, *hookedHand
 
 // removing is the store's existence view counting its removals.
 type removing struct {
-	engine.Existence
 	removes atomic.Int32
 	on      func() // run before each removal reaches the store
 }
 
-func (x *removing) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+func (x *removing) remove(ctx context.Context, next engine.Existence, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
 	x.removes.Add(1)
 	if x.on != nil {
 		x.on()
 	}
-	return x.Existence.Remove(ctx, share, file, epoch, op, pending)
+	return next.Remove(ctx, share, file, epoch, op, pending)
 }
 
 func (u *unit) size(t *testing.T, f entity.FileID) int64 {
@@ -247,7 +265,7 @@ func TestATruncateWaitsOutABatchInFlight(t *testing.T) {
 // truncate's phase 1 committed.
 func TestACloneWaitsOutATruncateInFlight(t *testing.T) {
 	x := &removing{}
-	u := cloneUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u := cloneUnit(t, onRemove(x.remove))
 	f, dst := u.create(t, "src"), u.create(t, "dst")
 	u.write(t, f, 0, fill(16, 'a'))
 	var phase1 atomic.Bool
@@ -272,27 +290,51 @@ func TestACloneWaitsOutATruncateInFlight(t *testing.T) {
 	}
 }
 
-// A truncate into an extent a clone registered, its source's or anywhere in
-// its destination, answers DelayClone with nothing removed.
-func TestATruncateIntoARegistrationIsDelayClone(t *testing.T) {
-	for _, onDst := range []bool{false, true} {
-		t.Run(map[bool]string{false: "source", true: "destination"}[onDst], func(t *testing.T) {
+// A truncate or a deallocate into an extent a clone registered as its
+// source, or anywhere in a file holding its destination, answers DelayClone
+// with nothing removed; a deallocate starting a byte past the source extent
+// is served.
+func TestAChangeIntoARegistrationIsDelayClone(t *testing.T) {
+	truncate := func(u *unit, f entity.FileID, _ int64) error { return u.e.Truncate(t.Context(), u.share.ID, f, 4) }
+	deallocate := func(u *unit, f entity.FileID, off int64) error {
+		return u.e.Deallocate(t.Context(), u.share.ID, f, off, 4)
+	}
+	for _, c := range []struct {
+		name    string
+		change  func(u *unit, f entity.FileID, off int64) error
+		onDst   bool
+		off     int64
+		refused bool
+	}{
+		{"a truncate of the source", truncate, false, 0, true},
+		{"a truncate of the destination", truncate, true, 0, true},
+		{"a deallocate inside the source extent", deallocate, false, 2, true},
+		{"a deallocate a byte past the source extent", deallocate, false, 8, false},
+		{"a deallocate in the destination, outside its extent", deallocate, true, 0, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
 			u := cloneUnit(t)
 			src, dst := u.create(t, "src"), u.create(t, "dst")
+			u.write(t, src, 0, fill(16, 's'))
 			in, out := make(chan struct{}), make(chan struct{})
 			u.e.SetAfterRegister(func() { close(in); <-out })
-			go func() {
-				_ = u.e.Clone(context.Background(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{SrcOff: 0, DstOff: 1 << 20, Len: 8})
-			}()
+			cloned := u.startClone(context.Background(), src, dst, vfserr.Extent{DstOff: 1 << 20, Len: 8})
 			<-in
 			f := src
-			if onDst {
+			if c.onDst {
 				f = dst
 			}
-			if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); !isDelay(err, vfserr.DelayClone) {
-				t.Errorf("truncate: %v, want ErrDelay(DelayClone)", err)
-			}
+			err := c.change(u, f, c.off)
 			close(out)
+			if err := <-cloned; !errors.Is(err, engine.ErrUnbuilt) {
+				t.Errorf("clone: %v, want the unbuilt answer", err)
+			}
+			if c.refused && !isDelay(err, vfserr.DelayClone) {
+				t.Errorf("%s: %v, want ErrDelay(DelayClone)", c.name, err)
+			}
+			if !c.refused && err != nil {
+				t.Errorf("%s: %v, want it served", c.name, err)
+			}
 		})
 	}
 }
@@ -301,7 +343,7 @@ func TestATruncateIntoARegistrationIsDelayClone(t *testing.T) {
 // phase 1, and the group commit commits the new size.
 func TestATruncateUpIsAGrow(t *testing.T) {
 	x := &removing{}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u := newUnit(t, onRemove(x.remove))
 	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 	f := made.ID
 	u.clock.Advance(time.Since(u.clock.Now()) + time.Hour) // past the store's own time of the create
@@ -392,17 +434,16 @@ func TestADeallocateRecordsItsHoleAtOnce(t *testing.T) {
 // conflictingRemove is the store's existence view answering every removal a
 // conflict while on, counting the removals it answered.
 type conflictingRemove struct {
-	engine.Existence
 	on    atomic.Bool
 	calls atomic.Int32
 }
 
-func (x *conflictingRemove) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+func (x *conflictingRemove) remove(ctx context.Context, next engine.Existence, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
 	x.calls.Add(1)
 	if x.on.Load() {
 		return kvstore.ErrConflict
 	}
-	return x.Existence.Remove(ctx, share, file, epoch, op, pending)
+	return next.Remove(ctx, share, file, epoch, op, pending)
 }
 
 // retriedTruncate truncates f to size with its phase 1 conflictingRemove, staging
@@ -434,7 +475,7 @@ func (u *unit) retriedTruncate(t *testing.T, x *conflictingRemove, f entity.File
 // the truncate as applied.
 func TestAGroupCommitStopsAtARetriedRemoval(t *testing.T) {
 	x := &conflictingRemove{}
-	u, h := newHookedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u, h := newHookedUnit(t, onRemove(x.remove))
 	u.e.NoGuardSkip()
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a')) // due, and below the truncate
@@ -470,68 +511,96 @@ func TestAGroupCommitStopsAtARetriedRemoval(t *testing.T) {
 	}
 }
 
-// removeOps records the pending operations each Remove commits in its
-// phase 1.
-type removeOps struct {
-	engine.Existence
-	mu  sync.Mutex
-	ops []kvstore.PendingOp
-}
-
-func (x *removeOps) Remove(ctx context.Context, s entity.ShareID, f entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
-	x.mu.Lock()
-	x.ops = append(x.ops, pending...)
-	x.mu.Unlock()
-	return x.Existence.Remove(ctx, s, f, epoch, op, pending)
+// Phase 1's hold on the writes below its removal is its own, the guard's
+// skip removed: a batch that captures the file during phase 1's sync and
+// fails releases its claim alone, and phase 1 still commits the write below
+// the truncate with it, charged. Were the two one claim, the failed batch
+// would release phase 1's too, and phase 1 would commit the truncate alone,
+// at an applied above the write, which no later commit then records.
+func TestAFailedBatchDuringPhaseOneLeavesItsHold(t *testing.T) {
+	c := &conflicting{}
+	u, h := newHookedUnit(t, onCommit(c.commit))
+	u.e.NoGuardSkip()
+	fh, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
+	f := made.ID
+	u.write(t, f, 0, fill(16, 'a'))
+	var first atomic.Bool
+	h.truncate = func() {
+		h.sync.set(func() {
+			if !first.CompareAndSwap(false, true) {
+				return // the batch's own sync
+			}
+			// Phase 1's sync, its hold taken: a batch captures the file and fails.
+			c.on.Store(true)
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			_ = u.e.CommitAll(ctx, u.rec)
+			cancel()
+			c.on.Store(false)
+		})
+	}
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 8); err != nil {
+		t.Fatal(err)
+	}
+	if c.calls.Load() == 0 {
+		t.Fatal("no batch captured the file during phase 1")
+	}
+	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, fh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Size != 8 || got.Charged != 8 {
+		t.Errorf("size %d, charged %d; want the write below the truncate committed with it, size 8 charging 8", got.Size, got.Charged)
+	}
+	if p := u.e.Pending(f); len(p) != 0 {
+		t.Errorf("pending %+v after phase 1, want nothing", p)
+	}
 }
 
 // RFC 8 §5.1, R48: a removal's phase 1 commits the writes pending below it
 // with the runs each supersedes, as the group commit does.
 func TestARemovalsPhaseOnePassesTheRunsEachWriteSupersedes(t *testing.T) {
-	x := &removeOps{}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	var mu sync.Mutex
+	var ops []kvstore.PendingOp // the pending operations each Remove commits
+	u := newUnit(t, onRemove(func(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+		mu.Lock()
+		ops = append(ops, pending...)
+		mu.Unlock()
+		return next.Remove(ctx, s, file, epoch, op, pending)
+	}))
 	f := u.create(t, "a")
 	u.write(t, f, 0, make([]byte, 8))
 	u.write(t, f, 2, make([]byte, 4))
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
 		t.Fatal(err)
 	}
-	x.mu.Lock()
-	defer x.mu.Unlock()
+	mu.Lock()
+	defer mu.Unlock()
 	want := [][]entity.Extent{nil, {entity.ExtentOf(2, 6)}}
-	if len(x.ops) != len(want) {
-		t.Fatalf("phase 1 committed %d operations, want the %d writes", len(x.ops), len(want))
+	if len(ops) != len(want) {
+		t.Fatalf("phase 1 committed %d operations, want the %d writes", len(ops), len(want))
 	}
-	for i, op := range x.ops {
+	for i, op := range ops {
 		if !slices.Equal(op.Over, want[i]) {
 			t.Errorf("write %d passed Over %v, want %v", i, op.Over, want[i])
 		}
 	}
 }
 
-// stalledRemove holds each Remove, once entered is closed, until release is.
-type stalledRemove struct {
-	engine.Existence
-	entered, release chan struct{}
-	once             sync.Once
-}
-
-func (x *stalledRemove) Remove(ctx context.Context, s entity.ShareID, f entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
-	x.once.Do(func() { close(x.entered) })
-	<-x.release
-	return x.Existence.Remove(ctx, s, f, epoch, op, pending)
-}
-
 // commitAll over a file whose removal holds its guard waits for the guard
 // rather than asking for batch after batch that each skip the file.
 func TestCommitAllWaitsForARemovalsGuardWithoutSpinning(t *testing.T) {
-	x := &stalledRemove{entered: make(chan struct{}), release: make(chan struct{})}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	entered, release := make(chan struct{}), make(chan struct{}) // each Remove, once entered is closed, holds until release is
+	var once sync.Once
+	u := newUnit(t, onRemove(func(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+		once.Do(func() { close(entered) })
+		<-release
+		return next.Remove(ctx, s, file, epoch, op, pending)
+	}))
 	f := u.create(t, "a")
 	u.write(t, f, 0, make([]byte, 8))
 	truncated := make(chan error, 1)
 	go func() { truncated <- u.e.Truncate(context.Background(), u.share.ID, f, 4) }()
-	<-x.entered
+	<-entered
 	var takes atomic.Int64
 	u.e.OnTake(func() { takes.Add(1) })
 	all := make(chan error, 1)
@@ -540,7 +609,7 @@ func TestCommitAllWaitsForARemovalsGuardWithoutSpinning(t *testing.T) {
 	if n := takes.Load(); n > 5 {
 		t.Errorf("%d batches in 100 ms while a removal held the only due file", n)
 	}
-	close(x.release)
+	close(release)
 	if err := <-truncated; err != nil {
 		t.Fatal(err)
 	}
@@ -667,56 +736,40 @@ func TestARemovalRefusedForAnOperationBelowItEnds(t *testing.T) {
 	}
 }
 
-// markedRemove records, for each Remove, whether its context carries the
-// retrying-owner mark, conflicting while on is set.
-type markedRemove struct {
-	engine.Existence
-	on     atomic.Bool
-	mu     sync.Mutex
-	marked []bool
-}
-
-func (x *markedRemove) Remove(ctx context.Context, s entity.ShareID, f entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
-	x.mu.Lock()
-	x.marked = append(x.marked, engine.RetryingOwner(ctx))
-	x.mu.Unlock()
-	if x.on.Load() {
-		return kvstore.ErrConflict
-	}
-	return x.Existence.Remove(ctx, s, f, epoch, op, pending)
-}
-
 // The removal loop's store calls, a retried phase 1 among them, carry the
 // retrying-owner mark; the call's own first try does not.
 func TestTheRemovalLoopsStoreCallsCarryTheRetryingOwnerMark(t *testing.T) {
-	x := &markedRemove{}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	var on atomic.Bool // each Remove conflicts while on
+	var mu sync.Mutex
+	var marked []bool // for each Remove, whether its context carries the mark
+	u := newUnit(t, onRemove(func(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+		mu.Lock()
+		marked = append(marked, engine.RetryingOwner(ctx))
+		mu.Unlock()
+		if on.Load() {
+			return kvstore.ErrConflict
+		}
+		return next.Remove(ctx, s, file, epoch, op, pending)
+	}))
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
-	x.on.Store(true)
+	on.Store(true)
 	_ = u.e.Truncate(t.Context(), u.share.ID, f, 4)
-	x.on.Store(false)
+	on.Store(false)
 	u.until(t, "the loop committing phase 1", func() bool { return !u.e.GuardHeld(f) })
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	if len(x.marked) < 2 {
-		t.Fatalf("%d Remove calls, want the call's try and the loop's", len(x.marked))
+	mu.Lock()
+	defer mu.Unlock()
+	if len(marked) < 2 {
+		t.Fatalf("%d Remove calls, want the call's try and the loop's", len(marked))
 	}
-	if x.marked[0] {
+	if marked[0] {
 		t.Error("the call's own phase 1 is marked as a retrying owner's")
 	}
-	for i, m := range x.marked[1:] {
+	for i, m := range marked[1:] {
 		if !m {
 			t.Errorf("the loop's Remove %d is not marked as a retrying owner's", i+1)
 		}
 	}
-}
-
-// goneRemove answers every Remove as the file being gone.
-type goneRemove struct{ engine.Existence }
-
-func (goneRemove) Remove(context.Context, entity.ShareID, entity.FileID, uint64, kvstore.RemoveOp, []kvstore.PendingOp) error {
-	return entity.ErrStale
 }
 
 // A release of a file already gone succeeds, whether it had writes pending
@@ -724,7 +777,9 @@ func (goneRemove) Remove(context.Context, entity.ShareID, entity.FileID, uint64,
 func TestAReleaseOfAGoneFileSucceeds(t *testing.T) {
 	for _, pending := range []bool{false, true} {
 		t.Run(fmt.Sprint("pending writes ", pending), func(t *testing.T) {
-			u := newUnit(t, func(d *engine.Deps) { d.Existence = goneRemove{d.Existence} })
+			u := newUnit(t, onRemove(func(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+				return entity.ErrStale // every Remove finds the file gone
+			}))
 			f := u.create(t, "a")
 			if pending {
 				u.write(t, f, 0, fill(8, 'a'))

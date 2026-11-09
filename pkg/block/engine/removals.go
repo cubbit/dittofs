@@ -11,6 +11,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // answer is what one run of a loop item answers.
@@ -20,7 +21,22 @@ const (
 	itemDone           answer = iota + 1 // the item is finished
 	itemRetry                            // it failed: retried after the backoff, counted toward a stall
 	itemRetryUncounted                   // it is held by something outside it: retried, never counted
+	itemAdvanced                         // it advanced and has more to do: run again at once, its failures reset
 )
+
+// runResult is a phase-2 run's outcome, one bounded Resume and the prune
+// after it, as engine_removal_runs_total labels it.
+type runResult uint8
+
+const (
+	runDone runResult = iota
+	runAdvanced
+	runConflict
+	runError
+	runResults
+)
+
+var runResultNames = [runResults]string{"done", "advanced", "conflict", "error"}
 
 // stallAfter is the count of consecutive failures after which an item is
 // removal_stalled.
@@ -53,21 +69,24 @@ type loopItem struct {
 // the scheduler's removal source when offload adds the first work that needs
 // fairness between shares.
 type removalLoop struct {
-	e       *Engine
-	mu      sync.Mutex
-	items   []*loopItem
-	closed  bool
-	dropped map[entity.ShareID]bool // shares dropped: an item of one, running or enqueued, is ended
-	steps   atomic.Int64            // items run, for a test to wait on a run
+	e      *Engine
+	mu     sync.Mutex
+	items  []*loopItem
+	closed bool
+	// decision: only a test helper sets dropped, until Drop is built, so the
+	// branches that read it end a dropped share's items for tests alone.
+	// They are the shape Drop needs: Drop sets it, and the helper goes,
+	// once built. Delete the field and its branches if Drop ends a share's
+	// items some other way.
+	dropped map[entity.ShareID]bool  // shares dropped: an item of one, running or enqueued, is ended
+	steps   atomic.Int64             // items run, for a test to wait on a run
+	runs    [runResults]atomic.Int64 // engine_removal_runs_total by result
 	wake    chan struct{}
 	stop    chan struct{}
 	done    chan struct{}
 	ctx     context.Context
 	cancel  context.CancelFunc
 }
-
-// removalSeries is engine_removal_batches_total, by result.
-type removalSeries struct{ ok, conflict, failed atomic.Int64 }
 
 func newRemovalLoop(e *Engine) *removalLoop {
 	l := &removalLoop{e: e, wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
@@ -137,19 +156,25 @@ func (l *removalLoop) next() (*loopItem, time.Duration) {
 
 // step runs it once, under a root span, and puts it back at the loop's end
 // unless it finished, raising removal_stalled after five failures in a row
-// and clearing it once it finishes.
+// and clearing it once it finishes or advances.
 func (l *removalLoop) step(it *loopItem) {
 	ctx, end := l.e.d.Tracer(l.ctx, "engine.removal_batch", slog.String("kind", it.kind.String()))
 	a := it.run(ctx)
 	end(nil)
 	l.steps.Add(1)
 	log := l.e.d.Logger
+	backoff := loopBackoff
 	switch a {
 	case itemDone:
 		if it.stalled {
 			log.Warn("removal_stalled cleared", "file", it.f, "kind", it.kind)
 		}
 		return
+	case itemAdvanced:
+		if it.stalled {
+			log.Warn("removal_stalled cleared", "file", it.f, "kind", it.kind)
+		}
+		it.fails, it.stalled, backoff = 0, false, 0
 	case itemRetry:
 		it.fails++
 		if it.fails >= stallAfter && !it.stalled {
@@ -157,7 +182,7 @@ func (l *removalLoop) step(it *loopItem) {
 			log.Warn("removal_stalled", "file", it.f, "kind", it.kind)
 		}
 	}
-	it.notBefore = l.e.d.Clock.Now().Add(loopBackoff)
+	it.notBefore = l.e.d.Clock.Now().Add(backoff)
 	l.mu.Lock()
 	ended := l.closed || l.dropped[it.b.share.ID]
 	if !ended {
@@ -185,31 +210,6 @@ func (l *removalLoop) close() {
 	close(l.stop)
 	<-l.done
 	for _, it := range items {
-		if it.end != nil {
-			it.end()
-		}
-	}
-}
-
-// dropShare takes share s's items off the loop, ending each; one running
-// now is ended when its run returns, and none of the share's is enqueued
-// after.
-func (l *removalLoop) dropShare(s entity.ShareID) {
-	l.mu.Lock()
-	if l.dropped == nil {
-		l.dropped = map[entity.ShareID]bool{}
-	}
-	l.dropped[s] = true
-	var dropped []*loopItem
-	l.items = slices.DeleteFunc(l.items, func(it *loopItem) bool {
-		if it.b.share.ID == s {
-			dropped = append(dropped, it)
-			return true
-		}
-		return false
-	})
-	l.mu.Unlock()
-	for _, it := range dropped {
 		if it.end != nil {
 			it.end()
 		}
@@ -248,42 +248,128 @@ func (l *removalLoop) stalledOn(f entity.FileID) bool {
 	return false
 }
 
-// count records one batch's result in engine_removal_batches_total.
-func (e *Engine) count(err error) {
-	switch {
-	case err == nil:
-		e.removalBatches.ok.Add(1)
-	case errors.Is(err, kvstore.ErrConflict):
-		e.removalBatches.conflict.Add(1)
-	default:
-		e.removalBatches.failed.Add(1)
-	}
-}
-
 // phase2 is the item that drops r's masked records and prunes its removal
 // record: the store's Resume runs every batch of the file's removals not
-// done, and the prune, with no pass in flight, is at r's own version.
+// done, and the prune, with no pass in flight, is at r's own version. One
+// bound covers a run; a run the bound cuts after a batch committed advanced,
+// so a removal larger than one bound's worth of batches is never counted
+// toward removal_stalled while each run moves its cursor.
 func (e *Engine) phase2(r *removal) *loopItem {
 	share, v := r.b.share.ID, entity.JournalVersion(r.v.Bytes())
 	return &loopItem{b: r.b, f: r.f, kind: r.kind, run: func(ctx context.Context) answer {
-		// decision: one bound covers every batch Resume runs, as Resume
-		// answers neither per batch nor with progress. Each batch commits on
-		// its own, so a removal larger than the bound's worth of batches
-		// still finishes, from its cursor, but counts each bounded run as a
-		// failure: removal_stalled after five, though it advances. Bound
-		// each batch, or count a run that advanced, once Resume reports one.
-		ctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+		ctx, cancel := e.bounded(ctx)
 		defer cancel()
-		err := e.d.Content.Resume(ctx, share, r.f)
+		advanced, err := e.d.Content.Resume(ctx, share, r.f)
 		if err == nil {
 			err = e.d.Content.PruneRemovals(ctx, share, r.f, v)
 		}
-		e.count(err)
-		if err != nil {
-			return itemRetry
+		res, a := runError, itemRetry
+		switch {
+		case err == nil:
+			res, a = runDone, itemDone
+		case advanced:
+			res, a = runAdvanced, itemAdvanced
+		case errors.Is(err, kvstore.ErrConflict):
+			res = runConflict
 		}
-		return itemDone
+		r.b.gc.removals.runs[res].Add(1)
+		return a
 	}}
+}
+
+// clonePhase2 is clone c's item once its phase 1 committed, r the clone's
+// removal of the destination extent: phase2's item, its run preceded by the
+// hold on the source and followed by the hold's release and the clone's end,
+// its registrations dropped and its done signal raised. Hold and Release are
+// each bounded by the conflict bound, and a failed one is retried counted, as
+// a phase 2 run is. The loop runs it with no entry lock or guard held.
+func (e *Engine) clonePhase2(c *cloneRun, r *removal) *loopItem {
+	it := e.phase2(r)
+	it.kind = entity.RemoveClone
+	p2 := it.run
+	var (
+		asked, held, p2done bool
+		hold                entity.OpenID
+	)
+	// decision: a clone's source open is keyed in its share's own shard, the
+	// one Bind named; nothing the engine receives names a finer shard. A share
+	// split into per-child shards needs Existence.Clone to return the hold's key.
+	//
+	// decision: the hold names the clone's version v, not asOf, as the store's
+	// phase 1 records the source's open with v and CloneOpen matches on it,
+	// while CloneSrc.AsOf says asOf. Pass asOf once the store records it, or
+	// rename the field if v is kept.
+	src := CloneSrc{Share: c.sb.share.ID, Shard: c.sb.share.Shard, File: c.src, Dst: c.dst,
+		AsOf: entity.JournalVersion(r.v.Bytes())}
+	release := func(ctx context.Context) error {
+		ctx, cancel := e.bounded(ctx)
+		defer cancel()
+		return e.d.Holds.Release(ctx, hold)
+	}
+	it.run = func(ctx context.Context) answer {
+		if !asked {
+			hctx, cancel := e.bounded(ctx)
+			id, err := e.d.Holds.Hold(hctx, src)
+			cancel()
+			var d *vfserr.Delay
+			switch {
+			case errors.As(err, &d) && d.Cause == vfserr.DelayFrozen:
+				// decision: a shard not yet served is retried uncounted with no
+				// ceiling, as serving it is open state's to raise, not a fault
+				// of this removal. A shard never served keeps both
+				// registrations, so writes to either extent keep answering
+				// DelayClone, and raises no removal_stalled. Count it toward
+				// the stall if a shard is seen staying unserved with nothing
+				// of open state's own reporting it.
+				return itemRetryUncounted
+			case errors.Is(err, entity.ErrStale):
+				// decision: a Hold refused for good, the source holding no
+				// open of the clone's, holds nothing and phase 2 runs on, with
+				// no Release after it; any other error is retried below. The
+				// clone's registration on the source keeps a release of it
+				// pending until the clone ends, so its bytes stay; opens of
+				// the source are refused meanwhile. Hold it back instead if a
+				// release is ever seen passing a source whose Hold failed.
+				e.d.Logger.Error("a clone's hold on its source was refused: phase 2 runs without it",
+					"src", c.src, "dst", c.dst, "err", err)
+			case err != nil:
+				e.d.Logger.Warn("a clone's hold on its source failed: retried", "src", c.src, "dst", c.dst, "err", err)
+				return itemRetry
+			default:
+				hold, held = id, true
+			}
+			asked = true
+		}
+		if !p2done {
+			if a := p2(ctx); a != itemDone {
+				return a
+			}
+			p2done = true
+		}
+		if held {
+			// decision: a Release that fails is retried alone, with the
+			// registrations kept, so nothing reaches the source while open
+			// state may still hold it. Drop the registrations at once instead
+			// if a Release failing for good is seen pinning a source.
+			if err := release(ctx); err != nil {
+				e.d.Logger.Warn("a clone's release of its source failed: retried", "src", c.src, "dst", c.dst, "err", err)
+				return itemRetry
+			}
+			held = false
+		}
+		e.endClone(c, nil)
+		return itemDone
+	}
+	it.end = func() {
+		// The loop ended, its context with it: the release runs under its own.
+		if held {
+			if err := release(context.Background()); err != nil {
+				e.d.Logger.Warn("a clone's release of its source at its loop's end failed", "src", c.src, "dst", c.dst, "err", err)
+			}
+		}
+		e.endClone(c, errLoopEnded)
+	}
+	return it
 }
 
 // finish ends r after its phase 1 committed: the guard released, the
@@ -314,10 +400,9 @@ func (e *Engine) retryLater(r *removal, op kvstore.RemoveOp, outcome func(error)
 	}
 	r.b.gc.removals.enqueue(&loopItem{b: r.b, f: r.f, kind: r.kind,
 		run: func(ctx context.Context) answer {
-			ctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+			ctx, cancel := e.bounded(ctx)
 			defer cancel()
 			err := e.tryPhase1(ctx, r, op)
-			e.count(err)
 			switch {
 			case err == nil:
 				tell(nil)

@@ -32,13 +32,13 @@ func newResuming() *resuming {
 	return &resuming{failing: map[entity.FileID]bool{}, resumes: map[entity.FileID]int{}, pruned: map[entity.FileID]entity.JournalVersion{}}
 }
 
-func (x *resuming) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) error {
+func (x *resuming) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) (bool, error) {
 	x.mu.Lock()
 	x.resumes[file]++
 	fail := x.failing[file]
 	x.mu.Unlock()
 	if fail {
-		return errors.New("an injected phase 2 failure")
+		return false, errors.New("an injected phase 2 failure")
 	}
 	return x.Content.Resume(ctx, share, file)
 }
@@ -143,30 +143,22 @@ func TestAFailingRemovalWedgesNoOther(t *testing.T) {
 	}
 }
 
-// stalledResume is the store's content view whose phase 2 of the files in
-// stalled holds until its context ends.
-type stalledResume struct {
-	*resuming
-	stalled entity.FileID
-}
-
-func (x *stalledResume) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) error {
-	if file == x.stalled {
-		<-ctx.Done()
-		return ctx.Err()
-	}
-	return x.resuming.Resume(ctx, share, file)
-}
-
 // A phase 2 whose store never answers is cut at the conflict bound, so the
 // loop moves on: another file's removal is pruned meanwhile.
 func TestAStalledPhase2HoldsNoOther(t *testing.T) {
-	engine.SetConflictBound(10 * time.Millisecond)
-	t.Cleanup(func() { engine.SetConflictBound(time.Second) })
-	x := &stalledResume{resuming: newResuming()}
-	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x })
-	f, g := u.create(t, "f"), u.create(t, "g")
-	x.stalled = f
+	x := newResuming()
+	var f entity.FileID
+	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x },
+		onResume(func(ctx context.Context, next engine.Content, s entity.ShareID, file entity.FileID) (bool, error) {
+			if file == f { // its store never answers
+				<-ctx.Done()
+				return false, ctx.Err()
+			}
+			return next.Resume(ctx, s, file)
+		}))
+	u.e.SetConflictBound(10 * time.Millisecond)
+	f = u.create(t, "f")
+	g := u.create(t, "g")
 	for _, id := range []entity.FileID{f, g} {
 		u.write(t, id, 0, fill(16, 'a'))
 		if err := u.e.CommitNow(t.Context(), u.share.ID, id); err != nil {
@@ -182,26 +174,65 @@ func TestAStalledPhase2HoldsNoOther(t *testing.T) {
 	u.until(t, "g's removal is pruned while f's phase 2 stalls", func() bool { _, ok := x.prunedAt(g); return ok })
 }
 
-// refusing is the store's existence view refusing every removal as
-// invalid, as the store refuses an operation it cannot apply.
-type refusing struct {
-	engine.Existence
-	on bool
+// cutResume is the store's content view whose first cut phase 2 runs of
+// the file it names each commit a batch and are cut at the bound with more
+// to do, as runs of a removal larger than one bound's worth of batches.
+type cutResume struct {
+	*resuming
+	f   entity.FileID
+	cut atomic.Int32
 }
 
-func (x *refusing) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
-	if x.on {
-		op.Kind = 0 // a kind the store refuses as invalid
+func (x *cutResume) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) (bool, error) {
+	if file == x.f && x.cut.Add(-1) >= 0 {
+		return true, context.DeadlineExceeded
 	}
-	return x.Existence.Remove(ctx, share, file, epoch, op, pending)
+	return x.resuming.Resume(ctx, share, file)
+}
+
+// A removal whose phase 2 needs more runs than removal_stalled allows
+// failures, each advancing, is never reported stalled, and finishes.
+func TestAnAdvancingPhase2IsNotStalled(t *testing.T) {
+	x := &cutResume{resuming: newResuming()}
+	logs := newLogRecorder()
+	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x; d.Logger = slog.New(logs) })
+	f := u.create(t, "f")
+	x.f = f
+	x.cut.Store(8)
+	u.write(t, f, 0, fill(16, 'a'))
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
+		t.Fatal(err)
+	}
+	u.until(t, "f's removal is pruned", func() bool { _, ok := x.prunedAt(f); return ok })
+	for _, r := range logs.records() {
+		if strings.HasPrefix(r.Message, "removal_stalled") {
+			t.Errorf("logged %q for a phase 2 that advanced on every run", r.Message)
+		}
+	}
+}
+
+// refused has the store refuse every removal as invalid, as it refuses an
+// operation it cannot apply.
+func refused(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+	op.Kind = 0 // a kind the store refuses as invalid
+	return next.Remove(ctx, s, file, epoch, op, pending)
 }
 
 // A phase 1 the store refuses as invalid ends at once: the call answers an
 // error, the guard is released and the truncate's operation leaves the
 // entry, so the next removal of the file is not held behind it.
 func TestARefusedPhase1EndsAndReleasesTheGuard(t *testing.T) {
-	x := &refusing{on: true}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	var on atomic.Bool // every removal is refused while on
+	on.Store(true)
+	u := newUnit(t, onRemove(func(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+		if on.Load() {
+			return refused(ctx, next, s, file, epoch, op, pending)
+		}
+		return next.Remove(ctx, s, file, epoch, op, pending)
+	}))
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
@@ -214,7 +245,7 @@ func TestARefusedPhase1EndsAndReleasesTheGuard(t *testing.T) {
 		t.Fatalf("after the refusal: guard %v, pending %+v, loop items %d; want none",
 			u.e.GuardHeld(f), u.e.Pending(f), u.e.RemovalsPending())
 	}
-	x.on = false
+	on.Store(false)
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	if err := u.e.Truncate(ctx, u.share.ID, f, 2); err != nil {
@@ -226,13 +257,11 @@ func TestARefusedPhase1EndsAndReleasesTheGuard(t *testing.T) {
 // without the removal, so no later start re-applies it, and logs the loss
 // of a file that still exists (RFC 8 §8.1).
 func TestARefusedPhase1SettlesItsMarker(t *testing.T) {
-	x := &refusing{on: true}
 	var logged lockedBuffer
 	var log *settlesLog
 	u := newUnitWith(t, unitConfig{
 		deps: []func(*engine.Deps){func(d *engine.Deps) {
-			x.Existence = d.Existence
-			d.Existence = x
+			d.Existence = removeHook{d.Existence, refused}
 			d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
 		}},
 		wrap: func(h engine.Handle) engine.Handle {
@@ -290,8 +319,7 @@ type endingStore struct {
 }
 
 func (x *endingStore) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
-	op.Kind = 0 // a kind the store refuses as invalid
-	return x.Existence.Remove(ctx, share, file, epoch, op, pending)
+	return refused(ctx, x.Existence, share, file, epoch, op, pending)
 }
 
 func (x *endingStore) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
@@ -380,7 +408,7 @@ func TestATerminalRemovalCommitsTheExistenceBelowItBeforeItsSettle(t *testing.T)
 func TestATerminalRemovalCommitsALossBelowItBeforeItsSettle(t *testing.T) {
 	x := &endingStore{}
 	u, h := newHookedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
-	_, appended, sizes := u.endedTruncate(t, h, true)
+	f, appended, sizes := u.endedTruncate(t, h, true)
 	if s := sizes(); len(s) != 2 || s[1] != 32 {
 		t.Fatalf("the store's size at each settle: %v, want 32 at the truncate's", s)
 	}
@@ -389,8 +417,15 @@ func TestATerminalRemovalCommitsALossBelowItBeforeItsSettle(t *testing.T) {
 		t.Fatal("nothing committed")
 	}
 	last := c[len(c)-1]
-	if len(last) != 1 || last[0].Version != entity.JournalVersion(appended.Bytes()) || last[0].Kind != kvstore.OpLost {
-		t.Errorf("the last commit %+v, want the append committed lost", last)
+	if len(last) != 1 || last[0].Version != entity.JournalVersion(appended.Bytes()) {
+		t.Fatalf("the last commit %+v, want the append's", last)
+	}
+	if l := last[0].Lost; len(l) != 1 || l[0] != last[0].Extent {
+		t.Errorf("the append committed with lost runs %v, want its whole extent %v", l, last[0].Extent)
+	}
+	u.e.ClearOps(f) // the crash: the engine's state goes, the store stays
+	if _, err := u.e.Read(t.Context(), u.share.ID, f, 16, make([]byte, 16)); !errors.Is(err, vfserr.ErrLost) {
+		t.Errorf("after the crash the append reads %v, want ErrLost", err)
 	}
 }
 

@@ -70,6 +70,14 @@ func TestGroupCommitSharesSyncsAcrossWaiters(t *testing.T) {
 	const writers, rounds = 16, 8
 	var active, waiting atomic.Int64
 	active.Store(writers)
+	// Every writer has appended its record of a round before any of them
+	// syncs: a record appended after the round's sync was issued is not covered
+	// by it, however slowly the others reach their Sync, so without the barrier
+	// the number of syncs depends on the scheduler, not on the sharing.
+	appended := make([]sync.WaitGroup, rounds)
+	for i := range appended {
+		appended[i].Add(writers)
+	}
 	var wg sync.WaitGroup
 	for w := range writers {
 		wg.Add(1)
@@ -79,6 +87,8 @@ func TestGroupCommitSharesSyncsAcrossWaiters(t *testing.T) {
 			f := file(byte(w + 1))
 			for i := range rounds {
 				r.appendWrite(t, f, int64(i*8), "x")
+				appended[i].Done()
+				appended[i].Wait()
 				waiting.Add(1)
 				if err := r.d.Sync(context.Background(), f); err != nil {
 					t.Errorf("Sync: %v", err)
@@ -305,7 +315,8 @@ func TestCancelledSyncLeavesTheSyncRunning(t *testing.T) {
 
 // TestFailedSyncFailsEveryWaiterAndIsNotRetried covers: every waiter on the
 // failed sync gets a SyncError naming the segment, the failure is counted,
-// and a later Sync of the segment fails at once with no new sync.
+// and a later Sync of a file already told is not told again and issues no new
+// sync.
 func TestFailedSyncFailsEveryWaiterAndIsNotRetried(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
@@ -339,14 +350,11 @@ func TestFailedSyncFailsEveryWaiterAndIsNotRetried(t *testing.T) {
 		t.Errorf("SyncFailures = %d, want 1", got)
 	}
 
+	// Both files were told: a later Sync finds nothing owed and nothing
+	// unsynced, and issues no sync of the failed segment.
 	before := r.syncsOf(a.Segment)
-	err := r.d.Sync(context.Background(), f)
-	var later *core.SyncError
-	if !errors.Is(err, core.ErrSyncFailed) || !errors.As(err, &later) {
-		t.Fatalf("a later Sync of the failed segment = %v, want ErrSyncFailed", err)
-	}
-	if len(later.Files) != 1 || later.Files[0] != f {
-		t.Errorf("the later SyncError.Files = %v, want [%v]", later.Files, f)
+	if err := r.d.Sync(context.Background(), f); err != nil {
+		t.Fatalf("a later Sync of the reported file = %v, want nil", err)
 	}
 	if got := r.syncsOf(a.Segment); got != before {
 		t.Errorf("a Sync retried the failed segment: %d new syncs", got-before)

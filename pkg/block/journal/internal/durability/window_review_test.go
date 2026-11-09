@@ -30,8 +30,9 @@ func TestASealThatFindsAFailedSyncDoesNotCountItAgain(t *testing.T) {
 	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("sync boom"))); err != nil {
 		t.Fatal(err)
 	}
-	wantSyncError(t, mustReturn(t, "Sync", r.syncAsync(context.Background(), f)), a.Segment, f)
-	r.waitWindow(t, 0)
+	first := mustReturn(t, "Sync", r.syncAsync(context.Background(), f))
+	wantSyncError(t, first, a.Segment, f)
+	eventually(t, "the window to be resolved", func() bool { return len(r.windowsOf(0)) == 0 })
 	if got := r.d.Stats().SyncFailures; got != 1 {
 		t.Errorf("one failed fsync counted %d times", got)
 	}
@@ -46,40 +47,61 @@ func TestASealThatFindsAFailedSyncDoesNotCountItAgain(t *testing.T) {
 		t.Errorf("LastSyncError = %+v, want the sync's own error", se)
 	}
 	var se *core.SyncError
-	if err := mustReturn(t, "later Sync", r.syncAsync(context.Background(), f)); !errors.As(err, &se) || !ownError(se.Err) {
-		t.Errorf("SyncError.Err = %v, want the sync's own error", err)
+	if !errors.As(first, &se) || !ownError(se.Err) {
+		t.Errorf("SyncError.Err = %v, want the sync's own error", first)
 	}
 }
 
-// TestALateSyncReportNeverSatisfiesAFailedWindow covers R14 at the layer that
-// consumes the report: a Synced value for the failed segment, before and after
-// its window is taken, satisfies none of the window's records.
+// TestALateSyncReportNeverSatisfiesAFailedWindow pins, at the layer that
+// consumes the report, that a Synced value for the failed segment, before and
+// after its window is taken, satisfies none of the window's records.
 func TestALateSyncReportNeverSatisfiesAFailedWindow(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	r := newRig(t, 1)
+	var resolved atomic.Int32
+	r := newRigConfigured(t, 1, func(c *Config) {
+		c.Resolved = func(uint32, core.SegmentID) { resolved.Add(1) }
+	})
 	f := file(1)
-	a := r.appendWrite(t, f, 0, "a")
+	var a segment.Location
+	var once sync.Once
+	// The late report lands while the window is pending with its failure
+	// already recorded, and again once it is resolved.
+	r.d.afterFail = func() {
+		once.Do(func() { r.sinks[0].Synced(a.Segment, a.Off+a.Len) })
+	}
+	r.d.Start(r.streams)
+	a = r.appendWrite(t, f, 0, "a")
 	r.failSyncOf(t, a.Segment, errors.New("sync boom"))
-	wantSyncError(t, mustReturn(t, "Sync", r.syncAsync(context.Background(), f)), a.Segment, f)
-	r.waitWindow(t, 0)
+	r.stamped(t, 0)
+	eventually(t, "the sync bound to issue the failing sync", func() bool {
+		r.clock.Advance(2 * core.SyncBound)
+		return r.d.Stats().SyncFailures == 1
+	})
+	// Announced once the worker has taken the window and failed its record: a
+	// count of the failure alone passes before the window exists, and a report
+	// landing then is not the late report the test is about.
+	eventually(t, "the window to be taken and resolved", func() bool { return resolved.Load() == 1 })
 	r.sinks[0].Synced(a.Segment, a.Off+a.Len)
-	wantSyncError(t, mustReturn(t, "Sync after a late report", r.syncAsync(context.Background(), f)), a.Segment, f)
 	if r.d.Durable(a) {
 		t.Error("a record of the failed window reads durable after a late report")
 	}
+	wantSyncError(t, mustReturn(t, "Sync after a late report", r.syncAsync(context.Background(), f)), a.Segment, f)
+	if r.d.Durable(a) {
+		t.Error("a record of the failed window reads durable after its failure was reported")
+	}
 }
 
-// TestAPendingWindowKeepsItsFailureThroughACompletionPass pins that a later
-// segment's sync, which completes the ledger, does not drop the failure a
-// pending window still needs: a Sync naming the failed file still answers.
-func TestAPendingWindowKeepsItsFailureThroughACompletionPass(t *testing.T) {
+// TestAFailedWindowKeepsItsReportThroughACompletionPass pins that a later
+// segment's sync, which completes the ledger, does not drop the report a
+// failed window left: a Sync naming the failed file still answers.
+func TestAFailedWindowKeepsItsReportThroughACompletionPass(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
 	f, g := file(1), file(2)
 	a := r.appendWrite(t, f, 0, "a")
 	r.failNextWrite(t, a.Segment, errors.New("write boom"))
 	r.appendFailing(t, g, 0)
-	r.waitWindow(t, 0)
+	r.waitResolved(t, 0)
 	r.appendWrite(t, g, 0, "b")
 	if err := mustReturn(t, "Sync of the new segment", r.syncAsync(context.Background(), g)); err != nil {
 		t.Fatal(err)
@@ -137,7 +159,11 @@ func TestADurableRecordIsNotInTheWindow(t *testing.T) {
 // pass took the window.
 func TestAnEndingMarkIsNotLeftByAStaleWant(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	r := newRig(t, 1)
+	resolved := make(chan core.SegmentID, 8)
+	r := newRigConfigured(t, 1, func(c *Config) {
+		c.Resolved = func(_ uint32, seg core.SegmentID) { resolved <- seg }
+	})
+	r.d.Start(r.streams)
 	f, g := file(1), file(2)
 	before := r.clock.Pending()
 	a := r.appendWrite(t, f, 0, "a")
@@ -148,7 +174,13 @@ func TestAnEndingMarkIsNotLeftByAStaleWant(t *testing.T) {
 	st.mu.Unlock()
 	r.failNextWrite(t, a.Segment, errors.New("write boom"))
 	r.appendFailing(t, g, 0)
-	r.waitWindow(t, 0)
+	// The stale want's sync may cover the record and leave an empty window,
+	// which is announced as well, so the announcement is the wait.
+	select {
+	case <-resolved:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the segment's window was never resolved")
+	}
 	r.appendWrite(t, g, 0, "b")
 	if err := mustReturn(t, "Sync", r.syncAsync(context.Background(), g)); err != nil {
 		t.Fatal(err)
@@ -288,5 +320,72 @@ func TestASealEndAfterTheFailureWasPrunedDoesNotCountItAgain(t *testing.T) {
 	}
 	if got := r.d.Stats().SyncFailures; got != 1 {
 		t.Errorf("one failed fsync counted %d times", got)
+	}
+}
+
+// TestAHeaderOnlyAnswerWaitsForTheLossGenerationOfItsWindow pins, for a window
+// holding a header-only and a content record of one file, that a Sync the
+// failure fails does not return before the worker has failed the window and
+// raised the loss generation, although the sync's failure is recorded the
+// moment it happens, and that the file is told once, by that one Sync.
+func TestAHeaderOnlyAnswerWaitsForTheLossGenerationOfItsWindow(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := newRigUnstarted(t, 1)
+	gate, open := releaser(t)
+	r.d.beforeFail = func(*window) { <-gate }
+	parked := make(chan struct{}, 16)
+	// A park counts only once the window is taken: the worker holds it at the
+	// gate, so the Sync parked with the window pending and not yet failed.
+	r.d.beforeWait = func() {
+		if len(r.windowsOf(0)) > 0 {
+			select {
+			case parked <- struct{}{}:
+			default:
+			}
+		}
+	}
+	t.Cleanup(open)
+	r.d.Start(r.streams)
+	f := file(1)
+	loc, _ := r.publish(t, f, 0, "aaaa")
+	r.appendKind(t, f, format.KindDelete, format.RecordBody{})
+	before := r.d.Generation()
+	r.failSyncOf(t, loc.Segment, errors.New("sync boom"))
+
+	type result struct {
+		err error
+		gen uint64
+	}
+	done := make(chan result, 1)
+	go func() {
+		err := r.d.Sync(context.Background(), f)
+		done <- result{err, r.d.Generation()}
+	}()
+	// The window is taken and held before its records are failed: the failure
+	// is known, and the Sync, whose target is the header-only record, must
+	// wait for the window to be failed.
+	// The Sync has looked at its targets with the window held and is parked, or
+	// it has returned early.
+	select {
+	case got := <-done:
+		t.Fatalf("Sync returned (%v) before the window was failed, generation %v", got.err, got.gen)
+	case <-parked:
+	}
+	open()
+	var got result
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Sync did not return")
+	}
+	var se *core.SyncError
+	if !errors.As(got.err, &se) {
+		t.Fatalf("Sync = %v, want a *core.SyncError", got.err)
+	}
+	if len(se.Files) != 1 || se.Files[0] != f {
+		t.Errorf("SyncError.Files = %v, want the file once", se.Files)
+	}
+	if got.gen == before {
+		t.Errorf("the generation was %v at the moment Sync returned the failure, want it raised", got.gen)
 	}
 }

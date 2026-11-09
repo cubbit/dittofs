@@ -763,6 +763,50 @@ func TestIORecallsGrants(t *testing.T) {
 	}
 }
 
+// I/O of no byte conflicts with no grant: an anonymous read or write beside
+// another client's write lease is admitted and recalls nothing. The
+// deny-mode check still applies to it, with its handle-caching break: an
+// anonymous write of no byte against a deny-write held only under a handle
+// lease breaks the lease's handle caching, alone, and waits on it, then is
+// refused once the lease gives the handle up while its open stays.
+func TestZeroLengthIORecallsNoGrant(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc-a"))
+	write := anyFile()
+	if _, g := f.grantOpen(t, a, write, OpenRequest{Access: rd | wr, Lease: LeaseKey{1}, Want: rwh}); g == nil || g.Kind != rwh {
+		t.Fatalf("a write lease: %+v", g)
+	}
+	anon := OpenRef{Kind: RefAnonymous, Handle: handle(write.ID)}
+	for _, w := range []bool{false, true} {
+		if err := f.Checks().CheckIO(ctx, Caller{}, write, anon, br(4, 0), ioWant(w)); err != nil {
+			t.Errorf("an anonymous I/O of no byte (write %v) beside a write lease: %v, want nil", w, err)
+		}
+		if r := f.sink.takeRecalls(); len(r) != 0 {
+			t.Errorf("an anonymous I/O of no byte (write %v) recalled %+v, want nothing", w, r)
+		}
+	}
+
+	file := anyFile()
+	f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Deny: wr, Lease: LeaseKey{2}, Want: rwh})
+	anon = OpenRef{Kind: RefAnonymous, Handle: handle(file.ID)}
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, anon, br(4, 0), entity.WriteData); delayedFor(err) != DelayRecall {
+		t.Fatalf("an anonymous write of no byte against a deny-write under a handle lease: %v, want ErrDelay", err)
+	}
+	r := f.sink.takeRecalls()
+	if len(r) != 1 || r[0].to != rw {
+		t.Fatalf("the deny-mode break recalled %+v, want the lease to RW", r)
+	}
+	if err := f.ack(a, &r[0].g, rw); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Checks().CheckIO(ctx, Caller{}, file, anon, br(4, 0), entity.WriteData); !errors.Is(err, ErrShareViolation) {
+		t.Errorf("the write of no byte once the handle is given up: %v, want ErrShareViolation", err)
+	}
+	if r := f.sink.takeRecalls(); len(r) != 0 {
+		t.Errorf("the refused write of no byte recalled %+v, want nothing", r)
+	}
+}
+
 // A lock state holding no locks is freed; one holding some is ErrLocksHeld.
 func TestFreeStateOfALockState(t *testing.T) {
 	f := newFixture(t)
