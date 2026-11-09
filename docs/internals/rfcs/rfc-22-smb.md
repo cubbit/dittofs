@@ -491,7 +491,7 @@ flight.
   what fits as a short read with `STATUS_SUCCESS`, leaving the rest in the
   pipe for the next `READ`, as a `READ` that does not park does. A parked
   pipe `READ` of more than 4 KiB is a test row (§16.6).
-- **A connection has at most 511 requests pending**, held and parked together,
+- **A connection puts at most 511 requests pending**, held and parked together,
   one fewer than the credit target, as `MaxAsyncCredits` minus one bounds them
   today; past it a new one is answered `STATUS_INSUFFICIENT_RESOURCES` at once.
   A call still in the service when its interim goes out is never refused, by
@@ -508,10 +508,9 @@ flight.
   timer also finds in the service goes pending the same way, so while such
   calls stay in the service the pending requests grow by one per round trip,
   and what bounds them is bytes — the floor, the hold pool and their receive
-  reservations. On this path the balance never
-  reaches zero (MS-SMB2 3.3.1.2), so the client can still acknowledge a lease
-  break the call may be waiting on; a drain's refusals are the exception
-  (§16.5). Credits of chain members answered before
+  reservations. The balance never reaches zero (MS-SMB2 3.3.1.2), a drain's
+  refusals included (§16.5), so the client can still acknowledge a lease
+  break the call may be waiting on. Credits of chain members answered before
   it ride on its interim and are granted in full.
 
 > ponytail: one credit target and one hold floor per connection, neither a
@@ -2570,9 +2569,11 @@ pends ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%2
 `ErrNoSession` to `STATUS_USER_SESSION_DELETED`; `ErrNoTree` to
 `STATUS_NETWORK_NAME_DELETED`; `ErrExpired` to `STATUS_NETWORK_SESSION_EXPIRED`;
 `ErrNotLast` to `STATUS_INTERNAL_ERROR`; `ErrTooManyPending` to
-`STATUS_INSUFFICIENT_RESOURCES`; `ErrDraining` and `ErrMoved` to no reply
-(§14's Witness move comes first). A parked request ended by a drain gets no
-reply either: a waiting lock has `CancelLock` called first, and one it reports
+`STATUS_INSUFFICIENT_RESOURCES`; `ErrDraining` and `ErrMoved` to an interim
+`STATUS_PENDING` that grants the request's credits, and the credits of the
+chain members after it, which do not run, and that no final response ever
+follows (§14's Witness move comes first). A parked request ended by a drain
+gets no final response either, its interim having gone out when it parked: a waiting lock has `CancelLock` called first, and one it reports
 granted is answered success. On a continuously available share the client
 replays the lock or the notification once it reconnects, so the application
 sees no `ERROR_OPERATION_ABORTED`. `ErrNotNegotiated`,
@@ -2587,19 +2588,24 @@ NFS's `COMMIT` is, and per request a `WRITE` through an open under a break,
 which the break waits on. Every other command is refused with the drain's
 error.
 
-> decision: the credit floor of §3.3 holds on the hold path only. A drain's
-> refusal sends no reply, so it spends its `CreditCharge` and grants nothing
-> back, and a chain it stops loses the credits of every member from it on. A
-> client that keeps sending other requests through a drain can therefore reach
-> zero, and then cannot send the break acknowledgement or the flushing `WRITE`
-> the drain lets through. Answering each refusal with an interim
-> `STATUS_PENDING` that grants up to the floor, and no final response, would
-> keep it at one, but makes every refusal a pending request the drain must
-> count and end. The ceiling: a client that sends more refused requests in one
-> drain than it holds credits has a break it owes time out (35 s, then S26's
-> fence), and the lease's unflushed writes wait for its reconnect. Adopt the
-> interim answer if a drain test shows a client reaching zero with a break
-> outstanding.
+> decision: a drain's refusal is an interim `STATUS_PENDING` that grants the
+> request's credits and is never followed by a final response, not silence.
+> A request left with no response at all spends its `CreditCharge` and gets
+> none back, so a client that kept sending through a drain would reach zero
+> and could not send the break acknowledgement or the flushing `WRITE` the
+> drain lets through; MS-SMB2 3.3.4.1.2 grants an asynchronous request's
+> credits in its interim, so the floor of §3.3 holds in a drain too. The
+> interim holds no bytes and no worker, is counted against no floor and not
+> against the pending ceiling, and ends when the connection closes as the
+> adapter stops. It costs an async ID per refused request, and a `CANCEL` of
+> it gets no response. The client replays the request after it reconnects, as
+> after no response. The ceiling: when the only node stops on a share that is
+> not continuously available, a durable open does not survive the restart
+> ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)),
+> so a write refused through it finds no open on its replay, and its data is
+> lost, not delayed, unless the client opens the file again by name, as the
+> Linux client does. Withdraw it if a client is found that does not replay a
+> request left pending across its reconnect.
 
 ### 16.6 Testing
 

@@ -153,8 +153,10 @@ what those tests stand on:
   timer, always pending; a cancel that arrives before its target holds, and one after its
   target's reply, gone after 5 s; a drain that cancels a parked operation and leaves it
   unanswered, serves a context operation and a read before a releasing one, and stops a chain
-  at a member it leaves unanswered while a member before it that went pending still gets its
-  final reply, and leaves a single-reply compound unanswered as a whole, caching nothing and leaving the slot's sequence ID where it was; a cancel or a drain racing a grant (§4.7's `Park`); a member before the last
+  at a member it refuses with an interim that grants its credits and the later members', and no final,
+  while a member before it that went pending still gets its final reply, and judges a single-reply compound whole before
+  any member runs, leaving one with a refused member unanswered with nothing applied (a release before the refused member
+  included), nothing cached and the slot's sequence ID where it was, and running one whose every member is served; a cancel or a drain racing a grant (§4.7's `Park`); a member before the last
   answered `ErrDelay` (§4.7's `Pends`); a call the interim timer finds in the service past the
   ceiling, and one past the floor with the hold pool full, each read on the credit balance (§4.6); `Park` with the reply pool
   full (§4.7's `Park`); an expired credential refusing a lock and a write under a break and
@@ -253,7 +255,7 @@ and 5.
    rule, why it holds and the evidence that would overturn it. RFC 20's notes go at their code
    sites: no attribute cache, parked requests off the hold floor, `Addrs` live, `Pends` asked
    only for a returned `ErrDelay`, a call in the service pending past the ceiling and the floor, context
-   and attribute reads served while draining, a `ponytail:` for the uncharged replay copies, a drain's refusal left unanswered, the expired
+   and attribute reads served while draining, a `ponytail:` for the uncharged replay copies, a drain's refusal answered by an interim with no final, the expired
    credential running only releases, a `ponytail:` for the cancel record's 5 s, `unwrap` on the reader, the cap of 64, one goroutine per request,
    `sync.Pool` per class, no self-probe. `pkg/resources`'s missing turns, `Reclaim`, `ShareCap`
    and `Split` each carry a `ponytail:` naming RFC 24.
@@ -552,9 +554,10 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   reply budget checked before each operation; chains from one record, each member's header
   decoded, unwrapped, admitted and looked up on its own, the related-request rule, the replies
   joined with `HeaderCodec.Chain`, a related member routed from the one before it; the drain
-  decision per request through `Invocation.Role`, and a member left unanswered stopping the
-  chain, the members before it answered in a chain and nothing answered or cached in a
-  single-reply compound, whose slot keeps its previous sequence ID so a retransmission runs (RFC 20 §4.7); on `testproto`'s chained frames, not on the runner's
+  decision per request through `Invocation.Role`, and a member the drain refuses stopping the
+  chain, the members before it answered in a chain with the refused member's interim, and a single-reply compound
+  judged whole before any member runs: one with a refused member runs nothing, answers and caches nothing, and keeps its
+  slot's previous sequence ID so a retransmission runs (RFC 20 §4.7); on `testproto`'s chained frames, not on the runner's
   internals alone.
 - T5.5 Held requests: interim timer and `HoldCodec.Interim`, the final reply under
   `HoldCodec.Final`, re-drive from `Resolve` with a fresh attempt deadline inside the hold bound,
@@ -570,7 +573,7 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
 - T5.6 The middleware chain: recovery (server fault, logged with the stack, the connection's
   other requests unharmed), trace span, metrics, deadline; order pinned by a test.
 - T5.7 `ErrorTable`: mapping by error, operations and version, and `NoReply` (`Map`'s reply flag,
-  the reply reservation freed with no reply, the request's credits counted spent and none granted back); `core.Errors()`; `ReplayCache`'s own copy; a kind named by a typed value under `errors.Is` (RFC 17 §4.3; `vfserr` matches by kind from #3869), most specific row first in §4.7's total order; an unmapped
+  the reply reservation freed with no final reply, and on a table that holds an interim granting the request's credits); `core.Errors()`; `ReplayCache`'s own copy; a kind named by a typed value under `errors.Is` (RFC 17 §4.3; `vfserr` matches by kind from #3869), most specific row first in §4.7's total order; an unmapped
   error answered server fault and counted; the totality check against `vfs.Errors()` as a
   helper each protocol's table will call.
 - T5.8 Request context: the 30 s deadline; cancellation on close and drain.

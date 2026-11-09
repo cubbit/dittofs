@@ -1377,12 +1377,13 @@ again, [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)),
 shard's open state, by the grace-instance rule of §3.4), `OldState` (a stateid
 seqid older than the state's current one), `BadState` (every
 other stateid or `FileId` whose record is missing — expired, freed, a removed or
-moved share's, never issued), `NoReclaim` (a reclaim in grace in a shard the client's
-record does not list, an administrator's revoke having emptied it included, or
-a reconnect whose open is gone),
-`NoGrace` (a reclaim the shard no longer takes: it is not in grace and does
-not hold what the reclaim names, or the client has finished reclaiming in the
-shard's grace instance, [RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)),
+moved share's, never issued), `NoReclaim` (one reclaim refused while its
+client still owes reclaims: a shard the client's record does not list, or state
+the shard does not hold; or a reconnect whose open is gone),
+`NoGrace` (a reclaim from a client with nothing left to reclaim: no shard its
+record lists is in a grace instance it has not finished, or the reclaim's shard
+is in one it has, an administrator's revoke having emptied its list included,
+[RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)),
 `ReclaimConflict` (a reclaim that conflicts with one already reclaimed in the
 same grace), `LocksHeld` (a lock owner released, or a lock state freed, while
 it still holds locks; a live open or grant freed), `BadSeqID` (an

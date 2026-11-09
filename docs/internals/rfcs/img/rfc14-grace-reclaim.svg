@@ -52,21 +52,22 @@
   <text x="36" y="175" class="s">the shard's records name</text>
   <text x="196" y="160" class="ok">accepted: only what it held, authorised like a new open against the file as it is now</text>
   <text x="196" y="175" class="s">a shard that lost nothing answers with the state it still holds</text>
-  <text x="728" y="167" class="e">ErrNoGrace</text>
+  <text x="728" y="160" class="s">held: returned as it is;</text>
+  <text x="728" y="175" class="e">else refused (§4.2)</text>
 
   <rect x="24" y="192" width="852" height="44" rx="5" class="st"/>
   <text x="36" y="210" class="s">reclaim of volatile state,</text>
   <text x="36" y="225" class="s">past the reclaim allowance</text>
   <text x="196" y="210" class="e">ErrDelay (DelayResources): retried within grace</text>
   <text x="196" y="225" class="s">a durable or persistent open and its locks are never refused for memory</text>
-  <text x="728" y="217" class="e">ErrNoGrace</text>
+  <text x="728" y="217" class="e">refused (§4.2)</text>
 
   <rect x="24" y="242" width="852" height="44" rx="5" class="bad"/>
   <text x="36" y="260" class="s">reclaim from a client the</text>
   <text x="36" y="275" class="s">shard's records do not name</text>
-  <text x="196" y="260" class="e">ErrNoReclaim: it held nothing here, so it cannot take state first</text>
+  <text x="196" y="260" class="e">ErrNoReclaim, or ErrNoGrace if it owes no reclaim anywhere: it cannot take state first</text>
   <text x="196" y="275" class="s">an administrator's revoke emptied the list, so it is refused across a restart too</text>
-  <text x="728" y="267" class="e">ErrNoGrace</text>
+  <text x="728" y="267" class="e">refused (§4.2)</text>
 
   <rect x="24" y="292" width="852" height="44" rx="5" class="bad"/>
   <text x="36" y="310" class="s">new open, lock or grant;</text>
@@ -86,7 +87,7 @@
   <text x="36" y="425" class="s">one already reclaimed</text>
   <text x="196" y="410" class="e">ErrReclaimConflict: two eligible clients claiming one range end with one holder</text>
   <text x="196" y="425" class="s">an eligible client is trusted about what it held, as the protocols trust it (§4.2)</text>
-  <text x="728" y="417" class="e">ErrNoGrace</text>
+  <text x="728" y="417" class="e">refused (§4.2)</text>
 
   <text x="16" y="466" class="h">A client has finished reclaiming as its recovery kind says (§4.4):</text>
   <text x="16" y="482" class="s">an explicit completion naming k′ (e.g. RECLAIM_COMPLETE), or every persistent open of its own reconnected or timed out;</text>
