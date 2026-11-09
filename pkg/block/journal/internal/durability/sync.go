@@ -104,17 +104,22 @@ type Durability struct {
 	// replaces it.
 	refuse func() error
 
-	// afterAppend, beforePublish and beforeSync are test hooks, nil in
-	// production.
-	afterAppend   func()
-	beforePublish func()
-	beforeSync    func()
+	// afterAppend and beforeSync are test hooks, nil in production. Neither
+	// runs under lmu.
+	afterAppend func()
+	beforeSync  func()
 
-	// lmu guards the loss ring, the counters and pieces.
+	// lmu guards the loss ring, the counters and pieces, and the generation
+	// read and raise that go with them.
 	//
-	// decision: lmu is a leaf mutex over the ring, the counters and the pieces
-	// set. It is never held across an Append, a Sync or a MarkLoss, which take
-	// locks of other domains, so it adds no edge to the journal's lock order.
+	// decision: lmu is a leaf mutex over the ring, the counters, the pieces
+	// set and the generation read and raise made with them, so a snapshot
+	// pairs a generation with exactly the events that raised it. The
+	// directory registry's own mutex is taken inside it and calls nothing
+	// back. It is never held across an Append, a Sync or a MarkLoss, which
+	// take locks of other domains, so it adds no edge to the journal's lock
+	// order. A window raise (RaiseWindow) takes the registry alone and raises
+	// with no event, so a snapshot may show it ahead of the events.
 	lmu               sync.Mutex
 	ring              [core.LossRingSize]core.LossEvent
 	head              int // index of the oldest event
@@ -506,12 +511,11 @@ func (d *Durability) Stats() Part {
 	p.CorruptDataLoss = d.corruptDataLoss
 	p.CorruptRepairable = d.corruptRepairable
 	p.StaleExtents = d.stale
-	d.lmu.Unlock()
-
-	// The generation is read after the ring is copied: Lose raises it before
-	// it publishes, so every event in the copy has already raised it and a
-	// load made afterwards includes that raise.
+	// The generation is read in the same section as the ring: Lose raises it
+	// and publishes in one section, so the snapshot never holds the raise
+	// without its event, nor an event without its raise.
 	p.LossGeneration = d.dir.load()
+	d.lmu.Unlock()
 	return p
 }
 

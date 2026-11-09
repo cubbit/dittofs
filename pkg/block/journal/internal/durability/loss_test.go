@@ -3,6 +3,7 @@ package durability_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sync"
@@ -175,36 +176,6 @@ func TestLoseOfAFailedWindowRaisesNothingBeyondTheWindowsOwnRaise(t *testing.T) 
 	}
 	if got := e.d.Generation(); got != 1 {
 		t.Errorf("generation after one window of 50 records = %d, want 1", got)
-	}
-}
-
-// TestLoseHasRaisedTheGenerationWhenItsEventIsFirstVisible catches a
-// generation raised after the event is published, which would let a client
-// read the event and still be handed a verifier it has seen.
-func TestLoseHasRaisedTheGenerationWhenItsEventIsFirstVisible(t *testing.T) {
-	e := newEnv(t)
-
-	ran := false
-	e.d.SetBeforePublish(func() {
-		ran = true
-		if got := len(e.d.Stats().Losses); got != 0 {
-			t.Errorf("%d events visible before the publish", got)
-		}
-		if got := e.d.Generation(); got != 1 {
-			t.Errorf("generation just before the event is visible = %d, want 1", got)
-		}
-		if got := e.d.Stats().CorruptDataLoss; got != 1 {
-			t.Errorf("CorruptDataLoss just before the event is visible = %d, want 1", got)
-		}
-	})
-	if _, err := e.d.Lose(context.Background(), loss(5)); err != nil {
-		t.Fatalf("Lose: %v", err)
-	}
-	if !ran {
-		t.Fatal("the before-publish hook never ran")
-	}
-	if got := len(e.d.Stats().Losses); got != 1 {
-		t.Errorf("%d events after Lose, want 1", got)
 	}
 }
 
@@ -620,16 +591,20 @@ func TestFailedIsSortedAndACopy(t *testing.T) {
 	}
 }
 
-// TestStatsNeverShowsAnEventBeyondItsGeneration catches a snapshot whose
-// generation was read before a loss that its ring already holds: a poller
-// pairing the two would record a generation from before the loss.
-func TestStatsNeverShowsAnEventBeyondItsGeneration(t *testing.T) {
+// TestStatsGenerationAlwaysMatchesTheEventsThatRaisedIt catches a Stats call
+// that lands between a loss's generation raise and its event: the snapshot
+// would carry the raised generation with the event missing, and a consumer
+// that skips work while the generation is unchanged would never see that
+// event. Every snapshot taken while losses run must hold exactly as many
+// generation-raising events as the generation has risen since the start.
+func TestStatsGenerationAlwaysMatchesTheEventsThatRaisedIt(t *testing.T) {
 	e := newEnv(t)
+	start := e.d.Stats().LossGeneration
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	bad := 0
+	var bad []string
 	for range 4 {
 		wg.Add(1)
 		go func() {
@@ -641,26 +616,45 @@ func TestStatsNeverShowsAnEventBeyondItsGeneration(t *testing.T) {
 				default:
 				}
 				p := e.d.Stats()
+				raising := uint64(0)
 				for _, ev := range p.Losses {
-					if ev.SeqNum > p.LossGeneration {
-						mu.Lock()
-						bad++
-						mu.Unlock()
-						break
+					if (ev.Reason == core.LossCorrupt || ev.Reason == core.LossAcknowledged) && !ev.Offloaded {
+						raising++
 					}
+				}
+				if got := p.LossGeneration - start; got != raising {
+					mu.Lock()
+					bad = append(bad, fmt.Sprintf("generation rose %d, events that raise it %d", got, raising))
+					mu.Unlock()
 				}
 			}
 		}()
 	}
-	for i := range 200 {
-		if _, err := e.d.Lose(context.Background(), loss(core.Seq(100+i))); err != nil {
-			t.Errorf("Lose: %v", err)
-		}
+	// Fewer losses than the ring holds, so no event is overwritten.
+	var lwg sync.WaitGroup
+	for w := range 4 {
+		lwg.Add(1)
+		go func() {
+			defer lwg.Done()
+			for i := range 50 {
+				l := loss(core.Seq(100 + w*50 + i))
+				switch i % 3 {
+				case 1:
+					l.Offloaded = true
+				case 2:
+					l.Reason = core.LossStale
+				}
+				if _, err := e.d.Lose(context.Background(), l); err != nil {
+					t.Errorf("Lose: %v", err)
+				}
+			}
+		}()
 	}
+	lwg.Wait()
 	close(stop)
 	wg.Wait()
-	if bad != 0 {
-		t.Fatalf("%d snapshots held an event whose generation raise they did not include", bad)
+	if len(bad) != 0 {
+		t.Fatalf("%d snapshots disagreed, first: %s", len(bad), bad[0])
 	}
 }
 

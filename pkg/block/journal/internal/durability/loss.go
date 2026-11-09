@@ -133,11 +133,15 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	// whose bytes are not offloaded is data a client may have been told was
 	// stored and is now gone, and anything else can be fetched again. A
 	// failed window raises it once, for the window, through RaiseWindow.
+	//
+	// The raise, the counters and the event are one critical section, so a
+	// Stats call never sees the raised generation without the event that
+	// raised it. The raise stays before the publish: a reader that sees the
+	// event sees its raise.
+	d.lmu.Lock()
 	if (l.Reason == core.LossCorrupt || l.Reason == core.LossAcknowledged) && !l.Offloaded && !l.Raised {
 		d.dir.raise()
 	}
-
-	d.lmu.Lock()
 	switch {
 	case l.Reason == core.LossCorrupt && !l.Offloaded:
 		d.corruptDataLoss++
@@ -146,13 +150,6 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	case l.Reason == core.LossStale:
 		d.stale++
 	}
-	d.lmu.Unlock()
-
-	if d.beforePublish != nil {
-		d.beforePublish()
-	}
-
-	d.lmu.Lock()
 	ev := d.pushLocked(core.LossEvent{
 		Share:     l.Share,
 		File:      l.File,
