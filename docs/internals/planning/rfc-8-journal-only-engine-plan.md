@@ -91,7 +91,7 @@ ships in a release. It sets no offloaded bit, because its journal interface hold
 | §8 removals | `Truncate`, `Deallocate`, `Delete` | phase 2 and the prune run from one loop per journal, not the shared scheduler (epic 5) |
 | §9 clone | journal-held source runs: copy, sync, phase 1, phase 2 with nothing to adopt | adoption of carved refs; the snapshot cases |
 | §10 local space | the refusal table and scoped repack | eviction, pacing, the pressure flag (epic 7) |
-| §11 health | journal and store conditions, the self-fence | offload health, put and get health, `WaitOffloaded` |
+| §11 health | journal and store conditions, the self-fence | offload health, put and get health, `stranded_export_failed`, `WaitOffloaded` |
 | §12.1 interface | the content methods, `New`, `Apply`, `Start`, `Close`, `Bind`, `Unbind`, `Drop`, `Stats` | `PrepareCut`, `CommitCut`, `PreWarm`, `WaitOffloaded` |
 | §12.2 retried mutation | none | single node: no route envelope (RFC 15 §4.3) |
 
@@ -217,7 +217,8 @@ with a known file.
   batches keep failing raises `removal_stalled` and wedges no other file; the undecodable
   ref is the second part's, since this part writes none); §10.3 scoped repack; §11.1
   `journal_full` at the maximum, `journal_full` on a full device, `journal_sync_failed`
-  (adapted: the journal turned read-only waits for RFC 1 §5.4's read-only state, which no epic of this part owns yet (epic 6's §9 point 8)); §11.2 self-fence threshold, self-fence on an erroring store. §11.1
+  (adapted: not the journal turned read-only, which waits for RFC 1 §5.4's read-only state,
+  epic 7's §9 point 1); §11.2 self-fence threshold, self-fence on an erroring store. §11.1
   `stranded_export_failed` is the second part's, with the salvage export.
 - **RFC 8 §15.3, Group C** (3 rows): §2.1 declared interfaces, §2.2 no assertions, §2.4
   settings.
