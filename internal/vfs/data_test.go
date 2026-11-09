@@ -78,6 +78,62 @@ func TestAWriteRefusedByOpenStateChangesNothing(t *testing.T) {
 	}
 }
 
+// V22: bob's write of no byte into alice's setuid file returns once judged,
+// beside another client's write lease: it recalls no lease, calls no engine
+// Write, leaves the mode and mtime as they were, and answers the file's
+// attributes as its WCC. A deallocate of no byte does the same. A read of no
+// byte calls no engine Read and answers end of file as off >= size.
+func TestAnEmptyWriteOrReadChangesNothingAndRecallsNothing(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o6777)
+	admin := proven(s.fs.Admin.Principal, inLab)
+	_, err := s.Write(ctx, admin, vfs.Anonymous(h), 0, []byte("data"), vfs.Unstable)
+	s.must(t, err)
+	pc := s.smb(t, "pc", s.alice.Principal)
+	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	r, err := s.tab.Opens().Open(ctx, who, keyOf(s.record(t, h)), openstate.OpenRequest{Access: entity.ReadData | entity.WriteData,
+		Want: openstate.GrantRead | openstate.GrantWrite, Lease: openstate.LeaseKey{1}})
+	s.must(t, err)
+	if r.Grant == nil || r.Grant.Kind&openstate.GrantWrite == 0 {
+		t.Fatalf("open state offered no write lease: %+v", r.Grant)
+	}
+	before, err := s.GetAttr(ctx, admin, h)
+	s.must(t, err)
+	s.engine.writing = func(entity.FileID) { t.Error("a write of no byte called the engine") }
+	s.engine.reading = func(entity.FileID) { t.Error("a read of no byte called the engine") }
+	s.engine.dealloc = func(entity.FileID) { t.Error("a deallocate of no byte called the engine") }
+	defer func() { s.engine.writing, s.engine.reading, s.engine.dealloc = nil, nil, nil }()
+	bob := proven(s.bob.Principal, inLab)
+	wantWCC := func(what string, off int64, w vfs.WCC) {
+		t.Helper()
+		if w.Before == nil || w.Before.Mode != 0o6777 || w.Before.Size != 4 || w.After.Mode != 0o6777 || w.After.Size != 4 {
+			t.Errorf("bob's %s of no byte at %d: WCC before set %v, after mode %o size %d; want mode 6777 size 4 before and after",
+				what, off, w.Before != nil, w.After.Mode, w.After.Size)
+		}
+	}
+	for _, off := range []int64{0, 4, 9} {
+		wr, err := s.Write(ctx, bob, vfs.Anonymous(h), off, nil, vfs.Unstable)
+		if err != nil {
+			t.Errorf("bob's write of no byte at %d beside alice's lease: %v, want nil", off, err)
+		}
+		wantWCC("write", off, wr.WCC)
+		w, err := s.Deallocate(ctx, bob, vfs.Anonymous(h), off, 0)
+		if err != nil {
+			t.Errorf("bob's deallocate of no byte at %d beside alice's lease: %v, want nil", off, err)
+		}
+		wantWCC("deallocate", off, w)
+		if _, eof, err := s.Read(ctx, bob, vfs.Anonymous(h), off, nil); err != nil || eof != (off >= 4) {
+			t.Errorf("bob's read of no byte at %d: eof %v, %v; want eof %v", off, eof, err, off >= 4)
+		}
+	}
+	after, err := s.GetAttr(ctx, admin, h)
+	s.must(t, err)
+	if after.Mode != 0o6777 || !after.Modify.Equal(before.Modify) {
+		t.Errorf("after writes of no byte: mode %o, mtime %v; want 6777, %v", after.Mode, after.Modify, before.Modify)
+	}
+}
+
 // V7: a write holds its file's admission lock from open state's check to
 // the bytes staged, and a lock takes it too, so a mandatory lock is ordered
 // wholly before the write, which it then refuses, or wholly after it: a lock
