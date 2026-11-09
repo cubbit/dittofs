@@ -370,7 +370,9 @@ func (d signalDomains) Lock(id core.FileID) func() {
 // a fresh version in a segment no read reaches; FailWindow then drops it,
 // which leaves the file no content and no marker, so its change version is
 // settled into its bucket. The candidates are fixed, so the search is
-// deterministic, and bounded far above the bucket count.
+// deterministic, and bounded far above the bucket count. The candidates'
+// pieces name a segment that does not exist and are dropped at once, which is
+// harmless here because no read and no retirement ever reaches it.
 func bucketMate(t *testing.T, c *Core, x core.FileID) core.FileID {
 	t.Helper()
 	const nowhere = core.SegmentID(1 << 40)
@@ -436,6 +438,7 @@ func TestReadAsOfWithWriteHeldAtTheSeam(t *testing.T) {
 				<-resolveGo
 			}
 		})
+		releaseWrite, releaseResolve := releaser(t, release), releaser(t, resolveGo)
 		s := mustShare(t, c, 1)
 		z := bucketMate(t, c, x)
 
@@ -471,15 +474,15 @@ func TestReadAsOfWithWriteHeldAtTheSeam(t *testing.T) {
 		select {
 		case <-asked:
 			// The read waits on X's append domain: the write publishes first.
-			close(release)
-			close(resolveGo)
+			releaseWrite()
+			releaseResolve()
 			r = within(t, read, "the read of X")
 		case <-resolving:
 			// The read took its asOf without waiting on the write: it resolves
 			// before the write publishes.
-			close(resolveGo)
+			releaseResolve()
 			r = within(t, read, "the read of X")
-			close(release)
+			releaseWrite()
 		case <-time.After(watchdog):
 			t.Fatal("the read of X neither asked for X's append domain nor resolved its span")
 		}
@@ -552,8 +555,19 @@ func TestReadHoldsNoIndexLockDuringIO(t *testing.T) {
 	served(t, within(t, read, "the held read"), p, data, v)
 }
 
+// sameStream fails the test unless a and b append through one stream, so a
+// write of b held at the seam holds the stream a's read reads from.
+func sameStream(t *testing.T, c *Core, a, b core.FileID) {
+	t.Helper()
+	if c.Streams().For(a) != c.Streams().For(b) {
+		t.Fatalf("files %v and %v append through different streams", a, b)
+	}
+}
+
 func TestReadOfFileANotBlockedByFileBWrite(t *testing.T) {
-	a, b := testFile(1), testFile(2)
+	// B appends through A's stream, so B's write held anywhere holds what
+	// A's read would wait on if it waited on its stream.
+	a, b := testFile(1), testFile(3)
 	data := pattern(4<<10, 61)
 
 	// B's write holds B's append domain between its append and its publish.
@@ -568,6 +582,8 @@ func TestReadOfFileANotBlockedByFileBWrite(t *testing.T) {
 				}
 			}
 		})
+		releaseWrite := releaser(t, release)
+		sameStream(t, c, a, b)
 		s := mustShare(t, c, 1)
 		v := mustWrite(t, c, s, a, 0, data)
 		syncFiles(t, c, a)
@@ -582,7 +598,7 @@ func TestReadOfFileANotBlockedByFileBWrite(t *testing.T) {
 
 		p := sentinels(len(data))
 		served(t, within(t, readAsync(c, s, a, 0, p), "a read of A while B's write is held"), p, data, v)
-		close(release)
+		releaseWrite()
 		if err := within(t, wrote, "the write of B"); err != nil {
 			t.Fatalf("WriteAt: %v", err)
 		}
@@ -591,11 +607,15 @@ func TestReadOfFileANotBlockedByFileBWrite(t *testing.T) {
 	// B's write is held at the storage seam, in its record's write.
 	t.Run("held in its record write", func(t *testing.T) {
 		c, seam := newTestCore(t)
+		sameStream(t, c, a, b)
 		s := mustShare(t, c, 1)
 		v := mustWrite(t, c, s, a, 0, data)
 		syncFiles(t, c, a)
 		mustWrite(t, c, s, b, 0, pattern(100, 63))
 		bseg := recordOf(t, c, b, 0).Record.Segment
+		if aseg := recordOf(t, c, a, 0).Record.Segment; aseg != bseg {
+			t.Fatalf("A's record is in segment %d and B's in %d, want one segment", aseg, bseg)
+		}
 
 		hold := seam.HoldFirst(t, kit.OpWrite, format.SegmentName(bseg))
 		wrote := make(chan error, 1)
@@ -659,7 +679,11 @@ func TestReadOfFileANotBlockedByFileBWrite(t *testing.T) {
 // decision: the headroom exhausted here is the spare pool's headroom class.
 // The record-count headroom an open reserves for its own records is not
 // admitted by the data path yet, so this does not draw that reserve down;
-// the row's full form waits on that admission.
+// the row's full form waits on that admission. For the same reason the count
+// of storage writes cannot tell a read that tries to append a record and
+// swallows the refusal from one that never tries: with no segment to append
+// to, both write nothing. Telling them apart needs the record-count headroom
+// admission, which would count the attempt.
 func TestReadCorruptWithHeadroomExhausted(t *testing.T) {
 	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
@@ -675,13 +699,18 @@ func TestReadCorruptWithHeadroomExhausted(t *testing.T) {
 	if err := seam.Schedule(kit.Failing(kit.OpCreate, "*", 0, syscall.ENOSPC)); err != nil {
 		t.Fatal(err)
 	}
+	refused := false
 	for range 1 << 10 {
 		if _, err := c.pool.Take(segment.Content); err != nil {
 			if !errors.Is(err, core.ErrNoSpace) {
 				t.Fatalf("Take(Content) = %v, want a spare refusal", err)
 			}
+			refused = true
 			break
 		}
+	}
+	if !refused {
+		t.Fatal("the content spares were never drawn to a refusal")
 	}
 	if _, err := c.pool.Take(segment.Headroom); !errors.Is(err, core.ErrNoSpace) {
 		t.Fatalf("Take(Headroom) = %v, want a refusal", err)
