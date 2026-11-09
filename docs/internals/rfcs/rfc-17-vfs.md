@@ -1354,7 +1354,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrDelay` | retry shortly | `*Delay{Cause; Until; Moved}`, below |
 | `ErrBlocked` | a lock waits, and will be granted through `LockWaitOver`: the service's answer for RFC 14's `LockResult{Waiting: true}` | — |
 | `ErrWrongSecurity` | the share's policy does not admit the call's flavour ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)) | — |
-| `ErrState` | a client-held name of state cannot be used as given | `*StateError{Kind; Sessioned}`, below |
+| `ErrState` | a client-held name of state cannot be used as given | `*StateError{Kind; Admin; Sessioned}`, below |
 | `ErrCross` | the call spans what cannot be spanned | `*CrossError{Kind}`: `CrossNamespace` (a copy or clone between namespaces), `CrossShare` (a rename or link between shares, [RFC 7 §5.1](rfc-7-namespace-metadata.md#5.1%20One%20transaction)), `CrossProject` (a rename or link across tree quotas, [RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%20filesystem)), `OtherShard` (**(cluster)** a clone whose source and destination lie in different shards, [§5.9](#5.9%20Copy%20and%20clone)) — the first three name the boundary a client can see; `OtherShard` names placement, which a client cannot, so adapters fall back rather than report it |
 | `ErrIncomplete` | a read of a file a snapshot lists as incomplete, or a copy or clone from one ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) | — |
 | `ErrInconsistent` | a store invariant the filesystem's own state breaks; the store raises a health condition naming the record ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — |
@@ -1412,10 +1412,10 @@ const (
 Each typed error matches, under `errors.Is`, its sentinel and any value of its
 own type with the same kind, so an adapter's error table
 ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)) can name a kind
-rather than only its sentinel. The kind is `Cause` for `AccessError`, `Scope`
-for `QuotaError`, `Cause` and `Moved` for `Delay`, `Kind` with `Sessioned` and
-`Admin` for `StateError`, and `Kind` for `CrossError`. `Delay`'s `Until` is a
-bound, not a kind, and is not compared; a zero `Cause` matches only another.
+rather than only its sentinel. The kind of an `AccessError`, `QuotaError`,
+`StateError` or `CrossError` is every field it has, so a field added later
+joins it; a `Delay`'s is its `Cause` and `Moved`, since `Until` is a bound,
+not a kind, and is not compared. A zero kind matches only another zero one.
 
 `Cause` labels metrics and selects how long an adapter holds the request and
 its final status (§3.2). **A transient refusal never becomes `ErrNoSpace` because a
