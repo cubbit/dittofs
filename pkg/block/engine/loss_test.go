@@ -401,9 +401,10 @@ func TestAnUnsyncedCorruptLossDropsTheWrite(t *testing.T) {
 			if n := dones.Load(); n != 1 {
 				t.Errorf("Done ran %d times, want once", n)
 			}
-			p := make([]byte, 4)
-			if _, err := u.e.Read(t.Context(), u.share.ID, f, 0, p); err != nil || string(p) != "held" {
-				t.Errorf("read of the earlier content: %q, %v; want held", p, err)
+			p := make([]byte, 8)
+			n, err := u.e.Read(t.Context(), u.share.ID, f, 0, p)
+			if err != nil || n != 4 || string(p[:n]) != "held" {
+				t.Errorf("read: %d %q, %v; want the 4 held bytes and no lost run", n, p[:n], err)
 			}
 		})
 	}
