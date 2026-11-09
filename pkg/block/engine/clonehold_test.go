@@ -101,10 +101,10 @@ func (h *recHolds) counts() (holds, releases int) {
 // A clone calls its store and open state in order: phase 1's Clone, then
 // Hold, the Resume of its batches, and Release once they are done, after
 // the clone is answered, none of them under either file's entry lock or the
-// destination's guard. The hold
-// is keyed in the source share's own shard, the one Bind named: with the
-// share bound on shard 7, not the default, and open state serving that
-// shard alone, Hold names it and CloneOpen finds the record there.
+// destination's guard. The hold is keyed in the source share's own shard, the
+// one Bind named: with the share bound on shard 7, not the default, and open
+// state serving that shard alone, Hold names it and CloneOpen finds the record
+// there.
 func TestAClonesHoldSpansItsPhase2(t *testing.T) {
 	h := &recHolds{}
 	var mu sync.Mutex

@@ -152,11 +152,10 @@ func (fe *fileEntry) drop(r *reg) {
 // undoes both registrations and changes nothing, then from the journal step
 // on its own goroutine (runClone) and the removal loop (clonePhase2), where
 // it fails only if the loop ends first, answering ErrUnavailable, until its
-// phase 2 is done; the call waits for it
-// within its own context, whose end, a deadline or a cancel, answers
-// DelayClone and leaves the clone running, as the clone may already have
-// changed the destination and only a call that changed nothing answers
-// refused.
+// phase 2 is done; the call waits for it within its own context, whose end, a
+// deadline or a cancel, answers DelayClone and leaves the clone running, as
+// the clone may already have changed the destination and only a call that
+// changed nothing answers refused.
 //
 // decision: a clone between two shares on one node is admitted, as both
 // shards are this node's and no failover or handover can split them while

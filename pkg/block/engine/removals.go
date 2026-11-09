@@ -352,9 +352,11 @@ func (e *Engine) clonePhase2(c *cloneRun, r *removal) *loopItem {
 			// anything past that batch: every ref of the destination is
 			// written, the source extent is no longer read, and the clone's
 			// open, which the Release closes, refuses a release of the source
-			// until then, deferring it to the open's close. Keep the
-			// registrations until the Release instead if a source is seen
-			// released while the clone's open is still held.
+			// until then, deferring it to the open's close: open state's rule,
+			// which TestASourceUnlinkedBeforeTheHoldIsReleasedAfterTheClone
+			// checks over the real table. Keep the registrations until the
+			// Release instead if a source is seen released while the clone's
+			// open is still held.
 			e.endClone(c, nil)
 		}
 		if held {
