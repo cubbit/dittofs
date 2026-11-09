@@ -508,6 +508,57 @@ func TestCorruptRecordInPendingWindowMarksFile(t *testing.T) {
 	}
 }
 
+// TestCorruptRecordOfFailedSegmentBeforeItsWindowMarksFile covers a record of
+// a segment whose sync already failed, found corrupt before the worker took
+// the segment's window: it is still in the ledger, and its file, whose only
+// write in the window it was, is told of the failure all the same, once, also
+// by a Sync that was already waiting on it.
+func TestCorruptRecordOfFailedSegmentBeforeItsWindowMarksFile(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	hook, reached, release := gate(t)
+	var parked atomic.Bool
+	cr := newCorruptRig(t, func(cr *corruptRig) {
+		cr.d.afterSync = func() {
+			if parked.Load() {
+				hook()
+			}
+		}
+	})
+	t.Cleanup(release)
+	f, g := file(1), file(2)
+	gw := cr.write(t, g, 0, "gggg")
+	// Park the worker after a sync that covers g's record, before its next
+	// pass takes any window.
+	parked.Store(true)
+	gSync := cr.syncAsync(context.Background(), g)
+	<-reached
+
+	fw := cr.write(t, f, 0, "aaaa")
+	if fw.loc.Segment != gw.loc.Segment {
+		t.Fatal("f's record landed in another segment")
+	}
+	cr.failSyncOf(t, fw.loc.Segment, errors.New("sync boom"))
+	if _, err := cr.streams.For(f).Seal(false); err == nil {
+		t.Fatal("the seal's sync did not fail")
+	}
+	st := cr.d.made[0]
+	eventually(t, "the end event to be queued", func() bool {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return len(st.ends) > 0
+	})
+	waiting := cr.syncAsync(context.Background(), f)
+
+	cr.corrupt(t, fw.c)
+	release()
+	if err := mustReturn(t, "Sync of g", gSync); err != nil {
+		t.Fatalf("Sync of g: %v", err)
+	}
+	wantSyncError(t, mustReturn(t, "the waiting Sync", waiting), fw.loc.Segment, f)
+	cr.wantNilSync(t, f)
+	cr.awaitRecord(t, fw.c.Seq)
+}
+
 // TestCorruptEmptiesPendingWindowWhichResolves covers a pending window whose
 // only record a read found corrupt: the window is resolved with nothing to
 // fail, and the file is told once.

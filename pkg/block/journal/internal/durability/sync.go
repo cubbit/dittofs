@@ -465,6 +465,10 @@ type stream struct {
 
 	// corrupt are the corrupt records' losses Corrupt handed to the worker.
 	corrupt []corruptJob
+	// owed holds, per failed segment whose window is not taken yet, the files
+	// Corrupt took a record of out of the ledger: the window takeWindow makes
+	// for the segment marks them, so they are told as if it had failed them.
+	owed map[core.SegmentID][]core.FileID
 
 	// kick wakes the worker; capacity 1, sent without blocking.
 	kick chan struct{}
@@ -1123,6 +1127,12 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 		owed = st.takeMarksLocked(ids)
 	}
 	lead := false
+	// A report owed for a segment whose window is not taken yet is waited for,
+	// as a failure in flight: takeWindow turns it into a mark, which a later
+	// check answers.
+	if failFast && st.owesLocked(ids) {
+		pending, failing = true, true
+	}
 	var failSeg core.SegmentID
 	var failWindow uint64
 	var failErr error

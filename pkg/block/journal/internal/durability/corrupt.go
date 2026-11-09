@@ -219,8 +219,19 @@ func (st *stream) takeCorrupt(c Corruption) (synced, lost bool) {
 			// record superseded, whether or not it has yet.
 			return true, false
 		}
+		file, seg := e.w.File, e.w.Loc.Segment
 		st.removeLocked(func(e *entry) bool { return at(e.w) }, nil)
+		// The segment may have failed already, with its window not yet taken:
+		// the window will not hold the record, so the file is owed its report
+		// now, and takeWindow turns that into the window's mark.
+		if st.segmentFailedLocked(seg) && !slices.Contains(st.owed[seg], file) {
+			if st.owed == nil {
+				st.owed = map[core.SegmentID][]core.FileID{}
+			}
+			st.owed[seg] = append(st.owed[seg], file)
+		}
 		st.d.notifyAll()
+		st.wake()
 		return false, false
 	}
 	for _, w := range st.windows {
@@ -232,6 +243,8 @@ func (st *stream) takeCorrupt(c Corruption) (synced, lost bool) {
 			w.entries = slices.Delete(w.entries, i, i+1)
 			st.markLocked(w, file)
 			st.d.notifyAll()
+			// A window left empty is resolved on the worker's next pass.
+			st.wake()
 			return false, false
 		}
 	}
@@ -241,4 +254,38 @@ func (st *stream) takeCorrupt(c Corruption) (synced, lost bool) {
 		}
 	}
 	return true, false
+}
+
+// segmentFailedLocked reports whether seg has failed and its end event, which
+// takeWindow turns into the window, is still to be taken: the worker counted
+// its failed sync and ended it, a sync found it ended, or the event is queued.
+// The caller holds mu.
+//
+// decision: a failure recorded in st.failed alone is not enough. A sync the
+// stream refused without an fsync records one with no end event to follow,
+// and an owed report no window takes would hold every Sync of the file for
+// good. Such a segment's record is dropped with no mark, as one of a segment
+// that never failed. Overturned if a refusal without an fsync ever ends the
+// segment.
+func (st *stream) segmentFailedLocked(seg core.SegmentID) bool {
+	if _, counted := st.counted[seg]; counted {
+		return true
+	}
+	if _, ended := st.ending[seg]; ended {
+		return true
+	}
+	return slices.ContainsFunc(st.ends, func(ev segment.EndEvent) bool { return ev.Segment == seg })
+}
+
+// owesLocked reports whether a file of ids is owed the report of a failed
+// segment whose window is not taken yet. The caller holds mu.
+func (st *stream) owesLocked(ids []core.FileID) bool {
+	for _, files := range st.owed {
+		for _, id := range ids {
+			if slices.Contains(files, id) {
+				return true
+			}
+		}
+	}
+	return false
 }

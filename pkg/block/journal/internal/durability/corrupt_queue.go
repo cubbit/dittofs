@@ -15,8 +15,8 @@ type corruptJob struct {
 // queue any more, and the loss is recorded on the caller's goroutine instead.
 //
 // decision: a Corrupt after Stop appends the loss record itself. The reader
-// then waits on an append and its sync, which a running layer never makes it
-// do, but there is no worker left to hand it to and the loss must not be
+// then waits on an append and its sync, and for a synced loss on MarkLoss,
+// which a running layer never makes it do, but there is no worker left to hand it to and the loss must not be
 // forgotten; a closed stream refuses the append at once, and the drop stands
 // with the seq listed as failed. Overturned if a Corrupt after Stop must
 // return without I/O, which would then list the seq as failed unappended.

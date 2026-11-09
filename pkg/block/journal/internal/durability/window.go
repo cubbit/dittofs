@@ -37,10 +37,13 @@ type failStamp struct {
 // decision: a window lives under the stream's leaf mutex, st.mu, like the
 // ledger its entries came out of: it is read and listed in st.windows only
 // with that mutex held, and only the stream's worker creates one (takeWindow,
-// or failReadOnly once the journal is read-only) or drops one (resolve), so no
-// other goroutine mutates it, and only the same worker removes an entry when
-// failWindow fails it. cause is kept for the code that fails a window's
-// records, which reads why the segment ended.
+// or failReadOnly once the journal is read-only) or drops one (resolve). Its
+// entries are changed only under st.mu, by two writers: the worker, when
+// failWindow or failReadOnly fails them, and Corrupt on a reader's goroutine,
+// which takes one entry out holding that entry's file domain. failFile
+// therefore re-checks, under the same domain, which of its entries are still
+// in a window before it fails them. cause is kept for the code that fails a
+// window's records, which reads why the segment ended.
 type window struct {
 	id      uint64
 	seg     core.SegmentID
@@ -176,6 +179,12 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	delete(st.counted, ev.Segment)
 	delete(st.ending, ev.Segment)
 	st.windows = append(st.windows, w)
+	// A file whose record of the segment Corrupt took out of the ledger before
+	// this window was taken is told of the window as if it had failed it.
+	for _, f := range st.owed[ev.Segment] {
+		st.markLocked(w, f)
+	}
+	delete(st.owed, ev.Segment)
 	if ev.Cause == segment.EndSeal && !dup && !wasCounted {
 		st.failures.Add(1)
 		st.lastFail.Store(&failStamp{SyncFailure: SyncFailure{Err: ev.Err, At: failedAt}, mono: failedMono})
