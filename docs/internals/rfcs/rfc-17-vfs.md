@@ -1354,7 +1354,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrDelay` | retry shortly | `*Delay{Cause; Until; Moved}`, below |
 | `ErrBlocked` | a lock waits, and will be granted through `LockWaitOver`: the service's answer for RFC 14's `LockResult{Waiting: true}` | — |
 | `ErrWrongSecurity` | the share's policy does not admit the call's flavour ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)) | — |
-| `ErrState` | a client-held name of state cannot be used as given | `*StateError{Kind; Sessioned}`, below |
+| `ErrState` | a client-held name of state cannot be used as given | `*StateError{Kind; Admin; Sessioned}`, below |
 | `ErrCross` | the call spans what cannot be spanned | `*CrossError{Kind}`: `CrossNamespace` (a copy or clone between namespaces), `CrossShare` (a rename or link between shares, [RFC 7 §5.1](rfc-7-namespace-metadata.md#5.1%20One%20transaction)), `CrossProject` (a rename or link across tree quotas, [RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%20filesystem)), `OtherShard` (**(cluster)** a clone whose source and destination lie in different shards, [§5.9](#5.9%20Copy%20and%20clone)) — the first three name the boundary a client can see; `OtherShard` names placement, which a client cannot, so adapters fall back rather than report it |
 | `ErrIncomplete` | a read of a file a snapshot lists as incomplete, or a copy or clone from one ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) | — |
 | `ErrInconsistent` | a store invariant the filesystem's own state breaks; the store raises a health condition naming the record ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — |
@@ -1398,15 +1398,24 @@ type Delay struct {
 type DelayCause uint8
 
 const (
-	DelayRecall    DelayCause = iota // a caching grant is being recalled (§3.2)
-	DelayClone                       // a running clone or copy chunk holds the extent past the call's hold (§5.9)
-	DelayConflict                    // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2), or an open-state owner's own numbered request in flight (RFC 14 §2.8)
-	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away; or a share not attached here (RFC 8 §12.1), or an open-state shard not yet served here (RFC 14 §11.3); or its journal's content not yet reconciled after damage (RFC 8 §2.5)
-	DelayCapacity                    // the journal's capacity or a share's journal limit (RFC 8 §10.2)
-	DelayCommit                      // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6); or a stable write's sync may have lost it (§5.8)
-	DelayResources                   // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
+	// Zero is no cause: every Delay names one of these.
+	DelayRecall    DelayCause = iota + 1 // a caching grant is being recalled (§3.2)
+	DelayClone                           // a running clone or copy chunk holds the extent past the call's hold (§5.9)
+	DelayConflict                        // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2), or an open-state owner's own numbered request in flight (RFC 14 §2.8)
+	DelayFrozen                          // the share is quiesced, frozen for a move, or moved away; or a share not attached here (RFC 8 §12.1), or an open-state shard not yet served here (RFC 14 §11.3); or its journal's content not yet reconciled after damage (RFC 8 §2.5)
+	DelayCapacity                        // the journal's capacity or a share's journal limit (RFC 8 §10.2)
+	DelayCommit                          // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6); or a stable write's sync may have lost it (§5.8)
+	DelayResources                       // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
 )
 ```
+
+Each typed error matches, under `errors.Is`, its sentinel and any value of its
+own type with the same kind, so an adapter's error table
+([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)) can name a kind
+rather than only its sentinel. The kind of an `AccessError`, `QuotaError`,
+`StateError` or `CrossError` is every field it has, so a field added later
+joins it; a `Delay`'s is its `Cause` and `Moved`, since `Until` is a bound,
+not a kind, and is not compared. A zero kind matches only another zero one.
 
 `Cause` labels metrics and selects how long an adapter holds the request and
 its final status (§3.2). **A transient refusal never becomes `ErrNoSpace` because a
@@ -1732,6 +1741,12 @@ it, long enough for a lease break to run out and be revoked.
 Steps 3–6 run at the primary as one step (§4.8), except across a hold (§5.0).
 The lock never spans a sync or a group commit.
 
+A write of no byte runs steps 1–3, its step 3 judging access, deny modes and
+grace but crossing no lock and starting no recall ([RFC 14 §7](rfc-14-open-state.md#7.%20Conflicts%20across%20protocols)), and returns:
+it reserves nothing, clears no setuid or setgid bit, changes no time and calls
+no engine `Write`, as MS-FSA answers a write of `ByteCount` zero before it notes
+the file modified (2.1.5.4, 2.1.4.17).
+
 ```go
 func (s *Filesystem) Write(ctx context.Context, call Call, ref OpenRef, off int64, src []byte, st Stability) (WriteResult, error) {
 	c, done, err := s.admit.Call(ctx, call, ref.Handle) // step 1: counted, then admitted (§4.9)
@@ -1770,6 +1785,9 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 	}
 	if err = s.checks.CheckIO(ctx, c.Who(), keyOf(f), ref, span(off, src), want); err != nil { // step 3: ErrGrace, ErrLocked, ErrShareViolation, ErrDelay(DelayRecall)
 		return wr, false, err
+	}
+	if len(src) == 0 { // a write of no byte returns after step 3: nothing reserved, cleared, timed or staged (above)
+		return wr, false, nil
 	}
 	res, err := s.quota.Reserve(ctx, c.Identity, chargeOf(f), Usage{Bytes: charge(f, off, src)}) // step 4: holes filled plus bytes past the size; charge reads the overlaid size (§5.7) under the lock, not f's committed one (§5.6)
 	if err != nil {
@@ -1822,7 +1840,9 @@ once (§5.6).
 
 ### 5.2 Read
 
-Steps 1–3 as for a write, with read access; then the engine's `Read`, which
+Steps 1–3 as for a write, with read access, a read of no byte returning after
+step 3, with no lock crossed and no recall started, and `eof` as `off >= size`
+([RFC 14 §7](rfc-14-open-state.md#7.%20Conflicts%20across%20protocols)); then the engine's `Read`, which
 resolves residency and streams verified chunks
 ([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order)).
 It never returns an unverified byte, but it can return `n` verified bytes and
@@ -1843,7 +1863,10 @@ derives them from reads.
 From an offset at or past the file's size, judged against the size read under
 the file's admission lock, `Seek` answers `ErrPastEnd`; otherwise it answers
 the first offset found, or the size when it finds none before the end, which an
-adapter reads as end of file.
+adapter reads as end of file. `CheckIO` judges a `Seek` as a read of no byte at
+its offset, so no byte-range lock refuses it and it recalls no grant, as MS-FSA
+judges no lock and breaks none for an allocated-range query (2.1.5.10.22): its
+answer can miss bytes another client caches under a write grant.
 
 ### 5.3 Open and close
 
@@ -2579,7 +2602,7 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 | V19 | A write through a persistent open, or any open on a continuously available share, is stable; a stable write waits for the sync and, overwriting committed content, its existence commit. | A write on a persistent open, asked unstable, survives a crash injected after its reply; a stable append's reply waits for no metadata transaction, counted by the store's transaction counter; a stable overwrite stalls with the store and answers `ErrDelay` at the deadline, never success. |
 | V20 | A journal-limit or capacity refusal is `ErrDelay` while space can be freed, never `ErrNoSpace` for a deadline; `ErrNoSpace` and `ErrQuota` are answered at once. | With the journal full of dirty bytes and the remote reachable, a write returns `ErrDelay(DelayCapacity)` and succeeds on retry once offload frees space; with the store unreachable past the deadline, still `ErrDelay`; with the store refusing puts as denied, `ErrNoSpace` at once. |
 | V21 | A deny-mode refusal is decided only after the handle-caching grants covering the conflicting opens are broken. | An SMB open, an NFSv4 `OPEN` and an NFSv3 `WRITE` meeting a deny mode held only in an SMB handle cache each get `ErrDelay`, the lease is broken, and the retry succeeds. |
-| V22 | An unprivileged caller's write, truncate, deallocate, copy or clone into a setuid or setgid file — the owner's included — clears the bits in a committed change before the bytes are staged. | bob writes alice's setuid file and `GetAttr` before any commit shows the bit clear; again with alice, unprivileged, then with a deallocate, a copy and a clone; an unprivileged append to a setuid, append-only file succeeds and clears the bit, and a write below its size is `ErrPerm` and clears nothing. |
+| V22 | An unprivileged caller's write, truncate, deallocate, copy or clone into a setuid or setgid file — the owner's included — clears the bits in a committed change before the bytes are staged. | bob writes alice's setuid file and `GetAttr` before any commit shows the bit clear; again with alice, unprivileged, then with a deallocate, a copy and a clone; an unprivileged append to a setuid, append-only file succeeds and clears the bit, and a write below its size is `ErrPerm` and clears nothing. A write of no byte by bob into alice's setuid file leaves the bit set and `mtime` unchanged, and breaks no other client's write-caching grant. |
 | V23 | A blocked lock holds no worker and has no deadline; nothing answers one other than as granted before `CancelLock` returns. | NLM and SMB locks that wait are answered `ErrBlocked` and later granted through `LockWaitOver`, with no goroutine held between; an NFSv4 one is `ErrLocked` and its next poll after the unlock is granted; a lock list with one range refused leaves none of the call's ranges held. |
 | V24 | I/O under a delegation is served only to the client holding it and authorised for the caller's own principal. | An NFSv4.1 client with a write delegation writes as a second principal that may write the file, then a third that may not: the first accepted, the second `ErrAccess`; another client presenting the stateid gets `NotYours`. |
 | V25 | `Write` samples the verifier before staging and `Commit` after its sync; an SMB flush across a loss fails once with `ErrLost`. | A `Commit` that waits on a failed sync window returns a verifier other than its writes', and a stable write whose `Commit` does so answers `ErrDelay` (`DelayCommit`), and its `Write`'s verifier when the two agree; the verifier changes after an unstable write is dropped as lost in the same process and epoch, and when a shard is handed away and back, and not across a shard-epoch raise that moves nothing; an SMB flush through each of two opens of such a file fails once, then succeeds. |

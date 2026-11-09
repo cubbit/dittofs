@@ -350,6 +350,11 @@ type open struct {
 	unsaved bool    // a persistent open's change its record lacks, which the timer writes again
 }
 
+// sessioned is whether the call that created o had a session: the session
+// its create named, which its record keeps, so an open installed again after
+// a restart keeps the mark. A reconnect changes the session, never the mark.
+func (o *open) sessioned() bool { return o.Session != (entity.SessionRef{}) }
+
 // opened is the file o opens: its named stream, or else its file.
 func (o *open) opened() entity.FileID {
 	if !o.Stream.IsZero() {
@@ -885,7 +890,7 @@ func (t *Table) upgrade(e *entry, up *open, who Caller, r OpenRequest, access, d
 // is, as the key stands at the mint, none of its openers is minted under no
 // key, so the check and the hold are one step under the index lock.
 func (t *Table) mintOpen(e *entry, o *open, s ShardID) error {
-	ref, err := t.mintUnder(e, o.Client, s, StateOpen, func(ref StateRef) error {
+	ref, err := t.mintUnder(e, o.Client, o.sessioned(), s, StateOpen, func(ref StateRef) error {
 		if o.Clone == nil && !t.current(o.Client) {
 			return ErrStaleClient
 		}
@@ -1015,7 +1020,7 @@ func (t *Table) findOpen(who Caller, ref OpenRef) (entity.FileID, refKey, error)
 	t.idx.Lock()
 	defer t.idx.Unlock()
 	if ref.Open == 0 {
-		h, err := t.resolveLocked(who.Client, f, ref.State)
+		h, err := t.resolveLocked(who, f, ref.State)
 		return h.file, refKey{ref.State.Shard, ref.State.Token}, err
 	}
 	k, ok := t.byID[ref.Open]
@@ -1023,13 +1028,10 @@ func (t *Table) findOpen(who Caller, ref OpenRef) (entity.FileID, refKey, error)
 		return entity.FileID{}, refKey{}, ErrBadState
 	}
 	h := t.refs[k]
-	switch {
-	case !f.IsZero() && h.file != f:
+	if !f.IsZero() && h.file != f {
 		return entity.FileID{}, refKey{}, ErrBadState
-	case h.client != who.Client:
-		return entity.FileID{}, refKey{}, ErrNotYours
 	}
-	return h.file, k, nil
+	return h.file, k, mine(who, h.client, h.sessioned)
 }
 
 // withOpen runs fn under the step of the file of the open ref names, once

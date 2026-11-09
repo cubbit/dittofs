@@ -6,7 +6,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -25,7 +25,7 @@ func name(id core.SegmentID) string { return fmt.Sprintf("%020d.seg", id) }
 func TestSegmentShutdownUnregistersFromTheBudget(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	seam, err := journaltest.NewSeam(t.TempDir())
+	seam, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}

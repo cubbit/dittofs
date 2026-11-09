@@ -9,18 +9,23 @@ import (
 
 // The filesystem service maps each of these once to its own neutral errors.
 var (
-	ErrBadState    = errors.New("openstate: reference names no record")
-	ErrStaleState  = errors.New("openstate: state lost with its shard's open state")
-	ErrNotYours    = errors.New("openstate: state held by another client or principal")
-	ErrOldState    = errors.New("openstate: reference sequence older than the state's")
-	ErrStaleClient = errors.New("openstate: client expired, or owes a reclaim it must confirm again for")
-	ErrClientInUse = errors.New("openstate: client name held by another principal")
-	ErrClientBusy  = errors.New("openstate: client still holds a session or state")
-	ErrNoRecall    = errors.New("openstate: acknowledgement of a grant with no recall in flight")
-	ErrInvalid     = errors.New("openstate: request out of bounds")
-	ErrDelay       = errors.New("openstate: retry later")
-	ErrGrace       = errors.New("openstate: in grace period")
-	ErrNoReclaim   = errors.New("openstate: nothing to reclaim in this shard")
+	ErrBadState   = errors.New("openstate: reference names no record")
+	ErrStaleState = errors.New("openstate: state lost with its shard's open state")
+	ErrNotYours   = errors.New("openstate: state held by another client or principal")
+	// ErrNotYoursSessioned is ErrNotYours for state created on a session,
+	// presented by a call with none: the state's own mark refuses it, so the
+	// adapter answers it without reading a client record. It wraps
+	// ErrNotYours, so a mapper tests it first.
+	ErrNotYoursSessioned = fmt.Errorf("%w: state created on a session, presented without one", ErrNotYours)
+	ErrOldState          = errors.New("openstate: reference sequence older than the state's")
+	ErrStaleClient       = errors.New("openstate: client expired, or owes a reclaim it must confirm again for")
+	ErrClientInUse       = errors.New("openstate: client name held by another principal")
+	ErrClientBusy        = errors.New("openstate: client still holds a session or state")
+	ErrNoRecall          = errors.New("openstate: acknowledgement of a grant with no recall in flight")
+	ErrInvalid           = errors.New("openstate: request out of bounds")
+	ErrDelay             = errors.New("openstate: retry later")
+	ErrGrace             = errors.New("openstate: in grace period")
+	ErrNoReclaim         = errors.New("openstate: nothing to reclaim in this shard")
 
 	ErrReclaimConflict = errors.New("openstate: reclaim conflicts with state already reclaimed")
 	ErrStopped         = errors.New("openstate: table not started, or stopped")

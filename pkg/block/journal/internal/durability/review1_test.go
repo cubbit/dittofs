@@ -11,7 +11,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -38,8 +38,8 @@ func failOnTwoStreams(t *testing.T, gate func(core.SegmentID), held func(lf, lg 
 		held(lf, lg)
 	}
 	if err := r.seam.Schedule(
-		journaltest.Failing(journaltest.OpSync, format.SegmentName(lf.Segment), 1, errors.New("boom f")),
-		journaltest.Failing(journaltest.OpSync, format.SegmentName(lg.Segment), 1, errors.New("boom g")),
+		kit.Failing(kit.OpSync, format.SegmentName(lf.Segment), 1, errors.New("boom f")),
+		kit.Failing(kit.OpSync, format.SegmentName(lg.Segment), 1, errors.New("boom g")),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -275,8 +275,8 @@ func TestALossRecordWhoseSyncFailsEndsItsSegment(t *testing.T) {
 	f, g := file(1), file(2)
 	a, _ := fr.publish(t, f, 0, "aaaa")
 	if err := fr.seam.Schedule(
-		journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("boom 1")),
-		journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment+1), 1, errors.New("boom 2")),
+		kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, errors.New("boom 1")),
+		kit.Failing(kit.OpSync, format.SegmentName(a.Segment+1), 1, errors.New("boom 2")),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +451,18 @@ func TestASyncWaitsForAFailureInFlightWhenAHeaderOnlyTargetIsAnswered(t *testing
 		return ok
 	})
 
+	// A sync succeeds in the spare first, so g's failure is not the second
+	// segment in a row the device refused, which would turn the journal
+	// read-only (RFC 1 section 5.4) and fail every record in one pass.
+	h := file(3)
+	locH, _ := r.publish(t, h, 0, "hhhh")
+	if err := r.d.Sync(context.Background(), h); err != nil {
+		t.Fatalf("Sync of h in the spare: %v", err)
+	}
 	locG, _ := r.publish(t, g, 4, "gggg")
+	if locG.Segment != locH.Segment {
+		t.Fatalf("g's write in segment %d, want h's %d", locG.Segment, locH.Segment)
+	}
 	heldSeg.Store(uint64(locG.Segment))
 	r.failSyncOf(t, locG.Segment, errors.New("boom g"))
 	r.stamped(t, 0)

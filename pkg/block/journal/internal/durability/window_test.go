@@ -11,7 +11,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -85,7 +85,7 @@ func newWatchedRig(t *testing.T, n int) (*rig, *recorder[windowView]) {
 // failNextWrite schedules the next write of the segment's file to fail once.
 func (r *rig) failNextWrite(t *testing.T, seg core.SegmentID, err error) {
 	t.Helper()
-	if e := r.seam.Schedule(journaltest.Failing(journaltest.OpWrite, format.SegmentName(seg), 1, err)); e != nil {
+	if e := r.seam.Schedule(kit.Failing(kit.OpWrite, format.SegmentName(seg), 1, err)); e != nil {
 		t.Fatal(e)
 	}
 }
@@ -174,7 +174,7 @@ func TestSealFailureCountsAndFailsItsWindow(t *testing.T) {
 	f := file(1)
 	sealBoom := errors.New("seal boom")
 	a := r.appendWrite(t, f, 0, "a")
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, sealBoom)); err != nil {
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, sealBoom)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.streams.For(f).Seal(false); err == nil {
@@ -250,7 +250,7 @@ func TestARecordStillWritingWhenTheSyncFailsIsInTheWindow(t *testing.T) {
 	}
 	r.settlePool(t)
 
-	hold := r.seam.HoldFirst(t, journaltest.OpWrite, format.SegmentName(first.Segment))
+	hold := r.seam.HoldFirst(t, kit.OpWrite, format.SegmentName(first.Segment))
 	var held segment.Location
 	var wg sync.WaitGroup
 	wg.Add(1)

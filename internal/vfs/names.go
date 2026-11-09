@@ -633,10 +633,10 @@ func (a *admitted) same(h vfs.Handle) error {
 	return nil
 }
 
-// who is the caller as open state takes it: the call's client and protocol,
-// and the principal it maps to, never squashed.
+// who is the caller as open state takes it: the call's client, protocol and
+// whether it has a session, and the principal it maps to, never squashed.
 func (a *admitted) who() openstate.Caller {
-	return openstate.Caller{Client: a.caller.Client, Principal: a.caller.Mapped, Protocol: a.caller.Protocol}
+	return openstate.Caller{Client: a.caller.Client, Principal: a.caller.Mapped, Protocol: a.caller.Protocol, Sessioned: a.sessioned}
 }
 
 // keyOf is f as open state names it.

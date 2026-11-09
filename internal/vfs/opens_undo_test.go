@@ -321,7 +321,7 @@ func TestAFailedReclaimKeepsTheHeldOpen(t *testing.T) {
 	req := vfs.OpenRequest{H: g, Disposition: vfs.OpenExisting, Access: entity.ReadData | entity.WriteData, Deny: entity.WriteData, Owner: owner}
 	held, err := n.Open(ctx, c, req)
 	n.must(t, err)
-	who := openstate.Caller{Client: c.Client, Principal: carol.Principal, Protocol: entity.ProtocolNFSv4}
+	who := openstate.Caller{Client: c.Client, Principal: carol.Principal, Protocol: entity.ProtocolNFSv4, Sessioned: true}
 	rg := openstate.ByteRange{Offset: 0, Length: 10}
 	lock := openstate.LockReq{Owner: openstate.LockOwner{Client: c.Client, Name: []byte("lock-owner")}, Open: held.Ref, Ranges: []openstate.LockRange{{ByteRange: rg, Exclusive: true}}}
 	_, err = n.tab.Locks().Lock(ctx, who, keyOf(f), lock)

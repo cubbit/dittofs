@@ -954,6 +954,7 @@ func TestEveryOpenStateErrorIsMapped(t *testing.T) {
 		{openstate.ErrBadState, state(vfs.StateBadState)},
 		{openstate.ErrStaleState, state(vfs.StateStaleState)},
 		{openstate.ErrNotYours, state(vfs.StateNotYours)},
+		{openstate.ErrNotYoursSessioned, &vfs.StateError{Kind: vfs.StateNotYours, Sessioned: true}},
 		{openstate.ErrOldState, state(vfs.StateOldState)},
 		{openstate.ErrStaleClient, state(vfs.StateStaleClient)},
 		{openstate.ErrClientInUse, state(vfs.StateClientInUse)},

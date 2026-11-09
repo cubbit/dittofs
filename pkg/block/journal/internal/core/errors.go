@@ -86,6 +86,13 @@ var (
 	// zero-length extent. Nothing is appended and no version is drawn.
 	ErrZeroLength = errors.New("journal: zero-length extent")
 
+	// ErrInvalidExtent is returned by a write whose extent cannot exist: a
+	// negative file offset, or an offset and length whose end overflows. It is
+	// named apart from ErrZeroLength because a zero-length write is accepted
+	// and does nothing. Nothing is appended and no version is drawn. It is
+	// never retried.
+	ErrInvalidExtent = errors.New("journal: invalid extent")
+
 	// ErrSyncFailed is matched by every SyncError: a sync window failed. The
 	// writes it covered are not durable, and a later successful sync never
 	// stands in for them.
@@ -98,6 +105,12 @@ var (
 	// ErrNoClock is returned by Open when it is given no clock. Nothing is
 	// opened. It is never retried: the caller passes WithClock.
 	ErrNoClock = errors.New("journal: no clock")
+
+	// ErrJournalReadOnly is returned by a write the journal refuses because it
+	// is read-only after a failure it cannot recover from. It is returned at
+	// once: nothing is reserved and no spare is taken. It is retried only
+	// after the journal is reopened.
+	ErrJournalReadOnly = errors.New("journal: read-only")
 
 	// ErrInvalidSetting is returned by Init and Open when a setting or the
 	// descriptor limit is negative. Nothing is opened or written. It
@@ -281,4 +294,22 @@ func (e *NotOffloadedError) Error() string {
 // Is reports whether target is ErrNotOffloaded.
 func (e *NotOffloadedError) Is(target error) bool {
 	return target == ErrNotOffloaded
+}
+
+// ReadOnlyState is whether the journal is read-only, and what the journal
+// knows about why.
+type ReadOnlyState struct {
+	// ReadOnly is true once the journal refuses writes.
+	ReadOnly bool
+
+	// Err is the error that made the journal read-only; nil while it is not.
+	Err error
+
+	// SpareMade is whether a spare segment was made after the journal went
+	// read-only.
+	SpareMade bool
+
+	// Check is the check a probe of the read-only journal found failing; nil
+	// when the probe passes or has not run.
+	Check error
 }

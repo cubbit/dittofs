@@ -22,6 +22,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
@@ -734,9 +735,9 @@ func failWindow(t *testing.T, f *journaltest.Fixture, seg journal.SegmentID) {
 	name := segmentName(seg)
 	eio := sim.FaultAction{Err: syscall.EIO}
 	fault, err := sim.NewSchedule(1, nil,
-		sim.Rule{Op: journaltest.OpSync, Key: name, Count: 1, Action: eio},
-		sim.Rule{Op: journaltest.OpRead, Key: name, Action: eio},
-		sim.Rule{Op: journaltest.OpReadDirect, Key: name, Action: eio},
+		sim.Rule{Op: kit.OpSync, Key: name, Count: 1, Action: eio},
+		sim.Rule{Op: kit.OpRead, Key: name, Action: eio},
+		sim.Rule{Op: kit.OpReadDirect, Key: name, Action: eio},
 	)
 	if err != nil {
 		t.Fatalf("fail segment %d's sync: %v", seg, err)
@@ -783,12 +784,12 @@ func TestRFC1B_FailedWindowDoesNotWedge(t *testing.T) {
 		if bSeg == seg {
 			t.Fatalf("share %d: the write after a failed sync was appended to the failed segment %d", k, seg)
 		}
-		syncs := f.Seam.CallsFor(journaltest.OpSync, segmentName(bSeg))
+		syncs := f.Seam.CallsFor(kit.OpSync, segmentName(bSeg))
 		if err := h.Sync(t.Context(), id); err != nil {
 			stub(t, "Sync", err)
 			t.Fatalf("share %d: the Sync after a failed window: %v; the file is wedged", k, err)
 		}
-		if f.Seam.CallsFor(journaltest.OpSync, segmentName(bSeg)) == syncs {
+		if f.Seam.CallsFor(kit.OpSync, segmentName(bSeg)) == syncs {
 			t.Fatalf("share %d: Sync returned without syncing segment %d, which holds the write", k, bSeg)
 		}
 		if s, ok := segmentInfo(f, seg); ok && !s.Failed {
@@ -872,7 +873,7 @@ func TestRFC1B_SyncFailure(t *testing.T) {
 		v := write(t, h, id, 0, pf)
 		seg := segmentOf(t, f, id, 0)
 		failures := f.J.Stats().Counters.SyncFailures
-		f.FailNext(journaltest.OpSync, segmentName(seg), 1)
+		f.FailNext(kit.OpSync, segmentName(seg), 1)
 		err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
@@ -893,9 +894,9 @@ func TestRFC1B_SyncFailure(t *testing.T) {
 		pn := pattern(fmt.Sprint("next", k), 4096)
 		v = write(t, h, id, 64<<10, pn)
 		next := segmentName(segmentOf(t, f, id, 64<<10))
-		syncs := f.Seam.CallsFor(journaltest.OpSync, next)
+		syncs := f.Seam.CallsFor(kit.OpSync, next)
 		syncNow(t, h, id)
-		if f.Seam.CallsFor(journaltest.OpSync, next) == syncs {
+		if f.Seam.CallsFor(kit.OpSync, next) == syncs {
 			t.Fatalf("share %d: a Sync after a failed one returned without a sync of %s, which holds the write", k, next)
 		}
 		durable = append(durable, kept{written{k, id, journal.Extent{Off: 64 << 10, Len: 4096}, v}, pn})
@@ -952,7 +953,7 @@ type relay struct {
 func newRelay(key string) *relay { return &relay{key: key, next: make(chan struct{})} }
 
 func (r *relay) At(op string, key []byte) (time.Duration, int, error) {
-	if (op != journaltest.OpRead && op != journaltest.OpReadDirect) || string(key) != r.key {
+	if (op != kit.OpRead && op != kit.OpReadDirect) || string(key) != r.key {
 		return 0, 0, nil
 	}
 	r.mu.Lock()
@@ -1512,7 +1513,7 @@ func TestRFC1B_BackgroundJoined(t *testing.T) {
 	syncNow(t, h, id)
 
 	j := f.J
-	copied := f.Seam.Hold(t, journaltest.OpWrite, "*.seg")
+	copied := f.Seam.Hold(t, kit.OpWrite, "*.seg")
 	repacked := make(chan error, 1)
 	go func() {
 		_, err := j.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{Segments: []journal.SegmentID{seg.ID}})

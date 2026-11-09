@@ -14,7 +14,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -28,7 +28,7 @@ const poolAttempts = 1 << 22
 // read-only check. The set the pool reaches through the Maker is the set
 // returned beside it, so a test reads the ledger's counters directly.
 func poolOf(t *testing.T, t2 segment.Targets, max int64, last core.SegmentID, log *slog.Logger) (
-	*journaltest.Seam, *segment.Set, *segment.Maker, *segment.Pool,
+	*kit.Seam, *segment.Set, *segment.Maker, *segment.Pool,
 ) {
 	t.Helper()
 
@@ -130,7 +130,7 @@ func (r *logRecorder) countAt(level slog.Level, sub string) int {
 // instead of failing; the hold's own Cleanup releases it on that path, so a
 // create that reaches the seam afterwards passes through instead of parking
 // the worker.
-func awaitHoldReached(t *testing.T, h *journaltest.Hold) {
+func awaitHoldReached(t *testing.T, h *kit.Hold) {
 	t.Helper()
 
 	select {
@@ -206,7 +206,7 @@ func TestPoolContentTakeNeverTakesHeadroomOrReserve(t *testing.T) {
 	}
 
 	p.Stop()
-	if got := seam.Calls(journaltest.OpCreate); got != 3 {
+	if got := seam.Calls(kit.OpCreate); got != 3 {
 		t.Fatalf("the pool made %d files for targets of 3, want 3", got)
 	}
 }
@@ -233,19 +233,19 @@ func TestPoolTakeMakesNoSeamCall(t *testing.T) {
 
 	// The worker's next create is parked at the seam, so whatever runs after
 	// this point and makes anything blocks where the test can see it.
-	hold := seam.HoldFirst(t, journaltest.OpCreate, "*")
+	hold := seam.HoldFirst(t, kit.OpCreate, "*")
 
 	ops := []string{
-		journaltest.OpAllocate,
-		journaltest.OpSync,
-		journaltest.OpRename,
-		journaltest.OpSyncDir,
+		kit.OpAllocate,
+		kit.OpSync,
+		kit.OpRename,
+		kit.OpSyncDir,
 	}
 	before := make(map[string]int, len(ops))
 	for _, op := range ops {
 		before[op] = seam.Calls(op)
 	}
-	creates := seam.Calls(journaltest.OpCreate)
+	creates := seam.Calls(kit.OpCreate)
 
 	// The take must return while the worker's create is held: a take that
 	// made its own spare would wait on this hold and never answer.
@@ -259,7 +259,7 @@ func TestPoolTakeMakesNoSeamCall(t *testing.T) {
 
 	// The worker's create is the only call that moved — the take itself made
 	// no seam call — and it moved exactly once.
-	if got := seam.Calls(journaltest.OpCreate); got != creates+1 {
+	if got := seam.Calls(kit.OpCreate); got != creates+1 {
 		t.Fatalf("after the take, create was called %d times, want %d: the worker's own make alone",
 			got, creates+1)
 	}
@@ -285,7 +285,7 @@ func TestPoolTakeFindsNoSpareRefusedAtOnce(t *testing.T) {
 	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
 	// "*" holds the create whichever name the worker drew, which the test
 	// cannot know: the id is drawn inside the worker's own make.
-	h := seam.HoldFirst(t, journaltest.OpCreate, "*")
+	h := seam.HoldFirst(t, kit.OpCreate, "*")
 	p.Start()
 
 	// The worker is parked at its first create; the pool holds no content
@@ -389,7 +389,7 @@ func TestPoolHoldReplaceGoesAheadOfUnreserved(t *testing.T) {
 	// The pool's only made spare is the one the target holds, so the worker
 	// parks at its next create: the takes' kicks hold it there, and nothing
 	// refills until the last one is freed.
-	h := seam.HoldFirst(t, journaltest.OpCreate, "*")
+	h := seam.HoldFirst(t, kit.OpCreate, "*")
 
 	hold, err := p.Hold(1)
 	if err != nil {
@@ -586,7 +586,7 @@ func TestPoolBytesFiguresFollowTheClasses(t *testing.T) {
 	// instead of the take's. Released before Stop is called, for Stop
 	// joins the worker, and a worker parked at the seam would never
 	// return.
-	hold := seam.HoldFirst(t, journaltest.OpCreate, "*")
+	hold := seam.HoldFirst(t, kit.OpCreate, "*")
 
 	if id, err := p.Take(segment.Headroom); err != nil || id == 0 {
 		t.Fatalf("the headroom take: (%d, %v)", id, err)
@@ -618,7 +618,7 @@ func TestPoolDeviceFullOnENOSPC(t *testing.T) {
 
 	t.Run("ENOSPC sets it and a made spare clears it", func(t *testing.T) {
 		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
-		if err := seam.Schedule(journaltest.Failing(journaltest.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
 		p.Start()
@@ -637,7 +637,7 @@ func TestPoolDeviceFullOnENOSPC(t *testing.T) {
 	t.Run("EIO sets nothing", func(t *testing.T) {
 		h := &logRecorder{}
 		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, slog.New(h))
-		if err := seam.Schedule(journaltest.Failing(journaltest.OpAllocate, "*", 0, syscall.EIO)); err != nil {
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.EIO)); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
 		p.Start()
@@ -700,7 +700,7 @@ func TestPoolRefillRefusedByMaximumStopsThePass(t *testing.T) {
 	}
 	p.Stop()
 
-	if got := seam.Calls(journaltest.OpCreate); got != 2 {
+	if got := seam.Calls(kit.OpCreate); got != 2 {
 		t.Fatalf("after the kicks the pool made %d files, want 2: a refused reservation makes no storage call",
 			got)
 	}
@@ -774,10 +774,10 @@ func TestPoolStopJoinsWorkerAndKeepsSpares(t *testing.T) {
 	// the scheduler's to keep, not a race: h1 parks the first create — its
 	// release also lets every later call pass — and h2, registered before
 	// that release, parks the second create, the make Stop must join.
-	h1 := seam.Hold(t, journaltest.OpCreate, "*")
+	h1 := seam.Hold(t, kit.OpCreate, "*")
 	p.Start()
 	<-h1.Reached()
-	h2 := seam.HoldFirst(t, journaltest.OpCreate, "*")
+	h2 := seam.HoldFirst(t, kit.OpCreate, "*")
 	h1.Release()
 	awaitCounters(t, "the first spare ready while the second is parked", p,
 		func(c segment.PoolCounters) bool { return c.Spares == 1 })
@@ -796,7 +796,7 @@ func TestPoolStopJoinsWorkerAndKeepsSpares(t *testing.T) {
 		t.Fatal("Stop never returned once the held make finished, want the join right after")
 	}
 
-	if got := seam.Calls(journaltest.OpRemove); got != 0 {
+	if got := seam.Calls(kit.OpRemove); got != 0 {
 		t.Fatalf("Stop removed %d files, want none: the untaken spares are the next open's to re-adopt",
 			got)
 	}
@@ -1063,7 +1063,7 @@ func TestPoolDeviceFullOnlyAMadeSpareClears(t *testing.T) {
 	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
 
 	// The device fills: every allocation fails ENOSPC.
-	if err := seam.Schedule(journaltest.Failing(journaltest.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
+	if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	p.Start()
@@ -1071,13 +1071,13 @@ func TestPoolDeviceFullOnlyAMadeSpareClears(t *testing.T) {
 
 	// The device still fails, now with an ordinary fault. No spare has been
 	// made: the state a roll reads must stand.
-	if err := seam.Schedule(journaltest.Failing(journaltest.OpAllocate, "*", 0, syscall.EIO)); err != nil {
+	if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	// The second failure must land before the state is read: the count of
 	// allocations — two, one per failed make — is the arrival of both.
 	p.Kick()
-	for seam.Calls(journaltest.OpAllocate) < 2 {
+	for seam.Calls(kit.OpAllocate) < 2 {
 		runtime.Gosched()
 	}
 	awaitDeviceFull(t, true, p)
@@ -1302,7 +1302,7 @@ func TestPoolReplaceAloneWakesTheRefill(t *testing.T) {
 	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
 	p.Start()
 	awaitCounters(t, "the first spare ready", p,
-		func(c segment.PoolCounters) bool { return c.Spares == 1 && seam.Calls(journaltest.OpCreate) == 1 })
+		func(c segment.PoolCounters) bool { return c.Spares == 1 && seam.Calls(kit.OpCreate) == 1 })
 
 	h, err := p.Hold(1)
 	if err != nil {
@@ -1315,10 +1315,10 @@ func TestPoolReplaceAloneWakesTheRefill(t *testing.T) {
 	// calm: nothing short, no kicks buffered. A settle with no makes is what
 	// makes the replace below the only wake in flight.
 	awaitCounters(t, "the take's refill landed", p,
-		func(c segment.PoolCounters) bool { return c.Spares == 1 && seam.Calls(journaltest.OpCreate) == 2 })
-	made := seam.Calls(journaltest.OpCreate)
+		func(c segment.PoolCounters) bool { return c.Spares == 1 && seam.Calls(kit.OpCreate) == 2 })
+	made := seam.Calls(kit.OpCreate)
 	for range 1 << 14 {
-		if seam.Calls(journaltest.OpCreate) != made {
+		if seam.Calls(kit.OpCreate) != made {
 			t.Fatalf("the pool made a file while nothing was short, want the settle calm")
 		}
 		runtime.Gosched()
@@ -1332,7 +1332,7 @@ func TestPoolReplaceAloneWakesTheRefill(t *testing.T) {
 	h.Replace()
 	awaitCounters(t, "the replaced demand made and landed", p,
 		func(c segment.PoolCounters) bool {
-			return c.Spares == 2 && c.Held == 1 && seam.Calls(journaltest.OpCreate) == made+1
+			return c.Spares == 2 && c.Held == 1 && seam.Calls(kit.OpCreate) == made+1
 		})
 	h.Close()
 	p.Stop()
@@ -1387,7 +1387,7 @@ func TestPoolRefusedHoldRetriesDoNotAccumulateDemand(t *testing.T) {
 	// Park the worker's next create, so the refusals below land while nothing
 	// can make: every shortfall is recorded before any spare arrives, the
 	// exact window a retrying engine widens.
-	park := seam.Hold(t, journaltest.OpCreate, "*")
+	park := seam.Hold(t, kit.OpCreate, "*")
 
 	// The same hold is refused ten times — the ask is 3 over a pool holding
 	// 2, short one spare each time.
@@ -1401,14 +1401,14 @@ func TestPoolRefusedHoldRetriesDoNotAccumulateDemand(t *testing.T) {
 	park.Release()
 	awaitCounters(t, "the one-spare shortfall made", p,
 		func(c segment.PoolCounters) bool { return c.Spares == 3 })
-	made := seam.Calls(journaltest.OpCreate)
+	made := seam.Calls(kit.OpCreate)
 	if made != 3 {
 		t.Fatalf("after the shortfall the pool made %d files, want 3: two of the fill and one spare of demand, not one per refusal", made)
 	}
 	// The settle: a refill that accumulated the demand would draw its next
 	// make here, one fsync chain at a time, and the count would move.
 	for range 1 << 16 {
-		if got := seam.Calls(journaltest.OpCreate); got != made {
+		if got := seam.Calls(kit.OpCreate); got != made {
 			t.Fatalf("with the demand level settled the worker began another make (%d files, want still %d): refusals accumulated as demand", got, made)
 		}
 		runtime.Gosched()
@@ -1451,7 +1451,7 @@ func TestPoolAHoldClosedDuringAMakeLeavesTheTarget(t *testing.T) {
 
 	// The hold is served; the refill, now wanting the target plus what the
 	// hold demands, starts its make and parks at the create.
-	park := seam.Hold(t, journaltest.OpCreate, "*")
+	park := seam.Hold(t, kit.OpCreate, "*")
 	h, err := p.Hold(1)
 	if err != nil {
 		t.Fatalf("Hold(1) over two ready spares: %v", err)
@@ -1569,7 +1569,7 @@ func TestPoolWantRecycleReservesTheShortestClassFirst(t *testing.T) {
 		// proves the take's kick ran the refill and it returned. The
 		// recycle path the landing below stands for renames and writes;
 		// it creates nothing, so the fault leaves it untouched.
-		if err := seam.Schedule(journaltest.Failing(journaltest.OpCreate, "*", 0, syscall.EIO)); err != nil {
+		if err := seam.Schedule(kit.Failing(kit.OpCreate, "*", 0, syscall.EIO)); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
 
@@ -1661,10 +1661,10 @@ func TestPoolRefillMakesNoSpareForAnIncomingRecycle(t *testing.T) {
 			// The next make fails at its allocate, and is parked there before
 			// it fails: the first pass to find the class empty, the fill's
 			// own or the take's, waits at the hold with the class it chose.
-			if err := seam.Schedule(journaltest.Failing(journaltest.OpAllocate, "*", 1, syscall.EIO)); err != nil {
+			if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 1, syscall.EIO)); err != nil {
 				t.Fatalf("Schedule: %v", err)
 			}
-			parked := seam.HoldFirst(t, journaltest.OpAllocate, "*")
+			parked := seam.HoldFirst(t, kit.OpAllocate, "*")
 			if _, err := p.Take(tc.class); err != nil {
 				t.Fatalf("the %s take: %v", tc.class, err)
 			}
@@ -1738,7 +1738,7 @@ func TestPoolARecycledContentSparePaysTheDemandLevel(t *testing.T) {
 	// to reach the hold: a pass that had not yet chosen its class when the
 	// recycle landed would find the level paid and make nothing, and the
 	// parked make this test is about would never exist.
-	park := seam.Hold(t, journaltest.OpCreate, "*")
+	park := seam.Hold(t, kit.OpCreate, "*")
 	_, err := p.Hold(2)
 	assertSpareRefusal(t, "the Hold(2) over one ready spare", err, 1)
 	if got := p.PendingForTest(); got != 1 {

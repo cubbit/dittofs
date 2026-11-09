@@ -1,6 +1,7 @@
 package durability
 
 import (
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"sync"
 	"testing"
 
@@ -8,7 +9,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -116,7 +116,7 @@ func TestDurableFollowsTheSyncThatCoversTheRecord(t *testing.T) {
 	}
 
 	// The sync is held at the seam, so b is appended after it began.
-	h := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(a.Segment))
+	h := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(a.Segment))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

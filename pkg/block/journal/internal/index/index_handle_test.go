@@ -1,6 +1,7 @@
 package index
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -123,5 +124,26 @@ func TestLiftSupersededOfNothingChangesNothing(t *testing.T) {
 	}
 	if n := ix.fs.len(); n != 1 {
 		t.Fatalf("entries = %d, want 1: the lift created one", n)
+	}
+}
+
+// TestIndexLose_ReturnsDelta: the handle's Lose leaves a loss marker over the
+// extent and returns the delta of what it stopped holding; a zero-length
+// extent is refused.
+func TestIndexLose_ReturnsDelta(t *testing.T) {
+	ix := New(1 << 20)
+	writeRetained(t, ix, write(0, 100, rec(1, 0), 1))
+	hd, err := ix.Lose(testFile, ext(0, 100), ver(2))
+	if err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+	if hd.File != testFile || hd.HeldBytes != -100 || hd.DirtyBytes != -100 {
+		t.Fatalf("Lose delta = %+v, want -100 held and dirty on the file", hd)
+	}
+	if _, ok := ix.Lookup(testFile, 0); ok {
+		t.Fatal("a lost extent is still held")
+	}
+	if hd, err := ix.Lose(testFile, ext(0, 0), ver(3)); !errors.Is(err, core.ErrZeroLength) || hd != (HeldDelta{}) {
+		t.Fatalf("zero-length Lose = %+v, %v; want the zero delta and ErrZeroLength", hd, err)
 	}
 }

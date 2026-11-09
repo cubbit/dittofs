@@ -12,7 +12,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -55,18 +55,18 @@ func TestRefillWaitsForQueuedRecycle(t *testing.T) {
 	e.r.Start()
 	e.r.Enqueue(id, segment.NotHeld)
 	used := e.set.Counters().UsedBytes
-	creates := e.seam.Calls(journaltest.OpCreate)
+	creates := e.seam.Calls(kit.OpCreate)
 
 	e.p.Start()
 	quietPool(e.p)
-	if got := e.seam.Calls(journaltest.OpCreate); got != creates {
+	if got := e.seam.Calls(kit.OpCreate); got != creates {
 		t.Fatalf("the pool created %d files while a full-sealed segment waited in the retirement queue, want none", got-creates)
 	}
 
 	ro.set(false)
 	e.r.KickForTest()
 	awaitSpares(t, e.p, 1)
-	if got := e.seam.Calls(journaltest.OpCreate); got != creates {
+	if got := e.seam.Calls(kit.OpCreate); got != creates {
 		t.Fatalf("the recycle's spare cost %d created files, want none", got-creates)
 	}
 	if got := e.set.Counters().UsedBytes; got != used {
@@ -90,18 +90,18 @@ func TestRefillMakesOnceQueueDrains(t *testing.T) {
 	id := e.segment(true)
 	e.r.Start()
 	e.r.Enqueue(id, segment.NotHeld)
-	creates := e.seam.Calls(journaltest.OpCreate)
+	creates := e.seam.Calls(kit.OpCreate)
 
 	e.p.Start()
 	quietPool(e.p)
-	if got := e.seam.Calls(journaltest.OpCreate); got != creates {
+	if got := e.seam.Calls(kit.OpCreate); got != creates {
 		t.Fatalf("the pool created %d files while a full-sealed segment waited in the retirement queue, want none", got-creates)
 	}
 
 	ro.set(false)
 	e.r.KickForTest()
 	awaitSpares(t, e.p, 2)
-	if got := e.seam.Calls(journaltest.OpCreate); got != creates+1 {
+	if got := e.seam.Calls(kit.OpCreate); got != creates+1 {
 		t.Fatalf("the class reached its target with %d makes, want exactly one beside the recycle", got-creates)
 	}
 	e.r.Stop()
@@ -166,11 +166,11 @@ func TestRefillIgnoresStoppedOrUnstartedRetirer(t *testing.T) {
 		id := e.segment(true)
 		e.r.Start()
 		e.r.Enqueue(id, segment.NotHeld)
-		creates := e.seam.Calls(journaltest.OpCreate)
+		creates := e.seam.Calls(kit.OpCreate)
 
 		e.p.Start()
 		quietPool(e.p)
-		if got := e.seam.Calls(journaltest.OpCreate); got != creates {
+		if got := e.seam.Calls(kit.OpCreate); got != creates {
 			t.Fatalf("the pool created %d files while the queue held a full-sealed segment, want none", got-creates)
 		}
 		e.r.Stop()
@@ -213,7 +213,7 @@ func TestRollENOSPCAsksRetirementQueue(t *testing.T) {
 		})
 		t.Cleanup(r.Stop)
 
-		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
+		if err := e.seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
 	}).withStream(t, 1)
@@ -271,7 +271,7 @@ func groupBuild(t *testing.T) groupEnv {
 	r.Start()
 	t.Cleanup(r.Stop)
 	t.Cleanup(func() { _ = ss.Close() })
-	idle := segment.NewIdleSealer(ss, journaltest.NewStopwatchClock(), 1<<20, nil, nil)
+	idle := segment.NewIdleSealer(ss, kit.NewStopwatchClock(), 1<<20, nil, nil)
 	idle.Start()
 	t.Cleanup(idle.Stop)
 	g := segment.NewGroup(segment.GroupConfig{Streams: ss, Idle: idle, Pool: e.pool, Retirer: r, Cache: e.cache})
@@ -411,7 +411,7 @@ func TestGroupCloseWaitsForHeldReader(t *testing.T) {
 	// cleanups' own shutdown.
 	var release sync.Once
 	t.Cleanup(func() { release.Do(ref.Release) })
-	closesBefore := e.seam.CallsFor(journaltest.OpClose, name)
+	closesBefore := e.seam.CallsFor(kit.OpClose, name)
 
 	done := make(chan error, 1)
 	go func() { done <- e.g.Close() }()
@@ -421,7 +421,7 @@ func TestGroupCloseWaitsForHeldReader(t *testing.T) {
 		t.Fatalf("Close returned (%v) while a reader held a reference, want it waiting", err)
 	case <-time.After(50 * time.Millisecond):
 	}
-	if got := e.seam.CallsFor(journaltest.OpClose, name); got != closesBefore {
+	if got := e.seam.CallsFor(kit.OpClose, name); got != closesBefore {
 		t.Fatalf("the segment's descriptor was closed %d times under a held reference, want %d", got, closesBefore)
 	}
 	buf := make([]byte, format.RecordHeaderSize)
@@ -433,7 +433,7 @@ func TestGroupCloseWaitsForHeldReader(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Close after the release = %v, want nil", err)
 	}
-	if got := e.seam.CallsFor(journaltest.OpClose, name); got <= closesBefore {
+	if got := e.seam.CallsFor(kit.OpClose, name); got <= closesBefore {
 		t.Fatalf("the descriptor was never closed after the release: %d closes, had %d", got, closesBefore)
 	}
 }
@@ -461,14 +461,14 @@ func TestGroupCloseStopsWorkersBeforeDescriptors(t *testing.T) {
 	if err := e.set.Seal(id, false); err != nil {
 		t.Fatalf("the segment's seal: %v", err)
 	}
-	hold := e.seam.HoldFirst(t, journaltest.OpRemove, streamSegName(id))
+	hold := e.seam.HoldFirst(t, kit.OpRemove, streamSegName(id))
 	e.r.Enqueue(id, segment.NotHeld)
 	select {
 	case <-hold.Reached():
 	case <-time.After(10 * time.Second):
 		t.Fatal("the worker never reached the retirement's remove")
 	}
-	closesBefore := e.seam.CallsFor(journaltest.OpClose, name)
+	closesBefore := e.seam.CallsFor(kit.OpClose, name)
 
 	done := make(chan error, 1)
 	go func() { done <- e.g.Close() }()
@@ -478,7 +478,7 @@ func TestGroupCloseStopsWorkersBeforeDescriptors(t *testing.T) {
 		t.Fatalf("Close returned (%v) with a retirement in flight, want it waiting", err)
 	case <-time.After(50 * time.Millisecond):
 	}
-	if got := e.seam.CallsFor(journaltest.OpClose, name); got != closesBefore {
+	if got := e.seam.CallsFor(kit.OpClose, name); got != closesBefore {
 		t.Fatalf("a descriptor closed while a retirement was in flight: %d closes, want %d", got, closesBefore)
 	}
 
@@ -486,7 +486,7 @@ func TestGroupCloseStopsWorkersBeforeDescriptors(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Close after the retirement = %v, want nil", err)
 	}
-	if got := e.seam.CallsFor(journaltest.OpClose, name); got <= closesBefore {
+	if got := e.seam.CallsFor(kit.OpClose, name); got <= closesBefore {
 		t.Fatalf("the descriptor was never closed: %d closes, had %d", got, closesBefore)
 	}
 }
@@ -576,14 +576,14 @@ func TestGroupCloseMakesNoSpare(t *testing.T) {
 		e.r.Enqueue(id, segment.NotHeld)
 		e.p.Start()
 		quietPool(e.p)
-		creates := e.seam.Calls(journaltest.OpCreate)
+		creates := e.seam.Calls(kit.OpCreate)
 
 		ss := segment.NewStreams(1, streamIdentity, e.set, e.p, e.c, nopSinkFor)
 		g := segment.NewGroup(segment.GroupConfig{Streams: ss, Pool: e.p, Retirer: e.r, Cache: e.c})
 		if err := g.Close(); err != nil {
 			t.Fatalf("Close = %v, want nil", err)
 		}
-		if got := e.seam.Calls(journaltest.OpCreate); got != creates {
+		if got := e.seam.Calls(kit.OpCreate); got != creates {
 			t.Fatalf("Close created %d files with a full segment queued, want none", got-creates)
 		}
 	}
@@ -597,7 +597,7 @@ func TestGroupCloseSecondCallAnswersNilAfterFailure(t *testing.T) {
 
 	e := groupBuild(t)
 	p := e.appendOne(t, 1)
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpClose, streamSegName(p.Loc.Segment), 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpClose, streamSegName(p.Loc.Segment), 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	if err := e.g.Close(); !errors.Is(err, syscall.EIO) {
@@ -632,7 +632,7 @@ func TestStreamsCloseRefusesEveryStreamBeforeAnyDrains(t *testing.T) {
 		t.Fatalf("stream 1's warm Append: %v", err)
 	}
 
-	hold := e.seam.HoldFirst(t, journaltest.OpWrite, streamSegName(warm.Loc.Segment))
+	hold := e.seam.HoldFirst(t, kit.OpWrite, streamSegName(warm.Loc.Segment))
 	appended := make(chan error, 1)
 	go func() {
 		hh, body := streamWriteHeader(streamFileID(2), 64, streamTestBody(64, 0xc3), 7, core.Version{Counter: 2})

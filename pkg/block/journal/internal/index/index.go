@@ -38,6 +38,13 @@ func (ix *Index) WriteRetain(tag core.ShareTag, id core.FileID, p Placed, seq co
 	})
 }
 
+// Lose applies a synced loss of e at v to id under the file's lock, with no
+// admission, and returns the change to the file's held state. A zero-length e
+// is refused with core.ErrZeroLength and changes nothing.
+func (ix *Index) Lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta, error) {
+	return ix.fs.lose(id, e, v)
+}
+
 // Lookup returns the held piece of id that covers off, and false when none
 // does or the file has no entry. It takes the file's lock shared and creates
 // no entry.
@@ -59,3 +66,28 @@ func (ix *Index) Retained(id core.FileID) []Retained {
 // SegmentBytes returns the bytes seg backs as held and as retained extents. It
 // takes no file's lock.
 func (ix *Index) SegmentBytes(seg core.SegmentID) SegmentBytes { return ix.fs.segmentBytes(seg) }
+
+// FileEntries returns a copy of id's placement index entries in read-out
+// order, held and retained pieces and removal markers alike; nil when the
+// file holds none. It takes the file's lock shared and creates no entry.
+//
+// decision: exported so the datapath tests can see a file's entries, and a
+// later inspection read-out is expected to take it over. It is withdrawn if
+// the inspection path does not use it.
+func (ix *Index) FileEntries(id core.FileID) []Entry { return ix.fs.inspect(id) }
+
+// AsOf returns the change version a read of id reports.
+//
+// decision: exported ahead of its caller, for the datapath tests that observe
+// the bucket raise of RaiseFloor. It is withdrawn if the read path does not
+// take it.
+func (ix *Index) AsOf(id core.FileID) core.Version { return ix.fs.asOf(id) }
+
+// RaiseFloor raises every floor bucket to floor's counter, clamped to the
+// greatest version as the counters clamp it, so a file with no entry reports
+// at least the floor and a fill read below it is refused. It never lowers a
+// bucket and is safe beside readers. The floor's epoch must already be
+// validated: the counters refuse a non-zero one first.
+func (ix *Index) RaiseFloor(floor core.Version) {
+	ix.fs.raiseBuckets(min(floor.Counter, maxVersion))
+}

@@ -87,7 +87,7 @@ func TestClientFoundByName(t *testing.T) {
 	if _, err := g.Renew(ctx, id); !errors.Is(err, ErrStaleClient) {
 		t.Errorf("renewing the old ID after the reboot: %v, want ErrStaleClient", err)
 	}
-	if _, err := g.resolve(id, f2, ref); !errors.Is(err, ErrBadState) {
+	if _, err := g.resolve(Caller{Client: id}, f2, ref); !errors.Is(err, ErrBadState) {
 		t.Errorf("the old ID's state after the reboot: %v, want released", err)
 	}
 	if n := len(g.sink.endedOf(id)); n != 1 {
@@ -137,7 +137,7 @@ func TestProposalChangesNothingUntilConfirmed(t *testing.T) {
 	if _, err := f.Renew(ctx, id); err != nil {
 		t.Errorf("the old ID after a proposal: %v", err)
 	}
-	if _, err := f.resolve(id, file, ref); err != nil {
+	if _, err := f.resolve(Caller{Client: id}, file, ref); err != nil {
 		t.Errorf("the old ID's state after a proposal: %v", err)
 	}
 
@@ -237,7 +237,7 @@ func TestLapsedClientIsNotRevived(t *testing.T) {
 	if _, err := f.Renew(ctx, id); !errors.Is(err, ErrStaleClient) {
 		t.Errorf("the old ID after the name connected again: %v, want ErrStaleClient", err)
 	}
-	if _, err := f.resolve(id, file, ref); !errors.Is(err, ErrBadState) {
+	if _, err := f.resolve(Caller{Client: id}, file, ref); !errors.Is(err, ErrBadState) {
 		t.Errorf("the old ID's state: %v, want released", err)
 	}
 	f.sweep(ctx)
@@ -396,7 +396,7 @@ func TestLeaseExpiresASilentClient(t *testing.T) {
 	if _, err := f.Record(ctx, quiet); !errors.Is(err, ErrStaleClient) {
 		t.Errorf("the expired client's record: %v, want gone", err)
 	}
-	if _, err := f.resolve(quiet, file, ref); !errors.Is(err, ErrBadState) {
+	if _, err := f.resolve(Caller{Client: quiet}, file, ref); !errors.Is(err, ErrBadState) {
 		t.Errorf("the expired client's state: %v, want released", err)
 	}
 	if e := f.sink.endedOf(quiet); len(e) != 1 || len(e[0].shards) != 1 || e[0].shards[0] != 5 {
@@ -451,7 +451,7 @@ func TestRebootRaceLeavesOneID(t *testing.T) {
 		if _, err := g.Renew(ctx, p.Client); err != nil {
 			t.Fatalf("round %d: the new ID: %v", i, err)
 		}
-		if _, err := g.resolve(old, file, ref); !errors.Is(err, ErrBadState) {
+		if _, err := g.resolve(Caller{Client: old}, file, ref); !errors.Is(err, ErrBadState) {
 			t.Fatalf("round %d: the old ID's state: %v, want released", i, err)
 		}
 		g.Stop()
@@ -480,7 +480,7 @@ func TestDestroy(t *testing.T) {
 			t.Errorf("client %d after a refused Destroy: %v", c, err)
 		}
 	}
-	if _, err := f.resolve(withState, file, ref); err != nil {
+	if _, err := f.resolve(Caller{Client: withState}, file, ref); err != nil {
 		t.Errorf("state after a refused Destroy: %v", err)
 	}
 	if err := f.Destroy(ctx, Caller{Client: idle, Principal: entity.NewUser()}); !errors.Is(err, ErrNotYours) {
@@ -885,7 +885,7 @@ func TestExpireIsNodeLocal(t *testing.T) {
 	if err := f.Expire(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.resolve(id, file, ref); !errors.Is(err, ErrBadState) {
+	if _, err := f.resolve(Caller{Client: id}, file, ref); !errors.Is(err, ErrBadState) {
 		t.Errorf("state after Expire: %v, want released", err)
 	}
 	if _, err := f.Record(ctx, id); err != nil {

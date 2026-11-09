@@ -18,9 +18,10 @@ import (
 // admitted is one call admitted to one share: the caller it acts as there,
 // and the share as admission read it.
 type admitted struct {
-	caller authz.Caller
-	share  entity.Share
-	policy entity.ExportPolicy
+	caller    authz.Caller
+	share     entity.Share
+	policy    entity.ExportPolicy
+	sessioned bool // the call has a session, which open state marks the state it creates with
 }
 
 // root is the share's root handle.
@@ -156,6 +157,7 @@ func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareI
 		ro = entity.NarrowedByClient
 	}
 	a.caller = authz.Caller{Share: sh.ID, Proved: c.Identity, Client: c.Client, Protocol: c.Protocol}
+	a.sessioned = c.Session != (vfs.SessionRef{})
 	a.caller.Identity, a.caller.Mapped, err = admit.Resolve(ctx, principals{fs.meta.Principals()}, c.Identity, sh.ID, p, ro)
 	if err == nil && delay {
 		err = &vfs.Delay{Cause: vfs.DelayFrozen}

@@ -10,7 +10,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // quietAfterFailures installs the hooks that let a model wait for the worker to
@@ -150,7 +150,7 @@ func FuzzSyncInterleaving(f *testing.F) {
 				if !appended {
 					continue
 				}
-				rule := journaltest.Failing(journaltest.OpSync, format.SegmentName(last.Segment), 1, errors.New("injected"))
+				rule := kit.Failing(kit.OpSync, format.SegmentName(last.Segment), 1, errors.New("injected"))
 				if err := r.seam.Schedule(rule); err != nil {
 					t.Fatal(err)
 				}
@@ -308,7 +308,7 @@ func FuzzFailedSyncWindow(f *testing.F) {
 				if st, err := r.set.State(last); err != nil || st != segment.Active {
 					continue
 				}
-				rule := journaltest.Failing(journaltest.OpSync, format.SegmentName(last), 1, errors.New("injected sync"))
+				rule := kit.Failing(kit.OpSync, format.SegmentName(last), 1, errors.New("injected sync"))
 				if err := r.seam.Schedule(rule); err != nil {
 					t.Fatal(err)
 				}
@@ -321,7 +321,7 @@ func FuzzFailedSyncWindow(f *testing.F) {
 				if st, err := r.set.State(last); err != nil || st != segment.Active {
 					continue
 				}
-				rule := journaltest.Failing(journaltest.OpWrite, format.SegmentName(last), 1, errors.New("injected write"))
+				rule := kit.Failing(kit.OpWrite, format.SegmentName(last), 1, errors.New("injected write"))
 				if err := r.seam.Schedule(rule); err != nil {
 					t.Fatal(err)
 				}

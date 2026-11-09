@@ -383,6 +383,10 @@ func (v opens) Reconnect(ctx context.Context, who Caller, id entity.OpenID, m Re
 		switch {
 		case o == nil || ended || !o.reconnects(who, m, t.d.Clock.Elapsed()):
 			return ErrNoReclaim
+		case o.sessioned() && !who.Sessioned:
+			// Refused as mine refuses a reference to it: reconnected, it
+			// would take the zero session and lose its mark.
+			return ErrNotYoursSessioned
 		case o.unsaved:
 			return &DelayError{DelayCommit} // its record is written again by the timer first
 		}
@@ -610,7 +614,7 @@ func (t *Table) reinstateLease(e *entry, o *open, s ShardID, l *entity.Lease, ou
 		}
 	}
 	k := kindOf(l.State)
-	ref, err := t.mintUnder(e, o.Client, s, StateGrant, func(StateRef) error {
+	ref, err := t.mintUnder(e, o.Client, o.sessioned(), s, StateGrant, func(StateRef) error {
 		if k == GrantNone {
 			return nil
 		}
@@ -623,7 +627,7 @@ func (t *Table) reinstateLease(e *entry, o *open, s ShardID, l *entity.Lease, ou
 		return err
 	}
 	g := &grant{id: GrantID{s, ref.Instance, ref.Token}, client: o.Client, key: o.lease, parent: LeaseKey(l.ParentKey),
-		fsm: grantfsm.Grant{Kind: k, Epoch: l.Epoch, V2: l.V2}, counted: k != GrantNone}
+		fsm: grantfsm.Grant{Kind: k, Epoch: l.Epoch, V2: l.V2}, counted: k != GrantNone, sessioned: o.sessioned()}
 	if e.grants == nil {
 		e.grants = map[uint64]*grant{}
 	}

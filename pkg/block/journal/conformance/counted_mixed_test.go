@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // This file is the mixed-durability check's round protocol as one code path
@@ -53,7 +53,7 @@ type mixedEnv interface {
 	// segment syncs. The check sets it as the seam's fault, so a real
 	// journal's fsyncs park at storage; a fake parks on it itself from its
 	// own sync paths.
-	Install(gate *journaltest.SimGate)
+	Install(gate *kit.SimGate)
 
 	// Append lands the stream's next interval on the stream goroutine and
 	// reports whether the stream has another one to land. The interval that
@@ -110,7 +110,7 @@ type mixedEnv interface {
 // mixedMatch is the class of storage calls the gate parks: syncs of segment
 // files, the fsyncs a journal makes durable through.
 func mixedMatch(op string, key []byte) bool {
-	return op == journaltest.OpSync && len(key) >= 4 && string(key[len(key)-4:]) == ".seg"
+	return op == kit.OpSync && len(key) >= 4 && string(key[len(key)-4:]) == ".seg"
 }
 
 // mixedWait bounds, in real time, what the protocol waits for: the fixture's
@@ -120,7 +120,7 @@ const mixedWait = 2 * time.Second
 // settleParked waits for every parked call of the gate to leave, or fails
 // the run: a window that ends with a still-parked call holds a goroutine the
 // disarm was meant to free.
-func settleParked(t mixedTB, gate *journaltest.SimGate) {
+func settleParked(t mixedTB, gate *kit.SimGate) {
 	t.Helper()
 	deadline := time.Now().Add(mixedWait)
 	for gate.Parked() != 0 || gate.Dropped() != 0 {
@@ -183,7 +183,7 @@ func settleParked(t mixedTB, gate *journaltest.SimGate) {
 func runMixedRounds(t mixedTB, env mixedEnv) {
 	t.Helper()
 
-	gate := &journaltest.SimGate{Match: mixedMatch}
+	gate := &kit.SimGate{Match: mixedMatch}
 	env.Install(gate)
 	t.Cleanup(gate.Disarm)
 
@@ -468,7 +468,7 @@ func runMixedRounds(t mixedTB, env mixedEnv) {
 
 // takeArrival reports whether an armed call's arrival is still queued, and
 // takes it.
-func takeArrival(gate *journaltest.SimGate) bool {
+func takeArrival(gate *kit.SimGate) bool {
 	select {
 	case <-gate.Arrivals:
 		return true

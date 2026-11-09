@@ -15,6 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // The checks here fail by serving or destroying the wrong bytes without an
@@ -606,7 +607,7 @@ func TestRFC1A_FillSafety(t *testing.T) {
 		r := read(t, h, id, 0, 64<<10)
 		wantMissing(t, r, 0, []journal.Extent{ext(0, 64<<10)}, "an extent never written")
 
-		held := f.Seam.HoldFirst(t, journaltest.OpWrite, "*.seg")
+		held := f.Seam.HoldFirst(t, kit.OpWrite, "*.seg")
 		filled := make(chan error, 1)
 		go func() {
 			filled <- journaltest.RetrySpare(func() error { return h.Fill(t.Context(), id, 0, distinct(k, 64<<10), r.asOf, v) })
@@ -689,7 +690,7 @@ func TestRFC1A_Refusal(t *testing.T) {
 	// made in the background writes to files of its own.
 	segWrites := func() (n int) {
 		for _, s := range f.J.Inspect().Segments() {
-			n += f.Seam.CallsFor(journaltest.OpWrite, segmentName(s.ID))
+			n += f.Seam.CallsFor(kit.OpWrite, segmentName(s.ID))
 		}
 		return n
 	}
@@ -824,7 +825,7 @@ func TestRFC1A_ReleaseFreesNothingInsideSegment(t *testing.T) {
 	}
 
 	// freeing is every call that could free, zero or deallocate storage.
-	freeing := []string{journaltest.OpTruncate, journaltest.OpAllocate, journaltest.OpRemove, journaltest.OpRename}
+	freeing := []string{kit.OpTruncate, kit.OpAllocate, kit.OpRemove, kit.OpRename}
 	type snap struct {
 		calls     []int
 		durable   []byte
@@ -921,8 +922,8 @@ func TestRFC1A_UnlinkUnderRead(t *testing.T) {
 
 		name := segmentName(e.Location.Segment)
 		held := f.Seam.Hold(t, "read*", name)
-		removed := f.Seam.Hold(t, journaltest.OpRemove, name)
-		renamed := f.Seam.Hold(t, journaltest.OpRename, name)
+		removed := f.Seam.Hold(t, kit.OpRemove, name)
+		renamed := f.Seam.Hold(t, kit.OpRename, name)
 		type result struct {
 			r   readOut
 			err error
@@ -1447,7 +1448,7 @@ func TestRFC1A_NoPinOnSegmentUnderRepack(t *testing.T) {
 			}
 		}
 
-		first := f.Seam.Hold(t, journaltest.OpWrite, "*.seg")
+		first := f.Seam.Hold(t, kit.OpWrite, "*.seg")
 		repacked := make(chan error, 1)
 		go func() {
 			_, err := f.J.Repack(t.Context(), 2*journaltest.FixtureSegmentCap, journal.RepackScope{Segments: []journal.SegmentID{seg}})
@@ -1469,8 +1470,8 @@ func TestRFC1A_NoPinOnSegmentUnderRepack(t *testing.T) {
 		againstPass(false)
 
 		name := segmentName(seg)
-		unlink := f.Seam.Hold(t, journaltest.OpRemove, name)
-		rename := f.Seam.Hold(t, journaltest.OpRename, name)
+		unlink := f.Seam.Hold(t, kit.OpRemove, name)
+		rename := f.Seam.Hold(t, kit.OpRename, name)
 		first.Release()
 		select {
 		case <-unlink.Reached():

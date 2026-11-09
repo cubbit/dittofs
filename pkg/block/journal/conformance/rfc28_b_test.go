@@ -9,6 +9,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -64,7 +65,7 @@ func TestRFC28B_SegmentReclaimable(t *testing.T) {
 	live := writeSynced(t, f, 0, 0, 128<<10, 64<<10)
 	b := writeSynced(t, f, 1, 1, 0, 64<<10)
 
-	creates := f.Seam.Calls(journaltest.OpCreate)
+	creates := f.Seam.Calls(kit.OpCreate)
 	seg := sealIdle(t, f, a)
 	name := segmentName(seg)
 	info := ownedSegment(t, f, seg)
@@ -82,7 +83,7 @@ func TestRFC28B_SegmentReclaimable(t *testing.T) {
 		t.Fatalf("repack the segment: %v", err)
 	}
 
-	if removed, renamed := f.Seam.CallsFor(journaltest.OpRemove, name), f.Seam.CallsFor(journaltest.OpRename, name); removed != 1 || renamed != 0 {
+	if removed, renamed := f.Seam.CallsFor(kit.OpRemove, name), f.Seam.CallsFor(kit.OpRename, name); removed != 1 || renamed != 0 {
 		t.Fatalf("segment %s was removed %d times and renamed %d times by repack, want unlinked once and never recycled: it was sealed early", name, removed, renamed)
 	}
 
@@ -96,7 +97,7 @@ func TestRFC28B_SegmentReclaimable(t *testing.T) {
 	// count. The segment is shorter than a cap, so a repack that frees
 	// nothing leaves a difference that is never a whole number of caps.
 	got := f.J.Stats().UsedBytes
-	made := int64(f.Seam.Calls(journaltest.OpCreate) - creates)
+	made := int64(f.Seam.Calls(kit.OpCreate) - creates)
 	if spares := got - (used - size); spares < 0 || spares%journaltest.FixtureSegmentCap != 0 || spares/journaltest.FixtureSegmentCap > made {
 		t.Fatalf("UsedBytes = %d after unlinking a segment accounted at %d from %d, with %d files created since before the idle seal, want %d plus at most one cap of %d for each", got, size, used, made, used-size, journaltest.FixtureSegmentCap)
 	}

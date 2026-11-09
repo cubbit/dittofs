@@ -56,7 +56,7 @@ func TestStateRefTokenIsUnguessable(t *testing.T) {
 		for bit := range 64 {
 			flipped := ref
 			flipped.Token ^= 1 << bit
-			if _, err := tab.resolve(1, f, flipped); !errors.Is(err, ErrBadState) {
+			if _, err := tab.resolve(Caller{Client: 1}, f, flipped); !errors.Is(err, ErrBadState) {
 				t.Fatalf("token %#x with bit %d flipped: %v, want ErrBadState", ref.Token, bit, err)
 			}
 		}
@@ -69,21 +69,21 @@ func TestResolveChecksClientAndFile(t *testing.T) {
 	tab := newTable(t)
 	f, other := entity.NewFileID(), entity.NewFileID()
 	ref := mintIn(t, tab, f, 1, 0)
-	if _, err := tab.resolve(1, f, ref); err != nil {
+	if _, err := tab.resolve(Caller{Client: 1}, f, ref); err != nil {
 		t.Fatalf("own client and file: %v", err)
 	}
-	if _, err := tab.resolve(1, entity.FileID{}, ref); err != nil {
+	if _, err := tab.resolve(Caller{Client: 1}, entity.FileID{}, ref); err != nil {
 		t.Fatalf("no file named: %v", err)
 	}
-	if _, err := tab.resolve(2, f, ref); !errors.Is(err, ErrNotYours) {
+	if _, err := tab.resolve(Caller{Client: 2}, f, ref); !errors.Is(err, ErrNotYours) {
 		t.Errorf("another client: %v, want ErrNotYours", err)
 	}
-	if _, err := tab.resolve(1, other, ref); !errors.Is(err, ErrBadState) {
+	if _, err := tab.resolve(Caller{Client: 1}, other, ref); !errors.Is(err, ErrBadState) {
 		t.Errorf("another file: %v, want ErrBadState", err)
 	}
 	wrongType := ref
 	wrongType.Type = StateLock
-	if _, err := tab.resolve(1, f, wrongType); !errors.Is(err, ErrBadState) {
+	if _, err := tab.resolve(Caller{Client: 1}, f, wrongType); !errors.Is(err, ErrBadState) {
 		t.Errorf("another type: %v, want ErrBadState", err)
 	}
 }
@@ -152,7 +152,7 @@ func TestStateRefSequence(t *testing.T) {
 	}{{0, nil}, {now, nil}, {now - 1, ErrOldState}, {now + 1, ErrBadState}} {
 		r := ref
 		r.Seq = tc.seq
-		if _, err := tab.resolve(1, f, r); !errors.Is(err, tc.want) {
+		if _, err := tab.resolve(Caller{Client: 1}, f, r); !errors.Is(err, tc.want) {
 			t.Errorf("seq %d against %d: %v, want %v", tc.seq, now, err, tc.want)
 		}
 	}
@@ -169,7 +169,7 @@ func TestStateRefSequence(t *testing.T) {
 	}
 	r := ref
 	r.Seq = ^uint32(0)
-	if _, err := tab.resolve(1, f, r); !errors.Is(err, ErrOldState) {
+	if _, err := tab.resolve(Caller{Client: 1}, f, r); !errors.Is(err, ErrOldState) {
 		t.Errorf("the sequence before the wrap: %v, want ErrOldState", err)
 	}
 }
@@ -195,7 +195,7 @@ func TestStepTouchesOnlyItsOwnFile(t *testing.T) {
 	f, g := entity.NewFileID(), entity.NewFileID()
 	ref := mintIn(t, tab, f, 1, 0)
 	releaseIn(t, tab, g, ref)
-	if _, err := tab.resolve(1, f, ref); err != nil {
+	if _, err := tab.resolve(Caller{Client: 1}, f, ref); err != nil {
 		t.Fatalf("after another file's step released it: %v", err)
 	}
 	if err := tab.step(g, func(e *entry) error { _, err := tab.advance(e, ref); return err }); !errors.Is(err, ErrBadState) {

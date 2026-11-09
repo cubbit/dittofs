@@ -11,7 +11,8 @@ import (
 )
 
 // run is one stream's worker: on each wake it takes the windows of the
-// segments that ended, fails their content records, completes the entries a
+// segments that ended, fails their content records (or, once the journal is
+// read-only, every unsynced record of the stream), completes the entries a
 // sync covered, stamps the ones it has not seen, issues the sync a waiter asked for
 // or the sync bound's timer calls for, and arms the timer, until Stop closes
 // done.
@@ -28,7 +29,11 @@ func (d *Durability) run(st *stream) {
 			fire, fired = nil, true
 		}
 		d.takeWindows(st)
-		d.failWindows(st)
+		if d.Admit() != nil {
+			d.failReadOnly(st)
+		} else {
+			d.failWindows(st)
+		}
 		d.complete(st)
 		d.stamp(st)
 		d.syncStep(st, fired)
@@ -43,7 +48,7 @@ func (d *Durability) run(st *stream) {
 
 // syncStep issues the sync a waiter asked for, or, when the timer fired and the
 // oldest uncovered record is past the bound, the bound's sync, with no lock
-// held.
+// held, unless the journal is read-only.
 // A failure is recorded against the segment the sync was of, as the stream
 // reports it, and is never retried: the segment's tracker froze at the
 // failure and will not report it again.
@@ -59,6 +64,15 @@ func (d *Durability) syncStep(st *stream, fired bool) {
 		now = d.clock.Elapsed()
 	}
 	st.mu.Lock()
+	if d.Admit() != nil {
+		// A read-only journal issues no sync, neither one a waiter asked for
+		// nor the bound's: every record it would cover is failed, and its
+		// failure would overwrite the counters that describe the entering
+		// one and end the active segment for nothing.
+		st.want = false
+		st.mu.Unlock()
+		return
+	}
 	if !st.want {
 		seen, ok := st.oldestLocked()
 		if !fired || !ok || now-seen < core.SyncBound {

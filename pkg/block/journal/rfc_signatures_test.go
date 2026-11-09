@@ -105,7 +105,9 @@ var (
 		ExtentLimit: 0, Counters: Counters{}, RejectedSegments: 0,
 		Recovery: RecoveryStats{}, Losses: []LossEvent(nil), LossGeneration: 0,
 		TagConflicts: []TagConflict(nil), Shares: map[ShareTag]ShareStats(nil),
+		ReadOnly: ReadOnlyState{},
 	}
+	_ = ReadOnlyState{ReadOnly: false, Err: error(nil), SpareMade: false, Check: error(nil)}
 	_ = ShareStats{Limit: 0, UsedBytes: 0, ReservedBytes: 0, HeldBytes: 0, DirtyBytes: 0, UnreclaimedBytes: 0}
 	_ = Counters{
 		WrittenBytes: 0, FilledBytes: 0, FillRefused: 0, OfferedBytes: 0, MarkedBytes: 0,

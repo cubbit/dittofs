@@ -7,7 +7,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -97,7 +97,7 @@ func TestSyncDurationOnTheBoundFallsInTheLowerBucket(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
 	a := r.appendWrite(t, file(1), 0, "a")
-	h := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(a.Segment))
+	h := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(a.Segment))
 	ch := r.syncAsync(context.Background(), file(1))
 	<-h.Reached()
 	r.clock.Advance(SyncDurationBounds[0])

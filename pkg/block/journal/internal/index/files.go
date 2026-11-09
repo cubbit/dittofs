@@ -244,10 +244,10 @@ func (fs *files) indexRefusals() uint64 { return fs.refusals.Load() }
 // any reader or writer runs. A start with a non-zero epoch never reaches it:
 // the counters refuse one first.
 //
-// This is the only thing that seeds the buckets. Attaching a share later
-// raises the counter above that share's floor but touches no bucket, so a
-// share attached after open must seed the buckets itself if an asOf stored
-// in one of its earlier incarnations is to stay refused here.
+// This is the only thing that seeds the buckets at open. Attaching a share
+// later raises the counter above that share's floor and calls raiseBuckets
+// with it, so an asOf stored in one of its earlier incarnations stays
+// refused here; opened is left where open put it.
 func (fs *files) openBuckets(start core.Version) {
 	for i := range fs.buckets {
 		fs.buckets[i].Store(start.Counter)
@@ -255,11 +255,41 @@ func (fs *files) openBuckets(start core.Version) {
 	fs.opened = start.Counter
 }
 
+// raiseBuckets raises every bucket to counter, never lowering one: each
+// bucket is raised by compare-and-swap, so a bucket a drop or an earlier
+// raise took higher stays there, and it is safe beside readers and drops. It
+// leaves opened alone, so an entry changed since open is still checked
+// against its own version.
+//
+// decision: a raise refuses a stale fill for a file with no entry and for an
+// entry not changed since open, but not for an entry whose change version c
+// satisfies opened < c < the raised counter: that entry is checked against
+// its own version, not the raised bucket. It holds because a fill is checked
+// against the file's own tag first, and a share attaching after open
+// normally owns no entry changed before the attach. It fails open only for a
+// tag re-attached while this index still holds its entries (a closed handle
+// leaves its tag's extents held, so every re-attach is such a case), and only
+// for a fill whose asOf, for one of those entries, was not issued by this
+// journal and is at least that entry's version. The attach floor rule rules
+// that out: an entry under the tag was written after an attach whose floor
+// exceeded every version the share held elsewhere, so a foreign asOf is below
+// the entry's version and the entry check refuses it. The exception is a
+// share moved out, dropped through Close without a Forget, and moved back.
+// Withdraw the rule by raising opened, an atomic on the read path, if that
+// move-back is reachable with such an asOf.
+func (fs *files) raiseBuckets(counter uint64) {
+	for i := range fs.buckets {
+		raise(&fs.buckets[i], counter)
+	}
+}
+
 // checkedAgainst returns the version f, id's entry, is checked against: its
 // own change version when it has changed since open, and its floor bucket
 // otherwise — the top of the range the bucket-start rule allows, which keeps
 // a read that began before the open from filling a file that has an entry
-// too. The caller holds f's lock.
+// too. The caller holds f's lock. A raise of the buckets after open does not
+// move opened, so an entry changed since open keeps answering with its own
+// version; see the decision at raiseBuckets.
 func (fs *files) checkedAgainst(f *file, id core.FileID) core.Version {
 	if c := f.change.Counter; c > fs.opened {
 		return f.change
@@ -275,7 +305,10 @@ func (fs *files) checkedAgainst(f *file, id core.FileID) core.Version {
 // decision: a bucket-based asOf can name a version drawn but not yet applied
 // to the index. Two files share a bucket; the first's write draws its
 // version and while the append is in flight the second draws a higher one,
-// is deleted and settled, raising the bucket to it. A read of the first
+// is deleted and settled, raising the bucket to it. A journal-wide bucket
+// raise at a share's attach is a second cause: a write that drew a version
+// below the new floor and has not published, while a read of its file reports
+// the raised bucket. A read of the first
 // file, missing now, reports the raised bucket, and a change landed after
 // that read at the lower version no longer refuses a fill of it, since the
 // lower version is not above the asOf the read reported. The index cannot

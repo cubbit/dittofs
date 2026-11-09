@@ -25,13 +25,13 @@ import (
 // that moves the path here, with the cluster.
 
 // who is the openstate caller c acts as for client cl: the principal its
-// Identity maps to, never squashed.
+// Identity maps to, never squashed, on c's session if it has one.
 func (fs *Filesystem) who(ctx context.Context, c vfs.Call, cl vfs.ClientID) (openstate.Caller, error) {
 	p, err := admit.Mapped(ctx, principals{fs.meta.Principals()}, c.Identity)
 	if err != nil {
 		return openstate.Caller{}, err
 	}
-	return openstate.Caller{Client: cl, Principal: p, Protocol: c.Protocol}, nil
+	return openstate.Caller{Client: cl, Principal: p, Protocol: c.Protocol, Sessioned: c.Session != (vfs.SessionRef{})}, nil
 }
 
 // record is the client record info proposes or connects, owned by p. An SMB

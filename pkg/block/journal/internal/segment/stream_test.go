@@ -18,7 +18,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -36,7 +36,7 @@ var streamIdentity = core.JournalID{0xd, 0xe, 0xc, 0xa, 0xd, 0}
 // streamEnv is one stream over the seam, its ledger, its spare pool and its
 // cache: the building set of every stream check.
 type streamEnv struct {
-	seam   *journaltest.Seam
+	seam   *kit.Seam
 	set    *segment.Set
 	maker  *segment.Maker
 	pool   *segment.Pool
@@ -73,7 +73,7 @@ func (e streamEnv) cacheBuilt(t *testing.T) {
 func streamOver(t *testing.T, cap int64, setup func(e streamEnv)) streamEnv {
 	t.Helper()
 
-	seam, err := journaltest.NewSeam(t.TempDir())
+	seam, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestStreamAFailedWriteEndsItsSegmentAndTheStreamRollsPastIt(t *testing.T) {
 
 	// The second write fails: the fault's EIO, and no location. Armed now,
 	// the rule fires on this write and this write alone.
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, seg, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, seg, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	payload2 := make([]byte, 64)
@@ -662,7 +662,7 @@ func TestStreamEachRangeWrittenOnceAndAccounted(t *testing.T) {
 	}
 
 	name := streamSegName(1)
-	if got := e.seam.CallsFor(journaltest.OpWrite, name); got != records+1 {
+	if got := e.seam.CallsFor(kit.OpWrite, name); got != records+1 {
 		t.Fatalf("the segment saw %d writes, want the header plus %d records = %d", got, records, records+1)
 	}
 
@@ -710,7 +710,7 @@ func TestStreamTheLocationIsReturnedOnlyAfterTheBytesAreWritten(t *testing.T) {
 
 	// Park the next record's write: one append is now between its
 	// reservation and its bytes.
-	h := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+	h := e.seam.HoldFirst(t, kit.OpWrite, seg)
 	appended := make(chan segment.Placed, 1)
 	appErr := make(chan error, 1)
 	go func() {
@@ -829,11 +829,11 @@ func TestStreamTheHeaderIsWrittenOnceAndTheTakeSingleFlighted(t *testing.T) {
 	if segs != 1 {
 		t.Fatalf("the concurrent first appends left %d segment files with headers, want exactly the one they took", segs)
 	}
-	if got := e.seam.CallsFor(journaltest.OpCreate, format.SpareName(1)); got != 1 {
+	if got := e.seam.CallsFor(kit.OpCreate, format.SpareName(1)); got != 1 {
 		t.Fatalf("the take created the spare %d times, want once", got)
 	}
 	name := streamSegName(1)
-	if got := e.seam.CallsFor(journaltest.OpWrite, name); got != appends+1 {
+	if got := e.seam.CallsFor(kit.OpWrite, name); got != appends+1 {
 		t.Fatalf("the segment saw %d writes, want one header plus %d records", got, appends)
 	}
 
@@ -892,7 +892,7 @@ func TestStreamAFailedTakeIsRefusedAndLeftForRetirement(t *testing.T) {
 	// The take's header write is faulted: the first OpWrite on the first
 	// segment's name fails with EIO.
 	e := streamOver(t, streamCap, func(streamEnv) {})
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, streamSegName(1), 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, streamSegName(1), 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	e.cacheBuilt(t)
@@ -935,7 +935,7 @@ func TestStreamAFailedTakeIsRefusedAndLeftForRetirement(t *testing.T) {
 
 	// The next append retries the take: a fresh segment with a higher id,
 	// the spare the roll drew after the faulted one.
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, streamSegName(1), 0, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, streamSegName(1), 0, syscall.EIO)); err != nil {
 		t.Fatalf("disarming the header fault: %v", err)
 	}
 	h2, body2 := streamWriteHeader(streamFileID(1), 0, payload, 7, core.Version{Counter: 2})
@@ -966,14 +966,14 @@ func TestStreamReadAtARefusedSegmentMakesOneAttempt(t *testing.T) {
 	p := streamAppendWrite(t, e, h, body)
 
 	// An EIO is returned once and the read is made once.
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpRead, streamSegName(1), 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpRead, streamSegName(1), 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	buf := make([]byte, 64)
 	if _, err := e.s.ReadAt(1, buf, p.Loc.Off); !errors.Is(err, syscall.EIO) {
 		t.Fatalf("the faulted ReadAt = %v, want the EIO unchanged", err)
 	}
-	if got := e.seam.CallsFor(journaltest.OpRead, streamSegName(1)); got != 1 {
+	if got := e.seam.CallsFor(kit.OpRead, streamSegName(1)); got != 1 {
 		t.Fatalf("the faulted read made %d OpRead calls, want exactly one attempt", got)
 	}
 
@@ -986,7 +986,7 @@ func TestStreamReadAtARefusedSegmentMakesOneAttempt(t *testing.T) {
 	if err := e.cache.Close(1); err != nil {
 		t.Fatalf("the cache's Close of the segment: %v", err)
 	}
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpRead, streamSegName(1), 0, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpRead, streamSegName(1), 0, syscall.EIO)); err != nil {
 		t.Fatalf("disarming the read fault: %v", err)
 	}
 	// A closed stream refuses reads, so a second stream over the same cache
@@ -1051,7 +1051,7 @@ func TestStreamCloseWaitsForTheInFlightAppend(t *testing.T) {
 	wh, wbody := streamWriteHeader(streamFileID(1), 0, warm, 7, core.Version{Counter: 0})
 	streamAppendWrite(t, e, wh, wbody)
 
-	h := e.seam.HoldFirst(t, journaltest.OpWrite, seg)
+	h := e.seam.HoldFirst(t, kit.OpWrite, seg)
 	appErr := make(chan error, 1)
 	go func() {
 		payload := make([]byte, 64)
@@ -1187,7 +1187,7 @@ func TestStreamCloseWaitsOutAnInFlightSync(t *testing.T) {
 
 	// Park the stream's fsync: the descriptor is clean, so a close of it now
 	// is an eviction the seam would show.
-	h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
+	h := e.seam.HoldFirst(t, kit.OpSync, seg)
 	syncErr := make(chan error, 1)
 	go func() { syncErr <- e.s.Sync() }()
 	select {
@@ -1243,7 +1243,7 @@ func TestStreamClosesUnderDenseAppendsRacingAppendsDoesNotPanic(t *testing.T) {
 	const rounds = 100
 	payload := make([]byte, 32)
 	for round := 0; round < rounds; round++ {
-		seam, err := journaltest.NewSeam(t.TempDir())
+		seam, err := kit.NewSeam(t.TempDir())
 		if err != nil {
 			t.Fatalf("round %d: the seam could not be made: %v", round, err)
 		}
@@ -1515,7 +1515,7 @@ func TestStreamTheSyncedThroughIsReadBeforeTheFsync(t *testing.T) {
 
 	// The fsync parks: while it waits, record B lands — after the sync
 	// started, so no value this sync records may count it.
-	h := e.seam.HoldFirst(t, journaltest.OpSync, seg)
+	h := e.seam.HoldFirst(t, kit.OpSync, seg)
 	syncErr := make(chan error, 1)
 	go func() { syncErr <- e.s.Sync() }()
 	select {
@@ -1584,7 +1584,7 @@ func TestStreamAFailedSyncStopsWhatALaterSyncCovers(t *testing.T) {
 	bPayload := streamTestBody(64, 0x55)
 	bh, bbody := streamWriteHeader(streamFileID(2), 64, bPayload, 7, core.Version{Counter: 2})
 	b := streamAppendWrite(t, e, bh, bbody)
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, seg, 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpSync, seg, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	if err := e.s.Sync(); !errors.Is(err, syscall.EIO) {
@@ -1753,7 +1753,7 @@ func TestStreamAppendRefusesRecordsItCannotEncode(t *testing.T) {
 	}
 
 	// Every refusal names ErrBadRecord and changes nothing.
-	writes := e.seam.CallsFor(journaltest.OpWrite, streamSegName(1))
+	writes := e.seam.CallsFor(kit.OpWrite, streamSegName(1))
 	share := e.set.ShareBytes(7)
 
 	payload := streamTestBody(64, 0x3c)
@@ -1788,7 +1788,7 @@ func TestStreamAppendRefusesRecordsItCannotEncode(t *testing.T) {
 		if _, err := e.s.Append(tc.h, tc.body); !errors.Is(err, segment.ErrBadRecord) {
 			t.Fatalf("%s: Append = %v, want ErrBadRecord", tc.name, err)
 		}
-		if got := e.seam.CallsFor(journaltest.OpWrite, streamSegName(1)); got != writes {
+		if got := e.seam.CallsFor(kit.OpWrite, streamSegName(1)); got != writes {
 			t.Fatalf("%s made a seam write, want the refusal to perform none", tc.name)
 		}
 		if got := e.set.ShareBytes(7); got != share {
@@ -1831,11 +1831,11 @@ func TestStreamSyncAtOfASegmentTheStreamSealedAndLeftIsDurable(t *testing.T) {
 
 	// A sync of the successor would be a sync call on its file: none may be
 	// made on the strength of the first record's location.
-	syncs := e.seam.CallsFor(journaltest.OpSync, streamSegName(second.Loc.Segment))
+	syncs := e.seam.CallsFor(kit.OpSync, streamSegName(second.Loc.Segment))
 	if err := e.s.SyncAt(first.Loc); err != nil {
 		t.Fatalf("SyncAt of a sealed, left segment = %v, want nil", err)
 	}
-	if got := e.seam.CallsFor(journaltest.OpSync, streamSegName(second.Loc.Segment)); got != syncs {
+	if got := e.seam.CallsFor(kit.OpSync, streamSegName(second.Loc.Segment)); got != syncs {
 		t.Errorf("SyncAt synced the successor: %d sync calls, want still %d", got, syncs)
 	}
 }
@@ -1857,7 +1857,7 @@ func TestStreamSyncAtRefusesASegmentThatEndsBetweenItsChecksAndItsSync(t *testin
 	segment.SetSyncAtGapHook(func() {
 		segment.SetSyncAtGapHook(nil)
 		ran = true
-		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, streamSegName(1), 1, syscall.EIO)); err != nil {
+		if err := e.seam.Schedule(kit.Failing(kit.OpSync, streamSegName(1), 1, syscall.EIO)); err != nil {
 			t.Errorf("Schedule: %v", err)
 		}
 		if _, err := e.s.Seal(false); err == nil {

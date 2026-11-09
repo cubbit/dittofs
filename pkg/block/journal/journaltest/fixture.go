@@ -10,6 +10,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
@@ -73,7 +74,7 @@ type Fixture struct {
 
 	// Seam is the storage the journal reaches its directory through: for
 	// faults, holds, call counts and durable images.
-	Seam *Seam
+	Seam *kit.Seam
 
 	// Dir is the journal's directory.
 	Dir string
@@ -165,7 +166,7 @@ func bareFixture(tb testing.TB, fault sim.Fault, segCap int64, set func(*journal
 	tb.Helper()
 
 	dir := tb.TempDir()
-	seam, err := NewSeam(dir)
+	seam, err := kit.NewSeam(dir)
 	if err != nil {
 		tb.Fatalf("fixture: seam: %v", err)
 	}
@@ -345,7 +346,7 @@ func File(i int) journal.FileID {
 //
 // A crash does not release a hold, and closing the old journal waits for its
 // calls in flight, so a test releases every call it holds before it crashes.
-func (f *Fixture) Crash(opts ...CrashOption) {
+func (f *Fixture) Crash(opts ...kit.CrashOption) {
 	f.tb.Helper()
 
 	if err := f.TryCrash(opts...); err != nil {
@@ -417,7 +418,7 @@ func (f *Fixture) Shutdown() {
 // later open succeeds. It is for a check that holds a call of the open after
 // a crash and crashes again there, so the open fails as a dead process's
 // would.
-func (f *Fixture) TryCrash(opts ...CrashOption) error {
+func (f *Fixture) TryCrash(opts ...kit.CrashOption) error {
 	f.tb.Helper()
 
 	if err := f.Seam.Crash(opts...); err != nil {

@@ -45,9 +45,10 @@ type refKey struct {
 // revokedRef is a reference in its client's revoked set: what it named, and
 // why it was revoked.
 type revokedRef struct {
-	client entity.ClientID
-	typ    StateType
-	cause  RevokeReason
+	client    entity.ClientID
+	typ       StateType
+	cause     RevokeReason
+	sessioned bool // as holder's
 }
 
 // holder is what a state reference resolves to.
@@ -56,10 +57,27 @@ type holder struct {
 	file   entity.FileID
 	client entity.ClientID
 	seq    uint32 // the state's current sequence; the first is 1
+
+	sessioned bool // the call that created it had a session: a call with none presenting it is refused
+}
+
+// mine is whether who may present state of client c, marked sessioned when
+// created on a session: a call with no session presenting such state is
+// ErrNotYoursSessioned whatever its client or principal, as the mark alone
+// decides it; another client's state is ErrNotYours.
+func mine(who Caller, c entity.ClientID, sessioned bool) error {
+	switch {
+	case sessioned && !who.Sessioned:
+		return ErrNotYoursSessioned
+	case c != who.Client:
+		return ErrNotYours
+	}
+	return nil
 }
 
 // mintUnder issues a reference to a new piece of state of e's file, held by
-// client c, under that file's step. Its token is 64 bits read from Deps.Rand,
+// client c and marked sessioned when created on a session, under that file's
+// step. Its token is 64 bits read from Deps.Rand,
 // outside idx; a failed read mints nothing. under, if set, runs with idx held
 // once the token is free and before the reference is added: an error from it
 // adds nothing. A minted reference carries the low bits of its shard's grace
@@ -68,7 +86,7 @@ type holder struct {
 // ponytail: one mutex guards the reference index for every file, so mints and
 // resolves on different files serialise on it. Split it by shard like files
 // when step-wait time on unrelated files shows contention on idx.
-func (t *Table) mintUnder(e *entry, c entity.ClientID, s ShardID, typ StateType, under func(StateRef) error) (StateRef, error) {
+func (t *Table) mintUnder(e *entry, c entity.ClientID, sessioned bool, s ShardID, typ StateType, under func(StateRef) error) (StateRef, error) {
 	var b [8]byte
 	for {
 		if _, err := io.ReadFull(t.d.Rand, b[:]); err != nil {
@@ -98,7 +116,7 @@ func (t *Table) mintUnder(e *entry, c entity.ClientID, s ShardID, typ StateType,
 				return StateRef{}, err
 			}
 		}
-		t.refs[k] = holder{typ: typ, file: e.file, client: c, seq: 1}
+		t.refs[k] = holder{typ: typ, file: e.file, client: c, seq: 1, sessioned: sessioned}
 		t.idx.Unlock()
 		e.states++
 		return ref, nil
@@ -150,17 +168,18 @@ func (t *Table) release(e *entry, ref StateRef) {
 	}
 }
 
-// resolve finds the state ref names, for client c. A non-zero f is the file
-// the request's handle names, and must be the state's. Every call names its
-// client and only that client's state.
-func (t *Table) resolve(c entity.ClientID, f entity.FileID, ref StateRef) (holder, error) {
+// resolve finds the state ref names, for who. A non-zero f is the file the
+// request's handle names, and must be the state's. Every call names its
+// client and only that client's state, and a call with no session no state
+// created on one (mine).
+func (t *Table) resolve(who Caller, f entity.FileID, ref StateRef) (holder, error) {
 	t.idx.Lock()
 	defer t.idx.Unlock()
-	return t.resolveLocked(c, f, ref)
+	return t.resolveLocked(who, f, ref)
 }
 
 // resolveAny is resolve for whichever client holds ref, or held it when
-// revoked.
+// revoked. Its caller carries no call, so no session is judged.
 func (t *Table) resolveAny(ref StateRef) (holder, error) {
 	t.idx.Lock()
 	defer t.idx.Unlock()
@@ -169,19 +188,19 @@ func (t *Table) resolveAny(ref StateRef) (holder, error) {
 	if r, gone := t.revoked[k]; gone {
 		c = r.client
 	}
-	return t.resolveLocked(c, entity.FileID{}, ref)
+	return t.resolveLocked(Caller{Client: c, Sessioned: true}, entity.FileID{}, ref)
 }
 
 // resolveLocked is resolve, with idx held.
-func (t *Table) resolveLocked(c entity.ClientID, f entity.FileID, ref StateRef) (holder, error) {
+func (t *Table) resolveLocked(who Caller, f entity.FileID, ref StateRef) (holder, error) {
 	k := refKey{ref.Shard, ref.Token}
 	h, ok := t.refs[k]
 	if r, gone := t.revoked[k]; !ok && gone {
-		switch {
-		case r.typ != ref.Type:
+		if r.typ != ref.Type {
 			return holder{}, ErrBadState
-		case r.client != c:
-			return holder{}, ErrNotYours
+		}
+		if err := mine(who, r.client, r.sessioned); err != nil {
+			return holder{}, err
 		}
 		return holder{}, &RevokedError{r.cause}
 	}
@@ -191,8 +210,8 @@ func (t *Table) resolveLocked(c entity.ClientID, f entity.FileID, ref StateRef) 
 	if h.typ != ref.Type || (!f.IsZero() && h.file != f) {
 		return holder{}, ErrBadState
 	}
-	if h.client != c {
-		return holder{}, ErrNotYours
+	if err := mine(who, h.client, h.sessioned); err != nil {
+		return holder{}, err
 	}
 	if err := seqErr(h.seq, ref.Seq); err != nil {
 		return holder{}, err

@@ -9,6 +9,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // The checks here fail by leaving an operator unable to tell which of two
@@ -202,7 +203,7 @@ func TestRFC1D_StatsTakeNoWriteLock(t *testing.T) {
 	f := journaltest.New(t)
 	h := f.Share(0)
 
-	held := f.Seam.Hold(t, journaltest.OpWrite, "*.seg")
+	held := f.Seam.Hold(t, kit.OpWrite, "*.seg")
 	wrote := make(chan error, 1)
 	go func() {
 		_, err := h.WriteAt(t.Context(), journaltest.File(0), 0, pattern("held", 4096), 0)
@@ -257,7 +258,7 @@ func TestRFC1D_StatsCostIsFlat(t *testing.T) {
 	quiet := func() {
 		deadline := time.Now().Add(2 * time.Second)
 		for prev := -1; ; time.Sleep(10 * time.Millisecond) {
-			n := f.Seam.Calls(journaltest.OpWrite)
+			n := f.Seam.Calls(kit.OpWrite)
 			if n == prev || time.Now().After(deadline) {
 				return
 			}
@@ -367,7 +368,7 @@ func TestRFC1D_MetricsAreReachable(t *testing.T) {
 
 	// A failed sync, whether the journal then re-appends its window or fails
 	// it.
-	f.FailNext(journaltest.OpSync, "*.seg", 1)
+	f.FailNext(kit.OpSync, "*.seg", 1)
 	write(t, h, journaltest.File(0), 0, pattern("sync", 4096))
 	stub(t, "Sync", h.Sync(t.Context(), journaltest.File(0)))
 	f.Seam.SetFault(nil)
@@ -389,11 +390,11 @@ func TestRFC1D_MetricsAreReachable(t *testing.T) {
 	// record in one call does; one that writes a header and its payload apart
 	// would keep a payload byte behind an empty slot, which a scan can end at
 	// cleanly.
-	f.Drop(journaltest.OpSync, "*.seg")
+	f.Drop(kit.OpSync, "*.seg")
 	write(t, h, journaltest.File(2), 0, pattern("torn", 4096))
 	torn := heldEntry(t, f, journaltest.File(2)).Location.Segment
 	f.Seam.SetFault(nil) // the record stays unsynced; recovery's syncs must work
-	f.Crash(journaltest.TornIn(segmentName(torn), 1))
+	f.Crash(kit.TornIn(segmentName(torn), 1))
 	if got := f.J.Stats().Counters.TornTails; got == 0 {
 		t.Fatal("TornTails is zero after an open that found a torn tail")
 	}
@@ -585,7 +586,7 @@ func TestRFC1D_VerificationReports(t *testing.T) {
 	// writes to files of its own while Verify runs.
 	segWrites := func() (n int) {
 		for _, s := range f.J.Inspect().Segments() {
-			n += f.Seam.CallsFor(journaltest.OpWrite, segmentName(s.ID))
+			n += f.Seam.CallsFor(kit.OpWrite, segmentName(s.ID))
 		}
 		return n
 	}

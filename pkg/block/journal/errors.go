@@ -19,11 +19,13 @@ var (
 	ErrNotOffered       = core.ErrNotOffered
 	ErrOfferEnded       = core.ErrOfferEnded
 	ErrZeroLength       = core.ErrZeroLength
+	ErrInvalidExtent    = core.ErrInvalidExtent
 	ErrSyncFailed       = core.ErrSyncFailed
 	ErrNoSpace          = core.ErrNoSpace
 	ErrOtherShare       = core.ErrOtherShare
 	ErrInvalidSetting   = core.ErrInvalidSetting
 	ErrNoClock          = core.ErrNoClock
+	ErrJournalReadOnly  = core.ErrJournalReadOnly
 )
 
 type (
@@ -34,6 +36,7 @@ type (
 	IdentityError     = core.IdentityError
 	SyncError         = core.SyncError
 	NotOffloadedError = core.NotOffloadedError
+	ReadOnlyState     = core.ReadOnlyState
 )
 
 // The limits a NoSpaceError names; see Limit.

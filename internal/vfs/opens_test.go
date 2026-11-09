@@ -650,7 +650,7 @@ func TestAShareMarkedBeforeARestartIsDroppedAtStart(t *testing.T) {
 	cb := &vfstest.RecordingCallbacks{}
 	g.reg.register(pc.Client, "", cb)
 	g.must(t, g.Start(ctx))
-	who := openstate.Caller{Client: pc.Client, Principal: alice.Principal, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: pc.Client, Principal: alice.Principal, Protocol: entity.ProtocolSMB, Sessioned: true}
 	m := openstate.ReconnectMatch{Share: n.share, Create: [16]byte{1}}
 	if _, err := g.tab.Opens().Reconnect(ctx, who, r.Ref.Open, m, vfs.SessionRef{ID: 2}); err == nil {
 		t.Error("the removed share's persistent open reconnected after the start")
@@ -702,7 +702,7 @@ func TestStartServesEveryShare(t *testing.T) {
 	g := n.restart(t)
 	g.reg.register(pc.Client, "", &vfstest.RecordingCallbacks{})
 	g.must(t, g.Start(ctx))
-	who := openstate.Caller{Client: pc.Client, Principal: alice.Principal, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: pc.Client, Principal: alice.Principal, Protocol: entity.ProtocolSMB, Sessioned: true}
 	for _, o := range opens {
 		m := openstate.ReconnectMatch{Share: o.share, Create: o.create}
 		if _, err := g.tab.Opens().Reconnect(ctx, who, o.ref.Open, m, vfs.SessionRef{ID: 2}); err != nil {

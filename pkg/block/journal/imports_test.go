@@ -146,6 +146,8 @@ func forbidden(rel, kind, path string) string {
 	switch {
 	case within(rel, "journaltest/raw") && !isStdlib(path):
 		return "journaltest/raw may import the standard library only, so it shares no code with what it checks"
+	case within(rel, "journaltest/kit") && (path == journalPath || path == journalPath+"/journaltest"):
+		return "journaltest/kit stays free of the journal's public package, so the in-package tests of the packages that package imports can use it"
 	case within(path, journalPath+"/journaltest") && !within(rel, "journaltest"):
 		if strings.Contains(kind, "test import") {
 			return ""
@@ -261,6 +263,13 @@ func TestForbidden(t *testing.T) {
 		{"journaltest imports raw", "journaltest", "import", raw, false},
 		{"production code imports the codec", "journaltest", "import", format, false},
 		{"the root package imports journaltest", ".", "import", journalPath + "/journaltest", true},
+		{"kit imports the public package", "journaltest/kit", "import", journalPath, true},
+		{"a test of kit imports the public package", "journaltest/kit", "test import", journalPath, true},
+		{"kit imports journaltest", "journaltest/kit", "test import", journalPath + "/journaltest", true},
+		{"kit imports core", "journaltest/kit", "import", core, false},
+		{"kit imports the set's clock", "journaltest/kit", "import", clockPath, false},
+		{"an internal test imports kit", "internal/segment", "test import", journalPath + "/journaltest/kit", false},
+		{"production code imports kit", "internal/segment", "import", journalPath + "/journaltest/kit", true},
 	} {
 		if got := forbidden(c.rel, c.kind, c.path) != ""; got != c.forbidden {
 			t.Errorf("%s: forbidden(%q, %q, %q) = %t, want %t", c.name, c.rel, c.kind, c.path, got, c.forbidden)

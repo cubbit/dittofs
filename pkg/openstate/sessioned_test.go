@@ -1,0 +1,203 @@
+package openstate
+
+import (
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+)
+
+// State created on a session, an open, its lock state and its delegation, is
+// refused ErrNotYoursSessioned to a call of its own client with no session,
+// whatever its principal, through every way of naming it: an open reference,
+// a bare state reference, a grant ID and a lock owner. The same calls on a
+// session, and on state created with none, are answered as before.
+func TestSessionStateRefusedWithoutSession(t *testing.T) {
+	for _, onSession := range []bool{true, false} {
+		f := newFixture(t)
+		owner_ := entity.NewUser()
+		id := f.connect(t, nfs("host", 1, owner_))
+		maker := Caller{Client: id, Principal: entity.NewUser(), Sessioned: onSession}
+		var s entity.SessionRef
+		if onSession {
+			s = entity.SessionRef{NodeEpoch: 1, ID: 1}
+		}
+		file := FileKey{Shard: 1, ID: entity.NewFileID()}
+		o, g := f.grantOpen(t, maker, file, OpenRequest{Access: rd, Via: entity.NewFileID(), Want: GrantRead, Session: s})
+		if g == nil {
+			t.Fatal("no delegation granted")
+		}
+		lo := owner(maker, "lo")
+		testLock := func(who Caller) error {
+			_, err := f.Locks().TestLock(ctx, who, file, lo, br(20, 1), true)
+			return err
+		}
+		ls := f.mustLock(t, maker, file, LockReq{Owner: lo, Open: refOf(o), Ranges: []LockRange{x(0, 10)}, Seqs: Seqs{NewOwner: 1}})
+
+		// The opener, its client's owner and another principal of the client.
+		for _, p := range []entity.Principal{maker.Principal, owner_, entity.NewUser()} {
+			bare := Caller{Client: id, Principal: p}
+			calls := map[string]error{
+				"I/O through the open":       f.Checks().CheckIO(ctx, bare, file, refOf(o), br(0, 1), entity.ReadData),
+				"I/O through the lock state": f.Checks().CheckIO(ctx, bare, file, OpenRef{Kind: RefLocked, State: ls.Ref, Handle: handle(file.ID)}, br(0, 1), entity.ReadData),
+				"I/O through the delegation": f.Checks().CheckIO(ctx, bare, file, delegated(g, file), br(0, 1), entity.ReadData),
+				"a state reference":          f.Recovery().TestState(ctx, bare, []StateRef{o.Ref})[0],
+				"a grant ID":                 f.ack(bare, g, GrantNone),
+				"a lock test by owner":       testLock(bare),
+				"an owner release":           f.Locks().ReleaseLockOwner(ctx, bare, lo),
+			}
+			for name, err := range calls {
+				switch {
+				case onSession && !errors.Is(err, ErrNotYoursSessioned):
+					t.Errorf("%s, created on a session, by %v with none: %v, want ErrNotYoursSessioned", name, p, err)
+				case !onSession && errors.Is(err, ErrNotYoursSessioned):
+					t.Errorf("%s, created with no session, by %v with none: %v", name, p, err)
+				}
+			}
+		}
+
+		// The opener on a session: the open, its lock state, the test by
+		// owner and the delegation are its own.
+		on := maker
+		on.Sessioned = true
+		if err := f.Checks().CheckIO(ctx, on, file, refOf(o), br(0, 1), entity.ReadData); err != nil {
+			t.Errorf("I/O through the open on a session: %v", err)
+		}
+		if err := f.Recovery().TestState(ctx, on, []StateRef{o.Ref, ls.Ref})[0]; err != nil {
+			t.Errorf("a state reference on a session: %v", err)
+		}
+		if err := testLock(on); err != nil {
+			t.Errorf("a lock test by owner on a session: %v", err)
+		}
+		if err := f.ack(on, g, GrantNone); errors.Is(err, ErrNotYours) {
+			t.Errorf("a return of the delegation on a session: %v", err)
+		}
+	}
+}
+
+// ErrNotYoursSessioned is an ErrNotYours, so a caller testing only the
+// latter still refuses it.
+func TestNotYoursSessionedIsNotYours(t *testing.T) {
+	if !errors.Is(ErrNotYoursSessioned, ErrNotYours) {
+		t.Error("ErrNotYoursSessioned does not wrap ErrNotYours")
+	}
+}
+
+// An open named by its ID, as SMB names one, is refused the same way.
+func TestSessionOpenByIDRefusedWithoutSession(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc"))
+	file := anyFile()
+	o := f.mustOpen(t, a, file, OpenRequest{Access: rd, Session: entity.SessionRef{NodeEpoch: 1, ID: 1}})
+	byID := OpenRef{Kind: RefOpened, Open: o.ID, Handle: handle(file.ID)}
+	bare := a
+	bare.Sessioned = false
+	if err := f.Checks().CheckIO(ctx, bare, file, byID, br(0, 1), entity.ReadData); !errors.Is(err, ErrNotYoursSessioned) {
+		t.Errorf("I/O through the open by ID with no session: %v, want ErrNotYoursSessioned", err)
+	}
+	if err := f.Checks().CheckIO(ctx, a, file, byID, br(0, 1), entity.ReadData); err != nil {
+		t.Errorf("I/O through the open by ID on a session: %v", err)
+	}
+}
+
+// A parked open created on a session is refused a reconnect by a call with
+// none, and keeps its mark: reconnected, it would take the zero session. A
+// reconnect on another session takes it back marked.
+func TestReconnectWithoutSessionRefused(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc"))
+	file := anyFile()
+	o := f.mustOpen(t, a, file, keep(OpenRequest{Access: rd, Want: rwh}, entity.DurabilityDurable, s1, time.Minute, 1))
+	f.disconnect(t, a, s1)
+	m := ReconnectMatch{Share: file.Share, Create: [16]byte{1}}
+	bare := a
+	bare.Sessioned = false
+	if _, err := f.reconnect(bare, o, m, entity.SessionRef{}); !errors.Is(err, ErrNotYoursSessioned) {
+		t.Errorf("a reconnect with no session: %v, want ErrNotYoursSessioned", err)
+	}
+	if err := f.check(); err != nil {
+		t.Errorf("after the refused reconnect: %v", err)
+	}
+	if _, err := f.reconnect(a, o, m, s2); err != nil {
+		t.Fatalf("a reconnect on another session: %v", err)
+	}
+	byID := OpenRef{Kind: RefOpened, Open: o.ID, Handle: handle(file.ID)}
+	if err := f.Checks().CheckIO(ctx, bare, file, byID, br(0, 1), entity.ReadData); !errors.Is(err, ErrNotYoursSessioned) {
+		t.Errorf("I/O with no session after the reconnect: %v, want ErrNotYoursSessioned", err)
+	}
+	if err := f.check(); err != nil {
+		t.Errorf("after the reconnect: %v", err)
+	}
+}
+
+// A grant takes its mark from the open it is offered on, not from the call:
+// an open created on a session marks its delegation even when the call
+// opening it says it has none.
+func TestGrantMarkedAsItsOpen(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host", 1, entity.NewUser()))
+	file := anyFile()
+	_, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Want: GrantRead, Session: s1})
+	if g == nil {
+		t.Fatal("no delegation granted")
+	}
+	if err := f.ack(a, g, GrantNone); !errors.Is(err, ErrNotYoursSessioned) {
+		t.Errorf("a return with no session of a delegation on a session's open: %v, want ErrNotYoursSessioned", err)
+	}
+	if err := f.check(); err != nil {
+		t.Error(err)
+	}
+}
+
+// A revoked reference keeps the mark of the state it named: a call with no
+// session presenting one created on a session is ErrNotYoursSessioned, not
+// ErrRevoked, whether an admin revoked it or a recall ran past its deadline.
+// On a session it is ErrRevoked.
+func TestRevokedRefKeepsMark(t *testing.T) {
+	revoked := func(t *testing.T, f *fixture, on Caller, refs ...StateRef) {
+		t.Helper()
+		bare := on
+		bare.Sessioned = false
+		for _, ref := range refs {
+			if err := f.Recovery().TestState(ctx, bare, []StateRef{ref})[0]; !errors.Is(err, ErrNotYoursSessioned) {
+				t.Errorf("revoked %v with no session: %v, want ErrNotYoursSessioned", ref.Type, err)
+			}
+			var rev *RevokedError
+			if err := f.Recovery().TestState(ctx, on, []StateRef{ref})[0]; !errors.As(err, &rev) {
+				t.Errorf("revoked %v on a session: %v, want ErrRevoked", ref.Type, err)
+			}
+		}
+	}
+	t.Run("admin", func(t *testing.T) {
+		f := newFixture(t)
+		a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+		a.Sessioned = true
+		file := anyFile()
+		o, d := f.grantOpen(t, a, file, OpenRequest{Access: rd, Want: GrantRead, Session: s1})
+		if d == nil {
+			t.Fatal("no delegation granted")
+		}
+		if err := f.Revoke(ctx, a.Client); err != nil {
+			t.Fatal(err)
+		}
+		revoked(t, f, a, o.Ref, d.ID.ref())
+	})
+	t.Run("recall deadline", func(t *testing.T) {
+		f := newFixture(t)
+		a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
+		a.Sessioned = true
+		b := f.caller(t, nfs("host-b", 1, entity.NewUser()))
+		file := anyFile()
+		_, d := f.grantOpen(t, a, file, OpenRequest{Access: rd | wr, Want: rw, Session: s1})
+		if d == nil {
+			t.Fatal("no delegation granted")
+		}
+		if _, err := f.open(b, file, OpenRequest{Access: rd}); delayedFor(err) != DelayRecall {
+			t.Fatalf("a conflicting open: %v, want ErrDelay(DelayRecall)", err)
+		}
+		f.pass(t, leasePeriod, a.Client, b.Client)
+		f.mustOpen(t, b, file, OpenRequest{Access: rd})
+		revoked(t, f, a, d.ID.ref())
+	})
+}

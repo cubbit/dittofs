@@ -87,7 +87,7 @@ func (t *Table) rebuild() indexes {
 	t.entries(func(e *entry) {
 		for tok, o := range e.opens {
 			k := refKey{o.Ref.Shard, tok}
-			x.refs[k] = holder{StateOpen, e.file, o.Client, o.Ref.Seq}
+			x.refs[k] = holder{StateOpen, e.file, o.Client, o.Ref.Seq, o.sessioned()}
 			if o.ID != 0 {
 				x.byID[o.ID] = k
 			}
@@ -106,7 +106,7 @@ func (t *Table) rebuild() indexes {
 			}
 		}
 		for tok, ls := range e.lstates {
-			x.refs[refKey{ls.ref.Shard, tok}] = holder{StateLock, e.file, ls.owner.Client, ls.ref.Seq}
+			x.refs[refKey{ls.ref.Shard, tok}] = holder{StateLock, e.file, ls.owner.Client, ls.ref.Seq, ls.sessioned()}
 			x.count(ls.owner.Client, cappedRanges, len(ls.locks))
 			k := ownerKey{ls.owner.Client, string(ls.owner.Name)}
 			if x.owners[k]++; x.owners[k] == 1 {
@@ -114,13 +114,13 @@ func (t *Table) rebuild() indexes {
 			}
 		}
 		for tok, g := range e.grants {
-			x.refs[refKey{g.id.Shard, tok}] = holder{StateGrant, e.file, g.client, 1}
+			x.refs[refKey{g.id.Shard, tok}] = holder{StateGrant, e.file, g.client, 1, g.sessioned}
 			if g.counted {
 				x.granted[g.client]++
 			}
 		}
 		for tok, w := range e.watches {
-			x.refs[refKey{w.id.Shard, tok}] = holder{StateWatch, e.file, w.client, 1}
+			x.refs[refKey{w.id.Shard, tok}] = holder{StateWatch, e.file, w.client, 1, false}
 			x.count(w.client, cappedWatches, 1)
 		}
 		for _, w := range e.waiters {
@@ -234,5 +234,5 @@ func checked(t *testing.T, tab *Table) {
 
 // mint is mintUnder with nothing run under idx.
 func (t *Table) mint(e *entry, c entity.ClientID, s ShardID, typ StateType) (StateRef, error) {
-	return t.mintUnder(e, c, s, typ, nil)
+	return t.mintUnder(e, c, false, s, typ, nil)
 }

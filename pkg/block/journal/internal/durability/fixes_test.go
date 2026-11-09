@@ -12,7 +12,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -22,7 +22,7 @@ import (
 func (r *rig) strand(t *testing.T, f, g core.FileID) (older, newer segment.Location) {
 	t.Helper()
 	a := r.appendWrite(t, f, 0, "a")
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.streams.For(f).Seal(false); err == nil {
@@ -90,7 +90,7 @@ func TestFailureIsRecordedAgainstTheSegmentSynced(t *testing.T) {
 	r.d.Start(r.streams)
 	a := r.appendWrite(t, f, 0, "a")
 	boom := errors.New("sync boom")
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, boom)); err != nil {
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, boom)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -143,7 +143,7 @@ func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
 	// r1 is a header-only record: a failed window keeps it pending, and no loss
 	// record is appended into the new segment ahead of the test's own append.
 	a := r.appendKind(t, f, format.KindDelete, format.RecordBody{})
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.streams.For(f).Seal(false); err == nil {
@@ -153,7 +153,7 @@ func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
 	// The roll's header write is the first write after this point and passes;
 	// the record's is the second and fails: the roll lands and nothing is
 	// tracked in the new segment.
-	if err := r.seam.Schedule(journaltest.FailingFrom(journaltest.OpWrite, "*", 2, 1, errors.New("record boom"))); err != nil {
+	if err := r.seam.Schedule(kit.FailingFrom(kit.OpWrite, "*", 2, 1, errors.New("record boom"))); err != nil {
 		t.Fatal(err)
 	}
 	h := format.RecordHeader{Kind: format.KindWrite, File: f, Extent: core.Extent{Off: 8, Len: 2}, Version: core.Version{Counter: 9}, Tag: 1}
@@ -206,7 +206,7 @@ func TestSyncOnAnEndedSegmentIssuesNoFsync(t *testing.T) {
 	// A header-only record, which a failed window keeps: failing a content
 	// record appends a loss record, and its sync would count here.
 	a := r.appendKind(t, f, format.KindDelete, format.RecordBody{})
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.streams.For(f).Seal(false); err == nil {
