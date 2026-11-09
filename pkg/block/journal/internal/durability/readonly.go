@@ -78,17 +78,15 @@ func (d *Durability) wakeOnce() {
 
 // Admit reports whether the journal takes a write: nil, or an error matching
 // core.ErrJournalReadOnly that also wraps the cause the journal went
-// read-only with.
+// read-only with. d.Admit is also the func() error the pool, the idle seal
+// and the retirer are handed to consult before they write. It reads one
+// atomic pointer, so it is safe from any goroutine and under any lock.
 func (d *Durability) Admit() error {
 	if st := d.ro.Load(); st != nil && st.ReadOnly {
 		return st.refusal
 	}
 	return nil
 }
-
-// ReadOnly is Admit as the func() error the pool, the idle seal and the
-// retirer consult before they write.
-func (d *Durability) ReadOnly() error { return d.Admit() }
 
 // ReadOnlyState returns the read-only state. It reads one atomic pointer and
 // never waits on a write path.

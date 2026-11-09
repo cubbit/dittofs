@@ -11,26 +11,22 @@ import (
 )
 
 // TestAdmitIsNilUntilEnter covers the state's two ends: a fresh layer admits,
-// and after Enter every Admit and ReadOnly names the sentinel and the cause.
+// and after Enter Admit names the sentinel and the cause.
 func TestAdmitIsNilUntilEnter(t *testing.T) {
 	r := newRig(t, 1)
 	if err := r.d.Admit(); err != nil {
 		t.Fatalf("Admit on a fresh layer = %v, want nil", err)
 	}
-	if err := r.d.ReadOnly(); err != nil {
-		t.Fatalf("ReadOnly on a fresh layer = %v, want nil", err)
-	}
 	if st := r.d.ReadOnlyState(); st.ReadOnly || st.Err != nil || st.SpareMade || st.Check != nil {
 		t.Fatalf("ReadOnlyState on a fresh layer = %+v, want zero", st)
 	}
 	r.d.Enter(syscall.EROFS)
-	for name, err := range map[string]error{"Admit": r.d.Admit(), "ReadOnly": r.d.ReadOnly()} {
-		if !errors.Is(err, core.ErrJournalReadOnly) {
-			t.Errorf("%s = %v, want core.ErrJournalReadOnly", name, err)
-		}
-		if !errors.Is(err, syscall.EROFS) {
-			t.Errorf("%s = %v, want the cause syscall.EROFS reachable", name, err)
-		}
+	err := r.d.Admit()
+	if !errors.Is(err, core.ErrJournalReadOnly) {
+		t.Errorf("Admit = %v, want core.ErrJournalReadOnly", err)
+	}
+	if !errors.Is(err, syscall.EROFS) {
+		t.Errorf("Admit = %v, want the cause syscall.EROFS reachable", err)
 	}
 }
 

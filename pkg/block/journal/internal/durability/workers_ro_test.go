@@ -28,7 +28,7 @@ var writeOps = []string{
 // test that swaps one for nil proves the assertion names that worker's call.
 type workerChecks struct{ pool, idle, retire func() error }
 
-// runWorkers wires the real pool, idle sealer and retirer to d.ReadOnly over a
+// runWorkers wires the real pool, idle sealer and retirer to d.Admit over a
 // seam, leaves each of them one piece of work (a pool below its target, an
 // active segment idle past the seal age, a sealed segment awaiting
 // retirement), optionally enters read-only, then drives all three and returns
@@ -62,7 +62,7 @@ func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (delta, ma
 	if err != nil {
 		t.Fatalf("durability.New: %v", err)
 	}
-	checks := workerChecks{pool: d.ReadOnly, idle: d.ReadOnly, retire: d.ReadOnly}
+	checks := workerChecks{pool: d.Admit, idle: d.Admit, retire: d.Admit}
 	if mutate != nil {
 		mutate(&checks)
 	}
