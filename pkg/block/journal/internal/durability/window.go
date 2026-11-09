@@ -37,12 +37,20 @@ type failStamp struct {
 // decision: a window lives under the stream's leaf mutex, st.mu, like the
 // ledger its entries came out of: it is read and listed in st.windows only
 // with that mutex held, and only the stream's worker creates one (takeWindow)
-// or drops one (resolve), so no other goroutine mutates it. cause is kept for
-// the code that fails a window's records, which reads why the segment ended.
+// or drops one (resolve), so no other goroutine mutates it, and only the same
+// worker removes an entry when failWindow fails it. cause is kept for the
+// code that fails a window's records, which reads why the segment ended.
 type window struct {
+	id      uint64
 	seg     core.SegmentID
 	cause   segment.EndCause
+	err     error   // why the segment ended
 	entries []entry // moved from the ledger, in Track order
+	// failed is set once failWindow has run for the window: its content
+	// records are dropped and the generation raised, or it holds none and
+	// needed no raise. A header-only record answers a Sync's failure only
+	// after that.
+	failed bool
 }
 
 // onEnd is the consumer of every stream's end events (D13). It runs on the
@@ -130,12 +138,29 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	}
 
 	st.mu.Lock()
-	w := &window{seg: ev.Segment, cause: ev.Cause}
+	// decision: the window is the entries no sync has covered when the worker
+	// takes the event, and no Synced report for the failed segment is refused
+	// in the gap between the failure and this point, because none can arrive:
+	// a failed sync freezes the segment's tracker under the append domain
+	// before the failure is returned (syncFail), and a failed write freezes the
+	// prefix at the record, so no later sync of that segment is reported
+	// (syncDone is false) and no report can cover a record the failure took.
+	// Every report made before the failure was ordered before it under the
+	// same domain and covers records that are rightly not in the window. A
+	// test that injects a report into the sink after the failure is making one
+	// the stream never would. Withdrawn if the tracker stops freezing, or a
+	// second source of Synced reports exists: the sink then refuses a report
+	// for a segment in st.failed.
+	w := &window{id: d.windowSeq.Add(1), seg: ev.Segment, cause: ev.Cause, err: ev.Err}
 	st.removeLocked(func(e *entry) bool {
 		return e.w.Loc.Segment == ev.Segment && !st.covered(e.w.Loc)
 	}, func(e entry) { w.entries = append(w.entries, e) })
-	_, dup := st.failed[ev.Segment]
-	if !dup {
+	first, dup := st.failed[ev.Segment]
+	if dup {
+		// The sync's own error stands over the one a seal found after it,
+		// which the segment's records are reported with.
+		w.err = first
+	} else {
 		st.failed[ev.Segment] = ev.Err
 	}
 	_, wasCounted := st.counted[ev.Segment]
@@ -170,21 +195,21 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 // and the failure kept for its segment once nothing else names it, then
 // announces the segment through Config.Resolved (R19). It runs on the worker.
 //
-// decision: in this layer only a window with no records is resolved, at the
-// moment it is taken. A window that holds records stays pending, and every
-// Sync naming a file with a record in it answers a *core.SyncError, until the
-// code that fails a window's records through the index calls resolve. A
-// pending window never reads durable, so nothing is lost by waiting; what is
-// withdrawn is only the window's memory.
+// decision: a window is resolved when it holds no record: at once when it is
+// taken with none, or when failWindow has failed its last content record. A
+// window holding a record that failWindow leaves, a header-only one, stays
+// pending and is not announced, and every Sync naming a file with such a
+// record answers a *core.SyncError, until the code that re-appends it lands.
+// A pending window never reads durable, so nothing is lost by waiting; what
+// is withdrawn is only the window's memory.
 //
-// Resolving a window that holds records would make Durable read true for a
-// failed record, which then has no ledger entry and no window: it fails open.
-// Only empty windows are resolved today, so it cannot. The code that resolves
-// a non-empty window must keep failed records out of Durable's "no entry means
-// durable" answer first.
+// A record failWindow dropped has left the window and the ledger, which would
+// read it durable: st.lost keeps it out of that answer, and failWindow adds it
+// there in the same critical section that removes it from the window.
 func (d *Durability) resolve(st *stream, w *window) {
 	st.mu.Lock()
 	st.windows = slices.DeleteFunc(st.windows, func(o *window) bool { return o == w })
+	delete(st.told, w.id)
 	held := false
 	for i := range st.ledger {
 		held = held || st.ledger[i].w.Loc.Segment == w.seg

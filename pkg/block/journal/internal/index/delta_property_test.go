@@ -155,7 +155,7 @@ func (w *deltaWorld) run(f *deltaFile, kind int) {
 			return nil
 		})
 		if kind == opWriteRetain && err == nil {
-			f.window = append(f.window, WindowRecord{Record: r, Version: ver(v)})
+			f.window = append(f.window, WindowRecord{Record: r, Version: ver(v), Extent: whole})
 		}
 	case opFill:
 		e, r, v := w.extent(), w.place(), w.rng.Uint64()%(w.version+1)

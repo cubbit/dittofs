@@ -16,19 +16,38 @@ import (
 // the version of the newer content over it, or, under none, keeps the failed
 // record's (see failWindow).
 //
-// The superseder is named by version, not by where its record sits: a record
-// re-appended after a failed sync, or copied by repack, moves but keeps its
-// version, and no version is issued to two records.
+// The superseder is named by version and the extent its record's header names,
+// not by where its record sits: a record re-appended after a failed sync, or
+// copied by repack, moves but keeps both. The version alone does not name one
+// record, since a write split across segments puts it on every piece, but each
+// piece has its own extent, and a retained piece is cut to lie inside one.
 type Retained struct {
 	Piece
 	By core.Version
 }
 
-// WindowRecord names one record of a failed sync window: where it sits and its
-// version.
+// Cover is newer content a failed record handed a part of what it superseded
+// to: the part, still retained, now waits for the sync of the record of
+// version Version, which would drop it. Extent is the part's extent, which
+// lies inside that record's header extent, so a lift by it drops that part
+// and nothing another record of the same version holds.
+type Cover struct {
+	Version core.Version
+	Extent  core.Extent
+}
+
+// WindowRecord names one record of a failed sync window: where it sits, its
+// version and the file extent its header names.
+//
+// The extent is part of what names the record's retained pieces: a write split
+// across segments leaves several records of one version with disjoint extents,
+// and the pieces each superseded lie within its own extent, so version alone
+// would take another piece's. The extent survives a re-append, which moves the
+// record and keeps its header.
 type WindowRecord struct {
 	Record  RecordAt
 	Version core.Version
+	Extent  core.Extent
 }
 
 // retainedSet is one file's retained extents. Unlike the held set, its pieces
@@ -122,9 +141,22 @@ func (s *retainedSet) in(seg core.SegmentID, out []Retained) []Retained {
 	return out
 }
 
-// bySuperseder selects the pieces the record of version v superseded.
-func bySuperseder(v core.Version) func(Retained) bool {
-	return func(r Retained) bool { return r.By == v }
+// supersededBy selects the pieces the record of version v whose header names
+// extent e superseded. A retained piece is cut to its superseder's extent, so
+// it lies inside e exactly when that record superseded it, and a piece another
+// record of the same version superseded, which lies outside e, is not
+// selected.
+func supersededBy(v core.Version, e core.Extent) func(Retained) bool {
+	return func(r Retained) bool {
+		return r.By == v && r.Extent.Off >= e.Off && r.Extent.Off+r.Extent.Len <= e.Off+e.Len
+	}
+}
+
+// supersededByAny selects the pieces any record of window superseded.
+func supersededByAny(window []WindowRecord) func(Retained) bool {
+	return func(r Retained) bool {
+		return slices.ContainsFunc(window, func(w WindowRecord) bool { return supersededBy(w.Version, w.Extent)(r) })
+	}
 }
 
 // drop stops retaining the parts inside e of the pieces match selects,
@@ -270,18 +302,20 @@ func (f *file) writeRetain(p Placed) {
 // held again either: it stays retained under the failed record's version and
 // is appended to out, for the caller to keep under a hold or drop.
 //
-// It also returns the covering versions it handed parts to, sorted and
-// distinct, leaving out the window's own. A returned version may name no part
-// by the time the call returns, since a later record's pass can drop what an
-// earlier one handed over.
+// It also returns the covering records it handed parts to, as a version and
+// the part's extent, sorted and distinct, leaving out the window's own. A
+// returned cover may name no part by the time the call returns, since a later
+// record's pass can drop what an earlier one handed over. Last it returns the
+// held pieces the window's records stopped holding, each as it was held, in the
+// order they were cut.
 //
-// decision: a covering version's sync drops what it was handed only if that
+// decision: a covering record's sync drops what it was handed only if that
 // sync is still to come. A covering write can sit in a later segment that
 // synced before this window's failure was handled, and then nothing would
 // drop the part by superseder again, so the caller drops by each returned
-// version it knows has synced, one check where it fails the window. Revisit
-// when windows are resolved before any later write can sync, which makes the
-// check always find nothing.
+// cover (a version and an extent) whose record it knows has synced, one check
+// where it fails the window. Revisit when windows are resolved before any later
+// write can sync, which makes the check always find nothing.
 //
 // The change version is left where the failed writes raised it, unless the
 // window held all the file's content, in which case the update's settle drops
@@ -293,7 +327,7 @@ func (f *file) writeRetain(p Placed) {
 // a copy of the window. A failed window is rare and short; pass each record's
 // extent with it, and index the window's versions, when a failed window over
 // files with many extents shows these in a profile.
-func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []core.Version) {
+func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []Cover, []Piece) {
 	// Failing a window moves superseded bytes between retained and held across
 	// several edits. The subtractions those edits collect stay pending until
 	// the pass has re-held and re-retained everything, so a concurrent reader
@@ -310,13 +344,15 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []
 	order := slices.Clone(window)
 	slices.SortFunc(order, func(a, b WindowRecord) int { return b.Version.Compare(a.Version) })
 	var was []core.Extent
+	var dropped []Piece
 	var back, gaps []Retained
-	var covers []core.Version
+	var covers []Cover
 	for _, w := range order {
 		was = was[:0]
 		f.held.visit(whole, func(p Piece) bool {
 			if p.Record == w.Record {
 				was = append(was, p.Extent)
+				dropped = append(dropped, p)
 			}
 			return true
 		})
@@ -331,7 +367,7 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []
 		// newest version first, each only where nothing newer went back.
 		back = back[:0]
 		for _, e := range was {
-			f.retained.edit(e, bySuperseder(w.Version), func(r Retained) (Retained, bool) {
+			f.retained.edit(e, supersededBy(w.Version, w.Extent), func(r Retained) (Retained, bool) {
 				back = append(back, r)
 				return r, false
 			})
@@ -354,9 +390,7 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []
 	// never-below bound is what TestFailWindowSettleNeverDipsASegmentItDoesNotWrite
 	// pins.
 	back = back[:0]
-	f.retained.edit(whole, func(r Retained) bool {
-		return slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == r.By })
-	}, func(r Retained) (Retained, bool) {
+	f.retained.edit(whole, supersededByAny(window), func(r Retained) (Retained, bool) {
 		back = append(back, r)
 		return r, false
 	})
@@ -369,21 +403,27 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []
 	}
 	// A record's pass can hand a part to an older record of the window, whose
 	// own pass then fails it: that version is the window's, not a cover.
-	covers = slices.DeleteFunc(covers, func(v core.Version) bool {
-		return slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == v })
+	covers = slices.DeleteFunc(covers, func(c Cover) bool {
+		return slices.ContainsFunc(window, func(w WindowRecord) bool {
+			return c.Version == w.Version && c.Extent.Off >= w.Extent.Off &&
+				c.Extent.Off+c.Extent.Len <= w.Extent.Off+w.Extent.Len
+		})
 	})
-	slices.SortFunc(covers, core.Version.Compare)
-	return out, slices.Compact(covers)
+	slices.SortFunc(covers, func(a, b Cover) int {
+		return cmp.Or(a.Version.Compare(b.Version), cmp.Compare(a.Extent.Off, b.Extent.Off), cmp.Compare(a.Extent.Len, b.Extent.Len))
+	})
+	return out, slices.Compact(covers), dropped
 }
 
 // supersede retains again the parts of r that held content newer than r
 // covers, each as superseded by that content's version, which it appends to
-// covers, and appends to gaps the parts under nothing held, or under older
-// content, still carrying r's By. Neighbouring parts that share a By are kept
-// as one.
-func (f *file) supersede(r Retained, gaps []Retained, covers []core.Version) ([]Retained, []core.Version) {
+// covers with the part's extent, and appends to gaps the parts under nothing
+// held, or under older content, still carrying r's By. Neighbouring parts that
+// share a By are kept as one.
+func (f *file) supersede(r Retained, gaps []Retained, covers []Cover) ([]Retained, []Cover) {
 	var part Retained
 	var gap bool
+	var partAt RecordAt
 	flush := func() {
 		switch {
 		case part.Extent.Len == 0:
@@ -391,35 +431,38 @@ func (f *file) supersede(r Retained, gaps []Retained, covers []core.Version) ([]
 			gaps = append(gaps, part)
 		default:
 			f.retained.add(part)
-			covers = append(covers, part.By)
+			covers = append(covers, Cover{Version: part.By, Extent: part.Extent})
 		}
 		part = Retained{}
 	}
-	take := func(lo, hi int64, by core.Version, isGap bool) {
+	// A part handed to newer content is cut where that content's record
+	// changes, so it lies inside one record's extent and a lift by that
+	// record names it; a gap has no newer record and is cut by version only.
+	take := func(lo, hi int64, by core.Version, isGap bool, at RecordAt) {
 		if lo >= hi {
 			return
 		}
-		if part.Extent.Len > 0 && part.Extent.Off+part.Extent.Len == lo && part.By == by && gap == isGap {
+		if part.Extent.Len > 0 && part.Extent.Off+part.Extent.Len == lo && part.By == by && gap == isGap && partAt == at {
 			part.Extent.Len = hi - part.Extent.Off
 			return
 		}
 		flush()
 		part = Retained{Piece: clip(r.Piece, core.Extent{Off: lo, Len: hi - lo}), By: by}
-		gap = isGap
+		gap, partAt = isGap, at
 	}
 	cursor, end := r.Extent.Off, r.Extent.Off+r.Extent.Len
 	f.held.visit(r.Extent, func(p Piece) bool {
 		lo, hi := max(p.Extent.Off, cursor), min(p.Extent.Off+p.Extent.Len, end)
-		take(cursor, lo, r.By, true)
+		take(cursor, lo, r.By, true, RecordAt{})
 		if p.Version.Compare(r.Version) > 0 {
-			take(lo, hi, p.Version, false)
+			take(lo, hi, p.Version, false, p.Record)
 		} else {
-			take(lo, hi, r.By, true)
+			take(lo, hi, r.By, true, RecordAt{})
 		}
 		cursor = hi
 		return true
 	})
-	take(cursor, end, r.By, true)
+	take(cursor, end, r.By, true, RecordAt{})
 	flush()
 	return gaps, covers
 }

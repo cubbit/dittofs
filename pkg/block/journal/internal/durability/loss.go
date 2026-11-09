@@ -190,7 +190,8 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 		if l.Reason != core.LossSuperseded {
 			d.dir.addFailed(l.Seq)
 		}
-		if refused || errors.Is(recErr, core.ErrNoSpace) {
+		if refused || errors.Is(recErr, core.ErrNoSpace) || errors.Is(recErr, core.ErrClosed) ||
+			errors.Is(recErr, segment.ErrStreamStopped) || errors.Is(recErr, segment.ErrStreamClosed) {
 			d.log.Debug("a loss record was not appended", "file", l.File, "seq", l.Seq, "err", recErr)
 		} else {
 			d.log.Error("a loss record was not appended", "file", l.File, "seq", l.Seq, "err", recErr)
@@ -202,7 +203,11 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 // appendRecord appends the loss record to the file's stream and syncs it.
 //
 // ponytail: the sync is the segment's own, one per loss, issued outside the
-// group commit, so a failure here ends the segment itself, as the stream's
+// group commit. A failed window of N content records therefore costs N serial
+// append-and-fsync rounds on the stream's worker, and no other file's Sync on
+// the stream returns meanwhile. Upgrade to appending the window's loss records
+// and one SyncAt of the last when a failed window's stall shows up in a
+// sync-latency reading. A failure here ends the segment itself, as the stream's
 // worker does for a sync of its own: no later sync would claim the records of
 // a segment left open, and the failed window is taken from the end this
 // requests. For the same reason that failure is not counted in sync_failures,

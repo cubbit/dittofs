@@ -28,7 +28,14 @@ func assertRetained(t *testing.T, f *file, want ...Retained) {
 }
 
 // failed names one record of a failed window.
-func failed(r RecordAt, v uint64) WindowRecord { return WindowRecord{Record: r, Version: ver(v)} }
+func failed(r RecordAt, v uint64) WindowRecord {
+	return WindowRecord{Record: r, Version: ver(v), Extent: whole}
+}
+
+// bySuperseder selects the pieces superseded by any record of version v.
+func bySuperseder(v core.Version) func(Retained) bool {
+	return func(r Retained) bool { return r.By == v }
+}
 
 // TestRetainedKeepsOverlappingPieces: retained pieces may overlap each other
 // and the held set, and are listed in offset then version order. A set that
@@ -187,7 +194,7 @@ func TestFailedWindowReholdsExactState(t *testing.T) {
 	before := f.held.pieces(nil)
 
 	f.writeRetain(write(4, 16, rec(3, 0), 3))
-	out, _ := f.failWindow([]WindowRecord{failed(rec(3, 0), 3)}, nil)
+	out, _, _ := f.failWindow([]WindowRecord{failed(rec(3, 0), 3)}, nil)
 	if len(out) != 0 {
 		t.Fatalf("unrestored %+v, want none", out)
 	}
@@ -210,7 +217,7 @@ func TestFailWindowShuffledRestoresExactly(t *testing.T) {
 
 	win := []WindowRecord{failed(rec(3, 0), 3), failed(rec(5, 0), 5), failed(rec(2, 0), 2), failed(rec(4, 0), 4)}
 	given := slices.Clone(win)
-	out, _ := f.failWindow(win, nil)
+	out, _, _ := f.failWindow(win, nil)
 	if len(out) != 0 {
 		t.Fatalf("unrestored %+v, want none", out)
 	}
@@ -250,7 +257,7 @@ func TestFailWindowReattributesUnderASurvivor(t *testing.T) {
 	f.write(write(0, 8, rec(1, 0), 1))
 	f.writeRetain(write(0, 8, rec(2, 0), 2))
 	f.write(write(4, 4, rec(3, 0), 3))
-	out, _ := f.failWindow([]WindowRecord{failed(rec(2, 0), 2)}, nil)
+	out, _, _ := f.failWindow([]WindowRecord{failed(rec(2, 0), 2)}, nil)
 	assertPieces(t, &f.held,
 		piece(0, 4, rec(1, 0), 0, 1, false),
 		piece(4, 4, rec(3, 0), 0, 3, false),
@@ -273,7 +280,7 @@ func TestFailWindowReturnsNoPieceOfTheWindow(t *testing.T) {
 	f.writeRetain(write(0, 8, rec(3, 0), 3))
 	f.writeRetain(write(0, 4, rec(5, 0), 5))
 	f.held.cut(ext(0, 4)) // released
-	out, _ := f.failWindow([]WindowRecord{failed(rec(3, 0), 3), failed(rec(5, 0), 5)}, nil)
+	out, _, _ := f.failWindow([]WindowRecord{failed(rec(3, 0), 3), failed(rec(5, 0), 5)}, nil)
 	want := []Retained{kept(piece(0, 4, rec(1, 0), 0, 1, false), 3)}
 	if !slices.Equal(out, want) {
 		t.Fatalf("unrestored %+v, want %+v", out, want)
@@ -293,7 +300,7 @@ func TestRemovalLeavesRetainedAndFailedWindowStopsAtIt(t *testing.T) {
 	f.writeRetain(write(0, 8, rec(2, 0), 2))
 	f.truncate(4, ver(3))
 	assertRetained(t, &f, kept(piece(0, 8, rec(1, 0), 0, 1, false), 2))
-	out, covers := f.failWindow([]WindowRecord{failed(rec(2, 0), 2)}, nil)
+	out, covers, _ := f.failWindow([]WindowRecord{failed(rec(2, 0), 2)}, nil)
 	want := []Retained{kept(piece(4, 4, rec(1, 0), 4, 1, false), 2)}
 	if !slices.Equal(out, want) || len(covers) != 0 {
 		t.Fatalf("unrestored %+v covers %v, want %+v and none", out, covers, want)
@@ -326,7 +333,7 @@ func TestFailedWindowThenSurvivorSyncs(t *testing.T) {
 	f.write(write(0, 8, rec(1, 0), 1))
 	f.writeRetain(write(0, 8, rec(2, 0), 2))
 	f.writeRetain(write(0, 4, rec(3, 0), 3))
-	out, _ := f.failWindow([]WindowRecord{failed(rec(2, 0), 2)}, nil)
+	out, _, _ := f.failWindow([]WindowRecord{failed(rec(2, 0), 2)}, nil)
 	if len(out) != 0 {
 		t.Fatalf("reported %+v, want nothing: a surviving write covers the part", out)
 	}
@@ -347,15 +354,15 @@ func TestFailedWindowNamesTheCoveringVersions(t *testing.T) {
 	f.writeRetain(write(0, 8, rec(2, 0), 2))          // the window that fails
 	f.writeRetain(write(0, 4, rec(3, 0), 3))          // the next segment
 	f.retained.drop(whole, bySuperseder(ver(3)), nil) // which syncs first
-	out, covers := f.failWindow([]WindowRecord{failed(rec(2, 0), 2)}, nil)
+	out, covers, _ := f.failWindow([]WindowRecord{failed(rec(2, 0), 2)}, nil)
 	if len(out) != 0 {
 		t.Fatalf("reported %+v, want nothing", out)
 	}
-	if want := []core.Version{ver(3)}; !slices.Equal(covers, want) {
+	if want := []Cover{{Version: ver(3), Extent: ext(0, 4)}}; !slices.Equal(covers, want) {
 		t.Fatalf("covering versions %+v, want %+v", covers, want)
 	}
-	for _, v := range covers {
-		f.retained.drop(whole, bySuperseder(v), nil)
+	for _, c := range covers {
+		f.retained.drop(whole, supersededBy(c.Version, c.Extent), nil)
 	}
 	assertRetained(t, &f)
 }
@@ -373,7 +380,7 @@ func TestFailedWindowReportsOnlyAGap(t *testing.T) {
 	f.held.cut(ext(0, 12)) // released, say
 	f.held.fill(Placed{Extent: ext(8, 4), Record: rec(4, 0), Version: ver(1)})
 	f.write(write(0, 4, rec(5, 0), 8))
-	out, _ := f.failWindow([]WindowRecord{failed(rec(2, 0), 6)}, nil)
+	out, _, _ := f.failWindow([]WindowRecord{failed(rec(2, 0), 6)}, nil)
 	want := []Retained{kept(piece(4, 8, rec(1, 0), 4, 5, false), 6)}
 	if !slices.Equal(out, want) {
 		t.Fatalf("reported %+v, want %+v", out, want)

@@ -140,7 +140,9 @@ func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
 	// stream's first append.
 	r.d.Start(r.streams)
 	f := file(1)
-	a := r.appendWrite(t, f, 0, "r1")
+	// r1 is a header-only record: a failed window keeps it pending, and no loss
+	// record is appended into the new segment ahead of the test's own append.
+	a := r.appendKind(t, f, format.KindDelete, format.RecordBody{})
 	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +203,9 @@ func TestSyncOnAnEndedSegmentIssuesNoFsync(t *testing.T) {
 	r := newRigLogging(t, 1, nil, slog.New(logs))
 	r.d.Start(r.streams)
 	f := file(1)
-	a := r.appendWrite(t, f, 0, "a")
+	// A header-only record, which a failed window keeps: failing a content
+	// record appends a loss record, and its sync would count here.
+	a := r.appendKind(t, f, format.KindDelete, format.RecordBody{})
 	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +214,11 @@ func TestSyncOnAnEndedSegmentIssuesNoFsync(t *testing.T) {
 	}
 	// The failed seal is itself reported once, as a failure and an Error log,
 	// when its end event is taken; the Sync below must add nothing to either.
-	eventually(t, "the seal's end event to be counted", func() bool { return r.d.Stats().SyncFailures == 1 })
+	// The worker counts the failure under the stream's lock and logs it after
+	// releasing it, so both are waited for before they are read as the seal's.
+	eventually(t, "the seal's end event to be counted and logged", func() bool {
+		return r.d.Stats().SyncFailures == 1 && logs.n.Load() == 1
+	})
 	sealFailures, sealLogs := r.d.Stats().SyncFailures, logs.n.Load()
 	before := r.syncsOf(a.Segment)
 
