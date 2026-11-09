@@ -1302,7 +1302,7 @@ resumed removal's `Drop` names only the share. The two raises differ only in the
 grace instance ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)): `RaiseAtStart` sets `GraceInstance` to the new
 incarnation, since a restart lost the shard's open state, and `RaiseAtAttach`
 keeps it. **`RaiseAtAttach` is only for a shard whose open state the node
-holds**: one this process has already raised, or one whose handover shipped the
+holds**: one this process has already raised and served, or one whose handover shipped the
 table (cluster, [RFC 11 §3.1](rfc-11-ownership.md#3.1%20The%20primary%20is%20fenced%20by%20an%20epoch)). Every other raise takes the start form: a share
 this node served before a restart and binds again after it, and a late attach of
 a journal refused at start, lost their open state with the restart; a new,
