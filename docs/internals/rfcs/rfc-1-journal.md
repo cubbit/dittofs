@@ -1431,7 +1431,8 @@ A **loss event** is an extent the journal stopped holding without being asked:
 dropped as corrupt ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), as stale ([RFC 28 §3.2](rfc-28-journal-format.md#3.2%20Offload%20state%20after%20recovery)), acknowledged unreadable ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)),
 as superseded by the metadata reconcile (`DropOlder`, [§3.3](#3.3%20Offload)),
 because a failed sync window was failed ([§5.3](#5.3%20A%20failed%20sync)), or because a read-only journal failed its unsynced records ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)). Each names the share, the file, the extent, the content version,
-the reason, whether its offloaded bit was set, and whether its loss is deferred
+the reason, whether its offloaded bit was set, whether the dropped record was
+synced, as its loss record says (below), and whether its loss is deferred
 ([§6](#6.%20Capacity)). `Stats` keeps the most recent
 ones in a bounded ring, each with a sequence number, and counts them all
 ([§3.9](#3.9%20Metrics)), so a poller sees every new event or knows how many it missed. The
