@@ -5,14 +5,10 @@ import (
 	"os"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	adaptercmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/adapter"
-	clientcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/client"
 	ctxcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/context"
-	gracecmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/grace"
 	groupcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/group"
 	idpcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/identityprovider"
 	idmapcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/idmap"
-	netgroupcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/netgroup"
 	netlogoncmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/netlogon"
 	quotacmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/quota"
 	settingscmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/settings"
@@ -97,10 +93,6 @@ func init() {
 	rootCmd.AddCommand(quotacmd.Cmd)
 	rootCmd.AddCommand(trashcmd.Cmd)
 	rootCmd.AddCommand(storecmd.Cmd)
-	rootCmd.AddCommand(adaptercmd.Cmd)
-	rootCmd.AddCommand(clientcmd.Cmd)
-	rootCmd.AddCommand(gracecmd.Cmd)
-	rootCmd.AddCommand(netgroupcmd.Cmd)
 	rootCmd.AddCommand(netlogoncmd.Cmd)
 	rootCmd.AddCommand(idmapcmd.Cmd)
 	rootCmd.AddCommand(idpcmd.Cmd)

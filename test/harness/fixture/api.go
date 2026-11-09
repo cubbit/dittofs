@@ -20,25 +20,11 @@ import (
 
 // configure sets the server up through its API: its stores on the fixture's
 // profile, with the blocks of an S3 profile in b, the users, the shares with
-// their settings and grants, and the adapter settings, all before dt enables
-// the adapters, which read them as they start. The server's answer to the NFS
-// settings must hold them as set. Users get password.
+// their settings and grants, and the adapter settings. The server's answer to
+// the NFS settings must hold them as set. Users get password.
 func (s *Server) configure(c *apiclient.Client, b *bucket, password string) error {
 	f := s.f
-	off, on := false, true
-	// decision: on a fresh database the server creates its NFS and SMB
-	// adapters enabled, on 12049 and 12445, and starts them; no setting stops
-	// that. So between the server's start and this step the fixture may hold
-	// those ports, or fail to bind them where another server holds them, which
-	// changes nothing here. A developer's own dfs that starts in that moment
-	// finds the port taken and runs without that adapter, logging it, until
-	// the adapter is enabled again. Withdraw this when the server can start
-	// without its default adapters.
-	for _, a := range []string{"nfs", "smb"} {
-		if _, err := c.UpdateAdapter(a, &apiclient.UpdateAdapterRequest{Enabled: &off}); err != nil {
-			return fmt.Errorf("turning off the %s adapter the server starts with: %w", a, err)
-		}
-	}
+	on := true
 	meta := map[string]any{"in_memory": true}
 	if f.Profile != "memory" { // badger and badger-s3 keep it on disk
 		meta = map[string]any{"path": filepath.Join(s.data, "metadata")}
@@ -107,21 +93,6 @@ func (s *Server) configure(c *apiclient.Client, b *bucket, password string) erro
 	if f.SMB.Encryption == "preferred" {
 		if _, err := c.PatchSMBSettings(&apiclient.PatchSMBSettingsRequest{EnableEncryption: &on}); err != nil {
 			return fmt.Errorf("the SMB settings: %w", err)
-		}
-	}
-	for _, a := range []struct {
-		name string
-		port int
-	}{{"nfs", s.nfsPort}, {"smb", s.smbPort}} {
-		if a.port == 0 {
-			continue
-		}
-		ad, err := c.UpdateAdapter(a.name, &apiclient.UpdateAdapterRequest{Port: &a.port, Enabled: &on})
-		if err != nil {
-			return fmt.Errorf("enabling %s on port %d: %w", strings.ToUpper(a.name), a.port, err)
-		}
-		if !ad.Running {
-			return fmt.Errorf("%s is enabled on port %d, but its listener isn't running", strings.ToUpper(a.name), a.port)
 		}
 	}
 	return nil
@@ -204,30 +175,12 @@ func nfsSettings(f registry.Fixture) (*apiclient.PatchNFSSettingsRequest, error)
 }
 
 // check is the fixture's check before the first test that the server
-// answers: an authenticated call answers, and shows NFS and SMB each served
-// on its port when the fixture asks for it, and no adapter it doesn't ask for.
-// With Kerberos, {server}, a name then, must lead to SMB's port. With an S3
-// profile's bucket b, the server's own check of its block store must find it
-// healthy too.
+// answers: an authenticated call answers. With Kerberos, {server}, a name
+// then, must lead to SMB's port. With an S3 profile's bucket b, the server's
+// own check of its block store must find it healthy too.
 func (s *Server) check(c *apiclient.Client, b *bucket) error {
-	adapters, err := c.ListAdapters()
-	if err != nil {
+	if _, err := c.GetCurrentUser(); err != nil {
 		return fmt.Errorf("an authenticated call: %w", err)
-	}
-	ports := map[string]int{"nfs": s.nfsPort, "smb": s.smbPort}
-	served := map[string]bool{}
-	for _, a := range adapters {
-		switch {
-		case ports[a.Type] > 0:
-			served[a.Type] = a.Running && a.Port == ports[a.Type]
-		case a.Running:
-			return fmt.Errorf("the %s adapter runs, which the fixture doesn't ask for", a.Type)
-		}
-	}
-	for _, a := range []string{"nfs", "smb"} {
-		if ports[a] > 0 && !served[a] {
-			return fmt.Errorf("%s isn't served on port %d", strings.ToUpper(a), ports[a])
-		}
 	}
 	if s.kdc != nil {
 		conn, err := net.DialTimeout("tcp", net.JoinHostPort(s.kdc.host, strconv.Itoa(s.smbPort)), 5*time.Second)

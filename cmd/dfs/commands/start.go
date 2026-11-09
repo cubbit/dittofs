@@ -14,12 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cubbit/dittofs/internal/auth/netlogon"
 	"github.com/cubbit/dittofs/internal/controlplane/api/handlers"
 	"github.com/cubbit/dittofs/internal/logger"
-	"github.com/cubbit/dittofs/pkg/adapter/nfs"
-	"github.com/cubbit/dittofs/pkg/adapter/smb"
-	"github.com/cubbit/dittofs/pkg/auth/kerberos"
 	"github.com/cubbit/dittofs/pkg/block"
 	"github.com/cubbit/dittofs/pkg/config"
 	"github.com/cubbit/dittofs/pkg/controlplane/api"
@@ -95,9 +91,9 @@ var startCmd = &cobra.Command{
 
 By default, the server daemonizes into the background and writes its PID to
 $XDG_STATE_HOME/dittofs/dittofs.pid. Use --foreground when running under a
-process supervisor (systemd, Docker) or for interactive debugging. The NFS
-adapter listens on port 12049 and the SMB adapter on port 12445 by default;
-the control-plane REST API is available at http://localhost:8080.
+process supervisor (systemd, Docker) or for interactive debugging. The
+server serves no file protocol: it runs the control plane, whose REST API is
+available at http://localhost:8080, and the metrics endpoint when enabled.
 
 Examples:
   # Start in background (daemon mode)
@@ -286,15 +282,6 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 		logger.Info("Default groups created", "groups", "admins, operators, users")
 	}
 
-	// Ensure default adapters exist (NFS and SMB)
-	adaptersCreated, err := cpStore.EnsureDefaultAdapters(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to ensure default adapters: %w", err)
-	}
-	if adaptersCreated {
-		logger.Info("Default adapters created", "adapters", "nfs, smb")
-	}
-
 	// Wire operator-configured Badger metadata-cache defaults into the badger
 	// engine BEFORE any metadata store is opened (InitializeFromStore opens
 	// them). Zero values leave that dimension to RAM-relative auto-sizing
@@ -332,22 +319,6 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 		DryRunSampleSize:    cfg.GC.DryRunSampleSize,
 		CompactionLiveRatio: cfg.GC.CompactionLiveRatio,
 	})
-
-	// Thread the operator-configured lock-manager grace period into the
-	// MetadataService BEFORE loading shares: AddShare registers each share's
-	// lock manager and enters the post-restart grace window, so the duration
-	// must be set first. LoadInitial is idempotent (the lifecycle Serve loop
-	// loads settings again); a nil/zero value falls back to the 90s default,
-	// which matches the DB default for grace_period.
-	if sw := rt.GetSettingsWatcher(); sw != nil {
-		if err := sw.LoadInitial(ctx); err != nil {
-			logger.Warn("Failed to load initial adapter settings for lock grace period", "error", err)
-		}
-		if nfsSettings := rt.GetNFSSettings(); nfsSettings != nil && nfsSettings.GracePeriod > 0 {
-			rt.GetMetadataService().SetLockGracePeriod(
-				time.Duration(nfsSettings.GracePeriod) * time.Second)
-		}
-	}
 
 	// Legacy-layout detection is a hard boot stop. Other share-loading failures
 	// stay best-effort (logged + ignored, the historical behavior).
@@ -439,8 +410,6 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 	if nlController != nil {
 		rt.SetNetlogonController(nlController)
 	}
-
-	rt.SetAdapterFactory(createAdapterFactory(&effectiveKerberos, nlAuth))
 
 	// Create and set API server
 	apiServer, err = api.NewServer(cfg.ControlPlane, rt, cpStore, api.Timeouts{
@@ -842,157 +811,6 @@ func kerberosDTOToConfig(dto handlers.KerberosConfigDTO) config.KerberosConfig {
 		c.MaxContexts = 10000
 	}
 	return c
-}
-
-// createAdapterFactory returns a factory function that creates protocol adapters
-// from configuration. This factory is used by Runtime to create adapters
-// dynamically when loading from store or when created via API.
-//
-// nlAuth is the shared, process-wide NETLOGON authenticator (one machine
-// account per process). It is built once by the caller — so the online-join
-// provider joins / loads the persisted secret exactly once regardless of how
-// many SMB adapter instances the runtime spins up — and injected here. It is
-// nil when machine_account is disabled.
-func createAdapterFactory(kerberosConfig *config.KerberosConfig, nlAuth *netlogon.Authenticator) runtime.AdapterFactory {
-	return func(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error) {
-		switch cfg.Type {
-		case "nfs":
-			return createNFSAdapter(cfg, kerberosConfig)
-		case "smb":
-			return createSMBAdapter(cfg, kerberosConfig, nlAuth)
-		default:
-			return nil, fmt.Errorf("unknown adapter type: %s", cfg.Type)
-		}
-	}
-}
-
-func createNFSAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig) (runtime.ProtocolAdapter, error) {
-	port := cfg.Port
-	if port == 0 {
-		port = models.DefaultNFSPort
-	}
-
-	nfsCfg := nfs.NFSConfig{Enabled: true, Port: port}
-
-	parsedConfig, err := cfg.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse adapter config: %w", err)
-	}
-	if tlsCfg, ok := parsedConfig["tls"].(map[string]any); ok {
-		if v, ok := tlsCfg["cert_file"].(string); ok {
-			nfsCfg.TLS.CertFile = v
-		}
-		if v, ok := tlsCfg["key_file"].(string); ok {
-			nfsCfg.TLS.KeyFile = v
-		}
-		if v, ok := tlsCfg["client_ca"].(string); ok {
-			nfsCfg.TLS.ClientCA = v
-		}
-		if v, ok := tlsCfg["min_version"].(string); ok {
-			nfsCfg.TLS.MinVersion = v
-		}
-		if v, ok := tlsCfg["mode"].(string); ok {
-			nfsCfg.TLS.Mode = v
-		}
-	}
-
-	adapter := nfs.New(nfsCfg)
-	if kerberosConfig != nil && kerberosConfig.Enabled {
-		adapter.SetKerberosConfig(kerberosConfig)
-	}
-	return adapter, nil
-}
-
-// applyParsedSMBConfig copies the adapter JSON fields this process honors.
-// Signing was already copied. encryption_mode is documented on the same
-// object and has to be copied too: without it, start stays on the preferred
-// default and there is no way to select required. It is read through the
-// same parser Validate uses, so a malformed encryption object is refused here
-// too instead of starting on preferred.
-//
-// An unknown mode is returned from here. smb.New panics on it, and this
-// string comes from a persisted adapter row. Boot has no recover above the
-// factory, so the row has to be refused as a config error.
-func applyParsedSMBConfig(smbCfg *smb.Config, parsedConfig map[string]any) error {
-	if parsedConfig == nil {
-		return nil
-	}
-	if bindAddr, ok := parsedConfig["bind_address"].(string); ok {
-		smbCfg.BindAddress = bindAddr
-	}
-	if signingCfg, ok := parsedConfig["signing"].(map[string]any); ok {
-		if enabled, ok := signingCfg["enabled"].(bool); ok {
-			smbCfg.Signing.Enabled = &enabled
-		}
-		if required, ok := signingCfg["required"].(bool); ok {
-			smbCfg.Signing.Required = required
-		}
-	}
-	mode, err := models.SMBEncryptionMode(parsedConfig)
-	if err != nil {
-		return err
-	}
-	if mode != "" {
-		if err := smb.ValidateEncryptionMode(mode); err != nil {
-			return err
-		}
-		smbCfg.Encryption.Mode = mode
-	}
-	return nil
-}
-
-func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig, nlAuth *netlogon.Authenticator) (runtime.ProtocolAdapter, error) {
-	port := cfg.Port
-	if port == 0 {
-		port = models.DefaultSMBPort
-	}
-
-	smbCfg := smb.Config{Enabled: true, Port: port}
-
-	parsedConfig, err := cfg.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse adapter config: %w", err)
-	}
-
-	if err := applyParsedSMBConfig(&smbCfg, parsedConfig); err != nil {
-		return nil, err
-	}
-
-	smbAdapter := smb.New(smbCfg)
-
-	// Wire Kerberos provider for SPNEGO authentication. When Kerberos is not
-	// configured, the SMB adapter only accepts NTLM/guest auth.
-	if kerberosConfig != nil && kerberosConfig.Enabled {
-		provider, err := kerberos.NewProvider(kerberosConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize SMB Kerberos provider: %w", err)
-		}
-		smbAdapter.SetKerberosProvider(provider)
-	}
-
-	// Wire the shared NETLOGON authenticator for domain-controller NTLM
-	// pass-through. It is built once by the caller (one machine account per
-	// process) and injected, regardless of kerberosConfig.Enabled — an NTLM-only
-	// / legacy deployment sets kerberos.enabled=false but still needs NETLOGON
-	// passthrough when machine_account.enabled=true. nlAuth is nil when
-	// MachineAccount.Enabled is false, so SetNetlogonAuthenticator no-ops then.
-	if kerberosConfig != nil {
-		// When NTLM pass-through is active, the SMB handler must advertise, in its
-		// NTLM CHALLENGE TargetInfo, both the AD NetBIOS/DNS domain AND the AD
-		// machine-account computer name. Domain clients echo these into their
-		// NTLMv2 response; if the advertised domain is WORKGROUP or the computer
-		// name is the bare OS hostname (not the machine account), Samba's NETLOGON
-		// SamLogon rejects the otherwise-valid response (#1357). SetKerberosProvider
-		// covers the SPNEGO-enabled path, but NTLM-only members (kerberos.enabled
-		// =false) never reach it, so set it explicitly here. The computer name is
-		// the same workstation name the NETLOGON secure channel authenticates as.
-		if nlAuth != nil {
-			smbAdapter.SetADDomain(kerberosConfig.NetBIOSDomain, kerberosConfig.DNSDomain, netbiosWorkstation(*kerberosConfig))
-		}
-		smbAdapter.SetNetlogonAuthenticator(nlAuth)
-	}
-
-	return smbAdapter, nil
 }
 
 // handleFormatMismatch prints the operator directive and reports exit 78 when

@@ -4,12 +4,10 @@ import (
 	"net/http"
 
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
-	"github.com/go-chi/chi/v5"
 )
 
-// ClientHandler handles unified client management API endpoints.
-// It uses the ClientRegistry for cross-protocol client listing and
-// Runtime.DisconnectClient for protocol-specific teardown.
+// ClientHandler handles unified client listing API endpoints, read from the
+// ClientRegistry.
 type ClientHandler struct {
 	rt *runtime.Runtime
 }
@@ -33,19 +31,4 @@ func (h *ClientHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSONOK(w, registry.List())
-}
-
-// Disconnect handles DELETE /api/v1/clients/{id}.
-// Performs protocol-specific teardown (closes TCP, triggers NFS state revocation /
-// SMB session cleanup) before deregistering the client.
-func (h *ClientHandler) Disconnect(w http.ResponseWriter, r *http.Request) {
-	clientID := chi.URLParam(r, "id")
-
-	record := h.rt.DisconnectClient(clientID)
-	if record == nil {
-		NotFound(w, "client not found")
-		return
-	}
-
-	WriteNoContent(w)
 }

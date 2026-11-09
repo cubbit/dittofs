@@ -49,6 +49,7 @@ func TestDfsEndsWithDT(t *testing.T) {
 // {mount} at each NFS version, with pjdfstest's options, and answers there;
 // Stop unmounts it and removes {mount}.
 func TestRealMount(t *testing.T) {
+	needsServedProtocol(t)
 	for _, n := range []string{"root", "nfs-client"} {
 		if err := needs.Check("", n); err != nil {
 			t.Skipf("%s: %v", n, err)
@@ -100,6 +101,7 @@ func TestRealMount(t *testing.T) {
 // mounted over SMB at {mount}, as {user}, and root makes a file at its root,
 // as a suite's commands do; Stop unmounts it and removes {mount}.
 func TestRealSMBMount(t *testing.T) {
+	needsServedProtocol(t)
 	for _, n := range []string{"root", "smb-client"} {
 		if err := needs.Check("", n); err != nil {
 			t.Skipf("%s: %v", n, err)
@@ -138,6 +140,7 @@ func TestRealSMBMount(t *testing.T) {
 // each client has its own hostname, and the user dt runs as reaches the
 // second over ssh. Stop leaves no namespace or bridge behind.
 func TestRealClients(t *testing.T) {
+	needsServedProtocol(t)
 	for _, n := range []string{"root", "nfs-client", "rpcbind"} {
 		if err := needs.Check("", n); err != nil {
 			t.Skipf("%s: %v", n, err)
@@ -213,6 +216,7 @@ func TestRealClients(t *testing.T) {
 // over NTLM with {user}'s principal, which the server's mapping resolves.
 // Stop removes the KDC's container.
 func TestRealKerberos(t *testing.T) {
+	needsServedProtocol(t)
 	bin := realBin(t)
 	out := t.TempDir()
 	if repo := os.Getenv("DITTOFS_REPO"); os.Getenv("DT_IN_CONTAINER") == "1" && !strings.HasPrefix(out, repo+"/") {

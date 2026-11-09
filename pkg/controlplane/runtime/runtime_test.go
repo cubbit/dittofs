@@ -28,9 +28,6 @@ func TestNew(t *testing.T) {
 	if rt.mountTracker == nil {
 		t.Error("expected mount tracker to be initialized")
 	}
-	if rt.adaptersSvc == nil {
-		t.Error("expected adapters service to be initialized")
-	}
 	if rt.lifecycleSvc == nil {
 		t.Error("expected lifecycle service to be initialized")
 	}
@@ -45,7 +42,7 @@ func TestSetShutdownTimeout(t *testing.T) {
 
 	t.Run("set custom timeout does not panic", func(t *testing.T) {
 		rt.SetShutdownTimeout(60 * time.Second)
-		// Timeout is delegated to adapters and lifecycle sub-services;
+		// Timeout is delegated to the lifecycle sub-service;
 		// we verify it doesn't panic.
 	})
 
@@ -154,104 +151,6 @@ func TestCountMetadataStores(t *testing.T) {
 	}
 	if rt.CountMetadataStores() != 1 {
 		t.Errorf("expected 1, got %d", rt.CountMetadataStores())
-	}
-}
-
-func TestMountTracking(t *testing.T) {
-	rt := New(nil)
-	setJournalRoot(t, rt)
-
-	t.Run("record mount", func(t *testing.T) {
-		rt.RecordMount("192.168.1.100:12345", "/export", 1000)
-
-		mounts := rt.ListMounts()
-		if len(mounts) != 1 {
-			t.Fatalf("expected 1 mount, got %d", len(mounts))
-		}
-		if mounts[0].ClientAddr != "192.168.1.100:12345" {
-			t.Errorf("expected client addr '192.168.1.100:12345', got %q", mounts[0].ClientAddr)
-		}
-		if mounts[0].ShareName != "/export" {
-			t.Errorf("expected share '/export', got %q", mounts[0].ShareName)
-		}
-		if mounts[0].MountTime != 1000 {
-			t.Errorf("expected mount time 1000, got %d", mounts[0].MountTime)
-		}
-	})
-
-	t.Run("remove mount", func(t *testing.T) {
-		removed := rt.RemoveMount("192.168.1.100:12345", "/export")
-		if !removed {
-			t.Error("expected mount to be removed")
-		}
-
-		removed = rt.RemoveMount("192.168.1.100:12345", "/export")
-		if removed {
-			t.Error("expected false for already removed mount")
-		}
-
-		if len(rt.ListMounts()) != 0 {
-			t.Error("expected no mounts after removal")
-		}
-	})
-
-	t.Run("remove non-existing mount", func(t *testing.T) {
-		removed := rt.RemoveMount("non-existing", "/export")
-		if removed {
-			t.Error("expected false for non-existing mount")
-		}
-	})
-
-	t.Run("remove mount leaves the client's other exports", func(t *testing.T) {
-		rt.RecordMount("client1", "/share1", 1000)
-		rt.RecordMount("client1", "/share2", 2000)
-
-		if !rt.RemoveMount("client1", "/share1") {
-			t.Fatal("expected /share1 to be removed")
-		}
-
-		mounts := rt.ListMounts()
-		if len(mounts) != 1 || mounts[0].ShareName != "/share2" {
-			t.Errorf("expected only /share2 left, got %+v", mounts)
-		}
-		rt.RemoveAllMounts("client1")
-	})
-
-	t.Run("remove all mounts is scoped to the client", func(t *testing.T) {
-		rt.RecordMount("client1", "/share1", 1000)
-		rt.RecordMount("client1", "/share2", 2000)
-		rt.RecordMount("client2", "/share3", 3000)
-
-		count := rt.RemoveAllMounts("client1")
-		if count != 2 {
-			t.Errorf("expected 2 removed, got %d", count)
-		}
-
-		mounts := rt.ListMounts()
-		if len(mounts) != 1 || mounts[0].ClientAddr != "client2" {
-			t.Errorf("expected client2's mount left, got %+v", mounts)
-		}
-		rt.RemoveAllMounts("client2")
-	})
-}
-
-func TestListMountsIsolation(t *testing.T) {
-	rt := New(nil)
-	setJournalRoot(t, rt)
-	rt.RecordMount("client1", "/share1", 1000)
-
-	mounts := rt.ListMounts()
-	if len(mounts) != 1 {
-		t.Fatalf("expected 1 mount, got %d", len(mounts))
-	}
-
-	// Modify returned mount to verify it's a copy
-	mounts[0].ClientAddr = "modified"
-
-	// Original should be unchanged
-	originalMounts := rt.ListMounts()
-	if originalMounts[0].ClientAddr != "client1" {
-		t.Error("ListMounts should return copies, not references")
 	}
 }
 
@@ -560,31 +459,6 @@ func TestGetServices(t *testing.T) {
 		if svc == nil {
 			t.Error("expected non-nil metadata service")
 		}
-	})
-}
-
-func TestAdapterManagementBasics(t *testing.T) {
-	rt := New(nil)
-	setJournalRoot(t, rt)
-
-	t.Run("list running adapters empty", func(t *testing.T) {
-		adapters := rt.ListRunningAdapters()
-		if len(adapters) != 0 {
-			t.Errorf("expected empty list, got %d items", len(adapters))
-		}
-	})
-
-	t.Run("is adapter running false for non-existing", func(t *testing.T) {
-		if rt.IsAdapterRunning("nfs") {
-			t.Error("expected false for non-existing adapter")
-		}
-	})
-
-	t.Run("set adapter factory", func(t *testing.T) {
-		rt.SetAdapterFactory(func(cfg *models.AdapterConfig) (ProtocolAdapter, error) {
-			return nil, nil
-		})
-		// Factory should be set (no error means success)
 	})
 }
 

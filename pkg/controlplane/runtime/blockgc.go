@@ -108,9 +108,13 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, dryRun bool, progress fun
 			}
 			applyGCDefaults(opts, gcDefaults)
 			applyGCProgress(opts, progress)
-			// Inject held hashes from ready snapshots and open-but-unlinked
-			// files (#1448) into the GC mark phase.
-			opts.HoldProvider = r.gcHoldForRemote(entry.Shares)
+			// Inject held hashes from ready snapshots into the GC mark phase.
+			//
+			// decision: no open-but-unlinked file is held, because nothing on
+			// this server holds a file open: no protocol is served. Hold the
+			// blocks of every open, unlinked file here again once a served
+			// protocol keeps files open past their last link.
+			opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
 			// The per-remote synced-hash index: the index-sweep candidate source AND
 			// the marker-clear for swept hashes (so they re-upload if they reappear
 			// in the live set) (#1433). Remote sweep only.
@@ -232,9 +236,13 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 				opts.GracePeriodSet = true
 			}
 			applyGCProgress(opts, progress)
-			// Inject held hashes from ready snapshots and open-but-unlinked
-			// files (#1448) into the GC mark phase.
-			opts.HoldProvider = r.gcHoldForRemote(entry.Shares)
+			// Inject held hashes from ready snapshots into the GC mark phase.
+			//
+			// decision: no open-but-unlinked file is held, because nothing on
+			// this server holds a file open: no protocol is served. Hold the
+			// blocks of every open, unlinked file here again once a served
+			// protocol keeps files open past their last link.
+			opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
 			// Per-remote synced-hash index: LIST-free candidate source + marker-clear
 			// for swept hashes (#1433). The live set unions every share on this
 			// remote (perRemoteReconciler below), so a single-share invocation never

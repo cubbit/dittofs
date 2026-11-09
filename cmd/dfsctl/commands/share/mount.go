@@ -9,13 +9,17 @@ import (
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/internal/cli/credentials"
 	"github.com/cubbit/dittofs/internal/cli/prompt"
-	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/cubbit/dittofs/pkg/controlplane/models"
 	"github.com/spf13/cobra"
 )
 
-// Default ports the client mounts when the server reports no explicit port.
-// Aliased to the server-side defaults so the value has a single source.
+// Ports the client mounts: each protocol's default, aliased to the server-side
+// defaults so the value has a single source.
+//
+// decision: the mount does not ask the server which port a protocol listens
+// on, because the server publishes no listener to ask about. A server whose
+// protocol listens elsewhere is not reachable through this command until
+// the listening ports are published again.
 const (
 	defaultNFSPort = models.DefaultNFSPort
 	defaultSMBPort = models.DefaultSMBPort
@@ -112,37 +116,15 @@ func runMount(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return fmt.Errorf("failed to get authenticated client: %w\nHint: Run 'dfsctl login' first", err)
-	}
-
-	// Discover the adapter port via the lean ports endpoint, which any
-	// authenticated user can call. ListAdapters is admin/operator-only and
-	// would block a plain share-user before the mount ever touches NFS/SMB.
-	adapters, err := client.ListAdapterPorts()
-	if err != nil {
-		return fmt.Errorf("failed to look up adapter ports: %w\nHint: Is the DittoFS server running?", err)
-	}
-
 	// Resolve server host from current context
 	serverHost := resolveServerHost()
 
 	switch protocol {
 	case "nfs":
-		return mountNFS(sharePath, mountPoint, adapters, serverHost, mountNFSVersion)
+		return mountNFS(sharePath, mountPoint, defaultNFSPort, serverHost, mountNFSVersion)
 	default:
-		return mountSMB(sharePath, mountPoint, adapters, serverHost)
+		return mountSMB(sharePath, mountPoint, defaultSMBPort, serverHost)
 	}
-}
-
-func getAdapterPort(adapters []apiclient.Adapter, protocol string, defaultPort int) int {
-	for _, adapter := range adapters {
-		if strings.EqualFold(adapter.Type, protocol) && adapter.Enabled {
-			return adapter.Port
-		}
-	}
-	return defaultPort
 }
 
 func resolveSMBUsername() (string, error) {

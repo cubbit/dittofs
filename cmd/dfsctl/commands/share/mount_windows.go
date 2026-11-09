@@ -7,8 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-
-	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 const defaultNFSPortStandard = 2049
@@ -50,12 +48,11 @@ func checkMountPrivileges(mountPoint, protocol, sharePath string) error {
 	return nil
 }
 
-func mountNFS(sharePath, mountPoint string, adapters []apiclient.Adapter, serverHost, nfsVersion string) error {
+func mountNFS(sharePath, mountPoint string, port int, serverHost, nfsVersion string) error {
 	// The built-in Windows 'Client for NFS' speaks NFSv3 only; the requested
 	// version is accepted for signature parity with the Unix implementation but
 	// does not change the Windows mount invocation.
 	_ = nfsVersion
-	port := getAdapterPort(adapters, "nfs", defaultNFSPort)
 
 	// The Windows NFS mount command does NOT support specifying a custom port via -o options.
 	// Supported -o options are: rsize, wsize, timeout, retry, mtype, lang, fileaccess, anon,
@@ -105,14 +102,12 @@ Alternatively, install via PowerShell (run as Administrator):
 	return nil
 }
 
-func mountSMB(sharePath, mountPoint string, adapters []apiclient.Adapter, serverHost string) error {
+func mountSMB(sharePath, mountPoint string, port int, serverHost string) error {
 	// On Windows, 'net use' requires a drive letter (e.g., Z:) as the local device name.
 	if !(len(mountPoint) == 2 && mountPoint[1] == ':' &&
 		((mountPoint[0] >= 'A' && mountPoint[0] <= 'Z') || (mountPoint[0] >= 'a' && mountPoint[0] <= 'z'))) {
 		return fmt.Errorf("on Windows, SMB mount point must be a drive letter (e.g., Z:), got: %s", mountPoint)
 	}
-
-	port := getAdapterPort(adapters, "smb", defaultSMBPort)
 
 	username, err := resolveSMBUsername()
 	if err != nil {

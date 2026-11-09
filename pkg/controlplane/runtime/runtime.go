@@ -6,7 +6,6 @@ import (
 	"maps"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/auth/netlogon"
@@ -14,7 +13,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/block"
 	"github.com/cubbit/dittofs/pkg/controlplane/models"
-	"github.com/cubbit/dittofs/pkg/controlplane/runtime/adapters"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime/identity"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime/lifecycle"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
@@ -31,13 +29,8 @@ import (
 // DefaultShutdownTimeout is the default timeout for graceful shutdown.
 const DefaultShutdownTimeout = lifecycle.DefaultShutdownTimeout
 
-// Type aliases re-exported for backward compatibility.
-type (
-	ProtocolAdapter = adapters.ProtocolAdapter
-	RuntimeSetter   = adapters.RuntimeSetter
-	AdapterFactory  = adapters.AdapterFactory
-	AuxiliaryServer = lifecycle.AuxiliaryServer
-)
+// AuxiliaryServer is re-exported so callers need not import lifecycle.
+type AuxiliaryServer = lifecycle.AuxiliaryServer
 
 type shareIdentityProvider struct {
 	sharesSvc *shares.Service
@@ -78,9 +71,9 @@ func (k *keyedMutex[M]) get(key string) *M {
 	return l
 }
 
-// Runtime manages all runtime state for shares and protocol adapters.
-// It composes sub-services for adapters, stores, shares, mounts,
-// lifecycle, and identity mapping.
+// Runtime manages all runtime state for shares.
+// It composes sub-services for stores, shares, mounts, lifecycle, and
+// identity mapping.
 type Runtime struct {
 	mu    sync.RWMutex
 	store store.Store
@@ -100,7 +93,6 @@ type Runtime struct {
 	netgroupDecisionsMu sync.Mutex
 	netgroupDecisions   map[string]netgroupDecision
 
-	adaptersSvc    *adapters.Service
 	storesSvc      *stores.Service
 	sharesSvc      *shares.Service
 	lifecycleSvc   *lifecycle.Service
@@ -129,10 +121,8 @@ type Runtime struct {
 	// clean bill of health. Guarded by mu.
 	shareIntegrity map[string]*health.IntegrityStatus
 
-	// metrics is the Prometheus metrics handle, set at startup. It is the
-	// carrier for inline adapter instruments (RED, connection, auth counters):
-	// adapters reach it via Runtime so no per-adapter plumbing is needed. May
-	// be nil; all metrics.Metrics Record* methods are nil-safe.
+	// metrics is the Prometheus metrics handle, set at startup. May be nil;
+	// all metrics.Metrics Record* methods are nil-safe.
 	metrics *metrics.Metrics
 
 	// trashSvc is the recycle-bin service (list/restore/empty + reaper),
@@ -152,15 +142,6 @@ type Runtime struct {
 	localStoreDefaults *shares.LocalStoreDefaults
 	gcDefaults         *GCDefaults
 	gcReg              *gcRegistry
-	settingsWatcher    *SettingsWatcher
-
-	adapterProviders   map[string]any
-	adapterProvidersMu sync.RWMutex
-	// oplockBreaker mirrors the "oplock_breaker" adapter provider for the NFS
-	// read/write hot path: every op checks it, but it is set at most once (when
-	// SMB registers). An atomic load replaces the RWMutex+map lookup, so the
-	// common no-SMB case is a single nil-check instead of a locked map access.
-	oplockBreaker atomic.Value
 
 	// snapDeleteLocks is the shared registry of per-share RWMutexes that
 	// serialize the snapshot GC mark phase (HeldHashes, RLock) against
@@ -218,26 +199,29 @@ type Runtime struct {
 	// without a restart (#1325). Guarded by mu.
 	netlogonCredential *netlogon.MachineCredential
 
+	// netlogonController is the NETLOGON machine-account controller the admin
+	// API reports on and rotates through; nil when passthrough is not
+	// configured. Guarded by mu.
+	netlogonController *netlogon.Controller
+
 	// statusCheckers is the lazy per-entity cached health-checker
 	// map backing [Runtime.BlockStoreChecker],
-	// [Runtime.MetadataStoreChecker], [Runtime.AdapterChecker], and
-	// [Runtime.ShareChecker]. Initialized in [New].
+	// [Runtime.MetadataStoreChecker], and [Runtime.ShareChecker]. Initialized in [New].
 	statusCheckers *checkerCache
 }
 
 func New(s store.Store) *Runtime {
 	rt := &Runtime{
-		store:            s,
-		metadataService:  metadata.New(),
-		mountTracker:     NewMountTracker(),
-		clientRegistry:   NewClientRegistry(),
-		adapterProviders: make(map[string]any),
-		storesSvc:        stores.New(),
-		sharesSvc:        shares.New(),
-		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),
-		identitySvc:      identity.New(),
-		statusCheckers:   newCheckerCache(StatusCacheTTL),
-		gcReg:            newGCRegistry(),
+		store:           s,
+		metadataService: metadata.New(),
+		mountTracker:    NewMountTracker(),
+		clientRegistry:  NewClientRegistry(),
+		storesSvc:       stores.New(),
+		sharesSvc:       shares.New(),
+		lifecycleSvc:    lifecycle.New(DefaultShutdownTimeout),
+		identitySvc:     identity.New(),
+		statusCheckers:  newCheckerCache(StatusCacheTTL),
+		gcReg:           newGCRegistry(),
 	}
 
 	// Long-lived ctx for snapshot orchestration goroutines.
@@ -265,27 +249,13 @@ func New(s store.Store) *Runtime {
 		rt.metadataService.SetQuotaGracePersister(&quotaGracePersister{rt: rt})
 	}
 
-	rt.adaptersSvc = adapters.New(s, DefaultShutdownTimeout)
-	rt.adaptersSvc.SetRuntime(rt)
-
-	if s != nil {
-		rt.settingsWatcher = NewSettingsWatcher(s, DefaultPollInterval)
-	}
-
 	return rt
-}
-
-// --- Adapter Management (delegated to adapters.Service) ---
-
-func (r *Runtime) SetAdapterFactory(factory AdapterFactory) {
-	r.adaptersSvc.SetAdapterFactory(factory)
 }
 
 func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 	if d == 0 {
 		d = DefaultShutdownTimeout
 	}
-	r.adaptersSvc.SetShutdownTimeout(d)
 	r.lifecycleSvc.SetShutdownTimeout(d)
 }
 
@@ -328,47 +298,6 @@ func (r *Runtime) StopBackgroundWorkers() {
 	if r.gcReg != nil {
 		r.gcReg.stopActive(startupDrainTimeout)
 	}
-}
-
-func (r *Runtime) CreateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
-	return r.adaptersSvc.CreateAdapter(ctx, cfg)
-}
-
-func (r *Runtime) DeleteAdapter(ctx context.Context, adapterType string) error {
-	return r.adaptersSvc.DeleteAdapter(ctx, adapterType)
-}
-
-func (r *Runtime) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
-	return r.adaptersSvc.UpdateAdapter(ctx, cfg)
-}
-
-func (r *Runtime) EnableAdapter(ctx context.Context, adapterType string) error {
-	return r.adaptersSvc.EnableAdapter(ctx, adapterType)
-}
-
-func (r *Runtime) DisableAdapter(ctx context.Context, adapterType string) error {
-	return r.adaptersSvc.DisableAdapter(ctx, adapterType)
-}
-
-func (r *Runtime) StopAllAdapters() error {
-	return r.adaptersSvc.StopAllAdapters()
-}
-
-func (r *Runtime) LoadAdaptersFromStore(ctx context.Context) error {
-	return r.adaptersSvc.LoadAdaptersFromStore(ctx)
-}
-
-func (r *Runtime) ListRunningAdapters() []string {
-	return r.adaptersSvc.ListRunningAdapters()
-}
-
-func (r *Runtime) IsAdapterRunning(adapterType string) bool {
-	return r.adaptersSvc.IsAdapterRunning(adapterType)
-}
-
-// AddAdapter directly starts a pre-created adapter (for testing, bypasses store).
-func (r *Runtime) AddAdapter(adapter ProtocolAdapter) error {
-	return r.adaptersSvc.AddAdapter(adapter)
 }
 
 // --- Metadata Store Management (delegated to stores.Service) ---
@@ -904,8 +833,6 @@ func (r *Runtime) Serve(ctx context.Context) error {
 	}
 
 	err := r.lifecycleSvc.Serve(ctx, lifecycle.Deps{
-		Settings:         r.settingsWatcher,
-		AdapterLoader:    r.adaptersSvc,
 		MetadataFlusher:  r.metadataService,
 		StoreCloser:      r.storesSvc,
 		MachineSIDStore:  r.store,
@@ -954,44 +881,6 @@ func (r *Runtime) drainStartupWorkers(ctx context.Context) {
 	// the lifecycle drain makes, and idempotent, so running both costs nothing.
 	r.StopBackgroundWorkers()
 
-	// The settings watcher is started before the adapter load that is the
-	// likeliest startup failure, and it polls the same store on a timer. Stop
-	// waits for a poll already in flight, which is what makes it a join — but it
-	// takes no context, and on a startup error the context that poll is running
-	// under is still live, so a store call that hangs would hang this join and
-	// with it the process. Bounded like the scheduler's, and it says which of
-	// the two happened.
-	//
-	// decision: this join gets its own budget rather than sharing one window
-	// with the snapshot drain below. A single window covering both is spent by
-	// whichever join hangs first, and the second one then receives an
-	// already-expired context and returns without waiting at all — so the
-	// hardest failure would silently skip the drain this path exists to
-	// perform. The cost is that a boot failing with both workers wedged takes
-	// two windows to give up instead of one. Withdraw the split if the
-	// failed-boot path ever needs a hard ceiling on total time.
-	if r.settingsWatcher != nil {
-		watchCtx, cancelWatch := context.WithTimeout(parent, startupDrainTimeout)
-		stopped := make(chan struct{})
-		go func() {
-			defer close(stopped)
-			r.settingsWatcher.Stop()
-		}()
-		select {
-		case <-stopped:
-		// decision: the failed-start drain gives up here rather than waiting
-		// out a poll that is not returning. The boot is already being abandoned,
-		// and an unbounded wait would leave a process that cannot exit — which
-		// is worse than a query that finds the store closed under it. Same
-		// condition as the other two: withdraw the bound if a poll ever performs
-		// a write whose partial application outlives the process.
-		case <-watchCtx.Done():
-			logger.Warn("startup drain: settings watcher was not joined before the store closes; " +
-				"a poll may still be running against it")
-		}
-		cancelWatch()
-	}
-
 	snapCtx, cancelSnap := context.WithTimeout(parent, startupDrainTimeout)
 	defer cancelSnap()
 	r.shutdownSnapshots(snapCtx)
@@ -1026,64 +915,7 @@ func (r *Runtime) Mounts() *MountTracker {
 	return r.mountTracker
 }
 
-func (r *Runtime) RecordMount(clientAddr, shareName string, mountTime int64) {
-	r.mountTracker.Record(clientAddr, "nfs", shareName, mountTime)
-}
-
-// RemoveMount drops the NFS mount record for one client and one export.
-func (r *Runtime) RemoveMount(clientAddr, shareName string) bool {
-	return r.mountTracker.Remove(clientAddr, "nfs", shareName)
-}
-
-// RemoveAllMounts drops every NFS mount record held by one client and returns
-// how many went away; other clients and the client's own SMB records stay.
-func (r *Runtime) RemoveAllMounts(clientAddr string) int {
-	return r.mountTracker.RemoveByClient(clientAddr, "nfs")
-}
-
 // ListMounts converts unified mount records to the legacy NFS format.
-func (r *Runtime) ListMounts() []*LegacyMountInfo {
-	unified := r.mountTracker.List()
-	result := make([]*LegacyMountInfo, 0, len(unified))
-	for _, m := range unified {
-		ts, ok := m.AdapterData.(int64)
-		if !ok {
-			ts = m.MountedAt.Unix()
-		}
-		result = append(result, &LegacyMountInfo{
-			ClientAddr: m.ClientAddr,
-			ShareName:  m.ShareName,
-			MountTime:  ts,
-		})
-	}
-	return result
-}
-
-// --- Client Management ---
-
-// DisconnectClient performs protocol-specific teardown for a client.
-// It looks up the client record, finds the adapter by protocol, closes the
-// TCP connection (triggering cleanup chain), then deregisters the client.
-// Returns the removed ClientRecord or nil if not found.
-func (r *Runtime) DisconnectClient(clientID string) *ClientRecord {
-	record := r.clientRegistry.Get(clientID)
-	if record == nil {
-		return nil
-	}
-
-	// Force-close the TCP connection — this triggers handleConnectionClose()
-	// which handles protocol-specific cleanup (NFS state revocation, SMB LOGOFF).
-	r.adaptersSvc.ForceCloseClientConnection(record.Protocol, record.Address)
-
-	// Best-effort deregister — cleanup chain may have already removed it.
-	r.clientRegistry.Deregister(clientID)
-
-	// Return the snapshot taken before teardown to avoid TOCTOU: the client
-	// existed when we started, and we acted on it regardless of race with
-	// the cleanup chain.
-	return record
-}
-
 // --- Service Access ---
 
 func (r *Runtime) Store() store.Store                    { return r.store }
@@ -1286,23 +1118,22 @@ func (r *Runtime) NetlogonCredential() *netlogon.MachineCredential {
 	return r.netlogonCredential
 }
 
-// netlogonControllerKey is the adapter-provider key under which the NETLOGON
-// machine-account controller is registered (#1631).
-const netlogonControllerKey = "netlogon"
-
 // SetNetlogonController registers the NETLOGON machine-account controller so the
 // admin API (`netlogon status` / `netlogon rotate`) can introspect and rotate the
 // machine account on the running server. Set once at startup when passthrough is
 // configured; a nil-controller process simply never registers one.
 func (r *Runtime) SetNetlogonController(c *netlogon.Controller) {
-	r.SetAdapterProvider(netlogonControllerKey, c)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.netlogonController = c
 }
 
 // NetlogonController returns the registered NETLOGON machine-account controller,
 // or nil when passthrough is not configured on this server.
 func (r *Runtime) NetlogonController() *netlogon.Controller {
-	c, _ := r.GetAdapterProvider(netlogonControllerKey).(*netlogon.Controller)
-	return c
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.netlogonController
 }
 
 // callbackList is a subscribe/notify list of parameterless callbacks. The zero
@@ -1392,64 +1223,4 @@ func (r *Runtime) OnIdentityProviderConfigChange(fn func()) func() {
 func (r *Runtime) NotifyIdentityProviderConfigChange() {
 	r.identityProviderChangeCallbacks.notify()
 	r.InvalidateAuthCache()
-}
-
-// --- Settings Access ---
-
-func (r *Runtime) GetSettingsWatcher() *SettingsWatcher { return r.settingsWatcher }
-
-func (r *Runtime) GetNFSSettings() *models.NFSAdapterSettings {
-	if r.settingsWatcher == nil {
-		return nil
-	}
-	return r.settingsWatcher.GetNFSSettings()
-}
-
-func (r *Runtime) GetSMBSettings() *models.SMBAdapterSettings {
-	if r.settingsWatcher == nil {
-		return nil
-	}
-	return r.settingsWatcher.GetSMBSettings()
-}
-
-// --- Adapter Providers ---
-
-func (r *Runtime) SetAdapterProvider(key string, p any) {
-	r.adapterProvidersMu.Lock()
-	r.adapterProviders[key] = p
-	r.adapterProvidersMu.Unlock()
-
-	// Mirror the oplock breaker into an atomic for the NFS hot path. Keyed by
-	// the literal to avoid importing pkg/adapter (which imports runtime).
-	// Wrap in a stable holder: atomic.Value.Store panics on a nil interface or
-	// a changing concrete type, but SetAdapterProvider accepts nil and may be
-	// called more than once — the holder keeps the stored type constant.
-	if key == OplockBreakerProviderKey {
-		r.oplockBreaker.Store(oplockProviderHolder{p: p})
-	}
-}
-
-// OplockBreakerProviderKey is the adapter provider key for the OplockBreaker.
-// Used with SetAdapterProvider / GetAdapterProvider to register and retrieve
-// the cross-protocol oplock breaker without import cycles between protocol
-// packages.
-const OplockBreakerProviderKey = "oplock_breaker"
-
-// oplockProviderHolder gives the oplockBreaker atomic.Value a single, stable
-// concrete type so nil providers and repeat registrations never panic Store.
-type oplockProviderHolder struct{ p any }
-
-// OplockBreakerProvider returns the registered cross-protocol oplock breaker
-// (as an opaque any the NFS handlers type-assert), or nil if none is
-// registered. A lock-free atomic load: the NFS read/write path calls this per
-// op and the no-SMB case must stay cheap.
-func (r *Runtime) OplockBreakerProvider() any {
-	h, _ := r.oplockBreaker.Load().(oplockProviderHolder)
-	return h.p
-}
-
-func (r *Runtime) GetAdapterProvider(key string) any {
-	r.adapterProvidersMu.RLock()
-	defer r.adapterProvidersMu.RUnlock()
-	return r.adapterProviders[key]
 }

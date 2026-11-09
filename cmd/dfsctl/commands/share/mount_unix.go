@@ -12,8 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-
-	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 const (
@@ -89,8 +87,7 @@ func validateMountPoint(mountPoint string) error {
 	return nil
 }
 
-func mountNFS(sharePath, mountPoint string, adapters []apiclient.Adapter, serverHost, nfsVersion string) error {
-	port := getAdapterPort(adapters, "nfs", defaultNFSPort)
+func mountNFS(sharePath, mountPoint string, port int, serverHost, nfsVersion string) error {
 	mountOptions := buildNFSMountOptions(nfsVersion, port)
 
 	source := fmt.Sprintf("%s:%s", serverHost, sharePath)
@@ -142,8 +139,7 @@ func nfsVersionSuffix(nfsVersion string) string {
 	return "v" + nfsVersion
 }
 
-func mountSMB(sharePath, mountPoint string, adapters []apiclient.Adapter, serverHost string) error {
-	port := getAdapterPort(adapters, "smb", defaultSMBPort)
+func mountSMB(sharePath, mountPoint string, port int, serverHost string) error {
 
 	username, err := resolveSMBUsername()
 	if err != nil {

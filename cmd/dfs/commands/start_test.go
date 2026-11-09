@@ -16,7 +16,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/controlplane/api"
 	"github.com/cubbit/dittofs/pkg/controlplane/models"
 
-	"github.com/cubbit/dittofs/internal/adapter/testruntime"
+	"github.com/cubbit/dittofs/internal/controlplane/runtimetest"
 	"github.com/cubbit/dittofs/internal/logger"
 	"github.com/cubbit/dittofs/pkg/block"
 	"github.com/cubbit/dittofs/pkg/config"
@@ -271,7 +271,7 @@ controlplane:
 	}
 
 	// The control-plane database must not exist: no store was opened, so no
-	// admin user, groups or adapters were bootstrapped.
+	// admin user or groups were bootstrapped.
 	if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
 		t.Fatalf("failed start left a control-plane database at %s (stat err: %v)", dbPath, statErr)
 	}
@@ -538,7 +538,7 @@ func TestLoadSharesWithKerberosCapability_PublishesBeforeLoading(t *testing.T) {
 	// The persisted metadata store is registered as runStart's
 	// InitializeFromStore would; without it every share is skipped and the
 	// assertion below would fail for a reason unrelated to the ordering.
-	rt := testruntime.New(t, s)
+	rt := runtimetest.New(t, s)
 	if err := rt.RegisterMetadataStore(krbMetaStore, badgertest.NewInMemory(t)); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
