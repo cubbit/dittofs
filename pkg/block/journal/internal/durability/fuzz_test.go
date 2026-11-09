@@ -17,12 +17,16 @@ import (
 // finish failing windows, and returns the wait. A failed window's loss records
 // are appended by the worker, and each one consumes a write or a sync the seam
 // has scheduled to fail, so a model lets the worker finish a window before it
-// schedules a fault or appends. It must run before the layer starts.
-func (r *rig) quietAfterFailures() func() {
+// schedules a fault or appends. It must run before the layer starts. A wait
+// that finds the worker still busy after its bound fails the test: a model
+// goes on to check an unsettled state otherwise.
+func (r *rig) quietAfterFailures(t testing.TB) func() {
+	t.Helper()
 	var entered, exited atomic.Int64
 	r.d.beforeFail = func(*window) { entered.Add(1) }
 	r.d.afterFail = func() { exited.Add(1) }
 	return func() {
+		t.Helper()
 		st := r.d.made[0]
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
@@ -39,6 +43,7 @@ func (r *rig) quietAfterFailures() func() {
 			}
 			time.Sleep(time.Millisecond)
 		}
+		t.Fatal("the worker did not finish failing its windows")
 	}
 }
 
@@ -62,7 +67,7 @@ func FuzzSyncInterleaving(f *testing.F) {
 			ops = ops[:24]
 		}
 		r := newRigUnstarted(t, 1)
-		quiet := r.quietAfterFailures()
+		quiet := r.quietAfterFailures(t)
 		r.d.Start(r.streams)
 		files := [2]core.FileID{file(1), file(2)}
 		var locs [2][]segment.Location
@@ -179,7 +184,7 @@ func FuzzFailedSyncWindow(f *testing.F) {
 			ops = ops[:24]
 		}
 		r := newRigUnstarted(t, 1)
-		quiet := r.quietAfterFailures()
+		quiet := r.quietAfterFailures(t)
 		r.d.Start(r.streams)
 		files := [3]core.FileID{file(1), file(2), file(3)}
 		type rec struct {

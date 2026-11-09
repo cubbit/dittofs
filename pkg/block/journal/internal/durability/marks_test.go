@@ -5,7 +5,6 @@ import (
 	"errors"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
@@ -248,10 +247,12 @@ func TestWaitDurableNeverConsultsTheMarks(t *testing.T) {
 
 	got := make(chan error, 1)
 	go func() { got <- fr.d.WaitDurable(loc) }()
-	select {
-	case err := <-got:
-		t.Fatalf("WaitDurable of a failed record returned %v, want it to keep waiting", err)
-	case <-time.After(50 * time.Millisecond):
-	}
+	// The Sync is told of the failure the wait left alone, and the wait is
+	// still there when the layer stops, which is the only thing that ends it:
+	// an earlier return would be a nil, or the SyncError, in got.
 	wantSyncError(t, mustReturn(t, "Sync", fr.syncAsync(context.Background(), f)), loc.Segment, f)
+	fr.d.Stop()
+	if err := mustReturn(t, "WaitDurable", got); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("WaitDurable of a failed record returned %v, want it to keep waiting until the layer stopped", err)
+	}
 }

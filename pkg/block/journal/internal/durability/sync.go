@@ -124,12 +124,14 @@ type Durability struct {
 	// replaces it.
 	refuse func() error
 
-	// afterAppend, beforeSync, beforeFail and afterFail are test hooks, nil in
-	// production. beforeFail runs on the worker once per window, before its
-	// content records are failed, and afterFail once they are failed and
-	// reported, before the window is resolved; none is called with a lock
-	// held.
+	// afterAppend, afterPass, beforeSync, beforeFail and afterFail are test
+	// hooks, nil in production. beforeFail runs on the worker once per window,
+	// before its content records are failed, and afterFail once they are failed
+	// and reported, before the window is resolved; afterPass runs at the end of
+	// each worker pass, once the pass has done everything it will do for the
+	// wake that started it. None is called with a lock held.
 	afterAppend func()
+	afterPass   func()
 	beforeFail  func(*window)
 	afterFail   func()
 	beforeSync  func()

@@ -21,6 +21,11 @@ import (
 type failRig struct {
 	*rig
 	resolved chan core.SegmentID
+	// passes counts the worker's finished passes, and atResolved is its value
+	// when the last window was announced resolved, so a test that expects no
+	// further announcement waits for the pass that announced to end instead of
+	// for a fixed time.
+	passes, atResolved atomic.Int64
 }
 
 // newFailRig builds a one-stream rig whose Resolved announcements are
@@ -29,13 +34,24 @@ func newFailRig(t *testing.T, pre func(*failRig)) *failRig {
 	t.Helper()
 	fr := &failRig{resolved: make(chan core.SegmentID, 64)}
 	fr.rig = newRigConfigured(t, 1, func(c *Config) {
-		c.Resolved = func(_ uint32, seg core.SegmentID) { fr.resolved <- seg }
+		c.Resolved = func(_ uint32, seg core.SegmentID) {
+			fr.atResolved.Store(fr.passes.Load())
+			fr.resolved <- seg
+		}
 	})
+	fr.d.afterPass = func() { fr.passes.Add(1) }
 	if pre != nil {
 		pre(fr)
 	}
 	fr.d.Start(fr.streams)
 	return fr
+}
+
+// awaitPassEnd waits until the worker has finished the pass it was in when
+// atMark was read: whatever that pass was going to do, it has done.
+func (fr *failRig) awaitPassEnd(t *testing.T, atMark int64) {
+	t.Helper()
+	eventually(t, "the worker to finish its pass", func() bool { return fr.passes.Load() > atMark })
 }
 
 // awaitResolved waits for one window to be announced resolved and returns its
@@ -544,7 +560,8 @@ func TestAFailedWindowLeavesWhatARecordStillInTheLedgerHeld(t *testing.T) {
 // keeps that record.
 func TestAWindowWithAHeaderOnlyRecordStaysPending(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	fr := newFailRig(t, nil)
+	var mark atomic.Int64
+	fr := newFailRig(t, func(fr *failRig) { fr.d.afterFail = func() { mark.Store(fr.passes.Load()) } })
 	f := file(1)
 	loc := fr.appendWrite(t, f, 0, "aaaa")
 	fr.appendKind(t, f, format.KindDelete, format.RecordBody{})
@@ -557,10 +574,13 @@ func TestAWindowWithAHeaderOnlyRecordStaysPending(t *testing.T) {
 		ws := fr.windowsOf(0)
 		return len(ws) == 1 && len(ws[0].locs) == 1
 	})
+	// The pass that failed the content record decides whether the window
+	// resolves before it ends.
+	fr.awaitPassEnd(t, mark.Load())
 	select {
 	case seg := <-fr.resolved:
 		t.Fatalf("segment %d was resolved with a header-only record pending", seg)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 	if fr.d.Durable(loc) {
 		t.Error("a failed record reads durable")
@@ -579,10 +599,12 @@ func TestAResolvedWindowIsAnnouncedOnce(t *testing.T) {
 	if got := fr.awaitResolved(t); got != loc.Segment {
 		t.Fatalf("resolved segment %d, want %d", got, loc.Segment)
 	}
+	// A second announcement would come from the pass that made the first.
+	fr.awaitPassEnd(t, fr.atResolved.Load())
 	select {
 	case seg := <-fr.resolved:
 		t.Fatalf("a second announcement, of segment %d", seg)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 	if len(fr.windowsOf(0)) != 0 {
 		t.Error("the resolved window is still pending")

@@ -35,6 +35,9 @@ func (d *Durability) run(st *stream) {
 		if fire == nil {
 			fire = d.arm(st)
 		}
+		if d.afterPass != nil {
+			d.afterPass()
+		}
 	}
 }
 
