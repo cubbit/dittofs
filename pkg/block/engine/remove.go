@@ -238,8 +238,9 @@ func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 // Delete returns, as the journal no longer holds the file's bytes and only
 // its marker brings them back; before that, the context's end is a refusal
 // that changed nothing. The one exception is a read-only journal, which
-// undoes a Delete it had not synced: a release whose phase 1 sync it refuses
-// within the call fails, vfserr.ErrUnavailable, and stays for the next start.
+// undoes a Delete it had not synced: a release it undid fails,
+// vfserr.ErrUnavailable, within the call or from the loop, and stays for the
+// next start (RFC 8 §8.1, §12.1).
 func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) (retry <-chan error, err error) {
 	b, err := e.bindingOf(s)
 	if err != nil {
@@ -263,11 +264,8 @@ func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 	switch err := e.tryPhase1(ctx, r, op); {
 	case err == nil:
 		return nil, nil
-	case errors.Is(err, journal.ErrJournalReadOnly):
-		// The file stays marked releasing and its pending release stays
-		// for the next start (RFC 8 §8.1).
-		e.undone(r)
-		return nil, fmt.Errorf("engine: release: %v: %w", err, vfserr.ErrUnavailable)
+	case undid(err):
+		return nil, e.undone(r, err)
 	case errors.Is(err, kvstore.ErrHeld):
 		return nil, e.abort(r)
 	case errors.Is(err, entity.ErrStale):
@@ -425,9 +423,8 @@ func (e *Engine) phase1(ctx context.Context, r *removal, op kvstore.RemoveOp) er
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, journal.ErrJournalReadOnly):
-		e.undone(r)
-		return e.journalErr(err)
+	case undid(err):
+		return e.undone(r, err)
 	case terminal(err):
 		e.unstage(r, err)
 		return terminalErr(err)
@@ -440,6 +437,9 @@ func (e *Engine) phase1(ctx context.Context, r *removal, op kvstore.RemoveOp) er
 	e.retryLater(r, op, nil)
 	if errors.Is(err, kvstore.ErrConflict) {
 		return &vfserr.Delay{Cause: vfserr.DelayConflict}
+	}
+	if errors.Is(err, errSyncRefused) {
+		return &vfserr.Delay{Cause: vfserr.DelayJournal}
 	}
 	return &vfserr.Delay{Cause: vfserr.DelayCommit}
 }
@@ -464,26 +464,21 @@ func (e *Engine) tryPhase1(ctx context.Context, r *removal, op kvstore.RemoveOp)
 	return nil
 }
 
-// undone ends removal r whose phase 1 sync a read-only journal refused
-// within its call: its own pending operation leaves the entry and the guard
-// is released, settling nothing, so the file keeps what metadata records and
-// the removal fails. The journal undid the removal's record, or, synced just
-// before the transition, leaves it to the next start's recovery (see sync).
-//
-// decision: only a phase 1 run within its call fails so. One the loop
-// retries keeps the guard and is retried, its sync refused until the journal
-// is reopened, whose recovery rebuilds the removal from the records the
-// journal still holds (RFC 8 §2.5). The loop sees one refusal whether the
-// journal undid the removal or synced it before the transition: sync answers
-// its own read-only refusal for both. RFC 8 §8.1 wants a release the journal
-// undid answered ErrUnavailable; do that with the reopen, which drains the
-// loop, telling the journal's own refusal, which it answers every Sync of a
-// file whose removal it undid, from sync's.
-func (e *Engine) undone(r *removal) {
+// undone ends removal r whose record the journal undid when it turned
+// read-only, err its refusal of r's sync: its own pending operation leaves
+// the entry and the guard is released, settling nothing, so the file keeps
+// what metadata records and the removal fails (RFC 8 §8.1). A release
+// answers vfserr.ErrUnavailable, as the file stays marked releasing for the
+// next start; any other removal the refusal by its cause.
+func (e *Engine) undone(r *removal, err error) error {
 	fe := e.files.lockFor(r.f)
 	fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool { return op.version == r.v })
 	e.files.unlock(r.f, fe)
 	e.release(r, false)
+	if r.kind == entity.RemoveRelease {
+		return fmt.Errorf("engine: release: %v: %w", err, vfserr.ErrUnavailable)
+	}
+	return e.journalErr(err)
 }
 
 // terminal reports a phase 1 failure that retrying cannot change: the file
