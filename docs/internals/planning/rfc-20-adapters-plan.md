@@ -81,8 +81,14 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   `pkg/controlplane/runtime/adapters`, the Runtime's adapter fields and methods, the lifecycle
   service's `AdapterLoader`, the adapter health checks, the `/api/v1/adapters` routes and their
   handlers, the settings watcher, `dfsctl adapter`, the `grace.go` and `nfs_clients.go` handlers,
-  the identity-mapping config in `pkg/config`, the start path in `cmd/dfs`, the API tests on
-  `testruntime`, the harness fixture's adapter calls, and the e2e files that no longer compile.
+  the identity-mapping config in `pkg/config`, the start path in `cmd/dfs`, the adapter cases of
+  the API tests on `testruntime`, the harness fixture's adapter calls, and the e2e files that no
+  longer compile. `testruntime` itself imports no protocol and backs share-removal and
+  grant-projection tests, so it moves to `internal/controlplane/runtimetest` rather than going.
+  The packages left with no importer go too: `pkg/discovery/mdns` and `wsd`, `pkg/auth`,
+  `pkg/auth/kerberos`, `pkg/identity/kerberos`, `internal/auth/kerberos` and
+  `internal/mfsymlink`, with the Kerberos cases of `test/integration/ad-dc`; their consumers
+  lift what they need from develop's history, as Appendix B's keep code is lifted.
   `internal/vfs/arch_test.go` keeps its adapter clause, RFC 17's check that the service imports
   no adapter: its fixtures live in `testdata/arch/`, which Go never builds, so deleting v1 breaks
   nothing there. `docs/guide/cli.md` is regenerated with `go run ./cmd/gendocs`.
@@ -94,30 +100,39 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   `dt run integration/kerberos` step is removed on the branch, since a fixed step ignores both
   the filter and the registry. A per-change cell vets the adapter packages with `GOOS=windows`
   and `GOOS=darwin`, which the filter's skip of `unit/windows` would otherwise leave unbuilt
-  once T4.8's socket options differ by platform. `test/required-tests.json`, whose every entry names a v1 test, is repinned to the surviving
+  once T4.8's socket options differ by platform; it lands with `core` (T1.7), the first
+  package whose files will differ by platform. `test/required-tests.json`, whose every entry names a v1 test, is repinned to the surviving
   authorization gates in `internal/vfs/admit` (`TestNoAnonymousPrincipalFailsClosed`,
   `TestAnUnmappedClaimedRootIsPrivileged`), so `required-tests.sh` neither loses its subject nor
   fails on an empty manifest. A build tag on `lint-go`'s `go vet -tags=` line stays while any file
   behind it compiles; a tag whose files are all deleted leaves the line.
-- **`pkg/adapter`** (RFC 20 §3.4, §3.5): `Adapter`, `Health`, `ConnInfo`, `Sidecar`, `Serving`,
-  `Deps` (with `Watch`, RFC 20 §3.7).
+- **`pkg/adapter`** (RFC 20 §3.4, §3.5): `Adapter` (`Reconfigure` taking `config.Settings`),
+  `State`, `Health` (`State`, `Ready`, `Err`, `Conditions`), `ConnInfo` (`Protocol`, `Remote`,
+  `Session`, `Since`), `Sidecar`, `Serving`, `Deps` (with `Watch`, RFC 20 §3.7).
 - **A test with every new package.** `lint-repo` runs `test/new-package-tests.sh`, which fails a
   directory new to the base branch that has no `_test.go`. Each package epic 1 creates lands with
-  a test that can fail (rule 8): `pkg/adapter`'s `Deps` with a nil `Watch` watching nothing,
+  a test that can fail (rule 8): `pkg/adapter`'s imports checked against RFC 20 §2.3's list (a
+  nil `Watch` watching nothing is the accept loop's behaviour, tested with it in T4.7),
   `pkg/resources`' class sizes ascending as RFC 24 §2.5 lists them, the settings' live and
   restart-only marks, `ErrRestartRequired`
   on a restart-only change, `New` refusing invalid settings, and for `core` `Bind`, whose body
   lands in T1.7: the `Invocation` its `Decode` returns hands `Bound`, `Resolve`, `Role`,
   `Call` and `Encode` the request it decoded.
-- **`pkg/adapter/config`** (RFC 20 §3.6, RFC 13): `Adapter`, `NFS`, `SMB`, with each field
-  marked live or restart-only, and `ErrRestartRequired`.
+- **`pkg/adapter/config`** (RFC 20 §3.6, RFC 13): `Adapter`, and `NFS` and `SMB` embedding it;
+  the sealed `Settings` that only `NFS` and `SMB` satisfy, and `AdapterOf`; each restart-only
+  field tagged `restart:"true"`; `RestartRequired`, returning an error wrapping
+  `ErrRestartRequired`.
 - **`pkg/adapter/nfs.New`, `pkg/adapter/smb.New`**: signatures and stubs returning an error.
 - **`pkg/resources`** (RFC 24 §2.5, §3.1, RFC 20 §6.8): `Budget`, `Reservation`, `Pools`, `Buf`,
-  `BufPool` (named apart from `Pools`, since RFC 24's pool is a counter, not an allocator), the
+  `BufPool` and `NewBufPool` (named apart from `Pools`, since RFC 24's pool is a counter, not an allocator), the
   class constants, as signatures.
-- **`pkg/metrics`**: whatever `core` needs to register its own series. `RegisterProvider` exists;
-  epic 1 checks it fits a per-request counter resolved at table build, and adds a registration
-  call if it does not.
+- **`pkg/metrics` gains nothing.** `Deps.Metrics` is typed as the branch's `*metrics.Metrics`,
+  whose `RegisterProvider` reads a snapshot per scrape and cannot resolve a counter at table
+  build; the call that does lands with its consumer, `core`'s series, in T5.9, and RFC 25's
+  registry takes the field's place when it is built (§6.2).
+- **The RFC amendments the surface needs** (T1.9): every point where RFC 20 left the frozen
+  surface ambiguous is settled in RFC 20 and RFC 24 before it is written, so S1 freezes a
+  surface the RFC states.
 - **`internal/adapter/core`'s exported surface, RFC 20 §4.7**, with stub bodies but for `Bind`'s:
   what `testproto`, `core` itself and both scaffolds consume before any implementation. It
   carries what SMB needs from `core` (a connection's handshake and kept state, a session level
@@ -132,7 +147,8 @@ RFC 20's suites paragraph puts every layer this plan builds in `unit`, and the a
 in a non-race cell. `unit/nonrace` is nightly, and the nightly runs on develop's schedule, never
 on `feat/storage-v2`, so the gates get a per-change cell of their own, `unit/adapter-allocs`, as
 the journal's run in `unit/journal-index`. Like that cell, it runs from a fixed step in the unit
-job (T1.3): the branch's cell filter drops a cell with no job, so the cell alone would never run. `unit` keeps no `known.yaml`, so it cannot hold a red test: **epic 2
+job: the branch's cell filter drops a cell with no job, so the cell alone would never run. Cell
+and step land with their first gate, `BufPool`'s in T3.3, since at S1 they would run nothing. `unit` keeps no `known.yaml`, so it cannot hold a red test: **epic 2
 registers no red suite**. Each test lands green with the epic that makes it pass. Epic 2 builds
 what those tests stand on:
 
@@ -280,7 +296,7 @@ suites come back through the ledger); a real-dependencies rule beyond rule 1's r
 
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
-| E1 ⛔ | Delete v1, fix the surface | v1 and the Runtime's adapter half deleted, suites off, required tests repinned; `pkg/adapter`, `pkg/adapter/config`, `pkg/resources`, `core`'s §4.7 surface | 8 | 14.5 | team | all |
+| E1 ⛔ | Delete v1, fix the surface | v1 and the Runtime's adapter half deleted, suites off, required tests repinned; RFC 20 and 24 amended; `pkg/adapter`, `pkg/adapter/config`, `pkg/resources`, `core`'s §4.7 surface | 9 | 15.5 | team | all |
 | E2 ⛔ | Test foundations | `testproto` and its stateful half, the import test, the leak checks | 4 | 8 | team | E3–E6 |
 | E3 | Budgets and buffers | `pkg/resources`: `Budget`, `Reservation`, `Buf`, `BufPool` | 3 | 6 | A | E4, E5 (partly) |
 | E4 | Connections and lifecycle | `Server` states, accept, limits, `Conn` reader and writer, drain, `Reconfigure`, health, TCP; the sidecar runner | 9 | 20 | B | E5 (partly), E6 via 🔀 S3 |
@@ -288,9 +304,9 @@ suites come back through the ledger); a real-dependencies rule beyond rule 1's r
 | E6 | Protocol scaffolds | `wire/`, `protocol/` and `New` for SMB and NFS; not supported end to end | 4 | 11.5 | C | E8 |
 | E7 🔀 | Integration with the node | `internal/node` builds, starts, reconciles and stops adapters and sidecars | — | planned after S4 | team | E8 (partly) |
 | E8 | E2E green | the allocation cell checked, the ledger handed over | 2 | 1.5 | team | — |
-| | **Total** | | **41** | **88** | | |
+| | **Total** | | **42** | **89** | | |
 
-**Plan estimate: 41 subtasks, 88 man-days, not counting epic 7.**
+**Plan estimate: 42 subtasks, 89 man-days, not counting epic 7.**
 
 The estimate `N = round(2785 / 400) = 7` against four middle epics: RFC 20's handler, codec,
 security and translation areas (§4.3–§4.4, §4.9–§4.10, most of §5) are ledger rows for RFC 21 and
@@ -386,11 +402,11 @@ flowchart TD
 pkg/
   resources/                  E1 surface, E3 body
     budget.go                 Budget, Reservation, Pools
-    buf.go                    Buf, BufPool, classes
+    buf.go                    Buf, BufPool, NewBufPool, classes
   adapter/                    E1
-    adapter.go                Adapter, Health, ConnInfo, Sidecar, Serving
+    adapter.go                Adapter, State, Health, ConnInfo, Sidecar, Serving
     deps.go                   Deps
-    config/                   Adapter, NFS, SMB; live and restart-only marks
+    config/                   Adapter, NFS, SMB, Settings, AdapterOf; restart-only tags, RestartRequired
     nfs/  smb/                New: E1 stub, E6 body
 internal/
   adapter/
@@ -414,11 +430,11 @@ internal/
 
 ### Epic 1 — Delete v1, fix the surface ⛔
 
-**Epic 1 estimate: 8 subtasks, 14.5 man-days.**
+**Epic 1 estimate: 9 subtasks, 15.5 man-days.**
 
 Deletes v1 and everything that imports it, keeps the suites that need a served protocol skipped,
 repins the required tests, and fixes the public surface and `core`'s protocol-facing types with
-stub bodies. At the end the branch builds, `unit` and `lint-go` pass, no adapter is served, and
+stub bodies, after amending RFC 20 and RFC 24 wherever the surface was ambiguous. At the end the branch builds, `unit` and `lint-go` pass, no adapter is served, and
 S1 holds. Every client-visible or operator-visible thing deleted here is a ledger row (§6.2).
 Every package T1.4 to T1.8 creates lands with a test that can fail, or `lint-repo`'s new-package
 check refuses it (§1.3).
@@ -429,26 +445,40 @@ deleted).
 
 - T1.1 Delete `internal/adapter`, `pkg/adapter` and their importers outside the control plane:
   the start path in `cmd/dfs`, the identity-mapping config in `pkg/config`, the e2e files that no
-  longer compile. `internal/vfs/arch_test.go`'s adapter clause stays.
+  longer compile; the packages left with no importer (`pkg/discovery/mdns` and `wsd`,
+  `pkg/auth`, `pkg/auth/kerberos`, `pkg/identity/kerberos`, `internal/auth/kerberos`,
+  `internal/mfsymlink`) and `ad-dc`'s Kerberos cases. `internal/vfs/arch_test.go`'s adapter
+  clause stays. 1.75 man-days.
 - T1.2 Delete the Runtime's adapter half: `runtime/adapters`, the Runtime's adapter fields and
   methods, the lifecycle `AdapterLoader`, the adapter health checks, the `/api/v1/adapters`
   routes and handlers, the settings watcher, the `grace` and `nfs_clients` handlers, the
-  `testruntime` API tests, the harness fixture's adapter calls; `dfsctl adapter`, and the
-  `dfsctl grace`, `netgroup` and `client` commands whose routes go with them; regenerate
-  `docs/guide/cli.md`.
+  adapter cases of the `testruntime` API tests, the harness fixture's adapter calls; `dfsctl
+  adapter`, and the `dfsctl grace`, `netgroup` and `client` commands whose routes go with them;
+  `testruntime` moved to `internal/controlplane/runtimetest`; regenerate `docs/guide/cli.md`.
+  3 man-days.
 - T1.3 `tests.yml`'s V2 filter extended by `integration/kerberos` and the fixed
-  `dt run integration/kerberos` step removed on the branch; a fixed `dt run unit/adapter-allocs`
-  step in the unit job, as `unit/journal-index` has; the `GOOS=windows` and `GOOS=darwin`
-  vet cell for the adapter packages; `test/required-tests.json` repinned to
-  `internal/vfs/admit`'s gate tests; `lint-go`'s vet tags pruned to those with files left.
-- T1.4 `pkg/adapter`: the contract and `Deps`, `Watch` included.
-- T1.5 `pkg/adapter/config`: the three settings shapes with live and restart-only marks;
-  `Addrs` supplied by the node and live.
-- T1.6 `pkg/resources`: `Budget`, `Reservation`, `Pools`, `Buf`, `BufPool`, classes, as stubs;
-  `pkg/metrics`'s registration path for `core`'s series checked, and added if missing.
+  `dt run integration/kerberos` step removed on the branch; `test/required-tests.json` repinned
+  to `internal/vfs/admit`'s gate tests; `lint-go`'s vet tags pruned to those with files left.
+  1.25 man-days.
+- T1.4 `pkg/adapter`: the contract and `Deps`, `Watch` included; `State`, `Health`, `ConnInfo`
+  as RFC 20 §3.4 states them. 0.75 man-days.
+- T1.5 `pkg/adapter/config`: the three settings shapes, `NFS` and `SMB` embedding `Adapter`;
+  the sealed `Settings` and `AdapterOf`; restart-only fields tagged and `RestartRequired` over
+  two `Settings`, wrapping `ErrRestartRequired`; `Addrs` supplied by the node and live.
+  2 man-days.
+- T1.6 `pkg/resources`: `Budget`, `Reservation`, `Pools`, `Buf`, `BufPool`, `NewBufPool`,
+  classes, as stubs. 1.25 man-days.
 - T1.7 `internal/adapter/core`'s surface, RFC 20 §4.7, with stub bodies; `Bind`'s body, with
-  the test that its `Invocation` hands each closure the request it decoded.
-- T1.8 `pkg/adapter/nfs.New` and `pkg/adapter/smb.New` stubs.
+  the test that its `Invocation` hands each closure the request it decoded; the `GOOS=windows`
+  and `GOOS=darwin` vet cell for the adapter packages. 2.5 man-days.
+- T1.8 `pkg/adapter/nfs.New` and `pkg/adapter/smb.New` stubs, validating before they refuse.
+  0.5 man-days.
+- T1.9 RFC 20 and RFC 24 amended where the frozen surface was ambiguous: the sealed settings
+  and `Reconfigure`'s parameter, the restart-only tags and their comparison, `Stop`'s target
+  asked of the service, `Health`'s and `ConnInfo`'s fields, `NewBufPool`, `Deps.Metrics`'s
+  type, `*resources.Buf` in `core`, `Interim`'s `after` and `Invocation.Role` before `Resolve`,
+  `Start` after `Stop` refused and `Stop` idempotent, and the prior-art proposals declined.
+  2.5 man-days.
 
 ### Epic 2 — Test foundations ⛔
 
@@ -484,8 +514,9 @@ refuse), §3.1 (classes), §2.7's zero-at-close.
 - T3.2 `BufPool` and `Buf`: a `sync.Pool` per class, smallest class that holds, unpooled past the
   largest, reference counting, poison on release under `-race`, second release past zero panics.
 - T3.3 Reserved-bytes gauges through `pkg/metrics`; a property test of reserve and release
-  sequences against a model; the 0-allocation gate on `Get` and `Release`; the budget leak
-  check's own failing test.
+  sequences against a model; the 0-allocation gate on `Get` and `Release`, the first gate, with
+  the `unit/adapter-allocs` cell and its fixed `dt run` step in the unit job, as
+  `unit/journal-index` has; the budget leak check's own failing test.
 
 ### Epic 4 — Connections and lifecycle
 
@@ -517,7 +548,7 @@ rows, A10, A11, A14, A19, A20.
   with `ErrRestartRequired`, open added listeners before swapping the snapshot, close removed
   ones and their connections after.
 - T4.7 Health (readiness from the state, liveness from accept-loop turns through `Deps.Watch`,
-  `adapter_refused`), `Connections()` from a connection map in `Server`, the idle timeout that
+  a nil `Watch` watching nothing, `adapter_refused`), `Connections()` from a connection map in `Server`, the idle timeout that
   passes over a connection while a `Keep` is held, the handshake deadline that `Established`
   disarms; both on `testproto`'s stateful half.
 - T4.8 TCP: `TCP_NODELAY`, keepalive 15 s and 3 probes 5 s apart, `TCP_USER_TIMEOUT` on Linux,
@@ -577,7 +608,8 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   error answered server fault and counted; the totality check against `vfs.Errors()` as a
   helper each protocol's table will call.
 - T5.8 Request context: the 30 s deadline; cancellation on close and drain.
-- T5.9 RFC 20 §10's metrics, spans and logs, all in `core`; series resolved at table build.
+- T5.9 RFC 20 §10's metrics, spans and logs, all in `core`; series resolved at table build,
+  through the resolve-once call `pkg/metrics` gains here, its first consumer.
 - T5.10 The pipeline micro-benchmark on `testproto` over `vfstest.Null`, its allocation ceiling
   checked in and registered in `unit/adapter-allocs`.
 - T5.11 Parked requests: RFC 20 §4.7's `Park` as its comment states it, on `testproto`'s parked
@@ -661,8 +693,8 @@ RFC sections: §6.10's codec and pipeline rows.
    Until one exists, `gss` sits with the RFC 22 plan, whose SMB sign-in needs it first.
 6. **NFS XDR, generated or by hand.** Epic 6 writes the RPC header's XDR by hand; whether every
    program's codecs are generated (RFC 20 §5.1) is RFC 21's plan's call.
-7. **`pkg/discovery/mdns` and `wsd` have no importer after epic 1**: they compile and are tested,
-   but nothing runs them until the cutover moves them onto the sidecar runner.
+7. **`pkg/discovery/mdns` and `wsd` are deleted in epic 1** with the other packages v1 alone
+   imported: the cutover's discovery sidecars lift what they need from develop's history (§6.2).
 8. **The skills this plan uses are unmerged** (#3524): `rfc-to-epic-plan` and `epic-breakdown`
    live on `docs/skills-epic-plan-breakdown`. §1.5's instruction names a path that exists only
    once that pull request merges.
@@ -716,6 +748,11 @@ feature parity with develop. A row moves only to another owner, never off the le
 | `test/required-tests.json` pins for the adapters' authorization gates | the v1 tests are deleted | RFC 21/22 plans | each gate's test re-written |
 | `vfs.WithRequestID` (RFC 17 §4.7), set from the protocol's retry identity | its one reader is the gateway, which RFC 17's plan leaves to the cluster stage (D2) | RFC 17 cluster stage, in core's pipeline (RFC 20 §6.4), from each protocol's retry identity | when the gateway is built |
 | docs: architecture's adapter section, the configuration guide's adapter keys, the user guides | describe v1 | cutover | stage 7 |
+| `k8s/dittofs-operator`, which drives the adapter and settings API through its own client | breaks against the branch once T1.2 deletes that API | cutover | when the API comes back |
+| `dfsctl share mount`'s discovery of a non-default port (`ListAdapterPorts`); it uses each protocol's default port | its route is deleted in T1.2 | cutover | with `/api/v1/adapters` |
+| the packages deleted in T1.1 for having no importer: `pkg/discovery/mdns` and `wsd`; `pkg/auth`, `pkg/auth/kerberos`, `pkg/identity/kerberos`, `internal/auth/kerberos`; `internal/mfsymlink` | nothing imports them once v1 is gone | discovery: cutover; Kerberos and `pkg/auth`: RFC 18 plan; `mfsymlink`: RFC 22 plan | each lifted from develop's history by its consumer |
+| `pkg/apiclient`'s adapter and netgroup methods, kept for the e2e helpers `lint-go` vets; their routes answer 404 | compiled tests still call them | cutover | with their routes |
+| `Deps.Metrics` typed as `pkg/metrics`' `*metrics.Metrics`, not RFC 25 §8.2's `*metrics.Registry` | the registry is not built | RFC 25 | when the registry is built |
 
 ## 7. RFC coverage
 
