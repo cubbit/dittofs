@@ -52,7 +52,8 @@ type CloneOp struct {
 // having left applied at the clone's version, and applied is then raised
 // to Copied, so a later commit of one would be skipped as applied. A replay,
 // the clone already applied, commits those of them above applied, as a
-// commit would.
+// commit would, and leaves applied otherwise as it is. One at the clone's
+// version is refused, before anything changes.
 //
 // The transaction reads its own writes: the commit after phase 1 reads the
 // File and the removal record phase 1 wrote.
@@ -91,6 +92,9 @@ func (e Existence) Clone(ctx context.Context, op CloneOp, pending []PendingOp) e
 	}
 	var below, above []PendingOp
 	for _, p := range pending {
+		if p.Version == op.Version {
+			return merrs.NewInvalidArgumentError("an operation at the clone's version")
+		}
 		if p.Version.Less(op.Version) {
 			below = append(below, p)
 		} else {
@@ -111,7 +115,8 @@ func (e Existence) Clone(ctx context.Context, op CloneOp, pending []PendingOp) e
 		return err
 	}
 	return e.s.kv.Update(ctx, func(tx kv.Txn) error {
-		if err := clonePhase1(tx, op, e.s.k, entity.OpenID(hold)); err != nil {
+		ran, err := clonePhase1(tx, op, e.s.k, entity.OpenID(hold))
+		if err != nil {
 			return err
 		}
 		if len(above) > 0 {
@@ -122,6 +127,9 @@ func (e Existence) Clone(ctx context.Context, op CloneOp, pending []PendingOp) e
 				}
 				return err
 			}
+		}
+		if !ran {
+			return nil // a replay: the copies were recorded with the clone
 		}
 		f, err := fileIn(tx, op.Share, op.File)
 		if err != nil || !f.Applied.Less(op.Copied) {
@@ -135,40 +143,40 @@ func (e Existence) Clone(ctx context.Context, op CloneOp, pending []PendingOp) e
 
 // clonePhase1 applies the clone's first phase, holding its source with a
 // durable open under the ID hold, and leaves applied at the clone's version,
-// the Version already past Copied. A clone at or below applied changes
-// nothing.
-func clonePhase1(tx kv.Txn, op CloneOp, k int, hold entity.OpenID) error {
+// the Version already past Copied. It reports whether it applied it: a clone
+// at or below applied changes nothing.
+func clonePhase1(tx kv.Txn, op CloneOp, k int, hold entity.OpenID) (bool, error) {
 	sp, share, file := op.Spec, op.Share, op.File
 	if err := rewriteFences(tx, share, file, op.Epoch); err != nil {
-		return err
+		return false, err
 	}
 	f, err := fileIn(tx, share, file)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !f.Applied.Less(op.Version) {
-		return nil // applied before, its source perhaps gone since
+		return false, nil // applied before, its source perhaps gone since
 	}
 	if err := destinationFree(tx, share, file); err != nil {
-		return err
+		return false, err
 	}
 	before := f
 	src, err := fileIn(tx, sp.SrcShare, sp.Src)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if sp.SrcOff+sp.Len > src.Size {
-		return merrs.NewInvalidArgumentError("a clone past the source's end of file")
+		return false, merrs.NewInvalidArgumentError("a clone past the source's end of file")
 	}
 	if err := sameNamespaces(tx, sp.SrcShare, share); err != nil {
-		return err
+		return false, err
 	}
 	if err := noCloneOver(tx, sp.SrcShare, sp.Src, entity.ExtentOf(sp.SrcOff, sp.SrcOff+sp.Len)); err != nil {
-		return err
+		return false, err
 	}
 	ms, err := masksOf(tx, share, file)
 	if err != nil {
-		return err
+		return false, err
 	}
 	ext := entity.ExtentOf(sp.DstOff, sp.DstOff+sp.Len)
 	was := f.Version
@@ -176,17 +184,17 @@ func clonePhase1(tx kv.Txn, op CloneOp, k int, hold entity.OpenID) error {
 	if live := ext.Intersect(entity.Extent{Length: f.Size}); !live.IsEmpty() {
 		var charged int64
 		if charged, credit, err = chargedIn(tx, share, file, f, ms, live, k, false); err != nil {
-			return err
+			return false, err
 		}
 		f.Charged -= charged
 		back, err := narrowStraddlers(tx, share, file, f, ms, live, true)
 		if err != nil {
-			return err
+			return false, err
 		}
 		f.Charged += back
 	} else if ext.Offset > f.Size {
 		if err := gapHole(tx, share, &f, ms, ext.Offset, op.Version); err != nil {
-			return err
+			return false, err
 		}
 	}
 	// The destination exists over the whole extent; phase 2 writes the
@@ -200,20 +208,20 @@ func clonePhase1(tx kv.Txn, op CloneOp, k int, hold entity.OpenID) error {
 	f.Modify, f.Change = later(f.Modify, op.Time), later(f.Change, op.Time)
 	f.Version = nextFileVersion(tx, entity.MaxVersion(f.Version, entity.MaxVersion(op.Version, op.Copied)))
 	if err := putFile(tx, was, f); err != nil {
-		return err
+		return false, err
 	}
 	if err := chargeFile(tx, share, &before, &f); err != nil {
-		return err
+		return false, err
 	}
 	spec := sp
 	m := entity.Removal{Version: op.Version, Extent: ext, Kind: entity.RemoveClone, Cursor: ext.Offset, OvSpan: f.MaxOverwrite, HoleCredit: credit, Shard: f.Shard, Clone: &spec}
 	if err := putRemoval(tx, share, file, m); err != nil {
-		return err
+		return false, err
 	}
 	// The source's hold: a durable open of the clone-source kind, held by
 	// no client, which no grace end closes and only the clone's last batch
 	// does.
-	return putOpen(tx, sp.SrcShare, src.Shard, entity.OpenRecord{ID: hold, File: sp.Src, Kind: entity.OpenCloneSource,
+	return true, putOpen(tx, sp.SrcShare, src.Shard, entity.OpenRecord{ID: hold, File: sp.Src, Kind: entity.OpenCloneSource,
 		CloneDst: file, CloneVersion: op.Version})
 }
 
