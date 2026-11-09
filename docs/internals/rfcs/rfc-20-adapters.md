@@ -599,9 +599,11 @@ Every adapter runs through the same four states, driven by the node
   `GETATTR`, an NFSv4.0 `RENEW`), so the `CLOSE` or `DELEGRETURN` a client sends
   behind a `GETATTR` runs, and a client told the share moved can read
   `fs_locations`. Any other new request gets the drain's error: `ErrMoved` when
-  the drain names a takeover target, `ErrDraining` when it names none (the only
-  node stopping); whether it names one, `core` asks the service as the drain
-  begins (§3.4's `Stop`). A table maps `ErrMoved` to the protocol's move signal where
+  the service names another gateway node the request's share can move to,
+  `ErrDraining` when it names none (the only node stopping). `core` asks the
+  service for each request it refuses, so each share is judged on its own;
+  the call is [RFC 17](rfc-17-vfs.md)'s to provide, and until
+  [RFC 15](rfc-15-topology.md)'s topology exists it answers none. A table maps `ErrMoved` to the protocol's move signal where
   the operation can carry one (`NFS4ERR_MOVED` with `fs_locations`,
   [RFC 21 §7.4](rfc-21-nfs.md#7.4%20Pseudo-filesystem%2C%20SECINFO%20and%20locations);
   Witness `CLIENT_MOVE` first, [RFC 22 §14](rfc-22-smb.md#14.%20Witness)), and
@@ -878,19 +880,19 @@ type Adapter interface {
 
 	// Reconfigure adds and removes listeners and applies live settings to
 	// connections set up after it returns (§3.1). s is the adapter's own
-	// protocol's shape, config.NFS or config.SMB (§3.6). A restart-only
+	// protocol's shape, config.NFS or config.SMB; the other protocol's is
+	// refused with an error (§3.6). A restart-only
 	// setting is refused with an error wrapping config.ErrRestartRequired;
 	// the node applies it by Stop, New and Start.
 	Reconfigure(ctx context.Context, s config.Settings) error
 
 	// Stop moves serving to draining to stopped. ctx's deadline is the drain
-	// deadline; requests still running at it are abandoned (§3.1). As the
-	// drain begins, core asks Deps.Service whether the shares have another
-	// gateway node to move to (RFC 15 §5.3): it drains towards that target
-	// (ErrMoved) when there is one, as RFC 21 §7.4's fs_locations does, and
-	// with none (ErrDraining) otherwise. The call is RFC 17's to provide;
-	// until RFC 15's topology exists it answers none. Stop is idempotent: a
-	// second call returns once the adapter is stopped.
+	// deadline; requests still running at it are abandoned (§3.1). A request
+	// refused while draining gets ErrMoved when the service names another
+	// gateway node for its share (RFC 15 §5.3), as RFC 21 §7.4's
+	// fs_locations does, and ErrDraining otherwise; core asks per request
+	// (§3.1). Stop is idempotent: a second call returns once the adapter is
+	// stopped.
 	Stop(ctx context.Context) error
 
 	// Health is ready when serving with every listener bound; configured and
@@ -917,8 +919,7 @@ const (
 type Health struct {
 	State      State
 	Ready      bool     // serving with every listener bound
-	Err        error    // why the adapter was refused at configured, or why a listener was lost; nil otherwise
-	Conditions []string // §3.7's conditions this adapter raises now, by name: adapter_refused, adapter_listener_lost
+	Conditions []string // §3.7's conditions this adapter raises now, by name: adapter_listener_lost
 }
 
 // ConnInfo is one open connection.
@@ -940,8 +941,8 @@ package adapter // pkg/adapter
 // where it has one.
 type Deps struct {
 	Service vfs.Service       // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
-	Pools   *resources.Pools  // RFC 24 §2.5 (pkg/resources): the four budgets on the request path, receive, reply, connection state and hold; core builds its BufPools over them (§6.8)
-	Metrics *metrics.Metrics  // pkg/metrics as it is built today; RFC 25 §8.2's *metrics.Registry replaces it when that is built
+	Pools   *resources.Pools  // RFC 24 §2.5 (pkg/resources): the four budgets on the request path, receive, reply, connection state and hold
+	Metrics *metrics.Registry // RFC 25 §8.2
 	Tracer  trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
 	Logger  *slog.Logger
 	// Watch registers a loop with the node's liveness watchdog (RFC 25 §3.5):
@@ -970,13 +971,6 @@ configured, not at the first request (§3.1). Settings arrive in exactly two
 places: `New`, which takes its protocol's shape, and `Reconfigure`, which takes
 `config.Settings`, an interface only `config.NFS` and `config.SMB` satisfy
 (§3.6).
-
-`Deps` carries the budgets, never an allocator: each `Server` builds its own
-`resources.BufPool` over `Deps.Pools` (§6.8). `Deps.Metrics` is the registry
-`pkg/metrics` has today, whose providers are read once per scrape; the call
-that resolves `core`'s series once per protocol and operation table, so the
-request path does an atomic add (§10.1), lands with those series, and RFC 25
-§8.2's `*metrics.Registry` takes the field's place when it is built.
 
 
 ### 3.5 Sidecars
@@ -1082,11 +1076,14 @@ Four kinds of change, and only two reach the adapter:
 | --- | --- | --- | --- |
 | share policy | its grants, read-only, netgroups | the next request | the service, which reads the share list by version per request ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); no adapter is touched |
 | share encryption requirement | encryption required | the next tree connect; a tree holds the flag it connected with for its life | the service, at `TreeConnect` |
-| live adapter setting | dialect range, idle timeout, connection limit | connections and sessions set up afterwards | `Reconfigure` |
+| live adapter setting | dialect range, idle timeout | connections and sessions set up afterwards | `Reconfigure` |
 | restart-class adapter setting | what [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table marks restart-only | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
 
-A sidecar's enabled flag is not an adapter setting either: the node applies it
-by `Sync`, with the serving adapters or with none (§3.5,
+`connection_limit` is a node's, not an adapter's: the node hands each adapter
+its share of it (§6.4,
+[RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)), so it is no field of
+the shapes below. A sidecar's enabled flag is not an adapter setting either:
+the node applies it by `Sync`, with the serving adapters or with none (§3.5,
 [RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)).
 
 > decision: a share's encryption requirement is read at tree connect and held
@@ -1120,7 +1117,7 @@ package config // pkg/adapter/config: a leaf
 // Adapter is what every adapter reads; core reads only this.
 type Adapter struct {
 	Addrs []netip.Addr // supplied by the node, live (below)
-	// … RFC 13 Appendix B's adapter rows, each with its default
+	// … RFC 13 Appendix B's adapter rows, each with its default; not connection_limit, the node's
 }
 
 // NFS and SMB are each protocol's whole shape: the common part, and what
@@ -1134,13 +1131,18 @@ type SMB struct {
 	// …
 }
 
-// Settings is NFS or SMB, and nothing else can be: its one method is
-// unexported. It is what Reconfigure takes, so a protocol's own live settings
-// reach it.
+// Settings is NFS or SMB: its one method is unexported, so no other type
+// satisfies it. Reconfigure takes it so that a protocol's own live settings
+// reach it; Reconfigure refuses the other protocol's shape.
 type Settings interface{ common() Adapter }
 
 // AdapterOf returns the Adapter s embeds.
 func AdapterOf(s Settings) Adapter
+
+// Validate checks every field of s against its rule and returns an error
+// naming the field and the rule; it never clamps or defaults. New,
+// Reconfigure and the control plane call it.
+func Validate(s Settings) error
 
 // ErrRestartRequired is wrapped by an error refusing a change to a
 // restart-only field.
@@ -1156,9 +1158,11 @@ func RestartRequired(old, next Settings) error
   `restart:"true"`; a live one carries none. `RestartRequired` reads the tags,
   so a field cannot be added without a mark, and a test compares every field's
   mark with RFC 13 Appendix B's class.
-- **One validator per shape**, run by `New`, by `Reconfigure` and by the
+- **One validator, `Validate`**, run by `New`, by `Reconfigure` and by the
   control plane, which has none of its own
-  ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)).
+  ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)). A setting that
+  cannot be applied — a certificate that does not load — is refused there,
+  at configured (§3.1).
 
 > decision: no adapter field is restart-only today. Every adapter row of RFC
 > 13 Appendix B is live, and `Addrs`, which RFC 13 marks restart-only for the
@@ -1176,7 +1180,10 @@ type Server struct {
 }
 
 func (s *Server) Reconfigure(ctx context.Context, next config.Settings) error {
-	if err := validate(next); err != nil {
+	if !sameProtocol(*s.settings.Load(), next) {
+		return errOtherProtocol // config.SMB handed to the NFS adapter, or the reverse
+	}
+	if err := config.Validate(next); err != nil {
 		return err // refused; what is running is unchanged
 	}
 	if err := config.RestartRequired(*s.settings.Load(), next); err != nil {
@@ -1217,8 +1224,8 @@ An adapter contributes three things, all from `core`, none from protocol code:
 | Answer | What the adapter supplies |
 | --- | --- |
 | **liveness** ([RFC 25 §3.5](rfc-25-observability.md#3.5%20Liveness)) | each accept loop reports a turn through `Deps.Watch`, or reports idle; a loop that does neither for 60 s fails liveness. A connection's reader legitimately blocks on its socket and is not watched. Nothing else the adapter does can fail it |
-| **readiness** ([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)) | `Health()`: ready when serving with every listener bound; not ready while configured or draining. The node is ready for clients when every enabled adapter is serving or was refused at configured; a refused adapter is reported unhealthy with its error, and the others keep serving |
-| **conditions** ([RFC 25 §3.1](rfc-25-observability.md#3.1%20Conditions)) | `adapter_listener_lost`, a listener whose socket failed while serving, `unhealthy`; `adapter_refused`, an adapter whose settings failed at configured, `unhealthy` with the error; `sidecar_failed` (§3.5), `degraded`; `adapter_record_unreadable`, naming the protocol, `degraded` while `Adapter` bytes fail to decode — the usual cause a rolling upgrade across record versions — raising a ticket at once. Each derived from current evidence and cleared when it no longer holds |
+| **readiness** ([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)) | `Health()`: ready when serving with every listener bound; not ready while configured or draining. The node is ready for clients when every enabled adapter is serving or was refused at configured. A refused adapter has no `Health`: the node raises `adapter_refused` from the error `New` or `Start` returned, and the others keep serving |
+| **conditions** ([RFC 25 §3.1](rfc-25-observability.md#3.1%20Conditions)) | `adapter_listener_lost`, a listener whose socket failed while serving, `unhealthy`; `adapter_refused`, raised by the node for an adapter whose `New` or `Start` failed, `unhealthy` with the error; `sidecar_failed` (§3.5), `degraded`; `adapter_record_unreadable`, naming the protocol, `degraded` while `Adapter` bytes fail to decode — the usual cause a rolling upgrade across record versions — raising a ticket at once. Each derived from current evidence and cleared when it no longer holds |
 
 A refused setting is not readiness either: it is refused on every node that reads it, so steering clients elsewhere helps none of them, and an unready node would take the management API that can fix the setting out of service with it. A sidecar's failure and a single client's trouble are not readiness: a node
 that serves files is ready whether or not mDNS is advertising it.
@@ -1841,6 +1848,10 @@ type OpTable struct {
 	Ops    map[uint32]*Op
 	Errors *ErrorTable // §4.5; per operation table, so NFSv3 and NFSv4 map differently
 	Holds  bool        // §4.6: SMB holds and re-drives what RFC 22 §16.5 holds, by error and cause; NFS answers every error at once
+	// ReadOp reads the operation code at the head of a compound member's bytes,
+	// and how many bytes it took: NFSv4's argop. Set on a table that is a
+	// compound row's Members; nil elsewhere.
+	ReadOp func(b []byte) (op uint32, n int, err error)
 }
 
 type Op struct {
@@ -1849,9 +1860,10 @@ type Op struct {
 	Versions  Range // first and last version or dialect served
 	Needs     Needs // nothing < negotiated < session < tree; plus a current filehandle
 	Cacheable bool
-	Role      Role  // what the operation always does to state (§3.1, §4.4); per request: Invocation.Role, which may run before Resolve
+	Role      Role  // what the operation always does to state (§3.1, §4.4); per request: Invocation.Role
 	Expired   bool  // runs on an expired credential: re-authentication, logoff (§4.4; RFC 18 §3.8)
-	Decode    func(body []byte, v Version) (Invocation, error)
+	Decode    func(body []byte, v Version) (inv Invocation, n int, err error) // n: the bytes of body it consumed
+	Members   *OpTable // non-nil on a compound row (NFSv4's COMPOUND): its members' table, which the runner decodes from after n (below)
 }
 
 // Invocation is one decoded operation: four closures over the decoded request
@@ -1864,11 +1876,13 @@ type Invocation struct {
 	Encode  func(out *Buf, v Version) error
 	// Role says what this request does to state: an SMB LOCK whose elements
 	// unlock releases it, a WRITE to an open under a break flushes it, an
-	// NFSv4 OPEN that claims a delegated open flushes it. It may be called
-	// before Resolve, as the runner judging a single-reply compound whole
-	// does (below), so it reads only the request's decoded arguments and the
-	// state an explicit ID among them names, never a value Resolve sets or
-	// an earlier operation would. nil: Op.Role decides alone.
+	// NFSv4 OPEN that claims a delegated open flushes it. It is called in
+	// two cases only. Judging a single-reply compound whole while draining
+	// (below), the runner calls it before Resolve, and it reads only the
+	// decoded arguments and the state an explicit stateid among them names.
+	// Everywhere else it is called after Resolve, and only while draining or
+	// on an expired credential, so a request served normally pays for no
+	// second lookup. nil: Op.Role decides alone.
 	Role func(r *Request) Role
 }
 
@@ -1892,7 +1906,7 @@ func Bind[Req, Rep any](
 	role func(r *Request, req *Req) Role,     // nil: Op.Role decides alone
 	h Handler[Req, Rep],
 	enc func(rep *Rep, v Version, out *Buf) error,
-) func([]byte, Version) (Invocation, error)
+) func([]byte, Version) (Invocation, int, error)
 
 // NewOpTable builds a table and checks it: codes unique, ranges well formed.
 func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
@@ -1960,12 +1974,13 @@ if cached, err := stages.Replay.Lookup(ctx, h); cached != nil { conn.write(wrap(
 tbl, r, err := stages.Router.Route(h, prev) // prev: the member before a related one
 op := tbl.Ops[h.Op()]               // absent: not supported
 err = check(op, h, r)               // Versions, Needs (§4.2)
-inv, err := op.Decode(body(rec), h.Version())
+inv, _, err := op.Decode(body(rec), h.Version()) // the bytes consumed matter to the compound runner only (below)
 err = reserveReply(ctx, inv.Bound()) // RFC 24 §3.3
 err = inv.Resolve(r)
-role := roleOf(op, inv, r) // inv.Role(r), or op.Role where nil
+role := op.Role
+if draining || expired(r) { role = roleOf(op, inv, r) } // inv.Role(r), or op.Role where nil; not asked otherwise
 if err == nil && expired(r) && !op.Expired && role != RoleRelease { err = ErrExpired } // §4.4
-if err == nil && draining && role == RoleNone { err = drainErr } // §3.1: ErrMoved or ErrDraining; never per operation in a single-reply compound (below)
+if err == nil && draining && role == RoleNone { err = drainErr(r) } // §3.1: ErrMoved if the service names a gateway for r's share, else ErrDraining; never per operation in a single-reply compound (below)
 if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve when tbl.Holds
 st, send := tbl.Errors.Map(err, op, h.Version())
 if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); return } // a NoReply row: no final reply; where the table holds (SMB) an interim grants the request's credits back, and those of the chain members after it, whose headers it is handed (none outside a chain) (HoldCodec.Interim)
@@ -1975,8 +1990,12 @@ err = stages.Security.Wrap(h, reply) // a chain's replies: once, joined (below)
 conn.write(reply) // the writer's queue (§6.2)
 ```
 
-For NFSv4 the RPC procedure is `COMPOUND`, whose row hands the operations to
-the compound runner with the minor version's operation table; an SMB chain
+For NFSv4 the RPC procedure is `COMPOUND`, a compound row: its `Members` is
+the minor version's operation table. Its `Decode` decodes the compound's own
+arguments and returns the bytes they took; from there the runner reads each
+member's operation code with `Members.ReadOp`, decodes the member with that
+row's `Decode`, and moves on by the bytes it returned, until the body is
+consumed, so every member is decoded before any runs. An SMB chain
 reaches the same runner from one record, each member with its own header at
 its own offset (`Decode(rec, off)`, `Header.Next`). The runner repeats the
 steps from `check` to `encode` per operation, carrying the compound state in
@@ -2007,9 +2026,20 @@ run, and the client replays them once it reconnects. In an SMB chain, where
 each member has its own reply, the members before it stay applied and are
 answered: their replies go out chained with the refused member's interim,
 which grants its credits and those of the members after it, and no final
-reply follows. The members after it are never decoded, so the runner reads
-only their headers and passes their credits to `HoldCodec.Interim` as `after`.
-One before it that went pending gets its final reply as usual.
+reply follows. The members after it are not otherwise decoded, so the runner
+decodes only their headers, with `HeaderCodec.Decode`, and hands them to
+`HoldCodec.Interim` as `after`. That costs one header decode per later member,
+into a slice the connection keeps and reuses, and only on a drain's refusal.
+A later member whose header does not decode ends the chain there: the interim
+grants the credits of those before it that decoded, and nothing past it is
+read. One before it that went pending gets its final reply as usual.
+
+> decision: the credits of the members after a refused one are granted from
+> headers no `Security` stage verified, since those members are never
+> unwrapped. The grant is bounded by `Interim`'s sum, which saturates at the
+> connection's credit target, so a forged value grants a client at most the
+> target it could already hold. Verify each header before granting if a client
+> is found that turns such a grant into more than the target.
 
 An NFSv4 `COMPOUND` has one reply, and a results array cut short under
 `NFS4_OK` is malformed (RFC 8881 §16.2.3), so a `NoReply` refusal in it leaves
@@ -2201,9 +2231,9 @@ var (
 	ErrNotLast        = errors.New("core: not the last member of a chain") // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")     // Stages.MaxPending
 	// ErrMoved and ErrDraining are what a request §3.1 does not serve gets
-	// while the adapter drains: ErrMoved where the drain names a takeover
-	// target (the move signal), ErrDraining where it names none (no final reply,
-	// ErrorRow.NoReply).
+	// while the adapter drains: ErrMoved where the service names a gateway
+	// node for the request's share (the move signal), ErrDraining where it
+	// names none (no final reply, ErrorRow.NoReply).
 	ErrMoved    = errors.New("core: moved")
 	ErrDraining = errors.New("core: draining")
 )
@@ -2214,7 +2244,7 @@ func Errors() []error
 // is the one implementation; a connection's own tests supply a stub.
 type Dispatcher interface {
 	Dispatch(ctx context.Context, c *Conn, rec *Buf)
-	Drain(moved bool) // from now on only requests §3.1 serves run; the rest get ErrMoved if moved, else ErrDraining
+	Drain() // from now on only requests §3.1 serves run; the rest get ErrMoved or ErrDraining, decided per request (§3.1)
 }
 
 // NewServer returns the adapter New hands back: each listener bound on each
@@ -2234,6 +2264,17 @@ These, with the types above, are `core`'s exported surface; a protocol
 reaches nothing else in it. `adaptertest`'s test-only protocol drives every
 one of them (§7), so the surface is proven before either protocol is built on
 it.
+
+> decision: a compound row is named by one field and split by one hook.
+> `Op.Decode` returns the bytes it consumed and `Op.Members` names the
+> members' table, so the runner can decode every member before any runs, as
+> judging a compound whole while draining needs. Reading a member's operation
+> code is the members' table's `ReadOp`, because its encoding is the protocol's
+> (an XDR `argop` for NFSv4) and no existing stage reads inside a body. The
+> array's own count is not compared with the members decoded: a body holding
+> more members than its count runs them all. Return the count from the
+> compound row's `Decode` if a client is found that relies on the count
+> cutting a body short.
 
 > decision: four additions proposed from prior servers add no surface, since
 > each need is met inside a body. A release hook on `Invocation`: a held
@@ -2545,7 +2586,9 @@ server answers, and the same TCP connection is upgraded to TLS before any
 other request. `core.Conn` offers that upgrade once, to the stage that asked —
 `StartTLS(cfg)`, called by NFS's `Header` stage after the reply is sent — and
 from then on the reader and writer read and write through TLS; frame and every
-stage above it are unchanged.
+stage above it are unchanged. `StartTLS` is not in §4.7's list: it is added to
+`Conn` with RFC 21's `NULL` handler, a method on a concrete type that changes
+no existing signature.
 
 It is configured on the NFS adapter, as today:
 
@@ -2822,7 +2865,7 @@ type Buf struct {
 }
 
 func NewBufPool(b *Budget) *BufPool                             // RFC 24 §2.5: every buffer it hands out is reserved from b
-func (p *BufPool) Get(ctx context.Context, n int) (*Buf, error) // reserve n's class, then take a buffer: refs = 1
+func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) // reserve n's class for key (RFC 24 §2.5), then take a buffer: refs = 1
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
 ```
