@@ -1843,7 +1843,9 @@ derives them from reads.
 From an offset at or past the file's size, judged against the size read under
 the file's admission lock, `Seek` answers `ErrPastEnd`; otherwise it answers
 the first offset found, or the size when it finds none before the end, which an
-adapter reads as end of file.
+adapter reads as end of file. `CheckIO` judges a `Seek` as a read of no byte at
+its offset, so no byte-range lock refuses it, as MS-FSA judges none for an
+allocated-range query (2.1.5.10.22).
 
 ### 5.3 Open and close
 

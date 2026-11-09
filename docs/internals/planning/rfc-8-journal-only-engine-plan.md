@@ -725,7 +725,7 @@ open-state calls are a clone's (epic 8).
 
 Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release`), §8.1,
 §8.2. Condition: `removal_stalled`. Counters: `engine_removals_pending`,
-`engine_removals_oldest_seconds`, `engine_removal_batches_total`.
+`engine_removals_oldest_seconds`, `engine_removal_runs_total`.
 
 - T5.1 The three removals through phase 1, `Settle` and the post. Phase 1 commits the
   file's pending existence, the file synced first (§5.1), so it calls `Done` for every write
