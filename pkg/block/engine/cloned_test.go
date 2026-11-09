@@ -380,7 +380,7 @@ func TestPhase1HoldsTheSourceAndHoldsTheDestinationExtent(t *testing.T) {
 		heldAt   entity.JournalVersion
 		covering error
 	)
-	h.onHold = func() error {
+	h.onHold = func(context.Context) error {
 		atHold, heldAt = cloneOpens()
 		for _, err := range u.fs.Store.Content().Covering(context.Background(), u.share.ID, dst, 0, mib) {
 			covering = err
@@ -1022,19 +1022,12 @@ func TestAStaleSourceAtPhase1IsRetried(t *testing.T) {
 	}
 }
 
-// idleResume is the store's content view whose Resume runs no batch and
-// answers done, so a clone's removal stays not done in the store.
-type idleResume struct{ engine.Content }
-
-func (idleResume) Resume(context.Context, entity.ShareID, entity.FileID) (bool, error) {
-	return false, nil
-}
-
 // A clone into a destination whose earlier clone the store still records
 // as not done is answered DelayClone before its journal step, rather than
 // taking it and retrying phase 1 with the destination's guard held.
 func TestACloneIntoADestinationStillCloningIsDelayedBeforeItsJournalStep(t *testing.T) {
-	u := clonedUnit(t, func(d *engine.Deps) { d.Content = idleResume{d.Content} })
+	// Its Resume runs no batch and answers done: the store keeps the clone not done.
+	u := clonedUnit(t, onResume(func(context.Context, engine.Content, entity.ShareID, entity.FileID) (bool, error) { return false, nil }))
 	src := u.committedFile(t, "src", fill(2*mib, 's'))
 	dst := u.create(t, "dst")
 	u.clone(t, src, dst, vfserr.Extent{Len: mib}) // its Resume runs no batch: the store keeps it not done

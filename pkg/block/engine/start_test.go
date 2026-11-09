@@ -661,20 +661,7 @@ func TestStatsIsACopy(t *testing.T) {
 // warned reports whether a Warn record names share and device.
 func warned(logs logRecorder, share entity.ShareID, device string) bool {
 	for _, r := range logs.warnings() {
-		var gotShare, gotDevice bool
-
-		r.Attrs(func(a slog.Attr) bool {
-			switch a.Key {
-			case "share":
-				gotShare = a.Value.String() == share.String()
-			case "device":
-				gotDevice = a.Value.String() == device
-			}
-
-			return true
-		})
-
-		if gotShare && gotDevice {
+		if attr(r, "share") == share.String() && attr(r, "device") == device {
 			return true
 		}
 	}

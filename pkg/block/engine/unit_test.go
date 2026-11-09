@@ -471,3 +471,21 @@ func (x removeHook) Remove(ctx context.Context, s entity.ShareID, file entity.Fi
 func onRemove(f removeFn) func(*engine.Deps) {
 	return func(d *engine.Deps) { d.Existence = removeHook{d.Existence, f} }
 }
+
+// resumeFn answers a phase 2's Resume in place of the store, next.
+type resumeFn func(ctx context.Context, next engine.Content, s entity.ShareID, file entity.FileID) (bool, error)
+
+// resumeHook is the store with its Resumes answered by f.
+type resumeHook struct {
+	engine.Content
+	f resumeFn
+}
+
+func (x resumeHook) Resume(ctx context.Context, s entity.ShareID, file entity.FileID) (bool, error) {
+	return x.f(ctx, x.Content, s, file)
+}
+
+// onResume has f answer the unit's Resumes.
+func onResume(f resumeFn) func(*engine.Deps) {
+	return func(d *engine.Deps) { d.Content = resumeHook{d.Content, f} }
+}
