@@ -575,3 +575,41 @@ func TestRFC8A_UnsuitableJournalAtStart(t *testing.T) {
 		t.Error("journal_unsuitable is still raised after the attach")
 	}
 }
+
+// TestRFC8A_RetryLaterAtTheShareLimit is RFC 8 §15.2's "§10.2 retry later" for
+// a share at its journal limit: the write that reaches the limit is retry-later
+// for capacity, never no space.
+func TestRFC8A_RetryLaterAtTheShareLimit(t *testing.T) {
+	f := enginetest.New(t)
+	ctx := t.Context()
+	second := f.Second
+	second.Limit = 64 << 10
+
+	if err := f.E.Bind(ctx, second); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	file := secondFile(t, f, "full")
+	p := make([]byte, 16<<10)
+
+	for i := range 16 {
+		_, err := f.E.Write(ctx, second.ID, file, int64(i*len(p)), p, engine.WriteOpts{Done: func() {}})
+		if err == nil {
+			continue
+		}
+
+		var d *vfserr.Delay
+
+		if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity {
+			t.Fatalf("the write at the limit: %v, want ErrDelay(DelayCapacity)", err)
+		}
+
+		if errors.Is(err, vfserr.ErrNoSpace) {
+			t.Fatalf("the write at the limit: %v, want retry-later, not no space", err)
+		}
+
+		return
+	}
+
+	t.Fatal("the share never reached its journal limit")
+}

@@ -265,10 +265,13 @@ func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 	if err != nil {
 		return nil, err
 	}
-	v, err := b.h.Delete(ctx, fileID(f))
+
+	v, err := refusing(e, b, func() (journal.Version, error) {
+		return b.h.Delete(ctx, fileID(f))
+	})
 	if err != nil {
 		e.release(r, false)
-		return nil, e.journalErr(err)
+		return nil, err
 	}
 	r.v = v
 	e.issued(b.vl, v)
@@ -391,9 +394,12 @@ func (e *Engine) stage(ctx context.Context, r *removal, j func(*fileEntry) (jour
 		return false, err
 	}
 	g := grow != nil && grow(fe)
-	v, err := j(fe)
+
+	v, err := refusing(e, r.b, func() (journal.Version, error) {
+		return j(fe)
+	})
 	if err != nil {
-		return false, e.journalErr(err)
+		return false, err
 	}
 	r.v = v
 	fe.insert(pendingOp{version: v, kind: kind, extent: x, at: r.at, grow: g, setsMtime: g}) // a size change moves mtime, up as down

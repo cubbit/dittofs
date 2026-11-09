@@ -409,8 +409,13 @@ func (e *Engine) prepare(ctx context.Context, c *cloneRun, x vfserr.Extent) erro
 	}
 	c.spec = journal.CloneSpec{SrcShare: journal.ShareID(c.sb.share.ID), Src: fileID(c.src),
 		SrcOff: x.SrcOff, DstOff: x.DstOff, Len: x.Len}
-	asOf, err := e.size(ctx, c)
+
+	asOf, err := e.size(ctx, c, true)
 	if err != nil {
+		if answeredRefusal(err) {
+			return err
+		}
+
 		return e.journalErr(err)
 	}
 	c.spec.AsOf = asOf
@@ -426,7 +431,7 @@ func (e *Engine) prepare(ctx context.Context, c *cloneRun, x vfserr.Extent) erro
 // ponytail: a clone reads its source's held bytes twice, here to size them
 // and in its copies. Give the handle RFC 1 §3.7's Extents to size without
 // reading when clone time on journal-held sources shows in a profile.
-func (e *Engine) size(ctx context.Context, c *cloneRun) (journal.Version, error) {
+func (e *Engine) size(ctx context.Context, c *cloneRun, client bool) (journal.Version, error) {
 	end := c.spec.SrcOff + c.spec.Len
 	buf := make([]byte, min(copyBuf, c.spec.Len))
 	var asOf journal.Version
@@ -448,6 +453,18 @@ func (e *Engine) size(ctx context.Context, c *cloneRun) (journal.Version, error)
 	if len(c.runs) > 0 {
 		res, err := c.db.h.Reserve(n, len(c.runs))
 		if err != nil {
+			// The removal loop's reservation answers no caller, so it is
+			// answered by the table without counting or warning; the loop
+			// retries it as before.
+			answer, ok := tableAnswer(err)
+			if client {
+				answer, ok = e.answered(c.db, err)
+			}
+
+			if ok {
+				return journal.Version{}, answer
+			}
+
 			return journal.Version{}, err
 		}
 		c.res = res
@@ -563,9 +580,12 @@ func (e *Engine) attempt(ctx context.Context, c *cloneRun, r *removal) answer {
 // reservation.
 func (e *Engine) copyAll(ctx context.Context, c *cloneRun) error {
 	if c.res == nil {
-		_, err := e.size(ctx, c)
-		var noSpace *journal.NoSpaceError
-		space := errors.As(err, &noSpace) && noSpace.Limit != journal.LimitVersion
+		_, err := e.size(ctx, c, false)
+
+		var d *vfserr.Delay
+
+		// size answers a refusal for space by the table, as DelayCapacity.
+		space := errors.As(err, &d) && d.Cause == vfserr.DelayCapacity
 		c.rs.space.Store(space)
 		c.rd.space.Store(space)
 		if err != nil {

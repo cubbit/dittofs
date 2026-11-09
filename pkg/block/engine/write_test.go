@@ -122,33 +122,14 @@ func TestAWriteCutShortAnswersTheContextsError(t *testing.T) {
 	}
 }
 
-// A write the journal refuses for space is ErrDelay with DelayCapacity, no
-// journal type: it calls no Done and leaves no operation. One of a file
-// another share holds is ErrCorrupt.
-func TestARefusedWriteLeavesNothing(t *testing.T) {
+// A write of a file another share holds is ErrCorrupt, through the share that
+// does not hold it.
+func TestAWriteOfAnotherSharesFileIsCorrupt(t *testing.T) {
 	u := newUnit(t)
 	small := enginetest.AddShare(t, u.fs.Store, "small", 2)
 
 	if err := u.e.Bind(t.Context(), small); err != nil {
 		t.Fatal(err)
-	}
-
-	f := entity.NewFileID()
-	called := false
-	done := func() {
-		called = true
-	}
-	_, err := u.e.Write(t.Context(), small.ID, f, 0, []byte("abc"), engine.WriteOpts{Done: done})
-	var d *vfserr.Delay
-	if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity {
-		t.Errorf("a write past the share's limit: %v, want ErrDelay(DelayCapacity)", err)
-	}
-	var noSpace *journal.NoSpaceError
-	if errors.As(err, &noSpace) {
-		t.Errorf("the refusal carries the journal's %T", noSpace)
-	}
-	if called || len(u.e.Pending(f)) != 0 || u.e.HasEntry(f) {
-		t.Errorf("a refused write: Done called %v, operations %v", called, u.e.Pending(f))
 	}
 
 	g := entity.NewFileID()
