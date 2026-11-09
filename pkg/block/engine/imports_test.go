@@ -30,14 +30,15 @@ var allowed = map[string][]string{
 	module + "pkg/vfs/vfserr":       {"*"},
 	// The test fixture composes the engine over the real journal, its seam and
 	// profiler, the real store on an in-memory kv.KV, and a test clock. The
-	// unit tests' start failure tests put the fault-injecting kv.KV under that
-	// store.
+	// unit tests' start failure tests, and the fixture's rows of the self-fence,
+	// put the fault-injecting kv.KV under that store.
 	module + "pkg/block/journal/journaltest":      {"enginetest"},
 	module + "pkg/block/journal/journaltest/kit":  {"enginetest"},
 	module + "pkg/block/journal/journaltest/prof": {"enginetest", unitTests},
 	module + "pkg/metadata/kv":                    {"enginetest", unitTests},
 	module + "pkg/metadata/kv/badgerkv":           {"enginetest", unitTests},
-	module + "pkg/metadata/kv/kvtest":             {unitTests},
+	module + "pkg/metadata/kv/keys":               {"enginetest", unitTests},
+	module + "pkg/metadata/kv/kvtest":             {"enginetest", unitTests},
 	module + "pkg/metadata/kvstore/kvstoretest":   {"enginetest", unitTests},
 	module + "pkg/sim":                            {"enginetest", unitTests},
 }

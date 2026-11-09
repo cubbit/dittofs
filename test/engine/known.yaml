@@ -226,3 +226,59 @@
   category: feature
   reason: 'Epic 6: a share bound above the journal limit raises from the counter. Fails at the fixture until the journal has Init, Open, Share, Draw and SetVersionLimit.'
   issue: '#3589'
+- test: TestRFC8B_SelfFenceThreshold
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 7: the store stalled 31s fences writes and stability points, serves reads, raises node_fenced, and the next commit clears it under the same verifier; also the group commit (epic 4). Fails at the fixture until the journal has Init, Open, WriteAt and Sync.'
+  issue: '#3590'
+- test: TestRFC8B_SelfFenceFailing
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 7: every write transaction failing at once fences after 30s and clears once one commits; also the group commit (epic 4). Fails at the fixture until the journal has Init, Open, WriteAt and Sync.'
+  issue: '#3590'
+- test: TestRFC8B_SelfFenceIdle
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 7: a node idle for a minute does not fence. Fails at the fixture until the journal has Init, Open, WriteAt and Sync.'
+  issue: '#3590'
+- test: TestRFC8B_SelfFenceOneShotFailed
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 7: a failed one-shot (Bind''s raise), then an idle minute, does not fence; also Bind (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt and Sync.'
+  issue: '#3590'
+- test: TestRFC8B_SelfFenceOneShotStalled
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 7: a one-shot stalled past 30s fences, and the fence lifts once it fails; also Bind (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt and Sync.'
+  issue: '#3590'
+- test: TestRFC8B_SelfFencePerFileErrors
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 7: a file failing alone in every commit for 31s does not fence; also the group commit (epic 4). Fails at the fixture until the journal has Init, Open, WriteAt and Sync.'
+  issue: '#3590'
+- test: TestRFC8B_SelfFenceHeldAfterIdle
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 7: after an idle minute, an existence commit held 1s starts a fresh 30s; also the group commit (epic 4). Fails at the fixture until the journal has Init, Open, WriteAt and Sync.'
+  issue: '#3590'
+- test: TestRFC8_SelfFenceVersionLimitRaise
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 7: the version limit''s raise failing for 31s fences the node and its commit clears it; waits for epic 6''s retried raise (T6.7), which nothing issues yet, so the row then fails on never fencing. Fails at the fixture until the journal has Init, Open and Draw.'
+  issue: '#3701'
