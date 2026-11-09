@@ -416,8 +416,14 @@ func (e *entry) blocker(o LockOwner, r LockRange, upto int) *Lock {
 // lockedOut is ErrLocked for I/O r through the open of token id (zero:
 // anonymous) across a range a mandatory lock on e forbids it: any I/O but its
 // own open's under an exclusive lock, and every write, its own open's too,
-// under a shared one. A stacking owner's locks are the mandatory ones.
+// under a shared one. A stacking owner's locks are the mandatory ones. An I/O
+// of no byte crosses no lock, though Overlap ends a zero-length range at
+// Offset-1 as it does a zero-length lock: MS-FSA answers a read or write of
+// no byte before it judges locks.
 func (e *entry) lockedOut(id uint64, r ByteRange, write bool) error {
+	if r.Length == 0 {
+		return nil
+	}
 	for _, ls := range e.lstates {
 		if !ls.owner.Stack {
 			continue
