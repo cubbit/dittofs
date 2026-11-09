@@ -141,6 +141,9 @@ type Stats struct {
 	// Shares holds, for every tag that holds a record, attached or not, that
 	// share's statistics. Kind: per share.
 	Shares map[ShareTag]ShareStats
+
+	// ReadOnly is whether the journal refuses writes, and why. Kind: value.
+	ReadOnly ReadOnlyState
 }
 
 // ShareStats is one share's statistics. Every field is a gauge.

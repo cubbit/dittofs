@@ -372,7 +372,8 @@ rfc8 / 15 / "one clock":
 rfc1 / 9.4 / A / "a read's `asOf` against a change in flight":
   pending: 2.7
 rfc1 / 9.4 / B / "read-only stops the drain":
-  pending: 2.10
+  tests: [TestRFC1B_ReadOnlyStopsTheDrain, TestRFC1B_ReadOnlyProbe, TestRFC1B_ReadOnlyOpenRefusedStaysClosed]
+  reason: 'the three tests assert only part of the row, and the row stays uncertified until the rest is added. Asserted: the sync refused with ErrJournalReadOnly, WriteAt, Release and the second Sync refused, A reading back, Stats naming the state and the spare, writes again after a reopen, a failing check leaving no spare, a refused open leaving the journal closed. Not asserted, by owner. Epic 6: the loss generation rising once, a truncate undone, the spare tried every 30 s; the offloaded extent not evicted and the offload report succeeding are held as state by epic 6 and acted on by epics 8 and 9. Epic 7, which builds Open: the reopen holding neither B nor the truncate in the whole segment whose sync failed, the unsynced loss record appended for each, and a reopen in a new process. Epic 11: retry-later reads of content only the closed journal held, and the probe checks, which are platform.Check outside the storage seam'
 rfc28 / 4.2 / C / "an ended segment is emptied once":
   pending: 2.13b
 rfc28 / 4.2 / C / "an open at an exhausted headroom":

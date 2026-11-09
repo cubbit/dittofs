@@ -18,7 +18,12 @@ type mark struct {
 // when the file was already told of w, or a mark of w for it is still waiting,
 // so a window that fails several records of a file, or goes on failing after a
 // Sync reported it, tells the file once. The caller holds mu.
-func (st *stream) markLocked(w *window, file core.FileID) {
+func (st *stream) markLocked(w *window, file core.FileID) { st.markErrLocked(w, file, w.err) }
+
+// markErrLocked is markLocked reporting err in place of the window's own
+// error, as a read-only journal reports its refusal for every record it
+// fails. The caller holds mu.
+func (st *stream) markErrLocked(w *window, file core.FileID, err error) {
 	if _, told := st.told[w.id][file]; told {
 		return
 	}
@@ -28,7 +33,7 @@ func (st *stream) markLocked(w *window, file core.FileID) {
 	if st.marks == nil {
 		st.marks = map[core.FileID][]mark{}
 	}
-	st.marks[file] = append(st.marks[file], mark{window: w.id, seg: w.seg, err: w.err})
+	st.marks[file] = append(st.marks[file], mark{window: w.id, seg: w.seg, err: err})
 }
 
 // takeMarksLocked answers a Sync naming ids with the failures the stream owes
