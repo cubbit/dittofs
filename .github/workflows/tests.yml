@@ -153,8 +153,12 @@ jobs:
           --health-retries 10
 
     steps: &cell
+      # The unit cell of a pull request compares with origin/<base>, which
+      # only a full checkout has.
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && matrix.name == 'unit' && '0' || '1' }}
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -275,10 +279,14 @@ jobs:
           echo "KUBEBUILDER_ASSETS=$RUNNER_TEMP/envtest" >> "$GITHUB_ENV"
           echo "ENVTEST_USE_ENV=true" >> "$GITHUB_ENV"
 
+      # decision: a pull request's unit cell tests only the packages it
+      # changed; the merge queue and a push test every one, so nothing lands
+      # untested.
       - name: Run ${{ matrix.name }}
         env:
           CELL: ${{ matrix.name }}
-        run: '"$RUNNER_TEMP/dt" run "$CELL" --tier "$TIER" --ci --retry "$RETRY"'
+          CHANGED: ${{ github.event_name == 'pull_request' && matrix.name == 'unit' && 'true' || '' }}
+        run: '"$RUNNER_TEMP/dt" run "$CELL" --tier "$TIER" --ci --retry "$RETRY" ${CHANGED:+"--changed"}'
 
       # What a failed e2e run left running, such as a hung mount helper or
       # server, to tell a wedge from a test failure.
@@ -305,9 +313,10 @@ jobs:
           if-no-files-found: ignore
 
       # The coverage profile the unit cell writes. A retry rewrites it with the
-      # retried tests' alone, so a run that retried uploads none.
+      # retried tests' alone, and a pull request's holds only the packages it
+      # changed, so neither uploads one.
       - name: Upload coverage to Codecov
-        if: matrix.name == 'unit' && hashFiles('test/harness/results/*/unit/go-test-*-retry-*.json') == ''
+        if: github.event_name != 'pull_request' && matrix.name == 'unit' && hashFiles('test/harness/results/*/unit/go-test-*-retry-*.json') == ''
         uses: codecov/codecov-action@v7
         with:
           files: test/harness/results/*/unit/coverage.txt

@@ -578,7 +578,7 @@ var unbuilt = regexp.MustCompile(`(^|/)(testdata|[._][^/]+)(/|$)`)
 //
 // decision: a package is tested for a change to its own files only, not to a
 // package it imports, so a change that breaks the tests of a package that
-// imports it passes here and fails the full run after the merge. Add the
+// imports it passes here and fails the merge queue's full run. Add the
 // importers, from go list's Deps, if that lets breaks through.
 func changedPackages(root, base string, patterns []string) ([]string, error) {
 	if base == "" {
