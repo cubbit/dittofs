@@ -458,7 +458,8 @@ listed test fails on the regression it names (after "catches").
 
 - **Track:** A. **Depends on:** T8.1a, T8.1b; epic 4's T4.3 (the per-file existence commit
   and `waitBatch`) and T4.5 (the one sync function); epic 5's T5.1 (the guard, phase 1's
-  order) and T5.4 (the retry channel); epic 6's T6.7 (`issued`).
+  order) and T5.4 (the retry channel). The `issued` call below lands with whichever of this and
+  epic 6's T6.7 comes second.
 - **Covers:** R4 (the reservation, a source past its end), R10 (the source's release),
   R11–R17, R24, R26 (a store error), R33 (the stall before phase 1), R35 (the refused
   reservation), R38, R41, R42.
@@ -531,7 +532,9 @@ listed test fails on the regression it names (after "catches").
   passing the destination's writes without their superseded runs); over the fake, with the
   test block of 16, a clone whose `CloneTarget` version is past the trigger and no other
   call issuing a version: the raise runs and the journal gets the new limit (catches a clone
-  target that does not call `issued`).
+  target that does not call `issued`); over the fake, a clone that makes three copies: the
+  versions passed to `issued`, counted through an `export_test.go` hook, are the target's
+  and each copy's, four in all (catches a copy that does not call `issued`).
 
 ### T8.3 The clone-kind open and phase 2
 
@@ -671,7 +674,9 @@ listed test fails on the regression it names (after "catches").
   only when released: no `Resume` before it, `removal_stalled` names the clone `Removal` after
   five backoffs and clears once it returns (catches a silent wait, D11), and an `Unbind` of
   the source's share before then returns only after the stub is released and the clone done
-  (catches a join that abandons the clone).
+  (catches a join that abandons the clone); over the fake, a restart that re-makes two copies
+  of a clone: the versions passed to `issued`, counted through the same hook as T8.2's, are
+  the two copies' (catches a re-made copy that does not call `issued`).
 
 ## 7. Order of work
 

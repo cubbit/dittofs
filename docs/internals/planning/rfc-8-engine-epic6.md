@@ -220,7 +220,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R2 | `JournalID` answers the identity the store records for a device; `J‖journal` is written when the journal is created, before anything in it is acknowledged | invariant | §2.5 step 1, RFC 16 §4.2, RFC 1 §3 | T6.1 |
 | R3 | Every write of `S‖id‖vl` (at start, at an attach, at every raise) is a tracked max-write: it writes the larger of the value it reads and its own, never blindly, and never lowers the limit | invariant | §2.7, RFC 16 §4.2 | T6.1, T6.2, T6.3, T6.7 |
 | R4 | The limits are raised in as many transactions as `K` takes, never one over every share | bound | §2.7, E40 | T6.1, T6.7 |
-| R5 | A raise at attach of a shard this process has raised changes its incarnation and keeps its grace instance; a start's raise, and the first raise of any other shard since the process started, copy the incarnation into the grace instance | invariant | RFC 14 §4.4, RFC 16 §2 (`Shard`), RFC 8 §2.5 step 2 | T6.1, T6.2, T6.10 |
+| R5 | A raise at attach of a shard this process has raised and served changes its incarnation and keeps its grace instance; a start's raise, and the first raise of any other shard since the process started, copy the incarnation into the grace instance | invariant | RFC 14 §4.4, RFC 16 §2 (`Shard`), RFC 8 §2.5 step 2 | T6.1, T6.2, T6.10 |
 
 **The share table and the bindings**
 
@@ -229,7 +229,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R6 | The share table is read on the request path without a lock; an attach or removal copies the whole table once per change, and no lock shared by more than one share is held across I/O or a wait on a write, read or commit | MUST NOT | §1.1 | T6.2 |
 | R7 | A binding holds the share's handle on each journal one of its shards lives on, and on no other, opened by `Share` at attach, its settings copied from the share record and its state; its handles and state are never stored, and `Start` rebuilds every binding from the share records | invariant | §2.3, RFC 11 §2.1 (one shard, one journal device) | T6.2, T6.3 |
 | R8 | `Bind` validates a share's settings and refuses an invalid one with an error, keeping the binding it had | MUST | §2.4, §2.3 | T6.2 |
-| R9 | `Bind` of a share not served attaches it: reads its version floor and limit, passes the larger to `Share`, raises the shard's incarnation, writes the share's limit at the journal's as a tracked max-write (the two in either order; T6.7 raises the incarnation first, D6), puts the incarnation that raise wrote on the binding, where a write samples it for its verifier, and only then publishes the binding; a failure undoes these in reverse and publishes nothing | invariant | §2.5 (`Bind`), §4.1, E29, RFC 1 §3 | T6.2 |
+| R9 | `Bind` of a share not served attaches it: reads its version floor and limit, passes the larger to `Share`, raises the shard's incarnation, writes the share's limit at the journal's as a tracked max-write (the two in either order; T6.7 raises the incarnation first, D6), puts the incarnation that raise wrote on the binding, where a write samples it for its verifier, and only then publishes the binding; a failure publishes nothing and undoes in reverse what can be undone, while the counter `Share` raised, the limits and the incarnation stay raised (RFC 8 §2.5) | invariant | §2.5 (`Bind`), §4.1, E29, RFC 1 §3 | T6.2 |
 | R10 | `Bind` of a served share applies a state change, serving to quiesced and back, without restarting the engine or touching another binding | invariant | §2.3 | T6.2 |
 | R11 | A share's full limit never refuses another share's writes on the same journal | test row | §2.3, §15.2 shared journal | T6.2 |
 | R12 | A content call naming a share with no binding answers `ErrDelay` with `DelayFrozen`, a share refused at start or left unattached by a lost journal included; only a share being removed or retired answers `ErrStale` | invariant | §12.1 | T6.2, T6.3, T6.9 |
@@ -266,7 +266,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | --- | --- | --- | --- | --- |
 | R34 | The trigger is evaluated on every version the engine issues, not on a timer | invariant | §2.7, §15.2 sustained load | T6.7 |
 | R35 | When the versions left below the limit last passed with `SetVersionLimit` after the version just issued, `limit - v - 1`, the count `Stats` reports, are below the larger of half a block and the peak version rate times the margin (D6), every served share's limit is raised to a block above the larger of that limit and `Stats().NextVersion`, and the new limit is passed with `SetVersionLimit` only after every share's raise has committed. The peak is the highest count of versions drawn in any one second of the last 60 s; the margin is 30 s plus the existence age plus 1 s | bound | §2.7 | T6.7 |
-| R36 | `Bind` raises every served share's limit first when the counter it raised leaves fewer versions than the trigger, itself and to R35's target, under the journal's raise lock, which it holds from its limit write until it publishes (D6) | invariant | §2.5 (`Bind`) | T6.7 |
+| R36 | `Bind` raises every served share's limit first when the counter it raised leaves fewer versions than the trigger, itself and to R35's target, under the journal's raise lock, which it holds from its limit write until it publishes (D6); a `Bind` that fails after its `Share` raised the counter calls the trigger check once (RFC 8 §2.7) | invariant | §2.5 (`Bind`) | T6.7 |
 | R37 | A write that reaches the limit is refused retry-later, never `ErrNoSpace`, and is served once the raise commits | test row | §2.7, RFC 1 §4.3, §15.1 version limit | T6.7 (the raise), T7.1 (the answer) |
 | R38 | The raise never runs on the request path: a version issued posts the check and never waits for a transaction | MUST NOT | §1.1 | T6.7 |
 
@@ -345,18 +345,17 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   directory, it also deletes that older index key, so each journal keeps one; RFC 16 says
   nothing on that key, and a `decision:` marker at `RecordJournal` says so, withdrawn if
   RFC 16 settles it. Start never writes `J‖journal` (#3642).
-- **D4, an attach keeps the grace instance only of a shard already raised.** `kvstore`'s
+- **D4, an attach keeps the grace instance only of a shard already raised and served.** `kvstore`'s
   `RaiseIncarnations` copies the incarnation into the grace instance on every call, which is
   right for a start and for the first raise of a shard since the process started, and wrong
-  for an attach of a shard this process has raised (R5). T6.1 gives the call that meaning,
+  for an attach of a shard this process has raised and served (R5). T6.1 gives the call that meaning,
   renamed `RaiseAtStart`, and adds `RaiseAtAttach(ctx, shard)`, which keeps the grace
-  instance; `Lifecycle` declares both. The engine keeps the set of shards whose incarnation
-  it has raised and whose binding it has published since `Start`: an attach calls
-  `RaiseAtAttach` for a shard in it and `RaiseAtStart` for any other, since the restart lost
-  that shard's open state (RFC 14 §4.4). A `Bind` that raised the incarnation and then
-  failed leaves its shard out of the set, so the next attach uses the start form again; that
-  is safe, as an incarnation only goes up and a shard never served has no client state to
-  lose. `kvstore`'s
+  instance; `Lifecycle` declares both. The engine keeps the set of shards it has raised and
+  served since `Start`, and an attach picks the form for a shard in that set and for any
+  other as RFC 8 §2.5 step 2 and RFC 16 §3 give it (RFC 14 §4.4). A `Bind` that raised the
+  incarnation and then failed leaves its shard out of the set, so the next attach uses the
+  start form again; that is safe, as an incarnation only goes up and a shard never served
+  has no client state to lose. `kvstore`'s
   `decision:` at `RaiseIncarnations`, as #3606 words it, already gives the start form "the
   first serve of a share's shard this process has not served": T6.1 rewrites that marker for
   `RaiseAtStart` and adds no second one. Both return the incarnation they wrote for each
@@ -388,24 +387,28 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   larger of that and the limit last passed: from the limit alone, a `Share` that moved the
   counter from about 2·10⁶ to 9·10⁸ (T6.2's case) leaves every share on the journal below
   the counter for about 50 raises, and from the counter alone, a rate term above a block
-  raises nothing while versions are left (§9 point 15). One raise runs at a time per
-  journal; one woken during a raise runs again after it only if the versions left are still
-  within the trigger. A raise that fails at the store is logged at `Warn` and retried until
+  raises nothing while versions are left (§9 point 15, settled by #3831 in RFC 8 §2.7).
+  RFC 8 §2.7 gives the rest of the rule: one raise at a time per journal, a wake during a
+  raise running it again only if the trigger still holds, the raise lock, and what a refused
+  limit does. A `Bind` that fails after its `Share` raised the counter calls the same check
+  once, so a raise of its own that failed at the store is taken over by the retrying
+  goroutine, and a journal at its limit, which issues no version, is still lifted. A raise that fails at the store is logged at `Warn` and retried until
   it commits, off the request path. Between attempts it waits on `Clock.After`: 10 ms at
   first, doubled after each failure, at most 1 s, and back to 10 ms after a raise that
   commits. A `decision:` marker says RFC 8 sets no wait. `Close` cancels and joins it (R41).
   A limit the journal refuses with `SetVersionLimit` is not retried, since trying again
   changes nothing: the raise logs it once at `Error` and marks the journal, so no later
   version wakes a raise for it, and writes at the limit answer retry-later, never
-  `ErrNoSpace`, until the journal is opened again. A `Bind` on that journal fails. No
-  condition in RFC 8 §11 names this. The raise holds a per-journal raise lock from its read
-  of the counter to its `SetVersionLimit`, and `Bind` takes the same lock from its limit
-  write until it publishes the binding. `Bind` raises the shard's incarnation before it
-  takes the lock, so the lock covers only the limit write and the publish, and another
-  share's `Bind` on the journal never waits for an incarnation raise; RFC 8 §2.5 asks only
-  that both come before the publish. A `Bind` that fails after its incarnation raise leaves
-  the incarnation raised, which is safe: an incarnation only goes up, so a retried `Bind`
-  raises it again and no incarnation repeats (RFC 14 §4.4). Under the raise lock, `Bind`
+  `ErrNoSpace`, until the journal is opened again, and a `Bind` on that journal fails with
+  the journal's error (`attachLimit` reads the mark before it writes the share's limit). No
+  condition in RFC 8 §11 names this: a `decision:` marker at the refusal says so, naming
+  that ceiling, withdrawn if an RFC sets a condition. The raise holds a per-journal raise
+  lock from its read of the counter to its `SetVersionLimit`, and `Bind` takes the same lock
+  from its limit write until it publishes the binding. `Bind` raises the shard's incarnation
+  before it takes the lock, so the lock covers only the limit write and the publish, and
+  another share's `Bind` on the journal never waits for an incarnation raise; RFC 8 §2.5 asks
+  only that both come before the publish, and says a retried `Bind` raises it again (an
+  incarnation only goes up, so none repeats, RFC 14 §4.4). Under the raise lock, `Bind`
   runs R36's raise itself when its `Share` left the counter within the trigger, the new
   share among the shares raised, and otherwise writes the new share's limit at the limit
   last passed. A lock released at the limit write would let a raise in the gap before the
@@ -584,7 +587,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   at the larger, the limit written at the journal's and the attach raise D4 picks, in either
   order (T6.7 puts the attach raise first, D6), the incarnation it returns put on the
   binding, publish; undo in reverse on failure) and for a served one (a state change); the
-  set of shards raised since `Start` (D4). Epic 3's unit composition binds through `Bind`
+  set of shards raised and served since `Start` (D4). Epic 3's unit composition binds through `Bind`
   from here, and its hook goes. E2's fixture gains a second share on its journal.
 - **Acceptance criteria:**
   - A content call never waits on the lifecycle mutex.
@@ -782,13 +785,19 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
 - **Track:** C. **Depends on:** T6.3; epic 3's T3.2 and T3.3; E2's T2.3.
 - **Covers:** R34 to R38, R3, R4, R15, R20.
 - **Deliverables:** in `recover.go` (D6): the per-journal peak-rate buckets,
-  `issued(journal, v)` called from `Write` and `Draw` (epics 5 and 8 add their own calls),
-  the raise goroutine: `RaiseVersionLimits` for every served share to a block above the
+  `issued(journal, v)` called from `Write` and `Draw`, and at the removal and clone steps
+  already merged when it lands (T5.1, T5.2, T5.4, T8.2 and T8.6, each with its test over the
+  fake); a step that lands after T6.7 adds its own call and test, so the call lands with
+  whichever of the step and T6.7 comes second and neither waits for the other; the raise
+  goroutine: `RaiseVersionLimits` for every served share to a block above the
   larger of the limit last passed and `Stats().NextVersion`, `SetVersionLimit` after the
   last transaction commits, under the journal's raise lock; `Bind` holding the same lock
   from its limit write until it publishes, writing the new share's limit at the limit last
   passed or, when its `Share` left the counter within the trigger, running that raise
-  itself with the new share among the shares raised (R36); RFC 8 §2.7's headroom `decision:`
+  itself with the new share among the shares raised (R36), and a `Bind` that fails after its
+  `Share` raised the counter calling the trigger check once (RFC 8 §2.7); a limit the journal
+  refuses logged once at `Error`, with a `decision:` marker at the refusal that names the
+  missing RFC 8 §11 condition; RFC 8 §2.7's headroom `decision:`
   and burst `ponytail:` markers at the trigger; a raise that fails at the store retried
   until it commits, with D6's wait and its `decision:` marker; the goroutine pushed on
   `Start`'s undo stack (R13), so a later failing step stops it, and joined by `Close`.
@@ -807,8 +816,11 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   refused and then served once the raise commits) and the two raise lock cases (a raise held
   between its last commit and `SetVersionLimit`, then a share bound; a `Bind` held inside
   its limit write while a write past the trigger wakes the raise) need the test block of 16,
-  which the conformance package cannot set without an exported symbol: they wait until it
-  can, and the row stays red in `known.yaml`. Over the fake, the same wrong changes are
+  which the conformance package cannot set without an exported symbol: they are a test of
+  their own, apart from the start and crash halves, with its own `known.yaml` entry naming
+  #3701. The start and crash halves' entry goes when they pass; this one stays until an issue
+  for a knob the conformance package can reach (rule 11 keeps hooks in `export_test.go`)
+  is done, so the raise halves stay red meanwhile. Over the fake, the same wrong changes are
   caught: a raise held before the store: the journal has only `Start`'s limit (catches
   `SetVersionLimit` before the raise commits); a raise held after its commit and before
   `SetVersionLimit`, then a share bound: the `Bind` waits on the raise lock and its
@@ -838,7 +850,11 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   left are still within the trigger (catches a wake lost while a raise runs); a
   `SetVersionLimit` the fake journal refuses: no second call, one `Error` log, a later
   version past the trigger wakes no raise, and a write at the limit answers `ErrDelay`, not
-  `ErrNoSpace` (catches a refused limit retried in a loop). §15.2's
+  `ErrNoSpace`, and a `Bind` on that journal answers the journal's error (catches a refused
+  limit retried in a loop, and a `Bind` that joins a journal no raise will lift); a `Bind`
+  failing at its limit write after its `Share` moved the counter to the limit last passed,
+  with no write and no `Draw` after it: the raise runs, the limit is passed and a write to a
+  served share succeeds (catches a trigger checked only on an issued version). §15.2's
   sustained-load and burst rows are epic 7's T7.4, over this raise.
 
 ### T6.8 `Close`
@@ -1071,8 +1087,9 @@ and PR 4.
    methods: D2's shape.
 2. **An attach keeps the grace instance** (D4), settled by #3712. RFC 16 §3 declares
    `RaiseAtStart`, which sets `GraceInstance`, and `RaiseAtAttach`, which keeps it, each
-   returning the incarnations written; RFC 8 §2.5 step 2 takes the attach form only when
-   the node holds the shard's open state, and the start form otherwise (RFC 14 §4.4): D4's
+   returning the incarnations written; RFC 8 §2.5 step 2 and RFC 16 §3 take the attach form
+   only when the node holds the shard's open state (a shard this process raised and served,
+   or whose handover shipped the table), and the start form otherwise (RFC 14 §4.4): D4's
    rule.
 3. **The start transaction against `K`** (D8), settled by #3633. RFC 8 §2.5 step 2, RFC 0,
    RFC 14 §4.4 and RFC 16 §3 now raise the shards in transactions of at most `K` keys,
@@ -1146,9 +1163,9 @@ and PR 4.
     journal whose shares' records were never written or are all released, so nothing
     `Start` reads tells the two apart. Until that text, T6.3 sets no loss floor, and the
     second part's acknowledgement sets it.
-15. **What a raise of the version limit counts from.** RFC 8 §2.7 raises every served
-    share's limit "by a block" and does not say from what. From the limit alone, a `Bind`
+15. **What a raise of the version limit counts from.** RFC 8 §2.7 raised every served
+    share's limit "by a block" and did not say from what. From the limit alone, a `Bind`
     whose `Share` jumped the counter leaves the journal refusing writes for many raises;
     from the counter alone, a rate term above a block raises nothing while versions are
-    left. D6 raises to a block above the larger of the two. RFC 8 §2.7, and RFC 1's plan
-    that repeats it, should say so; it changes no interface, so nothing waits for it.
+    left. D6 raises to a block above the larger of the two. Settled by #3831: RFC 8 §2.7
+    says so, and RFC 1's plan points at §2.7 instead of repeating it.
