@@ -51,15 +51,14 @@ func (l *losses) keep(f entity.FileID, ev journal.LossEvent) {
 	l.kept[f] = append(l.kept[f], ev)
 }
 
-// unmatched is the kept event naming f's write at version v, which is being
-// inserted, taken out, and found reports one was kept. The caller holds f's
-// entry lock.
-func (l *losses) unmatched(f entity.FileID, v journal.Version) (ev journal.LossEvent, found bool) {
+// unmatched is the kept events naming f's write at version v, which is
+// being inserted, taken out. The caller holds f's entry lock.
+func (l *losses) unmatched(f entity.FileID, v journal.Version) (found []journal.LossEvent) {
 	l.keptMu.Lock()
 	defer l.keptMu.Unlock()
 	evs := l.kept[f]
 	if len(evs) == 0 {
-		return journal.LossEvent{}, false
+		return nil
 	}
 	// decision: a kept event below v belongs to a write already committed
 	// and is discarded, since a file's writes reach the engine in version
@@ -67,8 +66,8 @@ func (l *losses) unmatched(f entity.FileID, v journal.Version) (ev journal.LossE
 	// the entry, where markLost would have found it, until it committed.
 	// Withdrawn with insert's own marker.
 	evs = slices.DeleteFunc(evs, func(e journal.LossEvent) bool {
-		if e.Version == v && !found {
-			ev, found = e, true
+		if e.Version == v {
+			found = append(found, e)
 			return true
 		}
 		return e.Version.Compare(v) < 0
@@ -78,7 +77,7 @@ func (l *losses) unmatched(f entity.FileID, v journal.Version) (ev journal.LossE
 	} else {
 		l.kept[f] = evs
 	}
-	return ev, found
+	return found
 }
 
 // seqOf is f's loss sequence. The caller holds mu.
@@ -166,10 +165,11 @@ func (e *Engine) syncMarks(ctx context.Context, b *binding, ids ...journal.FileI
 // drain applies the loss events the journal reported since the last drain,
 // read by their sequence numbers: each corrupt or failed-window loss of an
 // unoffloaded write raises its file's sequence, a gap in the ring raises
-// every file's, a corrupt loss of a write still pending marks that write
-// lost, so its existence commit records it lost and charges nothing, and a
-// failed window's loss drops its pending write, calling its Done, charging
-// nothing, and records its file as raised by its window.
+// every file's, a corrupt loss of a write still pending marks the run of
+// that write it names lost, so its existence commit records that run lost
+// and charges nothing for it, and a failed window's loss drops its pending
+// write, calling its Done, charging nothing, and records its file as raised
+// by its window.
 //
 // The drain holds the journal's loss lock until every write it marks is
 // marked, so a drain that finds an event already applied finds its write
@@ -236,7 +236,8 @@ func (e *Engine) drain(b *binding) {
 }
 
 // markLost applies ev to the pending write of f whose record it dropped, the
-// one at ev's version: a corrupt loss marks it lost; a failed window's drops
+// one at ev's version: a corrupt loss marks the run of it ev names lost, the
+// rest of the write committed and charged as written; a failed window's drops
 // it, out of the entry, or, when a batch claimed it, out of that batch, which
 // neither commits it nor calls its Done. An event that finds no pending write
 // is kept, under the entry's lock, for the write's insert, which applies it.
@@ -254,20 +255,14 @@ func (e *Engine) markLost(l *losses, f entity.FileID, ev journal.LossEvent) (don
 		}
 		found = true
 		if ev.Reason != journal.LossFailedWindow {
-			// decision: a corrupt loss of part of a pending write marks the
-			// whole write lost, so its good bytes commit uncharged and read
-			// back only while the journal holds them. Splitting the write
-			// needs the store to take two operations of one file at one
-			// version, which Existence.Commit refuses; lift this once it can,
-			// or once PendingOp carries the lost runs of a write.
-			op.lost = true
+			op.lost = lostRuns(op.lost, entity.Extent{Offset: op.extent.Off, Length: op.extent.Len}, ev.Extent)
 			continue
 		}
 		if op.done != nil {
 			dones = append(dones, op.done)
 			op.done = nil
 		}
-		if op.claimed {
+		if op.claimed || op.held {
 			op.dropped = true
 			continue
 		}
@@ -351,6 +346,13 @@ func (e *Engine) lostWhole(j Journal) {
 	g.broadcastLocked() // every waiter then finds the journal lost
 	g.mu.Unlock()
 	runAll(dones)
+}
+
+// lostRuns is runs, a write's lost runs, with the part of the write w that
+// x, a loss's extent, covers merged in.
+func lostRuns(runs []entity.Extent, w entity.Extent, x journal.Extent) []entity.Extent {
+	r := w.Intersect(entity.Extent{Offset: x.Off, Length: x.Len})
+	return entity.MergeExtents(append(runs, r))
 }
 
 func overlaps(a, b journal.Extent) bool {

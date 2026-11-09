@@ -558,14 +558,16 @@ const batchItemKeys = 10
 // Charged — the bytes of each hole it drops that are owed back, a clone's
 // source holes — goes into the removal's charge, and no batch writes the
 // File but the last (see finishRemoval). Content at or above the removal's
-// version is never touched, so a re-run is harmless.
+// version is never touched, so a re-run is harmless. advanced reports
+// whether a batch committed before err: a run cut short that still moved a
+// cursor.
 //
 // ponytail: nothing moves to history, because no snapshot cut is recorded
 // yet, so a dropped ref is dated by nothing and an overwrite record is
 // dropped whole with the batch that reaches its start, not narrowed for the
 // next batch to date by. Date and move what a live cut sees here when cuts
 // land.
-func (c Content) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) error {
+func (c Content) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) (advanced bool, err error) {
 	for {
 		var more bool
 		err := c.s.kv.Update(ctx, func(tx kv.Txn) (err error) {
@@ -573,8 +575,9 @@ func (c Content) Resume(ctx context.Context, share entity.ShareID, file entity.F
 			return err
 		})
 		if err != nil || !more {
-			return err
+			return advanced, err
 		}
+		advanced = true
 	}
 }
 

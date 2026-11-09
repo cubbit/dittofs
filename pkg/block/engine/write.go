@@ -63,10 +63,15 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 		return vfserr.Verifier{}, e.journalErr(err)
 	}
 	// A loss drained since WriteAt answered found no pending write to apply
-	// to and was kept: a corrupt loss inserts the write lost, a failed
-	// window's drops it, its Done run and nothing charged.
-	ev, lost := b.gc.losses.unmatched(f, ver)
-	if lost && ev.Reason == journal.LossFailedWindow {
+	// to and was kept: a corrupt loss inserts the write with the run it
+	// names lost, a failed window's drops it, its Done run and nothing
+	// charged.
+	var lost []entity.Extent
+	for _, ev := range b.gc.losses.unmatched(f, ver) {
+		if ev.Reason != journal.LossFailedWindow {
+			lost = lostRuns(lost, x, ev.Extent)
+			continue
+		}
 		e.files.unlock(f, fe)
 		if o.Done != nil {
 			o.Done()

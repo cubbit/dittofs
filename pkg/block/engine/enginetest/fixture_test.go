@@ -28,7 +28,7 @@ func TestACrashedProcessChangesNothingInTheStore(t *testing.T) {
 	if err := x.Clone(ctx, kvstore.CloneOp{}, nil); !errors.Is(err, errCrashed) {
 		t.Errorf("Clone after the crash: %v, want errCrashed", err)
 	}
-	if err := c.Resume(ctx, share, file); !errors.Is(err, errCrashed) {
+	if _, err := c.Resume(ctx, share, file); !errors.Is(err, errCrashed) {
 		t.Errorf("Resume after the crash: %v, want errCrashed", err)
 	}
 	if err := c.PruneRemovals(ctx, share, file, entity.JournalVersion{}); !errors.Is(err, errCrashed) {

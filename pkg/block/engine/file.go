@@ -28,15 +28,16 @@ const (
 type pendingOp struct {
 	version   journal.Version
 	kind      opKind
-	extent    journal.Extent // a truncate's Off is the size it sets, its Len zero
-	at        time.Time      // the clock's time when staged: the file's change time
-	setsMtime bool           // the operation moves the file's modification time
-	grow      bool           // a truncate at or above the replayed size: committed by the group commit, no phase 1
-	lost      bool           // the journal dropped it after its sync: its existence commits lost
-	claimed   bool           // a batch claimed it: no other path commits it or calls its Done
-	dropped   bool           // a failed window dropped it while claimed: it no longer exists, its Done has run
-	copy      bool           // a clone's copy of a source run: its clone's phase 1 records it, through Copied
-	done      func()         // the write's WriteOpts.Done, called once its existence commits or it is dropped
+	extent    journal.Extent  // a truncate's Off is the size it sets, its Len zero
+	at        time.Time       // the clock's time when staged: the file's change time
+	setsMtime bool            // the operation moves the file's modification time
+	grow      bool            // a truncate at or above the replayed size: committed by the group commit, no phase 1
+	lost      []entity.Extent // the runs of a write the journal dropped after its sync, merged: they commit lost, charging nothing
+	claimed   bool            // a batch claimed it: that batch's settle releases the claim
+	held      bool            // a removal's phase 1 holds it: no batch's settle releases it
+	dropped   bool            // a failed window dropped it while claimed or held: it no longer exists, its Done has run
+	copy      bool            // a clone's copy of a source run: its clone's phase 1 records it, through Copied
+	done      func()          // the write's WriteOpts.Done, called once its existence commits or it is dropped
 }
 
 // fileEntry is one file's state: its pending operations in version order,

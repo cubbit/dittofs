@@ -32,7 +32,7 @@ func (f *cfix) remove(file entity.FileID, op RemoveOp) {
 
 func (f *cfix) resume(file entity.FileID) {
 	f.t.Helper()
-	if err := f.s.Content().Resume(context.Background(), f.share, file); err != nil {
+	if _, err := f.s.Content().Resume(context.Background(), f.share, file); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -258,6 +258,57 @@ func TestRemovalBatches(t *testing.T) {
 	}
 	if batches < n {
 		t.Errorf("%d batches for %d refs at one ref a batch", batches, n)
+	}
+	if refs := f.refs(file); len(refs) != 0 {
+		t.Errorf("refs left %+v", refs)
+	}
+}
+
+// cutKV fails every update once ok of them have succeeded, ok negative
+// passing all, as a Resume whose bound ends after so many batches.
+type cutKV struct {
+	kv.KV
+	ok *int
+}
+
+func (c cutKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	if *c.ok == 0 {
+		return context.DeadlineExceeded
+	}
+	if *c.ok > 0 {
+		*c.ok--
+	}
+	return c.KV.Update(ctx, fn)
+}
+
+// A Resume cut short reports whether a batch committed before the cut: one
+// cut after a batch advanced, one cut before any did not, and the next run
+// finishes from the cursor.
+func TestResumeReportsWhetherItAdvanced(t *testing.T) {
+	ok := -1
+	f := newContentFix(t, func(db kv.KV) kv.KV { return cutKV{db, &ok} })
+	f.s.SetKeyBudget(3*batchItemKeys + 4)
+	file := f.file(0)
+	const n = 4
+	f.exist(file, write(1, 0, n*mib))
+	for i := range int64(n) {
+		h := chunk(byte(10 + i))
+		f.commit(file, carry(h), ref(i*mib, mib, h, 1, 1))
+	}
+	f.remove(file, truncate(2, 0))
+	for _, c := range []struct {
+		ok   int
+		want bool
+	}{{1, true}, {0, false}} {
+		ok = c.ok
+		advanced, err := f.s.Content().Resume(context.Background(), f.share, file)
+		if err == nil || advanced != c.want {
+			t.Errorf("a Resume cut after %d batches: advanced %v, %v; want %v and the cut", c.ok, advanced, err, c.want)
+		}
+	}
+	ok = -1
+	if _, err := f.s.Content().Resume(context.Background(), f.share, file); err != nil {
+		t.Fatal(err)
 	}
 	if refs := f.refs(file); len(refs) != 0 {
 		t.Errorf("refs left %+v", refs)

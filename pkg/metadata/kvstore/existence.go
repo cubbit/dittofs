@@ -30,10 +30,6 @@ const (
 	OpWrite OpKind = iota + 1
 	// OpGrow is a truncate up to Size. A truncate down is a removal.
 	OpGrow
-	// OpLost is a write of Extent the journal dropped after it was synced:
-	// it exists as an OpWrite does, uncarved, and holds nothing, so it
-	// charges nothing and a read of it answers that it is lost.
-	OpLost
 )
 
 // PendingOp is one journal operation of a file whose existence is not yet
@@ -41,15 +37,24 @@ const (
 type PendingOp struct {
 	Version entity.JournalVersion
 	Kind    OpKind
-	Extent  entity.Extent // OpWrite, OpLost
+	Extent  entity.Extent // OpWrite
 	Size    int64         // OpGrow
 	Mtime   time.Time     // the modification time it sets; zero when its open suspended it
 	Ctime   time.Time     // the change time it sets
-	// Over is, for an OpWrite or OpLost, the runs where it overlaps an earlier
+	// Over is, for an OpWrite, the runs where it overlaps an earlier
 	// write of the file pending in the same commit, which an overwrite record
 	// at its version covers: content committed before the commit is found by
 	// the store itself (RFC 8 §5.1).
 	Over []entity.Extent
+	// Lost is, for an OpWrite, the runs of Extent the journal dropped after
+	// they were synced, in offset order and disjoint: they exist and
+	// supersede as the rest of the write does, and charge nothing, so only
+	// they read as lost. The write stays one operation at its version, so
+	// no key budget can commit part of it. A write the journal lost whole
+	// has the one run Extent. Offload needs no check of its own: a lost run
+	// is not held by the journal, so an offload that uploads what the
+	// journal holds skips it.
+	Lost []entity.Extent
 }
 
 // PendingExistence is one file's operations to commit, in version order.
@@ -368,7 +373,7 @@ func (s *existState) keys() int { return fileKeys + len(s.dirtyH) + len(s.dirtyO
 func (s *existState) window(op PendingOp) entity.Extent {
 	lo, hi := s.f.Size, s.f.Size
 	switch op.Kind {
-	case OpWrite, OpLost:
+	case OpWrite:
 		lo, hi = min(lo, op.Extent.Offset), op.Extent.End()
 	case OpGrow:
 		hi = op.Size
@@ -440,7 +445,7 @@ func covered(ws []entity.Extent, e entity.Extent) bool {
 
 func (s *existState) apply(op PendingOp) error {
 	switch op.Kind {
-	case OpWrite, OpLost:
+	case OpWrite:
 		e := op.Extent
 		if e.IsEmpty() {
 			break
@@ -456,11 +461,13 @@ func (s *existState) apply(op PendingOp) error {
 		if e.Offset > s.f.Size {
 			s.addHole(entity.ExtentOf(s.f.Size, e.Offset), op.Version)
 		}
+		uncharged, err := s.lostBytes(e, op.Lost)
+		if err != nil {
+			return err
+		}
 		filled := s.removeHoles(e)
 		grown := max(0, e.End()-max(e.Offset, s.f.Size))
-		if op.Kind == OpWrite {
-			s.f.Charged += filled + grown
-		}
+		s.f.Charged += filled + grown - uncharged
 		s.f.Size = max(s.f.Size, e.End())
 	case OpGrow:
 		if op.Size < s.f.Size {
@@ -476,6 +483,25 @@ func (s *existState) apply(op PendingOp) error {
 	s.f.Modify, s.f.Change = later(s.f.Modify, op.Mtime), later(s.f.Change, op.Ctime)
 	s.f.Applied = entity.MaxVersion(s.f.Applied, op.Version)
 	return nil
+}
+
+// lostBytes is what the runs lost of a write of e would charge, the holes
+// they fill and the bytes they grow the file by, read before the write
+// applies. Runs out of order or overlapping are refused.
+func (s *existState) lostBytes(e entity.Extent, lost []entity.Extent) (int64, error) {
+	var n int64
+	at := e.Offset
+	for _, l := range lost {
+		if l.Offset < at || !e.Contains(l) {
+			return 0, fileFailed(merrs.NewInvalidArgumentError("lost runs out of order or outside the write"))
+		}
+		at = l.End()
+		for _, h := range overlapping(s.holes, l) {
+			n += h.Intersect(l).Length
+		}
+		n += max(0, l.End()-max(l.Offset, s.f.Size))
+	}
+	return n, nil
 }
 
 func later(a, b time.Time) time.Time {
