@@ -1,3 +1,5 @@
+//go:build linux
+
 package fuzz
 
 // Request is one system call for a worker, already resolved: paths are

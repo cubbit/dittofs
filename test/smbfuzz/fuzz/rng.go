@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package fuzz is the SMB differential fuzzer: plans, the generator, the
 // per-user workers, the runner that executes a plan on the reference and the
 // device under test in lockstep, the comparison and the minimiser.
