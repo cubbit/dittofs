@@ -80,12 +80,30 @@ type Fixture struct {
 	// stalled holds every existence commit until its context ends, as a
 	// store that commits nothing does; Stall sets it.
 	stalled atomic.Bool
-	handles sync.Map // journal.ShareTag → the handle the running engine opened on it
+	// cloneGate, once set by HoldNextClone, holds the next clone's phase 1.
+	cloneGate atomic.Pointer[gate]
+	handles   sync.Map // journal.ShareTag → the handle the running engine opened on it
 }
 
 // Stall makes the store commit no existence from now on: each commit waits
 // until its context ends.
 func (f *Fixture) Stall() { f.stalled.Store(true) }
+
+// HoldNextClone holds the next clone's phase 1 at the store, with both of
+// its files registered, until release is called; entered is closed once it
+// arrives. A test's cleanup releases it.
+func (f *Fixture) HoldNextClone() (entered <-chan struct{}, release func()) {
+	g := &gate{entered: make(chan struct{}), release: make(chan struct{})}
+	var once sync.Once
+	release = func() { once.Do(func() { close(g.release) }) }
+	f.t.Cleanup(release)
+	f.cloneGate.Store(g)
+	return g.entered, release
+}
+
+// gate is a held store call: entered is closed when it arrives, and it waits
+// for release.
+type gate struct{ entered, release chan struct{} }
 
 // FailNextSync makes the journal's next fsync fail, so the sync window it
 // belongs to fails.
@@ -304,7 +322,7 @@ func (f *Fixture) start() {
 			}
 			return wrapJournal(j, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
 		},
-		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed, stalled: &f.stalled},
+		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate},
 		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
 		Lifecycle: f.FS.Store.Lifecycle(),
 		Holds:     Holds(f.Opens, f.FS.Store.Opens()),
@@ -470,8 +488,9 @@ var errCrashed = errors.New("fixture: the process crashed: its engine commits no
 // only recovery may, or a row after the crash would pass without recovery.
 type fencedExistence struct {
 	engine.Existence
-	crashed *atomic.Bool
-	stalled *atomic.Bool
+	crashed   *atomic.Bool
+	stalled   *atomic.Bool
+	cloneGate *atomic.Pointer[gate]
 }
 
 func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
@@ -495,6 +514,14 @@ func (x fencedExistence) Remove(ctx context.Context, share entity.ShareID, file 
 func (x fencedExistence) Clone(ctx context.Context, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
 	if x.crashed.Load() {
 		return errCrashed
+	}
+	if g := x.cloneGate.Swap(nil); g != nil {
+		close(g.entered)
+		select {
+		case <-g.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return x.Existence.Clone(ctx, op, pending)
 }
