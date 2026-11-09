@@ -112,6 +112,67 @@ func TestASyncWaitsForAFailureInFlightOnAnotherStream(t *testing.T) {
 	}
 }
 
+// TestASyncWaitsForAFailureInFlightOnItsOwnStream pins the same wait when both
+// files live on one stream: f's failure is already waiting as a mark, h's
+// window is taken but not yet failed, and a Sync naming both returns only once
+// it names h as well, as it does when the files are on two streams.
+func TestASyncWaitsForAFailureInFlightOnItsOwnStream(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	var heldSeg atomic.Uint64
+	gate, open := releaser(t)
+	resolved := &recorder[resolvedAt]{}
+	r := newRigConfigured(t, 1, func(c *Config) {
+		c.Resolved = func(stream uint32, seg core.SegmentID) { resolved.add(resolvedAt{stream, seg}) }
+	})
+	r.d.beforeFail = func(w *window) {
+		if heldSeg.Load() == uint64(w.seg) {
+			<-gate
+		}
+	}
+	r.d.Start(r.streams)
+	// Registered after the rig's own cleanups, so it runs before the layer
+	// stops: a worker parked at the gate would stop the stop.
+	t.Cleanup(open)
+
+	failed := func(f core.FileID, n int) segment.Location {
+		loc, _ := r.publish(t, f, int64(n)*4, "aaaa")
+		r.failSyncOf(t, loc.Segment, errors.New("boom"))
+		r.stamped(t, 0)
+		eventually(t, "the sync to fail", func() bool {
+			r.clock.Advance(2 * core.SyncBound)
+			return r.d.Stats().SyncFailures >= uint64(n+1)
+		})
+		return loc
+	}
+	f, h := file(1), file(2)
+	failed(f, 0)
+	eventually(t, "f's window to be failed", func() bool { return len(resolved.all()) == 1 })
+	// h's segment is the one the stream rolled to after f's failure.
+	locH, _ := r.publish(t, h, 4, "hhhh")
+	heldSeg.Store(uint64(locH.Segment))
+	r.failSyncOf(t, locH.Segment, errors.New("boom h"))
+	r.stamped(t, 0)
+	eventually(t, "h's window to be taken", func() bool {
+		r.clock.Advance(2 * core.SyncBound)
+		return len(r.windowsOf(0)) > 0
+	})
+
+	done := r.syncAsync(context.Background(), f, h)
+	mustBlock(t, "Sync of both files with h's failure in flight", done)
+	open()
+	err := mustReturn(t, "Sync of both", done)
+	var se *core.SyncError
+	if !errors.As(err, &se) {
+		t.Fatalf("Sync = %v, want a *core.SyncError", err)
+	}
+	if !slices.Contains(se.Files, f) || !slices.Contains(se.Files, h) {
+		t.Errorf("SyncError.Files = %v, want both files", se.Files)
+	}
+	if err := mustReturn(t, "Sync of h after the report", r.syncAsync(context.Background(), h)); err != nil {
+		t.Errorf("Sync(h) after the report = %v, want nil: its mark was left set", err)
+	}
+}
+
 // TestASyncThatEndsEarlyStillReportsTheMarksItTook pins that when a later
 // stream answers core.ErrClosed after an earlier one gave up its marks, the
 // call returns the failure it took, not the closed error: nothing else would

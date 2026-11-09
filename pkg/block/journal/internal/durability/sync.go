@@ -783,7 +783,6 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 				// are taken before returning, each under its own stream's
 				// mutex, and one error names them.
 				owed = mergeOwed(owed, found)
-				continue
 			}
 			if err != nil {
 				return early(err)
@@ -881,10 +880,9 @@ func (st *stream) answersFailureLocked(loc segment.Location) (uint64, bool) {
 func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pending, failing bool, found *owedFailure, err error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	var owed *owedFailure
 	if failFast {
-		if o := st.takeMarksLocked(ids); o != nil {
-			return false, false, o, nil
-		}
+		owed = st.takeMarksLocked(ids)
 	}
 	lead := false
 	var failSeg core.SegmentID
@@ -926,9 +924,12 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 		}
 	}
 	if !pending {
-		return false, false, nil, nil
+		return false, false, owed, nil
 	}
 	if st.closed {
+		if owed != nil {
+			return false, false, owed, nil
+		}
 		return false, false, nil, core.ErrClosed
 	}
 	if failErr != nil {
@@ -938,11 +939,11 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 				se.Files = append(se.Files, t.file)
 			}
 		}
-		return false, false, &owedFailure{err: se, window: failWindow}, nil
+		return false, false, mergeOwed(owed, &owedFailure{err: se, window: failWindow}), nil
 	}
 	if lead && !st.syncing && !st.want {
 		st.want = true
 		st.wake()
 	}
-	return true, failing, nil, nil
+	return true, failing, owed, nil
 }
