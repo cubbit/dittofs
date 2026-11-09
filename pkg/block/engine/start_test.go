@@ -673,13 +673,43 @@ func TestStartRefusesALostJournalByName(t *testing.T) {
 				},
 			}
 
+			refused := []engine.Share{s.one, s.two, unhanded}
+			before := map[entity.ShardID]entity.Shard{}
+
+			for _, sh := range refused {
+				before[sh.Shard] = s.shardOf(t, sh.Shard)
+			}
+
 			if err := s.start(t); err != nil {
 				t.Fatalf("Start with a lost journal = %v, want nil", err)
 			}
 
+			// A refused share's shard is not raised: its late attach raises
+			// it in the start form, which a raise here would turn into the
+			// attach form, keeping this start's grace instance.
+			for _, sh := range refused {
+				got, want := s.shardOf(t, sh.Shard), before[sh.Shard]
+
+				if got.Incarnation != want.Incarnation || got.GraceInstance != want.GraceInstance {
+					t.Errorf(
+						"refused share %v's shard %d: incarnation %d, grace instance %d; want %d and %d, unraised",
+						sh.ID,
+						sh.Shard,
+						got.Incarnation,
+						got.GraceInstance,
+						want.Incarnation,
+						want.GraceInstance,
+					)
+				}
+
+				if s.e.RaisedForTest(sh.Shard) {
+					t.Errorf("refused share %v's shard %d recorded as raised", sh.ID, sh.Shard)
+				}
+			}
+
 			st := s.e.Stats()
 
-			for _, sh := range []engine.Share{s.one, s.two, unhanded} {
+			for _, sh := range refused {
 				got := st.Shares[sh.ID]
 
 				if got.Device != startDevice || !errors.Is(got.Refused, engine.ErrJournalLost) || !errors.Is(got.Refused, c.err) {

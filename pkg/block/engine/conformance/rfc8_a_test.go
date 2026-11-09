@@ -105,8 +105,8 @@ func TestRFC8A_JournalAuthority(t *testing.T) {
 // TestRFC8A_IncarnationAtStart, the engine half: a restart with no journal
 // attach raises the incarnation of the shard it serves, in the start form, so
 // the shard opens a new grace instance. A start that raised incarnations only
-// at attach would repeat the grace instance. That open state answers nothing
-// and no shard enters grace before the raise commits is open state's half.
+// at attach would repeat the grace instance. Holding open-state answers and
+// grace until the raise commits is open state's half, not checked here.
 func TestRFC8A_IncarnationAtStart(t *testing.T) {
 	f := enginetest.New(t)
 
