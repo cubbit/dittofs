@@ -30,10 +30,6 @@ const (
 	OpWrite OpKind = iota + 1
 	// OpGrow is a truncate up to Size. A truncate down is a removal.
 	OpGrow
-	// OpLost is a write of Extent the journal dropped after it was synced:
-	// it exists as an OpWrite does, uncarved, and holds nothing, so it
-	// charges nothing and a read of it answers that it is lost.
-	OpLost
 )
 
 // PendingOp is one journal operation of a file whose existence is not yet
@@ -41,11 +37,11 @@ const (
 type PendingOp struct {
 	Version entity.JournalVersion
 	Kind    OpKind
-	Extent  entity.Extent // OpWrite, OpLost
+	Extent  entity.Extent // OpWrite
 	Size    int64         // OpGrow
 	Mtime   time.Time     // the modification time it sets; zero when its open suspended it
 	Ctime   time.Time     // the change time it sets
-	// Over is, for an OpWrite or OpLost, the runs where it overlaps an earlier
+	// Over is, for an OpWrite, the runs where it overlaps an earlier
 	// write of the file pending in the same commit, which an overwrite record
 	// at its version covers: content committed before the commit is found by
 	// the store itself (RFC 8 §5.1).
@@ -54,7 +50,8 @@ type PendingOp struct {
 	// they were synced, in offset order and disjoint: they exist and
 	// supersede as the rest of the write does, and charge nothing, so only
 	// they read as lost. The write stays one operation at its version, so
-	// no key budget can commit part of it.
+	// no key budget can commit part of it. A write the journal lost whole
+	// has the one run Extent.
 	Lost []entity.Extent
 }
 
@@ -374,7 +371,7 @@ func (s *existState) keys() int { return fileKeys + len(s.dirtyH) + len(s.dirtyO
 func (s *existState) window(op PendingOp) entity.Extent {
 	lo, hi := s.f.Size, s.f.Size
 	switch op.Kind {
-	case OpWrite, OpLost:
+	case OpWrite:
 		lo, hi = min(lo, op.Extent.Offset), op.Extent.End()
 	case OpGrow:
 		hi = op.Size
@@ -446,7 +443,7 @@ func covered(ws []entity.Extent, e entity.Extent) bool {
 
 func (s *existState) apply(op PendingOp) error {
 	switch op.Kind {
-	case OpWrite, OpLost:
+	case OpWrite:
 		e := op.Extent
 		if e.IsEmpty() {
 			break
@@ -468,9 +465,7 @@ func (s *existState) apply(op PendingOp) error {
 		}
 		filled := s.removeHoles(e)
 		grown := max(0, e.End()-max(e.Offset, s.f.Size))
-		if op.Kind == OpWrite {
-			s.f.Charged += filled + grown - uncharged
-		}
+		s.f.Charged += filled + grown - uncharged
 		s.f.Size = max(s.f.Size, e.End())
 	case OpGrow:
 		if op.Size < s.f.Size {

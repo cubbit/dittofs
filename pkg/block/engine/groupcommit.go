@@ -169,7 +169,7 @@ func superseded(ops []pendingOp, i int) []entity.Extent {
 }
 
 // storeOp is op as the store commits it: a write, with the runs of it the
-// journal lost, a write the journal lost whole, or a truncate up.
+// journal lost, all of it for a write lost whole, or a truncate up.
 func storeOp(op pendingOp, mtime time.Time) kvstore.PendingOp {
 	o := kvstore.PendingOp{
 		Version: entity.JournalVersion(op.version.Bytes()),
@@ -178,12 +178,9 @@ func storeOp(op pendingOp, mtime time.Time) kvstore.PendingOp {
 		Mtime:   mtime,
 		Ctime:   op.at,
 	}
-	switch {
-	case op.grow:
+	if op.grow {
 		o.Kind, o.Extent, o.Size = kvstore.OpGrow, entity.Extent{}, op.extent.Off
-	case len(op.lost) == 1 && op.lost[0] == o.Extent:
-		o.Kind = kvstore.OpLost
-	default:
+	} else {
 		o.Lost = op.lost
 	}
 	return o

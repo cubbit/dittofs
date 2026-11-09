@@ -415,7 +415,7 @@ func TestATerminalRemovalCommitsTheExistenceBelowItBeforeItsSettle(t *testing.T)
 func TestATerminalRemovalCommitsALossBelowItBeforeItsSettle(t *testing.T) {
 	x := &endingStore{}
 	u, h := newHookedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
-	_, appended, sizes := u.endedTruncate(t, h, true)
+	f, appended, sizes := u.endedTruncate(t, h, true)
 	if s := sizes(); len(s) != 2 || s[1] != 32 {
 		t.Fatalf("the store's size at each settle: %v, want 32 at the truncate's", s)
 	}
@@ -424,8 +424,12 @@ func TestATerminalRemovalCommitsALossBelowItBeforeItsSettle(t *testing.T) {
 		t.Fatal("nothing committed")
 	}
 	last := c[len(c)-1]
-	if len(last) != 1 || last[0].Version != entity.JournalVersion(appended.Bytes()) || last[0].Kind != kvstore.OpLost {
-		t.Errorf("the last commit %+v, want the append committed lost", last)
+	if len(last) != 1 || last[0].Version != entity.JournalVersion(appended.Bytes()) {
+		t.Errorf("the last commit %+v, want the append's", last)
+	}
+	u.e.ClearOps(f) // the crash: the engine's state goes, the store stays
+	if _, err := u.e.Read(t.Context(), u.share.ID, f, 16, make([]byte, 16)); !errors.Is(err, vfserr.ErrLost) {
+		t.Errorf("after the crash the append reads %v, want ErrLost", err)
 	}
 }
 

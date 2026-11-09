@@ -385,13 +385,13 @@ func TestExistenceCommitSuspendedModify(t *testing.T) {
 	}
 }
 
-// A lost write exists as a write does, uncarved past the old size, and
-// charges nothing.
+// A write lost whole exists as a write does, uncarved past the old size,
+// and charges nothing.
 func TestExistenceCommitLost(t *testing.T) {
 	f := newContentFix(t, nil)
 	file := f.file(0)
 	lost := write(2, mib, mib)
-	lost.Kind = OpLost
+	lost.Lost = []entity.Extent{lost.Extent}
 	f.exist(file, write(1, 0, mib), lost)
 	got := f.get(file)
 	if got.Size != 2*mib || got.Charged != mib {
