@@ -1856,7 +1856,7 @@ if err == nil && expired(r) && !op.Expired && role != RoleRelease { err = ErrExp
 if err == nil && draining && role == RoleNone { err = drainErr } // §3.1: ErrMoved or ErrDraining; never per operation in a single-reply compound (below)
 if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve when tbl.Holds
 st, send := tbl.Errors.Map(err, op, h.Version())
-if !send { if tbl.Holds { conn.write(interim(h, true)) }; freeReply(); return } // a NoReply row: no final reply; where the table holds (SMB) an interim grants the request's credits back (HoldCodec.Interim)
+if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); return } // a NoReply row: no final reply; where the table holds (SMB) an interim grants the request's credits back, and after, the credits read from the headers of the chain members after it (0 outside a chain) (HoldCodec.Interim)
 reply := encode(stages.Header, h, st, inv)
 if op.Cacheable { stages.Replay.Store(h, reply) } // a clear copy, before Wrap
 err = stages.Security.Wrap(h, reply) // a chain's replies: once, joined (below)
@@ -1895,7 +1895,9 @@ run, and the client replays them once it reconnects. In an SMB chain, where
 each member has its own reply, the members before it stay applied and are
 answered: their replies go out chained with the refused member's interim,
 which grants its credits and those of the members after it, and no final
-reply follows; one before it that went pending gets its final reply as usual.
+reply follows. The members after it are never decoded, so the runner reads
+only their headers and passes their credits to `HoldCodec.Interim` as `after`.
+One before it that went pending gets its final reply as usual.
 
 An NFSv4 `COMPOUND` has one reply, and a results array cut short under
 `NFS4_OK` is malformed (RFC 8881 §16.2.3), so a `NoReply` refusal in it leaves
@@ -2014,10 +2016,12 @@ type HoldCodec interface {
 	// with the hold pool full, §4.6), only what keeps the client's balance at
 	// one. Either way it grants the credits of the chain members answered
 	// before it, which ride on its header. For a NoReply row (a drain's
-	// refusal) it grants the request's credits and those of the chain members
-	// after it, which do not run; no Final follows, nothing is held, and it
-	// counts against no floor or MaxPending.
-	Interim(h Header, grant bool, out *Buf) error
+	// refusal) it grants the request's credits and after, the credits of the
+	// chain members after it, which do not run: the runner reads them from
+	// those members' headers, since it decodes nothing else of them. No Final
+	// follows, nothing is held, and it counts against no floor or MaxPending.
+	// Every other interim passes after 0.
+	Interim(h Header, grant bool, after uint16, out *Buf) error
 	// Final is the final reply's header, with the async ID. If grant (true
 	// only when its interim withheld), it grants the request's credits less
 	// what the interim granted of them; otherwise none.

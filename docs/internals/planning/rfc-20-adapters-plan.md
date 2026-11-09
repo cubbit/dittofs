@@ -153,7 +153,7 @@ what those tests stand on:
   timer, always pending; a cancel that arrives before its target holds, and one after its
   target's reply, gone after 5 s; a drain that cancels a parked operation and leaves it
   unanswered, serves a context operation and a read before a releasing one, and stops a chain
-  at a member it refuses with an interim that grants its credits and the later members', and no final,
+  at a member it refuses with an interim that grants its credits and the later members' (`Interim`'s `after`, read from their headers alone), and no final,
   while a member before it that went pending still gets its final reply, and judges a single-reply compound whole before
   any member runs, leaving one with a refused member unanswered with nothing applied (a release before the refused member
   included), nothing cached and the slot's sequence ID where it was, and running one whose every member is served, or that began before the drain, whole; a cancel or a drain racing a grant (§4.7's `Park`); a member before the last
@@ -559,7 +559,7 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   judged whole before any member runs, by each member's operation and own arguments, never the current stateid or filehandle, with the drain read once and no per-member check: one with a refused member runs nothing, answers and caches nothing, and keeps its
   slot's previous sequence ID so a retransmission runs (RFC 20 §4.7); on `testproto`'s chained frames, not on the runner's
   internals alone.
-- T5.5 Held requests: interim timer and `HoldCodec.Interim`, the final reply under
+- T5.5 Held requests: interim timer and `HoldCodec.Interim` (`after` 0 on every hold), the final reply under
   `HoldCodec.Final`, re-drive from `Resolve` with a fresh attempt deadline inside the hold bound,
   `vfs.WithHold` added to `pkg/vfs` (RFC 17 §5.9) and passed on every call, asserted on the
   context `vfstest.Record` receives (its reader, the clone wait, is RFC 17 plan piece 11's, V30),
