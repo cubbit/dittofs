@@ -3,6 +3,7 @@ package datapath
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +28,18 @@ func twoHandles(t *testing.T, c *Core) (a, b *Share) {
 	return mustShare(t, c, tagA), mustShare(t, c, tagB)
 }
 
+// twoFilesOnTwoStreams returns two files whose ids carry each other's tagged
+// bytes — F1's read as B's, F2's as A's — and asserts they sit on the core's
+// two distinct streams, so sharing one stream cannot pass unsaid.
+func twoFilesOnTwoStreams(t *testing.T, c *Core) (f1, f2 core.FileID) {
+	t.Helper()
+	f1, f2 = fileWith(0x22, 0x01), fileWith(0x11, 0x01)
+	if c.Streams().For(f1) == c.Streams().For(f2) {
+		t.Fatal("the two files share one stream; pick ids the streams differ on")
+	}
+	return f1, f2
+}
+
 // wantOtherShare asserts err is an ErrOtherShare of f asked through tag and
 // owned by owner, naming both tags.
 func wantOtherShare(t *testing.T, err error, f core.FileID, tag, owner core.ShareTag) {
@@ -43,7 +56,7 @@ func wantOtherShare(t *testing.T, err error, f core.FileID, tag, owner core.Shar
 // tagOnly leaves A's one write of F unsynced and fails its sync, so the file's
 // held piece is dropped and the entry F keeps is kept by the segment that
 // still holds the record: F's tag-only life, the state a rebuild reaches from
-// the record on disk and a Fill through B is refused for. It settles the
+// the record on disk and a call through B is refused for. It settles the
 // failure first, so the assertions below see the applied failure, and returns
 // with A still owning F.
 func tagOnly(t *testing.T) (*Core, *Share, *Share, core.FileID) {
@@ -166,13 +179,56 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 		}
 	})
 
+	t.Run("refused_before_other_validation", func(t *testing.T) {
+		// The check is the first thing a call does after its context and
+		// handle checks, so even a call that would change nothing on its own
+		// merits — a zero-length write, a negative offset, an overflowing
+		// one — names a FileID and is refused through the wrong handle
+		// before the shape of what it asked is even looked at.
+		c, _ := newTestCore(t)
+		a, b := twoHandles(t, c)
+		f := testFile(21)
+		if _, err := c.WriteAt(context.Background(), a, f, 0, []byte("aaaa"), 1); err != nil {
+			t.Fatalf("A's WriteAt of F: %v", err)
+		}
+		if v, err := c.WriteAt(context.Background(), b, f, 0, nil, 1); err == nil || !errors.Is(err, core.ErrOtherShare) {
+			t.Fatalf("a zero-length write through B on A's file = %v, %v, want ErrOtherShare", v, err)
+		} else if v != (core.Version{}) {
+			t.Fatalf("the refused zero-length write returned version %v", v)
+		}
+		for _, off := range []int64{-1, math.MaxInt64 - 2} {
+			if v, err := c.WriteAt(context.Background(), b, f, off, []byte("bbbb"), 1); !errors.Is(err, core.ErrOtherShare) {
+				t.Fatalf("a write of F through B at offset %d = %v, %v, want ErrOtherShare", off, v, err)
+			}
+		}
+
+		// Through the owner and on an untagged file the shapes stand on
+		// their own: a zero-length write returns the zero version and nil
+		// and claims nothing, so a later write through the other handle
+		// still claims the file.
+		if v, err := c.WriteAt(context.Background(), a, f, 0, nil, 1); err != nil || v != (core.Version{}) {
+			t.Fatalf("a zero-length write through A = %v, %v, want the zero version and nil", v, err)
+		}
+		g := testFile(22)
+		if v, err := c.WriteAt(context.Background(), a, g, 0, nil, 1); err != nil || v != (core.Version{}) {
+			t.Fatalf("a zero-length write on an untagged file = %v, %v, want the zero version and nil", v, err)
+		}
+		if err := c.Index().CheckTag(tagA, g); err != nil {
+			t.Fatalf("the zero-length write claimed G for A: %v", err)
+		}
+		if _, err := c.WriteAt(context.Background(), b, g, 0, []byte("bbbb"), 1); err != nil {
+			t.Fatalf("B's claim of G after A's zero-length write: %v", err)
+		}
+	})
+
 	t.Run("resolved_by_handle_alone", func(t *testing.T) {
 		c, _ := newTestCore(t)
 		a, b := twoHandles(t, c)
 		// The same FileID value is nobody's: the share a call reaches is the
 		// handle it goes through, so each of the two files is its writer's,
-		// whatever bytes its id carries.
-		fa, fb := fileWith(0x22, 0x11), fileWith(0x11, 0x22)
+		// whatever bytes its id carries. The two ids carry each other's
+		// tagged bytes and sit on the two streams.
+		fa, fb := twoFilesOnTwoStreams(t, c)
 		if _, err := c.WriteAt(context.Background(), a, fa, 0, []byte("aaaa"), 1); err != nil {
 			t.Fatalf("A's write of F1: %v", err)
 		}
@@ -369,62 +425,131 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 		}
 	})
 
-	t.Run("conflict_refused_through_both", func(t *testing.T) {
-		// A rivalled file — one with records under two tags — is what only a
-		// fault leaves on disk and a rebuild reaches from the damaged
-		// records. Planting it needs the index package's rebuilder, whose
-		// entry point is unexported and unreachable from here; the conflict's
-		// refusals through both tags and the TagConflicts list until ClearTag
-		// are pinned there, and the conformance suite plants the two-tag
-		// segment over a real reopen. Skipped here rather than guessed at.
-		t.Skip("NEEDS_CONTEXT: the rebuilder has no entry point reachable from datapath")
-	})
+	// A rivalled file's refusals through both tags and its TagConflicts entry
+	// are pinned in the index package's own tests (TestTagConflictsFromRebuild
+	// and its neighbours in index/tags_test.go); a conflicted-file test here
+	// needs an exported rebuild entry point, which does not exist yet.
 
 	t.Run("race_first_writes", func(t *testing.T) {
-		// Two handles, two files, both streams. Each round races A's
-		// and B's first writes of both files, so two claims of one file meet
-		// on its append domain: exactly one write wins each file and the
-		// other is refused with ErrOtherShare.
-		c, _ := newTestCore(t)
+		// Two handles, both streams. Every round races A's and B's first
+		// writes of a fresh pair of files, so two claims of one file meet on
+		// its append domain: exactly one write wins each file, and the loser
+		// gains nothing — the round drew two versions, two sequence numbers
+		// and two written bytes, which is what the check before the draw
+		// adds over a refusal at the publish, and the whole run holds one
+		// record per winner: a refusal at the publish would have drawn the
+		// loser's numbers and left its record on disk.
+		c, seam := newTestCore(t)
 		a, b := twoHandles(t, c)
-		fa, fb := fileWith(0x22, 0x11), fileWith(0x11, 0x22)
 		ctx := context.Background()
+		next := raceFilePicker(t, c)
 		const rounds = 500
 		for round := range rounds {
-			files := []core.FileID{fa, fb}
-			handles := []*Share{a, b}
-			var won [2][2]int
+			fa, fb := next(), next()
+			before := takeRaceCounters(t, c)
+			var mu sync.Mutex
+			var won, lost int
 			var wg sync.WaitGroup
-			for fi, f := range files {
-				for hi, s := range handles {
-					wg.Add(1)
-					go func(f core.FileID, s *Share, fi, hi int) {
-						defer wg.Done()
-						if _, err := c.WriteAt(ctx, s, f, int64(round)*8, []byte("x"), 1); err == nil {
-							won[fi][hi] = 1
-						} else if !errors.Is(err, core.ErrOtherShare) {
+			for _, s := range []*Share{a, b} {
+				wg.Add(1)
+				go func(s *Share) {
+					defer wg.Done()
+					var w, l int
+					for _, f := range []core.FileID{fa, fb} {
+						if _, err := c.WriteAt(ctx, s, f, 0, []byte("x"), 1); err == nil {
+							w++
+						} else if errors.Is(err, core.ErrOtherShare) {
+							l++
+						} else {
 							t.Errorf("round %d: a racing first write = %v, want success or ErrOtherShare", round, err)
 						}
-					}(f, s, fi, hi)
-				}
+					}
+					mu.Lock()
+					won, lost = won+w, lost+l
+					mu.Unlock()
+				}(s)
 			}
 			wg.Wait()
-			for fi, f := range files {
-				if got := won[fi][0] + won[fi][1]; got != 1 {
-					t.Fatalf("round %d: file %v was won by %d writes, want exactly one", round, f, got)
-				}
+			if won != 2 || lost != 2 {
+				t.Fatalf("round %d: %d racing writes won and %d were refused, want 2 and 2", round, won, lost)
 			}
-			// The next round writes at a fresh offset, so every round is a
-			// first-claim race over the same entry.
-			for fi, f := range files {
-				s := handles[0]
-				if won[fi][1] == 1 {
-					s = handles[1]
-				}
-				if _, err := c.WriteAt(ctx, s, f, int64(round)*8+4, []byte("y"), 1); err != nil {
-					t.Errorf("round %d: the winner's follow-up write of %v = %v", round, f, err)
-				}
+			after := takeRaceCounters(t, c)
+			// The two winners drew two versions, wrote two bytes and drew two
+			// seqs plus the one this second counting read consumes.
+			if after.version != before.version+2 || after.seq != before.seq+3 || after.written != before.written+2 {
+				t.Fatalf("round %d: after the race the round drew %d versions, %d seqs and %d written bytes (want +2, +3, +2): the refused writes left numbers behind",
+					round, after.version-before.version, after.seq-before.seq, after.written-before.written)
 			}
 		}
+		// One record per winning write, none for a refused one: 2*rounds
+		// records on disk, each of a file the round named through its
+		// winning handle.
+		if got := len(readRecords(t, seam)); got != 2*rounds {
+			t.Fatalf("%d records on disk after %d rounds, want %d: a refused write appended", got, rounds, 2*rounds)
+		}
 	})
+}
+
+// raceFilePicker returns a function handing out fresh FileIDs in pairs whose
+// members sit on the core's two distinct streams, so a round's two raced
+// claims are on both streams and every round races a first claim of files
+// the core has not seen. The ids spread a counter over three bytes, so none
+// is the all-zero identifier the record format refuses, and a pair whose
+// members happen to share a stream is skipped whole.
+func raceFilePicker(t *testing.T, c *Core) func() core.FileID {
+	t.Helper()
+	// The ids start past the bytes the other subtests name.
+	n := 31
+	first := true
+	return func() core.FileID {
+		if first {
+			// The pair handed out first is asserted to differ, so a wrong
+			// pairing fails the test rather than passing.
+			if c.Streams().For(pickRaceFile(n)) == c.Streams().For(pickRaceFile(n+1)) {
+				t.Fatal("the pair's two ids sit on one stream; pick ids the streams differ on")
+			}
+			first = false
+		}
+		for c.Streams().For(pickRaceFile(n)) == c.Streams().For(pickRaceFile(n+1)) {
+			n++
+		}
+		f := pickRaceFile(n)
+		n++
+		return f
+	}
+}
+
+// pickRaceFile returns the id of rank n: the counter spread over the id's
+// first three bytes, with the fourth held at 1 so no id is all zero.
+func pickRaceFile(n int) core.FileID {
+	var id [16]byte
+	id[0] = byte(n)
+	id[1] = byte(n >> 8)
+	id[2] = byte(n >> 16)
+	id[3] = 1
+	return core.NewFileID(id)
+}
+
+// raceCounters is the core's drawn version, drawn seq and written bytes, so
+// a race round can assert the refused half of its writes changed nothing.
+// Reading the next sequence number consumes one, so the expected difference
+// between two readings is the winners' two records plus the one the second
+// reading drew itself.
+type raceCounters struct {
+	version uint64
+	seq     uint64
+	written uint64
+}
+
+func takeRaceCounters(t *testing.T, c *Core) raceCounters {
+	t.Helper()
+	seq, err := c.counters.NextSeq()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raceCounters{
+		version: c.counters.NextVersion().Counter - 1,
+		seq:     uint64(seq),
+		written: c.WrittenBytes(),
+	}
 }
