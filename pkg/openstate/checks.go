@@ -53,7 +53,9 @@ type Checks interface {
 	// and in grace ErrGrace while the grace still waits for a client that
 	// can reclaim a deny mode or a mandatory lock. Any is refused ErrLocked across a range a
 	// mandatory lock forbids it, and recalls another holder's caching the I/O
-	// conflicts with, answering ErrDelay until the recall ends.
+	// conflicts with, answering ErrDelay until the recall ends. A range of no
+	// byte crosses no lock and recalls nothing; access, grace and the deny
+	// modes, with their handle-caching break, are judged as for any other.
 	CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r ByteRange, want entity.AccessMask) error
 	// CheckChange admits a change to f, made through via, an open of f, or
 	// through none: what the open state of f refuses. It recalls the caching
@@ -87,6 +89,18 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 	}
 	others := func(*grant) GrantKind { return keeps }
 	var out outbox
+	// decision: I/O of no byte conflicts with no grant, so it recalls none,
+	// as MS-FSA answers a read or write of ByteCount zero before its oplock
+	// break check and NFSv4 lets a count of 0 succeed subject only to its
+	// access checks. The deny-mode check stays, with the handle-caching break
+	// it waits on. Overturned by a client found to rely on an empty write to
+	// break another client's write caching.
+	recall := func(e *entry, own func(*grant) bool) error {
+		if r.Length == 0 {
+			return nil
+		}
+		return t.recallOthers(ctx, e, own, others, &out)
+	}
 	through := func(e *entry, op *open) error {
 		if e.file != f.ID || !t.confirmed(op) {
 			return ErrBadState
@@ -104,7 +118,7 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 		if err := e.lockedOut(op.Ref.Token, r, write); err != nil {
 			return err
 		}
-		return t.recallOthers(ctx, e, func(g *grant) bool { return g.heldBy(op.Client, op.lease, op) }, others, &out)
+		return recall(e, func(g *grant) bool { return g.heldBy(op.Client, op.lease, op) })
 	}
 	// unopened is I/O through no open: anonymous, or through a delegation
 	// own holds, which its holder's own deny modes do not refuse. It is I/O
@@ -128,7 +142,7 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 		if err := e.lockedOut(0, r, write); err != nil {
 			return err
 		}
-		return t.recallOthers(ctx, e, own, others, &out)
+		return recall(e, own)
 	}
 	if o.Kind != RefAnonymous && o.State.Shard != f.Shard {
 		return ErrBadState

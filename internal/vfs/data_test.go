@@ -78,6 +78,45 @@ func TestAWriteRefusedByOpenStateChangesNothing(t *testing.T) {
 	}
 }
 
+// V22: bob's write of no byte into alice's setuid file returns once judged,
+// beside another client's write lease: it recalls no lease, calls no engine
+// Write, and leaves the mode and mtime as they were. A read of no byte calls
+// no engine Read and answers end of file as off >= size.
+func TestAnEmptyWriteOrReadChangesNothingAndRecallsNothing(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o6777)
+	admin := proven(s.fs.Admin.Principal, inLab)
+	_, err := s.Write(ctx, admin, vfs.Anonymous(h), 0, []byte("data"), vfs.Unstable)
+	s.must(t, err)
+	pc := s.smb(t, "pc", s.alice.Principal)
+	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	r, err := s.tab.Opens().Open(ctx, who, keyOf(s.record(t, h)), openstate.OpenRequest{Access: entity.ReadData | entity.WriteData,
+		Want: openstate.GrantRead | openstate.GrantWrite, Lease: openstate.LeaseKey{1}})
+	s.must(t, err)
+	if r.Grant == nil || r.Grant.Kind&openstate.GrantWrite == 0 {
+		t.Fatalf("open state offered no write lease: %+v", r.Grant)
+	}
+	before, err := s.GetAttr(ctx, admin, h)
+	s.must(t, err)
+	s.engine.writing = func(entity.FileID) { t.Error("a write of no byte called the engine") }
+	s.engine.reading = func(entity.FileID) { t.Error("a read of no byte called the engine") }
+	bob := proven(s.bob.Principal, inLab)
+	for _, off := range []int64{0, 4, 9} {
+		if _, err := s.Write(ctx, bob, vfs.Anonymous(h), off, nil, vfs.Unstable); err != nil {
+			t.Errorf("bob's write of no byte at %d beside alice's lease: %v, want nil", off, err)
+		}
+		if _, eof, err := s.Read(ctx, bob, vfs.Anonymous(h), off, nil); err != nil || eof != (off >= 4) {
+			t.Errorf("bob's read of no byte at %d: eof %v, %v; want eof %v", off, eof, err, off >= 4)
+		}
+	}
+	after, err := s.GetAttr(ctx, admin, h)
+	s.must(t, err)
+	if after.Mode != 0o6777 || !after.Modify.Equal(before.Modify) {
+		t.Errorf("after writes of no byte: mode %o, mtime %v; want 6777, %v", after.Mode, after.Modify, before.Modify)
+	}
+}
+
 // V7: a write holds its file's admission lock from open state's check to
 // the bytes staged, and a lock takes it too, so a mandatory lock is ordered
 // wholly before the write, which it then refuses, or wholly after it: a lock

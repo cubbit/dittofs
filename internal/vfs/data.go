@@ -36,6 +36,9 @@ func (fs *Filesystem) Read(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off
 	}
 	defer release()
 	defer unlock()
+	if len(dst) == 0 { // a read of no byte returns once judged
+		return 0, off >= f.Size, nil
+	}
 	n, err := fs.engine.Read(ctx, f.Share, f.ID, off, dst)
 	return n, err == nil && off+int64(n) >= f.Size, storeErr(err)
 }
@@ -62,6 +65,10 @@ func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 		return vfs.WriteResult{}, err
 	}
 	defer release()
+	if len(src) == 0 { // a write of no byte returns once judged: nothing reserved, cleared, timed or staged
+		unlock()
+		return vfs.WriteResult{}, nil
+	}
 	var res *quota.Reservation
 	add, err := fs.charges(ctx, f, off, int64(len(src)))
 	if err == nil {
