@@ -379,6 +379,41 @@ func (st *stream) takeCorrupt(c Corruption, dirty bool) (synced, lost bool) {
 	return true, false
 }
 
+// Tracked returns the record of file at r as its writer reported it, while
+// the stream's ledger or a pending window still holds it, and false once the
+// record was completed or taken out, or was never tracked. It changes nothing
+// and holds the stream's mutex only for the scan.
+//
+// A reader whose record's header does not decode learns the record's sequence
+// number here: a completed record is the one case it cannot answer, because
+// nothing in memory keeps a sequence number per record once its sync was
+// applied.
+//
+// ponytail: a linear scan of the ledger and the pending windows, as
+// takeCorrupt's, and upgraded with it.
+func (d *Durability) Tracked(file core.FileID, r index.RecordAt) (segment.Written, bool) {
+	st := d.streamOf(file)
+	if st == nil {
+		return segment.Written{}, false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	match := func(w segment.Written) bool { return w.File == file && recordAt(w) == r }
+	for i := range st.ledger {
+		if match(st.ledger[i].w) {
+			return st.ledger[i].w, true
+		}
+	}
+	for _, w := range st.windows {
+		for i := range w.entries {
+			if match(w.entries[i].w) {
+				return w.entries[i].w, true
+			}
+		}
+	}
+	return segment.Written{}, false
+}
+
 // segmentFailedLocked reports whether seg has failed and its end event, which
 // takeWindow turns into the window, is still to be taken: the worker counted
 // its failed sync and ended it, a sync found it ended, or the event is queued.
