@@ -372,7 +372,7 @@ rfc8 / 15 / "one clock":
 rfc1 / 9.4 / A / "a read's `asOf` against a change in flight":
   pending: 2.7
 rfc1 / 9.4 / B / "read-only stops the drain":
-  pending: 2.10
+  tests: [TestRFC1B_ReadOnlyStopsTheDrain, TestRFC1B_ReadOnlyProbe, TestRFC1B_ReadOnlyOpenRefusedStaysClosed]
 rfc28 / 4.2 / C / "an ended segment is emptied once":
   pending: 2.13b
 rfc28 / 4.2 / C / "an open at an exhausted headroom":
