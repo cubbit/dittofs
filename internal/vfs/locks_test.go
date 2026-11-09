@@ -201,8 +201,8 @@ func TestDelegatedIOIsTheHoldersOwn(t *testing.T) {
 	}
 	noSession := as(1000)
 	noSession.Session = vfs.SessionRef{}
-	if _, err := s.Write(ctx, noSession, ref, 0, []byte("x"), vfs.Unstable); !notYours(err) {
-		t.Errorf("the delegation presented on no session: %v, want NotYours", err)
+	if _, err := s.Write(ctx, noSession, ref, 0, []byte("x"), vfs.Unstable); !errors.Is(err, &vfs.StateError{Kind: vfs.StateNotYours, Sessioned: true}) {
+		t.Errorf("the delegation presented on no session: %v, want NotYours Sessioned", err)
 	}
 }
 
@@ -304,7 +304,7 @@ func TestDrainLeavesAPendingBreak(t *testing.T) {
 	if err != nil || len(opens) != 1 {
 		t.Errorf("the lease after Drain covers %v, %v; want its open", opens, err)
 	}
-	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB, Sessioned: true}
 	if err := s.tab.Grants().AckRecall(ctx, who, r.Grant.ID, to); err != nil {
 		t.Errorf("the break's answer after Drain: %v, want it still in flight", err)
 	}

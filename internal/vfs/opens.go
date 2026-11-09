@@ -474,10 +474,11 @@ func (fs *Filesystem) Close(ctx context.Context, c vfs.Call, ref vfs.OpenRef, q 
 // here for its client. The client record's Adapter bytes carry the minor
 // version that confirmed it, which the NFSv4 adapter reads before it names
 // the call's client, refusing a stateid of a client confirmed under the
-// other minor version itself, so no such call reaches the service; the
-// service never reads those bytes. What the service refuses is a delegation
-// presented on no session (onSession). Overturned if a second NFSv4 adapter
-// is ever written that does not read them.
+// other minor version itself; the service never reads those bytes. What the
+// service refuses is state presented on no session that was created on one:
+// a delegation here (onSession), and an open, lock state or grant by the
+// mark open state keeps on it, both NotYours, Sessioned. Overturned if a
+// second NFSv4 adapter is ever written that does not read them.
 func (fs *Filesystem) opened(ctx context.Context, c vfs.Call, ref vfs.OpenRef, releases bool) (*admitted, func(), func(), error) {
 	if err := onSession(c, &ref); err != nil {
 		return nil, nil, nil, err
@@ -821,12 +822,13 @@ func (fs *Filesystem) recoverReleases(ctx context.Context, share entity.ShareID,
 }
 
 // onSession refuses ref, when it names a delegation, on a call with no
-// session: NotYours. A delegation is its client's, not an opener's, and
-// NFSv4.0, the one protocol naming a client with no session, is offered
-// none, so a delegation's stateid on no session is never its holder's own.
+// session: NotYours, Sessioned. A delegation is its client's, not an
+// opener's, and NFSv4.0, the one protocol naming a client with no session, is
+// offered none, so a delegation's stateid on no session was created on a
+// session and is never its holder's own.
 func onSession(c vfs.Call, ref *vfs.OpenRef) error {
 	if ref != nil && ref.Kind == vfs.RefDelegated && c.Session == (vfs.SessionRef{}) {
-		return &vfs.StateError{Kind: vfs.StateNotYours}
+		return &vfs.StateError{Kind: vfs.StateNotYours, Sessioned: true}
 	}
 	return nil
 }

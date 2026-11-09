@@ -99,7 +99,11 @@ func (v watches) Watch(ctx context.Context, who Caller, dir FileKey, recursive b
 		if _, err := t.admit(who, dir.Shard, false); err != nil {
 			return err
 		}
-		ref, err := t.mintUnder(e, who.Client, dir.Shard, StateWatch, func(StateRef) error {
+		// decision: a watch carries no session mark, as only an open, a lock
+		// state and a grant are marked: a watch is SMB's, whose every call has
+		// a session, so the mark would never refuse one. Mark it from
+		// who.Sessioned if a protocol with no session can ever watch.
+		ref, err := t.mintUnder(e, who.Client, false, dir.Shard, StateWatch, func(StateRef) error {
 			if !t.current(who.Client) {
 				return ErrStaleClient
 			}
@@ -123,12 +127,12 @@ func (v watches) Unwatch(ctx context.Context, who Caller, id WatchID) error {
 	if _, err := t.running(); err != nil {
 		return err
 	}
-	h, err := t.resolve(who.Client, entity.FileID{}, id.ref())
+	h, err := t.resolve(who, entity.FileID{}, id.ref())
 	if err != nil {
 		return err
 	}
 	return t.step(h.file, func(e *entry) error {
-		if _, err := t.resolve(who.Client, e.file, id.ref()); err != nil {
+		if _, err := t.resolve(who, e.file, id.ref()); err != nil {
 			return err
 		}
 		t.dropWatch(e, e.watches[id.Token])

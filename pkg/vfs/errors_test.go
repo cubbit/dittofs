@@ -55,6 +55,7 @@ var wantErrors = append(slices.Clone(sentinels),
 	&vfs.StateError{Kind: vfs.StateNotYours},
 	&vfs.StateError{Kind: vfs.StateRevoked},
 	&vfs.StateError{Kind: vfs.StateRevoked, Admin: true},
+	&vfs.StateError{Kind: vfs.StateNotYours, Sessioned: true},
 
 	&vfs.CrossError{Kind: vfs.CrossNamespace},
 	&vfs.CrossError{Kind: vfs.CrossShare},

@@ -92,6 +92,7 @@ var openCodes = []struct {
 }{
 	{openstate.ErrBadState, &vfs.StateError{Kind: vfs.StateBadState}},
 	{openstate.ErrStaleState, &vfs.StateError{Kind: vfs.StateStaleState}},
+	{openstate.ErrNotYoursSessioned, &vfs.StateError{Kind: vfs.StateNotYours, Sessioned: true}}, // before ErrNotYours, which it wraps
 	{openstate.ErrNotYours, &vfs.StateError{Kind: vfs.StateNotYours}},
 	{openstate.ErrOldState, &vfs.StateError{Kind: vfs.StateOldState}},
 	{openstate.ErrStaleClient, &vfs.StateError{Kind: vfs.StateStaleClient}},

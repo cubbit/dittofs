@@ -123,6 +123,9 @@ type grant struct {
 	gen     uint32        // raised by each recall started, naming it to the arming of its deadline
 	sent    time.Duration // the deadline of the recall in flight, once handed to the Sink; zero: none, or not yet handed
 	counted bool          // it is in its client's budget: it caches something
+	// sessioned is whether the call that created it had a session; a
+	// reinstated lease takes its open's mark.
+	sessioned bool
 }
 
 type clientKey struct {
@@ -421,7 +424,14 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 	if r.Lease != (LeaseKey{}) {
 		epoch = r.Epoch
 	}
-	ref, err := t.mintUnder(e, who.Client, f.Shard, StateGrant, func(StateRef) error {
+	// decision: a grant takes its mark from o, the open it is offered on,
+	// not from who.Sessioned, as RFC 14 §2.2's Grant.Sessioned would, so an
+	// open, its lock states and its grants carry one mark from one source,
+	// the open's session, and reinstateLease derives the same mark from the
+	// same open after a restart. Every grant is offered on an open; mark one
+	// from its caller if a grant is ever minted on none, as a directory
+	// delegation would be.
+	ref, err := t.mintUnder(e, who.Client, o.sessioned(), f.Shard, StateGrant, func(StateRef) error {
 		if !t.current(who.Client) || t.granted[who.Client] >= maxGrants {
 			return &DelayError{DelayResources} // offered none: the open stands without it
 		}
@@ -433,7 +443,7 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 	if err != nil {
 		return nil // a grant is offered, never owed: the open stands without one
 	}
-	g := &grant{id: GrantID{ref.Shard, ref.Instance, ref.Token}, client: who.Client, key: r.Lease, parent: r.Parent, fsm: grantfsm.New(k, epoch), counted: true}
+	g := &grant{id: GrantID{ref.Shard, ref.Instance, ref.Token}, client: who.Client, key: r.Lease, parent: r.Parent, fsm: grantfsm.New(k, epoch), counted: true, sessioned: o.sessioned()}
 	if smb && r.Lease == (LeaseKey{}) {
 		g.open = o
 	}
@@ -609,7 +619,8 @@ func (t *Table) lapse(ctx context.Context, e *entry, out *outbox) {
 			continue
 		}
 		t.idx.Lock()
-		t.revoked[refKey{g.id.Shard, g.id.Token}] = revokedRef{g.client, StateGrant, RevokedGrant}
+		k := refKey{g.id.Shard, g.id.Token}
+		t.revoked[k] = revokedRef{g.client, StateGrant, RevokedGrant, t.refs[k].sessioned}
 		t.idx.Unlock()
 		t.dropGrant(e, g)
 		out.revoked = append(out.revoked, Revocation{Client: g.client, Grant: g.id, Reason: RevokedGrant})
@@ -660,13 +671,13 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 	if err != nil {
 		return err
 	}
-	h, err := t.resolve(who.Client, entity.FileID{}, id.ref())
+	h, err := t.resolve(who, entity.FileID{}, id.ref())
 	if err != nil {
 		return err
 	}
 	out := outbox{timer: true}
 	err = t.step(h.file, func(e *entry) error {
-		if _, err := t.resolve(who.Client, e.file, id.ref()); err != nil {
+		if _, err := t.resolve(who, e.file, id.ref()); err != nil {
 			return err
 		}
 		g := e.grants[id.Token]

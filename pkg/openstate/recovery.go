@@ -523,7 +523,7 @@ func (t *Table) noteMarkLocked(c entity.ClientID, m entity.ShardMark) {
 func (v recovery) TestState(ctx context.Context, who Caller, s []StateRef) []error {
 	errs := make([]error, len(s))
 	for i, ref := range s {
-		_, errs[i] = v.t.resolve(who.Client, entity.FileID{}, ref)
+		_, errs[i] = v.t.resolve(who, entity.FileID{}, ref)
 	}
 	return errs
 }
@@ -536,7 +536,7 @@ func (v recovery) FreeState(ctx context.Context, who Caller, s StateRef) error {
 	}
 	k := refKey{s.Shard, s.Token}
 	t.idx.Lock()
-	h, err := t.resolveLocked(who.Client, entity.FileID{}, s)
+	h, err := t.resolveLocked(who, entity.FileID{}, s)
 	if _, ok := err.(*RevokedError); ok {
 		delete(t.revoked, k)
 		t.idx.Unlock()

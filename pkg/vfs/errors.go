@@ -124,7 +124,7 @@ func Errors() []error {
 	for k := StateKind(1); k.Valid(); k++ {
 		errs = append(errs, &StateError{Kind: k})
 	}
-	errs = append(errs, &StateError{Kind: StateRevoked, Admin: true})
+	errs = append(errs, &StateError{Kind: StateRevoked, Admin: true}, &StateError{Kind: StateNotYours, Sessioned: true})
 	for k := CrossKind(1); k.Valid(); k++ {
 		errs = append(errs, &CrossError{Kind: k})
 	}
