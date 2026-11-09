@@ -53,19 +53,14 @@ type ownedCopy struct {
 // left in a failed segment. A later copy of the same number replaces the
 // earlier one. The entry stays until Retired reports loc's segment retired.
 //
-// The re-append calls it once the new place is appended, under the record's
-// file append domain and before the index is repointed to the new place, so
-// a read that finds the new place corrupt is served the original.
-//
-// decision: the copy is registered before the new place is synced, so the
-// record a registered copy serves can still be unsynced, and a failure of the
-// new segment's sync, or the journal turning read-only, can fail it while the
-// table names its copy (useCopy names that ceiling). Registering only after
-// that sync would leave the time between the repoint and the sync with no
-// copy to serve a corrupt read of the new place from, which then drops the
-// record. Overturned if the table must only ever name a copy of a synced
-// record, which would move the registration and the repoint behind the new
-// place's sync.
+// The re-append calls it only once the new segment's sync has completed and
+// the index is repointed to the new copy, so the record whose re-append
+// registers a copy is synced at its new place, and no failed sync can take it
+// back while the table names its copy. A re-append whose own sync fails
+// registers nothing: the new copy is a record of a failed window of the new
+// segment, under the same rules as any other. A hold's re-append registers
+// nothing either, so after one the table can still name the earlier copy
+// while the record's newest place is unsynced (useCopy names that ceiling).
 //
 // ponytail: the table knows only the copies registered here, the originals of
 // re-appends in failed segments. Copies a repack carried are not registered,
@@ -180,14 +175,18 @@ func (d *Durability) readCopy(st *stream, c copyEntry) (copyVerdict, error) {
 // failed-window loss record for it (a read-only journal only tries to),
 // publishes the event, raises the generation and marks the file, although the
 // copy is served until the hold's re-append moves it, which a read-only
-// journal never makes. A copy the re-append registers can reach it, as
-// RegisterCopy is called before the new place is synced. A hold's re-append
+// journal never makes. No copy the window's re-append registers reaches it on
+// that re-append alone, as RegisterCopy is called only after the record it
+// serves for is synced, which no window then holds and the read-only pass
+// does not fail; only a copy that outlives that place does, once a hold's
+// re-append has moved the record to a place not yet synced. A hold's re-append
 // and the window's can each append a copy of the record, two records sharing
 // one sequence number and version, which is harmless in content; the loss or
 // replay consequence is the sequence-number exclusion of RFC 1 section 3.8,
-// as for any dropped record's copy. Overturned by re-appending such a record
-// from the copy that verified, as reappendHeld does for a held record, when
-// its re-read from the window fails.
+// as for any dropped record's copy. Overturned if a copy is ever registered
+// before that sync, or by re-appending such a record from the copy that
+// verified, as reappendHeld does for a held record, when its re-read from the
+// window fails.
 func (d *Durability) useCopy(st *stream, c Corruption, cp copyEntry) (CorruptOutcome, bool) {
 	synced := c.Synced
 	if !c.AtOpen {

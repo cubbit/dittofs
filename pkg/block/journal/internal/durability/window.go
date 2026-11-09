@@ -236,12 +236,12 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 // taken with none, when resolveWindows has failed or re-appended its last
 // record, or when resolveWindows or failReadOnly finds a Corrupt took the last
 // record out before it ran. A content record leaves the window only once the
-// index is repointed to its copy and its original registered in the copy
-// table, so a resolved segment backs no extent of a re-appended record. A
-// window whose record could not be re-appended stays pending and is not
-// announced, and the pass after retries it, until the journal turns
-// read-only, which fails every record of every window and so resolves them
-// all. A pending window never reads durable, so nothing is lost by waiting;
+// index is repointed to its copy, so a resolved segment backs no extent of a
+// re-appended record; its original is registered in the copy table only once
+// the copy's sync completes. A window whose record could not be re-appended
+// stays pending and is not announced, and the pass after retries it, until
+// the journal turns read-only, which fails every record of every window and
+// so resolves them all. A pending window never reads durable, so nothing is lost by waiting;
 // what is withdrawn is only the window's memory. A window failReadOnly made is
 // resolved without an announcement: its segment did not fail.
 //

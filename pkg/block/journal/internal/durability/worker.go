@@ -195,10 +195,12 @@ func bucketOf(d time.Duration) int {
 // done under its file's append domain, one domain at a time, so a record whose
 // sync landed is never dropped in the gap between a writer's append and the
 // accounting it does under that same domain. A content record's superseded
-// extents stop being retained under the same hold. Corrupt can take an
-// uncovered entry out between the steps, which moves the later ones down, so
-// each covered entry is found again by its count; Corrupt never takes a
-// covered one, so it is always there.
+// extents stop being retained under the same hold, and the original of a
+// re-appended record is registered in the copy table there, before the entry
+// is done, so a Sync that returns on the record finds the copy. Corrupt can
+// take an uncovered entry out between the steps, which moves the later ones
+// down, so each covered entry is found again by its count; Corrupt never takes
+// a covered one, so it is always there.
 func (d *Durability) complete(st *stream) {
 	st.mu.Lock()
 	if !st.reported {
@@ -235,6 +237,23 @@ func (d *Durability) complete(st *stream) {
 			// account is the caller's. The entry is done only after the
 			// lift, so a Sync that returns on it sees the lift.
 			d.lift(w.File, w.Version, w.Extent)
+		}
+		st.mu.Lock()
+		var orig *copyEntry
+		if i, ok := st.findLocked(no); ok {
+			orig = st.ledger[i].original
+		}
+		st.mu.Unlock()
+		if orig != nil {
+			// decision: the copy is registered here, at completion, as
+			// RegisterCopy's contract asks, not when the sync's report
+			// covers the record. A read that finds the new place corrupt
+			// between that report and this pass finds no copy and drops the
+			// record, as any synced record with no copy is dropped.
+			// Overturned if such drops are seen, which would move the
+			// registration to the report. st.mu is not held: the table
+			// takes its own lock.
+			d.RegisterCopy(orig.seq, orig.loc, orig.checksum)
 		}
 		st.mu.Lock()
 		if i, ok := st.findLocked(no); ok {

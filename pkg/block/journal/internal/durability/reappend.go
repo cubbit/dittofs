@@ -81,10 +81,12 @@ func (d *Durability) reappendWindow(st *stream, w *window) (refused bool) {
 // verified. The record keeps its sequence number and version: it is the same
 // operation at a new place, so no generation is raised, no loss record is
 // written and no event is published. A content record is then repointed in
-// the index and its original registered as a copy (repointReappended). The
-// old place then leads to the new one, so a waiter on it follows the record,
-// and the record leaves the window. A failed append changes nothing. A content
-// record that does not verify returns errUnverified.
+// the index, and its original handed to the new place's ledger entry, which
+// registers it as a copy once that place's sync completes
+// (repointReappended). The old place then leads to the new one, so a waiter
+// on it follows the record, and the record leaves the window. A failed append
+// changes nothing. A content record that does not verify returns
+// errUnverified.
 //
 // st.mu is not held across the re-read, the append or a call into the index,
 // and no file's append domain is held across the re-read or the append, which
@@ -223,11 +225,28 @@ func (d *Durability) reappendHeld(st *stream, c ownedCopy) error {
 
 // repointReappended finishes the re-append of the content record e, whose
 // copy the stream placed at to. Under the record's file append domain, and
-// only while e is still in its window, it registers the original as a copy of
-// the record, repoints the index from the original to the copy, and takes e
-// out of the window with the old place leading to the new one. It takes no
-// other domain and holds st.mu only to read and change the window, never
-// across the index or the copy table.
+// only while e is still in its window, it repoints the index from the
+// original to the copy, takes e out of the window with the old place leading
+// to the new one, and hands the original to the ledger entry of the new place,
+// whose completion registers it in the copy table (complete). A new place
+// already completed is registered here; one whose sync failed, in a window or
+// the lost set, registers nothing. It takes no other domain and holds st.mu
+// only to read and change the window and the ledger, never across the index
+// or the copy table.
+//
+// decision: the copy registered is the place e was read from and verified at,
+// with the checksum the ledger kept, also when e is itself the new place of
+// an earlier re-append whose own sync failed. That place is in a failed
+// segment exactly as a first original is: its pages are trusted only because
+// the re-read just verified them, and useCopy verifies them again against the
+// same checksum before serving, so it is no weaker a copy than the first
+// original, which was never synced either. The first original is not carried
+// forward: it was verified one re-append earlier, and it is the older of two
+// failed segments, the likelier to be retired or to have lost its pages. When
+// neither verifies at the time of a corrupt read, the read drops the record as
+// it would with no copy. Overturned if the table must name only a copy that a
+// sync once covered, which no re-append's original ever is; registration
+// would then stop altogether.
 //
 // The window check and the repoint share the domain because Corrupt takes a
 // record out of a window under the same domain: a Corrupt is then wholly
@@ -269,7 +288,6 @@ func (d *Durability) repointReappended(st *stream, e entry, to segment.Location)
 	}
 	st.mu.Unlock()
 
-	d.RegisterCopy(e.w.Seq, e.w.Loc, e.w.PayloadCRC)
 	at := index.RecordAt{Segment: to.Segment, Offset: uint32(to.Off)}
 	froms := []index.RecordAt{recordAt(e.w)}
 	if haveCopy {
@@ -297,9 +315,32 @@ func (d *Durability) repointReappended(st *stream, e entry, to segment.Location)
 		}
 	}
 
+	orig := copyEntry{seq: e.w.Seq, loc: e.w.Loc, checksum: e.w.PayloadCRC}
 	st.mu.Lock()
 	st.leaveWindowLocked(w, e, to)
+	now := st.copyOnCompleteLocked(to, orig)
 	st.mu.Unlock()
+	if now {
+		d.RegisterCopy(orig.seq, orig.loc, orig.checksum)
+	}
+}
+
+// copyOnCompleteLocked hands the original c of a re-appended record to the
+// ledger entry of its new place to, which the completion registers. It
+// reports whether to is already completed, in no ledger, window or lost set,
+// for the caller to register c itself. A new place in a window or the lost set
+// had its sync fail, and gets nothing. The caller holds mu.
+func (st *stream) copyOnCompleteLocked(to segment.Location, c copyEntry) (now bool) {
+	for i := range st.ledger {
+		if e := &st.ledger[i]; e.w.Loc == to {
+			if e.done {
+				return true
+			}
+			e.original = &c
+			return false
+		}
+	}
+	return !st.heldLocked(to)
 }
 
 // leaveWindowLocked takes the re-appended record e out of the window w, makes

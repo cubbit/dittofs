@@ -445,6 +445,13 @@ type entry struct {
 	// also finds the entry again by it after Corrupt took an earlier entry
 	// out of the ledger.
 	tracked uint64
+	// original is set on the new place of a re-appended content record: the
+	// place the record was read from and the checksum the ledger kept for it.
+	// The completion registers it in the copy table, so the table names a
+	// copy only of a record whose new place has synced. An entry that leaves
+	// the ledger any other way, failed by its window, undone or taken by
+	// Corrupt, takes it along unregistered.
+	original *copyEntry
 }
 
 // stream is one stream's state.

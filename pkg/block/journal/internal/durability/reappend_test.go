@@ -733,9 +733,12 @@ func (fr *failRig) wantNotResolved(t *testing.T, when string) {
 }
 
 // TestReappendRepointsTheIndexAndRegistersTheOriginal covers a re-appended
-// content record: the index names the new place and no longer the original,
-// the copy table names the original with the checksum the ledger kept, and a
-// corrupt new copy read through Corrupt is served from the original.
+// content record: the index names the new place and no longer the original
+// once the copy is appended, the copy table names nothing for the record
+// while the new place's sync has not completed, and names the original with
+// the checksum the ledger kept once it has, by the time a Sync returns on the
+// record; a corrupt new copy read through Corrupt then is served from the
+// original.
 func TestReappendRepointsTheIndexAndRegistersTheOriginal(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	fr := newFailRig(t, nil)
@@ -743,11 +746,24 @@ func TestReappendRepointsTheIndexAndRegistersTheOriginal(t *testing.T) {
 	a, v := fr.publish(t, f, 0, "aaaa")
 	seq := core.Seq(fr.lastSeq.Load())
 	kept := fr.keptChecksum(t, a)
+	hold := fr.holdNewSegmentSync(t, a.Segment)
 	fr.failSyncKeepingPages(t, a.Segment, errors.New("sync boom"))
-	if err := mustReturn(t, "Sync", fr.syncAsync(context.Background(), f)); err != nil {
+	ch := fr.syncAsync(context.Background(), f)
+	fr.awaitResolved(t)
+	if got := fr.placedAt(t, f, 0); got.Segment == a.Segment {
+		t.Fatalf("the extent is served from %+v, want the new place once the window resolved", got)
+	}
+	if cp, ok := fr.d.copyOf(seq); ok {
+		t.Fatalf("copy table = %+v before the new place synced, want nothing", cp)
+	}
+	awaitGate(t, "the new segment's sync", hold.Reached())
+	if cp, ok := fr.d.copyOf(seq); ok {
+		t.Fatalf("copy table = %+v while the new place's sync is in flight, want nothing", cp)
+	}
+	hold.Release()
+	if err := mustReturn(t, "Sync", ch); err != nil {
 		t.Fatalf("Sync = %v, want nil", err)
 	}
-	fr.awaitResolved(t)
 
 	h, ok := fr.writesOutside(t, a.Segment)[seq]
 	if !ok {
@@ -773,6 +789,103 @@ func TestReappendRepointsTheIndexAndRegistersTheOriginal(t *testing.T) {
 	if err != nil || out.Kind != CorruptUseCopy || out.Copy != a {
 		t.Fatalf("Corrupt of the new copy = %+v, %v, want UseCopy of the original %+v", out, err, a)
 	}
+}
+
+// TestACorruptReadOfAnUnsyncedReappendedRecordIsNotServedFromTheOriginal
+// covers a read that finds the new place of a re-appended record corrupt
+// before that place's sync completes: no copy is registered yet, so the read
+// is not served from the original in the failed segment, the record leaves
+// the ledger unsynced, and nothing is registered for it afterwards either.
+func TestACorruptReadOfAnUnsyncedReappendedRecordIsNotServedFromTheOriginal(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr := newFailRig(t, nil)
+	f := file(1)
+	a, v := fr.publish(t, f, 0, "aaaa")
+	seq := core.Seq(fr.lastSeq.Load())
+	hold := fr.holdNewSegmentSync(t, a.Segment)
+	fr.failSyncKeepingPages(t, a.Segment, errors.New("sync boom"))
+	ch := fr.syncAsync(context.Background(), f)
+	fr.awaitResolved(t)
+	at := fr.placedAt(t, f, 0)
+	if at.Segment == a.Segment {
+		t.Fatalf("the extent is served from %+v, want the new place once the window resolved", at)
+	}
+
+	out, err := fr.d.Corrupt(context.Background(), Corruption{
+		Share: 1, File: f, Record: at, Seq: seq, Version: v, Extent: core.Extent{Off: 0, Len: 4},
+	})
+	if err != nil || out.Kind == CorruptUseCopy {
+		t.Fatalf("Corrupt of the unsynced new place = %+v, %v, want it not served from a copy", out, err)
+	}
+	if out.Kind != CorruptDropped {
+		t.Errorf("Corrupt of the unsynced new place = %+v, want Dropped", out)
+	}
+	hold.Release()
+	// The dropped record's answer is Corrupt's to decide, not this test's.
+	_ = mustReturn(t, "Sync", ch)
+	if err := mustReturn(t, "second Sync", fr.syncAsync(context.Background(), f)); err != nil {
+		t.Fatalf("the second Sync = %v, want nil", err)
+	}
+	if cp, ok := fr.d.copyOf(seq); ok {
+		t.Errorf("copy table = %+v for a record whose new place never completed, want nothing", cp)
+	}
+}
+
+// TestAReappendWhoseSyncFailsRegistersNothing covers a re-append whose new
+// segment's sync then fails and whose new place does not verify on re-read:
+// the record is failed at the new place, and its original is never registered
+// as a copy. A record of the same window whose new place an earlier sync of
+// that segment covered is registered once it completes.
+func TestAReappendWhoseSyncFailsRegistersNothing(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	hook, reached, release := gate(t)
+	var appends atomic.Int32
+	fr := newFailRig(t, func(fr *failRig) {
+		fr.d.afterAppend = func() {
+			if appends.Add(1) == 1 {
+				hook()
+			}
+		}
+	})
+	t.Cleanup(release)
+	f, g := file(1), file(2)
+	a1, _ := fr.publish(t, f, 0, "aaaa")
+	seq1 := core.Seq(fr.lastSeq.Load())
+	kept1 := fr.keptChecksum(t, a1)
+	fr.publish(t, g, 0, "bbbb")
+	seq2 := core.Seq(fr.lastSeq.Load())
+	b := a1.Segment + 1
+	// Only the first segment's pages read back: the second record's copy in b
+	// does not verify once b fails. b's first sync passes, so that its failure
+	// is not the second in a row, which stops the stream.
+	fr.keptPages.Store(a1.Segment, struct{}{})
+	if err := fr.seam.Schedule(
+		kit.Failing(kit.OpSync, format.SegmentName(a1.Segment), 1, errors.New("first boom")),
+		kit.FailingFrom(kit.OpSync, format.SegmentName(b), 2, 1, errors.New("second boom")),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	ch := fr.syncAsync(context.Background(), g)
+	awaitGate(t, "the first record's append", reached)
+	// As in the chain test, the roll out of the failing segment needs its
+	// spare ready.
+	fr.settlePool(t)
+	if err := fr.streams.Stream(0).Sync(); err != nil {
+		t.Fatalf("Sync of the new segment = %v, want it to pass", err)
+	}
+	release()
+	wantSyncError(t, mustReturn(t, "Sync", ch), b, g)
+	if got := []core.SegmentID{fr.awaitResolved(t), fr.awaitResolved(t)}; got[0] != a1.Segment || got[1] != b {
+		t.Fatalf("resolved segments %v, want %d then %d", got, a1.Segment, b)
+	}
+	if cp, ok := fr.d.copyOf(seq2); ok {
+		t.Errorf("copy table = %+v for a re-append whose sync failed, want nothing", cp)
+	}
+	eventually(t, "the first record's copy to complete", func() bool {
+		cp, ok := fr.d.copyOf(seq1)
+		return ok && cp.loc == a1 && cp.checksum == kept1
+	})
 }
 
 // TestAWriteBetweenTheCopyAndItsRepointKeepsTheOverwrite covers a write over
@@ -877,6 +990,10 @@ func v10UnderV11(t *testing.T, between func(fr *failRig, a segment.Location)) (f
 	if between != nil {
 		between(fr, a)
 	}
+	// The re-append out of v11's failed segment rolls into a spare, and a
+	// refusal for a missing one is retried only at a tick of the clock, which
+	// this test does not drive.
+	fr.settlePool(t)
 	fr.failSyncOf(t, b.Segment, errors.New("sync boom"))
 	resume()
 	return fr, a, b, v10, atResolve, led
@@ -1343,8 +1460,10 @@ func TestAReappendWhoseSyncFailsStartsANewWindow(t *testing.T) {
 	f, g := file(1), file(2)
 	a1, _ := fr.publish(t, f, 0, "aaaa")
 	seq1 := core.Seq(fr.lastSeq.Load())
+	kept1 := fr.keptChecksum(t, a1)
 	a2, v2 := fr.publish(t, g, 0, "bbbb")
 	seq2 := core.Seq(fr.lastSeq.Load())
+	kept2 := fr.keptChecksum(t, a2)
 	b, c := a1.Segment+1, a1.Segment+2
 	// One schedule fails both segments: a second one would replace the first.
 	// The new segment's first sync passes, so that its failure is not the
@@ -1405,6 +1524,15 @@ func TestAReappendWhoseSyncFailsStartsANewWindow(t *testing.T) {
 		t.Errorf("durable loss records = %+v, want none", recs)
 	}
 	eventually(t, "the chain to be forgotten", func() bool { return fr.movedLen(0) == 0 })
+	// Each record's copy is registered once its last place completed: the
+	// first record's original, and for the second the place in b its final
+	// re-append was read from, never the first place in a1.
+	if cp, ok := fr.d.copyOf(seq1); !ok || cp.loc != a1 || cp.checksum != kept1 {
+		t.Errorf("copy table for seq %d = %+v, %v, want the original %+v with checksum %#x", seq1, cp, ok, a1, kept1)
+	}
+	if cp, ok := fr.d.copyOf(seq2); !ok || cp.loc.Segment != b || cp.checksum != kept2 {
+		t.Errorf("copy table for seq %d = %+v, %v, want its place in segment %d with checksum %#x", seq2, cp, ok, b, kept2)
+	}
 }
 
 // TestAReappendedRecordWhoseCopyIsCorruptedIsServedFromTheOriginalThenMoved
@@ -1490,23 +1618,32 @@ func TestAReappendedRecordWhoseCopyIsCorruptedIsServedFromTheOriginalThenMoved(t
 // records, which an earlier re-append left there: the window's resolution is
 // withheld until the hold's re-append lands, and the announcement then comes
 // once, with the index naming nothing in the segment.
+//
+// A copy is registered only once its record's new place completes, which the
+// worker does after the pass that re-appended it, so the window is kept
+// pending past that pass by a second record the stream refuses: a header-only
+// record whose kept bytes do not decode, restored only once f's copy is
+// registered and held.
 func TestAFailedSegmentIsNotAnnouncedWhileAHeldCopyIsNotReappended(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	hookWindow, atWindow, releaseWindow := gate(t)
+	hookPause, atPause, releasePause := gate(t)
 	hookHold, atHold, releaseHold := gate(t)
 	var appends atomic.Int32
+	var pausing atomic.Bool
 	var mu sync.Mutex
 	var counted index.SegmentBytes
 	fr := newFailRig(t, func(fr *failRig) {
 		fr.d.reappend = fr.d.reappendHeld
-		// The first two appends are the window's records, f's then g's; the
-		// third is the hold's.
+		// The first append is f's re-append, the second g's once its bytes
+		// decode again, the third the hold's.
 		fr.d.afterAppend = func() {
-			switch appends.Add(1) {
-			case 2:
-				hookWindow()
-			case 3:
+			if appends.Add(1) == 3 {
 				hookHold()
+			}
+		}
+		fr.d.afterHolds = func() {
+			if pausing.Load() {
+				hookPause()
 			}
 		}
 		fr.d.resolved = func(_ uint32, seg core.SegmentID) {
@@ -1516,15 +1653,43 @@ func TestAFailedSegmentIsNotAnnouncedWhileAHeldCopyIsNotReappended(t *testing.T)
 			fr.resolved <- seg
 		}
 	})
-	t.Cleanup(releaseWindow)
+	t.Cleanup(releasePause)
 	t.Cleanup(releaseHold)
 	f, g := file(1), file(2)
 	a, v := fr.publish(t, f, 0, "aaaa")
 	seq := core.Seq(fr.lastSeq.Load())
-	fr.publish(t, g, 0, "bbbb")
+	ga := fr.appendKind(t, g, format.KindDelete, format.RecordBody{})
+	st := fr.d.made[0]
+	var good []byte
+	st.mu.Lock()
+	for i := range st.ledger {
+		if e := &st.ledger[i]; e.w.Loc == ga {
+			good = e.w.Bytes
+			bad := append([]byte(nil), good...)
+			bad[format.RecordHeaderSize-1] ^= 0xff
+			e.w.Bytes = bad
+		}
+	}
+	st.mu.Unlock()
+	if good == nil {
+		t.Fatalf("no ledger entry for g's record at %+v", ga)
+	}
 	fr.failSyncKeepingPages(t, a.Segment, errors.New("sync boom"))
-	ch := fr.syncAsync(context.Background(), f, g)
-	awaitGate(t, "the window's last append", atWindow)
+	if err := mustReturn(t, "Sync of f", fr.syncAsync(context.Background(), f)); err != nil {
+		t.Fatalf("Sync of f = %v, want nil: its record was re-appended", err)
+	}
+	if cp, ok := fr.d.copyOf(seq); !ok || cp.loc != a {
+		t.Fatalf("copy table = %+v, %v, want f's original %+v once its copy completed", cp, ok, a)
+	}
+	if ws := fr.windowsOf(0); len(ws) != 1 {
+		t.Fatalf("windows = %+v, want g's record still pending", ws)
+	}
+	// The worker is paused after a pass's holds and before its completion,
+	// so the read below holds the copy before any pass retries g.
+	pausing.Store(true)
+	st.wake()
+	awaitGate(t, "the worker's pause", atPause)
+	pausing.Store(false)
 
 	// f's record is already re-appended and registered; a read of its new
 	// copy serves the original and holds it.
@@ -1538,7 +1703,17 @@ func TestAFailedSegmentIsNotAnnouncedWhileAHeldCopyIsNotReappended(t *testing.T)
 	if err != nil || out.Kind != CorruptUseCopy || out.Copy != a {
 		t.Fatalf("Corrupt = %+v, %v, want UseCopy of the original %+v", out, err, a)
 	}
-	releaseWindow()
+	st.mu.Lock()
+	for _, w := range st.windows {
+		for i := range w.entries {
+			if w.entries[i].w.Loc == ga {
+				w.entries[i].w.Bytes = good
+			}
+		}
+	}
+	st.mu.Unlock()
+	ch := fr.syncAsync(context.Background(), f, g)
+	releasePause()
 	awaitGate(t, "the hold's append", atHold)
 	if ws := fr.windowsOf(0); len(ws) != 0 {
 		t.Fatalf("windows = %+v, want the window resolved and its announcement withheld", ws)
