@@ -14,7 +14,7 @@ aliases:
 tags:
   - rfc
 ---
-# RFC 14 — open state and locks
+# RFC 14 — {==open state and locks==}{>>you|2026-10-01|NOTE: Is this the best name for this RFC?<<}
 
 **Status:** draft. [§15](#15.%20Open%20questions) lists what is known to be undecided.
 **Audience:** anyone changing how opens, byte-range locks, deny modes, caching

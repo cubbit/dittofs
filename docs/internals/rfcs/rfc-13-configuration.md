@@ -47,12 +47,7 @@ This document specifies behaviour, not the current code.
 
 ## 1. Purpose
 
-The storage RFCs each name the few settings their component takes, and each
-states some rule about them: refused rather than replaced ([RFC 8 §2.4](rfc-8-engine.md#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)), two
-settings and everything else fixed ([RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)), configuration governs the
-next write ([RFC 5 §5.1](rfc-5-transforms.md#5.1%20Configuration%20governs%20the%20next%20write)). This document collects those rules into one model,
-gives every setting a scope and a binding class, and states what the control
-plane owes the components that read it.
+{==The storage RFCs each name the few settings their component takes, and each\nstates some rule about them: refused rather than replaced ([RFC 8 §2.4](rfc-8-engine.md#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)), two\nsettings and everything else fixed ([RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)), configuration governs the\nnext write ([RFC 5 §5.1](rfc-5-transforms.md#5.1%20Configuration%20governs%20the%20next%20write)). This document collects those rules into one model,\ngives every setting a scope and a binding class, and states what the control\nplane owes the components that read it.==}{>>you|2026-10-01|NOTE: We are not only defining storage RFCs. But all the RFCs needed to implement DittoFS from scratch<<}
 
 ### 1.1 Non-goals
 
@@ -80,20 +75,7 @@ one database is run, backed up and replicated for all of it. The store's format
 record, read before anything else at open, covers these records as it covers
 every other ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format)).
 
-### 2.2 A host holds only its bootstrap
-
-A process needs a few facts before it can reach the control plane. These, and
-only these, come from the host — a file or the environment:
-
-| Bootstrap fact                                                                                                        | Why it cannot come from the control plane                                                                                                 |
-| --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| the node's identity                                                                                                   | the control plane addresses the node by it                                                                                                |
-| how to reach the metadata store, and the credential for it                                                            | needed to read anything else                                                                                                              |
-| the local devices the node may use, and their paths                                                                   | a path means something only on its host ([§3](#3.%20Scopes))                                                                              |
-| listen addresses                                                                                                      | a port conflict is a host's problem                                                                                                       |
-| log destination and level                                                                                             | needed before the control plane answers, to say why it did not                                                                            |
-| the node's **roles** — `protocol`, `storage`, both by default ([RFC 15](rfc-15-topology.md))                          | they decide what the node composes, including whether it reaches the control plane's store as a writer; fixed for the life of the process |
-| the location of the wrapping key of each role the node runs, and no other, for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing, and a key for a role the node does not run is a key it can leak                     |
+{==### 2.2 A host holds only its bootstrap\n\nA process needs a few facts before it can reach the control plane. These, and\nonly these, come from the host — a file or the environment:\n\n| Bootstrap fact                                                                                                        | Why it cannot come from the control plane                                                                                                 |\n| --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |\n| the node's identity                                                                                                   | the control plane addresses the node by it                                                                                                |\n| how to reach the metadata store, and the credential for it                                                            | needed to read anything else                                                                                                              |\n| the local devices the node may use, and their paths                                                                   | a path means something only on its host ([§3](#3.%20Scopes))                                                                              |\n| listen addresses                                                                                                      | a port conflict is a host's problem                                                                                                       |\n| log destination and level                                                                                             | needed before the control plane answers, to say why it did not                                                                            |\n| the node's **roles** — `protocol`, `storage`, both by default ([RFC 15](rfc-15-topology.md))                          | they decide what the node composes, including whether it reaches the control plane's store as a writer; fixed for the life of the process |\n| the location of the wrapping key of each role the node runs, and no other, for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing, and a key for a role the node does not run is a key it can leak                     |==}{>>you|2026-10-01|NOTE: Do these belong here? Or should they go in a RFC dedicated to the controlplane?<<}
 
 A bootstrap fact **MUST NOT** also be a record field, and a record field
 **MUST NOT** be overridable from the host. An override from the host is a
@@ -109,7 +91,7 @@ version**. A component reports, per record, the generation it runs
 the record rather than reading the fields it recognises: a field it skipped may
 be the one that mattered.
 
-### 2.4 Records can be declared in a provisioning file
+{==### 2.4 Records can be declared in a provisioning file==}{>>you|2026-10-01|NOTE: We should add an example here<<}
 
 An operator **MAY** declare records in a **provisioning file**, so a server or a
 test starts in a known state without a script of API calls, and the file can be
@@ -118,7 +100,7 @@ records by their API names — settings at any scope, remote stores, namespaces,
 shares, users, groups, grants, snapshot policies — in the same shape the
 management API accepts.
 
-**Applying is a merge through the API.** At start, and on every reload, the node
+{==**Applying is a merge through the API.**==}{>>you|2026-10-01|NOTE: Mmh, I would write full API names in the provisioning file (thinks like v2/users/get, etc). I would write the provisioning file as a JSON/YAML file with the config names specified. Then they will match a config struct on the server. The APIs are just CRUDs to edit the same struct maintained in the controlplane. The database saves the state of the config struct. Does this make sense?<<} At start, and on every reload, the node
 validates the whole file with the API's validator ([§6](#6.%20Validation)) and then writes
 each declared record as the API would: created if absent, replaced if it
 differs. Records the file does not declare are left alone. A file that fails
@@ -133,13 +115,13 @@ refuse to change or delete a managed record, answering that it is declared in
 that file and must be changed there and reloaded. This keeps §2.1's rule: every
 record has exactly one source, and an operator can see which.
 
-| Event | Effect |
-| --- | --- |
-| a declared record differs from the store | the file's value is written |
-| a record is removed from the file | it stays, and stops being managed; with `prune: true` in the file it is deleted instead, subject to the same refusals as an API delete |
-| an API call edits a managed record | refused, naming the file |
-| two nodes apply files that declare the same record differently | the second is refused: a record managed by another file hash is changed only after the first file stops declaring it; health condition on the refused node |
-| reload | `dfsctl config reload`, a signal, or at start; the node reports the applied file hash ([§8](#8.%20Observability)) |
+| Event                                                          | Effect                                                                                                                                                                                                                      |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a declared record differs from the store                       | the file's value is written                                                                                                                                                                                                 |
+| a record is removed from the file                              | it stays, and stops being managed; with {==`prune: true` in the file it is deleted instead==}{>>you\|2026-10-01\|NOTE: I am not getting this. Can you provide an example?<<}, subject to the same refusals as an API delete |
+| an API call edits a managed record                             | refused, naming the file                                                                                                                                                                                                    |
+| two nodes apply files that declare the same record differently | the second is refused: a record managed by another file hash is changed only after the first file stops declaring it; health condition on the refused node                                                                  |
+| reload                                                         | `dfsctl config reload`, a signal, or at start; the node reports the applied file hash ([§8](#8.%20Observability))                                                                                                           |
 
 **Secrets stay references.** A provisioning file **MUST NOT** hold a secret value.
 It names one by reference — an environment variable or a file on the host — and
@@ -157,13 +139,13 @@ identical file on every node, provisions it.
 
 A setting has exactly one scope, the smallest thing it must be the same across:
 
-| Scope | Holds | Examples |
-| --- | --- | --- |
-| **installation** | what every node and namespace shares | the syncer's pool sizes' defaults, GC's schedule |
-| **node** | what describes one host's resources | its journals, one per device, and each one's maximum footprint ([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)) |
-| **namespace** | what decides stored bytes and their identity | key scope, chunking key, `Target`, the counting domain |
-| **remote store** | how blocks reach and sit on a service | endpoint, bucket, prefix, credential reference, storage class, transform chain, block target |
-| **share** | what a client sees | case sensitivity, name length, `atime`, per-share journal limit, snapshot policy |
+| Scope                                                                                                                               | Holds                                        | Examples                                                                                                    |
+| ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **installation**                                                                                                                    | what every node and namespace shares         | the syncer's pool sizes' defaults, GC's schedule                                                            |
+| **{==node==}{>>you\|2026-10-01\|NOTE: Align this term with the other RFCs. Here we are referring to a DittoFS instance, right?<<}** | what describes one host's resources          | its journals, one per device, and each one's maximum footprint ([RFC 1 §7](rfc-1-journal.md#7.%20Capacity)) |
+| **namespace**                                                                                                                       | what decides stored bytes and their identity | key scope, chunking key, `Target`, the counting domain                                                      |
+| **remote store**                                                                                                                    | how blocks reach and sit on a service        | endpoint, bucket, prefix, credential reference, storage class, transform chain, block target                |
+| **share**                                                                                                                           | what a client sees                           | case sensitivity, name length, `atime`, per-share journal limit, snapshot policy                            |
 
 **A setting that decides stored bytes belongs to the scope content is compared
 across.** Deduplication compares chunks across a namespace ([RFC 2 §4.3](rfc-2-carver.md#4.3%20Key%20scope)), so
@@ -347,18 +329,10 @@ type SecretProvider interface {
 - **A secret changes without a record change.** Rotating a credential updates the
   provider; the reference stays, and the component picks the new value up on its
   next resolution ([§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change)).
-- **Material is a secret with a lifecycle.** Encryption keys are resolved through
+- {==**Material is a secret with a lifecycle==}{>>you|2026-10-01|NOTE: We should better design what material is. Is it defined correctly?<<}.** Encryption keys are resolved through
   the material provider, which also tracks which keys exist, are current or are
   destroyed ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)). A secret provider need not.
-- **Material configuration is master keys plus wrapped namespace keys.** A remote
-  store's configuration references its **master keys**, which the provider holds
-  and never releases. Each namespace's keys — its current and retired **data
-  keys**, its **header key** and its **chunking key** — are stored only wrapped
-  under a master key, and the namespace's record holds each one's (material ID,
-  fingerprint), never the key. The provider refuses an ID whose fingerprint
-  changed. Rotating a master key re-wraps the namespace keys and changes no
-  record; rotating a data key is new material plus relocation
-  ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
+- {==**Material configuration is master keys plus wrapped namespace keys.** A remote\n  store's configuration references its **master keys**, which the provider holds\n  and never releases. Each namespace's keys — its current and retired **data\n  keys**, its **header key** and its **chunking key** — are stored only wrapped\n  under a master key, and the namespace's record holds each one's (material ID,\n  fingerprint), never the key. The provider refuses an ID whose fingerprint\n  changed. Rotating a master key re-wraps the namespace keys and changes no\n  record; rotating a data key is new material plus relocation\n  ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).==}{>>you|2026-10-01|NOTE: Shall we add a feature to connect an external KMS for secrets?<<}
 - **A namespace's header key and chunking key** are derived at its creation when
   its chain encrypts ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)) and live as long as the namespace. An
   export names them, and every data key in its census, the same way
@@ -368,14 +342,14 @@ type SecretProvider interface {
   store and the wrapping keys of its own roles, or references to them in an
   external key service ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
 
-## 8. Observability
+{==## 8. Observability==}{>>you|2026-10-01|NOTE: I don't know. Maybe adding observability here would be a little overkill. Don't you think?<<}
 
-| Answers | Metric | Type |
-| --- | --- | --- |
-| the generation of each record a node runs, against the store's current one | `dittofs_config_generation` | gauge, labelled by record |
-| records refused, by component and reason | `dittofs_config_refused_total` | counter |
-| changes refused because a setting is bound | `dittofs_config_bound_refusals_total` | counter |
-| the provisioning file hash each node applied, and applies refused by reason | `dittofs_config_provisioning_applied`, `dittofs_config_provisioning_refused_total` | gauge, counter |
+| Answers                                                                     | Metric                                                                             | Type                      |
+| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------- |
+| the generation of each record a node runs, against the store's current one  | `dittofs_config_generation`                                                        | gauge, labelled by record |
+| records refused, by component and reason                                    | `dittofs_config_refused_total`                                                     | counter                   |
+| changes refused because a setting is bound                                  | `dittofs_config_bound_refusals_total`                                              | counter                   |
+| the provisioning file hash each node applied, and applies refused by reason | `dittofs_config_provisioning_applied`, `dittofs_config_provisioning_refused_total` | gauge, counter            |
 
 A node whose generation for a live record stays behind the store's for longer
 than the 5 s propagation bound ([§5](#5.%20Binding%20classes)) is a health condition of that node, not
@@ -404,24 +378,7 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§5.4](#5.4%20A%20format%20version%20is%20written%20only%20once%20every%20reader%20reads%20it) format version | Run two nodes, one reading one format version fewer. Advance the namespace's version to write; assert refused. Upgrade the second node; assert accepted, and every block either node writes afterwards reads on both. |
 | [§7](#7.%20Secrets) namespace keys | Replace a namespace's chunking key under the same ID. Assert the provider refuses it by fingerprint and the namespace does not open. |
 
-## 10. Edits this document asks of other RFCs
-
-Proposed, for review with this document; none is applied yet.
-
-1. **RFC 2 §3.2:** `Target` becomes a namespace setting, not a share's
-   ([§3](#3.%20Scopes)), and bound ([§5](#5.%20Binding%20classes)).
-2. **RFC 2 §6 and RFC 5 §3.2:** "a share that encrypts" reads "a namespace whose
-   store's chain encrypts"; the chunking key is the namespace's.
-3. **RFC 4 §4.2 and Appendix C:** bucket and prefix are bound; endpoint and
-   credential change under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change).
-4. **RFC 12 §6.2:** the YAML example becomes the control-plane records it
-   describes: `snapshots.hold_bound` and `snapshots.reserve` per share, `snapshots.hold_journal_fraction`
-   and `migration.freeze_timeout` per installation (Appendix B).
-5. **RFC 7 §3.3:** case sensitivity is bound, so a change is refused rather than
-   left undefined.
-6. **RFC 9 §8:** GC's `Config` holds four namespace fields (interval, trash
-   retention, space-amplification target, audit period); everything else it
-   once held is a constant or derived.
+{==## 10. Edits this document asks of other RFCs\n\nProposed, for review with this document; none is applied yet.\n\n1. **RFC 2 §3.2:** `Target` becomes a namespace setting, not a share's\n   ([§3](#3.%20Scopes)), and bound ([§5](#5.%20Binding%20classes)).\n2. **RFC 2 §6 and RFC 5 §3.2:** "a share that encrypts" reads "a namespace whose\n   store's chain encrypts"; the chunking key is the namespace's.\n3. **RFC 4 §4.2 and Appendix C:** bucket and prefix are bound; endpoint and\n   credential change under [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change).\n4. **RFC 12 §6.2:** the YAML example becomes the control-plane records it\n   describes: `snapshots.hold_bound` and `snapshots.reserve` per share, `snapshots.hold_journal_fraction`\n   and `migration.freeze_timeout` per installation (Appendix B).\n5. **RFC 7 §3.3:** case sensitivity is bound, so a change is refused rather than\n   left undefined.\n6. **RFC 9 §8:** GC's `Config` holds four namespace fields (interval, trash\n   retention, space-amplification target, audit period); everything else it\n   once held is a constant or derived.==}{>>you|2026-10-01|NOTE: Do these<<}
 
 ## 11. Open questions
 
