@@ -213,15 +213,22 @@ func (j *FakeJournal) Close() error {
 // and raises the generation once per window. Model both once a test drops
 // several extents in one window or reads what a failed write overwrote.
 func (j *FakeJournal) Lose(id journal.FileID, e journal.Extent, why journal.LossReason) {
+	j.LoseLater(id, e, why)()
+}
+
+// LoseLater is Lose with the event held back until publish is called, as
+// the journal raises the generation before it publishes the event: in
+// between, Stats shows the raised generation and a ring without the event.
+func (j *FakeJournal) LoseLater(id journal.FileID, e journal.Extent, why journal.LossReason) (publish func()) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	f := j.files[id]
 	if f == nil {
-		return
+		return func() {}
 	}
 	v, ok := j.cut(f, e.Off, e.Off+e.Len)
 	if !ok {
-		return
+		return func() {}
 	}
 	if why != journal.LossFailedWindow { // a failed window's loss was never synced, so Since has nothing of it
 		f.changes = append(f.changes, journal.Change{Kind: journal.ChangeLoss, Extent: e, Version: v})
@@ -229,7 +236,11 @@ func (j *FakeJournal) Lose(id journal.FileID, e journal.Extent, why journal.Loss
 	if why == journal.LossCorrupt || why == journal.LossFailedWindow {
 		j.gen++
 	}
-	j.losses = append(j.losses, journal.LossEvent{SeqNum: j.nextSeq(), Share: f.tag, File: id, Extent: e, Version: v, Reason: why})
+	return func() {
+		j.mu.Lock()
+		defer j.mu.Unlock()
+		j.losses = append(j.losses, journal.LossEvent{SeqNum: j.nextSeq(), Share: f.tag, File: id, Extent: e, Version: v, Reason: why})
+	}
 }
 
 // Report puts ev in the loss ring as the journal reports a loss whose

@@ -72,6 +72,36 @@ func TestALossBeforeTheBatchsSyncCommitsTheWriteLost(t *testing.T) {
 	}
 }
 
+// A corrupt loss whose event the journal publishes after a drain saw the
+// generation it raised is still applied by the next drain: the write commits
+// lost, charging nothing, a read of it answers ErrLost and its file's
+// sequence is raised.
+func TestALossPublishedAfterItsGenerationIsDrained(t *testing.T) {
+	u := newUnit(t)
+	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
+	f := made.ID
+	u.write(t, f, 0, []byte("lost"))
+	publish := u.j.LoseLater(journal.NewFileID(f), journal.Extent{Len: 4}, journal.LossCorrupt)
+	_ = u.e.LossSeq(u.share.ID, f) // a drain between the raise and the event
+	publish()
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Size != 4 || got.Charged != 0 {
+		t.Errorf("size %d, charged %d; want size 4 charging nothing", got.Size, got.Charged)
+	}
+	if _, err := u.e.Read(t.Context(), u.share.ID, f, 0, make([]byte, 4)); !errors.Is(err, vfserr.ErrLost) {
+		t.Errorf("a read of the lost write: %v, want ErrLost", err)
+	}
+	if s := u.e.LossSeq(u.share.ID, f); s != 1 {
+		t.Errorf("f's sequence after its loss is %d, want 1", s)
+	}
+}
+
 // A journal's device lost whole, with writers running: every write accepted
 // gets its Done exactly once, none is left pending, a write after the loss is
 // answered unavailable with no Done, and every file's sequence is raised.
@@ -141,8 +171,8 @@ func TestADeviceLostWhole(t *testing.T) {
 	}
 }
 
-// A drain that finds the generation already applied by a drain still
-// marking its writes waits for it: the batch's own drain cannot run ahead
+// A drain that finds the events already applied by a drain still marking
+// their writes waits for it: the batch's own drain cannot run ahead
 // and commit a write that drain marks lost as written.
 func TestAConcurrentDrainWaitsForTheMarks(t *testing.T) {
 	u := newUnit(t)
@@ -158,7 +188,7 @@ func TestAConcurrentDrainWaitsForTheMarks(t *testing.T) {
 			time.Sleep(50 * time.Millisecond) // the batch's sync and drain run meanwhile
 		})
 	})
-	_ = u.e.LossSeq(u.share.ID, f) // the first drain, held after it applied the generation
+	_ = u.e.LossSeq(u.share.ID, f) // the first drain, held after it read the ring
 	if err := <-committed; err != nil {
 		t.Fatal(err)
 	}
