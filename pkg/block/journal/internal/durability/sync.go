@@ -511,11 +511,12 @@ type stream struct {
 	// dropping an entry once the record's segment is retired from the journal,
 	// when a stream with a long failure history shows up in a heap profile.
 	lost map[segment.Location]lostRecord
-	// moved maps the place of a header-only record that was re-appended to the
-	// place it was re-appended at, so a waiter that holds the old place finds
-	// the record. A record that moved twice has a chain, which followLocked
-	// walks to its end. complete drops an entry once the record at its end is
-	// done, together with the entries that lead to it.
+	// moved maps the place of a record that was re-appended to the place it
+	// was re-appended at, so a waiter that holds the old place finds the
+	// record, and Corrupt reads the old place as unsynced. A record that
+	// moved twice has a chain, which followLocked walks to its end. complete
+	// drops an entry once the record at its end is done, together with the
+	// entries that lead to it.
 	//
 	// ponytail: one entry per re-appended record not yet completed, so it is
 	// bounded by what a failed window held and the new segment's sync clears.

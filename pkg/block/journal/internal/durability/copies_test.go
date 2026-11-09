@@ -73,9 +73,9 @@ func (cr *corruptRig) reappend(t *testing.T, f core.FileID, off int64, payload s
 
 // keptChecksum returns the payload checksum the ledger holds for the record
 // at loc.
-func (cr *corruptRig) keptChecksum(t *testing.T, loc segment.Location) uint32 {
+func (r *rig) keptChecksum(t *testing.T, loc segment.Location) uint32 {
 	t.Helper()
-	st := cr.d.made[0]
+	st := r.d.made[0]
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	for _, e := range st.ledger {
@@ -88,9 +88,9 @@ func (cr *corruptRig) keptChecksum(t *testing.T, loc segment.Location) uint32 {
 }
 
 // placedAt returns the record the index serves offset off of f from.
-func (cr *corruptRig) placedAt(t *testing.T, f core.FileID, off int64) index.RecordAt {
+func (r *rig) placedAt(t *testing.T, f core.FileID, off int64) index.RecordAt {
 	t.Helper()
-	p, ok := cr.ix.Lookup(f, off)
+	p, ok := r.ix.Lookup(f, off)
 	if !ok {
 		t.Fatalf("offset %d of the file is not in the index", off)
 	}
@@ -453,10 +453,9 @@ func TestCorruptCopyOverwrittenBeforeRepointReleasesHold(t *testing.T) {
 // record served from a copy stays in its pending window, and when the window
 // fails, the worker still reports a failed-window loss for it while the index
 // goes on naming the copy. The per-record re-append has landed; the test keeps
-// this path by making the window's re-read fail. The success branch, a record
-// Corrupt served from a copy that stays in the window and is then re-appended,
-// sets moved while the index names the copy, is covered by no test yet and is
-// handed to the repoint step.
+// this path by making the window's re-read fail. The success branch, where the
+// re-read verifies and the record is re-appended and repointed from the copy,
+// is TestACopyServedRecordInTheWindowIsRepointedFromTheCopy.
 func TestCorruptUsedCopyThenWindowFailsPinsKnownCeiling(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	hook, reached, release := gate(t)

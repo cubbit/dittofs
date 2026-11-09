@@ -277,21 +277,23 @@ var errRecordCorrupt = errors.New("durability: the record was found corrupt befo
 // segment has failed, so its file is owed the window's report; for a record of
 // a pending window unless the window was raised already. The registry's mutex
 // it raises under is a leaf. lost reports a record the worker already failed,
-// or an earlier Corrupt already took out, which has nothing left to drop or
-// raise.
+// or an earlier Corrupt already took out, or one re-appended whose copy has
+// not completed, which has nothing left to drop or raise.
 //
-// decision: a record in neither the ledger, a pending window nor the lost set
-// is synced. Every record Track saw that left the ledger otherwise was
-// completed, which is after its sync: an unsynced one taken out by a failed
-// window or by Corrupt is in the lost set. It is the answer Durable gives for
-// such a location. The segment's synced value cannot decide it: the worker
-// forgets it once the segment holds no entry. Overturned by a record that can
-// leave the ledger unsynced some other way.
+// decision: a record in neither the ledger, a pending window, the lost set nor
+// the moves of re-appended records is synced. Every record Track saw that left
+// the ledger otherwise was completed, which is after its sync: an unsynced one
+// taken out by a failed window or by Corrupt is in the lost set, and one
+// re-appended out of its window has its old place in moved until its copy
+// completes. It is the answer Durable gives for such a location. The
+// segment's synced value cannot decide it: the worker forgets it once the
+// segment holds no entry. Overturned by a record that can leave the ledger
+// unsynced some other way.
 //
 // ponytail: the record is found by a linear scan of the ledger, the pending
-// windows and the lost set, O(ledger + window + lost) per call, and the lost
-// set is never pruned. Upgrade to an index by record when a read that finds
-// many corrupt records shows the scan in a profile.
+// windows, the lost set and the moves, O(ledger + window + lost + moved) per
+// call, and the lost set is never pruned. Upgrade to an index by record when a
+// read that finds many corrupt records shows the scan in a profile.
 func (st *stream) takeCorrupt(c Corruption, dirty bool) (synced, lost bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -372,6 +374,16 @@ func (st *stream) takeCorrupt(c Corruption, dirty bool) (synced, lost bool) {
 		}
 	}
 	for loc := range st.lost {
+		if loc.Segment == c.Record.Segment && loc.Off == int64(c.Record.Offset) {
+			return false, true
+		}
+	}
+	// A record re-appended out of its window left it unsynced, and its old
+	// place leads to the copy until the copy completes: the index was
+	// repointed to the copy in the step that took the record out, so nothing
+	// at the old place is left to drop, and what the record superseded stays
+	// held until the copy is synced.
+	for loc := range st.moved {
 		if loc.Segment == c.Record.Segment && loc.Off == int64(c.Record.Offset) {
 			return false, true
 		}

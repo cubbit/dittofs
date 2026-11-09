@@ -8,6 +8,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
@@ -17,10 +18,10 @@ import (
 var errUnverified = errors.New("durability: the record does not verify on re-read")
 
 // resolveWindows resolves every pending window of the stream, oldest first:
-// each record is re-appended to the stream's current segment, unless it is a
-// content record whose re-read does not verify, which is failed. A window that
-// then holds nothing more is resolved. It runs on the worker, after the
-// windows are taken.
+// each record is re-appended to the stream's current segment, and a content
+// record repointed there, unless it is a content record whose re-read does not
+// verify, which is failed. A window that then holds nothing more is resolved.
+// It runs on the worker, after the windows are taken.
 //
 // A record the stream refuses stays in its window, which stays pending, and
 // the pass ends there, so a record never lands ahead of one that came before
@@ -79,14 +80,15 @@ func (d *Durability) reappendWindow(st *stream, w *window) (refused bool) {
 // kept; a content record from its failed segment's bytes, read again and
 // verified. The record keeps its sequence number and version: it is the same
 // operation at a new place, so no generation is raised, no loss record is
-// written and no event is published. The old place then leads to the new one,
-// so a waiter on it follows the record, and the record leaves the window. A
-// failed append changes nothing. A content record that does not verify
-// returns errUnverified.
+// written and no event is published. A content record is then repointed in
+// the index and its original registered as a copy (repointReappended). The
+// old place then leads to the new one, so a waiter on it follows the record,
+// and the record leaves the window. A failed append changes nothing. A content
+// record that does not verify returns errUnverified.
 //
-// st.mu is not held across the re-read or the append, and no file's append
-// domain is taken: the record touches no index entry, and an append may roll,
-// seal and sync.
+// st.mu is not held across the re-read, the append or a call into the index,
+// and no file's append domain is held across the re-read or the append, which
+// may roll, seal and sync.
 func (d *Durability) reappendEntry(st *stream, w *window, e entry) error {
 	id := st.s.Identity()
 	var h format.RecordHeader
@@ -99,6 +101,14 @@ func (d *Durability) reappendEntry(st *stream, w *window, e entry) error {
 	}
 	if err != nil {
 		return err
+	}
+	// A record Corrupt took out of the window while it was read again is
+	// Corrupt's to drop and report: no copy of it is appended.
+	st.mu.Lock()
+	in := st.inWindowLocked(e.w.Loc)
+	st.mu.Unlock()
+	if !in {
+		return nil
 	}
 	// The stream fills in the segment, offset and synced-through.
 	nh := format.RecordHeader{
@@ -113,32 +123,139 @@ func (d *Durability) reappendEntry(st *stream, w *window, e entry) error {
 	if err != nil {
 		return err
 	}
+	if d.afterAppend != nil {
+		d.afterAppend()
+	}
+	if isContent(e.w) {
+		d.repointReappended(st, e, p.Loc)
+		return nil
+	}
+	// A header-only record names no index entry and no read reports it
+	// corrupt, so nothing but the worker takes it out of the window.
+	st.mu.Lock()
+	st.leaveWindowLocked(w, e, p.Loc)
+	st.mu.Unlock()
+	return nil
+}
+
+// repointReappended finishes the re-append of the content record e, whose
+// copy the stream placed at to. Under the record's file append domain, and
+// only while e is still in its window, it registers the original as a copy of
+// the record, repoints the index from the original to the copy, and takes e
+// out of the window with the old place leading to the new one. It takes no
+// other domain and holds st.mu only to read and change the window, never
+// across the index or the copy table.
+//
+// The window check and the repoint share the domain because Corrupt takes a
+// record out of a window under the same domain: a Corrupt is then wholly
+// before the repoint, and the record is no longer in the window, or wholly
+// after it, and finds the index naming the copy.
+//
+// decision: a record Corrupt took out of the window after the worker's check
+// before the append, and before this step took the domain, has had its copy
+// appended all the same: no domain is held across an append, so the check
+// and the append cannot be made one step. The copy is left as a record no
+// index entry names, taken out of the ledger and into the lost set, so no
+// wait and no later window of its segment ever handles it, and repack finds
+// nothing live in it. It stays on disk under the record's sequence number:
+// at recovery the loss record Corrupt wrote for that number excludes every
+// record carrying it, the copy included, whatever their order (RFC 1 §3.8),
+// and a crash before that loss record is durable finds the record whole, as
+// it finds any dropped record of a failed window whose loss record is not
+// durable. When the index no longer named the record, so Corrupt wrote no
+// loss record, the overwrite that took it outranks the copy by version, or the
+// earlier drop that took it wrote the loss record that excludes it.
+// Overturned if recovery ever stops excluding a dropped record by its
+// sequence number, or if a Corrupt may wait on a re-append, which would let
+// it serve the copy instead.
+func (d *Durability) repointReappended(st *stream, e entry, to segment.Location) {
+	f := e.w.File
+	// A read that found the record corrupt may have repointed the index to
+	// another copy of it; that copy is read before the original replaces it
+	// in the table.
+	cp, haveCopy := d.copyOf(e.w.Seq)
+	unlock := d.domains.Lock(f)
+	defer unlock()
 
 	st.mu.Lock()
-	defer st.mu.Unlock()
+	w := st.windowOfLocked(e.w.Loc)
+	if w == nil {
+		st.untrackLocked(to)
+		st.mu.Unlock()
+		return
+	}
+	st.mu.Unlock()
+
+	d.RegisterCopy(e.w.Seq, e.w.Loc, e.w.PayloadCRC)
+	at := index.RecordAt{Segment: to.Segment, Offset: uint32(to.Off)}
+	froms := []index.RecordAt{recordAt(e.w)}
+	if haveCopy {
+		froms = append(froms, index.RecordAt{Segment: cp.loc.Segment, Offset: uint32(cp.loc.Off)})
+	}
+	for _, from := range froms {
+		// decision: only the pieces the index still has at the record's
+		// places are moved, held or retained. A write that superseded the
+		// record since its append holds the extent itself, so nothing held is
+		// moved and the overwrite stays what is served; what it superseded is
+		// retained until it syncs, and that retained piece is moved to the
+		// copy, so the failed segment backs nothing once the window resolves,
+		// and a later failure of the overwrite's window holds the record again
+		// at the copy, never at a segment repack may have removed. A record
+		// the index no longer names at all was dropped or fully overwritten
+		// and synced, and has nothing to move. Overturned if the index ever
+		// keeps a piece of a record anywhere but held or retained.
+		if !d.index.Names(f, from) {
+			continue
+		}
+		_, hd, err := d.index.RepointRecord(f, from, at)
+		d.accountDelta(hd)
+		if err != nil {
+			d.log.Error("journal could not repoint a re-appended record", "stream", st.no, "file", f, "seq", e.w.Seq, "err", err)
+		}
+	}
+
+	st.mu.Lock()
+	st.leaveWindowLocked(w, e, to)
+	st.mu.Unlock()
+}
+
+// leaveWindowLocked takes the re-appended record e out of the window w, makes
+// its old place lead to to while the copy is still held, and asks for the
+// sync that makes the copy durable. The caller holds mu.
+func (st *stream) leaveWindowLocked(w *window, e entry, to segment.Location) {
 	i := slices.IndexFunc(w.entries, func(o entry) bool { return o.w.Loc == e.w.Loc })
 	if i < 0 {
-		// decision: a record Corrupt took out of the window while its re-read
-		// was in flight is still appended, so the journal holds a second
-		// durable record of that sequence number that no index entry names;
-		// if Corrupt already wrote a loss record for it, a durable write of
-		// the same number contradicts the loss at recovery. Accepted only
-		// until the repoint step lands, which owns the file's domain and the
-		// index. Overturned by re-checking the window's membership under the
-		// file's domain before the append, or by Corrupt skipping a record
-		// whose re-append is in flight.
-		return nil
+		return
 	}
 	w.entries = slices.Delete(w.entries, i, i+1)
 	// The new record may already be synced and completed, which clears its
 	// entry: then nothing is left to follow, and the old place, in no window
 	// or ledger, reads as done.
-	if st.heldLocked(p.Loc) {
-		st.moved[e.w.Loc] = p.Loc
+	if st.heldLocked(to) {
+		st.moved[e.w.Loc] = to
 	}
 	st.want = true
 	st.d.notifyAll()
+}
+
+// windowOfLocked returns the pending window holding the record at loc, or nil.
+// The caller holds mu.
+func (st *stream) windowOfLocked(loc segment.Location) *window {
+	for _, w := range st.windows {
+		if slices.ContainsFunc(w.entries, func(o entry) bool { return o.w.Loc == loc }) {
+			return w
+		}
+	}
 	return nil
+}
+
+// untrackLocked takes the record at loc out of the ledger into the lost set,
+// so it never reads durable and no wait or window handles it. The caller
+// holds mu.
+func (st *stream) untrackLocked(loc segment.Location) {
+	st.removeLocked(func(e *entry) bool { return e.w.Loc == loc }, nil)
+	st.lost[loc] = lostRecord{err: errRecordCorrupt}
+	st.d.notifyAll()
 }
 
 // decodeKept decodes the header-only record e from the bytes the ledger kept.

@@ -29,6 +29,8 @@ type testDomains struct {
 	// held is how many file domains are held now, and mostHeld the most that
 	// were held at once.
 	held, mostHeld int
+	// order is every file whose domain was taken, in the order taken.
+	order []core.FileID
 }
 
 func (d *testDomains) Lock(id core.FileID) func() {
@@ -47,6 +49,7 @@ func (d *testDomains) Lock(id core.FileID) func() {
 	d.mu.Lock()
 	d.held++
 	d.mostHeld = max(d.mostHeld, d.held)
+	d.order = append(d.order, id)
 	d.mu.Unlock()
 	return func() {
 		d.mu.Lock()
@@ -194,11 +197,13 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	t.Cleanup(func() { _ = streams.Close() })
 	t.Cleanup(d.Stop)
 	r := newRigOver(d, streams, seam, clock, domains, pool, set, n, sinks, c, acct)
-	// This seam also reroutes readCopy, so production's st.s.ReadAt branch does
-	// not run in the durability tests that use it. It always reads through
-	// stream 0, and a copy read of a pending window's segment gets EIO by
-	// default, which readCopy treats as deciding nothing. A test of the
-	// production read sets d.readCopyAt to nil.
+	// This seam is the read of both readCopy and the re-read of a failed
+	// window, so production's st.s.ReadAt branch runs only in a test that sets
+	// d.readCopyAt to nil before Start, as
+	// TestReappendReadsTheFailedSegmentThroughTheStream does. It always reads
+	// through stream 0, and a read of a pending window's segment gets EIO
+	// unless keptPages lists the segment: readCopy treats that as deciding
+	// nothing, and the re-read fails the record.
 	d.readCopyAt = func(seg core.SegmentID, p []byte, off int64) (int, error) {
 		if _, kept := r.keptPages.Load(seg); !kept && r.inPendingWindow(seg) {
 			return 0, syscall.EIO
