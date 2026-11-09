@@ -1681,9 +1681,13 @@ after a loss, each client resends its recent unstable writes once.
   state, which fails one SMB flush per open that was open across the loss
   ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens), [RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)). The engine raises it from the journal's loss events;
   so that a `Commit` never reads it before the event that should raise it, a
-  `Commit` that finds the journal's loss generation above the last one the
-  engine applied first drains the journal's loss ring up to it, and where the
-  ring reports events missed, raises the sequence of every file of that journal.
+  `Commit` first drains the journal's loss ring past the last event the engine
+  applied, by the events' sequence numbers, never by the loss generation, which
+  rises before its event is published and sometimes with none
+  ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), and where the ring reports events
+  missed, raises the sequence of every file of that journal; a drain between a
+  raise and its event misses the event until the next one, the write verifier
+  already carrying the raise.
   **A device lost whole raises every attached file's sequence.** A journal
   device that dies under the running process, or a journal found missing or
   foreign at open whose loss an operator acknowledges ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1), writes
@@ -2873,11 +2877,11 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   the file's in-flight floor ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)), which the prune reads from the pass
   registry under the file's guard ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)): a capture adds to it under that
   guard, so no pass captured before the removal can be missed.
-- A failed phase-2 batch or prune returns `Retry`, and the scheduler backs it off
+- A failed phase-2 run (a bounded `Resume` and the prune after it) returns `Retry`, and the scheduler backs it off
   between `offload.retry_min` and `offload.retry_max`, for as long as the node is
-  the shard's primary ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)). After five consecutive failed batches
+  the shard's primary ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)). After five consecutive failed runs
   the removal is the condition `removal_stalled`, naming the file and the
-  removal's kind, cleared by its next batch that commits; the count is kept by
+  removal's kind, cleared by its next run that advances or finishes; the count is kept by
   the removal, which the file's guard makes the file's only one at a time. A stalled clone holds writes to
   its destination extent, so its condition is unhealthy rather than degraded.
 - A release that cannot finish within its call is pending, not failed: one
@@ -3898,7 +3902,7 @@ pipeline states, `count` for operations per commit.
 | work-queue entries, labelled `journal`, `source` and `state`, and per share under the worst-n rule; the instance's total; events posted, labelled `event` = `dirty`, `age_tick`, `pressure` or `removal_pending` ([§6.1](#6.1%20The%20work%20queue)) | `engine_queue_entries`, `engine_queue_entries_limit`, `engine_queue_events_total` | gauge, gauge, counter |
 | age of the oldest entry due and not dispatched, and the time of the last run that returned, labelled `journal` and `source` | `engine_queue_oldest_pending_seconds`, `engine_queue_last_done_timestamp_seconds` | gauge |
 | runs in flight and their bound, labelled `journal` and `source`; runs past twice their run timeout ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)) | `engine_work_runs_inflight`, `engine_work_runs_inflight_limit`, `engine_work_runs_overdue_total` | gauge, gauge, counter |
-| removals not done, and the age of the oldest, per share under the worst-n rule; phase-2 batches, labelled `result` = `ok`, `conflict` or `error` ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)) | `engine_removals_pending`, `engine_removals_oldest_seconds`, `engine_removal_batches_total` | gauge, gauge, counter |
+| removals not done, and the age of the oldest, per share under the worst-n rule; phase-2 runs, labelled `result` = `done`, `advanced`, `conflict` or `error`, a run being one bounded `Resume` and the prune after it, the `Resume` committing as many batches as its bound allows ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)) | `engine_removals_pending`, `engine_removals_oldest_seconds`, `engine_removal_runs_total` | gauge, gauge, counter |
 | held files the reseed has yet to visit, labelled `journal` ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 7) | `engine_reseed_files_remaining` | gauge |
 | offload passes, labelled `result` ([§6.3](#6.3%20The%20offload%20pipeline)) | `engine_offload_passes_total` | counter |
 | time in each pipeline state, and step failures and retries, labelled `state` | `engine_pipeline_state_seconds`, `engine_pipeline_retries_total` | histogram, counter |
