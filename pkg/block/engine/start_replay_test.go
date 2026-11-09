@@ -643,7 +643,8 @@ func (r *rig) wantRemovals(t *testing.T, f entity.File, want []kvstore.Unfinishe
 			t.Fatal(err)
 		}
 
-		got = append(got, u)
+		// The listing also carries each record; only the pair is checked here.
+		got = append(got, kvstore.UnfinishedRemoval{File: u.File, Version: u.Version})
 	}
 
 	if !slices.Equal(got, want) {
