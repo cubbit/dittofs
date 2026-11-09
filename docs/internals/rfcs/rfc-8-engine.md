@@ -1290,8 +1290,9 @@ limit, and a write from a journal with a lower counter would otherwise lower
 it below versions another journal has reported. A write that reaches the
 limit first is refused as retry-later ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)).
 
-One raise runs at a time on a journal; a version issued during it wakes it to
-run again only if the trigger still holds after it. A raise holds a
+One raise runs at a time on a journal; a version issued during it, or a failed
+`Bind`'s check, wakes it to run again only if the trigger still holds after it.
+A raise holds a
 per-journal lock from its read of the counter to its `SetVersionLimit`, and
 `Bind` holds the same lock from writing its share's limit until it publishes the
 binding, so that no raise passes a limit above the limit of a share it has not
@@ -1299,7 +1300,7 @@ yet lifted ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions): the smallest of the 
 A limit the journal refuses with `SetVersionLimit` is not retried, since trying
 again changes nothing: the engine logs it once at `Error` and raises no more for
 that journal, a write at the limit answers retry-later until the journal is
-opened again, and a `Bind` on that journal fails with the journal's error.
+opened again, and a `Bind` that attaches a share to that journal fails with the journal's error.
 
 > decision: the headroom is sized by time, not by count alone, so that the
 > version limit does not refuse writes before the 30 s self-fence would at

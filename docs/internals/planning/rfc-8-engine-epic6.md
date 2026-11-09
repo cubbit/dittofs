@@ -220,7 +220,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R2 | `JournalID` answers the identity the store records for a device; `J‖journal` is written when the journal is created, before anything in it is acknowledged | invariant | §2.5 step 1, RFC 16 §4.2, RFC 1 §3 | T6.1 |
 | R3 | Every write of `S‖id‖vl` (at start, at an attach, at every raise) is a tracked max-write: it writes the larger of the value it reads and its own, never blindly, and never lowers the limit | invariant | §2.7, RFC 16 §4.2 | T6.1, T6.2, T6.3, T6.7 |
 | R4 | The limits are raised in as many transactions as `K` takes, never one over every share | bound | §2.7, E40 | T6.1, T6.7 |
-| R5 | A raise at attach of a shard this process has raised and served changes its incarnation and keeps its grace instance; a start's raise, and the first raise of any other shard since the process started, copy the incarnation into the grace instance | invariant | RFC 14 §4.4, RFC 16 §2 (`Shard`), RFC 8 §2.5 step 2 | T6.1, T6.2, T6.10 |
+| R5 | A raise at attach of a shard this process has raised and served changes its incarnation and keeps its grace instance; every other raise copies the incarnation into the grace instance | invariant | RFC 14 §4.4, RFC 16 §2 (`Shard`) and §3, RFC 8 §2.5 step 2 | T6.1, T6.2, T6.10 |
 
 **The share table and the bindings**
 
@@ -347,15 +347,12 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   RFC 16 settles it. Start never writes `J‖journal` (#3642).
 - **D4, an attach keeps the grace instance only of a shard already raised and served.** `kvstore`'s
   `RaiseIncarnations` copies the incarnation into the grace instance on every call, which is
-  right for a start and for the first raise of a shard since the process started, and wrong
+  right for a start and for every other raise, and wrong
   for an attach of a shard this process has raised and served (R5). T6.1 gives the call that meaning,
   renamed `RaiseAtStart`, and adds `RaiseAtAttach(ctx, shard)`, which keeps the grace
   instance; `Lifecycle` declares both. The engine keeps the set of shards it has raised and
   served since `Start`, and an attach picks the form for a shard in that set and for any
-  other as RFC 8 §2.5 step 2 and RFC 16 §3 give it (RFC 14 §4.4). A `Bind` that raised the
-  incarnation and then failed leaves its shard out of the set, so the next attach uses the
-  start form again; that is safe, as an incarnation only goes up and a shard never served
-  has no client state to lose. `kvstore`'s
+  other as RFC 8 §2.5 step 2 and RFC 16 §3 give it (RFC 14 §4.4). `kvstore`'s
   `decision:` at `RaiseIncarnations`, as #3606 words it, already gives the start form "the
   first serve of a share's shard this process has not served": T6.1 rewrites that marker for
   `RaiseAtStart` and adds no second one. Both return the incarnation they wrote for each
@@ -801,9 +798,9 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   the first version, R20); a floor several blocks above the journal's limit, then a share
   bound: its `S‖id‖vl` is above the version its first `WriteAt` returns, and another share's
   write is served after one raise (catches a raise counted from the old limit, R35). The
-  row's raise halves (a block of 16: below 8 left the limit is raised before the journal is
-  given it; the raise blocked by the fault-injecting `kv.KV`, the write reaching the limit
-  refused and then served once the raise commits) and the two raise lock cases (a raise held
+  row's raise halves (every step between its start and its crash steps, at a block of 16, with
+  the fault-injecting `kv.KV` blocking or failing the raise's commit and failing a `Bind`'s
+  limit write) and the two raise lock cases (a raise held
   between its last commit and `SetVersionLimit`, then a share bound; a `Bind` held inside
   its limit write while a write past the trigger wakes the raise) need the test block of 16,
   which the conformance package cannot set without an exported symbol: they are a test of
@@ -837,11 +834,11 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   to the journal (catches one removed share failing the batch); a raise that fails once at
   the store with the journal at its limit and no write pending: retried after the wait, the
   limit passed, the next write served (catches a raise run only when woken); a `Draw` past
-  the trigger while a raise runs: one more pass after it, which raises only if the versions
-  left are still within the trigger (catches a wake lost while a raise runs); a
+  the trigger, or a failed `Bind`'s check, while a raise runs: one more pass after it,
+  which raises only if the versions left are still within the trigger (catches a wake lost while a raise runs); a
   `SetVersionLimit` the fake journal refuses: no second call, one `Error` log, a later
   version past the trigger wakes no raise, and a write at the limit answers `ErrDelay`, not
-  `ErrNoSpace`, and a `Bind` on that journal answers the journal's error (catches a refused
+  `ErrNoSpace`, and a `Bind` that attaches a share to that journal answers the journal's error (catches a refused
   limit retried in a loop, and a `Bind` that joins a journal no raise will lift); a `Bind`
   failing at its limit write after its `Share` moved the counter to the limit last passed,
   with no write and no `Draw` after it: the raise runs, the limit is passed and a write to a
