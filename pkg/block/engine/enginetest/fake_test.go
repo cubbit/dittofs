@@ -1,7 +1,9 @@
 package enginetest
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"slices"
 	"strings"
@@ -309,33 +311,40 @@ func fullDevice() error {
 	return &fs.PathError{Op: "write", Path: "segment", Err: syscall.ENOSPC}
 }
 
+// callFake makes one call of kind c on file A and answers its error.
+func callFake(t *testing.T, j *FakeJournal, h engine.Handle, c Call) error {
+	t.Helper()
+
+	ctx := t.Context()
+
+	var err error
+
+	switch c {
+	case CallWriteAt:
+		_, err = h.WriteAt(ctx, fileA, 0, []byte("x"), 0)
+	case CallDraw:
+		_, err = j.Draw()
+	case CallTruncate:
+		_, err = h.Truncate(ctx, fileA, 0)
+	case CallDeallocate:
+		_, err = h.Deallocate(ctx, fileA, ext(0, 1))
+	case CallDelete:
+		_, err = h.Delete(ctx, fileA)
+	case CallCloneTarget:
+		_, err = h.CloneTarget(ctx, fileA, journal.CloneSpec{DstOff: 0, Len: 1})
+	case CallReserve:
+		_, err = h.Reserve(1, 1)
+	}
+
+	return err
+}
+
 // A refused call answers the armed error exactly, for every pair RFC 1 lets
 // the journal answer, and issues no version; a pair RFC 1 does not allow is
 // refused by Refuse and arms nothing; a nil error disarms.
 func TestFakeRefusesOnlyWhatTheJournalCan(t *testing.T) {
 	call := func(j *FakeJournal, h engine.Handle, c Call) error {
-		ctx := t.Context()
-
-		var err error
-
-		switch c {
-		case CallWriteAt:
-			_, err = h.WriteAt(ctx, fileA, 0, []byte("x"), 0)
-		case CallDraw:
-			_, err = j.Draw()
-		case CallTruncate:
-			_, err = h.Truncate(ctx, fileA, 0)
-		case CallDeallocate:
-			_, err = h.Deallocate(ctx, fileA, ext(0, 1))
-		case CallDelete:
-			_, err = h.Delete(ctx, fileA)
-		case CallCloneTarget:
-			_, err = h.CloneTarget(ctx, fileA, journal.CloneSpec{DstOff: 0, Len: 1})
-		case CallReserve:
-			_, err = h.Reserve(1, 1)
-		}
-
-		return err
+		return callFake(t, j, h, c)
 	}
 
 	allowed := map[Call][]error{
@@ -452,4 +461,98 @@ func sameRefusal(a, b error) bool {
 	}
 
 	return errors.Is(a, syscall.ENOSPC) && errors.Is(b, syscall.ENOSPC)
+}
+
+// A failed call answers the armed error exactly, for every pair RFC 1 lets the
+// journal answer: a file of another share, and a read-only journal, for the
+// calls that name a file, and EIO for WriteAt, which a failed write answers
+// (RFC 28 §2.2). Everything else is refused by Fail and arms nothing: a
+// capacity refusal is Refuse's, and EIO is no answer of any other call.
+func TestFakeFailsOnlyWhatTheJournalCan(t *testing.T) {
+	otherShare := &journal.OtherShareError{File: fileA, Tag: 1, Owner: 2}
+	readOnly := fmt.Errorf("%w: %w", journal.ErrJournalReadOnly, syscall.EROFS)
+	named := []Call{CallWriteAt, CallTruncate, CallDeallocate, CallDelete, CallCloneTarget}
+
+	allowed := map[Call][]error{}
+	for _, c := range named {
+		allowed[c] = []error{otherShare, readOnly}
+	}
+
+	allowed[CallWriteAt] = append(allowed[CallWriteAt], syscall.EIO)
+
+	for c, errs := range allowed {
+		for _, want := range errs {
+			j, h := fake(t, 0)
+			write(t, h, fileA, 0, "seed")
+
+			before := j.Stats().NextVersion
+
+			if err := j.Fail(c, want); err != nil {
+				t.Errorf("call %d: Fail(%v) = %v, want nil", c, want, err)
+
+				continue
+			}
+
+			if got := callFake(t, j, h, c); got != want {
+				t.Errorf("call %d armed with %v answered %v", c, want, got)
+			}
+
+			if got := j.Stats().NextVersion; got != before {
+				t.Errorf("call %d failed with %v moved the version %v to %v", c, want, before, got)
+			}
+
+			if err := j.Fail(c, nil); err != nil {
+				t.Errorf("call %d: Fail(nil) = %v, want nil", c, err)
+			}
+
+			if got := callFake(t, j, h, c); got != nil {
+				t.Errorf("call %d after Fail(nil) answered %v, want nil", c, got)
+			}
+		}
+	}
+
+	// Every call times every error a test could arm: the two allowed ones, a
+	// failing device, a closed journal, a canceled context, every limit the
+	// journal names and a full device.
+	candidates := []error{
+		otherShare, readOnly, syscall.EIO, journal.ErrClosed, context.Canceled, fullDevice(),
+	}
+
+	for l := journal.LimitShare; !strings.HasPrefix(l.String(), "Limit("); l++ {
+		candidates = append(candidates, refusalOf(l))
+	}
+
+	forbidden := 0
+
+	for c := CallWriteAt; c <= CallReserve; c++ {
+		for _, err := range candidates {
+			isAllowed := func(ok error) bool {
+				return ok == err
+			}
+
+			if slices.ContainsFunc(allowed[c], isAllowed) {
+				continue
+			}
+
+			forbidden++
+
+			j, h := fake(t, 0)
+			write(t, h, fileA, 0, "seed")
+
+			if got := j.Fail(c, err); got == nil {
+				t.Errorf("call %d: Fail(%v) = nil, want an error", c, err)
+			}
+
+			if got := callFake(t, j, h, c); got != nil {
+				t.Errorf("call %d answered %v after a rejected Fail(%v), want nil", c, got, err)
+			}
+		}
+	}
+
+	// 7 calls times 12 candidates is 84 pairs and the journal's contract allows
+	// 11 of them: two for each of the five calls that name a file, and EIO for
+	// WriteAt.
+	if forbidden != 73 {
+		t.Errorf("checked %d forbidden pairs, want 73", forbidden)
+	}
 }

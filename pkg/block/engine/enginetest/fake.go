@@ -994,3 +994,57 @@ func callOf(k journal.ChangeKind) Call {
 
 	return 0
 }
+
+// Fail arms every call of kind c to answer err until Fail is called with a nil
+// err for it. It arms only the errors other than a capacity refusal that the
+// journal's contract lets that call return: a file of another share (RFC 1
+// §3) and a read-only journal (RFC 1 §5.4), for the calls that name a file,
+// and, for WriteAt alone, EIO, which a failed write answers (RFC 28 §2.2; RFC
+// 1 lists EIO among the faults it injects). It returns an error, arming
+// nothing, for any other, a capacity refusal included, which is Refuse's.
+//
+// Left out on purpose: ErrClosed, which the fake models through Close; the
+// argument errors, which the fake makes itself; and a read-only journal's
+// state, which a test sets with ReadOnly, so that Stats reports it as well.
+// Fail and Refuse arm one map, so either one disarms what the other armed.
+func (j *FakeJournal) Fail(c Call, err error) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if err == nil {
+		delete(j.refused, c)
+
+		return nil
+	}
+
+	if !failureAllowed(c, err) {
+		return fmt.Errorf("fake: RFC 1 does not let call %d fail with %w", c, err)
+	}
+
+	if j.refused == nil {
+		j.refused = map[Call]error{}
+	}
+
+	j.refused[c] = err
+
+	return nil
+}
+
+// failureAllowed reports whether the journal can answer err to call c besides
+// a capacity refusal; see Fail. It names none for Draw or Reserve.
+func failureAllowed(c Call, err error) bool {
+	switch c {
+	case CallWriteAt:
+		return errors.Is(err, syscall.EIO) || namesFile(err)
+	case CallTruncate, CallDeallocate, CallDelete, CallCloneTarget:
+		return namesFile(err)
+	}
+
+	return false
+}
+
+// namesFile reports whether err is one a call that names a file can answer: a
+// file of another share, or a read-only journal.
+func namesFile(err error) bool {
+	return errors.Is(err, journal.ErrOtherShare) || errors.Is(err, journal.ErrJournalReadOnly)
+}
