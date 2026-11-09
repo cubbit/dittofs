@@ -12,7 +12,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/block"
 	"github.com/cubbit/dittofs/pkg/controlplane/models"
-	"github.com/cubbit/dittofs/pkg/controlplane/runtime/identity"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime/lifecycle"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime/snapshotsched"
@@ -30,22 +29,6 @@ const DefaultShutdownTimeout = lifecycle.DefaultShutdownTimeout
 
 // AuxiliaryServer is re-exported so callers need not import lifecycle.
 type AuxiliaryServer = lifecycle.AuxiliaryServer
-
-type shareIdentityProvider struct {
-	sharesSvc *shares.Service
-}
-
-func (p *shareIdentityProvider) GetShareIdentityInfo(shareName string) (*identity.ShareInfo, error) {
-	share, err := p.sharesSvc.GetShare(shareName)
-	if err != nil {
-		return nil, err
-	}
-	return &identity.ShareInfo{
-		Squash:       share.Squash,
-		AnonymousUID: share.AnonymousUID,
-		AnonymousGID: share.AnonymousGID,
-	}, nil
-}
 
 // keyedMutex is a lazily-populated registry of per-key locks. The same key
 // always yields the same pointer, so independent callers that look a key up
@@ -71,8 +54,7 @@ func (k *keyedMutex[M]) get(key string) *M {
 }
 
 // Runtime manages all runtime state for shares.
-// It composes sub-services for stores, shares, mounts, lifecycle, and
-// identity mapping.
+// It composes sub-services for stores, shares, mounts and lifecycle.
 type Runtime struct {
 	mu    sync.RWMutex
 	store store.Store
@@ -85,17 +67,9 @@ type Runtime struct {
 
 	metadataService *metadata.Service
 
-	// netgroupDecisions memoizes recent netgroup allow/deny verdicts keyed by
-	// netgroup and client IP, so a protocol with no mount step does not query the
-	// netgroup store on every request. Entries expire after netgroupDecisionTTL
-	// and expired ones are swept on insert.
-	netgroupDecisionsMu sync.Mutex
-	netgroupDecisions   map[string]netgroupDecision
-
 	storesSvc      *stores.Service
 	sharesSvc      *shares.Service
 	lifecycleSvc   *lifecycle.Service
-	identitySvc    *identity.Service
 	mountTracker   *MountTracker
 	clientRegistry *ClientRegistry
 
@@ -206,7 +180,6 @@ func New(s store.Store) *Runtime {
 		storesSvc:       stores.New(),
 		sharesSvc:       shares.New(),
 		lifecycleSvc:    lifecycle.New(DefaultShutdownTimeout),
-		identitySvc:     identity.New(),
 		statusCheckers:  newCheckerCache(StatusCacheTTL),
 		gcReg:           newGCRegistry(),
 	}
@@ -638,8 +611,7 @@ func (r *Runtime) SetShareTrashConfig(name string, cfg shares.TrashSettings) err
 }
 
 // SetShareNetgroup updates the live netgroup association for a share's NFS
-// export. An empty netgroupName clears the association (allow-all). Takes
-// effect immediately for subsequent CheckNetgroupAccess calls.
+// export. An empty netgroupName clears the association (allow-all).
 func (r *Runtime) SetShareNetgroup(name, netgroupName string) error {
 	return r.sharesSvc.SetShareNetgroup(name, netgroupName)
 }
@@ -881,12 +853,6 @@ func (r *Runtime) drainStartupWorkers(ctx context.Context) {
 // a test that has finished with a runtime is its only other caller.
 func (r *Runtime) ShutdownSnapshots(ctx context.Context) {
 	r.shutdownSnapshots(ctx)
-}
-
-// --- Identity Mapping (delegated to identity.Service) ---
-
-func (r *Runtime) ApplyIdentityMapping(shareName string, ident *metadata.Identity) (*metadata.Identity, error) {
-	return r.identitySvc.ApplyIdentityMapping(shareName, ident, &shareIdentityProvider{sharesSvc: r.sharesSvc})
 }
 
 // --- Client Tracking (delegated to ClientRegistry) ---
