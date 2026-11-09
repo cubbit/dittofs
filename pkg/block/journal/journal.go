@@ -1,12 +1,38 @@
 package journal
 
-import "context"
+import (
+	"context"
+	"sync"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/datapath"
+)
 
 // Journal is one journal on one directory: the bytes of every share placed on
 // the device it lives on. Each share works through its own handle.
 //
 // A Journal is built only by Open. Its methods are safe for concurrent use.
-type Journal struct{}
+type Journal struct {
+	core *datapath.Core
+
+	// handlesMu guards handles. Only Share and Handle.Close take it, and no
+	// lock domain is held when they do. Share holds it across the core's
+	// attach, which takes only the core's registry mutex and short, I/O-free
+	// locks of its own; Close takes it only after the core's Close returned.
+	handlesMu sync.Mutex
+	// handles is the one *Handle of each open *datapath.Share, so a second
+	// Share of an open tag returns the handle the first one did.
+	//
+	// ponytail: a map under a mutex, one entry per open handle, removed by
+	// Handle.Close. Shares are few and attach and close rarely, so a lookup
+	// per Share costs nothing. Upgrade to a field on the core's share if the
+	// public layer ever needs its handle on a hot path.
+	handles map[*datapath.Share]*Handle
+}
+
+// newJournal returns the Journal that serves c.
+func newJournal(c *datapath.Core) *Journal {
+	return &Journal{core: c, handles: make(map[*datapath.Share]*Handle)}
+}
 
 // Init creates a new journal in dir, writing into its format file a fresh
 // journal identity and install, the installation ID the same initialisation
