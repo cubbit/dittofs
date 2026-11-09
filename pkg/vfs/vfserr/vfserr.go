@@ -61,7 +61,9 @@ var (
 // call ever answers an adapter with a release's outcome.
 var ErrFileOpen = errors.New("vfs: release aborted by a holder")
 
-// AccessError is an ErrAccess with its cause.
+// AccessError is an ErrAccess with its cause. Under errors.Is it matches
+// ErrAccess and any *AccessError equal to it: every field is part of the
+// kind.
 type AccessError struct{ Cause AccessCause }
 
 // AccessCause is why access was refused, where the adapter tells one apart.
@@ -81,9 +83,16 @@ func (c AccessCause) Valid() bool { return c >= 1 && c < accessCauseEnd }
 func (e *AccessError) Error() string {
 	return ErrAccess.Error() + ": " + kindName(accessCauses[:], e.Cause)
 }
-func (e *AccessError) Is(target error) bool { return target == ErrAccess }
+func (e *AccessError) Is(target error) bool {
+	if t, ok := target.(*AccessError); ok {
+		return t != nil && *t == *e
+	}
+	return target == ErrAccess
+}
 
-// QuotaError is an ErrQuota naming the first scope exceeded.
+// QuotaError is an ErrQuota naming the first scope exceeded. Under
+// errors.Is it matches ErrQuota and any *QuotaError equal to it: every field
+// is part of the kind.
 type QuotaError struct{ Scope QuotaScope }
 
 // QuotaScope is what a quota limits, in the order a refusal names the first
@@ -107,10 +116,18 @@ func (s QuotaScope) Valid() bool { return s >= 1 && s < quotaScopeEnd }
 func (e *QuotaError) Error() string {
 	return ErrQuota.Error() + ": " + kindName(quotaScopes[:], e.Scope)
 }
-func (e *QuotaError) Is(target error) bool { return target == ErrQuota }
+func (e *QuotaError) Is(target error) bool {
+	if t, ok := target.(*QuotaError); ok {
+		return t != nil && *t == *e
+	}
+	return target == ErrQuota
+}
 
 // Delay is an ErrDelay. Its Cause selects how long an adapter holds the
-// request and its final status.
+// request and its final status. Under errors.Is it matches ErrDelay and any
+// *Delay of the same Cause and Moved, which change the adapter's answer;
+// Until is the freeze's bound, not its kind, so it is not compared. A zero
+// Cause is no cause and matches only another zero Cause.
 type Delay struct {
 	Cause DelayCause
 	Until time.Time // DelayFrozen: the freeze's bound; zero otherwise
@@ -148,11 +165,17 @@ func (e *Delay) Error() string {
 	return ErrDelay.Error() + ": " + kindName(delayCauses[:], e.Cause)
 }
 
-func (e *Delay) Is(target error) bool { return target == ErrDelay }
+func (e *Delay) Is(target error) bool {
+	if t, ok := target.(*Delay); ok {
+		return t != nil && t.Cause == e.Cause && t.Moved == e.Moved
+	}
+	return target == ErrDelay
+}
 
 // StateError is an ErrState naming why: a client-held name of state cannot
 // be used as given. Admin tells, for StateRevoked, an administrator's revoke
-// from a recall missed.
+// from a recall missed. Under errors.Is it matches ErrState and any
+// *StateError equal to it: every field is part of the kind.
 type StateError struct {
 	Kind  StateKind
 	Admin bool
@@ -200,9 +223,15 @@ func (e *StateError) Error() string {
 	return ErrState.Error() + ": " + kindName(stateKinds[:], e.Kind)
 }
 
-func (e *StateError) Is(target error) bool { return target == ErrState }
+func (e *StateError) Is(target error) bool {
+	if t, ok := target.(*StateError); ok {
+		return t != nil && *t == *e
+	}
+	return target == ErrState
+}
 
-// CrossError is an ErrCross naming the boundary.
+// CrossError is an ErrCross naming the boundary. Under errors.Is it matches
+// ErrCross and any *CrossError equal to it: every field is part of the kind.
 type CrossError struct{ Kind CrossKind }
 
 // CrossKind is the boundary a call spans. The first three are boundaries a
@@ -224,8 +253,14 @@ var crossKinds = [...]string{CrossNamespace: "namespace", CrossShare: "share", C
 // Valid reports whether k is a declared kind.
 func (k CrossKind) Valid() bool { return k >= 1 && k < crossKindEnd }
 
-func (e *CrossError) Error() string        { return ErrCross.Error() + ": " + kindName(crossKinds[:], e.Kind) }
-func (e *CrossError) Is(target error) bool { return target == ErrCross }
+func (e *CrossError) Error() string { return ErrCross.Error() + ": " + kindName(crossKinds[:], e.Kind) }
+
+func (e *CrossError) Is(target error) bool {
+	if t, ok := target.(*CrossError); ok {
+		return t != nil && *t == *e
+	}
+	return target == ErrCross
+}
 
 // kindName is the name of kind k, or "unknown" for a kind no name is
 // declared for, the zero value of a kind numbered from one included.
