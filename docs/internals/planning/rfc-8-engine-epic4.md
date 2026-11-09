@@ -244,7 +244,7 @@ row.
 | --- | --- | --- | --- | --- |
 | R27 | Each file has a loss sequence, in memory and monotonic for the life of the process, raised by each loss event that drops an acknowledged, unoffloaded write of the file (the metadata reconcile's raise at start: §9, point 6) | MUST | §5.1 "Each file has a loss sequence" | T4.5 |
 | R28 | `Commit` returns the loss sequence read after its sync; `LossSeq` returns it without one | MUST | §5.1, §12.1 | T4.2, T4.5 |
-| R29 | A loss generation above the last one applied drains the loss ring before any existence commit that follows; events the ring missed raise every file of that journal | MUST | §5.1, RFC 1 §3.8 | T4.5 |
+| R29 | Every existence commit follows a drain of the loss ring past the last event applied, by the events' sequence numbers, never by the loss generation; events the ring missed raise every file of that journal | MUST | §5.1, RFC 1 §3.8 | T4.5 |
 | R30 | A journal device lost whole under the running process raises every attached file's sequence (a start past an acknowledged loss is epic 6's) | MUST | §5.1 | T4.5 |
 | R31 | The sequence is a journal-wide floor plus per-file entries above it; a file's sequence is the larger | bound | §5.1's `ponytail:` | T4.5 |
 | R32 | A synced append or hole fill a loss event drops before its existence commit is committed from its loss event, reading **Lost** and charging nothing | MUST | §5.1, "Why an overwrite waits" | T4.5 |
