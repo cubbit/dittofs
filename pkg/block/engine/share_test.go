@@ -155,6 +155,18 @@ func (l logRecorder) warnings() []slog.Record {
 	return out
 }
 
+// attr is the value r carries under key, "" when it carries none.
+func attr(r slog.Record, key string) (v string) {
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			v = a.Value.String()
+			return false
+		}
+		return true
+	})
+	return v
+}
+
 // isDelay reports whether err is ErrDelay with cause c.
 func isDelay(err error, c vfserr.DelayCause) bool {
 	var d *vfserr.Delay
@@ -561,15 +573,7 @@ func TestBindOfAServedShareKeepsItsLimitAndWarns(t *testing.T) {
 			t.Errorf("the warning %q carries a limit", r.Message)
 		}
 
-		share := false
-
-		r.Attrs(func(a slog.Attr) bool {
-			share = share || a.Key == "share"
-
-			return true
-		})
-
-		if !share {
+		if attr(r, "share") == "" {
 			t.Errorf("the warning %q names no share", r.Message)
 		}
 	}

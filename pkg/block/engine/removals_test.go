@@ -143,29 +143,22 @@ func TestAFailingRemovalWedgesNoOther(t *testing.T) {
 	}
 }
 
-// stalledResume is the store's content view whose phase 2 of the files in
-// stalled holds until its context ends.
-type stalledResume struct {
-	*resuming
-	stalled entity.FileID
-}
-
-func (x *stalledResume) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) (bool, error) {
-	if file == x.stalled {
-		<-ctx.Done()
-		return false, ctx.Err()
-	}
-	return x.resuming.Resume(ctx, share, file)
-}
-
 // A phase 2 whose store never answers is cut at the conflict bound, so the
 // loop moves on: another file's removal is pruned meanwhile.
 func TestAStalledPhase2HoldsNoOther(t *testing.T) {
-	x := &stalledResume{resuming: newResuming()}
-	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x })
+	x := newResuming()
+	var f entity.FileID
+	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x },
+		onResume(func(ctx context.Context, next engine.Content, s entity.ShareID, file entity.FileID) (bool, error) {
+			if file == f { // its store never answers
+				<-ctx.Done()
+				return false, ctx.Err()
+			}
+			return next.Resume(ctx, s, file)
+		}))
 	u.e.SetConflictBound(10 * time.Millisecond)
-	f, g := u.create(t, "f"), u.create(t, "g")
-	x.stalled = f
+	f = u.create(t, "f")
+	g := u.create(t, "g")
 	for _, id := range []entity.FileID{f, g} {
 		u.write(t, id, 0, fill(16, 'a'))
 		if err := u.e.CommitNow(t.Context(), u.share.ID, id); err != nil {

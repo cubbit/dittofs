@@ -327,8 +327,8 @@ func RetryingOwner(ctx context.Context) bool { return isRetryingOwner(ctx) }
 // ErrUnbuilt: a test of admission alone.
 func (e *Engine) SetAfterRegister(h func()) { e.afterRegister = h }
 
-// FakeCloneDone has a clone whose phase 1 committed drop its registrations
-// and answer, standing in for its hold, its phase 2 and its done signal.
+// FakeCloneDone lets a clone run past its registrations to its done signal,
+// standing in for the joins a served engine does not have yet.
 func (e *Engine) FakeCloneDone() { e.fakeCloneDone.Store(true) }
 
 // LoopSteps is the count of items the share's journal's removal loop ran.
@@ -338,6 +338,16 @@ func (e *Engine) LoopSteps(s entity.ShareID) int64 {
 		return 0
 	}
 	return b.gc.removals.steps.Load()
+}
+
+// RemovalRunsDone is engine_removal_runs_total{result="done"} on the share's
+// journal's loop.
+func (e *Engine) RemovalRunsDone(s entity.ShareID) int64 {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return 0
+	}
+	return b.gc.removals.runs[runDone].Load()
 }
 
 // Registrations is the count of f's source and destination registrations.
@@ -568,4 +578,15 @@ func (l *removalLoop) dropShare(s entity.ShareID) {
 			it.end()
 		}
 	}
+}
+
+// EntryLocked reports whether f's entry lock is held: a probe that takes and
+// gives back the lock when it is free.
+func (e *Engine) EntryLocked(f entity.FileID) bool {
+	fe := e.files.entryOf(f)
+	if fe == nil || !fe.mu.TryLock() {
+		return fe != nil
+	}
+	fe.mu.Unlock()
+	return false
 }

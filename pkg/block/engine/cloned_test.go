@@ -20,8 +20,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// clonedUnit is a cloneUnit whose clones answer once their phase 1 commits,
-// a test's stand-in for the hold, phase 2 and done signal not built.
+// clonedUnit is a cloneUnit whose clones run to their done signal, past
+// the gate a served engine keeps, over a recording CloneHold unless opts
+// sets another.
 func clonedUnit(t *testing.T, opts ...func(*engine.Deps)) *unit {
 	t.Helper()
 	return clonedUnitWith(t, unitConfig{deps: opts})
@@ -30,6 +31,7 @@ func clonedUnit(t *testing.T, opts ...func(*engine.Deps)) *unit {
 // clonedUnitWith is clonedUnit as c asks.
 func clonedUnitWith(t *testing.T, c unitConfig) *unit {
 	t.Helper()
+	c.deps = append([]func(*engine.Deps){func(d *engine.Deps) { d.Holds = &recHolds{} }}, c.deps...)
 	u := cloneUnitWith(t, c)
 	u.e.FakeCloneDone()
 	return u
@@ -352,34 +354,50 @@ func TestAWriteOutsideTheExtentDuringACloneSurvives(t *testing.T) {
 	}
 }
 
-// After phase 1 over the real store, the source holds an open record of the
-// clone kind naming the destination and the clone's version, and the
-// destination's covering lookup over the extent waits for the clone to be
-// done.
+// After phase 1 over the real store, when the clone takes its hold, the
+// source holds an open record of the clone kind naming the destination and
+// the clone's version, and the destination's covering lookup over the
+// extent waits for the clone to be done; once done, the record is gone.
 func TestPhase1HoldsTheSourceAndHoldsTheDestinationExtent(t *testing.T) {
-	u := clonedUnit(t)
+	h := &recHolds{}
+	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h })
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
+	cloneOpens := func() (n int, v entity.JournalVersion) {
+		opens, err := u.fs.Store.Opens().Of(context.Background(), u.share.ID, src)
+		if err != nil {
+			t.Error(err)
+		}
+		for _, o := range opens {
+			if o.Kind == entity.OpenCloneSource && o.CloneDst == dst {
+				n, v = n+1, o.CloneVersion
+			}
+		}
+		return n, v
+	}
+	var (
+		atHold   int
+		heldAt   entity.JournalVersion
+		covering error
+	)
+	h.onHold = func(context.Context) error {
+		atHold, heldAt = cloneOpens()
+		for _, err := range u.fs.Store.Content().Covering(context.Background(), u.share.ID, dst, 0, mib) {
+			covering = err
+			break
+		}
+		return nil
+	}
 	u.clone(t, src, dst, vfserr.Extent{Len: mib})
-	v := u.j.CloneTargets()[0].Version
-	opens, err := u.fs.Store.Opens().Of(t.Context(), u.share.ID, src)
-	if err != nil {
-		t.Fatal(err)
+	v := entity.JournalVersion(u.j.CloneTargets()[0].Version.Bytes())
+	if atHold != 1 || heldAt != v {
+		t.Errorf("the source's clone-kind opens at the hold: %d at %v; want one naming the destination at %v", atHold, heldAt, v)
 	}
-	found := false
-	for _, o := range opens {
-		if o.Kind == entity.OpenCloneSource && o.CloneDst == dst && o.CloneVersion == entity.JournalVersion(v.Bytes()) {
-			found = true
-		}
+	if !errors.Is(covering, entity.ErrDelay) {
+		t.Errorf("the destination extent served before the clone is done: %v", covering)
 	}
-	if !found {
-		t.Errorf("the source's opens after phase 1: %+v; want one of the clone kind naming the destination at %v", opens, v)
-	}
-	for _, err := range u.fs.Store.Content().Covering(t.Context(), u.share.ID, dst, 0, mib) {
-		if !errors.Is(err, entity.ErrDelay) {
-			t.Errorf("the destination extent served before the clone is done: %v", err)
-		}
-		break
+	if n, _ := cloneOpens(); n != 0 {
+		t.Errorf("%d clone-kind opens left on the source after the clone, want the last batch to delete it", n)
 	}
 }
 
@@ -1008,10 +1026,11 @@ func TestAStaleSourceAtPhase1IsRetried(t *testing.T) {
 // as not done is answered DelayClone before its journal step, rather than
 // taking it and retrying phase 1 with the destination's guard held.
 func TestACloneIntoADestinationStillCloningIsDelayedBeforeItsJournalStep(t *testing.T) {
-	u := clonedUnit(t)
+	// Its Resume runs no batch and answers done: the store keeps the clone not done.
+	u := clonedUnit(t, onResume(func(context.Context, engine.Content, entity.ShareID, entity.FileID) (bool, error) { return false, nil }))
 	src := u.committedFile(t, "src", fill(2*mib, 's'))
 	dst := u.create(t, "dst")
-	u.clone(t, src, dst, vfserr.Extent{Len: mib}) // its phase 2 is not built: the store keeps it not done
+	u.clone(t, src, dst, vfserr.Extent{Len: mib}) // its Resume runs no batch: the store keeps it not done
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	err := u.e.Clone(ctx, u.share.ID, src, u.share.ID, dst, vfserr.Extent{SrcOff: mib, DstOff: mib, Len: mib})

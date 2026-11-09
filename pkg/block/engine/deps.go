@@ -117,7 +117,10 @@ type Lifecycle interface {
 // types, so the engine imports no open state; the root adapts the open-state
 // table to it, its errors included: a shard not yet served here or a table
 // not running answers ErrDelay with DelayFrozen, which holds the clone for a
-// retry, and Release of a hold already gone answers nil.
+// retry, uncounted; Hold of a source holding no open of the clone's answers
+// entity.ErrStale, the one refusal the clone gives the hold up on; any other
+// error, its context's end included, is retried as a failed run; and Release
+// of a hold already gone answers nil.
 type CloneHold interface {
 	// Hold takes over the source open the clone's first phase wrote, before
 	// its second phase runs: open state's CloneOpen.
