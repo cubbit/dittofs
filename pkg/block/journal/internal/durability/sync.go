@@ -120,9 +120,12 @@ type Durability struct {
 	streams atomic.Pointer[segment.Streams]
 
 	// refuse reports why the journal takes no append, or nil. It is never
-	// nil: New installs one that never refuses, and the read-only state
-	// replaces it.
+	// nil: New installs Admit, which refuses once the journal is read-only.
 	refuse func() error
+
+	// ro is the read-only state, nil while the journal takes writes. Each
+	// value is immutable and replaced whole, so reads take no lock.
+	ro atomic.Pointer[roState]
 
 	// afterAppend, afterPass, beforeWait, beforeSync, beforeFail and afterFail
 	// are test hooks, nil in production. beforeFail runs on the worker once per
@@ -175,13 +178,7 @@ type Durability struct {
 	resolved func(stream uint32, seg core.SegmentID)
 
 	// readOnly is the journal's read-only entry, handed the failure that
-	// stopped a stream. It is set before Start.
-	//
-	// decision: nil until the code that turns the journal read-only installs
-	// it. While it is nil a stopped stream stays stopped, and its appends fail
-	// with segment.ErrStreamStopped wrapping the cause, and nothing more
-	// happens: the stream is refused, not the journal. Withdrawn once the
-	// entry is wired, when a stopped stream must always reach it.
+	// stopped a stream. New installs Enter; it is replaceable before Start.
 	//
 	// decision: it is reached only through an EndEvent carrying Stopped, but
 	// the stream also stops without an event, for example on a failed
@@ -190,8 +187,9 @@ type Durability struct {
 	// on End of an already ended segment with EROFS; and on a straggler
 	// write's EROFS after the segment's event was handed over. So a stream
 	// can stop with readOnly uncalled, as when segment 1's sync fails and
-	// then the spare's header write fails on the roll. The stream stack needs a stop notification of its own before this
-	// can claim a stopped stream always reaches it.
+	// then the spare's header write fails on the roll. The stream stack needs
+	// a stop notification of its own before this can claim a stopped stream
+	// always reaches it.
 	readOnly func(cause error)
 
 	// mu guards made, started and stopped. It is not held across a stream
@@ -247,7 +245,7 @@ func New(cfg Config) (*Durability, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Durability{
+	d := &Durability{
 		clock:    cfg.Clock,
 		domains:  cfg.Domains,
 		tracer:   cfg.Tracer,
@@ -262,9 +260,11 @@ func New(cfg Config) (*Durability, error) {
 		counters: cfg.Counters,
 		markLoss: cfg.MarkLoss,
 		account:  cfg.Account,
-		refuse:   func() error { return nil },
 		pieces:   map[piece]struct{}{},
-	}, nil
+	}
+	d.refuse = d.Admit
+	d.readOnly = d.Enter
+	return d, nil
 }
 
 // changes returns the channel the next stream change closes.

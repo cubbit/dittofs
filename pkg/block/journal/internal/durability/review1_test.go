@@ -451,7 +451,18 @@ func TestASyncWaitsForAFailureInFlightWhenAHeaderOnlyTargetIsAnswered(t *testing
 		return ok
 	})
 
+	// A sync succeeds in the spare first, so g's failure is not the second
+	// segment in a row the device refused, which would turn the journal
+	// read-only (RFC 1 section 5.4) and fail every record in one pass.
+	h := file(3)
+	locH, _ := r.publish(t, h, 0, "hhhh")
+	if err := r.d.Sync(context.Background(), h); err != nil {
+		t.Fatalf("Sync of h in the spare: %v", err)
+	}
 	locG, _ := r.publish(t, g, 4, "gggg")
+	if locG.Segment != locH.Segment {
+		t.Fatalf("g's write in segment %d, want h's %d", locG.Segment, locH.Segment)
+	}
 	heldSeg.Store(uint64(locG.Segment))
 	r.failSyncOf(t, locG.Segment, errors.New("boom g"))
 	r.stamped(t, 0)
