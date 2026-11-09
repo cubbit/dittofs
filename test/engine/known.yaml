@@ -147,5 +147,5 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 8: the source''s clone-kind open is gone once the clone is answered (§9.1); the removals held behind the clone are the rest of the row. Fails at the fixture until the journal has Init, Open, WriteAt, ReadAt, Sync, Reserve and CloneTarget.'
+  reason: 'Epic 8: the source''s clone-kind open is gone once the clone is answered (§9.1); the removals held behind the clone are the rest of the row. Fails at the fixture until the journal has Init, Open, WriteAt, ReadAt, Sync, Reserve and CloneTarget, then at Clone (ErrUnbuilt) until a clone answers once the joins of a running clone are built.'
   issue: '#3591'

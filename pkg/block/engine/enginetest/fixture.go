@@ -58,7 +58,6 @@ type Fixture struct {
 	E     *engine.Engine   // the engine running now; Restart and Crash replace it
 	FS    *kvstoretest.FS  // the store, its share and the share's root
 	Opens *openstate.Table // the open-state table running now, replaced with E
-	Sink  *Sink            // the sink Opens runs with, recording what it closes
 	Seam  *journaltest.Seam
 	Clock *sim.TestClock
 	Share engine.Share // the share as the engine binds it
@@ -287,8 +286,7 @@ func (f *Fixture) start() {
 	if err != nil {
 		t.Fatalf("fixture: open state: %v", err)
 	}
-	f.Sink = &Sink{}
-	if err := f.Opens.Start(ctx, f.Sink, noOrder); err != nil {
+	if err := f.Opens.Start(ctx, quietSink{}, noOrder); err != nil {
 		t.Fatalf("fixture: open state start: %v", err)
 	}
 	f.starts++

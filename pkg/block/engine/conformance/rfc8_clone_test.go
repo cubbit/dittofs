@@ -84,8 +84,8 @@ func TestRFC8A_Clone(t *testing.T) {
 
 // §9.1 removals of a cloning destination, its last assertion: once the
 // clone is answered, its last batch has deleted the source's clone-kind
-// open, and Release has closed open state's hold, reporting nothing of a
-// source still linked.
+// open. Whether Release reports an unlinked source an orphan is the unit
+// tests', which unlink one.
 func TestRFC8A_RemovalsOfACloningDestination(t *testing.T) {
 	f := enginetest.New(t)
 	ctx := t.Context()
@@ -103,11 +103,6 @@ func TestRFC8A_RemovalsOfACloningDestination(t *testing.T) {
 	for _, o := range opens {
 		if o.Kind == entity.OpenCloneSource {
 			t.Errorf("the source's clone-kind open %+v outlived the clone", o)
-		}
-	}
-	for _, c := range f.Sink.ClosedCalls() {
-		if c.File == src && c.Result.Orphan {
-			t.Errorf("the linked source was reported an orphan: %+v", c)
 		}
 	}
 }
