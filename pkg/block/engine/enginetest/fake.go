@@ -6,10 +6,12 @@ package enginetest
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"slices"
 	"sync"
+	"syscall"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -61,6 +63,8 @@ type FakeJournal struct {
 	readOnly journal.ReadOnlyState   // ReadOnly's state, reported by Stats
 	refusal  error                   // what a write answers once read-only
 	undone   map[journal.FileID]bool // ReadOnly's files: every Sync naming one answers the refusal
+
+	refused map[Call]error // Refuse's errors, answered by every call of their kind until cleared
 
 	refuseReserve error // RefuseReserve's error: the next Reserve answers it
 }
@@ -166,6 +170,10 @@ func (j *FakeJournal) Draw() (journal.Version, error) {
 	defer j.mu.Unlock()
 	if j.closed {
 		return journal.Version{}, journal.ErrClosed
+	}
+
+	if err := j.refused[CallDraw]; err != nil {
+		return journal.Version{}, err
 	}
 	return j.draw()
 }
@@ -472,6 +480,10 @@ func (h *FakeHandle) WriteAt(_ context.Context, id journal.FileID, off int64, p 
 	if err != nil || len(p) == 0 {
 		return journal.Version{}, err
 	}
+
+	if err := j.refused[CallWriteAt]; err != nil {
+		return journal.Version{}, err
+	}
 	// ponytail: the share's limit counts held bytes, not record bytes, so an
 	// overwrite counts its new bytes only once the old are cut. A unit test of
 	// the engine's refusal mapping needs only that a refusal names its limit.
@@ -688,6 +700,10 @@ func (h *FakeHandle) remove(id journal.FileID, k journal.ChangeKind, from, to in
 	if err != nil {
 		return journal.Version{}, err
 	}
+
+	if err := j.refused[callOf(k)]; err != nil {
+		return journal.Version{}, err
+	}
 	v, err := j.draw()
 	if err != nil {
 		return journal.Version{}, err
@@ -827,6 +843,10 @@ func (h *FakeHandle) Reserve(n int64, writes int) (engine.Reservation, error) {
 		j.refuseReserve = nil
 		return nil, err
 	}
+
+	if err := j.refused[CallReserve]; err != nil {
+		return nil, err
+	}
 	j.reservedBytes += n
 	return &fakeReservation{h: h, left: writes, n: n}, nil
 }
@@ -882,4 +902,95 @@ func (r *fakeReservation) Close() error {
 	r.h.j.reservedBytes -= r.n
 	r.h.j.mu.Unlock()
 	return nil
+}
+
+// Call names a journal call whose refusal a test arms with Refuse.
+type Call uint8
+
+// The calls Refuse can arm.
+const (
+	CallWriteAt Call = iota + 1
+	CallDraw
+	CallTruncate
+	CallDeallocate
+	CallDelete
+	CallCloneTarget
+	CallReserve
+)
+
+// Refuse arms every call of kind c to answer err until Refuse is called with a
+// nil err for it. It arms capacity refusals only: it returns an error, arming
+// nothing, for any other error and for a capacity refusal RFC 1 does not let
+// the journal answer to c, so the fake never refuses more than the journal
+// does. Only WriteAt can meet a full device.
+func (j *FakeJournal) Refuse(c Call, err error) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if err == nil {
+		delete(j.refused, c)
+
+		return nil
+	}
+
+	if !refusalAllowed(c, err) {
+		return fmt.Errorf("fake: RFC 1 does not let call %d answer %w", c, err)
+	}
+
+	if j.refused == nil {
+		j.refused = map[Call]error{}
+	}
+
+	j.refused[c] = err
+
+	return nil
+}
+
+// refusalLimits are the limits a NoSpaceError can name for each call, from
+// the journal handle's contract (RFC 1 §6): a header-only record is never
+// refused by a share's limit, the journal's maximum or the spare pool.
+var refusalLimits = map[Call][]journal.Limit{
+	CallWriteAt: {
+		journal.LimitShare, journal.LimitJournal, journal.LimitIndex,
+		journal.LimitVersion, journal.LimitSpare, journal.LimitHeadroom,
+	},
+	CallDraw:        {journal.LimitVersion},
+	CallTruncate:    {journal.LimitHeadroom, journal.LimitVersion},
+	CallDelete:      {journal.LimitHeadroom, journal.LimitVersion},
+	CallDeallocate:  {journal.LimitHeadroom, journal.LimitVersion, journal.LimitIndex},
+	CallCloneTarget: {journal.LimitHeadroom, journal.LimitVersion, journal.LimitIndex},
+	CallReserve: {
+		journal.LimitShare, journal.LimitJournal, journal.LimitIndex,
+		journal.LimitVersion, journal.LimitSpare,
+	},
+}
+
+// refusalAllowed reports whether the journal can answer err to call c: a
+// NoSpaceError naming one of the call's limits, or, for WriteAt alone, a full
+// device.
+func refusalAllowed(c Call, err error) bool {
+	var noSpace *journal.NoSpaceError
+
+	if errors.As(err, &noSpace) {
+		return slices.Contains(refusalLimits[c], noSpace.Limit)
+	}
+
+	return c == CallWriteAt && errors.Is(err, syscall.ENOSPC)
+}
+
+// callOf is the call that leaves a removal marker of kind k, and zero for a
+// kind no call of Refuse names, which no refusal is ever armed for.
+func callOf(k journal.ChangeKind) Call {
+	switch k {
+	case journal.ChangeTruncate:
+		return CallTruncate
+	case journal.ChangeDeallocate:
+		return CallDeallocate
+	case journal.ChangeDelete:
+		return CallDelete
+	case journal.ChangeCloneTarget:
+		return CallCloneTarget
+	}
+
+	return 0
 }

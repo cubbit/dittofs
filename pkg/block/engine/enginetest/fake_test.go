@@ -2,7 +2,10 @@ package enginetest
 
 import (
 	"errors"
+	"io/fs"
 	"slices"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
@@ -294,4 +297,159 @@ func TestFakeStatsReportsDirtyBytesBelowHeld(t *testing.T) {
 	if got.HeldBytes != 8192 || got.DirtyBytes != 4096 {
 		t.Errorf("held %d dirty %d, want held 8192 dirty 4096", got.HeldBytes, got.DirtyBytes)
 	}
+}
+
+// refusalOf is the capacity refusal naming limit l.
+func refusalOf(l journal.Limit) error {
+	return &journal.NoSpaceError{Limit: l, Missing: 1, Unit: journal.UnitBytes}
+}
+
+// fullDevice is the error a full device surfaces as: never a NoSpaceError.
+func fullDevice() error {
+	return &fs.PathError{Op: "write", Path: "segment", Err: syscall.ENOSPC}
+}
+
+// A refused call answers the armed error exactly, for every pair RFC 1 lets
+// the journal answer, and issues no version; a pair RFC 1 does not allow is
+// refused by Refuse and arms nothing; a nil error disarms.
+func TestFakeRefusesOnlyWhatTheJournalCan(t *testing.T) {
+	call := func(j *FakeJournal, h engine.Handle, c Call) error {
+		ctx := t.Context()
+
+		var err error
+
+		switch c {
+		case CallWriteAt:
+			_, err = h.WriteAt(ctx, fileA, 0, []byte("x"), 0)
+		case CallDraw:
+			_, err = j.Draw()
+		case CallTruncate:
+			_, err = h.Truncate(ctx, fileA, 0)
+		case CallDeallocate:
+			_, err = h.Deallocate(ctx, fileA, ext(0, 1))
+		case CallDelete:
+			_, err = h.Delete(ctx, fileA)
+		case CallCloneTarget:
+			_, err = h.CloneTarget(ctx, fileA, journal.CloneSpec{DstOff: 0, Len: 1})
+		case CallReserve:
+			_, err = h.Reserve(1, 1)
+		}
+
+		return err
+	}
+
+	allowed := map[Call][]error{
+		CallWriteAt: {
+			refusalOf(journal.LimitShare), refusalOf(journal.LimitJournal),
+			refusalOf(journal.LimitIndex), refusalOf(journal.LimitVersion),
+			refusalOf(journal.LimitSpare), refusalOf(journal.LimitHeadroom), fullDevice(),
+		},
+		CallDraw:     {refusalOf(journal.LimitVersion)},
+		CallTruncate: {refusalOf(journal.LimitHeadroom), refusalOf(journal.LimitVersion)},
+		CallDelete:   {refusalOf(journal.LimitHeadroom), refusalOf(journal.LimitVersion)},
+		CallDeallocate: {
+			refusalOf(journal.LimitHeadroom), refusalOf(journal.LimitVersion),
+			refusalOf(journal.LimitIndex),
+		},
+		CallCloneTarget: {
+			refusalOf(journal.LimitHeadroom), refusalOf(journal.LimitVersion),
+			refusalOf(journal.LimitIndex),
+		},
+		CallReserve: {
+			refusalOf(journal.LimitShare), refusalOf(journal.LimitJournal),
+			refusalOf(journal.LimitIndex), refusalOf(journal.LimitVersion),
+			refusalOf(journal.LimitSpare),
+		},
+	}
+
+	for c, errs := range allowed {
+		for _, want := range errs {
+			j, h := fake(t, 0)
+			write(t, h, fileA, 0, "seed")
+
+			before := j.Stats().NextVersion
+
+			if err := j.Refuse(c, want); err != nil {
+				t.Errorf("call %d: Refuse(%v) = %v, want nil", c, want, err)
+
+				continue
+			}
+
+			if got := call(j, h, c); got != want {
+				t.Errorf("call %d armed with %v answered %v", c, want, got)
+			}
+
+			if got := j.Stats().NextVersion; got != before {
+				t.Errorf(
+					"call %d refused with %v moved the next version %v to %v",
+					c,
+					want,
+					before,
+					got,
+				)
+			}
+
+			if err := j.Refuse(c, nil); err != nil {
+				t.Errorf("call %d: Refuse(nil) = %v, want nil", c, err)
+			}
+
+			if got := call(j, h, c); got != nil {
+				t.Errorf("call %d after Refuse(nil) answered %v, want nil", c, got)
+			}
+		}
+	}
+
+	// The forbidden pairs are the complement of allowed: every call times every
+	// limit the journal names, walked as the refusal table's test walks them,
+	// and a full device; a failing device is none of the calls' to answer.
+	candidates := []error{fullDevice(), syscall.EIO}
+
+	for l := journal.LimitShare; !strings.HasPrefix(l.String(), "Limit("); l++ {
+		candidates = append(candidates, refusalOf(l))
+	}
+
+	forbidden := 0
+
+	for c := CallWriteAt; c <= CallReserve; c++ {
+		for _, err := range candidates {
+			isAllowed := func(ok error) bool {
+				return sameRefusal(ok, err)
+			}
+
+			if slices.ContainsFunc(allowed[c], isAllowed) {
+				continue
+			}
+
+			forbidden++
+
+			j, h := fake(t, 0)
+			write(t, h, fileA, 0, "seed")
+
+			if got := j.Refuse(c, err); got == nil {
+				t.Errorf("call %d: Refuse(%v) = nil, want an error", c, err)
+			}
+
+			if got := call(j, h, c); got != nil {
+				t.Errorf("call %d answered %v after a rejected Refuse(%v), want nil", c, got, err)
+			}
+		}
+	}
+
+	// 7 calls times 6 limits and a full device is 49 pairs and RFC 1 allows 23,
+	// so 26 are forbidden, and so is a failing device for each of the 7 calls.
+	if forbidden != 26+7 {
+		t.Errorf("checked %d forbidden pairs, want 33", forbidden)
+	}
+}
+
+// sameRefusal reports whether a and b are the same capacity refusal: the same
+// limit, or both a full device.
+func sameRefusal(a, b error) bool {
+	var x, y *journal.NoSpaceError
+
+	if errors.As(a, &x) || errors.As(b, &y) {
+		return errors.As(a, &x) && errors.As(b, &y) && x.Limit == y.Limit
+	}
+
+	return errors.Is(a, syscall.ENOSPC) && errors.Is(b, syscall.ENOSPC)
 }
