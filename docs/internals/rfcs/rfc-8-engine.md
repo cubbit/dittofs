@@ -3143,8 +3143,9 @@ metadata alone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20
 - **The source cannot be released mid-clone.** From admission the clone's
   registration holds it: a release of the source is answered pending before
   the journal's `Delete`, so nothing is dropped, and its channel yields
-  `ErrDelay` (`DelayClone`) when the registration drops, once the clone's open
-  is closed (step 6) ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)).
+  `ErrDelay` (`DelayClone`) when the registration drops, once the last batch
+  is done (step 6); a release run again before the clone's open is closed is
+  deferred to that open's close ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)).
   From `Hold` ([§2.6](#2.6%20Dependencies%20and%20wiring)), between phase 1 and
   phase 2, the clone's open is in the source's open table at its primary, so a
   last close or an unlink defers the source's release
@@ -3304,11 +3305,14 @@ refusal of the first chunk returns the error.
      joins the extent's edge holes and raises `MaxSpan`
      ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)): no other batch writes the File. Usage therefore reads
      high only while the clone runs.
-6. The last batch sets the removal done; close the source's open reference
-   (`Release`, [§2.6](#2.6%20Dependencies%20and%20wiring)), then drop the
-   registration, so a release answered pending runs again with no clone open to
-   refuse it; serve the destination extent, and answer. Open state serves the
-   source's waiters after that ([§2.6](#2.6%20Dependencies%20and%20wiring)).
+6. The last batch sets the removal done; drop the registrations, serve the
+   destination extent, and answer. Then close the source's open reference
+   (`Release`, [§2.6](#2.6%20Dependencies%20and%20wiring)), retried until it
+   succeeds. A release of the source answered pending runs again once the
+   registration drops; while the clone's open is still held it is refused, and
+   runs again at that open's close, which open state reports through
+   `Sink.Closed`. Open state serves the source's waiters after the `Release`
+   ([§2.6](#2.6%20Dependencies%20and%20wiring)).
 
 > decision: a clone copies the source's unoffloaded bytes through the journal
 > rather than offloading them first, so a clone never waits on the remote tier;
@@ -3616,8 +3620,9 @@ too ([RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20exte
 repack frees space),
 `journal_sync_failed` (journal, raised while the journal has reported, in the
 last hour, a loss event of a failed sync window, [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync), or has turned
-read-only with its loss generation raised, since that fails the open window
-with no loss record appended and so publishes no event ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)); never for
+read-only with its loss generation raised, since that fails every unsynced
+record as a failed window, publishing its loss events with no loss record
+appended ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)); never for
 a window re-appended nor for one found at open ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), whose window failed
 before the restart; it clears on its own an hour after the latest, since a failed window
 leaves nothing to repair, only writes its clients resend, [RFC 25 §3.4](rfc-25-observability.md#3.4%20A%20condition%20is%20derived%2C%20never%20latched)),
@@ -4026,7 +4031,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) zero ref under an overwrite | Offload an extent of zeros, write data over it and commit without offloading; ask `SEEK_HOLE` and an allocated-range query from its start. Assert data. |
 | [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) clone never waits | Make the remote unavailable; write a source extent without offloading; clone it. Assert the clone completes, the destination reads the source's bytes, and no put was issued during it. Write into the destination extent, and into the source extent, during a clone: assert `ErrDelay` for both until it is done. Cut power right after the clone is answered: assert the destination reads the source's bytes after restart, never **Lost**. |
 | [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) Lost source run carried | Offload `[0, 4 MiB)` of a source, overwrite `[1, 2 MiB)` and `Commit`, drop the journal's copy, clone `[0, 4 MiB)` onto a destination holding other data. Assert the clone completes, the destination's `[1, 2 MiB)` fails as **Lost**, and the rest reads the source. A clone that zeroes the run reads zeros; one that adopts the stale ref reads the first write. |
-| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) one source state | With `K` forced small, clone 1 GiB, `clone_max_len` raised to allow it; between batch 1 and batch 2, try to write the source at `[0, 1 MiB)` and `[900, 901 MiB)`. Assert both answer `ErrDelay`, and the destination equals the source as it was at the clone's start, while an offload of the source commits during the clone. Clone `f[0, 4 MiB)` onto `f[8, 12 MiB)`; assert it completes. Unlink the source and close its last handle mid-clone; assert the clone completes and the source is released after it. Unlink the source, with no open, while the clone is stalled before phase 1, and stall the clone's `Release` once it is called: assert the release is answered pending, its channel yields nothing while `Release` is stalled, and the source's content is still held; let `Release` return: assert the channel then yields `ErrDelay` (`DelayClone`), and the release run again releases the source, with no restart. A clone without the registration yields a destination the source never was; one under the source's guard wedges the offload. |
+| [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) one source state | With `K` forced small, clone 1 GiB, `clone_max_len` raised to allow it; between batch 1 and batch 2, try to write the source at `[0, 1 MiB)` and `[900, 901 MiB)`. Assert both answer `ErrDelay`, and the destination equals the source as it was at the clone's start, while an offload of the source commits during the clone. Clone `f[0, 4 MiB)` onto `f[8, 12 MiB)`; assert it completes. Unlink the source and close its last handle mid-clone; assert the clone completes and the source is released after it. Unlink the source, with no open, while the clone is stalled before phase 1, and stall the clone's `Release` once it is called: assert the release is answered pending and its channel yields nothing until the clone is answered, then yields `ErrDelay` (`DelayClone`); assert the release run again is refused while `Release` is stalled, and the source's content is still held; let `Release` return: assert open state reports the source an orphan, and the release run then releases the source, with no restart. A clone without the registration yields a destination the source never was; one under the source's guard wedges the offload. |
 | [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) overlapping clone | Clone `f[0, 8 MiB)` onto `f[1, 9 MiB)`. Assert `ErrInvalid`, and `f` reads exactly as before. A design that runs it fails it as **Lost** or zeroes the extent. |
 | [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) failure leaves the destination | Make the clone's capacity reservation fail. Assert the clone fails and the destination reads its prior content. Clone an extent part dirty, part carved; crash after the journal step, after the copies, after phase 1 and between two batches, writing the source at each restart before it is served. Assert every restart finishes the clone from its spec, the destination equals the source at `asOf`, and the write answers `ErrDelay` until done. A restart that applies the marker as a plain removal leaves the destination zeroed; one that keeps the freeze in memory only clones a source written since. |
 | [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) snapshot between batches | With `K` forced small, clone an extent whose source is partly dirty; take a snapshot between two batches. Assert the snapshot reads the whole clone or none of it, never **Lost** for the copied runs. Repeat with a sparse source whose holes span every batch: assert the snapshot reads no hole as **Lost**, and every hole a batch wrote carries the clone's `cut` as `born`. Clone a 100 MiB source holding 90 MiB of holes: assert the destination's `Charged` and its owner's usage fall back by the holes' bytes once the clone is done. |
