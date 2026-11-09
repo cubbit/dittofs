@@ -22,9 +22,6 @@ func TestNew(t *testing.T) {
 	if rt.sharesSvc == nil {
 		t.Error("expected shares service to be initialized")
 	}
-	if rt.mountTracker == nil {
-		t.Error("expected mount tracker to be initialized")
-	}
 	if rt.lifecycleSvc == nil {
 		t.Error("expected lifecycle service to be initialized")
 	}

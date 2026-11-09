@@ -54,7 +54,7 @@ func (k *keyedMutex[M]) get(key string) *M {
 }
 
 // Runtime manages all runtime state for shares.
-// It composes sub-services for stores, shares, mounts and lifecycle.
+// It composes sub-services for stores, shares and lifecycle.
 type Runtime struct {
 	mu    sync.RWMutex
 	store store.Store
@@ -67,11 +67,9 @@ type Runtime struct {
 
 	metadataService *metadata.Service
 
-	storesSvc      *stores.Service
-	sharesSvc      *shares.Service
-	lifecycleSvc   *lifecycle.Service
-	mountTracker   *MountTracker
-	clientRegistry *ClientRegistry
+	storesSvc    *stores.Service
+	sharesSvc    *shares.Service
+	lifecycleSvc *lifecycle.Service
 
 	// skippedShares maps a share name to the reason it is not being served.
 	// A share that exists in the control-plane store but whose runtime setup
@@ -175,8 +173,6 @@ func New(s store.Store) *Runtime {
 	rt := &Runtime{
 		store:           s,
 		metadataService: metadata.New(),
-		mountTracker:    NewMountTracker(),
-		clientRegistry:  NewClientRegistry(),
 		storesSvc:       stores.New(),
 		sharesSvc:       shares.New(),
 		lifecycleSvc:    lifecycle.New(DefaultShutdownTimeout),
@@ -756,10 +752,7 @@ func (r *Runtime) Metrics() *metrics.Metrics {
 var startupDrainTimeout = 10 * time.Second
 
 func (r *Runtime) Serve(ctx context.Context) error {
-	r.clientRegistry.StartSweeper(ctx)
-
-	// Launch the recycle-bin reaper alongside the client sweeper. Like the
-	// sweeper it exits on ctx cancellation, and on the Stop the lifecycle
+	// Launch the recycle-bin reaper. It exits on ctx cancellation, and on the Stop the lifecycle
 	// shutdown issues — which is what reaches it when that ctx is still live.
 	r.Trash().Start(ctx)
 
@@ -855,20 +848,6 @@ func (r *Runtime) ShutdownSnapshots(ctx context.Context) {
 	r.shutdownSnapshots(ctx)
 }
 
-// --- Client Tracking (delegated to ClientRegistry) ---
-
-// Clients returns the client registry for protocol client tracking.
-func (r *Runtime) Clients() *ClientRegistry {
-	return r.clientRegistry
-}
-
-// --- Mount Tracking (delegated to MountTracker) ---
-
-func (r *Runtime) Mounts() *MountTracker {
-	return r.mountTracker
-}
-
-// ListMounts converts unified mount records to the legacy NFS format.
 // --- Service Access ---
 
 func (r *Runtime) Store() store.Store                    { return r.store }

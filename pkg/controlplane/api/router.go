@@ -39,20 +39,10 @@ const passwordChangePath = "/api/v1/users/me/password"
 //   - POST /api/v1/users/me/password - Change own password
 //   - /api/v1/users/* - User management (admin only)
 //   - /api/v1/groups/* - Group management (admin only)
-//   - /api/v1/shares/* - Share management (admin only)
+//   - /api/v1/shares/* - Share management, including each share's NFS config (admin only)
 //   - /api/v1/store/metadata/* - Metadata store management (admin only)
 //   - /api/v1/store/block/* - Block store management (admin only)
-//   - GET /api/v1/adapters - Adapter list (admin + operator)
-//   - /api/v1/adapters/* - Adapter management (admin only)
-//   - /api/v1/adapters/{type}/settings - Adapter settings (admin only)
-//   - /api/v1/clients - Unified client listing and disconnect (admin only)
-//   - /api/v1/adapters/nfs/clients/{id}/sessions - NFS client sessions (admin only)
-//   - /api/v1/adapters/{type}/grace - NFS grace period management (admin only)
-//   - /api/v1/adapters/{type}/netgroups - NFS netgroup management (admin only)
-//   - /api/v1/adapters/{type}/identity-mappings - NFS identity mapping management (admin only)
-//   - /api/v1/adapters/{type}/mounts - Protocol-specific mount listing (admin only)
 //   - /api/v1/settings/* - System settings management (admin only)
-//   - /api/v1/mounts - Unified mount listing (admin only)
 //   - GET /api/v1/durable-handles - List active durable handles (admin only)
 //   - DELETE /api/v1/durable-handles/{id} - Force-close a durable handle (admin only)
 func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.Store, pprofEnabled bool, timeouts Timeouts) http.Handler {
@@ -202,7 +192,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			blockAuditHandler := handlers.NewBlockStoreAuditHandler(rt)
 			manifestCheckHandler := handlers.NewBlockStoreManifestCheckHandler(rt)
 			usageRecomputeHandler := handlers.NewUsageRecomputeHandler(rt)
-			mountHandler := handlers.NewMountHandler(rt)
 
 			// Share management (admin only)
 			r.Route("/shares", func(r chi.Router) {
@@ -426,20 +415,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					})
 				}
 			}
-
-			// Unified client listing (admin only) - all protocols
-			if clientHandler := handlers.NewClientHandler(rt); clientHandler != nil {
-				r.Route("/clients", func(r chi.Router) {
-					r.Use(apiMiddleware.RequireAdmin())
-					r.Get("/", clientHandler.List)
-				})
-			}
-
-			// Unified mount listing (admin only) - all protocols
-			r.Route("/mounts", func(r chi.Router) {
-				r.Use(apiMiddleware.RequireAdmin())
-				r.Get("/", mountHandler.List)
-			})
 
 			// Durable handle management (admin only)
 			r.Route("/durable-handles", func(r chi.Router) {
