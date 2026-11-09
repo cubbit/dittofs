@@ -1694,7 +1694,7 @@ is tested once, on its own.
 | Shared | Between | Where | What it is |
 | --- | --- | --- | --- |
 | everything above the handler | all protocols | `core` | connections, pipeline, compound runner, held requests, middleware, buffers, metrics, spans (§2.5) |
-| neutral ↔ wire values | all protocols | `translate` | ACLs and security descriptors ([RFC 19 §5.1](rfc-19-authorization.md#5.1%20One%20translation%2C%20two%20spellings)), access masks, times, file types and modes, `metadata.File` to the attributes each protocol reports |
+| neutral ↔ wire values | all protocols | `translate` | ACLs and security descriptors ([RFC 19 §5.1](rfc-19-authorization.md#5.1%20One%20translation%2C%20two%20spellings)), access masks, times, file types and modes, `vfs.File` to the attributes each protocol reports |
 | fitting a listing to the client's buffer | `READDIR`, `READDIRPLUS`, NFSv4 `READDIR`, SMB `QUERY_DIRECTORY` | `translate` | `Fit(entries []vfs.DirEntry, budget int, size func(vfs.DirEntry) int) int`: how many entries of the service's page fit; each protocol supplies its encoded size and resumes from the cursor of the last entry sent |
 | the RPC layer | NFSv3, NFSv4, the auxiliary services | `nfs/rpc`, `nfs/wire` | record marking, RPC header, AUTH_SYS, `RPCSEC_GSS`, routing by program and version |
 | XDR primitives | every NFS program | `nfs/wire` | integers, opaques, strings, bitmaps, file handles — generated |
@@ -1784,7 +1784,7 @@ What follows from the service owning it:
   since a server need not validate a handle until it is used.
 - **Mount-crossing attributes are formatted, not computed.** `fsid`,
   `mounted_on_fileid` and the pseudo directory's change attribute come back
-  in the `metadata.File` the service returns; the attribute encoder writes
+  in the `vfs.File` the service returns; the attribute encoder writes
   them.
 - **No share list in the adapter.** A share added, removed or re-pathed reaches
   every protocol through the service's next call, with nothing to refresh,
