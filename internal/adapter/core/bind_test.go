@@ -22,6 +22,7 @@ type row struct {
 	seen     map[string]*args
 	replied  *reply
 	encoded  *reply
+	encodedV core.Version
 	handlerE error
 }
 
@@ -42,7 +43,7 @@ func (w *row) bind(withHooks bool) func([]byte, core.Version) (core.Invocation, 
 		w.replied = &reply{n: a.n}
 		return w.replied, w.handlerE
 	}
-	enc := func(r *reply, _ core.Version, _ *resources.Buf) error { w.encoded = r; return nil }
+	enc := func(r *reply, v core.Version, _ *resources.Buf) error { w.encoded, w.encodedV = r, v; return nil }
 	if !withHooks {
 		return core.Bind(dec, bound, nil, nil, nil, h, enc)
 	}
@@ -88,8 +89,11 @@ func TestBindHandsEveryClosureTheDecodedRequest(t *testing.T) {
 	if err := inv.Call(ctx, r); err != nil {
 		t.Errorf("Call: %v", err)
 	}
-	if err := inv.Encode(nil, 3); err != nil {
+	if err := inv.Encode(nil, 4); err != nil {
 		t.Errorf("Encode: %v", err)
+	}
+	if w.encodedV != 4 {
+		t.Errorf("enc saw version %d, want Encode's 4, not the decode's 3", w.encodedV)
 	}
 	if w.decodes != 1 {
 		t.Errorf("decoded %d times, want once", w.decodes)
@@ -104,20 +108,31 @@ func TestBindHandsEveryClosureTheDecodedRequest(t *testing.T) {
 	}
 }
 
-// A parked handler returns its reply value with ErrParked and fills it later,
-// so Encode is handed that reply although Call returned an error.
-func TestBindKeepsAParkedReply(t *testing.T) {
-	w := row{handlerE: core.ErrParked}
-	inv, _, err := w.bind(false)([]byte{1}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := inv.Call(context.Background(), &core.Request{}); !errors.Is(err, core.ErrParked) {
-		t.Fatalf("Call: %v, want ErrParked", err)
-	}
-	_ = inv.Encode(nil, 0)
-	if w.encoded == nil || w.encoded != w.replied {
-		t.Errorf("Encode saw %p, not the parked reply %p", w.encoded, w.replied)
+// A handler may return a reply with its error (a parked reply, an NFSv3
+// failure's WCC data), and Encode is handed that reply; a re-driven Call
+// replaces it.
+func TestBindKeepsTheLastReplyWhateverTheError(t *testing.T) {
+	for _, herr := range []error{core.ErrParked, errBadArgs} {
+		w := row{handlerE: herr}
+		inv, _, err := w.bind(false)([]byte{1}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := &core.Request{}
+		if err := inv.Call(context.Background(), r); !errors.Is(err, herr) {
+			t.Fatalf("Call: %v, want %v", err, herr)
+		}
+		first := w.replied
+		if err := inv.Call(context.Background(), r); !errors.Is(err, herr) {
+			t.Fatalf("second Call: %v, want %v", err, herr)
+		}
+		if w.replied == first {
+			t.Fatal("the handler returned the same reply twice; the test cannot tell them apart")
+		}
+		_ = inv.Encode(nil, 0)
+		if w.encoded == nil || w.encoded != w.replied {
+			t.Errorf("with %v: Encode saw %p, not the last reply returned %p", herr, w.encoded, w.replied)
+		}
 	}
 }
 

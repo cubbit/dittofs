@@ -32,49 +32,36 @@ type Op struct {
 	Expired   bool                                                            // runs on an expired credential: re-authentication, logoff
 	Decode    func(body []byte, v Version) (inv Invocation, n int, err error) // n: the bytes of body it consumed
 	// Members is non-nil on a compound row (NFSv4's COMPOUND): its members'
-	// table. The row's Decode decodes the compound's own arguments, sets
-	// Invocation.Count to the members they say follow and returns the bytes
-	// they took; the runner then decodes exactly Count members after them,
-	// each's code read with Members.ReadOp, and refuses bytes left after the
-	// last, before any member runs.
+	// table, which the runner decodes from after the bytes Decode consumed.
 	//
-	// decision: a compound row is named by one field and split by one hook.
-	// Decode returns the bytes it consumed, Members names the members' table
-	// and Invocation.Count the members to expect, so the runner checks the
-	// cap, decodes every member and refuses trailing bytes before any runs,
-	// as judging a compound whole while draining needs. Reading a member's
-	// operation code is the members' table's ReadOp, because its encoding is
-	// the protocol's and no stage reads inside a body. Revisit if a
-	// protocol's compound cannot state its count before its members.
+	// decision: a compound row is named by this field and split by
+	// Invocation.Count and OpTable.ReadOp, so the runner can check the cap and
+	// refuse trailing bytes before any member runs. Revisit if a protocol's
+	// compound cannot state its count before its members.
 	Members *OpTable
 }
 
 // Invocation is one decoded operation: closures over the decoded request and
-// its reply, filled by Bind. A struct, not an interface: Bind is its only
-// producer.
-//
-// decision: four additions proposed from prior servers add no surface, since
-// each need is met inside a body. No release hook here: a held request keeps
-// its receive buffer retained until it ends, so decoded arguments that point
-// into it stay valid across every re-drive. No carrier for RPC PROG_MISMATCH's
-// low and high versions: NFS's HeaderCodec.Encode writes them from its own
-// tables. No non-waiting reserve for Park: a reserve under a context already
-// past its deadline tries once and fails at once. No guard against a
-// reservation released twice through a copy: Release zeroes the reservation
-// it is called on, and one is moved, never copied. Add the surface when a body
-// is found that cannot meet its need this way.
+// its reply. A struct, not an interface. Bind produces it for every row but a
+// compound row, whose Decode the protocol writes and which builds its
+// Invocation directly, setting Count from the arguments it decoded.
 type Invocation struct {
 	Bound   func() int                                  // the reply bound
 	Resolve func(r *Request) error                      // wire IDs to service values
 	Call    func(ctx context.Context, r *Request) error // the handler
-	Encode  func(out *resources.Buf, v Version) error
+	// Encode runs on every request that gets a final reply, so its reply may
+	// be nil: the request refused before Call, or a handler that returned
+	// (nil, err). An encoder accepts a nil reply and encodes the status alone.
+	// A handler may return a reply with its error, as an NFSv3 failure carries
+	// its WCC data: Call keeps whatever reply the handler returned.
+	Encode func(out *resources.Buf, v Version) error
 	// Handle is the filehandle the request's own arguments name (a PUTFH's),
 	// read before Resolve, which core hands the service to learn a draining
 	// request's move target; the service resolves it, core never parses it.
 	// nil: the request names none.
 	Handle func() (vfs.Handle, bool)
-	// Count is a compound row's: the members its arguments say follow, which
-	// its Decode sets on what Bind returned. 0 on every other row.
+	// Count is a compound row's: the members its arguments say follow, set by
+	// that row's own Decode. 0 on every other row.
 	Count int
 	// Role says what this request does to state: an SMB LOCK whose elements
 	// unlock releases it, a WRITE to an open under a break flushes it, an
@@ -106,8 +93,8 @@ type Handler[Req, Rep any] func(ctx context.Context, r *Request, req *Req) (*Rep
 // Bind joins a row's codec pair and handler, type-checked against each other,
 // and returns the row's Decode. The Invocation it returns hands Bound,
 // Resolve, Role, Handle, Call and Encode the one request dec decoded, and
-// Encode the reply the last Call produced; a decode error builds no
-// Invocation.
+// Encode the reply the last Call returned, with or without its error, and the
+// version Encode is given; a decode error builds no Invocation.
 func Bind[Req, Rep any](
 	dec func(b []byte, v Version, req *Req) (n int, err error), // n: the bytes of b it consumed, which Decode returns
 	bound func(req *Req) int,
@@ -132,8 +119,6 @@ func Bind[Req, Rep any](
 				}
 				return resolve(r, req)
 			},
-			// A parked handler returns its reply value with ErrParked and
-			// fills it later, so the reply is kept whatever the error.
 			Call: func(ctx context.Context, r *Request) error {
 				var err error
 				rep, err = h(ctx, r, req)
@@ -202,31 +187,10 @@ type Request struct {
 	State any
 }
 
-// Park holds the request until done. A handler calls it once its call reports
-// a wait (a waiting lock's ErrBlocked, a watch set): the service has
-// registered the waiter by then. Park refuses a member before the last of a
-// chain with ErrNotLast, a connection at Stages.MaxPending with
-// ErrTooManyPending, a draining connection with the drain's error (ErrDraining
-// or ErrMoved), and a reply pool that cannot take the small-class reservation
-// with ErrDelay of DelayResources, answered at once; nothing is sent, and the
-// handler withdraws its waiter (CancelLock, Unwatch) and returns the error for
-// its table to map, or success if CancelLock reports the lock granted. A
-// callback that fires before Park returns is kept by the handler and passed
-// to done once it has it. On a connection already closed, Park calls cancel at
-// once and done's reply is dropped, as a close would.
-//
-// Otherwise core sends the interim reply at once, releases the receive
-// reservation and charges the reply to a small-class reply reservation; a
-// reply that would not fit is answered as its protocol answers an overflow. A
-// request already pending past its interim gets no second interim: its slot
-// moves from held to parked. A parked request holds no worker and no write
-// data and is not counted against the hold floor: MaxPending bounds it. On
-// done core encodes the reply, wraps it and sends it under Final's header. A
-// client cancel calls cancel first, and done's error goes out as the
-// protocol's cancel status. The start of a drain calls cancel, and done's
-// error is replaced by the drain's, answered as its table maps it. Either way
-// a done(nil), a call that took effect, is answered success. A closed
-// connection calls cancel, and done's reply is dropped.
+// Park holds the request until done: core sends the interim, and answers
+// done's result under Final's header, as a cancel, a drain or a close
+// replaces it. It refuses with ErrNotLast, ErrTooManyPending or the drain's
+// error, and the handler then withdraws the waiter its call registered.
 func (r *Request) Park(cancel func()) (done func(err error), err error) {
 	return nil, fmt.Errorf("core: park: %w", errors.ErrUnsupported)
 }

@@ -1,0 +1,228 @@
+type Conn struct{}
+
+func (c *Conn) Send(h Header, msg *resources.Buf, before uint64) error
+
+func (c *Conn) Established()
+
+func (c *Conn) Keep() (release func())
+
+func (c *Conn) Settings() config.Settings
+
+func (c *Conn) Close(err error)
+
+type Dispatcher interface {
+	Dispatch(ctx context.Context, c *Conn, rec *resources.Buf)
+
+	Drain()
+}
+
+type OpTable struct {
+	Ops    map[uint32]*Op
+	Errors *ErrorTable
+	Holds  bool
+
+	ReadOp func(b []byte) (op uint32, n int, err error)
+}
+
+type Op struct {
+	Code      uint32
+	Name      string
+	Versions  Range
+	Needs     Needs
+	Cacheable bool
+	Role      Role
+	Expired   bool
+	Decode    func(body []byte, v Version) (inv Invocation, n int, err error)
+
+	Members *OpTable
+}
+
+type Invocation struct {
+	Bound   func() int
+	Resolve func(r *Request) error
+	Call    func(ctx context.Context, r *Request) error
+
+	Encode func(out *resources.Buf, v Version) error
+
+	Handle func() (vfs.Handle, bool)
+
+	Count int
+
+	Role func(r *Request) Role
+}
+
+type Role uint8
+
+const (
+	RoleNone Role = iota
+	RoleContext
+	RoleFlush
+	RoleRelease
+)
+
+type Handler[Req, Rep any] func(ctx context.Context, r *Request, req *Req) (*Rep, error)
+
+func Bind[Req, Rep any](
+	dec func(b []byte, v Version, req *Req) (n int, err error),
+	bound func(req *Req) int,
+	resolve func(r *Request, req *Req) error,
+	role func(r *Request, req *Req) Role,
+	handle func(req *Req) (vfs.Handle, bool),
+	h Handler[Req, Rep],
+	enc func(rep *Rep, v Version, out *resources.Buf) error,
+) func([]byte, Version) (Invocation, int, error)
+
+func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
+
+type Version uint32
+
+type Range struct{ First, Last Version }
+
+type Needs uint8
+
+const (
+	NeedsNothing Needs = iota
+	NeedsNegotiated
+	NeedsSession
+	NeedsTree
+	NeedsFH Needs = 1 << 7
+)
+
+type Status uint32
+
+type Call func(ctx context.Context, r *Request) error
+
+type Middleware func(next Call) Call
+
+type Request struct {
+	Call    vfs.Call
+	Version Version
+	Level   Needs
+	Conn    *Conn
+
+	State any
+}
+
+func (r *Request) Park(cancel func()) (done func(err error), err error)
+
+type ErrorTable struct{}
+
+type ErrorRow struct {
+	Err      error
+	Ops      []uint32
+	Versions *Range
+
+	NoReply bool
+
+	Hold   func(err error, start time.Time) time.Time
+	Status Status
+}
+
+func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable
+
+func (t *ErrorTable) Map(err error, op *Op, v Version) (s Status, reply bool)
+
+var (
+	ErrNotSupported   = errors.New("core: operation not supported")
+	ErrVersion        = errors.New("core: version not served")
+	ErrNotNegotiated  = errors.New("core: not negotiated")
+	ErrNoSession      = errors.New("core: no session")
+	ErrNoTree         = errors.New("core: no tree")
+	ErrNoFH           = errors.New("core: no current filehandle")
+	ErrTooLong        = errors.New("core: compound past its cap")
+	ErrExpired        = errors.New("core: credential expired")
+	ErrNotLast        = errors.New("core: not the last member of a chain")
+	ErrTooManyPending = errors.New("core: too many pending requests")
+
+	ErrMoved    = errors.New("core: moved")
+	ErrDraining = errors.New("core: draining")
+)
+
+func Errors() []error
+
+type HoldCodec interface {
+	Key(h Header) uint64
+
+	Interim(h Header, grant bool, after []Header, out *resources.Buf) error
+
+	Final(h Header, grant bool) Header
+	Cancels(h Header) (key uint64, ok bool)
+
+	Pends(h Header, err error) bool
+}
+
+var ErrParked = errors.New("core: parked")
+
+type Protocol interface {
+	Framer() Framer
+	NewConn(c *Conn) Stages
+}
+
+type Framer interface {
+	HeaderLen() int
+	BodyLen(hdr []byte) (int, error)
+}
+
+type Stages struct {
+	Header     HeaderCodec
+	Router     Router
+	Security   Security
+	Flow       FlowControl
+	Replay     ReplayCache
+	Hold       HoldCodec
+	MaxPending int
+	OnClose    func(ctx context.Context)
+}
+
+type HeaderCodec interface {
+	Decode(rec *resources.Buf, off int) (Header, error)
+	Encode(h Header, s Status, out *resources.Buf) error
+	Chain(out *resources.Buf, prev int) error
+}
+
+type Router interface {
+	Route(h Header, prev *Request) (*OpTable, *Request, error)
+}
+
+type Security interface {
+	Unwrap(h Header, rec *resources.Buf, prev Header) (Header, error)
+	Wrap(h Header, reply *resources.Buf) error
+}
+
+type FlowControl interface {
+	Admit(ctx context.Context, h Header) (release func(), err error)
+}
+
+type ReplayCache interface {
+	Lookup(ctx context.Context, h Header) (*resources.Buf, error)
+
+	Store(h Header, reply *resources.Buf)
+}
+
+type Header interface {
+	Op() uint32
+	Version() Version
+	Next() int
+	Related() bool
+}
+
+type Server struct{}
+
+type Listener struct {
+	Network  string
+	Port     uint16
+	Protocol Protocol
+}
+
+func NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)
+
+func (s *Server) Start(ctx context.Context) error
+
+func (s *Server) Reconfigure(ctx context.Context, next config.Settings) error
+
+func (s *Server) Stop(ctx context.Context) error
+
+func (s *Server) Health() adapter.Health
+
+func (s *Server) Connections() iter.Seq[adapter.ConnInfo]
+

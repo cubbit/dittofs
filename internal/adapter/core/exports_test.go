@@ -1,128 +1,176 @@
 package core_test
 
 import (
+	"bytes"
+	"flag"
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
+	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 )
 
-// surface is core's exported surface as RFC 20 §4.7 states it, with §4.3's
-// Handler: types, functions, variables and constants, and Type.Name for each
-// exported method, struct field and interface method. A protocol reaches
-// nothing else in core; an export missing here is added to §4.7 first.
-var surface = []string{
-	"Bind", "Call", "Conn", "Conn.Close", "Conn.Established", "Conn.Keep", "Conn.Send", "Conn.Settings",
-	"Dispatcher", "Dispatcher.Dispatch", "Dispatcher.Drain",
-	"ErrDraining", "ErrExpired", "ErrMoved", "ErrNoFH", "ErrNoSession", "ErrNoTree", "ErrNotLast",
-	"ErrNotNegotiated", "ErrNotSupported", "ErrParked", "ErrTooLong", "ErrTooManyPending", "ErrVersion",
-	"ErrorRow", "ErrorRow.Err", "ErrorRow.Hold", "ErrorRow.NoReply", "ErrorRow.Ops", "ErrorRow.Status", "ErrorRow.Versions",
-	"ErrorTable", "ErrorTable.Map", "Errors",
-	"FlowControl", "FlowControl.Admit", "Framer", "Framer.BodyLen", "Framer.HeaderLen",
-	"Handler", "Header", "Header.Next", "Header.Op", "Header.Related", "Header.Version",
-	"HeaderCodec", "HeaderCodec.Chain", "HeaderCodec.Decode", "HeaderCodec.Encode",
-	"HoldCodec", "HoldCodec.Cancels", "HoldCodec.Final", "HoldCodec.Interim", "HoldCodec.Key", "HoldCodec.Pends",
-	"Invocation", "Invocation.Bound", "Invocation.Call", "Invocation.Count", "Invocation.Encode",
-	"Invocation.Handle", "Invocation.Resolve", "Invocation.Role",
-	"Listener", "Listener.Network", "Listener.Port", "Listener.Protocol",
-	"Middleware", "Needs", "NeedsFH", "NeedsNegotiated", "NeedsNothing", "NeedsSession", "NeedsTree",
-	"NewErrorTable", "NewOpTable", "NewServer",
-	"Op", "Op.Cacheable", "Op.Code", "Op.Decode", "Op.Expired", "Op.Members", "Op.Name", "Op.Needs",
-	"Op.Role", "Op.Versions",
-	"OpTable", "OpTable.Errors", "OpTable.Holds", "OpTable.Ops", "OpTable.ReadOp",
-	"Protocol", "Protocol.Framer", "Protocol.NewConn", "Range", "Range.First", "Range.Last",
-	"ReplayCache", "ReplayCache.Lookup", "ReplayCache.Store",
-	"Request", "Request.Call", "Request.Conn", "Request.Level", "Request.Park", "Request.State", "Request.Version",
-	"Role", "RoleContext", "RoleFlush", "RoleNone", "RoleRelease",
-	"Router", "Router.Route", "Security", "Security.Unwrap", "Security.Wrap",
-	"Server", "Server.Connections", "Server.Health", "Server.Reconfigure", "Server.Start", "Server.Stop",
-	"Stages", "Stages.Flow", "Stages.Header", "Stages.Hold", "Stages.MaxPending", "Stages.OnClose",
-	"Stages.Replay", "Stages.Router", "Stages.Security",
-	"Status", "Version",
+var update = flag.Bool("update", false, "rewrite testdata/surface from the source")
+
+// frozen is every package whose exported surface RFC 20 freezes: core's §4.7,
+// the contract, the settings, the budgets and the two constructors. Each is
+// compared, declaration by declaration, with its golden file, which is
+// changed only with the RFC.
+var frozen = map[string]string{
+	"core":      ".",
+	"adapter":   "../../../pkg/adapter",
+	"config":    "../../../pkg/adapter/config",
+	"resources": "../../../pkg/resources",
+	"nfs":       "../../../pkg/adapter/nfs",
+	"smb":       "../../../pkg/adapter/smb",
 }
 
-// exports lists the exported identifiers of core's non-test files.
-func exports(t *testing.T) []string {
+// surface prints each exported declaration of dir's non-test files without
+// its comments or bodies: types with their exported fields and every
+// interface method, functions and methods with their signatures, constants
+// and variables with their values.
+func surface(t *testing.T, dir string) []byte {
 	t.Helper()
-	files, err := filepath.Glob("*.go")
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got []string
-	add := func(owner string, names []*ast.Ident) {
-		for _, n := range names {
-			if n.IsExported() {
-				got = append(got, owner+n.Name)
-			}
+	var out bytes.Buffer
+	fset := token.NewFileSet()
+	emit := func(node any) {
+		cfg := printer.Config{Mode: printer.UseSpaces | printer.TabIndent, Tabwidth: 8}
+		if err := cfg.Fprint(&out, fset, node); err != nil {
+			t.Fatal(err)
 		}
+		out.WriteString("\n\n")
 	}
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(token.NewFileSet(), f, nil, 0)
+		file, err := parser.ParseFile(fset, f, nil, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, decl := range file.Decls {
 			switch d := decl.(type) {
 			case *ast.FuncDecl:
-				owner := ""
-				if d.Recv != nil {
-					typ := d.Recv.List[0].Type
-					if star, ok := typ.(*ast.StarExpr); ok {
-						typ = star.X
-					}
-					owner = typ.(*ast.Ident).Name + "."
+				if d.Name.IsExported() && (d.Recv == nil || receiverExported(d.Recv)) {
+					d.Body = nil
+					emit(d)
 				}
-				add(owner, []*ast.Ident{d.Name})
 			case *ast.GenDecl:
+				if d.Tok == token.IMPORT {
+					continue
+				}
+				var keep []ast.Spec
 				for _, spec := range d.Specs {
 					switch s := spec.(type) {
-					case *ast.ValueSpec:
-						add("", s.Names)
 					case *ast.TypeSpec:
-						add("", []*ast.Ident{s.Name})
-						if !s.Name.IsExported() {
-							continue
+						if s.Name.IsExported() {
+							dropUnexportedFields(s.Type)
+							keep = append(keep, s)
 						}
-						var fields *ast.FieldList
-						switch tt := s.Type.(type) {
-						case *ast.StructType:
-							fields = tt.Fields
-						case *ast.InterfaceType:
-							fields = tt.Methods
-						}
-						if fields == nil {
-							continue
-						}
-						for _, fl := range fields.List {
-							add(s.Name.Name+".", fl.Names)
+					case *ast.ValueSpec:
+						if exportedName(s.Names) {
+							keep = append(keep, s)
 						}
 					}
+				}
+				if len(keep) > 0 {
+					d.Specs = keep
+					emit(d)
 				}
 			}
 		}
 	}
-	slices.Sort(got)
-	return got
+	return out.Bytes()
 }
 
-// core exports exactly what RFC 20 §4.7 names: an export it does not name
-// fails here, as does one it names that core lost.
-func TestExportsAreTheRFCSurface(t *testing.T) {
-	got, want := exports(t), slices.Sorted(slices.Values(surface))
-	for _, name := range got {
-		if _, found := slices.BinarySearch(want, name); !found {
-			t.Errorf("core exports %s, which RFC 20 §4.7 does not name: unexport it, or add it to §4.7 first", name)
+func receiverExported(recv *ast.FieldList) bool {
+	typ := recv.List[0].Type
+	if star, ok := typ.(*ast.StarExpr); ok {
+		typ = star.X
+	}
+	return typ.(*ast.Ident).IsExported()
+}
+
+func exportedName(names []*ast.Ident) bool {
+	for _, n := range names {
+		if n.IsExported() {
+			return true
 		}
 	}
-	for _, name := range want {
-		if _, found := slices.BinarySearch(got, name); !found {
-			t.Errorf("core does not export %s, which RFC 20 §4.7 names", name)
+	return false
+}
+
+// dropUnexportedFields removes a struct's unexported fields, in nested
+// unnamed structs too; an embedded field is kept as its type name says.
+func dropUnexportedFields(expr ast.Expr) {
+	st, ok := expr.(*ast.StructType)
+	if !ok {
+		return
+	}
+	var keep []*ast.Field
+	for _, f := range st.Fields.List {
+		if len(f.Names) == 0 || exportedName(f.Names) {
+			dropUnexportedFields(f.Type)
+			keep = append(keep, f)
 		}
 	}
+	st.Fields.List = keep
+}
+
+// Each frozen package's exported declarations are exactly its golden file:
+// a changed signature, field or constant fails here, as does an export the
+// RFC does not name. Change one with the RFC, then rerun with -update.
+func TestSurfaceIsFrozen(t *testing.T) {
+	for name, dir := range frozen {
+		got := surface(t, dir)
+		golden := filepath.Join("testdata", "surface", name+".golden")
+		if *update {
+			if err := os.MkdirAll(filepath.Dir(golden), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(golden, got, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		want, err := os.ReadFile(golden)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s's exported surface differs from %s; change it with RFC 20 first, then rerun with -update.\ngot:\n%s", name, golden, diff(want, got))
+		}
+	}
+}
+
+// diff lists the lines of got that want lacks, and the reverse.
+func diff(want, got []byte) string {
+	in := func(lines []string, l string) bool {
+		for _, x := range lines {
+			if x == l {
+				return true
+			}
+		}
+		return false
+	}
+	w, g := strings.Split(string(want), "\n"), strings.Split(string(got), "\n")
+	var b strings.Builder
+	for _, l := range g {
+		if !in(w, l) {
+			b.WriteString("+ " + l + "\n")
+		}
+	}
+	for _, l := range w {
+		if !in(g, l) {
+			b.WriteString("- " + l + "\n")
+		}
+	}
+	return b.String()
 }

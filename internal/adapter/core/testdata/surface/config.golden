@@ -1,0 +1,47 @@
+type Adapter struct {
+	Addrs []netip.Addr
+
+	DrainDeadline time.Duration `default:"90s"`
+
+	IdleTimeout time.Duration `default:"15m"`
+
+	WriteDeadline time.Duration `default:"60s"`
+
+	HandshakeDeadline time.Duration `default:"30s"`
+
+	FrameDeadline time.Duration `default:"30s"`
+
+	Disabled []string `default:""`
+}
+
+type NFS struct {
+	Adapter
+
+	TLS struct {
+		CertFile   string `default:""`
+		KeyFile    string `default:""`
+		ClientCA   string `default:""`
+		MinVersion string `default:"1.3"`
+		Mode       string `default:"opportunistic"`
+	}
+}
+
+type SMB struct {
+	Adapter
+
+	Dialects struct {
+		Min string `default:"2.1"`
+		Max string `default:"3.1.1"`
+	}
+}
+
+type Settings interface{ common() Adapter }
+
+func AdapterOf(s Settings) Adapter
+
+func Validate(s Settings) error
+
+var ErrRestartRequired = errors.New("config: restart required")
+
+func RestartRequired(old, next Settings) error
+

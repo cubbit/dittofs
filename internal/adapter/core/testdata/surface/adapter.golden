@@ -1,0 +1,59 @@
+type Adapter interface {
+	Start(ctx context.Context) error
+
+	Reconfigure(ctx context.Context, s config.Settings) error
+
+	Stop(ctx context.Context) error
+
+	Health() Health
+
+	Connections() iter.Seq[ConnInfo]
+}
+
+type State uint8
+
+const (
+	StateConfigured State = iota
+	StateServing
+	StateDraining
+	StateStopped
+)
+
+type Health struct {
+	State      State
+	Ready      bool
+	Conditions []string
+}
+
+type ConnInfo struct {
+	Protocol string
+	Remote   netip.AddrPort
+	Session  string
+	Since    time.Time
+}
+
+type Sidecar interface {
+	Name() string
+	Adapters() []string
+
+	Sync(ctx context.Context, serving []Serving) error
+}
+
+type Serving struct {
+	Adapter   string
+	Listeners map[string]netip.AddrPort
+}
+
+type Deps struct {
+	Service vfs.Service
+
+	Pools   *resources.Pools
+	Metrics *metrics.Registry
+	Tracer  trace.Tracer
+	Logger  *slog.Logger
+
+	Watch func(loop string) (turn, idle, stop func())
+
+	Dial func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+}
+

@@ -21,18 +21,10 @@ import (
 // cancels that early.
 type HoldCodec interface {
 	Key(h Header) uint64
-	// Interim encodes STATUS_PENDING. It grants the request's credits if
-	// grant; if not (a call in the service past MaxPending, or past the hold
-	// floor with the hold pool full), only what keeps the client's balance at
-	// one. Either way it grants the credits of the chain members answered
-	// before it, which ride on its header. For a NoReply row (a drain's
-	// refusal) it grants the request's credits and those of the chain members
-	// after it, which do not run: the runner hands it their headers, the only
-	// part of them it decodes, and the codec reads their credits and sums
-	// them, saturating at the connection's credit target rather than
-	// wrapping. core knows nothing of credits. No Final follows, nothing is
-	// held, and it counts against no floor or MaxPending. Every other interim
-	// is handed no headers.
+	// Interim encodes STATUS_PENDING: it grants the request's credits if
+	// grant, else only what keeps the client's balance at one, and always
+	// those of chain members answered before it. For a drain's refusal it is
+	// handed the headers of the members after, and grants theirs too.
 	//
 	// decision: the credits of the members after a refused one are granted
 	// from headers no Security stage verified, since those members are never
