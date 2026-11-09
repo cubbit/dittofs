@@ -1189,7 +1189,7 @@ every reclaim after the first failover. Instead:
   is what tells an NFSv4.1 client whose session survived to reclaim: a client
   told its state was revoked frees it instead.
 - The client then reclaims everything it holds, in every shard, since NFSv4.1
-  reclaims per client, not per shard. A reclaim reaching a shard not in grace,
+  reclaims per client, not per shard. While the client still owes reclaims, a reclaim reaching a shard not in grace,
   or in a grace instance the client has already completed, of state that
   shard holds for that client, **MUST** be answered with
   that state as it stands, granting nothing new; any other reclaim there is
