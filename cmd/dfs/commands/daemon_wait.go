@@ -20,8 +20,8 @@ import (
 const (
 	// daemonStartTimeout bounds how long `dfs start` waits for the background
 	// server to answer /health. A server still alive at the deadline is reported
-	// as started, with a note: a slow start (a large store being recovered) is
-	// not a failure.
+	// as still starting, not as failed: a slow start (a large store being
+	// recovered) is not a failure.
 	daemonStartTimeout = 30 * time.Second
 
 	// daemonStartGrace is how long the child must stay alive when /health cannot
@@ -80,19 +80,32 @@ func waitForDaemon(exited <-chan error, ready func() bool, timeout, poll time.Du
 func healthProbe() func() bool {
 	launched := time.Now()
 	cfg, err := config.Load(GetConfigFile())
-	if err != nil || cfg.ControlPlane.TLS.ClientCA != "" {
+	if err != nil {
+		return nil
+	}
+	return apiHealthProbe(cfg.ControlPlane, launched)
+}
+
+// apiHealthProbe is healthProbe for the API that cp configures.
+func apiHealthProbe(cp api.APIConfig, launched time.Time) func() bool {
+	if cp.TLS.ClientCA != "" {
 		return nil
 	}
 	scheme := "http"
-	client := &http.Client{Timeout: time.Second}
-	if cfg.ControlPlane.TLS.Enabled() {
+	// No Proxy: the probe goes straight to the server this command started,
+	// never through an HTTP proxy set in the environment.
+	transport := &http.Transport{}
+	if cp.TLS.Enabled() {
 		scheme = "https"
-		// The probe sends no credentials and reads only started_at, so it does
-		// not need to verify the server certificate (it may be self-signed or
-		// issued for another name than localhost).
-		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // see above
+		// decision: the probe does not verify the server certificate, which may
+		// be self-signed or issued for a name other than the one probed. It
+		// sends no credentials and reads only started_at, so a listener that is
+		// not this server can at most make the start look ready. Withdraw this
+		// if the probe ever sends a credential or acts on more than started_at.
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // see above
 	}
-	addr := api.DisplayAddr(cfg.ControlPlane.Host, cfg.ControlPlane.Port)
+	client := &http.Client{Timeout: time.Second, Transport: transport}
+	addr := api.DisplayAddr(cp.Host, cp.Port)
 	return healthReadyFunc(client, scheme+"://"+addr+"/health", launched)
 }
 
@@ -160,20 +173,46 @@ func awaitDaemonStart(cmd *exec.Cmd, ready func() bool, pidPath, logPath string,
 	// supervisors retry a start that is still in progress. The message says
 	// "still starting" instead of "started", so nobody reads it as ready. Withdraw
 	// this if slow starts that later die turn out to be common.
-	if outcome == daemonAlive && ready != nil {
-		fmt.Printf("DittoFS server is still starting (PID: %d); it did not answer /health within %s\n", cmd.Process.Pid, timeout)
-	} else {
-		fmt.Printf("DittoFS server started (PID: %d)\n", cmd.Process.Pid)
-	}
+	fmt.Println(startedMessage(outcome, ready != nil, cmd.Process.Pid, timeout))
 	fmt.Printf("Log file: %s\n", logPath)
 	fmt.Printf("PID file: %s\n", pidPath)
 	return nil
 }
 
+// startedMessage is what `dfs start` prints for a server that did not exit
+// during the wait. Only an answer to /health reports it started; one alive when
+// /health is not probed is reported running, since that is all that is known.
+func startedMessage(outcome daemonOutcome, probed bool, pid int, timeout time.Duration) string {
+	switch {
+	case outcome == daemonReady:
+		return fmt.Sprintf("DittoFS server started (PID: %d)", pid)
+	case !probed:
+		return fmt.Sprintf("DittoFS server is running (PID: %d); /health was not checked", pid)
+	default:
+		return fmt.Sprintf("DittoFS server is still starting (PID: %d); it did not answer /health within %s", pid, timeout)
+	}
+}
+
+// openLogTail returns a read handle on the log positioned at its end, where
+// this run's output begins, or nil when the log cannot be read back from there
+// (a pipe or a terminal given as --log-file): the start goes ahead, and a
+// failure report then has no tail.
+func openLogTail(path string) *os.File {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		_ = f.Close()
+		return nil
+	}
+	return f
+}
+
 // readLogTail returns the last n lines available from the current position of
 // log. Reading through the handle opened before the child started, not the
 // path, keeps the tail correct if the log is rotated during startup, and the
-// position keeps output from earlier runs out of it.
+// position keeps output from earlier runs out of it. A nil log has no tail.
 func readLogTail(log *os.File, n int) string {
 	data, err := io.ReadAll(log)
 	if err != nil {

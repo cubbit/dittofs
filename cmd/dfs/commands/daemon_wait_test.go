@@ -2,10 +2,10 @@ package commands
 
 import (
 	"bytes"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cubbit/dittofs/pkg/controlplane/api"
 )
 
 func TestWaitForDaemon(t *testing.T) {
@@ -89,17 +91,89 @@ func TestHealthReadyFunc(t *testing.T) {
 	})
 }
 
-func TestHealthReadyFunc_TLS(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprint(w, `{"status":"healthy","data":{"started_at":"2026-01-02T03:04:06Z"}}`)
-	}))
-	defer srv.Close()
+func TestAPIHealthProbe(t *testing.T) {
 	launched := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"status":"healthy","data":{"started_at":"2026-01-02T03:04:06Z"}}`)
+	})
+	apiOn := func(srv *httptest.Server) api.APIConfig {
+		return api.APIConfig{Host: "127.0.0.1", Port: srv.Listener.Addr().(*net.TCPAddr).Port}
+	}
 
-	// The probe skips certificate verification, as healthProbe's client does.
-	insecure := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // test
-	if !healthReadyFunc(insecure, srv.URL, launched)() {
-		t.Fatal("not ready over https with verification skipped")
+	t.Run("a plain API is probed over http", func(t *testing.T) {
+		srv := httptest.NewServer(handler)
+		defer srv.Close()
+		if ready := apiHealthProbe(apiOn(srv), launched); ready == nil || !ready() {
+			t.Fatal("not ready over http")
+		}
+	})
+
+	t.Run("a TLS API is probed over https without verifying its certificate", func(t *testing.T) {
+		srv := httptest.NewTLSServer(handler) // self-signed
+		defer srv.Close()
+		cp := apiOn(srv)
+		cp.TLS = api.TLSConfig{CertFile: "tls.crt", KeyFile: "tls.key"}
+		if ready := apiHealthProbe(cp, launched); ready == nil || !ready() {
+			t.Fatal("not ready over https with a self-signed certificate")
+		}
+	})
+
+	t.Run("an API that requires a client certificate is not probed", func(t *testing.T) {
+		cp := api.APIConfig{Host: "127.0.0.1", Port: 1}
+		cp.TLS = api.TLSConfig{CertFile: "tls.crt", KeyFile: "tls.key", ClientCA: "ca.pem"}
+		if apiHealthProbe(cp, launched) != nil {
+			t.Fatal("probed an API that requires a client certificate")
+		}
+	})
+}
+
+func TestStartedMessage(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome daemonOutcome
+		probed  bool
+		want    string
+	}{
+		{"answered /health", daemonReady, true, "DittoFS server started (PID: 7)"},
+		{"alive at the deadline", daemonAlive, true, "DittoFS server is still starting (PID: 7); it did not answer /health within 30s"},
+		{"alive through the grace, not probed", daemonAlive, false, "DittoFS server is running (PID: 7); /health was not checked"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := startedMessage(tc.outcome, tc.probed, 7, 30*time.Second); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOpenLogTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dittofs.log")
+	if err := os.WriteFile(path, []byte("earlier run\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := openLogTail(path)
+	if f == nil {
+		t.Fatal("no handle on a regular log file")
+	}
+	defer func() { _ = f.Close() }()
+	lf, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lf.Close() }()
+	if _, err := lf.WriteString("this run\n"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readLogTail(f, 10); got != "this run" {
+		t.Errorf("tail = %q, want only this run's output", got)
+	}
+
+	if openLogTail(filepath.Join(t.TempDir(), "missing.log")) != nil {
+		t.Error("a handle on a log that does not exist")
+	}
+	if got := readLogTail(nil, 10); got != "" {
+		t.Errorf("tail of no log = %q, want none", got)
 	}
 }
 
@@ -164,14 +238,10 @@ func startHelperDaemon(t *testing.T, mode string) (cmd *exec.Cmd, pidPath, logPa
 	if _, err := lf.WriteString("earlier run\n"); err != nil {
 		t.Fatal(err)
 	}
-	rf, err = os.Open(logPath)
-	if err != nil {
-		t.Fatal(err)
+	if rf = openLogTail(logPath); rf == nil {
+		t.Fatal("no read handle on the log")
 	}
 	t.Cleanup(func() { _ = rf.Close() })
-	if _, err := rf.Seek(0, io.SeekEnd); err != nil {
-		t.Fatal(err)
-	}
 
 	cmd = exec.Command(os.Args[0], "-test.run=^TestHelperDaemon$")
 	cmd.Env = append(os.Environ(), "DFS_TEST_DAEMON="+mode)
