@@ -141,6 +141,13 @@ type Part struct {
 	CorruptRepairable uint64
 	// StaleExtents counts the losses of the stale reason.
 	StaleExtents uint64
+
+	// DamagedSegments counts the segments that held a record which did not
+	// verify when it was read. A segment stays counted, with its row in
+	// Segments, until the journal closes.
+	DamagedSegments uint64
+	// Segments are the damaged segments' rows, in segment order.
+	Segments []DamagedRow
 }
 
 // Durability is the ledger and the workers of every stream.
@@ -223,6 +230,14 @@ type Durability struct {
 	corruptDataLoss   uint64
 	corruptRepairable uint64
 	stale             uint64
+
+	// dmu guards damaged.
+	//
+	// decision: dmu is a leaf mutex over the damaged rows, held only for a map
+	// access and never across an index call, an Append or any other lock, so
+	// Stats reads the damage without a lock a write needs.
+	dmu     sync.Mutex
+	damaged map[core.SegmentID]*damagedRow
 
 	// pieces holds every (dropped seq, extent) a Lose or a Place has taken,
 	// so one piece of a dropped record is reported once, while another piece
@@ -707,6 +722,7 @@ func (d *Durability) Stats() Part {
 	// without its event, nor an event without its raise.
 	p.LossGeneration = d.dir.load()
 	d.lmu.Unlock()
+	p.DamagedSegments, p.Segments = d.damagedReport()
 	return p
 }
 
