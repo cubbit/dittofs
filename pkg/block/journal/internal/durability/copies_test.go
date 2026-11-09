@@ -238,15 +238,25 @@ func TestCorruptCopyVerifyingInReadOnly(t *testing.T) {
 		t.Fatalf("Sync: %v", err)
 	}
 	eventually(t, "the synced entry to complete", func() bool { return cr.ledgerLen(0) == 0 })
+	cr.settlePool(t)
 	cr.d.Enter(errors.New("the journal is read-only"))
+	writes := cr.seam.Calls(kit.OpWrite)
 
 	out, err := cr.d.Corrupt(context.Background(), r.c)
 	if err != nil || out.Kind != CorruptUseCopy || out.Copy != r.orig {
 		t.Fatalf("Corrupt = %+v, %v, want UseCopy at %+v", out, err, r.orig)
 	}
+	if got := cr.seam.Calls(kit.OpWrite); got != writes {
+		t.Fatalf("the read made %d writes in a read-only journal, want none", got-writes)
+	}
 	want := index.RecordAt{Segment: r.orig.Segment, Offset: uint32(r.orig.Off)}
 	if got := cr.placedAt(t, f, 0); got != want {
 		t.Fatalf("the extent is served from %+v, want the copy %+v", got, want)
+	}
+	// The record was synced, so the corrupt copy's segment is counted
+	// damaged, never the segment of the copy that is served.
+	if p := cr.d.Stats(); p.DamagedSegments != 1 || len(p.Segments) != 1 || p.Segments[0].Segment != r.c.Record.Segment {
+		t.Fatalf("damaged = %d, rows %+v, want one row for the corrupt copy's segment %d", p.DamagedSegments, p.Segments, r.c.Record.Segment)
 	}
 	if got := h.all(); len(got) != 0 {
 		t.Fatalf("holdCopy was handed %+v in a read-only journal, want nothing", got)

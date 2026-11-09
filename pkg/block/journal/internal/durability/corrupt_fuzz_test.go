@@ -29,6 +29,10 @@ var errCatalogMismatch = errors.New("header does not match the catalog entry")
 // written and the flip must have landed in the padding; a covered byte that
 // passes the check is a failure.
 //
+// It proves the format's checksum coverage, a flipped covered byte being
+// refused, and the drop that follows a refusal. The reader that runs the check
+// on a real read is not on this base, so the check here stands in for it.
+//
 // Every offset of the record is a seed, so the plain test run flips each byte
 // once; the fuzzer then mutates the offset and the mask.
 func FuzzCorruptEveryByte(f *testing.F) {
@@ -56,6 +60,9 @@ func FuzzCorruptEveryByte(f *testing.F) {
 		if err != nil {
 			t.Fatalf("Durable: %v", err)
 		}
+		if int64(size) != w.loc.Len {
+			t.Fatalf("the record takes %d bytes, recordSize says %d", w.loc.Len, size)
+		}
 		start := w.loc.Off
 		rec := append([]byte(nil), raw[start:start+int64(size)]...)
 		at := int(offset) % size
@@ -69,7 +76,7 @@ func FuzzCorruptEveryByte(f *testing.F) {
 			// leaves nothing to handle: skip it after checking that what the
 			// reader serves is what was written. A flip anywhere else that
 			// passes is a flipped byte served.
-			if at < format.RecordHeaderSize+8+len(fuzzPayload) {
+			if at < format.RecordHeaderSize+bodySize() {
 				t.Fatalf("flipping byte %d with mask %#x passed verification: a flipped byte of the record would be served", at, mask)
 			}
 			if string(served) != fuzzPayload {
@@ -88,6 +95,13 @@ func FuzzCorruptEveryByte(f *testing.F) {
 			t.Fatalf("the neighbour reads %+v, %v after Corrupt, want its own version", p, ok)
 		}
 	})
+}
+
+// bodySize is the body bytes of one record of fuzzPayload, the bytes its
+// payload checksum covers.
+func bodySize() int {
+	h := format.RecordHeader{Kind: format.KindWrite, Extent: core.Extent{Len: int64(len(fuzzPayload))}}
+	return int(h.BodySize())
 }
 
 // recordSize is the bytes one record of fuzzPayload takes in its segment.

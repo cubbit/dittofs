@@ -18,20 +18,27 @@ type corruptJob struct {
 // then waits on an append and its sync, and for a synced loss on MarkLoss,
 // which a running layer never makes it do, but there is no worker left to
 // hand it to and the loss must not be forgotten; a closed stream refuses the
-// append at once, and the drop stands with the seq listed as failed. Overturned if a Corrupt after Stop must
-// return without I/O, which would then list the seq as failed unappended.
+// append at once, and the drop stands with the seq listed as failed.
+// Overturned if a Corrupt after Stop must return without I/O, which would
+// then list the seq as failed unappended.
 func (d *Durability) queueCorrupt(st *stream, job corruptJob) {
-	st.mu.Lock()
-	closed := st.closed
-	if !closed {
-		st.corrupt = append(st.corrupt, job)
-	}
-	st.mu.Unlock()
-	if closed {
+	if !st.pushCorrupt(job) {
 		d.runCorrupt(job)
 		return
 	}
 	st.wake()
+}
+
+// pushCorrupt queues job for the worker without waking it, and reports
+// whether it did: a closed stream has no worker left to drain it.
+func (st *stream) pushCorrupt(job corruptJob) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.closed {
+		return false
+	}
+	st.corrupt = append(st.corrupt, job)
+	return true
 }
 
 // drainCorrupt runs every corrupt loss queued on the stream. It runs on the

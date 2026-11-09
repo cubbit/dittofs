@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -309,7 +310,7 @@ func TestCorruptSyncedLossMasksWhatItSuperseded(t *testing.T) {
 
 // TestCorruptUnsyncedReholdsAndLeavesLedger covers an unsynced record over a
 // synced one: the older is served again, the entry leaves the ledger, a later
-// sync lifts nothing, and a later failure of its segment fails nothing more.
+// sync lifts nothing.
 func TestCorruptUnsyncedReholdsAndLeavesLedger(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	cr := newCorruptRig(t, nil)
@@ -335,30 +336,128 @@ func TestCorruptUnsyncedReholdsAndLeavesLedger(t *testing.T) {
 		t.Fatalf("loss record = %+v, want unsynced", rec)
 	}
 
-	t.Run("a later sync", func(t *testing.T) {
-		cr.syncStream(t, f)
-		eventually(t, "the completion pass", func() bool { return !cr.inLedger(other.loc) })
-		if p, ok := cr.ix.Lookup(f, 0); !ok || p.Version != v5.c.Version {
-			t.Fatalf("after a sync the extent reads %+v, %v, want v5 still held", p, ok)
-		}
-	})
+	cr.syncStream(t, f)
+	eventually(t, "the completion pass", func() bool { return !cr.inLedger(other.loc) })
+	if p, ok := cr.ix.Lookup(f, 0); !ok || p.Version != v5.c.Version {
+		t.Fatalf("after a sync the extent reads %+v, %v, want v5 still held", p, ok)
+	}
+}
 
-	t.Run("the window then fails", func(t *testing.T) {
-		h := file(3)
-		late := cr.write(t, h, 0, "dddd")
-		cr.failSegmentOf(t, late.loc.Segment, h)
-		cr.awaitResolved(t)
-		if p, ok := cr.ix.Lookup(f, 0); !ok || p.Version != v5.c.Version {
-			t.Fatalf("after the window failed the extent reads %+v, %v, want v5", p, ok)
-		}
-		evs := cr.lossesOf(f)
-		if len(evs) != 1 || evs[0].Reason != core.LossCorrupt {
-			t.Fatalf("f's events = %+v, want only the corrupt loss", evs)
-		}
-		if recs := cr.recordsNaming(t, v10.c.Seq); len(recs) != 1 || recs[0].Reason != format.LossCorrupt {
-			t.Fatalf("loss records naming v10 = %+v, want only the corrupt one", recs)
-		}
-	})
+// TestCorruptUnsyncedThenItsSegmentFails covers an unsynced record found
+// corrupt whose own segment's sync then fails, with no sync in between: the
+// window is taken without it, so it is neither failed nor reported again, and
+// what it superseded stays held.
+func TestCorruptUnsyncedThenItsSegmentFails(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cr := newCorruptRig(t, nil)
+	f, g := file(1), file(2)
+	v5 := cr.write(t, f, 0, "aaaa")
+	if err := cr.d.Sync(context.Background(), f); err != nil {
+		t.Fatalf("Sync of v5: %v", err)
+	}
+	v10 := cr.write(t, f, 0, "bbbb")
+
+	cr.corrupt(t, v10.c)
+	// The loss record lands, synced, before the segment's sync is made to
+	// fail, so the failure takes g's later record and not the loss record's
+	// own sync, which would also have covered g's.
+	cr.awaitRecord(t, v10.c.Seq)
+	other := cr.write(t, g, 0, "cccc")
+	if other.loc.Segment != v10.loc.Segment {
+		t.Fatal("g's record landed in another segment than v10")
+	}
+	cr.failSegmentOf(t, v10.loc.Segment, g)
+	if got := cr.awaitResolved(t); got != v10.loc.Segment {
+		t.Fatalf("resolved segment %d, want v10's %d", got, v10.loc.Segment)
+	}
+	cr.d.Stop()
+	if p, ok := cr.ix.Lookup(f, 0); !ok || p.Version != v5.c.Version {
+		t.Fatalf("after the window failed the extent reads %+v, %v, want v5", p, ok)
+	}
+	evs := cr.lossesOf(f)
+	if len(evs) != 1 || evs[0].Reason != core.LossCorrupt {
+		t.Fatalf("f's events = %+v, want only the corrupt loss", evs)
+	}
+	if recs := cr.recordsNaming(t, v10.c.Seq); len(recs) != 1 || recs[0].Reason != format.LossCorrupt {
+		t.Fatalf("loss records naming v10 = %+v, want only the corrupt one", recs)
+	}
+}
+
+// TestCorruptUnsyncedLedgerRecordIsNeverDurable covers an unsynced record
+// found corrupt: it never reads durable, a durability wait on it keeps
+// waiting, and a second read of it adds nothing.
+func TestCorruptUnsyncedLedgerRecordIsNeverDurable(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cr := newCorruptRig(t, nil)
+	f := file(1)
+	w := cr.write(t, f, 0, "aaaa")
+
+	cr.corrupt(t, w.c)
+	if cr.d.Durable(w.loc) {
+		t.Fatal("the corrupt unsynced record reads durable")
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- cr.d.WaitDurable(w.loc) }()
+	mustBlock(t, "WaitDurable", wait)
+	cr.awaitRecord(t, w.c.Seq)
+
+	before := cr.d.Generation()
+	cr.corrupt(t, w.c)
+	cr.d.Stop()
+	if err := mustReturn(t, "WaitDurable", wait); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("WaitDurable = %v, want ErrClosed at Stop", err)
+	}
+	if got := cr.d.Generation(); got != before {
+		t.Fatalf("a second read moved the generation from %d to %d", before, got)
+	}
+	if evs := cr.lossesOf(f); len(evs) != 1 {
+		t.Fatalf("events = %+v, want 1", evs)
+	}
+	if recs := cr.recordsNaming(t, w.c.Seq); len(recs) != 1 {
+		t.Fatalf("loss records = %+v, want 1", recs)
+	}
+}
+
+// TestCorruptPendingWindowRecordIsNeverDurable covers a record of a pending
+// window found corrupt: it never reads durable, before or after the window
+// resolves, and a durability wait on it keeps waiting.
+func TestCorruptPendingWindowRecordIsNeverDurable(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cr, fw, _, release := pendingWindow(t)
+
+	cr.corrupt(t, fw.c)
+	if cr.d.Durable(fw.loc) {
+		t.Fatal("the corrupt record of a pending window reads durable")
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- cr.d.WaitDurable(fw.loc) }()
+	mustBlock(t, "WaitDurable", wait)
+	release()
+	cr.awaitResolved(t)
+	if cr.d.Durable(fw.loc) {
+		t.Fatal("the corrupt record reads durable once its window resolved")
+	}
+	mustBlock(t, "WaitDurable", wait)
+	cr.d.Stop()
+	if err := mustReturn(t, "WaitDurable", wait); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("WaitDurable = %v, want ErrClosed at Stop", err)
+	}
+}
+
+// TestCorruptSyncedRecordStaysDurable covers a synced record found corrupt:
+// it was synced, so it still reads durable.
+func TestCorruptSyncedRecordStaysDurable(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cr := newCorruptRig(t, nil)
+	f := file(1)
+	w := cr.write(t, f, 0, "aaaa")
+	if err := cr.d.Sync(context.Background(), f); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	cr.corrupt(t, w.c)
+	if !cr.d.Durable(w.loc) {
+		t.Fatal("the synced corrupt record no longer reads durable")
+	}
 }
 
 // TestCorruptCoveredBeforeWorkerAppliesCompletion covers a record a sync
@@ -671,6 +770,58 @@ func TestReadOnlyPassResolvesAWindowCorruptEmptied(t *testing.T) {
 	}
 }
 
+// TestCorruptInReadOnlyWindowReportsTheRefusal covers a record a read takes
+// out of a failed segment's window once the journal is read-only, before the
+// read-only pass reached the window: its file is told the window's failure
+// with the read-only refusal, as the pass tells the file of a record it fails
+// in that window, and the record is lost with the refusal too.
+func TestCorruptInReadOnlyWindowReportsTheRefusal(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	hook, reached, release := gate(t)
+	var park atomic.Bool
+	cr := newCorruptRig(t, func(cr *corruptRig) {
+		cr.d.afterPass = func() {
+			if park.Load() {
+				hook()
+			}
+		}
+	})
+	t.Cleanup(release)
+	f, g := file(1), file(2)
+	fw := cr.write(t, f, 0, "aaaa")
+	gw := cr.write(t, g, 0, "bbbb")
+	if fw.loc.Segment != gw.loc.Segment {
+		t.Fatal("the two records landed in different segments")
+	}
+	st := cr.d.made[0]
+	park.Store(true)
+	st.wake()
+	<-reached
+
+	win := &window{id: cr.d.windowSeq.Add(1), seg: fw.loc.Segment, err: errors.New("sync boom")}
+	st.mu.Lock()
+	st.removeLocked(func(e *entry) bool { return e.w.Loc.Segment == fw.loc.Segment }, func(e entry) { win.entries = append(win.entries, e) })
+	st.windows = append(st.windows, win)
+	st.mu.Unlock()
+	cr.d.Enter(errors.New("read-only"))
+
+	cr.corrupt(t, fw.c)
+	st.mu.Lock()
+	l, lost := st.lost[fw.loc]
+	st.mu.Unlock()
+	if !lost || !errors.Is(l.err, core.ErrJournalReadOnly) {
+		t.Fatalf("f's record lost = %v with %v, want lost with the read-only refusal", lost, l.err)
+	}
+	cr.d.failReadOnly(st)
+	for _, w := range []written{fw, gw} {
+		err := mustReturn(t, "Sync", cr.syncAsync(context.Background(), w.c.File))
+		wantSyncError(t, err, w.loc.Segment, w.c.File)
+		if !errors.Is(err, core.ErrJournalReadOnly) {
+			t.Fatalf("Sync(%v) = %v, want the read-only refusal", w.c.File, err)
+		}
+	}
+}
+
 // TestCorruptAfterWorkerFailedRecordDoesNothing covers a record the worker
 // already failed: Corrupt reports it dropped and adds nothing.
 func TestCorruptAfterWorkerFailedRecordDoesNothing(t *testing.T) {
@@ -729,16 +880,65 @@ func TestCorruptAppendsNothingAndReturnsBeforeSeal(t *testing.T) {
 	cr.awaitRecord(t, w.c.Seq)
 }
 
-// TestCorruptThenStopWritesLossRecord covers a loss queued just before Stop:
-// its record is on disk when Stop returns.
+// TestCorruptThenStopWritesLossRecord covers a loss queued just before Stop
+// that the worker never drained: Stop records it, so its record is on disk
+// when Stop returns.
 func TestCorruptThenStopWritesLossRecord(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	cr := newCorruptRig(t, nil)
+	hook, reached, release := gate(t)
+	var parked atomic.Bool
+	cr := newCorruptRig(t, func(cr *corruptRig) {
+		cr.d.afterSync = func() {
+			if parked.Load() {
+				hook()
+			}
+		}
+	})
+	t.Cleanup(release)
 	f := file(1)
 	w := cr.write(t, f, 0, "aaaa")
+	// Park the worker inside a pass, past the step that drains the queue.
+	parked.Store(true)
+	syncing := cr.syncAsync(context.Background(), f)
+	<-reached
 
-	cr.corrupt(t, w.c)
-	cr.d.Stop()
+	st := cr.d.made[0]
+	// No wake is left for the worker to take another pass on.
+	select {
+	case <-st.kick:
+	default:
+	}
+	job := corruptJob{record: w.c.Record, losses: []Loss{{
+		Share: w.c.Share, File: f, Extent: w.c.Extent, Version: w.c.Version,
+		Seq: w.c.Seq, Reason: core.LossCorrupt, Raised: true,
+	}}}
+	if !st.pushCorrupt(job) {
+		t.Fatal("the stream refused the job before Stop")
+	}
+
+	stopped := make(chan struct{})
+	go func() { cr.d.Stop(); close(stopped) }()
+	eventually(t, "Stop to close the layer", func() bool {
+		select {
+		case <-cr.d.done:
+			return true
+		default:
+			return false
+		}
+	})
+	st.mu.Lock()
+	queued := len(st.corrupt)
+	st.mu.Unlock()
+	if queued != 1 {
+		t.Fatalf("%d jobs queued when Stop was called, want the one the worker never drained", queued)
+	}
+	release()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not return")
+	}
+	_ = mustReturn(t, "Sync", syncing)
 	if recs := cr.recordsNaming(t, w.c.Seq); len(recs) != 1 {
 		t.Fatalf("loss records naming the record after Stop = %+v, want 1", recs)
 	}

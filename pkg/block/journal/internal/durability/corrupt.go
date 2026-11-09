@@ -2,6 +2,7 @@ package durability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -81,12 +82,14 @@ type CorruptOutcome struct {
 // that error and drops nothing. Overturned if an EIO read is ruled to drop the
 // extent, which would then call Corrupt for it too.
 //
-// decision: the generation is raised here, by the reader, once per call that
+// decision: the generation is raised by the dropping call, once per call that
 // drops a piece whose offloaded bit is unset, before the loss is handed to the
-// worker, and the loss says so with Raised. It lives in memory only, like
-// every raise. A reader that gets the extent missing then finds the generation
-// up, though the loss record and the event follow on the worker. Overturned if
-// a raise must wait for the loss record to be durable.
+// worker, and the loss says so with Raised: on the reader's goroutine for a
+// read's drop, on the worker for a held record whose copy was retired. It
+// lives in memory only, like every raise. A reader that gets the extent
+// missing then finds the generation up, though the loss record and the event
+// follow on the worker. Overturned if a raise must wait for the loss record to
+// be durable.
 func (d *Durability) Corrupt(ctx context.Context, c Corruption) (CorruptOutcome, error) {
 	if err := ctx.Err(); err != nil {
 		return CorruptOutcome{}, err
@@ -227,18 +230,23 @@ func (d *Durability) streamOf(file core.FileID) *stream {
 	return nil
 }
 
+// errRecordCorrupt is what the lost set holds for an unsynced record a read
+// found corrupt and took out of the ledger.
+var errRecordCorrupt = errors.New("durability: the record was found corrupt before its sync")
+
 // takeCorrupt decides, in one step under mu, whether the record c names
 // was synced, and takes it out of the ledger or a pending window when it was
-// not. lost reports a record the worker already failed, which has nothing
-// left to drop.
+// not, adding it to the lost set so it never reads durable. lost reports a
+// record the worker already failed, or an earlier Corrupt already took out,
+// which has nothing left to drop.
 //
 // decision: a record in neither the ledger, a pending window nor the lost set
 // is synced. Every record Track saw that left the ledger otherwise was
-// completed, which is after its sync, and a record taken out by an earlier
-// Corrupt is no longer in the index, so the answer reaches nothing for it. It
-// is the answer Durable gives for such a location. The segment's synced value
-// cannot decide it: the worker forgets it once the segment holds no entry.
-// Overturned by a record that can leave the ledger unsynced some other way.
+// completed, which is after its sync: an unsynced one taken out by a failed
+// window or by Corrupt is in the lost set. It is the answer Durable gives for
+// such a location. The segment's synced value cannot decide it: the worker
+// forgets it once the segment holds no entry. Overturned by a record that can
+// leave the ledger unsynced some other way.
 //
 // ponytail: the record is found by a linear scan of the ledger, the pending
 // windows and the lost set, O(ledger + window + lost) per call, and the lost
@@ -258,8 +266,11 @@ func (st *stream) takeCorrupt(c Corruption) (synced, lost bool) {
 			// record superseded, whether or not it has yet.
 			return true, false
 		}
-		file, seg := e.w.File, e.w.Loc.Segment
+		file, seg, loc := e.w.File, e.w.Loc.Segment, e.w.Loc
 		st.removeLocked(func(e *entry) bool { return at(e.w) }, nil)
+		// Never durable: the record leaves the ledger unsynced, and the lost
+		// set keeps it from reading durable and a durability wait from ending.
+		st.lost[loc] = lostRecord{err: errRecordCorrupt}
 		// The segment may have failed already, with its window not yet taken:
 		// the window will not hold the record, so the file is owed its report
 		// now, and takeWindow turns that into the window's mark.
@@ -278,9 +289,18 @@ func (st *stream) takeCorrupt(c Corruption) (synced, lost bool) {
 			if !at(w.entries[i].w) {
 				continue
 			}
-			file := w.entries[i].w.File
+			file, loc := w.entries[i].w.File, w.entries[i].w.Loc
 			w.entries = slices.Delete(w.entries, i, i+1)
-			st.markLocked(w, file)
+			// Lost as a record the window failed is, so it never reads durable
+			// once it has left the window. A read-only journal fails every
+			// window's records with its refusal (failReadOnly), so the record
+			// is reported with it too.
+			err := w.err
+			if ro := st.d.Admit(); ro != nil {
+				err = ro
+			}
+			st.lost[loc] = lostRecord{err: err}
+			st.markErrLocked(w, file, err)
 			st.d.notifyAll()
 			// A window left empty is resolved on the worker's next pass.
 			st.wake()
@@ -302,12 +322,12 @@ func (st *stream) takeCorrupt(c Corruption) (synced, lost bool) {
 // step that makes its window, so no gap opens between the two.
 //
 // decision: a failure counts from when this layer records it: once syncStep
-// has recorded the worker's failed sync, or once the end event is queued, not
-// from the failed fsync or from the stream's own end of the segment. A
-// Corrupt before that point is read as before the failure: the record leaves
-// the ledger, the window is later taken without it, and its file is told
-// nothing of the window. Overturned if the stream reports a failure to this
-// layer before it ends the segment.
+// has recorded the worker's failed sync, once a sync found the segment ended,
+// or once the end event is queued, not from the failed fsync or from the
+// stream's own end of the segment. A Corrupt before that point is read as
+// before the failure: the record leaves the ledger, the window is later taken
+// without it, and its file is told nothing of the window. Overturned if the
+// stream reports a failure to this layer before it ends the segment.
 //
 // decision: a failure recorded in st.failed alone is not enough. A sync the
 // stream refused without an fsync records one with no end event to follow,
