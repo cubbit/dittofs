@@ -4,21 +4,19 @@
 // it.
 //
 // Each field carries its mark: a restart-only field the tag restart:"true", a
-// live one none. Each field read from the settings record carries its default
-// in a default tag.
-//
-// decision: a default is a struct tag, not code that fills a zero value, so
-// Validate never defaults: the record loader fills a field the record omits
-// from its tag, and Validate refuses a zero it is handed. A default is then
-// one reviewed string beside its field, and a test compares each with the
-// value its RFC states. Replace the tags with a constructor if a default is
-// found that cannot be written as one string.
+// live one none. A field read from the settings record carries its default in
+// a default:"…" tag, read by the record loader that builds the shape; Validate
+// never fills a default, and refuses a zero value where one is required.
 package config
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -105,13 +103,8 @@ var (
 
 // Validate checks every field of s against its rule and returns an error
 // naming the field and the rule; it never clamps or defaults. New,
-// Reconfigure and the control plane call it.
-//
-// ponytail: the TLS block is checked field by field, not by loading its
-// files: this package is a leaf, and the certificate loader is the shared
-// one the NFS adapter builds TLS with. Load the files at the NFS constructor
-// when it builds TLS, so a certificate that does not load is still refused
-// at configured.
+// Reconfigure and the control plane call it. It loads NFS's TLS certificate,
+// key and client CA, so one that does not load is refused at configured.
 func Validate(s Settings) error {
 	var errs []error
 	refuse := func(field, format string, args ...any) {
@@ -133,6 +126,11 @@ func Validate(s Settings) error {
 		if t.ClientCA != "" && t.CertFile == "" {
 			refuse("TLS.ClientCA", "set while TLS is off (CertFile empty)")
 		}
+		if t.CertFile != "" && t.KeyFile != "" {
+			if field, err := loadTLS(t.CertFile, t.KeyFile, t.ClientCA); err != nil {
+				refuse(field, "%v", err)
+			}
+		}
 	case SMB:
 		validateAdapter(v.Adapter, refuse)
 		lo, hi := slices.Index(dialects, v.Dialects.Min), slices.Index(dialects, v.Dialects.Max)
@@ -149,6 +147,38 @@ func Validate(s Settings) error {
 		return fmt.Errorf("config: %T is not config.NFS or config.SMB", s)
 	}
 	return errors.Join(errs...)
+}
+
+// loadTLS loads the certificate, its key and the client CA, and names the
+// field of the first that does not load.
+func loadTLS(certFile, keyFile, clientCA string) (field string, err error) {
+	certPEM, err := os.ReadFile(certFile)
+	if err != nil {
+		return "TLS.CertFile", err
+	}
+	if block, _ := pem.Decode(certPEM); block == nil {
+		return "TLS.CertFile", fmt.Errorf("%s holds no PEM certificate", certFile)
+	} else if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+		return "TLS.CertFile", fmt.Errorf("%s: %w", certFile, err)
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		return "TLS.KeyFile", err
+	}
+	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
+		return "TLS.KeyFile", fmt.Errorf("%s: %w", keyFile, err)
+	}
+	if clientCA == "" {
+		return "", nil
+	}
+	caPEM, err := os.ReadFile(clientCA)
+	if err != nil {
+		return "TLS.ClientCA", err
+	}
+	if !x509.NewCertPool().AppendCertsFromPEM(caPEM) {
+		return "TLS.ClientCA", fmt.Errorf("%s holds no PEM certificate", clientCA)
+	}
+	return "", nil
 }
 
 func validateAdapter(a Adapter, refuse func(field, format string, args ...any)) {
