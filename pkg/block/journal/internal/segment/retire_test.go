@@ -1547,7 +1547,7 @@ func TestRetireWorkerRetriesAFailedUnlink(t *testing.T) {
 	})
 
 	t.Run("a failed recycle whose fallback unlink fails too", func(t *testing.T) {
-		e, _ := retirer(t, segment.Targets{Content: 1}, nil)
+		e, durable := retirer(t, segment.Targets{Content: 1}, nil)
 		id := e.segment(true)
 		oldName := format.SegmentName(id)
 
@@ -1576,14 +1576,17 @@ func TestRetireWorkerRetriesAFailedUnlink(t *testing.T) {
 			t.Fatalf("after the failed recycle the directory holds the segments %v, want the one renamed file", segs)
 		}
 
-		// The retry removes both names and retires the segment at last.
+		// The retry removes both names and retires the segment at last. The
+		// wait is the durable signal, the pass's last step: the ledger's
+		// footprint falls before the executor's freed_bytes rises, so a wait
+		// on the ledger can read the counter between the two.
 		segment.RetryEveryForTest(e.r, time.Millisecond)
 		e.r.Start()
 		e.r.Enqueue(id, segment.NotHeld)
 		deadline := time.Now().Add(10 * time.Second)
-		for e.set.Counters().UsedBytes != 0 {
+		for durable.len() == 0 {
 			if time.Now().After(deadline) {
-				t.Fatalf("the worker never retried: the ledger holds %+v", e.set.Counters())
+				t.Fatalf("the worker never retried: the ledger holds %+v and the signal %+v", e.set.Counters(), durable.all())
 			}
 			runtime.Gosched()
 		}

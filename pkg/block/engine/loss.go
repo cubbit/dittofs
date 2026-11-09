@@ -22,7 +22,6 @@ type losses struct {
 	mu    sync.Mutex
 	floor uint64
 	files map[entity.FileID]uint64
-	gen   uint64 // the journal's loss generation the drain last applied
 	seq   uint64 // the newest loss event the drain read
 	// windows are the files a failed-window event raised whose failed sync
 	// has not yet reached a Sync of theirs: that Sync's SyncError raises them
@@ -164,7 +163,7 @@ func (e *Engine) syncMarks(ctx context.Context, b *binding, ids ...journal.FileI
 }
 
 // drain applies the loss events the journal reported since the last drain,
-// once its loss generation moved: each corrupt or failed-window loss of an
+// read by their sequence numbers: each corrupt or failed-window loss of an
 // unoffloaded write raises its file's sequence, a gap in the ring raises
 // every file's, a corrupt loss of a write still pending marks the run of
 // that write it names lost, so its existence commit records that run lost
@@ -173,8 +172,23 @@ func (e *Engine) syncMarks(ctx context.Context, b *binding, ids ...journal.FileI
 // by its window.
 //
 // The drain holds the journal's loss lock until every write it marks is
-// marked, so a drain that finds the generation already applied finds its
-// writes marked too.
+// marked, so a drain that finds an event already applied finds its write
+// marked too.
+//
+// decision: the drain reads the ring on every call rather than only once the
+// loss generation moved, since the journal raises the generation before it
+// publishes the event behind it (RFC 1 §3.8), and raises it for a range that
+// names no record with no event at all: no generation tells which events it
+// covers, so one stored as applied would hide an event published after it
+// until the next raise. A drain that runs between a raise and its event
+// misses that event, and the gap lasts the loss record's fsync on a read's
+// loss, and a whole failed window's events after its one raise. A Commit in
+// it answers a verifier that already carries the raise, so an NFS client
+// resends; but it returns the file's loss sequence still unraised, so an SMB
+// flush succeeds and the write commits as data, charged, and the next drain
+// raises the sequence but cannot mark a write already committed. That is no
+// worse than draining by the generation was. Revisit if the journal ever
+// publishes an event before it raises the generation for it.
 //
 // decision: a corrupt loss of a pending write is taken as of a synced write
 // and committed lost, and a failed window's as of an unsynced one, dropped,
@@ -186,12 +200,8 @@ func (e *Engine) drain(b *binding) {
 	defer func() { runAll(dones) }()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if b.j.Stats().LossGeneration == l.gen {
-		return
-	}
-	st := b.j.Stats()
 	var lost []journal.LossEvent
-	for _, ev := range st.Losses {
+	for _, ev := range b.j.Stats().Losses {
 		if ev.SeqNum <= l.seq {
 			continue
 		}
@@ -199,6 +209,11 @@ func (e *Engine) drain(b *binding) {
 			l.raiseAll() // the ring dropped events this drain never saw
 		}
 		l.seq = ev.SeqNum
+		// decision: a superseded loss is to be skipped here as a stale one
+		// is (RFC 8 §5.1: the reconcile raises superseded content, the
+		// drain does not). The journal exports no superseded reason yet:
+		// whichever of this and the journal's export lands second adds it
+		// to this skip.
 		if ev.Offloaded || ev.Reason == journal.LossStale {
 			continue
 		}
@@ -212,7 +227,6 @@ func (e *Engine) drain(b *binding) {
 			l.windows[f] = true
 		}
 	}
-	l.gen = st.LossGeneration
 	if h := e.hooks.drained.Load(); h != nil {
 		(*h)()
 	}
