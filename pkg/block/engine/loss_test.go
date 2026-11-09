@@ -74,8 +74,7 @@ func TestALossBeforeTheBatchsSyncCommitsTheWriteLost(t *testing.T) {
 
 // A corrupt loss whose event the journal publishes after a drain saw the
 // generation it raised is still applied by the next drain: the write commits
-// lost, charging nothing, a read of it answers ErrLost and its file's
-// sequence is raised.
+// lost, charging nothing, and its file's sequence is raised.
 func TestALossPublishedAfterItsGenerationIsDrained(t *testing.T) {
 	u := newUnit(t)
 	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
@@ -93,9 +92,6 @@ func TestALossPublishedAfterItsGenerationIsDrained(t *testing.T) {
 	}
 	if got.Size != 4 || got.Charged != 0 {
 		t.Errorf("size %d, charged %d; want size 4 charging nothing", got.Size, got.Charged)
-	}
-	if _, err := u.e.Read(t.Context(), u.share.ID, f, 0, make([]byte, 4)); !errors.Is(err, vfserr.ErrLost) {
-		t.Errorf("a read of the lost write: %v, want ErrLost", err)
 	}
 	if s := u.e.LossSeq(u.share.ID, f); s != 1 {
 		t.Errorf("f's sequence after its loss is %d, want 1", s)

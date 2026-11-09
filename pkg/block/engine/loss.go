@@ -181,9 +181,14 @@ func (e *Engine) syncMarks(ctx context.Context, b *binding, ids ...journal.FileI
 // names no record with no event at all: no generation tells which events it
 // covers, so one stored as applied would hide an event published after it
 // until the next raise. A drain that runs between a raise and its event
-// misses that event; the verifier, sampled after the drain, already carries
-// the raise, and the next drain applies the event. Revisit if the journal
-// ever publishes an event before it raises the generation for it.
+// misses that event, and the gap lasts the loss record's fsync on a read's
+// loss, and a whole failed window's events after its one raise. A Commit in
+// it answers a verifier that already carries the raise, so an NFS client
+// resends; but it returns the file's loss sequence still unraised, so an SMB
+// flush succeeds and the write commits as data, charged, and the next drain
+// raises the sequence but cannot mark a write already committed. That is no
+// worse than draining by the generation was. Revisit if the journal ever
+// publishes an event before it raises the generation for it.
 //
 // decision: a corrupt loss of a pending write is taken as of a synced write
 // and committed lost, and a failed window's as of an unsynced one, dropped,
@@ -209,12 +214,10 @@ func (e *Engine) drain(b *binding) {
 		}
 		l.seq = ev.SeqNum
 		// decision: a superseded loss is to be skipped here as a stale one
-		// is. RFC 8 §5.1 raises a file for superseded content only where the
-		// metadata reconcile finds that just an overwrite record knew the
-		// newer bytes, and the event of a held piece's end raises nothing
-		// more; the event cannot tell that piece from one a ref holds, so the
-		// reconcile raises it, not the drain. The journal exports no
-		// superseded reason yet: skip it here once it does.
+		// is (RFC 8 §5.1: the reconcile raises superseded content, the
+		// drain does not). The journal exports no superseded reason yet:
+		// whichever of this and the journal's export lands second adds it
+		// to this skip.
 		if ev.Offloaded || ev.Reason == journal.LossStale {
 			continue
 		}
