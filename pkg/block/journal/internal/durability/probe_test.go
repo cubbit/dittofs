@@ -21,8 +21,11 @@ type afterCounter struct {
 }
 
 func (c *afterCounter) After(d time.Duration) <-chan struct{} {
+	ch := c.Clock.After(d)
+	// Counted once the timer is registered, so a test that saw the count may
+	// advance the clock and be sure the timer feels it.
 	c.n.Add(1)
-	return c.Clock.After(d)
+	return ch
 }
 
 type probeRig struct {
