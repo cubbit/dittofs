@@ -91,7 +91,7 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 	var out outbox
 	// decision: I/O of no byte conflicts with no grant, so it recalls none,
 	// as MS-FSA answers a read or write of ByteCount zero before its oplock
-	// break check and NFSv4 lets a count of 0 succeed subject only to its
+	// break check and NFSv4 lets a count of 0 succeed subject to its
 	// access checks. The deny-mode check stays, with the handle-caching break
 	// it waits on. Overturned by a client found to rely on an empty write to
 	// break another client's write caching.
