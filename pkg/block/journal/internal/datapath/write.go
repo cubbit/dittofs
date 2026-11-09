@@ -2,6 +2,7 @@ package datapath
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -70,6 +71,11 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 		}, format.RecordBody{Payload: rest, MTime: mtime})
 		if err != nil {
 			return core.Version{}, done, err
+		}
+		if pl.N <= 0 {
+			// A stream that places nothing and reports no error would have
+			// this loop append the same rest forever.
+			return core.Version{}, done, fmt.Errorf("datapath: the stream placed no byte of a %d-byte piece of file %v at offset %d", len(rest), id, off+done)
 		}
 		// decision: the index may refuse a publish after its record is in the
 		// segment, by a tag that owns the file elsewhere or by the entry bound.
