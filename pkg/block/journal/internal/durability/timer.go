@@ -60,14 +60,17 @@ func (st *stream) oldestLocked() (seen time.Duration, ok bool) {
 // later, so the one timer is never late, and a fire that finds the oldest
 // record not yet due arms the next.
 //
-// A hold waiting on a retry (an owed claim, or a record to re-append) arms a
-// tick one sync bound away when no record's deadline comes sooner, so the
-// worker retries at each tick of the bound with nothing else to wake it. A
-// read-only journal retries nothing, so its holds arm none.
+// A hold waiting on a retry (an owed claim, or a record to re-append), or a
+// window with a record not yet re-appended, arms a tick one sync bound away
+// when no record's deadline comes sooner, so the worker retries at each tick
+// of the bound with nothing else to wake it. A read-only journal retries
+// nothing, so its holds and windows arm none.
 func (d *Durability) arm(st *stream) <-chan struct{} {
 	st.mu.Lock()
 	seen, ok := st.oldestLocked()
-	retry := st.holdsDueLocked(d.reappend != nil)
+	// A window that is still pending holds a record the pass could not
+	// re-append, which the next tick tries again.
+	retry := st.holdsDueLocked(d.reappend != nil) || len(st.windows) != 0
 	st.mu.Unlock()
 	if !ok && retry && !d.isReadOnly() {
 		return d.clock.After(core.SyncBound)

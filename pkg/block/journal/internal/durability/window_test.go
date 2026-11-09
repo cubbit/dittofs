@@ -378,17 +378,23 @@ func TestAResolvedWindowIsAnnouncedOnceAndItsRecordsAreNotPending(t *testing.T) 
 	}
 }
 
-// leaveAFailedSegment drives the segment a stream took to leave a failed one: it
-// fails a sync of f, then appends g's record in the spare. The two files are
-// distinct so a Sync of g does not meet the failed segment's window. f's record
-// is a header-only one, which a failed window keeps rather than fails, so that
-// no loss record is appended into the spare ahead of g's.
+// leaveAFailedSegment drives the segment a stream took to leave a failed one: f
+// writes a record and syncs it, a seal of the segment then fails, and g's
+// record is appended in the spare. The two files are distinct so a Sync of g
+// does not meet the failed segment's window. No record of the failed segment is
+// unsynced, so the failure leaves nothing to fail or re-append in the spare
+// ahead of g's.
 func (r *rig) leaveAFailedSegment(t *testing.T, f, g core.FileID) (first, spare segment.Location) {
 	t.Helper()
 	first = r.appendKind(t, f, format.KindDelete, format.RecordBody{})
+	if err := mustReturn(t, "Sync", r.syncAsync(context.Background(), f)); err != nil {
+		t.Fatalf("Sync = %v", err)
+	}
 	r.failSyncOf(t, first.Segment, errors.New("first boom"))
-	wantSyncError(t, mustReturn(t, "Sync", r.syncAsync(context.Background(), f)), first.Segment, f)
-	eventually(t, "the worker to take the window", func() bool { return len(r.windowsOf(0)) > 0 })
+	if _, err := r.streams.For(f).Seal(false); err == nil {
+		t.Fatal("the seal was expected to fail")
+	}
+	eventually(t, "the worker to take the window", func() bool { return r.d.Stats().SyncFailures == 1 })
 	r.settlePool(t)
 	spare = r.appendWrite(t, g, 1, "b")
 	if spare.Segment == first.Segment {

@@ -13,8 +13,9 @@ import (
 )
 
 // run is one stream's worker: on each wake it takes the windows of the
-// segments that ended, fails their content records (or, once the journal is
-// read-only, every unsynced record of the stream), records the losses of the
+// segments that ended, fails their content records and re-appends the rest
+// (or, once the journal is read-only, fails every unsynced record of the
+// stream), records the losses of the
 // corrupt records reads handed it, completes the entries a
 // sync covered, stamps the ones it has not seen, issues the sync a waiter asked for
 // or the sync bound's timer calls for, and arms the timer, until Stop closes
@@ -35,7 +36,7 @@ func (d *Durability) run(st *stream) {
 		if d.Admit() != nil {
 			d.failReadOnly(st)
 		} else {
-			d.failWindows(st)
+			d.resolveWindows(st)
 		}
 		d.reappendStep(st)
 		if d.afterHolds != nil {
@@ -245,7 +246,7 @@ func (d *Durability) complete(st *stream) {
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	st.removeLocked(func(e *entry) bool { return e.done }, nil)
+	st.removeLocked(func(e *entry) bool { return e.done }, func(e entry) { st.forgetMovedLocked(e.w.Loc) })
 	// A Sync waits for its records to be completed, not only covered.
 	d.notifyAll()
 	live := st.live

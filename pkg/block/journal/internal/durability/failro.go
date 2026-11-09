@@ -110,6 +110,8 @@ func (d *Durability) failReadOnly(st *stream) {
 	}
 	every := func(entry) bool { return true }
 	for _, w := range ws {
-		d.settle(st, w, every, ro, true)
+		if d.settle(st, w, every, ro, true) {
+			d.resolve(st, w)
+		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
@@ -444,6 +445,16 @@ func TestStatsReturnsACopyOfTheRing(t *testing.T) {
 // on the directory's failed list and the synced loss is marked.
 func assertDropStands(t *testing.T, e *env, ev core.LossEvent, l durability.Loss) {
 	t.Helper()
+	assertDropKept(t, e, ev, l)
+	if lh, _ := e.lossRecords(); len(lh) != 0 {
+		t.Errorf("%d loss records are durable, want none", len(lh))
+	}
+}
+
+// assertDropKept is assertDropStands without the check that no loss record is
+// durable, for a failure after which the record may still land.
+func assertDropKept(t *testing.T, e *env, ev core.LossEvent, l durability.Loss) {
+	t.Helper()
 
 	if ev.SeqNum != 1 || ev.File != l.File || ev.Extent != l.Extent || ev.Reason != l.Reason {
 		t.Errorf("the event returned with the error is %+v, want the published loss of %+v", ev, l)
@@ -460,9 +471,6 @@ func assertDropStands(t *testing.T, e *env, ev core.LossEvent, l durability.Loss
 	}
 	if got := e.marked(); (len(got) == 1) != l.Synced {
 		t.Errorf("MarkLoss called %d times for a loss with Synced=%v", len(got), l.Synced)
-	}
-	if lh, _ := e.lossRecords(); len(lh) != 0 {
-		t.Errorf("%d loss records are durable, want none", len(lh))
 	}
 }
 
@@ -786,6 +794,8 @@ func TestFailedHoldsASeqOnceAcrossDurabilities(t *testing.T) {
 // TestLoseOfARecordWhoseSegmentWasEndedIsNotDurable catches a loss reported
 // durable because the stream rolled past the segment holding its record
 // before the sync: the sync then covers the new segment, not the record's.
+// The failed window then re-appends the record, so it does become durable, in
+// the new segment and once, and only after the Lose has answered.
 func TestLoseOfARecordWhoseSegmentWasEndedIsNotDurable(t *testing.T) {
 	e := newEnv(t)
 	st := e.streams.For(file(1))
@@ -809,7 +819,27 @@ func TestLoseOfARecordWhoseSegmentWasEndedIsNotDurable(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Lose = nil, but its record's segment was ended and never made durable")
 	}
-	assertDropStands(t, e, ev, l)
+	assertDropKept(t, e, ev, l)
+	// The record is re-appended by the worker, which is not part of the Lose,
+	// and syncs with the next sync of the file: a sync the stream already
+	// had in flight may not cover it.
+	if err := e.d.Sync(context.Background(), l.File); err != nil {
+		t.Fatalf("Sync of the re-appended record's file = %v, want nil", err)
+	}
+	var got []format.Loss
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		_, got = e.lossRecords()
+		dropped := 0
+		for _, b := range got {
+			if b.Dropped == l.Seq {
+				dropped++
+			}
+		}
+		if dropped == 1 {
+			return
+		}
+	}
+	t.Fatalf("the re-appended record of seq %d never became durable once: %+v", l.Seq, got)
 }
 
 // TestLoseOfARecordWhoseSyncFailsEndsItsSegment catches a failed sync of a

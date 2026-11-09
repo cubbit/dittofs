@@ -592,32 +592,29 @@ func TestAFailedWindowLeavesWhatARecordStillInTheLedgerHeld(t *testing.T) {
 	}
 }
 
-// TestAWindowWithAHeaderOnlyRecordStaysPending pins the interim: only content
-// records are failed, so a window holding another kind is not resolved and
-// keeps that record.
-func TestAWindowWithAHeaderOnlyRecordStaysPending(t *testing.T) {
+// TestAWindowWithAHeaderOnlyRecordIsResolvedOnceItIsReappended pins that only
+// content records are failed: a window holding another kind as well fails the
+// write, re-appends the delete, and is announced resolved once, with the
+// delete's file still told of the write's loss alone.
+func TestAWindowWithAHeaderOnlyRecordIsResolvedOnceItIsReappended(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	var mark atomic.Int64
-	fr := newFailRig(t, func(fr *failRig) { fr.d.afterFail = func() { mark.Store(fr.passes.Load()) } })
+	fr := newFailRig(t, nil)
 	f := file(1)
 	loc := fr.appendWrite(t, f, 0, "aaaa")
 	fr.appendKind(t, f, format.KindDelete, format.RecordBody{})
 	fr.failSyncOf(t, loc.Segment, errors.New("sync boom"))
 	_ = fr.syncAsync(context.Background(), f)
 
-	// The write is failed and named; the delete keeps the window.
-	eventually(t, "the content record to be failed", func() bool { return len(fr.events()) == 1 })
-	eventually(t, "the window to hold only the delete", func() bool {
-		ws := fr.windowsOf(0)
-		return len(ws) == 1 && len(ws[0].locs) == 1
-	})
-	// The pass that failed the content record decides whether the window
-	// resolves before it ends.
-	fr.awaitPassEnd(t, mark.Load())
-	select {
-	case seg := <-fr.resolved:
-		t.Fatalf("segment %d was resolved with a header-only record pending", seg)
-	default:
+	// The write is failed and named; the delete is carried to a new segment
+	// and the window resolves.
+	if got := fr.awaitResolved(t); got != loc.Segment {
+		t.Fatalf("resolved segment %d, want %d", got, loc.Segment)
+	}
+	if n := len(fr.events()); n != 1 {
+		t.Errorf("%d loss events, want the write's alone", n)
+	}
+	if ws := fr.windowsOf(0); len(ws) != 0 {
+		t.Errorf("windows = %+v, want none", ws)
 	}
 	if fr.d.Durable(loc) {
 		t.Error("a failed record reads durable")

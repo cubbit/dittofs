@@ -50,11 +50,6 @@ type window struct {
 	cause   segment.EndCause
 	err     error   // why the segment ended
 	entries []entry // moved from the ledger, in Track order
-	// failed is set once failWindow has run for the window: its content
-	// records are dropped and the generation raised, or it holds none and
-	// needed no raise. A header-only record answers a Sync's failure only
-	// after that.
-	failed bool
 	// readOnly marks a window failReadOnly made of a segment's unsynced
 	// records once the journal turned read-only: the segment did not fail,
 	// so resolving the window announces nothing and keeps the segment's
@@ -237,12 +232,11 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 // worker.
 //
 // decision: a window is resolved when it holds no record: at once when it is
-// taken with none, when failWindow has failed its last record, or when
-// failWindow or failReadOnly finds a Corrupt took the last record out before
-// it ran. While the journal takes writes, a window holding a record that
-// failWindow leaves, a header-only one, stays pending and is not announced,
-// and every Sync naming a file with such a record answers a *core.SyncError,
-// until the code that re-appends it lands, or until the journal turns
+// taken with none, when failWindow has failed its last content record and
+// resolveWindows re-appended its last other record, or when resolveWindows or
+// failReadOnly finds a Corrupt took the last record out before it ran. A
+// window whose record could not be re-appended stays pending and is not
+// announced, and the pass after retries it, until the journal turns
 // read-only, which fails every record of every window and so resolves them
 // all. A pending window never reads durable, so nothing is lost by waiting;
 // what is withdrawn is only the window's memory. A window failReadOnly made is

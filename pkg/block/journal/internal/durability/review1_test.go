@@ -336,7 +336,7 @@ func TestACoverStillInALaterWindowIsNotLiftedWhenAnEarlierOneFails(t *testing.T)
 	if n := len(r.windowsOf(0)); n != 2 {
 		t.Fatalf("%d windows pending, want both", n)
 	}
-	r.d.failWindows(st)
+	r.d.resolveWindows(st)
 
 	if p, ok := r.ix.Lookup(f, 0); !ok || p.Version != v1 {
 		t.Fatalf("after both windows failed Lookup serves %+v, %v, want v1's piece held again", p, ok)
@@ -412,13 +412,14 @@ func TestACoverIsHeldOnlyByTheRecordOfItsOwnExtent(t *testing.T) {
 	}
 }
 
-// TestASyncWaitsForAFailureInFlightWhenAHeaderOnlyTargetIsAnswered pins that a
-// header-only target whose window has been failed does not end the wait while
-// another file's failed window on the same stream is still being handled: f's
-// delete is failed and answered, g's write in the next segment is failed and
-// its window held, and a Sync naming both returns only after g's window is
-// failed, with the generation raised, and names both files.
-func TestASyncWaitsForAFailureInFlightWhenAHeaderOnlyTargetIsAnswered(t *testing.T) {
+// TestASyncWaitsForAFailureInFlightWhileAHeaderOnlyRecordIsCarriedForward pins
+// that a Sync naming a file whose header-only record was re-appended still
+// waits while another file's failed window on the same stream is being
+// handled: f's delete is re-appended, g's write in the next segment is failed
+// and its window held, and a Sync naming both returns only after g's window is
+// failed, with the generation raised, and names g alone: f's record was
+// carried forward, not lost.
+func TestASyncWaitsForAFailureInFlightWhileAHeaderOnlyRecordIsCarriedForward(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	var heldSeg atomic.Uint64
 	gate, open := releaser(t)
@@ -442,13 +443,14 @@ func TestASyncWaitsForAFailureInFlightWhenAHeaderOnlyTargetIsAnswered(t *testing
 		r.clock.Advance(2 * core.SyncBound)
 		return r.d.Stats().SyncFailures >= 1
 	})
-	// The window stays: a header-only record is not failed, only answered.
-	eventually(t, "f's window to be failed", func() bool {
-		st := r.d.made[0]
-		st.mu.Lock()
-		defer st.mu.Unlock()
-		_, ok := st.answersFailureLocked(delLoc)
-		return ok
+	// The window resolves: its header-only record is re-appended, not failed.
+	eventually(t, "f's window to be resolved", func() bool {
+		for _, got := range resolved.all() {
+			if got.seg == delLoc.Segment {
+				return true
+			}
+		}
+		return false
 	})
 
 	// A sync succeeds in the spare first, so g's failure is not the second
@@ -468,7 +470,7 @@ func TestASyncWaitsForAFailureInFlightWhenAHeaderOnlyTargetIsAnswered(t *testing
 	r.stamped(t, 0)
 	eventually(t, "g's window to be taken", func() bool {
 		r.clock.Advance(2 * core.SyncBound)
-		return r.d.Stats().SyncFailures >= 2 && len(r.windowsOf(0)) > 1
+		return r.d.Stats().SyncFailures >= 2 && len(r.windowsOf(0)) > 0
 	})
 
 	before := r.d.Generation()
@@ -481,8 +483,8 @@ func TestASyncWaitsForAFailureInFlightWhenAHeaderOnlyTargetIsAnswered(t *testing
 	if !errors.As(err, &se) {
 		t.Fatalf("Sync = %v, want a *core.SyncError", err)
 	}
-	if !slices.Contains(se.Files, f) || !slices.Contains(se.Files, g) {
-		t.Errorf("SyncError.Files = %v, want both files", se.Files)
+	if !slices.Contains(se.Files, g) || slices.Contains(se.Files, f) {
+		t.Errorf("SyncError.Files = %v, want g alone: f's record was re-appended", se.Files)
 	}
 	if gen <= before {
 		t.Errorf("generation %d after the Sync, was %d before g's window was failed: the Sync returned before the raise", gen, before)
@@ -535,7 +537,7 @@ func TestAFailedWindowLiftsACoverOverItsOwnExtentOnly(t *testing.T) {
 		t.Fatalf("ledger holds %d entries, want the second record alone", n)
 	}
 
-	r.d.failWindows(st)
+	r.d.resolveWindows(st)
 	got := r.retainedBy(f, v3)
 	if len(got) == 0 {
 		t.Fatalf("nothing is retained by the second record, whose sync has not completed: its part was lifted with the first record's")

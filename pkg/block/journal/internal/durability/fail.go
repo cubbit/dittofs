@@ -10,23 +10,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
-// failWindows fails the content records of every pending window of the
-// stream. It runs on the worker, after the windows are taken, while the
-// journal takes writes; a read-only journal fails its windows in
-// failReadOnly instead.
-func (d *Durability) failWindows(st *stream) {
-	st.mu.Lock()
-	if len(st.windows) == 0 {
-		st.mu.Unlock()
-		return
-	}
-	ws := slices.Clone(st.windows)
-	st.mu.Unlock()
-	for _, w := range ws {
-		d.failWindow(st, w)
-	}
-}
-
 // recordAt is where the index places the record e was written at.
 func recordAt(w segment.Written) index.RecordAt {
 	return index.RecordAt{Segment: w.Loc.Segment, Offset: uint32(w.Loc.Off)}
@@ -35,11 +18,12 @@ func recordAt(w segment.Written) index.RecordAt {
 // isLoss reports whether w is a loss record.
 func isLoss(w segment.Written) bool { return w.Kind == format.KindLoss }
 
-// failWindow fails the content records of a failed segment's window, raises
-// the loss generation once for the window, names every dropped record in a
-// loss record and an event, and resolves the window once it holds nothing
-// more. It runs on the stream's worker. A read-only journal fails its windows
-// in failReadOnly instead.
+// failWindow drops the window's content records from the index, which holds
+// again what they superseded, raises the loss generation once for the window,
+// and names every dropped record in a loss record and an event. A record of
+// another kind stays in the window for resolveWindows to re-append. It runs on
+// the stream's worker while the journal takes writes; a read-only journal
+// fails its windows in failReadOnly instead.
 //
 // The index is changed under the file's append domain, one file at a time, so
 // a writer that appended into the failed segment and has not yet published
@@ -47,15 +31,6 @@ func isLoss(w segment.Written) bool { return w.Kind == format.KindLoss }
 // records are appended with no domain held: an append may roll, seal and sync,
 // and a read of the file must not wait on it. st.mu is never held across a
 // call into the index or the domains.
-//
-// decision: outside a read-only journal only content records are failed, and
-// a window that still holds another kind keeps it and stays pending, with the
-// interim answer check gives. Such a record holds nothing in the index and has
-// no content to lose, but its operation must not be forgotten, and it is the
-// re-append of the record that carries it forward; failing it here would drop
-// the operation. Withdrawn once that re-append exists: the record is then
-// neither failed nor kept here. A read-only journal, which can append nothing,
-// fails them too (failReadOnly).
 func (d *Durability) failWindow(st *stream, w *window) {
 	st.mu.Lock()
 	var failing []entry
@@ -65,19 +40,8 @@ func (d *Durability) failWindow(st *stream, w *window) {
 		}
 	}
 	if len(failing) == 0 {
-		empty := len(w.entries) == 0
-		// Nothing to drop and no generation to raise, but the window is
-		// processed: a header-only record may now answer its Sync. A window
-		// Corrupt took the last record out of holds nothing more and is
-		// resolved here; one still holding another kind stays pending.
-		if !w.failed {
-			w.failed = true
-			st.d.notifyAll()
-		}
+		// Nothing to drop and no generation to raise.
 		st.mu.Unlock()
-		if empty {
-			d.resolve(st, w)
-		}
 		return
 	}
 	st.mu.Unlock()
@@ -119,10 +83,11 @@ func byFileOf(entries []entry) ([]core.FileID, map[core.FileID][]entry) {
 }
 
 // settle takes the entries fails selects out of the window, now that their
-// index changes are made, records each as lost with err, marks every file
-// owed a report, and resolves the window once it holds nothing more. ro says
-// a read-only journal failed them: a header-only record among them was undone.
-func (d *Durability) settle(st *stream, w *window, fails func(entry) bool, err error, ro bool) {
+// index changes are made, records each as lost with err, and marks every file
+// owed a report. It reports whether the window then holds nothing more, which
+// the caller resolves. ro says a read-only journal failed them: a header-only
+// record among them was undone.
+func (d *Durability) settle(st *stream, w *window, fails func(entry) bool, err error, ro bool) (empty bool) {
 	// The records leave the window and every file's mark is set in one step,
 	// so a waiter never sees a record gone with no report owed, and a Sync
 	// naming several files of the window hears of all of them at once. A record
@@ -157,16 +122,13 @@ func (d *Durability) settle(st *stream, w *window, fails func(entry) bool, err e
 	for _, f := range marked {
 		st.markErrLocked(w, f, err)
 	}
-	w.failed = true
-	empty := len(w.entries) == 0
+	empty = len(w.entries) == 0
 	st.d.notifyAll()
 	st.mu.Unlock()
 	if d.afterFail != nil {
 		d.afterFail()
 	}
-	if empty {
-		d.resolve(st, w)
-	}
+	return empty
 }
 
 // failFile fails the records of one file, given in the order they were
