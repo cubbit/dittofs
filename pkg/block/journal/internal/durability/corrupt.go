@@ -259,7 +259,16 @@ func (st *stream) takeCorrupt(c Corruption) (synced, lost bool) {
 // segmentFailedLocked reports whether seg has failed and its end event, which
 // takeWindow turns into the window, is still to be taken: the worker counted
 // its failed sync and ended it, a sync found it ended, or the event is queued.
-// The caller holds mu.
+// The caller holds mu. An event stays queued until takeWindow pops it in the
+// step that makes its window, so no gap opens between the two.
+//
+// decision: a failure counts from when this layer records it: once syncStep
+// has recorded the worker's failed sync, or once the end event is queued, not
+// from the failed fsync or from the stream's own end of the segment. A
+// Corrupt before that point is read as before the failure: the record leaves
+// the ledger, the window is later taken without it, and its file is told
+// nothing of the window. Overturned if the stream reports a failure to this
+// layer before it ends the segment.
 //
 // decision: a failure recorded in st.failed alone is not enough. A sync the
 // stream refused without an fsync records one with no end event to follow,

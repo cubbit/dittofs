@@ -185,12 +185,12 @@ type Durability struct {
 	// window, before its records are failed, and afterFail once they are
 	// failed and reported, before the window is resolved; afterPass runs at
 	// the end of each worker pass, once the pass has done everything it will
-	// do for the wake that started it; beforeWait runs in a caller's await
-	// each time it is about to park, after its checks found something still
-	// pending. None is called with a lock held.
+	// do for the wake that started it; beforeWait runs in a caller's await,
+	// on its work, each time it is about to park, after its checks found
+	// something still pending. None is called with a lock held.
 	afterAppend func()
 	afterPass   func()
-	beforeWait  func()
+	beforeWait  func([]work)
 	beforeFail  func(*window)
 	afterFail   func()
 	beforeSync  func()
@@ -199,6 +199,10 @@ type Durability struct {
 	// under the file's domain on what the index dropped, before it reads the
 	// dropped pieces.
 	afterCorruptDrop func(*index.FailedWindow)
+
+	// beforeTakeWindow is a test hook, nil in production: the worker runs it
+	// with no lock held before it takes each queued end event's window.
+	beforeTakeWindow func()
 
 	// lmu guards the loss ring, the counters and pieces, and the generation
 	// read and raise that go with them.
@@ -993,7 +997,7 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 			return nil
 		}
 		if d.beforeWait != nil {
-			d.beforeWait()
+			d.beforeWait(ws)
 		}
 		select {
 		case <-ctx.Done():

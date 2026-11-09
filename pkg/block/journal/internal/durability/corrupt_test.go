@@ -517,15 +517,22 @@ func TestCorruptRecordOfFailedSegmentBeforeItsWindowMarksFile(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	hook, reached, release := gate(t)
 	var parked atomic.Bool
+	var waits atomic.Int64
+	f, g := file(1), file(2)
 	cr := newCorruptRig(t, func(cr *corruptRig) {
 		cr.d.afterSync = func() {
 			if parked.Load() {
 				hook()
 			}
 		}
+		// Counts the times a Sync naming f is left waiting.
+		cr.d.beforeWait = func(ws []work) {
+			if slices.ContainsFunc(ws, func(w work) bool { return slices.Contains(w.ids, f) }) {
+				waits.Add(1)
+			}
+		}
 	})
 	t.Cleanup(release)
-	f, g := file(1), file(2)
 	gw := cr.write(t, g, 0, "gggg")
 	// Park the worker after a sync that covers g's record, before its next
 	// pass takes any window.
@@ -548,6 +555,8 @@ func TestCorruptRecordOfFailedSegmentBeforeItsWindowMarksFile(t *testing.T) {
 		return len(st.ends) > 0
 	})
 	waiting := cr.syncAsync(context.Background(), f)
+	eventually(t, "the Sync of f to wait", func() bool { return waits.Load() > 0 })
+	mustBlock(t, "the waiting Sync", waiting)
 
 	cr.corrupt(t, fw.c)
 	release()
@@ -557,6 +566,32 @@ func TestCorruptRecordOfFailedSegmentBeforeItsWindowMarksFile(t *testing.T) {
 	wantSyncError(t, mustReturn(t, "the waiting Sync", waiting), fw.loc.Segment, f)
 	cr.wantNilSync(t, f)
 	cr.awaitRecord(t, fw.c.Seq)
+}
+
+// TestCorruptRecordWhileItsEndEventIsTakenMarksFile covers a record found
+// corrupt after the worker took its segment's end event off the queue and
+// before it made the event's window: the file, whose only write in the window
+// it was, is told of the failure once.
+func TestCorruptRecordWhileItsEndEventIsTakenMarksFile(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	hook, reached, release := gate(t)
+	cr := newCorruptRig(t, func(cr *corruptRig) { cr.d.beforeTakeWindow = hook })
+	t.Cleanup(release)
+	f := file(1)
+	w := cr.write(t, f, 0, "aaaa")
+	// A seal whose sync fails ends the segment with no failure the worker
+	// counted, so the queued end event is all that names the failure.
+	cr.failSyncOf(t, w.loc.Segment, errors.New("sync boom"))
+	if _, err := cr.streams.For(f).Seal(false); err == nil {
+		t.Fatal("the seal's sync did not fail")
+	}
+	<-reached
+
+	cr.corrupt(t, w.c)
+	release()
+	wantSyncError(t, mustReturn(t, "first Sync", cr.syncAsync(context.Background(), f)), w.loc.Segment, f)
+	cr.wantNilSync(t, f)
+	cr.awaitRecord(t, w.c.Seq)
 }
 
 // TestCorruptEmptiesPendingWindowWhichResolves covers a pending window whose

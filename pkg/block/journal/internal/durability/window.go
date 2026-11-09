@@ -80,13 +80,22 @@ func (d *Durability) onEnd(ev segment.EndEvent) {
 
 // takeWindows takes the window of every end event queued for the stream. It
 // runs on the worker, before the completion pass, so a record a sync covered
-// is completed there and only the uncovered ones are the window.
+// is completed there and only the uncovered ones are the window. It takes the
+// events queued when it starts; one queued meanwhile waits for the next pass.
+// Each event stays queued until takeWindow makes its window in the critical
+// section that pops it, so Corrupt sees the segment failed throughout.
 func (d *Durability) takeWindows(st *stream) {
 	st.mu.Lock()
-	evs := st.ends
-	st.ends = nil
+	n := len(st.ends)
 	st.mu.Unlock()
-	for _, ev := range evs {
+	for range n {
+		// Only the worker pops, so the head is the event peeked here.
+		st.mu.Lock()
+		ev := st.ends[0]
+		st.mu.Unlock()
+		if d.beforeTakeWindow != nil {
+			d.beforeTakeWindow()
+		}
 		d.takeWindow(st, ev)
 	}
 }
@@ -147,6 +156,8 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	}
 
 	st.mu.Lock()
+	// The event leaves the queue in the step that makes its window.
+	st.ends = slices.Delete(st.ends, 0, 1)
 	// decision: the window is the entries no sync has covered when the worker
 	// takes the event, and no Synced report for the failed segment is refused
 	// in the gap between the failure and this point, because none can arrive:

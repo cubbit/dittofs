@@ -336,7 +336,7 @@ func TestAHeaderOnlyAnswerWaitsForTheLossGenerationOfItsWindow(t *testing.T) {
 	parked := make(chan struct{}, 16)
 	// A park counts only once the window is taken: the worker holds it at the
 	// gate, so the Sync parked with the window pending and not yet failed.
-	r.d.beforeWait = func() {
+	r.d.beforeWait = func([]work) {
 		if len(r.windowsOf(0)) > 0 {
 			select {
 			case parked <- struct{}{}:

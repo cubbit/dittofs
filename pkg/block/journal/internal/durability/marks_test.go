@@ -241,7 +241,7 @@ func TestWaitDurableNeverConsultsTheMarks(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	parked := make(chan struct{}, 1)
 	fr := newFailRig(t, func(fr *failRig) {
-		fr.d.beforeWait = func() {
+		fr.d.beforeWait = func([]work) {
 			select {
 			case parked <- struct{}{}:
 			default:
