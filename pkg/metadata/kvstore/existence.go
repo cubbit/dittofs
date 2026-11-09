@@ -51,7 +51,9 @@ type PendingOp struct {
 	// supersede as the rest of the write does, and charge nothing, so only
 	// they read as lost. The write stays one operation at its version, so
 	// no key budget can commit part of it. A write the journal lost whole
-	// has the one run Extent.
+	// has the one run Extent. Offload needs no check of its own: a lost run
+	// is not held by the journal, so an offload that uploads what the
+	// journal holds skips it.
 	Lost []entity.Extent
 }
 
