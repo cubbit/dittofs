@@ -198,16 +198,8 @@ Signing behavior:
 - **Required** (default `false`): when `true`, the server rejects unsigned messages from
   established sessions.
 
-Configure via `dfsctl`, where the two states above are selected by one tri-state flag
-(`disabled` | `enabled` | `required`):
-
-```bash
-# Advertise signing and reject unsigned messages
-./dfsctl adapter settings smb update --signing required
-
-# Advertise signing but still accept unsigned messages (the default)
-./dfsctl adapter settings smb update --signing enabled
-```
+The two states above are stored as one tri-state SMB adapter setting
+(`disabled` | `enabled` | `required`); this build has no command to change it.
 
 **Recommendation:** set `required: true` for all production deployments to prevent tampering even
 when encryption is not used.
@@ -284,10 +276,11 @@ IP addresses, CIDR ranges and hostnames. A share with a netgroup accepts only
 clients whose address matches a member; a share with no netgroup accepts any
 client.
 
+This build removes the netgroup commands and their REST routes, so a netgroup
+cannot be created or edited; netgroups already stored in the control-plane
+database are kept. One is attached to a share with:
+
 ```bash
-dfsctl netgroup create trusted-net
-dfsctl netgroup add-member trusted-net --type cidr --value 192.168.1.0/24
-dfsctl netgroup add-member trusted-net --type ip   --value 192.168.1.50
 dfsctl share nfs-config set /export --netgroup trusted-net
 ```
 

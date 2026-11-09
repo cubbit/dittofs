@@ -145,9 +145,6 @@ go build -o dfsctl cmd/dfsctl/main.go
 
 # 7. Grant permissions
 ./dfsctl share permission grant /smbbasic --user testuser --level read-write
-
-# 8. Verify the SMB adapter is listening on port 12445
-./dfsctl adapter list
 ```
 
 Connect from the Windows VM:

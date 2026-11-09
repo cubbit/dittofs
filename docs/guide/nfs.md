@@ -142,20 +142,11 @@ showmount -e localhost
 
 ### Configuration
 
-The portmapper is disabled by default. Enable it via `dfsctl`:
+The portmapper is disabled by default. Its enabled flag and port are NFS
+adapter settings (`portmapper_enabled`, `portmapper_port`); this build has no
+command to change them.
 
-```bash
-# Check current settings
-dfsctl adapter settings nfs
-
-# Change the portmapper port
-dfsctl adapter settings nfs update --portmapper-port 10111
-
-# Disable the portmapper entirely
-dfsctl adapter settings nfs update --portmapper-enabled=false
-```
-
-Or via environment variables:
+The equivalent environment variables:
 
 ```bash
 DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=10111
@@ -247,14 +238,10 @@ and discovers them by querying the **server's portmapper on port 111** — there
 no mount option to redirect that lookup. So two server-side pieces, both
 **disabled by default**, are required:
 
-1. **UDP transport** — serve NLM/NSM/MOUNT over UDP:
-   ```bash
-   dfsctl adapter settings nfs update --udp-enabled true
-   ```
-2. **Portmapper on port 111** — so the client's discovery query resolves:
-   ```bash
-   dfsctl adapter settings nfs update --portmapper-enabled true --portmapper-port 111
-   ```
+1. **UDP transport** — serve NLM/NSM/MOUNT over UDP (the `udp_enabled`
+   adapter setting).
+2. **Portmapper on port 111** — so the client's discovery query resolves (the
+   `portmapper_enabled` and `portmapper_port` adapter settings).
    Binding 111 needs root or `CAP_NET_BIND_SERVICE`, and may clash with a host
    `rpcbind`. On Kubernetes the operator exposes port 111 via the adapter Service
    (mapped to the unprivileged container port), so no privileged binding is needed
@@ -400,9 +387,6 @@ mount_nfs -o vers=3,tcp,port=12049,mountport=12049,resvport server:/my-share /mn
 When the portmapper runs on the standard port 111 (requires root or `CAP_NET_BIND_SERVICE`), NFS clients can auto-discover ports and mount commands are simplified:
 
 ```bash
-# Configure portmapper on standard port (requires root)
-dfsctl adapter settings nfs update --portmapper-port 111
-
 # Linux - no port options needed, client queries portmapper automatically
 sudo mkdir -p /mnt/nfs
 sudo mount -t nfs -o tcp localhost:/export /mnt/nfs
@@ -606,7 +590,7 @@ before Kerberos is ever attempted. (Run the embedded portmapper on 111 to drop
 the explicit port — see [Embedded Portmapper](#embedded-portmapper).)
 
 **Per-export policy.** Three NFS export options gate which auth flavors a share
-accepts (set via `dfsctl adapter edit nfs` / the share's `NFSExportOptions`):
+accepts (set via the share's `NFSExportOptions`):
 
 | Option | Default | Effect |
 |--------|---------|--------|

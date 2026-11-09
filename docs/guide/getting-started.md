@@ -143,8 +143,6 @@ sudo dnf install -y nfs-utils cifs-utils    # RHEL / Fedora
 </details>
 
 ```bash
-dfsctl adapter enable nfs
-
 # Linux
 sudo mkdir -p /mnt/nfs
 sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
@@ -164,7 +162,6 @@ options, Kerberos, and NFS-over-TLS are in the [NFS guide](nfs.md).
 SMB always requires user authentication:
 
 ```bash
-dfsctl adapter enable smb
 dfsctl user create --username alice          # password prompted
 dfsctl share permission grant /export --user alice --level read-write
 
