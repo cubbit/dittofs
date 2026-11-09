@@ -1106,10 +1106,12 @@ and PR 4.
    estimates include them. E2's fault-injecting `kv.KV` (its T2.3) is not built either.
    T6.4 and T6.7 depend on it, and its days stay in E2's estimate.
 8. **A read-only journal reopened in place** (RFC 8 §2.5, E42, and §15.2's read-only row) is
-   in no epic of this part. It needs RFC 1 §5.4's read-only state, which `journal` does not
-   have yet; once it does, it is a subtask of this epic or of the second part. That subtask
-   also adds the drain's closing mark to epic 4's group commit (RFC 8 §2.5) and passes
-   §15.2's "the marks fence is per open" row.
+   in no epic of this part. RFC 1 §5.4's read-only state is now built in `journal`, and the
+   engine already refuses writes and syncs while it holds (RFC 8 §2.5, §11.2): until the
+   reopen, a read-only journal stays read-only until a restart. The reopen is a subtask
+   still to schedule, in this epic or the second part. It also adds the drain's closing
+   mark to epic 4's group commit (RFC 8 §2.5) and passes §15.2's "the marks fence is per
+   open" row.
 9. **`Unbind` with `keepHolds`** is refused: no snapshot exists in this part. A removal that
    keeps snapshots is RFC 12's, out.
 10. **No row over the real journal turns green in this epic** until `journal`'s `Init`,
