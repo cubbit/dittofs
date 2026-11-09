@@ -17,7 +17,7 @@ version limit's headroom and the deadline rule; [RFC 17](../rfcs/rfc-17-vfs.md) 
 delay causes; [RFC 25](../rfcs/rfc-25-observability.md) §3.9 and §8.2, for the condition
 registry and the health source.
 **Track:** C, with T7.1a and T7.1b on track A.
-**Epic 7 estimate: 5 subtasks, 17.5 man-days.**
+**Epic 7 estimate: 5 subtasks, 18 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Engine`, `Deps`, `Journal`,
 `Handle`, `Stats`) and E2's fixture, fake journal and fault-injecting `kv.KV` (T2.3). T7.1a
 needs epic 3's `Write` and `Draw` (T3.2, T3.3), whose interim answer to a `NoSpaceError` it
@@ -192,15 +192,15 @@ part can pass, and §15.2's §11.1 rows for `journal_full` and `journal_sync_fai
 | --- | --- | --- |
 | 1 Unit tests | all | T7.1a and T7.1b test the refusal table (D1) as a table and the engine's own sequencing of the refusal path over E2's fake journal; T7.2 over the real `kvstore` on E2's fault-injecting `kv.KV` and the test clock; T7.3 through `*Engine` over the fake, for each condition's raise and clear and for `Stats`' reads (the rows of §15.2 are rule 8's). T7.1a extends the fake with a `NoSpaceError` per limit and a full device; T7.1b with `Repack` over a scope, its seal and the unreclaimed figure of D4 in its `Stats` |
 | 2 Fuzz | none | no parser. The refusal table is a pure function, tested by its table |
-| 3 Observability | T7.1a, T7.2, T7.3 | counters `engine_write_refusals_total` (T7.1a) and `engine_self_fences_total{reason="store"}` (T7.2), as `Stats` fields. Conditions through `Stats` (T7.3): `node_fenced` (T7.2), `journal_full` (T7.1b raises it, T7.3 clears it on room, D9), `journal_sync_failed` (T7.3, D10), and the ones epics 4, 5 and 6 raise (epic 8's T8.3 raising epic 5's `removal_stalled` for a clone). Logs: a refused write at `Warn`, rate-limited (T7.1a); entering the fence at `Error`, naming the store's last error, and leaving it at `Info` (T7.2), as RFC 25 §3.4 logs an unhealthy condition raised and cleared. The refusal path's repack and sync are children of the caller's span; no new span name |
+| 3 Observability | T7.1a, T7.2, T7.3 | counters `engine_write_refusals_total` (T7.1a) and `engine_self_fences_total{reason="store"}` (T7.2), as `Stats` fields. Conditions through `Stats` (T7.3): `node_fenced` (T7.2), `journal_full` (T7.1b raises it, T7.3 clears it on room, D9), `journal_sync_failed` (T7.3, D10), the ones epics 4, 5 and 6 raise, and, since epics 4 and 5 only log `existence_commit_failing` and `removal_stalled` (`groupcommit.go`, `removals.go` on `feat/storage-v2`), T7.3 records both into the set where they are logged (epic 8's T8.3 raising epic 5's `removal_stalled` for a clone). Logs: a refused write at `Warn`, rate-limited (T7.1a); entering the fence at `Error`, naming the store's last error, and leaving it at `Info` (T7.2), as RFC 25 §3.4 logs an unhealthy condition raised and cleared. The refusal path's repack and sync are children of the caller's span; no new span name |
 | 4 Profiling | all | `prof.Watch` covers every test: the refusal path starts no goroutine and the fence none (D6), so a goroutine left by either fails it |
 | 5 Public and internal | all | internal tests of the refusal table (T7.1a, T7.1b) and of the fence's clock arithmetic (T7.2); the rest through `*Engine`; `-race` in T7.1b (racing refusals) and T7.2 (commits racing the fence's check). What the engine hands the journal is asserted where the journal acts on it: the scope by which segments `Repack` retired, the sync by the failed window the file's next `Commit` reports |
 | 6 Known failures | T7.1a to T7.4 | the rows this epic owns, T7.3's among them, are written here, over E2's fixture, red in `known.yaml` naming this epic's issue until the journal calls they need exist (`Repack` and the seam's free-bytes budget above all), and removed in the change that turns them green |
 | 7 v2 ignores v1 | all | nothing new is imported |
 | 8 Real dependencies | T7.1b, T7.2, T7.3, T7.4 | the refusal, the seal, the repack, the race between refusals and the failed window over the real journal and its storage and crash seams; the fence over the real `kvstore` with T2.3's stalls and errors; the stall checks over the fixture; T7.3's §15.2 rows (`journal_full`'s room half, on a full device through the seam's free-bytes budget, D9; `journal_sync_failed`, whose failed window and restart over a loss record need the crash seam) over E2's fixture. The fake journal serves only the engine's own sequencing and T7.3's unit tests |
-| 9 Comments | all | the `decision:` that dirty bytes count as nothing that can be freed while no offload is composed, and the `ponytail:` that repack runs only at a refusal (T7.1b); RFC 8 §10.2's `decision:` on the first two rows (T7.1a); §10's `ponytail:` on concurrent refusals (T7.1b); §2.7's headroom `decision:` and burst `ponytail:` stay at T6.7's trigger, and T7.4's checks are their evidence; the markers of §4 |
+| 9 Comments | all | the `decision:` that dirty bytes count as nothing that can be freed while no offload is composed, and the `ponytail:` that repack runs only at a refusal (T7.1b); RFC 8 §10.2's `decision:` on the first two rows (T7.1a); §10's `ponytail:` on concurrent refusals (T7.1b); §2.7's headroom `decision:` and burst `ponytail:` stay at T6.7's trigger, and T7.4's checks are their evidence; the `ponytail:` that the free-space refresh rides on the group commit's loop (T7.3, D9); the markers of §4 |
 | 10 Tests can fail | all | each test below names the change it catches |
-| 11 Exports | T7.3, and the first subtask that raises a condition | `Stats` gains its fields, frozen empty at S1 (D8, §9 point 6): the condition set, `Condition` and the `Shares` and `Node` fields with the first subtask that raises a condition, the journal figures and the counters with T7.3. `Deps.Journal` does not change: D4's figure comes through the `Stats` call it already declares. No other symbol; test hooks live in `export_test.go` |
+| 11 Exports | T7.3 | `Stats` already has `Journals`, `Shares`, `Condition` and `Subject` from epic 6's T6.3 (`types.go` and `health.go` on `feat/storage-v2`); T7.3 adds the rest of D8's fields (the journal figures, `Node`, the counters) and `Scope`'s share and node values, agreed with the filesystem service's owner (§9 point 6). `Deps` gains `FreeSpace` (D9), the one change to E1's `Deps`, agreed the same way and asked of RFC 8 §2.6 (§9 point 11), as epic 5 does for `Existence.Size`. `Deps.Journal` does not change: D4's figure comes through the `Stats` call it already declares. No other symbol; test hooks live in `export_test.go` |
 | 12 Creates only what it declares | all | each fake journal call lands with the subtask that first calls it |
 
 ## 3. Requirements and invariants
@@ -263,7 +263,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R29 | `Stats` reports per share and per journal, conditions included, and for the node | invariant | §11.1, §12.1 | T7.3 |
 | R30 | The conditions this part raises reach `Stats`: `existence_commit_failing` (share, naming the file), `removal_stalled` (share, naming the file and the kind), `journal_unsuitable`, `journal_lost`, `journal_full` (journal, D9) and `journal_sync_failed` (journal, D10), `node_fenced` (node), each with its subject and cause | invariant | §11.1, RFC 25 §3.9 | T7.3 |
 | R31 | A condition clears when its cause does, with no operator step, but `journal_lost`, which waits for the operator | invariant | §11.1, RFC 0 §10.2, RFC 25 §3.9 | T7.3 |
-| R32 | `Stats` is a read: it takes no lock a content call takes and does no I/O beyond the journals' own `Stats`; the free-space read of D9 is made outside it and `Stats` returns the figure it cached | invariant | RFC 25 §2.8, for what the root exports from it (rule 3) | T7.3 |
+| R32 | `Stats` is a read: it takes no lock a content call takes and does no I/O beyond the journals' own `Stats`; the free-space read of D9 is made by the journal's group commit loop and `Stats` returns the figure it kept | invariant | RFC 25 §2.8, for what the root exports from it (rule 3) | T7.3 |
 | R33 | §11.1 `journal_full` at the maximum and `journal_full` on a full device: raised by a refusal of the journal's own capacity or a full device, kept while writes into allocated segments are accepted, cleared only once the limit that refused has room again since the latest refusal, by at least what it lacked, and after a headroom refusal by the next content write accepted outside a reservation (D9) | test row | §11.1, §15.2 | T7.1b, T7.3 |
 | R34 | §11.1 `journal_sync_failed` (adapted: not the read-only half, §9 point 1): raised from a failed window's loss event in the last hour, never for a window re-appended nor for a loss found at open, cleared an hour after the latest (D10) | test row | §11.1, §15.2 | T7.3 |
 
@@ -364,13 +364,16 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   a share refused or left unattached at start), `Node` (its conditions), and the counters of
   every epic, under RFC 8 §14's names. A `Condition` mirrors RFC 25 §8.2's (`Name`,
   `Subject`, `Cause`, `Detail`), so the root adapts it into the evaluator once the health
-  source exists (rule 3). The condition set, `Condition` and the `Shares` and `Node` fields
-  land with the first subtask that raises a condition, whichever epic's it is (rule 12), and
-  every epic records into that set; T7.3 adds the journal figures and the counters. Pending
-  agreement, since `Stats` is frozen empty at S1 (§9 point 6). For D9 the engine also reads,
+  source exists (rule 3). Epic 6's T6.3 landed `Journals` (a device's conditions), `Shares`
+  (the device and cause of a share refused at start), `Condition` and `Subject`; it left
+  `Node`, a share's conditions, the journal figures and the counters to the epic that
+  writes them, which is T7.3. Epics 4 and 5 raise `existence_commit_failing` and
+  `removal_stalled` as log lines only, so T7.3 records them into the set where they are
+  logged, with `Scope` values for a share and for the node. The fields beyond T6.3's are
+  pending agreement, since `Stats` is E1's surface (§9 point 6). For D9 the engine also reads,
   from the journal's `Stats`, `freed_bytes` among its counters (RFC 1 §3.9), `HeadroomBytes`,
   `ExtentCount` and `ExtentLimit` (RFC 1 §3.7), and `MaxBytes`; the free space of the
-  journal directory's filesystem it reads through D9's seam, outside `Stats`.
+  journal directory's filesystem it reads through `Deps.FreeSpace`, outside `Stats` (D9).
 - **D9, `journal_full`.** RFC 8 §11.1 states when it is raised and when it clears; this
   document follows it and settles only what §11.1 leaves open:
   - *What it compares.* As it answers the refusal, the engine notes what the refusal lacked
@@ -386,10 +389,18 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
     the one place both sides go through: it already fails the journal's allocations, and
     gains a free-bytes budget that makes an allocation past it fail with `ENOSPC` and that
     `FreeSpace` reports. A test gives the filesystem a segment's cap by raising the budget.
-    `Deps` is frozen at S1, so the field is agreed as `Stats` is (§9 point 6). When the
-    engine reads is an RFC 8 §11.1 line to settle (§9 point 11); until then: at the refusal
-    that names the full device, and while the condition stands for it at most once a second
-    on the engine's clock, by a refresh `Stats` only reads the result of.
+    `Deps` is frozen at S1, so the field is asked of RFC 8 §2.6 and agreed as `Stats` is
+    (§9 point 11). When and by whom it is read is an RFC 8 §11.1 line to settle (§9 point
+    11); until then, the refusal that names the full device wakes that journal's group commit
+    (`groupCommitFor` starts it on first use), whose loop (`groupCommit.run`) already runs
+    once per journal on the engine's `Clock`. While the condition stands for the full device,
+    the loop reads `Deps.FreeSpace` at that wake and then at most once a second, on a timer
+    it sets only for that, and keeps the figure and the time it read it; `Stats` and the
+    clear read the kept figure and never the filesystem. It starts no goroutine (rule 4) and
+    needs no write: the clock moving is enough. A `ponytail:` at the timer says the refresh
+    rides on the group commit's loop, which a store stall holds inside a commit, so the
+    clear can lag by a stall; upgrade to the work queue's age tick (RFC 8 §2.5 step 7)
+    when the second part builds it.
   - *Who does what.* T7.1b raises it, and clears it at an unreserved content write accepted
     after a headroom refusal, since that happens on the write path; T7.3 clears it on room,
     when it reads the figures above.
@@ -413,14 +424,20 @@ pkg/block/engine/
                             the seal (D2); journal_full (D9)
   fence.go           T7.2   the transaction recorder (D5) and the fence (D6, D7)
   deps.go            T7.2   New wraps Existence, Content and Lifecycle in the recorder
-                     T7.3   FreeSpace (D9), once agreed (§9 point 6)
+                     T7.3   FreeSpace (D9), once agreed (§9 point 11)
+  groupcommit.go     T7.3   the free-space refresh timer in the journal's loop (D9);
+                            existence_commit_failing recorded into the condition set where
+                            it is logged
+  removals.go        T7.3   removal_stalled recorded into the condition set where it is logged
+  clone.go           T7.3   the same for a clone's destination
   health.go          T7.3   the journal figures and the counters in Stats (D8), as RFC 8 §2.8
                             places Stats; journal_full's clear on room (D9) and
-                            journal_sync_failed (D10); the condition set lands with the first
-                            subtask that raises a condition
+                            journal_sync_failed (D10); the condition set T6.3 landed gains the
+                            conditions epics 4 and 5 only log
   loss.go            T7.3   the engine's clock at the latest drained failed window, per journal
                             (D10), beside T4.5's drain
-  types.go           T7.3   Stats, ShareStats, JournalStats; Condition with the condition set
+  types.go           T7.3   the rest of Stats, ShareStats and JournalStats (T6.3 landed their
+                            first fields), and Scope's share and node values
   export_test.go     T7.2   the fence's clock; T7.3 a file's state lock held
   ../journal/journaltest/
     seam.go          T7.3   the free-bytes budget: an allocation past it fails with ENOSPC, and
@@ -503,7 +520,8 @@ would split one condition's cause from its raise.
   answers `ErrNoSpace` at once rather than an endless `ErrDelay`, which would hang an NFS
   hard mount (it covers D3's index row too), and the `ponytail:` marker that repack runs only
   at a refusal; §10's `ponytail:` on concurrent refusals; `journal_full` raised, with what
-  the refusal lacked and the journal's figures noted at it (D9); D4's left to free read
+  the refusal lacked and the journal's figures noted at it, and, for a full device, the
+  journal's group commit woken for the free-space read (D9); D4's left to free read
   through the journal's `Stats`. The fake journal gains `Repack` over a scope with its seal,
   D4's unreclaimed figure in its `Stats`, per journal and per tag, two append streams, a roll
   refused with `ENOSPC`, and reservations.
@@ -619,19 +637,28 @@ would split one condition's cause from its raise.
 
 ### T7.3 `Stats` and the conditions
 
-**Subtask T7.3 estimate: 5 man-days.**
+**Subtask T7.3 estimate: 5.5 man-days.**
+
+Above 5 because epics 4 and 5 merged `existence_commit_failing` and `removal_stalled` as log
+lines only, so this subtask also records them into the condition set at the sites that log
+them (half a day, with their raise and clear tests), beside the free-space timer in the
+group commit's loop (D9); the rest is the 5 days the conditions, the figures and the rows
+already took.
 
 - **Track:** C. **Depends on:** T7.2; epic 4's T4.4, epic 5's T5.3, epic 6's T6.3 and
   T6.10, epic 8's T8.3, whose conditions it reports; T7.1b, whose refusals raise
   `journal_full`; epic 4's T4.5, whose drain of the loss events `journal_sync_failed` reads.
 - **Covers:** R29 to R32, R33 (the clear on room), R34.
-- **Deliverables:** the rest of `Stats`' fields (D8), around the condition set the first
-  subtask that raises a condition created and each epic records into; the journal's figures
-  per journal and, under it, per tag, copied from the journals' `Stats`; `journal_full`
-  cleared once the limit that refused has room again, by the measures of D9, with the
-  free-space read of a full device made through `Deps.FreeSpace` outside `Stats` and the
-  seam's free-bytes budget behind it; `journal_sync_failed` (D10), from the latest failed
-  window's time per journal in `loss.go`, cleared an hour after it on the engine's clock;
+- **Deliverables:** the rest of `Stats`' fields (D8), around the condition set T6.3
+  created; `existence_commit_failing` (`groupcommit.go`) and `removal_stalled`
+  (`removals.go`, `clone.go`) recorded into it where they are logged, under the set's own
+  lock, not the group commit's or a file's; the journal's figures per journal and, under
+  it, per tag, copied from the journals' `Stats`; `journal_full` cleared once the limit
+  that refused has room again, by the measures of D9, with the free-space read of a full
+  device made through `Deps.FreeSpace` by the journal's group commit loop on its timer
+  (D9), never by `Stats`, and the seam's free-bytes budget behind it; `journal_sync_failed`
+  (D10), from the latest failed window's time per journal in `loss.go`, cleared an hour
+  after it on the engine's clock;
   the counters epics 3 to 8 keep unexported (epic 3's D9) moved into `Stats`; the
   `export_test.go` readers they used replaced.
 - **Acceptance criteria:**
@@ -643,10 +670,11 @@ would split one condition's cause from its raise.
   `journal_lost` stays after its cause is gone until the directory is re-initialised, which
   stands for the operator's acknowledgement in this part, as in epic 6 (R31); a share's
   `UsedBytes` in `Stats` equals the journal's for its tag (catches a share read from the
-  wrong tag); a share refused at start, its journal missing, has a `Shares` entry naming
-  its device and cause (catches a refused share left out of `Stats`, RFC 8 §2.5, R29); a
-  journal-maximum refusal whose `Missing` is above the room left, nothing freed: `Stats`
-  still reports `journal_full` (catches a clear on room for the missing amount alone, D9);
+  wrong tag); a journal-maximum refusal whose `Missing` is above the room left, nothing
+  freed: `Stats` still reports `journal_full` (catches a clear on room for the missing
+  amount alone, D9); on a full device with nothing written, a counting `FreeSpace` is
+  called once at the wake, then no more than once per second of the test clock, and never
+  by a `Stats` read (catches a clear nothing triggers, or a `Stats` that reads, D9, R32);
   with a file's state lock held through `export_test.go`, `Stats` returns within a second
   (catches a `Stats` that takes it, R32), and `Stats` under `-race` beside writes and the
   group commit.
@@ -659,7 +687,8 @@ would split one condition's cause from its raise.
     did not fall (catches room read from `UsedBytes`, D9, R33); the maximum raised by a
     segment's cap with nothing freed clears it (catches a raised maximum not counted, D9);
   - "`journal_full` on a full device", its room half: the seam's free-bytes budget raised by
-    a segment's cap clears it with nothing written (R33); `Stats` read in between does not
+    a segment's cap clears it with nothing written, the test clock advanced past the refresh
+    second and no `Stats` call needed to trigger it (R33); `Stats` read in between does not
     reach the filesystem (R32);
   - "`journal_sync_failed`": a failed window with loss records, the journal still writable,
     raises it, and it clears an hour after the latest failed window on the test clock with
@@ -725,7 +754,7 @@ retry-later and no space as §10.2's table says.
 | 1 | T7.2 | 2.5 | S2; T2.3; #3654 | the fence and its recorder, which every later write transaction goes through; its tests call the wrapped views directly, and its §15.2 rows wait red in `known.yaml` for T4.3, T5.3, T6.2 and T6.7 |
 | 2 | T7.1a | 2.5 | T3.2, T3.3, T6.7; the RFC 8 text for D1 | the refusal table on the write path, replacing epic 3's interim answer |
 | 3 | T7.1b | 5.5 | PR 2; T4.6; #3665, #3653 | repack and the last step, its fixture rows red until the journal seals |
-| 4 | T7.3, T7.4 | 7 | PR 1, PR 2, PR 3; T4.4, T4.5, T5.3, T6.3, T6.7, T6.10, T8.3 | what an operator sees, and the version limit's checks against the fence |
+| 4 | T7.3, T7.4 | 7.5 | PR 1, PR 2, PR 3; T4.4, T4.5, T5.3, T6.3, T6.7, T6.10, T8.3 | what an operator sees, and the version limit's checks against the fence |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -763,15 +792,16 @@ A suggestion only: one pull request per subtask works as well.
    first: §3.1's signature takes the refusal and the step reached, or §10.2 hands the
    decision to the refusal table in `capacity.go`. Pending an RFC 8 pull request, before
    T7.1a starts.
-6. **E1's frozen `Stats`, and the journal's figure for D4.** `Stats` is an empty struct
-   frozen at S1 and RFC 8 §12.1 names no field (D8); adding them is to be agreed with the
-   filesystem service's owner, who reads it. D4 reads the unreclaimed bytes of the scope's
+6. **E1's `Stats`, and the journal's figure for D4.** E1 froze `Stats` empty at S1 and RFC
+   8 §12.1 names no field; epic 6's T6.3 (#3790) added `Journals`, `Shares`, `Condition`
+   and `Subject`, and the fields D8 adds beyond them are to be agreed with the filesystem
+   service's owner, who reads it. D4 reads the unreclaimed bytes of the scope's
    segments that take no further append: `journal`'s `UnreclaimedBytes` counts active
    segments too, and its per-segment `SegmentInfo` has neither an unreclaimed field nor a
    tag, so it cannot give a share's scope. `journal.Stats` and `ShareStats` each gain that
    figure, once RFC 1 §3.7 names it (RFC 1 §10 question 6, which today asks it of §4.4's
    per-segment breakdown), and the engine reads it through the `Stats` call RFC 8 §2.1
-   already gives it. `Deps.Journal` does not change. D9's `Deps.FreeSpace` is agreed the same way.
+   already gives it. `Deps.Journal` does not change. D9's `Deps.FreeSpace` is point 11's.
 7. **The journal's `Repack`** is not built (`journal` returns `ErrNotImplemented`), and
    RFC 1 does not yet require it to seal or to report that figure (§10 questions 5 and 6).
    Question 5 asks the seal only of a pass scoped to a share, while R12 needs it from the
@@ -789,12 +819,17 @@ A suggestion only: one pull request per subtask works as well.
    §3.6, RFC 13's index excess row and RFC 24 §2.3 and §7.1 still answer a removal's or the
    index's refusal retry-later, where R6, R7 and D3 can answer `ErrNoSpace`. Pending #3665,
    which closes #3660 and #3662.
-10. **The estimate.** 17.5 man-days against the 12.5 of the original four subtasks: the split
+10. **The estimate.** 18 man-days against the 12.5 of the original four subtasks: the split
     of T7.1 into T7.1a and T7.1b added 2 (14.5), since the race, the seal and the failed
-    window each need their own fixture rows and fake support; and RFC 8 §11.1's rules for
-    `journal_full` and `journal_sync_failed` add 1 day to T7.1b and 2 to T7.3 (D9, D10).
-11. **When the engine reads the journal directory's free space** (D9). RFC 8 §11.1 says the
-    engine reads it itself, not when; RFC 25 §2.8 has an export read only what components
-    keep anyway. This document reads it at the refusal that names the full device and, while
-    the condition stands for it, at most once a second, outside `Stats`. RFC 8 §11.1 says
-    that, or says the read is another one, before T7.3 starts. Pending an RFC 8 pull request.
+    window each need their own fixture rows and fake support; RFC 8 §11.1's rules for
+    `journal_full` and `journal_sync_failed` add 1 day to T7.1b and 2 to T7.3 (D9, D10); and
+    recording `existence_commit_failing` and `removal_stalled`, which epics 4 and 5 only
+    log, with the free-space timer adds half a day to T7.3.
+11. **How and when the engine reads the journal directory's free space** (D9). RFC 8 §11.1
+    says the engine reads it itself, not how or when; RFC 8 §2.6's `Deps` has no member for
+    it, and `Deps` is frozen at S1; RFC 25 §2.8 has an export read only what components keep
+    anyway. This document adds `Deps.FreeSpace(dir)`, read by the journal's group commit loop
+    at the refusal that names the full device and then at most once a second while the
+    condition stands for it, kept for `Stats` and the clear. RFC 8 §2.6 names the member and
+    §11.1 says when it is read, or says the read is another one, before T7.3 starts. Pending
+    an RFC 8 pull request, with the filesystem service's owner agreeing the `Deps` change.
