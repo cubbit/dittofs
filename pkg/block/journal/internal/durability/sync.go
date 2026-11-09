@@ -79,7 +79,9 @@ type Config struct {
 
 	// Check runs the checks open makes of the journal's mount and directory.
 	// The read-only probe calls it every core.ProbeInterval, from its own
-	// goroutine with no lock held. Nil means there is no check.
+	// goroutine with no lock held. Nil means no check runs before the
+	// probe's spare, which is only for a journal whose open makes none; a
+	// real journal must always pass one (see the decision at probeOnce).
 	Check func() error
 
 	// MakeSpare makes one spare segment and keeps it for the reopen. The probe
@@ -238,9 +240,12 @@ type Durability struct {
 	// on End of an already ended segment with EROFS; and on a straggler
 	// write's EROFS after the segment's event was handed over. So a stream
 	// can stop with readOnly uncalled, as when segment 1's sync fails and
-	// then the spare's header write fails on the roll. The stream stack needs
-	// a stop notification of its own before this can claim a stopped stream
-	// always reaches it.
+	// then the spare's header write fails on the roll; unless Observe saw an
+	// EROFS on the way, Admit then keeps answering nil while the stream's
+	// appends fail with ErrStreamStopped. Removed by a stop
+	// notification from the stream stack, raised on every stop whatever path
+	// it took and routed to readOnly with the stopping error, after which a
+	// stopped stream always reaches it.
 	readOnly func(cause error)
 
 	// mu guards made, started and stopped. It is not held across a stream

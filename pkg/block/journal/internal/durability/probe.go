@@ -73,6 +73,15 @@ func (d *Durability) runProbe() {
 }
 
 // probeOnce runs one probe. It holds no lock across Check or MakeSpare.
+//
+// decision: a nil Config.Check runs no check before the spare, so the probe
+// makes one at its first tick. That is right only for a journal whose open
+// makes no check of its mount or directory, as in tests of the layer alone.
+// The caller that wires a real journal must always pass the checks its open
+// makes: a spare made on a mount the open would refuse is wasted, and the
+// journal stays read-only however often it is reopened. The ceiling is that
+// nothing here can tell the two callers apart. Overturned by a real journal
+// wired with no Check, which would make Check required in New.
 func (d *Durability) probeOnce() {
 	if d.check != nil {
 		if err := d.check(); err != nil {
