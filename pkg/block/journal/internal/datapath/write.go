@@ -70,6 +70,15 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 			Tag:     s.Tag,
 		}, format.RecordBody{Payload: rest, MTime: mtime})
 		if err != nil {
+			// decision: a write that fails on a later piece returns no version,
+			// yet the pieces it already published stay held under the version it
+			// drew, so reads serve bytes the caller has no version to record. The
+			// window is reachable when a write crosses a segment's cap and no
+			// spare is ready for the next piece. It is accepted for now because
+			// the capacity admission that refuses such a write before it draws a
+			// version is not yet on this path; once it is, the window narrows to
+			// a device that fails mid-write. Overturned by returning the version
+			// with the error, if the caller can then record the partial write.
 			return core.Version{}, done, err
 		}
 		if pl.N <= 0 {
