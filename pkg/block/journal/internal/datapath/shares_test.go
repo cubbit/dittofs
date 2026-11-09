@@ -217,6 +217,19 @@ func TestHandleClose_WaitsForTheCallInFlight(t *testing.T) {
 	s := mustShare(t, c, 1)
 	f := testFile(1)
 	warm(t, c, s, f)
+	// other lands in a segment the hold below does not cover.
+	pf, _ := c.Index().Lookup(f, 1<<20)
+	var other core.FileID
+	found := false
+	for x := byte(2); x < 64 && !found; x++ {
+		other = testFile(x)
+		warm(t, c, s, other)
+		po, _ := c.Index().Lookup(other, 1<<20)
+		found = po.Record.Segment != pf.Record.Segment
+	}
+	if !found {
+		t.Fatal("no file landed in a segment other than f's")
+	}
 	holds := holdRecordWrites(t, c, seam, f)
 	defer holds.release()
 
@@ -248,6 +261,24 @@ func TestHandleClose_WaitsForTheCallInFlight(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
+	// A Share on the tag while the old handle drains makes a new handle, and a
+	// write through it is neither refused nor held back by the drain.
+	during, err := c.Share(1, 0, core.Version{})
+	if err != nil {
+		t.Fatalf("Share while the old handle drains: %v", err)
+	}
+	if during == s {
+		t.Fatal("a Share on the tag returned the handle that is closing")
+	}
+	if _, err := c.WriteAt(context.Background(), during, other, 0, []byte("n"), 1); err != nil {
+		t.Fatalf("a write through the new handle while the old one drains: %v", err)
+	}
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned %v before the held write was released", err)
+	default:
+	}
+
 	holds.release()
 	wg.Wait()
 	select {
@@ -261,6 +292,9 @@ func TestHandleClose_WaitsForTheCallInFlight(t *testing.T) {
 	fresh := mustShare(t, c, 1)
 	if fresh == s {
 		t.Fatal("a Share after Close returned the closed handle")
+	}
+	if fresh != during {
+		t.Fatal("the handle made while the old one drained is not the tag's open handle")
 	}
 	if p, ok := c.Index().Lookup(f, 0); !ok || p.Extent.Len != 4 {
 		t.Fatalf("Lookup = %+v, %v; want the extent still held", p, ok)
@@ -423,20 +457,27 @@ func TestShare_RaceAttachCloseAndWrite(t *testing.T) {
 	var wg sync.WaitGroup
 	for g := range cyclers {
 		wg.Go(func() {
-			tag := core.ShareTag(100 + g)
-			for range rounds {
+			// Every cycler rotates over the same two tags, so Share, a call
+			// and Close genuinely race on one tag. A handle another cycler
+			// closed refuses a call and a second Close with ErrClosed.
+			//
+			// This is a -race stress and asserts no more than that: whether a
+			// handle Share returned is still open cannot be pinned down, as
+			// another cycler may close it before the next line runs.
+			for i := range rounds {
+				tag := core.ShareTag(100 + (g+i)%2)
 				s, err := c.Share(tag, 1, core.Version{})
 				if err != nil {
 					t.Errorf("Share(%d): %v", tag, err)
 					return
 				}
-				exit, err := s.enter()
-				if err != nil {
-					t.Errorf("a fresh handle for tag %d refuses a call: %v", tag, err)
+				if exit, err := s.enter(); err == nil {
+					exit()
+				} else if !errors.Is(err, core.ErrClosed) {
+					t.Errorf("a call on tag %d: %v", tag, err)
 					return
 				}
-				exit()
-				if err := s.Close(); err != nil {
+				if err := s.Close(); err != nil && !errors.Is(err, core.ErrClosed) {
 					t.Errorf("Close(%d): %v", tag, err)
 					return
 				}
@@ -458,8 +499,13 @@ func TestShare_RaceAttachCloseAndWrite(t *testing.T) {
 	wg.Wait()
 	close(stop)
 	pollers.Wait()
-	if got := shareTags(c); !slices.Equal(got, []core.ShareTag{1, 2}) {
-		t.Fatalf("Shares = %v, want only the writers' tags [1 2]", got)
+	for _, tag := range shareTags(c) {
+		if tag != 1 && tag != 2 && tag != 100 && tag != 101 {
+			t.Fatalf("Shares holds tag %d, which no goroutine attached", tag)
+		}
+	}
+	if got := shareTags(c); !slices.Contains(got, 1) || !slices.Contains(got, 2) {
+		t.Fatalf("Shares = %v, want the writers' tags 1 and 2 still open", got)
 	}
 }
 
