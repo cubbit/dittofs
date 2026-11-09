@@ -37,6 +37,10 @@ func (d *Durability) run(st *stream) {
 		} else {
 			d.failWindows(st)
 		}
+		d.reappendStep(st)
+		if d.afterHolds != nil {
+			d.afterHolds()
+		}
 		d.drainCorrupt(st)
 		d.complete(st)
 		d.stamp(st)

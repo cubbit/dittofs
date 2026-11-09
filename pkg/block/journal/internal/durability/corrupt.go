@@ -117,8 +117,15 @@ func (d *Durability) Corrupt(ctx context.Context, c Corruption) (CorruptOutcome,
 			return out, nil
 		}
 	}
+	return d.dropCorrupt(st, c, unlock), nil
+}
 
-	// The segment is counted damaged here, on the reader's goroutine and before
+// dropCorrupt is Corrupt's drop of a record with no copy to serve: it runs
+// under c.File's append domain, which unlock releases before it returns, and
+// hands the loss to the stream's worker. The worker calls it too, for a held
+// record whose copy's segment was retired.
+func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) CorruptOutcome {
+	// The segment is counted damaged here, on the caller's goroutine and before
 	// any return below, so the count reads 1 from the moment Corrupt returns
 	// whatever the index or the worker had already done with the record; the
 	// worker, which only records the loss, would leave a window where it still
@@ -132,7 +139,7 @@ func (d *Durability) Corrupt(ctx context.Context, c Corruption) (CorruptOutcome,
 		synced, lost = st.takeCorrupt(c)
 		if lost {
 			unlock()
-			return dropped, nil
+			return dropped
 		}
 	}
 
@@ -189,7 +196,7 @@ func (d *Durability) Corrupt(ctx context.Context, c Corruption) (CorruptOutcome,
 		// The index no longer names the record: an overwrite or an earlier
 		// drop took it, and nothing it held is lost here.
 		unlock()
-		return dropped, nil
+		return dropped
 	}
 	// Raised before the domain is let go, so a read of the file that finds the
 	// extent missing finds the generation up.
@@ -199,7 +206,7 @@ func (d *Durability) Corrupt(ctx context.Context, c Corruption) (CorruptOutcome,
 	unlock()
 
 	d.queueCorrupt(st, job)
-	return dropped, nil
+	return dropped
 }
 
 // streamOf returns the stream state of the stream file is appended to, or nil

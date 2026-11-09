@@ -252,6 +252,23 @@ type Durability struct {
 	onHoldCopy   func(ownedCopy)
 	onUnholdCopy func(ownedCopy)
 
+	// reappend appends a held record to a healthy segment from its copy and
+	// repoints the index to the new place. The worker calls it under the
+	// record's file append domain, with no lock of this layer held, once the
+	// copy's segment is claimed and the index repointed to the copy.
+	//
+	// decision: it is nil until the per-record re-append installs it, and
+	// while it is nil the worker neither repoints a held record nor re-appends
+	// it, so a held record stays held and its segment claimed. Nothing lets a
+	// hold go but a landed re-append, a lost record or a record a later write
+	// overwrote, and only the first of these can make the segment resolved by
+	// the copy's own content. Withdrawn once the re-append is installed.
+	reappend func(st *stream, c ownedCopy) error
+
+	// afterHolds is a test hook, nil in production: the worker runs it with
+	// no lock held after each pass's step over the held segments.
+	afterHolds func()
+
 	// pieces holds every (dropped seq, extent) a Lose or a Place has taken,
 	// so one piece of a dropped record is reported once, while another piece
 	// of the same record, which a reconcile can drop alone, is reported on
@@ -413,7 +430,10 @@ type entry struct {
 //
 // decision: mu is a leaf mutex, never held across I/O, a sync, the clock, a
 // file domain or another lock, because both sinks run under the
-// segment's append domain and must not wait on anything.
+// segment's append domain and must not wait on anything. The two locks taken
+// under it are leaves themselves, which take nothing while held: the change
+// channel's cmu, and the segment ledger's mutex, which a hold's claim, release
+// and lookup take (segHold says why).
 type stream struct {
 	d  *Durability
 	no uint32
@@ -501,6 +521,8 @@ type stream struct {
 	// Corrupt took a record of out of the ledger: the window takeWindow makes
 	// for the segment marks them, so they are told as if it had failed them.
 	owed map[core.SegmentID][]core.FileID
+	// holds are the segments copies are in use from, each with its hold.
+	holds map[core.SegmentID]*segHold
 
 	// kick wakes the worker; capacity 1, sent without blocking.
 	kick chan struct{}

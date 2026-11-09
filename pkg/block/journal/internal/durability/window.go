@@ -222,7 +222,9 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 
 // resolve marks the window's records no longer pending: it drops the window
 // and the failure kept for its segment once nothing else names it, then
-// announces the segment through Config.Resolved (R19). It runs on the worker.
+// announces the segment through Config.Resolved (R19), unless copies in the
+// segment are held, whose hold then announces it when it ends. It runs on the
+// worker.
 //
 // decision: a window is resolved when it holds no record: at once when it is
 // taken with none, or when failWindow has failed its last record. While the
@@ -257,9 +259,12 @@ func (d *Durability) resolve(st *stream, w *window) {
 	if !held {
 		delete(st.failed, w.seg)
 	}
+	// A segment copies are in use from stays unresolved: the hold's end
+	// announces it.
+	withheld := st.withholdLocked(w.seg)
 	st.d.notifyAll()
 	st.mu.Unlock()
-	if d.resolved != nil {
+	if !withheld && d.resolved != nil {
 		d.resolved(st.no, w.seg)
 	}
 }
