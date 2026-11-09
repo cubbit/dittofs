@@ -265,7 +265,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R34 | The trigger is evaluated on every version the engine issues, not on a timer | invariant | §2.7, §15.2 sustained load | T6.7 |
-| R35 | When the versions left below the limit last passed with `SetVersionLimit` after the version just issued, `limit - v - 1`, the count `Stats` reports, are below the larger of half a block and the peak version rate times the margin (D6), every served share's limit is raised to a block above the larger of that limit and `Stats().NextVersion`, and the new limit is passed with `SetVersionLimit` only after every share's raise has committed. The peak is the highest count of versions drawn in any one second of the last 60 s; the margin is 30 s plus the existence age plus 1 s | bound | §2.7 | T6.7 |
+| R35 | When the versions left below the limit last passed with `SetVersionLimit`, that limit minus `Stats().NextVersion`, the count `Stats` reports, are below the larger of half a block and the peak version rate times the margin (D6), every served share's limit is raised to a block above the larger of that limit and `Stats().NextVersion`, and the new limit is passed with `SetVersionLimit` only after every share's raise has committed. The peak is the highest count of versions drawn in any one second of the last 60 s; the margin is 30 s plus the existence age plus 1 s | bound | §2.7 | T6.7 |
 | R36 | `Bind` raises every served share's limit first when the counter it raised leaves fewer versions than the trigger, itself and to R35's target, under the journal's raise lock, which it holds from its limit write until it publishes (D6); a `Bind` that fails after its `Share` raised the counter calls the trigger check once (RFC 8 §2.7) | invariant | §2.5 (`Bind`) | T6.7 |
 | R37 | A write that reaches the limit is refused retry-later, never `ErrNoSpace`, and is served once the raise commits | test row | §2.7, RFC 1 §4.3, §15.1 version limit | T6.7 (the raise), T7.1 (the answer) |
 | R38 | The raise never runs on the request path: a version issued posts the check and never waits for a transaction | MUST NOT | §1.1 | T6.7 |
@@ -379,8 +379,8 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   buckets on `Clock.Elapsed`; the margin is 30 s plus `existence_age` plus 1 s, read from the
   settings at each check. A version issued (`Write`, `Draw`, a removal's journal step, a
   clone target and its copies) calls `limits.issued(journal, v)`, which counts it and
-  compares the versions left below the limit it last passed with `SetVersionLimit` after
-  `v`, `limit - v - 1`, the count `Stats` reports, with the trigger; past it, it wakes the
+  compares the versions left below the limit it last passed with `SetVersionLimit`, that
+  limit minus `Stats().NextVersion`, the count `Stats` reports, with the trigger; past it, it wakes the
   journal's raise goroutine and returns. No `Stats` call on the request path: `Stats`
   returns copies of its per-share maps, a cost that grows with the shares on the journal.
   The raise reads `Stats().NextVersion` once per raise and raises to a block above the
@@ -388,36 +388,26 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   counter from about 2·10⁶ to 9·10⁸ (T6.2's case) leaves every share on the journal below
   the counter for about 50 raises, and from the counter alone, a rate term above a block
   raises nothing while versions are left (§9 point 15, settled by #3831 in RFC 8 §2.7).
-  RFC 8 §2.7 gives the rest of the rule: one raise at a time per journal, a wake during a
-  raise running it again only if the trigger still holds, the raise lock, and what a refused
-  limit does. A `Bind` that fails after its `Share` raised the counter calls the same check
-  once, so a raise of its own that failed at the store is taken over by the retrying
-  goroutine, and a journal at its limit, which issues no version, is still lifted. A raise that fails at the store is logged at `Warn` and retried until
-  it commits, off the request path. Between attempts it waits on `Clock.After`: 10 ms at
-  first, doubled after each failure, at most 1 s, and back to 10 ms after a raise that
-  commits. A `decision:` marker says RFC 8 sets no wait. `Close` cancels and joins it (R41).
-  A limit the journal refuses with `SetVersionLimit` is not retried, since trying again
-  changes nothing: the raise logs it once at `Error` and marks the journal, so no later
-  version wakes a raise for it, and writes at the limit answer retry-later, never
-  `ErrNoSpace`, until the journal is opened again, and a `Bind` on that journal fails with
-  the journal's error (`attachLimit` reads the mark before it writes the share's limit). No
+  RFC 8 §2.7 gives the rule: the trigger, one raise at a time, the raise lock, and the one
+  more check after a `Bind` that failed past its `Share`, which also takes over a raise of
+  its own that failed at the store. The plan adds what RFC 8 leaves out. A raise that fails
+  at the store is logged at `Warn` and retried until it commits, off the request path.
+  Between attempts it waits on `Clock.After`: 10 ms at first, doubled after each failure,
+  at most 1 s, and back to 10 ms after a raise that commits. A `decision:` marker says
+  RFC 8 sets no wait. `Close` cancels and joins it (R41). A limit the journal refuses is
+  marked on the journal, so no later version wakes a raise for it, and `attachLimit` reads
+  the mark before it writes the share's limit (RFC 8 §2.7 gives what a caller sees). No
   condition in RFC 8 §11 names this: a `decision:` marker at the refusal says so, naming
-  that ceiling, withdrawn if an RFC sets a condition. The raise holds a per-journal raise
-  lock from its read of the counter to its `SetVersionLimit`, and `Bind` takes the same lock
-  from its limit write until it publishes the binding. `Bind` raises the shard's incarnation
-  before it takes the lock, so the lock covers only the limit write and the publish, and
-  another share's `Bind` on the journal never waits for an incarnation raise; RFC 8 §2.5 asks
-  only that both come before the publish, and says a retried `Bind` raises it again (an
-  incarnation only goes up, so none repeats, RFC 14 §4.4). Under the raise lock, `Bind`
-  runs R36's raise itself when its `Share` left the counter within the trigger, the new
-  share among the shares raised, and otherwise writes the new share's limit at the limit
-  last passed. A lock released at the limit write would let a raise in the gap before the
-  publish lift only the served shares, which do not include the new one yet, and pass a
-  limit above its `S‖id‖vl`, against RFC 1 §4.3's "smallest of the durable per-share
-  limits"; a crash would then issue those versions again. The lock is the journal's, not
-  the lifecycle mutex (D1): the raise goroutine reads the table through its pointer and
-  never takes the mutex, so the two never wait on each other in reverse order, and no
-  content call takes the lock.
+  that ceiling, withdrawn if an RFC sets a condition. `Bind` raises the shard's incarnation
+  before it takes the raise lock, so the lock covers only the limit write and the publish,
+  and another share's `Bind` on the journal never waits for an incarnation raise; RFC 8 §2.5
+  leaves the order open (an incarnation only goes up, so a retried `Bind` repeats none,
+  RFC 14 §4.4). Under the lock, `Bind` runs R36's raise itself when its `Share` left the
+  counter within the trigger, the new share among the shares raised, and otherwise writes
+  the new share's limit at the limit last passed. The lock is the journal's, not the
+  lifecycle mutex (D1): the raise goroutine reads the table through its pointer and never
+  takes the mutex, so the two never wait on each other in reverse order, and no content call
+  takes the lock.
 - **D7, the stop bound.** RFC 8 §2.5 names "the stop bound" without a value. It is the
   deadline of the context `Close` is given and, only when that context has none, a package
   default, 30 s from the call, so a `Close(context.Background())` over a stuck loop still
@@ -586,9 +576,9 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   journal, the state; `Bind` for a share not served (validate, read floor and limit, `Share`
   at the larger, the limit written at the journal's and the attach raise D4 picks, in either
   order (T6.7 puts the attach raise first, D6), the incarnation it returns put on the
-  binding, publish; undo in reverse on failure) and for a served one (a state change); the
-  set of shards raised and served since `Start` (D4). Epic 3's unit composition binds through `Bind`
-  from here, and its hook goes. E2's fixture gains a second share on its journal.
+  binding, publish; on failure, undo in reverse what can be undone, as RFC 8 §2.5 says)
+  and for a served one (a state change); the set of shards raised and served since
+  `Start` (D4). Epic 3's unit composition binds through `Bind` from here, and its hook goes. E2's fixture gains a second share on its journal.
 - **Acceptance criteria:**
   - A content call never waits on the lifecycle mutex.
   - A `Bind` that fails at any step leaves no handle open that it opened, and the table
@@ -818,9 +808,10 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   its limit write while a write past the trigger wakes the raise) need the test block of 16,
   which the conformance package cannot set without an exported symbol: they are a test of
   their own, apart from the start and crash halves, with its own `known.yaml` entry naming
-  #3701. The start and crash halves' entry goes when they pass; this one stays until an issue
-  for a knob the conformance package can reach (rule 11 keeps hooks in `export_test.go`)
-  is done, so the raise halves stay red meanwhile. Over the fake, the same wrong changes are
+  the issue for a knob the conformance package can reach (rule 11 keeps hooks in
+  `export_test.go`), opened before this subtask merges, not #3701, which closes with it. The
+  start and crash halves' entry goes when they pass; this one stays until that issue is
+  done, so the raise halves stay red meanwhile. Over the fake, the same wrong changes are
   caught: a raise held before the store: the journal has only `Start`'s limit (catches
   `SetVersionLimit` before the raise commits); a raise held after its commit and before
   `SetVersionLimit`, then a share bound: the `Bind` waits on the raise lock and its
