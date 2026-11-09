@@ -11,6 +11,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // answer is what one run of a loop item answers.
@@ -274,6 +275,72 @@ func (e *Engine) phase2(r *removal) *loopItem {
 		r.b.gc.removals.runs[res].Add(1)
 		return a
 	}}
+}
+
+// clonePhase2 is clone c's item once its phase 1 committed, r the clone's
+// removal of the destination extent: the hold on the source taken, then
+// phase2's run, Resume and the prune, counted and stalled as any removal's,
+// then the hold released and the clone ended, its registrations dropped and
+// its done signal raised. The loop runs it with no entry lock or guard held.
+func (e *Engine) clonePhase2(c *cloneRun, r *removal) *loopItem {
+	p2 := e.phase2(r)
+	var (
+		asked, held bool
+		hold        entity.OpenID
+	)
+	// decision: a clone's source open is keyed in its share's own shard, the
+	// one Bind named; nothing the engine receives names a finer shard. A share
+	// split into per-child shards needs Existence.Clone to return the hold's key.
+	//
+	// decision: the hold names the clone's version v, not asOf, as the store's
+	// phase 1 records the source's open with v and CloneOpen matches on it,
+	// while CloneSrc.AsOf says asOf. Pass asOf once the store records it, or
+	// rename the field if v is kept.
+	src := CloneSrc{Share: c.sb.share.ID, Shard: c.sb.share.Shard, File: c.src, Dst: c.dst,
+		AsOf: entity.JournalVersion(r.v.Bytes())}
+	return &loopItem{b: r.b, f: r.f, kind: entity.RemoveClone,
+		run: func(ctx context.Context) answer {
+			if !asked {
+				id, err := e.d.Holds.Hold(ctx, src)
+				var d *vfserr.Delay
+				switch {
+				case errors.As(err, &d) && d.Cause == vfserr.DelayFrozen:
+					return itemRetryUncounted
+				case err != nil:
+					// decision: a Hold failing for any reason but a shard
+					// not yet served holds nothing and phase 2 runs on, with
+					// no Release after it: the source's durable open, which
+					// phase 1 wrote and the last batch deletes, still holds
+					// it against a release, whose holder check reads that
+					// record. Hold it back instead if a release is ever seen
+					// passing a source whose Hold failed.
+					e.d.Logger.Error("a clone's hold on its source failed: phase 2 runs without it",
+						"src", c.src, "dst", c.dst, "err", err)
+				default:
+					hold, held = id, true
+				}
+				asked = true
+			}
+			if a := p2.run(ctx); a != itemDone {
+				return a
+			}
+			if held {
+				// decision: a Release that fails is retried with the
+				// registrations kept, so nothing reaches the source while
+				// open state may still hold it: the rerun's Resume and prune
+				// find nothing left. Drop the registrations at once instead
+				// if a Release failing for good is seen pinning a source.
+				if err := e.d.Holds.Release(ctx, hold); err != nil {
+					e.d.Logger.Warn("a clone's release of its source failed: retried", "src", c.src, "dst", c.dst, "err", err)
+					return itemRetry
+				}
+				held = false
+			}
+			e.endClone(c, nil)
+			return itemDone
+		},
+		end: func() { e.endClone(c, errLoopEnded) },
+	}
 }
 
 // finish ends r after its phase 1 committed: the guard released, the

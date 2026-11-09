@@ -146,12 +146,13 @@ func (fe *fileEntry) drop(r *reg) {
 // overlapping extents of one file and a length over clone_max_len
 // (ErrInvalid), two write namespaces (ErrCross with CrossNamespace), and an
 // extent a running clone holds (DelayClone). It then registers the source
-// extent and the destination extent. The clone's hold on its source, its
-// phase 2 and its done signal are not built, so it then undoes both and
-// answers errUnbuilt; with a test's stand-in for the done signal it runs on:
-// step 1 on the call (prepare), whose refusal undoes both registrations and
-// changes nothing, then from the journal step on its own goroutine
-// (runClone), where it never fails; the call waits for it within its own
+// extent and the destination extent. Nothing joins a running clone at
+// Unbind or Close yet, so it then undoes both and answers errUnbuilt; with a
+// test's stand-in it runs on: step 1 on the call (prepare), whose refusal
+// undoes both registrations and changes nothing, then from the journal step
+// on its own goroutine (runClone) and the removal loop (clonePhase2), where
+// it never fails, until its phase 2 is done and its hold on the source
+// released; the call waits for it within its own
 // context, whose end, a deadline or a cancel, answers DelayClone and leaves
 // the clone running, as the clone may already have changed the destination
 // and only a call that changed nothing answers refused.
@@ -208,14 +209,18 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		return err
 	}
 	if !e.fakeCloneDone.Load() {
-		// A clone stops once registered while its hold on the source, its
-		// phase 2 and its done signal are not built, as nothing could answer
-		// one past its journal step: a test of admission alone runs its hook
-		// first, and a test's stand-in for the done signal lets it run on.
+		// A clone stops once registered while nothing joins a running one:
+		// a test of admission alone runs its hook first, and a test's
+		// stand-in lets it run on.
 		//
 		// decision: everything past this gate, step 1, the journal step, the
-		// copies and phase 1, runs only under the test's stand-in, never in a
-		// served engine. Withdraw it when the done signal is built.
+		// copies, phase 1, the hold on the source, phase 2, the release and
+		// the done signal, runs only under the test's stand-in, never in a
+		// served engine: the clone's goroutine and its loop items are joined
+		// by nothing, so Close and Unbind would leave one running, and a
+		// retry with the same spec starts a second clone rather than
+		// joining the first. Withdraw it when the running clones are kept
+		// where a retry, Unbind and Close join them.
 		if h := e.afterRegister; h != nil {
 			h()
 		}
@@ -364,8 +369,9 @@ func (e *Engine) runClone(c *cloneRun) {
 
 // attempt runs what the clone has left past its journal step: its copies
 // and the destination's sync, unless done, then its phase 1, bounded by the
-// conflict bound. It answers itemDone once the clone finished or ended,
-// itemRetry for the loop to run it again.
+// conflict bound. It answers itemDone once its phase 1 committed, its phase
+// 2 posted to the loop, or once the clone ended; itemRetry for the loop to
+// run it again.
 //
 // decision: once the journal step dropped the destination extent no undo
 // exists, so a copy, a sync or a phase 1 that fails is retried by the loop
@@ -392,7 +398,7 @@ func (e *Engine) attempt(ctx context.Context, c *cloneRun, r *removal) answer {
 	err := e.tryClonePhase1(pctx, c, r)
 	switch {
 	case err == nil:
-		e.endClone(c, nil)
+		c.db.gc.removals.enqueue(e.clonePhase2(c, r))
 		return itemDone
 	case errors.Is(err, entity.ErrStale):
 		// The store answers stale for either file gone; only the
@@ -402,9 +408,10 @@ func (e *Engine) attempt(ctx context.Context, c *cloneRun, r *removal) answer {
 			return itemDone
 		}
 		// decision: a source gone after the journal step is retried, the
-		// guard held, as nothing may fail past it; a clone's hold on its
-		// source keeps it from going, so only a path this part lacks, that
-		// hold not built, reaches it. Withdraw it once the hold is built.
+		// guard held, as nothing may fail past it; until phase 1 writes the
+		// source's durable open, the source's registration answers its
+		// release pending, so only a path that bypasses the engine reaches
+		// it. Withdraw it if such a path is built.
 		e.d.Logger.Error("a clone's source went after its journal step: retried", "src", c.src, "dst", c.dst, "err", err)
 	case errors.Is(err, entity.ErrDelay):
 		e.d.Logger.Warn("a clone's phase 1 was delayed by a clone not done: retried", "src", c.src, "dst", c.dst, "err", err)
@@ -579,9 +586,10 @@ func (e *Engine) cloneEnded(c *cloneRun, r *removal, err error) {
 }
 
 // endClone ends c, answering err: its reservation, when one is held, is
-// given back and both registrations go. A clone past its phase 1 ends with
-// a nil err: its hold on the source, its phase 2 and its done signal are not
-// built, and a test's stand-in ends it there.
+// given back, both registrations go, which a release answered pending
+// behind them sees at its next look, and its done signal is raised. A
+// clone ends with a nil err once its phase 2 is done and its hold on the
+// source released (clonePhase2).
 func (e *Engine) endClone(c *cloneRun, err error) {
 	if c.res != nil {
 		_ = c.res.Close()

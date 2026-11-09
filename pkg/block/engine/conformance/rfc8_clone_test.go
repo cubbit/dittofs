@@ -11,6 +11,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -78,5 +79,35 @@ func TestRFC8A_Clone(t *testing.T) {
 	}
 	if _, err := f.E.Write(bctx, f.Share.ID, src, 0, []byte("x"), engine.WriteOpts{Done: func() {}}); err != nil {
 		t.Errorf("a write into the refused clone's source extent: %v, want its registration undone", err)
+	}
+}
+
+// §9.1 removals of a cloning destination, its last assertion: once the
+// clone is answered, its last batch has deleted the source's clone-kind
+// open, and Release has closed open state's hold, reporting nothing of a
+// source still linked.
+func TestRFC8A_RemovalsOfACloningDestination(t *testing.T) {
+	f := enginetest.New(t)
+	ctx := t.Context()
+	const n = 64 << 10
+	_, src := f.File("src")
+	_, dst := f.File("dst")
+	write(t, f, src, 0, bytes.Repeat([]byte{'s'}, n))
+	if err := f.E.Clone(ctx, f.Share.ID, src, f.Share.ID, dst, vfserr.Extent{Len: n}); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	opens, err := f.FS.Store.Opens().Of(ctx, f.Share.ID, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range opens {
+		if o.Kind == entity.OpenCloneSource {
+			t.Errorf("the source's clone-kind open %+v outlived the clone", o)
+		}
+	}
+	for _, c := range f.Sink.ClosedCalls() {
+		if c.File == src && c.Result.Orphan {
+			t.Errorf("the linked source was reported an orphan: %+v", c)
+		}
 	}
 }

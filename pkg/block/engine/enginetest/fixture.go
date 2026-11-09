@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -57,6 +58,7 @@ type Fixture struct {
 	E     *engine.Engine   // the engine running now; Restart and Crash replace it
 	FS    *kvstoretest.FS  // the store, its share and the share's root
 	Opens *openstate.Table // the open-state table running now, replaced with E
+	Sink  *Sink            // the sink Opens runs with, recording what it closes
 	Seam  *journaltest.Seam
 	Clock *sim.TestClock
 	Share engine.Share // the share as the engine binds it
@@ -285,7 +287,8 @@ func (f *Fixture) start() {
 	if err != nil {
 		t.Fatalf("fixture: open state: %v", err)
 	}
-	if err := f.Opens.Start(ctx, quietSink{}, noOrder); err != nil {
+	f.Sink = &Sink{}
+	if err := f.Opens.Start(ctx, f.Sink, noOrder); err != nil {
 		t.Fatalf("fixture: open state start: %v", err)
 	}
 	f.starts++
@@ -306,7 +309,7 @@ func (f *Fixture) start() {
 		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed, stalled: &f.stalled},
 		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
 		Lifecycle: f.FS.Store.Lifecycle(),
-		Holds:     cloneHold{opens: f.Opens.Opens(), recovery: f.Opens.Recovery()},
+		Holds:     Holds(f.Opens),
 		Clock:     f.Clock,
 		Logger:    f.logger,
 		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
@@ -369,12 +372,43 @@ func (quietSink) Revoked(openstate.Revocation)                                  
 func (quietSink) Notify(entity.ClientID, openstate.WatchID, []openstate.Change)            {}
 func (quietSink) GraceEnded(entity.ShareID, openstate.ShardID)                             {}
 
+// Sink is open state's Sink with no client and no service behind it,
+// recording each Closed: a file's last open closed, an orphan among them.
+type Sink struct {
+	quietSink
+	mu     sync.Mutex
+	closed []Closed
+}
+
+// Closed is one Sink.Closed call.
+type Closed struct {
+	File   entity.FileID
+	Result openstate.CloseResult
+}
+
+func (s *Sink) Closed(f entity.FileID, r openstate.CloseResult) {
+	s.mu.Lock()
+	s.closed = append(s.closed, Closed{f, r})
+	s.mu.Unlock()
+}
+
+// ClosedCalls is every Closed so far, oldest first.
+func (s *Sink) ClosedCalls() []Closed {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.closed)
+}
+
 // noOrder takes no admission lock: the fixture has no service holding one.
 func noOrder(entity.FileID) func() { return func() {} }
 
-// cloneHold adapts the open-state table to the engine's CloneHold, as the
-// composition root does. An orphan CloneClose leaves reaches open state's
-// Sink.Closed, which the fixture's sink drops.
+// Holds adapts t to the engine's CloneHold, as the composition root does.
+// An orphan CloneClose leaves reaches t's Sink.Closed.
+func Holds(t *openstate.Table) engine.CloneHold {
+	return cloneHold{opens: t.Opens(), recovery: t.Recovery()}
+}
+
+// cloneHold is the open-state table as the engine's CloneHold.
 type cloneHold struct {
 	opens    openstate.Opens
 	recovery openstate.Recovery
