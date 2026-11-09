@@ -206,6 +206,7 @@ func TestAPartialLossMarksOnlyItsRuns(t *testing.T) {
 		{"one run", [][2]int64{{4, 4}}, false},
 		{"two runs", [][2]int64{{0, 2}, {6, 2}}, false},
 		{"before the insert", [][2]int64{{4, 4}}, true},
+		{"two runs before the insert", [][2]int64{{0, 2}, {6, 2}}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			u := newUnit(t)
