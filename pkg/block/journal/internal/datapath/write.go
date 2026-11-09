@@ -130,11 +130,19 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 		// another tag to claim the file inside WriteRetain itself, without the
 		// domain: no path does that today, and a path that did would be the
 		// fault shape the rival mark exists for, reached only by a bug. The
-		// live case is the entry bound, which no earlier check holds. The
-		// caller gets the error and the record stays on disk, never
-		// published by this run. Overturned by a check of the entry bound
-		// before the draw, which would leave this marker with no reachable
-		// refusal at all.
+		// live case is the entry bound, which no earlier check holds.
+		//
+		// The tag has the same hole: a refusal at WriteRetain's admission
+		// returns before its update applies, so the claim that names the
+		// record is never made — the record sits in its segment under this
+		// handle's tag while the file stays untagged and un-noted, so another
+		// share's next write can claim the file and leave its records, on
+		// disk, under two tags a later rebuild reads as a conflict. Both
+		// holes close the same way, a capacity admission that refuses before
+		// the version is drawn. Until then the caller gets the error and the
+		// record stays on disk, never published by this run. Overturned by a
+		// check of the entry bound before the draw, which would leave this
+		// refusal with no reachable case at all.
 		hd, err := c.index.WriteRetain(s.Tag, id, index.Placed{
 			Extent:  core.Extent{Off: off + done, Len: pl.N},
 			Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},

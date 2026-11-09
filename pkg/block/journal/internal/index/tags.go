@@ -66,11 +66,12 @@ func (c *conflictSet) snapshot() []Conflict {
 	return out
 }
 
-// CheckTag refuses a call through tag that names id, as every appending call's
-// first step does, naming both tags when the file belongs to another share and
-// whichever tag is asked through when the file is rivalled. It takes the
-// file's lock shared, creates no entry and claims nothing, so a read may run
-// it; a file with no entry is nobody's and checks clean.
+// CheckTag refuses a call through tag that names id, as every file-naming
+// call's first step does — a read's as much as a write's — naming both tags
+// when the file belongs to another share and whichever tag is asked through
+// when the file is rivalled. It takes the file's lock shared, creates no
+// entry and claims nothing, so a read may run it; a file with no entry is
+// nobody's and checks clean.
 func (ix *Index) CheckTag(tag core.ShareTag, id core.FileID) error {
 	var err error
 	ix.fs.view(id, func(f *file) { err = f.check(tag, id) })
@@ -79,20 +80,27 @@ func (ix *Index) CheckTag(tag core.ShareTag, id core.FileID) error {
 
 // TagConflicts returns the rivalled files, one Conflict per file ordered by
 // FileID bytes, in time proportional to their number. It takes no file's
-// lock. A call names a file in Stats until a tag is cleared or the last
-// record of it leaves the disk; the list is what a caller consults to name
-// them.
+// lock. A rivalled file stays a member until one of its two tags is cleared
+// or the last record of it leaves the disk, so the list is the read-out a
+// caller consults to name the files a Stats call answers for.
 func (ix *Index) TagConflicts() []Conflict { return ix.fs.conflicts.snapshot() }
 
-// ClearTag drops id's owner and rival marks whole, so the file's records, on
-// disk, no longer name their tags and the next appending call through any tag
-// claims the file afresh. It is what forgetting a share's tag calls on the
-// files the journal holds under it. A file with no entry is a no-op.
+// ClearTag drops id's owner and rival marks whole in memory, leaving the
+// file's records on disk as they are: they still carry their tags, so a
+// rebuild over them re-creates both the file's owner and, for a rivalled
+// file, its conflict. In the running index the file is nobody's again, so
+// the next appending call through any tag claims it afresh. A file with no
+// entry is a no-op.
 //
-// decision: only the index's own tests call ClearTag today. It is the
-// building block the durability layer's share-forgetting path calls on a
-// rivalled file once its records' tag is dropped, which no other surface
-// reaches. Overturned when that caller lands and calls it outside the tests.
+// It is the stand-in the tests use for forgetting a share's tag, which is
+// narrower: a real forget of one of a rivalled file's two tags must leave
+// the file owned by the other tag, not nobody's, and must be made durable —
+// clear the marks in memory alone and a rebuild restores them as soon as it
+// replays the records still naming both tags.
+//
+// decision: only tests call ClearTag today, both the index's own and the
+// datapath's tag tests. Overturned when a Forget(tag) caller lands and takes
+// over what the tests exercise by hand.
 func (ix *Index) ClearTag(id core.FileID) error {
 	_, err := ix.fs.update(id, func(f *file) error {
 		f.tagged, f.tag = false, 0

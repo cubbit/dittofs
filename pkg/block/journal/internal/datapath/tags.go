@@ -4,10 +4,11 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
-// checkTag refuses a call through s that names id, as the first step of every
-// call that names a FileID takes after its context and handle checks. The
-// index takes the file's lock shared, creates no entry and claims nothing, so
-// a read may run it; a file with no entry, or one nobody owns, checks clean.
+// checkTag refuses a call through s that names id. Every call that names a
+// FileID runs it as its first step after its context and handle checks, a
+// read's as much as a write's. The index takes the file's lock shared,
+// creates no entry and claims nothing, so a read may run it; a file with no
+// entry, or one nobody owns, checks clean.
 // A file another share owns, or one the journal rebuilt under two tags, is
 // refused with core.ErrOtherShare naming both tags, serving, appending,
 // changing and offering nothing of it.

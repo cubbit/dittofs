@@ -494,8 +494,10 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 // members sit on the core's two distinct streams, so a round's two raced
 // claims are on both streams and every round races a first claim of files
 // the core has not seen. The ids spread a counter over three bytes, so none
-// is the all-zero identifier the record format refuses, and a pair whose
-// members happen to share a stream is skipped whole.
+// is the all-zero identifier the record format refuses, and when a pair's
+// members happen to share a stream the picker advances until they differ:
+// the first pair is asserted to differ, so a wrong pairing fails the test
+// rather than passing.
 func raceFilePicker(t *testing.T, c *Core) func() core.FileID {
 	t.Helper()
 	// The ids start past the bytes the other subtests name.

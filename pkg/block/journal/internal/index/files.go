@@ -114,11 +114,13 @@ type files struct {
 	// beside whatever an entry's ranges hold.
 	dropRanges atomic.Int64
 
-	// conflicts is the set of rivalled files, whose cost TagConflicts is
-	// proportional to and whose every member the set is told once, where the
-	// rival mark lands under the file's lock and where the entry leaves the
-	// map or the tags are cleared. A rebuild's replays feed it as many files
-	// in parallel as there are shards, and a reader walks it beside both.
+	// conflicts is the set of rivalled files. TagConflicts' cost is
+	// proportional to the set's size and never to the number of files. Each
+	// member is told to the set exactly once, under its file's lock, when the
+	// update that marked the file rivalled lands, and taken back out when an
+	// update clears the marks or the entry's settle removes it. A rebuild's
+	// workers feed it as many files in parallel as there are shards, and a
+	// reader takes the list without waiting on any file's lock.
 	conflicts conflictSet
 }
 
@@ -485,9 +487,10 @@ func (f *file) settle(fs *files, s *fileShard, id core.FileID) {
 		return
 	}
 	if f.rivalled {
-		// The last of the entry goes with its marks still set, so the set's
-		// takeback cannot wait on apply's diff. The file's lock is still
-		// held here, and the set's is taken last, under none of them.
+		// The last of the entry goes with its marks still set, so the set
+		// cannot wait for apply's diff to take it back out: this settle drops
+		// it here instead. The set's lock is taken last — while this file's
+		// lock is still held, and never together with a shard's.
 		fs.conflicts.drop(id)
 	}
 	f.gone = true

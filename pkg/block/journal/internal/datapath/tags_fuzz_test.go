@@ -10,13 +10,13 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
-// fuzzFiles are the files an input works on: two pairs whose ids carry the
-// other handle's tag in their own bytes — a reading of the tag from an id's
-// own bytes names the wrong share for two of the four — spread over the
-// core's two streams, so an input reaches both whichever files it names.
-// The second pair's first bytes are not a real tag: only the ids' own bytes
-// poison a tag-reading share resolution, which 0x22 and 0x11 alone pin, and
-// any id the streams differ on serves the stream spread.
+// fuzzFiles are the files an input works on, spread over the core's two
+// streams so an input reaches both whichever files it names. Three of the
+// four carry a real tag's bytes in their own ids — F1's first byte is B's
+// tag, F2's is A's, F4's last byte is B's — so resolving a share by reading
+// a tag out of the FileID names the wrong share for a file the handle alone
+// must decide; F3 carries none, and serves the stream spread as any id the
+// streams differ on does.
 func fuzzFiles(t *testing.T, c *Core) []core.FileID {
 	t.Helper()
 	files := []core.FileID{
@@ -214,7 +214,7 @@ var tagSeeds = [][]byte{
 
 	// A's zero-length write of unowned file 0 claims nothing, so B's write of
 	// it serves and claims it, and A's zero-length write of B's file is then
-	// refused like any other.
+	// refused — the wrong handle never reaches the shape's clean return.
 	{0x04, 0, 0x00, 'a', 0x01, 0, 0x00, 'b', 0x06, 0, 0x00, 'a'},
 
 	// Both handles write every file: each file's first writer claims it and
