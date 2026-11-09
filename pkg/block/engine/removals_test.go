@@ -425,7 +425,10 @@ func TestATerminalRemovalCommitsALossBelowItBeforeItsSettle(t *testing.T) {
 	}
 	last := c[len(c)-1]
 	if len(last) != 1 || last[0].Version != entity.JournalVersion(appended.Bytes()) {
-		t.Errorf("the last commit %+v, want the append's", last)
+		t.Fatalf("the last commit %+v, want the append's", last)
+	}
+	if l := last[0].Lost; len(l) != 1 || l[0] != last[0].Extent {
+		t.Errorf("the append committed with lost runs %v, want its whole extent %v", l, last[0].Extent)
 	}
 	u.e.ClearOps(f) // the crash: the engine's state goes, the store stays
 	if _, err := u.e.Read(t.Context(), u.share.ID, f, 16, make([]byte, 16)); !errors.Is(err, vfserr.ErrLost) {
