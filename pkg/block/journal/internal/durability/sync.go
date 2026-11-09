@@ -425,6 +425,18 @@ type stream struct {
 	// when a stream with many abandoned files shows up in a heap profile.
 	marks map[core.FileID][]mark
 	told  map[uint64]map[core.FileID]struct{}
+	// undone holds, per file, the read-only refusal of a header-only record
+	// of the file that the read-only journal undid. Such a record can never
+	// become durable, so every Sync naming the file returns the refusal,
+	// bare, for as long as the layer lives, rather than once through a mark.
+	//
+	// ponytail: one entry per file with an undone header-only record for the
+	// life of the Durability, never freed; the journal leaves read-only only
+	// by being closed and reopened, which drops the layer. Upgrade to
+	// dropping a file's entry once its removal is retried through a reopened
+	// journal or the file is forgotten, when a read-only journal that stays
+	// open over many removed files shows up in a heap profile.
+	undone map[core.FileID]error
 	// lastSeg is the newest segment the stream is known to have reached: the
 	// segment of a tracked record or of a sync, whichever is later.
 	lastSeg  core.SegmentID
@@ -740,11 +752,15 @@ func (st *stream) inWindowLocked(loc segment.Location) bool {
 // ctx.Err() when ctx is done first; a cancelled caller changes no state and
 // the sync it may have led runs on for the other waiters. Once the journal is
 // read-only, a failure matches core.ErrJournalReadOnly too: a content record
-// it failed is reported as a failed window is, a *core.SyncError wrapping the
-// refusal, and a header-only record it undid fails every Sync waiting on it
-// with the refusal. So in a read-only journal errors.As to *core.SyncError is
-// not guaranteed: a Sync on an undone header-only record returns the bare
-// refusal or a SyncError wrapping it, and both match core.ErrJournalReadOnly.
+// it failed is reported as a failed window is, once, a *core.SyncError
+// wrapping the refusal. A file with a header-only record it undid is answered
+// differently: every Sync naming the file, or waiting on the record, returns
+// the refusal bare, never a *core.SyncError, for as long as the layer lives,
+// since the record can never become durable and a caller that routed it as a
+// failed window would retry what the journal undid. That answer stands in for
+// any read-only failure the call is owed; only a failure of a window that
+// failed before the entry is kept beside it, joined, and that join alone
+// matches both errors.As to *core.SyncError and core.ErrJournalReadOnly.
 //
 // A failed window is reported once per file: the first Sync naming a file
 // that lost a record in it returns the *core.SyncError and clears the file's
@@ -880,17 +896,24 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 	var owed *owedFailure
 	var refused error
 	// answer joins what the call is owed: the failures it took and the
-	// read-only refusal of a target the read-only journal failed. A failure
-	// the read-only journal reported already matches the refusal, so it is
-	// returned alone.
+	// read-only refusal of a record the read-only journal undid. The refusal
+	// is returned bare, never as a *core.SyncError, so a caller cannot route
+	// it as a failed window and retry what the journal undid: a failure the
+	// read-only journal reported matches the refusal already and is dropped
+	// for it. Only a failure of a window that failed before the journal
+	// turned read-only is kept, joined with the refusal; that answer matches
+	// both errors.As to *core.SyncError and errors.Is to
+	// core.ErrJournalReadOnly.
 	answer := func() error {
 		switch {
 		case owed != nil && refused != nil && !errors.Is(owed.err, core.ErrJournalReadOnly):
 			return errors.Join(owed.err, refused)
+		case refused != nil:
+			return refused
 		case owed != nil:
 			return owed.err
 		default:
-			return refused
+			return nil
 		}
 	}
 	// early is the answer for a call that cannot wait any longer.
@@ -986,6 +1009,34 @@ func (st *stream) answersFailureLocked(loc segment.Location) (uint64, bool) {
 	return 0, false
 }
 
+// undoingLocked reports whether the stream holds a header-only record of one
+// of ids, other than a loss record, that a read-only journal's failure pass
+// will undo and has not yet: one in a pending window, or one in the ledger
+// that no sync covered and the worker has not completed. The caller holds mu
+// and has seen the journal read-only.
+//
+// ponytail: a linear scan of the ledger and the windows, run on each check of
+// a Sync while the journal is read-only. Upgrade to a per-file count of
+// header-only records when a profile of a read-only journal shows the scan.
+func (st *stream) undoingLocked(ids []core.FileID) bool {
+	undoable := func(e *entry) bool {
+		return !isContent(e.w) && !isLoss(e.w) && slices.Contains(ids, e.w.File)
+	}
+	for i := range st.ledger {
+		if e := &st.ledger[i]; !e.done && !st.covered(e.w.Loc) && undoable(e) {
+			return true
+		}
+	}
+	for _, w := range st.windows {
+		for i := range w.entries {
+			if undoable(&w.entries[i]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // check looks at one stream's targets. With failFast it first takes the marks
 // owed to ids, and still evaluates the targets afterwards. It reports whether
 // any target is pending, whether a target sits in a failed segment whose
@@ -993,7 +1044,8 @@ func (st *stream) answersFailureLocked(loc segment.Location) (uint64, bool) {
 // marks it took, joined with the answer of a header-only record whose window
 // has been failed. It returns an error for a closed layer, and then only when
 // it owes no failure, and the read-only refusal once a target is a record the
-// read-only journal failed, alongside whatever failure it owes. It also leads
+// read-only journal failed, or, with failFast, once a file of ids has a
+// header-only record it undid, alongside whatever failure it owes. It also leads
 // a sync when the targets need one.
 //
 // decision: one sync per stream runs at a time and covers every waiter (group
@@ -1026,8 +1078,10 @@ func (st *stream) answersFailureLocked(loc segment.Location) (uint64, bool) {
 // in flight, so the answer is returned with them and not ahead of them.
 // Overturned by the re-append of a header-only record, which must wait for the
 // new sync instead of failing at once. Once the journal is read-only the
-// record is undone and failed (failReadOnly), and every wait on it then ends
-// with the refusal.
+// record is undone and failed (failReadOnly), every wait on it then ends with
+// the refusal, and so does every later Sync naming its file (st.undone); until
+// the pass has undone it, it counts as a failure in flight for a Sync naming
+// its file (undoingLocked), so no other failure is answered ahead of it.
 func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pending, failing bool, found *owedFailure, err error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -1040,6 +1094,24 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 	var failWindow uint64
 	var failErr error
 	var refused error
+	if failFast {
+		// A file with a header-only record the read-only journal undid is
+		// refused on every Sync naming it: the record can never become
+		// durable, and a Sync that returned nil would let its caller commit
+		// what the journal undid.
+		for _, id := range ids {
+			if err, ok := st.undone[id]; ok {
+				refused = err
+				break
+			}
+		}
+		// One the read-only journal has yet to undo holds the answer back
+		// as a failure in flight, so a failure the call already took is not
+		// returned ahead of the refusal it is about to owe.
+		if refused == nil && st.d.Admit() != nil && st.undoingLocked(ids) {
+			failing = true
+		}
+	}
 	for _, t := range targets {
 		if l, lost := st.lost[t.loc]; lost {
 			if l.undone {

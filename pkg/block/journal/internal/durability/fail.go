@@ -114,20 +114,26 @@ func (d *Durability) settle(st *stream, w *window, fails func(entry) bool, err e
 	// naming several files of the window hears of all of them at once. A file
 	// whose only failed records are loss records is not marked: a loss
 	// record's drop stands, so its file is owed nothing. A file with an undone
-	// header-only record is marked like one with content, so a Sync issued
-	// after the failure hears of it, unless a Sync was already told of the
-	// window for that file, when its content failed earlier: the mark is then
-	// not set again (markErrLocked) and a later Sync of the file returns nil.
-	// One already waiting on the record when another took the mark fails
-	// through st.lost instead.
+	// header-only record is not marked for it: the file joins st.undone, so
+	// every Sync naming it, then and later, returns the bare refusal and never
+	// a *core.SyncError (check), and one waiting on the record fails through
+	// st.lost. Its content records, if any, still mark it, and the refusal
+	// then answers in place of that mark (await).
 	st.mu.Lock()
 	var marked []core.FileID
 	for _, e := range w.entries {
 		if !fails(e) {
 			continue
 		}
-		st.lost[e.w.Loc] = lostRecord{err: err, undone: ro && !isContent(e.w) && !isLoss(e.w)}
-		if !isLoss(e.w) && !slices.Contains(marked, e.w.File) {
+		undone := ro && !isContent(e.w) && !isLoss(e.w)
+		st.lost[e.w.Loc] = lostRecord{err: err, undone: undone}
+		switch {
+		case undone:
+			if st.undone == nil {
+				st.undone = map[core.FileID]error{}
+			}
+			st.undone[e.w.File] = err
+		case !isLoss(e.w) && !slices.Contains(marked, e.w.File):
 			marked = append(marked, e.w.File)
 		}
 	}

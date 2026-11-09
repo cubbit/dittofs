@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -114,6 +115,103 @@ func wantReadOnlySyncError(t *testing.T, what string, err error, f core.FileID) 
 	if !errors.As(err, &se) || !slices.Contains(se.Files, f) {
 		t.Errorf("%s = %v, want a *core.SyncError naming the file", what, err)
 	}
+}
+
+// wantNoSyncError fails the test when err is a *core.SyncError, which a
+// caller would route as a failed window and retry.
+func wantNoSyncError(t *testing.T, what string, err error) {
+	t.Helper()
+	var se *core.SyncError
+	if errors.As(err, &se) {
+		t.Errorf("%s = %v, a *core.SyncError", what, err)
+	}
+}
+
+// wantBareRefusal fails the test unless err is the read-only refusal and no
+// *core.SyncError.
+func wantBareRefusal(t *testing.T, what string, err error) {
+	t.Helper()
+	wantReadOnly(t, what, err)
+	wantNoSyncError(t, what, err)
+}
+
+// TestASyncOfAFileWithAnUndoneRemovalIsTheBareRefusalEveryTime covers a
+// removal the read-only journal undid: the first Sync of its file and every
+// later one return the read-only refusal and never a *core.SyncError, so a
+// caller cannot route it as a failed window and retry the removal; a Sync of
+// another file returns nil, and WaitDurable on the removal still returns the
+// refusal.
+func TestASyncOfAFileWithAnUndoneRemovalIsTheBareRefusalEveryTime(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r, undo := newRORig(t, 1, "")
+	f, g := file(1), file(2)
+	loc, _ := r.appendHeader(t, f, format.KindDelete, format.RecordBody{})
+
+	r.d.Enter(syscall.EROFS)
+	eventually(t, "the removal to be undone", func() bool { return len(undo.all()) > 0 })
+	wantBareRefusal(t, "the first Sync of the removed file", mustReturn(t, "Sync", r.syncAsync(context.Background(), f)))
+	wantBareRefusal(t, "the second Sync of the removed file", mustReturn(t, "Sync", r.syncAsync(context.Background(), f)))
+	wantBareRefusal(t, "a Sync naming both files", mustReturn(t, "Sync", r.syncAsync(context.Background(), g, f)))
+	if err := mustReturn(t, "Sync", r.syncAsync(context.Background(), g)); err != nil {
+		t.Errorf("Sync of a file with no undone record = %v, want nil", err)
+	}
+	wantBareRefusal(t, "WaitDurable on the removal", mustReturn(t, "WaitDurable", r.waitDurableAsync(loc)))
+	wantBareRefusal(t, "a third Sync of the removed file", mustReturn(t, "Sync", r.syncAsync(context.Background(), f)))
+}
+
+// TestASyncOfAFileWithAWriteAndAnUndoneRemovalIsTheBareRefusal fails a write
+// and a removal of one file at entry: the write's failure would be reported
+// as a failed window, but the file's removal was undone, so every Sync of the
+// file returns the bare refusal.
+func TestASyncOfAFileWithAWriteAndAnUndoneRemovalIsTheBareRefusal(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r, undo := newRORig(t, 1, "")
+	f := file(1)
+	r.publish(t, f, 0, "aaaa")
+	r.appendHeader(t, f, format.KindTruncate, format.RecordBody{})
+
+	r.d.Enter(syscall.EROFS)
+	eventually(t, "the truncate to be undone", func() bool { return len(undo.all()) > 0 })
+	wantBareRefusal(t, "the first Sync", mustReturn(t, "Sync", r.syncAsync(context.Background(), f)))
+	wantBareRefusal(t, "the second Sync", mustReturn(t, "Sync", r.syncAsync(context.Background(), f)))
+}
+
+// TestAFailedWritesReportWaitsForTheRemovalAfterIt fails a write at entry,
+// then appends a removal of the same file whose failure pass is held: a Sync
+// of the file, owed the write's failure, waits for the removal to be undone
+// and returns the bare refusal, rather than the write's *core.SyncError ahead
+// of it.
+func TestAFailedWritesReportWaitsForTheRemovalAfterIt(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	var armed atomic.Bool
+	gate := make(chan struct{})
+	var open sync.Once
+	release := func() { open.Do(func() { close(gate) }) }
+	r := newRigConfigured(t, 1, func(c *Config) {
+		c.Undo = func(segment.Written) index.HeldDelta { return index.HeldDelta{} }
+	})
+	// Registered after the rig, so it runs before the rig's Stop joins the
+	// worker, which a failed assertion would otherwise leave parked.
+	t.Cleanup(release)
+	r.d.beforeFail = func(*window) {
+		if armed.Load() {
+			<-gate
+		}
+	}
+	r.d.Start(r.streams)
+	f := file(1)
+	loc, _ := r.publish(t, f, 0, "aaaa")
+	r.d.Enter(syscall.EROFS)
+	eventually(t, "the write to be failed", func() bool {
+		return !r.d.Durable(loc) && r.ledgerLen(0) == 0 && len(r.windowsOf(0)) == 0
+	})
+
+	armed.Store(true)
+	r.appendHeader(t, f, format.KindDelete, format.RecordBody{})
+	ch := r.syncAsync(context.Background(), f)
+	mustBlock(t, "the Sync while the removal's failure is held", ch)
+	release()
+	wantBareRefusal(t, "the Sync", mustReturn(t, "Sync", ch))
 }
 
 // accounted reports whether the account log holds hd.
@@ -239,7 +337,7 @@ func TestHeaderOnlyRecordsAreUndoneNewestFirst(t *testing.T) {
 
 // TestEverySyncWaitingOnAnUndoneRecordFails covers RFC 1 §5.4's "every Sync
 // that waits on one" of an undone record: two Syncs waiting on one truncate when the journal turns
-// read-only both fail, though the failure is reported to the file once.
+// read-only both fail with the bare refusal, never a *core.SyncError.
 func TestEverySyncWaitingOnAnUndoneRecordFails(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r, _ := newRORig(t, 1, "")
@@ -257,8 +355,8 @@ func TestEverySyncWaitingOnAnUndoneRecordFails(t *testing.T) {
 
 	r.d.Enter(syscall.EROFS)
 	hold.Release()
-	wantReadOnly(t, "the first Sync", mustReturn(t, "the first Sync", a))
-	wantReadOnly(t, "the second Sync", mustReturn(t, "the second Sync", b))
+	wantBareRefusal(t, "the first Sync", mustReturn(t, "the first Sync", a))
+	wantBareRefusal(t, "the second Sync", mustReturn(t, "the second Sync", b))
 }
 
 // TestEnteringReadOnlyLeavesALossRecordsDropStanding covers RFC 1 §5.4's "only
@@ -301,10 +399,10 @@ func TestARecordTrackedAfterTheFailurePassIsFailedByTheNext(t *testing.T) {
 
 	locG, vG := r.publish(t, g, 0, "gggg")
 	hloc, _ := r.appendHeader(t, g, format.KindDeallocate, format.RecordBody{})
-	// The write's own Track may run a pass before the deallocate lands, and
-	// the Sync then answers the write's report alone: the deallocate's wait is
-	// what follows it.
-	wantReadOnlySyncError(t, "Sync of the late file", mustReturn(t, "Sync", r.syncAsync(context.Background(), g)), g)
+	// The write's own Track may run a pass before the deallocate lands; its
+	// report is held back until the deallocate is undone, and the file then
+	// gets the bare refusal whichever pass failed the write.
+	wantBareRefusal(t, "Sync of the late file", mustReturn(t, "Sync", r.syncAsync(context.Background(), g)))
 	wantReadOnly(t, "WaitDurable of the late deallocate", mustReturn(t, "WaitDurable", r.waitDurableAsync(hloc)))
 
 	if r.d.Durable(locG) {

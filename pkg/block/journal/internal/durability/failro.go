@@ -12,7 +12,8 @@ type lostRecord struct {
 	// its segment, or the read-only refusal.
 	err error
 	// undone is set for a header-only record a read-only journal undid: every
-	// Sync and WaitDurable that waits on it fails with err.
+	// Sync and WaitDurable that waits on it fails with err, bare, and so does
+	// every Sync naming its file (stream.undone).
 	undone bool
 }
 
