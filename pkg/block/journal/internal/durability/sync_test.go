@@ -70,6 +70,14 @@ func TestGroupCommitSharesSyncsAcrossWaiters(t *testing.T) {
 	const writers, rounds = 16, 8
 	var active, waiting atomic.Int64
 	active.Store(writers)
+	// Every writer has appended its record of a round before any of them
+	// syncs: a record appended after the round's sync was issued is not covered
+	// by it, however slowly the others reach their Sync, so without the barrier
+	// the number of syncs depends on the scheduler, not on the sharing.
+	appended := make([]sync.WaitGroup, rounds)
+	for i := range appended {
+		appended[i].Add(writers)
+	}
 	var wg sync.WaitGroup
 	for w := range writers {
 		wg.Add(1)
@@ -79,6 +87,8 @@ func TestGroupCommitSharesSyncsAcrossWaiters(t *testing.T) {
 			f := file(byte(w + 1))
 			for i := range rounds {
 				r.appendWrite(t, f, int64(i*8), "x")
+				appended[i].Done()
+				appended[i].Wait()
 				waiting.Add(1)
 				if err := r.d.Sync(context.Background(), f); err != nil {
 					t.Errorf("Sync: %v", err)
