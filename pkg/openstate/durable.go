@@ -383,6 +383,10 @@ func (v opens) Reconnect(ctx context.Context, who Caller, id entity.OpenID, m Re
 		switch {
 		case o == nil || ended || !o.reconnects(who, m, t.d.Clock.Elapsed()):
 			return ErrNoReclaim
+		case o.sessioned() && !who.Sessioned:
+			// Refused as mine refuses a reference to it: reconnected, it
+			// would take the zero session and lose its mark.
+			return ErrNotYoursSessioned
 		case o.unsaved:
 			return &DelayError{DelayCommit} // its record is written again by the timer first
 		}

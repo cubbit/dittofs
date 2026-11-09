@@ -3,6 +3,7 @@ package openstate
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
@@ -97,5 +98,35 @@ func TestSessionOpenByIDRefusedWithoutSession(t *testing.T) {
 	}
 	if err := f.Checks().CheckIO(ctx, a, file, byID, br(0, 1), entity.ReadData); err != nil {
 		t.Errorf("I/O through the open by ID on a session: %v", err)
+	}
+}
+
+// A parked open created on a session is refused a reconnect by a call with
+// none, and keeps its mark: reconnected, it would take the zero session. A
+// reconnect on another session takes it back marked.
+func TestReconnectWithoutSessionRefused(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc"))
+	file := anyFile()
+	o := f.mustOpen(t, a, file, keep(OpenRequest{Access: rd, Want: rwh}, entity.DurabilityDurable, s1, time.Minute, 1))
+	f.disconnect(t, a, s1)
+	m := ReconnectMatch{Share: file.Share, Create: [16]byte{1}}
+	bare := a
+	bare.Sessioned = false
+	if _, err := f.reconnect(bare, o, m, entity.SessionRef{}); !errors.Is(err, ErrNotYoursSessioned) {
+		t.Errorf("a reconnect with no session: %v, want ErrNotYoursSessioned", err)
+	}
+	if err := f.check(); err != nil {
+		t.Errorf("after the refused reconnect: %v", err)
+	}
+	if _, err := f.reconnect(a, o, m, s2); err != nil {
+		t.Fatalf("a reconnect on another session: %v", err)
+	}
+	byID := OpenRef{Kind: RefOpened, Open: o.ID, Handle: handle(file.ID)}
+	if err := f.Checks().CheckIO(ctx, bare, file, byID, br(0, 1), entity.ReadData); !errors.Is(err, ErrNotYoursSessioned) {
+		t.Errorf("I/O with no session after the reconnect: %v, want ErrNotYoursSessioned", err)
+	}
+	if err := f.check(); err != nil {
+		t.Errorf("after the reconnect: %v", err)
 	}
 }
