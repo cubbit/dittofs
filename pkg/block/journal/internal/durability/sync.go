@@ -530,14 +530,20 @@ func (d *Durability) Sink(no uint32) segment.Sink {
 			// A sync reported once the journal is read-only moves nothing,
 			// even one in flight at the transition that succeeded: every
 			// record it covered that was not completed is failed, and no
-			// Sync of one may return nil. The Admit read is the report's
-			// linearisation point: a report that read nil just before the
-			// entry and applies after it stands before the entry, so the
-			// records it covered are completed, not failed, which is right.
+			// Sync of one may return nil. The state is read under mu, the
+			// mutex failReadOnly moves the ledger under, so the read and the
+			// apply are one step to the failure pass. A report that reads
+			// nil applies before any pass of the entry moves a record (a
+			// pass runs only once Admit refuses, and takes mu first), so
+			// every record it covers is still in the ledger, covered, and
+			// is completed rather than failed, which is right for a sync
+			// that landed before the entry. One that reads the refusal
+			// moves nothing. Admit is one atomic load, so mu stays a leaf.
+			st.mu.Lock()
 			if d.Admit() != nil {
+				st.mu.Unlock()
 				return
 			}
-			st.mu.Lock()
 			if through > st.synced[seg] {
 				st.synced[seg] = through
 			}
