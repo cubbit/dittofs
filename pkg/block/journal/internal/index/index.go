@@ -70,6 +70,10 @@ func (ix *Index) SegmentBytes(seg core.SegmentID) SegmentBytes { return ix.fs.se
 // FileEntries returns a copy of id's placement index entries in read-out
 // order, held and retained pieces and removal markers alike; nil when the
 // file holds none. It takes the file's lock shared and creates no entry.
+//
+// decision: exported so the datapath tests can see a file's entries, and a
+// later inspection read-out is expected to take it over. It is withdrawn if
+// the inspection path does not use it.
 func (ix *Index) FileEntries(id core.FileID) []Entry { return ix.fs.inspect(id) }
 
 // AsOf returns the change version a read of id reports.

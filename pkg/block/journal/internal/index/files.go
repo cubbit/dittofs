@@ -266,12 +266,17 @@ func (fs *files) openBuckets(start core.Version) {
 // satisfies opened < c < the raised counter: that entry is checked against
 // its own version, not the raised bucket. It holds because a fill is checked
 // against the file's own tag first, and a share attaching after open
-// normally owns no entry changed before the attach. Overturned by an attach
-// of a tag that still holds entries in this index: a closed handle leaves its
-// tag's extents held, so a later attach of the same tag with a floor above
-// such an entry can accept a fill whose asOf came from another version space.
+// normally owns no entry changed before the attach. It fails open only for a
+// tag re-attached while this index still holds its entries (a closed handle
+// leaves its tag's extents held, so every re-attach is such a case), and only
+// for a fill whose asOf, for one of those entries, was not issued by this
+// journal and is at least that entry's version. The attach floor rule rules
+// that out: an entry under the tag was written after an attach whose floor
+// exceeded every version the share held elsewhere, so a foreign asOf is below
+// the entry's version and the entry check refuses it. The exception is a
+// share moved out, dropped through Close without a Forget, and moved back.
 // Withdraw the rule by raising opened, an atomic on the read path, if that
-// re-attach is reachable with such an asOf.
+// move-back is reachable with such an asOf.
 func (fs *files) raiseBuckets(counter uint64) {
 	for i := range fs.buckets {
 		raise(&fs.buckets[i], counter)
@@ -300,7 +305,10 @@ func (fs *files) checkedAgainst(f *file, id core.FileID) core.Version {
 // decision: a bucket-based asOf can name a version drawn but not yet applied
 // to the index. Two files share a bucket; the first's write draws its
 // version and while the append is in flight the second draws a higher one,
-// is deleted and settled, raising the bucket to it. A read of the first
+// is deleted and settled, raising the bucket to it. A journal-wide bucket
+// raise at a share's attach is a second cause: a write that drew a version
+// below the new floor and has not published, while a read of its file reports
+// the raised bucket. A read of the first
 // file, missing now, reports the raised bucket, and a change landed after
 // that read at the lower version no longer refuses a fill of it, since the
 // lower version is not above the asOf the read reported. The index cannot
