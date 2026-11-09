@@ -48,9 +48,30 @@ type fence struct {
 // outstanding or failing starts a fresh fenceAfter: a failing owner's count
 // leaves zero at each retry, so it is the node's state, not the count, that
 // times the fence.
+//
+// since is stored before the count leaves zero, so no reader sees the node
+// busy with the since of an earlier busy spell. It is only ever raised: a
+// start that read zero and then lost the count to another cannot lower the
+// since that one stored, and moves it no later than its own reading.
 func (f *fence) begin() {
-	if f.outstanding.Add(1) == 1 && !f.failing.Load() {
-		f.since.Store(int64(f.clock.Elapsed()))
+	for {
+		n := f.outstanding.Load()
+		if n == 0 && !f.failing.Load() {
+			raise(&f.since, int64(f.clock.Elapsed()))
+		}
+		if f.outstanding.CompareAndSwap(n, n+1) {
+			return
+		}
+	}
+}
+
+// raise sets a to v unless it already holds a later value.
+func raise(a *atomic.Int64, v int64) {
+	for {
+		c := a.Load()
+		if c >= v || a.CompareAndSwap(c, v) {
+			return
+		}
 	}
 }
 
