@@ -207,6 +207,17 @@ type Durability struct {
 	// dropped pieces.
 	afterCorruptDrop func(*index.FailedWindow)
 
+	// afterCorruptTake is a test hook, nil in production: Corrupt runs it
+	// under the file's domain, with no lock of this layer held, once it has
+	// taken an unsynced record out of the ledger or a pending window, which a
+	// Sync or a durability wait then sees.
+	afterCorruptTake func()
+
+	// onCorruptHeld is a test hook, nil in production: Corrupt runs it under
+	// the file's domain on the record's held pieces it read before deciding,
+	// and may change their offloaded bits.
+	onCorruptHeld func([]index.Piece)
+
 	// beforeTakeWindow is a test hook, nil in production: the worker runs it
 	// with no lock held before it takes each queued end event's window.
 	beforeTakeWindow func()
@@ -439,10 +450,12 @@ type entry struct {
 //
 // decision: mu is a leaf mutex, never held across I/O, a sync, the clock, a
 // file domain or another lock, because both sinks run under the
-// segment's append domain and must not wait on anything. The two locks taken
-// under it are leaves themselves, which take nothing while held: the change
-// channel's cmu, and the segment ledger's mutex, which a hold's claim, release
-// and lookup take (segHold says why).
+// segment's append domain and must not wait on anything. The three locks
+// taken under it are leaves themselves, which take nothing while held: the
+// change channel's cmu, the segment ledger's mutex, which a hold's claim,
+// release and lookup take (segHold says why), and the directory registry's
+// mutex, which a raise of the generation takes, so a raise and the change
+// that makes its loss visible are one step.
 type stream struct {
 	d  *Durability
 	no uint32

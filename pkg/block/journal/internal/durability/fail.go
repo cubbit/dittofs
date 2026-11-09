@@ -87,13 +87,15 @@ func (d *Durability) failWindow(st *stream, w *window) {
 
 	// Raised before anything is published or answered, so a reader that sees a
 	// loss event, or a Sync that returns its failure, finds the generation up.
-	//
-	// decision: the raise follows the snapshot, so when Corrupt takes every
-	// content record out of the window after it, the window raises with
-	// nothing left to fail, beside Corrupt's own raise. A spare raise only
-	// makes a client re-send, so it is kept rather than deferred until a record
-	// is failed. Overturned if a raise must name a loss it was raised for.
-	d.RaiseWindow()
+	// A Corrupt that took a record out of the window since the snapshot made
+	// the window's raise already, before it answered the failure for that
+	// record, so the window is raised once, by whichever came first.
+	st.mu.Lock()
+	if !w.raised {
+		d.RaiseWindow()
+		w.raised = true
+	}
+	st.mu.Unlock()
 
 	files, byFile := byFileOf(failing)
 	for _, f := range files {

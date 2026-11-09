@@ -58,8 +58,8 @@ type CorruptOutcome struct {
 // the copy that fails with an error that shows nothing about it is returned
 // as that error, with nothing marked or dropped (readCopy says which). With no
 // copy, or one that does not verify, it drops the extents
-// the record backs from the index, raises the loss generation for a dirty
-// one, and hands the loss record to the stream's worker. It returns
+// the record backs from the index, raises the loss generation, first, for a
+// dirty one, and hands the loss record to the stream's worker. It returns
 // CorruptDropped, after which the caller reports the extents missing. The
 // read appends nothing, takes no segment append domain and waits on no sync:
 // a loss record that cannot be appended reaches only the worker, where the
@@ -82,14 +82,31 @@ type CorruptOutcome struct {
 // that error and drops nothing. Overturned if an EIO read is ruled to drop the
 // extent, which would then call Corrupt for it too.
 //
-// decision: the generation is raised by the dropping call, once per call that
-// drops a piece whose offloaded bit is unset, before the loss is handed to the
-// worker, and the loss says so with Raised: on the reader's goroutine for a
-// read's drop, on the worker for a held record whose copy was retired. It
-// lives in memory only, like every raise. A reader that gets the extent
-// missing then finds the generation up, though the loss record and the event
-// follow on the worker. Overturned if a raise must wait for the loss record to
-// be durable.
+// decision: the generation is raised by the dropping call, at most once per
+// call, before anything makes the drop visible: before the record leaves the
+// ledger or a pending window, where a Sync, a durability wait or Durable
+// would see it gone, before the file is marked or owed a window's report, and
+// before the index drops its extents. The loss says so with Raised. It is
+// raised on the reader's goroutine for a read's drop, and on the worker for a
+// held record whose copy was retired, and lives in memory only, like every
+// raise. Whether a piece is dirty is read from the index under the file's
+// domain before the decision, as the record's held pieces with their
+// offloaded bits: a call raises when one of them is not offloaded, and also,
+// whatever the pieces, when it answers a failed window's report for the record
+// (a mark, or a report owed to a window not yet taken), since a failed window
+// raises before any Sync it fails returns. A record in a pending window shares
+// the window's one raise with the worker's failure of it (window.raised). A
+// record the index no longer names, overwritten or already dropped, raises
+// nothing outside a failed window.
+//
+// The read is exact because every change to a record's held pieces made while
+// the journal runs (a write over it, a repoint, a drop) is made under the
+// file's domain, which is held from the read to the drop. Overturned by an
+// offload report or a release that changes held pieces without the domain:
+// the raise is then decided on a read that can be stale, which only ever
+// raises for a piece offloaded meanwhile, a spare raise, never a missing one,
+// as long as no path sets a piece back to dirty. Overturned also if a raise
+// must wait for the loss record to be durable.
 func (d *Durability) Corrupt(ctx context.Context, c Corruption) (CorruptOutcome, error) {
 	if err := ctx.Err(); err != nil {
 		return CorruptOutcome{}, err
@@ -136,14 +153,33 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 	d.markDamaged(c.Record.Segment)
 	dropped := CorruptOutcome{Kind: CorruptDropped}
 
+	// What the drop takes is read before anything is decided or published,
+	// so the generation can be raised ahead of both. Every change to the
+	// record's held pieces is made under the file's domain, which is held
+	// until the drop below, so the drop takes exactly these.
+	held := d.index.HeldAt(c.File, c.Record)
+	if d.onCorruptHeld != nil {
+		d.onCorruptHeld(held)
+	}
+	dirty := slices.ContainsFunc(held, func(p index.Piece) bool { return !p.Offloaded })
+
 	synced, known := c.Synced, c.AtOpen
 	if !known {
 		var lost bool
-		synced, lost = st.takeCorrupt(c)
+		synced, lost = st.takeCorrupt(c, dirty)
 		if lost {
 			unlock()
 			return dropped
 		}
+		if !synced && d.afterCorruptTake != nil {
+			d.afterCorruptTake()
+		}
+	}
+	// takeCorrupt raised for an unsynced record as it took it out; a synced
+	// one, or one an open proved, is raised for here, before the drop below
+	// makes the extent missing to a read.
+	if (known || synced) && dirty {
+		d.dir.raise()
 	}
 
 	// A synced record lifted what it superseded when it completed, or the
@@ -167,7 +203,6 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 	}
 
 	job := corruptJob{record: c.Record, synced: synced}
-	dirty := false
 	base := Loss{
 		Share:   c.Share,
 		File:    c.File,
@@ -185,26 +220,20 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 		l := base
 		l.Extent, l.Offloaded = p.Extent, p.Offloaded
 		job.losses = append(job.losses, l)
-		dirty = dirty || !p.Offloaded
 	}
-	if len(job.losses) == 0 && err != nil {
-		// The index refused the drop, so it may still name the record: the
-		// loss is named by the header extent, as dirty, whatever it holds.
+	if len(job.losses) == 0 && err != nil && len(held) > 0 {
+		// The index refused the drop, so it may still hold the record: the
+		// loss is named by the header extent, with the offloaded bit its
+		// pieces had, which the raise above already followed.
 		l := base
-		l.Extent = c.Extent
+		l.Extent, l.Offloaded = c.Extent, !dirty
 		job.losses = append(job.losses, l)
-		dirty = true
 	}
 	if len(job.losses) == 0 {
 		// The index no longer names the record: an overwrite or an earlier
 		// drop took it, and nothing it held is lost here.
 		unlock()
 		return dropped
-	}
-	// Raised before the domain is let go, so a read of the file that finds the
-	// extent missing finds the generation up.
-	if dirty {
-		d.dir.raise()
 	}
 	unlock()
 
@@ -236,9 +265,14 @@ var errRecordCorrupt = errors.New("durability: the record was found corrupt befo
 
 // takeCorrupt decides, in one step under mu, whether the record c names
 // was synced, and takes it out of the ledger or a pending window when it was
-// not, adding it to the lost set so it never reads durable. lost reports a
-// record the worker already failed, or an earlier Corrupt already took out,
-// which has nothing left to drop.
+// not, adding it to the lost set so it never reads durable. In that same step,
+// and before any of it, it raises the generation: for an unsynced record of
+// the ledger when dirty says a held piece of it is not offloaded or its
+// segment has failed, so its file is owed the window's report; for a record of
+// a pending window unless the window was raised already. The registry's mutex
+// it raises under is a leaf. lost reports a record the worker already failed,
+// or an earlier Corrupt already took out, which has nothing left to drop or
+// raise.
 //
 // decision: a record in neither the ledger, a pending window nor the lost set
 // is synced. Every record Track saw that left the ledger otherwise was
@@ -252,7 +286,7 @@ var errRecordCorrupt = errors.New("durability: the record was found corrupt befo
 // windows and the lost set, O(ledger + window + lost) per call, and the lost
 // set is never pruned. Upgrade to an index by record when a read that finds
 // many corrupt records shows the scan in a profile.
-func (st *stream) takeCorrupt(c Corruption) (synced, lost bool) {
+func (st *stream) takeCorrupt(c Corruption, dirty bool) (synced, lost bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	at := func(w segment.Written) bool { return recordAt(w) == c.Record }
@@ -267,6 +301,13 @@ func (st *stream) takeCorrupt(c Corruption) (synced, lost bool) {
 			return true, false
 		}
 		file, seg, loc := e.w.File, e.w.Loc.Segment, e.w.Loc
+		failed := st.segmentFailedLocked(seg)
+		// Raised before the record leaves the ledger, so a Sync that finds it
+		// gone, or that takes the report owed below, returns with the
+		// generation up.
+		if dirty || failed {
+			st.d.dir.raise()
+		}
 		st.removeLocked(func(e *entry) bool { return at(e.w) }, nil)
 		// Never durable: the record leaves the ledger unsynced, and the lost
 		// set keeps it from reading durable and a durability wait from ending.
@@ -274,7 +315,7 @@ func (st *stream) takeCorrupt(c Corruption) (synced, lost bool) {
 		// The segment may have failed already, with its window not yet taken:
 		// the window will not hold the record, so the file is owed its report
 		// now, and takeWindow turns that into the window's mark.
-		if st.segmentFailedLocked(seg) && !slices.Contains(st.owed[seg], file) {
+		if failed && !slices.Contains(st.owed[seg], file) {
 			if st.owed == nil {
 				st.owed = map[core.SegmentID][]core.FileID{}
 			}
@@ -290,6 +331,13 @@ func (st *stream) takeCorrupt(c Corruption) (synced, lost bool) {
 				continue
 			}
 			file, loc := w.entries[i].w.File, w.entries[i].w.Loc
+			// The window's failure is answered from here on, through the
+			// mark below, so the window's one raise is made now, before it,
+			// unless the worker made it already.
+			if !w.raised {
+				st.d.dir.raise()
+				w.raised = true
+			}
 			w.entries = slices.Delete(w.entries, i, i+1)
 			// Lost as a record the window failed is, so it never reads durable
 			// once it has left the window. A read-only journal fails every

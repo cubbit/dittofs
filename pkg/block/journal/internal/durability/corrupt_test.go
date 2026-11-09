@@ -192,6 +192,11 @@ func TestCorruptDirtyVsOffloaded(t *testing.T) {
 			prof.Watch(t, prof.Options{})
 			cr := newCorruptRig(t, func(cr *corruptRig) {
 				if offloaded {
+					cr.d.onCorruptHeld = func(held []index.Piece) {
+						for i := range held {
+							held[i].Offloaded = true
+						}
+					}
 					cr.d.afterCorruptDrop = func(fw *index.FailedWindow) {
 						for i := range fw.Dropped {
 							fw.Dropped[i].Offloaded = true

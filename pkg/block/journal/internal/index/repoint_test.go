@@ -152,3 +152,26 @@ func TestNamesReadsHeldAndRetainedPieces(t *testing.T) {
 		t.Fatal("a record no piece sits at is named")
 	}
 }
+
+// TestHeldAtReturnsTheRecordsHeldPieces: HeldAt returns only the held pieces
+// at the record, split where an overwrite cut them, with no retained piece, and
+// nothing for a file with no entry, for which no entry is created.
+func TestHeldAtReturnsTheRecordsHeldPieces(t *testing.T) {
+	ix := New(1 << 20)
+	if got := ix.HeldAt(testFile, rec(1, 0)); len(got) != 0 {
+		t.Fatalf("HeldAt of a file with no entry = %+v, want none", got)
+	}
+	if ix.fs.view(testFile, func(*file) {}) {
+		t.Fatal("HeldAt created an entry")
+	}
+	writeRetained(t, ix, write(0, 4096, rec(1, 0), 5))
+	writeRetained(t, ix, write(1024, 1024, rec(2, 0), 10)) // retains v5's middle
+	got := ix.HeldAt(testFile, rec(1, 0))
+	if len(got) != 2 || got[0].Extent != ext(0, 1024) || got[1].Extent != ext(2048, 2048) ||
+		got[0].Offloaded || got[1].Offloaded {
+		t.Fatalf("HeldAt = %+v, want v5's [0,1024) and [2048,4096), not offloaded", got)
+	}
+	if got := ix.HeldAt(testFile, rec(3, 0)); len(got) != 0 {
+		t.Fatalf("HeldAt of a record no piece sits at = %+v, want none", got)
+	}
+}

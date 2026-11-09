@@ -60,6 +60,13 @@ type window struct {
 	// so resolving the window announces nothing and keeps the segment's
 	// failure state as it is.
 	readOnly bool
+	// raised is set, under st.mu and in the step that raises it, once the
+	// generation was raised for the window: by failWindow before it fails a
+	// record, or by Corrupt before it answers the window's failure for a
+	// record it took out. Either raise is the window's one. A read-only
+	// journal raises once for its entry instead (raiseOnce), whatever the
+	// window says.
+	raised bool
 }
 
 // onEnd is the consumer of every stream's end events (D13). It runs on the
@@ -227,15 +234,16 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 // worker.
 //
 // decision: a window is resolved when it holds no record: at once when it is
-// taken with none, or when failWindow has failed its last record. While the
-// journal takes writes, a window holding a record that failWindow leaves, a
-// header-only one, stays pending and is not announced, and every Sync naming a
-// file with such a record answers a *core.SyncError, until the code that
-// re-appends it lands, or until the journal turns read-only, which fails every
-// record of every window and so resolves them all. A pending window never
-// reads durable, so nothing is lost by waiting; what is withdrawn is only the
-// window's memory. A window failReadOnly made is resolved without an
-// announcement: its segment did not fail.
+// taken with none, when failWindow has failed its last record, or when
+// failWindow or failReadOnly finds a Corrupt took the last record out before
+// it ran. While the journal takes writes, a window holding a record that
+// failWindow leaves, a header-only one, stays pending and is not announced,
+// and every Sync naming a file with such a record answers a *core.SyncError,
+// until the code that re-appends it lands, or until the journal turns
+// read-only, which fails every record of every window and so resolves them
+// all. A pending window never reads durable, so nothing is lost by waiting;
+// what is withdrawn is only the window's memory. A window failReadOnly made is
+// resolved without an announcement: its segment did not fail.
 //
 // A record failWindow dropped has left the window and the ledger, which would
 // read it durable: st.lost keeps it out of that answer, and failWindow adds it

@@ -27,6 +27,22 @@ func (ix *Index) Names(id core.FileID, r RecordAt) bool {
 	return ix.fs.view(id, func(f *file) { at = f.sitsAt(r) }) && at
 }
 
+// HeldAt returns a copy of id's held pieces at record r, each with its
+// offloaded bit, in offset order. It takes the file's lock shared and creates
+// no entry.
+func (ix *Index) HeldAt(id core.FileID, r RecordAt) []Piece {
+	var out []Piece
+	ix.fs.view(id, func(f *file) {
+		f.held.visit(whole, func(p Piece) bool {
+			if p.Record == r {
+				out = append(out, p)
+			}
+			return true
+		})
+	})
+	return out
+}
+
 // sitsAt reports whether any held or retained piece of f is at record r.
 func (f *file) sitsAt(r RecordAt) bool {
 	found := false
