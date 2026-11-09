@@ -3,12 +3,15 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 // errStoreDown is a store's failure of the whole call.
@@ -136,5 +139,159 @@ func TestFenceCauseOfAStallAfterARecoveredFailure(t *testing.T) {
 	c, ok := f.condition()
 	if !ok || c.Cause != errNoCommit {
 		t.Errorf("node_fenced %v naming %v, want errNoCommit", ok, c.Cause)
+	}
+}
+
+// probe stands in for the store behind the fenced views: each write
+// transaction records the count the fence holds outstanding while it runs,
+// and answers advanced and err.
+type probe struct {
+	f        *fence
+	seen     int64
+	advanced bool
+	err      error
+}
+
+func (p *probe) call() error { p.seen = p.f.outstanding.Load(); return p.err }
+
+type probeExistence struct {
+	Existence
+	*probe
+}
+
+func (x probeExistence) Commit(context.Context, []kvstore.PendingExistence, *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+	return nil, x.call()
+}
+
+func (x probeExistence) Remove(context.Context, entity.ShareID, entity.FileID, uint64, kvstore.RemoveOp, []kvstore.PendingOp) error {
+	return x.call()
+}
+
+func (x probeExistence) Clone(context.Context, kvstore.CloneOp, []kvstore.PendingOp) error {
+	return x.call()
+}
+
+type probeContent struct {
+	Content
+	*probe
+}
+
+func (c probeContent) Resume(context.Context, entity.ShareID, entity.FileID) (bool, error) {
+	return c.advanced, c.call()
+}
+
+func (c probeContent) PruneRemovals(context.Context, entity.ShareID, entity.FileID, entity.JournalVersion) error {
+	return c.call()
+}
+
+type probeLifecycle struct {
+	Lifecycle
+	*probe
+}
+
+func (l probeLifecycle) RaiseVersionLimits(context.Context, map[entity.ShareID]entity.JournalVersion) error {
+	return l.call()
+}
+
+func (l probeLifecycle) RaiseAtStart(context.Context, []entity.ShardID) (map[entity.ShardID]uint64, error) {
+	return nil, l.call()
+}
+
+func (l probeLifecycle) RaiseAtAttach(context.Context, entity.ShardID) (uint64, error) {
+	return 0, l.call()
+}
+
+// fencedCalls is every write transaction the fenced views wrap, each called
+// once through its view.
+var fencedCalls = map[string]func(ctx context.Context, p *probe) error{
+	"Existence.Commit": func(ctx context.Context, p *probe) error {
+		_, err := fencedExistence{probeExistence{probe: p}, p.f}.Commit(ctx, nil, nil)
+		return err
+	},
+	"Existence.Remove": func(ctx context.Context, p *probe) error {
+		return fencedExistence{probeExistence{probe: p}, p.f}.Remove(ctx, entity.ShareID{}, entity.FileID{}, 0, kvstore.RemoveOp{}, nil)
+	},
+	"Existence.Clone": func(ctx context.Context, p *probe) error {
+		return fencedExistence{probeExistence{probe: p}, p.f}.Clone(ctx, kvstore.CloneOp{}, nil)
+	},
+	"Content.Resume": func(ctx context.Context, p *probe) error {
+		_, err := fencedContent{probeContent{probe: p}, p.f}.Resume(ctx, entity.ShareID{}, entity.FileID{})
+		return err
+	},
+	"Content.PruneRemovals": func(ctx context.Context, p *probe) error {
+		return fencedContent{probeContent{probe: p}, p.f}.PruneRemovals(ctx, entity.ShareID{}, entity.FileID{}, entity.JournalVersion{})
+	},
+	"Lifecycle.RaiseVersionLimits": func(ctx context.Context, p *probe) error {
+		return fencedLifecycle{probeLifecycle{probe: p}, p.f}.RaiseVersionLimits(ctx, nil)
+	},
+	"Lifecycle.RaiseAtStart": func(ctx context.Context, p *probe) error {
+		_, err := fencedLifecycle{probeLifecycle{probe: p}, p.f}.RaiseAtStart(ctx, nil)
+		return err
+	},
+	"Lifecycle.RaiseAtAttach": func(ctx context.Context, p *probe) error {
+		_, err := fencedLifecycle{probeLifecycle{probe: p}, p.f}.RaiseAtAttach(ctx, 0)
+		return err
+	},
+}
+
+// Every write transaction a view wraps is outstanding while it runs, and a
+// retrying owner's call of it failing at the store leaves the node failing.
+func TestFenceRecordsEveryWriteTransaction(t *testing.T) {
+	for name, call := range fencedCalls {
+		t.Run(name, func(t *testing.T) {
+			f, _ := newClockFence()
+			p := &probe{f: f, err: errStoreDown}
+			if err := call(withRetryingOwner(context.Background()), p); !errors.Is(err, errStoreDown) {
+				t.Fatalf("the call answered %v, want the store's error", err)
+			}
+			if p.seen != 1 {
+				t.Errorf("%d outstanding while it ran, want 1", p.seen)
+			}
+			if n, failing := f.outstanding.Load(), f.failing.Load(); n != 0 || !failing {
+				t.Errorf("after it: %d outstanding, failing %v; want 0 and failing", n, failing)
+			}
+		})
+	}
+}
+
+// A retrying owner's error that fails one file or one call is not the
+// store's: it leaves the node not failing. A retrying owner's context is
+// cancelled only when its loop stops, so context.Canceled reaches the fence
+// only then.
+func TestFenceNotFailingOnACallsOwnError(t *testing.T) {
+	// The store refuses a clone of nothing before it reads a key.
+	refused := kvstore.Existence{}.Clone(context.Background(), kvstore.CloneOp{}, nil)
+	if !kvstore.Refused(refused) {
+		t.Fatalf("a clone of nothing answered %v, want the store's refusal", refused)
+	}
+	for name, err := range map[string]error{
+		"conflict":          kvstore.ErrConflict,
+		"refused":           refused,
+		"stale":             entity.ErrStale,
+		"open gen moved":    kvstore.ErrOpenGenMoved,
+		"context cancelled": context.Canceled,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, _ := newClockFence()
+			f.begin()
+			f.end(withRetryingOwner(context.Background()), fmt.Errorf("wrapped: %w", err))
+			if f.failing.Load() {
+				t.Error("the node failing on a call's own error")
+			}
+		})
+	}
+}
+
+// Resume's batches that committed before a later one failed are a commit:
+// they restart the bound, though the call answers the store's error.
+func TestFenceResumeAdvancedThenFailedCommits(t *testing.T) {
+	f, clock := newClockFence()
+	clock.Advance(10 * time.Second)
+	p := &probe{f: f, advanced: true, err: errStoreDown}
+	if err := fencedCalls["Content.Resume"](withRetryingOwner(context.Background()), p); !errors.Is(err, errStoreDown) {
+		t.Fatalf("Resume answered %v, want the store's error", err)
+	}
+	if got, want := time.Duration(f.lastCommit.Load()), 70*time.Second; got != want {
+		t.Errorf("last commit at %v, want %v", got, want)
 	}
 }
