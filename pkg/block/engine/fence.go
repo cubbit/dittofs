@@ -108,10 +108,15 @@ func storeFailed(err error) bool {
 // outstanding or failing and fenceAfter has passed since the later of the
 // last commit and the moment the node last went busy. The first reader to
 // find it entered counts and logs it; one finding it lifted logs that.
+//
+// The clock is read before the state: a commit or a start landing between
+// the two then only moves from past now, which reads as not yet due, where
+// the other order pairs an old from with a later now and fences.
 func (f *fence) holds() bool {
+	now := int64(f.clock.Elapsed())
 	busy := f.outstanding.Load() > 0 || f.failing.Load()
 	from := max(f.lastCommit.Load(), f.since.Load())
-	if !busy || int64(f.clock.Elapsed())-from < int64(fenceAfter) {
+	if !busy || now-from < int64(fenceAfter) {
 		f.lift()
 		return false
 	}
