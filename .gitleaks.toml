@@ -11,4 +11,6 @@ regexes = [
   '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',
   # Localstack / test fixtures use literal "test" credentials.
   '''(?i)(access|secret)[_-]?key["'\s:=]+test["']''',
+  # The JWT signing key of the throwaway DittoFS that test/smbfuzz's fixture starts.
+  '''smbfuzz-jwt-secret-key-that-is-long-enough-32''',
 ]

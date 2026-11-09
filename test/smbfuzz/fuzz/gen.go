@@ -808,10 +808,10 @@ func (g *genState) descriptor(part string) string {
 
 func (g *genState) aceCount() int {
 	r := g.r
-	switch x := r.Below(10); {
-	case x == 0:
+	switch r.Below(10) {
+	case 0:
 		return Pick(r, []int{128, 256, 512, 1000})
-	case x == 1:
+	case 1:
 		return Pick(r, []int{8, 12, 16, 32, 64, 100})
 	}
 	return Pick(r, []int{1, 2, 3, 4, 5, 6})

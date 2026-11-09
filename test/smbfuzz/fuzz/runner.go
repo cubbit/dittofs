@@ -639,7 +639,7 @@ func (r *Runner) cleanup(dir string) {
 	r.Close()
 	if r.hooks != nil {
 		if err := r.hooks.CleanRef(dir); err != nil {
-			fmt.Fprintf(r.log, "cleanup ref %s: %v\n", dir, err)
+			_, _ = fmt.Fprintf(r.log, "cleanup ref %s: %v\n", dir, err)
 		}
 	}
 	left := r.removeTree(SideDut, filepath.Join(r.env.DutRoot, dir))
@@ -652,7 +652,7 @@ func (r *Runner) cleanup(dir string) {
 	r.mu.Unlock()
 	if reset && r.hooks != nil {
 		if err := r.hooks.ResetDut(); err != nil {
-			fmt.Fprintf(r.log, "reset DittoFS share: %v\n", err)
+			_, _ = fmt.Fprintf(r.log, "reset DittoFS share: %v\n", err)
 		}
 	}
 }

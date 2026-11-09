@@ -161,7 +161,7 @@ func runCmd(args []string) (int, error) {
 			return 2, err
 		}
 		p, err := fuzz.ParsePlan(f)
-		f.Close()
+		_ = f.Close() // opened read-only: a failed close loses nothing
 		if err != nil {
 			return 2, err
 		}

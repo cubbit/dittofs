@@ -81,7 +81,7 @@ net ads testjoin
 
 winbindd -D
 smbd -D
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
     wbinfo -p >/dev/null 2>&1 && wbinfo -u >/dev/null 2>&1 && break
     sleep 1
 done

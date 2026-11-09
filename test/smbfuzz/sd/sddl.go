@@ -367,7 +367,7 @@ func (r *Resolver) parseACE(s string) (ACE, error) {
 	if !a.modelled() {
 		raw, ok := strings.CutPrefix(f[2], "raw:")
 		if !ok {
-			return ACE{}, fmt.Errorf("sd: unmodelled ACE %q needs raw:", s)
+			return ACE{}, fmt.Errorf("sd: unmodelled ACE %q needs a raw: prefix", s)
 		}
 		a.Raw, err = hex.DecodeString(raw)
 		return a, err

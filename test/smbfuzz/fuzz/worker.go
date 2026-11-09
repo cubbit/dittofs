@@ -173,7 +173,7 @@ func setSparse(path string, on bool) error {
 	if err != nil {
 		return err
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }() // opened read-only: a failed close loses nothing
 	buf := make([]byte, 24+1)
 	binary.LittleEndian.PutUint32(buf[0:], fsctlSetSparse) // info_type: the FSCTL
 	binary.LittleEndian.PutUint32(buf[12:], passthruFSCTL) // flags
@@ -385,7 +385,7 @@ func (w *worker) exec(r *Request) (*Output, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }() // a directory read: a failed close loses nothing
 		ents, err := f.ReadDir(-1)
 		if err != nil {
 			return nil, err

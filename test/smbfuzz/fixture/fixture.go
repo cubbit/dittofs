@@ -61,7 +61,9 @@ func (c Config) dutMount() string { return filepath.Join(c.State, "mnt", "dut") 
 func (c Config) dfsDir() string   { return filepath.Join(c.State, "dfs") }
 func (c Config) keytabs() string  { return filepath.Join(c.State, "keytabs") }
 
-func (c Config) logf(format string, a ...any) { fmt.Fprintf(c.Log, "[fixture] "+format+"\n", a...) }
+func (c Config) logf(format string, a ...any) {
+	_, _ = fmt.Fprintf(c.Log, "[fixture] "+format+"\n", a...)
+}
 
 func run(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -137,7 +139,7 @@ func Up(ctx context.Context, c Config) (*fuzz.Env, error) {
 		return err == nil
 	}); err != nil {
 		logs, _ := run(ctx, "docker", "logs", "--tail", "40", refName)
-		return nil, fmt.Errorf("Samba reference never became ready: %w\n%s", err, logs)
+		return nil, fmt.Errorf("the Samba reference never became ready: %w\n%s", err, logs)
 	}
 
 	c.logf("starting DittoFS")
@@ -234,6 +236,8 @@ func (c Config) dfsConfig() string {
   output: stdout
 controlplane:
   port: %d
+  # A test secret: it signs the tokens of a DittoFS that lives only as long
+  # as the fixture.
   jwt:
     secret: "smbfuzz-jwt-secret-key-that-is-long-enough-32"
 database:
@@ -475,9 +479,12 @@ func (c Config) hostKerberos() error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	_, err = fmt.Fprintf(f, "%s\n%s ref.dittofs.ad\n127.0.0.1 dittofs.dittofs.ad\n%s dc.dittofs.ad\n%s\n",
 		hostsBegin, refIP, dcIP, hostsEnd)
+	// The close can be where a failed append shows.
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
 	return err
 }
 

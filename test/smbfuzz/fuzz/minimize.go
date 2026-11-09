@@ -74,7 +74,7 @@ func Minimize(x Executor, failing *Result, log io.Writer) *Minimized {
 			cand := m.Plan.Clone()
 			cand.Steps = append(cand.Steps[:i], cand.Steps[i+1:]...)
 			if try(cand) {
-				fmt.Fprintf(log, "  minimise: removed step %d, %d left\n", i+1, len(m.Plan.Steps))
+				_, _ = fmt.Fprintf(log, "  minimise: removed step %d, %d left\n", i+1, len(m.Plan.Steps))
 				changed = true
 			}
 		}
@@ -89,7 +89,7 @@ func Minimize(x Executor, failing *Result, log io.Writer) *Minimized {
 		gone := cand.Tree[i].Path
 		cand.Tree = cand.Tree.Without(gone)
 		if try(cand) {
-			fmt.Fprintf(log, "  minimise: removed tree object %s, %d left\n", gone, len(m.Plan.Tree))
+			_, _ = fmt.Fprintf(log, "  minimise: removed tree object %s, %d left\n", gone, len(m.Plan.Tree))
 		}
 	}
 	for i := range m.Plan.Tree {
@@ -97,7 +97,7 @@ func Minimize(x Executor, failing *Result, log io.Writer) *Minimized {
 			cand := m.Plan.Clone()
 			cand.Tree[i].Fill = 0
 			if try(cand) {
-				fmt.Fprintf(log, "  minimise: tree %s fill=0\n", cand.Tree[i].Path)
+				_, _ = fmt.Fprintf(log, "  minimise: tree %s fill=0\n", cand.Tree[i].Path)
 			}
 		}
 		if m.Plan.Tree[i].Dir {
@@ -107,7 +107,7 @@ func Minimize(x Executor, failing *Result, log io.Writer) *Minimized {
 			cand := m.Plan.Clone()
 			cand.Tree[i].Len = simpler
 			if try(cand) {
-				fmt.Fprintf(log, "  minimise: tree %s len=%s\n", cand.Tree[i].Path, simpler)
+				_, _ = fmt.Fprintf(log, "  minimise: tree %s len=%s\n", cand.Tree[i].Path, simpler)
 				break
 			}
 		}
@@ -118,7 +118,7 @@ func Minimize(x Executor, failing *Result, log io.Writer) *Minimized {
 				cand := m.Plan.Clone()
 				cand.Steps[i].Args[k] = simpler
 				if try(cand) {
-					fmt.Fprintf(log, "  minimise: step %d %s=%s\n", i+1, k, simpler)
+					_, _ = fmt.Fprintf(log, "  minimise: step %d %s=%s\n", i+1, k, simpler)
 					break
 				}
 			}
