@@ -36,7 +36,8 @@ original and minimised plan, both sides' trace, the replay command — goes to
 pastes `minimized.plan` whole: the plan is the reproducer (DESIGN.md §12.4). Exit status: 0 nothing new, 1 a new divergence, 75 rounds not run (a failed probe
 included; `dt` grades 75 as not run), 2 the command could not start.
 
-- `known.yaml` — accepted divergences, one per signature, each with its reason.
+- `known.yaml` — accepted divergences, one per signature, each with its reason and an issue,
+  or a `spec` citing the rule for a by-design difference (DESIGN.md §12.2).
 - `corpus/` — minimised plans of fixed bugs, replayed with `run --plan`.
 
 | Package | What |

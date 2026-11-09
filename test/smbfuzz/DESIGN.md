@@ -1048,7 +1048,7 @@ comparison would report the difference again in another form.
 succeeds on both sides, admin reads the descriptor at once — owner, group and DACL, plus the
 SACL when the write was of the full descriptor — and it is compared entry by entry in order
 (§9.3). A server that reorders, merges, canonicalises or drops entries diverges at the write
-that did it, signed `<op>:readback:<part>` (`aceadd:readback:dacl`), and the step shows in a
+that did it, signed `<op>:readback:<part>` (`aceadd:readback:dacl:mask`, §12.2), and the step shows in a
 trace as `NNR`.
 
 A **known** divergence (§12.2) is recorded, and the round goes on only when it leaves the trees
@@ -1244,9 +1244,25 @@ a new divergence wins over rounds not run, so a run that found one fails.
 ### 12.2 Known divergences and the corpus
 
 - `test/smbfuzz/known.yaml` lists accepted divergences, one entry per signature, each with a
-  reason and, unless the reason is "DittoFS differs by design" citing its rule, an issue.
+  `reason` and either an `issue` (a number or a URL) or, when DittoFS differs by design, a
+  `spec` citing the rule it follows (`spec: RFC 22 §12.2`). `run` refuses a file with an
+  entry that has neither, an issue that is neither a number nor a URL, a field it does not
+  know, or a signature listed twice.
   An entry excuses that signature only, wherever it occurs, per RFC 29's grading rule that a
   known-failure entry names one check, not a class of outcomes.
+- So that a signature names one situation, not every difference in a field, an output field
+  that could otherwise differ in many unrelated ways carries a class after it:
+
+  | Divergence | Signature | Example |
+  |---|---|---|
+  | owner, group of a descriptor | the two normalised trustees, `ref/dut` | `getacl:owner:alice/local:user-1000` |
+  | DACL, SACL | what the first differing entry differs in (`type`, `flags`, `mask`, `trustee`, `body`), else `count` of entries, `null` (one side has none) or `control` | `getacl:dacl:flags`, `setacl:readback:dacl:count` |
+  | size, nlink, and in the `posix` profile perm and owner | the object's type on the reference | `stat:size:dir` |
+  | DOS attributes | the bits that differ | `getdosattr:attrs:ARCHIVE` |
+
+  Errnos (`<op>:errno:<ref>/<dut>`) and times (`<op>:mtime:<ref>/<dut>` as §9.4 relates
+  them) are already narrow. The class costs the minimiser nothing it should keep: a shrink
+  that changes it reproduces another situation, which §11.2 records as a lead.
 - `test/smbfuzz/corpus/*.plan` holds minimised plans. A plan enters the corpus when the bug it
   found is fixed, in the same change as the fix, and is replayed by every run from then on. A
   corpus plan that diverges is a regression, never a known divergence.

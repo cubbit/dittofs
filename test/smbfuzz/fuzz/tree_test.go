@@ -227,7 +227,7 @@ func TestNoDirectoryCaseAlias(t *testing.T) {
 // changes the tree, the round ends there, graded known.
 func TestKnownDivergenceEndsRoundWhenTreesMaySplit(t *testing.T) {
 	known := &Known{Entries: []KnownEntry{
-		{Signature: "getacl:owner", Reason: "r"},
+		{Signature: "getacl:owner:alice/bob", Reason: "r"},
 		{Signature: "rename:errno:EACCES/OK", Reason: "r"},
 		{Signature: "stat:errno:ENOENT/OK", Reason: "r"},
 		{Signature: "setacl:readback:dacl", Reason: "r"},
@@ -238,7 +238,7 @@ func TestKnownDivergenceEndsRoundWhenTreesMaySplit(t *testing.T) {
 		op, sig, field string
 		ends           bool
 	}{
-		{"getacl", "getacl:owner", "owner", false},
+		{"getacl", "getacl:owner:alice/bob", "owner", false},
 		{"rename", "rename:errno:EACCES/OK", "errno", true},
 		{"stat", "stat:errno:ENOENT/OK", "errno", true},
 		{"setacl", "setacl:readback:dacl", "dacl", true}, // judged as the write it reads back

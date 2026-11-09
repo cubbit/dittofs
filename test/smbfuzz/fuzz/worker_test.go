@@ -81,8 +81,34 @@ func TestCompareSignatures(t *testing.T) {
 	b, _ := r.Parse("O:bobG:DUD:(A;;FA;;;WD)")
 	g := Step{User: "bob", Op: "getacl", Args: map[string]string{"path": "f0", "part": "ntsd"}}
 	d, _ = c.compare(g, Reply{Out: &Output{Bytes: a.Marshal()}}, Reply{Out: &Output{Bytes: b.Marshal()}})
-	if d == nil || d.Sig != "getacl:owner" {
+	if d == nil || d.Sig != "getacl:owner:alice/bob" {
 		t.Fatalf("got %+v", d)
+	}
+	// An ACL difference is signed by the part of the first entry that
+	// differs, a stat field by the object's type, DOS attributes by the bits
+	// that differ: a known entry names one situation, not a whole field.
+	for _, x := range []struct{ ref, dut, sig string }{
+		{"D:(A;;FA;;;WD)(A;;FR;;;alice)", "D:(A;;FA;;;WD)(A;;FW;;;alice)", "getacl:dacl:mask"},
+		{"D:(A;;FA;;;WD)(A;;FR;;;alice)", "D:(A;;FA;;;WD)(A;;FR;;;bob)", "getacl:dacl:trustee"},
+		{"D:(A;;FA;;;WD)(A;OI;FR;;;alice)", "D:(A;;FA;;;WD)(A;;FR;;;alice)", "getacl:dacl:flags"},
+		{"D:(A;;FA;;;WD)(A;;FR;;;alice)", "D:(A;;FA;;;WD)", "getacl:dacl:count"},
+		{"D:P(A;;FA;;;WD)", "D:(A;;FA;;;WD)", "getacl:dacl:control"},
+	} {
+		a, _ := r.Parse("O:aliceG:DU" + x.ref)
+		b, _ := r.Parse("O:aliceG:DU" + x.dut)
+		if d, _ := c.compare(g, Reply{Out: &Output{Bytes: a.Marshal()}}, Reply{Out: &Output{Bytes: b.Marshal()}}); d == nil || d.Sig != x.sig {
+			t.Errorf("%s vs %s: got %+v, want %s", x.ref, x.dut, d, x.sig)
+		}
+	}
+	sz := Step{User: "bob", Op: "stat", Args: map[string]string{"path": "d0"}}
+	if d, _ := c.compare(sz, Reply{Out: &Output{Stat: &StatOut{Type: "dir", Size: 4096}}},
+		Reply{Out: &Output{Stat: &StatOut{Type: "dir"}}}); d == nil || d.Sig != "stat:size:dir" {
+		t.Errorf("a directory's size: got %+v", d)
+	}
+	da := Step{User: "bob", Op: "getdosattr", Args: map[string]string{"path": "f0"}}
+	if d, _ := c.compare(da, Reply{Out: &Output{Bytes: []byte{0x22, 0, 0, 0}}},
+		Reply{Out: &Output{Bytes: []byte{0x20, 0, 0, 0}}}); d == nil || d.Sig != "getdosattr:attrs:HIDDEN" {
+		t.Errorf("DOS attributes: got %+v", d)
 	}
 	st := Step{User: "bob", Op: "stat", Args: map[string]string{"path": "f0"}}
 	at := func(sec float64) *StatOut { return &StatOut{Type: "file", Mtime: int64(sec * 1e9)} }

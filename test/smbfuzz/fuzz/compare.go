@@ -57,6 +57,15 @@ func div(s Step, field, ref, dut string) *Divergence {
 	return &Divergence{Sig: s.Op + ":" + field, Field: field, Ref: ref, Dut: dut}
 }
 
+// classed is div with the signature narrowed by class, so that a known entry
+// for it names one situation rather than every difference in the field
+// (DESIGN.md §12.2).
+func classed(s Step, field, class, ref, dut string) *Divergence {
+	d := div(s, field, ref, dut)
+	d.Sig += ":" + class
+	return d
+}
+
 // under maps p to its place under to when p is from or below it.
 func under(p, from, to string) (string, bool) {
 	if p == from {
@@ -260,7 +269,8 @@ func (c *comparer) compare(s Step, ref, dut Reply) (*Divergence, []string) {
 	case "getdosattr":
 		ra, da := le32(ro.Bytes), le32(do.Bytes)
 		if ra != da {
-			return div(s, "attrs", formatFlags(uint64(ra), dosAttrNames), formatFlags(uint64(da), dosAttrNames)), nil
+			return classed(s, "attrs", formatFlags(uint64(ra^da), dosAttrNames),
+				formatFlags(uint64(ra), dosAttrNames), formatFlags(uint64(da), dosAttrNames)), nil
 		}
 	case "getbtime":
 		rv, dv := int64(le64(ro.Bytes)), int64(le64(do.Bytes))
@@ -322,18 +332,20 @@ func (c *comparer) compareStat(s Step, path string, r, d *StatOut) (*Divergence,
 	if r.Type != d.Type {
 		return div(s, "type", r.Type, d.Type), nil
 	}
+	// The object's type narrows a field's signature: a directory's size
+	// and a file's are different situations.
 	if r.Size != d.Size {
-		return div(s, "size", fmt.Sprint(r.Size), fmt.Sprint(d.Size)), nil
+		return classed(s, "size", r.Type, fmt.Sprint(r.Size), fmt.Sprint(d.Size)), nil
 	}
 	if r.Nlink != d.Nlink {
-		return div(s, "nlink", fmt.Sprint(r.Nlink), fmt.Sprint(d.Nlink)), nil
+		return classed(s, "nlink", r.Type, fmt.Sprint(r.Nlink), fmt.Sprint(d.Nlink)), nil
 	}
 	if c.profile == "posix" {
 		if r.Perm != d.Perm {
-			return div(s, "perm", fmt.Sprintf("%04o", r.Perm), fmt.Sprintf("%04o", d.Perm)), nil
+			return classed(s, "perm", r.Type, fmt.Sprintf("%04o", r.Perm), fmt.Sprintf("%04o", d.Perm)), nil
 		}
 		if r.UID != d.UID || r.GID != d.GID {
-			return div(s, "owner", fmt.Sprintf("%d:%d", r.UID, r.GID), fmt.Sprintf("%d:%d", d.UID, d.GID)), nil
+			return classed(s, "owner", r.Type, fmt.Sprintf("%d:%d", r.UID, r.GID), fmt.Sprintf("%d:%d", d.UID, d.GID)), nil
 		}
 	}
 	if dv := c.compareTime(s, path, "mtime", r.Mtime, d.Mtime, 100); dv != nil {
@@ -446,11 +458,14 @@ func (c *comparer) compareSD(s Step, rb, db []byte) *Divergence {
 		}
 		return c.res.Name(*x)
 	}
+	// An owner or group difference is signed by the two trustees, which are
+	// normalised names (§9.3), and an ACL difference by the part of the
+	// first entry that differs.
 	if a, b := name(rd.Owner), name(dd.Owner); a != b {
-		return div(s, "owner", a, b)
+		return classed(s, "owner", a+"/"+b, a, b)
 	}
 	if a, b := name(rd.Group), name(dd.Group); a != b {
-		return div(s, "group", a, b)
+		return classed(s, "group", a+"/"+b, a, b)
 	}
 	acl := func(d *sd.SD, dacl bool) string {
 		x := &sd.SD{Control: d.Control}
@@ -464,12 +479,43 @@ func (c *comparer) compareSD(s Step, rb, db []byte) *Divergence {
 		return c.res.Format(x)
 	}
 	if a, b := acl(rd, true), acl(dd, true); a != b {
-		return div(s, "dacl", a, b)
+		return classed(s, "dacl", c.aclDiff(rd.DACL, dd.DACL), a, b)
 	}
 	if a, b := acl(rd, false), acl(dd, false); a != b {
-		return div(s, "sacl", a, b)
+		return classed(s, "sacl", c.aclDiff(rd.SACL, dd.SACL), a, b)
 	}
 	return nil
+}
+
+// aclDiff names what differs between two ACLs whose formatted forms differ:
+// one is null, the first entry that differs (its type, flags, mask or
+// trustee), the number of entries, or else the control flags.
+func (c *comparer) aclDiff(r, d *sd.ACL) string {
+	if (r == nil) != (d == nil) {
+		return "null"
+	}
+	if r == nil {
+		return "control"
+	}
+	for i := range min(len(r.ACEs), len(d.ACEs)) {
+		a, b := r.ACEs[i], d.ACEs[i]
+		switch {
+		case a.Type != b.Type:
+			return "type"
+		case a.Flags != b.Flags:
+			return "flags"
+		case a.Mask != b.Mask:
+			return "mask"
+		case c.res.Name(a.SID) != c.res.Name(b.SID):
+			return "trustee"
+		case !slices.Equal(a.Raw, b.Raw):
+			return "body"
+		}
+	}
+	if len(r.ACEs) != len(d.ACEs) {
+		return "count"
+	}
+	return "control"
 }
 
 func (c *comparer) formatSD(b []byte) string {
