@@ -62,13 +62,17 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
 
+	segCap := testSegmentCap
+	if o.segmentCap != 0 {
+		segCap = o.segmentCap
+	}
 	c, err := newCore(Deps{
 		FS:          seam.FS(),
 		Clock:       kit.NewStopwatchClock(),
 		Dir:         t.TempDir(),
 		Identity:    testIdentity,
 		Streams:     testStreams,
-		SegmentCap:  testSegmentCap,
+		SegmentCap:  segCap,
 		ExtentLimit: 1 << 20,
 		Descriptors: core.NewDescriptorBudget(64),
 		Targets:     segment.Targets{Content: 2 * testStreams},

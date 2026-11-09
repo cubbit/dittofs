@@ -59,6 +59,12 @@ type coreOptions struct {
 	// beforeResolve runs in ReadAt after the as-of is read and the file's
 	// append domain released, before the span is resolved.
 	beforeResolve func()
+	// afterCorrupt runs in ReadAt after Corrupt answered a record that did not
+	// verify and before the read goes on from that answer.
+	afterCorrupt func()
+	// segmentCap replaces the test helper's segment size, so a test can write
+	// a record larger than the default segment holds.
+	segmentCap int64
 	// noLimit keeps the test helper's generous version limit off the core, so
 	// a test can hold a fresh core that issues nothing until it sets one.
 	noLimit bool
@@ -98,6 +104,11 @@ type Core struct {
 	// as-of and resolving its span. It is nil outside tests, for the same
 	// reason afterAppend is.
 	beforeResolve func()
+
+	// afterCorrupt is a test seam that holds a read between Corrupt's answer
+	// and the read of a copy it named. It is nil outside tests, for the same
+	// reason afterAppend is.
+	afterCorrupt func()
 
 	// registry is the open handles, replaced whole under registryMu and read
 	// through the pointer alone. See shares.go.
@@ -146,7 +157,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve}
+	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, afterCorrupt: o.afterCorrupt}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)
