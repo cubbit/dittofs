@@ -25,12 +25,13 @@ import (
 // recHolds is a recording CloneHold. Each Hold runs onHold, when set, and
 // answers its error; otherwise next's answer, or a new hold when next is
 // nil. Each Release runs onRel, when set, and answers its error; otherwise
-// next's, or nil.
+// next's, or nil, counted in freed once it answers nil.
 type recHolds struct {
 	mu       sync.Mutex
 	next     engine.CloneHold
 	holds    []engine.CloneSrc
 	releases []entity.OpenID
+	freed    int
 	ids      entity.OpenID
 	onHold   func(ctx context.Context) error
 	onRel    func(ctx context.Context) error
@@ -66,9 +67,21 @@ func (h *recHolds) Release(ctx context.Context, o entity.OpenID) error {
 		}
 	}
 	if h.next != nil {
-		return h.next.Release(ctx, o)
+		if err := h.next.Release(ctx, o); err != nil {
+			return err
+		}
 	}
+	h.mu.Lock()
+	h.freed++
+	h.mu.Unlock()
 	return nil
+}
+
+// released reports how many Releases answered nil.
+func (h *recHolds) released() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.freed
 }
 
 func (h *recHolds) Served(ctx context.Context, s entity.ShardID) error {
@@ -85,8 +98,9 @@ func (h *recHolds) counts() (holds, releases int) {
 }
 
 // A clone calls its store and open state in order: phase 1's Clone, then
-// Hold, the Resume of its batches, and Release once they are done, none of
-// them under either file's entry lock or the destination's guard. The hold
+// Hold, the Resume of its batches, and Release once they are done, after
+// the clone is answered, none of them under either file's entry lock or the
+// destination's guard. The hold
 // is keyed in the source share's own shard, the one Bind named: with the
 // share bound on shard 7, not the default, and open state serving that
 // shard alone, Hold names it and CloneOpen finds the record there.
@@ -133,6 +147,7 @@ func TestAClonesHoldSpansItsPhase2(t *testing.T) {
 	src = u.committedFile(t, "src", fill(mib, 's'))
 	dst = u.create(t, "dst")
 	u.clone(t, src, dst, vfserr.Extent{Len: mib})
+	u.until(t, "the hold released", func() bool { return h.released() > 0 })
 	mu.Lock()
 	defer mu.Unlock()
 	if want := []string{"Clone", "Hold", "Resume", "Release"}; !slices.Equal(calls, want) {
@@ -255,20 +270,23 @@ func TestAHungHoldOrReleaseIsCutAndCounted(t *testing.T) {
 	if err := u.answered(t, "the clone", errc); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
+	u.until(t, "the hold released", func() bool { return h.released() > 0 })
 	if _, releases := h.counts(); releases != 2 || x.resumed(dst) == 0 {
 		t.Errorf("%d Releases, Resume run %d times; want the hung one cut and the hold released after phase 2", releases, x.resumed(dst))
 	}
 }
 
-// A Release that fails is retried alone: phase 2 is not run again, so
-// engine_removal_runs_total{result="done"} moves once, and the clone is
-// answered only once a Release succeeds.
+// A Release that fails is retried alone, after the clone is answered:
+// while it keeps failing, the clone's registrations are gone and its
+// destination extent is written; phase 2 is not run again, so
+// engine_removal_runs_total{result="done"} moves once; and the Release is
+// retried until it succeeds.
 func TestAFailedReleaseRetriesOnlyTheRelease(t *testing.T) {
 	h := &recHolds{}
-	var fails atomic.Int32
-	fails.Store(3)
+	var failing atomic.Bool
+	failing.Store(true)
 	h.onRel = func(context.Context) error {
-		if fails.Add(-1) >= 0 {
+		if failing.Load() {
 			return errors.New("an injected release failure")
 		}
 		return nil
@@ -277,12 +295,20 @@ func TestAFailedReleaseRetriesOnlyTheRelease(t *testing.T) {
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	before := u.e.RemovalRunsDone(u.share.ID)
-	if err := u.answered(t, "the clone", u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})); err != nil {
+	if err := u.answered(t, "the clone while its Release fails", u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
-	if _, releases := h.counts(); releases != 4 {
-		t.Errorf("%d Releases, want three failed and the fourth answered", releases)
+	u.until(t, "three failed Releases", func() bool { _, r := h.counts(); return r >= 3 })
+	s, _ := u.e.Registrations(src)
+	_, d := u.e.Registrations(dst)
+	if s+d != 0 {
+		t.Errorf("registrations while the Release fails: source %d, destination %d; want none", s, d)
 	}
+	if _, err := u.e.Write(t.Context(), u.share.ID, dst, 0, []byte("x"), engine.WriteOpts{Done: func() {}}); err != nil {
+		t.Errorf("a write into the destination extent while the Release fails: %v, want served", err)
+	}
+	failing.Store(false)
+	u.until(t, "the Release retried to success", func() bool { return h.released() == 1 })
 	if got := u.e.RemovalRunsDone(u.share.ID) - before; got != 1 {
 		t.Errorf("engine_removal_runs_total{done} moved by %d, want 1 for the clone's one phase 2", got)
 	}
@@ -321,6 +347,25 @@ func TestALoopEndReleasesTheClonesHold(t *testing.T) {
 	}
 	if holds, releases := h.counts(); holds != 1 || releases != 1 {
 		t.Errorf("%d Holds, %d Releases; want the hold released once", holds, releases)
+	}
+}
+
+// A clone whose loop ends while its Release fails, its phase 2 done and the
+// clone answered, releases the hold once more at the loop's end, and is not
+// ended a second time.
+func TestALoopEndRetriesAFailedRelease(t *testing.T) {
+	h := &recHolds{onRel: func(context.Context) error { return errors.New("an injected release failure") }}
+	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h })
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.create(t, "dst")
+	if err := u.answered(t, "the clone", u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	u.until(t, "a failed Release", func() bool { _, r := h.counts(); return r > 0 })
+	_, before := h.counts()
+	u.e.StopRemovalLoops()
+	if _, after := h.counts(); after <= before {
+		t.Errorf("%d Releases at the loop's end after %d, want one more", after, before)
 	}
 }
 
@@ -480,6 +525,9 @@ func TestASourceUnlinkedBeforeTheHoldIsReleasedAfterTheClone(t *testing.T) {
 			if got := u.read(t, dst, 0, mib); !bytes.Equal(got, fill(mib, 's')) {
 				t.Error("the destination does not read the source")
 			}
+			// The clone's open, which the Release closes after the clone is
+			// answered, holds the source until then.
+			u.until(t, "the hold released", func() bool { return c.always || h.released() > 0 })
 			done, err = tb.Opens().Releasing(t.Context(), key)
 			if err != nil {
 				t.Fatalf("Releasing the source after the clone: %v", err)
@@ -535,9 +583,7 @@ func TestASourceUnlinkedDuringPhase2IsAnOrphanAfterRelease(t *testing.T) {
 	if err := u.answered(t, "the clone", errc); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
-	if !released.Load() {
-		t.Fatal("the clone answered with no Release")
-	}
+	u.until(t, "the clone's Release", released.Load)
 	u.until(t, "the orphan reported", func() bool {
 		return slices.ContainsFunc(sink.ClosedCalls(), func(c enginetest.Closed) bool { return c.File == src && c.Result.Orphan })
 	})

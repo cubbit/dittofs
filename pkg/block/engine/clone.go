@@ -152,7 +152,7 @@ func (fe *fileEntry) drop(r *reg) {
 // undoes both registrations and changes nothing, then from the journal step
 // on its own goroutine (runClone) and the removal loop (clonePhase2), where
 // it fails only if the loop ends first, answering ErrUnavailable, until its
-// phase 2 is done and its hold on the source released; the call waits for it
+// phase 2 is done; the call waits for it
 // within its own context, whose end, a deadline or a cancel, answers
 // DelayClone and leaves the clone running, as the clone may already have
 // changed the destination and only a call that changed nothing answers
@@ -589,8 +589,8 @@ func (e *Engine) cloneEnded(c *cloneRun, r *removal, err error) {
 // endClone ends c, answering err: its reservation, when one is held, is
 // given back, both registrations go, which a release answered pending
 // behind them sees at its next look, and its done signal is raised. A
-// clone ends with a nil err once its phase 2 is done and its hold on the
-// source released (clonePhase2).
+// clone ends with a nil err once its phase 2 is done, before its hold on the
+// source is released (clonePhase2).
 func (e *Engine) endClone(c *cloneRun, err error) {
 	if c.res != nil {
 		_ = c.res.Close()
