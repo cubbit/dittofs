@@ -91,3 +91,18 @@ func TestTheGroupCommitCommitsNothingOverAReadOnlyJournal(t *testing.T) {
 		t.Errorf("pending %+v, want the write", u.e.Pending(f))
 	}
 }
+
+// A read-only journal raises journal_read_only naming its device and the
+// error that entered the state.
+func TestAReadOnlyJournalRaisesItsCondition(t *testing.T) {
+	u := newUnit(t)
+	u.j.ReadOnly(syscall.EIO)
+	for _, js := range u.e.Stats().Journals {
+		for _, c := range js.Conditions {
+			if c.Name == "journal_read_only" && c.Subject.Scope == engine.ScopeJournal && errors.Is(c.Cause, syscall.EIO) {
+				return
+			}
+		}
+	}
+	t.Errorf("Stats %+v: no journal_read_only naming EIO", u.e.Stats())
+}

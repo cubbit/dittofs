@@ -37,6 +37,7 @@ var (
 // refused and the conditions raised; and the shards step 2 raised.
 type opened struct {
 	journal Journal
+	id      journal.JournalID // the journal's identity as the store records it
 	table   bindings
 	stats   Stats
 	raised  []entity.ShardID
@@ -89,6 +90,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 
 	o := opened{
 		journal: j,
+		id:      expect,
 		table:   removedBindings(tags),
 		stats:   newStats(),
 	}

@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -41,13 +42,14 @@ type Engine struct {
 	// mu is the lifecycle mutex: Bind takes it only to read and swap the
 	// share table and the fields below, never across I/O, and no content call
 	// takes it.
-	mu       sync.Mutex
-	journals []Journal                   // the journals open, one per device; Start opens them
-	busy     map[entity.ShareID]struct{} // the shares with a lifecycle call in progress
-	raised   map[entity.ShardID]struct{} // the shards whose incarnation this process raised
-	starting bool                        // a Start runs: a lifecycle call answers ErrDelay
-	started  bool                        // a Start succeeded
-	health   Stats                       // the shares refused at start and the conditions raised
+	mu        sync.Mutex
+	journals  []Journal                   // the journals open, one per device; Start opens them
+	journalID journal.JournalID           // the identity of journals[0], as the store records it
+	busy      map[entity.ShareID]struct{} // the shares with a lifecycle call in progress
+	raised    map[entity.ShardID]struct{} // the shards whose incarnation this process raised
+	starting  bool                        // a Start runs: a lifecycle call answers ErrDelay
+	started   bool                        // a Start succeeded
+	health    Stats                       // the shares refused at start and the conditions raised
 
 	gcMu            sync.Mutex
 	gcs             map[Journal]*groupCommit                                                   // each journal's group commit
@@ -166,6 +168,7 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 
 	if o.journal != nil {
 		e.journals = []Journal{o.journal}
+		e.journalID = o.id
 	}
 
 	for _, id := range o.raised {
@@ -244,10 +247,22 @@ func (e *Engine) whileStarting() error {
 }
 
 // Stats reports the engine's counters and conditions: before Start, none.
+// A read-only journal's condition is read from the journal on each call, so
+// it clears once the journal takes writes again.
 func (e *Engine) Stats() Stats {
 	e.mu.Lock()
+	s := e.health.clone()
+	js, id := e.journals, e.journalID
+	e.mu.Unlock()
 
-	defer e.mu.Unlock()
+	for _, j := range js { // Start serves one device: journals[0] is Devices[0]'s
+		dir := e.d.Devices[0]
+		if c, ok := readOnlyCondition(j.Stats().ReadOnly, dir, id); ok {
+			js := s.Journals[dir]
+			js.Conditions = append(js.Conditions, c)
+			s.Journals[dir] = js
+		}
+	}
 
-	return e.health.clone()
+	return s
 }
