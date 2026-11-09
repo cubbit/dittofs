@@ -156,3 +156,52 @@
   category: feature
   reason: 'Epic 8: the source''s clone-kind open is gone once the clone is answered (§9.1); the removals held behind the clone are the rest of the row. Fails at the fixture until the journal has Init, Open, WriteAt, ReadAt, Sync, Reserve and CloneTarget, then at Clone (ErrUnbuilt) until a clone answers once the joins of a running clone are built.'
   issue: '#3591'
+- test: TestRFC8A_RecoveryThroughSince
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: a truncate cut off before its removal record is applied at start, before the file is served, and settled. Fails at the fixture until the journal has Init, Open, WriteAt, Sync, Truncate, Since and Settle.'
+  issue: '#3589'
+- test: TestRFC8A_RecoveryReappliesInVersionOrder
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: a write, a truncate and a write replay in version order at start. Fails at the fixture until the journal has Init, Open, WriteAt, Truncate, Since and Settle.'
+  issue: '#3589'
+- test: TestRFC8A_SyncedLossReadsLost
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: a synced loss is committed as lost at start and reads as lost. Fails at the fixture until the journal has Init, Open, WriteAt, Sync, ReadAt and its loss records.'
+  issue: '#3589'
+- test: TestRFC8A_AbortedReleaseAtStart
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: a release a holder refuses, found as a marker at start, is settled without its removal and reported as lost. Fails at the fixture until the journal has Init, Open, WriteAt, Delete, Since and Settle.'
+  issue: '#3589'
+- test: TestRFC8A_AbortedReleaseNextRestartQuiet
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: the restart after an aborted release is quiet. Fails at the fixture until the journal has Init, Open, WriteAt, Delete, Since and Settle, and then until the daily decides what makes a discarded marker stay settled across a restart, since the journal's Settle is not persisted (RFC 1 section 3.10).'
+  issue: '#3589'
+- test: TestRFC8A_ReleaseLeftMidRetryFinishedByRestart
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: a release whose journal step is done and whose first transaction stalled is finished by the restart. Fails at the fixture until the journal has Init, Open, WriteAt, Delete, Since and Settle.'
+  issue: '#3589'
+- test: TestRFC8A_RecoveryUsage
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: the usage after recovery is the bytes re-applied, and a second restart leaves it unchanged. Fails at the fixture until the journal has Init, Open, WriteAt, Since and Settle.'
+  issue: '#3589'
