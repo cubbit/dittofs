@@ -16,8 +16,9 @@ func isContent(w segment.Written) bool {
 }
 
 // lift stops retaining what the record of version v and header extent e
-// superseded in file, now that the record is synced, and accounts the change. A failure is logged and
-// stands: the extent stays retained, which wastes space and loses nothing.
+// superseded in file, now that the record is synced, and accounts the change.
+// A failure is logged and stands: the extent stays retained, which wastes space
+// and loses nothing.
 //
 // decision: the caller holds file's append domain. A writer publishes the
 // content it superseded as retained while it holds that domain, from its

@@ -11,9 +11,10 @@ import (
 // older content has nothing left to be kept for. A write split across
 // segments has several records of one version, each superseding only the
 // pieces inside its own extent, so a lift by version alone would drop what a
-// sibling record, not yet synced, still has to hold. It changes nothing, and takes the file's lock only shared,
-// for a v that superseded nothing, and creates no entry for a file that has
-// none. Otherwise it takes the lock exclusively.
+// sibling record, not yet synced, still has to hold. It changes nothing, and
+// takes the file's lock only shared, for a v that superseded nothing, and
+// creates no entry for a file that has none. Otherwise it takes the lock
+// exclusively.
 //
 // decision: the lift drops every piece the record superseded, because no
 // snapshot hold exists in this package to exempt one. A hold must keep the

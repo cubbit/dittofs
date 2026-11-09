@@ -303,18 +303,19 @@ func (f *file) writeRetain(p Placed) {
 // is appended to out, for the caller to keep under a hold or drop.
 //
 // It also returns the covering records it handed parts to, as a version and
-// the part's extent, sorted and distinct, leaving out the window's own. A returned cover may name no part
-// by the time the call returns, since a later record's pass can drop what an
-// earlier one handed over. Last it returns the held pieces the window's
-// records stopped holding, each as it was held, in the order they were cut.
+// the part's extent, sorted and distinct, leaving out the window's own. A
+// returned cover may name no part by the time the call returns, since a later
+// record's pass can drop what an earlier one handed over. Last it returns the
+// held pieces the window's records stopped holding, each as it was held, in the
+// order they were cut.
 //
-// decision: a covering version's sync drops what it was handed only if that
+// decision: a covering record's sync drops what it was handed only if that
 // sync is still to come. A covering write can sit in a later segment that
 // synced before this window's failure was handled, and then nothing would
 // drop the part by superseder again, so the caller drops by each returned
-// version it knows has synced, one check where it fails the window. Revisit
-// when windows are resolved before any later write can sync, which makes the
-// check always find nothing.
+// cover (a version and an extent) whose record it knows has synced, one check
+// where it fails the window. Revisit when windows are resolved before any later
+// write can sync, which makes the check always find nothing.
 //
 // The change version is left where the failed writes raised it, unless the
 // window held all the file's content, in which case the update's settle drops
@@ -416,9 +417,9 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []
 
 // supersede retains again the parts of r that held content newer than r
 // covers, each as superseded by that content's version, which it appends to
-// covers with the part's extent, and appends to gaps the parts under nothing held, or under older
-// content, still carrying r's By. Neighbouring parts that share a By are kept
-// as one.
+// covers with the part's extent, and appends to gaps the parts under nothing
+// held, or under older content, still carrying r's By. Neighbouring parts that
+// share a By are kept as one.
 func (f *file) supersede(r Retained, gaps []Retained, covers []Cover) ([]Retained, []Cover) {
 	var part Retained
 	var gap bool

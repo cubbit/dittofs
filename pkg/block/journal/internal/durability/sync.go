@@ -616,7 +616,7 @@ func (st *stream) pending(loc segment.Location) bool {
 	}
 	// A record of a pending window, or one a failed window dropped, is pending
 	// whatever the segment's synced offset: no sync value satisfies a record of
-	// a failed segment (R14).
+	// a failed segment.
 	_, lost := st.lost[loc]
 	return lost || st.inWindowLocked(loc)
 }
@@ -738,7 +738,8 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 	}
 	// A pending window's records are targets whatever the segment's synced
 	// offset. A content record is answered from the mark its failure leaves; a
-	// header-only one, which no failure takes, gets the SyncError at once.
+	// header-only one, which no failure takes, gets the SyncError once its
+	// window has been failed.
 	for j := len(st.windows) - 1; j >= 0; j-- {
 		w := st.windows[j]
 		for i := len(w.entries) - 1; i >= 0; i-- {
@@ -748,19 +749,23 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 	return ts
 }
 
-// await waits until no target of any stream is pending. failFast makes a
-// target of a failed segment end the wait with its SyncError.
+// await waits until no target of any stream is pending. With failFast, the
+// failures owed to the call (its files' marks, and the answer of a header-only
+// record of a failed window) end the wait once no failure is still in flight
+// on any stream, and the call returns them as one error.
 //
-// decision: a failure found on one stream does not end the wait while another
-// stream still has a target in a failed segment it has not answered yet, so
-// one Sync names every file the call lost, as a Sync naming files of several
-// streams is owed (R44). A stream whose targets are merely waiting for a sync
-// that has not failed does not hold the answer back: a failure is returned as
-// soon as no failure is in flight, and a failure the call could not know of is
-// told, mark and all, to the file's next Sync. The failures taken so far are
-// never dropped: a call that ends early, because the layer stopped or the
-// context is done, returns them in place of that error, since their marks are
-// cleared and nothing else would report them.
+// decision: a failure found on a stream does not end the wait while any stream
+// of the call, that one included, still has a target in a failed segment whose
+// failure the worker has not finished handling, so one Sync names every file
+// the call lost, whatever the layout of the files on streams. A stream whose
+// targets are merely waiting for a sync that has not failed does not hold the
+// answer back: a failure is returned as soon as no failure is in flight, and
+// one the call could not know of is told, mark and all, to the file's next
+// Sync. The failures taken so far are never dropped: a call that ends early,
+// because the layer stopped or the context is done, returns them in place of
+// that error, since their marks are cleared and nothing else would report
+// them. Withdraw the wait if a failed window can stay unhandled indefinitely,
+// since a Sync would then hang on it rather than return the failure it holds.
 func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error {
 	var owed *owedFailure
 	// early is the answer for a call that cannot wait any longer.
@@ -846,10 +851,13 @@ func (st *stream) answersFailureLocked(loc segment.Location) (uint64, bool) {
 	return 0, false
 }
 
-// check looks at one stream's targets, and with failFast first answers the
-// marks owed to ids. It reports whether any is pending, and
-// returns an error for a closed layer or, with failFast, a failed segment. It
-// also leads a sync when the targets need one.
+// check looks at one stream's targets. With failFast it first takes the marks
+// owed to ids, and still evaluates the targets afterwards. It reports whether
+// any target is pending, whether a target sits in a failed segment whose
+// failure is not yet answered (failing), and the failure owed to the call: the
+// marks it took, joined with the answer of a header-only record whose window
+// has been failed. It returns an error only for a closed layer, and then only
+// when it owes no failure. It also leads a sync when the targets need one.
 //
 // decision: one sync per stream runs at a time and covers every waiter (group
 // commit). The waiter that finds none in flight and none asked for leads: it sets

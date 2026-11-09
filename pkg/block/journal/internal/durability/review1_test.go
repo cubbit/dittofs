@@ -52,8 +52,8 @@ func failOnTwoStreams(t *testing.T, gate func(core.SegmentID), held func(lf, lg 
 	return r, f, g, resolved
 }
 
-// TestASyncNamingFilesOnTwoStreamsReportsBothFailures covers R17 and R44 across
-// streams: one Sync names every file the failures of both streams took, and
+// TestASyncNamingFilesOnTwoStreamsReportsBothFailures pins that across streams
+// one Sync names every file the failures of both streams took, and
 // clears the mark of each, so no later Sync reports an old failure again.
 func TestASyncNamingFilesOnTwoStreamsReportsBothFailures(t *testing.T) {
 	prof.Watch(t, prof.Options{})
@@ -304,7 +304,7 @@ func TestALossRecordWhoseSyncFailsEndsItsSegment(t *testing.T) {
 // cover of a failed record, a newer record that took over what it had
 // superseded, is lifted only when no window or ledger entry of the stream
 // still holds it: here the cover's own window fails next, and the extent the
-// first failure restored has to be held again for a reader (R26).
+// first failure restored has to be held again for a reader.
 func TestACoverStillInALaterWindowIsNotLiftedWhenAnEarlierOneFails(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	// No worker runs, so the test takes the two ends and fails the windows
