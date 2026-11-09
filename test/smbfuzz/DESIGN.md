@@ -1229,8 +1229,10 @@ smbfuzz fixture down
 
 `run` reads the authentication and profile back from the fixture, runs §3.6's probes, then
 the rounds. It exits 0 when every round passed or diverged only as
-known, 1 on a new divergence, 2 when it ran fewer rounds than asked (a fixture probe failed,
-the fixture died and could not be restarted).
+known, 1 on a new divergence, 75 when it ran fewer rounds than asked and found nothing new
+(a fixture probe failed, the fixture died and could not be restarted), and 2 when it could not
+start (a bad flag, no fixture state). 75 is the status RFC 29's `dt` grades as not run (§12.3);
+a new divergence wins over rounds not run, so a run that found one fails.
 
 ### 12.2 Known divergences and the corpus
 
@@ -1249,7 +1251,8 @@ the fixture died and could not be restarted).
 mounts both shares. It reports one CTRF test per round (`smb-fuzz/round-<N>`) and one per
 corpus plan (`smb-fuzz/corpus/<file>`), graded by `dt` like every other suite; a divergence
 attaches §11.4's report. Rounds the run was meant to run and did not are reported as not run
-(RFC 29's R10), so a fixture that dies at round 40 of 300 is not green.
+(RFC 29's R10), so a fixture that dies at round 40 of 300 is not green: `run` exits 75, which
+`dt` grades as not run (RFC 29 §4.6), and so does a failed probe (§3.6).
 
 Which tiers run the suite, how many rounds each runs and from which round, is decided once the
 suite exists and its cost per round is measured.

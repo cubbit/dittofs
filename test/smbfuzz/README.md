@@ -33,7 +33,8 @@ Test N is always the same plan for a generator version (`--gen`, default the new
 diverging round is replayed three times; a stable one is minimised, and its report —
 original and minimised plan, both sides' trace, the replay command — goes to
 `smbfuzz-reports/round-N/`. An issue for a divergence quotes the report's summary line and
-pastes `minimized.plan` whole: the plan is the reproducer (DESIGN.md §12.4). Exit status: 0 nothing new, 1 a new divergence, 2 rounds not run.
+pastes `minimized.plan` whole: the plan is the reproducer (DESIGN.md §12.4). Exit status: 0 nothing new, 1 a new divergence, 75 rounds not run (a failed probe
+included; `dt` grades 75 as not run), 2 the command could not start.
 
 - `known.yaml` — accepted divergences, one per signature, each with its reason.
 - `corpus/` — minimised plans of fixed bugs, replayed with `run --plan`.

@@ -152,7 +152,7 @@ func runCmd(args []string) (int, error) {
 	if !*noProbe {
 		if err := r.Probe(); err != nil {
 			fmt.Printf("NOT RUN: %v\n", err)
-			return 2, nil
+			return exitNotRun, nil
 		}
 	}
 	var plans []*fuzz.Plan
@@ -215,11 +215,22 @@ func runCmd(args []string) (int, error) {
 	}
 done:
 	fmt.Printf("\n%d passed, %d known, %d diverged, %d not run\n", passed, knownN, failed, notRun)
+	return exitCode(failed, notRun), nil
+}
+
+// exitNotRun is the status dt grades as not run rather than failed (RFC 29
+// §4.6): a fixture that failed its own probe, or rounds the run was asked for
+// and did not run.
+const exitNotRun = 75
+
+// exitCode is run's exit status. A new divergence wins over rounds not run:
+// it is a finding, and grading the run not run would hide it.
+func exitCode(failed, notRun int) int {
 	switch {
-	case notRun > 0:
-		return 2, nil
 	case failed > 0:
-		return 1, nil
+		return 1
+	case notRun > 0:
+		return exitNotRun
 	}
-	return 0, nil
+	return 0
 }

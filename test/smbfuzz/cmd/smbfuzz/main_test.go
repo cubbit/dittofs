@@ -27,3 +27,15 @@ func TestPlanCommand(t *testing.T) {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, p.Format())
 	}
 }
+
+// dt grades only 75 as not run; a divergence must still fail the run when
+// other rounds did not run.
+func TestExitCode(t *testing.T) {
+	for _, c := range []struct{ failed, notRun, want int }{
+		{0, 0, 0}, {1, 0, 1}, {0, 1, 75}, {1, 1, 1},
+	} {
+		if got := exitCode(c.failed, c.notRun); got != c.want {
+			t.Errorf("exitCode(%d failed, %d not run) = %d, want %d", c.failed, c.notRun, got, c.want)
+		}
+	}
+}
