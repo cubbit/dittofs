@@ -109,6 +109,9 @@ type Part struct {
 	// when none has failed.
 	LastSyncError *SyncFailure
 
+	// ReadOnly is the read-only state, read from the layer's atomic snapshot.
+	ReadOnly core.ReadOnlyState
+
 	// Losses are the events in the ring, oldest first.
 	Losses []core.LossEvent
 
@@ -612,7 +615,8 @@ func (d *Durability) SyncBound() time.Duration { return core.SyncBound }
 func (d *Durability) Stats() Part {
 	made := d.snapshot()
 
-	p := Part{SyncDuration: Histogram{
+	// The read-only state is one atomic load: no lock a write holds is taken.
+	p := Part{ReadOnly: d.ReadOnlyState(), SyncDuration: Histogram{
 		Bounds: append([]time.Duration(nil), SyncDurationBounds...),
 		Counts: make([]uint64, len(SyncDurationBounds)+1),
 	}}
