@@ -894,7 +894,7 @@ func (st *stream) answersFailureLocked(loc segment.Location) (uint64, bool) {
 // would never end; the call's other targets still decide whether a failure is
 // in flight, so the answer is returned with them and not ahead of them.
 // Overturned by the re-append of a header-only record, which must wait for the
-// new sync (RFC 1 §5.3) instead of failing at once.
+// new sync instead of failing at once.
 func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pending, failing bool, found *owedFailure, err error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
