@@ -596,3 +596,84 @@ func TestASourceUnlinkedDuringPhase2IsAnOrphanAfterRelease(t *testing.T) {
 	}
 	done(true)
 }
+
+// Removals of a destination whose clone is in phase 2 are held until the
+// clone is done: a punch in its extent, a truncate, a clone onto it and an
+// unlink with no open answer DelayClone or pending, and the clone's removal
+// is not pruned while they wait. Once the clone is done the unlink's channel
+// answers, and each applies: the punched range reads zeros, never the cloned
+// bytes, around the clone's own.
+func TestRemovalsOfACloningDestinationWaitForIt(t *testing.T) {
+	x := newResuming()
+	var dst entity.FileID
+	entered, open := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	u := clonedUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x },
+		onResume(func(ctx context.Context, next engine.Content, s entity.ShareID, file entity.FileID) (bool, error) {
+			if file == dst {
+				once.Do(func() { close(entered) })
+				<-open
+			}
+			return next.Resume(ctx, s, file)
+		}))
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	other := u.committedFile(t, "other", fill(mib, 'o'))
+	dst = u.committedFile(t, "dst", fill(2*mib, 'd'))
+	errc := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
+	<-entered
+
+	// Each call is answered at once, so a bound no answer needs ends a
+	// removal admitted mid-clone, which would wait on the held phase 2.
+	held, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	ctx, s := t.Context(), u.share.ID
+	if err := u.e.Deallocate(held, s, dst, 0, 4096); !isDelay(err, vfserr.DelayClone) {
+		t.Errorf("a punch in the destination extent during phase 2: %v, want DelayClone", err)
+	}
+	if err := u.e.Truncate(held, s, dst, 0); !isDelay(err, vfserr.DelayClone) {
+		t.Errorf("a truncate of the destination during phase 2: %v, want DelayClone", err)
+	}
+	if err := u.e.Clone(held, s, other, s, dst, vfserr.Extent{DstOff: mib, Len: mib}); !isDelay(err, vfserr.DelayClone) {
+		t.Errorf("a clone onto the destination during phase 2: %v, want DelayClone", err)
+	}
+	if _, err := u.fs.Store.Namespace().Unlink(ctx, u.fs.Admin, u.fs.Root, []byte("dst")); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := u.e.Delete(held, s, dst)
+	if err != nil || ch == nil {
+		t.Fatalf("an unlink of the destination during phase 2: %v, %v; want it pending", ch, err)
+	}
+	if _, ok := x.prunedAt(dst); ok {
+		t.Error("the clone's removal was pruned before its phase 2 ran")
+	}
+
+	close(open)
+	if err := u.answered(t, "the clone", errc); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	if got := u.answered(t, "the pending unlink", ch); !isDelay(got, vfserr.DelayClone) {
+		t.Errorf("the pending unlink: %v, want DelayClone to run it again", got)
+	}
+	if _, ok := x.prunedAt(dst); !ok {
+		t.Error("the clone's removal was not pruned once done")
+	}
+	if err := u.e.Deallocate(ctx, s, dst, 0, 4096); err != nil {
+		t.Fatalf("the punch once the clone is done: %v", err)
+	}
+	if got := u.read(t, dst, 0, 4096); !zeros(got) {
+		t.Error("the punched range does not read zeros")
+	}
+	if got := u.read(t, dst, 4096, mib-4096); !bytes.Equal(got, fill(mib-4096, 's')) {
+		t.Error("the destination extent around the punch does not read the source")
+	}
+	u.clone(t, other, dst, vfserr.Extent{DstOff: mib, Len: mib})
+	if got := u.read(t, dst, mib, mib); !bytes.Equal(got, fill(mib, 'o')) {
+		t.Error("the clone onto the destination once done does not read its source")
+	}
+	if err := u.e.Truncate(ctx, s, dst, 0); err != nil {
+		t.Errorf("the truncate once the clone is done: %v", err)
+	}
+	if ch, err := u.e.Delete(ctx, s, dst); ch != nil || err != nil {
+		t.Errorf("the unlink run again: %v, %v; want it released", ch, err)
+	}
+}
