@@ -442,6 +442,44 @@ func (e *Engine) PendingWrites(f entity.FileID, off, end int64) int {
 	return n
 }
 
+// Writing is the count of writes admitted to file f and not yet in its entry.
+func (e *Engine) Writing(f entity.FileID) int {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return 0
+	}
+
+	defer e.files.unlock(f, fe)
+
+	return len(fe.writing)
+}
+
+// JoinRaisesForTest returns once every raise of the version limit has ended, as
+// Close will: the group Add happens before a raise starts. A test calls it
+// only while nothing can issue a version, since an Add with the counter at
+// zero must not race this Wait.
+func (e *Engine) JoinRaisesForTest() {
+	e.raising.wg.Wait()
+}
+
+// VersionLimitWatch is the channel a call refused by share s's journal waits
+// on for the raise: it closes when a raise changes the limit or the journal
+// refuses one.
+func (e *Engine) VersionLimitWatch(s entity.ShareID) <-chan struct{} {
+	return e.table()[s].vl.watch()
+}
+
+// OnRefused sets f to run when a refused call is about to wait for the raise.
+func (e *Engine) OnRefused(f func()) {
+	e.waits.refused.Store(&f)
+}
+
+// NotifyVersionLimitForTest wakes the calls waiting for share s's journal's
+// raise, as a raise that changed the limit would.
+func (e *Engine) NotifyVersionLimitForTest(s entity.ShareID) {
+	e.table()[s].vl.notify()
+}
+
 // GuardHeld reports whether a removal holds f's guard.
 func (e *Engine) GuardHeld(f entity.FileID) bool {
 	fe := e.files.entryOf(f)
@@ -789,4 +827,21 @@ func (e *Engine) EnqueueKind(
 		},
 		end: end,
 	})
+}
+
+// WakeRaiseForTest starts share s's journal's raise, or marks it to run once
+// more, as a version drawn within the trigger does.
+func (e *Engine) WakeRaiseForTest(s entity.ShareID) {
+	e.wake(e.table()[s].vl)
+}
+
+// HoldRaiseLockForTest takes share s's journal's raise lock, so a raise waits
+// for it, and answers the function that frees it.
+func (e *Engine) HoldRaiseLockForTest(ctx context.Context, s entity.ShareID) (func(), error) {
+	vl := e.table()[s].vl
+	if err := vl.acquire(ctx); err != nil {
+		return nil, err
+	}
+
+	return vl.release, nil
 }

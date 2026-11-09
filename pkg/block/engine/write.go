@@ -46,30 +46,48 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	if o.Suspend&entity.TimeModify == 0 {
 		mtime = now.UnixNano()
 	}
-	// The write is admitted under the entry's lock, where a clone's
-	// registration is checked and installed, and stays counted until its
-	// operation is in the entry, so a registration waits for it.
+	// Each attempt admits the write under the entry's lock, where a clone's
+	// registration is checked and installed, counts it until the journal has
+	// answered, and leaves, so a write waiting for the raise holds neither the
+	// lock nor a registration that a removal or a clone would wait on.
 	x := entity.Extent{Offset: off, Length: int64(len(p))}
-	fe, err := e.admitAfterStaging(ctx, f)
-	if err != nil {
-		return vfserr.Verifier{}, err
-	}
-	if err := fe.refuseWrite(x); err != nil {
-		e.files.unlock(f, fe)
-		return vfserr.Verifier{}, err
-	}
-	fe.writing = append(fe.writing, x)
-	e.files.unlock(f, fe)
 
-	ver, err := refusing(e, b, func() (journal.Version, error) {
-		return b.h.WriteAt(ctx, fileID(f), off, p, mtime)
-	})
-	fe = e.files.lockFor(f) // the admitted write keeps the entry alive
-	fe.leave(x)
-	if err != nil {
+	got, err := answeringRefusals(ctx, e, b, true, func() (admitted, error) {
+		fe, err := e.admitAfterStaging(ctx, f)
+		if err != nil {
+			return admitted{}, err
+		}
+
+		if err := fe.refuseWrite(x); err != nil {
+			e.files.unlock(f, fe)
+
+			return admitted{}, err
+		}
+
+		fe.writing = append(fe.writing, x)
 		e.files.unlock(f, fe)
+
+		ver, err := b.h.WriteAt(ctx, fileID(f), off, p, mtime)
+		fe = e.files.lockFor(f) // the admitted write keeps the entry alive
+		fe.leave(x)
+
+		if err != nil {
+			e.files.unlock(f, fe)
+
+			if _, refused := capacityRefusal(err); refused {
+				return admitted{}, err
+			}
+
+			return admitted{}, e.journalErr(err)
+		}
+
+		return admitted{ver: ver, fe: fe}, nil
+	})
+	if err != nil {
 		return vfserr.Verifier{}, err
 	}
+
+	ver, fe := got.ver, got.fe
 	// A loss drained since WriteAt answered found no pending write to apply
 	// to and was kept: one that drops its write (see drops) drops it, its
 	// Done run and nothing charged, any other inserts the write with the run
@@ -119,6 +137,13 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	return v, nil
 }
 
+// admitted is a write the journal accepted: its version, and its file's entry,
+// locked.
+type admitted struct {
+	ver journal.Version
+	fe  *fileEntry
+}
+
 // admitAfterStaging is f's entry, locked, once no removal is waiting out the
 // writes admitted before it, so a write admitted now reaches the journal
 // after that removal. An entry that died during the wait is looked up again.
@@ -156,7 +181,7 @@ func (e *Engine) Draw(ctx context.Context, s entity.ShareID, f entity.FileID) (e
 		return entity.JournalVersion{}, err
 	}
 
-	v, err := refusing(e, b, b.j.Draw)
+	v, err := refusing(ctx, e, b, true, b.j.Draw)
 	if err != nil {
 		return entity.JournalVersion{}, err
 	}

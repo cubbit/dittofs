@@ -93,6 +93,13 @@ type Engine struct {
 	// unknownLimits holds the limits with no row of the refusal table that
 	// were logged, so each is logged once.
 	unknownLimits sync.Map
+	// waits is a test's seam on a refused call that waits for the raise of the
+	// version limit: refused runs when the call is about to block. It cannot be a
+	// wrapper: it marks the engine's own decision to block, taken after the
+	// journal call returned, and there is no dependency call to wrap there.
+	waits struct {
+		refused atomic.Pointer[func()]
+	}
 
 	block   uint64 // the versions one raise of the version limit covers
 	raising raises // the version limit raises running
