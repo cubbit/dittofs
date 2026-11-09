@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/model"
 )
 
@@ -186,12 +187,12 @@ func (x *fixtureTarget) countSealed() {
 }
 
 func (x *fixtureTarget) Crash(kind model.CrashKind, arg uint64) error {
-	var opts []CrashOption
+	var opts []kit.CrashOption
 	switch kind {
 	case model.CrashTorn:
-		opts = append(opts, Torn(int(arg)))
+		opts = append(opts, kit.Torn(int(arg)))
 	case model.CrashReordered:
-		opts = append(opts, Reordered(arg))
+		opts = append(opts, kit.Reordered(arg))
 	}
 	return reopened(x.tb.guard(func() { x.f.Crash(opts...) }))
 }

@@ -152,11 +152,10 @@ func (fe *fileEntry) drop(r *reg) {
 // undoes both registrations and changes nothing, then from the journal step
 // on its own goroutine (runClone) and the removal loop (clonePhase2), where
 // it fails only if the loop ends first, answering ErrUnavailable, until its
-// phase 2 is done and its hold on the source released; the call waits for it
-// within its own context, whose end, a deadline or a cancel, answers
-// DelayClone and leaves the clone running, as the clone may already have
-// changed the destination and only a call that changed nothing answers
-// refused.
+// phase 2 is done; the call waits for it within its own context, whose end, a
+// deadline or a cancel, answers DelayClone and leaves the clone running, as
+// the clone may already have changed the destination and only a call that
+// changed nothing answers refused.
 //
 // decision: a clone between two shares on one node is admitted, as both
 // shards are this node's and no failover or handover can split them while
@@ -490,6 +489,7 @@ func (e *Engine) copyRuns(ctx context.Context, c *cloneRun) (journal.Version, er
 			fe.insert(pendingOp{version: v, kind: opWrite, extent: journal.Extent{Off: off, Len: h.Extent.Len},
 				at: now, setsMtime: true, copy: true})
 			e.files.unlock(c.dst, fe)
+			e.issued(c.db.vl, v)
 			newest = newer(newest, v)
 		}
 	}
@@ -596,8 +596,8 @@ func (e *Engine) cloneEnded(c *cloneRun, r *removal, err error) {
 // endClone ends c, answering err: its reservation, when one is held, is
 // given back, both registrations go, which a release answered pending
 // behind them sees at its next look, and its done signal is raised. A
-// clone ends with a nil err once its phase 2 is done and its hold on the
-// source released (clonePhase2).
+// clone ends with a nil err once its phase 2 is done, before its hold on the
+// source is released (clonePhase2).
 func (e *Engine) endClone(c *cloneRun, err error) {
 	if c.res != nil {
 		_ = c.res.Close()

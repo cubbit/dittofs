@@ -8,7 +8,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -146,7 +146,7 @@ func TestFailedSegmentIsNotRetriedByTheTimer(t *testing.T) {
 	before := r.clock.Pending()
 	a := r.appendWrite(t, file(1), 0, "a")
 	r.armed(t, before)
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, context.DeadlineExceeded)); err != nil {
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, context.DeadlineExceeded)); err != nil {
 		t.Fatal(err)
 	}
 	r.clock.Advance(core.SyncBound)
@@ -166,7 +166,7 @@ func TestStopWithTimerArmedAndWaiterParkedLeaksNothing(t *testing.T) {
 	before := r.clock.Pending()
 	a := r.appendWrite(t, file(1), 0, "a")
 	r.armed(t, before)
-	h := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(a.Segment))
+	h := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(a.Segment))
 	ch := make(chan error, 1)
 	go func() { ch <- r.d.WaitDurable(a) }()
 	<-h.Reached()

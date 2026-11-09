@@ -1730,6 +1730,14 @@ func (s *Stream) ReadAt(seg core.SegmentID, p []byte, off int64) (int, error) {
 	return n, rerr
 }
 
+// Identity returns the journal identity the stream seeds its records'
+// checksums with, so a reader of a positioned record can verify it.
+func (s *Stream) Identity() core.JournalID { return s.identity }
+
+// Set returns the ledger of segments the stream takes its segments from, so a
+// caller can claim, release or look up a segment the stream wrote.
+func (s *Stream) Set() *Set { return s.set }
+
 // Close closes the stream: further appends answer ErrStreamClosed, and the
 // in-flight ones — a roll counted with them, for it runs inside an append and
 // its seal is a Close of the segment in its own right, and an in-flight Sync,

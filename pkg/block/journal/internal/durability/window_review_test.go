@@ -12,7 +12,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -27,7 +27,7 @@ func TestASealThatFindsAFailedSyncDoesNotCountItAgain(t *testing.T) {
 	r.d.afterSync = func() { once.Do(func() { _, _ = r.streams.For(f).Seal(false) }) }
 	r.d.Start(r.streams)
 	a := r.appendWrite(t, f, 0, "a")
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("sync boom"))); err != nil {
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, errors.New("sync boom"))); err != nil {
 		t.Fatal(err)
 	}
 	first := mustReturn(t, "Sync", r.syncAsync(context.Background(), f))
@@ -281,7 +281,7 @@ func TestASealEndAfterTheFailureWasPrunedDoesNotCountItAgain(t *testing.T) {
 	armed.Store(true)
 	// One failure: the worker's sync. The seal that follows finds the failed
 	// sync and ends the segment without an fsync of its own.
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("sync boom"))); err != nil {
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, errors.New("sync boom"))); err != nil {
 		t.Fatal(err)
 	}
 	st.mu.Lock()
@@ -336,7 +336,7 @@ func TestAHeaderOnlyAnswerWaitsForTheLossGenerationOfItsWindow(t *testing.T) {
 	parked := make(chan struct{}, 16)
 	// A park counts only once the window is taken: the worker holds it at the
 	// gate, so the Sync parked with the window pending and not yet failed.
-	r.d.beforeWait = func() {
+	r.d.beforeWait = func([]work) {
 		if len(r.windowsOf(0)) > 0 {
 			select {
 			case parked <- struct{}{}:

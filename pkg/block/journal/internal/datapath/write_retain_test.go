@@ -15,7 +15,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // syncWhileHeld arms a hold in the gap between a write's append and its
@@ -31,7 +31,7 @@ type syncWhileHeld struct {
 	c       *Core
 	f       core.FileID
 	failing bool
-	seam    *journaltest.Seam
+	seam    *kit.Seam
 
 	// nth is the call of the hold, counted from arm, that starts the sync: 0
 	// or 1 is the first append of the armed write.
@@ -125,12 +125,12 @@ func (h *syncWhileHeld) syncNow(fail bool) {
 	}
 	before := h.c.Durability().Stats()
 	if fail {
-		var rules []journaltest.Rule
+		var rules []kit.Rule
 		for id := core.SegmentID(1); id <= 16; id++ {
 			if h.failSeg != 0 && id != h.failSeg {
 				continue
 			}
-			rules = append(rules, journaltest.Failing(journaltest.OpSync, format.SegmentName(id), 1, errors.New("injected sync failure")))
+			rules = append(rules, kit.Failing(kit.OpSync, format.SegmentName(id), 1, errors.New("injected sync failure")))
 		}
 		if err := h.seam.Schedule(rules...); err != nil {
 			panic(err)
@@ -170,7 +170,7 @@ func retainedBytes(c *Core, f core.FileID) int64 {
 // unsynced, and is released once the sync lands.
 func TestWriteAt_SupersededIsRetainedUntilSynced(t *testing.T) {
 	c, _ := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(1)
 	a := mustWrite(t, c, s, f, 0, make([]byte, 4096))
 	b := mustWrite(t, c, s, f, 0, make([]byte, 4096))
@@ -200,7 +200,7 @@ func TestWriteAt_SupersededIsRetainedUntilSynced(t *testing.T) {
 func TestWriteAt_SyncCompletesBetweenAppendAndPublish(t *testing.T) {
 	t.Run("completes", func(t *testing.T) {
 		h, c := newHeld(t, false)
-		s := c.AddShare(1)
+		s := mustShare(t, c, 1)
 		f := testFile(2)
 		h.f = f
 		mustWrite(t, c, s, f, 0, make([]byte, 4096))
@@ -224,7 +224,7 @@ func TestWriteAt_SyncCompletesBetweenAppendAndPublish(t *testing.T) {
 	})
 	t.Run("fails", func(t *testing.T) {
 		h, c := newHeld(t, true)
-		s := c.AddShare(1)
+		s := mustShare(t, c, 1)
 		f := testFile(3)
 		h.f = f
 		a := mustWrite(t, c, s, f, 0, make([]byte, 4096))
@@ -266,7 +266,7 @@ func TestWriteAt_SyncCompletesBetweenAppendAndPublish(t *testing.T) {
 
 // pieceLoc is the ledger location of the held piece of f at off: where the
 // index places it and the padded length of its record on disk.
-func pieceLoc(t *testing.T, c *Core, seam *journaltest.Seam, f core.FileID, off int64) segment.Location {
+func pieceLoc(t *testing.T, c *Core, seam *kit.Seam, f core.FileID, off int64) segment.Location {
 	t.Helper()
 	p, ok := c.Index().Lookup(f, off)
 	if !ok {
@@ -299,7 +299,7 @@ func retainedIn(c *Core, f core.FileID, lo, hi int64) int64 {
 func TestWriteAt_DurablePieceLiftsOnlyItsOwnExtent(t *testing.T) {
 	h, c := newHeld(t, false)
 	h.nth, h.failFirst = 2, true
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(7)
 	h.f = f
 	size := 2*testSegmentCap + 1000
@@ -364,12 +364,12 @@ func TestWriteAt_DurablePieceLiftsOnlyItsOwnExtent(t *testing.T) {
 // tracked would read durable while its segment is held.
 func TestWriteAt_EveryPieceReachesTheLedger(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(5)
 	size := 2*testSegmentCap + 1000
-	h1 := seam.Hold(t, journaltest.OpSync, format.SegmentName(1))
-	h2 := seam.Hold(t, journaltest.OpSync, format.SegmentName(2))
-	h3 := seam.Hold(t, journaltest.OpSync, format.SegmentName(3))
+	h1 := seam.Hold(t, kit.OpSync, format.SegmentName(1))
+	h2 := seam.Hold(t, kit.OpSync, format.SegmentName(2))
+	h3 := seam.Hold(t, kit.OpSync, format.SegmentName(3))
 
 	wrote := make(chan error, 1)
 	go func() {
@@ -444,7 +444,7 @@ func TestWriteAt_AccountSeesPublishAndLift(t *testing.T) {
 	c, _ := newTestCore(t, func(o *coreOptions) {
 		o.accountSpy = func(d index.HeldDelta) { mu.Lock(); seen = append(seen, d); mu.Unlock() }
 	})
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(6)
 	mustWrite(t, c, s, f, 0, make([]byte, 4096))
 	mu.Lock()

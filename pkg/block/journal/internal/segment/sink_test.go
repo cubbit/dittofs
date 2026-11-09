@@ -15,7 +15,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // nopSink is a durability sink that drops every event, for the tests that
@@ -187,12 +187,12 @@ func TestSinkTrackRunsBeforeAppendReturns(t *testing.T) {
 // TestSinkFailedWriteNotTracked pins that a write that fails, or that lands
 // short, is not registered, and that the appends after it are.
 func TestSinkFailedWriteNotTracked(t *testing.T) {
-	for name, rule := range map[string]func(key string) journaltest.Rule{
-		"a failed write": func(key string) journaltest.Rule {
-			return journaltest.Failing(journaltest.OpWrite, key, 1, syscall.EIO)
+	for name, rule := range map[string]func(key string) kit.Rule{
+		"a failed write": func(key string) kit.Rule {
+			return kit.Failing(kit.OpWrite, key, 1, syscall.EIO)
 		},
-		"a write torn with an error": func(key string) journaltest.Rule {
-			return journaltest.Tearing(journaltest.OpWrite, key, 1, 8, syscall.EIO)
+		"a write torn with an error": func(key string) kit.Rule {
+			return kit.Tearing(kit.OpWrite, key, 1, 8, syscall.EIO)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -298,7 +298,7 @@ func TestSinkSyncedOnStreamSync(t *testing.T) {
 		e := sinkStream(t, rec.sink())
 		placed := sinkAppendN(t, e, 3)
 
-		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, streamSegName(placed[0].Loc.Segment), 1, syscall.EIO)); err != nil {
+		if err := e.seam.Schedule(kit.Failing(kit.OpSync, streamSegName(placed[0].Loc.Segment), 1, syscall.EIO)); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
 		if err := e.s.Sync(); err == nil {
@@ -460,7 +460,7 @@ func TestSinkSealSyncs(t *testing.T) {
 		rec := &recordingSink{}
 		e := sinkStream(t, rec.sink())
 		sinkAppendN(t, e, 5)
-		e.seam.SetFault(&sealNthFault{seg: seg, op: journaltest.OpTruncate, n: 1, err: syscall.EIO})
+		e.seam.SetFault(&sealNthFault{seg: seg, op: kit.OpTruncate, n: 1, err: syscall.EIO})
 		res, err := e.s.Seal(true)
 		if err != nil || res.TailErr == nil {
 			t.Fatalf("Seal = %v, TailErr %v, want a clean seal with a failed tail", err, res.TailErr)
@@ -475,7 +475,7 @@ func TestSinkSealSyncs(t *testing.T) {
 		rec := &recordingSink{}
 		e := sinkStream(t, rec.sink())
 		sinkAppendN(t, e, 5)
-		e.seam.SetFault(&sealNthFault{seg: seg, op: journaltest.OpSync, n: 3, err: syscall.EIO})
+		e.seam.SetFault(&sealNthFault{seg: seg, op: kit.OpSync, n: 3, err: syscall.EIO})
 		res, err := e.s.Seal(true)
 		if err != nil || res.TailErr == nil {
 			t.Fatalf("Seal = %v, TailErr %v, want a clean seal with a failed tail", err, res.TailErr)
@@ -499,7 +499,7 @@ func TestSinkSealSyncs(t *testing.T) {
 			e := sinkStream(t, rec.sink())
 			placed := sinkAppendN(t, e, 5)
 			marker := placed[4].Loc.Off + placed[4].Loc.Len
-			e.seam.SetFault(&sealNthFault{seg: seg, op: journaltest.OpSync, n: tc.nth, err: syscall.EIO})
+			e.seam.SetFault(&sealNthFault{seg: seg, op: kit.OpSync, n: tc.nth, err: syscall.EIO})
 			if _, err := e.s.Seal(false); !errorsIsEnded(err) {
 				t.Fatalf("Seal = %v, want ErrSegmentEnded", err)
 			}

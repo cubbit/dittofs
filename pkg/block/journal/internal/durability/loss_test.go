@@ -16,7 +16,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // TestLoseAppendsItsRecordBeforeTheEventIsPublished catches an event a poller
@@ -202,6 +202,27 @@ func TestLoseReturnsTheEventItPublished(t *testing.T) {
 	}
 }
 
+// TestLosePublishesTheSyncedBitItWasGiven catches an event that drops the
+// caller's Synced, in the returned event and in the ring.
+func TestLosePublishesTheSyncedBitItWasGiven(t *testing.T) {
+	e := newEnv(t)
+	for i, synced := range []bool{true, false} {
+		l := loss(core.Seq(i + 1))
+		l.Synced = synced
+		ev, err := e.d.Lose(context.Background(), l)
+		if err != nil {
+			t.Fatalf("Lose synced=%v: %v", synced, err)
+		}
+		if ev.Synced != synced {
+			t.Errorf("returned event Synced = %v, want %v", ev.Synced, synced)
+		}
+	}
+	got := e.d.Stats().Losses
+	if len(got) != 2 || !got[0].Synced || got[1].Synced {
+		t.Errorf("ring = %+v, want Synced true then false", got)
+	}
+}
+
 // TestLoseKeepsTheNewestEventsWhenTheRingOverflows catches an unbounded ring
 // and a gap a poller could not see.
 func TestLoseKeepsTheNewestEventsWhenTheRingOverflows(t *testing.T) {
@@ -314,6 +335,20 @@ func TestPlacePublishesAtOpenAndRaisesNothing(t *testing.T) {
 	}
 	if lh, _ := e.lossRecords(); len(lh) != 0 {
 		t.Errorf("Place appended %d loss records", len(lh))
+	}
+}
+
+// TestPlaceKeepsTheSyncedBitItsCallerGave catches a placed event whose Synced
+// is reset.
+func TestPlaceKeepsTheSyncedBitItsCallerGave(t *testing.T) {
+	e := newEnv(t)
+
+	e.d.Place(core.LossEvent{File: file(2), Reason: core.LossCorrupt, Synced: true}, 3)
+	e.d.Place(core.LossEvent{File: file(2), Reason: core.LossCorrupt, Extent: core.Extent{Off: 8, Len: 4}}, 4)
+
+	got := e.d.Stats().Losses
+	if len(got) != 2 || !got[0].Synced || got[1].Synced {
+		t.Errorf("ring = %+v, want Synced true then false", got)
 	}
 }
 
@@ -485,7 +520,7 @@ var errReadOnly = errors.New("the journal is read only")
 func TestLoseReadOnlyAppendsNothingAndKeepsTheDrop(t *testing.T) {
 	e := newEnv(t)
 	e.d.SetReadOnly(func() error { return errReadOnly })
-	writes := e.seam.Calls(journaltest.OpWrite)
+	writes := e.seam.Calls(kit.OpWrite)
 
 	l := loss(5)
 	l.Synced = true
@@ -494,7 +529,7 @@ func TestLoseReadOnlyAppendsNothingAndKeepsTheDrop(t *testing.T) {
 	if !errors.Is(err, errReadOnly) {
 		t.Fatalf("Lose = %v, want the read-only error", err)
 	}
-	if got := e.seam.Calls(journaltest.OpWrite); got != writes {
+	if got := e.seam.Calls(kit.OpWrite); got != writes {
 		t.Errorf("%d writes reached the journal, want none", got-writes)
 	}
 	assertDropStands(t, e, ev, l)
@@ -504,7 +539,7 @@ func TestLoseReadOnlyAppendsNothingAndKeepsTheDrop(t *testing.T) {
 // record trusted, when the device fails the record's write.
 func TestLoseAFailedWriteKeepsTheDrop(t *testing.T) {
 	e := newEnv(t)
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, "*.seg", 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, "*.seg", 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 
@@ -522,7 +557,7 @@ func TestLoseAFailedWriteKeepsTheDrop(t *testing.T) {
 // reported as one whose record failed: the retiring copy owes the record.
 func TestLoseDeferredAppendsNothingAndOwesNoFailedSeq(t *testing.T) {
 	e := newEnv(t)
-	writes := e.seam.Calls(journaltest.OpWrite)
+	writes := e.seam.Calls(kit.OpWrite)
 
 	l := loss(5)
 	l.Synced = true
@@ -535,7 +570,7 @@ func TestLoseDeferredAppendsNothingAndOwesNoFailedSeq(t *testing.T) {
 	if !ev.Deferred {
 		t.Errorf("event %+v, want Deferred", ev)
 	}
-	if got := e.seam.Calls(journaltest.OpWrite); got != writes {
+	if got := e.seam.Calls(kit.OpWrite); got != writes {
 		t.Errorf("%d writes reached the journal, want none", got-writes)
 	}
 	if got := e.marked(); len(got) != 1 {
@@ -755,7 +790,7 @@ func TestLoseOfARecordWhoseSegmentWasEndedIsNotDurable(t *testing.T) {
 	e := newEnv(t)
 	st := e.streams.For(file(1))
 	e.d.SetBeforeSync(func() {
-		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, "*.seg", 1, syscall.EIO)); err != nil {
+		if err := e.seam.Schedule(kit.Failing(kit.OpSync, "*.seg", 1, syscall.EIO)); err != nil {
 			t.Errorf("Schedule: %v", err)
 		}
 		if _, err := st.Seal(false); err == nil {
@@ -794,7 +829,7 @@ func TestLoseOfARecordWhoseSyncFailsEndsItsSegment(t *testing.T) {
 		return p.Loc
 	}
 	before := probe()
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, "*.seg", 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpSync, "*.seg", 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 
@@ -853,7 +888,7 @@ func TestLoseLogsAnExpectedRefusalAtDebugAndAnUnexpectedFailureAtError(t *testin
 	}{
 		{"read-only", func(e *env) { e.d.SetReadOnly(func() error { return errors.New("read-only") }) }, slog.LevelDebug},
 		{"write fault", func(e *env) {
-			if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, "*.seg", 1, syscall.EIO)); err != nil {
+			if err := e.seam.Schedule(kit.Failing(kit.OpWrite, "*.seg", 1, syscall.EIO)); err != nil {
 				t.Fatalf("Schedule: %v", err)
 			}
 		}, slog.LevelError},
@@ -953,7 +988,7 @@ func TestLoseOfARepeatedPieceAppendsOneRecord(t *testing.T) {
 // disk before its event is visible.
 func TestLoseOfASecondPieceWaitsForItsOwnRecordWhenTheFirstFailed(t *testing.T) {
 	e := newEnv(t)
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, "*.seg", 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, "*.seg", 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	reached := make(chan struct{})

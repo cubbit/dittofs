@@ -12,7 +12,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 const (
@@ -23,23 +23,48 @@ const (
 
 var testIdentity = core.JournalID{0xd, 0xa, 0x7, 0xa}
 
+// limitCount is the generous version limit newTestCore sets on a core built
+// over a fresh State, so the other tests keep writing without naming a limit
+// themselves.
+const limitCount = uint64(1) << 40
+
 // newTestCore builds a Core over a real directory through the seam, with two
 // streams and small segments, and closes it when the test ends. opts adjust
 // the unexported options before the layers are built.
-func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *journaltest.Seam) {
+//
+// A core built over a fresh State gets a generous version limit, so tests keep
+// writing without naming one; a State that carries its own Counters gets none,
+// and the noLimit option keeps the fresh core limitless too, so a test can hold
+// a core that issues nothing until it sets a limit itself.
+func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *kit.Seam) {
 	t.Helper()
-	seam, err := journaltest.NewSeam(t.TempDir())
-	if err != nil {
-		t.Fatalf("the seam could not be made: %v", err)
-	}
-
 	var o coreOptions
 	for _, f := range opts {
 		f(&o)
 	}
+	c, seam := buildCore(t, o)
+	if o.state.Counters == nil && !o.noLimit {
+		// A fresh core issues no version until a limit is set, so a test that
+		// writes through one without naming a limit gets a generous one here.
+		if err := c.SetVersionLimit(core.Version{Counter: limitCount}); err != nil {
+			t.Fatalf("SetVersionLimit: %v", err)
+		}
+	}
+	return c, seam
+}
+
+// buildCore is newTestCore before the limit is set: the core and the seam it
+// is built over, closed when the test ends, with its spares awaited.
+func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
+	t.Helper()
+	seam, err := kit.NewSeam(t.TempDir())
+	if err != nil {
+		t.Fatalf("the seam could not be made: %v", err)
+	}
+
 	c, err := newCore(Deps{
 		FS:          seam.FS(),
-		Clock:       journaltest.NewStopwatchClock(),
+		Clock:       kit.NewStopwatchClock(),
 		Dir:         t.TempDir(),
 		Identity:    testIdentity,
 		Streams:     testStreams,
@@ -126,6 +151,17 @@ func publish(t *testing.T, c *Core, f core.FileID, off int64, payload string) co
 	}
 	c.Account(hd)
 	return v
+}
+
+// mustShare attaches a handle for tag with no limit and no floor, failing the
+// test when the core refuses it. It is for the test goroutine only.
+func mustShare(t *testing.T, c *Core, tag core.ShareTag) *Share {
+	t.Helper()
+	s, err := c.Share(tag, 0, core.Version{})
+	if err != nil {
+		t.Fatalf("Share(%d): %v", tag, err)
+	}
+	return s
 }
 
 func syncFiles(t *testing.T, c *Core, ids ...core.FileID) {

@@ -11,7 +11,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -48,7 +48,7 @@ func checkPattern(t *testing.T, id core.SegmentID, p []byte) {
 type cacheEnv struct {
 	budget *core.DescriptorBudget
 	c      *segment.Descriptors
-	seam   *journaltest.Seam
+	seam   *kit.Seam
 
 	// stocked is how many closes the stocking of segment files made, one per
 	// file: stock writes each file through its own handle and closes it, and
@@ -62,7 +62,7 @@ type cacheEnv struct {
 // leaked descriptor keeps it above zero after Close.
 func (e cacheEnv) openCount(id core.SegmentID) int {
 	n := name(id)
-	return e.seam.CallsFor(journaltest.OpOpen, n) - (e.seam.CallsFor(journaltest.OpClose, n) - e.stocked[id])
+	return e.seam.CallsFor(kit.OpOpen, n) - (e.seam.CallsFor(kit.OpClose, n) - e.stocked[id])
 }
 
 // newCache builds one cache over its own directory on a budget of limit
@@ -71,7 +71,7 @@ func (e cacheEnv) openCount(id core.SegmentID) int {
 func newCache(t *testing.T, limit int) cacheEnv {
 	t.Helper()
 
-	seam, err := journaltest.NewSeam(t.TempDir())
+	seam, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
@@ -164,11 +164,11 @@ func stocked(t *testing.T, e cacheEnv, id core.SegmentID) {
 func TestDescriptorsSharedBudgetBindsBothCaches(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	seamA, err := journaltest.NewSeam(t.TempDir())
+	seamA, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
-	seamB, err := journaltest.NewSeam(t.TempDir())
+	seamB, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestDescriptorsReopenCountedOncePerMiss(t *testing.T) {
 	if got := e.c.Stats().Reopens; got != 2 {
 		t.Fatalf("Reopens = %d after reading two segments alternately at a bound of 1, want 2 (one reopen per miss, none per hit)", got)
 	}
-	if opens := e.seam.Calls(journaltest.OpOpen); opens != 4 {
+	if opens := e.seam.Calls(kit.OpOpen); opens != 4 {
 		t.Fatalf("the seam saw %d opens, want 4, the two first opens and the two reopens", opens)
 	}
 
@@ -249,7 +249,7 @@ func TestDescriptorsReopenCountedOncePerMiss(t *testing.T) {
 	if got := e.c.Stats().Reopens; got != 2 {
 		t.Fatalf("Reopens = %d after one more read of segment 2, want it still 2", got)
 	}
-	if opens := e.seam.Calls(journaltest.OpOpen); opens != 4 {
+	if opens := e.seam.Calls(kit.OpOpen); opens != 4 {
 		t.Fatalf("the seam saw %d opens after a hit, want it still 4", opens)
 	}
 }
@@ -639,7 +639,7 @@ func TestDescriptorsRefusalMakesNoIO(t *testing.T) {
 		t.Fatalf("acquiring segment 2 failed: %v", err)
 	}
 	defer r2.Release()
-	opens := e.seam.Calls(journaltest.OpOpen)
+	opens := e.seam.Calls(kit.OpOpen)
 
 	start := time.Now()
 	if _, err := e.c.Acquire(3); !errors.Is(err, segment.ErrNoDescriptor) {
@@ -648,7 +648,7 @@ func TestDescriptorsRefusalMakesNoIO(t *testing.T) {
 	if past := time.Since(start); past > time.Second {
 		t.Fatalf("the refusal took %v, want it at once: the bound is not a queue to wait in", past)
 	}
-	if got := e.seam.Calls(journaltest.OpOpen); got != opens {
+	if got := e.seam.Calls(kit.OpOpen); got != opens {
 		t.Fatalf("the seam saw %d opens after the refusal, want still %d: the refusal performs no I/O", got, opens)
 	}
 
@@ -670,7 +670,7 @@ func TestDescriptorsFailedOpenRetries(t *testing.T) {
 	e.stock(t, 2)
 	shutRegister(t, e.c)
 
-	e.seam.SetFault(&eioFault{op: journaltest.OpOpen, key: name(1), n: 1})
+	e.seam.SetFault(&eioFault{op: kit.OpOpen, key: name(1), n: 1})
 
 	if _, err := e.c.Acquire(1); !errors.Is(err, syscall.EIO) {
 		t.Fatalf("the first acquire of segment 1 = %v, want the fault's EIO", err)
@@ -936,7 +936,7 @@ func TestDescriptorsCloseRacingAnOpen(t *testing.T) {
 	// itself instead of wedging the Shutdown past the run's timeout.
 	shutRegister(t, e.c)
 
-	h := e.seam.HoldFirst(t, journaltest.OpOpen, name(1))
+	h := e.seam.HoldFirst(t, kit.OpOpen, name(1))
 	opener := make(chan error, 1)
 	go func() {
 		_, err := e.c.Acquire(1)
@@ -1013,7 +1013,7 @@ func TestDescriptorsShutdownRacingAnOpen(t *testing.T) {
 	e := newCache(t, 4)
 	e.stock(t, 2)
 
-	h := e.seam.HoldFirst(t, journaltest.OpOpen, name(1))
+	h := e.seam.HoldFirst(t, kit.OpOpen, name(1))
 	opener := make(chan error, 1)
 	go func() {
 		_, err := e.c.Acquire(1)
@@ -1083,7 +1083,7 @@ func TestDescriptorsASecondCloseWaitsForTheOpenDrain(t *testing.T) {
 	// itself instead of wedging the Shutdown past the run's timeout.
 	shutRegister(t, e.c)
 
-	h := e.seam.HoldFirst(t, journaltest.OpOpen, name(1))
+	h := e.seam.HoldFirst(t, kit.OpOpen, name(1))
 	opener := make(chan error, 1)
 	go func() {
 		_, err := e.c.Acquire(1)
@@ -1200,10 +1200,10 @@ func TestDescriptorsCloseDuringShutdownClosesOnce(t *testing.T) {
 		t.Fatal("Shutdown did not return after the last reference dropped")
 	}
 
-	if closes := e.seam.CallsFor(journaltest.OpClose, name(1)) - e.stocked[1]; closes != 1 {
+	if closes := e.seam.CallsFor(kit.OpClose, name(1)) - e.stocked[1]; closes != 1 {
 		t.Fatalf("segment 1's file was closed %d times, want once: a Close and a Shutdown that overlap must not both take it", closes)
 	}
-	if closes := e.seam.CallsFor(journaltest.OpClose, name(2)) - e.stocked[2]; closes != 1 {
+	if closes := e.seam.CallsFor(kit.OpClose, name(2)) - e.stocked[2]; closes != 1 {
 		t.Fatalf("segment 2's file was closed %d times, want once", closes)
 	}
 	if got := e.openCount(1); got != 0 {
@@ -1316,11 +1316,11 @@ func TestDescriptorsForgetKeepsALiveEntry(t *testing.T) {
 func TestDescriptorsAIdleJournalYieldsToAnother(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	seamA, err := journaltest.NewSeam(t.TempDir())
+	seamA, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the first seam could not be made: %v", err)
 	}
-	seamB, err := journaltest.NewSeam(t.TempDir())
+	seamB, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the second seam could not be made: %v", err)
 	}
@@ -1415,11 +1415,11 @@ func TestDescriptorsAStaleAcquireAfterForgetLeavesNoTrace(t *testing.T) {
 func TestDescriptorsShutdownDoesNotPinItsIdleDescriptors(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	seamA, err := journaltest.NewSeam(t.TempDir())
+	seamA, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the first seam could not be made: %v", err)
 	}
-	seamB, err := journaltest.NewSeam(t.TempDir())
+	seamB, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the second seam could not be made: %v", err)
 	}
@@ -1538,7 +1538,7 @@ func TestDescriptorsCloseWaitsAReclaimClosingThatSegment(t *testing.T) {
 	// itself instead of wedging the Shutdown past the run's timeout.
 	shutRegister(t, e.c)
 
-	h := e.seam.HoldFirst(t, journaltest.OpClose, name(1))
+	h := e.seam.HoldFirst(t, kit.OpClose, name(1))
 	e.read(t, 1)
 
 	// The read of 2 evicts 1: the reclaimer is inside segment 1's close, held
@@ -1610,7 +1610,7 @@ func TestDescriptorsCloseWaitsAShutdownClosingThatSegment(t *testing.T) {
 	// drop does not keep the Shutdown this test runs wedged on it.
 	dropHeld := relRegister(t, held)
 
-	h := e.seam.HoldFirst(t, journaltest.OpClose, name(1))
+	h := e.seam.HoldFirst(t, kit.OpClose, name(1))
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- e.c.Shutdown() }()
 	// Shutdown has started once its rejects answer shut.
@@ -1657,7 +1657,7 @@ func TestDescriptorsCloseWaitsAShutdownClosingThatSegment(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Shutdown did not return after the close ended")
 	}
-	if closes := e.seam.CallsFor(journaltest.OpClose, name(2)) - e.stocked[2]; closes != 1 {
+	if closes := e.seam.CallsFor(kit.OpClose, name(2)) - e.stocked[2]; closes != 1 {
 		t.Fatalf("segment 2's file was closed %d times, want once", closes)
 	}
 }
@@ -1678,7 +1678,7 @@ func TestDescriptorsCloseOfANeverAcquiredSegmentTombstonesIt(t *testing.T) {
 	// Segment 9 exists on storage too, so only the tombstone tells a later
 	// acquire from an open: the open would find the file.
 	stocked(t, e, 9)
-	opens := e.seam.Calls(journaltest.OpOpen)
+	opens := e.seam.Calls(kit.OpOpen)
 
 	if err := e.c.Close(9); err != nil {
 		t.Fatalf("Close(9) of a never-acquired segment = %v, want nil", err)
@@ -1697,7 +1697,7 @@ func TestDescriptorsCloseOfANeverAcquiredSegmentTombstonesIt(t *testing.T) {
 			t.Fatalf("acquiring segment 9 after its Close = %v, want ErrSegmentGone", err)
 		}
 	}
-	if got := e.seam.Calls(journaltest.OpOpen) - opens; got != 0 {
+	if got := e.seam.Calls(kit.OpOpen) - opens; got != 0 {
 		t.Fatalf("the acquires after the Close made %d opens, want 0: the tombstone must answer them, not the file", got)
 	}
 
@@ -1866,7 +1866,7 @@ func TestDescriptorsShutdownWaitsOutACloseTheReclaimIsStillMaking(t *testing.T) 
 		t.Fatal("Shutdown never woke from its wait")
 	}
 
-	h := e.seam.HoldFirst(t, journaltest.OpClose, name(1))
+	h := e.seam.HoldFirst(t, kit.OpClose, name(1))
 	reclaimDone := make(chan bool, 1)
 	go func() { reclaimDone <- e.budget.Reclaim() }()
 	select {
@@ -1917,7 +1917,7 @@ func TestDescriptorsASecondCloseWaitsForTheFirstOnesFileClose(t *testing.T) {
 
 	// The first Close parks in the middle of its file close, the exact
 	// window the second can arrive in.
-	h := e.seam.HoldFirst(t, journaltest.OpClose, name(1))
+	h := e.seam.HoldFirst(t, kit.OpClose, name(1))
 	first := make(chan error, 1)
 	go func() { first <- e.c.Close(1) }()
 	select {
@@ -1951,7 +1951,7 @@ func TestDescriptorsASecondCloseWaitsForTheFirstOnesFileClose(t *testing.T) {
 	if got := e.openCount(1); got != 0 {
 		t.Fatalf("segment 1's descriptor count is %d after both Closes, want 0", got)
 	}
-	if closes := e.seam.CallsFor(journaltest.OpClose, name(1)) - e.stocked[1]; closes != 1 {
+	if closes := e.seam.CallsFor(kit.OpClose, name(1)) - e.stocked[1]; closes != 1 {
 		t.Fatalf("segment 1's file was closed %d times, want once", closes)
 	}
 }
@@ -1969,7 +1969,7 @@ func TestDescriptorsShutdownWaitsOutACloseStillRunning(t *testing.T) {
 	e.stock(t, 2)
 	e.read(t, 1)
 
-	h := e.seam.HoldFirst(t, journaltest.OpClose, name(1))
+	h := e.seam.HoldFirst(t, kit.OpClose, name(1))
 	closed := make(chan error, 1)
 	go func() { closed <- e.c.Close(1) }()
 	select {
@@ -2018,8 +2018,8 @@ func TestDescriptorsAFailedOpensDropLeavesTheEvictable(t *testing.T) {
 
 	// A first open of segment 1 fails EIO, held at the seam while the
 	// cache's slot is taken: the opener's Acquire is inside fs.Open.
-	e.seam.SetFault(&eioFault{op: journaltest.OpOpen, key: name(1), n: 1})
-	h := e.seam.HoldFirst(t, journaltest.OpOpen, name(1))
+	e.seam.SetFault(&eioFault{op: kit.OpOpen, key: name(1), n: 1})
+	h := e.seam.HoldFirst(t, kit.OpOpen, name(1))
 	opener := make(chan error, 1)
 	go func() {
 		_, err := e.c.Acquire(1)
@@ -2102,10 +2102,10 @@ func TestDescriptorsAFailedOpensDropLeavesTheEvictable(t *testing.T) {
 	// segment 2's keeps its stocking's alone. A drop path that skipped the
 	// idle linking under this staging leaves 2 as the only victim the
 	// reclaimer finds.
-	if got := e.seam.CallsFor(journaltest.OpClose, name(1)) - e.stocked[1]; got != 1 {
+	if got := e.seam.CallsFor(kit.OpClose, name(1)) - e.stocked[1]; got != 1 {
 		t.Fatalf("segment 1's descriptor was closed %d times by the reclaim, want 1: the failed waiter's late drop left it out of the idle list", got)
 	}
-	if got := e.seam.CallsFor(journaltest.OpClose, name(2)) - e.stocked[2]; got != 0 {
+	if got := e.seam.CallsFor(kit.OpClose, name(2)) - e.stocked[2]; got != 0 {
 		t.Fatalf("segment 2's descriptor was closed %d times, want 0: segment 1 was the least recently used idle one", got)
 	}
 }
@@ -2139,7 +2139,7 @@ func TestDescriptorsClosesOnOneDrainWaitOutTheFileClose(t *testing.T) {
 	go func() { results <- e.c.Close(1) }()
 	time.Sleep(100 * time.Millisecond)
 
-	h := e.seam.HoldFirst(t, journaltest.OpClose, name(1))
+	h := e.seam.HoldFirst(t, kit.OpClose, name(1))
 	drop()
 	select {
 	case <-h.Reached():
@@ -2168,7 +2168,7 @@ func TestDescriptorsClosesOnOneDrainWaitOutTheFileClose(t *testing.T) {
 	if n := segment.EntryCount(e.c); n != 0 {
 		t.Fatalf("the cache holds %d entries after Forget, want 0", n)
 	}
-	if closes := e.seam.CallsFor(journaltest.OpClose, name(1)) - e.stocked[1]; closes != 1 {
+	if closes := e.seam.CallsFor(kit.OpClose, name(1)) - e.stocked[1]; closes != 1 {
 		t.Fatalf("segment 1's file was closed %d times, want once", closes)
 	}
 }
@@ -2208,7 +2208,7 @@ func TestDescriptorsCloseAndShutdownOnOneReleaseWaitOutTheFileClose(t *testing.T
 		time.Sleep(time.Millisecond)
 	}
 
-	h := e.seam.HoldFirst(t, journaltest.OpClose, name(1))
+	h := e.seam.HoldFirst(t, kit.OpClose, name(1))
 	drop()
 	select {
 	case <-h.Reached():
@@ -2249,7 +2249,7 @@ func TestDescriptorsCloseKeepsItsSlotUntilTheFileIsClosed(t *testing.T) {
 	e.stock(t, 2)
 	e.read(t, 1)
 
-	h := e.seam.HoldFirst(t, journaltest.OpClose, name(1))
+	h := e.seam.HoldFirst(t, kit.OpClose, name(1))
 	closed := make(chan error, 1)
 	go func() { closed <- e.c.Close(1) }()
 	select {
@@ -2368,7 +2368,7 @@ func TestDescriptorsDirtyDescriptorPinned(t *testing.T) {
 		t.Fatalf("syncing segment 1 failed: %v", err)
 	}
 	r.Release()
-	if closeCalls := e.seam.CallsFor(journaltest.OpClose, name(1)) - e.stocked[1]; closeCalls != 0 {
+	if closeCalls := e.seam.CallsFor(kit.OpClose, name(1)) - e.stocked[1]; closeCalls != 0 {
 		t.Fatalf("segment 1's descriptor was closed %d times before its sync, want it held", closeCalls)
 	}
 	for i := 2; i <= 20; i++ {
@@ -2407,7 +2407,7 @@ func TestDescriptorsFailedSyncUnpins(t *testing.T) {
 	if _, err := r.WriteAt(buf, 0); err != nil {
 		t.Fatalf("writing through segment 1's descriptor a second time failed: %v", err)
 	}
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, name(1), 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpSync, name(1), 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	if err := r.Sync(); !errors.Is(err, syscall.EIO) {
@@ -2449,7 +2449,7 @@ func TestDescriptorsSyncDoesNotCoverAWriteInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquiring segment 1 for the write failed: %v", err)
 	}
-	h := e.seam.HoldFirst(t, journaltest.OpWrite, name(1))
+	h := e.seam.HoldFirst(t, kit.OpWrite, name(1))
 	written := make(chan error, 1)
 	go func() {
 		buf := make([]byte, 16)
@@ -2531,7 +2531,7 @@ func TestDescriptorsEverySlotDirtyOrReferenced(t *testing.T) {
 		r.Release()
 	}
 
-	opens := e.seam.Calls(journaltest.OpOpen)
+	opens := e.seam.Calls(kit.OpOpen)
 	start := time.Now()
 	r3, err := e.c.Acquire(3)
 	if err != nil {
@@ -2548,7 +2548,7 @@ func TestDescriptorsEverySlotDirtyOrReferenced(t *testing.T) {
 	if past := time.Since(start); past > time.Second {
 		t.Fatalf("the refusal took %v, want it at once: a dirty slot is not a queue to wait in", past)
 	}
-	if got := e.seam.Calls(journaltest.OpOpen); got != opens {
+	if got := e.seam.Calls(kit.OpOpen); got != opens {
 		t.Fatalf("the seam saw %d opens after the refusal, want still %d: the refusal performs no I/O", got, opens)
 	}
 	for _, id := range []core.SegmentID{1, 2} {
@@ -2580,7 +2580,7 @@ func TestDescriptorsAWriteUnderTheParkedSyncStaysUncovered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquiring segment 1 for the sync failed: %v", err)
 	}
-	h := e.seam.HoldFirst(t, journaltest.OpSync, name(1))
+	h := e.seam.HoldFirst(t, kit.OpSync, name(1))
 	syncErr := make(chan error, 1)
 	go func() { syncErr <- a.Sync() }()
 	select {

@@ -85,6 +85,11 @@ func (d *Durability) failReadOnly(st *stream) {
 	}
 	st.mu.Unlock()
 	if len(all) == 0 {
+		// A window Corrupt took the last record out of holds nothing more
+		// and is resolved here, as settle resolves one it empties.
+		for _, w := range ws {
+			d.resolve(st, w)
+		}
 		return
 	}
 

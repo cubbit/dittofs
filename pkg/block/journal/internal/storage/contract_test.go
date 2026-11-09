@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -31,9 +31,9 @@ type target struct {
 // the operating system's storage where it is implemented.
 var targets = []target{
 	{
-		name: "journaltest.Seam",
+		name: "kit.Seam",
 		open: func(t *testing.T, dir string) storage.FS {
-			s, err := journaltest.NewSeam(dir)
+			s, err := kit.NewSeam(dir)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -41,7 +41,7 @@ var targets = []target{
 			return s
 		},
 		durable: func(fs storage.FS, name string) ([]byte, error) {
-			return fs.(*journaltest.Seam).Durable(name)
+			return fs.(*kit.Seam).Durable(name)
 		},
 	},
 }

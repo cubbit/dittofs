@@ -20,6 +20,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
 
@@ -148,8 +149,8 @@ func fullDevice(t *testing.T, f *journaltest.Fixture) {
 
 	full := sim.FaultAction{Err: syscall.ENOSPC}
 	fault, err := sim.NewSchedule(1, nil,
-		sim.Rule{Op: journaltest.OpCreate, Key: "*", Action: full},
-		sim.Rule{Op: journaltest.OpAllocate, Key: "*", Action: full},
+		sim.Rule{Op: kit.OpCreate, Key: "*", Action: full},
+		sim.Rule{Op: kit.OpAllocate, Key: "*", Action: full},
 	)
 	if err != nil {
 		t.Fatalf("a full device: %v", err)
@@ -339,9 +340,9 @@ func segmentCalls(t *testing.T, f *journaltest.Fixture) map[string]int {
 	t.Helper()
 
 	ops := []string{
-		journaltest.OpOpen, journaltest.OpAllocate, journaltest.OpWrite, journaltest.OpRead,
-		journaltest.OpReadDirect, journaltest.OpSync, journaltest.OpTruncate, journaltest.OpClose,
-		journaltest.OpRename, journaltest.OpRemove,
+		kit.OpOpen, kit.OpAllocate, kit.OpWrite, kit.OpRead,
+		kit.OpReadDirect, kit.OpSync, kit.OpTruncate, kit.OpClose,
+		kit.OpRename, kit.OpRemove,
 	}
 	out := map[string]int{}
 	for _, name := range segmentNames(t, f) {
@@ -360,7 +361,7 @@ func segmentWrites(t *testing.T, f *journaltest.Fixture) (n int) {
 	t.Helper()
 
 	for _, name := range segmentNames(t, f) {
-		n += f.Seam.CallsFor(journaltest.OpWrite, name)
+		n += f.Seam.CallsFor(kit.OpWrite, name)
 	}
 	return n
 }
@@ -372,7 +373,7 @@ func retired(f *journaltest.Fixture, id journal.SegmentID) bool {
 		return false
 	}
 	name := segmentName(id)
-	return f.Seam.CallsFor(journaltest.OpRemove, name)+f.Seam.CallsFor(journaltest.OpRename, name) > 0
+	return f.Seam.CallsFor(kit.OpRemove, name)+f.Seam.CallsFor(kit.OpRename, name) > 0
 }
 
 // refusedAtOnce runs call, which the journal must refuse, with every call on
@@ -729,7 +730,7 @@ func TestRFC1B_HandleClose(t *testing.T) {
 		h := limitedShare(t, f, tag, 0)
 		id, p := journaltest.File(k), pattern(fmt.Sprint("inflight", k), 4096)
 
-		held := f.Seam.Hold(t, journaltest.OpWrite, "*.seg")
+		held := f.Seam.Hold(t, kit.OpWrite, "*.seg")
 		wrote := make(chan error, 1)
 		go func() {
 			_, err := h.WriteAt(t.Context(), id, 0, p, 0)
@@ -829,9 +830,9 @@ func TestRFC1B_NamedRefusal(t *testing.T) {
 
 	retry := func(what string, h *journal.Handle, id journal.FileID, off int64, p []byte) {
 		t.Helper()
-		writes := f.Seam.Calls(journaltest.OpWrite)
+		writes := f.Seam.Calls(kit.OpWrite)
 		write(t, h, id, off, p)
-		if f.Seam.Calls(journaltest.OpWrite) == writes {
+		if f.Seam.Calls(kit.OpWrite) == writes {
 			t.Fatalf("%s: the retried write stored its bytes without a write at the seam", what)
 		}
 	}
@@ -1325,7 +1326,7 @@ func TestRFC1B_NoVersionRepeats(t *testing.T) {
 	// still on its way lands between clearing it and the crash; the reopened
 	// journal's syncs are dropped until it is cleared, which only a second
 	// crash would see.
-	f.Drop(journaltest.OpSync, "*.seg")
+	f.Drop(kit.OpSync, "*.seg")
 	a := write(t, f.Share(0), journaltest.File(0), 0, pattern("lost", 4096))
 	f.Crash()
 	f.Seam.SetFault(nil)
@@ -1616,11 +1617,11 @@ func TestRFC1B_FreedMeansFreed(t *testing.T) {
 	f := journaltest.New(t)
 
 	// A retired segment is unlinked or recycled as a spare, so both are held.
-	holdRetire := func(seg journal.SegmentID) (*journaltest.Hold, *journaltest.Hold) {
+	holdRetire := func(seg journal.SegmentID) (*kit.Hold, *kit.Hold) {
 		name := segmentName(seg)
-		return f.Seam.Hold(t, journaltest.OpRemove, name), f.Seam.Hold(t, journaltest.OpRename, name)
+		return f.Seam.Hold(t, kit.OpRemove, name), f.Seam.Hold(t, kit.OpRename, name)
 	}
-	reached := func(what string, a, b *journaltest.Hold, early <-chan error) {
+	reached := func(what string, a, b *kit.Hold, early <-chan error) {
 		t.Helper()
 		select {
 		case <-a.Reached():

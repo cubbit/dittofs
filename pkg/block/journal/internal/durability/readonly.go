@@ -88,6 +88,14 @@ func (d *Durability) Admit() error {
 	return nil
 }
 
+// isReadOnly reports whether the journal is read-only: Admit refuses, which it
+// does for that state alone. It is the test the steps that run differently in
+// a read-only journal consult (a read served from a copy, a held record's
+// claim and re-append, their retry tick), rather than refuse, which is the
+// append's own check and can be made to answer for another reason. It reads
+// one atomic pointer, so it is safe from any goroutine and under any lock.
+func (d *Durability) isReadOnly() bool { return d.Admit() != nil }
+
 // ReadOnlyState returns the read-only state. It reads one atomic pointer and
 // never waits on a write path.
 func (d *Durability) ReadOnlyState() core.ReadOnlyState {

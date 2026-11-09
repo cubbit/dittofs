@@ -15,6 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -923,7 +924,7 @@ func TestEdge_ReleaseMiddleEndsAndAll(t *testing.T) {
 			if _, ok := segmentInfo(f, seg); !ok {
 				t.Fatalf("share %d: %s: segment %d left the journal before its releases were made durable", k, step.at, seg)
 			}
-			if f.Seam.CallsFor(journaltest.OpRemove, name)+f.Seam.CallsFor(journaltest.OpRename, name) > 0 {
+			if f.Seam.CallsFor(kit.OpRemove, name)+f.Seam.CallsFor(kit.OpRename, name) > 0 {
 				t.Fatalf("share %d: %s: segment %d was retired before its releases were made durable", k, step.at, seg)
 			}
 		}
@@ -968,13 +969,13 @@ func TestEdge_FullyReleasedSegmentReclaimedWithoutRead(t *testing.T) {
 
 	name := segmentName(seg)
 	before := f.J.Stats()
-	reads := f.Seam.CallsFor(journaltest.OpRead, name) + f.Seam.CallsFor(journaltest.OpReadDirect, name)
+	reads := f.Seam.CallsFor(kit.OpRead, name) + f.Seam.CallsFor(kit.OpReadDirect, name)
 	info, _ := segmentInfo(f, seg)
 	// The snapshot of the accounted storage settles before it is read, so a
 	// spare refill racing the snapshot is waited out, not read mid-flight.
 	wantAccounted(t, f, "before the releases")
 	beforeUsed := f.J.Stats().UsedBytes
-	createsBefore := f.Seam.Calls(journaltest.OpCreate)
+	createsBefore := f.Seam.Calls(kit.OpCreate)
 
 	for _, r := range recs {
 		release(t, h, r.id, r.extent)
@@ -982,7 +983,7 @@ func TestEdge_FullyReleasedSegmentReclaimedWithoutRead(t *testing.T) {
 	syncFiles(t, h, id)
 	eventually(t, "a segment released by every record of it was not retired without a repack", func() bool { return retired(f, seg) })
 
-	if got := f.Seam.CallsFor(journaltest.OpRead, name) + f.Seam.CallsFor(journaltest.OpReadDirect, name); got != reads {
+	if got := f.Seam.CallsFor(kit.OpRead, name) + f.Seam.CallsFor(kit.OpReadDirect, name); got != reads {
 		t.Fatalf("%d reads of segment %d over its releases and retirement, want the %d before: it was retired through a read", got-reads, seg, reads)
 	}
 	if _, ok := segmentInfo(f, seg); ok {
@@ -997,7 +998,7 @@ func TestEdge_FullyReleasedSegmentReclaimedWithoutRead(t *testing.T) {
 	// With one retire and nothing held, the path is read from the calls the
 	// seam saw on the old name: a rename with no unlink is the recycle, any
 	// unlink the unlink path, a recycle's fallback included.
-	recycled := f.Seam.CallsFor(journaltest.OpRename, name) > 0 && f.Seam.CallsFor(journaltest.OpRemove, name) == 0
+	recycled := f.Seam.CallsFor(kit.OpRename, name) > 0 && f.Seam.CallsFor(kit.OpRemove, name) == 0
 	wantRetireAccounted(t, f, "a retire without a repack", seg, beforeUsed, info.Allocated, createsBefore, recycled)
 	wantFreed(t, f, "a retire without a repack", before.Counters.FreedBytes, uint64(info.Allocated))
 }
@@ -1420,7 +1421,7 @@ func TestEdge_SyncFailsThenSucceeds(t *testing.T) {
 		failures, gen, reappended := s.Counters.SyncFailures, s.LossGeneration, s.Counters.SyncReappendedBytes
 		beforeFail := s
 
-		f.FailNext(journaltest.OpSync, segmentName(seg), 1)
+		f.FailNext(kit.OpSync, segmentName(seg), 1)
 		err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
@@ -1455,12 +1456,12 @@ func TestEdge_SyncFailsThenSucceeds(t *testing.T) {
 		if next == seg {
 			t.Fatalf("share %d: the write after a failed sync was appended to the failed segment %d", k, seg)
 		}
-		syncs := f.Seam.CallsFor(journaltest.OpSync, segmentName(next))
+		syncs := f.Seam.CallsFor(kit.OpSync, segmentName(next))
 		if err := h.Sync(t.Context(), id); err != nil {
 			stub(t, "Sync", err)
 			t.Fatalf("share %d: the Sync after a failed one: %v", k, err)
 		}
-		if f.Seam.CallsFor(journaltest.OpSync, segmentName(next)) == syncs {
+		if f.Seam.CallsFor(kit.OpSync, segmentName(next)) == syncs {
 			t.Fatalf("share %d: the Sync after a failed one returned without syncing segment %d, which holds the write", k, next)
 		}
 
@@ -1669,14 +1670,14 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 	// one, because a retire holds the segment exclusively from the moment
 	// it starts and another retire may wait on it without ever reaching the
 	// file.
-	heldRemove := f.Seam.HoldFirst(t, journaltest.OpRemove, name)
-	heldRename := f.Seam.HoldFirst(t, journaltest.OpRename, name)
+	heldRemove := f.Seam.HoldFirst(t, kit.OpRemove, name)
+	heldRename := f.Seam.HoldFirst(t, kit.OpRename, name)
 	before := f.J.Stats()
 	// The accounted storage settles before it is read, so a spare refill
 	// racing the snapshot is waited out, not read mid-flight.
 	wantAccounted(t, f, "before the two selectors ran")
 	beforeUsed := f.J.Stats().UsedBytes
-	createsBefore := f.Seam.Calls(journaltest.OpCreate)
+	createsBefore := f.Seam.Calls(kit.OpCreate)
 
 	// The sync that makes the releases durable is the journal's own
 	// retirement selector: from its return the segment is one the journal
@@ -1703,9 +1704,9 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 	syncDone := false
 	select {
 	case <-heldRemove.Reached():
-		landed = journaltest.OpRemove
+		landed = kit.OpRemove
 	case <-heldRename.Reached():
-		landed = journaltest.OpRename
+		landed = kit.OpRename
 	case err := <-synced:
 		stub(t, "Sync", err)
 		if err != nil {
@@ -1714,9 +1715,9 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 		syncDone = true
 		select {
 		case <-heldRemove.Reached():
-			landed = journaltest.OpRemove
+			landed = kit.OpRemove
 		case <-heldRename.Reached():
-			landed = journaltest.OpRename
+			landed = kit.OpRename
 		case <-time.After(backgroundWait):
 			t.Fatalf("the sync returned and no retire reached the segment's file within %v, want one once the releases are durable", backgroundWait)
 		}
@@ -1785,7 +1786,7 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 	// double is held, no minimum: a conforming journal that claims its
 	// candidate before any storage call selects, retires and counts inside
 	// its own serialisation, invisible here.
-	seamSaw := f.Seam.CallsFor(journaltest.OpRemove, name) + f.Seam.CallsFor(journaltest.OpRename, name)
+	seamSaw := f.Seam.CallsFor(kit.OpRemove, name) + f.Seam.CallsFor(kit.OpRename, name)
 	if got := after.Counters.DoubleRetires - before.Counters.DoubleRetires; got > 1 || (seamSaw >= 2 && got != 1) {
 		t.Fatalf("DoubleRetires rose by %d over a selection the seam watched in %d file calls, want 1 when both selectors reached the segment and never more", got, seamSaw)
 	}
@@ -1797,7 +1798,7 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 	// recycle's fallback also is - or a rename to a fresh one for the
 	// spare pool. The accounted storage is checked for the path of the call
 	// that landed and the freed counter is the segment's account on either.
-	wantRetireAccounted(t, f, "a double selection's retire", seg, beforeUsed, s.Allocated, createsBefore, landed == journaltest.OpRename)
+	wantRetireAccounted(t, f, "a double selection's retire", seg, beforeUsed, s.Allocated, createsBefore, landed == kit.OpRename)
 	wantFreed(t, f, "a double selection's retire", before.Counters.FreedBytes, uint64(s.Allocated))
 	if after.UsedBytes < 0 {
 		t.Fatalf("UsedBytes = %d after the retirement, want it never below zero", after.UsedBytes)
@@ -1910,13 +1911,13 @@ func TestEdge_WriteLargerThanSegment(t *testing.T) {
 		// spare whose rename lands after the listing would have no hold, so
 		// the create and the rename are parked for the whole of what
 		// follows.
-		spareMaking := []*journaltest.Hold{
-			f.Seam.Hold(t, journaltest.OpCreate, "*"),
-			f.Seam.Hold(t, journaltest.OpRename, "*"),
+		spareMaking := []*kit.Hold{
+			f.Seam.Hold(t, kit.OpCreate, "*"),
+			f.Seam.Hold(t, kit.OpRename, "*"),
 		}
-		var holds []*journaltest.Hold
+		var holds []*kit.Hold
 		for _, name := range spareNames(t, f) {
-			holds = append(holds, f.Seam.Hold(t, journaltest.OpWrite, name))
+			holds = append(holds, f.Seam.Hold(t, kit.OpWrite, name))
 		}
 		p := distinct(50, 2<<20) // two caps, so the write rolls at least once
 		wrote := make(chan error, 1)
@@ -2291,7 +2292,7 @@ func wantRetireAccounted(t *testing.T, f *journaltest.Fixture, what string, seg 
 	}
 	after := f.J.Stats().UsedBytes
 	fell := before - after
-	refilled := f.Seam.Calls(journaltest.OpCreate) > createsBefore
+	refilled := f.Seam.Calls(kit.OpCreate) > createsBefore
 	switch {
 	case !refilled && recycled:
 		if fell > 0 {

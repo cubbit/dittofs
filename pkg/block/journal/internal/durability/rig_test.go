@@ -1,6 +1,7 @@
 package durability
 
 import (
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -11,7 +12,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
 
 const rigCap = int64(64 << 10)
@@ -54,6 +54,22 @@ func (d *testDomains) Lock(id core.FileID) func() {
 	}
 }
 
+// heldBy reports whether id's file domain is held now, by anyone: a probe
+// that takes the domain only when it is free, and gives it back at once.
+func (d *testDomains) heldBy(id core.FileID) bool {
+	d.mu.Lock()
+	m, ok := d.locks[id]
+	d.mu.Unlock()
+	if !ok {
+		return false
+	}
+	if !m.TryLock() {
+		return true
+	}
+	m.Unlock()
+	return false
+}
+
 // heldNow returns how many file domains are held now.
 func (d *testDomains) heldNow() int {
 	d.mu.Lock()
@@ -65,8 +81,8 @@ func (d *testDomains) heldNow() int {
 type rig struct {
 	d       *Durability
 	streams *segment.Streams
-	seam    *journaltest.Seam
-	clock   journaltest.DrivenClock
+	seam    *kit.Seam
+	clock   kit.DrivenClock
 	domains *testDomains
 	pool    *segment.Pool
 	set     *segment.Set
@@ -133,7 +149,7 @@ func newRigLogging(t *testing.T, n int, tracer core.Tracer, log *slog.Logger) *r
 func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	t.Helper()
 
-	seam, err := journaltest.NewSeam(t.TempDir())
+	seam, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
@@ -153,7 +169,7 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 			t.Errorf("the cache's Shutdown: %v", err)
 		}
 	})
-	clock := journaltest.NewStopwatchClock()
+	clock := kit.NewStopwatchClock()
 	domains := &testDomains{}
 	c := testConfig(t, clock, domains)
 	acct := &accountLog{}

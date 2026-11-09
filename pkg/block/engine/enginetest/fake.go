@@ -84,8 +84,25 @@ type fakeFile struct {
 	tag     journal.ShareTag
 	pieces  []piece
 	changes []journal.Change // markers and losses
+	settled journal.Version  // Settle's newest version: changes at or below it are hidden until a reopen
 	asOf    journal.Version
 	rec     record // its newest record
+}
+
+// unsettled is the file's markers and losses that Settle has not covered.
+func (f *fakeFile) unsettled() []journal.Change {
+	return slices.DeleteFunc(slices.Clone(f.changes), func(c journal.Change) bool {
+		return c.Version.Compare(f.settled) <= 0
+	})
+}
+
+// newest is the newer of two versions.
+func newest(a, b journal.Version) journal.Version {
+	if a.Compare(b) < 0 {
+		return b
+	}
+
+	return a
 }
 
 // record is where a record lies on the stream: its segment, its end there,
@@ -206,6 +223,27 @@ func (j *FakeJournal) Close() error {
 		h.closed = true
 	}
 	return nil
+}
+
+// Reopen models the journal after a restart. It first closes what the
+// process ending closes, every handle, as Close does, so a late call of the
+// old process fails with ErrClosed; then it opens again with the held pieces
+// kept, and with every marker and synced loss unsettled again, as RFC 1 §3.10
+// has recovery rebuild them: Settle is not persisted.
+func (j *FakeJournal) Reopen() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	for _, h := range j.handles {
+		h.closed = true
+	}
+
+	j.handles = nil
+	j.closed = false
+
+	for _, f := range j.files {
+		f.settled = journal.Version{}
+	}
 }
 
 // Lose drops what file id holds in e as the journal does on a loss: the bytes
@@ -621,7 +659,7 @@ func (h *FakeHandle) Since(_ context.Context, id journal.FileID, from journal.Ve
 		for _, p := range f.pieces {
 			out = append(out, journal.Change{Kind: journal.ChangeWrite, Extent: journal.Extent{Off: p.off, Len: int64(len(p.b))}, Version: p.v, Mtime: p.mtime})
 		}
-		out = append(out, f.changes...)
+		out = append(out, f.unsettled()...)
 	}
 	j.mu.Unlock()
 	out = slices.DeleteFunc(out, func(c journal.Change) bool { return c.Version.Compare(from) <= 0 })
@@ -639,12 +677,13 @@ func (h *FakeHandle) Since(_ context.Context, id journal.FileID, from journal.Ve
 	}
 }
 
-// Settle drops the file's markers and losses at or below v.
+// Settle covers the file's markers and losses at or below v: Since and Files
+// stop yielding them, until the journal is reopened.
 func (h *FakeHandle) Settle(id journal.FileID, v journal.Version) {
 	h.j.mu.Lock()
 	defer h.j.mu.Unlock()
 	if f := h.j.files[id]; f != nil && f.tag == h.tag {
-		f.changes = slices.DeleteFunc(f.changes, func(c journal.Change) bool { return c.Version.Compare(v) <= 0 })
+		f.settled = newest(f.settled, v)
 	}
 }
 
@@ -653,7 +692,7 @@ func (h *FakeHandle) Files() iter.Seq[journal.FileID] {
 	h.j.mu.Lock()
 	var ids []journal.FileID
 	for id, f := range h.j.files {
-		if f.tag == h.tag && len(f.pieces)+len(f.changes) > 0 {
+		if f.tag == h.tag && len(f.pieces)+len(f.unsettled()) > 0 {
 			ids = append(ids, id)
 		}
 	}

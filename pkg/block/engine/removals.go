@@ -279,13 +279,13 @@ func (e *Engine) phase2(r *removal) *loopItem {
 
 // clonePhase2 is clone c's item once its phase 1 committed, r the clone's
 // removal of the destination extent: phase2's item, its run preceded by the
-// hold on the source and followed by the hold's release and the clone's end,
-// its registrations dropped and its done signal raised. Hold and Release are
-// each bounded by the conflict bound, and a failed one is retried counted, as
-// a phase 2 run is. The loop runs it with no entry lock or guard held.
+// hold on the source and followed by the clone's end, its registrations
+// dropped and its done signal raised, then the hold's release. Hold and
+// Release are each bounded by the conflict bound, and a failed one is
+// retried counted, as a phase 2 run is. The loop runs it with no entry lock
+// or guard held.
 func (e *Engine) clonePhase2(c *cloneRun, r *removal) *loopItem {
 	it := e.phase2(r)
-	it.kind = entity.RemoveClone
 	p2 := it.run
 	var (
 		asked, held, p2done bool
@@ -345,19 +345,27 @@ func (e *Engine) clonePhase2(c *cloneRun, r *removal) *loopItem {
 				return a
 			}
 			p2done = true
+			// decision: the clone ends once its last batch set the removal
+			// done, before the Release: its registrations drop, the
+			// destination extent is served and the call answered, and a
+			// failed Release is retried alone. Neither registration guards
+			// anything past that batch: every ref of the destination is
+			// written, the source extent is no longer read, and the clone's
+			// open, which the Release closes, refuses a release of the source
+			// until then, deferring it to the open's close: open state's rule,
+			// which TestASourceUnlinkedBeforeTheHoldIsReleasedAfterTheClone
+			// checks over the real table. Keep the registrations until the
+			// Release instead if a source is seen released while the clone's
+			// open is still held.
+			e.endClone(c, nil)
 		}
 		if held {
-			// decision: a Release that fails is retried alone, with the
-			// registrations kept, so nothing reaches the source while open
-			// state may still hold it. Drop the registrations at once instead
-			// if a Release failing for good is seen pinning a source.
 			if err := release(ctx); err != nil {
 				e.d.Logger.Warn("a clone's release of its source failed: retried", "src", c.src, "dst", c.dst, "err", err)
 				return itemRetry
 			}
 			held = false
 		}
-		e.endClone(c, nil)
 		return itemDone
 	}
 	it.end = func() {
@@ -367,7 +375,9 @@ func (e *Engine) clonePhase2(c *cloneRun, r *removal) *loopItem {
 				e.d.Logger.Warn("a clone's release of its source at its loop's end failed", "src", c.src, "dst", c.dst, "err", err)
 			}
 		}
-		e.endClone(c, errLoopEnded)
+		if !p2done { // a clone done already ended, its Release alone left
+			e.endClone(c, errLoopEnded)
+		}
 	}
 	return it
 }

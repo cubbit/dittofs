@@ -56,9 +56,9 @@ func TestAccount_ReachedFromDurabilityLift(t *testing.T) {
 	}
 }
 
-func TestAddShare_ReturnsItsTag(t *testing.T) {
+func TestShare_ReturnsItsTag(t *testing.T) {
 	c, _ := newTestCore(t)
-	if s := c.AddShare(7); s.Tag != 7 {
+	if s := mustShare(t, c, 7); s.Tag != 7 {
 		t.Fatalf("Tag = %d, want 7", s.Tag)
 	}
 }

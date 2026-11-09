@@ -10,6 +10,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // readOnlyProbe is the interval at which a read-only journal tries a spare.
@@ -18,16 +19,16 @@ const readOnlyProbe = 30 * time.Second
 // writingOps are the seam operations that change the directory or a file: a
 // read-only mount refuses each with EROFS and serves reads.
 var writingOps = []string{
-	journaltest.OpOpen, journaltest.OpWrite, journaltest.OpSync, journaltest.OpCreate,
-	journaltest.OpAllocate, journaltest.OpRename, journaltest.OpRemove,
-	journaltest.OpTruncate, journaltest.OpSyncDir,
+	kit.OpOpen, kit.OpWrite, kit.OpSync, kit.OpCreate,
+	kit.OpAllocate, kit.OpRename, kit.OpRemove,
+	kit.OpTruncate, kit.OpSyncDir,
 }
 
 // readOnlyRules fails every writing operation on every file with err.
-func readOnlyRules(err error) []journaltest.Rule {
-	rules := make([]journaltest.Rule, 0, len(writingOps))
+func readOnlyRules(err error) []kit.Rule {
+	rules := make([]kit.Rule, 0, len(writingOps))
 	for _, op := range writingOps {
-		rules = append(rules, journaltest.Failing(op, "*", 0, err))
+		rules = append(rules, kit.Failing(op, "*", 0, err))
 	}
 	return rules
 }
@@ -104,7 +105,7 @@ func TestRFC1B_ReadOnlyProbe(t *testing.T) {
 	eventually(t, "the journal to turn read-only", func() bool { return f.J.Stats().ReadOnly.ReadOnly })
 
 	files := len(segmentFiles(t, f))
-	f.Drop(journaltest.OpSync, "*")
+	f.Drop(kit.OpSync, "*")
 	f.Advance(readOnlyProbe)
 	eventually(t, "Stats to name the failed check", func() bool { return f.J.Stats().ReadOnly.Check != nil })
 	if ro := f.J.Stats().ReadOnly; !ro.ReadOnly || ro.SpareMade {
@@ -130,7 +131,7 @@ func TestRFC1B_ReadOnlyOpenRefusedStaysClosed(t *testing.T) {
 	write(t, h, id, 0, pa)
 	syncNow(t, h, id)
 
-	schedule(t, f, journaltest.Failing(journaltest.OpOpen, "*", 0, syscall.EIO))
+	schedule(t, f, kit.Failing(kit.OpOpen, "*", 0, syscall.EIO))
 	if err := f.TryReopen(); err == nil {
 		t.Fatal("the open returned nil while every open failed, want the journal to stay closed")
 	}

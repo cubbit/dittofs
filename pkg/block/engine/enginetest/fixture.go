@@ -14,7 +14,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
@@ -58,7 +58,7 @@ type Fixture struct {
 	E     *engine.Engine   // the engine running now; Restart and Crash replace it
 	FS    *kvstoretest.FS  // the store, its share and the share's root
 	Opens *openstate.Table // the open-state table running now, replaced with E
-	Seam  *journaltest.Seam
+	Seam  *kit.Seam
 	Clock *sim.TestClock
 	Share engine.Share // the share as the engine binds it
 	// Second is a second share of the store, on the same journal, which no
@@ -91,7 +91,7 @@ func (f *Fixture) Stall() { f.stalled.Store(true) }
 // belongs to fails.
 func (f *Fixture) FailNextSync() {
 	f.t.Helper()
-	if err := f.Seam.Schedule(journaltest.Failing(journaltest.OpSync, "*", 1, errors.New("fixture: an injected sync failure"))); err != nil {
+	if err := f.Seam.Schedule(kit.Failing(kit.OpSync, "*", 1, errors.New("fixture: an injected sync failure"))); err != nil {
 		f.t.Fatalf("fixture: schedule a sync failure: %v", err)
 	}
 }
@@ -107,7 +107,7 @@ func New(t *testing.T) *Fixture {
 	prof.Watch(t, prof.Options{})
 
 	dir := t.TempDir()
-	seam, err := journaltest.NewSeam(dir)
+	seam, err := kit.NewSeam(dir)
 	if err != nil {
 		t.Fatalf("fixture: seam: %v", err)
 	}
@@ -202,7 +202,7 @@ func (f *Fixture) Reinit() journal.JournalID {
 // crash is closed through a view of the seam the crash ended, so nothing it
 // does while closing reaches the directory. opts are the seam's crash
 // variants.
-func (f *Fixture) Crash(opts ...journaltest.CrashOption) {
+func (f *Fixture) Crash(opts ...kit.CrashOption) {
 	f.t.Helper()
 	f.crashed.Store(true) // before the crash, so nothing the old engine runs meanwhile reaches the store
 	if err := f.Seam.Crash(opts...); err != nil {
@@ -307,7 +307,7 @@ func (f *Fixture) start() {
 		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed, stalled: &f.stalled},
 		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
 		Lifecycle: f.FS.Store.Lifecycle(),
-		Holds:     Holds(f.Opens),
+		Holds:     Holds(f.Opens, f.FS.Store.Opens()),
 		Clock:     f.Clock,
 		Logger:    f.logger,
 		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
@@ -400,24 +400,44 @@ func (s *Sink) ClosedCalls() []Closed {
 // noOrder takes no admission lock: the fixture has no service holding one.
 func noOrder(entity.FileID) func() { return func() {} }
 
-// Holds adapts t to the engine's CloneHold, as the composition root does.
-// An orphan CloneClose leaves reaches t's Sink.Closed.
-func Holds(t *openstate.Table) engine.CloneHold {
-	return cloneHold{opens: t.Opens(), recovery: t.Recovery()}
+// Holds adapts t, over the store's durable opens, to the engine's
+// CloneHold, as the composition root does. An orphan CloneClose leaves
+// reaches t's Sink.Closed.
+func Holds(t *openstate.Table, records OpenRecords) engine.CloneHold {
+	return cloneHold{opens: t.Opens(), recovery: t.Recovery(), records: records}
+}
+
+// OpenRecords reads a file's durable opens: the store's Opens.
+type OpenRecords interface {
+	Of(ctx context.Context, share entity.ShareID, file entity.FileID) ([]entity.OpenRecord, error)
 }
 
 // cloneHold is the open-state table as the engine's CloneHold.
 type cloneHold struct {
 	opens    openstate.Opens
 	recovery openstate.Recovery
+	records  OpenRecords
 }
 
+// Hold answers ErrStale only for a source holding no open of the clone's.
+// CloneOpen answers ErrBadState for that and for a share whose open state
+// was dropped, so the record is read again to tell them apart; the dropped
+// share's answer crosses as itself, which the engine retries.
 func (h cloneHold) Hold(ctx context.Context, src engine.CloneSrc) (entity.OpenID, error) {
 	id, err := h.opens.CloneOpen(ctx, openstate.FileKey{Share: src.Share, Shard: src.Shard, ID: src.File}, openstate.CloneSource{Dst: src.Dst, Version: src.AsOf})
-	if errors.Is(err, openstate.ErrBadState) {
-		return 0, entity.ErrStale // the source holds no open of the clone's
+	if !errors.Is(err, openstate.ErrBadState) {
+		return id, holdErr(err)
 	}
-	return id, holdErr(err)
+	recs, rerr := h.records.Of(ctx, src.Share, src.File)
+	if rerr != nil {
+		return 0, rerr
+	}
+	if !slices.ContainsFunc(recs, func(r entity.OpenRecord) bool {
+		return r.Kind == entity.OpenCloneSource && r.CloneDst == src.Dst && r.CloneVersion == src.AsOf
+	}) {
+		return 0, entity.ErrStale
+	}
+	return 0, err
 }
 
 func (h cloneHold) Release(ctx context.Context, o entity.OpenID) error {

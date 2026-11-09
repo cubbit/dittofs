@@ -1,6 +1,6 @@
 //go:build linux
 
-package journaltest
+package kit
 
 import (
 	"os"

@@ -105,6 +105,23 @@ func (r *rig) events() []core.LossEvent {
 func (r *rig) lossRecordsOnDisk(t *testing.T) []format.Loss {
 	t.Helper()
 	var out []format.Loss
+	for _, l := range r.lossesOnDisk(t) {
+		out = append(out, l.body)
+	}
+	return out
+}
+
+// lossOnDisk is one durable loss record: its header, which names the dropped
+// extent, and its body.
+type lossOnDisk struct {
+	header format.RecordHeader
+	body   format.Loss
+}
+
+// lossesOnDisk returns the durable loss records, in segment order.
+func (r *rig) lossesOnDisk(t *testing.T) []lossOnDisk {
+	t.Helper()
+	var out []lossOnDisk
 	for id := core.SegmentID(1); id < 32; id++ {
 		raw, err := r.seam.Durable(format.SegmentName(id))
 		if err != nil {
@@ -125,7 +142,7 @@ func (r *rig) lossRecordsOnDisk(t *testing.T) []format.Loss {
 				t.Fatalf("record at %d of segment %d: %v", off, id, err)
 			}
 			if h.Kind == format.KindLoss {
-				out = append(out, body.Loss)
+				out = append(out, lossOnDisk{header: h, body: body.Loss})
 			}
 			off += h.Size()
 		}
@@ -177,6 +194,26 @@ func TestAFailedWindowServesTheLastSyncedWriteAndNamesTheLostOne(t *testing.T) {
 	recs := fr.lossRecordsOnDisk(t)
 	if len(recs) != 1 || recs[0].Dropped != seq2 || recs[0].Synced || recs[0].Reason != format.LossFailedSync {
 		t.Fatalf("durable loss records = %+v, want one naming seq %d, unsynced", recs, seq2)
+	}
+}
+
+// TestAFailedWindowsLossEventIsUnsynced pins that the event of a record a
+// failed window dropped says it was not synced.
+func TestAFailedWindowsLossEventIsUnsynced(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr := newFailRig(t, nil)
+	f := file(1)
+	loc, _ := fr.publish(t, f, 0, "aaaa")
+
+	fr.failSegmentOf(t, loc.Segment, f)
+	fr.awaitResolved(t)
+
+	evs := fr.events()
+	if len(evs) != 1 {
+		t.Fatalf("%d loss events, want 1: %+v", len(evs), evs)
+	}
+	if ev := evs[0]; ev.Reason != core.LossFailedWindow || ev.Synced {
+		t.Fatalf("event = %+v, want a failed window's, Synced false", ev)
 	}
 }
 

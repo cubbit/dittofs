@@ -18,7 +18,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -32,10 +32,10 @@ const (
 
 // newSeam returns a seam over its own empty directory, refusing the test on
 // the seam's own errors.
-func newSeam(t *testing.T) *journaltest.Seam {
+func newSeam(t *testing.T) *kit.Seam {
 	t.Helper()
 
-	seam, err := journaltest.NewSeam(t.TempDir())
+	seam, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSeam: %v", err)
 	}
@@ -46,7 +46,7 @@ func newSeam(t *testing.T) *journaltest.Seam {
 // It gives Maker the seam's epoch-bound view, never the seam itself, so a
 // crash the test makes ends the Maker's calls rather than silently acting on
 // the directory the crash left.
-func maker(t *testing.T, last core.SegmentID, max int64) (*journaltest.Seam, *segment.Set, *segment.Maker) {
+func maker(t *testing.T, last core.SegmentID, max int64) (*kit.Seam, *segment.Set, *segment.Maker) {
 	t.Helper()
 
 	seam := newSeam(t)
@@ -58,7 +58,7 @@ func maker(t *testing.T, last core.SegmentID, max int64) (*journaltest.Seam, *se
 // regression that skips the held step altogether must fail the test on its
 // own assertion, not hang until the whole binary is timed out. Make's
 // result arrives on res instead; whichever comes first wins.
-func awaitReached(t *testing.T, step string, hold *journaltest.Hold, res <-chan error) {
+func awaitReached(t *testing.T, step string, hold *kit.Hold, res <-chan error) {
 	t.Helper()
 
 	select {
@@ -114,7 +114,7 @@ func classify(names []string) (segs, spares []string) {
 // listNames returns the journal directory as the seam's current process sees
 // it, which every post-crash check must: a view bound to an earlier epoch
 // refuses the List.
-func listNames(t *testing.T, seam *journaltest.Seam) []string {
+func listNames(t *testing.T, seam *kit.Seam) []string {
 	t.Helper()
 
 	names, err := seam.List()
@@ -128,7 +128,7 @@ func listNames(t *testing.T, seam *journaltest.Seam) []string {
 // name as a whole segment: present, at the cap, and zeros end to end. It is
 // the "whole" half of whole-or-absent; the absence it is checked against is
 // the caller's, by name.
-func assertWhole(t *testing.T, seam *journaltest.Seam, name string) {
+func assertWhole(t *testing.T, seam *kit.Seam, name string) {
 	t.Helper()
 
 	f, err := seam.Open(name)
@@ -201,12 +201,12 @@ func TestMakeStorageCallOrder(t *testing.T) {
 	// The directory sync's key is the empty one, so its record ends in the
 	// joining space.
 	want := []string{
-		journaltest.OpCreate + " " + spare,
-		journaltest.OpAllocate + " " + spare,
-		journaltest.OpSync + " " + spare,
-		journaltest.OpClose + " " + spare,
-		journaltest.OpRename + " " + spare,
-		journaltest.OpSyncDir + " ",
+		kit.OpCreate + " " + spare,
+		kit.OpAllocate + " " + spare,
+		kit.OpSync + " " + spare,
+		kit.OpClose + " " + spare,
+		kit.OpRename + " " + spare,
+		kit.OpSyncDir + " ",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("Make drove storage as %v, want exactly %v", got, want)
@@ -232,12 +232,12 @@ func TestMakeCrashLeavesTheSpareWholeOrAbsent(t *testing.T) {
 		op  string
 		key string // "*" for the directory sync: its own key is empty, which a hold cannot name
 	}{
-		{journaltest.OpCreate, spare},
-		{journaltest.OpAllocate, spare},
-		{journaltest.OpSync, spare},
-		{journaltest.OpClose, spare},
-		{journaltest.OpRename, spare},
-		{journaltest.OpSyncDir, "*"},
+		{kit.OpCreate, spare},
+		{kit.OpAllocate, spare},
+		{kit.OpSync, spare},
+		{kit.OpClose, spare},
+		{kit.OpRename, spare},
+		{kit.OpSyncDir, "*"},
 	} {
 		t.Run(tc.op, func(t *testing.T) {
 			seam, set, m := maker(t, 0, noMax)
@@ -326,10 +326,10 @@ func TestMakeSpareTmpDurableByAnotherSyncBoundsTheNextID(t *testing.T) {
 	seam, _, m := maker(t, 0, noMax)
 
 	spare := format.SpareName(core.SegmentID(1))
-	h := seam.HoldFirst(t, journaltest.OpRename, spare)
+	h := seam.HoldFirst(t, kit.OpRename, spare)
 	errc := make(chan error, 1)
 	go func() { errc <- errOf(m.Make()) }()
-	awaitReached(t, journaltest.OpRename, h, errc)
+	awaitReached(t, kit.OpRename, h, errc)
 
 	// Another directory sync — not Make's own, which is parked at the rename
 	// — makes the temporary name durable.
@@ -449,7 +449,7 @@ func TestMakerDrawsAscendingIDs(t *testing.T) {
 		seam, _, m := maker(t, 0, noMax)
 
 		spare := format.SpareName(core.SegmentID(1))
-		if err := seam.Schedule(journaltest.Failing(journaltest.OpAllocate, spare, 1, syscall.EIO)); err != nil {
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, spare, 1, syscall.EIO)); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
 		if _, err := m.Make(); err == nil {
@@ -567,7 +567,7 @@ func TestMakeRefusedAtTheMaximumMakesNoStorageCall(t *testing.T) {
 			drawn, won)
 	}
 
-	if calls := seam.Calls(journaltest.OpCreate); calls != fitted {
+	if calls := seam.Calls(kit.OpCreate); calls != fitted {
 		t.Fatalf("the Makes created %d files, want %d: a refused Make must make no seam call", calls, fitted)
 	}
 	if c := set.Counters(); c.UsedBytes != fitted*segCap || c.Spares != fitted {
@@ -590,10 +590,10 @@ func TestMakeRaisesTheFootprintBeforeTheAllocation(t *testing.T) {
 	before := set.Counters()
 
 	spare := format.SpareName(core.SegmentID(1))
-	h := seam.HoldFirst(t, journaltest.OpAllocate, spare)
+	h := seam.HoldFirst(t, kit.OpAllocate, spare)
 	errc := make(chan error, 1)
 	go func() { _, err := m.Make(); errc <- err }()
-	awaitReached(t, journaltest.OpAllocate, h, errc)
+	awaitReached(t, kit.OpAllocate, h, errc)
 
 	c := set.Counters()
 	if c.UsedBytes != before.UsedBytes+segCap {
@@ -632,12 +632,12 @@ func TestFailedMakeUnlinksBothNamesOrStaysAccounted(t *testing.T) {
 
 	spare := format.SpareName(core.SegmentID(1))
 	steps := []step{
-		{journaltest.OpCreate, spare, "create", storageErrs},
-		{journaltest.OpAllocate, spare, "allocate", storageErrs},
-		{journaltest.OpSync, spare, "sync", storageErrs},
-		{journaltest.OpClose, spare, "close", storageErrs},
-		{journaltest.OpRename, spare, "rename", storageErrs},
-		{journaltest.OpSyncDir, "*", "sync_dir", storageErrs},
+		{kit.OpCreate, spare, "create", storageErrs},
+		{kit.OpAllocate, spare, "allocate", storageErrs},
+		{kit.OpSync, spare, "sync", storageErrs},
+		{kit.OpClose, spare, "close", storageErrs},
+		{kit.OpRename, spare, "rename", storageErrs},
+		{kit.OpSyncDir, "*", "sync_dir", storageErrs},
 	}
 
 	for _, st := range steps {
@@ -648,11 +648,11 @@ func TestFailedMakeUnlinksBothNamesOrStaysAccounted(t *testing.T) {
 					seam, set, m := maker(t, 0, noMax)
 					before := set.Counters()
 
-					rules := []journaltest.Rule{
-						journaltest.Failing(st.op, st.key, 1, failWith),
+					rules := []kit.Rule{
+						kit.Failing(st.op, st.key, 1, failWith),
 					}
 					if removeFails {
-						rules = append(rules, journaltest.Failing(journaltest.OpRemove, "*", 0, syscall.EIO))
+						rules = append(rules, kit.Failing(kit.OpRemove, "*", 0, syscall.EIO))
 					}
 					if err := seam.Schedule(rules...); err != nil {
 						t.Fatalf("Schedule: %v", err)
@@ -715,7 +715,7 @@ func TestFailedMakeUnlinksBothNamesOrStaysAccounted(t *testing.T) {
 						// the id's format names, for the ledger that just freed
 						// the cap keeps no name. A create that failed owns no
 						// file at all, and its leftover is ledger-only.
-						if st.op != journaltest.OpCreate && len(segs)+len(spares) != 1 {
+						if st.op != kit.OpCreate && len(segs)+len(spares) != 1 {
 							t.Fatalf("after the retire the directory holds %v and %v, want the one file the failed Make could not unlink", segs, spares)
 						}
 						return
@@ -747,9 +747,9 @@ func TestFailedMakeUnlinksBothNamesOrStaysAccounted(t *testing.T) {
 		before := set.Counters()
 
 		spare := format.SpareName(core.SegmentID(1))
-		rules := []journaltest.Rule{
-			journaltest.Failing(journaltest.OpAllocate, spare, 1, syscall.EIO),
-			journaltest.Failing(journaltest.OpClose, spare, 1, syscall.EIO),
+		rules := []kit.Rule{
+			kit.Failing(kit.OpAllocate, spare, 1, syscall.EIO),
+			kit.Failing(kit.OpClose, spare, 1, syscall.EIO),
 		}
 		if err := seam.Schedule(rules...); err != nil {
 			t.Fatalf("Schedule: %v", err)
@@ -777,9 +777,9 @@ func TestFailedMakeUnlinksBothNamesOrStaysAccounted(t *testing.T) {
 		before := set.Counters()
 
 		spare := format.SpareName(core.SegmentID(1))
-		rules := []journaltest.Rule{
-			journaltest.Failing(journaltest.OpSync, spare, 1, syscall.EIO),
-			journaltest.Failing(journaltest.OpClose, spare, 1, syscall.EIO),
+		rules := []kit.Rule{
+			kit.Failing(kit.OpSync, spare, 1, syscall.EIO),
+			kit.Failing(kit.OpClose, spare, 1, syscall.EIO),
 		}
 		if err := seam.Schedule(rules...); err != nil {
 			t.Fatalf("Schedule: %v", err)
@@ -811,14 +811,14 @@ func TestFailedMakeReturnsTheReservationAfterTheUnlink(t *testing.T) {
 	before := set.Counters()
 
 	spare := format.SpareName(core.SegmentID(1))
-	if err := seam.Schedule(journaltest.Failing(journaltest.OpAllocate, spare, 1, syscall.EIO)); err != nil {
+	if err := seam.Schedule(kit.Failing(kit.OpAllocate, spare, 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 
-	h := seam.HoldFirst(t, journaltest.OpRemove, "*")
+	h := seam.HoldFirst(t, kit.OpRemove, "*")
 	errc := make(chan error, 1)
 	go func() { _, err := m.Make(); errc <- err }()
-	awaitReached(t, journaltest.OpRemove, h, errc)
+	awaitReached(t, kit.OpRemove, h, errc)
 
 	c := set.Counters()
 	if c.UsedBytes != before.UsedBytes+segCap {
@@ -927,7 +927,7 @@ func TestFailedMakeUnlinksBothNamesAfterTheAppliedRename(t *testing.T) {
 func TestFailedMakeWarnsAboutTheLeftover(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	setup := func(failRename bool) (*journaltest.Seam, *segment.Set, *segment.Maker, *bytes.Buffer) {
+	setup := func(failRename bool) (*kit.Seam, *segment.Set, *segment.Maker, *bytes.Buffer) {
 		seam := newSeam(t)
 		set := segment.NewSet(segCap, nil)
 		var buf bytes.Buffer
@@ -937,8 +937,8 @@ func TestFailedMakeWarnsAboutTheLeftover(t *testing.T) {
 		} else {
 			spare := format.SpareName(core.SegmentID(1))
 			if err := seam.Schedule(
-				journaltest.Failing(journaltest.OpAllocate, spare, 1, syscall.EIO),
-				journaltest.Failing(journaltest.OpRemove, "*", 0, syscall.EIO),
+				kit.Failing(kit.OpAllocate, spare, 1, syscall.EIO),
+				kit.Failing(kit.OpRemove, "*", 0, syscall.EIO),
 			); err != nil {
 				t.Fatalf("Schedule: %v", err)
 			}

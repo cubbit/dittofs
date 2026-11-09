@@ -259,6 +259,7 @@ func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 		return nil, e.journalErr(err)
 	}
 	r.v = v
+	e.issued(b.vl, v)
 	e.staged()
 	op := kvstore.RemoveOp{Kind: entity.RemoveRelease, Extent: r.x, Version: entity.JournalVersion(v.Bytes()), Time: r.at}
 	switch err := e.tryPhase1(ctx, r, op); {
@@ -385,6 +386,7 @@ func (e *Engine) stage(ctx context.Context, r *removal, j func(*fileEntry) (jour
 	}
 	r.v = v
 	fe.insert(pendingOp{version: v, kind: kind, extent: x, at: r.at, grow: g, setsMtime: g}) // a size change moves mtime, up as down
+	e.issued(r.b.vl, v)
 	return g, nil
 }
 

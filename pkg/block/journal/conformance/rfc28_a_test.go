@@ -13,6 +13,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -189,7 +190,7 @@ func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
 
 	// The middle write parks at its storage call, and the third, made while
 	// it waits, runs past it.
-	held := f.Seam.HoldFirst(t, journaltest.OpWrite, name)
+	held := f.Seam.HoldFirst(t, kit.OpWrite, name)
 	middle := make(chan error, 1)
 
 	go func() {
@@ -232,7 +233,7 @@ func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
 		}
 	}
 
-	f.FailNext(journaltest.OpWrite, name, 1)
+	f.FailNext(kit.OpWrite, name, 1)
 	held.Release()
 
 	err = <-middle
@@ -316,7 +317,7 @@ func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
 	seg := entryAt(t, k, base.id, 0).Location.Segment
 	segName := segmentName(seg)
 
-	append1 := k.Seam.HoldFirst(t, journaltest.OpWrite, segName)
+	append1 := k.Seam.HoldFirst(t, kit.OpWrite, segName)
 	appended := make(chan error, 1)
 
 	go func() {
@@ -328,7 +329,7 @@ func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
 
 	// The rolling write's piece in the held segment, if it has one, parks at
 	// a hold of its own, so the failure below falls on the held append.
-	piece := k.Seam.HoldFirst(t, journaltest.OpWrite, segName)
+	piece := k.Seam.HoldFirst(t, kit.OpWrite, segName)
 	rolled := make(chan error, 1)
 
 	go func() {
@@ -340,7 +341,7 @@ func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
 		t.Fatalf("segment %d carries a seal marker while an append into it is in flight", seg)
 	}
 
-	k.FailNext(journaltest.OpWrite, segName, 1)
+	k.FailNext(kit.OpWrite, segName, 1)
 	append1.Release()
 
 	err = <-appended
@@ -431,7 +432,7 @@ func deviceSync(t *testing.T, f *journaltest.Fixture, name string) {
 // fails as a dead process's; the hold is released second, so the call
 // returns; the fixture's kill runs last, repeating the seam's abandon with
 // nothing left to close, and opens the journal on what the process left.
-func killHeld(t *testing.T, f *journaltest.Fixture, h *journaltest.Hold) {
+func killHeld(t *testing.T, f *journaltest.Fixture, h *kit.Hold) {
 	t.Helper()
 
 	f.Seam.Abandon()
@@ -513,7 +514,7 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 	f := journaltest.NewUnwatched(t)
 	other := writeSynced(t, f, 1, 1, 0, 64<<10)
 	u := writeUnproven(t, f)
-	f.Drop(journaltest.OpSync, u.name)
+	f.Drop(kit.OpSync, u.name)
 	f.Kill()
 	f.Seam.SetFault(nil)
 	wantVerifiedThenReappended(t, f, u)
@@ -531,7 +532,7 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 	for id := range filled {
 		syncFiles(t, g.Share(1), id)
 	}
-	g.Drop(journaltest.OpSync, u.name)
+	g.Drop(kit.OpSync, u.name)
 	g.Kill()
 	g.Seam.SetFault(nil)
 	wantVerifiedThenReappended(t, g, u)
@@ -543,8 +544,8 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 	// could have been open at the crash, and the outcome is the same.
 	k := journaltest.NewUnwatched(t)
 	u = writeUnproven(t, k)
-	k.FailNext(journaltest.OpSync, u.name, 1)
-	held := k.Seam.Hold(t, journaltest.OpWrite, "*.seg")
+	k.FailNext(kit.OpSync, u.name, 1)
+	held := k.Seam.Hold(t, kit.OpWrite, "*.seg")
 	synced := make(chan error, 1)
 	go func() { synced <- k.Share(0).Sync(t.Context(), u.a.id) }()
 	select {

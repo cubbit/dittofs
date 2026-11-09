@@ -101,6 +101,8 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 		done:      o.Done,
 	})
 	e.files.unlock(f, fe)
+	e.issued(b.vl, ver)
+
 	return v, nil
 }
 
@@ -144,6 +146,9 @@ func (e *Engine) Draw(ctx context.Context, s entity.ShareID, f entity.FileID) (e
 	if err != nil {
 		return entity.JournalVersion{}, e.journalErr(err)
 	}
+
+	e.issued(b.vl, v)
+
 	return entity.JournalVersion(v.Bytes()), nil
 }
 

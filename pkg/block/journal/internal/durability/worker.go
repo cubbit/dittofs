@@ -1,9 +1,11 @@
 package durability
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -12,7 +14,8 @@ import (
 
 // run is one stream's worker: on each wake it takes the windows of the
 // segments that ended, fails their content records (or, once the journal is
-// read-only, every unsynced record of the stream), completes the entries a
+// read-only, every unsynced record of the stream), records the losses of the
+// corrupt records reads handed it, completes the entries a
 // sync covered, stamps the ones it has not seen, issues the sync a waiter asked for
 // or the sync bound's timer calls for, and arms the timer, until Stop closes
 // done.
@@ -34,6 +37,11 @@ func (d *Durability) run(st *stream) {
 		} else {
 			d.failWindows(st)
 		}
+		d.reappendStep(st)
+		if d.afterHolds != nil {
+			d.afterHolds()
+		}
+		d.drainCorrupt(st)
 		d.complete(st)
 		d.stamp(st)
 		d.syncStep(st, fired)
@@ -186,8 +194,10 @@ func bucketOf(d time.Duration) int {
 // done under its file's append domain, one domain at a time, so a record whose
 // sync landed is never dropped in the gap between a writer's append and the
 // accounting it does under that same domain. A content record's superseded
-// extents stop being retained under the same hold. Only the worker compacts and
-// Track only appends, so the indices collected stay valid between the steps.
+// extents stop being retained under the same hold. Corrupt can take an
+// uncovered entry out between the steps, which moves the later ones down, so
+// each covered entry is found again by its count; Corrupt never takes a
+// covered one, so it is always there.
 func (d *Durability) complete(st *stream) {
 	st.mu.Lock()
 	if !st.reported {
@@ -198,19 +208,26 @@ func (d *Durability) complete(st *stream) {
 	st.scratch = st.scratch[:0]
 	for i := range st.ledger {
 		if e := &st.ledger[i]; !e.done && st.covered(e.w.Loc) {
-			st.scratch = append(st.scratch, i)
+			st.scratch = append(st.scratch, e.tracked)
 		}
 	}
-	idx := st.scratch
+	nos := st.scratch
 	st.mu.Unlock()
-	if len(idx) == 0 {
+	if len(nos) == 0 {
 		return
 	}
 
-	for _, i := range idx {
+	for _, no := range nos {
 		st.mu.Lock()
-		w := st.ledger[i].w
+		i, ok := st.findLocked(no)
+		var w segment.Written
+		if ok {
+			w = st.ledger[i].w
+		}
 		st.mu.Unlock()
+		if !ok {
+			continue
+		}
 		unlock := d.domains.Lock(w.File)
 		if isContent(w) {
 			// st.mu is not held: the index takes the file's lock and the
@@ -219,7 +236,9 @@ func (d *Durability) complete(st *stream) {
 			d.lift(w.File, w.Version, w.Extent)
 		}
 		st.mu.Lock()
-		st.ledger[i].done = true
+		if i, ok := st.findLocked(no); ok {
+			st.ledger[i].done = true
+		}
 		st.mu.Unlock()
 		unlock()
 	}
@@ -255,22 +274,31 @@ func (d *Durability) complete(st *stream) {
 	}
 }
 
+// findLocked returns the index of the ledger entry whose Track count is no,
+// and false when it is gone. The ledger is in Track order. The caller holds
+// mu.
+func (st *stream) findLocked(no uint64) (int, bool) {
+	return slices.BinarySearchFunc(st.ledger, no, func(e entry, no uint64) int { return cmp.Compare(e.tracked, no) })
+}
+
 // stamp records when the worker first saw each entry. The clock is read
-// outside mu, and only entries that existed before the read are stamped, so a
-// stamp is never earlier than the record's arrival.
+// outside mu, and only entries tracked before the read are stamped, so a
+// stamp is never earlier than the record's arrival. They are told by their
+// Track count, not by position: Corrupt may take an entry out in between.
 func (d *Durability) stamp(st *stream) {
 	st.mu.Lock()
-	n, from := len(st.ledger), st.stamped
+	upto, more := st.trackedN, st.stamped < len(st.ledger)
 	st.mu.Unlock()
-	if n == from {
+	if !more {
 		return
 	}
 	now := d.clock.Elapsed()
 	st.mu.Lock()
-	for i := from; i < n; i++ {
+	i := st.stamped
+	for ; i < len(st.ledger) && st.ledger[i].tracked <= upto; i++ {
 		e := &st.ledger[i]
 		e.seen, e.seenSet = now, true
 	}
-	st.stamped = n
+	st.stamped = i
 	st.mu.Unlock()
 }

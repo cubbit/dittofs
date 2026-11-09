@@ -16,9 +16,43 @@ import "context"
 //
 // limit bounds the record bytes of the share's records on disk; zero means no
 // limit below the journal's maximum, and a negative limit is refused with
-// ErrInvalidSetting. A tag may have more than one handle open at once.
+// ErrInvalidSetting. A floor with a non-zero epoch is refused with
+// ErrUnknownFormat, and tag 0 with ErrInvalidSetting; a refusal attaches
+// nothing.
+//
+// A tag has one handle open at a time. Share of a tag whose handle is open
+// returns that same handle, with its limit replaced by limit and the floors
+// raised to floor; after the handle's Close, a later Share makes a new handle.
 func (j *Journal) Share(tag ShareTag, limit int64, floor Version) (*Handle, error) {
-	return nil, ErrNotImplemented
+	// decision: a Journal with no core, the zero value, refuses Share with
+	// ErrNotImplemented instead of panicking. Share is the only guarded
+	// method: Draw, SetVersionLimit, Handle.Close and Handle.WriteAt on a zero
+	// Journal or Handle are not, because no caller holds a zero value past
+	// building it. The engine's tests build one to see a refused Share answer
+	// nil and only call Reserve on a zero handle, still a stub, and the
+	// journaltest fixture builds a zero Journal and Handle whose cleanup
+	// touches neither. Overturned by any caller that calls one of the
+	// unguarded methods on a zero value, or by Open making zero values
+	// unreachable, when the Share guard can go.
+	if j.core == nil {
+		return nil, ErrNotImplemented
+	}
+	// The map lock is held across the core's attach so that a share the core
+	// returns is never one whose Close already removed its handle: Close
+	// removes the entry only after the core dropped the share, so an attach
+	// that sees the share also sees its entry.
+	j.handlesMu.Lock()
+	defer j.handlesMu.Unlock()
+	s, err := j.core.Share(tag, limit, floor)
+	if err != nil {
+		return nil, err
+	}
+	if h, ok := j.handles[s]; ok {
+		return h, nil
+	}
+	h := &Handle{j: j, s: s}
+	j.handles[s] = h
+	return h, nil
 }
 
 // Forget drops tag whole: every held and retained extent, removal marker and
@@ -56,7 +90,7 @@ func (j *Journal) Strand(tag ShareTag) error {
 // version would reach the version limit, and before the first
 // SetVersionLimit, since the journal issues no version without a limit.
 func (j *Journal) Draw() (Version, error) {
-	return Version{}, ErrNotImplemented
+	return j.core.Draw()
 }
 
 // SetVersionLimit sets the version limit: no version is issued at or above
@@ -64,4 +98,6 @@ func (j *Journal) Draw() (Version, error) {
 // recorded for every share the journal serves, raised by the caller ahead of
 // use so a write is not refused for want of versions. A mark with a non-zero
 // epoch is refused with ErrUnknownFormat and the limit stays as it was.
-func (j *Journal) SetVersionLimit(mark Version) error { return ErrNotImplemented }
+func (j *Journal) SetVersionLimit(mark Version) error {
+	return j.core.SetVersionLimit(mark)
+}
