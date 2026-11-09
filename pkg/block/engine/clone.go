@@ -482,6 +482,7 @@ func (e *Engine) copyRuns(ctx context.Context, c *cloneRun) (journal.Version, er
 			fe.insert(pendingOp{version: v, kind: opWrite, extent: journal.Extent{Off: off, Len: h.Extent.Len},
 				at: now, setsMtime: true, copy: true})
 			e.files.unlock(c.dst, fe)
+			e.issued(c.db.vl, v)
 			newest = newer(newest, v)
 		}
 	}
