@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,17 +19,13 @@ import (
 )
 
 // fakeAPI answers the calls the fixture makes as the server would, and
-// records each, with the NFS settings dt sets and the stores it creates.
+// records each, with the stores it creates.
 type fakeAPI struct {
-	mu       sync.Mutex
-	calls    []string
-	settings map[string]any
-	lease    int                       // what reading the settings back reports, when not 0
-	deleg    *bool                     // the same for delegations, when not nil
-	unbound  bool                      // reading back reports no registration with the host's rpcbind
-	stores   map[string]map[string]any // the config of each store, by its path
-	shares   []map[string]any          // each share created, as sent
-	sick     string                    // when set, the block store's health check fails with it
+	mu     sync.Mutex
+	calls  []string
+	stores map[string]map[string]any // the config of each store, by its path
+	shares []map[string]any          // each share created, as sent
+	sick   string                    // when set, the block store's health check fails with it
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -40,26 +35,10 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	switch {
-	case r.URL.Path == "/api/v1/adapters/smb/settings":
-		call += fmt.Sprintf(" %v", body)
-		_, _ = w.Write([]byte("{}"))
 	case r.URL.Path == "/api/v1/shares" && r.Method == http.MethodPost:
 		f.shares = append(f.shares, body)
 		call += fmt.Sprintf(" %v owner=%v", body["name"], body["owner"])
 		_, _ = w.Write([]byte("{}"))
-	case r.URL.Path == "/api/v1/adapters/nfs/settings":
-		f.settings = body
-		lease, _ := f.settings["lease_time"].(float64)
-		if f.lease != 0 {
-			lease = float64(f.lease)
-		}
-		deleg, _ := f.settings["delegations_enabled"].(bool)
-		if f.deleg != nil {
-			deleg = *f.deleg
-		}
-		register := f.settings["portmapper_register_with_system"] == true && !f.unbound
-		_ = json.NewEncoder(w).Encode(map[string]any{"lease_time": lease, "delegations_enabled": deleg,
-			"portmapper_register_with_system": register, "udp_enabled": f.settings["udp_enabled"] == true})
 	case strings.HasPrefix(r.URL.Path, "/api/v1/store/") && r.Method == http.MethodPost:
 		var config map[string]any
 		_ = json.Unmarshal([]byte(fmt.Sprint(body["config"])), &config)
@@ -102,12 +81,10 @@ func testServer(f registry.Fixture, url string, nfsPort, smbPort int) *Server {
 }
 
 // The stores, the users, then the share, its squash and the users' grants go
-// in; the NFS settings are set last and read back. The check then makes an
-// authenticated call.
+// in. The check then makes an authenticated call.
 func TestConfigureOrder(t *testing.T) {
 	f, c, url := newFakeAPI(t)
-	no := false
-	s := testServer(registry.Fixture{Profile: "badger", NFS: registry.NFS{Version: "export"}, Squash: "none", Users: []string{"65532", "1"}, Delegations: &no, Lease: "30s"}, url, 40001, 0)
+	s := testServer(registry.Fixture{Profile: "badger", NFS: registry.NFS{Version: "export"}, Squash: "none", Users: []string{"65532", "1"}}, url, 40001, 0)
 	if err := s.configure(c, nil, "pw"); err != nil {
 		t.Fatal(err)
 	}
@@ -125,23 +102,19 @@ func TestConfigureOrder(t *testing.T) {
 		"PATCH /api/v1/shares/export/adapters/nfs/config",
 		"PUT /api/v1/shares/export/permissions/users/dt-65532 read-write",
 		"PUT /api/v1/shares/export/permissions/users/dt-1 read-write",
-		"PATCH /api/v1/adapters/nfs/settings",
 		"GET /api/v1/auth/me",
 	}
 	if !slices.Equal(f.calls, want) {
 		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
 	}
-	if f.settings["lease_time"] != float64(30) || f.settings["delegations_enabled"] != false || len(f.settings) != 2 {
-		t.Errorf("settings sent: %v", f.settings)
-	}
 }
 
 // A shares file's shares are each created with their own settings, owned by
-// {user}, who gets the admin grant on each; SMB encryption is set last, and the
-// check then makes an authenticated call.
+// {user}, who gets the admin grant on each, and the check then makes an
+// authenticated call.
 func TestConfigureSMB(t *testing.T) {
 	f, c, url := newFakeAPI(t)
-	s := testServer(registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true, Encryption: "preferred"}, Shares: "shares.yaml"}, url, 0, 40002)
+	s := testServer(registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}, Shares: "shares.yaml"}, url, 0, 40002)
 	on := true
 	s.shares = []apiclient.CreateShareRequest{{Name: "/a"}, {Name: "/b", AccessBasedEnumeration: &on}}
 	if err := s.configure(c, nil, "pw"); err != nil {
@@ -159,7 +132,6 @@ func TestConfigureSMB(t *testing.T) {
 		"PUT /api/v1/shares/a/permissions/users/dt-user admin",
 		"POST /api/v1/shares /b owner=dt-user",
 		"PUT /api/v1/shares/b/permissions/users/dt-user admin",
-		"PATCH /api/v1/adapters/smb/settings map[enable_encryption:true]",
 		"GET /api/v1/auth/me",
 	}
 	if !slices.Equal(f.calls, want) {
@@ -185,23 +157,12 @@ func TestConfigureSMBMount(t *testing.T) {
 }
 
 // With Kerberos, {user}'s principal maps to {user} once the test users are
-// in, as the scripts' bootstrap maps it, and the check finds SMB at {server},
-// a name then, and fails when the name doesn't lead there.
+// in, as the scripts' bootstrap maps it.
 func TestConfigureKerberos(t *testing.T) {
 	f, c, url := newFakeAPI(t)
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = l.Close() }()
-	port := l.Addr().(*net.TCPAddr).Port
-	s := testServer(registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}, Kerberos: true}, url, 0, port)
-	s.kdc = &kdc{host: "localhost"}
+	s := testServer(registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}, Kerberos: true}, url, 0, 40002)
 	if err := s.configure(c, nil, "pw"); err != nil {
 		t.Fatal(err)
-	}
-	if err := s.check(c, nil); err != nil {
-		t.Errorf("SMB at {server}: %v", err)
 	}
 	want := []string{
 		"POST /api/v1/users dt-user uid=65535 gid=65535",
@@ -211,13 +172,6 @@ func TestConfigureKerberos(t *testing.T) {
 	}
 	if i := slices.Index(f.calls, want[0]); i < 0 || i+len(want) > len(f.calls) || !slices.Equal(f.calls[i:i+len(want)], want) {
 		t.Errorf("calls:\n%s\nwant, in a row:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
-	}
-	// SMB moves to port 1, which nothing listens on, and unlike a port the
-	// test frees, nothing else gets it meanwhile: it's never handed out as a
-	// free port, and an ordinary user may not bind it.
-	s.smbPort = 1
-	if err := s.check(c, nil); err == nil || !strings.Contains(err.Error(), "{server}, the name localhost, doesn't lead to SMB's port") {
-		t.Errorf("nothing at {server}: %v", err)
 	}
 }
 
@@ -249,93 +203,49 @@ func TestReset(t *testing.T) {
 	}
 }
 
-// A fixture without NFS settings or an export sets none; one whose lease or delegations don't read back as set fails, as
-// does a lease that isn't whole seconds.
-func TestConfigureSettings(t *testing.T) {
-	f, c, url := newFakeAPI(t)
-	s := testServer(registry.Fixture{Profile: "memory"}, url, 0, 0)
-	if err := s.configure(c, nil, "pw"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.check(c, nil); err != nil {
-		t.Errorf("no settings asked for: %v", err)
-	}
-	if slices.ContainsFunc(f.calls, func(c string) bool { return strings.Contains(c, "settings") }) {
-		t.Errorf("calls %q", f.calls)
-	}
-
-	f, c, url = newFakeAPI(t)
-	f.lease = 90
-	err := testServer(registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Lease: "30s"}, url, 40001, 0).configure(c, nil, "pw")
-	if err == nil || !strings.Contains(err.Error(), "lease of 90s, not the 30s") {
-		t.Errorf("a lease that reads back wrong: %v", err)
-	}
-
-	f, c, url = newFakeAPI(t)
-	yes, no := true, false
-	f.deleg = &yes
-	err = testServer(registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Delegations: &no}, url, 40001, 0).configure(c, nil, "pw")
-	if err == nil || !strings.Contains(err.Error(), "delegations true, not the false") {
-		t.Errorf("delegations that read back wrong: %v", err)
-	}
-
-	_, c, url = newFakeAPI(t)
-	if err := testServer(registry.Fixture{Profile: "memory", Lease: "1.5s"}, url, 0, 0).configure(c, nil, "pw"); err == nil || !strings.Contains(err.Error(), "whole number of seconds") {
-		t.Errorf("a lease of 1.5s: %v", err)
+// A fixture that sets NFS or SMB adapter settings is refused before any call
+// reaches the server, which serves no file protocol and could apply none.
+func TestConfigureRefusesAdapterSettings(t *testing.T) {
+	no := false
+	for name, fx := range map[string]registry.Fixture{
+		"lease":          {Profile: "memory", Lease: "30s"},
+		"delegations":    {Profile: "memory", Delegations: &no},
+		"rpcbind":        {Profile: "memory", RPCBind: "host"},
+		"smb encryption": {Profile: "memory", SMB: registry.SMB{Enabled: true, Encryption: "preferred"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, c, url := newFakeAPI(t)
+			err := testServer(fx, url, 0, 0).configure(c, nil, "pw")
+			if err == nil || !strings.Contains(err.Error(), "serves no file protocol") {
+				t.Errorf("configure = %v, want the refusal", err)
+			}
+			if len(f.calls) != 0 {
+				t.Errorf("calls made before the refusal: %q", f.calls)
+			}
+		})
 	}
 }
 
 // self is the user dt runs as, in its own group, with a read-write grant like
-// any user's. rpcbind: host has the server register with the host's rpcbind
-// and serve UDP, as the setting it reads back must say.
-func TestConfigureSelfAndRPCBind(t *testing.T) {
+// any user's.
+func TestConfigureSelf(t *testing.T) {
+	// A Windows process has no uid (os.Getuid is -1), and users: self runs on Linux only.
+	if runtime.GOOS == "windows" {
+		t.Skip("users: self runs on Linux only")
+	}
 	f, c, url := newFakeAPI(t)
-	s := testServer(registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Users: []string{"self"}, RPCBind: "host"}, url, 40001, 0)
+	s := testServer(registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, Users: []string{"self"}}, url, 40001, 0)
 	if err := s.configure(c, nil, "pw"); err != nil {
 		t.Fatal(err)
 	}
-	// A Windows process has no uid (os.Getuid is -1), and users: self runs on Linux only.
-	if runtime.GOOS != "windows" {
-		self := fmt.Sprintf("dt-%d", os.Getuid())
-		for _, call := range []string{
-			fmt.Sprintf("POST /api/v1/users %s uid=%d gid=%d", self, os.Getuid(), os.Getgid()),
-			"PUT /api/v1/shares/export/permissions/users/" + self + " read-write",
-		} {
-			if !slices.Contains(f.calls, call) {
-				t.Errorf("no %q among the calls:\n%s", call, strings.Join(f.calls, "\n"))
-			}
+	self := fmt.Sprintf("dt-%d", os.Getuid())
+	for _, call := range []string{
+		fmt.Sprintf("POST /api/v1/users %s uid=%d gid=%d", self, os.Getuid(), os.Getgid()),
+		"PUT /api/v1/shares/export/permissions/users/" + self + " read-write",
+	} {
+		if !slices.Contains(f.calls, call) {
+			t.Errorf("no %q among the calls:\n%s", call, strings.Join(f.calls, "\n"))
 		}
-	}
-	if f.settings["portmapper_register_with_system"] != true || f.settings["udp_enabled"] != true {
-		t.Errorf("settings sent: %v", f.settings)
-	}
-
-	f, c, url = newFakeAPI(t)
-	f.unbound = true
-	err := testServer(registry.Fixture{Profile: "memory", NFS: registry.NFS{Version: "export"}, RPCBind: "host"}, url, 40001, 0).configure(c, nil, "pw")
-	if err == nil || !strings.Contains(err.Error(), "doesn't register with the host's rpcbind") {
-		t.Errorf("a registration that reads back off: %v", err)
-	}
-}
-
-// The host's rpcbind must list the server's lock manager and MOUNT over TCP
-// on its NFS port: another lock manager's registration, or the server's own
-// on another port, doesn't count.
-func TestUnregistered(t *testing.T) {
-	const table = `   program vers proto   port  service
-    100000    4   tcp    111  portmapper
-    100021    4   udp  40001  nlockmgr
-    100021    4   tcp  33421  nlockmgr
-    100005    3   tcp  40001  mountd
-`
-	if got, nlm := unregistered(table, 40001); !slices.Equal(got, []string{"lock manager"}) || nlm != "33421" {
-		t.Errorf("another lock manager's registration: missing %q, NLM at %q", got, nlm)
-	}
-	if got, nlm := unregistered(strings.Replace(table, "tcp  33421", "tcp  40001", 1), 40001); len(got) != 0 || nlm != "" {
-		t.Errorf("both registered: missing %q, NLM at %q", got, nlm)
-	}
-	if got, _ := unregistered(table, 40002); !slices.Equal(got, []string{"MOUNT", "lock manager"}) {
-		t.Errorf("another port: missing %q", got)
 	}
 }
 

@@ -40,7 +40,7 @@ Examples:
   # Check status when the control-plane API runs on a non-default port
   dfs status --api-port 9080
 
-  # Include per-entity (share, adapter, store) detail
+  # Include per-entity (share, store) detail
   dfs status --api-token <token>
 
   # Emit machine-readable JSON output

@@ -21,8 +21,8 @@ var rootCmd = &cobra.Command{
 	Use:   "dfs",
 	Short: "DittoFS - Modular virtual filesystem",
 	Long: `DittoFS is an experimental modular virtual filesystem that decouples
-file interfaces from storage backends. It implements NFSv3 and SMB protocols
-in pure Go (userspace, no FUSE required) with pluggable metadata and content stores.
+file interfaces from storage backends, with pluggable metadata and content
+stores. This build runs the control plane and serves no file protocol.
 
 Use "dfs [command] --help" for more information about a command.`,
 	SilenceUsage:  true,

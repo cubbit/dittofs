@@ -355,7 +355,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Validate BlockedOperations entries
 	if req.BlockedOperations != nil {
 		for _, op := range *req.BlockedOperations {
-			if !isValidBlockedOperation(op) {
+			if !slices.Contains(blockableOperations, op) {
 				BadRequest(w, "Unknown blocked operation: "+op)
 				return
 			}
@@ -788,7 +788,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.BlockedOperations != nil {
 		for _, op := range *req.BlockedOperations {
-			if !isValidBlockedOperation(op) {
+			if !slices.Contains(blockableOperations, op) {
 				BadRequest(w, "Unknown blocked operation: "+op)
 				return
 			}
@@ -1774,9 +1774,4 @@ var blockableOperations = []string{
 	"NEGOTIATE", "SESSION_SETUP", "LOGOFF", "TREE_CONNECT", "TREE_DISCONNECT",
 	"FLUSH", "IOCTL", "CANCEL", "ECHO", "QUERY_DIRECTORY", "CHANGE_NOTIFY",
 	"QUERY_INFO", "SET_INFO", "OPLOCK_BREAK",
-}
-
-// isValidBlockedOperation checks if a blocked operation name is valid for any protocol.
-func isValidBlockedOperation(op string) bool {
-	return slices.Contains(blockableOperations, op)
 }

@@ -77,6 +77,32 @@ func TestStatusCheckers_MetadataStore_CachedAcrossCalls(t *testing.T) {
 	}
 }
 
+// TestStatusCheckers_TTLExpiry proves newCheckerCache passes its TTL through
+// to the cached checkers: a call after the TTL window re-probes the store
+// instead of returning the cached report.
+func TestStatusCheckers_TTLExpiry(t *testing.T) {
+	rt, _ := newRuntimeForChecks(t)
+	ttl := 10 * time.Millisecond
+	rt.statusCheckers = newCheckerCache(ttl)
+
+	meta := newCountingMetaStore(t)
+	if err := rt.RegisterMetadataStore("m-ttl", meta); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
+	}
+
+	_ = rt.MetadataStoreChecker("m-ttl").Healthcheck(context.Background())
+	if got := meta.Count(); got != 1 {
+		t.Fatalf("first call probe count = %d, want 1", got)
+	}
+
+	time.Sleep(ttl * 5)
+
+	_ = rt.MetadataStoreChecker("m-ttl").Healthcheck(context.Background())
+	if got := meta.Count(); got < 2 {
+		t.Errorf("probe count after the TTL = %d, want at least 2 (the cache did not expire)", got)
+	}
+}
+
 func TestStatusCheckers_MetadataStore_WrapperIsCached(t *testing.T) {
 	rt, _ := newRuntimeForChecks(t)
 	meta := newCountingMetaStore(t)

@@ -27,9 +27,6 @@ import (
 // DefaultShutdownTimeout is the default timeout for graceful shutdown.
 const DefaultShutdownTimeout = lifecycle.DefaultShutdownTimeout
 
-// AuxiliaryServer is re-exported so callers need not import lifecycle.
-type AuxiliaryServer = lifecycle.AuxiliaryServer
-
 // keyedMutex is a lazily-populated registry of per-key locks. The same key
 // always yields the same pointer, so independent callers that look a key up
 // separately still serialize against each other.
@@ -725,7 +722,7 @@ func (r *Runtime) GetShareUsage(ctx context.Context, shareName string) (usedByte
 
 // --- Lifecycle (delegated to lifecycle.Service) ---
 
-func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
+func (r *Runtime) SetAPIServer(server lifecycle.AuxiliaryServer) {
 	r.lifecycleSvc.SetAPIServer(server)
 }
 
