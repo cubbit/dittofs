@@ -1183,7 +1183,12 @@ or once everything it held was released — and dropping it raises the file's
 bucket to the entry's version. A file with no entry is compared against
 its bucket. At open every bucket starts at the highest content version on disk or
 in the floor, whichever is higher:
-no read that began before the open can still fill. A file that has an entry at
+no read that began before the open can still fill. `Share` raises every bucket
+to its `floor` before it returns the handle, never lowering one, since the
+buckets are seeded only at open: a `Fill` whose `asOf` came from an earlier
+incarnation of the share is then refused for a file with no entry. The raise
+is journal-wide, so an attach refuses the fills in flight of every share's files
+with no entry; attaches are rare, and a needless refusal costs a cache miss. A file that has an entry at
 open is held to the same rule: until its next change, the change version a read
 reports for it, and a `Fill` is checked against, may be anything from its
 entry's version up to its bucket's. So is a file whose entry a `Fill` created,
