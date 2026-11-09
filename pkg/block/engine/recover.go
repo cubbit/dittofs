@@ -138,6 +138,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 			j:     j,
 			vl:    vl,
 			h:     h,
+			seq:   e.opened.Add(1),
 		}
 		b.state.Store(uint32(s.State))
 		o.table[s.ID] = b
@@ -536,6 +537,8 @@ type versionLimit struct {
 	// raise lock.
 	refused atomic.Bool
 	refusal error
+
+	closed atomic.Bool // Close closed the journal
 }
 
 // newVersionLimit is the version limit of journal j, its raise lock free.
@@ -565,6 +568,7 @@ type raises struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	exited func()
 	count  *atomic.Int32
 	timers *sync.Map
 }
@@ -761,6 +765,10 @@ func (vl *versionLimit) again() bool {
 // the owners that retry their write transactions.
 func (e *Engine) raiseLoop(vl *versionLimit) {
 	defer e.raising.wg.Done()
+
+	if f := e.raising.exited; f != nil {
+		defer f()
+	}
 
 	if c := e.raising.count; c != nil {
 		defer c.Add(-1)

@@ -54,6 +54,15 @@ type Engine struct {
 
 	conds conditionSet // the conditions raised as the engine runs
 
+	// closed is set under mu when Close begins: every call answers
+	// ErrUnavailable from then on, and every publish checks it under mu. It
+	// is atomic so a content call, which never takes mu, reads it.
+	closed  atomic.Bool
+	closing *closeRun     // the Close running, or the last one
+	ended   chan struct{} // closed, and replaced, each time a lifecycle call ends
+	opened  atomic.Uint64 // the bindings made so far, which Close undoes in reverse
+	cloning sync.WaitGroup
+
 	gcMu            sync.Mutex
 	gcs             map[Journal]*groupCommit                        // each journal's group commit
 	gcsClosed       bool                                            // the group commits were closed: none starts again
@@ -72,6 +81,13 @@ type Engine struct {
 	// applied version, with the share, the file, the marker's spec and its
 	// version, in place of the rebuild. Nothing above the marker is applied.
 	cloneMarker cloneMarkerFunc
+
+	// seams are a test's hooks in Close: each fires when that wait has to
+	// wait, and is nil in production.
+	seams struct {
+		joining  atomic.Pointer[func()] // a join of Close
+		draining atomic.Pointer[func()] // Close's wait for the lifecycle calls
+	}
 
 	block   uint64 // the versions one raise of the version limit covers
 	raising raises // the version limit raises running
@@ -119,6 +135,7 @@ func New(d Deps) (*Engine, error) {
 		instance: instanceID(),
 		busy:     map[entity.ShareID]struct{}{},
 		raised:   map[entity.ShardID]struct{}{},
+		ended:    make(chan struct{}),
 		block:    versionBlock,
 	}
 	e.conflictBound.Store(int64(time.Second))
@@ -157,6 +174,12 @@ var errDevices = fmt.Errorf("engine: more than one journal device, and no shard 
 func (e *Engine) Start(ctx context.Context, shares []Share) error {
 	e.mu.Lock()
 
+	if e.closed.Load() {
+		e.mu.Unlock()
+
+		return errClosed
+	}
+
 	if e.started || e.starting {
 		e.mu.Unlock()
 
@@ -181,6 +204,7 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 	defer e.mu.Unlock()
 
 	e.starting = false
+	e.lifecycleEnded()
 
 	if err != nil {
 		return err
@@ -264,9 +288,6 @@ func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
 
 	return o, nil
 }
-
-// Close stops the engine and closes what it opened, in reverse.
-func (e *Engine) Close(ctx context.Context) error { return errUnbuilt }
 
 // Unbind admits nothing new for the share and joins what it has in flight.
 // While Start runs it answers ErrDelay.

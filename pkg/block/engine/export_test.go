@@ -692,3 +692,23 @@ func (e *Engine) StoreViews() (Existence, Content, Lifecycle) {
 func (e *Engine) FenceBusy() (outstanding int64, failing bool) {
 	return e.fence.outstanding.Load(), e.fence.failing.Load() > 0
 }
+
+// StopBoundDefault is the stop bound of a Close whose context has no
+// deadline.
+const StopBoundDefault = stopDefault
+
+// OnDraining sets the seam Close fires when its wait for the lifecycle calls
+// in progress has to wait.
+func (e *Engine) OnDraining(f func()) {
+	e.seams.draining.Store(&f)
+}
+
+// OnJoining sets the seam Close fires each time a join has to wait.
+func (e *Engine) OnJoining(f func()) {
+	e.seams.joining.Store(&f)
+}
+
+// Served reports whether share s has a binding in the share table.
+func (e *Engine) Served(s entity.ShareID) bool {
+	return e.table()[s] != nil
+}

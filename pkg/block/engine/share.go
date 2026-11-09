@@ -34,6 +34,8 @@ type binding struct {
 	primary     primary       // the verifier's other inputs from the shard's primary
 	gc          *groupCommit  // the group commit of j
 	removed     bool
+	seq         uint64      // the order bindings were made in, which Close undoes in reverse
+	closed      atomic.Bool // Close closed its handle
 }
 
 // bindings is the share table, read on every content call without a lock. A
@@ -50,6 +52,10 @@ type bindings = map[entity.ShareID]*binding
 // still to come, and a share with a removed binding is ErrStale. Neither
 // touches a journal.
 func (e *Engine) bindingOf(s entity.ShareID) (*binding, error) {
+	if e.closed.Load() {
+		return nil, errClosed
+	}
+
 	b := e.table()[s]
 
 	switch {
@@ -88,6 +94,10 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 	b := e.table()[s.ID]
 
 	switch {
+	case e.closed.Load():
+		e.mu.Unlock()
+
+		return errClosed
 	case e.starting:
 		e.mu.Unlock()
 
@@ -196,6 +206,7 @@ func (e *Engine) onlyJournal() (*versionLimit, error) {
 func (e *Engine) endCall(id entity.ShareID) {
 	e.mu.Lock()
 	delete(e.busy, id)
+	e.lifecycleEnded()
 	e.mu.Unlock()
 }
 
@@ -293,11 +304,11 @@ func (e *Engine) limitAndPublish(
 		h:           h,
 		incarnation: inc,
 		gc:          e.groupCommitFor(vl.j),
+		seq:         e.opened.Add(1),
 	}
 	b.state.Store(uint32(s.State))
-	e.publish(b)
 
-	return nil
+	return e.publish(b)
 }
 
 // raise raises the shard's incarnation: keeping its grace instance when this
@@ -322,17 +333,25 @@ func (e *Engine) raise(ctx context.Context, s Share, raised bool) (uint64, error
 }
 
 // publish puts b in a copy of the share table and swaps it in, and records
-// its shard as raised.
-func (e *Engine) publish(b *binding) {
+// its shard as raised. It publishes nothing once Close has begun and answers
+// errClosed, so a Bind that was past its switch when Close set the closed
+// state does not leave a handle open over a journal Close is closing.
+func (e *Engine) publish(b *binding) error {
 	e.mu.Lock()
 
 	defer e.mu.Unlock()
+
+	if e.closed.Load() {
+		return errClosed
+	}
 
 	t := make(bindings, len(e.table())+1)
 	maps.Copy(t, e.table())
 	t[b.share.ID] = b
 	e.shares.Store(&t)
 	e.raised[b.share.Shard] = struct{}{}
+
+	return nil
 }
 
 // storeErr is Bind's answer for an error the store returned: the error of
