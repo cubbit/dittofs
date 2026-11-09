@@ -82,11 +82,16 @@ func raise(a *atomic.Int64, v int64) {
 // (storeFailed); a one-shot call's error, or one ended by its caller's
 // context, is neither a commit nor a failure.
 //
-// ponytail: one failing flag for the node rather than one per owner, so any
-// commit clears it while another owner is still failing; that owner's next
-// attempt sets it again and starts a fresh fenceAfter, so a node whose only
-// commits come from one owner fences up to one backoff of another late. Keep a
-// flag per owner, carried by the mark, if that lag is seen to matter.
+// ponytail: one failing flag for the node rather than one per owner. Any
+// commit clears it while another owner is still failing, and that owner's
+// next attempt, up to one maximum backoff later (the group commit's
+// backoffMax, 30 s), sets it again and starts a fresh fenceAfter: the node
+// can fence as late as 60 s after its last commit, not 30 s. Only a commit
+// clears it, so once an owner can be dropped while failing (a share's Unbind
+// or Drop) the flag outlives the owner and an idle node stays fenced until
+// something commits. Keep the failing state per owner, carried by the mark
+// and dropped with it, when owners become droppable or that lag is seen to
+// matter.
 func (f *fence) end(ctx context.Context, err error) {
 	switch {
 	case err == nil:
