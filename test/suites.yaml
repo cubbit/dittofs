@@ -392,6 +392,7 @@ suites:
     # tool's own (a DC, a Samba member, DittoFS and two kernel cifs mounts on this host).
     # decision: manual until its cost per round is measured; test/smbfuzz/DESIGN.md §12.3 leaves the tiers open.
     tier: manual
+    format: junit   # one test per round, from --junit; the exit status says only what didn't run (75)
     # dt builds smbfuzz and dfs into {bin} as the user, since every command here runs as root and
     # root never runs go build. The workers run the fuzzer under the domain users' uids, which
     # may not reach {bin} inside the user's results, so root copies it out, world-executable, outside
@@ -404,7 +405,7 @@ suites:
     cmd:
       - install -m 0755 {bin}/smbfuzz /var/tmp/smbfuzz-bin
       - /var/tmp/smbfuzz-bin fixture up --dfs {bin}/dfs
-      - /var/tmp/smbfuzz-bin run --from 1 --count 200 --minimise=false --reports {out}/smb-fuzz
+      - /var/tmp/smbfuzz-bin run --from 1 --count 200 --minimise=false --reports {out}/smb-fuzz --junit {out}/smb-fuzz.xml
       - /var/tmp/smbfuzz-bin fixture down
     needs: [linux, root, docker, smb-client]
     timeout: { test: 60m, cell: 120m }

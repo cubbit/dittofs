@@ -1228,7 +1228,7 @@ under the same rule.
 
 ```
 smbfuzz fixture up --dfs BIN [--auth ntlm|krb5] [--profile sd|posix]   # §3, state in /var/tmp/smbfuzz
-smbfuzz run   --from 1 --count 500 [--gen 1] [--minimise=false] [--stop]
+smbfuzz run   --from 1 --count 500 [--gen 1] [--minimise=false] [--stop] [--junit FILE]
 smbfuzz run   --plan FILE              # one plan, e.g. a minimised one or a corpus entry
 smbfuzz plan  --round 4242 [--gen 1]   # print, don't run
 smbfuzz fixture down
@@ -1271,9 +1271,13 @@ a new divergence wins over rounds not run, so a run that found one fails.
 
 `smb-fuzz` is a suite of [RFC 29](../../docs/internals/rfcs/rfc-29-test-harness.md)'s registry, with needs
 `[linux, root, docker, smb-client]` and a fixture that brings up §3's DC, reference and DittoFS and
-mounts both shares. It reports one CTRF test per round (`smb-fuzz/round-<N>`) and one per
-corpus plan (`smb-fuzz/corpus/<file>`), graded by `dt` like every other suite; a divergence
-attaches §11.4's report. Rounds the run was meant to run and did not are reported as not run
+mounts both shares. It reports one CTRF test per round (`smb-fuzz/round-<N>`), graded by `dt`
+like every other suite: `run --junit FILE` writes each round as a JUnit test case, which the
+suite's `junit` format reads. A round that passed, or met only known divergences, passes; one
+with a new divergence fails, its message the signature, the step and §11.4's report directory;
+one not run is skipped, with why. The file is rewritten after every round, so a run stopped
+part way still reports the rounds it finished. One test per corpus plan
+(`smb-fuzz/corpus/<file>`) comes with the corpus replay of §12.2, which `run` does not do yet. Rounds the run was meant to run and did not are reported as not run
 (RFC 29's R10), so a fixture that dies at round 40 of 300 is not green: `run` exits 75, which
 `dt` grades as not run (RFC 29 §4.6), and so does a failed probe (§3.6).
 

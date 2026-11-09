@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"os"
@@ -130,6 +131,7 @@ func runCmd(args []string) (int, error) {
 	knownFile := fs.String("known", "", "known divergences (default test/smbfuzz/known.yaml)")
 	stopFirst := fs.Bool("stop", false, "stop at the first new divergence")
 	noProbe := fs.Bool("no-probe", false, "skip the fixture probes")
+	junitFile := fs.String("junit", "", "also write one JUnit test case per round to this file, as dt reads it")
 	c := fixtureConfig(fs, args)
 	env, err := fixture.Load(c)
 	if err != nil {
@@ -181,21 +183,26 @@ func runCmd(args []string) (int, error) {
 	// was built from uncommitted changes, which no commit reproduces.
 	commit, _ := exec.Command("git", "-C", c.Repo, "describe", "--always", "--abbrev=9", "--dirty", "--exclude=*").Output()
 	var passed, knownN, failed, notRun int
+	var cases []junitCase
 	for _, p := range plans {
 		res := r.Run(p)
+		tc := junitCase{Code: fmt.Sprintf("round-%d", p.Round), Name: fmt.Sprintf("round-%d", p.Round), Classname: "smb-fuzz"}
 		switch {
 		case res.Err != nil:
 			notRun++
 			fmt.Printf("round %d: NOT RUN: %v\n", p.Round, res.Err)
+			tc.Skipped = &junitMessage{Message: "not run: " + res.Err.Error()}
 		case res.Diverge == nil && len(res.Known) > 0:
 			knownN++
 			fmt.Printf("round %d: ok but for known divergences %s\n", p.Round, strings.Join(res.Known, ", "))
+			tc.Out = "known divergences: " + strings.Join(res.Known, ", ")
 		case res.Diverge == nil:
 			passed++
 			fmt.Printf("round %d: ok\n", p.Round)
 		default:
 			failed++
 			fmt.Printf("round %d: DIVERGES at step %s: %s\n", p.Round, res.Diverge.Step, res.Signature())
+			tc.Failure = &junitMessage{Message: fmt.Sprintf("%s at step %s", res.Signature(), res.Diverge.Step)}
 			rp := &fuzz.Report{Round: p.Round, Gen: p.Gen, Profile: env.Profile, Auth: env.Auth,
 				Kernel: strings.TrimSpace(string(kernel)), Commit: strings.TrimSpace(string(commit)), Original: res}
 			stable, sigs := fuzz.Stability(r, res)
@@ -208,14 +215,52 @@ func runCmd(args []string) (int, error) {
 				return 2, err
 			}
 			fmt.Printf("  report: %s\n", dir)
-			if *stopFirst {
-				goto done
+			tc.Failure.Message += "; report " + dir
+		}
+		// Rewritten after every round, so a run stopped part way still
+		// reports the rounds it finished.
+		cases = append(cases, tc)
+		if *junitFile != "" {
+			if err := writeJUnit(*junitFile, cases); err != nil {
+				return 2, err
 			}
 		}
+		if tc.Failure != nil && *stopFirst {
+			break
+		}
 	}
-done:
 	fmt.Printf("\n%d passed, %d known, %d diverged, %d not run\n", passed, knownN, failed, notRun)
 	return exitCode(failed, notRun), nil
+}
+
+// junitCase is one round as a JUnit test case. Code is the name dt gives
+// the test, the round within the smb-fuzz suite (DESIGN.md §12.3).
+type junitCase struct {
+	XMLName   xml.Name      `xml:"testcase"`
+	Code      string        `xml:"code,attr"`
+	Name      string        `xml:"name,attr"`
+	Classname string        `xml:"classname,attr"`
+	Failure   *junitMessage `xml:"failure"`
+	Skipped   *junitMessage `xml:"skipped"`
+	Out       string        `xml:"system-out,omitempty"`
+}
+
+type junitMessage struct {
+	Message string `xml:"message,attr"`
+}
+
+// writeJUnit writes the rounds run so far as one JUnit test suite.
+func writeJUnit(path string, cases []junitCase) error {
+	b, err := xml.MarshalIndent(struct {
+		XMLName xml.Name    `xml:"testsuite"`
+		Name    string      `xml:"name,attr"`
+		Tests   int         `xml:"tests,attr"`
+		Cases   []junitCase `xml:"testcase"`
+	}{Name: "smb-fuzz", Tests: len(cases), Cases: cases}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append([]byte(xml.Header), b...), 0o644)
 }
 
 // exitNotRun is the status dt grades as not run rather than failed (RFC 29

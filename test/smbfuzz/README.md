@@ -27,7 +27,8 @@ where they can run it. `dt`'s `smb-fuzz` suite has `dt` build both into `{bin}` 
 fuzzer out to the same place.
 
 `fixture up` takes `--auth ntlm|krb5` and `--profile sd|posix`; `run` reads them back from
-the fixture's state (`/var/tmp/smbfuzz` unless `--state`).
+the fixture's state (`/var/tmp/smbfuzz` unless `--state`). `run --junit FILE` also writes one
+JUnit test case per round, which is how `dt` reports each round (DESIGN.md §12.3).
 
 Test N is always the same plan for a generator version (`--gen`, default the newest). A
 diverging round is replayed three times; a stable one is minimised, and its report —
