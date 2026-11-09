@@ -399,7 +399,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the failed-sync re-append of records without payload bytes, and the failed segment never sealed.'
+  reason: 'Needs Open: the re-append of the header-only records of a failed window is built (Durability), outside a read-only journal, the fixture cannot open a journal.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestRFC1C_IncrementalReport
@@ -1820,14 +1820,14 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a re-appended window outranked by a later removal, and recovery.'
+  reason: 'Needs Open: a re-append keeping its sequence number and version is built (Durability), the fixture cannot open a journal or recover one.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestRFC1A_ReappendTrustsNoPageCache
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a re-appended window that reads through no page cache, and its failed-window loss.'
+  reason: 'Needs Open: the re-append verifying against the kept checksum, with its failed-window loss, is built (Durability), the fixture cannot open a journal.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestRFC1A_RecycledSegmentKeepsNewRecords
