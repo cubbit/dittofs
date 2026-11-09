@@ -8,7 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Known is the list of accepted divergences (RFC 31 §12.2): one entry per
+// Known is the list of accepted divergences (DESIGN.md §12.2): one entry per
 // signature, each with its reason. An entry excuses that signature only.
 type Known struct {
 	Entries []KnownEntry `yaml:"divergences"`

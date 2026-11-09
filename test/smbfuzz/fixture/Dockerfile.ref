@@ -1,4 +1,4 @@
-# The Samba reference of RFC 31 §3.2, on the AD-DC fixture's image: a member
+# The Samba reference of DESIGN.md §3.2, on the AD-DC fixture's image: a member
 # server needs winbind's NSS module so smbd can map domain users to uids.
 FROM dittofs-ad-dc-test
 RUN set -eu; \

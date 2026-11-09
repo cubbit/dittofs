@@ -21,7 +21,7 @@ var refOnly = map[string]bool{
 	"the server lets bob read":                             true,
 }
 
-// Probe runs RFC 31 §3.6's checks. A failed check means the fixture cannot
+// Probe runs DESIGN.md §3.6's checks. A failed check means the fixture cannot
 // tell the two servers apart for the reason it was written for, so nothing
 // may run.
 func (r *Runner) Probe() error {

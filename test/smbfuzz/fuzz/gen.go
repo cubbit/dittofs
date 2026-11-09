@@ -2,12 +2,13 @@ package fuzz
 
 import (
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/cubbit/dittofs/test/smbfuzz/sd"
 )
 
-// StepsPerPlan is the plan length (RFC 31 §5.2).
+// StepsPerPlan is the plan length (DESIGN.md §5.2).
 const StepsPerPlan = 12
 
 // LatestGen is the newest generator version, the default.
@@ -27,7 +28,7 @@ func Generate(gen int, round uint64) (*Plan, error) {
 	return nil, fmt.Errorf("unknown generator version %d", gen)
 }
 
-// RoundRoots are the descriptors a round directory starts with (RFC 31 §10).
+// RoundRoots are the descriptors a round directory starts with (DESIGN.md §10).
 var RoundRoots = map[string]string{
 	"open":       "D:(A;OICI;FA;;;WD)",
 	"owner-only": "D:(A;OICIIO;FA;;;CO)(A;;0x1200a6;;;DU)(A;OICI;FA;;;DA)",
@@ -36,10 +37,10 @@ var RoundRoots = map[string]string{
 }
 
 // The admin-full entry on owner-only, protected and empty roots keeps the
-// round removable by the admin's cleanup (RFC 31 §10); without it an
+// round removable by the admin's cleanup (DESIGN.md §10); without it an
 // "empty" root would make cleanup take ownership on every round.
 
-// opWeights are RFC 31 §7.7's weights, flattened: group weight times the
+// opWeights are DESIGN.md §7.7's weights, flattened: group weight times the
 // operation's share of its group.
 var opWeights = func() []WeightedChoice[string] {
 	groups := []struct {
@@ -50,10 +51,10 @@ var opWeights = func() []WeightedChoice[string] {
 		{20, []WeightedChoice[string]{{"pread", 5}, {"pwrite", 6}, {"write", 2}, {"ftruncate", 2}, {"truncate", 1},
 			{"fallocate", 3}, {"lseek", 1}, {"fsync", 0.5}, {"fdatasync", 0.5}, {"copy_file_range", 0.7},
 			{"ficlone_range", 0.3}, {"setsparse", 0.5}}},
-		{14, []WeightedChoice[string]{{"mkdir", 3}, {"rmdir", 1}, {"unlink", 2}, {"rename", 2}, {"link", 1}, {"readdir", 2}}},
+		{14, []WeightedChoice[string]{{"mkdir", 3}, {"rmdir", 1}, {"unlink", 2}, {"rename", 3}, {"link", 1}, {"readdir", 2}}},
 		{12, []WeightedChoice[string]{{"stat", 4}, {"lstat", 1}, {"fstat", 2}, {"utimensat", 1}, {"getdosattr", 1.5},
 			{"setdosattr", 2}, {"getbtime", 0.5}, {"setbtime", 0.5}, {"getxattr", 0.5}, {"setxattr", 0.5},
-			{"removexattr", 0.5}, {"listxattr", 0.5}, {"chmod", 2}, {"chown", 1}}},
+			{"removexattr", 0.5}, {"listxattr", 0.5}, {"statfs", 0.5}, {"chmod", 2}, {"chown", 1}}},
 		{14, []WeightedChoice[string]{{"lock", 5}, {"unlock", 3}, {"testlock", 1}, {"flock", 1}}},
 		{22, []WeightedChoice[string]{{"getacl", 4}, {"setacl", 4}, {"setowner", 1.5}}},
 	}
@@ -75,12 +76,14 @@ type slotRef struct{ user, slot, path string }
 type lockRef struct{ path, off, len string }
 
 type genState struct {
-	r      *RNG
-	slots  []slotRef
-	paths  []string
-	locks  []lockRef
-	writes []lockRef         // ranges pwrite and fallocate named, per path
-	slotOf map[string]string // slot -> path
+	r       *RNG
+	slots   []slotRef
+	paths   []string
+	locks   []lockRef
+	writes  []lockRef         // ranges pwrite and fallocate named, per path
+	slotOf  map[string]string // slot -> path
+	tree    Tree
+	touched []string // paths a namespace step changed, and their parents
 }
 
 func genV1(round uint64) *Plan {
@@ -88,11 +91,13 @@ func genV1(round uint64) *Plan {
 	p := &Plan{Gen: 1, Round: round}
 	p.Root = PickW(r, []WeightedChoice[string]{{"open", 40}, {"owner-only", 25}, {"protected", 20}, {"empty", 15}})
 	g := &genState{r: r, slotOf: map[string]string{}}
+	p.Tree = g.drawTree()
+	g.tree = p.Tree
 	for i := 0; i < StepsPerPlan; i++ {
 		user := PickW(r, Users)
 		op := PickW(r, opWeights)
 		// A handle operation drawn before any open would only hit an empty
-		// slot; it becomes an open with probability 0.8 (RFC 31 §5.4).
+		// slot; it becomes an open with probability 0.8 (DESIGN.md §5.4).
 		if spec := Ops[op]; spec.Handle && len(g.slots) == 0 && r.Chance(0.8) {
 			op = "open"
 		}
@@ -127,13 +132,226 @@ func genV1(round uint64) *Plan {
 	return p
 }
 
-func (g *genState) path() string {
-	if len(g.paths) > 0 && g.r.Chance(0.7) {
+type objKind int
+
+const (
+	objAny objKind = iota
+	objDir
+	objFile
+)
+
+// poolPath draws a name from the pool (DESIGN.md §5.4): one the tree created
+// with probability 0.7, one it did not otherwise; for an operation meant for
+// one kind of object, a name of that kind with probability 0.8.
+func (g *genState) poolPath(k objKind) string {
+	if k != objAny && !g.r.Chance(0.8) {
+		k = objAny
+	}
+	pick := func(created bool) []string {
+		var out []string
+		for _, o := range Pool {
+			if g.tree.Has(o.Path) != created || (k == objDir && !o.Dir) || (k == objFile && o.Dir) {
+				continue
+			}
+			out = append(out, o.Path)
+		}
+		return out
+	}
+	created := g.r.Chance(0.7)
+	cands := pick(created)
+	if len(cands) == 0 {
+		cands = pick(!created)
+	}
+	return Pick(g.r, cands)
+}
+
+// pathOf draws a path argument: with probability 0.5 one an earlier step
+// named, otherwise a pool name (poolPath).
+func (g *genState) pathOf(k objKind) string {
+	if len(g.paths) > 0 && g.r.Chance(0.5) {
 		return Pick(g.r, g.paths)
 	}
-	p := PickW(g.r, Paths)
+	p := g.poolPath(k)
 	g.paths = append(g.paths, p)
 	return p
+}
+
+func (g *genState) path() string { return g.pathOf(objAny) }
+
+// observed draws the path of an operation that reads attributes, a listing
+// or a descriptor: with probability 0.5 one an earlier namespace step changed
+// (its source, its target, their parents, the names that moved with it), so
+// what a rename, link or unlink did to the objects around it is looked at.
+func (g *genState) observed(k objKind) string {
+	if len(g.touched) > 0 && g.r.Chance(0.5) {
+		return Pick(g.r, g.touched)
+	}
+	return g.pathOf(k)
+}
+
+func (g *genState) touch(paths ...string) {
+	for _, p := range paths {
+		if p != "." && p != "" {
+			g.touched = append(g.touched, p)
+		}
+	}
+}
+
+func inPool(p string) bool {
+	for _, o := range Pool {
+		if o.Path == p {
+			return true
+		}
+	}
+	return false
+}
+
+func joinRel(dir, name string) string {
+	if dir == "." || dir == "" {
+		return name
+	}
+	return dir + "/" + name
+}
+
+// sibling is another pool name of the same kind in the same directory.
+func sibling(p string) string {
+	alt := map[string]string{"d0": "d1", "d1": "d0", "f0": "f1", "f1": "f0", "e0": "e1", "e1": "e0"}[path.Base(p)]
+	if alt == "" {
+		return ""
+	}
+	if q := joinRel(path.Dir(p), alt); inPool(q) {
+		return q
+	}
+	return ""
+}
+
+// elsewhere lists the pool names with p's base name in another directory at
+// p's depth: where a move keeps every name below it in the pool.
+func elsewhere(p string) []string {
+	var out []string
+	depth := strings.Count(p, "/")
+	for _, o := range Pool {
+		if o.Path != p && path.Base(o.Path) == path.Base(p) && strings.Count(o.Path, "/") == depth {
+			out = append(out, o.Path)
+		}
+	}
+	return out
+}
+
+// openPaths are the paths earlier opens named.
+func (g *genState) openPaths(nested bool) []string {
+	var out []string
+	for _, s := range g.slots {
+		if !nested || strings.Contains(s.path, "/") {
+			out = append(out, s.path)
+		}
+	}
+	return out
+}
+
+// renameArgs draws a rename's source and target (DESIGN.md §7.3). The source
+// is, with probability 0.25, a directory above a file an earlier step opened
+// (a directory with an open handle below it); with 0.15 a file an earlier
+// step opened; with 0.35 a directory; otherwise any path. The target is
+// renameTarget's.
+func (g *genState) renameArgs() (string, string) {
+	r := g.r
+	var src string
+	nested, open := g.openPaths(true), g.openPaths(false)
+	switch x := r.Float(); {
+	case x < 0.25 && len(nested) > 0:
+		p := Pick(r, nested)
+		var above []string
+		for d := path.Dir(p); d != "."; d = path.Dir(d) {
+			above = append(above, d)
+		}
+		src = Pick(r, above)
+	case x < 0.4 && len(open) > 0:
+		src = Pick(r, open)
+	case x < 0.75:
+		src = g.pathOf(objDir)
+	default:
+		src = g.path()
+	}
+	dst := g.renameTarget(src)
+	g.touch(src, dst, path.Dir(src), path.Dir(dst))
+	g.paths = append(g.paths, dst)
+	// The names below the source move below the target: later steps name
+	// them there.
+	for _, o := range Pool {
+		if strings.HasPrefix(o.Path, src+"/") {
+			if moved := dst + strings.TrimPrefix(o.Path, src); inPool(moved) {
+				g.paths = append(g.paths, moved)
+				g.touch(moved)
+			}
+		}
+	}
+	for slot, p := range g.slotOf {
+		if p == src || strings.HasPrefix(p, src+"/") {
+			g.slotOf[slot] = dst + strings.TrimPrefix(p, src)
+		}
+	}
+	return src, dst
+}
+
+// renameTarget draws where src goes: with probability 0.3 another name of
+// the same kind in its directory (which may exist: a file to replace, a
+// directory empty or not); with 0.2 the same name in another directory at the
+// same depth, so the subtree that moves stays named by the pool; with 0.1 a
+// name inside src itself; with 0.05 src with its last name's case changed;
+// with 0.05 src itself; otherwise any path.
+func (g *genState) renameTarget(src string) string {
+	r := g.r
+	switch x := r.Float(); {
+	case x < 0.3:
+		if s := sibling(src); s != "" {
+			return s
+		}
+	case x < 0.5:
+		if alts := elsewhere(src); len(alts) > 0 {
+			return Pick(r, alts)
+		}
+	case x < 0.6:
+		var inside []string
+		for _, o := range Pool {
+			if strings.HasPrefix(o.Path, src+"/") {
+				inside = append(inside, o.Path)
+			}
+		}
+		if len(inside) > 0 {
+			return Pick(r, inside)
+		}
+		return src + "/f0"
+	case x < 0.65:
+		dir, base := path.Dir(src), path.Base(src)
+		return joinRel(dir, strings.ToUpper(base[:1])+base[1:])
+	case x < 0.7:
+		return src
+	}
+	return g.path()
+}
+
+// linkArgs draws a hard link's source, a file, and its new name: with
+// probability 0.4 the same name in another directory, with 0.2 another name
+// in the same directory, otherwise any file name.
+func (g *genState) linkArgs() (string, string) {
+	r := g.r
+	src := g.pathOf(objFile)
+	var dst string
+	switch x := r.Float(); {
+	case x < 0.4:
+		if alts := elsewhere(src); len(alts) > 0 {
+			dst = Pick(r, alts)
+		}
+	case x < 0.6:
+		dst = sibling(src)
+	}
+	if dst == "" {
+		dst = g.pathOf(objFile)
+	}
+	g.paths = append(g.paths, dst)
+	g.touch(src, dst, path.Dir(dst))
+	return src, dst
 }
 
 // slot picks a slot for a handle operation and the user who runs it.
@@ -189,14 +407,17 @@ func (g *genState) size(maxPoint int64) string {
 	case x < 0.5:
 		return a + "+1"
 	}
-	return a + "+" + g.point(maxPoint)
+	if b := g.point(maxPoint); b != "0" {
+		return a + "+" + b
+	}
+	return a
 }
 
 func (g *genState) offset() string { return g.size(1 << 62) }
 func (g *genState) length() string { return g.size(8 * mib) }
 
 // rangeFor draws off and len, overlapping an earlier lock on the slot's file
-// with probability 0.5 (RFC 31 §5.4).
+// with probability 0.5 (DESIGN.md §5.4).
 func (g *genState) rangeFor(slot string) (string, string) {
 	path := g.slotOf[slot]
 	var mine []lockRef
@@ -260,6 +481,17 @@ func mustEval(expr string) int64 {
 	return v
 }
 
+func parentOf(p string) string { return path.Dir(p) }
+
+func (g *genState) wideFilled() bool {
+	for _, o := range g.tree {
+		if o.Path == WideDir && o.Fill > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *genState) data() string { return Pick(g.r, DataPatterns) }
 
 func (g *genState) time() string {
@@ -278,9 +510,12 @@ func (g *genState) step(user, op string) Step {
 	}
 	switch op {
 	case "open":
-		path := g.path()
+		path := g.pathOf(objFile)
 		a["path"] = path
 		a["flags"] = g.openFlags()
+		if strings.Contains(a["flags"], "O_CREAT") {
+			g.touch(path, parentOf(path))
+		}
 		a["mode"] = Pick(r, Modes)
 		s.Out = fmt.Sprintf("%s.h%d", user, r.Below(4))
 		g.slots = append(g.slots, slotRef{user, s.Out, path})
@@ -307,7 +542,7 @@ func (g *genState) step(user, op string) Step {
 		slot := handle()
 		_, a["len"] = g.rangeFor(slot)
 	case "truncate":
-		a["path"] = g.path()
+		a["path"] = g.pathOf(objFile)
 		a["len"] = g.offset()
 	case "fallocate":
 		slot := handle()
@@ -325,17 +560,38 @@ func (g *genState) step(user, op string) Step {
 		a["slot2"] = g.slotOfUser(s.User)
 		a["off2"] = g.offset()
 	case "mkdir":
-		a["path"] = g.path()
+		a["path"] = g.pathOf(objDir)
 		a["mode"] = Pick(r, Modes)
-	case "rmdir", "unlink", "readdir", "stat", "lstat", "getdosattr", "getbtime", "listxattr":
+		g.touch(a["path"], parentOf(a["path"]))
+	case "rmdir":
+		a["path"] = g.pathOf(objDir)
+		g.touch(parentOf(a["path"]))
+	case "unlink":
+		// An open file, with probability 0.3: the client renames it aside
+		// and deletes it on close, and the server sees both.
+		if open := g.openPaths(false); len(open) > 0 && r.Chance(0.3) {
+			a["path"] = Pick(r, open)
+		} else {
+			a["path"] = g.pathOf(objFile)
+		}
+		g.touch(a["path"], parentOf(a["path"]))
+	case "readdir":
+		// The wide directory, when the tree filled it, with probability 0.3:
+		// its listing spans several QUERY_DIRECTORY responses.
+		if g.wideFilled() && r.Chance(0.3) {
+			a["path"] = WideDir
+		} else {
+			a["path"] = g.observed(objDir)
+		}
+	case "stat", "lstat", "getdosattr", "getbtime", "listxattr":
+		a["path"] = g.observed(objAny)
+	case "statfs":
 		a["path"] = g.path()
 	case "rename":
-		a["path"] = g.path()
-		a["path2"] = g.path()
+		a["path"], a["path2"] = g.renameArgs()
 		a["flags"] = PickW(r, []WeightedChoice[string]{{"0", 75}, {"RENAME_NOREPLACE", 25}})
 	case "link":
-		a["path"] = g.path()
-		a["path2"] = g.path()
+		a["path"], a["path2"] = g.linkArgs()
 	case "utimensat":
 		a["path"] = g.path()
 		a["atime"] = g.timeOrSpecial()
@@ -375,7 +631,7 @@ func (g *genState) step(user, op string) Step {
 		handle()
 		a["how"] = PickW(r, []WeightedChoice[string]{{"LOCK_SH|LOCK_NB", 40}, {"LOCK_EX|LOCK_NB", 40}, {"LOCK_UN", 20}})
 	case "getacl":
-		a["path"] = g.path()
+		a["path"] = g.observed(objAny)
 		a["part"] = PickW(r, []WeightedChoice[string]{{"dacl", 30}, {"ntsd", 50}, {"ntsd_full", 20}})
 	case "setacl":
 		a["path"] = g.path()
@@ -454,7 +710,7 @@ func (g *genState) dosAttrs() string {
 }
 
 // descriptor draws a security descriptor for a set of the given part
-// (RFC 31 §8), as SDDL with symbolic trustees.
+// (DESIGN.md §8), as SDDL with symbolic trustees.
 func (g *genState) descriptor(part string) string {
 	r := g.r
 	var b strings.Builder

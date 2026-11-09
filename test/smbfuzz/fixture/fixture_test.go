@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Both mounts get the options RFC 31 §3.4 requires; the profile and the
+// Both mounts get the options DESIGN.md §3.4 requires; the profile and the
 // authentication change only their own options.
 func TestMountOptions(t *testing.T) {
 	c := Config{Auth: "ntlm", Profile: "sd"}

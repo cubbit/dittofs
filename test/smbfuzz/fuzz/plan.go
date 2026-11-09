@@ -41,7 +41,7 @@ func (p param) positional() bool {
 	return false
 }
 
-// OpSpec describes one operation of RFC 31 §7.
+// OpSpec describes one operation of DESIGN.md §7.
 type OpSpec struct {
 	Name   string
 	Params []param
@@ -72,6 +72,10 @@ var opList = []OpSpec{
 	{Name: "rename", Params: []param{{"path", kPath}, {"path2", kPath}, {"flags", kEnum}}},
 	{Name: "link", Params: []param{{"path", kPath}, {"path2", kPath}}},
 	{Name: "readdir", Params: []param{{"path", kPath}}},
+	{Name: "statfs", Params: []param{{"path", kPath}}},
+	// mkfiles is the tree setup's: it creates count filler entries of the
+	// wide directory, FillName(from) onwards, and is never drawn.
+	{Name: "mkfiles", Params: []param{{"path", kPath}, {"from", kEnum}, {"count", kEnum}}},
 	{Name: "stat", Params: []param{{"path", kPath}}},
 	{Name: "lstat", Params: []param{{"path", kPath}}},
 	{Name: "fstat", Params: []param{{"slot", kSlot}}, Handle: true},
@@ -129,13 +133,15 @@ func (s Step) Clone() Step {
 type Plan struct {
 	Gen   int
 	Round uint64
-	Root  string // the round root's descriptor, by name (RFC 31 §10)
+	Root  string // the round root's descriptor, by name (DESIGN.md §10)
+	Tree  Tree   // what exists before step 1 (DESIGN.md §6.3)
 	Steps []Step
 }
 
 // Clone returns a deep copy.
 func (p *Plan) Clone() *Plan {
 	c := *p
+	c.Tree = p.Tree.Clone()
 	c.Steps = make([]Step, len(p.Steps))
 	for i, s := range p.Steps {
 		c.Steps[i] = s.Clone()
@@ -179,6 +185,9 @@ func FormatStep(n int, s Step) string {
 func (p *Plan) Format() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# smbfuzz plan gen=%d round=%d root=%s\n", p.Gen, p.Round, p.Root)
+	for _, o := range p.Tree {
+		b.WriteString(o.format() + "\n")
+	}
 	for i, s := range p.Steps {
 		b.WriteString(FormatStep(i+1, s) + "\n")
 	}
@@ -229,6 +238,14 @@ func ParsePlan(r io.Reader) (*Plan, error) {
 		ln++
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "# tree ") {
+			o, err := parseTreeLine(line)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %w", ln, err)
+			}
+			p.Tree = append(p.Tree, o)
 			continue
 		}
 		if strings.HasPrefix(line, "#") {

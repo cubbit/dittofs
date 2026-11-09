@@ -19,7 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// WorkerConfig is how a worker signs in (RFC 31 §4.2).
+// WorkerConfig is how a worker signs in (DESIGN.md §4.2).
 type WorkerConfig struct {
 	User     string // the plan's name for the user
 	Account  string // the domain account, "alice"
@@ -118,7 +118,7 @@ func (w *worker) do(r *Request) Reply {
 	return Reply{Out: out}
 }
 
-// Pattern fills buf with a write's bytes (RFC 31 §6.6). Byte i of a write is
+// Pattern fills buf with a write's bytes (DESIGN.md §6.6). Byte i of a write is
 // a function of i and the step, so a read can be checked without remembering
 // the write.
 func Pattern(name string, seed uint64, step int, buf []byte) {
@@ -363,6 +363,20 @@ func (w *worker) exec(r *Request) (*Output, error) {
 		return nil, unix.Renameat2(unix.AT_FDCWD, r.Path, unix.AT_FDCWD, r.Path2, uint(r.Flags))
 	case "link":
 		return nil, unix.Link(r.Path, r.Path2)
+	case "statfs":
+		var st unix.Statfs_t
+		return nil, unix.Statfs(r.Path, &st)
+	case "mkfiles":
+		for i := r.Off; i < r.Off+r.Len; i++ {
+			fd, err := unix.Open(r.Path+"/"+FillName(int(i)), unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC, 0o644)
+			if err != nil {
+				return nil, err
+			}
+			if err := unix.Close(fd); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
 	case "readdir":
 		f, err := os.Open(r.Path)
 		if err != nil {

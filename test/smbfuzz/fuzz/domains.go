@@ -9,7 +9,7 @@ import (
 )
 
 // This file holds the finite domains every plan parameter is drawn from
-// (RFC 31 §6). A change to any table here changes what round N means, so it
+// (DESIGN.md §6). A change to any table here changes what round N means, so it
 // is made only together with a new generator version (gen.go).
 
 // Users are the plan's actors, in a fixed order.
@@ -27,7 +27,7 @@ func UserNames() []string {
 }
 
 // Trustees an ACE, an owner or a group may name, with the weights of
-// RFC 31 §8.1. Names are SDDL aliases where one exists.
+// DESIGN.md §8.1. Names are SDDL aliases where one exists.
 var Trustees = []WeightedChoice[string]{
 	{"alice", 10}, {"bob", 10}, {"carol", 10}, {"Administrator", 10},
 	{"devs", 6}, {"engineering", 6}, {"fuzzers", 6},
@@ -41,16 +41,8 @@ var Trustees = []WeightedChoice[string]{
 // how each server refuses them is part of the test.
 var Owners = Trustees
 
-// Paths of a round's tree (RFC 31 §6.3). "L255" stands for a 255-byte name.
-var Paths = []WeightedChoice[string]{
-	{"f0", 12.5}, {"f1", 12.5}, {"d0", 12.5}, {"d1", 12.5},
-	{"d0/f0", 6}, {"d0/f1", 6}, {"d0/d1", 6}, {"d0/d1/f0", 6}, {"d1/f0", 6},
-	{"F0", 5}, {"D0/f0", 5},
-	{"a b", 2}, {"é", 2}, {"É", 1.5}, {".hidden", 1.5},
-	{"L255", 3},
-}
-
-// ExpandPath turns a plan path into the on-disk relative path.
+// ExpandPath turns a plan path into the on-disk relative path. "L255" stands
+// for a 255-byte name.
 func ExpandPath(p string) string {
 	parts := strings.Split(p, "/")
 	for i, c := range parts {
@@ -61,7 +53,7 @@ func ExpandPath(p string) string {
 	return strings.Join(parts, "/")
 }
 
-// Point is a named offset or length (RFC 31 §6.4).
+// Point is a named offset or length (DESIGN.md §6.4).
 type Point struct {
 	Name  string
 	Value int64
@@ -153,19 +145,19 @@ func EvalSize(expr string) (int64, error) {
 	return total, nil
 }
 
-// Modes (RFC 31 §6.5).
+// Modes (DESIGN.md §6.5).
 var Modes = []string{"0000", "0400", "0444", "0600", "0640", "0644", "0700", "0750", "0755", "0777"}
 
-// DataPatterns (RFC 31 §6.6).
+// DataPatterns (DESIGN.md §6.6).
 var DataPatterns = []string{"zero", "ones", "seq", "rand"}
 
-// Times for utimensat and setbtime (RFC 31 §6.7): seconds and nanoseconds.
+// Times for utimensat and setbtime (DESIGN.md §6.7): seconds and nanoseconds.
 var TimeSeconds = []string{"0", "1", "1000000000", "2147483647", "2147483648", "4294967296", "-11644473600"}
 
 // TimeNanos are the nanosecond parts.
 var TimeNanos = []string{"0", "1", "100", "999999999"}
 
-// XattrNames (RFC 31 §6.8); "user.L200" stands for a 200-byte suffix.
+// XattrNames (DESIGN.md §6.8); "user.L200" stands for a 200-byte suffix.
 var XattrNames = []string{"user.a", "user.b", "user.A", "user.L200"}
 
 // ExpandXattrName returns the on-wire name.
@@ -209,7 +201,7 @@ var flockNames = []flagName{
 	{"LOCK_SH", unix.LOCK_SH}, {"LOCK_EX", unix.LOCK_EX}, {"LOCK_UN", unix.LOCK_UN}, {"LOCK_NB", unix.LOCK_NB},
 }
 
-// DOS attributes (RFC 31 §6.9).
+// DOS attributes (DESIGN.md §6.9).
 var dosAttrNames = []flagName{
 	{"READONLY", 0x1}, {"HIDDEN", 0x2}, {"SYSTEM", 0x4}, {"DIRECTORY", 0x10}, {"ARCHIVE", 0x20},
 	{"NORMAL", 0x80}, {"TEMPORARY", 0x100}, {"SPARSE_FILE", 0x200}, {"COMPRESSED", 0x800},

@@ -57,7 +57,6 @@ the table's order.
 | [RFC 25](rfc-25-observability.md) | observability | draft | metric naming, units, labels and cardinality; the condition registry and health derivation; liveness and readiness; the access, quota, logon and admin event streams' delivery, retention, export and access; logs; tracing; alerting |
 | **Testing** | | | |
 | [RFC 29](rfc-29-test-harness.md) | test harness | reviewed | the `dt` runner, the suite registry, fixtures, tiers, grading against known failures, the result format and how red is reported |
-| [RFC 31](rfc-31-smb-testing.md) | SMB testing | draft | differential fuzzing of SMB file operations, Windows ACLs, DOS attributes and byte-range locks against a Samba reference share in a temporary AD domain: per-user workers, plans seeded by their round number over finite domains, what is compared, minimisation of a failing plan, the `smb-fuzz` suite |
 | [RFC 30](rfc-30-kubernetes.md) | deployment on Kubernetes | draft | the operator's cluster resource with protocol and storage pools, tiers mapped to Deployment and StatefulSet, storage identity on its volume, drain before removal, autoscaling the protocol pool and operator-paced storage, service or floating-IP addressing |
 
 RFC 26 and RFC 27 were split out of RFC 12. They sit with it under data management but are numbered after the
@@ -68,10 +67,6 @@ RFC 29 was written for the repository's test tooling before it joined the set, s
 its own layout: it has no `## Start here`, and it names the tools and files it is about,
 which the naming convention below allows only of an appendix elsewhere. It builds on no
 other RFC, RFC 0 included, so it is `reviewed` while the storage RFCs are still `draft`.
-
-RFC 31 is test tooling too, and names its tools and files in its normative text for the same
-reason. Unlike RFC 29 it opens with `## Start here`, and it builds on the RFCs whose
-behaviour it compares, so it stays `draft` with them.
 
 ## Dependencies
 
@@ -116,7 +111,6 @@ graph LR
   R28["28 journal format"] --> R1 & R2 & R3 & R6 & R8 & R14
   R29["29 test harness"]
   R30["30 kubernetes operator"] --> R10 & R11 & R13 & R14 & R15 & R16
-  R31["31 smb testing"] --> R19 & R22 & R29
   style R10 stroke-dasharray: 5 5
   style R11 stroke-dasharray: 5 5
   style R15 stroke-dasharray: 5 5

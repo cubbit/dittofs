@@ -5,6 +5,7 @@ package fuzz
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,13 +85,16 @@ func TestCompareSignatures(t *testing.T) {
 		t.Fatalf("got %+v", d)
 	}
 	st := Step{User: "bob", Op: "stat", Args: map[string]string{"path": "f0"}}
-	one := &StatOut{Type: "file", Mtime: 10}
-	two := &StatOut{Type: "file", Mtime: 20}
-	if d, _ := c.compare(st, Reply{Out: &Output{Stat: one}}, Reply{Out: &Output{Stat: two}}); d != nil {
-		t.Fatalf("first observation differs only in value, got %+v", d)
+	at := func(sec float64) *StatOut { return &StatOut{Type: "file", Mtime: int64(sec * 1e9)} }
+	if d, _ := c.compare(st, Reply{Out: &Output{Stat: at(1000)}}, Reply{Out: &Output{Stat: at(1000.5)}}); d != nil {
+		t.Fatalf("a first look within the slack differs, got %+v", d)
 	}
-	if d, _ := c.compare(st, Reply{Out: &Output{Stat: &StatOut{Type: "file", Mtime: 11}}}, Reply{Out: &Output{Stat: two}}); d == nil || d.Sig != "stat:mtime:advanced/unchanged" {
+	if d, _ := c.compare(st, Reply{Out: &Output{Stat: at(1003)}}, Reply{Out: &Output{Stat: at(1000.5)}}); d == nil || d.Sig != "stat:mtime:advanced/unchanged" {
 		t.Fatalf("got %+v", d)
+	}
+	st2 := Step{User: "bob", Op: "stat", Args: map[string]string{"path": "f1"}}
+	if d, _ := c.compare(st2, Reply{Out: &Output{Stat: at(1000)}}, Reply{Out: &Output{Stat: at(1002)}}); d == nil || d.Sig != "stat:mtime:apart" {
+		t.Fatalf("a first look two seconds apart: got %+v", d)
 	}
 }
 
@@ -130,4 +134,58 @@ func (f fakeExec) Run(p *Plan) *Result {
 		r.Diverge = &Divergence{Sig: sig}
 	}
 	return r
+}
+
+// The tree's setup steps, resolved as the runner resolves them and run by a
+// worker on a local directory, build the tree: every object, its content, the
+// wide directory's fillers, and the fixed times.
+func TestTreeSetupLocal(t *testing.T) {
+	dir := t.TempDir()
+	r := &Runner{env: Env{RefRoot: dir, DutRoot: dir}, resolver: testResolver()}
+	tree := Tree{
+		{Path: "d0", Dir: true},
+		{Path: "d0/d1", Dir: true},
+		{Path: "d0/d1/f0", Len: "4096+1", Data: "seq"},
+		{Path: "f1", Len: "0", Data: "zero"},
+		{Path: WideDir, Dir: true, Fill: 250},
+	}
+	setup := tree.SetupSteps()
+	var in bytes.Buffer
+	enc := json.NewEncoder(&in)
+	for _, ts := range setup {
+		req, err := r.resolve(9, "", SideRef, ts.N, ts.Step)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = enc.Encode(req)
+	}
+	var out bytes.Buffer
+	if err := RunWorker(WorkerConfig{User: "admin", Auth: "local"}, &in, &out); err != nil {
+		t.Fatal(err)
+	}
+	for i, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var rep Reply
+		if err := json.Unmarshal([]byte(line), &rep); err != nil {
+			t.Fatal(err)
+		}
+		// The local file system may refuse the client's creation-time
+		// attribute; everything else must succeed.
+		if rep.Errno != 0 && setup[i].Step.Op != "setbtime" {
+			t.Fatalf("%s: %s", FormatStep(setup[i].N, setup[i].Step), errName(rep.Errno))
+		}
+	}
+	var st unix.Stat_t
+	if err := unix.Stat(filepath.Join(dir, "d0/d1/f0"), &st); err != nil || st.Size != 4097 {
+		t.Fatalf("d0/d1/f0: %v, size %d", err, st.Size)
+	}
+	if st.Mtim.Sec != 1500000000+1000*2 || st.Mtim.Nsec != 123456700 {
+		t.Fatalf("d0/d1/f0 mtime %d.%d", st.Mtim.Sec, st.Mtim.Nsec)
+	}
+	if err := unix.Stat(filepath.Join(dir, "d0"), &st); err != nil || st.Mtim.Sec != 1500000000 {
+		t.Fatalf("d0 mtime moved after its times were set: %d", st.Mtim.Sec)
+	}
+	ents, err := os.ReadDir(filepath.Join(dir, WideDir))
+	if err != nil || len(ents) != 250 || !IsFiller(WideDir+"/"+ents[0].Name()) {
+		t.Fatalf("wide directory: %v, %d entries", err, len(ents))
+	}
 }

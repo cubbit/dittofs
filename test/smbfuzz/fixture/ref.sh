@@ -1,5 +1,5 @@
 #!/bin/bash
-# The Samba reference of RFC 31 §3.2: a member server of the AD-DC fixture's
+# The Samba reference of DESIGN.md §3.2: a member server of the AD-DC fixture's
 # domain, serving [profiles] from a loop-mounted ext4 with Windows ACLs only.
 # It runs in a container of the AD-DC image, which already carries samba,
 # winbind and krb5-user, started with this script as its entrypoint.
@@ -40,7 +40,7 @@ fi
 chmod 0777 /srv/fuzz
 
 # Every setting below is the documented Windows-ACL-only share. A setting
-# added for a divergence says which one beside it (RFC 31 §3.2).
+# added for a divergence says which one beside it (DESIGN.md §3.2).
 rm -f /etc/samba/smb.conf
 cat > /etc/samba/smb.conf <<EOF
 [global]
@@ -85,7 +85,7 @@ for i in $(seq 1 30); do
     wbinfo -p >/dev/null 2>&1 && wbinfo -u >/dev/null 2>&1 && break
     sleep 1
 done
-# The security privilege for the SACL (RFC 31 §7.6).
+# The security privilege for the SACL (DESIGN.md §7.6).
 net sam rights grant "$DOMAIN\\Domain Admins" SeSecurityPrivilege
 net sam rights grant "$DOMAIN\\Administrator" SeSecurityPrivilege
 # The share root's descriptor: Everyone full control, inherited by every round

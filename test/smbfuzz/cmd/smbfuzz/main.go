@@ -1,6 +1,6 @@
 //go:build linux
 
-// Command smbfuzz is RFC 31's differential SMB fuzzer.
+// Command smbfuzz is the differential SMB fuzzer DESIGN.md describes.
 //
 //	smbfuzz fixture up|down          bring the domain, Samba, DittoFS and mounts up or down
 //	smbfuzz plan --round N           print round N's plan
@@ -176,7 +176,9 @@ func runCmd(args []string) (int, error) {
 		}
 	}
 	kernel, _ := exec.Command("uname", "-r").Output()
-	commit, _ := exec.Command("git", "-C", c.Repo, "rev-parse", "--short", "HEAD").Output()
+	// The commit names what ran only when the tree is clean; "-dirty" says it
+	// was built from uncommitted changes, which no commit reproduces.
+	commit, _ := exec.Command("git", "-C", c.Repo, "describe", "--always", "--abbrev=9", "--dirty", "--exclude=*").Output()
 	var passed, knownN, failed, notRun int
 	for _, p := range plans {
 		res := r.Run(p)

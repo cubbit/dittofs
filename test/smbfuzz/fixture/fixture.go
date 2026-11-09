@@ -1,6 +1,6 @@
 //go:build linux
 
-// Package fixture brings up RFC 31 §3's topology on this host: the AD-DC
+// Package fixture brings up DESIGN.md §3's topology on this host: the AD-DC
 // fixture's domain controller, a Samba member server as the reference, a
 // DittoFS built from this checkout and joined to the domain, and the two
 // kernel cifs mounts the fuzzer drives.
@@ -77,7 +77,7 @@ func dexec(ctx context.Context, container string, args ...string) (string, error
 }
 
 // Users the fixture creates, by plan name, with their local uids
-// (RFC 31 §4.2).
+// (DESIGN.md §4.2).
 var users = []struct {
 	plan, account string
 	uid           int
@@ -174,7 +174,7 @@ func Up(ctx context.Context, c Config) (*fuzz.Env, error) {
 	return env, nil
 }
 
-// populate creates what the suite adds to the AD-DC fixture (RFC 31 §3.1)
+// populate creates what the suite adds to the AD-DC fixture (DESIGN.md §3.1)
 // and returns every account's SID.
 func (c Config) populate(ctx context.Context) (map[string]string, string, error) {
 	tool := func(args ...string) (string, error) {

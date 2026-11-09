@@ -1,29 +1,11 @@
----
-rfc: 31
-title: "RFC 31 — SMB testing: differential fuzzing against a Samba reference"
-component: smb testing
-status: draft
-depends_on:
-  - "[[rfc-0-data-lifecycle]]"
-  - "[[rfc-19-authorization]]"
-  - "[[rfc-22-smb]]"
-  - "[[rfc-29-test-harness]]"
-aliases:
-  - RFC 31
-  - SMB testing
-tags:
-  - rfc
----
-# RFC 31 — SMB testing: differential fuzzing against a Samba reference
+# smbfuzz — differential SMB fuzzing against a Samba reference
 
-**Status:** draft. [§16](#16.%20Open%20questions) lists what is undecided. Nothing here is
-implemented yet; [§15](#15.%20Plan) orders the work.
 **Audience:** anyone changing the SMB adapter, the ACL model or the file operations behind
 them, and anyone triaging a divergence the fuzzer reports.
 
-Conventions, RFC 2119 keywords and test tiers are set once in the [index](rfc-index.md). Like
-[RFC 29](rfc-29-test-harness.md), this RFC is about the repository's test tooling, so its
-normative text names the tools, files and Linux interfaces it is built from.
+How `smbfuzz` works and how to use it; [README.md](README.md) is the quick start. The
+document is about the repository's test tooling, so it names the tools, files and Linux
+interfaces it is built from. [§16](#16.%20Open%20questions) lists what is still undecided.
 
 ## Summary
 
@@ -76,7 +58,7 @@ for it, on any machine.
 
 Where the analogy stops: a difference is not automatically DittoFS's bug. Samba has its own
 bugs and its own choices, and DittoFS deliberately differs in places
-([RFC 22](rfc-22-smb.md)). Every difference is either fixed, or written down as a known
+([RFC 22](../../docs/internals/rfcs/rfc-22-smb.md)). Every difference is either fixed, or written down as a known
 divergence with its reason, and the list of those is part of the suite.
 
 ### The cast and the picture
@@ -128,8 +110,10 @@ Round 4242. The generator draws this plan (format in [§5.3](#5.3%20The%20plan%2
 ```
 
 1. `smbfuzz` creates `r4242-a0/` on both shares as Administrator, with the round root's
-   security descriptor named in the header ([§10](#10.%20Rounds%2C%20isolation%20and%20cleanup)),
-   and every path in the plan is relative to it.
+   security descriptor named in the header ([§10](#10.%20Rounds%2C%20isolation%20and%20cleanup))
+   and the tree of files and directories the plan's `# tree` lines list
+   ([§6.3](#6.3%20Names%3A%20the%20pool%20and%20the%20tree); this one has none), and every path
+   in the plan is relative to it.
 2. Step by step, the step's user's worker runs the call on `/mnt/ref/…`, then on
    `/mnt/dut/…`, and returns errno and output for each.
 3. Steps 1–7 agree. Step 3 is `ENOENT` on both: a plan need not make sense, the two shares
@@ -213,7 +197,7 @@ differently from Samba — and reduce each one to a plan short enough to read.
 | R11 | A failing round is minimised by removing one operation at a time until none can be removed | §11 |
 | R12 | Random ACLs and ownership changes, compared with the reference | §7.6, §8 |
 | R13 | Beyond ACLs: read, write, ranged write, truncate, punch hole, delete, mkdir, chown, setattr, DOS attributes, byte-range locks and more | §7's tables |
-| R14 | Not run is never passed | §12.3, following [RFC 29](rfc-29-test-harness.md) |
+| R14 | Not run is never passed | §12.3, following [RFC 29](../../docs/internals/rfcs/rfc-29-test-harness.md) |
 
 ## 3. Topology
 
@@ -284,7 +268,7 @@ Rules:
 ### 3.3 DittoFS
 
 DittoFS is built from the checkout under test and started by the harness's fixture code
-([RFC 29 §4.2](rfc-29-test-harness.md#4.2%20Fixtures%3A%20the%20DittoFS%20a%20suite%20runs%20against)),
+([RFC 29 §4.2](../../docs/internals/rfcs/rfc-29-test-harness.md#4.2%20Fixtures%3A%20the%20DittoFS%20a%20suite%20runs%20against)),
 joined to the same domain:
 
 - NTLM authentication passed through to the DC over NETLOGON with the `dittofs$` machine
@@ -488,7 +472,8 @@ one plan forever, and a report always states both numbers.
 - A plan **MUST** name at least two distinct users. If the 12 draws picked one, the generator
   redraws the user of the last step from the others. (A rule, not a retry loop: the draw
   stays a function of the round number.)
-- The round root's descriptor (§10) is drawn first and written in the plan's header.
+- The round root's descriptor (§10) is drawn first and written in the plan's header; the
+  tree (§6.3) is drawn next and written as the header's `# tree` lines.
 - Operations are drawn without regard to whether they make sense: reading before creating,
   closing twice, removing a directory that was never made, unlocking what was never locked.
   The only bias is §5.4's.
@@ -502,7 +487,9 @@ A plan is a text file, one step per line, so a human can read, edit and replay i
 <nn> <user> <op> <positional args...> [key=value ...] [-> <slot>]
 ```
 
-- Paths are relative to the round's directory and drawn from §6.3.
+- Paths are relative to the round's directory and drawn from §6.3's pool.
+- `# tree dir <path> [fill=<n>]` and `# tree file <path> len=<size> data=<pattern>` lines,
+  after the header and parents before children, are what exists before step 1 (§6.3).
 - Flags are written symbolically (`O_RDWR|O_CREAT`), modes in octal, offsets and lengths as
   the expression they were drawn as (`4096+1`, `chunk.max-1`), security descriptors as SDDL
   with trustees by their fixture names (§8.3), DOS attributes by name (`HIDDEN|SYSTEM`), data
@@ -514,18 +501,31 @@ A plan is a text file, one step per line, so a human can read, edit and replay i
 without running it. Both read and write the same format, so a minimised plan, a hand-written
 regression and a generated plan are interchangeable.
 
-### 5.4 The one bias: reuse what the plan already named
+### 5.4 The biases: reuse what the plan already named
 
 Without a bias, most handle operations would hit an empty slot, most path operations a name
 nothing created, and most locks a range no read or write touches. The generator therefore
 keeps a **symbolic history** of the plan so far — which (user, slot) pairs an earlier step
-opened, which paths an earlier step named, which ranges an earlier step locked — and never a
-model of results (it does not know whether the open or the lock succeeded):
+opened, which paths an earlier step named, which ranges an earlier step locked, which paths a
+namespace step changed — and never a model of results (it does not know whether the open or
+the lock succeeded). It knows the tree (§6.3), because the tree is in the plan:
 
 - a handle operation picks, with probability 0.85, a (user, slot) pair an earlier `open`
   named, and runs as that user; otherwise any user and any of that user's slots `h0`–`h3`;
-- a path argument picks, with probability 0.7, a path an earlier step named; otherwise any
-  path of §6.3;
+- a path argument picks, with probability 0.5, a path an earlier step named; otherwise a pool
+  name: one the tree created with probability 0.7, one it did not otherwise, so a creation, a
+  rename or a link also meets names that are free. An operation meant for one kind of object
+  (`mkdir`, `rmdir`, `readdir` a directory; `open`, `truncate`, `unlink`, `link` a file) draws
+  a pool name of that kind with probability 0.8;
+- an operation that reads attributes, a listing or a descriptor (`stat`, `lstat`,
+  `getdosattr`, `getbtime`, `listxattr`, `getacl`, `readdir`) picks, with probability 0.5, a
+  path an earlier namespace step changed: a rename's source and target, their parents and the
+  pool names that moved with it; a link's names; what an `unlink`, a `mkdir`, an `rmdir` or a
+  creating `open` touched, and its parent. So what a rename did to the objects around it is
+  looked at, and §9.4 compares their attributes against what they were before;
+- `rename` and `link` draw their two names together, §7.3;
+- `unlink` picks, with probability 0.3, a file an earlier step opened;
+- `readdir` picks, with probability 0.3, the wide directory when the tree filled it;
 - a data, truncate or lock operation on a file some earlier step locked picks, with
   probability 0.5, an offset and length that overlap that lock: the same range, a range
   starting inside it, or one ending inside it;
@@ -537,7 +537,7 @@ model of results (it does not know whether the open or the lock succeeded):
 - a handle operation drawn before any step of the plan opened a slot becomes an `open`, with
   probability 0.8.
 
-All five probabilities are generator constants (part of `gen`), not settings.
+Every probability here is a generator constant (part of `gen`), not a setting.
 
 ## 6. Domains
 
@@ -572,21 +572,45 @@ SDDL has one — and translated to its SID when the descriptor is built:
 | `ghost` | `<domain>-99999` | a well-formed SID nobody holds: setting it as owner or in an ACE must fail or succeed the same way on both |
 | `unix-1000` | `S-1-22-1-1000` | Samba's unmapped-uid SID form, which DittoFS must at least store |
 
-### 6.3 Names
+### 6.3 Names: the pool and the tree
 
-The round's tree is drawn from a fixed set of paths, so a plan revisits the same few objects:
+A round names objects from a fixed **pool** of paths, so a plan revisits the same few objects,
+and starts with a **tree**: the part of the pool admin creates before step 1. The rest of the
+pool is free names, for a step to create, or to rename or link onto.
 
-- plain: `f0`, `f1`, `d0`, `d1`;
-- nested: `d0/f0`, `d0/f1`, `d0/d1`, `d0/d1/f0`, `d1/f0`;
-- case: `F0`, `D0/f0` (each share's case rule decides whether these are new names, [RFC 22 §12.2](rfc-22-smb.md#12.2%20Case));
+**The pool** has three directory levels with the same names at every level, so renaming a
+directory to another name at its depth carries every name below it onto another pool name, and
+later steps can still reach what moved:
+
+- directories `d0`, `d1` at the top, in each of them, and in each of those: 14 directories,
+  `d0/d1/d0` the deepest;
+- files `f0`, `f1` at the top and in every directory: 30 files, `d1/d0/d1/f1` the deepest;
+- case: `F0`, `D0`, `D0/f0`, `d0/F0`, `d1/F0` (each share's case rule decides whether these are
+  new names, [RFC 22 §12.2](../../docs/internals/rfcs/rfc-22-smb.md#12.2%20Case));
 - awkward but legal on both: `a b` (space), `é` (NFC), `É` (case of a non-ASCII letter),
   `.hidden`;
-- long: a 255-byte name (`l` repeated).
-
-Weights: plain 50, nested 30, case 10, awkward 7, long 3.
+- long: a 255-byte name (`l` repeated);
+- the wide directory `w`, with `w/e0`, `w/e1` and `w/new`.
 
 Names the client rewrites or refuses before the server sees them — a trailing dot or space,
 a component over 255 bytes, characters SMB reserves — are not drawn: they test the client.
+
+**The tree** is drawn per round, parents before children: a top-level directory exists with
+probability 0.85, a deeper one with 0.7, each if its parent does; a file with 0.55; `a b`, `é`,
+`.hidden` and the long name with 0.3. The case names and `w/new` are never created, since the
+first would collide with what they alias and the second is the wide directory's free name. A
+file's length is 0 with probability 0.2, a §6.4 size up to `2^21` otherwise, and with
+probability 0.05 any write length; its content is a §6.6 pattern, written as step `100+k` for
+the tree's `k`-th object, so no two objects and no plan step share bytes.
+
+**The wide directory** holds `fill` entries `x0000`, `x0001`, … that no step names: 0 with
+probability 0.6, 128 with 0.2, 600 with 0.15, 1500 with 0.05. They exist so a listing spans
+several `QUERY_DIRECTORY` responses, and a creation, removal or rename among them is followed by
+a listing that has to resume correctly. With `fill=0` the directory exists with probability
+0.3, empty.
+
+The tree's setup, §10, gives every object fixed times, so a step's first look at a tree object
+compares exact values (§9.4).
 
 ### 6.4 Offsets and lengths
 
@@ -609,7 +633,7 @@ DittoFS's own size boundaries:
 | `chunk.max` | 16 MiB | the chunker's largest chunk; a cut is forced here |
 | `carve.block` | 4 MiB | the journal's carve block: content is offered to the carver in pieces of this size |
 | `block` | 8 MiB | the block size of the block store |
-| `rfc2.min`, `rfc2.target`, `rfc2.max` | 64 KiB, 256 KiB, 1 MiB | the chunk bounds [RFC 2](rfc-2-carver.md) specifies, which the code is moving to |
+| `rfc2.min`, `rfc2.target`, `rfc2.max` | 64 KiB, 256 KiB, 1 MiB | the chunk bounds [RFC 2](../../docs/internals/rfcs/rfc-2-carver.md) specifies, which the code is moving to |
 
 No point has its neighbours as points of its own. A value is one point (probability 0.5) or the
 sum of two (0.5), and the second term of a sum is `1` or `-1` with probability 0.25 each, so
@@ -759,9 +783,27 @@ opens it inside the same compound, so it takes a path.
 | `mkdir(path, mode)` | §6.3, §6.5 | — |
 | `rmdir(path)` | §6.3 | — |
 | `unlink(path)` | §6.3 | — |
-| `rename(old, new, flags)` | §6.3, §6.3; `0` 75, `RENAME_NOREPLACE` 25 (`renameat2`) | — |
-| `link(old, new)` | §6.3, §6.3 | — |
+| `rename(old, new, flags)` | below; `0` 75, `RENAME_NOREPLACE` 25 (`renameat2`) | — |
+| `link(old, new)` | below | — |
 | `readdir(path)` | §6.3 (`opendir` + `getdents64` to the end) | the sorted list of (name, type) without `.` and `..` (§9.4) |
+| `statfs(path)` | §6.3 (`statfs`, `FileFsFullSizeInformation`) | — (sizes and free space are each server's own) |
+
+**What a rename's names are.** The source is, with probability 0.25, a directory above a file an
+earlier step opened — a directory with an open handle below it, which Windows and Samba refuse
+to rename; with 0.15 a file an earlier step opened; with 0.35 a directory, which the tree has
+usually filled with subdirectories and files with content; otherwise any path. The target is,
+with probability 0.3, the other name of the same kind in the same directory (`d0` to `d1`, `f0`
+to `f1`), which the tree may have created: a file to replace, a directory empty or not; with 0.2
+the same name in another directory at the same depth, a move across parents that keeps the
+subtree in the pool; with 0.1 a name inside the source itself; with 0.05 the source with the
+case of its last name changed; with 0.05 the source itself; otherwise any path. A hard link's
+source is a file; its new name is, with probability 0.4, the same name in another directory,
+with 0.2 the other name in the same directory, otherwise any file name.
+
+Together with the tree, these reach a directory moved with its subtree, a move into its own
+subtree, over a non-empty directory, a directory over a file and back, a case-only rename of a
+full directory, and a rename or unlink of a file open through another handle (which the client
+turns into a rename aside and a delete on close).
 
 `symlink`, `mknod` and `RENAME_EXCHANGE` are not drawn in generator version 1: the first two
 need a client-side encoding (`mfsymlinks`, reparse points) that is a test of the client, and
@@ -862,12 +904,12 @@ carries comes from §8.4. The client writes owner, group, DACL and SACL together
 
 The privilege is granted the same way on both servers: on the reference with
 `net sam rights grant "DITTOFS\Domain Admins" SeSecurityPrivilege`, on DittoFS through the
-admin flag [RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)
+admin flag [RFC 19 §3.5](../../docs/internals/rfcs/rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)
 gives Domain Admins. DittoFS today grants the right to no caller, so the first rounds that
 reach a SACL will diverge for admin; that is a finding against RFC 19, not a known divergence.
 
 The SACL is only stored and read back: no audit event is compared, because Samba writes none
-and DittoFS's audit stream is [RFC 25](rfc-25-observability.md)'s.
+and DittoFS's audit stream is [RFC 25](../../docs/internals/rfcs/rfc-25-observability.md)'s.
 
 ### 7.7 Default weights
 
@@ -875,8 +917,8 @@ and DittoFS's audit stream is [RFC 25](rfc-25-observability.md)'s.
 |---|---|---|
 | open/close | 18 | `open` 3, `close` 1 |
 | data | 20 | `pread` 5, `pwrite` 6, `write` 2, `ftruncate` 2, `truncate` 1, `fallocate` 3, `lseek` 1, `fsync` 0.5, `fdatasync` 0.5, `copy_file_range` 0.7, `ficlone_range` 0.3, `setsparse` 0.5 (admin only; another user's draw is redrawn as admin) |
-| namespace | 14 | `mkdir` 3, `rmdir` 1, `unlink` 2, `rename` 2, `link` 1, `readdir` 2 |
-| attributes | 12 | `stat` 4, `lstat` 1, `fstat` 2, `utimensat` 1, `getdosattr` 1.5, `setdosattr` 2, `getbtime` 0.5, `setbtime` 0.5, xattr ops 0.5 each |
+| namespace | 14 | `mkdir` 3, `rmdir` 1, `unlink` 2, `rename` 3, `link` 1, `readdir` 2 |
+| attributes | 12 | `stat` 4, `lstat` 1, `fstat` 2, `utimensat` 1, `getdosattr` 1.5, `setdosattr` 2, `getbtime` 0.5, `setbtime` 0.5, xattr ops 0.5 each, `statfs` 0.5 |
 | locks | 14 | `lock` 5, `unlock` 3, `testlock` 1, `flock` 1 |
 | security descriptors | 22 | `getacl` 4, `setacl` 4, `setowner` 1.5 |
 
@@ -982,7 +1024,8 @@ divergences is graded "known", not passed.
 A round with no divergence ends with a **sweep**: the admin worker walks the round directory
 on both sides — `readdir`, `stat`, DOS attributes, the content of every file (§9.3) and its
 `ntsd` — and compares them as if they were steps. The sweep catches state no step happened to
-observe. It is not one of the 12 steps, and a divergence in it is reported as a step numbered
+observe, including whatever a rename moved out of the pool. It looks at the wide directory's
+fillers only through the directory's listing. It is not one of the 12 steps, and a divergence in it is reported as a step numbered
 `S`.
 
 ### 9.2 Errors
@@ -1019,10 +1062,11 @@ server's local accounts compare by role, not by machine.
 | file type | exact |
 | size | exact |
 | nlink | exact |
-| inode | as a relation only: two paths of the round that have equal inode numbers on one side must have equal ones on the other |
+| inode | never as a number, which is each server's own; as a relation only: two paths of the round that have equal inode numbers on one side must have equal ones on the other. A removed name is forgotten with every name below it, so a number one server reuses is never related to a name gone |
 | uid, gid, permission bits | `posix` profile only, exact |
-| mtime, ctime, btime | **relative**: per path, each side remembers the last value it observed; the comparison is "first seen", "unchanged", "advanced" or "went back", and after a `utimensat` or `setbtime` that set it, the exact value, truncated to 100 ns |
+| mtime, btime | the first look at a time compares the two values, which may be up to 1 s apart (each step runs on one server and then the other); every later look is **relative**: per path, each side remembers the last value it observed, and the comparison is "unchanged", "advanced" or "went back". A time the plan sets — `utimensat`, `setbtime`, the tree's setup — becomes the remembered value on both sides, so "unchanged" after it means both kept exactly what was set, truncated to 100 ns. A rename carries what is remembered of the source, and of every name below it, to the target: a later look at a moved object compares against what it was before the move |
 | atime | not compared (the reference's mount options decide when it moves) |
+| ctime | not compared: Samba reports a file's ChangeTime as its modification time, DittoFS as the time of its last change, metadata included, as Windows does, so every ACL, attribute or rename step would diverge on semantics alone |
 | blocks, `SEEK_DATA`, `SEEK_HOLE` | **allocation-dependent**: compared exactly; when they differ, the comparator checks each side's answer against the logical content both sides agree on (a reported hole must read as zeros, a reported data offset must not be past the size). If both are admissible, the difference is recorded as a note, not a divergence |
 
 The allocation rule exists because ext4 allocates in 4 KiB blocks and DittoFS in its own
@@ -1049,6 +1093,13 @@ the fixture restarts it before the next round.
   have to take ownership of every round. Without it, each
   server's default descriptor for a new directory would decide every inheritance test, and the
   two defaults differ by design.
+- Then admin builds the plan's tree (§6.3) on both sides, one object at a time, the reference
+  first: each directory, each file with its content, the wide directory's fillers in steps of
+  100. Then it sets each object's access and modification time to `1500000000.1234567 + 1000·k`
+  seconds and its creation time to `1400000000 + 1000·k`, the `k`-th object first from the
+  deepest, so no later creation moves a time already set. These are steps like the plan's,
+  numbered `T` in a trace, and a divergence among them ends the round as any other does. The
+  objects inherit the round root's descriptor.
 - **After the round**, its directory is removed:
   - on the reference, out of band: `rm -rf` of the directory on the server's ext4, which no
     ACL under test can block;
@@ -1110,12 +1161,19 @@ a time, paths replaced by `f0`/`d0`. Same acceptance rule. A shrink that would o
 reference (a path renamed in one step but not in the step that uses it) is rejected by the
 replay, not by special cases.
 
+The tree shrinks after step removal and before the parameters: each object is removed with
+what is below it, deepest first,
+then the wide directory's `fill` goes to 0 and each file's length is tried at simpler sizes,
+under the same rule.
+
 ### 11.4 What a report carries
 
 - the original plan file and the minimised one, both runnable with `smbfuzz run --plan`;
 - for the minimised plan, both sides' trace: every step's request, errno and output;
-- the signature, the round number, the generator version, the commit, the profile, the
-  authentication and the client's kernel version;
+- the summary line: the round number, the generator version, the commit, the profile, the
+  authentication and the client's kernel version
+  (`round 4242, gen 1, commit 1a2b3c4, profile sd, auth ntlm, kernel 6.8.0`), then the
+  signature;
 - the leads of §11.2;
 - for a crash or hang, the DittoFS log tail (§9.5).
 
@@ -1148,7 +1206,7 @@ the fixture died and could not be restarted).
 
 ### 12.3 Under `dt`
 
-`smb-fuzz` is a suite of [RFC 29](rfc-29-test-harness.md)'s registry, with needs
+`smb-fuzz` is a suite of [RFC 29](../../docs/internals/rfcs/rfc-29-test-harness.md)'s registry, with needs
 `[linux, root, docker, cifs]` and a fixture that brings up §3's DC, reference and DittoFS and
 mounts both shares. It reports one CTRF test per round (`smb-fuzz/round-<N>`) and one per
 corpus plan (`smb-fuzz/corpus/<file>`), graded by `dt` like every other suite; a divergence
@@ -1157,6 +1215,21 @@ attaches §11.4's report. Rounds the run was meant to run and did not are report
 
 Which tiers run the suite, how many rounds each runs and from which round, is decided once the
 suite exists and its cost per round is measured.
+
+### 12.4 Opening an issue for a divergence
+
+An issue opened for a divergence the fuzzer found carries:
+
+- the report's **summary line** (§11.4): round, generator version, commit, profile,
+  authentication, kernel;
+- the **minimised plan** (`minimized.plan`), pasted whole.
+
+The plan is the reproducer. It is self-contained — the tree, the round root and every step
+with its arguments are in it — and runs with `smbfuzz run --plan` on any fixture with the
+issue's profile and authentication, without regenerating anything. The round number and the
+generator version name the plan the run drew (`smbfuzz plan --round N --gen G` prints the
+original again); the commit fixes the comparator, the fixture and the DittoFS that gave the
+verdict. When the bug is fixed, the same plan enters the corpus (§12.2).
 
 ## 13. Alternatives considered
 

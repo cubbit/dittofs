@@ -57,7 +57,7 @@ func replySummary(r Reply) string {
 	return s
 }
 
-// Report is what a failing round leaves behind (RFC 31 §11.4).
+// Report is what a failing round leaves behind (DESIGN.md §11.4).
 type Report struct {
 	Round     uint64
 	Gen       int
@@ -71,6 +71,15 @@ type Report struct {
 	Minimized *Minimized
 }
 
+// SummaryLine is the report's first line, which an issue opened from it
+// quotes (DESIGN.md §12.4): the round and the generator version name the
+// plan, the commit fixes the comparator, the fixture and the DittoFS that
+// gave the verdict, and the rest are the run's dimensions.
+func (rp *Report) SummaryLine() string {
+	return fmt.Sprintf("round %d, gen %d, commit %s, profile %s, auth %s, kernel %s",
+		rp.Round, rp.Gen, rp.Commit, rp.Profile, rp.Auth, rp.Kernel)
+}
+
 // Write saves the report under dir/round-<N>/.
 func (rp *Report) Write(dir string) (string, error) {
 	d := filepath.Join(dir, fmt.Sprintf("round-%d", rp.Round))
@@ -78,8 +87,7 @@ func (rp *Report) Write(dir string) (string, error) {
 		return "", err
 	}
 	var sum strings.Builder
-	fmt.Fprintf(&sum, "round %d, generator %d, profile %s, auth %s\n", rp.Round, rp.Gen, rp.Profile, rp.Auth)
-	fmt.Fprintf(&sum, "commit %s, kernel %s\n", rp.Commit, rp.Kernel)
+	fmt.Fprintf(&sum, "%s\n", rp.SummaryLine())
 	fmt.Fprintf(&sum, "signature: %s\n", rp.Original.Signature())
 	if rp.Stable {
 		fmt.Fprintf(&sum, "stable over %d runs\n", Replays)

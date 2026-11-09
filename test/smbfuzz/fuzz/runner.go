@@ -52,7 +52,7 @@ type Env struct {
 	Timeout   time.Duration       `json:"timeout"`
 }
 
-// Hooks are the fixture's out-of-band actions (RFC 31 §10).
+// Hooks are the fixture's out-of-band actions (DESIGN.md §10).
 type Hooks interface {
 	// CleanRef removes a round directory on the reference server's disk.
 	CleanRef(dir string) error
@@ -81,7 +81,7 @@ type Runner struct {
 }
 
 // SetKnown makes the runner record a known divergence and carry on with the
-// round instead of ending it there (RFC 31 §12.2): a known divergence says
+// round instead of ending it there (DESIGN.md §12.2): a known divergence says
 // nothing about the steps after it, which may still find a new one.
 func (r *Runner) SetKnown(k *Known) { r.known = k }
 
@@ -176,7 +176,7 @@ func (r *Runner) worker(user string) (*workerProc, error) {
 	}
 	if user == "admin" {
 		// The passthrough ioctl that sends an explicit SET_SPARSE needs
-		// CAP_SYS_ADMIN (RFC 31 §7.2); only the admin draws it.
+		// CAP_SYS_ADMIN (DESIGN.md §7.2); only the admin draws it.
 		cmd.SysProcAttr.AmbientCaps = []uintptr{unix.CAP_SYS_ADMIN}
 	}
 	cmd.Stderr = r.log
@@ -209,7 +209,7 @@ func (r *Runner) worker(user string) (*workerProc, error) {
 }
 
 // kinit fills the user's credential cache, where cifs.upcall looks for the
-// calling uid's tickets (RFC 31 §4.2).
+// calling uid's tickets (DESIGN.md §4.2).
 func (r *Runner) kinit(c UserCred) error {
 	if r.hooks == nil {
 		return fmt.Errorf("krb5 needs the fixture's hooks")
@@ -331,6 +331,13 @@ func (r *Runner) resolve(round uint64, dir, side string, n int, s Step) (*Reques
 		req.Flags, err = flagsOf(a["how"], flockNames)
 	case "setsparse":
 		req.On = a["on"] == "true"
+	case "mkfiles":
+		var from, count int
+		from, err = strconv.Atoi(a["from"])
+		if err == nil {
+			count, err = strconv.Atoi(a["count"])
+		}
+		req.Off, req.Len = int64(from), int64(count)
 	case "utimensat":
 		req.ATime, err = parseTime(a["atime"])
 		if err == nil {
@@ -474,6 +481,22 @@ func (r *Runner) Run(p *Plan) *Result {
 		return res
 	}
 	cmp := newComparer(r.env.Profile, r.resolver)
+	// The tree is built as admin steps, compared like plan steps: a server
+	// that cannot build it the same way diverges at a step numbered T.
+	for _, ts := range p.Tree.SetupSteps() {
+		sr := r.runStep(p.Round, dir, ts.N, "T", ts.Step, cmp)
+		sr.Line = "T" + strings.TrimLeft(sr.Line, "0123456789")
+		res.Steps = append(res.Steps, sr)
+		if sr.Ref.Fatal != "" || sr.Dut.Fatal != "" {
+			res.Err = fmt.Errorf("tree setup: %s%s", sr.Ref.Fatal, sr.Dut.Fatal)
+			return res
+		}
+		if sr.Diverge != nil && !r.passKnown(res, sr.Diverge) {
+			res.Diverge = sr.Diverge
+			r.checkDut(res)
+			return res
+		}
+	}
 	for i, s := range p.Steps {
 		sr := r.runStep(p.Round, dir, i+1, fmt.Sprintf("%02d", i+1), s, cmp)
 		res.Steps = append(res.Steps, sr)
@@ -553,7 +576,7 @@ func (r *Runner) setupRound(dir, root string) error {
 	return nil
 }
 
-// cleanup removes a round directory (RFC 31 §10): out of band on the
+// cleanup removes a round directory (DESIGN.md §10): out of band on the
 // reference; as admin over SMB on DittoFS, taking ownership where refused,
 // and resetting the share when anything is left or every 100 rounds.
 func (r *Runner) cleanup(dir string) {
@@ -626,7 +649,7 @@ func (r *Runner) removeTree(side, path string) bool {
 }
 
 // sweep walks the round directory as admin on both sides and compares what
-// it finds (RFC 31 §9.1). It stops at the first divergence.
+// it finds (DESIGN.md §9.1). It stops at the first divergence.
 func (r *Runner) sweep(round uint64, dir string, cmp *comparer, res *Result) {
 	queue := []string{"."}
 	for len(queue) > 0 && res.Diverge == nil {
@@ -646,6 +669,12 @@ func (r *Runner) sweep(round uint64, dir string, cmp *comparer, res *Result) {
 			p := e.Name
 			if rel != "." {
 				p = rel + "/" + e.Name
+			}
+			// The wide directory's fillers are empty files the listing
+			// above already compared; looking at each would cost thousands
+			// of requests per round.
+			if IsFiller(p) {
+				continue
 			}
 			steps := []Step{
 				{User: "admin", Op: "lstat", Args: map[string]string{"path": p}},

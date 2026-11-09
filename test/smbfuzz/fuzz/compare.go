@@ -20,12 +20,11 @@ type Divergence struct {
 }
 
 // comparer compares one round's results, keeping the per-side state the
-// relative comparisons need (RFC 31 §9.4).
+// relative comparisons need (DESIGN.md §9.4).
 type comparer struct {
 	profile  string
 	res      *sd.Resolver
-	prev     [2]map[string]int64  // side -> "path|field" -> last value
-	explicit map[string]bool      // "path|field" set to an exact value by the plan
+	prev     [2]map[string]int64  // side -> "path|field" -> last value, in 100 ns units
 	ino      [2]map[string]uint64 // side -> path -> inode
 	slotPath map[string]string
 }
@@ -35,7 +34,6 @@ func newComparer(profile string, res *sd.Resolver) *comparer {
 		profile:  profile,
 		res:      res,
 		prev:     [2]map[string]int64{{}, {}},
-		explicit: map[string]bool{},
 		ino:      [2]map[string]uint64{{}, {}},
 		slotPath: map[string]string{},
 	}
@@ -55,23 +53,81 @@ func div(s Step, field, ref, dut string) *Divergence {
 	return &Divergence{Sig: s.Op + ":" + field, Field: field, Ref: ref, Dut: dut}
 }
 
-// forget drops what the comparer knows about a path whose identity changed.
+// under maps p to its place under to when p is from or below it.
+func under(p, from, to string) (string, bool) {
+	if p == from {
+		return to, true
+	}
+	if strings.HasPrefix(p, from+"/") {
+		return to + p[len(from):], true
+	}
+	return "", false
+}
+
+// forget drops what the comparer knows about paths whose object went away,
+// and every path below them.
 func (c *comparer) forget(paths ...string) {
 	for _, p := range paths {
 		for i := range c.ino {
-			delete(c.ino[i], p)
+			for k := range c.ino[i] {
+				if _, ok := under(k, p, ""); ok {
+					delete(c.ino[i], k)
+				}
+			}
 			for k := range c.prev[i] {
-				if strings.HasPrefix(k, p+"|") {
+				kp, _, _ := strings.Cut(k, "|")
+				if _, ok := under(kp, p, ""); ok {
 					delete(c.prev[i], k)
 				}
 			}
 		}
-		for k := range c.explicit {
-			if strings.HasPrefix(k, p+"|") {
-				delete(c.explicit, k)
+	}
+}
+
+// move carries what the comparer knows about from, and every path below it,
+// to to, after a rename: the objects are the same, so a later look at them
+// under their new names compares against what was seen under the old ones —
+// a time a rename must not move shows as unchanged.
+func (c *comparer) move(from, to string) {
+	if from == to {
+		return
+	}
+	c.forget(to)
+	for i := range c.ino {
+		moved := map[string]uint64{}
+		for k, v := range c.ino[i] {
+			if np, ok := under(k, from, to); ok {
+				delete(c.ino[i], k)
+				moved[np] = v
 			}
 		}
+		for k, v := range moved {
+			c.ino[i][k] = v
+		}
+		prev := map[string]int64{}
+		for k, v := range c.prev[i] {
+			kp, field, _ := strings.Cut(k, "|")
+			if np, ok := under(kp, from, to); ok {
+				delete(c.prev[i], k)
+				prev[np+"|"+field] = v
+			}
+		}
+		for k, v := range prev {
+			c.prev[i][k] = v
+		}
 	}
+	for slot, p := range c.slotPath {
+		if np, ok := under(p, from, to); ok {
+			c.slotPath[slot] = np
+		}
+	}
+}
+
+// seed records a time the plan set, on both sides: the next look compares
+// against it, so a server that ignored or altered the set diverges from one
+// that kept it.
+func (c *comparer) seed(path, field string, v int64) {
+	c.prev[0][path+"|"+field], c.prev[1][path+"|"+field] = v, v
 }
 
 func (c *comparer) compare(s Step, ref, dut Reply) (*Divergence, []string) {
@@ -90,14 +146,16 @@ func (c *comparer) compare(s Step, ref, dut Reply) (*Divergence, []string) {
 	case "unlink", "rmdir":
 		c.forget(path)
 	case "rename":
-		c.forget(path, s.Args["path2"])
+		c.move(path, s.Args["path2"])
 	case "utimensat":
-		if a := s.Args["mtime"]; a != "OMIT" && a != "NOW" {
-			c.explicit[path+"|mtime"] = true
+		if t, err := parseTime(s.Args["mtime"]); err == nil && !t.Omit && !t.Now {
+			c.seed(path, "mtime", (t.Sec*1e9+t.Nsec)/100)
 		}
 	case "setbtime":
-		c.explicit[path+"|btime"] = true
-		c.explicit[path+"|ftbtime"] = true
+		if t, err := parseTime(s.Args["t"]); err == nil {
+			c.seed(path, "btime", (t.Sec*1e9+t.Nsec)/100)
+			c.seed(path, "ftbtime", int64(fileTime(t)))
+		}
 	}
 	ro, do := ref.Out, dut.Out
 	if ro == nil {
@@ -131,7 +189,7 @@ func (c *comparer) compare(s Step, ref, dut Reply) (*Divergence, []string) {
 			if w := s.Args["whence"]; w == "SEEK_DATA" || w == "SEEK_HOLE" {
 				// ponytail: an allocation-dependent answer that differs is
 				// recorded as a note without the admissibility check of
-				// RFC 31 §9.4 (a reported hole must read as zeros). Add it
+				// DESIGN.md §9.4 (a reported hole must read as zeros). Add it
 				// when notes start hiding real differences.
 				notes = append(notes, fmt.Sprintf("%s: ref %d, dut %d (allocation-dependent)", w, ro.N, do.N))
 			} else {
@@ -202,9 +260,12 @@ func (c *comparer) compareStat(s Step, path string, r, d *StatOut) (*Divergence,
 	if dv := c.compareTime(s, path, "mtime", r.Mtime, d.Mtime, 100); dv != nil {
 		return dv, nil
 	}
-	if dv := c.compareTime(s, path, "ctime", r.Ctime, d.Ctime, 100); dv != nil {
-		return dv, nil
-	}
+	// decision: ctime is not compared. Samba reports a file's ChangeTime as
+	// its modification time, while DittoFS reports when the file last
+	// changed, metadata included, as Windows does; every ACL, attribute or
+	// rename step and every first look at a tree object would diverge on a
+	// difference of semantics, not a bug. Compare it again against a reference
+	// whose ChangeTime moves on metadata changes (a Windows server).
 	if r.HasBtime != d.HasBtime {
 		return div(s, "btime", fmt.Sprint(r.HasBtime), fmt.Sprint(d.HasBtime)), nil
 	}
@@ -236,23 +297,35 @@ func (c *comparer) compareStat(s Step, path string, r, d *StatOut) (*Divergence,
 	return nil, notes
 }
 
-// compareTime compares a timestamp relatively, or exactly after the plan
-// set it. unit is the resolution both sides are truncated to.
+// timeSlack is how far apart two first looks at a time may be, in 100 ns
+// units. Each step runs on the reference and then on DittoFS, so an object
+// the plan creates gets its times on the two sides a fraction of a second
+// apart; one second covers that without hiding a time that is wrong.
+const timeSlack = 10_000_000
+
+// compareTime compares a timestamp (DESIGN.md §9.4). A first look at it
+// compares the two values within timeSlack; every later look compares how it
+// moved since the previous one on its own side — unchanged, advanced or went
+// back — because the two servers stamp the same event at slightly different
+// instants. A time the plan set (utimensat, setbtime, the tree's setup) is
+// recorded as the previous value on both sides, so "unchanged" after it means
+// both kept exactly what was set. unit converts the value to 100 ns units.
 func (c *comparer) compareTime(s Step, path, field string, r, d int64, unit int64) *Divergence {
 	key := path + "|" + field
-	if c.explicit[key] {
-		if r/unit != d/unit {
-			return div(s, field, fmt.Sprint(r), fmt.Sprint(d))
+	r, d = r/unit, d/unit
+	pr, okr := c.prev[0][key]
+	pd, okd := c.prev[1][key]
+	c.prev[0][key], c.prev[1][key] = r, d
+	if !okr || !okd {
+		if diff := r - d; diff > timeSlack || diff < -timeSlack {
+			dv := div(s, field, fmt.Sprint(r), fmt.Sprint(d))
+			dv.Sig = fmt.Sprintf("%s:%s:apart", s.Op, field)
+			return dv
 		}
-		c.prev[0][key], c.prev[1][key] = r, d
 		return nil
 	}
-	rel := func(i int, v int64) string {
-		p, ok := c.prev[i][key]
-		c.prev[i][key] = v
+	rel := func(p, v int64) string {
 		switch {
-		case !ok:
-			return "first"
 		case p == v:
 			return "unchanged"
 		case v > p:
@@ -260,11 +333,11 @@ func (c *comparer) compareTime(s Step, path, field string, r, d int64, unit int6
 		}
 		return "went-back"
 	}
-	rr, dr := rel(0, r), rel(1, d)
+	rr, dr := rel(pr, r), rel(pd, d)
 	if rr != dr {
-		d := div(s, field, rr, dr)
-		d.Sig = fmt.Sprintf("%s:%s:%s/%s", s.Op, field, rr, dr)
-		return d
+		dv := div(s, field, rr, dr)
+		dv.Sig = fmt.Sprintf("%s:%s:%s/%s", s.Op, field, rr, dr)
+		return dv
 	}
 	return nil
 }

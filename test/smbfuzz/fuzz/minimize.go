@@ -12,7 +12,7 @@ type Executor interface {
 }
 
 // Replays is how many times a failing round runs in all before it is called
-// stable (RFC 31 §11.1).
+// stable (DESIGN.md §11.1).
 const Replays = 3
 
 // Stability replays a failing plan and returns the signature of every run,
@@ -43,7 +43,7 @@ type Minimized struct {
 	Runs   int
 }
 
-// Minimize shrinks a stable failing plan (RFC 31 §11.2, §11.3): it removes
+// Minimize shrinks a stable failing plan (DESIGN.md §11.2, §11.3): it removes
 // one step at a time, from the last, keeping a removal when the replay still
 // diverges with the same signature, until a pass removes nothing; then it
 // tries each parameter at a simpler value under the same rule.
@@ -76,6 +76,39 @@ func Minimize(x Executor, failing *Result, log io.Writer) *Minimized {
 			if try(cand) {
 				fmt.Fprintf(log, "  minimise: removed step %d, %d left\n", i+1, len(m.Plan.Steps))
 				changed = true
+			}
+		}
+	}
+	// The tree shrinks the same way: each object goes, with what is below it,
+	// deepest first; then the wide directory empties and contents shorten.
+	for i := len(m.Plan.Tree) - 1; i >= 0; i-- {
+		if i >= len(m.Plan.Tree) {
+			continue
+		}
+		cand := m.Plan.Clone()
+		gone := cand.Tree[i].Path
+		cand.Tree = cand.Tree.Without(gone)
+		if try(cand) {
+			fmt.Fprintf(log, "  minimise: removed tree object %s, %d left\n", gone, len(m.Plan.Tree))
+		}
+	}
+	for i := range m.Plan.Tree {
+		if m.Plan.Tree[i].Fill > 0 {
+			cand := m.Plan.Clone()
+			cand.Tree[i].Fill = 0
+			if try(cand) {
+				fmt.Fprintf(log, "  minimise: tree %s fill=0\n", cand.Tree[i].Path)
+			}
+		}
+		if m.Plan.Tree[i].Dir {
+			continue
+		}
+		for _, simpler := range simplerValues("tree", "len", m.Plan.Tree[i].Len) {
+			cand := m.Plan.Clone()
+			cand.Tree[i].Len = simpler
+			if try(cand) {
+				fmt.Fprintf(log, "  minimise: tree %s len=%s\n", cand.Tree[i].Path, simpler)
+				break
 			}
 		}
 	}
