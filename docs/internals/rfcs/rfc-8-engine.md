@@ -3593,8 +3593,9 @@ too ([RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20exte
 repack frees space),
 `journal_sync_failed` (journal, raised while the journal has reported, in the
 last hour, a loss event of a failed sync window, [RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync), or has turned
-read-only with its loss generation raised, since that fails the open window
-with no loss record appended and so publishes no event ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)); never for
+read-only with its loss generation raised, since that fails every unsynced
+record as a failed window, publishing its loss events with no loss record
+appended ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)); never for
 a window re-appended nor for one found at open ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), whose window failed
 before the restart; it clears on its own an hour after the latest, since a failed window
 leaves nothing to repair, only writes its clients resend, [RFC 25 §3.4](rfc-25-observability.md#3.4%20A%20condition%20is%20derived%2C%20never%20latched)),
