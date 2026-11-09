@@ -58,6 +58,7 @@ type Engine struct {
 	splits          atomic.Int64                                                               // engine_group_commit_splits_total
 	stabilityPoints atomic.Int64                                                               // engine_stability_points_total
 	pendingApplied  atomic.Int64                                                               // engine_pending_existence_ops: operations committed
+	readOnlyLogged  atomic.Bool                                                                // the journal's turn read-only was logged: see noteReadOnly
 	hooks           struct{ taken, captured, drained, written, staged atomic.Pointer[func()] } // a test's seams: after a batch's take, its capture, a drain's read of the ring, a write's WriteAt, and a removal's journal step
 	afterRegister   func()                                                                     // a test's hook: run once a clone's registrations are installed, the clone then stopping
 	fakeCloneDone   atomic.Bool                                                                // a test's stand-in for the joins of a running clone: set, a clone runs past its registrations

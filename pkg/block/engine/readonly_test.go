@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -266,5 +267,22 @@ func TestARetriedReleaseAReadOnlyJournalUndidFails(t *testing.T) {
 	}
 	if u.e.GuardHeld(f) {
 		t.Error("the guard is still held")
+	}
+}
+
+// A journal turning read-only is logged at Error once, however many writes
+// it then refuses.
+func TestAReadOnlyJournalIsLoggedOnce(t *testing.T) {
+	var errs atomic.Int64
+	u := newUnit(t, func(d *engine.Deps) { d.Logger = slog.New(countHandler{errors: &errs}) })
+	f := u.create(t, "a")
+	u.j.ReadOnly(syscall.EIO)
+	for range 100 {
+		if _, err := u.e.Write(t.Context(), u.share.ID, f, 0, fill(4, 'a'), engine.WriteOpts{Done: func() {}}); err == nil {
+			t.Fatal("a write to a read-only journal succeeded")
+		}
+	}
+	if n := errs.Load(); n != 1 {
+		t.Errorf("%d records at Error, want 1", n)
 	}
 }

@@ -187,10 +187,11 @@ func (e *Engine) journalErr(err error) error {
 		return fmt.Errorf("engine: %v: %w", err, vfserr.ErrCorrupt)
 	case errors.Is(err, journal.ErrJournalReadOnly):
 		// A read-only journal refuses every write until it is reopened, so
-		// a refusal is expected and logged at Debug: the journal_read_only
-		// condition names the state once. EROFS, a remount only an operator
+		// a refusal is expected and logged at Debug: noteReadOnly logs the
+		// state once. EROFS, a remount only an operator
 		// clears, is ErrReadOnly; any other cause may pass, so it is
 		// retry-later, DelayJournal (RFC 8 §11.2; the cause per RFC 17 §4.3).
+		e.noteReadOnly(true, err)
 		e.d.Logger.Debug("journal read-only", "err", err)
 		if errors.Is(err, syscall.EROFS) {
 			return fmt.Errorf("engine: %v: %w", err, vfserr.ErrReadOnly)
@@ -203,6 +204,21 @@ func (e *Engine) journalErr(err error) error {
 	}
 	e.d.Logger.Error("journal call failed", "err", err)
 	return fmt.Errorf("engine: %v: %w", err, vfserr.ErrUnavailable)
+}
+
+// noteReadOnly logs at Error, once per transition, the journal turning
+// read-only, cause what entered the state, as journal_read_only is an
+// unhealthy condition (RFC 25 §3.4); ro false clears the mark, so a journal
+// turned read-only again is logged again. A write's refusal and every sync's
+// drain report the state.
+//
+// ponytail: one mark for the engine, as Start serves one journal. Key it by
+// journal once Start serves several.
+func (e *Engine) noteReadOnly(ro bool, cause error) {
+	if e.readOnlyLogged.Swap(ro) || !ro {
+		return
+	}
+	e.d.Logger.Error("journal turned read-only: it refuses writes until it is reopened", "err", cause)
 }
 
 // journalReadErr is journalErr for the journal's answer to a read: the

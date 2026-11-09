@@ -279,6 +279,7 @@ func (e *Engine) drain(b *binding) journal.ReadOnlyState {
 	for _, ev := range lost {
 		dones = append(dones, e.markLost(l, entity.FileID(ev.File.Bytes()), ev)...)
 	}
+	e.noteReadOnly(st.ReadOnly.ReadOnly, st.ReadOnly.Err)
 	return st.ReadOnly
 }
 
