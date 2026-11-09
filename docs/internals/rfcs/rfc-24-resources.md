@@ -404,10 +404,7 @@ func (r *Reservation) Release()
 // Pools is what an adapter is handed (RFC 20 §3.4): the four budgets on the request path.
 type Pools struct{ Receive, Reply, Conn, Hold *Budget }
 
-// NewBufPool returns RFC 20 §6.8's pool of reference-counted buffers in §3.1's
-// classes, each reserved from b before it is handed out. Each adapter's core
-// builds its own over the budgets in Pools; no allocator is shared or handed in.
-func NewBufPool(b *Budget) *BufPool
+func NewBufPool(b *Budget) *BufPool // RFC 20 §6.8's buffers in §3.1's classes, each reserved from b, its Get keyed as Reserve is
 ```
 
 - Whether a budget waits or refuses is fixed by its pool's row (§2.3), so one
