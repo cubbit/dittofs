@@ -148,8 +148,10 @@ func TestRFC8A_SyncedLossReadsLost(t *testing.T) {
 
 	write(t, f, id, 0, p)
 
-	if _, _, err := f.E.Commit(t.Context(), f.Share.ID, id, 0, 0); err != nil {
-		t.Fatalf("Commit: %v", err)
+	// Synced, not committed: the loss record stays above the file's applied
+	// version, so the replay yields it (RFC 8 §2.5 step 3).
+	if _, err := f.Handle().Sync(t.Context(), journal.NewFileID(id)); err != nil {
+		t.Fatalf("Sync: %v", err)
 	}
 
 	corrupt(t, f, p)

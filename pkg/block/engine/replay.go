@@ -23,6 +23,12 @@ import (
 // declares no such error yet, so an unreadable record cannot be told from a
 // failing device. Overturned once the journal declares ErrUnreadable, when
 // that file is skipped and step 3 runs for it again once its record reads.
+//
+// ponytail: start time grows linearly with the files a journal holds, one
+// file after another, each costing a read of its applied version and a walk of
+// Since, and the batch of one file costs superseded's O(n²). No commit
+// interval bounds either at a restart. Parallel files, or an index of the
+// files with changes above applied, lifts it when a measured start needs it.
 func (e *Engine) replay(ctx context.Context, o *opened) error {
 	now := e.d.Clock.Now()
 
@@ -60,14 +66,25 @@ func (e *Engine) replayFile(
 		return fmt.Errorf("engine: start: read the applied version of file %v: %w", f, err)
 	}
 
+	from := journal.VersionFromBytes(applied)
+
+	changes, err := changesSince(ctx, b.h, id, from)
+	if err != nil {
+		return fmt.Errorf("engine: start: read the journal's changes of file %v: %w", f, err)
+	}
+
+	if len(changes) == 0 {
+		// Recovery rebuilds every marker and synced loss at or below applied,
+		// since Settle is not persisted, so they are settled again here
+		// (RFC 1 §3.6, §3.10).
+		b.h.Settle(id, from)
+
+		return nil
+	}
+
 	size, err := e.d.Existence.Size(ctx, b.share.ID, f)
 	if err != nil {
 		return fmt.Errorf("engine: start: read the size of file %v: %w", f, err)
-	}
-
-	changes, err := changesSince(ctx, b.h, id, journal.VersionFromBytes(applied))
-	if err != nil {
-		return fmt.Errorf("engine: start: read the journal's changes of file %v: %w", f, err)
 	}
 
 	r := &replayer{
@@ -281,7 +298,15 @@ func (r *replayer) apply(ctx context.Context, s replayStep) (stop bool, err erro
 			return true, err
 		}
 
-		if hook := r.e.cloneMarker; hook != nil && s.clone != nil {
+		// The destination is not served until the clone's phase 1 commits
+		// (RFC 8 §2.5 step 4), so with no hook to rebuild the clone Start
+		// fails, as Clone does, rather than serve the file as it was.
+		hook := r.e.cloneMarker
+		if hook == nil {
+			return true, fmt.Errorf("engine: start: rebuild the clone of file %v: %w", r.f, errUnbuilt)
+		}
+
+		if s.clone != nil {
 			hook(r.b.share.ID, r.f, *s.clone, s.version)
 		}
 

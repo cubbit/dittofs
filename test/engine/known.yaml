@@ -189,7 +189,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: the restart after an aborted release is quiet. Fails at the fixture until the journal has Init, Open, WriteAt, Delete, Since and Settle, and then until the daily decides what makes a discarded marker stay settled across a restart, since the journal's Settle is not persisted (RFC 1 section 3.10).'
+  reason: 'Epic 6: the restart after an aborted release is quiet. Fails at the fixture until the journal has Init, Open, WriteAt, Delete, Since and Settle, and then until RFC 8 says what keeps a discarded marker settled across a restart, since the journal''s Settle is not persisted (RFC 1 section 3.10).'
   issue: '#3589'
 - test: TestRFC8A_ReleaseLeftMidRetryFinishedByRestart
   message: 'fixture: journal init: journal: not implemented'

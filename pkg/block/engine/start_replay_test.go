@@ -836,8 +836,16 @@ func TestASecondStartReplaysNothing(t *testing.T) {
 		t.Fatalf("second Start: %v", err)
 	}
 
-	if c := r.calls(mark, "commit", "remove", "settle"); len(c) != 0 {
+	if c := r.calls(mark, "commit", "remove"); len(c) != 0 {
 		t.Errorf("the second start made %v, want nothing", c)
+	}
+
+	// Settle is not persisted, so the markers recovery brings back at or
+	// below applied are settled again, and nothing above it.
+	want := []string{settleCall(f, journal.VersionFromBytes(first.Applied))}
+
+	if s := r.settles(mark); !slices.Equal(s, want) {
+		t.Errorf("the second start settled %v, want %v", s, want)
 	}
 
 	if got := r.usage(t); got != usage {
@@ -1160,6 +1168,26 @@ func TestStartCommitsALossAsLost(t *testing.T) {
 
 	if s := r.settles(0); !slices.Equal(s, []string{settleCall(f, v1)}) {
 		t.Errorf("settles %v, want exactly %q", s, settleCall(f, v1))
+	}
+}
+
+// With no hook to rebuild a clone, a clone marker fails Start: the
+// destination is not served as it was before the clone (RFC 8 §2.5 step 4).
+func TestStartFailsOnACloneMarkerWithNoHook(t *testing.T) {
+	r := newRig(t)
+	_, f := r.newFile(t, "a")
+	id := journal.NewFileID(f)
+
+	r.write(t, f, 0, 4096, writeMtime)
+
+	if _, err := r.jh.CloneTarget(t.Context(), id, journal.CloneSpec{DstOff: 4096, Len: 4096}); err != nil {
+		t.Fatal(err)
+	}
+
+	r.atRestart()
+
+	if err := r.start(t); !errors.Is(err, engine.ErrUnbuilt) {
+		t.Errorf("Start = %v, want ErrUnbuilt", err)
 	}
 }
 
