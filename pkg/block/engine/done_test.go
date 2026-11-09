@@ -50,6 +50,8 @@ func TestARetriedBatchCallsEachDoneOnce(t *testing.T) {
 	res := enginetest.NewReservations(t)
 	f := u.create(t, "a")
 	o, answered := res.Opts()
+	done := o.Done
+	o.Done = func() { time.Sleep(5 * time.Millisecond); done() } // slow, so a waiter woken before it fails
 	_, err := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("abc"), o)
 	answered(err)
 	c.on.Store(true)
@@ -146,6 +148,8 @@ func TestABatchRetriesAfterADrop(t *testing.T) {
 	f := made.ID
 	for _, off := range []int64{0, 4} {
 		o, answered := res.Opts()
+		done := o.Done
+		o.Done = func() { time.Sleep(5 * time.Millisecond); done() } // slow, so a waiter woken before it fails
 		_, err := u.e.Write(t.Context(), u.share.ID, f, off, []byte("four"), o)
 		answered(err)
 	}
