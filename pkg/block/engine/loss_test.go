@@ -343,3 +343,85 @@ func TestALostDeviceLogsEachFailingFileCleared(t *testing.T) {
 		t.Errorf("%d cleared warnings after the device was lost, want one for the failing file", cleared)
 	}
 }
+
+// A corrupt loss of a write never synced drops the write, as a failed
+// window's does, whether drained while the write is pending or between its
+// WriteAt and its insert: the file commits as it was before the write, size
+// and modification time, nothing more charged, Done runs once, and the next
+// Commit answers the raised sequence and a verifier other than the write's.
+func TestAnUnsyncedCorruptLossDropsTheWrite(t *testing.T) {
+	for _, early := range []bool{false, true} {
+		t.Run(map[bool]string{false: "pending", true: "before the insert"}[early], func(t *testing.T) {
+			u := newUnit(t)
+			h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
+			f := made.ID
+			u.write(t, f, 0, []byte("held"))
+			if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+				t.Fatal(err)
+			}
+			before, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lose := func() {
+				u.j.Lose(journal.NewFileID(f), journal.Extent{Off: 4, Len: 4}, journal.LossCorrupt, false)
+				u.e.LossSeq(u.share.ID, f) // drains the loss
+			}
+			if early {
+				var once sync.Once
+				u.e.OnWritten(func() { once.Do(lose) })
+			}
+			u.clock.Advance(time.Since(u.clock.Now()) + time.Hour) // the write's mtime is past the file's
+			var dones atomic.Int32
+			v, err := u.e.Write(t.Context(), u.share.ID, f, 4, []byte("more"), engine.WriteOpts{Done: func() { dones.Add(1) }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !early {
+				lose()
+			}
+			cv, seq, err := u.e.Commit(t.Context(), u.share.ID, f, 0, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cv == v || seq != 1 {
+				t.Errorf("Commit answered verifier %x, sequence %d; want other than the write's %x, and 1", cv, seq, v)
+			}
+			if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+				t.Fatal(err)
+			}
+			got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Size != before.Size || !got.Modify.Equal(before.Modify) || got.Charged != before.Charged {
+				t.Errorf("size %d, mtime %v, charged %d; want the file as before the write: %d, %v, %d",
+					got.Size, got.Modify, got.Charged, before.Size, before.Modify, before.Charged)
+			}
+			if n := dones.Load(); n != 1 {
+				t.Errorf("Done ran %d times, want once", n)
+			}
+			p := make([]byte, 4)
+			if _, err := u.e.Read(t.Context(), u.share.ID, f, 0, p); err != nil || string(p) != "held" {
+				t.Errorf("read of the earlier content: %q, %v; want held", p, err)
+			}
+		})
+	}
+}
+
+// A corrupt loss of a write never synced comes with no SyncError, so a later
+// SyncError of its file that no event covers still raises the file again.
+func TestAnUnsyncedCorruptLossLeavesALaterSyncErrorRaising(t *testing.T) {
+	u := newUnit(t)
+	f := u.create(t, "a")
+	u.write(t, f, 0, []byte("lost"))
+	u.j.Lose(journal.NewFileID(f), journal.Extent{Len: 4}, journal.LossCorrupt, false)
+	if s := u.e.LossSeq(u.share.ID, f); s != 1 {
+		t.Fatalf("LossSeq after the loss: %d, want 1", s)
+	}
+	u.write(t, f, 0, []byte("held"))
+	u.failWindow(f, 100, 4) // past what f holds: no event, only the SyncError
+	if _, seq, err := u.e.Commit(t.Context(), u.share.ID, f, 0, 0); err != nil || seq != 2 {
+		t.Errorf("Commit: sequence %d, %v; want 2", seq, err)
+	}
+}
