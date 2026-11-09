@@ -614,7 +614,7 @@ so domain users authenticate against the correct domain (see Part C / docs/SMB.m
 A real Windows client gets the cleanest experience by **joining the domain** and
 authenticating to DittoFS over **Kerberos** — the server side is fully proven
 (SMB SPNEGO/PAC + AES keytab, Part C). Connecting by a name with no Kerberos SPN
-(an IP, or the Explorer → Network discovery name) falls back to **NTLM**, which
+(such as an IP) falls back to **NTLM**, which
 is now supported for AD domain users via **NETLOGON pass-through** — configure a
 machine account (`kerberos.machine_account`, see
 [configuration.md](configuration.md#12-kerberos-configuration) and

@@ -455,54 +455,9 @@ For the full operator runbook see
 
 ## Adapter Pattern
 
-DittoFS uses the Adapter pattern to provide clean protocol abstractions:
-
-```go
-// ProtocolAdapter interface (defined in runtime package to avoid import cycles)
-type ProtocolAdapter interface {
-    Serve(ctx context.Context) error
-    Stop(ctx context.Context) error
-    Protocol() string
-    Port() int
-}
-
-// RuntimeSetter - adapters that need runtime access implement this.
-// The parameter is `any` on purpose: pkg/adapter cannot import
-// pkg/controlplane/runtime (the runtime imports the adapter contract), so
-// implementations type-assert to *runtime.Runtime and panic on a mismatch.
-type RuntimeSetter interface {
-    SetRuntime(rt any)
-}
-
-// Multiple adapters can run concurrently, sharing the same runtime
-rt := runtime.New(cpStore)
-rt.SetAdapterFactory(createAdapterFactory())
-rt.Serve(ctx)  // Loads adapters from store and starts them
-```
-
-### Shared adapter helpers (internal/adapter/common)
-
-NFSv3, NFSv4, and SMB v2/3 handlers share a single package of helpers at
-`internal/adapter/common/` so the three adapters do not each carry a
-private copy of the same logic. The package exposes:
-
-- **No content store**: `common.ErrNoContentStore` is the answer every
-  data operation gives while the data path is cut: `block.ErrNoContentStore`
-  in the I/O row, so each protocol's `StatusForErr` maps it to its own I/O
-  status.
-- **Metadata error translation**: per-package `StatusFor` switches in the
-  adapter types packages (`internal/adapter/nfs/types`,
-  `internal/adapter/nfs/v4/types`, `internal/adapter/smb/types`), each with
-  its enum-walk test; `StatusForErr` is the error-level wrapper. SMB lock-
-  operation context uses the parallel `StatusForLock`/`StatusForLockErr`
-  functions in the same package (e.g., `ErrLocked` →
-  `STATUS_LOCK_NOT_GRANTED` in lock context vs. `STATUS_FILE_LOCK_CONFLICT`
-  in general I/O context). Adding a new `metadata.ErrorCode` means adding a
-  switch arm plus an expectation row in each relevant package — the
-  enum-walk test fails loudly if either is missing.
-
-See CONTRIBUTING.md "Adding a new metadata.ErrorCode" for the recipe and
-NFS.md / SMB.md "Error mapping" for protocol-specific notes.
+On this branch the v1 protocol adapters (`pkg/adapter`, `internal/adapter`) are
+deleted and no file protocol is served. RFC 20's v2 adapters replace them; see
+[RFC 20](rfcs/rfc-20-adapters.md).
 
 ### Object ownership: a client-supplied identifier is not authorization
 

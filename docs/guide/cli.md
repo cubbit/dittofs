@@ -32,8 +32,8 @@ This page is generated from the command definitions (`go run ./cmd/gendocs`). Do
 DittoFS - Modular virtual filesystem
 
 DittoFS is an experimental modular virtual filesystem that decouples
-file interfaces from storage backends. It implements NFSv3 and SMB protocols
-in pure Go (userspace, no FUSE required) with pluggable metadata and content stores.
+file interfaces from storage backends, with pluggable metadata and content
+stores. This build runs the control plane and serves no file protocol.
 
 Use "dfs [command] --help" for more information about a command.
 
@@ -489,7 +489,7 @@ dfs status
 # Check status when the control-plane API runs on a non-default port
 dfs status --api-port 9080
 
-# Include per-entity (share, adapter, store) detail
+# Include per-entity (share, store) detail
 dfs status --api-token <token>
 
 # Emit machine-readable JSON output
@@ -709,8 +709,8 @@ dfsctl is the command-line client for managing DittoFS servers remotely.
 
 It communicates with the DittoFS control-plane REST API (default port 8080) and
 persists credentials in ~/.config/dfsctl/config.json. Run dfsctl login first to
-authenticate, then use the subcommands to manage users, groups, shares, stores,
-adapters, and server settings. Multiple server contexts are supported via the
+authenticate, then use the subcommands to manage users, groups, shares, stores
+and server settings. Multiple server contexts are supported via the
 context subcommand.
 
 Use "dfsctl [command] --help" for more information about a command.

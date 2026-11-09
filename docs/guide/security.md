@@ -6,6 +6,10 @@ Exercise caution before deploying in production environments without thorough te
 For the internal mechanism design and threat model, see
 [`../internals/security-model.md`](../internals/security-model.md).
 
+> **Not served on this branch.** This build serves no file protocol. The NFS and
+> SMB sections below, and their `adapters:` settings, describe the released
+> server.
+
 ## Table of Contents
 
 - [What is implemented](#what-is-implemented)
@@ -592,32 +596,16 @@ kerberos:
   max_clock_skew: 5m
   context_ttl: 8h
 
-# Shares, their netgroup allowlist and their squash mode live in the control
-# plane, not this file. Create them once:
+# Shares and their squash mode live in the control plane, not this file.
+# Create them once:
 #
-#   dfsctl netgroup create trusted-net
-#   dfsctl netgroup add-member trusted-net --type cidr --value 10.0.0.0/8
 #   dfsctl share create --name /export --metadata default --block-store default \
-    --read-only --squash root_to_guest
-#   dfsctl share nfs-config set /export --netgroup trusted-net
-
-adapters:
-  nfs:
-    port: 12049
-    max_connections: 100
-    timeouts:
-      idle: 5m
-  smb:
-    port: 12445
-    signing:
-      enabled: true
-      required: true
-    encryption:
-      encryption_mode: required
-      allowed_ciphers: []
+#     --read-only --squash root_to_guest
+#
+# This build serves no file protocol, so it reads no adapter block here.
 ```
 
-See [`./configuration.md`](./configuration.md) for the full adapter configuration reference.
+See [`./configuration.md`](./configuration.md) for the full configuration reference.
 
 ---
 

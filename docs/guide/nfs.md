@@ -2,6 +2,10 @@
 
 > Implementing or debugging the protocol? See [NFS protocol internals](../internals/nfs-protocol.md).
 
+> **Not served on this branch.** This build serves no file protocol; the NFS
+> adapter is being rebuilt (RFC 20, RFC 21). This guide describes NFS as the
+> released server serves it.
+
 This guide covers everything an operator or end user needs to mount and use DittoFS over NFS: supported versions, mount commands, portmapper configuration, Kerberos, NFS-over-TLS, and troubleshooting pointers.
 
 ## Table of Contents
@@ -146,13 +150,6 @@ The portmapper is disabled by default. Its enabled flag and port are NFS
 adapter settings (`portmapper_enabled`, `portmapper_port`); this build has no
 command to change them.
 
-The equivalent environment variables:
-
-```bash
-DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=10111
-DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=false
-```
-
 #### Registering with the system rpcbind (port 111)
 
 A kernel NFSv3 client discovers the NLM (lock manager) port by querying
@@ -161,16 +158,11 @@ client-side override. On a host that already runs a system `rpcbind`, DittoFS
 cannot bind 111 with its embedded portmapper, so a client mounted **without**
 `nolock` finds no NLM registration and lock calls hang.
 
-Set `register_with_system` to make DittoFS register its services (NFS, MOUNT,
+The `portmapper_register_with_system` setting makes DittoFS register its services (NFS, MOUNT,
 NLM, NSM) with the host's existing `rpcbind` at startup — the same mechanism
 `rpc.nfsd` and `rpc.statd` use — so NFSv3 byte-range locking works without
-`nolock`:
-
-```bash
-DITTOFS_ADAPTERS_NFS_PORTMAPPER_REGISTER_WITH_SYSTEM=true
-# NLM/NSM use UDP for status notifications — enable the UDP transport too:
-DITTOFS_ADAPTERS_NFS_UDP_ENABLED=true
-```
+`nolock`. NLM/NSM use UDP for status notifications, so `udp_enabled` goes with
+it.
 
 Best effort: if no `rpcbind` answers on 111 the registration is skipped with a
 warning (NFS still serves; only `nolock`-free v3 locking is unavailable). The
@@ -250,24 +242,6 @@ no mount option to redirect that lookup. So two server-side pieces, both
 Restart the adapter after changing these settings. Linux clients (NLM v4) work
 once the portmapper is reachable; they do not strictly require UDP, but enabling
 it is harmless.
-
-Equivalent config-file / env settings:
-
-```yaml
-adapters:
-  nfs:
-    udp:
-      enabled: true
-    portmapper:
-      enabled: true
-      port: 111
-```
-
-```bash
-DITTOFS_ADAPTERS_NFS_UDP_ENABLED=true
-DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=true
-DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=111
-```
 
 ### Recommended: just use NFSv4
 
