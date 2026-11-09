@@ -403,6 +403,9 @@ a channel is how many requests may be in flight on it at once.
   `NFS4ERR_RETRY_UNCACHED_REP`, never run again and never answered from a
   partial reply: a part of a reply returned as if it were the whole tells the
   client operations failed or succeeded that did neither.
+- A request a drain leaves unanswered leaves the slot as it was, its previous
+  sequence ID and reply, so its retransmission runs again
+  ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
 
 > ponytail: 8 KiB per cached reply covers every non-idempotent operation's
 > reply with its attributes, and bounds a session at 512 KiB however many
@@ -814,9 +817,9 @@ adapter then calls `FreeState` for it on the client's behalf, so a later use is
 **A revoke outlives a restart.** The revoked set is volatile, but the revoke's
 transaction also empties the client's shard list durably
 ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
-A later reclaim names a shard the record does not list and is refused
+A later reclaim in grace names a shard the record does not list and is refused
 `ErrState` (`NoReclaim`) (§11.5) — the client held nothing there it may take
-back — until the client next takes state there by an ordinary, non-reclaim
+back — and one after grace is `ErrState` (`NoGrace`), until the client next takes state there by an ordinary, non-reclaim
 request, which lists the shard again; RFC 8881 §8.4.3 asks a server to refuse
 the reclaim of state revoked before its restart. Without it, a node restarting
 before a stuck client saw its revoke would let that client reclaim in grace the
@@ -825,7 +828,7 @@ told by, so an administrator's revoke of an NLM host is an expiry
 ([RFC 14 §4.3](rfc-14-open-state.md#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)):
 it releases the host's locks and deletes its record, so a later restart sends
 it no `SM_NOTIFY` and it reclaims nothing. A reclaim it sends anyway names a
-client no record holds — `ErrState` (`NoReclaim`) — and its next ordinary lock request
+client no record holds — `ErrState` (`NoReclaim`) in grace, `ErrState` (`NoGrace`) after — and its next ordinary lock request
 creates a new client record (§6.1).
 
 > decision: an administrator's revoke follows RFC 8881 rather than purging
@@ -1123,9 +1126,9 @@ wire:
 | Situation | Answer |
 | --- | --- |
 | a non-reclaim request refused during grace (`ErrGrace`) | `NFS4ERR_GRACE` (NFSv4), `NLM4_DENIED_GRACE_PERIOD` (NLM) |
-| a reclaim outside grace, or by a client the record does not name for the shard | `NFS4ERR_NO_GRACE` |
-| a reclaim in grace of state the client did not hold (`ErrState` (`NoReclaim`)) | `NFS4ERR_RECLAIM_BAD` |
-| a reclaim sent after that same client's `RECLAIM_COMPLETE` for the same shard and the same grace instance (RFC 8881 §18.51.3) | `NFS4ERR_NO_GRACE` |
+| a reclaim outside grace of state the shard does not hold for the client (`ErrState` (`NoGrace`)) | `NFS4ERR_NO_GRACE` |
+| a reclaim in grace by a client the record does not name for the shard (`ErrState` (`NoReclaim`)) | `NFS4ERR_RECLAIM_BAD` |
+| a reclaim sent after that same client's `RECLAIM_COMPLETE` for the same shard and the same grace instance (RFC 8881 §18.51.3) (`ErrState` (`NoGrace`)) | `NFS4ERR_NO_GRACE` |
 | reclaim an open | `OPEN` with `CLAIM_PREVIOUS` |
 | reclaim a lock | `LOCK` with `reclaim` set |
 | reclaim a delegation (`CLAIM_PREVIOUS` with a delegation type), in a shard in grace | the open, without a delegation: the shard lost its grants, which are not durable ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)) |
@@ -1171,7 +1174,7 @@ every reclaim after the first failover. Instead:
   reclaims per client, not per shard. A reclaim reaching a shard not in grace,
   of state that shard still holds for that client, **MUST** be answered with
   that state as it stands, granting nothing new; any other reclaim there is
-  `NFS4ERR_NO_GRACE`. Otherwise a client asked to reclaim by one shard's
+  `NFS4ERR_NO_GRACE` (`ErrState` (`NoGrace`)). Otherwise a client asked to reclaim by one shard's
   failover would lose its opens in every healthy shard. That includes a
   delegation: a reclaim there of an open that holds one returns the open with
   its delegation, and only a shard in grace answers without one (the table
@@ -1604,7 +1607,7 @@ What a client sees depends on whether the move carries the address it mounts:
   handles keep working at B. An NFSv4 client sees a new server owner and scope
   and its client ID unknown, and B holds no client record for it: a Linux
   NFSv4.1 client, told of a new scope, sends no reclaim, and any client's
-  reclaim is `NFS4ERR_NO_GRACE`. Its opens, locks and delegations are lost, a
+  reclaim is `NFS4ERR_RECLAIM_BAD` (`ErrState` (`NoReclaim`)). Its opens, locks and delegations are lost, a
   lock's holder sees `EIO`, and its new opens are `NFS4ERR_GRACE` until B's
   grace ends.
 - **The move names no address.** A answers every handle into the moved shares
@@ -2420,8 +2423,8 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrLost` on `Commit` — a loss of unstable writes the client was answered for | the `COMMIT` reply, with the new verifier (§9.1) | the same |
 | `ErrLost` on a stable `Write` — the sync that write waited on failed (§9.1) | `NFS4ERR_IO` | `NFS3ERR_IO` |
 | `ErrGrace` | `NFS4ERR_GRACE` | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
-| `ErrState` (`NoReclaim`) — a reclaim in grace of state the record does not show | `NFS4ERR_RECLAIM_BAD` | NLM: `NLM4_DENIED_GRACE_PERIOD` |
-| a reclaim outside grace — the service, which knows the shard's grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)), answers it as its own kind ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), so no handler splits by grace | `NFS4ERR_NO_GRACE` | NLM: `NLM4_DENIED` |
+| `ErrState` (`NoReclaim`) — a reclaim in grace by a client the record does not name for the shard | `NFS4ERR_RECLAIM_BAD` | NLM: `NLM4_DENIED_GRACE_PERIOD` |
+| `ErrState` (`NoGrace`) — a reclaim outside grace of state the shard does not hold, or after the client's `RECLAIM_COMPLETE` for the shard's grace instance; the service, which knows the shard's grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)), answers it as its own kind ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), so no handler splits by grace | `NFS4ERR_NO_GRACE` | NLM: `NLM4_DENIED` |
 | `ErrState` (`ReclaimConflict`) — a reclaim that conflicts with state already reclaimed in the same grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | `NFS4ERR_RECLAIM_CONFLICT` | NLM: `NLM4_DENIED` |
 | `ErrState` (`StaleClient`) — a client that expired, or is marked by a shard's loss ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_STALE_CLIENTID` for an operation naming a client ID, `RENEW` included, and for an NFSv4.0 client a loss awaits (§5.4). A stateid of an expired client is never answered `NFS4ERR_STALE_CLIENTID`, which is not a legal answer to `READ`, `WRITE` and the other stateid operations of RFC 8881: RFC 14 released its record with the client's other state, so it resolves to nothing and is `ErrState` (`BadState`), below. `NFS4ERR_EXPIRED` is never answered, since no expired client's record is kept (§5.1). A stateid of a live client whose state was lost is `ErrState` (`StaleState`), below | NLM: never `NLM4_DENIED`: the adapter connects the host afresh and retries once, then answers `NLM4_DENIED_GRACE_PERIOD` (§6.1) |
 | `ErrState` (`Revoked`, `Admin` naming the cause) — a stateid in its client's revoked set, not yet freed, its client still live: a grant revoked at its recall deadline, or any state an administrator revoked (§5.1, [RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)); state lost with a shard stays `ErrState` (`StaleState`) | by the revocation's cause: `NFS4ERR_ADMIN_REVOKED` for any stateid an administrator revoked (§5.1); `NFS4ERR_DELEG_REVOKED` for a delegation's or layout's revoked at its recall deadline (§5.3) | — |
@@ -2431,7 +2434,7 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrPerm` — an immutable or append-only file, or a change of owner, group or flags the caller may not make ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_PERM` | `NFS3ERR_PERM` |
 | `ErrIO` — a journal read the device could not complete, after its bounded retry ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), on a `READ`, `READ_PLUS`, `COPY` or `CLONE` reading its source, a `COMMIT` or a stable `WRITE` | `NFS4ERR_IO`, after a short read of the verified bytes on a `READ` or `READ_PLUS` | `NFS3ERR_IO`, likewise |
 | `ErrUnavailable`, `ErrCorrupt`, `ErrLost` on a read ([RFC 17 §5.2](rfc-17-vfs.md#5.2%20Read)) | a short read of the verified bytes, then `NFS4ERR_DELAY` for `ErrUnavailable` and `NFS4ERR_IO` for the others | `NFS3ERR_JUKEBOX` for `ErrUnavailable`, `NFS3ERR_IO` for the others |
-| `ErrState` (`NotYours`) | `NFS4ERR_ACCESS` for NFSv4.0 `READ`, `WRITE` and `SETATTR` under an open or lock stateid, unless the error is `Sessioned` (rule 5's principal check, §5.2); `NFS4ERR_BAD_STATEID` otherwise, a delegation stateid's and a `Sessioned` refusal included (rule 5), with no read of the client record | — |
+| `ErrState` (`NotYours`) | `NFS4ERR_ACCESS` for NFSv4.0 `READ`, `WRITE` and `SETATTR`, unless the error is `Sessioned` (rule 5's principal check, §5.2); `NFS4ERR_BAD_STATEID` otherwise, with no read of the client record. The row needs no stateid type: an NFSv4.0 call presenting a delegation stateid is always refused `Sessioned`, since only a session is offered a delegation ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), so it is `NFS4ERR_BAD_STATEID` (rule 5) | — |
 | `ErrWrongSecurity` — the share's policy does not admit the call's flavour ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) | `NFS4ERR_WRONGSEC` | the RPC is rejected `AUTH_TOOWEAK` (§10) |
 | `ErrState` (`BadSeqID`) | `NFS4ERR_BAD_SEQID` | — |
 | `ErrState` (`LocksHeld`) — `RELEASE_LOCKOWNER` of an owner still holding locks, `FREE_STATEID` of a lock state holding locks or of a live open or delegation; nothing changed | `NFS4ERR_LOCKS_HELD` | — |
@@ -2514,7 +2517,9 @@ service, before any wire suite runs:
   is answered in full; a `WRITE` gets `NFS4ERR_MOVED`, and `EXCHANGE_ID` no
   reply. `SEQUENCE` under NFSv4.0 gets `NFS4ERR_OP_ILLEGAL`. On the only node
   stopping, `SEQUENCE`, `PUTFH`, `WRITE` gets no reply at all, not a results
-  array cut short under `NFS4_OK`, and its slot caches nothing
+  array cut short under `NFS4_OK`, and its slot keeps its previous sequence ID
+  and reply, so its retransmission is refused by the drain again, never
+  answered `NFS4ERR_RETRY_UNCACHED_REP`
   ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
 - **Every decoder is fuzzed.** Go native fuzzing (`testing.F`) of the stateid ↔
   `StateRef` codec, `share_access`/`share_deny` decoding, `LOCK` and NLM

@@ -503,9 +503,15 @@ flight.
   those final responses still owe and a synchronous response grants no more
   than it; past the floor it keeps its
   receive reservation
-  ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)). The balance never
+  ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)). That bounds the
+  rate, not the count: a request sent on the last credit that the interim
+  timer also finds in the service goes pending the same way, so while such
+  calls stay in the service the pending requests grow by one per round trip,
+  and what bounds them is bytes — the floor, the hold pool and their receive
+  reservations. On this path the balance never
   reaches zero (MS-SMB2 3.3.1.2), so the client can still acknowledge a lease
-  break the call may be waiting on. Credits of chain members answered before
+  break the call may be waiting on; a drain's refusals are the exception
+  (§16.5). Credits of chain members answered before
   it ride on its interim and are granted in full.
 
 > ponytail: one credit target and one hold floor per connection, neither a
@@ -2502,6 +2508,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrCross` (`CrossNamespace`) — a copy or clone between shares in different namespaces (§10) | `STATUS_NOT_SUPPORTED` at once; the client copies the bytes itself |
 | `ErrLost` on `FLUSH` — a loss of the file's acknowledged writes since this open last flushed (§9.4) | `STATUS_UNEXPECTED_IO_ERROR`, once per open |
 | `ErrState` (`NoReclaim`) — a reconnect whose open is gone, an administrator's revoke included ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)) | `STATUS_OBJECT_NAME_NOT_FOUND` (§6.4) |
+| `ErrState` (`NoGrace`) — a reclaim the shard no longer takes ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | not met: SMB reclaims only by `Reconnect`, which is never refused `NoGrace`; were it met, `STATUS_OBJECT_NAME_NOT_FOUND` as for `NoReclaim` |
 | `ErrState` (`ReclaimConflict`) — a reclaim that conflicts with one already reclaimed in the same grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | not met: a reconnect reclaims a persistent open its durable record holds, which no other reclaim can hold; were it met, `STATUS_OBJECT_NAME_NOT_FOUND` as for `NoReclaim` |
 | `ErrState` (`StaleState`) — a FileId whose open was lost with its shard's open state ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_FILE_CLOSED` |
 | `ErrState` (`Revoked`) — a FileId whose open an administrator revoked, its client kept ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_FILE_CLOSED`: SMB has no revoked status, and the client reopens. Once it has so answered a FileId, the adapter calls `FreeState` for it ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)), as SMB has no `FREE_STATEID`; a later use is `ErrState` (`BadState`) |
@@ -2579,6 +2586,20 @@ lease, and per request a `LOCK` whose elements unlock; flushes are `FLUSH`, as
 NFS's `COMMIT` is, and per request a `WRITE` through an open under a break,
 which the break waits on. Every other command is refused with the drain's
 error.
+
+> decision: the credit floor of §3.3 holds on the hold path only. A drain's
+> refusal sends no reply, so it spends its `CreditCharge` and grants nothing
+> back, and a chain it stops loses the credits of every member from it on. A
+> client that keeps sending other requests through a drain can therefore reach
+> zero, and then cannot send the break acknowledgement or the flushing `WRITE`
+> the drain lets through. Answering each refusal with an interim
+> `STATUS_PENDING` that grants up to the floor, and no final response, would
+> keep it at one, but makes every refusal a pending request the drain must
+> count and end. The ceiling: a client that sends more refused requests in one
+> drain than it holds credits has a break it owes time out (35 s, then S26's
+> fence), and the lease's unflushed writes wait for its reconnect. Adopt the
+> interim answer if a drain test shows a client reaching zero with a break
+> outstanding.
 
 ### 16.6 Testing
 

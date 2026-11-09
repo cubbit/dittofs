@@ -1488,11 +1488,13 @@ version:
   `errors.Is` matches against a value of the same type and kind only, and the
   whole class by its sentinel ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values));
 - a row sees the error, the operation and the version, nothing else. An answer
-  that turns on more is two kinds the service tells apart: a reclaim is
-  `NFS4ERR_RECLAIM_BAD` in grace and `NFS4ERR_NO_GRACE` outside it
+  that turns on more is two kinds the service tells apart: a refused reclaim is
+  `NFS4ERR_RECLAIM_BAD` in grace and `NFS4ERR_NO_GRACE` outside it, or once
+  the client has finished reclaiming
   ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors)), and the service, which knows
   the shard's grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)),
-  answers a reclaim outside it as its own kind, mapped by its own row;
+  answers those as their own kind,
+  `&vfs.StateError{Kind: vfs.StateNoGrace}`, mapped by its own row;
 - expected refusals — `ErrNotFound`, `ErrExist`, `ErrAccess` and the like — are
   logged at debug, unexpected ones at error.
 
@@ -1572,12 +1574,15 @@ it holds — the service counts nothing about holds:
 > once could report a failure for a call that applies a moment later (§4.7's
 > `Pends` decision). Its interim withholds its credits but for what keeps the
 > client's balance at one, and its final reply grants the rest
-> (`HoldCodec.Interim`, `HoldCodec.Final`): the overshoot is at most the
-> client's balance minus one when the ceiling, or the floor with the pool full,
-> was reached, then one call at a time sent on that last credit, each keeping
-> its receive reservation: the credit target counts what a withheld interim's
-> final reply still owes, so no other response refills the balance past it
-> (RFC 22 §3.3). The balance stays at one because MS-SMB2 3.3.1.2
+> (`HoldCodec.Interim`, `HoldCodec.Final`): the client's balance falls to one,
+> since the credit target counts what a withheld interim's final reply still
+> owes, so no other response refills the balance past it (RFC 22 §3.3), and it
+> then sends one call at a time on that last credit. That bounds the rate, not
+> the count: a call sent on the last credit that the timer also finds in the
+> service goes pending the same way, so while such calls stay in the service
+> the pending calls grow by one per round trip, each keeping its receive
+> reservation, and bytes bound them — the floor, the hold pool and those
+> reservations — not a number. The balance stays at one because MS-SMB2 3.3.1.2
 > requires that it never reach zero, and a client at zero could not send the lease-break
 > acknowledgement such a call may be waiting on. This departs from MS-SMB2
 > 3.3.4.1.2, which grants an asynchronous request's credits in its interim
@@ -1838,7 +1843,7 @@ if err == nil && expired(r) && !op.Expired && role != RoleRelease { err = ErrExp
 if err == nil && draining && role == RoleNone { err = drainErr } // §3.1: ErrMoved or ErrDraining
 if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve when tbl.Holds
 st, send := tbl.Errors.Map(err, op, h.Version())
-if !send { freeReply(); return } // a NoReply row: the reservation and credit are released
+if !send { freeReply(); return } // a NoReply row: the reply reservation is freed; the request's credits stay spent, none granted back, so the server's view of the balance falls as the client's does
 reply := encode(stages.Header, h, st, inv)
 if op.Cacheable { stages.Replay.Store(h, reply) } // a clear copy, before Wrap
 err = stages.Security.Wrap(h, reply) // a chain's replies: once, joined (below)
@@ -1879,7 +1884,12 @@ before it stay applied and are answered: their replies go out chained, ending
 at the member before it, and one that went pending gets its final reply as
 usual. An NFSv4 `COMPOUND` has one reply, and a results array cut short
 under `NFS4_OK` is malformed (RFC 8881 §16.2.3), so an operation that sends no
-reply leaves the whole RPC unanswered and its slot caches nothing.
+reply leaves the whole RPC unanswered, and its NFSv4.1 slot keeps its previous
+sequence ID and reply: `SEQUENCE` ran, but
+the runner does not advance the slot for a reply it never sends, so a
+retransmission on the same slot and sequence ID runs again rather than being
+answered `NFS4ERR_RETRY_UNCACHED_REP`, which would tell the client the
+compound ran when its refused operation did not.
 
 > decision: `Pends` is asked only for an `ErrDelay` the service returned. A
 > call still in the service can apply after any answer, so answering it at
@@ -2503,6 +2513,8 @@ with `vfs.WithRequestID`, built from the protocol's retry identity as
 [RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope) says; the
 gateway copies it into the route envelope
 ([RFC 17 §4.7](rfc-17-vfs.md#4.7%20Callable%20across%20the%20network)).
+The gateway is its one reader, so until the gateway exists (RFC 17's cluster
+stage) a single node sets no request ID.
 
 ### 6.5 Cancellation
 
@@ -3158,8 +3170,8 @@ connection, not once per request
 ## Appendix B — where the current code differs
 
 *Non-normative.* The code on the branch this RFC was written against, by section.
-The order in which it moves, and the shrinking allowlist that shows each step,
-are [RFC 17 §9](rfc-17-vfs.md#9.%20Migration)'s.
+The order in which the service lands is [RFC 17 §9](rfc-17-vfs.md#9.%20Migration)'s;
+the current adapters are deleted, not moved, at stage 5 of RFC 20's plan.
 
 **The goal is feature parity, not a port.** Every feature a client sees today
 — each protocol version, operation, side behaviour and setting — is served

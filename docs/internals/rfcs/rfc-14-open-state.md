@@ -1556,10 +1556,20 @@ state — the client was told to reclaim everywhere, but only another shard
 failed over — returns the state that shard still holds for the client, and is
 not refused: the client is reclaiming what it has. One asking access or deny
 the open it still holds lacks, or naming an open it does not hold, is
-`ErrNoReclaim`, and changes nothing: there the record shows what was held. That includes a delegation:
+`ErrNoGrace`, and changes nothing: there the table shows what is held. That includes a delegation:
 a reclaim of an open that names a delegation the shard still holds returns the
 open with that delegation. Only a shard in grace, which lost its grants
 ([§8](#8.%20What%20is%20durable)), answers such a reclaim without one.
+
+**A reclaim the shard no longer takes is `ErrNoGrace`**, its own refusal, so an
+adapter answers it without knowing the shard's grace: a reclaim reaching a
+shard not in grace that names what the shard does not hold for the client, as
+above, and one from a client that has finished reclaiming in the shard's grace
+instance, as its `Recovery` defines finishing (§4.4). It is
+checked before the shard list, so `ErrNoReclaim`, a client the list does not
+name, is a refusal in grace only. It refuses a reclaim, an open or lock with
+`Reclaim` set, never a `Reconnect`: a reconnect whose open is gone is
+`ErrNoReclaim` in or out of grace (§8.1).
 
 **A reclaim never grants more than the client held.** It **MUST** restore only
 the access and deny modes — and the locks and grants — the client claims to
@@ -1923,8 +1933,9 @@ wants); `Destroy` drops the revoked set with the record.
 
 **A revoke outlives a restart.** The revoked set is volatile, but the revoke's
 transaction also empties the client's `Shards` durably, since the revoke left
-it holding nothing in any shard. A later reclaim, in or out of grace, then
-names a shard the record does not list and is refused `ErrNoReclaim`; the
+it holding nothing in any shard. A later reclaim in grace then
+names a shard the record does not list and is refused `ErrNoReclaim`, and one
+out of grace is `ErrNoGrace`, as any there of state not held (§4.2); the
 client's next ordinary request in a shard lists it again. Without it, a restart
 before the client saw `ClientStatus.AdminRevoked` would let it reclaim in grace
 the open and lock another client took after the revoke.
@@ -3217,6 +3228,7 @@ var (
 	ErrRangeNotLocked  = errors.New("openstate: unlock of a range the owner does not hold")
 	ErrLocksHeld       = errors.New("openstate: the owner or lock state still holds locks")
 	ErrNoReclaim       = errors.New("openstate: nothing to reclaim in this shard")
+	ErrNoGrace         = errors.New("openstate: reclaim the shard no longer takes: not in grace, or the client finished reclaiming") // §4.2
 	ErrReclaimConflict = errors.New("openstate: reclaim conflicts with state already reclaimed")
 	ErrStaleClient     = errors.New("openstate: client expired, or owes a reclaim it must confirm again for")
 	ErrRevoked         = errors.New("openstate: state revoked, by a recall past its deadline or an administrator, and not yet freed")
@@ -3263,7 +3275,7 @@ Deleted numbers are not reused.
 | --- | --- | --- |
 | L1 | All open state is keyed by file, held in one table per file at the file's primary, and visible to every adapter; that primary also runs the file's I/O. A grant is broken by exactly what §5.2's table names. | Service layer, cross-protocol: for every row of [§7](#7.%20Conflicts%20across%20protocols)'s table and §5.2's, assert the stated outcome with one protocol holding and the other requesting; a read delegation is recalled before an SMB open that denies read is granted. A single-adapter rig cannot fail this. |
 | L2 | After a loss of open state, every non-reclaim request, and every anonymous or unreclaimed I/O in a shard whose records name a client that can reclaim a deny mode or a mandatory lock, is refused `ErrGrace` until grace ends, and grace ends on its own. | Grant a lock, restart, have a different client request the conflicting lock at once: assert refused for the lease period; a lock on a file nobody held is refused too, and a reclaim is granted. Hold an NFSv4 deny-write open, fail over, write the file anonymously before the reclaim: assert `ErrGrace`; remove or rename the file over NFSv3 then: `ErrGrace`, and a mode change passes. An SMB client holds no deny mode grace waits for: with its deny-write open and an NLM host's lock in one shard, after the restart an anonymous write to the SMB client's file passes while a lock that is no reclaim is `ErrGrace`. |
-| L3 | A reclaim is accepted only from a client whose durable record names the shard, and every client so named is told to reclaim. | Lose the client records, restart, reclaim: assert `ErrNoReclaim`. Client C holds state only in shard U1, D a lock in U2; fail U2 over: assert C's reclaim of D's lock is refused. |
+| L3 | A reclaim is accepted only from a client whose durable record names the shard, and every client so named is told to reclaim. | Lose the client records, restart, reclaim: assert `ErrNoReclaim`. Client C holds state only in shard U1, D a lock in U2; fail U2 over: assert C's reclaim of D's lock is refused. After grace ends, assert a reclaim of state the shard does not hold is `ErrNoGrace`, whether or not the list names its client; in grace, after a client's `ReclaimComplete` for the instance, assert its next reclaim is `ErrNoGrace`. |
 | L3b | Two reclaims never both hold conflicting state. | Clients C and D both have records in a shard; both reclaim an exclusive lock on one range: the second is `ErrReclaimConflict` and one holder remains. Model fuzzing holds it as an invariant over every reclaim sequence. |
 | L5 | A recall ends within its deadline, by acknowledgement or revocation, and no worker waits on it. | Hold grants on 10⁴ files with a client that never answers; send conflicting opens from another. Assert each gets `ErrDelay` at once, unrelated `CheckIO` p99 stays within 2× its idle value, and no goroutine is blocked on a recall (counted). |
 | L5b | A recall's deadline starts when it is handed to the Sink; a recall not yet sent is never revoked and starts no fence. | Fill the outbox past 4,096 recalls with a slow Sink and a responsive holder: no recall is revoked and no client fenced for a recall sent after its nominal deadline and answered within one deadline of being sent; a request that would start a recall past the bound is `ErrDelay` (`DelayResources`). |
