@@ -107,7 +107,7 @@ func (d *Durability) failWindow(st *stream, w *window) {
 func (d *Durability) failFile(st *stream, w *window, f core.FileID, entries []entry) {
 	recs := make([]index.WindowRecord, len(entries))
 	for i, e := range entries {
-		recs[i] = index.WindowRecord{Record: recordAt(e.w), Version: e.w.Version}
+		recs[i] = index.WindowRecord{Record: recordAt(e.w), Version: e.w.Version, Extent: e.w.Extent}
 	}
 
 	unlock := d.domains.Lock(f)
@@ -122,9 +122,9 @@ func (d *Durability) failFile(st *stream, w *window, f core.FileID, entries []en
 	// retained until that record syncs. One that already synced was lifted
 	// before the failed record handed it the parts, so it is lifted now; one
 	// still in the ledger or a window lifts when it completes.
-	for _, v := range fw.Covers {
-		if !d.hasEntry(st, f, v) {
-			d.lift(f, v)
+	for _, c := range fw.Covers {
+		if !d.hasEntry(st, f, c) {
+			d.lift(f, c.Version, c.Extent)
 		}
 	}
 	unlock()
@@ -134,14 +134,19 @@ func (d *Durability) failFile(st *stream, w *window, f core.FileID, entries []en
 	}
 }
 
-// hasEntry reports whether the stream's ledger or a pending window holds a
-// record of file at version v.
-func (d *Durability) hasEntry(st *stream, file core.FileID, v core.Version) bool {
+// hasEntry reports whether the stream's ledger or a pending window holds the
+// content record a cover names: one of file at the cover's version whose
+// extent holds the cover's part. A write split across segments has several
+// records of one version, and a sibling's entry is not this record's.
+func (d *Durability) hasEntry(st *stream, file core.FileID, c index.Cover) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	// Only content covers: a loss record's header carries the dropped
 	// record's version and is not a cover.
-	match := func(e entry) bool { return isContent(e.w) && e.w.File == file && e.w.Version == v }
+	match := func(e entry) bool {
+		return isContent(e.w) && e.w.File == file && e.w.Version == c.Version &&
+			e.w.Extent.Off <= c.Extent.Off && c.Extent.Off+c.Extent.Len <= e.w.Extent.Off+e.w.Extent.Len
+	}
 	if slices.ContainsFunc(st.ledger, match) {
 		return true
 	}

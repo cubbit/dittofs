@@ -147,7 +147,7 @@ func TestSegmentBytesMatchWalk(t *testing.T) {
 						if len(windows[1]) > 0 || rng.IntN(2) == 0 {
 							w = 1
 						}
-						windows[w] = append(windows[w], winRec{id, WindowRecord{Record: r, Version: ver(nextVersion)}})
+						windows[w] = append(windows[w], winRec{id, WindowRecord{Record: r, Version: ver(nextVersion), Extent: whole}})
 						f.writeRetain(write(off, n, r, nextVersion))
 					} else {
 						f.write(write(off, n, r, nextVersion))
@@ -577,7 +577,7 @@ func TestFailWindowNeverDipsASegmentItDoesNotWrite(t *testing.T) {
 func TestFailWindowSettleNeverDipsASegmentItDoesNotWrite(t *testing.T) {
 	var fs files
 	id := fid(1)
-	b := WindowRecord{Record: rec(2, 0), Version: ver(2)}
+	b := WindowRecord{Record: rec(2, 0), Version: ver(2), Extent: whole}
 	_, _ = fs.update(id, func(f *file) error {
 		f.write(write(0, 8, rec(1, 0), 1))
 		f.writeRetain(write(0, 8, b.Record, 2)) // seg 1: 8 retained by v2

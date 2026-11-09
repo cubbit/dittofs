@@ -8,6 +8,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
@@ -206,5 +207,28 @@ func TestASyncOfARecordASyncAlreadyCoveredWaitsForTheLift(t *testing.T) {
 	}
 	if got := r.ix.Retained(f); len(got) != 0 {
 		t.Fatalf("after the Sync %+v is still retained", got)
+	}
+}
+
+// TestACoverIsHeldOnlyByTheRecordOfItsOwnExtent pins that a sibling record of
+// the cover's version, a piece of the same split write that still sits in the
+// ledger, does not stop the lift of a part another piece covers: the ledger
+// holds the cover only when an entry's extent holds the part.
+func TestACoverIsHeldOnlyByTheRecordOfItsOwnExtent(t *testing.T) {
+	r := newRigUnstarted(t, 1)
+	st := r.d.made[0]
+	f := file(1)
+	v := core.Version{Counter: 3}
+	st.mu.Lock()
+	st.ledger = append(st.ledger, entry{w: segment.Written{
+		Kind: format.KindWrite, File: f, Version: v, Extent: core.Extent{Off: 4, Len: 4},
+	}})
+	st.mu.Unlock()
+
+	if r.d.hasEntry(st, f, index.Cover{Version: v, Extent: core.Extent{Off: 0, Len: 4}}) {
+		t.Error("a sibling record's entry was taken for the record that covers [0,4)")
+	}
+	if !r.d.hasEntry(st, f, index.Cover{Version: v, Extent: core.Extent{Off: 4, Len: 2}}) {
+		t.Error("the record whose extent holds the cover was not found")
 	}
 }

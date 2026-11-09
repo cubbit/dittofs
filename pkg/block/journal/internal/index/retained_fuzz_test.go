@@ -116,7 +116,7 @@ func retainedOps(t *testing.T, data []byte) {
 				} else if w != pureWin {
 					pure = false
 				}
-				windows[w] = append(windows[w], WindowRecord{Record: p.Record, Version: p.Version})
+				windows[w] = append(windows[w], WindowRecord{Record: p.Record, Version: p.Version, Extent: whole})
 				for i := e.Off; i < e.Off+e.Len; i++ {
 					if b := o[i]; b.held {
 						kept = append(kept, rbyte{i, b.record, b.at, b.version, b.offloaded, p.Version})
@@ -178,13 +178,17 @@ func retainedOps(t *testing.T, data []byte) {
 			inWindow := func(v core.Version) bool {
 				return slices.ContainsFunc(window, func(w WindowRecord) bool { return w.Version == v })
 			}
-			if !slices.IsSortedFunc(covers, core.Version.Compare) || len(slices.CompactFunc(slices.Clone(covers), func(a, b core.Version) bool { return a == b })) != len(covers) || slices.ContainsFunc(covers, inWindow) {
+			coverVersions := make([]core.Version, len(covers))
+			for i, c := range covers {
+				coverVersions[i] = c.Version
+			}
+			if !slices.IsSortedFunc(covers, func(a, b Cover) int { return a.Version.Compare(b.Version) }) || slices.ContainsFunc(coverVersions, inWindow) {
 				t.Fatalf("step %d: covering versions %+v are not sorted, distinct and outside the window %+v", step, covers, window)
 			}
 			// A superseder the call handed out, new to the retained set and
 			// not the window's own, is one the caller must be told about.
 			for _, r := range f.retained.list(nil) {
-				if !slices.Contains(bys, r.By) && !inWindow(r.By) && !slices.Contains(covers, r.By) {
+				if !slices.Contains(bys, r.By) && !inWindow(r.By) && !slices.Contains(coverVersions, r.By) {
 					t.Fatalf("step %d: %+v was handed to %v, which failWindow did not name in %+v", step, r, r.By, covers)
 				}
 			}

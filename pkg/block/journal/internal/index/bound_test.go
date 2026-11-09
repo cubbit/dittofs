@@ -166,7 +166,7 @@ func TestExtentCountMatchesWalk(t *testing.T) {
 			var window []WindowRecord
 			fs.view(id, func(f *file) {
 				for _, p := range f.held.pieces(nil) {
-					window = append(window, WindowRecord{Record: p.Record, Version: p.Version})
+					window = append(window, WindowRecord{Record: p.Record, Version: p.Version, Extent: whole})
 				}
 			})
 			if len(window) > 0 {

@@ -199,7 +199,7 @@ func (d *Durability) complete(st *stream) {
 			// st.mu is not held: the index takes the file's lock and the
 			// account is the caller's. The entry is done only after the
 			// lift, so a Sync that returns on it sees the lift.
-			d.lift(w.File, w.Version)
+			d.lift(w.File, w.Version, w.Extent)
 		}
 		st.mu.Lock()
 		st.ledger[i].done = true

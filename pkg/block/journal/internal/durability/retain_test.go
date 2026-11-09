@@ -26,6 +26,13 @@ func (r *rig) publishGap(t *testing.T, f core.FileID, off int64, payload string,
 	if err != nil {
 		t.Fatalf("Draw: %v", err)
 	}
+	return r.publishAs(t, f, off, payload, v, gap)
+}
+
+// publishAs is publishGap with the version given, so that several records can
+// carry the one version of a write split across segments.
+func (r *rig) publishAs(t *testing.T, f core.FileID, off int64, payload string, v core.Version, gap func()) (segment.Location, core.Version) {
+	t.Helper()
 	seq, err := r.d.counters.NextSeq()
 	if err != nil {
 		t.Fatalf("NextSeq: %v", err)

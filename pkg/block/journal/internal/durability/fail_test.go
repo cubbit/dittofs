@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -625,5 +626,53 @@ func TestFailingAWindowHoldsOneFileDomainAtATime(t *testing.T) {
 	defer mu.Unlock()
 	if len(heldAtLose) != 6 || slices.ContainsFunc(heldAtLose, func(n int) bool { return n != 0 }) {
 		t.Errorf("domains held at each loss record's append: %v, want six zeros", heldAtLose)
+	}
+}
+
+// TestASplitWriteSyncedInPartLiftsOnlyThatPartsContent covers a write split
+// across two segments, whose records carry one version: the first record's
+// sync lifts only what that record superseded, and when the second record's
+// window then fails, the content it superseded is still held and read, not a
+// hole.
+func TestASplitWriteSyncedInPartLiftsOnlyThatPartsContent(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr := newFailRig(t, nil)
+	f := file(1)
+	_, v1 := fr.publish(t, f, 0, "aaaaaaaa")
+	if err := fr.d.Sync(context.Background(), f); err != nil {
+		t.Fatalf("Sync of v1: %v", err)
+	}
+	v2, err := fr.d.counters.Draw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := fr.publishAs(t, f, 0, "bbbb", v2, nil)
+	// Another file fills the segment, so the second piece's append rolls: the
+	// roll syncs the first piece while the append still holds f's domain, so
+	// its lift runs only once the second piece has superseded v1 as well.
+	fr.appendWrite(t, file(2), 0, strings.Repeat("x", 64<<10-400))
+	second, _ := fr.publishAs(t, f, 4, "bbbb", v2, nil)
+	if second.Segment == first.Segment {
+		t.Fatal("the second piece did not roll to a new segment")
+	}
+	eventually(t, "the first piece's sync to lift what it superseded", func() bool {
+		return len(fr.retainedBy(f, v2)) < 2
+	})
+	got := fr.retainedBy(f, v2)
+	if len(got) != 1 || got[0].Extent != (core.Extent{Off: 4, Len: 4}) || got[0].Version != v1 {
+		t.Fatalf("retained by v2 = %+v, want only v1 [4,8) held for the second piece", got)
+	}
+
+	fr.failSegmentOf(t, second.Segment, f)
+	fr.awaitResolved(t)
+
+	if p, ok := fr.ix.Lookup(f, 4); !ok || p.Version != v1 {
+		t.Errorf("Lookup(4) = %+v, %v, want the synced v1 where the second piece was lost", p, ok)
+	}
+	if p, ok := fr.ix.Lookup(f, 0); !ok || p.Version != v2 {
+		t.Errorf("Lookup(0) = %+v, %v, want the synced first piece of v2", p, ok)
+	}
+	if got := fr.ix.Retained(f); len(got) != 0 {
+		t.Errorf("retained %+v after the window failed, want none", got)
 	}
 }

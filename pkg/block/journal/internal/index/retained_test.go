@@ -28,7 +28,14 @@ func assertRetained(t *testing.T, f *file, want ...Retained) {
 }
 
 // failed names one record of a failed window.
-func failed(r RecordAt, v uint64) WindowRecord { return WindowRecord{Record: r, Version: ver(v)} }
+func failed(r RecordAt, v uint64) WindowRecord {
+	return WindowRecord{Record: r, Version: ver(v), Extent: whole}
+}
+
+// bySuperseder selects the pieces superseded by any record of version v.
+func bySuperseder(v core.Version) func(Retained) bool {
+	return func(r Retained) bool { return r.By == v }
+}
 
 // TestRetainedKeepsOverlappingPieces: retained pieces may overlap each other
 // and the held set, and are listed in offset then version order. A set that
@@ -351,11 +358,11 @@ func TestFailedWindowNamesTheCoveringVersions(t *testing.T) {
 	if len(out) != 0 {
 		t.Fatalf("reported %+v, want nothing", out)
 	}
-	if want := []core.Version{ver(3)}; !slices.Equal(covers, want) {
+	if want := []Cover{{Version: ver(3), Extent: ext(0, 4)}}; !slices.Equal(covers, want) {
 		t.Fatalf("covering versions %+v, want %+v", covers, want)
 	}
-	for _, v := range covers {
-		f.retained.drop(whole, bySuperseder(v), nil)
+	for _, c := range covers {
+		f.retained.drop(whole, supersededBy(c.Version, c.Extent), nil)
 	}
 	assertRetained(t, &f)
 }

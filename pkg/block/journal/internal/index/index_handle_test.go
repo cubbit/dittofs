@@ -41,7 +41,7 @@ func TestHandleWriteRetainServesNewestAndRetainsTheOlder(t *testing.T) {
 		t.Fatalf("SegmentBytes(1) = %+v, want 4096 retained and nothing held", sb)
 	}
 
-	d, err := ix.LiftSuperseded(testFile, ver(2))
+	d, err := ix.LiftSuperseded(testFile, ver(2), whole)
 	if err != nil {
 		t.Fatalf("LiftSuperseded: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestLiftSupersededOfNothingChangesNothing(t *testing.T) {
 	writeRetained(t, ix, write(0, 4096, rec(2, 0), 2))
 	before := ix.Retained(testFile)
 
-	d, err := ix.LiftSuperseded(testFile, ver(9))
+	d, err := ix.LiftSuperseded(testFile, ver(9), whole)
 	if err != nil || d != (HeldDelta{}) {
 		t.Fatalf("lift of a version that superseded nothing = %+v, %v; want zero", d, err)
 	}
@@ -114,7 +114,7 @@ func TestLiftSupersededOfNothingChangesNothing(t *testing.T) {
 		t.Fatalf("Retained changed: %+v -> %+v", before, got)
 	}
 
-	d, err = ix.LiftSuperseded(fid(99), ver(2))
+	d, err = ix.LiftSuperseded(fid(99), ver(2), whole)
 	if err != nil || d != (HeldDelta{}) {
 		t.Fatalf("lift on a file with no entry = %+v, %v; want zero", d, err)
 	}

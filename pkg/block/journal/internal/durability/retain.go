@@ -15,8 +15,8 @@ func isContent(w segment.Written) bool {
 	return w.Kind == format.KindWrite || w.Kind == format.KindFill
 }
 
-// lift stops retaining what the record of version v superseded in file, now
-// that the record is synced, and accounts the change. A failure is logged and
+// lift stops retaining what the record of version v and header extent e
+// superseded in file, now that the record is synced, and accounts the change. A failure is logged and
 // stands: the extent stays retained, which wastes space and loses nothing.
 //
 // decision: the caller holds file's append domain. A writer publishes the
@@ -26,10 +26,10 @@ func isContent(w segment.Written) bool {
 // domain would find nothing to drop, and the extent would stay retained for
 // good. Overturned by a publish that no longer follows the append under one
 // domain hold.
-func (d *Durability) lift(file core.FileID, v core.Version) {
-	hd, err := d.index.LiftSuperseded(file, v)
+func (d *Durability) lift(file core.FileID, v core.Version, e core.Extent) {
+	hd, err := d.index.LiftSuperseded(file, v, e)
 	if err != nil {
-		d.log.Error("journal could not lift superseded content", "file", file, "version", v, "err", err)
+		d.log.Error("journal could not lift superseded content", "file", file, "version", v, "extent", e, "err", err)
 		return
 	}
 	d.accountDelta(hd)
