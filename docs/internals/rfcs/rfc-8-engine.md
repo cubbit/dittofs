@@ -2938,8 +2938,10 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   operation in front of every capture of the file. So a phase 1 its call
   cannot commit is retried from the scheduler with the guard held, as a
   pending release's is, and a truncate or deallocate answers `ErrDelay`:
-  `DelayConflict` for a conflict, `DelayCommit` otherwise; the client asks
-  again. Only a terminal failure ends it: the file found gone, or the removal
+  `DelayConflict` for a conflict, `DelayJournal` while the engine refuses the
+  journal's syncs ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), `DelayCommit` otherwise; the client asks again. A
+  removal whose record a journal turning read-only undid has no journal step
+  done: it fails, as a release does in step 1 ([RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write)). Only a terminal failure ends it: the file found gone, or the removal
   refused by the store as invalid. Then the removal's own pending operation
   leaves the file's state, a file still there has its other pending existence committed in
   a transaction of its own, a lost write's existence from its loss record
@@ -3853,7 +3855,7 @@ standard library and which `pkg/vfs` re-exports as aliases
 `ErrStale` (a share being removed or retired, §12.1), `ErrCorrupt` ([§7.7](#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves), and the journal's `ErrOtherShare`, never retried), `ErrNoSpace`
 ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)), `ErrInvalid` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrIncomplete` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrCross` with
 `CrossNamespace` or **(cluster)** `OtherShard` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrDelay` with its
-`Delay` cause: `DelayCapacity`, `DelayCommit`, `DelayConflict`, `DelayClone`, `DelayJournal` (a journal turned read-only on a device error that may clear, §11.2),
+`Delay` cause: `DelayCapacity`, `DelayCommit`, `DelayConflict`, `DelayClone`, `DelayJournal` (the local journal is read-only for now: a device error that may clear, or a removal past its journal step waiting for the reopen, §8.1, §11.2),
 `DelayFrozen` (a share with no binding here, §12.1, or a file the metadata reconcile has
 not yet visited, §2.5), and `ErrFileOpen`, a release a holder aborted ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), which only the service reads.
 

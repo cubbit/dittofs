@@ -84,8 +84,8 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
   past an acknowledged loss goes with that step (§9 point 14).
 - The salvage export of a stranded tag and its `Forget` while serving (`salvage.path`): the
   second part. Here a stranded tag stays stranded until the next start.
-- A read-only journal reopened in place (RFC 8 §2.5, E42): it needs RFC 1 §5.4's read-only
-  state, spares and probe, which `journal` does not have. No epic of this part owns it
+- A read-only journal reopened in place (RFC 8 §2.5, E42): RFC 1 §5.4's read-only state,
+  spares and probe are built in `journal`, but no epic of this part owns the reopen yet
   (§9 point 8).
 - `Bind` with `State: Closing` (a re-home's finish, RFC 27) and `Fenced` (RFC 8 §11.2's
   copied-image row): out, and epic 7 for the self-fence, which is not a share state.
