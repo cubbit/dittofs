@@ -98,7 +98,7 @@ func (u *unit) create(t *testing.T, name string) entity.FileID {
 }
 
 func (u *unit) lose(f entity.FileID, off, n int64) {
-	u.j.Lose(journal.NewFileID(f), journal.Extent{Off: off, Len: n}, journal.LossCorrupt, true)
+	u.j.Lose(journal.NewFileID(f), journal.Extent{Off: off, Len: n}, journal.LossCorrupt)
 }
 
 func fill(n int, b byte) []byte { return bytes.Repeat([]byte{b}, n) }

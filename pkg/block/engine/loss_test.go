@@ -80,7 +80,7 @@ func TestALossPublishedAfterItsGenerationIsDrained(t *testing.T) {
 	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 	f := made.ID
 	u.write(t, f, 0, []byte("lost"))
-	publish := u.j.LoseLater(journal.NewFileID(f), journal.Extent{Len: 4}, journal.LossCorrupt, true)
+	publish := u.j.LoseLater(journal.NewFileID(f), journal.Extent{Len: 4}, journal.LossCorrupt)
 	_ = u.e.LossSeq(u.share.ID, f) // a drain between the raise and the event
 	publish()
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
@@ -364,7 +364,7 @@ func TestAnUnsyncedCorruptLossDropsTheWrite(t *testing.T) {
 				t.Fatal(err)
 			}
 			lose := func() {
-				u.j.Lose(journal.NewFileID(f), journal.Extent{Off: 4, Len: 4}, journal.LossCorrupt, false)
+				u.j.LoseUnsynced(journal.NewFileID(f), journal.Extent{Off: 4, Len: 4})
 				u.e.LossSeq(u.share.ID, f) // drains the loss
 			}
 			if early {
@@ -423,7 +423,7 @@ func TestAPartialUnsyncedCorruptLossLosesItsRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	u.write(t, f, 0, []byte("bbbbbbbbcccc"))
-	u.j.Lose(journal.NewFileID(f), journal.Extent{Off: 8, Len: 4}, journal.LossCorrupt, false)
+	u.j.LoseUnsynced(journal.NewFileID(f), journal.Extent{Off: 8, Len: 4})
 	u.e.LossSeq(u.share.ID, f) // drains the loss
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
@@ -450,7 +450,7 @@ func TestAnUnsyncedCorruptLossLeavesALaterSyncErrorRaising(t *testing.T) {
 	u := newUnit(t)
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("lost"))
-	u.j.Lose(journal.NewFileID(f), journal.Extent{Len: 4}, journal.LossCorrupt, false)
+	u.j.LoseUnsynced(journal.NewFileID(f), journal.Extent{Len: 4})
 	if s := u.e.LossSeq(u.share.ID, f); s != 1 {
 		t.Fatalf("LossSeq after the loss: %d, want 1", s)
 	}
