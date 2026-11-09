@@ -1121,10 +1121,9 @@ difference. After any of them the fixture checks the DittoFS process: if it exit
 status and the tail of its log are attached to the report, and the fixture restarts it before
 the next round.
 
-A step whose worker times out or dies on **both** sides is not agreement, though the two
-outcomes are equal: two servers failing one step the same way is more likely the fuzzer's own
-failure, or the client's, than a finding. The round is reported as not run, as a plan error
-is, wherever the step is: the tree's setup, a plan step, a read-back or the sweep.
+A worker that crashes is always a finding, on one side or on **both**
+(`<op>:errno:CRASHED/CRASHED`): an application must not crash whatever the server answers. A
+step that times out on both sides is agreement, like any equal errno, and the round goes on.
 
 ## 10. Rounds, isolation and cleanup
 

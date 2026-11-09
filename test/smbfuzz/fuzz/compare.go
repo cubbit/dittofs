@@ -173,7 +173,11 @@ func (c *comparer) compare(s Step, ref, dut Reply) (*Divergence, []string) {
 	if n := seekDataNote(s, ref, dut); n != "" {
 		return nil, []string{n}
 	}
-	if ref.Errno != dut.Errno {
+	// A crashed worker is always a finding, on one side or both (DESIGN.md
+	// §9.5): an application must not crash whatever the server answers. A
+	// timeout on both sides is agreement, like any equal errno, and falls
+	// through to it below.
+	if ref.Errno != dut.Errno || ref.Errno == errCrashed {
 		d := div(s, "errno", errName(ref.Errno), errName(dut.Errno))
 		d.Sig = fmt.Sprintf("%s:errno:%s/%s", s.Op, d.Ref, d.Dut)
 		// A hang on one side is signed by the side alone (DESIGN.md §9.5):

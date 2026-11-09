@@ -660,26 +660,11 @@ func (r *Runner) runStep(round uint64, dir string, n int, label string, s Step, 
 	if sr.Ref.Fatal != "" || sr.Dut.Fatal != "" {
 		return sr
 	}
-	if f := fuzzerFailure(sr.Ref, sr.Dut); f != "" {
-		sr.Ref.Fatal = f
-		return sr
-	}
 	sr.Diverge, sr.Notes = cmp.compare(s, sr.Ref, sr.Dut)
 	if sr.Diverge != nil {
 		sr.Diverge.Step = label
 	}
 	return sr
-}
-
-// fuzzerFailure reports a step whose worker timed out or died on both sides
-// (DESIGN.md §9.5). Equal errnos would pass it as agreement, but two servers
-// failing the same step the same way is more likely the fuzzer's own failure,
-// or the client's, than a finding, so the round is not run.
-func fuzzerFailure(ref, dut Reply) string {
-	if ref.Errno >= 0 || dut.Errno >= 0 {
-		return ""
-	}
-	return fmt.Sprintf("the worker gave %s on the reference and %s on DittoFS", errName(ref.Errno), errName(dut.Errno))
 }
 
 // setupRound creates the round directory as admin on both sides and sets the
