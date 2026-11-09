@@ -221,3 +221,37 @@ func TestNoDirectoryCaseAlias(t *testing.T) {
 		}
 	}
 }
+
+// A known divergence lets the round go on only for an output difference at a
+// step that changes nothing; after differing errnos, or at a step that
+// changes the tree, the round ends there, graded known.
+func TestKnownDivergenceEndsRoundWhenTreesMaySplit(t *testing.T) {
+	known := &Known{Entries: []KnownEntry{
+		{Signature: "getacl:owner", Reason: "r"},
+		{Signature: "rename:errno:EACCES/OK", Reason: "r"},
+		{Signature: "stat:errno:ENOENT/OK", Reason: "r"},
+		{Signature: "setacl:readback:dacl", Reason: "r"},
+		{Signature: "lseek:offset", Reason: "r"},
+	}}
+	r := &Runner{known: known}
+	for _, c := range []struct {
+		op, sig, field string
+		ends           bool
+	}{
+		{"getacl", "getacl:owner", "owner", false},
+		{"rename", "rename:errno:EACCES/OK", "errno", true},
+		{"stat", "stat:errno:ENOENT/OK", "errno", true},
+		{"setacl", "setacl:readback:dacl", "dacl", true}, // judged as the write it reads back
+		{"lseek", "lseek:offset", "offset", true},
+		{"stat", "stat:size", "size", true}, // not known
+	} {
+		res := &Result{}
+		got := r.ends(res, Step{Op: c.op}, &Divergence{Sig: c.sig, Field: c.field})
+		if got != c.ends {
+			t.Errorf("%s: ends %v, want %v", c.sig, got, c.ends)
+		}
+		if isNew := res.Diverge != nil; isNew == known.Has(c.sig) {
+			t.Errorf("%s: recorded as new %v", c.sig, isNew)
+		}
+	}
+}

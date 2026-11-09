@@ -83,9 +83,8 @@ type Runner struct {
 	known   *Known
 }
 
-// SetKnown makes the runner record a known divergence and carry on with the
-// round instead of ending it there (DESIGN.md §12.2): a known divergence says
-// nothing about the steps after it, which may still find a new one.
+// SetKnown makes the runner record a known divergence instead of failing the
+// round on it (DESIGN.md §9.1, §12.2); ends says when the round goes on.
 func (r *Runner) SetKnown(k *Known) { r.known = k }
 
 // NewRunner builds a runner; workers start on first use.
@@ -525,9 +524,7 @@ func (r *Runner) Run(p *Plan) *Result {
 			res.Err = fmt.Errorf("tree setup: %s%s", sr.Ref.Fatal, sr.Dut.Fatal)
 			return res
 		}
-		if sr.Diverge != nil && !r.passKnown(res, sr.Diverge) {
-			res.Diverge = sr.Diverge
-			r.checkDut(res)
+		if sr.Diverge != nil && r.ends(res, ts.Step, sr.Diverge) {
 			return res
 		}
 	}
@@ -538,9 +535,7 @@ func (r *Runner) Run(p *Plan) *Result {
 			res.Err = fmt.Errorf("step %d: %s%s", i+1, sr.Ref.Fatal, sr.Dut.Fatal)
 			return res
 		}
-		if sr.Diverge != nil && !r.passKnown(res, sr.Diverge) {
-			res.Diverge = sr.Diverge
-			r.checkDut(res)
+		if sr.Diverge != nil && r.ends(res, s, sr.Diverge) {
 			return res
 		}
 		// What a descriptor write left is read back at once, as admin, and
@@ -553,17 +548,14 @@ func (r *Runner) Run(p *Plan) *Result {
 				res.Err = fmt.Errorf("step %dR: %s%s", i+1, rb.Ref.Fatal, rb.Dut.Fatal)
 				return res
 			}
-			if rb.Diverge != nil && !r.passKnown(res, rb.Diverge) {
-				res.Diverge = rb.Diverge
-				r.checkDut(res)
+			// Judged as the write it reads back: a known difference in
+			// what the write left is a difference in the trees.
+			if rb.Diverge != nil && r.ends(res, s, rb.Diverge) {
 				return res
 			}
 		}
 	}
 	r.sweep(p.Round, dir, cmp, res)
-	if res.Diverge != nil {
-		r.checkDut(res)
-	}
 	return res
 }
 
@@ -761,8 +753,7 @@ func (r *Runner) sweep(round uint64, dir string, cmp *comparer, res *Result) {
 		ls := Step{User: "admin", Op: "readdir", Args: map[string]string{"path": rel}}
 		sr := r.runStep(round, dir, 0, "S", ls, cmp)
 		res.Steps = append(res.Steps, sr)
-		if sr.Diverge != nil && !r.passKnown(res, sr.Diverge) {
-			res.Diverge = sr.Diverge
+		if sr.Diverge != nil && r.ends(res, ls, sr.Diverge) {
 			return
 		}
 		if sr.Ref.Out == nil {
@@ -795,8 +786,7 @@ func (r *Runner) sweep(round uint64, dir string, cmp *comparer, res *Result) {
 				sr := r.runStep(round, dir, 0, "S", s, cmp)
 				sr.Line = strings.Replace(sr.Line, "00", " S", 1)
 				res.Steps = append(res.Steps, sr)
-				if sr.Diverge != nil && !r.passKnown(res, sr.Diverge) {
-					res.Diverge = sr.Diverge
+				if sr.Diverge != nil && r.ends(res, s, sr.Diverge) {
 					return
 				}
 			}
@@ -807,12 +797,28 @@ func (r *Runner) sweep(round uint64, dir string, cmp *comparer, res *Result) {
 	}
 }
 
-func (r *Runner) passKnown(res *Result, d *Divergence) bool {
-	if r.known != nil && r.known.Has(d.Sig) {
-		res.Known = append(res.Known, d.Sig)
+// unchanging are the operations that change nothing a later step sees. lseek
+// is not one: it moves the slot's offset, which a later write uses.
+var unchanging = map[string]bool{
+	"pread": true, "readdir": true, "statfs": true, "stat": true, "lstat": true, "fstat": true,
+	"getdosattr": true, "getbtime": true, "getxattr": true, "listxattr": true, "getacl": true,
+	"testlock": true,
+}
+
+// ends records step s's divergence d in res and reports whether the round
+// ends there (DESIGN.md §9.1). A new divergence ends it. A known one ends it
+// too, graded known, unless both sides succeeded at a step that changes
+// nothing: after differing errnos, or a step that changes the tree, the two
+// trees may differ, and every later step would report that again under
+// another signature.
+func (r *Runner) ends(res *Result, s Step, d *Divergence) bool {
+	if r.known == nil || !r.known.Has(d.Sig) {
+		res.Diverge = d
+		r.checkDut(res)
 		return true
 	}
-	return false
+	res.Known = append(res.Known, d.Sig)
+	return d.Field == "errno" || !unchanging[s.Op]
 }
 
 func errName(e int) string {

@@ -1051,10 +1051,13 @@ SACL when the write was of the full descriptor — and it is compared entry by e
 that did it, signed `<op>:readback:<part>` (`aceadd:readback:dacl`), and the step shows in a
 trace as `NNR`.
 
-A **known** divergence (§12.2) does not end the round. It is recorded and the round goes on,
-because a known difference that leaves the trees alike — a descriptor reported with another
-owner name — would otherwise hide every step after it. A round that met only known
-divergences is graded "known", not passed.
+A **known** divergence (§12.2) is recorded, and the round goes on only when it leaves the trees
+alike: an output difference, with both sides successful, at a step that changes nothing — a
+read, a `stat`, a listing, a `getacl` (a descriptor reported with another owner name) — which
+would otherwise hide every step after it. Any other known divergence ends the round: after
+differing errnos, or at a step that changes the tree (a read-back included, which is judged as
+its write), the two trees may differ, and every later step would report that again under a new
+signature. A round that met only known divergences is graded "known", not passed.
 
 A round with no divergence ends with a **sweep**: the admin worker walks the round directory
 on both sides — `readdir`, `stat`, DOS attributes, the content of every file (§9.3) and its
