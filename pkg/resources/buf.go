@@ -28,8 +28,8 @@ type Buf struct {
 // budget before it is taken, so a Get waits in the budget, never in the
 // allocator.
 //
-// ponytail: one sync.Pool per class behind the reservation counter, so
-// collection still scans and frees idle pooled buffers. Replace it with a
+// ponytail: a sync.Pool per class behind the reservation counter, so
+// collection scans and frees idle pooled buffers. Replace it with a
 // fixed-size slab per class, allocated once at start, when a profile shows
 // collection time from transfer-class buffers limiting throughput.
 type BufPool struct {
@@ -41,8 +41,9 @@ func NewBufPool(b *Budget) *BufPool {
 	return &BufPool{budget: b}
 }
 
-// Get reserves n's class for key, as Reserve does, then takes a buffer with
-// one reference.
+// Get takes one reservation for key, as Reserve does, of n's class plus the
+// fixed 8 KiB per-request overhead, released with the buffer; then a buffer
+// with one reference.
 func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) {
 	return nil, fmt.Errorf("resources: get a %d-byte buffer: %w", n, errors.ErrUnsupported)
 }

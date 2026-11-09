@@ -6,17 +6,7 @@
 // Nothing here has a lifecycle: NewBudget and NewBufPool start no goroutine
 // and open nothing, and there is no Start or Close.
 //
-// ponytail: RFC 24's process limit (Detect) is not read here; add it with
-// the node's start, its first caller.
-//
-// ponytail: RFC 24's fixed split of that limit into pools (Split) is absent;
-// add it with Detect, since it needs only the limit.
-//
-// ponytail: RFC 24's per-share cap at admission (ShareCap) is absent; add it
-// with the service's admission, which charges it.
-//
-// ponytail: RFC 24's reclaim past a ceiling during grace (Reclaim) is absent;
-// add it to Budget with the open-state table, its one caller.
+// ponytail: RFC 24's Detect, Split, ShareCap and Reclaim are absent; each lands with its first caller.
 package resources
 
 import (
@@ -30,9 +20,9 @@ import (
 // refuses at its ceiling. Whether it waits or refuses is fixed when it is
 // built.
 //
-// ponytail: no turns across clients at the ceiling; a waiting budget's
-// waiters are not yet queued per key. Add RFC 24's per-key fair queue when
-// the first waiting Reserve is written.
+// ponytail: one mutex over the count and a fair queue of waiters per key, so
+// clients take turns at the ceiling; take the fast path as one atomic step
+// with no waiter when a profile shows the lock limiting the request rate.
 type Budget struct {
 	name    string
 	ceiling int64

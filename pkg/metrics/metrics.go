@@ -20,14 +20,8 @@ type Metrics struct {
 	in       *instruments
 }
 
-// Registry is the name an adapter's dependencies hold the metrics under.
-//
-// ponytail: an alias of Metrics, whose RegisterProvider reads a snapshot per
-// scrape and cannot resolve a counter once, when an operation table is built.
-// Grow Metrics with the methods that resolve a series once and return its
-// counter, then rename it Registry and turn this alias around, when the first
-// caller needs a counter resolved at table build; a separate struct would
-// break every holder of a *Metrics.
+// ponytail: an alias, which cannot resolve a counter once at table build; grow
+// Metrics with those methods and rename it Registry, turning the alias around.
 type Registry = Metrics
 
 // New creates a Metrics with an owned registry pre-populated with the Go
