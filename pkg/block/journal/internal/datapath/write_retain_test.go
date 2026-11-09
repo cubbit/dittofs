@@ -170,7 +170,7 @@ func retainedBytes(c *Core, f core.FileID) int64 {
 // unsynced, and is released once the sync lands.
 func TestWriteAt_SupersededIsRetainedUntilSynced(t *testing.T) {
 	c, _ := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(1)
 	a := mustWrite(t, c, s, f, 0, make([]byte, 4096))
 	b := mustWrite(t, c, s, f, 0, make([]byte, 4096))
@@ -200,7 +200,7 @@ func TestWriteAt_SupersededIsRetainedUntilSynced(t *testing.T) {
 func TestWriteAt_SyncCompletesBetweenAppendAndPublish(t *testing.T) {
 	t.Run("completes", func(t *testing.T) {
 		h, c := newHeld(t, false)
-		s := c.AddShare(1)
+		s := mustShare(t, c, 1)
 		f := testFile(2)
 		h.f = f
 		mustWrite(t, c, s, f, 0, make([]byte, 4096))
@@ -224,7 +224,7 @@ func TestWriteAt_SyncCompletesBetweenAppendAndPublish(t *testing.T) {
 	})
 	t.Run("fails", func(t *testing.T) {
 		h, c := newHeld(t, true)
-		s := c.AddShare(1)
+		s := mustShare(t, c, 1)
 		f := testFile(3)
 		h.f = f
 		a := mustWrite(t, c, s, f, 0, make([]byte, 4096))
@@ -299,7 +299,7 @@ func retainedIn(c *Core, f core.FileID, lo, hi int64) int64 {
 func TestWriteAt_DurablePieceLiftsOnlyItsOwnExtent(t *testing.T) {
 	h, c := newHeld(t, false)
 	h.nth, h.failFirst = 2, true
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(7)
 	h.f = f
 	size := 2*testSegmentCap + 1000
@@ -364,7 +364,7 @@ func TestWriteAt_DurablePieceLiftsOnlyItsOwnExtent(t *testing.T) {
 // tracked would read durable while its segment is held.
 func TestWriteAt_EveryPieceReachesTheLedger(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(5)
 	size := 2*testSegmentCap + 1000
 	h1 := seam.Hold(t, journaltest.OpSync, format.SegmentName(1))
@@ -444,7 +444,7 @@ func TestWriteAt_AccountSeesPublishAndLift(t *testing.T) {
 	c, _ := newTestCore(t, func(o *coreOptions) {
 		o.accountSpy = func(d index.HeldDelta) { mu.Lock(); seen = append(seen, d); mu.Unlock() }
 	})
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(6)
 	mustWrite(t, c, s, f, 0, make([]byte, 4096))
 	mu.Lock()

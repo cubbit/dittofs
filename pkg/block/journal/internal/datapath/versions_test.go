@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
@@ -52,7 +53,7 @@ func wantNoSpace(t *testing.T, where string, err error) {
 // as before.
 func TestDraw_TwoDrawsIncreaseAndAppendNothing(t *testing.T) {
 	c, _ := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(1)
 	v0 := mustWrite(t, c, s, f, 0, make([]byte, 4096))
 
@@ -94,7 +95,7 @@ func TestVersionLimit_NothingIssuedBeforeTheFirstLimit(t *testing.T) {
 	c, _ := newTestCore(t, func(o *coreOptions) { o.noLimit = true })
 	_, err := c.Draw()
 	wantNoSpace(t, "Draw before the first limit", err)
-	_, err = c.WriteAt(context.Background(), c.AddShare(1), testFile(1), 0, []byte("a"), 1)
+	_, err = c.WriteAt(context.Background(), mustShare(t, c, 1), testFile(1), 0, []byte("a"), 1)
 	wantNoSpace(t, "WriteAt before the first limit", err)
 }
 
@@ -102,7 +103,7 @@ func TestVersionLimit_NothingIssuedBeforeTheFirstLimit(t *testing.T) {
 // succeeds again after it is raised.
 func TestVersionLimit_RefusesAtTheLimitAndSucceedsAfterARaise(t *testing.T) {
 	c, _ := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(1)
 	// The limit is exclusive: a limit of 3 issues the two versions below it,
 	// 1 and 2, and refuses the draw of 3.
@@ -145,7 +146,7 @@ func TestVersionLimit_RefusesAtTheLimitAndSucceedsAfterARaise(t *testing.T) {
 // would let a refused write through if it were applied before the epoch check.
 func TestVersionLimit_EpochMarkRefusedLimitStillBinds(t *testing.T) {
 	c, _ := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(1)
 	note := core.Version{Counter: 3}
 	setLimit(t, c, note.Counter)
@@ -182,8 +183,10 @@ func TestVersionLimit_EpochMarkRefusedLimitStillBinds(t *testing.T) {
 // and is not tested here.
 func TestNoVersionRepeats_ConcurrentDrawAndWrite(t *testing.T) {
 	c, _ := newTestCore(t)
-	setLimit(t, c, 1+8*(200+200)+100)
-	s := c.AddShare(1)
+	// The limit leaves room for the versions a write that retries on a spare
+	// refusal draws and loses.
+	setLimit(t, c, 1<<20)
+	s := mustShare(t, c, 1)
 
 	var mu sync.Mutex
 	seen := map[core.Version]bool{}
@@ -208,7 +211,18 @@ func TestNoVersionRepeats_ConcurrentDrawAndWrite(t *testing.T) {
 					panic(err)
 				}
 				add(v, "Draw")
-				w, err := c.WriteAt(context.Background(), s, f, 0, []byte("x"), 1)
+				var w core.Version
+				for {
+					w, err = c.WriteAt(context.Background(), s, f, 0, []byte("x"), 1)
+					// A roll that finds no spare ready is refused, retryable by
+					// design; the pool readies one shortly.
+					var ns *core.NoSpaceError
+					if errors.As(err, &ns) && ns.Limit == core.LimitSpare {
+						time.Sleep(time.Millisecond)
+						continue
+					}
+					break
+				}
 				if err != nil {
 					panic(err)
 				}

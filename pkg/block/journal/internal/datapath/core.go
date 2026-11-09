@@ -43,12 +43,6 @@ type State struct {
 	Set      *segment.Set
 }
 
-// Share is a share's registration with the core.
-//
-// decision: a Share holds no lock domain; it only carries the tag its writes
-// publish under. Revisit when a share gains state that writers must serialize.
-type Share struct{ Tag core.ShareTag }
-
 // coreOptions are the test-only adjustments newCore applies before the layers
 // above the domain table are built.
 type coreOptions struct {
@@ -96,6 +90,11 @@ type Core struct {
 	// New with no options. It is a field of the core and not of Deps so that no
 	// production wiring can set it.
 	afterAppend func()
+
+	// registry is the open handles, replaced whole under registryMu and read
+	// through the pointer alone. See shares.go.
+	registry   atomic.Pointer[[]*Share]
+	registryMu sync.Mutex
 
 	closeOnce sync.Once
 	closeErr  error
@@ -186,9 +185,6 @@ func (c *Core) Streams() *segment.Streams { return c.streams }
 // WrittenBytes returns the payload bytes WriteAt has published since the core
 // was built: the written_bytes counter.
 func (c *Core) WrittenBytes() uint64 { return c.writtenBytes.Load() }
-
-// AddShare registers a share and returns its handle.
-func (c *Core) AddShare(tag core.ShareTag) *Share { return &Share{Tag: tag} }
 
 // Close stops the durability layer, then closes the streams, then shuts the
 // descriptor cache and stops the pool. It is safe to call twice.

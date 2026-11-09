@@ -153,6 +153,17 @@ func publish(t *testing.T, c *Core, f core.FileID, off int64, payload string) co
 	return v
 }
 
+// mustShare attaches a handle for tag with no limit and no floor, failing the
+// test when the core refuses it. It is for the test goroutine only.
+func mustShare(t *testing.T, c *Core, tag core.ShareTag) *Share {
+	t.Helper()
+	s, err := c.Share(tag, 0, core.Version{})
+	if err != nil {
+		t.Fatalf("Share(%d): %v", tag, err)
+	}
+	return s
+}
+
 func syncFiles(t *testing.T, c *Core, ids ...core.FileID) {
 	t.Helper()
 	if err := c.Durability().Sync(context.Background(), ids...); err != nil {

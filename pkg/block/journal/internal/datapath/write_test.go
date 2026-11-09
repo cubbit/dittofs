@@ -150,7 +150,7 @@ func eventually(t *testing.T, what string, cond func() bool) {
 
 func TestWriteAt_HeldDirtyAndSurvivesCrash(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(1)
 	payload := bytes.Repeat([]byte{0xab}, 4096)
 	v, err := c.WriteAt(context.Background(), s, f, 0, payload, 7)
@@ -180,7 +180,7 @@ func TestWriteAt_HeldDirtyAndSurvivesCrash(t *testing.T) {
 
 func TestWriteAt_RecordCarriesTagVersionMTime(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(5)
+	s := mustShare(t, c, 5)
 	f := testFile(2)
 	v, err := c.WriteAt(context.Background(), s, f, 8, []byte("abcd"), 12345)
 	if err != nil {
@@ -217,7 +217,7 @@ func TestWriteAt_RecordCarriesTagVersionMTime(t *testing.T) {
 
 func TestWriteAt_PublishFollowsRecordWrite(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(3)
 	warm(t, c, s, f)
 	holds := holdRecordWrites(t, c, seam, f)
@@ -246,7 +246,7 @@ func TestWriteAt_PublishFollowsRecordWrite(t *testing.T) {
 
 func TestWriteAt_PublishDoesNotWaitForSync(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(4)
 	warm(t, c, s, f)
 	wp, _ := c.Index().Lookup(f, 1<<20)
@@ -268,7 +268,7 @@ func TestWriteAt_PublishDoesNotWaitForSync(t *testing.T) {
 
 func TestWriteAt_VersionsAppendedInAssignmentOrder(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(5)
 	const writers, each = 16, 20
 	var wg sync.WaitGroup
@@ -304,7 +304,7 @@ func TestWriteAt_VersionsAppendedInAssignmentOrder(t *testing.T) {
 
 func TestWriteAt_DifferentFilesRunInParallel(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f1, f2 := testFile(6), testFile(7)
 	warm(t, c, s, f1, f2)
 	holds := holdRecordWrites(t, c, seam, f1, f2)
@@ -325,7 +325,7 @@ func TestWriteAt_DifferentFilesRunInParallel(t *testing.T) {
 
 func TestWriteAt_OverwriteServesNewBytesAtOnce(t *testing.T) {
 	c, _ := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(8)
 	ctx := context.Background()
 	va, err := c.WriteAt(ctx, s, f, 0, []byte("AAAAAAAA"), 1)
@@ -390,7 +390,7 @@ func TestWriteAt_OnlyTheFileAppendDomainIsHeldDuringTheRecordWrite(t *testing.T)
 			return probe
 		}
 	})
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(9)
 	warm(t, c, s, f)
 	holds := holdRecordWrites(t, c, seam, f)
@@ -456,7 +456,7 @@ func TestWriteAt_ErrorsAppendNothing(t *testing.T) {
 				t.Fatal(err)
 			}
 			c, seam := newTestCore(t, func(o *coreOptions) { o.state = State{Counters: counters} })
-			s := c.AddShare(1)
+			s := mustShare(t, c, 1)
 			f := testFile(10)
 			writes := seam.Calls(journaltest.OpWrite)
 			v, err := c.WriteAt(tc.ctx, s, f, tc.off, make([]byte, tc.len), 1)
@@ -489,7 +489,7 @@ func TestWriteAt_ErrorsAppendNothing(t *testing.T) {
 
 func TestWriteAt_ZeroLengthDoesNothing(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	writes := seam.Calls(journaltest.OpWrite)
 	v, err := c.WriteAt(context.Background(), s, testFile(11), 0, nil, 1)
 	if v != (core.Version{}) || err != nil {
@@ -505,7 +505,7 @@ func TestWriteAt_ZeroLengthDoesNothing(t *testing.T) {
 
 func TestWriteAt_CountsWrittenBytes(t *testing.T) {
 	c, _ := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	ctx := context.Background()
 	for _, n := range []int{4, 5, 0} {
 		if _, err := c.WriteAt(ctx, s, testFile(12), 0, make([]byte, n), 1); err != nil {
@@ -526,7 +526,7 @@ func TestWriteAt_PublishRefusalReturnsNoVersion(t *testing.T) {
 	c, seam := newTestCore(t)
 	f := testFile(13)
 	publish(t, c, f, 0, "aaaa") // the file belongs to tag 1
-	v, err := c.WriteAt(context.Background(), c.AddShare(2), f, 8, []byte("bbbb"), 1)
+	v, err := c.WriteAt(context.Background(), mustShare(t, c, 2), f, 8, []byte("bbbb"), 1)
 	if !errors.Is(err, core.ErrOtherShare) {
 		t.Fatalf("WriteAt through another tag = %v, want ErrOtherShare", err)
 	}
