@@ -143,32 +143,39 @@ func (d *Durability) readCopy(st *stream, c copyEntry) (copyVerdict, error) {
 // record was proven synced: damage to an unsynced copy is a torn write, which
 // is not reported. ok is false when the index no longer names the record, an
 // overwrite or a failed window having taken it, and the caller then goes on
-// to the drop, which finds nothing to drop.
+// to the drop, which finds nothing to drop. The copy's segment can be retired
+// between the read and the repoint, leaving the index naming a gone segment,
+// until the hold set guards the copy's segment.
 //
 // decision: whether the record was synced is read under the stream's mutex
 // without taking it out of the ledger or a pending window, as the drop does.
 // The record is served, not lost, so its entry stays for the worker to
 // complete or fail, and what it superseded is lifted or held again as for any
 // other record. The answer can be stale by a sync the worker has not applied,
-// which only decides whether the segment is counted damaged. Overturned if a
-// served copy must also leave the ledger, as when a re-append that replaces
-// it takes over the entry.
+// which only decides whether the segment is counted damaged. The ceiling: a
+// served record left in a window that then fails is failed by the worker as
+// any other, and although the index names the copy and nothing is dropped,
+// the worker still writes a failed-window loss record for it, publishes the
+// event, raises the generation and marks the file, while the copy goes on
+// being served. Overturned by the per-record re-append, which repoints such a
+// record and takes it out of the window instead of failing it.
 func (d *Durability) useCopy(st *stream, c Corruption, cp copyEntry) (CorruptOutcome, bool) {
 	synced := c.Synced
 	if !c.AtOpen {
 		synced = st.syncedAt(c.Record)
 	}
+	oc := ownedCopy{
+		File:    c.File,
+		Seq:     c.Seq,
+		Record:  c.Record,
+		Copy:    cp.loc,
+		Share:   c.Share,
+		Version: c.Version,
+		Extent:  c.Extent,
+	}
 	repoint := true
-	if !d.isReadOnly() {
-		oc := ownedCopy{
-			File:    c.File,
-			Seq:     c.Seq,
-			Record:  c.Record,
-			Copy:    cp.loc,
-			Share:   c.Share,
-			Version: c.Version,
-			Extent:  c.Extent,
-		}
+	held := !d.isReadOnly()
+	if held {
 		if d.onHoldCopy != nil {
 			d.onHoldCopy(oc)
 		}
@@ -185,6 +192,17 @@ func (d *Durability) useCopy(st *stream, c Corruption, cp copyEntry) (CorruptOut
 			// it comes back here.
 			d.log.Error("journal could not repoint a corrupt record to its copy", "file", c.File, "seq", c.Seq, "err", err)
 		case moved == 0:
+			// A record handed to holdCopy joined the hold set before the
+			// repoint, which moved nothing, so its hold is released here, by
+			// the hold set's owner: left in the set, it
+			// would keep the copy's segment held and unretired for a record
+			// nothing serves from it.
+			if held {
+				if d.onUnholdCopy != nil {
+					d.onUnholdCopy(oc)
+				}
+				d.unholdCopy(st, oc)
+			}
 			return CorruptOutcome{}, false
 		}
 	}
@@ -229,3 +247,7 @@ func (st *stream) syncedAt(r index.RecordAt) bool {
 func (d *Durability) holdCopy(_ *stream, _ ownedCopy) bool {
 	return true
 }
+
+// unholdCopy takes back a hold holdCopy gave a record whose repoint then moved
+// nothing. It is called under the record's file append domain.
+func (d *Durability) unholdCopy(_ *stream, _ ownedCopy) {}

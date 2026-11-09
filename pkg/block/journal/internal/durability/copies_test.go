@@ -28,14 +28,21 @@ type reappended struct {
 	kept uint32
 }
 
-// reappend publishes a write of f, appends it again under the same number and
-// version, and repoints the index to the second copy, under f's domain.
+// reappend publishes a write of f, seals its segment, appends the write again
+// under the same number and version, so the second copy lands in another
+// segment, and repoints the index to the second copy, under f's domain. The
+// first copy is synced by the seal; the second is not synced.
 func (cr *corruptRig) reappend(t *testing.T, f core.FileID, off int64, payload string) reappended {
 	t.Helper()
 	orig, v := cr.publish(t, f, off, payload)
 	seq := core.Seq(cr.lastSeq.Load())
 	kept := cr.keptChecksum(t, orig)
 	x := core.Extent{Off: off, Len: int64(len(payload))}
+	if _, err := cr.streams.For(f).Seal(false); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	// The worker completes the sealed record's entry on its own pass.
+	eventually(t, "the sealed record's entry to complete", func() bool { return !cr.inLedger(orig) })
 
 	unlock := cr.domains.Lock(f)
 	p, err := cr.streams.For(f).Append(format.RecordHeader{
@@ -51,6 +58,9 @@ func (cr *corruptRig) reappend(t *testing.T, f core.FileID, off int64, payload s
 	unlock()
 	if err != nil || moved == 0 {
 		t.Fatalf("RepointRecord = %d, %v, want the record moved", moved, err)
+	}
+	if p.Loc.Segment == orig.Segment {
+		t.Fatalf("the second copy landed in the first copy's segment %d", orig.Segment)
 	}
 	return reappended{orig: orig, again: p.Loc, kept: kept, c: Corruption{
 		Share: 1, File: f, Record: to, Seq: seq, Version: v, Extent: x,
@@ -98,10 +108,10 @@ func (cr *corruptRig) tableLen() int {
 	return len(cr.d.copies)
 }
 
-// holds records every copy the layer handed to holdCopy.
+// holds records every copy the layer handed to holdCopy and to unholdCopy.
 type holds struct {
-	mu  sync.Mutex
-	got []ownedCopy
+	mu       sync.Mutex
+	got, let []ownedCopy
 }
 
 func (h *holds) record(c ownedCopy) {
@@ -110,10 +120,27 @@ func (h *holds) record(c ownedCopy) {
 	h.got = append(h.got, c)
 }
 
+func (h *holds) release(c ownedCopy) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.let = append(h.let, c)
+}
+
 func (h *holds) all() []ownedCopy {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]ownedCopy(nil), h.got...)
+}
+
+func (h *holds) released() []ownedCopy {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]ownedCopy(nil), h.let...)
+}
+
+// watch installs h on the layer's hold hooks.
+func (h *holds) watch(d *Durability) {
+	d.onHoldCopy, d.onUnholdCopy = h.record, h.release
 }
 
 // wantNoLoss stops the layer, which drains every queued corrupt loss, and
@@ -142,7 +169,7 @@ func TestCorruptUsesVerifyingCopy(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			prof.Watch(t, prof.Options{})
 			h := &holds{}
-			cr := newCorruptRig(t, func(cr *corruptRig) { cr.d.onHoldCopy = h.record })
+			cr := newCorruptRig(t, func(cr *corruptRig) { h.watch(cr.d) })
 			f := file(1)
 			r := cr.reappend(t, f, 0, "aaaa")
 			cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
@@ -176,15 +203,20 @@ func TestCorruptUsesVerifyingCopy(t *testing.T) {
 			if n := cr.queuedCorrupt(); n != 0 {
 				t.Fatalf("%d corrupt losses queued, want none", n)
 			}
-			wantDamaged := uint64(0)
-			if synced {
-				wantDamaged = 1
+			// Only the corrupt copy's segment can be counted, never the
+			// segment of the copy that is served.
+			p := cr.d.Stats()
+			if synced && (p.DamagedSegments != 1 || len(p.Segments) != 1 || p.Segments[0].Segment != r.c.Record.Segment) {
+				t.Fatalf("damaged = %d, rows %+v, want one row for the corrupt copy's segment %d", p.DamagedSegments, p.Segments, r.c.Record.Segment)
 			}
-			if got := cr.d.Stats().DamagedSegments; got != wantDamaged {
-				t.Fatalf("DamagedSegments = %d, want %d", got, wantDamaged)
+			if !synced && (p.DamagedSegments != 0 || len(p.Segments) != 0) {
+				t.Fatalf("damaged = %d, rows %+v, want none for an unsynced record", p.DamagedSegments, p.Segments)
 			}
 			if got := h.all(); len(got) != 1 || got[0].Seq != r.c.Seq || got[0].Copy != r.orig || got[0].Record != r.c.Record || got[0].File != f {
 				t.Fatalf("holdCopy was handed %+v, want the one record and its copy", got)
+			}
+			if got := h.released(); len(got) != 0 {
+				t.Fatalf("unholdCopy was handed %+v after a repoint that moved the record, want nothing", got)
 			}
 			cr.wantNoLoss(t)
 		})
@@ -363,4 +395,78 @@ func TestRetiredDropsTableEntries(t *testing.T) {
 		t.Fatalf("the extent is served from %+v, want it dropped", p)
 	}
 	cr.awaitRecord(t, r.c.Seq)
+}
+
+// TestCorruptCopyOverwrittenBeforeRepointReleasesHold covers a record
+// overwritten between the copy's read and the repoint: the repoint moves
+// nothing, the hold the record joined is released, and the record is reported
+// dropped.
+func TestCorruptCopyOverwrittenBeforeRepointReleasesHold(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	h := &holds{}
+	cr := newCorruptRig(t, func(cr *corruptRig) { h.watch(cr.d) })
+	f := file(1)
+	r := cr.reappend(t, f, 0, "aaaa")
+	cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
+	// The copy is read with no domain held, so a writer overwrites the
+	// record right after the read and before Corrupt takes the domain, and
+	// the overwrite syncs, so the index keeps no retained piece of it either.
+	cr.d.readCopyAt = func(seg core.SegmentID, p []byte, off int64) (int, error) {
+		n, err := cr.streams.For(f).ReadAt(seg, p, off)
+		cr.publish(t, f, 0, "bbbb")
+		if err := cr.d.Sync(context.Background(), f); err != nil {
+			t.Errorf("Sync of the overwrite: %v", err)
+		}
+		eventually(t, "the overwritten record to leave the index", func() bool { return len(cr.ix.Retained(f)) == 0 })
+		return n, err
+	}
+
+	out, err := cr.d.Corrupt(context.Background(), r.c)
+	if err != nil || out.Kind != CorruptDropped {
+		t.Fatalf("Corrupt = %+v, %v, want Dropped and nil", out, err)
+	}
+	held, let := h.all(), h.released()
+	if len(held) != 1 || len(let) != 1 || let[0] != held[0] {
+		t.Fatalf("held %+v, released %+v, want the one hold released", held, let)
+	}
+	if got := cr.placedAt(t, f, 0); got.Segment == r.orig.Segment && got.Offset == uint32(r.orig.Off) {
+		t.Fatalf("the overwritten extent is served from the copy %+v", got)
+	}
+}
+
+// TestCorruptUsedCopyThenWindowFailsPinsKnownCeiling pins a known ceiling: a
+// record served from a copy stays in its pending window, and when the window
+// fails, the worker still reports a failed-window loss for it while the index
+// goes on naming the copy. The per-record re-append, which repoints such a
+// record and takes it out of the window instead of failing it, must change
+// this test when it lands.
+func TestCorruptUsedCopyThenWindowFailsPinsKnownCeiling(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	hook, reached, release := gate(t)
+	cr := newCorruptRig(t, func(cr *corruptRig) { cr.d.beforeFail = func(*window) { hook() } })
+	t.Cleanup(release)
+	f := file(1)
+	r := cr.reappend(t, f, 0, "aaaa")
+	cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
+	cr.failByTimer(t, r.again.Segment)
+	<-reached
+
+	out, err := cr.d.Corrupt(context.Background(), r.c)
+	if err != nil || out.Kind != CorruptUseCopy || out.Copy != r.orig {
+		t.Fatalf("Corrupt = %+v, %v, want UseCopy at %+v", out, err, r.orig)
+	}
+	release()
+	if got := cr.awaitResolved(t); got != r.again.Segment {
+		t.Fatalf("resolved segment %d, want %d", got, r.again.Segment)
+	}
+	cr.d.Stop()
+
+	evs := cr.lossesOf(f)
+	if len(evs) != 1 || evs[0].Reason != core.LossFailedWindow || evs[0].Version != r.c.Version {
+		t.Fatalf("events = %+v, want exactly one failed-window loss of the record", evs)
+	}
+	want := index.RecordAt{Segment: r.orig.Segment, Offset: uint32(r.orig.Off)}
+	if got := cr.placedAt(t, f, 0); got != want {
+		t.Fatalf("the extent is served from %+v, want the copy %+v", got, want)
+	}
 }

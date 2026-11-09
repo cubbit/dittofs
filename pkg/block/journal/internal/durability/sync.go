@@ -244,11 +244,13 @@ type Durability struct {
 	copyMu sync.Mutex
 	copies map[core.Seq]copyEntry
 
-	// readCopyAt and onHoldCopy are test hooks, nil in production. readCopyAt
-	// replaces the stream's read of a copy; onHoldCopy runs, under the file's
-	// domain, before each hand-off of a served copy to holdCopy.
-	readCopyAt func(seg core.SegmentID, p []byte, off int64) (int, error)
-	onHoldCopy func(ownedCopy)
+	// readCopyAt, onHoldCopy and onUnholdCopy are test hooks, nil in
+	// production. readCopyAt replaces the stream's read of a copy; onHoldCopy
+	// and onUnholdCopy run, under the file's domain, before each call of
+	// holdCopy and unholdCopy.
+	readCopyAt   func(seg core.SegmentID, p []byte, off int64) (int, error)
+	onHoldCopy   func(ownedCopy)
+	onUnholdCopy func(ownedCopy)
 
 	// pieces holds every (dropped seq, extent) a Lose or a Place has taken,
 	// so one piece of a dropped record is reported once, while another piece
