@@ -168,6 +168,7 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 		Version:   l.Version,
 		Reason:    l.Reason,
 		Offloaded: l.Offloaded,
+		Synced:    l.Synced,
 		AtOpen:    l.AtOpen,
 		Deferred:  l.Deferred,
 	})
@@ -299,7 +300,7 @@ func (d *Durability) pushLocked(ev core.LossEvent) core.LossEvent {
 // are of drops this run made, and the record is already on disk. A piece
 // (seq and ev.Extent) already taken by a Lose or a Place publishes nothing,
 // so one piece is never reported twice, while another piece of the same
-// record is.
+// record is. The event's Synced is kept as the caller set it.
 func (d *Durability) Place(ev core.LossEvent, dropped core.Seq) {
 	d.lmu.Lock()
 	defer d.lmu.Unlock()

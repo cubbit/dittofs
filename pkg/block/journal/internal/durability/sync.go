@@ -141,6 +141,13 @@ type Part struct {
 	CorruptRepairable uint64
 	// StaleExtents counts the losses of the stale reason.
 	StaleExtents uint64
+
+	// DamagedSegments counts the segments that held a record which did not
+	// verify when it was read. A segment stays counted, with its row in
+	// Segments, until the journal closes.
+	DamagedSegments uint64
+	// Segments are the damaged segments' rows, in segment order.
+	Segments []DamagedRow
 }
 
 // Durability is the ledger and the workers of every stream.
@@ -185,15 +192,35 @@ type Durability struct {
 	// window, before its records are failed, and afterFail once they are
 	// failed and reported, before the window is resolved; afterPass runs at
 	// the end of each worker pass, once the pass has done everything it will
-	// do for the wake that started it; beforeWait runs in a caller's await
-	// each time it is about to park, after its checks found something still
-	// pending. None is called with a lock held.
+	// do for the wake that started it; beforeWait runs in a caller's await,
+	// on its work, each time it is about to park, after its checks found
+	// something still pending. None is called with a lock held.
 	afterAppend func()
 	afterPass   func()
-	beforeWait  func()
+	beforeWait  func([]work)
 	beforeFail  func(*window)
 	afterFail   func()
 	beforeSync  func()
+
+	// afterCorruptDrop is a test hook, nil in production: Corrupt runs it
+	// under the file's domain on what the index dropped, before it reads the
+	// dropped pieces.
+	afterCorruptDrop func(*index.FailedWindow)
+
+	// afterCorruptTake is a test hook, nil in production: Corrupt runs it
+	// under the file's domain, with no lock of this layer held, once it has
+	// taken an unsynced record out of the ledger or a pending window, which a
+	// Sync or a durability wait then sees.
+	afterCorruptTake func()
+
+	// onCorruptHeld is a test hook, nil in production: Corrupt runs it under
+	// the file's domain on the record's held pieces it read before deciding,
+	// and may change their offloaded bits.
+	onCorruptHeld func([]index.Piece)
+
+	// beforeTakeWindow is a test hook, nil in production: the worker runs it
+	// with no lock held before it takes each queued end event's window.
+	beforeTakeWindow func()
 
 	// lmu guards the loss ring, the counters and pieces, and the generation
 	// read and raise that go with them.
@@ -214,6 +241,58 @@ type Durability struct {
 	corruptDataLoss   uint64
 	corruptRepairable uint64
 	stale             uint64
+
+	// dmu guards damaged and unproduced.
+	//
+	// decision: dmu is a leaf mutex over the damaged rows and the count of held
+	// records each segment cannot produce, held only for a map access and
+	// never across an index call, an Append or any other lock, so Stats reads
+	// the damage without a lock a write needs. A hold's count changes under a
+	// stream's mu, which takes dmu inside it.
+	dmu     sync.Mutex
+	damaged map[core.SegmentID]*damagedRow
+	// unproduced counts, per segment, the held records the index may still
+	// name at a corrupt place in it (pinLocked).
+	unproduced map[core.SegmentID]int
+
+	// copyMu guards copies, the table of other copies of re-appended records.
+	// It is a leaf mutex, held only for a map access.
+	copyMu sync.Mutex
+	copies map[core.Seq]copyEntry
+
+	// readCopyAt, onHoldCopy and onUnholdCopy are test hooks, nil in
+	// production. readCopyAt replaces the stream's read of a copy; onHoldCopy
+	// and onUnholdCopy run, under the file's domain, before each call of
+	// holdCopy and unholdCopy.
+	readCopyAt   func(seg core.SegmentID, p []byte, off int64) (int, error)
+	onHoldCopy   func(ownedCopy)
+	onUnholdCopy func(ownedCopy)
+
+	// reappend appends a held record to a healthy segment from its copy and
+	// repoints the index to the new place. The worker calls it once the copy's
+	// segment is claimed and the index repointed to the copy, with no file
+	// append domain and no lock of this layer held, so a read of the file
+	// never waits on the re-append's fsync. It appends and syncs the new
+	// segment on its own, then takes the record's file append domain only for
+	// its final repoint, which it makes only if the index still names the copy
+	// (Index.Names), since a write may have overwritten the record meanwhile.
+	// It runs on the stream's worker, so it must not wait on anything that
+	// worker does, such as a Sync or a WaitDurable of this layer: it may block
+	// on the stream's append and its own fsync of the segment, and on the
+	// record's file append domain. A nil error says the re-append landed and
+	// the record leaves the hold.
+	//
+	// decision: it is nil until the per-record re-append installs it, and
+	// while it is nil the worker neither repoints a held record nor re-appends
+	// it, so a held record stays held and its segment claimed. Nothing lets a
+	// hold go but a landed re-append, a lost record or a record a later write
+	// overwrote, and only the first of these can make the segment resolved by
+	// the copy's own content. Withdrawn once the re-append is installed.
+	reappend func(st *stream, c ownedCopy) error
+
+	// afterHolds is a test hook, nil in production: the worker runs it with
+	// no lock held after each pass's step over the held segments.
+	afterHolds func()
 
 	// pieces holds every (dropped seq, extent) a Lose or a Place has taken,
 	// so one piece of a dropped record is reported once, while another piece
@@ -366,7 +445,9 @@ type entry struct {
 	done bool
 	// tracked is the entry's place in the stream's Track order, which a
 	// window keeps when it takes the entry, so a read-only journal undoes a
-	// file's records newest first across windows and segments.
+	// file's records newest first across windows and segments. The worker
+	// also finds the entry again by it after Corrupt took an earlier entry
+	// out of the ledger.
 	tracked uint64
 }
 
@@ -374,7 +455,13 @@ type entry struct {
 //
 // decision: mu is a leaf mutex, never held across I/O, a sync, the clock, a
 // file domain or another lock, because both sinks run under the
-// segment's append domain and must not wait on anything.
+// segment's append domain and must not wait on anything. The four locks
+// taken under it are leaves themselves, which take nothing while held: the
+// change channel's cmu, the segment ledger's mutex, which a hold's claim,
+// release and lookup take (segHold says why), the directory registry's
+// mutex, which a raise of the generation takes, so a raise and the change
+// that makes its loss visible are one step, and dmu, which a hold's count of
+// records its corrupt segment cannot produce takes (pinLocked).
 type stream struct {
 	d  *Durability
 	no uint32
@@ -384,7 +471,10 @@ type stream struct {
 	// trackedN counts the records the stream tracked; each entry carries its
 	// own count.
 	trackedN uint64
-	// ledger holds the entries in Track order.
+	// ledger holds the entries in Track order. Track only appends, the
+	// worker compacts, and Corrupt takes out an entry no sync covered, so an
+	// entry's index can move down between two steps of the worker, which finds
+	// it again by its count.
 	//
 	// ponytail: one entry per unsynced record, bounded by what a stream
 	// accepts within one sync bound. Durable scans it linearly. Upgrade
@@ -453,6 +543,15 @@ type stream struct {
 	want    bool
 	syncing bool
 
+	// corrupt are the corrupt records' losses Corrupt handed to the worker.
+	corrupt []corruptJob
+	// owed holds, per failed segment whose window is not taken yet, the files
+	// Corrupt took a record of out of the ledger: the window takeWindow makes
+	// for the segment marks them, so they are told as if it had failed them.
+	owed map[core.SegmentID][]core.FileID
+	// holds are the segments copies are in use from, each with its hold.
+	holds map[core.SegmentID]*segHold
+
 	// kick wakes the worker; capacity 1, sent without blocking.
 	kick chan struct{}
 
@@ -472,9 +571,10 @@ type stream struct {
 	buckets  []atomic.Uint64
 	sum      atomic.Int64
 
-	// scratch and live are the worker's own, reused by each pass: the indices
-	// it completes and the segments that still hold an entry.
-	scratch []int
+	// scratch and live are the worker's own, reused by each pass: the Track
+	// counts of the entries it completes and the segments that still hold an
+	// entry.
+	scratch []uint64
 	live    map[core.SegmentID]struct{}
 }
 
@@ -685,10 +785,13 @@ func (d *Durability) Stats() Part {
 	// without its event, nor an event without its raise.
 	p.LossGeneration = d.dir.load()
 	d.lmu.Unlock()
+	p.DamagedSegments, p.Segments = d.damagedReport()
 	return p
 }
 
-// Stop stops the workers and joins them. A second call is a no-op.
+// Stop stops the workers and joins them, then records the corrupt losses
+// still queued, so a loss handed over before Stop has its record appended
+// when Stop returns. A second call is a no-op.
 func (d *Durability) Stop() {
 	d.stop.Do(func() {
 		d.mu.Lock()
@@ -702,6 +805,12 @@ func (d *Durability) Stop() {
 			st.closed = true
 			d.notifyAll()
 			st.mu.Unlock()
+		}
+		// Every Corrupt that queued before closed was set has its loss in a
+		// queue now, and every later one records its loss itself.
+		d.wg.Wait()
+		for _, st := range made {
+			d.drainCorrupt(st)
 		}
 	})
 	d.wg.Wait()
@@ -967,7 +1076,7 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 			return nil
 		}
 		if d.beforeWait != nil {
-			d.beforeWait()
+			d.beforeWait(ws)
 		}
 		select {
 		case <-ctx.Done():
@@ -1101,6 +1210,12 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 		owed = st.takeMarksLocked(ids)
 	}
 	lead := false
+	// A report owed for a segment whose window is not taken yet is waited for,
+	// as a failure in flight: takeWindow turns it into a mark, which a later
+	// check answers.
+	if failFast && st.owesLocked(ids) {
+		pending, failing = true, true
+	}
 	var failSeg core.SegmentID
 	var failWindow uint64
 	var failErr error

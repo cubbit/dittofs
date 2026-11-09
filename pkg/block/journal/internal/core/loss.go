@@ -23,6 +23,11 @@ type LossEvent struct {
 	// Offloaded is whether the extent's offloaded bit was set.
 	Offloaded bool
 
+	// Synced is whether the dropped record was synced when it was dropped.
+	// It is false for a failed window, a read-only failure and any other
+	// unsynced drop.
+	Synced bool
+
 	// AtOpen reports that the event was found at open, from a loss record
 	// still on disk, or is an open's own loss.
 	AtOpen bool
