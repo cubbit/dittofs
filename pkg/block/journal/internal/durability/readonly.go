@@ -1,9 +1,12 @@
 package durability
 
 import (
+	"errors"
 	"fmt"
+	"syscall"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
 // roState is one immutable snapshot of the read-only state. A change builds a
@@ -81,3 +84,80 @@ func (d *Durability) setSpareMade() { d.update(func(s *roState) { s.SpareMade = 
 
 // setCheck records the check a probe found failing, or clears it with nil.
 func (d *Durability) setCheck(err error) { d.update(func(s *roState) { s.Check = err }) }
+
+// Observe returns fs wrapped so that the first EROFS from any call it makes,
+// or from any call on a file it returns, makes the journal read-only through
+// Enter. A read-only filesystem can answer EROFS to any write path (a segment
+// write, a sync, a rename, a directory sync), so the call sites cannot each
+// be checked; the one wrapper, put under the journal's storage once when it is
+// built, sees them all. It never alters a result: every value and error,
+// EROFS included, is returned exactly as the wrapped call gave it, and an
+// error that is not EROFS (EIO, ENOSPC) leaves the journal as it was.
+func (d *Durability) Observe(fs storage.FS) storage.FS { return &observedFS{d: d, fs: fs} }
+
+// observe enters read-only when err is an EROFS and returns err unchanged.
+func (d *Durability) observe(err error) error {
+	if err != nil && errors.Is(err, syscall.EROFS) {
+		d.Enter(err)
+	}
+	return err
+}
+
+type observedFS struct {
+	d  *Durability
+	fs storage.FS
+}
+
+func (o *observedFS) wrap(f storage.File, err error) (storage.File, error) {
+	if f != nil {
+		f = &observedFile{d: o.d, f: f}
+	}
+	return f, o.d.observe(err)
+}
+
+func (o *observedFS) Create(name string) (storage.File, error) { return o.wrap(o.fs.Create(name)) }
+func (o *observedFS) Open(name string) (storage.File, error)   { return o.wrap(o.fs.Open(name)) }
+func (o *observedFS) Rename(oldName, newName string) error {
+	return o.d.observe(o.fs.Rename(oldName, newName))
+}
+func (o *observedFS) Remove(name string) error { return o.d.observe(o.fs.Remove(name)) }
+func (o *observedFS) List() ([]string, error) {
+	names, err := o.fs.List()
+	return names, o.d.observe(err)
+}
+func (o *observedFS) SyncDir() error { return o.d.observe(o.fs.SyncDir()) }
+
+type observedFile struct {
+	d *Durability
+	f storage.File
+}
+
+func (o *observedFile) ReadAt(p []byte, off int64) (int, error) {
+	n, err := o.f.ReadAt(p, off)
+	return n, o.d.observe(err)
+}
+
+func (o *observedFile) ReadAtDirect(p []byte, off int64) (int, error) {
+	n, err := o.f.ReadAtDirect(p, off)
+	return n, o.d.observe(err)
+}
+
+func (o *observedFile) WriteAt(p []byte, off int64) (int, error) {
+	n, err := o.f.WriteAt(p, off)
+	return n, o.d.observe(err)
+}
+
+func (o *observedFile) Allocate(off, n int64) error { return o.d.observe(o.f.Allocate(off, n)) }
+func (o *observedFile) Sync() error                 { return o.d.observe(o.f.Sync()) }
+func (o *observedFile) Truncate(size int64) error   { return o.d.observe(o.f.Truncate(size)) }
+func (o *observedFile) Size() (int64, error) {
+	n, err := o.f.Size()
+	return n, o.d.observe(err)
+}
+func (o *observedFile) Close() error { return o.d.observe(o.f.Close()) }
+func (o *observedFile) Name() string { return o.f.Name() }
+
+var (
+	_ storage.FS   = (*observedFS)(nil)
+	_ storage.File = (*observedFile)(nil)
+)
