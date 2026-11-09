@@ -1968,7 +1968,7 @@ if err == nil && expired(r) && !op.Expired && role != RoleRelease { err = ErrExp
 if err == nil && draining && role == RoleNone { err = drainErr } // §3.1: ErrMoved or ErrDraining; never per operation in a single-reply compound (below)
 if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve when tbl.Holds
 st, send := tbl.Errors.Map(err, op, h.Version())
-if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); return } // a NoReply row: no final reply; where the table holds (SMB) an interim grants the request's credits back, and after, the credits read from the headers of the chain members after it (0 outside a chain) (HoldCodec.Interim)
+if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); return } // a NoReply row: no final reply; where the table holds (SMB) an interim grants the request's credits back, and those of the chain members after it, whose headers it is handed (none outside a chain) (HoldCodec.Interim)
 reply := encode(stages.Header, h, st, inv)
 if op.Cacheable { stages.Replay.Store(h, reply) } // a clear copy, before Wrap
 err = stages.Security.Wrap(h, reply) // a chain's replies: once, joined (below)
@@ -2132,14 +2132,14 @@ type HoldCodec interface {
 	// with the hold pool full, §4.6), only what keeps the client's balance at
 	// one. Either way it grants the credits of the chain members answered
 	// before it, which ride on its header. For a NoReply row (a drain's
-	// refusal) it grants the request's credits and after, the credits of the
-	// chain members after it, which do not run: the runner reads them from
-	// those members' headers, since it decodes nothing else of them, and
-	// their sum saturates at the connection's credit target (RFC 22 §3.3)
-	// rather than wrapping in a uint16. No Final follows, nothing is held,
-	// and it counts against no floor or MaxPending. Every other interim
-	// passes after 0.
-	Interim(h Header, grant bool, after uint16, out *Buf) error
+	// refusal) it grants the request's credits and those of the chain
+	// members after it, which do not run: the runner hands it their headers,
+	// the only part of them it decodes, and the codec reads their credits and
+	// sums them, saturating at the connection's credit target (RFC 22 §3.3)
+	// rather than wrapping. core knows nothing of credits. No Final follows,
+	// nothing is held, and it counts against no floor or MaxPending. Every
+	// other interim is handed no headers.
+	Interim(h Header, grant bool, after []Header, out *Buf) error
 	// Final is the final reply's header, with the async ID. If grant (true
 	// only when its interim withheld), it grants the request's credits less
 	// what the interim granted of them; otherwise none.

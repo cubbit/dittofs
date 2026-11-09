@@ -267,7 +267,7 @@ which epic owns the rest.
 | R67 | `Header` is `{Op() uint32; Version() Version; Next() int; Related() bool}`; `core` reads a header only through these | MUST | §4.7 | T1.7 |
 | R68 | `Request` exports `Call vfs.Call`, `Version`, `Level Needs`, `Conn *Conn`, `State any`, the rest unexported; `(*Request).Park(cancel func()) (done func(err error), err error)` (semantics: E5) | MUST | §4.7 | T1.7 |
 | R69 | `Conn` is opaque; a protocol reaches it only through `Send(h Header, msg *Buf, before uint64) error`, `Established()`, `Keep() (release func())`, `Settings() config.Settings` (D15), `Close(err error)` (bodies: E4, E5) | MUST | §4.7 | T1.7 |
-| R70 | `HoldCodec` is `{Key(h) uint64; Interim(h, grant bool, after uint16, out *Buf) error; Final(h, grant bool) Header; Cancels(h) (key uint64, ok bool); Pends(h, cause vfs.DelayCause) bool}` | MUST | §4.7 | T1.7 |
+| R70 | `HoldCodec` is `{Key(h) uint64; Interim(h, grant bool, after []Header, out *Buf) error; Final(h, grant bool) Header; Cancels(h) (key uint64, ok bool); Pends(h, cause vfs.DelayCause) bool}` | MUST | §4.7 | T1.7 |
 | R71 | `ErrParked` and core's refusals `ErrNotSupported`, `ErrVersion`, `ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree`, `ErrNoFH`, `ErrTooLong`, `ErrExpired`, `ErrNotLast`, `ErrTooManyPending`, `ErrMoved`, `ErrDraining` are distinct sentinels; `Errors() []error` (body: E5) | MUST | §4.7 | T1.7 |
 | R72 | `Dispatcher` is `{Dispatch(ctx, c *Conn, rec *Buf); Drain(moved bool)}`, the seam a connection's own tests stub | MUST | §4.7 | T1.7 |
 | R73 | `NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)`; `Listener{Network string; Port uint16; Protocol Protocol}`; `*Server` implements `adapter.Adapter` (bodies: E4) | MUST | §4.7, §3.4, §2.5 | T1.7 |
@@ -383,11 +383,12 @@ which epic owns the rest.
 - **D18, `core` builds its `BufPool`.** `resources.NewBufPool(b *Budget) *BufPool` is added to
   RFC 24 §2.5; each `Server` builds one over each budget of `Deps.Pools` it takes buffers
   from, receive and reply. `Deps` carries no allocator.
-- **D19, the two gaps the review follow-ups leave.** `HoldCodec.Interim` takes the credits of
-  the chain members after the refused one, summed from their headers, `Interim(h Header, grant
-  bool, after uint16, out *resources.Buf) error`, so a drain's refusal grants them; the sum
-  saturates at the connection's credit target (RFC 22 §3.3) rather than wrapping in a
-  `uint16`. `Invocation.Role` may be called before `Resolve`, reading only the request's
+- **D19, the two gaps the review follow-ups leave.** `HoldCodec.Interim` is handed the headers of
+  the chain members after the refused one, `Interim(h Header, grant bool, after []Header, out
+  *resources.Buf) error`, so a drain's refusal grants their credits. `Header` exposes no
+  credits and `core` holds no credit target, so the codec reads and sums them, saturating at
+  the connection's credit target (RFC 22 §3.3) rather than wrapping; `core` passes a slice of
+  the chain's headers it already holds, allocating nothing. `Invocation.Role` may be called before `Resolve`, reading only the request's
   decoded arguments and the state an explicit ID among them names, which is what judging a
   single-reply compound whole before any member runs needs.
 - **D20, four prior-art proposals add no surface.** Each is met inside an epic's body instead,
