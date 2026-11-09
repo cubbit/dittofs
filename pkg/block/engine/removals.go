@@ -53,10 +53,15 @@ type loopItem struct {
 // the scheduler's removal source when offload adds the first work that needs
 // fairness between shares.
 type removalLoop struct {
-	e       *Engine
-	mu      sync.Mutex
-	items   []*loopItem
-	closed  bool
+	e      *Engine
+	mu     sync.Mutex
+	items  []*loopItem
+	closed bool
+	// decision: only a test helper sets dropped, until Drop is built, so the
+	// branches that read it end a dropped share's items for tests alone.
+	// They are the shape Drop needs: Drop sets it, and the helper goes,
+	// once built. Delete the field and its branches if Drop ends a share's
+	// items some other way.
 	dropped map[entity.ShareID]bool // shares dropped: an item of one, running or enqueued, is ended
 	steps   atomic.Int64            // items run, for a test to wait on a run
 	wake    chan struct{}

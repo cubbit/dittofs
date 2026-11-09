@@ -553,26 +553,24 @@ func (e *Engine) claimAll(ctx context.Context, r *removal) error {
 func (e *Engine) retryClone(c *cloneRun, r *removal) {
 	c.db.gc.removals.enqueue(&loopItem{b: c.db, f: c.dst, kind: entity.RemoveClone,
 		run: func(ctx context.Context) answer { return e.attempt(ctx, c, r) },
-		end: func() { e.cloneEnded(c, r, nil) },
+		end: func() { e.endClone(c, errLoopEnded) },
 	})
 }
 
-// cloneEnded ends a clone whose phase 1 will not commit: the destination
-// gone, err its store error, or its loop ended first, err nil. A destination
-// gone loses the clone's copies with its own operation: committed as writes,
-// they would raise the destination's applied above the clone, and the next
-// start's rebuild of it would then be skipped as applied. A loop's end, as
-// Close's stop of the work queue, leaves the destination as it is: its
-// operations, the clone's and its copies included, stay in the entry and its
-// guard stays held, so no group commit after it commits any, and the
-// journal's marker leaves the clone to the next start, as a removal's cut
-// short phase 1 is left (RFC 8 §2.5 step 2). Both registrations go, and the
-// call answers why.
+// cloneEnded ends a clone whose phase 1 will not commit as its destination
+// is gone, err its store error. The destination loses the clone's copies
+// with its own operation: committed as writes, they would raise the
+// destination's applied above the clone, and the next start's rebuild of it
+// would then be skipped as applied. Both registrations go, and the call
+// answers why.
+//
+// A loop's end, as Close's stop of the work queue, ends the clone with
+// endClone alone: the destination is left as it is, its operations, the
+// clone's and its copies included, staying in the entry and its guard held,
+// so no group commit after it commits any, and the journal's marker leaves
+// the clone to the next start, as a removal's cut short phase 1 is left
+// (RFC 8 §2.5 step 2).
 func (e *Engine) cloneEnded(c *cloneRun, r *removal, err error) {
-	if err == nil {
-		e.endClone(c, errLoopEnded)
-		return
-	}
 	fe := e.files.lockFor(c.dst)
 	fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool { return op.copy })
 	e.files.unlock(c.dst, fe)

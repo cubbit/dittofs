@@ -207,6 +207,11 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 	}
 	g.ctx, g.cancel = context.WithCancel(withRetryingOwner(context.Background()))
 	g.removals = newRemovalLoop(e)
+	// decision: only a test helper sets gcsClosed, until Close is built, so
+	// this branch serves tests alone. It is the shape Close needs: Close
+	// sets it, and the helper goes, once built. Delete the field and the
+	// branch if Close keeps a journal's group commit from starting some
+	// other way.
 	if e.gcsClosed {
 		g.closed = true
 		g.cancel()
