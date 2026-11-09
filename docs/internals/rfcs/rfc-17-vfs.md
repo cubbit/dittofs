@@ -1732,6 +1732,11 @@ it, long enough for a lease break to run out and be revoked.
 Steps 3–6 run at the primary as one step (§4.8), except across a hold (§5.0).
 The lock never spans a sync or a group commit.
 
+A write of no byte runs steps 1 and 2 and returns: past them it starts no recall, reserves
+nothing, clears no setuid or setgid bit, changes no time and calls no engine
+`Write`, as MS-FSA answers a write of `ByteCount` zero before it notes the file
+modified (2.1.5.4, 2.1.4.17) ([RFC 14 §7](rfc-14-open-state.md#7.%20Conflicts%20across%20protocols)).
+
 ```go
 func (s *Filesystem) Write(ctx context.Context, call Call, ref OpenRef, off int64, src []byte, st Stability) (WriteResult, error) {
 	c, done, err := s.admit.Call(ctx, call, ref.Handle) // step 1: counted, then admitted (§4.9)
@@ -1822,7 +1827,8 @@ once (§5.6).
 
 ### 5.2 Read
 
-Steps 1–3 as for a write, with read access; then the engine's `Read`, which
+Steps 1–3 as for a write, with read access, a read of no byte returning after
+step 2 with no recall ([RFC 14 §7](rfc-14-open-state.md#7.%20Conflicts%20across%20protocols)); then the engine's `Read`, which
 resolves residency and streams verified chunks
 ([RFC 8 §7.2](rfc-8-engine.md#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order)).
 It never returns an unverified byte, but it can return `n` verified bytes and
