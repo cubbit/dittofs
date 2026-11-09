@@ -7,7 +7,9 @@ import (
 	"io/fs"
 	"log/slog"
 	"reflect"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -29,6 +31,18 @@ type clockCtx struct {
 
 func (c clockCtx) Deadline() (time.Time, bool) {
 	return c.now, true
+}
+
+// failIfWaits makes a call that waits for the raise of the version limit fail
+// t and ends its wait by cancelling the context it runs under: a call that
+// must not wait then fails here instead of blocking, with no timer.
+func failIfWaits(t *testing.T, e *engine.Engine, cancel context.CancelFunc) {
+	t.Helper()
+
+	e.OnRefused(func() {
+		t.Error("the call waited for the raise")
+		cancel()
+	})
 }
 
 // answerOf is the test's own table of the answers a refusal must get: retry
@@ -86,17 +100,17 @@ func TestEachSiteAnswersByTheTable(t *testing.T) {
 		name string
 		call enginetest.Call
 		errs []error
-		run  func(t *testing.T, u *unit, src, dst entity.FileID) error
+		run  func(t *testing.T, ctx context.Context, u *unit, src, dst entity.FileID) error
 	}
 
-	write := func(t *testing.T, u *unit, src, _ entity.FileID) error {
-		_, err := u.e.Write(t.Context(), u.share.ID, src, 0, []byte("abc"),
+	write := func(t *testing.T, ctx context.Context, u *unit, src, _ entity.FileID) error {
+		_, err := u.e.Write(ctx, u.share.ID, src, 0, []byte("abc"),
 			engine.WriteOpts{Done: func() {}})
 
 		return err
 	}
-	clone := func(t *testing.T, u *unit, src, dst entity.FileID) error {
-		return u.e.Clone(t.Context(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: mib})
+	clone := func(t *testing.T, ctx context.Context, u *unit, src, dst entity.FileID) error {
+		return u.e.Clone(ctx, u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: mib})
 	}
 	headroomVersion := []error{refusalErr(journal.LimitHeadroom), refusalErr(journal.LimitVersion)}
 	withIndex := append(
@@ -114,28 +128,28 @@ func TestEachSiteAnswersByTheTable(t *testing.T) {
 		{
 			"Draw", enginetest.CallDraw,
 			[]error{refusalErr(journal.LimitVersion)},
-			func(t *testing.T, u *unit, src, _ entity.FileID) error {
-				_, err := u.e.Draw(t.Context(), u.share.ID, src)
+			func(t *testing.T, ctx context.Context, u *unit, src, _ entity.FileID) error {
+				_, err := u.e.Draw(ctx, u.share.ID, src)
 
 				return err
 			},
 		},
 		{
 			"Truncate", enginetest.CallTruncate, headroomVersion,
-			func(t *testing.T, u *unit, src, _ entity.FileID) error {
-				return u.e.Truncate(t.Context(), u.share.ID, src, 5)
+			func(t *testing.T, ctx context.Context, u *unit, src, _ entity.FileID) error {
+				return u.e.Truncate(ctx, u.share.ID, src, 5)
 			},
 		},
 		{
 			"Deallocate", enginetest.CallDeallocate, withIndex,
-			func(t *testing.T, u *unit, src, _ entity.FileID) error {
-				return u.e.Deallocate(t.Context(), u.share.ID, src, 0, 4)
+			func(t *testing.T, ctx context.Context, u *unit, src, _ entity.FileID) error {
+				return u.e.Deallocate(ctx, u.share.ID, src, 0, 4)
 			},
 		},
 		{
 			"Delete", enginetest.CallDelete, headroomVersion,
-			func(t *testing.T, u *unit, src, _ entity.FileID) error {
-				_, err := u.e.Delete(t.Context(), u.share.ID, src)
+			func(t *testing.T, ctx context.Context, u *unit, src, _ entity.FileID) error {
+				_, err := u.e.Delete(ctx, u.share.ID, src)
 
 				return err
 			},
@@ -159,7 +173,34 @@ func TestEachSiteAnswersByTheTable(t *testing.T) {
 					t.Fatalf("Refuse(%v): %v", ref, err)
 				}
 
-				checkAnswer(t, "answer", s.run(t, u, src, dst), wantOf(ref))
+				// A version refusal waits for the raise unless the deadline has
+				// passed on the engine's clock; none of these calls may wait.
+				base, cancel := context.WithCancel(t.Context())
+
+				defer cancel()
+
+				ctx := context.Context(base)
+				if s.call != enginetest.CallCloneTarget {
+					ctx = clockCtx{Context: base, now: u.clock.Now()}
+				}
+
+				failIfWaits(t, u.e, cancel)
+
+				if s.call == enginetest.CallCloneTarget {
+					// The clone runs on the loop's context, which a test cannot cancel:
+					// a wait there ends by clearing the refusal and waking it.
+					u.e.OnRefused(func() {
+						t.Error("the call waited for the raise")
+
+						if err := u.j.Refuse(s.call, nil); err != nil {
+							t.Error(err)
+						}
+
+						u.e.NotifyVersionLimitForTest(u.share.ID)
+					})
+				}
+
+				checkAnswer(t, "answer", s.run(t, ctx, u, src, dst), wantOf(ref))
 			})
 		}
 	}
@@ -256,11 +297,15 @@ func TestContextEndKeepsTheRefusalsCause(t *testing.T) {
 
 	for _, c := range []struct {
 		name string
-		ctx  func(u *unit) context.Context
+		ctx  func(u *unit) (context.Context, context.CancelFunc)
 	}{
-		{"canceled", func(*unit) context.Context { return canceled }},
-		{"deadline passed", func(u *unit) context.Context {
-			return clockCtx{Context: t.Context(), now: u.clock.Now()}
+		{"canceled", func(*unit) (context.Context, context.CancelFunc) {
+			return canceled, func() {}
+		}},
+		{"deadline passed", func(u *unit) (context.Context, context.CancelFunc) {
+			base, cancel := context.WithCancel(t.Context())
+
+			return clockCtx{Context: base, now: u.clock.Now()}, cancel
 		}},
 	} {
 		for _, ref := range refusals {
@@ -272,7 +317,13 @@ func TestContextEndKeepsTheRefusalsCause(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				err := refusedWrite(t, u, c.ctx(u), f)
+				ctx, cancel := c.ctx(u)
+
+				defer cancel()
+
+				failIfWaits(t, u.e, cancel)
+
+				err := refusedWrite(t, u, ctx, f)
 				checkAnswer(t, "answer", err, wantOf(ref))
 
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -289,7 +340,13 @@ func TestContextEndKeepsTheRefusalsCause(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, err := u.e.Draw(c.ctx(u), u.share.ID, u.create(t, "d"))
+			ctx, cancel := c.ctx(u)
+
+			defer cancel()
+
+			failIfWaits(t, u.e, cancel)
+
+			_, err := u.e.Draw(ctx, u.share.ID, u.create(t, "d"))
 			checkAnswer(t, "answer", err, &vfserr.Delay{Cause: vfserr.DelayCommit})
 
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -352,7 +409,15 @@ func TestARefusedCallChangesNothing(t *testing.T) {
 
 			called := false
 
-			_, err = u.e.Write(t.Context(), sh.ID, f, 0, []byte("abc"),
+			base, cancel := context.WithCancel(t.Context())
+
+			defer cancel()
+
+			failIfWaits(t, u.e, cancel)
+
+			ctx := clockCtx{Context: base, now: u.clock.Now()}
+
+			_, err = u.e.Write(ctx, sh.ID, f, 0, []byte("abc"),
 				engine.WriteOpts{Done: func() {
 					called = true
 				}})
@@ -577,5 +642,72 @@ func TestAnUnknownLimitIsRetryLaterAndLoggedOnce(t *testing.T) {
 
 	if n := u.e.Stats().WriteRefusals; n != 2 {
 		t.Errorf("%d refusals counted, want 2", n)
+	}
+}
+
+// A clone retried by the removal loop meets a refusal by the version limit at
+// its second reservation: the loop does not wait for the raise, nor count the
+// refusal; it retries at its backoff and the clone completes.
+func TestLoopReserveRefusalIsRetriedNotWaited(t *testing.T) {
+	var logged lockedBuffer
+
+	u, h := clonedHookedUnit(t, func(d *engine.Deps) {
+		d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
+	})
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.create(t, "dst")
+
+	var waits atomic.Int64
+
+	u.e.OnRefused(func() {
+		waits.Add(1)
+		t.Error("the removal loop waits for the raise")
+		// The loop's context cannot be canceled by a test: wake its wait, which
+		// then retries against the one-shot refusal already spent.
+		u.e.NotifyVersionLimitForTest(u.share.ID)
+	})
+	h.cloneTarget.set(func() {
+		u.lose(src, mib/4, mib/4) // the copies now outrun the reservation
+		u.j.RefuseReserve(refusalErr(journal.LimitVersion))
+	})
+
+	before := u.e.LoopSteps(u.share.ID)
+	errc := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
+
+	// The loop's first step is the resize the journal refuses; its retry waits
+	// one backoff on the engine's clock. The loop's own step counter, not the
+	// clock's pending timers, says when each has run: the group commit's age
+	// timer can arm in that window and is as pending as the loop's.
+	for u.e.LoopSteps(u.share.ID) == before {
+		runtime.Gosched()
+	}
+
+	refused := u.e.LoopSteps(u.share.ID)
+
+	for u.e.LoopSteps(u.share.ID) == refused {
+		u.clock.Advance(time.Second)
+		runtime.Gosched()
+	}
+
+	if got := <-errc; got != nil {
+		t.Fatalf("a clone refused once by the version limit at its resize: %v", got)
+	}
+
+	if n := waits.Load(); n != 0 {
+		t.Errorf("the loop waited for the raise %d times, want none", n)
+	}
+
+	if n := u.e.Stats().WriteRefusals; n != 0 {
+		t.Errorf("%d refusals counted, want 0: the loop's refusal answers no client", n)
+	}
+
+	// The loop's retry is logged with the table's answer, not the journal's
+	// error (a copy past its reservation is the reservation's, and stays raw), and
+	// the refusal is not warned.
+	if !strings.Contains(logged.String(), "retry shortly: commit") ||
+		strings.Contains(logged.String(), "refused by the version limit") ||
+		strings.Contains(logged.String(), "write refused") {
+		t.Errorf("the loop's retry was logged as %q, want the table's answer, no refusal line",
+			logged.String())
 	}
 }

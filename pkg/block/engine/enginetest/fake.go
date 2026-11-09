@@ -64,7 +64,8 @@ type FakeJournal struct {
 	refusal  error                   // what a write answers once read-only
 	undone   map[journal.FileID]bool // ReadOnly's files: every Sync naming one answers the refusal
 
-	refused map[Call]error // Refuse's errors, answered by every call of their kind until cleared
+	afterRefusal func()         // AfterRefusal's action, run inside a refused WriteAt
+	refused      map[Call]error // Refuse's errors, until cleared
 
 	refuseReserve error // RefuseReserve's error: the next Reserve answers it
 }
@@ -473,7 +474,49 @@ func (h *FakeHandle) file(id journal.FileID, claim bool) (*fakeFile, error) {
 // WriteAt holds p at off under a new version, refused by the share's limit
 // on held bytes or the version limit. A zero-length p holds nothing and
 // answers the zero version, as the journal does.
-func (h *FakeHandle) WriteAt(_ context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error) {
+func (h *FakeHandle) WriteAt(
+	ctx context.Context,
+	id journal.FileID,
+	off int64,
+	p []byte,
+	mtime int64,
+) (journal.Version, error) {
+	v, err := h.writeAt(ctx, id, off, p, mtime)
+
+	var noSpace *journal.NoSpaceError
+	if !errors.As(err, &noSpace) {
+		return v, err
+	}
+
+	h.j.mu.Lock()
+	after := h.j.afterRefusal
+	h.j.mu.Unlock()
+
+	if after != nil {
+		after()
+	}
+
+	return v, err
+}
+
+// AfterRefusal arms f to run inside every WriteAt the journal refuses by a
+// limit, after the journal released its lock and before the call answers, so f
+// may call the journal; nil disarms it. It is how a test lets the raise of the
+// version limit commit between the refusal and the caller's wait.
+func (j *FakeJournal) AfterRefusal(f func()) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	j.afterRefusal = f
+}
+
+func (h *FakeHandle) writeAt(
+	_ context.Context,
+	id journal.FileID,
+	off int64,
+	p []byte,
+	mtime int64,
+) (journal.Version, error) {
 	j := h.j
 	j.mu.Lock()
 	defer j.mu.Unlock()

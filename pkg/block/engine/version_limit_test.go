@@ -943,10 +943,18 @@ func TestRefusedLimitIsNotRetried(t *testing.T) {
 		t.Errorf("a refused limit waits to be retried: %d waits", s.clock.Pending())
 	}
 
+	// A draw at the refused limit must not wait for a raise that will not
+	// come: if it did, the test fails and the wait ends.
+	ctx, cancel := context.WithCancel(t.Context())
+
+	defer cancel()
+
+	failIfWaits(t, s.e, cancel)
+
 	var err error
 
 	for err == nil {
-		_, err = s.e.Draw(t.Context(), s.one.ID, drawFile)
+		_, err = s.e.Draw(ctx, s.one.ID, drawFile)
 	}
 
 	s.e.WaitRaises(t)

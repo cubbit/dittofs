@@ -428,6 +428,11 @@ func (e *Engine) prepare(ctx context.Context, c *cloneRun, x vfserr.Extent) erro
 // need, so no copy is refused part-way. It answers the newest version the
 // source was read at.
 //
+// The reservation is answered by the refusal table. With client set, a clone
+// of a caller waits for a version raise, and counts and logs each refusal;
+// the removal loop's size, with client unset, takes the table's answer only,
+// with no wait, count or warning, and the loop retries it.
+//
 // ponytail: a clone reads its source's held bytes twice, here to size them
 // and in its copies. Give the handle RFC 1 §3.7's Extents to size without
 // reading when clone time on journal-held sources shows in a profile.
@@ -451,22 +456,31 @@ func (e *Engine) size(ctx context.Context, c *cloneRun, client bool) (journal.Ve
 		n += h.Extent.Len
 	}
 	if len(c.runs) > 0 {
-		res, err := c.db.h.Reserve(n, len(c.runs))
-		if err != nil {
+		reserve := func() (Reservation, error) {
+			return c.db.h.Reserve(n, len(c.runs))
+		}
+
+		var (
+			res Reservation
+			err error
+		)
+
+		if client {
+			res, err = answeringRefusals(ctx, e, c.db, true, reserve)
+		} else {
 			// The removal loop's reservation answers no caller, so it is
-			// answered by the table without counting or warning; the loop
-			// retries it as before.
-			answer, ok := tableAnswer(err)
-			if client {
-				answer, ok = e.answered(c.db, err)
+			// answered by the table without waiting, counting or warning;
+			// the loop retries it as before.
+			res, err = reserve()
+			if answer, ok := tableAnswer(err); ok {
+				err = answer
 			}
+		}
 
-			if ok {
-				return journal.Version{}, answer
-			}
-
+		if err != nil {
 			return journal.Version{}, err
 		}
+
 		c.res = res
 	}
 	return asOf, nil
@@ -488,7 +502,7 @@ func (e *Engine) runClone(c *cloneRun) {
 	r, err := e.begin(ctx, c.db, c.dst, entity.RemoveClone, c.rd.Extent)
 	if err == nil {
 		dx := journal.Extent{Off: c.spec.DstOff, Len: c.spec.Len}
-		if _, err = e.stage(ctx, r, func(*fileEntry) (journal.Version, error) {
+		if _, err = e.stageAnswering(ctx, r, false, func(*fileEntry) (journal.Version, error) {
 			return c.db.h.CloneTarget(ctx, fileID(c.dst), c.spec)
 		}, opClone, dx, nil); err != nil {
 			e.release(r, false)

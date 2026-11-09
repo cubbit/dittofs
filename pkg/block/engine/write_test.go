@@ -221,7 +221,15 @@ func TestDrawIsTheJournalsNextVersion(t *testing.T) {
 	if err := u.j.SetVersionLimit(journal.Version{Counter: drawn.Counter + 2}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = u.e.Draw(t.Context(), u.share.ID, g)
+
+	base, cancel := context.WithCancel(t.Context())
+
+	defer cancel()
+
+	failIfWaits(t, u.e, cancel)
+
+	ctx := clockCtx{Context: base, now: u.clock.Now()}
+	_, err = u.e.Draw(ctx, u.share.ID, g)
 	var delay *vfserr.Delay
 	var noSpace *journal.NoSpaceError
 	if !errors.As(err, &delay) || delay.Cause != vfserr.DelayCommit || errors.As(err, &noSpace) {

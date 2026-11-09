@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -185,18 +186,131 @@ func answeredRefusal(err error) bool {
 	return errors.Is(err, vfserr.ErrDelay) || errors.Is(err, vfserr.ErrNoSpace)
 }
 
-// refusing runs call, a journal call of binding b's, and answers its error: a
-// capacity refusal as the table rules, anything else as journalErr maps it, so
-// the caller returns the error as it is.
-func refusing[T any](e *Engine, b *binding, call func() (T, error)) (T, error) {
-	got, err := call()
-	if err == nil {
-		return got, nil
-	}
+// answeringRefusals runs call, a journal call of binding b's, and answers a
+// capacity refusal it returns as the table rules; any other error is returned
+// as it is. A call that wait allows, refused by the version limit, waits for
+// the raise of the limit and runs again each time the raise changes it, until
+// the caller's context ends, which answers retry-later with the refusal's own
+// cause and never the context's error (RFC 8 §10.2). It does not wait when the
+// journal refused its limit, since no raise will come, nor when the context's
+// deadline has already passed on the engine's clock.
+func answeringRefusals[T any](
+	ctx context.Context,
+	e *Engine,
+	b *binding,
+	wait bool,
+	call func() (T, error),
+) (T, error) {
+	for {
+		changed := b.vl.watch()
 
-	if answer, ok := e.answered(b, err); ok {
+		got, err := call()
+		if err == nil {
+			return got, nil
+		}
+
+		r, ok := capacityRefusal(err)
+		if !ok {
+			return got, err
+		}
+
+		if wait && e.mayWait(ctx, b, r, changed) && e.awaitRaise(ctx, changed) {
+			continue
+		}
+
+		answer, _ := e.answered(b, err)
+
 		return got, answer
 	}
+}
 
-	return got, e.journalErr(err)
+// closed reports whether c is closed.
+func closed(c <-chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
+	}
+}
+
+// awaitRaise waits until the raise changes the limit or the journal refuses
+// one, which is when changed closes, and reports true; or until ctx ends, and
+// reports false. A change that already happened does not wait. A hook tells a
+// test when a call is about to block.
+func (e *Engine) awaitRaise(ctx context.Context, changed <-chan struct{}) bool {
+	select {
+	case <-changed:
+	default:
+		if h := e.waits.refused.Load(); h != nil {
+			(*h)()
+		}
+
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return false
+		}
+	}
+
+	return true
+}
+
+// mayWait reports whether a call refused with r waits for the raise: the table
+// says its row waits, a raise is in flight for the journal or has changed the
+// limit since the call took changed, no raise is known to be refused, and its
+// context has not ended nor passed its deadline by the
+// engine's clock.
+//
+// decision: a raise is in flight when its state is not raiseIdle, running or
+// running with a wake pending, so a goroutine is raising or will raise again.
+// The wake channel was taken before the journal call and the state is read
+// after the refusal. Every exit of a raise wakes the channel: a commit, a
+// refusal by the journal, a failed attempt before its retry wait, and the end
+// of the raise, which it does once the state is idle; only a cancellation by
+// the engine's close wakes none, which the close subtask must do. A raise that
+// ends between the call and the read has closed the channel, so the call runs
+// again; with none in flight and the channel open the call answers
+// retry-later at once. A wake with nothing changed is harmless: the call
+// retries and, with no raise in flight, answers retry-later. Overturned if a
+// version refusal must wait with no raise triggered.
+func (e *Engine) mayWait(
+	ctx context.Context,
+	b *binding,
+	r refusal,
+	changed <-chan struct{},
+) bool {
+	if row, known := rowOf(r); !known || !row.wait || b.vl.refused.Load() {
+		return false
+	}
+
+	if b.vl.state.Load() == raiseIdle && !closed(changed) {
+		return false
+	}
+
+	if ctx.Err() != nil {
+		return false
+	}
+
+	deadline, ok := ctx.Deadline()
+
+	return !ok || e.d.Clock.Now().Before(deadline)
+}
+
+// refusing is answeringRefusals for a call whose other errors are the
+// journal's own: they are mapped as journalErr maps them, so the caller returns
+// the error as it is.
+func refusing[T any](
+	ctx context.Context,
+	e *Engine,
+	b *binding,
+	wait bool,
+	call func() (T, error),
+) (T, error) {
+	got, err := answeringRefusals(ctx, e, b, wait, call)
+	if err != nil && !answeredRefusal(err) {
+		err = e.journalErr(err)
+	}
+
+	return got, err
 }

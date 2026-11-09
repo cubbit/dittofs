@@ -728,11 +728,17 @@ type versionLimit struct {
 	// raise lock.
 	refused atomic.Bool
 	refusal error
+
+	// changed is closed, and replaced, whenever a raise passes a new limit to
+	// the journal or the journal refuses one, so a call refused by the version
+	// limit waits on it for the raise (RFC 8 §10.2); waitMu guards the swap.
+	waitMu  sync.Mutex
+	changed chan struct{}
 }
 
 // newVersionLimit is the version limit of journal j, its raise lock free.
 func newVersionLimit(j Journal) *versionLimit {
-	return &versionLimit{j: j, lock: make(chan struct{}, 1)}
+	return &versionLimit{j: j, lock: make(chan struct{}, 1), changed: make(chan struct{})}
 }
 
 // acquire takes the raise lock, or gives up with ctx's error when ctx ends
@@ -744,6 +750,26 @@ func (vl *versionLimit) acquire(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// watch is the channel that closes the next time a raise changes the limit or
+// the journal refuses one. A call takes it before its journal call, so a
+// change that lands between the refusal and the wait is not lost.
+func (vl *versionLimit) watch() <-chan struct{} {
+	vl.waitMu.Lock()
+	defer vl.waitMu.Unlock()
+
+	return vl.changed
+}
+
+// notify wakes every call waiting on watch's channel, and arms the next.
+func (vl *versionLimit) notify() {
+	vl.waitMu.Lock()
+	defer vl.waitMu.Unlock()
+
+	close(vl.changed)
+
+	vl.changed = make(chan struct{})
 }
 
 // release frees the raise lock.
@@ -939,6 +965,11 @@ func (vl *versionLimit) again() bool {
 		}
 
 		if vl.state.CompareAndSwap(raiseRunning, raiseIdle) {
+			// The raise ends here, whether it committed or found the trigger
+			// no longer held: a call waiting for it is woken after the state
+			// is idle, so it finds no raise in flight when it asks.
+			vl.notify()
+
 			return false
 		}
 	}
@@ -1013,6 +1044,9 @@ func (e *Engine) raiseLoop(vl *versionLimit) {
 
 			return
 		}
+
+		// A failed attempt wakes the calls waiting for it; the retry follows.
+		vl.notify()
 
 		e.d.Logger.Warn("version limit raise failed; retrying", "wait", wait, "err", err)
 
@@ -1106,11 +1140,13 @@ func (e *Engine) raiseLocked(ctx context.Context, vl *versionLimit, also []entit
 	if err := vl.j.SetVersionLimit(mark); err != nil {
 		vl.refusal = fmt.Errorf("%w: %w", errLimitRefused, err)
 		vl.refused.Store(true)
+		vl.notify()
 
 		return vl.refusal
 	}
 
 	vl.last.Store(mark.Counter)
+	vl.notify()
 
 	return nil
 }
