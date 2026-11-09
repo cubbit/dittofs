@@ -19,7 +19,7 @@ func recordAt(w segment.Written) index.RecordAt {
 func isLoss(w segment.Written) bool { return w.Kind == format.KindLoss }
 
 // failEntries drops the records es of the window from the index, which holds
-// again what they superseded, raises the loss generation once for the window,
+// again what they superseded, raises the loss generation once for the batch,
 // and names every dropped record in a loss record and an event. The window's
 // other records are left as they are, so a window passing only its unverified
 // part raises the generation for that part alone. It runs on the stream's
@@ -43,15 +43,25 @@ func (d *Durability) failEntries(st *stream, w *window, content []entry) {
 
 	// Raised before anything is published or answered, so a reader that sees a
 	// loss event, or a Sync that returns its failure, finds the generation up.
-	// A Corrupt that took a record out of the window since the snapshot made
-	// the window's raise already, before it answered the failure for that
-	// record, so the window is raised once, by whichever came first.
+	// Each batch that still has a record in the window raises, so a window
+	// whose records fail over several passes, a refusal having stranded the
+	// later ones, moves the generation before each pass's failures are
+	// answered, never only before the first. A batch whose every record a
+	// Corrupt took out since the snapshot, each answered after a raise of its
+	// own, fails nothing and raises nothing. While the batch runs, raised
+	// tells a Corrupt of one of its records that the raise is made; it is
+	// cleared once the batch is settled.
 	st.mu.Lock()
-	if !w.raised {
+	if slices.ContainsFunc(content, func(e entry) bool { return st.inWindowLocked(e.w.Loc) }) {
 		d.RaiseWindow()
 		w.raised = true
 	}
 	st.mu.Unlock()
+	defer func() {
+		st.mu.Lock()
+		w.raised = false
+		st.mu.Unlock()
+	}()
 
 	files, byFile := byFileOf(content)
 	for _, f := range files {

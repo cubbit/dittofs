@@ -37,7 +37,11 @@ type CorruptKind uint8
 
 const (
 	// CorruptDropped is a record whose extents left the index: the caller
-	// reports them missing.
+	// reports them missing. A Dropped answer for the old place of a record
+	// the worker has just re-appended is the exception: the record left that
+	// place by a repoint, not a drop, and is live at its new place, so a
+	// caller must look the extent up in the index again before reporting it
+	// missing (takeCorrupt says why).
 	CorruptDropped CorruptKind = iota + 1
 	// CorruptUseCopy is a record served from another copy of it.
 	CorruptUseCopy
@@ -94,8 +98,9 @@ type CorruptOutcome struct {
 // offloaded bits: a call raises when one of them is not offloaded, and also,
 // whatever the pieces, when it answers a failed window's report for the record
 // (a mark, or a report owed to a window not yet taken), since a failed window
-// raises before any Sync it fails returns. A record in a pending window shares
-// the window's one raise with the worker's failure of it (window.raised). In a
+// raises before any Sync it fails returns. A record in a pending window
+// shares the raise of a batch of the worker's failures that is running
+// (window.raised), and raises on its own otherwise. In a
 // read-only journal that window raise and the read-only entry's raiseOnce can
 // both land for the same window, as a spare raise: an extra raise, never a
 // missing one, since a raise only makes a client resend and the generation
@@ -340,8 +345,8 @@ func (st *stream) takeCorrupt(c Corruption, dirty bool) (synced, lost bool) {
 			}
 			file, loc := w.entries[i].w.File, w.entries[i].w.Loc
 			// The window's failure is answered from here on, through the
-			// mark below, so the window's one raise is made now, before it,
-			// unless the worker made it already.
+			// mark below, so the raise is made now, before it, unless a
+			// batch of failEntries running for the window made it.
 			if !w.raised {
 				st.d.dir.raise()
 				w.raised = true
@@ -383,6 +388,16 @@ func (st *stream) takeCorrupt(c Corruption, dirty bool) (synced, lost bool) {
 	// repointed to the copy in the step that took the record out, so nothing
 	// at the old place is left to drop, and what the record superseded stays
 	// held until the copy is synced.
+	//
+	// decision: Corrupt then answers CorruptDropped, with the index untouched,
+	// although the record is live at its new place. The reader reached the
+	// old place through an index lookup made before the repoint, read it,
+	// and called Corrupt after the repoint; its lookup is stale, not its
+	// record lost. CorruptDropped's doc tells the caller to look the extent
+	// up again before reporting it missing, which then finds the new place.
+	// Overturned once a production reader depends on the answer itself:
+	// Corrupt would then answer CorruptUseCopy at followLocked of the old
+	// place.
 	for loc := range st.moved {
 		if loc.Segment == c.Record.Segment && loc.Off == int64(c.Record.Offset) {
 			return false, true

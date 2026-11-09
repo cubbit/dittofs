@@ -341,6 +341,78 @@ func TestReappendOfARecordThatCannotBeAppendedIsRetriedByTheNextPass(t *testing.
 	}
 }
 
+// TestAWindowFailedAcrossTwoPassesRaisesTheGenerationOnEach covers a window
+// whose records are failed in two passes: the first fails A, whose re-read
+// does not verify, and stops at a record the stream refuses, which strands B
+// behind it; the second, once that record lands, fails B. Each pass raises
+// the loss generation before it fails its records, so a client that read the
+// generation after the first pass still sees it move before B's failure is
+// answered.
+func TestAWindowFailedAcrossTwoPassesRaisesTheGenerationOnEach(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	// No worker runs, so the test takes the window and resolves it itself.
+	r := newRigUnstarted(t, 1)
+	st := r.d.made[0]
+	st.s = r.streams.Stream(0)
+	r.streams.OnEnd(r.d.onEnd)
+	f, g, h := file(1), file(2), file(3)
+	a, _ := r.publish(t, f, 0, "aaaa")
+	r.appendKind(t, g, format.KindDelete, format.RecordBody{})
+	b, _ := r.publish(t, h, 0, "bbbb")
+	if a.Segment != b.Segment {
+		t.Fatalf("A in segment %d and B in %d, want one window", a.Segment, b.Segment)
+	}
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.streams.For(f).Seal(false); err == nil {
+		t.Fatal("the seal was expected to fail")
+	}
+	eventually(t, "the end to be queued", func() bool {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return len(st.ends) == 1
+	})
+	r.d.takeWindows(st)
+	// The pages of the failed segment do not read back (the rig's default),
+	// so A and B do not verify; the header-only record between them is
+	// refused while its kept bytes do not decode.
+	st.mu.Lock()
+	if n := len(st.windows); n != 1 || len(st.windows[0].entries) != 3 {
+		st.mu.Unlock()
+		t.Fatalf("windows = %d, want one of three records", n)
+	}
+	mid := &st.windows[0].entries[1]
+	good := mid.w.Bytes
+	bad := append([]byte(nil), good...)
+	bad[format.RecordHeaderSize-1] ^= 0xff
+	mid.w.Bytes = bad
+	st.mu.Unlock()
+
+	gen := r.d.Generation()
+	r.d.resolveWindows(st)
+	afterFirst := r.d.Generation()
+	if afterFirst != gen+1 {
+		t.Fatalf("generation = %d after the pass that failed A, want %d", afterFirst, gen+1)
+	}
+	if ws := r.windowsOf(0); len(ws) != 1 || len(ws[0].locs) != 2 {
+		t.Fatalf("windows = %+v after the first pass, want the refused record and B pending", ws)
+	}
+
+	st.mu.Lock()
+	st.windows[0].entries[0].w.Bytes = good
+	st.mu.Unlock()
+	var atFail uint64
+	r.d.afterFail = func() { atFail = r.d.Generation() }
+	r.d.resolveWindows(st)
+	if ws := r.windowsOf(0); len(ws) != 0 {
+		t.Fatalf("windows = %+v after the second pass, want none", ws)
+	}
+	if atFail != afterFirst+1 {
+		t.Errorf("generation = %d when B's failure was settled, want %d: the second pass raised nothing", atFail, afterFirst+1)
+	}
+}
+
 // TestALossRecordInAFailedWindowIsReappendedWithoutAnEvent covers a loss
 // record caught in a failed window: it is written again, with the record it
 // names, and its re-append is no new loss, so no event is published and the

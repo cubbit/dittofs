@@ -61,15 +61,17 @@ type window struct {
 	// so resolving the window announces nothing and keeps the segment's
 	// failure state as it is.
 	readOnly bool
-	// raised is set, under st.mu and in the step that raises it, once the
-	// generation was raised for the window: by failEntries before it fails a
-	// record, or by Corrupt before it answers the window's failure for a
-	// record it took out. Either raise is the window's one. A read-only
-	// journal raises once for its entry instead (raiseOnce), whatever the
-	// window says, so both can land for one window there: a spare raise,
-	// an extra one and never a missing one, which only makes a client
-	// resend. Overturned if that costs something; takeCorrupt would then
-	// call the entry's raiseOnce when Admit() != nil to share one raise.
+	// raised is set, under st.mu, while a batch of failEntries runs, from its
+	// raise until the batch is settled: a Corrupt of a record of the window
+	// in that time answers the failure after the batch's raise and makes
+	// none of its own. Outside a batch it is clear, so each batch, and each
+	// Corrupt of a record still in the window, raises for the failures it
+	// answers. A read-only journal raises once for its entry instead
+	// (raiseOnce), whatever the window says, so both can land for one window
+	// there: a spare raise, an extra one and never a missing one, which only
+	// makes a client resend. Overturned if that costs something; takeCorrupt
+	// would then call the entry's raiseOnce when Admit() != nil to share one
+	// raise.
 	raised bool
 }
 

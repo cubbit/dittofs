@@ -939,16 +939,17 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) error {
 }
 
 // WaitDurable returns nil once the record at the location is durable,
-// core.ErrClosed once the layer stopped, or, once the journal is read-only and
-// the record is failed, the refusal, which matches core.ErrJournalReadOnly. It
-// takes no context and never returns a *core.SyncError. A header-only record
-// of a segment whose sync failed is re-appended, and the wait follows it to
-// its new place and ends when that is durable. While the journal takes writes,
-// a content record of such a segment is failed and keeps waiting, since it is
-// never durable, until Stop or until the journal turns read-only, which wakes
-// every such waiter. It consults and clears no marks, which belong to the Sync
-// that names the file. A record with no sync running for it gets one, as a
-// Sync would. The caller holds no file's append domain, as for Sync.
+// core.ErrClosed once the layer stopped, or, once the journal is read-only
+// and the record is failed, the refusal, which matches
+// core.ErrJournalReadOnly. It takes no context and never returns a
+// *core.SyncError. A header-only record of a segment whose sync failed is
+// re-appended, and the wait follows it to its new place and ends when that
+// is durable. While the journal takes writes, a content record of such a
+// segment is failed and keeps waiting, since it is never durable, until Stop
+// or until the journal turns read-only, which wakes every such waiter. It
+// consults and clears no marks, which belong to the Sync that names the
+// file. A record with no sync running for it gets one, as a Sync would. The
+// caller holds no file's append domain, as for Sync.
 func (d *Durability) WaitDurable(at segment.Location) error {
 	var ws []work
 	for _, st := range d.snapshot() {

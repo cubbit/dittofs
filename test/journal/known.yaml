@@ -399,7 +399,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Needs Open: the re-append of the header-only records of a failed window is built (Durability), outside a read-only journal, the fixture cannot open a journal.'
+  reason: 'Needs Open: the re-append of the header-only records of a failed window is built (Durability) outside a read-only journal; the fixture cannot open a journal.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestRFC1C_IncrementalReport

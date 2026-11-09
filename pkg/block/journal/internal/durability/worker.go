@@ -253,8 +253,11 @@ func (d *Durability) complete(st *stream) {
 			// RegisterCopy's contract asks for this order, so the table
 			// names a copy only of a record synced at its new place.
 			// Overturned by a ruling that the drop of a never-acknowledged
-			// record is a loss under RFC 28 §3.3; the registration would
-			// then move to the append.
+			// record is a loss under RFC 28 §3.3. The cheap upgrade then is
+			// for Corrupt to consult the new place's ledger entry, whose
+			// original names the verified place before any registration,
+			// and serve from it, so the table still never names a copy of
+			// an unsynced record; registering at the append is the other way.
 			d.registerOriginal(st, *orig)
 		}
 		unlock := d.domains.Lock(w.File)

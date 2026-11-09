@@ -56,9 +56,9 @@ func (st *stream) oldestLocked() (seen time.Duration, ok bool) {
 
 // arm returns the channel of an After for the oldest uncovered record's
 // deadline, or nil when nothing waits. The worker keeps at most one
-// outstanding, since a pending After cannot be cancelled; deadlines only move
-// later, so the one timer is never late, and a fire that finds the oldest
-// record not yet due arms the next.
+// outstanding, since a pending After cannot be cancelled; deadlines only
+// move later, so the one timer is never late, and a fire that finds the
+// oldest record not yet due arms the next.
 //
 // A hold waiting on a retry (an owed claim, or a record to re-append), or a
 // window with a record not yet re-appended, arms a tick one sync bound away

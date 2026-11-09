@@ -320,6 +320,13 @@ func (d *Durability) repointReappended(st *stream, e entry, to segment.Location)
 		_, hd, err := d.index.RepointRecord(f, from, at)
 		d.accountDelta(hd)
 		if err != nil {
+			// decision: a repoint that fails is logged and the re-append
+			// goes on: the record still leaves the window, and its segment
+			// is announced resolved while the index may still name the old
+			// place there, which repack could then remove. RepointRecord
+			// cannot fail today (its callback returns no error). Overturned
+			// the day it can, which then needs the record kept in its window
+			// and the repoint retried on the next pass.
 			d.log.Error("journal could not repoint a re-appended record", "stream", st.no, "file", f, "seq", e.w.Seq, "err", err)
 		}
 	}
@@ -346,21 +353,17 @@ func (st *stream) copyOnCompleteLocked(to segment.Location, c copyEntry) {
 }
 
 // leaveWindowLocked takes the re-appended record e out of the window w, makes
-// its old place lead to to while the copy is still held, and asks for the
-// sync that makes the copy durable. The caller holds mu.
+// its old place lead to to, and asks for the sync that makes the copy
+// durable. The caller holds mu.
 func (st *stream) leaveWindowLocked(w *window, e entry, to segment.Location) {
 	i := slices.IndexFunc(w.entries, func(o entry) bool { return o.w.Loc == e.w.Loc })
 	if i < 0 {
 		return
 	}
 	w.entries = slices.Delete(w.entries, i, i+1)
-	// The new place's ledger entry may be gone by now: Corrupt took the record
-	// out, or a failure moved it into a window or the lost set. Then nothing
-	// is left to follow, and the old place, in no window or ledger, reads as
-	// done.
-	if st.heldLocked(to) {
-		st.moved[e.w.Loc] = to
-	}
+	// The move is always recorded: the old place leaves the window here, and
+	// in no ledger, window, lost set or move it would read durable.
+	st.moved[e.w.Loc] = to
 	st.want = true
 	st.d.notifyAll()
 }
@@ -463,13 +466,4 @@ func (d *Durability) rereadRecord(st *stream, e entry) (format.RecordHeader, for
 		return unverified("the body does not match the kept checksum", err)
 	}
 	return h, body, nil
-}
-
-// heldLocked reports whether the ledger, a pending window or the failed
-// records hold the record at loc. The caller holds mu.
-func (st *stream) heldLocked(loc segment.Location) bool {
-	if _, lost := st.lost[loc]; lost || st.inWindowLocked(loc) {
-		return true
-	}
-	return slices.ContainsFunc(st.ledger, func(e entry) bool { return e.w.Loc == loc })
 }
