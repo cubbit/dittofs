@@ -14,7 +14,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // onDisk is a record read back from a segment file.
@@ -25,7 +25,7 @@ type onDisk struct {
 
 // readRecords decodes every record of every segment the seam now serves, in
 // segment and offset order.
-func readRecords(t *testing.T, seam *journaltest.Seam) []onDisk {
+func readRecords(t *testing.T, seam *kit.Seam) []onDisk {
 	t.Helper()
 	names, err := seam.List()
 	if err != nil {
@@ -68,7 +68,7 @@ func readRecords(t *testing.T, seam *journaltest.Seam) []onDisk {
 
 // crashKeepingAll crashes the seam keeping every unsynced write, so the bytes
 // a crash may leave are the ones read back.
-func crashKeepingAll(t *testing.T, seam *journaltest.Seam) {
+func crashKeepingAll(t *testing.T, seam *kit.Seam) {
 	t.Helper()
 	n := seam.Unsynced()
 	if n > 64 {
@@ -79,7 +79,7 @@ func crashKeepingAll(t *testing.T, seam *journaltest.Seam) {
 		mask = ^uint64(0)
 	}
 	crashedSeams.Store(seam, true)
-	if err := seam.Crash(journaltest.Keeping(mask)); err != nil {
+	if err := seam.Crash(kit.Keeping(mask)); err != nil {
 		t.Fatalf("Crash: %v", err)
 	}
 }
@@ -102,12 +102,12 @@ func warm(t *testing.T, c *Core, s *Share, files ...core.FileID) {
 }
 
 // recordHolds are holds on the record writes of the files' active segments.
-type recordHolds []*journaltest.Hold
+type recordHolds []*kit.Hold
 
 // holdRecordWrites holds writes to the segment files that the warmed files'
 // last pieces are in, one hold per distinct segment. A background write of
 // the pool goes to another file, so a held call is a record write.
-func holdRecordWrites(t *testing.T, c *Core, seam *journaltest.Seam, files ...core.FileID) recordHolds {
+func holdRecordWrites(t *testing.T, c *Core, seam *kit.Seam, files ...core.FileID) recordHolds {
 	t.Helper()
 	var holds recordHolds
 	seen := map[core.SegmentID]bool{}
@@ -120,7 +120,7 @@ func holdRecordWrites(t *testing.T, c *Core, seam *journaltest.Seam, files ...co
 			continue
 		}
 		seen[p.Record.Segment] = true
-		holds = append(holds, seam.Hold(t, journaltest.OpWrite, format.SegmentName(p.Record.Segment)))
+		holds = append(holds, seam.Hold(t, kit.OpWrite, format.SegmentName(p.Record.Segment)))
 	}
 	return holds
 }
@@ -150,7 +150,7 @@ func eventually(t *testing.T, what string, cond func() bool) {
 
 func TestWriteAt_HeldDirtyAndSurvivesCrash(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(1)
 	payload := bytes.Repeat([]byte{0xab}, 4096)
 	v, err := c.WriteAt(context.Background(), s, f, 0, payload, 7)
@@ -180,7 +180,7 @@ func TestWriteAt_HeldDirtyAndSurvivesCrash(t *testing.T) {
 
 func TestWriteAt_RecordCarriesTagVersionMTime(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(5)
+	s := mustShare(t, c, 5)
 	f := testFile(2)
 	v, err := c.WriteAt(context.Background(), s, f, 8, []byte("abcd"), 12345)
 	if err != nil {
@@ -217,7 +217,7 @@ func TestWriteAt_RecordCarriesTagVersionMTime(t *testing.T) {
 
 func TestWriteAt_PublishFollowsRecordWrite(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(3)
 	warm(t, c, s, f)
 	holds := holdRecordWrites(t, c, seam, f)
@@ -246,19 +246,19 @@ func TestWriteAt_PublishFollowsRecordWrite(t *testing.T) {
 
 func TestWriteAt_PublishDoesNotWaitForSync(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(4)
 	warm(t, c, s, f)
 	wp, _ := c.Index().Lookup(f, 1<<20)
 	seg := format.SegmentName(wp.Record.Segment)
-	if err := seam.Schedule(journaltest.Failing(journaltest.OpSync, seg, 0, errors.New("sync boom"))); err != nil {
+	if err := seam.Schedule(kit.Failing(kit.OpSync, seg, 0, errors.New("sync boom"))); err != nil {
 		t.Fatal(err)
 	}
-	before := seam.CallsFor(journaltest.OpSync, seg)
+	before := seam.CallsFor(kit.OpSync, seg)
 	if _, err := c.WriteAt(context.Background(), s, f, 0, []byte("abcd"), 1); err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
-	if got := seam.CallsFor(journaltest.OpSync, seg); got != before {
+	if got := seam.CallsFor(kit.OpSync, seg); got != before {
 		t.Fatalf("WriteAt made %d sync calls", got-before)
 	}
 	if _, ok := c.Index().Lookup(f, 0); !ok {
@@ -268,7 +268,7 @@ func TestWriteAt_PublishDoesNotWaitForSync(t *testing.T) {
 
 func TestWriteAt_VersionsAppendedInAssignmentOrder(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(5)
 	const writers, each = 16, 20
 	var wg sync.WaitGroup
@@ -304,7 +304,7 @@ func TestWriteAt_VersionsAppendedInAssignmentOrder(t *testing.T) {
 
 func TestWriteAt_DifferentFilesRunInParallel(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f1, f2 := testFile(6), testFile(7)
 	warm(t, c, s, f1, f2)
 	holds := holdRecordWrites(t, c, seam, f1, f2)
@@ -325,7 +325,7 @@ func TestWriteAt_DifferentFilesRunInParallel(t *testing.T) {
 
 func TestWriteAt_OverwriteServesNewBytesAtOnce(t *testing.T) {
 	c, _ := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(8)
 	ctx := context.Background()
 	va, err := c.WriteAt(ctx, s, f, 0, []byte("AAAAAAAA"), 1)
@@ -390,7 +390,7 @@ func TestWriteAt_OnlyTheFileAppendDomainIsHeldDuringTheRecordWrite(t *testing.T)
 			return probe
 		}
 	})
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(9)
 	warm(t, c, s, f)
 	holds := holdRecordWrites(t, c, seam, f)
@@ -456,9 +456,9 @@ func TestWriteAt_ErrorsAppendNothing(t *testing.T) {
 				t.Fatal(err)
 			}
 			c, seam := newTestCore(t, func(o *coreOptions) { o.state = State{Counters: counters} })
-			s := c.AddShare(1)
+			s := mustShare(t, c, 1)
 			f := testFile(10)
-			writes := seam.Calls(journaltest.OpWrite)
+			writes := seam.Calls(kit.OpWrite)
 			v, err := c.WriteAt(tc.ctx, s, f, tc.off, make([]byte, tc.len), 1)
 			if !tc.want(err) {
 				t.Fatalf("WriteAt = %v", err)
@@ -466,7 +466,7 @@ func TestWriteAt_ErrorsAppendNothing(t *testing.T) {
 			if v != (core.Version{}) {
 				t.Fatalf("a refused write returned version %v", v)
 			}
-			if got := seam.Calls(journaltest.OpWrite); got != writes {
+			if got := seam.Calls(kit.OpWrite); got != writes {
 				t.Fatalf("the refused write made %d write calls", got-writes)
 			}
 			if h, d, r := c.heldBytes(); h != 0 || d != 0 || r != 0 || c.WrittenBytes() != 0 {
@@ -489,13 +489,13 @@ func TestWriteAt_ErrorsAppendNothing(t *testing.T) {
 
 func TestWriteAt_ZeroLengthDoesNothing(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
-	writes := seam.Calls(journaltest.OpWrite)
+	s := mustShare(t, c, 1)
+	writes := seam.Calls(kit.OpWrite)
 	v, err := c.WriteAt(context.Background(), s, testFile(11), 0, nil, 1)
 	if v != (core.Version{}) || err != nil {
 		t.Fatalf("WriteAt of nothing = %v, %v; want the zero version and no error", v, err)
 	}
-	if seam.Calls(journaltest.OpWrite) != writes || c.WrittenBytes() != 0 {
+	if seam.Calls(kit.OpWrite) != writes || c.WrittenBytes() != 0 {
 		t.Fatal("a zero-length write appended or counted")
 	}
 	if got := c.counters.NextVersion(); got.Counter != 1 {
@@ -505,7 +505,7 @@ func TestWriteAt_ZeroLengthDoesNothing(t *testing.T) {
 
 func TestWriteAt_CountsWrittenBytes(t *testing.T) {
 	c, _ := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	ctx := context.Background()
 	for _, n := range []int{4, 5, 0} {
 		if _, err := c.WriteAt(ctx, s, testFile(12), 0, make([]byte, n), 1); err != nil {
@@ -526,7 +526,7 @@ func TestWriteAt_PublishRefusalReturnsNoVersion(t *testing.T) {
 	c, seam := newTestCore(t)
 	f := testFile(13)
 	publish(t, c, f, 0, "aaaa") // the file belongs to tag 1
-	v, err := c.WriteAt(context.Background(), c.AddShare(2), f, 8, []byte("bbbb"), 1)
+	v, err := c.WriteAt(context.Background(), mustShare(t, c, 2), f, 8, []byte("bbbb"), 1)
 	if !errors.Is(err, core.ErrOtherShare) {
 		t.Fatalf("WriteAt through another tag = %v, want ErrOtherShare", err)
 	}

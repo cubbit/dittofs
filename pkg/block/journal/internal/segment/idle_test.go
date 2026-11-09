@@ -12,7 +12,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -22,10 +22,10 @@ import (
 type idleRig struct {
 	streams *Streams
 	worker  *IdleSealer
-	seam    *journaltest.Seam
+	seam    *kit.Seam
 	set     *Set
 	pool    *Pool
-	clock   journaltest.DrivenClock
+	clock   kit.DrivenClock
 	cap     int64
 }
 
@@ -45,7 +45,7 @@ type idleRig struct {
 func idleRigOver(t *testing.T, n int, cap int64, threshold int64, admit func() error) *idleRig {
 	t.Helper()
 
-	seam, err := journaltest.NewSeam(t.TempDir())
+	seam, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
@@ -63,7 +63,7 @@ func idleRigOver(t *testing.T, n int, cap int64, threshold int64, admit func() e
 	})
 	streams := NewStreams(n, probeIdentity, set, pool, cache, func(uint32) Sink { return nopInternalSink() })
 	t.Cleanup(func() { _ = streams.Close() })
-	clock := journaltest.NewStopwatchClock()
+	clock := kit.NewStopwatchClock()
 	r := &idleRig{
 		streams: streams,
 		seam:    seam,
@@ -219,7 +219,7 @@ func TestTheIdleSealComesAtExactlyTheIdleAge(t *testing.T) {
 		t.Fatalf("a nanosecond before the idle age: state %v, %d sealed, want open and none", state, sealed)
 	}
 	name := format.SegmentName(w.Loc.Segment)
-	if got := r.seam.CallsFor(journaltest.OpTruncate, name); got != 0 {
+	if got := r.seam.CallsFor(kit.OpTruncate, name); got != 0 {
 		t.Fatalf("a nanosecond before the idle age the segment saw %d truncations, want none", got)
 	}
 	// The pool's refill the first append's roll kicked has settled by here
@@ -239,7 +239,7 @@ func TestTheIdleSealComesAtExactlyTheIdleAge(t *testing.T) {
 	if state := idleState(s); state != sealSealed {
 		t.Fatalf("a nanosecond past the idle age: state %v, want sealed", state)
 	}
-	if got := r.seam.CallsFor(journaltest.OpTruncate, name); got == 0 {
+	if got := r.seam.CallsFor(kit.OpTruncate, name); got == 0 {
 		t.Fatal("the idle seal truncated nothing: the tail was not returned")
 	}
 	// The ledger fell by the whole returned tail: the segment is accounted at
@@ -443,15 +443,15 @@ func TestARefusedAdmissionStopsTheIdleSeal(t *testing.T) {
 	s := r.stream(0)
 	w := idleAppend(t, s, 64, 0)
 	name := format.SegmentName(w.Loc.Segment)
-	writes := r.seam.CallsFor(journaltest.OpWrite, name)
-	syncs := r.seam.CallsFor(journaltest.OpSync, name)
+	writes := r.seam.CallsFor(kit.OpWrite, name)
+	syncs := r.seam.CallsFor(kit.OpSync, name)
 
 	r.advance(t, 3*core.IdleSealAge)
 	r.armed(t)
-	if after := r.seam.CallsFor(journaltest.OpWrite, name); after != writes {
+	if after := r.seam.CallsFor(kit.OpWrite, name); after != writes {
 		t.Fatalf("the seam saw %d writes of %s while the check refused, want the %d it held", after, name, writes)
 	}
-	if after := r.seam.CallsFor(journaltest.OpSync, name); after != syncs {
+	if after := r.seam.CallsFor(kit.OpSync, name); after != syncs {
 		t.Fatalf("the seam saw %d syncs of %s while the check refused, want the %d it held", after, name, syncs)
 	}
 	if state, sealed := idleState(s), r.set.Counters().Sealed; state != sealOpen || sealed != 0 {
@@ -562,7 +562,7 @@ func TestStopWaitsForASealInFlight(t *testing.T) {
 	s := r.stream(0)
 	w := idleAppend(t, s, 64, 0)
 	name := format.SegmentName(w.Loc.Segment)
-	held := r.seam.HoldFirst(t, journaltest.OpSync, name)
+	held := r.seam.HoldFirst(t, kit.OpSync, name)
 
 	r.advance(t, 2*core.IdleSealAge)
 	select {
@@ -614,7 +614,7 @@ func TestAFailingSealDoesNotKillTheWorker(t *testing.T) {
 
 	// Every sync of stream 0's first segment fails; stream 1's own file is
 	// not named, so its seal runs clean through the same pass.
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(w0.Loc.Segment), 0, errors.New("the sync failed"))); err != nil {
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(w0.Loc.Segment), 0, errors.New("the sync failed"))); err != nil {
 		t.Fatalf("the fault schedule: %v", err)
 	}
 	r.advance(t, 2*core.IdleSealAge)

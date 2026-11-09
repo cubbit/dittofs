@@ -15,7 +15,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -26,7 +26,7 @@ import (
 // recycle must keep (the middle) and the two slots it must zero.
 type retireEnv struct {
 	t    *testing.T
-	seam *journaltest.Seam
+	seam *kit.Seam
 	set  *segment.Set
 	m    *segment.Maker
 	c    *segment.Descriptors
@@ -380,9 +380,9 @@ func TestRetireRecycleCallLogAndFootprint(t *testing.T) {
 
 	// The call counts from here on are the retirement's own: the segment's
 	// making is behind them.
-	syncDirs := e.seam.Calls(journaltest.OpSyncDir)
-	removes := e.seam.Calls(journaltest.OpRemove)
-	allocs := e.seam.Calls(journaltest.OpAllocate)
+	syncDirs := e.seam.Calls(kit.OpSyncDir)
+	removes := e.seam.Calls(kit.OpRemove)
+	allocs := e.seam.Calls(kit.OpAllocate)
 
 	res, err := e.r.Retire(old, segment.NotHeld)
 	if err != nil {
@@ -399,22 +399,22 @@ func TestRetireRecycleCallLogAndFootprint(t *testing.T) {
 	// The call log: one rename, one directory sync, the two zero writes and
 	// one sync between them, in this order, and nothing else beside the close
 	// of the fresh descriptor.
-	if got := e.seam.CallsFor(journaltest.OpRename, format.SegmentName(old)); got != 1 {
+	if got := e.seam.CallsFor(kit.OpRename, format.SegmentName(old)); got != 1 {
 		t.Fatalf("the rename of %d was called %d times, want once", old, got)
 	}
-	if got := e.seam.Calls(journaltest.OpSyncDir) - syncDirs; got != 1 {
+	if got := e.seam.Calls(kit.OpSyncDir) - syncDirs; got != 1 {
 		t.Fatalf("the recycle synced the directory %d times, want once", got)
 	}
-	if got := e.seam.CallsFor(journaltest.OpWrite, fresh); got != 2 {
+	if got := e.seam.CallsFor(kit.OpWrite, fresh); got != 2 {
 		t.Fatalf("the recycle wrote %d times through the fresh name, want the two zero writes", got)
 	}
-	if got := e.seam.CallsFor(journaltest.OpSync, fresh); got != 1 {
+	if got := e.seam.CallsFor(kit.OpSync, fresh); got != 1 {
 		t.Fatalf("the recycle synced the zeroing %d times, want once", got)
 	}
-	if got := e.seam.Calls(journaltest.OpAllocate) - allocs; got != 0 {
+	if got := e.seam.Calls(kit.OpAllocate) - allocs; got != 0 {
 		t.Fatalf("the recycle allocated %d times, want none: its blocks are already there", got)
 	}
-	if got := e.seam.Calls(journaltest.OpRemove) - removes; got != 0 {
+	if got := e.seam.Calls(kit.OpRemove) - removes; got != 0 {
 		t.Fatalf("the recycle removed %d files, want none", got)
 	}
 	// The zeroed slots and the kept middle.
@@ -473,10 +473,10 @@ func TestRetireRecycleCallLogAndFootprint(t *testing.T) {
 	// create never parks the worker either, so Stop's join is never
 	// blocked and no release is owed.
 	e.p.Start()
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpCreate, "*", 0, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpCreate, "*", 0, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
-	removesAtTail := e.seam.Calls(journaltest.OpRemove)
+	removesAtTail := e.seam.Calls(kit.OpRemove)
 	if id, err := e.p.Take(segment.Content); err != nil || id != res.Fresh {
 		t.Fatalf("the take of the recycled spare: (%d, %v), want %d", id, err, res.Fresh)
 	}
@@ -486,7 +486,7 @@ func TestRetireRecycleCallLogAndFootprint(t *testing.T) {
 	// before the reads below, and the test fails unless it does.
 	landed := false
 	for range poolAttempts {
-		if e.seam.Calls(journaltest.OpRemove) >= removesAtTail+1 {
+		if e.seam.Calls(kit.OpRemove) >= removesAtTail+1 {
 			landed = true
 			break
 		}
@@ -500,7 +500,7 @@ func TestRetireRecycleCallLogAndFootprint(t *testing.T) {
 	if class, ok := e.p.WantRecycleForTest(); !ok || class != segment.Content {
 		t.Fatalf("after the recycled spare was taken the pool wants no recycle: (%v, %v), want (content, true) over the emptied class", class, ok)
 	}
-	if got := e.seam.Calls(journaltest.OpAllocate) - allocs; got != 0 {
+	if got := e.seam.Calls(kit.OpAllocate) - allocs; got != 0 {
 		t.Fatalf("the retirement and the take allocated %d times, want none beside the segment's own making", got)
 	}
 	e.p.Stop()
@@ -591,10 +591,10 @@ func TestRetireDecidesAtRetirement(t *testing.T) {
 		// proves the take's kick ran the refill and it returned. The
 		// recycle the retirement runs below renames and writes; it
 		// creates nothing, so the fault leaves it untouched.
-		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpCreate, "*", 0, syscall.EIO)); err != nil {
+		if err := e.seam.Schedule(kit.Failing(kit.OpCreate, "*", 0, syscall.EIO)); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
-		removes := e.seam.Calls(journaltest.OpRemove)
+		removes := e.seam.Calls(kit.OpRemove)
 
 		// Take the spare the pool holds, so the retirement finds the pool
 		// below its target.
@@ -603,7 +603,7 @@ func TestRetireDecidesAtRetirement(t *testing.T) {
 		}
 		ran := false
 		for range poolAttempts {
-			if e.seam.Calls(journaltest.OpRemove) >= removes+1 {
+			if e.seam.Calls(kit.OpRemove) >= removes+1 {
 				ran = true
 				break
 			}
@@ -641,7 +641,7 @@ func TestRetireDecidesAtRetirement(t *testing.T) {
 		if res.Recycled {
 			t.Fatalf("the retire at target recycled: %+v, want an unlink with the pool at its target", res)
 		}
-		if got := e.seam.Calls(journaltest.OpRemove); got != 1 {
+		if got := e.seam.Calls(kit.OpRemove); got != 1 {
 			t.Fatalf("the unlink at target removed %d files, want one", got)
 		}
 		if c := e.set.Counters(); c.Spares != 1 || c.UsedBytes != segCap {
@@ -662,10 +662,10 @@ func TestRetireSealedEarlyIsUnlinked(t *testing.T) {
 
 	assertNeverRecycled := func(t *testing.T, e *retireEnv, renames, writes int) {
 		t.Helper()
-		if got := e.seam.Calls(journaltest.OpRename); got != renames {
+		if got := e.seam.Calls(kit.OpRename); got != renames {
 			t.Fatalf("the early seal's retire renamed %d times, want %d: an early seal is never a recycle's candidate", got, renames)
 		}
-		if got := e.seam.Calls(journaltest.OpWrite); got != writes {
+		if got := e.seam.Calls(kit.OpWrite); got != writes {
 			t.Fatalf("the early seal's retire wrote %d times, want %d: the recycle's zeroing it would have run never did", got, writes)
 		}
 	}
@@ -676,8 +676,8 @@ func TestRetireSealedEarlyIsUnlinked(t *testing.T) {
 		if err := e.set.Shrink(old, segCap/2); err != nil {
 			t.Fatalf("the early seal's truncation: %v", err)
 		}
-		renames := e.seam.Calls(journaltest.OpRename)
-		writes := e.seam.Calls(journaltest.OpWrite)
+		renames := e.seam.Calls(kit.OpRename)
+		writes := e.seam.Calls(kit.OpWrite)
 		res, err := e.r.Retire(old, segment.NotHeld)
 		if err != nil {
 			t.Fatalf("the retire of the early-sealed segment: %v", err)
@@ -700,8 +700,8 @@ func TestRetireSealedEarlyIsUnlinked(t *testing.T) {
 		// seal's own word, not the size, is what a recycle trusts.
 		e, _ := retirer(t, segment.Targets{Content: 1}, nil)
 		old := e.segment(false)
-		renames := e.seam.Calls(journaltest.OpRename)
-		writes := e.seam.Calls(journaltest.OpWrite)
+		renames := e.seam.Calls(kit.OpRename)
+		writes := e.seam.Calls(kit.OpWrite)
 		res, err := e.r.Retire(old, segment.NotHeld)
 		if err != nil {
 			t.Fatalf("the retire of the failed truncation: %v", err)
@@ -728,9 +728,9 @@ func TestRetireEndedIsUnlinkedNeverRecycled(t *testing.T) {
 		e, _ := retirer(t, segment.Targets{Content: 1}, nil)
 		id := e.ended()
 
-		calls := e.seam.Calls(journaltest.OpRemove)
-		renames := e.seam.Calls(journaltest.OpRename)
-		writes := e.seam.Calls(journaltest.OpWrite)
+		calls := e.seam.Calls(kit.OpRemove)
+		renames := e.seam.Calls(kit.OpRename)
+		writes := e.seam.Calls(kit.OpWrite)
 		res, err := e.r.Retire(id, segment.ReasonEnded)
 		if err != nil {
 			t.Fatalf("the retire of the ended segment: %v", err)
@@ -740,13 +740,13 @@ func TestRetireEndedIsUnlinkedNeverRecycled(t *testing.T) {
 		}
 		// The decision's own proof: an ended segment is never a recycle's
 		// candidate, so its retire renames and writes nothing.
-		if got := e.seam.Calls(journaltest.OpRename) - renames; got != 0 {
+		if got := e.seam.Calls(kit.OpRename) - renames; got != 0 {
 			t.Fatalf("the ended segment's retire renamed %d times, want none: an ended segment is never recycled", got)
 		}
-		if got := e.seam.Calls(journaltest.OpWrite) - writes; got != 0 {
+		if got := e.seam.Calls(kit.OpWrite) - writes; got != 0 {
 			t.Fatalf("the ended segment's retire wrote %d times, want none: the recycle's zeroing it would have run never did", got)
 		}
-		if got := e.seam.Calls(journaltest.OpRemove) - calls; got != 2 {
+		if got := e.seam.Calls(kit.OpRemove) - calls; got != 2 {
 			// One for the segment's own name and one for the spare's, the
 			// name a failed make's leftover may sit under.
 			t.Fatalf("the ended segment's unlink removed %d files, want the two names of its id", got)
@@ -899,7 +899,7 @@ func TestRetireAFailedMakeLeftover(t *testing.T) {
 		name       string
 		failsAfter string // the make's step whose failure leaves the leftover
 	}{
-		{"leftover under the spare's own name", journaltest.OpAllocate},
+		{"leftover under the spare's own name", kit.OpAllocate},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			seam := newSeam(t)
@@ -956,20 +956,20 @@ func TestRetireRecycleFailureIsAnUnlink(t *testing.T) {
 
 	type step struct {
 		name  string
-		rules func(e *retireEnv) []journaltest.Rule // the seam's failing rules
+		rules func(e *retireEnv) []kit.Rule // the seam's failing rules
 	}
 	steps := []step{
-		{"a rename that does not apply", func(e *retireEnv) []journaltest.Rule {
-			return []journaltest.Rule{journaltest.Failing(journaltest.OpRename, "*", 1, syscall.EIO)}
+		{"a rename that does not apply", func(e *retireEnv) []kit.Rule {
+			return []kit.Rule{kit.Failing(kit.OpRename, "*", 1, syscall.EIO)}
 		}},
-		{"the directory sync after it", func(e *retireEnv) []journaltest.Rule {
-			return []journaltest.Rule{journaltest.Failing(journaltest.OpSyncDir, "*", 1, syscall.EIO)}
+		{"the directory sync after it", func(e *retireEnv) []kit.Rule {
+			return []kit.Rule{kit.Failing(kit.OpSyncDir, "*", 1, syscall.EIO)}
 		}},
-		{"the first zeroing write", func(e *retireEnv) []journaltest.Rule {
-			return []journaltest.Rule{journaltest.Failing(journaltest.OpWrite, "*", 1, syscall.EIO)}
+		{"the first zeroing write", func(e *retireEnv) []kit.Rule {
+			return []kit.Rule{kit.Failing(kit.OpWrite, "*", 1, syscall.EIO)}
 		}},
-		{"the zeroing's sync", func(e *retireEnv) []journaltest.Rule {
-			return []journaltest.Rule{journaltest.Failing(journaltest.OpSync, "*", 3, syscall.EIO)}
+		{"the zeroing's sync", func(e *retireEnv) []kit.Rule {
+			return []kit.Rule{kit.Failing(kit.OpSync, "*", 3, syscall.EIO)}
 		}},
 	}
 
@@ -1117,7 +1117,7 @@ func TestRetireCrashBetweenRenameAndZeroing(t *testing.T) {
 
 		// Park the retirement at its first zeroing write: the rename and its
 		// directory sync are past, the zeroing is not.
-		h := e.seam.HoldFirst(t, journaltest.OpWrite, "*")
+		h := e.seam.HoldFirst(t, kit.OpWrite, "*")
 		resc := make(chan segment.Retirement, 1)
 		errc := make(chan error, 1)
 		go func() {
@@ -1125,7 +1125,7 @@ func TestRetireCrashBetweenRenameAndZeroing(t *testing.T) {
 			resc <- res
 			errc <- err
 		}()
-		awaitReached(t, journaltest.OpWrite, h, errc)
+		awaitReached(t, kit.OpWrite, h, errc)
 
 		if err := e.seam.Crash(); err != nil {
 			t.Fatalf("the crash between the rename and the zeroing: %v", err)
@@ -1212,7 +1212,7 @@ func TestRetireCrashAtEachDurableStateOfAnUnlink(t *testing.T) {
 
 		// Park the unlink after its remove: the hold on the next sync_dir
 		// lets the remove return and nothing else.
-		h := e.seam.HoldFirst(t, journaltest.OpSyncDir, "*")
+		h := e.seam.HoldFirst(t, kit.OpSyncDir, "*")
 		resc := make(chan segment.Retirement, 1)
 		errc := make(chan error, 1)
 		go func() {
@@ -1220,7 +1220,7 @@ func TestRetireCrashAtEachDurableStateOfAnUnlink(t *testing.T) {
 			resc <- res
 			errc <- err
 		}()
-		awaitReached(t, journaltest.OpSyncDir, h, errc)
+		awaitReached(t, kit.OpSyncDir, h, errc)
 
 		if err := e.seam.Crash(); err != nil {
 			t.Fatalf("the crash: %v", err)
@@ -1356,7 +1356,7 @@ func TestRetireWaitsForAReadInFlight(t *testing.T) {
 
 	// The retire parks at its remove: it must not reach it while the
 	// reference is held.
-	h := e.seam.HoldFirst(t, journaltest.OpRemove, name)
+	h := e.seam.HoldFirst(t, kit.OpRemove, name)
 	resc := make(chan segment.Retirement, 1)
 	errc := make(chan error, 1)
 	go func() {
@@ -1375,7 +1375,7 @@ func TestRetireWaitsForAReadInFlight(t *testing.T) {
 	// remove: the hold is what proves it arrived only now, and its release
 	// is what lets the retire finish.
 	ref.Release()
-	awaitReached(t, journaltest.OpRemove, h, errc)
+	awaitReached(t, kit.OpRemove, h, errc)
 	h.Release()
 	if res := <-resc; res.Recycled || res.Freed != segCap {
 		t.Fatalf("the retire after the drain recycled or freed wrong: %+v", res)
@@ -1401,7 +1401,7 @@ func TestRetireFreedBytesAfterTheUnlink(t *testing.T) {
 	id := e.segment(true)
 	name := format.SegmentName(id)
 
-	h := e.seam.HoldFirst(t, journaltest.OpRemove, name)
+	h := e.seam.HoldFirst(t, kit.OpRemove, name)
 	resc := make(chan segment.Retirement, 1)
 	errc := make(chan error, 1)
 	go func() {
@@ -1409,7 +1409,7 @@ func TestRetireFreedBytesAfterTheUnlink(t *testing.T) {
 		resc <- res
 		errc <- err
 	}()
-	awaitReached(t, journaltest.OpRemove, h, errc)
+	awaitReached(t, kit.OpRemove, h, errc)
 
 	if c := e.r.Counters(); c.FreedBytes != 0 {
 		t.Fatalf("while the unlink is held freed_bytes is %d, want 0: it rises only after the remove", c.FreedBytes)
@@ -1441,7 +1441,7 @@ func TestRetireNotDurable(t *testing.T) {
 	name := format.SegmentName(id)
 
 	// The unlink's directory sync fails once.
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSyncDir, "*", 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	res, err := e.r.Retire(id, segment.NotHeld)
@@ -1507,7 +1507,7 @@ func TestRetireWorkerRetriesAFailedUnlink(t *testing.T) {
 		name := format.SegmentName(id)
 		before := e.set.Counters()
 
-		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpRemove, name, 1, syscall.EIO)); err != nil {
+		if err := e.seam.Schedule(kit.Failing(kit.OpRemove, name, 1, syscall.EIO)); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
 		if _, err := e.r.Retire(id, segment.NotHeld); err == nil {
@@ -1555,8 +1555,8 @@ func TestRetireWorkerRetriesAFailedUnlink(t *testing.T) {
 		// owns both names — its own and the fresh one — and both removes
 		// fail now, so only the retry can take the segment out.
 		if err := e.seam.Schedule(
-			journaltest.Failing(journaltest.OpWrite, "*", 1, syscall.EIO),
-			journaltest.Failing(journaltest.OpRemove, "*", 2, syscall.EIO),
+			kit.Failing(kit.OpWrite, "*", 1, syscall.EIO),
+			kit.Failing(kit.OpRemove, "*", 2, syscall.EIO),
 		); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
@@ -1566,7 +1566,7 @@ func TestRetireWorkerRetriesAFailedUnlink(t *testing.T) {
 		} else if !errors.Is(err, syscall.EIO) {
 			t.Fatalf("the failed recycle led with %v, want the EIO", err)
 		}
-		if got := e.seam.CallsFor(journaltest.OpRemove, oldName); got < 1 {
+		if got := e.seam.CallsFor(kit.OpRemove, oldName); got < 1 {
 			t.Fatalf("the fallback unlink never tried %s", oldName)
 		}
 		// The fresh name is recorded, so the retry's unlink removes it too.
@@ -1608,8 +1608,8 @@ func TestRetireWorkerRetriesAFailedUnlink(t *testing.T) {
 		// fallback unlink's removes fail after it: the fresh name is recorded
 		// for the retry, and the segment stays claimed by the queue.
 		if err := e.seam.Schedule(
-			journaltest.Failing(journaltest.OpRename, "*", 1, syscall.EIO),
-			journaltest.Failing(journaltest.OpRemove, "*", 2, syscall.EIO),
+			kit.Failing(kit.OpRename, "*", 1, syscall.EIO),
+			kit.Failing(kit.OpRemove, "*", 2, syscall.EIO),
 		); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
@@ -1816,7 +1816,7 @@ func TestRetireRetiredHookAfterLeavingTheSet(t *testing.T) {
 
 		// The recycle's rename fails, so the fallback unlink retires the
 		// segment: one retirement, one hook call.
-		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpRename, "*", 1, syscall.EIO)); err != nil {
+		if err := e.seam.Schedule(kit.Failing(kit.OpRename, "*", 1, syscall.EIO)); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
 		res, err := e.r.Retire(old, segment.NotHeld)
@@ -1841,7 +1841,7 @@ func TestRetireRetiredHookAfterLeavingTheSet(t *testing.T) {
 		// The unlink's directory sync fails, so the retirement is not durable
 		// and the durable signal stays silent — but the hook has run, for the
 		// retirement was complete before the sync was asked.
-		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSyncDir, "*", 1, syscall.EIO)); err != nil {
+		if err := e.seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 1, syscall.EIO)); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
 		res, err := e.r.Retire(id, segment.NotHeld)
@@ -1891,7 +1891,7 @@ func TestRetireRetiredHookAfterLeavingTheSet(t *testing.T) {
 			id := e.segment(true)
 			name := format.SegmentName(id)
 
-			if err := e.seam.Schedule(journaltest.Failing(journaltest.OpRemove, name, 1, syscall.EIO)); err != nil {
+			if err := e.seam.Schedule(kit.Failing(kit.OpRemove, name, 1, syscall.EIO)); err != nil {
 				t.Fatalf("Schedule: %v", err)
 			}
 			if _, err := e.r.Retire(id, segment.NotHeld); err == nil {
@@ -2047,7 +2047,7 @@ func TestRetireAFailedRecycleFellBackIsARetirement(t *testing.T) {
 
 		// The recycle's first zeroing write fails, so the fallback unlink
 		// takes the segment out under both of its names.
-		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, "*", 1, syscall.EIO)); err != nil {
+		if err := e.seam.Schedule(kit.Failing(kit.OpWrite, "*", 1, syscall.EIO)); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
 		before := e.set.Counters()
@@ -2086,7 +2086,7 @@ func TestRetireAFailedRecycleFellBackIsARetirement(t *testing.T) {
 		id := e.segment(true)
 		before := e.set.Counters()
 
-		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, "*", 1, syscall.EIO)); err != nil {
+		if err := e.seam.Schedule(kit.Failing(kit.OpWrite, "*", 1, syscall.EIO)); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
 		segment.RetryEveryForTest(e.r, time.Millisecond)
@@ -2304,7 +2304,7 @@ func TestRetireUnlinkKicksTheRefill(t *testing.T) {
 	// it failed is named at Warn — the logger the test reads it back through.
 	h := &logRecorder{}
 	seam, set, m, p := poolOf(t, segment.Targets{Content: 0, Headroom: 1, Reserve: 0}, noMax, 0, slog.New(h))
-	if err := seam.Schedule(journaltest.Failing(journaltest.OpAllocate, "*", 1, syscall.EIO)); err != nil {
+	if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	p.Start()
@@ -2366,7 +2366,7 @@ func TestRetireStopDropsTheRestOfAnInterruptedPass(t *testing.T) {
 	segment.RetryEveryForTest(e.r, time.Millisecond)
 	e.r.Enqueue(first, segment.NotHeld)
 	e.r.Enqueue(second, segment.NotHeld)
-	remove := e.seam.HoldFirst(t, journaltest.OpRemove, format.SegmentName(first))
+	remove := e.seam.HoldFirst(t, kit.OpRemove, format.SegmentName(first))
 	e.r.Start()
 	<-remove.Reached()
 

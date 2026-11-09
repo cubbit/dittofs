@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/datapath"
 )
 
 // Handle is one share's view of the journal. Every call through it that names
@@ -17,7 +18,10 @@ import (
 // The lock domains named below are taken in this order and no other: file
 // append, capacity, file index, segment append, storage guard. A handle's
 // methods are safe for concurrent use.
-type Handle struct{}
+type Handle struct {
+	j *Journal
+	s *datapath.Share
+}
 
 // Change is one thing Since reports about a file: a held extent, an unsettled
 // removal marker, or a synced loss.
@@ -50,9 +54,17 @@ const (
 
 // Close ends the handle. New calls through it fail with ErrClosed, and Close
 // returns once every call already in flight on it has returned. The handle's
-// extents stay held.
+// extents stay held. A second or concurrent Close, such as another owner's of
+// a handle Share returned twice, also waits for those calls and then returns
+// ErrClosed.
 func (h *Handle) Close() error {
-	return ErrNotImplemented
+	if err := h.s.Close(); err != nil {
+		return err
+	}
+	h.j.handlesMu.Lock()
+	delete(h.j.handles, h.s)
+	h.j.handlesMu.Unlock()
+	return nil
 }
 
 // Reserve takes, at once, everything needed by the given number of writes
@@ -89,7 +101,7 @@ func (h *Handle) Reserve(n int64, writes int) (*Reservation, error) {
 // It takes the file append domain, in which its version is assigned, then
 // capacity, the file index and the segment's append domain.
 func (h *Handle) WriteAt(ctx context.Context, id FileID, off int64, p []byte, mtime int64) (Version, error) {
-	return Version{}, ErrNotImplemented
+	return h.j.core.WriteAt(ctx, h.s, id, off, p, mtime)
 }
 
 // Sync returns once every operation on the named files that returned before

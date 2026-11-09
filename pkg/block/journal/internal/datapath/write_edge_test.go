@@ -12,12 +12,12 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // fileWrites returns the write records of f on disk, in segment and offset
 // order.
-func fileWrites(t *testing.T, seam *journaltest.Seam, f core.FileID) []onDisk {
+func fileWrites(t *testing.T, seam *kit.Seam, f core.FileID) []onDisk {
 	t.Helper()
 	var out []onDisk
 	for _, r := range readRecords(t, seam) {
@@ -59,7 +59,7 @@ func segmentRoom(t *testing.T) int64 {
 	t.Helper()
 	c, seam := newTestCore(t)
 	f := testFile(1)
-	mustWrite(t, c, c.AddShare(1), f, 0, make([]byte, 2*testSegmentCap))
+	mustWrite(t, c, mustShare(t, c, 1), f, 0, make([]byte, 2*testSegmentCap))
 	recs := fileWrites(t, seam, f)
 	if len(recs) < 2 {
 		t.Fatalf("a write of two segments made %d records", len(recs))
@@ -69,7 +69,7 @@ func segmentRoom(t *testing.T) int64 {
 
 func TestEdge_WriteCrossesSegment(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(1)
 	mustWrite(t, c, s, f, 0, bytes.Repeat([]byte{1}, 40<<10))
 	const off = 1 << 20
@@ -112,7 +112,7 @@ func TestEdge_RecordExactlyFillsSegment(t *testing.T) {
 	room := segmentRoom(t)
 	c, seam := newTestCore(t)
 	f := testFile(2)
-	v := mustWrite(t, c, c.AddShare(1), f, 0, make([]byte, room))
+	v := mustWrite(t, c, mustShare(t, c, 1), f, 0, make([]byte, room))
 	recs := fileWrites(t, seam, f)
 	if len(recs) != 1 || recs[0].Header.Version != v || recs[0].Header.Extent.Len != room {
 		t.Fatalf("records = %d, want one of %d bytes", len(recs), room)
@@ -123,7 +123,7 @@ func TestEdge_RecordExactlyFillsSegment(t *testing.T) {
 	// One byte more no longer fits whole: it splits.
 	c2, seam2 := newTestCore(t)
 	g := testFile(3)
-	mustWrite(t, c2, c2.AddShare(1), g, 0, make([]byte, room+1))
+	mustWrite(t, c2, mustShare(t, c2, 1), g, 0, make([]byte, room+1))
 	if n := len(fileWrites(t, seam2, g)); n != 2 {
 		t.Fatalf("a write one byte over the room made %d records, want 2", n)
 	}
@@ -131,7 +131,7 @@ func TestEdge_RecordExactlyFillsSegment(t *testing.T) {
 
 func TestEdge_ThreeWaySplit(t *testing.T) {
 	c, _ := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(4)
 	v1 := mustWrite(t, c, s, f, 0, make([]byte, 3000))
 	v2 := mustWrite(t, c, s, f, 1000, make([]byte, 1000))
@@ -155,7 +155,7 @@ func TestEdge_ThreeWaySplit(t *testing.T) {
 
 func TestEdge_OverwriteCoversSeveralExtents(t *testing.T) {
 	c, _ := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(5)
 	var vs []core.Version
 	for i := range 5 { // five extents of 100: Z, A, B, C, D
@@ -182,7 +182,7 @@ func TestEdge_OverwriteCoversSeveralExtents(t *testing.T) {
 
 func TestEdge_SameExtentOverwrittenManyTimes(t *testing.T) {
 	c, seam := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(6)
 	var vs []core.Version
 	for i := range 200 {
@@ -215,7 +215,7 @@ func TestEdge_FirstHeldByteFarFromZero(t *testing.T) {
 	c, _ := newTestCore(t)
 	f := testFile(7)
 	const off = int64(1) << 40
-	v := mustWrite(t, c, c.AddShare(1), f, off, make([]byte, 4096))
+	v := mustWrite(t, c, mustShare(t, c, 1), f, off, make([]byte, 4096))
 	for _, at := range []int64{off, off + 4095} {
 		if p, ok := c.Index().Lookup(f, at); !ok || p.Version != v || p.Extent != (core.Extent{Off: off, Len: 4096}) {
 			t.Fatalf("Lookup(%d) = %+v, %v", at, p, ok)
@@ -234,7 +234,7 @@ func TestEdge_FirstHeldByteFarFromZero(t *testing.T) {
 // without guarding a line of its own.
 func TestEdge_ZeroLengthWrite(t *testing.T) {
 	c, _ := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(8)
 	v := mustWrite(t, c, s, f, 0, make([]byte, 100))
 	if z, err := c.WriteAt(context.Background(), s, f, 50, nil, 1); z != (core.Version{}) || err != nil {
@@ -248,7 +248,7 @@ func TestEdge_ZeroLengthWrite(t *testing.T) {
 
 func TestEdge_WriteNearLargestOffset(t *testing.T) {
 	c, _ := newTestCore(t)
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	f := testFile(9)
 	p := make([]byte, 16)
 	off := int64(math.MaxInt64) - int64(len(p))
@@ -277,7 +277,7 @@ func TestWriteAt_ThreePiecesAcrossTwoRolls(t *testing.T) {
 		payload[i] = byte(i*31 + i>>8)
 	}
 	const off = 12345
-	v, err := c.WriteAt(context.Background(), c.AddShare(1), f, off, payload, 1)
+	v, err := c.WriteAt(context.Background(), mustShare(t, c, 1), f, off, payload, 1)
 	if err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestWriteAt_ThreePiecesAcrossTwoRolls(t *testing.T) {
 func TestWriteAt_LaterPieceFails(t *testing.T) {
 	var armed atomic.Bool
 	var c *Core
-	var seam *journaltest.Seam
+	var seam *kit.Seam
 	boom := errors.New("injected write failure")
 	f := testFile(12)
 	c, seam = newTestCore(t, func(o *coreOptions) {
@@ -333,16 +333,16 @@ func TestWriteAt_LaterPieceFails(t *testing.T) {
 			if !ok {
 				return
 			}
-			var rules []journaltest.Rule
+			var rules []kit.Rule
 			for id := p.Record.Segment + 1; id <= p.Record.Segment+8; id++ {
-				rules = append(rules, journaltest.Failing(journaltest.OpWrite, format.SegmentName(id), 0, boom))
+				rules = append(rules, kit.Failing(kit.OpWrite, format.SegmentName(id), 0, boom))
 			}
 			if err := seam.Schedule(rules...); err != nil {
 				panic(err)
 			}
 		}
 	})
-	s := c.AddShare(1)
+	s := mustShare(t, c, 1)
 	armed.Store(true)
 	payload := make([]byte, 2*testSegmentCap)
 	v, err := c.WriteAt(context.Background(), s, f, 0, payload, 1)

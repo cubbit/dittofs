@@ -11,13 +11,13 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // syncsOf counts the syncs the seam saw of the segment's file.
 func (r *rig) syncsOf(seg core.SegmentID) int {
-	return r.seam.CallsFor(journaltest.OpSync, format.SegmentName(seg))
+	return r.seam.CallsFor(kit.OpSync, format.SegmentName(seg))
 }
 
 // syncAsync runs Sync in a goroutine and returns the channel its error lands on.
@@ -59,8 +59,8 @@ func TestGroupCommitSharesSyncsAcrossWaiters(t *testing.T) {
 		t.Fatalf("seed Sync: %v", err)
 	}
 	seg := format.SegmentName(first.Segment)
-	gate := &journaltest.SimGate{Match: func(op string, key []byte) bool {
-		return op == journaltest.OpSync && string(key) == seg
+	gate := &kit.SimGate{Match: func(op string, key []byte) bool {
+		return op == kit.OpSync && string(key) == seg
 	}}
 	r.seam.SetFault(gate)
 	gate.Arm()
@@ -123,7 +123,7 @@ func TestSyncReturnsAfterTheCoveringSync(t *testing.T) {
 	r := newRig(t, 1)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
-	h := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(a.Segment))
+	h := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(a.Segment))
 
 	ch := r.syncAsync(context.Background(), f)
 	<-h.Reached()
@@ -156,7 +156,7 @@ func TestRecordCompletedAfterTheSyncBeganIsNotCovered(t *testing.T) {
 	r := newRig(t, 1)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
-	h := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(a.Segment))
+	h := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(a.Segment))
 
 	chA := r.syncAsync(context.Background(), f)
 	<-h.Reached()
@@ -187,7 +187,7 @@ func TestWaitDurableNeedsNoSyncCaller(t *testing.T) {
 	r := newRig(t, 1)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
-	ha := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(a.Segment))
+	ha := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(a.Segment))
 
 	ch := make(chan error, 1)
 	go func() { ch <- r.d.WaitDurable(a) }()
@@ -199,7 +199,7 @@ func TestWaitDurableNeedsNoSyncCaller(t *testing.T) {
 	}
 
 	b := r.appendWrite(t, f, 8, "b")
-	h := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(b.Segment))
+	h := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(b.Segment))
 	parked := make(chan error, 1)
 	go func() { parked <- r.d.WaitDurable(b) }()
 	<-h.Reached() // WaitDurable led a sync, and the seam holds it
@@ -222,7 +222,7 @@ func TestSyncRidesTheSealsSync(t *testing.T) {
 	r := newRig(t, 1)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
-	h := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(a.Segment))
+	h := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(a.Segment))
 
 	sealed := make(chan error, 1)
 	go func() { _, err := r.streams.For(f).Seal(false); sealed <- err }()
@@ -252,7 +252,7 @@ func TestSyncNeverSyncsADirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.settlePool(t)
-	dirs, all := r.seam.Calls(journaltest.OpSyncDir), r.seam.Calls(journaltest.OpSync)
+	dirs, all := r.seam.Calls(kit.OpSyncDir), r.seam.Calls(kit.OpSync)
 	seg := r.d.made[0].ledgerSegForTest()
 	for i := range 5 {
 		r.appendWrite(t, f, int64(8*(i+1)), "b")
@@ -260,10 +260,10 @@ func TestSyncNeverSyncsADirectory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := r.seam.Calls(journaltest.OpSyncDir); got != dirs {
+	if got := r.seam.Calls(kit.OpSyncDir); got != dirs {
 		t.Errorf("%d directory syncs during writes and Syncs", got-dirs)
 	}
-	if got, want := r.seam.Calls(journaltest.OpSync)-all, r.syncsOf(seg)-1; got < want {
+	if got, want := r.seam.Calls(kit.OpSync)-all, r.syncsOf(seg)-1; got < want {
 		t.Errorf("%d syncs of any file against %d of the segment file", got, want)
 	}
 }
@@ -283,7 +283,7 @@ func TestCancelledSyncLeavesTheSyncRunning(t *testing.T) {
 	r := newRig(t, 1)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
-	h := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(a.Segment))
+	h := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(a.Segment))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	leader := r.syncAsync(ctx, f)
@@ -324,10 +324,10 @@ func TestFailedSyncFailsEveryWaiterAndIsNotRetried(t *testing.T) {
 	a := r.appendWrite(t, f, 0, "a")
 	r.appendWrite(t, g, 0, "g")
 	boom := errors.New("disk on fire")
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, boom)); err != nil {
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, boom)); err != nil {
 		t.Fatal(err)
 	}
-	h := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(a.Segment))
+	h := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(a.Segment))
 
 	chF := r.syncAsync(context.Background(), f)
 	<-h.Reached()
@@ -368,7 +368,7 @@ func TestWaitDurableOnAFailedSegmentKeepsWaiting(t *testing.T) {
 	r := newRig(t, 1)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, errors.New("boom"))); err != nil {
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, errors.New("boom"))); err != nil {
 		t.Fatal(err)
 	}
 	ch := make(chan error, 1)
@@ -452,7 +452,7 @@ func TestEachIssuedSyncHasOneSpanEndedWithItsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	boom := errors.New("boom")
-	if err := r.seam.Schedule(journaltest.Failing(journaltest.OpSync, format.SegmentName(a.Segment), 1, boom)); err != nil {
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, boom)); err != nil {
 		t.Fatal(err)
 	}
 	r.appendWrite(t, f, 8, "b")

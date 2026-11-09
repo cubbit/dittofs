@@ -13,6 +13,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // The second half of the checks that fail by serving or destroying the wrong
@@ -144,8 +145,8 @@ func TestRFC1A_CrashMidRepack(t *testing.T) {
 		// The reclamation is one call on the source's name — its unlink or
 		// the rename that recycles it — so the holds stop whichever it turns
 		// out to be and match nothing else.
-		unlink := f.Seam.HoldFirst(t, journaltest.OpRemove, segmentName(seg))
-		rename := f.Seam.HoldFirst(t, journaltest.OpRename, segmentName(seg))
+		unlink := f.Seam.HoldFirst(t, kit.OpRemove, segmentName(seg))
+		rename := f.Seam.HoldFirst(t, kit.OpRename, segmentName(seg))
 		repacked := make(chan error, 1)
 		go func() {
 			_, err := f.J.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{Segments: []journal.SegmentID{seg}})
@@ -158,7 +159,7 @@ func TestRFC1A_CrashMidRepack(t *testing.T) {
 			stub(t, "Repack", err)
 			t.Fatalf("share %d: the repack returned (%v) with its source unheld, without reclaiming it", k, err)
 		}
-		f.Drop(journaltest.OpSyncDir, "*")
+		f.Drop(kit.OpSyncDir, "*")
 		unlink.Release()
 		rename.Release()
 		err := <-repacked
@@ -244,8 +245,8 @@ func TestRFC1A_RepackUnderRead(t *testing.T) {
 		// unlink; the unlink and rename holds stop the pass between its copy
 		// and its reclamation of the source.
 		held := f.Seam.HoldFirst(t, "read*", name)
-		unlink := f.Seam.Hold(t, journaltest.OpRemove, name)
-		rename := f.Seam.Hold(t, journaltest.OpRename, name)
+		unlink := f.Seam.Hold(t, kit.OpRemove, name)
+		rename := f.Seam.Hold(t, kit.OpRename, name)
 		type result struct {
 			r   readOut
 			err error
@@ -440,7 +441,7 @@ func TestRFC1A_RemovalOutlivesItsSegment(t *testing.T) {
 		// removal included — so on this seam the crash finds the old bytes'
 		// segment durably gone, never restored, whatever the journal did
 		// with the settled delete in the pass over its segment.
-		f.Drop(journaltest.OpSyncDir, "*")
+		f.Drop(kit.OpSyncDir, "*")
 		repackAll(t, f, journal.RepackScope{Segments: []journal.SegmentID{overSeg}})
 		f.Seam.SetFault(nil)
 		repackAll(t, f, journal.RepackScope{Segments: []journal.SegmentID{deleteSeg}})
@@ -742,7 +743,7 @@ func TestRFC1A_CopyLosesToNewerWrite(t *testing.T) {
 		// over a segment that is its own copy's target. The overwrite below
 		// rolls into the next segment.
 		sealNow(t, f, seg)
-		copying := f.Seam.HoldFirst(t, journaltest.OpWrite, "*.seg")
+		copying := f.Seam.HoldFirst(t, kit.OpWrite, "*.seg")
 		repacked = make(chan error, 1)
 		go func() {
 			_, err := f.J.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{Segments: []journal.SegmentID{seg}})
@@ -999,7 +1000,7 @@ func TestRFC1A_LossRaisesLossGeneration(t *testing.T) {
 		reappID := journaltest.File(64 + 2*k)
 		write(t, h, reappID, 0, pattern(fmt.Sprint("reappend", k), size))
 		rseg := segmentOf(t, f, reappID, 0)
-		f.FailNext(journaltest.OpSync, segmentName(rseg), 1)
+		f.FailNext(kit.OpSync, segmentName(rseg), 1)
 		before = f.J.Stats().LossGeneration
 		reappended = f.J.Stats().Counters.SyncReappendedBytes
 		err = h.Sync(t.Context(), reappID)
@@ -1095,10 +1096,10 @@ func TestRFC1A_RecycledSegmentKeepsNewRecords(t *testing.T) {
 			syncFile(t, h, id)
 			before := slices.Clone(segmentNames(t, f))
 			name := segmentName(seg)
-			renames := f.Seam.CallsFor(journaltest.OpRename, name)
+			renames := f.Seam.CallsFor(kit.OpRename, name)
 			repackAll(t, f, journal.RepackScope{Segments: []journal.SegmentID{seg}})
 			f.Seam.SetFault(nil)
-			if f.Seam.CallsFor(journaltest.OpRename, name) <= renames {
+			if f.Seam.CallsFor(kit.OpRename, name) <= renames {
 				continue // this retirement unlinked; the pool is full again
 			}
 			gained := slices.DeleteFunc(slices.Clone(segmentNames(t, f)), func(n string) bool {
@@ -1115,7 +1116,7 @@ func TestRFC1A_RecycledSegmentKeepsNewRecords(t *testing.T) {
 			// to a spare's temporary name does not end in .seg at all.
 			var marked []string
 			for _, n := range gained {
-				if f.Seam.CallsFor(journaltest.OpWrite, n) > 0 {
+				if f.Seam.CallsFor(kit.OpWrite, n) > 0 {
 					marked = append(marked, n)
 				}
 			}
@@ -1197,7 +1198,7 @@ func TestRFC1A_RecycledSegmentKeepsNewRecords(t *testing.T) {
 		if at := segmentOf(t, f, id, rolledAt+4*size); at != seg2 {
 			t.Fatalf("share %d: C was written into segment %d, want the recycled segment %d beside B", k, at, seg2)
 		}
-		f.FailNext(journaltest.OpWrite, name2, 1)
+		f.FailNext(kit.OpWrite, name2, 1)
 		if _, err := tryWrite(t, h, id, rolledAt+3*size, distinct(30+k, 10<<10)); err == nil {
 			t.Fatalf("share %d: the append the fault was set to fail succeeded", k)
 		}
@@ -1245,12 +1246,12 @@ func TestRFC1A_RecycledSegmentKeepsNewRecords(t *testing.T) {
 		if err != nil && !errors.Is(err, journal.ErrSyncFailed) {
 			t.Fatalf("share %d: the Sync that resolved the failed append's window returned %v, want success or a SyncError", k, err)
 		}
-		renamed2 := f.Seam.CallsFor(journaltest.OpRename, name2)
+		renamed2 := f.Seam.CallsFor(kit.OpRename, name2)
 		repackAll(t, f, journal.RepackScope{Segments: []journal.SegmentID{seg2}})
 		if !retired(f, seg2) {
 			t.Fatalf("share %d: the failed segment %d is still owned after the pass that followed its window's resolution, which carried its new record forward", k, seg2)
 		}
-		if n := f.Seam.CallsFor(journaltest.OpRename, name2) - renamed2; n > 0 {
+		if n := f.Seam.CallsFor(kit.OpRename, name2) - renamed2; n > 0 {
 			t.Fatalf("share %d: the failed segment %d was renamed %d time(s) into a spare rather than unlinked", k, seg2, n)
 		}
 		// B, carried forward by the retiring pass, reads back between the
@@ -1504,7 +1505,7 @@ func TestRFC1A_RemovalDroppedByVersion(t *testing.T) {
 			segWrites := func() map[string]int {
 				counts := map[string]int{}
 				for _, name := range segmentNames(t, f) {
-					counts[name] = f.Seam.CallsFor(journaltest.OpWrite, name)
+					counts[name] = f.Seam.CallsFor(kit.OpWrite, name)
 				}
 				return counts
 			}
@@ -1766,8 +1767,8 @@ func TestRFC1A_ReappendTrustsNoPageCache(t *testing.T) {
 		seg := segmentOf(t, f, id, 0)
 		name := segmentName(seg)
 
-		writes := f.Seam.CallsFor(journaltest.OpWrite, name)
-		f.FailNext(journaltest.OpSync, name, 1)
+		writes := f.Seam.CallsFor(kit.OpWrite, name)
+		f.FailNext(kit.OpSync, name, 1)
 		f.Seam.StaleReads(name)
 		err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
@@ -1776,7 +1777,7 @@ func TestRFC1A_ReappendTrustsNoPageCache(t *testing.T) {
 		if err != nil && !failed {
 			t.Fatalf("share %d: the Sync over the failed one returned %v, want a SyncError or a re-append", k, err)
 		}
-		if got := f.Seam.CallsFor(journaltest.OpWrite, name); got != writes {
+		if got := f.Seam.CallsFor(kit.OpWrite, name); got != writes {
 			t.Fatalf("share %d: %d records were appended to the failed segment before its sync was retried", k, got-writes)
 		}
 
@@ -1802,14 +1803,14 @@ func TestRFC1A_ReappendTrustsNoPageCache(t *testing.T) {
 		// the failed segment, a roll, which a correct journal can refuse for
 		// want of a spare, so it is retried as one that returns to the pool
 		// can be.
-		if got := f.Seam.CallsFor(journaltest.OpWrite, name); got != writes {
+		if got := f.Seam.CallsFor(kit.OpWrite, name); got != writes {
 			t.Fatalf("share %d: %d records were appended to the failed segment after its sync failed", k, got-writes)
 		}
 		if _, err := tryWrite(t, h, id, size, distinct(40+k, size)); err != nil {
 			stub(t, "WriteAt", err)
 			t.Fatalf("share %d: the write after the window resolved: %v", k, err)
 		}
-		if got := f.Seam.CallsFor(journaltest.OpWrite, name); got != writes {
+		if got := f.Seam.CallsFor(kit.OpWrite, name); got != writes {
 			t.Fatalf("share %d: %d records were appended to the failed segment after the window resolved and the file was written again", k, got-writes)
 		}
 
@@ -2065,7 +2066,7 @@ func TestRFC1A_ReappendKeepsItsNumbers(t *testing.T) {
 		seg := segmentOf(t, f, id, 0)
 
 		before := f.J.Stats().Counters.SyncReappendedBytes
-		f.FailNext(journaltest.OpSync, segmentName(seg), 1)
+		f.FailNext(kit.OpSync, segmentName(seg), 1)
 		err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
@@ -2095,7 +2096,7 @@ func TestRFC1A_ReappendKeepsItsNumbers(t *testing.T) {
 		// the record and reads as a crash that never kept the original. The
 		// truncate and the copy are synced, so they are durable whatever the
 		// draw keeps.
-		f.Crash(journaltest.Reordered(404))
+		f.Crash(kit.Reordered(404))
 
 		// The crash is observed by what it left, not by what it was handed:
 		// the file's own bytes say whether the original came through it. A

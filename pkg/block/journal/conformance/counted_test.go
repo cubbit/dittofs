@@ -3,6 +3,7 @@
 package conformance
 
 import (
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"strings"
 	"sync"
 	"testing"
@@ -151,7 +152,7 @@ func (g *syncGate) finished() {
 // that round passes, whatever a correct journal batches them into. The seam
 // calls it with no lock of its own held, so a gated sync stalls only itself.
 func (g *syncGate) At(op string, key []byte) (delay time.Duration, tearAfter int, err error) {
-	if op != journaltest.OpSync || !strings.HasSuffix(string(key), ".seg") {
+	if op != kit.OpSync || !strings.HasSuffix(string(key), ".seg") {
 		return 0, 0, nil
 	}
 	g.mu.Lock()
@@ -183,7 +184,7 @@ func TestCounted_SyncsPerWrite(t *testing.T) {
 
 	segmentSyncs := func() (n int) {
 		for _, name := range segmentNames(t, f) {
-			n += f.Seam.CallsFor(journaltest.OpSync, name)
+			n += f.Seam.CallsFor(kit.OpSync, name)
 		}
 		return n
 	}
@@ -348,7 +349,7 @@ type fixtureMixedEnv struct {
 
 // Install sets the gate as the seam's fault, so every sync of a segment file
 // the journal issues parks where the protocol can hand it turns.
-func (e *fixtureMixedEnv) Install(gate *journaltest.SimGate) {
+func (e *fixtureMixedEnv) Install(gate *kit.SimGate) {
 	e.f.Seam.SetFault(gate)
 }
 

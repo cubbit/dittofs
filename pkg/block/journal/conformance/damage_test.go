@@ -12,6 +12,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/model"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
@@ -262,7 +263,7 @@ func wantWholePieces(t *testing.T, where string, h *journal.Handle, w pieced) {
 // then releases cur, so the call parked at cur passes and the one after it
 // parks: a call sees the holds in place when it arrives, never one installed
 // while it waits. The hold is registered on tb, the fixture's lifetime.
-func holdNext(tb testing.TB, f *journaltest.Fixture, op, key string, cur *journaltest.Hold) *journaltest.Hold {
+func holdNext(tb testing.TB, f *journaltest.Fixture, op, key string, cur *kit.Hold) *kit.Hold {
 	tb.Helper()
 
 	next := f.Seam.Hold(tb, op, key)
@@ -288,12 +289,12 @@ func magicAt(t *testing.T, f *journaltest.Fixture, name string, off int64, magic
 // return to, a precondition that the parked call is the sync point meant,
 // and what to apply to the model from what the operation did before it.
 type parked struct {
-	held   *journaltest.Hold
+	held   *kit.Hold
 	done   <-chan error
 	check  func() string
 	mirror func()
-	holds  []*journaltest.Hold // other holds, released after the seam's crash
-	split  []pieced            // writes the crash takes in part, held to whole pieces
+	holds  []*kit.Hold // other holds, released after the seam's crash
+	split  []pieced    // writes the crash takes in part, held to whole pieces
 }
 
 // crashParked crashes the storage with the parked call in flight, releases
@@ -392,7 +393,7 @@ func rollParked(t *testing.T, d *driven) (parked, journal.SegmentID) {
 		off := int64(n) * size
 		p := pattern(fmtTag("f", 0, 0, off), size)
 
-		held := d.f.Seam.Hold(d.tb, journaltest.OpSync, name)
+		held := d.f.Seam.Hold(d.tb, kit.OpSync, name)
 		result := make(chan wrote, 1)
 		done := make(chan error, 1)
 
@@ -489,7 +490,7 @@ func idleSealParked(t *testing.T, d *driven) (parked, journal.SegmentID) {
 	d.writeSynced(0, 0, 0, size)
 	d.writeSynced(0, 0, size, size)
 	seg := entryAt(t, d.f, journaltest.File(0), 0).Location.Segment
-	held := d.f.Seam.Hold(d.tb, journaltest.OpSync, segmentName(seg))
+	held := d.f.Seam.Hold(d.tb, kit.OpSync, segmentName(seg))
 	d.f.Advance(journaltest.IdleSealAge)
 	p := parked{held: held}
 	waitAtHold(t, p, "the idle seal")
@@ -519,7 +520,7 @@ func advanceUntil(t *testing.T, d *driven, p *parked, name string, cond func() b
 			t.Fatalf("precondition: %s after %d syncs of %s", what, n, name)
 		}
 
-		p.held = holdNext(d.tb, d.f, journaltest.OpSync, name, p.held)
+		p.held = holdNext(d.tb, d.f, kit.OpSync, name, p.held)
 		waitAtHold(t, *p, "the seal")
 	}
 }
@@ -624,7 +625,7 @@ func recycleCrashed(t *testing.T, d *driven) string {
 
 	name, seg, spares := retirable(t, d)
 	files := segmentFiles(t, d.f)
-	rename := d.f.Seam.Hold(d.tb, journaltest.OpRename, name)
+	rename := d.f.Seam.Hold(d.tb, kit.OpRename, name)
 	done := make(chan error, 1)
 	go func() {
 		_, err := d.f.J.Repack(t.Context(), journaltest.FixtureSegmentCap, journal.RepackScope{Segments: []journal.SegmentID{seg}})
@@ -634,7 +635,7 @@ func recycleCrashed(t *testing.T, d *driven) string {
 	waitAtHold(t, p, "the repack")
 
 	// The next sync of a segment file after the rename is the zeroing's.
-	p.held = holdNext(d.tb, d.f, journaltest.OpSync, "*.seg", p.held)
+	p.held = holdNext(d.tb, d.f, kit.OpSync, "*.seg", p.held)
 	waitAtHold(t, p, "the repack")
 	r := retirement(t, d.f, name, files)
 	if !r.recycled {
@@ -667,11 +668,11 @@ func recycleCrashed(t *testing.T, d *driven) string {
 // segment. It returns that segment's name and id, and the hold parking
 // spare-making, to be released into the crashed storage before the dead
 // journal is closed.
-func retirable(t *testing.T, d *driven) (string, journal.SegmentID, *journaltest.Hold) {
+func retirable(t *testing.T, d *driven) (string, journal.SegmentID, *kit.Hold) {
 	t.Helper()
 
 	const size = 64 << 10
-	spares := d.f.Seam.Hold(d.tb, journaltest.OpCreate, "*.spare.tmp")
+	spares := d.f.Seam.Hold(d.tb, kit.OpCreate, "*.spare.tmp")
 	recs, _, seg := d.fill(0, 0, size)
 	others, _, _ := d.fill(1, 1, size)
 	d.sync(0, recs[0].id)
@@ -709,7 +710,7 @@ func zeroSlots(t *testing.T, d *driven, name string) func() string {
 // the segment's sync. The writes that returned before it are applied to the
 // model on the test's goroutine once the parked one is released; the parked
 // one, which the crash takes, is not.
-func takeParked(t *testing.T, d *driven, zero *journaltest.Hold, name string) parked {
+func takeParked(t *testing.T, d *driven, zero *kit.Hold, name string) parked {
 	t.Helper()
 
 	const size = 64 << 10
@@ -767,7 +768,7 @@ var syncPoints = []struct {
 		d.writeSynced(0, 0, 0, 64<<10)
 		w := d.write(0, 0, 64<<10, pattern("w", 64<<10))
 		name := segmentName(entryAt(t, d.f, w.id, w.extent.Off).Location.Segment)
-		held := d.f.Seam.Hold(d.tb, journaltest.OpSync, name)
+		held := d.f.Seam.Hold(d.tb, kit.OpSync, name)
 		done := make(chan error, 1)
 		go func() { done <- d.f.Share(0).Sync(t.Context(), w.id) }()
 		return parked{held: held, done: done}
@@ -810,14 +811,14 @@ var syncPoints = []struct {
 		d.sync(0, recs[0].id)
 		d.writeSynced(0, 0, 0, 64<<10) // the first record superseded: the segment has dead bytes
 		name := segmentName(seg)
-		held := d.f.Seam.Hold(d.tb, journaltest.OpSync, "*.seg")
+		held := d.f.Seam.Hold(d.tb, kit.OpSync, "*.seg")
 		done := make(chan error, 1)
 		go func() {
 			_, err := d.f.J.Repack(t.Context(), journaltest.FixtureSegmentCap, journal.RepackScope{Segments: []journal.SegmentID{seg}})
 			done <- err
 		}()
 		return parked{held: held, done: done, check: func() string {
-			if d.f.Seam.CallsFor(journaltest.OpRename, name) != 0 || d.f.Seam.CallsFor(journaltest.OpRemove, name) != 0 {
+			if d.f.Seam.CallsFor(kit.OpRename, name) != 0 || d.f.Seam.CallsFor(kit.OpRemove, name) != 0 {
 				return "the segment was retired before its first sync inside the repack"
 			}
 			return ""
@@ -832,15 +833,15 @@ var syncPoints = []struct {
 		d.f.Reopen() // the pool is at its target as the open counts it
 		d.writeSynced(0, 0, 0, 64<<10)
 		name := segmentName(seg)
-		removes := d.f.Seam.CallsFor(journaltest.OpRemove, name)
-		held := d.f.Seam.Hold(d.tb, journaltest.OpSyncDir, "*")
+		removes := d.f.Seam.CallsFor(kit.OpRemove, name)
+		held := d.f.Seam.Hold(d.tb, kit.OpSyncDir, "*")
 		done := make(chan error, 1)
 		go func() {
 			_, err := d.f.J.Repack(t.Context(), journaltest.FixtureSegmentCap, journal.RepackScope{Segments: []journal.SegmentID{seg}})
 			done <- err
 		}()
 		p := parked{held: held, done: done, check: func() string {
-			if d.f.Seam.CallsFor(journaltest.OpRemove, name) != removes+1 {
+			if d.f.Seam.CallsFor(kit.OpRemove, name) != removes+1 {
 				return "the held directory sync does not follow the segment's unlink"
 			}
 			return ""
@@ -849,12 +850,12 @@ var syncPoints = []struct {
 		// repack can roll, and a refill's directory sync then reaches the
 		// hold before the unlink's.
 		waitAtHold(t, p, "the repack")
-		for n := 0; d.f.Seam.CallsFor(journaltest.OpRemove, name) == removes; n++ {
+		for n := 0; d.f.Seam.CallsFor(kit.OpRemove, name) == removes; n++ {
 			if n == maxRefillSyncs {
 				t.Fatalf("precondition: the segment was not unlinked within %d directory syncs of the repack", n)
 			}
 
-			p.held = holdNext(d.tb, d.f, journaltest.OpSyncDir, "*", p.held)
+			p.held = holdNext(d.tb, d.f, kit.OpSyncDir, "*", p.held)
 			waitAtHold(t, p, "the repack")
 		}
 		return p
@@ -867,7 +868,7 @@ var syncPoints = []struct {
 		awaitSpare(t, d.f, func() { d.writeSynced(0, 2, 0, journaltest.FixtureSegmentCap) })
 		d.f.Reopen()
 		before := len(segmentFiles(t, d.f))
-		held := d.f.Seam.Hold(d.tb, journaltest.OpSyncDir, "*")
+		held := d.f.Seam.Hold(d.tb, kit.OpSyncDir, "*")
 		recs, _, _ := d.fill(0, 0, 64<<10)
 		d.sync(0, recs[0].id)
 		// The roll returned already; the spare's directory sync, off the
@@ -885,7 +886,7 @@ var syncPoints = []struct {
 		a := d.write(0, 0, 0, pattern("a", 64<<10))
 		d.write(0, 0, 64<<10, pattern("b", 64<<10))
 		name := segmentName(entryAt(t, d.f, a.id, 0).Location.Segment)
-		held := d.f.Seam.Hold(d.tb, journaltest.OpSync, name)
+		held := d.f.Seam.Hold(d.tb, kit.OpSync, name)
 		done := make(chan error, 1)
 		go func() { done <- d.f.TryKill() }()
 		return parked{held: held, done: done}
@@ -895,12 +896,12 @@ var syncPoints = []struct {
 		a := d.writeSynced(0, 0, 0, 64<<10)
 		d.write(0, 0, 64<<10, pattern("b", 64<<10))
 		name := segmentName(entryAt(t, d.f, a.id, 0).Location.Segment)
-		truncates := d.f.Seam.CallsFor(journaltest.OpTruncate, name)
-		held := d.f.Seam.Hold(d.tb, journaltest.OpSync, name)
+		truncates := d.f.Seam.CallsFor(kit.OpTruncate, name)
+		held := d.f.Seam.Hold(d.tb, kit.OpSync, name)
 		done := make(chan error, 1)
-		go func() { done <- d.f.TryCrash(journaltest.TornIn(name, 32<<10)) }()
+		go func() { done <- d.f.TryCrash(kit.TornIn(name, 32<<10)) }()
 		return parked{held: held, done: done, check: func() string {
-			if d.f.Seam.CallsFor(journaltest.OpTruncate, name) != truncates+1 {
+			if d.f.Seam.CallsFor(kit.OpTruncate, name) != truncates+1 {
 				return "the held sync does not follow the truncation of the torn tail"
 			}
 			return ""
@@ -913,16 +914,16 @@ var syncPoints = []struct {
 		loc := entryAt(t, d.f, a.id, 0).Location
 		name := segmentName(loc.Segment)
 		end := loc.Offset + raw.RecordHeaderSize + 8 + a.extent.Len
-		held := d.f.Seam.Hold(d.tb, journaltest.OpSync, name)
+		held := d.f.Seam.Hold(d.tb, kit.OpSync, name)
 		done := make(chan error, 1)
-		go func() { done <- d.f.TryCrash(journaltest.TornIn(name, 32<<10)) }()
+		go func() { done <- d.f.TryCrash(kit.TornIn(name, 32<<10)) }()
 		p := parked{held: held, done: done}
 		waitAtHold(t, p, "the open after a torn crash")
 		// A journal that syncs the truncation and the seal together is at the
 		// seal's sync already; one that syncs them apart is at the
 		// truncation's, and the next sync of the segment is the seal's.
 		if !magicAt(t, d.f, name, end, "DJS1") {
-			p.held = holdNext(d.tb, d.f, journaltest.OpSync, name, p.held)
+			p.held = holdNext(d.tb, d.f, kit.OpSync, name, p.held)
 		}
 
 		p.check = func() string {
@@ -940,9 +941,9 @@ var syncPoints = []struct {
 		name := segmentName(entryAt(t, d.f, a.id, 0).Location.Segment)
 		deviceSync(t, d.f, name)
 		d.write(0, 0, 64<<10, pattern("b", 64<<10))
-		d.f.Drop(journaltest.OpSync, name)
-		syncs := d.f.Seam.CallsFor(journaltest.OpSync, name)
-		held := d.f.Seam.Hold(d.tb, journaltest.OpSync, name)
+		d.f.Drop(kit.OpSync, name)
+		syncs := d.f.Seam.CallsFor(kit.OpSync, name)
+		held := d.f.Seam.Hold(d.tb, kit.OpSync, name)
 		done := make(chan error, 1)
 		go func() { done <- d.f.TryKill() }()
 		p := parked{held: held, done: done}
@@ -951,25 +952,25 @@ var syncPoints = []struct {
 		// verifies every newest segment's unproven tail by syncing it, file
 		// 1's included, so a sync of that segment is passed too, and the
 		// first sync of any other segment is the re-append's.
-		otherSyncs := d.f.Seam.CallsFor(journaltest.OpSync, otherName)
-		p.held = holdNext(d.tb, d.f, journaltest.OpSync, "*.seg", p.held)
+		otherSyncs := d.f.Seam.CallsFor(kit.OpSync, otherName)
+		p.held = holdNext(d.tb, d.f, kit.OpSync, "*.seg", p.held)
 		waitAtHold(t, p, "the open after a kill")
-		for n := 0; d.f.Seam.CallsFor(journaltest.OpSync, otherName) != otherSyncs; n++ {
+		for n := 0; d.f.Seam.CallsFor(kit.OpSync, otherName) != otherSyncs; n++ {
 			if n == maxOpenSyncs {
 				t.Fatalf("precondition: no sync of a segment other than the unproven one's and file 1's within %d syncs of the open", n)
 			}
 
-			otherSyncs = d.f.Seam.CallsFor(journaltest.OpSync, otherName)
-			p.held = holdNext(d.tb, d.f, journaltest.OpSync, "*.seg", p.held)
+			otherSyncs = d.f.Seam.CallsFor(kit.OpSync, otherName)
+			p.held = holdNext(d.tb, d.f, kit.OpSync, "*.seg", p.held)
 			waitAtHold(t, p, "the open after a kill")
 		}
 
 		p.check = func() string {
-			if d.f.Seam.CallsFor(journaltest.OpSync, name) != syncs+1 {
+			if d.f.Seam.CallsFor(kit.OpSync, name) != syncs+1 {
 				return "the unproven segment was synced again after its own sync, so the held sync is not the re-append's"
 			}
 
-			if d.f.Seam.CallsFor(journaltest.OpSync, otherName) != otherSyncs {
+			if d.f.Seam.CallsFor(kit.OpSync, otherName) != otherSyncs {
 				return "the held sync is file 1's segment's, not the re-append's"
 			}
 			return ""
@@ -982,7 +983,7 @@ var syncPoints = []struct {
 		// The open after the crash re-adopts the segment and zeroes both its
 		// slots, or leaves that to the take, in which case the stream is
 		// driven into it.
-		zero := d.f.Seam.Hold(d.tb, journaltest.OpSync, name)
+		zero := d.f.Seam.Hold(d.tb, kit.OpSync, name)
 		opened := make(chan error, 1)
 		go func() { opened <- d.f.TryCrash() }()
 		select {
@@ -1003,17 +1004,17 @@ var syncPoints = []struct {
 		// before it zeroes the slots; the sync is the point, held once the
 		// rename is parked, so no earlier directory sync is taken for it.
 		name, seg, spares := retirable(t, d)
-		rename := d.f.Seam.Hold(d.tb, journaltest.OpRename, name)
+		rename := d.f.Seam.Hold(d.tb, kit.OpRename, name)
 		done := make(chan error, 1)
 		go func() {
 			_, err := d.f.J.Repack(t.Context(), journaltest.FixtureSegmentCap, journal.RepackScope{Segments: []journal.SegmentID{seg}})
 			done <- err
 		}()
-		p := parked{held: rename, done: done, holds: []*journaltest.Hold{spares}}
+		p := parked{held: rename, done: done, holds: []*kit.Hold{spares}}
 		waitAtHold(t, p, "the repack")
-		p.held = holdNext(d.tb, d.f, journaltest.OpSyncDir, "*", p.held)
+		p.held = holdNext(d.tb, d.f, kit.OpSyncDir, "*", p.held)
 		p.check = func() string {
-			if d.f.Seam.CallsFor(journaltest.OpRename, name) != 1 {
+			if d.f.Seam.CallsFor(kit.OpRename, name) != 1 {
 				return "the held directory sync does not follow the recycle's rename"
 			}
 			return ""
@@ -1025,7 +1026,7 @@ var syncPoints = []struct {
 		// A spare's refill parked at its rename, its temporary entry made
 		// durable by the directory sync of a retirement, then a crash: the
 		// open after it unlinks the temporary spare and syncs the directory.
-		rename := d.f.Seam.Hold(d.tb, journaltest.OpRename, "*.spare.tmp")
+		rename := d.f.Seam.Hold(d.tb, kit.OpRename, "*.spare.tmp")
 		recs, _, seg := d.fill(0, 0, size)
 		d.sync(0, recs[0].id)
 		<-rename.Reached()
@@ -1040,14 +1041,14 @@ var syncPoints = []struct {
 		}
 
 		d.sync(0, recs[0].id)
-		syncs := d.f.Seam.Calls(journaltest.OpSyncDir)
+		syncs := d.f.Seam.Calls(kit.OpSyncDir)
 		_, err := d.f.J.Repack(t.Context(), journaltest.FixtureSegmentCap, journal.RepackScope{Segments: []journal.SegmentID{seg}})
 		stub(t, "Repack", err)
 		if err != nil {
 			t.Fatalf("repack segment %d: %v", seg, err)
 		}
 
-		if d.f.Seam.Calls(journaltest.OpSyncDir) == syncs {
+		if d.f.Seam.Calls(kit.OpSyncDir) == syncs {
 			t.Fatalf("precondition: the retirement synced the directory no time; the temporary spare's entry is not durable")
 		}
 
@@ -1056,23 +1057,23 @@ var syncPoints = []struct {
 		}
 
 		rename.Release()
-		removes := d.f.Seam.CallsFor(journaltest.OpRemove, tmp)
-		held := d.f.Seam.Hold(d.tb, journaltest.OpSyncDir, "*")
+		removes := d.f.Seam.CallsFor(kit.OpRemove, tmp)
+		held := d.f.Seam.Hold(d.tb, kit.OpSyncDir, "*")
 		opened := make(chan error, 1)
 		go func() { opened <- d.f.TryCrash() }()
 		p := parked{held: held, done: opened, check: func() string {
-			if d.f.Seam.CallsFor(journaltest.OpRemove, tmp) != removes+1 {
+			if d.f.Seam.CallsFor(kit.OpRemove, tmp) != removes+1 {
 				return "the held directory sync does not follow the unlink of the temporary spare"
 			}
 			return ""
 		}}
 		waitAtHold(t, p, "the open after the crash")
-		for n := 0; d.f.Seam.CallsFor(journaltest.OpRemove, tmp) == removes; n++ {
+		for n := 0; d.f.Seam.CallsFor(kit.OpRemove, tmp) == removes; n++ {
 			if n == maxRefillSyncs {
 				t.Fatalf("precondition: the open did not unlink %s within %d directory syncs", tmp, n)
 			}
 
-			p.held = holdNext(d.tb, d.f, journaltest.OpSyncDir, "*", p.held)
+			p.held = holdNext(d.tb, d.f, kit.OpSyncDir, "*", p.held)
 			waitAtHold(t, p, "the open after the crash")
 		}
 		return p
@@ -1085,7 +1086,7 @@ var syncPoints = []struct {
 		// A sync that fails with nothing unsynced ends the segment and
 		// changes nothing the model holds, whether the journal returns the
 		// failure or not, so its result is not applied to the model.
-		d.f.FailNext(journaltest.OpSync, name, 1)
+		d.f.FailNext(kit.OpSync, name, 1)
 		err := d.f.Share(0).Sync(t.Context(), a.id)
 		stub(t, "Sync", err)
 		var se *journal.SyncError
@@ -1097,26 +1098,26 @@ var syncPoints = []struct {
 			t.Fatalf("precondition: segment %d is not reported failed after its sync failed", seg)
 		}
 
-		removes := d.f.Seam.CallsFor(journaltest.OpRemove, name)
-		held := d.f.Seam.Hold(d.tb, journaltest.OpSyncDir, "*")
+		removes := d.f.Seam.CallsFor(kit.OpRemove, name)
+		held := d.f.Seam.Hold(d.tb, kit.OpSyncDir, "*")
 		done := make(chan error, 1)
 		go func() {
 			_, err := d.f.J.Repack(t.Context(), journaltest.FixtureSegmentCap, journal.RepackScope{Segments: []journal.SegmentID{seg}})
 			done <- err
 		}()
 		p := parked{held: held, done: done, check: func() string {
-			if d.f.Seam.CallsFor(journaltest.OpRemove, name) != removes+1 {
+			if d.f.Seam.CallsFor(kit.OpRemove, name) != removes+1 {
 				return "the held directory sync does not follow the failed segment's unlink"
 			}
 			return ""
 		}}
 		waitAtHold(t, p, "the repack")
-		for n := 0; d.f.Seam.CallsFor(journaltest.OpRemove, name) == removes; n++ {
+		for n := 0; d.f.Seam.CallsFor(kit.OpRemove, name) == removes; n++ {
 			if n == maxRefillSyncs {
 				t.Fatalf("precondition: the failed segment was not unlinked within %d directory syncs of the repack", n)
 			}
 
-			p.held = holdNext(d.tb, d.f, journaltest.OpSyncDir, "*", p.held)
+			p.held = holdNext(d.tb, d.f, kit.OpSyncDir, "*", p.held)
 			waitAtHold(t, p, "the repack")
 		}
 		return p
@@ -1227,7 +1228,7 @@ func TestDamage_TornWrites(t *testing.T) {
 				last := d.write(0, 0, 64<<10, pattern(fmtTag("t", 0, 0, 64<<10), size))
 				w := piecesOf(t, d.label, d.f, 0, last.id, last.extent)
 
-				if err := d.f.TryCrash(journaltest.TornIn(name, n)); err != nil {
+				if err := d.f.TryCrash(kit.TornIn(name, n)); err != nil {
 					stub(t, "Open", err)
 					t.Fatalf("%s: %v", d.label, err)
 				}
@@ -1248,7 +1249,7 @@ func TestDamage_TornWrites(t *testing.T) {
 					t.Fatalf("precondition: the held call is not the footer's sync: %s", msg)
 				}
 
-				if err := d.f.Seam.Crash(journaltest.TornEnd(name, n)); err != nil {
+				if err := d.f.Seam.Crash(kit.TornEnd(name, n)); err != nil {
 					t.Fatalf("%s: %v", d.label, err)
 				}
 
@@ -1288,7 +1289,7 @@ func TestDamage_TornWrites(t *testing.T) {
 // roll's, the same on every pass. It returns the hold parking spare-making,
 // to be released into the crashed storage before the dead journal is
 // closed, and the four unsynced writes as the index places them.
-func reorderScript(t *testing.T, tb testing.TB, d *driven) (*journaltest.Hold, []pieced) {
+func reorderScript(t *testing.T, tb testing.TB, d *driven) (*kit.Hold, []pieced) {
 	t.Helper()
 
 	const size = 64 << 10
@@ -1297,7 +1298,7 @@ func reorderScript(t *testing.T, tb testing.TB, d *driven) (*journaltest.Hold, [
 		t.Fatalf("%s: reopen: %v", d.label, err)
 	}
 
-	spares := d.f.Seam.Hold(tb, journaltest.OpCreate, "*.spare.tmp")
+	spares := d.f.Seam.Hold(tb, kit.OpCreate, "*.spare.tmp")
 
 	d.writeSynced(0, 0, 0, size)
 	d.writeSynced(1, 1, 0, size)
@@ -1356,7 +1357,7 @@ func TestDamage_ReorderedWrites(t *testing.T) {
 			// The seam's crash keeps the subset; the parked spare maker is
 			// then released into the crashed storage, since the close of
 			// the dead journal joins it, and the journal opened again.
-			if err := d.f.Seam.Crash(journaltest.Keeping(mask)); err != nil {
+			if err := d.f.Seam.Crash(kit.Keeping(mask)); err != nil {
 				t.Fatalf("%s: %v", d.label, err)
 			}
 
@@ -1880,7 +1881,7 @@ func TestDamage_BitFlip(t *testing.T) {
 			t.Run(fd.name, func(t *testing.T) {
 				s := newFlipSite(t, large, 0, false)
 				flipStructure(t, s, "format", 0, fd, func(where string) {
-					writes := s.f.Seam.CallsFor(journaltest.OpWrite, "format") + s.f.Seam.CallsFor(journaltest.OpTruncate, "format") + s.f.Seam.CallsFor(journaltest.OpCreate, "format.tmp")
+					writes := s.f.Seam.CallsFor(kit.OpWrite, "format") + s.f.Seam.CallsFor(kit.OpTruncate, "format") + s.f.Seam.CallsFor(kit.OpCreate, "format.tmp")
 					err := s.f.TryReopen()
 					stub(t, "Open", err)
 					// decision: the magic and the version are read before the
@@ -1893,7 +1894,7 @@ func TestDamage_BitFlip(t *testing.T) {
 						t.Fatalf("%s: the open returned %v, want ErrCorrupt, or ErrUnknownFormat for the magic and the version", where, err)
 					}
 
-					if got := s.f.Seam.CallsFor(journaltest.OpWrite, "format") + s.f.Seam.CallsFor(journaltest.OpTruncate, "format") + s.f.Seam.CallsFor(journaltest.OpCreate, "format.tmp"); got != writes {
+					if got := s.f.Seam.CallsFor(kit.OpWrite, "format") + s.f.Seam.CallsFor(kit.OpTruncate, "format") + s.f.Seam.CallsFor(kit.OpCreate, "format.tmp"); got != writes {
 						t.Fatalf("%s: the open wrote to the format file; it is never repaired in silence", where)
 					}
 				})
@@ -1953,7 +1954,7 @@ func TestDamage_SegmentDeleted(t *testing.T) {
 	wantBytes(t, f.Share(1), other.id, 0, other.p)
 
 	after := callsFor(f, name)
-	for _, op := range []string{journaltest.OpCreate, journaltest.OpWrite} {
+	for _, op := range []string{kit.OpCreate, kit.OpWrite} {
 		if after[op] != before[op] {
 			t.Fatalf("the open made %d calls of %s on the deleted segment's name; a fresh id exceeds every id the directory names", after[op]-before[op], op)
 		}

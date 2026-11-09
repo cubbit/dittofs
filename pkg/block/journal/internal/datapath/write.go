@@ -14,7 +14,9 @@ import (
 // publishes it to the placement index, and returns the version it carries.
 // mtime is the modification time the record carries.
 //
-// A cancelled ctx is refused first and changes nothing. A zero-length p
+// A cancelled ctx is refused first and changes nothing; a handle whose close
+// began is refused next, with core.ErrClosed, and a call that runs holds its
+// handle's Close back until it returns. A zero-length p
 // returns the zero version and does nothing: no version is drawn and nothing
 // is appended or counted. A negative off, or an off whose end overflows, is
 // refused with core.ErrInvalidExtent before anything is drawn or appended.
@@ -32,6 +34,11 @@ func (c *Core) WriteAt(ctx context.Context, s *Share, id core.FileID, off int64,
 	if err := ctx.Err(); err != nil {
 		return core.Version{}, err
 	}
+	exit, err := s.enter()
+	if err != nil {
+		return core.Version{}, err
+	}
+	defer exit()
 	if len(p) == 0 {
 		return core.Version{}, nil
 	}

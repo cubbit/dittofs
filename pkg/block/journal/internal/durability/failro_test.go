@@ -15,7 +15,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -231,8 +231,8 @@ func TestEnteringReadOnlyFailsTheUnsyncedContentOfEveryStream(t *testing.T) {
 	loc1, v1 := r.publish(t, f1, 0, "bbbb")
 	gen := r.d.Generation()
 	writes := func() int {
-		return r.seam.CallsFor(journaltest.OpWrite, format.SegmentName(loc0.Segment)) +
-			r.seam.CallsFor(journaltest.OpWrite, format.SegmentName(loc1.Segment))
+		return r.seam.CallsFor(kit.OpWrite, format.SegmentName(loc0.Segment)) +
+			r.seam.CallsFor(kit.OpWrite, format.SegmentName(loc1.Segment))
 	}
 	before := writes()
 
@@ -343,7 +343,7 @@ func TestEverySyncWaitingOnAnUndoneRecordFails(t *testing.T) {
 	r, _ := newRORig(t, 1, "")
 	f := file(1)
 	loc, _ := r.appendHeader(t, f, format.KindTruncate, format.RecordBody{})
-	hold := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(loc.Segment))
+	hold := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(loc.Segment))
 	a := r.syncAsync(context.Background(), f)
 	select {
 	case <-hold.Reached():
@@ -427,7 +427,7 @@ func TestASyncThatSucceedsAfterEntryMovesNothing(t *testing.T) {
 	r, _ := newRORig(t, 1, "")
 	f := file(1)
 	loc, _ := r.publish(t, f, 0, "aaaa")
-	hold := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(loc.Segment))
+	hold := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(loc.Segment))
 	ch := r.syncAsync(context.Background(), f)
 	select {
 	case <-hold.Reached():
@@ -470,7 +470,7 @@ func TestFailedSeqsAreSeenByALaterDurabilityOnTheDirectory(t *testing.T) {
 	}
 
 	later := func(dir string) *Durability {
-		c := testConfig(t, journaltest.NewStopwatchClock(), &testDomains{})
+		c := testConfig(t, kit.NewStopwatchClock(), &testDomains{})
 		c.Dir = dir
 		d, err := New(c)
 		if err != nil {
@@ -509,7 +509,7 @@ func TestARemovalsWaitDurableReturnsErrJournalReadOnly(t *testing.T) {
 		r, _ := newRORig(t, 1, "")
 		f := file(1)
 		loc, _ := r.appendHeader(t, f, format.KindDelete, format.RecordBody{})
-		hold := r.seam.HoldFirst(t, journaltest.OpSync, format.SegmentName(loc.Segment))
+		hold := r.seam.HoldFirst(t, kit.OpSync, format.SegmentName(loc.Segment))
 		ch := r.waitDurableAsync(loc)
 		select {
 		case <-hold.Reached():
@@ -676,7 +676,7 @@ func TestAReadOnlyJournalIssuesNoFurtherSync(t *testing.T) {
 	f := file(1)
 	loc, _ := r.publish(t, f, 0, "aaaa")
 	name := format.SegmentName(loc.Segment)
-	hold := r.seam.HoldFirst(t, journaltest.OpSync, name)
+	hold := r.seam.HoldFirst(t, kit.OpSync, name)
 	ch := r.syncAsync(context.Background(), f)
 	select {
 	case <-hold.Reached():
@@ -686,7 +686,7 @@ func TestAReadOnlyJournalIssuesNoFurtherSync(t *testing.T) {
 	held := r.syncsOf(loc.Segment)
 	// Every later sync of the segment fails, as it would on a read-only
 	// device.
-	if err := r.seam.Schedule(journaltest.FailingFrom(journaltest.OpSync, name, held+1, 0, syscall.EROFS)); err != nil {
+	if err := r.seam.Schedule(kit.FailingFrom(kit.OpSync, name, held+1, 0, syscall.EROFS)); err != nil {
 		t.Fatal(err)
 	}
 	before := r.d.Stats()

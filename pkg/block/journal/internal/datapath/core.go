@@ -43,12 +43,6 @@ type State struct {
 	Set      *segment.Set
 }
 
-// Share is a share's registration with the core.
-//
-// decision: a Share holds no lock domain; it only carries the tag its writes
-// publish under. Revisit when a share gains state that writers must serialize.
-type Share struct{ Tag core.ShareTag }
-
 // coreOptions are the test-only adjustments newCore applies before the layers
 // above the domain table are built.
 type coreOptions struct {
@@ -62,6 +56,9 @@ type coreOptions struct {
 	// afterAppend runs in WriteAt right after a record is appended and before
 	// it is published, with the file's append domain held.
 	afterAppend func()
+	// noLimit keeps the test helper's generous version limit off the core, so
+	// a test can hold a fresh core that issues nothing until it sets one.
+	noLimit bool
 }
 
 // Core is the journal's assembled write path: the placement index, the
@@ -94,18 +91,18 @@ type Core struct {
 	// production wiring can set it.
 	afterAppend func()
 
+	// registry is the open handles, replaced whole under registryMu and read
+	// through the pointer alone. See shares.go.
+	registry   atomic.Pointer[[]*Share]
+	registryMu sync.Mutex
+
 	closeOnce sync.Once
 	closeErr  error
 }
 
-const (
-	// unboundedBytes is the Maker's byte ceiling: none that a journal could
-	// reach, so segment creation is limited only by the pool's targets.
-	unboundedBytes = int64(1) << 62
-	// versionCeiling is the version counter's limit for a fresh Counters:
-	// versions are issued only below it.
-	versionCeiling = uint64(1) << 62
-)
+// unboundedBytes is the Maker's byte ceiling: none that a journal could
+// reach, so segment creation is limited only by the pool's targets.
+const unboundedBytes = int64(1) << 62
 
 // New assembles a Core over deps, continuing from state, and starts it.
 //
@@ -130,11 +127,11 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	if state.Index == nil {
 		state.Index = index.New(deps.ExtentLimit)
 	}
+	// A fresh Counters issues no version until SetVersionLimit first sets a
+	// limit, so a caller that continues from a zero State must set one before
+	// its first draw or write.
 	if state.Counters == nil {
 		state.Counters = &index.Counters{}
-		if err := state.Counters.SetVersionLimit(core.Version{Counter: versionCeiling}); err != nil {
-			return nil, err
-		}
 	}
 	budget := deps.Descriptors
 	if budget == nil {
@@ -188,9 +185,6 @@ func (c *Core) Streams() *segment.Streams { return c.streams }
 // WrittenBytes returns the payload bytes WriteAt has published since the core
 // was built: the written_bytes counter.
 func (c *Core) WrittenBytes() uint64 { return c.writtenBytes.Load() }
-
-// AddShare registers a share and returns its handle.
-func (c *Core) AddShare(tag core.ShareTag) *Share { return &Share{Tag: tag} }
 
 // Close stops the durability layer, then closes the streams, then shuts the
 // descriptor cache and stops the pool. It is safe to call twice.

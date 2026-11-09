@@ -17,7 +17,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -25,7 +25,7 @@ import (
 // a started pool, a cache and the stream that takes its segments from the
 // pool, the shape every roll check starts from.
 type rollEnv struct {
-	seam   *journaltest.Seam
+	seam   *kit.Seam
 	set    *segment.Set
 	maker  *segment.Maker
 	pool   *segment.Pool
@@ -89,7 +89,7 @@ func rollPin(t *testing.T, cap int64, targets segment.Targets, setup func(e roll
 func rollBuildMax(t *testing.T, cap int64, targets segment.Targets, max int64, last core.SegmentID, setup func(e rollEnv)) rollEnv {
 	t.Helper()
 
-	seam, err := journaltest.NewSeam(t.TempDir())
+	seam, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
@@ -185,9 +185,9 @@ func segmentName(id core.SegmentID) string { return format.SegmentName(id) }
 func rollAllCountersOf(e rollEnv) map[string]int {
 	c := map[string]int{}
 	for _, op := range []string{
-		journaltest.OpCreate, journaltest.OpOpen, journaltest.OpAllocate,
-		journaltest.OpWrite, journaltest.OpSync, journaltest.OpTruncate,
-		journaltest.OpRemove, journaltest.OpList, journaltest.OpSyncDir,
+		kit.OpCreate, kit.OpOpen, kit.OpAllocate,
+		kit.OpWrite, kit.OpSync, kit.OpTruncate,
+		kit.OpRemove, kit.OpList, kit.OpSyncDir,
 	} {
 		c[op] = e.seam.Calls(op)
 	}
@@ -303,7 +303,7 @@ func TestRollAStraddlingWriteLandsInTwoSegmentsNamingItsPredecessor(t *testing.T
 	seg1Name := segmentName(seg1)
 	seg2Name := segmentName(seg2)
 	for i, c := range log {
-		if c.op == journaltest.OpSync && c.name == seg1Name {
+		if c.op == kit.OpSync && c.name == seg1Name {
 			syncs++
 			if syncs == 2 {
 				sealEnd = i
@@ -315,7 +315,7 @@ func TestRollAStraddlingWriteLandsInTwoSegmentsNamingItsPredecessor(t *testing.T
 	}
 	writeAt := -1
 	for i, c := range log {
-		if c.op == journaltest.OpWrite && c.name == seg2Name {
+		if c.op == kit.OpWrite && c.name == seg2Name {
 			writeAt = i
 			break
 		}
@@ -440,7 +440,7 @@ func TestRollRefusedWithAnEmptyPoolMakesNoSeamCall(t *testing.T) {
 	if c := e.set.Counters(); c.Sealed != 0 {
 		t.Fatalf("the refused roll sealed %d segments, want none", c.Sealed)
 	}
-	if got := e.seam.CallsFor(journaltest.OpSync, streamSegName(id)); got != 0 {
+	if got := e.seam.CallsFor(kit.OpSync, streamSegName(id)); got != 0 {
 		t.Fatalf("the refused roll made %d syncs of the segment, want none", got)
 	}
 }
@@ -814,7 +814,7 @@ func TestRollENOSPCAfterAFailedMakeIsNotAnsweredAsSpare(t *testing.T) {
 	// The worker's makes fail ENOSPC, so the pool holds no spare and the
 	// state it owes the roll is set.
 	e := rollBuild(t, streamCap, segment.Targets{Content: 1}, func(e rollEnv) {
-		if err := e.seam.Schedule(journaltest.Failing(journaltest.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
+		if err := e.seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
 			t.Fatalf("Schedule: %v", err)
 		}
 	}).withStream(t, 1)
@@ -868,7 +868,7 @@ func TestRollASegmentEndedByAFailedSealSyncNamesNoPredecessor(t *testing.T) {
 			warm := make([]byte, 1024)
 			wh, wb := streamWriteHeaderPair(streamFileID(1), 0, warm)
 			p1 := streamAppendWrite(t, e.stream(t), wh, wb)
-			if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, streamSegName(p1.Loc.Segment), tc.count, syscall.EIO)); err != nil {
+			if err := e.seam.Schedule(kit.Failing(kit.OpSync, streamSegName(p1.Loc.Segment), tc.count, syscall.EIO)); err != nil {
 				t.Fatalf("Schedule: %v", err)
 			}
 
@@ -955,7 +955,7 @@ func TestRollASegmentWhoseTruncationFailedStaysSealedAndNamed(t *testing.T) {
 
 	// The early seal's truncation fails: the segment is sealed, accounted at
 	// its cap, and TailErr names the failure.
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpTruncate, streamSegName(id), 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpTruncate, streamSegName(id), 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	res, err := e.s.Seal(true)
@@ -1071,7 +1071,7 @@ func TestRollTwoFilesOnTwoStreamsNeverBlockEachOther(t *testing.T) {
 	// segment: file b's append, on another stream and another segment, must
 	// complete while it waits — a stream blocked in storage never blocks
 	// another.
-	stop := e.seam.HoldFirst(t, journaltest.OpWrite, segA)
+	stop := e.seam.HoldFirst(t, kit.OpWrite, segA)
 	appendBlocked := make(chan error, 1)
 	go func() {
 		payload := streamTestBody(64, 0x11)
@@ -1403,7 +1403,7 @@ func TestRollTheStreamClosedWhileARollRanReturnsClosedAndEndsItsSpare(t *testing
 	// The rest rolls: its roll seals the full segment, and the hold parks
 	// the seal's first sync — the sync that makes the full segment's
 	// records durable, the first thing a seal does.
-	stop := e.seam.HoldFirst(t, journaltest.OpSync, streamSegName(seg1))
+	stop := e.seam.HoldFirst(t, kit.OpSync, streamSegName(seg1))
 	appendErr := make(chan error, 1)
 	go func() {
 		rest := piece[p1.N:]
@@ -1565,7 +1565,7 @@ func TestRollTheConstructorGuardsAndTheBadRollOptions(t *testing.T) {
 			r:    segment.Roll{Hold: hold},
 		},
 	}
-	writes := e.seam.Calls(journaltest.OpWrite)
+	writes := e.seam.Calls(kit.OpWrite)
 	share := e.set.ShareBytes(7)
 	for _, tc := range bad {
 		p, err := e.s.AppendRoll(tc.h, tc.body, tc.r)
@@ -1575,7 +1575,7 @@ func TestRollTheConstructorGuardsAndTheBadRollOptions(t *testing.T) {
 		if p != (segment.Placed{}) {
 			t.Fatalf("%s: AppendRoll placed %+v, want nothing", tc.name, p)
 		}
-		if got := e.seam.Calls(journaltest.OpWrite); got != writes {
+		if got := e.seam.Calls(kit.OpWrite); got != writes {
 			t.Fatalf("%s made a seam write, want the refusal to perform none", tc.name)
 		}
 		if got := e.set.ShareBytes(7); got != share {
@@ -1629,7 +1629,7 @@ func TestRollASegmentItsSealEndedIsReportedNotRolledPast(t *testing.T) {
 
 	// The seal the roll will run fails its first sync — the records' — with
 	// EIO, so the seal ends the segment its roll was closing.
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpSync, streamSegName(seg1), 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpSync, streamSegName(seg1), 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 
@@ -1911,7 +1911,7 @@ func TestRollASealRunningUnderARollIsWaitedOut(t *testing.T) {
 
 	// An explicit seal parks inside its first sync: the segment is taken,
 	// the state sealing, its footer not yet durable.
-	stop := e.seam.HoldFirst(t, journaltest.OpSync, streamSegName(seg1))
+	stop := e.seam.HoldFirst(t, kit.OpSync, streamSegName(seg1))
 	sealed := make(chan error, 1)
 	go func() { _, err := e.s.Seal(false); sealed <- err }()
 	<-stop.Reached()
@@ -2005,7 +2005,7 @@ func TestRollAStreamClosedAtItsSuccessorsHeaderIsRefusedAndTheSpareEnded(t *test
 
 	// Park the successor's header write: the roll has taken its spare,
 	// sealed the full segment, and reached its last I/O before install.
-	stop := e.seam.HoldFirst(t, journaltest.OpWrite, segmentName(seg2))
+	stop := e.seam.HoldFirst(t, kit.OpWrite, segmentName(seg2))
 	payload := streamTestBody(1024, 0x3c)
 	h, body := streamWriteHeader(streamFileID(2), 0, payload, 7, core.Version{Counter: 2})
 	appendErr := make(chan error, 1)
@@ -2081,7 +2081,7 @@ func TestRollAFailedSuccessorHeaderWriteEndsTheSpareAndTheNextAppendRollsAgain(t
 	warmPlaced := streamAppendWrite(t, e.stream(t), wh, wb)
 	seg1 := warmPlaced.Loc.Segment
 	seg2 := seg1 + 1 // the pinned pool's FIFO hands the next id out
-	if err := e.seam.Schedule(journaltest.Failing(journaltest.OpWrite, segmentName(seg2), 1, syscall.EIO)); err != nil {
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, segmentName(seg2), 1, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 

@@ -24,6 +24,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -557,7 +558,7 @@ func journalIdentity(t *testing.T, f *journaltest.Fixture) [16]byte {
 // rule names an op and a key pattern as the seam's Schedule takes them. The
 // fixture's FailNext and Drop cover the common faults; this is for the rest,
 // such as a full filesystem, a short write or one dropped write.
-func schedule(t *testing.T, f *journaltest.Fixture, rules ...journaltest.Rule) {
+func schedule(t *testing.T, f *journaltest.Fixture, rules ...kit.Rule) {
 	t.Helper()
 
 	if err := f.Seam.Schedule(rules...); err != nil {
@@ -646,17 +647,17 @@ func sealIdle(t *testing.T, f *journaltest.Fixture, r rec) journal.SegmentID {
 
 	seg := entryAt(t, f, r.id, r.extent.Off).Location.Segment
 	name := segmentName(seg)
-	truncates := f.Seam.CallsFor(journaltest.OpTruncate, name)
-	held := f.Seam.Hold(t, journaltest.OpSync, name)
+	truncates := f.Seam.CallsFor(kit.OpTruncate, name)
+	held := f.Seam.Hold(t, kit.OpSync, name)
 	f.Advance(journaltest.IdleSealAge)
 	<-held.Reached()
 
-	for n := 0; f.Seam.CallsFor(journaltest.OpTruncate, name) == truncates; n++ {
+	for n := 0; f.Seam.CallsFor(kit.OpTruncate, name) == truncates; n++ {
 		if n == maxSealSyncs {
 			t.Fatalf("precondition: segment %d was not truncated within %d syncs of its idle seal", seg, n)
 		}
 
-		next := f.Seam.Hold(t, journaltest.OpSync, name)
+		next := f.Seam.Hold(t, kit.OpSync, name)
 		held.Release()
 		held = next
 		<-held.Reached()
@@ -672,7 +673,7 @@ func sealIdle(t *testing.T, f *journaltest.Fixture, r rec) journal.SegmentID {
 }
 
 // changingOps are the seam calls that change a directory or a file.
-var changingOps = []string{journaltest.OpCreate, journaltest.OpWrite, journaltest.OpTruncate, journaltest.OpRename, journaltest.OpRemove}
+var changingOps = []string{kit.OpCreate, kit.OpWrite, kit.OpTruncate, kit.OpRename, kit.OpRemove}
 
 // dirImage is the journal's directory as the real filesystem shows it, so
 // entries the seam did not make, such as a lost+found directory, are in it

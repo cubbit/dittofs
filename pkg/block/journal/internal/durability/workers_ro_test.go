@@ -11,7 +11,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -19,9 +19,9 @@ import (
 // none of them; open, read, read_direct, list and close change nothing and are
 // left out.
 var writeOps = []string{
-	journaltest.OpCreate, journaltest.OpAllocate, journaltest.OpWrite,
-	journaltest.OpSync, journaltest.OpTruncate, journaltest.OpRename,
-	journaltest.OpRemove, journaltest.OpSyncDir,
+	kit.OpCreate, kit.OpAllocate, kit.OpWrite,
+	kit.OpSync, kit.OpTruncate, kit.OpRename,
+	kit.OpRemove, kit.OpSyncDir,
 }
 
 // workerChecks are the read-only checks each background worker is handed; a
@@ -40,11 +40,11 @@ func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (delta, ma
 	t.Helper()
 	prof.Watch(t, prof.Options{})
 
-	seam, err := journaltest.NewSeam(t.TempDir())
+	seam, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
-	clock := journaltest.NewStopwatchClock()
+	clock := kit.NewStopwatchClock()
 	var maker *segment.Maker
 	d, err = durability.New(durability.Config{
 		Clock:    clock,
@@ -163,8 +163,8 @@ func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (delta, ma
 			t.Errorf("Retire in a writable journal = %v", retireErr)
 		}
 		// The queue worker may have taken the retirement first.
-		eventually(t, "the unlink", func() bool { return seam.Calls(journaltest.OpRemove) > before[journaltest.OpRemove] })
-		eventually(t, "the idle seal", func() bool { return seam.Calls(journaltest.OpTruncate) > before[journaltest.OpTruncate] })
+		eventually(t, "the unlink", func() bool { return seam.Calls(kit.OpRemove) > before[kit.OpRemove] })
+		eventually(t, "the idle seal", func() bool { return seam.Calls(kit.OpTruncate) > before[kit.OpTruncate] })
 		eventually(t, "the pool's refill", func() bool { return pool.Counters().Spares >= 2 })
 	}
 
@@ -175,7 +175,7 @@ func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (delta, ma
 	return delta, makeCost, d
 }
 
-func awaitClockArmed(t *testing.T, c journaltest.DrivenClock) {
+func awaitClockArmed(t *testing.T, c kit.DrivenClock) {
 	t.Helper()
 	eventually(t, "the idle sealer to arm its wait", func() bool { return c.Pending() >= 1 })
 }
@@ -195,7 +195,7 @@ func eventually(t *testing.T, what string, cond func() bool) {
 // seal) and unlinks the retired one (remove).
 func TestWorkersCreateSealAndUnlinkBeforeReadOnly(t *testing.T) {
 	delta, _, _ := runWorkers(t, false, nil)
-	for _, op := range []string{journaltest.OpCreate, journaltest.OpAllocate, journaltest.OpRename, journaltest.OpWrite, journaltest.OpSync, journaltest.OpTruncate, journaltest.OpRemove} {
+	for _, op := range []string{kit.OpCreate, kit.OpAllocate, kit.OpRename, kit.OpWrite, kit.OpSync, kit.OpTruncate, kit.OpRemove} {
 		if delta[op] == 0 {
 			t.Errorf("a writable journal's workers made no %s call, so the read-only check below would prove nothing: %v", op, delta)
 		}
@@ -213,11 +213,11 @@ func TestWorkersMakeNoSpareAndWriteNothingOnceReadOnly(t *testing.T) {
 func assertQuiet(t *testing.T, mutate func(*workerChecks)) {
 	t.Helper()
 	delta, makeCost, d := runWorkers(t, true, mutate)
-	if makeCost[journaltest.OpCreate] != 1 {
+	if makeCost[kit.OpCreate] != 1 {
 		t.Fatalf("one Make cost %v, want exactly one create", makeCost)
 	}
-	if delta[journaltest.OpCreate] != 1 {
-		t.Errorf("the seam saw %d creates after the journal went read-only, want the probe's one: %v", delta[journaltest.OpCreate], delta)
+	if delta[kit.OpCreate] != 1 {
+		t.Errorf("the seam saw %d creates after the journal went read-only, want the probe's one: %v", delta[kit.OpCreate], delta)
 	}
 	for _, op := range writeOps {
 		if delta[op] != makeCost[op] {

@@ -1,6 +1,6 @@
 //go:build !windows
 
-package journaltest
+package kit
 
 import "os"
 

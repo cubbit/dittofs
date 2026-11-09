@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
 
@@ -92,7 +93,7 @@ func TestShutdownOnNoJournalIsIdle(t *testing.T) {
 	if f.J != nil {
 		t.Fatalf("a shut fixture has a journal: %v", f.J)
 	}
-	for _, op := range []string{OpClose, OpSync, OpSyncDir} {
+	for _, op := range []string{kit.OpClose, kit.OpSync, kit.OpSyncDir} {
 		if n := f.Seam.Calls(op); n != 0 {
 			t.Fatalf("shutting down with no journal made %d %s calls", n, op)
 		}
@@ -161,7 +162,7 @@ func TestTryCrashReturnsTheRefusalOrTheOpensError(t *testing.T) {
 
 	// A crash keeping a write with none unsynced is refused by the seam, and
 	// a refused crash changes nothing: the file created is still open.
-	if err := f.TryCrash(Keeping(1)); !errors.Is(err, ErrCrashRefused) {
+	if err := f.TryCrash(kit.Keeping(1)); !errors.Is(err, kit.ErrCrashRefused) {
 		t.Fatalf("TryCrash of a crash the seam refuses returned %v, want the seam's refusal", err)
 	}
 
