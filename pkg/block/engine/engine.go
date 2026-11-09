@@ -73,6 +73,13 @@ type Engine struct {
 
 	block   uint64 // the versions one raise of the version limit covers
 	raising raises // the version limit raises running
+
+	// cloneRemoval is called by start step 4 for each clone removal not done
+	// the shard's unfinished-removal index lists, with the share, the file and
+	// the record. Nothing is posted for the file. It is the seam where a
+	// clone is rebuilt from its record, and nil makes Start fail, as it does
+	// for a clone marker.
+	cloneRemoval cloneRemovalFunc
 }
 
 // New checks d and builds the engine. It takes no settings, opens nothing and
@@ -191,6 +198,12 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 	e.health = o.stats
 	e.started = true
 
+	// The removals are posted once the table is published, and the loop runs
+	// them on its own goroutine, so Start never waits for a batch.
+	for _, q := range o.removals {
+		q.b.gc.removals.enqueue(q.it)
+	}
+
 	return nil
 }
 
@@ -220,6 +233,10 @@ func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
 	}
 
 	if err := e.replay(ctx, &o); err != nil {
+		return opened{}, u.unwind(err)
+	}
+
+	if err := e.collectRemovals(ctx, &o); err != nil {
 		return opened{}, u.unwind(err)
 	}
 

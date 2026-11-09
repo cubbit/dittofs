@@ -46,6 +46,10 @@ type opened struct {
 	table   bindings
 	stats   Stats
 	raised  []entity.ShardID
+
+	// removals are the items step 4 found, posted to their journal's loop
+	// once the table is published.
+	removals []queuedRemoval
 }
 
 // openJournal is start step 1 for the one device (RFC 8 §2.5): it reads the

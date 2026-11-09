@@ -233,18 +233,38 @@ func (k *kvPerTx) since(n int) []kv.UpdateCounts {
 // leaves it, and whose existence view it can watch.
 type rig struct {
 	*starter
-	ex *logExistence
-	jh engine.Handle // a handle on share one's tag, writing the journal as the crashed process did
+	ex      *logExistence
+	db      kv.KV         // the store's kv.KV, to read the keys a file left
+	content *startContent // the content view the engine calls, recording its removals
+	gate    *batchLog     // counts the removal batches the engine's loop ran
+	run     func()        // starts the removal loop, held until then
+
+	// jh is a handle on share one's tag, writing the journal as the crashed
+	// process did.
+	jh engine.Handle
 }
 
 func newRig(t *testing.T, opts ...starterOption) *rig {
 	t.Helper()
 
+	var db kv.KV
+
+	opts = append([]starterOption{withStore(func(tb testing.TB) kv.KV {
+		db = memKV(tb)
+
+		return db
+	})}, opts...)
+
 	x := &logExistence{}
+	c := newStartContent()
+	g := newBatchLog()
 
 	opts = append(opts, withStartDeps(func(d *engine.Deps) {
 		x.Existence = d.Existence
 		d.Existence = x
+		c.Content = d.Content
+		d.Content = c
+		d.Tracer = g.tracer
 	}))
 
 	s := newStarter(t, opts...)
@@ -257,8 +277,12 @@ func newRig(t *testing.T, opts ...starterOption) *rig {
 	r := &rig{
 		starter: s,
 		ex:      x,
+		db:      db,
+		content: c,
+		gate:    g,
 	}
 	r.jh = r.handle(t, s.one.Tag)
+	r.hold(t, s.e)
 
 	return r
 }
@@ -393,6 +417,7 @@ func (r *rig) begin(t *testing.T) {
 func (r *rig) restart(t *testing.T) {
 	t.Helper()
 
+	r.run()
 	r.e.CloseGroupCommits()
 	r.j.Reopen()
 
@@ -408,6 +433,20 @@ func (r *rig) restart(t *testing.T) {
 	}
 
 	r.e = e
+	r.hold(t, e)
+}
+
+// hold builds e's group commit and removal loop for the journal and runs only
+// the group commit, so the items Start posts wait on the loop, counted, until
+// the test calls run. Whatever the test did, the loop starts before e's group
+// commits are closed.
+func (r *rig) hold(t *testing.T, e *engine.Engine) {
+	t.Helper()
+
+	run := e.HoldRemovalLoop(r.j)
+	r.run = run
+
+	t.Cleanup(run)
 }
 
 // calls is the journal's call log from mark on, keeping the calls whose
