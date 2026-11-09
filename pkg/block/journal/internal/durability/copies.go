@@ -202,6 +202,11 @@ func (d *Durability) useCopy(st *stream, c Corruption, cp copyEntry) (CorruptOut
 		to := index.RecordAt{Segment: cp.loc.Segment, Offset: uint32(cp.loc.Off)}
 		moved, hd, err := d.index.RepointRecord(c.File, c.Record, to)
 		d.accountDelta(hd)
+		if err == nil {
+			// Whatever it moved, the index names the corrupt place no more,
+			// so the held record no longer keeps its segment blocked.
+			d.unpin(st, cp.loc.Segment, c.Seq)
+		}
 		switch {
 		case err != nil:
 			// The copy verified, so the read is served from it all the same;

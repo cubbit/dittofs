@@ -13,7 +13,8 @@ type DamagedRow struct {
 	// Retired is set once the runtime retired the segment. The row stays.
 	Retired bool
 	// BlocksReclaim is true while the segment still backs held extents it
-	// cannot produce, so a reclamation pass must not select it.
+	// cannot produce, so a reclamation pass must not select it: while the
+	// index may still name a corrupt record in it (blocksLocked).
 	BlocksReclaim bool
 }
 
@@ -52,6 +53,40 @@ func (d *Durability) Retired(seg core.SegmentID) {
 	d.dropCopies(seg)
 }
 
+// countUnproduced adds delta to the count of held records seg cannot produce,
+// dropping the entry at zero so the map follows the live holds.
+func (d *Durability) countUnproduced(seg core.SegmentID, delta int) {
+	d.dmu.Lock()
+	defer d.dmu.Unlock()
+	n := d.unproduced[seg] + delta
+	if n <= 0 {
+		delete(d.unproduced, seg)
+		return
+	}
+	if d.unproduced == nil {
+		d.unproduced = map[core.SegmentID]int{}
+	}
+	d.unproduced[seg] = n
+}
+
+// blocksLocked reports whether seg's row r blocks reclamation. The caller
+// holds dmu.
+//
+// decision: a damaged segment blocks only while the index may still name a
+// corrupt record in it, which is a record served from a copy whose repoint has
+// not moved it yet: a hold's owed claim, or a repoint the index refused. A
+// record dropped as corrupt leaves the index in the same call that marks the
+// segment, so it never blocks, and a readable neighbour in the segment is
+// content the segment can produce, which a repack carries like any other. A
+// retired segment blocks nothing. In a read-only journal, which takes no hold,
+// a refused repoint is not counted: reclamation does not run there, and the
+// next read of the record tries the repoint again. Overturned if a corrupt
+// record can stay in the index past its Corrupt call some other way, which
+// would then have to be counted here too.
+func (d *Durability) blocksLocked(seg core.SegmentID, r *damagedRow) bool {
+	return !r.retired && d.unproduced[seg] > 0
+}
+
 // ReclaimBlocked reports whether seg is damaged and still backs held extents
 // it cannot produce. It turns false once none is held, which is the signal
 // that the segment is ready to be repacked; the row and the count stay.
@@ -60,24 +95,21 @@ func (d *Durability) Retired(seg core.SegmentID) {
 // later reclamation work that selects segments.
 func (d *Durability) ReclaimBlocked(seg core.SegmentID) bool {
 	d.dmu.Lock()
-	_, ok := d.damaged[seg]
-	d.dmu.Unlock()
-	return ok && d.index.SegmentBytes(seg).Held > 0
+	defer d.dmu.Unlock()
+	r, ok := d.damaged[seg]
+	return ok && d.blocksLocked(seg, r)
 }
 
 // damagedReport returns the count and the rows in segment order. It reads the
-// row map under dmu and each segment's held bytes from the index's counters;
-// it takes no stream lock and walks nothing.
+// rows and the counts they block on under dmu; it takes no stream lock, makes
+// no index call and walks nothing.
 func (d *Durability) damagedReport() (uint64, []DamagedRow) {
 	d.dmu.Lock()
 	rows := make([]DamagedRow, 0, len(d.damaged))
 	for seg, r := range d.damaged {
-		rows = append(rows, DamagedRow{Segment: seg, Retired: r.retired})
+		rows = append(rows, DamagedRow{Segment: seg, Retired: r.retired, BlocksReclaim: d.blocksLocked(seg, r)})
 	}
 	d.dmu.Unlock()
 	slices.SortFunc(rows, func(a, b DamagedRow) int { return cmp.Compare(a.Segment, b.Segment) })
-	for i := range rows {
-		rows[i].BlocksReclaim = d.index.SegmentBytes(rows[i].Segment).Held > 0
-	}
 	return uint64(len(rows)), rows
 }

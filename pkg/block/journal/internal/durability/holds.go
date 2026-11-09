@@ -49,6 +49,61 @@ type segHold struct {
 	withheld bool
 	// landed says a re-append of a held record landed.
 	landed bool
+	// pinned are the held records the index may still name at their corrupt
+	// place, keyed by sequence number: each counts once toward its corrupt
+	// record's segment in d.unproduced.
+	pinned map[core.Seq]struct{}
+}
+
+// pinLocked records whether the index may still name the corrupt place of h's
+// held record seq, and keeps the count of such records per corrupt segment
+// that the damaged report reads. A record not in h changes nothing. The caller
+// holds mu.
+//
+// decision: the count is maintained at the events that change it, not read
+// from the holds or the index, so Stats reads it under dmu alone, with no lock
+// a write needs and no walk (R62). A record is counted from when a read adds
+// it to a hold, under its file's domain, and uncounted once a repoint has
+// moved it off the corrupt place, the index is found naming it there no more
+// (an overwrite or another read's repoint), or it leaves the hold. An
+// overwrite is seen only on the worker's next pass over the hold, so the
+// count can stay up a pass longer than the index names the record: a block
+// that lasts too long, never one that ends early. Overturned if a reclamation
+// pass must select such a segment within that pass.
+func (st *stream) pinLocked(h *segHold, seq core.Seq, on bool) {
+	c, ok := h.records[seq]
+	if !ok {
+		return
+	}
+	if _, was := h.pinned[seq]; was == on {
+		return
+	}
+	if on {
+		if h.pinned == nil {
+			h.pinned = map[core.Seq]struct{}{}
+		}
+		h.pinned[seq] = struct{}{}
+		st.d.countUnproduced(c.Record.Segment, 1)
+		return
+	}
+	delete(h.pinned, seq)
+	st.d.countUnproduced(c.Record.Segment, -1)
+}
+
+// unpin records that the index no longer names the corrupt place of the
+// record seq held on copy segment seg. It takes mu.
+func (d *Durability) unpin(st *stream, seg core.SegmentID, seq core.Seq) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if h := st.holds[seg]; h != nil {
+		st.pinLocked(h, seq, false)
+	}
+}
+
+// dropHeldLocked takes seq out of h, uncounting it first. The caller holds mu.
+func (st *stream) dropHeldLocked(h *segHold, seq core.Seq) {
+	st.pinLocked(h, seq, false)
+	delete(h.records, seq)
 }
 
 // holdVerdict is what holdCopy decided for a record served from a copy.
@@ -109,6 +164,8 @@ func (d *Durability) holdCopy(st *stream, c ownedCopy) (v holdVerdict, added boo
 	if _, in := h.records[c.Seq]; !in {
 		h.records[c.Seq] = c
 		added = true
+		// The index names the corrupt place until the repoint moves it.
+		st.pinLocked(h, c.Seq, true)
 	}
 	v = holdRepoint
 	if h.owed {
@@ -138,7 +195,7 @@ func (d *Durability) unholdCopy(st *stream, c ownedCopy) {
 	announce := false
 	if h != nil {
 		if cur, ok := h.records[c.Seq]; ok && cur == c {
-			delete(h.records, c.Seq)
+			st.dropHeldLocked(h, c.Seq)
 			announce = st.releaseLocked(set, seg, h)
 		}
 	}
@@ -246,6 +303,11 @@ func (d *Durability) retryHold(st *stream, set *segment.Set, seg core.SegmentID)
 			h.claimed, h.owed = true, false
 		case segmentGone(set, seg):
 			gone = true
+			// Every record goes to the drop below, which takes its extents
+			// out of the index.
+			for seq := range h.pinned {
+				st.pinLocked(h, seq, false)
+			}
 			delete(st.holds, seg)
 		}
 	}
@@ -290,6 +352,9 @@ func (d *Durability) moveHeld(st *stream, seg core.SegmentID, h *segHold, c owne
 	unlock := d.domains.Lock(c.File)
 	at := index.RecordAt{Segment: c.Copy.Segment, Offset: uint32(c.Copy.Off)}
 	atRecord := d.index.Names(c.File, c.Record)
+	if !atRecord {
+		d.unpin(st, seg, c.Seq)
+	}
 	switch {
 	case !atRecord && !d.index.Names(c.File, at):
 		// Overwritten: nothing of the record is served from the copy.
@@ -307,6 +372,7 @@ func (d *Durability) moveHeld(st *stream, seg core.SegmentID, h *segHold, c owne
 			d.log.Error("journal could not repoint a held record to its copy", "file", c.File, "seq", c.Seq, "err", err)
 			return
 		}
+		d.unpin(st, seg, c.Seq)
 	}
 	unlock()
 	if d.isReadOnly() {
@@ -328,7 +394,7 @@ func (d *Durability) letGo(st *stream, seg core.SegmentID, h *segHold, c ownedCo
 		return
 	}
 	if cur, ok := h.records[c.Seq]; ok && cur == c {
-		delete(h.records, c.Seq)
+		st.dropHeldLocked(h, c.Seq)
 	}
 	h.landed = h.landed || landed
 }

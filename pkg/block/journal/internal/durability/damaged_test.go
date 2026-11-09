@@ -1,6 +1,7 @@
 package durability
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -38,10 +39,25 @@ func TestDamagedCountsFromTheCall(t *testing.T) {
 	}
 }
 
-// TestDamagedStaysAfterReclaimBlockEnds covers the block: a damaged segment
-// that still backs a held extent blocks reclamation, and once that extent is
-// dropped only the block ends, never the count or the row.
-func TestDamagedStaysAfterReclaimBlockEnds(t *testing.T) {
+// wantBlocks fails unless seg's row is counted and blocks reclamation as
+// want says, through both ReclaimBlocked and the Stats row.
+func wantBlocks(t *testing.T, cr *corruptRig, seg core.SegmentID, want bool) {
+	t.Helper()
+	if got := cr.d.ReclaimBlocked(seg); got != want {
+		t.Fatalf("ReclaimBlocked(%d) = %v, want %v", seg, got, want)
+	}
+	p := cr.d.Stats()
+	r, ok := rowOf(p, seg)
+	if !ok || r.BlocksReclaim != want || p.DamagedSegments != 1 {
+		t.Fatalf("count %d, row %+v, %v, want 1 and a row with BlocksReclaim %v", p.DamagedSegments, r, ok, want)
+	}
+}
+
+// TestDamagedReadableNeighbourDoesNotBlockReclaim covers a damaged segment
+// whose corrupt record was dropped and which still holds a readable neighbour:
+// the neighbour is content the segment can produce, so nothing blocks
+// reclamation, while the row and the count stay.
+func TestDamagedReadableNeighbourDoesNotBlockReclaim(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	cr := newCorruptRig(t, nil)
 	f := file(1)
@@ -55,20 +71,53 @@ func TestDamagedStaysAfterReclaimBlockEnds(t *testing.T) {
 		t.Fatal("ReclaimBlocked is true for a segment with no unreadable record")
 	}
 	cr.corrupt(t, a.c)
-	if !cr.d.ReclaimBlocked(seg) {
-		t.Fatal("ReclaimBlocked is false while the segment still backs a held extent")
+	if _, ok := cr.ix.Lookup(f, 100); !ok {
+		t.Fatal("the neighbour does not read")
 	}
-	if r, ok := rowOf(cr.d.Stats(), seg); !ok || !r.BlocksReclaim {
-		t.Fatalf("row = %+v, %v, want one that blocks reclamation", r, ok)
-	}
-	cr.corrupt(t, b.c)
-	if cr.d.ReclaimBlocked(seg) {
-		t.Fatal("ReclaimBlocked is still true with no held extent")
-	}
-	p := cr.d.Stats()
-	r, ok := rowOf(p, seg)
-	if p.DamagedSegments != 1 || !ok || r.BlocksReclaim {
-		t.Fatalf("after the block ended: count %d, row %+v, %v, want 1 and a row that no longer blocks", p.DamagedSegments, r, ok)
+	wantBlocks(t, cr, seg, false)
+}
+
+// TestDamagedBlocksReclaimWhileAHeldRecordIsUnrepointed covers a synced
+// record found corrupt and served from its copy while the copy's segment
+// claim is owed: the index still names the corrupt record, so its segment
+// blocks reclamation until the record leaves it, by the worker's repoint once
+// the claim is taken, or until the segment is retired. Only the block ends,
+// never the count or the row.
+func TestDamagedBlocksReclaimWhileAHeldRecordIsUnrepointed(t *testing.T) {
+	for _, end := range []string{"repointed", "retired"} {
+		t.Run(end, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+			l := newLanding(false)
+			cr := newCorruptRig(t, l.install)
+			f := file(1)
+			r := cr.reappend(t, f, 0, "aaaa")
+			if err := cr.d.Sync(context.Background(), f); err != nil {
+				t.Fatalf("Sync of the re-append: %v", err)
+			}
+			cr.register(r)
+			copySeg, damaged := r.orig.Segment, r.c.Record.Segment
+			if !cr.set.Claim(copySeg) {
+				t.Fatal("the repack could not claim the copy's segment")
+			}
+
+			cr.useCopy(t, r)
+			if got := cr.placedAt(t, f, 0); got != r.c.Record {
+				t.Fatalf("f is placed at %+v, want the corrupt record %+v unrepointed", got, r.c.Record)
+			}
+			wantBlocks(t, cr, damaged, true)
+
+			switch end {
+			case "repointed":
+				cr.set.Release(copySeg)
+				cr.tickUntil(t, "the hold to be let go", func() bool { return !cr.holdOf(copySeg).held })
+				if got := cr.placedAt(t, f, 0); got == r.c.Record {
+					t.Fatal("f is still placed at the corrupt record")
+				}
+			case "retired":
+				cr.d.Retired(damaged)
+			}
+			wantBlocks(t, cr, damaged, false)
+		})
 	}
 }
 

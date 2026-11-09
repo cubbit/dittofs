@@ -242,13 +242,18 @@ type Durability struct {
 	corruptRepairable uint64
 	stale             uint64
 
-	// dmu guards damaged.
+	// dmu guards damaged and unproduced.
 	//
-	// decision: dmu is a leaf mutex over the damaged rows, held only for a map
-	// access and never across an index call, an Append or any other lock, so
-	// Stats reads the damage without a lock a write needs.
+	// decision: dmu is a leaf mutex over the damaged rows and the count of held
+	// records each segment cannot produce, held only for a map access and
+	// never across an index call, an Append or any other lock, so Stats reads
+	// the damage without a lock a write needs. A hold's count changes under a
+	// stream's mu, which takes dmu inside it.
 	dmu     sync.Mutex
 	damaged map[core.SegmentID]*damagedRow
+	// unproduced counts, per segment, the held records the index may still
+	// name at a corrupt place in it (pinLocked).
+	unproduced map[core.SegmentID]int
 
 	// copyMu guards copies, the table of other copies of re-appended records.
 	// It is a leaf mutex, held only for a map access.
@@ -450,12 +455,13 @@ type entry struct {
 //
 // decision: mu is a leaf mutex, never held across I/O, a sync, the clock, a
 // file domain or another lock, because both sinks run under the
-// segment's append domain and must not wait on anything. The three locks
+// segment's append domain and must not wait on anything. The four locks
 // taken under it are leaves themselves, which take nothing while held: the
 // change channel's cmu, the segment ledger's mutex, which a hold's claim,
-// release and lookup take (segHold says why), and the directory registry's
+// release and lookup take (segHold says why), the directory registry's
 // mutex, which a raise of the generation takes, so a raise and the change
-// that makes its loss visible are one step.
+// that makes its loss visible are one step, and dmu, which a hold's count of
+// records its corrupt segment cannot produce takes (pinLocked).
 type stream struct {
 	d  *Durability
 	no uint32
