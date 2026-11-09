@@ -274,6 +274,31 @@ jobs:
         id: build
         run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
 
+      # The operator's tests run envtest's binaries, which setup-envtest would
+      # download from a release without a token. With ENVTEST_USE_ENV set and
+      # the three binaries in KUBEBUILDER_ASSETS, it returns that path and goes
+      # to no network. The tag follows the minor of the operator's k8s.io/api,
+      # as make test's own pick does; a harness test checks the two match.
+      - name: Fetch envtest
+        id: envtest
+        if: matrix.suite == 'operator'
+        uses: ./.github/actions/release-asset
+        with:
+          repo: kubernetes-sigs/controller-tools
+          tag: envtest-v1.37.0
+          asset: envtest-v1.37.0-linux-amd64.tar.gz
+          sha256: f03faedfc68d2a78cee5cb02618bb44e7f67044f4c5fc957f72d3307fda61a9c
+
+      - name: Install envtest
+        if: matrix.suite == 'operator'
+        env:
+          TARBALL: ${{ steps.envtest.outputs.path }}
+        run: |
+          mkdir "$RUNNER_TEMP/envtest"
+          tar -xzf "$TARBALL" -C "$RUNNER_TEMP/envtest" --strip-components=2
+          echo "KUBEBUILDER_ASSETS=$RUNNER_TEMP/envtest" >> "$GITHUB_ENV"
+          echo "ENVTEST_USE_ENV=true" >> "$GITHUB_ENV"
+
       - name: Run ${{ matrix.name }}
         env:
           CELL: ${{ matrix.name }}
