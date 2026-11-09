@@ -92,12 +92,21 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 			t.Errorf("Close: %v", err)
 		}
 	})
+	awaitSpares(t, c)
+	return c, seam
+}
+
+// awaitSpares waits until the pool has readied its content spares to its
+// target. The pool makes spares one at a time and stops once the target is
+// met, so after it returns no spare is being made, and none lands later
+// unless something takes one.
+func awaitSpares(t *testing.T, c *Core) {
+	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); c.pool.Counters().Spares < 2*testStreams; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the pool never readied its spares: %+v", c.pool.Counters())
 		}
 	}
-	return c, seam
 }
 
 // crashedSeams holds the seams a test crashed.

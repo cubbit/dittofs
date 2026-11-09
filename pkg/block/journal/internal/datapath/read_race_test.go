@@ -695,6 +695,11 @@ func TestReadCorruptWithHeadroomExhausted(t *testing.T) {
 	seq := headerAt(t, seam, rec).Seq
 	corruptPayload(t, c, seam, f, 0)
 
+	// The write's roll took a spare, and the pool makes its replacement in the
+	// background: one whose make began before the fault below would still
+	// land after the drain and take the loss record. The pool is let reach
+	// its target, so no make is in flight when the fault is armed.
+	awaitSpares(t, c)
 	// Every spare the pool would make fails as on a full device.
 	if err := seam.Schedule(kit.Failing(kit.OpCreate, "*", 0, syscall.ENOSPC)); err != nil {
 		t.Fatal(err)
