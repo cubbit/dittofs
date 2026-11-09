@@ -9,8 +9,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const lockRefused = -100
-
 // refOnly are the probes that check the client and the reference, not
 // DittoFS: whether the server, rather than the client, decides access is a
 // property of the mount options, the same for both, and of Samba's
@@ -58,13 +56,7 @@ func (r *Runner) Probe() error {
 				q.Slot = side + ":" + req.Slot
 			}
 			rep := r.call(user, &q)
-			ok := rep.Errno == want
-			if want == lockRefused {
-				// fcntl may answer a lock conflict either way; the client
-				// answers EACCES.
-				ok = rep.Errno == int(unix.EACCES) || rep.Errno == int(unix.EAGAIN)
-			}
-			if rep.Fatal != "" || !ok {
+			if rep.Fatal != "" || rep.Errno != want {
 				return fmt.Errorf("probe %q on %s: got %s%s, want %s", what, side, errName(rep.Errno), rep.Fatal, errName(want))
 			}
 		}
@@ -99,9 +91,20 @@ func (r *Runner) Probe() error {
 		{"the server lets bob read", "bob", Request{Op: "open", Path: "denied", Flags: unix.O_RDONLY}, 0},
 		{"the descriptor reads back", "admin", Request{Op: "getacl", Path: "denied", Part: "ntsd"}, 0},
 		{"a lock file", "alice", Request{Op: "open", Path: "alice/lockf", Flags: unix.O_CREAT | unix.O_RDWR, Mode: 0o644}, 0},
+		{"the lock file has content", "alice", Request{Op: "pwrite", Slot: "alice.probe", Off: 0, Len: 20, Data: "ones"}, 0},
 		{"alice locks it", "alice", Request{Op: "lock", Slot: "alice.probe", LockType: unix.F_WRLCK, Off: 0, Len: 10}, 0},
 		{"bob opens it", "bob", Request{Op: "open", Path: "alice/lockf", Flags: unix.O_RDWR}, 0},
-		{"bob's conflicting lock reaches the server and fails", "bob", Request{Op: "lock", Slot: "bob.probe", LockType: unix.F_WRLCK, Off: 5, Len: 10}, lockRefused},
+		// decision: the probe writes over the lock rather than taking a
+		// conflicting one. The cifs client keeps the locks every open of
+		// an inode holds on its mount and refuses a conflicting lock
+		// itself, before either server sees it, while a write with
+		// cache=none goes to the server unchecked. A write, not a read:
+		// Samba's default strict locking skips the check of a read made
+		// under a read oplock, which bob may hold. So a lock-against-lock
+		// conflict between two slots of a plan is settled by the client on
+		// both sides alike (DESIGN.md §7.5); probe it again once each user
+		// has a mount, or a client, of its own.
+		{"the server refuses bob a write over alice's lock", "bob", Request{Op: "pwrite", Slot: "bob.probe", Off: 5, Len: 10, Data: "zero"}, int(unix.EACCES)},
 		{"alice closes", "alice", Request{Op: "close", Slot: "alice.probe"}, 0},
 		{"bob closes", "bob", Request{Op: "close", Slot: "bob.probe"}, 0},
 		{"DOS attributes can be set", "alice", Request{Op: "setdosattr", Path: "alice/lockf", Attrs: 0x2}, 0},

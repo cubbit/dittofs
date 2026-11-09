@@ -365,8 +365,10 @@ The fixture **MUST** check, before any round, and stop with "not run" if any che
 3. a `getxattr("system.cifs_ntsd")` on the probe directory returns a parseable descriptor on
    both sides (not `ntsd_full`: reading a SACL is under test, and DittoFS refuses it today,
    §7.6);
-4. an exclusive lock taken by alice makes bob's conflicting lock fail on both shares — that
-   is what proves locks reach the server (§7.5);
+4. an exclusive lock taken by alice makes bob's write over it fail on both shares — that is
+   what proves the server enforces locks (§7.5). The probe writes rather than taking a
+   conflicting lock, which the client refuses itself, and rather than reading, which Samba's
+   default `strict locking = auto` does not check under a read oplock;
 5. setting `HIDDEN` through `user.cifs.dosattrib` reads back on both shares — that is what
    proves the client can set DOS attributes (§7.4);
 6. in the `posix` profile, `getpwnam("DITTOFS\\alice")` on the client resolves, and
@@ -843,8 +845,14 @@ SMB byte-range locks are **mandatory**: while one open holds an exclusive lock o
 read or write of that range through any other open fails, and while it holds a shared lock,
 writes through any other open fail. Locks belong to an open, not to a process or a user, so two
 handles of the same user conflict like two users. The Linux client sends `SMB2 LOCK` for each
-`fcntl` lock and enforces nothing itself with `cache=none`, so the two servers decide every
-conflict.
+`fcntl` lock it cannot settle itself, but it keeps every lock granted to any open of an inode on
+its mount and refuses a conflicting one with `EACCES` before either server sees it, and it
+answers an unlock that matches no lock it recorded. Every user and slot of a plan shares one
+mount per side, so **a lock-against-lock conflict, and an unlock of a range nothing locked, are
+settled by the same client logic on both sides** and test neither server. What reaches the
+servers is I/O through another open over a locked range: with `cache=none`, reads and writes
+go to the server without a lock check on the client. Lock against lock on the server needs a
+second client per side (§13), as share modes and oplocks do.
 
 The operations use open-file-description locks (`F_OFD_*`), whose owner is the descriptor,
 because that is the SMB model; classic `F_SETLK` locks belong to a process, and would merge
@@ -864,13 +872,13 @@ What plans reach, through these operations and §5.4's overlap bias:
 
 - **conflicts between users and between handles:** shared against shared (allowed), shared
   against exclusive and exclusive against either (refused), across users and across two slots
-  of one user;
+  of one user — settled by the client, as above, so both sides agree whatever the servers do;
 - **stacking:** the same open locking the same range twice, shared over shared, exclusive
   over its own shared; SMB keeps each lock separately, and each needs its own unlock;
 - **unlocking:** a range not exactly matching any lock (SMB requires an exact match and
   answers `STATUS_RANGE_NOT_LOCKED`, where POSIX would split the lock; what the client makes
   of the difference is the same for both servers, what the server answers is the test), an
-  unlock with nothing locked, a double unlock;
+  unlock with nothing locked, a double unlock — the last two answered by the client;
 - **edges:** a lock past the end of the file, a zero-length lock, a lock to the largest
   length, overlapping locks that touch at one byte (`off+len` against `off`);
 - **enforcement:** `pread`, `pwrite`, `ftruncate`, `fallocate` and `copy_file_range` through
