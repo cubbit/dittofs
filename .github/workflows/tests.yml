@@ -274,6 +274,31 @@ jobs:
         id: build
         run: go build -o "$RUNNER_TEMP/dt" ./cmd/dt
 
+      # The operator's tests run envtest's binaries, which setup-envtest would
+      # download from a release without a token. With ENVTEST_USE_ENV set and
+      # the three binaries in KUBEBUILDER_ASSETS, it returns that path and goes
+      # to no network. The tag follows the minor of the operator's k8s.io/api,
+      # as make test's own pick does; a harness test checks the two match.
+      - name: Fetch envtest
+        id: envtest
+        if: matrix.suite == 'operator'
+        uses: ./.github/actions/release-asset
+        with:
+          repo: kubernetes-sigs/controller-tools
+          tag: envtest-v1.37.0
+          asset: envtest-v1.37.0-linux-amd64.tar.gz
+          sha256: f03faedfc68d2a78cee5cb02618bb44e7f67044f4c5fc957f72d3307fda61a9c
+
+      - name: Install envtest
+        if: matrix.suite == 'operator'
+        env:
+          TARBALL: ${{ steps.envtest.outputs.path }}
+        run: |
+          mkdir "$RUNNER_TEMP/envtest"
+          tar -xzf "$TARBALL" -C "$RUNNER_TEMP/envtest" --strip-components=2
+          echo "KUBEBUILDER_ASSETS=$RUNNER_TEMP/envtest" >> "$GITHUB_ENV"
+          echo "ENVTEST_USE_ENV=true" >> "$GITHUB_ENV"
+
       - name: Run ${{ matrix.name }}
         env:
           CELL: ${{ matrix.name }}
@@ -352,22 +377,27 @@ jobs:
         name: Install the FoundationDB client
         uses: ./.github/actions/fdb-client
 
-      - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v9
+      - name: Fetch golangci-lint
+        id: golangci-lint
+        uses: ./.github/actions/release-asset
         with:
-          version: v2.15.0
-          install-only: true
-          # Analyse cold every run. The action restores and saves its analysis
-          # cache even when it only installs, and dt's run reads it. Its cache
-          # key covers go.mod, but its restore-key fallback does not: when a
-          # dependency bump changes go.mod the run misses its own key, restores
-          # the pre-bump analysis cache, and then saves a fact set built from it
-          # under the new key. Every later run gets an exact hit on that entry,
-          # and staticcheck loses the cross-package fact that t.Fatal never
-          # returns, which turns every `if x == nil { t.Fatal(...) }` guard into
-          # a spurious SA5011 nil-dereference report. Restoring is what breaks
-          # it, so the cache is skipped rather than pinned: costs ~20s.
-          skip-cache: true
+          repo: golangci/golangci-lint
+          tag: v2.15.0
+          asset: golangci-lint-2.15.0-linux-amd64.tar.gz
+          sha256: 9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea
+
+      # Analyse cold every run: no step restores golangci-lint's analysis
+      # cache. One restored across a go.mod change keeps facts built before it,
+      # and staticcheck then loses the cross-package fact that t.Fatal never
+      # returns, which turns every `if x == nil { t.Fatal(...) }` guard into a
+      # spurious SA5011 nil-dereference report. Costs ~20s.
+      - name: Install golangci-lint
+        env:
+          TARBALL: ${{ steps.golangci-lint.outputs.path }}
+        run: |
+          mkdir "$RUNNER_TEMP/golangci-lint"
+          tar -xzf "$TARBALL" -C "$RUNNER_TEMP/golangci-lint" --strip-components=1
+          echo "$RUNNER_TEMP/golangci-lint" >> "$GITHUB_PATH"
 
       - &build
         name: Build dt
@@ -433,16 +463,24 @@ jobs:
 
       # Pinned by version and checksum, so a new release can't turn the job
       # red on its own.
+      - name: Fetch ShellCheck
+        id: shellcheck
+        uses: ./.github/actions/release-asset
+        with:
+          repo: koalaman/shellcheck
+          tag: v0.11.0
+          asset: shellcheck-v0.11.0.linux.x86_64.tar.xz
+          sha256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+
+      # Without the tarball's versioned top directory, so a bump edits only
+      # the pin above.
       - name: Install ShellCheck
         env:
-          VERSION: v0.11.0
-          SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          TARBALL: ${{ steps.shellcheck.outputs.path }}
         run: |
-          curl -fsSLo "$RUNNER_TEMP/shellcheck.tar.xz" \
-            "https://github.com/koalaman/shellcheck/releases/download/$VERSION/shellcheck-$VERSION.linux.x86_64.tar.xz"
-          echo "$SHA256  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
-          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/shellcheck-$VERSION" >> "$GITHUB_PATH"
+          mkdir "$RUNNER_TEMP/shellcheck"
+          tar -xJf "$TARBALL" -C "$RUNNER_TEMP/shellcheck" --strip-components=1
+          echo "$RUNNER_TEMP/shellcheck" >> "$GITHUB_PATH"
 
       - *build
       - *suite
