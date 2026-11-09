@@ -37,4 +37,8 @@ const (
 	// IdleSealAge is how long an active segment takes no append before it is
 	// sealed, once past the idle-seal threshold.
 	IdleSealAge = 30 * time.Second
+
+	// ProbeInterval is how often a read-only journal probes whether it could
+	// accept writes again.
+	ProbeInterval = 30 * time.Second
 )
