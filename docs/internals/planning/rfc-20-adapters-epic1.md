@@ -222,7 +222,7 @@ which epic owns the rest.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R35 | Three shapes: `config.Adapter`, and `config.NFS` and `config.SMB` embedding it; `config.Settings`, which only `NFS` and `SMB` satisfy, `AdapterOf` reading the embedded `Adapter`, and `Validate` (D15) | MUST | §3.4, §3.6 | T1.5 |
+| R35 | Three shapes: `config.Adapter`, and `config.NFS` and `config.SMB` embedding it; `config.Settings`, whose `NFS` and `SMB` values alone `Validate` and `RestartRequired` accept (anything else refused with an error), `AdapterOf` reading the embedded `Adapter`, and `Validate` (D15) | MUST | §3.4, §3.6 | T1.5 |
 | R36 | Every field is marked live or restart-only, as RFC 13's table classes it: a restart-only field carries the tag `restart:"true"`, a live one none (D6) | MUST | §2.5, §3.6; RFC 13 §5, Appendix B | T1.5 |
 | R37 | `config.Adapter.Addrs` holds the listen addresses the node supplies from the host's bootstrap and the addresses it took over, never from the settings record; it is live, with §3.6's `decision:` marker at the field | MUST | §3.6 (and decision); RFC 13 §2.2; rule 7 | T1.5 |
 | R38 | The adapter settings RFC 13 lists are fields with their stated defaults and marks: `adapter.drain_deadline` 90 s, `adapter.idle_timeout` 15 min, `adapter.write_deadline` 60 s, `adapter.handshake_deadline` 30 s, `adapter.frame_deadline` 30 s, operations switched off by name, all live; `adapters.nfs.tls` (`cert_file`, `key_file`, `client_ca`, `min_version` 1.3, `mode` `opportunistic` or `require`; off), live; `adapters.smb.dialects` (2.1 to 3.1.1), live. Not fields: `connection_limit` is node-wide, and the node hands each adapter its share (E4 enforces it, E7 hands it); `smb_pending_cap` and `smb_pending_deadline` are RFC 17's | MUST | RFC 13 Appendix B; RFC 20 §3.6, §4.2, §6.4 | T1.5 |
@@ -241,7 +241,7 @@ which epic owns the rest.
 | R46 | `Reservation` is a value `{b *Budget; key netip.Addr; n int64}`, so taking one allocates nothing; `(*Reservation).Release()` (idempotent: E3) | MUST | RFC 24 §2.5 | T1.6 |
 | R47 | `Pools` is `{Receive, Reply, Conn, Hold *Budget}`, the four budgets on the request path | MUST | RFC 24 §2.5, §2.3 | T1.6 |
 | R48 | The budget and the allocator are kept apart: `Buf` and `BufPool` are distinct from `Budget` and `Pools`, and the pool reserves before it hands out bytes, never waiting in the allocator | invariant | RFC 20 §6.8 | T1.6 |
-| R49 | `Buf` is `{B []byte; class uint8; refs atomic.Int32; res Reservation}` with only `B` exported; `(*BufPool).Get(ctx, key netip.Addr, n int) (*Buf, error)`, the key charging the client as `Reserve` does, `(*Buf).Retain() *Buf`, `(*Buf).Release()` | MUST | RFC 20 §6.8 | T1.6 (body: E3) |
+| R49 | `Buf` is `{B []byte; class uint8; refs atomic.Int32; res Reservation}` with only `B` exported; `(*BufPool).Get(ctx, key netip.Addr, n int) (*Buf, error)`, the key charging the client as `Reserve` does, one reservation of n's class plus the per-request overhead, `(*Buf).Retain() *Buf`, `(*Buf).Release()` | MUST | RFC 20 §6.8 | T1.6 (body: E3) |
 | R50 | Four classes, ascending: small 4 KiB, directory 64 KiB, transfer 1 MiB, large 8 MiB | bound | RFC 24 §3.1; RFC 13 Appendix B | T1.6 |
 | R51 | Nothing in `pkg/resources` has a lifecycle: no `Start` or `Close`, and `NewBudget` starts no goroutine; no adapter can replace or close a shared budget | invariant | RFC 24 §2.7 | T1.6 |
 | R52 | What is not built (§4.1's turns, `Reclaim`, `ShareCap`, `Detect`, `Split`) is absent from the surface and carries a `ponytail:` naming RFC 24 | MUST | RFC 24 §2.5, §2.8; rule 7 | T1.6 |
@@ -257,7 +257,7 @@ which epic owns the rest.
 | R57 | Stage interfaces with §4.7's signatures: `HeaderCodec{Decode, Encode, Chain}`, `Router{Route}`, `Security{Unwrap, Wrap}`, `FlowControl{Admit}`, `ReplayCache{Lookup, Store}` | MUST | §4.7 | T1.7 |
 | R58 | `OpTable{Ops map[uint32]*Op; Errors *ErrorTable; Holds bool; ReadOp func(b []byte) (op uint32, n int, err error)}`, `ReadOp` set only on a compound row's `Members` and `NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable` (its checks, codes unique and ranges well formed: E5) | MUST | §4.7, §4.2 | T1.7 |
 | R59 | `Op` carries §4.2's columns as data: `Code`, `Name`, `Versions Range`, `Needs`, `Cacheable`, `Role`, `Expired`, `Decode func(body []byte, v Version) (inv Invocation, n int, err error)` returning the bytes it consumed, `Members *OpTable` marking a compound row; per-protocol policy and version gating are columns, never handler checks (checks: E5) | MUST | §4.2, §4.7, §2.5 rule 2 | T1.7 |
-| R60 | `Invocation` is a struct of closures `Bound`, `Resolve`, `Call`, `Encode`, `Role`, `Handle func() (vfs.Handle, bool)`, and `Count int`, the members a compound row's arguments count (0 elsewhere), not an interface; `Bind` is its only producer | MUST | §4.7 | T1.7 |
+| R60 | `Invocation` is a struct of closures `Bound`, `Resolve`, `Call`, `Encode`, `Role`, `Handle func() (vfs.Handle, bool)`, and `Count int`, the members a compound row's arguments count (0 elsewhere), not an interface; `Bind` produces it for every row but a compound row, whose `Decode` builds it directly; `Encode` accepts a nil reply | MUST | §4.7 | T1.7 |
 | R61 | `Role uint8` with `RoleNone`, `RoleContext`, `RoleFlush`, `RoleRelease` in that order; `Op.Role` is what the operation always does, `Invocation.Role` decides per request: before `Resolve`, reading only the decoded arguments and the state an explicit stateid among them names, when a single-reply compound is judged whole while draining; after `Resolve`, and only while draining or on an expired credential, everywhere else; and a nil one leaves `Op.Role` alone (drain and expiry filters: E5) | MUST | §4.7, §3.1 | T1.7 |
 | R62 | `Bind[Req, Rep any](dec, bound, resolve, role, handle, h Handler[Req, Rep], enc)` type-checks the codec pair against the handler and returns the row's `Decode`; `dec` is `func(b []byte, v Version, req *Req) (n int, err error)`, and `Decode` returns its `n`; the `Invocation` it returns hands `Bound`, `Resolve`, `Role`, `Call` and `Encode` the request `dec` decoded; a nil `resolve` means the operation names no wire ID, a nil `role` leaves `Invocation.Role` nil, a nil `handle` leaves `Invocation.Handle` nil | MUST | §4.7, §4.3 | T1.7 (body and test) |
 | R63 | `Handler[Req, Rep any] func(ctx context.Context, r *core.Request, req *Req) (*Rep, error)` | MUST | §4.3 | T1.7 |
@@ -361,8 +361,10 @@ which epic owns the rest.
   and compares the exported identifiers with a checked-in list copied from RFC 20 §4.7. It
   fails on an export §4.7 does not name, which is rule 9's check until E2's import test
   exists.
-- **D15, settings are a sealed `config.Settings`.** `Reconfigure` and `NewServer` take
-  `config.Settings`, which only `config.NFS` and `config.SMB` satisfy; `Reconfigure` refuses the
+- **D15, settings are `config.Settings`.** `Reconfigure` and `NewServer` take
+  `config.Settings`; `Validate` and `RestartRequired` accept only an `NFS` or `SMB` value and
+  refuse anything else (a `*NFS`, an outside struct embedding one), `AdapterOf` is called only
+  after `Validate` and returns the zero `Adapter` otherwise, and `Reconfigure` refuses the
   other protocol's shape. `AdapterOf`, `Validate` and `Conn.Settings` are how `core`, the
   control plane and a protocol read it (R35, R41, R69; RFC 20 §3.6). Each `New` keeps its typed
   parameter.
@@ -390,8 +392,9 @@ which epic owns the rest.
   the bytes it consumed, `Op.Members` names a compound row's members' table,
   `Invocation.Count` the members its arguments count, and that table's `ReadOp` reads each
   member's operation code (R58–R60), so the runner checks the cap, decodes exactly `Count`
-  members and refuses trailing bytes before any runs; RFC 20 §4.7's `decision:` gives the
-  reason.
+  members and refuses trailing bytes before any runs. A compound row's `Decode` is written by
+  the protocol and builds its `Invocation` directly, to set `Count`; `Bind` produces every
+  other row's. RFC 20 §4.7's `decision:` gives the reason.
 - **D22, the open-unlinked hold stays, fed by a plain setter.** GC and the stranded-row
   reaper must not reclaim a file still open after its last link. The hold that keeps them off
   it is protocol-neutral (its dedup, stale-handle skip, fail-closed rule and payload hold), so
@@ -480,8 +483,8 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
   - D19's `Interim` parameter and `Invocation.Role`'s two cases;
   - D21's compound split, with `Bind`'s decoder returning its length;
   - D26's `ErrorRow.Hold` and `Pends(h Header, err error) bool`, and RFC 17's `vfs.Grace{Until}`;
-  - RFC 20 §3.6's default tags, unnamed nested TLS and dialect fields, and certificates loaded
-    by `Validate`;
+  - RFC 20 §3.6's default tags, unnamed nested TLS and dialect fields, `Validate` reading no
+    file, and certificates loaded by `New` and `Reconfigure`;
   - RFC 17 amended too: `MoveTarget` on its `Shares` area (D16), and RFC 21 §7.4's
     `fs_locations` pointing at it;
   - RFC 13 Appendix B's `adapters.smb.dialects` row; RFC 23's re-enabled adapter built with
@@ -642,9 +645,9 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
   loader, and `Validate` fills none and refuses a zero value where one is required; NFS's TLS
   block and SMB's dialect range are unnamed nested fields (`NFS.TLS{CertFile, KeyFile,
   ClientCA, MinVersion, Mode}`, `SMB.Dialects{Min, Max}`, dialects the strings `"2.1"`,
-  `"3.0"`, `"3.0.2"`, `"3.1.1"`), so no type is exported for them; `Validate` loads the
-  certificate files with the standard library, so an unloadable one is refused at `New` and
-  `Reconfigure`.
+  `"3.0"`, `"3.0.2"`, `"3.1.1"`), so no type is exported for them; `Validate` checks shapes
+  and ranges and reads no file, since the control plane runs it where the certificates may not
+  be; `New` and `Reconfigure` load them (E6 and RFC 21, E4).
 - **Acceptance criteria:**
   - An out-of-range value is refused with an error naming the field and the rule, never
     clamped or replaced by a default.

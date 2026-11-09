@@ -119,7 +119,7 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   lands in T1.7: the `Invocation` its `Decode` returns hands `Bound`, `Resolve`, `Role`,
   `Call` and `Encode` the request it decoded.
 - **`pkg/adapter/config`** (RFC 20 §3.6, RFC 13): `Adapter`, and `NFS` and `SMB` embedding it;
-  the sealed `Settings` that only `NFS` and `SMB` satisfy, `AdapterOf` and `Validate`; each restart-only
+  `Settings`, whose `NFS` and `SMB` values alone `Validate` and `RestartRequired` accept, `AdapterOf` and `Validate`; each restart-only
   field tagged `restart:"true"`; `RestartRequired`, returning an error wrapping
   `ErrRestartRequired`.
 - **`pkg/adapter/nfs.New`, `pkg/adapter/smb.New`**: signatures and stubs returning an error.
@@ -603,7 +603,10 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   judged whole before any member runs, by each member's operation and own arguments, never the current stateid or filehandle, with the drain read once and no per-member check: one with a refused member runs nothing, answers and caches nothing, and keeps its
   slot's previous sequence ID so a retransmission runs (RFC 20 §4.7); on `testproto`'s chained frames, not on the runner's
   internals alone.
-- T5.5 Held requests: interim timer and `HoldCodec.Interim` (`after` 0 on every hold), the final reply under
+- T5.5 Held requests (moving a held request's receive charge to the hold pool, RFC 24 §4.3,
+  while its decoded arguments stay in the retained receive `Buf`, needs a method added to `*Buf`,
+  `Recharge(to *Budget) error`: additive after S1, brought by this subtask with an RFC 24
+  amendment): interim timer and `HoldCodec.Interim` (`after` 0 on every hold), the final reply under
   `HoldCodec.Final`, re-drive from `Resolve` with a fresh attempt deadline inside the hold bound,
   `vfs.WithHold` added to `pkg/vfs` (RFC 17 §5.9) and passed on every call, asserted on the
   context `vfstest.Record` receives (its reader, the clone wait, is RFC 17 plan piece 11's, V30),
@@ -735,7 +738,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | NFSv3 procedures; NFSv4.0, 4.1 and 4.2 operations; the `ops/` tables | handlers are RFC 21's | RFC 21 plan | its handler epics |
 | MOUNT, NLM, NSM, `SM_NOTIFY`; MOUNT, NLM and NSM over UDP (RFC 20 §11 q3) | auxiliary programs are RFC 21's | RFC 21 plan | its auxiliary-services epic |
 | RPCSEC_GSS context table and window; NFSv4.1 slots and reply cache; the v3 and v4.0 duplicate-request cache (RFC 20 §11 q2) | stage state machines, no driver here | RFC 21 plan | with `EXCHANGE_ID`/`CREATE_SESSION` and GSS `INIT` |
-| NFS-over-TLS (`Conn.StartTLS`, `tlsconfig` reload, `require` mode); a certificate that does not load refused by `config.Validate` at `New` and `Reconfigure`, at configured (RFC 20 §3.1) | starts at the `NULL` handler; `StartTLS` is a method added to `Conn`, no frozen signature changed | RFC 21 plan | with `NULL` |
+| NFS-over-TLS (`Conn.StartTLS`, `tlsconfig` reload, `require` mode); a certificate that does not load refused when `New` loads it (at configured) and when `Reconfigure` does, before the snapshot swap, never by `config.Validate`, which reads no file (RFC 20 §3.6); the loading lands with E4's `Reconfigure` and RFC 21's `New` (E6 has no TLS) | starts at the `NULL` handler; `StartTLS` is a method added to `Conn`, no frozen signature changed | RFC 21 plan | with `NULL` |
 | NFS callbacks (`CB_RECALL`, `CB_NOTIFY`, `CB_RECALL_ANY`, NLM `GRANTED` via `Deps.Dial`) | need sessions and handlers | RFC 21 plan | with delegations and NLM |
 | SMB 2.1–3.1.1 commands and `ioctl/` | handlers are RFC 22's | RFC 22 plan | its handler epics |
 | SMB transform header, signing, encryption, credits, message-ID window, multichannel session registry, `Caps` | stage state machines, no driver here | RFC 22 plan | with `NEGOTIATE` and `SESSION_SETUP` |

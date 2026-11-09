@@ -1132,17 +1132,22 @@ type SMB struct {
 	// …
 }
 
-// Settings is NFS or SMB: its one method is unexported, so no other type
-// satisfies it. Reconfigure takes it so that a protocol's own live settings
-// reach it; Reconfigure refuses the other protocol's shape.
+// Settings is what Reconfigure takes, so that a protocol's own live settings
+// reach it. Its one method is unexported, but a *NFS, or a struct elsewhere
+// embedding NFS, satisfies it too: Validate and RestartRequired accept only
+// an NFS or SMB value and refuse anything else with an error, and
+// Reconfigure refuses the other protocol's shape.
 type Settings interface{ common() Adapter }
 
-// AdapterOf returns the Adapter s embeds.
+// AdapterOf returns the Adapter s embeds. It is called only on settings
+// Validate accepted; for any other type it returns the zero Adapter, never
+// a panic.
 func AdapterOf(s Settings) Adapter
 
-// Validate checks every field of s against its rule and returns an error
-// naming the field and the rule; it never clamps or defaults. New,
-// Reconfigure and the control plane call it.
+// Validate checks every field of s against its rule — shapes and ranges
+// only, touching no file — and returns an error naming the field and the
+// rule; it never clamps or defaults. New, Reconfigure and the control plane
+// call it.
 func Validate(s Settings) error
 
 // ErrRestartRequired is wrapped by an error refusing a change to a
@@ -1168,10 +1173,12 @@ func RestartRequired(old, next Settings) error
   `"3.0"`, `"3.0.2"` or `"3.1.1"`.
 - **One validator, `Validate`**, run by `New`, by `Reconfigure` and by the
   control plane, which has none of its own
-  ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)). A setting that
-  cannot be applied is refused there, at configured (§3.1): `Validate` loads
-  the TLS certificate files with the standard library, so an unloadable
-  certificate is refused at `New` and `Reconfigure`, and the package stays a
+  ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)). It reads no file,
+  since the control plane runs it when a record is written, on a host that
+  may not hold the serving node's certificates. The TLS certificate files are
+  loaded by `New`, at configured, and by `Reconfigure` before the snapshot
+  swap, so an unloadable certificate fails at configured or is refused by
+  `Reconfigure`, never at the first handshake (§3.1). The package stays a
   leaf, importing nothing under `internal/`.
 
 > decision: no adapter field is restart-only today. Every adapter row of RFC
@@ -1881,21 +1888,25 @@ type Op struct {
 	Members   *OpTable // non-nil on a compound row (NFSv4's COMPOUND): its members' table, which the runner decodes from after n (below)
 }
 
-// Invocation is one decoded operation: four closures over the decoded request
-// and its reply, filled by Bind. A struct, not an interface: Bind is its only
-// producer.
+// Invocation is one decoded operation: closures over the decoded request and
+// its reply. A struct, not an interface. Bind produces it for every row but a
+// compound row, whose Decode the protocol writes and which builds its
+// Invocation directly, setting Count from the arguments it decoded.
 type Invocation struct {
 	Bound   func() int                                 // the reply bound (§4.2)
 	Resolve func(r *Request) error                     // wire IDs to service values
 	Call    func(ctx context.Context, r *Request) error // the handler
+	// Encode runs on every request that gets a final reply, so its reply may
+	// be nil: the request refused before Call, or a handler that returned
+	// (nil, err). An encoder accepts a nil reply and encodes the status alone.
 	Encode  func(out *Buf, v Version) error
 	// Handle is the filehandle the request's own arguments name (a PUTFH's),
 	// read before Resolve, which core hands the service to learn a draining
 	// request's move target (§3.1); the service resolves it, core never parses
 	// it. nil: the request names none.
 	Handle func() (vfs.Handle, bool)
-	// Count is a compound row's: the members its arguments say follow, which
-	// its Decode sets on what Bind returned. 0 on every other row.
+	// Count is a compound row's: the members its arguments say follow, set by
+	// that row's own Decode. 0 on every other row.
 	Count int
 	// Role says what this request does to state: an SMB LOCK whose elements
 	// unlock releases it, a WRITE to an open under a break flushes it, an
@@ -2022,7 +2033,8 @@ conn.write(reply) // the writer's queue (§6.2)
 
 For NFSv4 the RPC procedure is `COMPOUND`, a compound row: its `Members` is
 the minor version's operation table. Its `Decode` decodes the compound's own
-arguments, sets `Invocation.Count` to the array's count and returns the bytes
+arguments and builds its `Invocation` itself rather than through `Bind`, so it
+can set `Invocation.Count` to the array's count; it returns the bytes
 they took. The runner refuses a count past the compound cap with `ErrTooLong`
 before it decodes any member (§4.3); otherwise it decodes exactly `Count`
 members, each's operation code read with `Members.ReadOp` and its arguments
@@ -2912,7 +2924,7 @@ type Buf struct {
 }
 
 func NewBufPool(b *Budget) *BufPool                             // RFC 24 §2.5: every buffer it hands out is reserved from b
-func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) // reserve n's class for key (RFC 24 §2.5), then take a buffer: refs = 1
+func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) // one reservation for key of n's class plus RFC 24 §3.1's per-request overhead (8 KiB), released with the buffer; then a buffer: refs = 1
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
 ```
