@@ -65,6 +65,9 @@ func (c *Core) ReadAt(ctx context.Context, s *Share, id core.FileID, off int64, 
 		c.beforeResolve()
 	}
 	placed, gaps := c.index.Span(id, core.Extent{Off: off, Len: int64(len(p))})
+	if c.beforeRead != nil {
+		c.beforeRead()
+	}
 
 	r := reading{c: c, ctx: ctx, id: id, st: c.streams.For(id), off: off, p: p, missing: gaps}
 	err = r.serve(placed, true)
