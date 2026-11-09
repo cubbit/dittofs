@@ -1108,8 +1108,7 @@ corruption before its stability point, the extent reads as the older content.
 That is one of the ways an acknowledged write can read as what it replaced, accepted
 as the price of group-committing existence: the write was never stable, and I1
 binds only from its stability point on. The other is the metadata reconcile's
-ceiling: a stable write that superseded content whose own existence had not
-committed, or refilled a removal since pruned, leaves no version in metadata, so if
+ceiling: a refill after a removal since pruned leaves no version in metadata, so if
 its record is later lost where no record names it, the older content is served
 ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). RFC 28 §3.3 accepts the others, each as a `decision:` or
 `ponytail:` there: a synced tail lost with its segment's directory entry, and a
