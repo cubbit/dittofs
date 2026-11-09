@@ -130,3 +130,22 @@ func TestReconnectWithoutSessionRefused(t *testing.T) {
 		t.Errorf("after the reconnect: %v", err)
 	}
 }
+
+// A grant takes its mark from the open it is offered on, not from the call:
+// an open created on a session marks its delegation even when the call
+// opening it says it has none.
+func TestGrantMarkedAsItsOpen(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("host", 1, entity.NewUser()))
+	file := anyFile()
+	_, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Want: GrantRead, Session: s1})
+	if g == nil {
+		t.Fatal("no delegation granted")
+	}
+	if err := f.ack(a, g, GrantNone); !errors.Is(err, ErrNotYoursSessioned) {
+		t.Errorf("a return with no session of a delegation on a session's open: %v, want ErrNotYoursSessioned", err)
+	}
+	if err := f.check(); err != nil {
+		t.Error(err)
+	}
+}

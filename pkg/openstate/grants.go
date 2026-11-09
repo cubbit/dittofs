@@ -424,7 +424,14 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 	if r.Lease != (LeaseKey{}) {
 		epoch = r.Epoch
 	}
-	ref, err := t.mintUnder(e, who.Client, who.Sessioned, f.Shard, StateGrant, func(StateRef) error {
+	// decision: a grant takes its mark from o, the open it is offered on,
+	// not from who.Sessioned, as RFC 14 §2.2's Grant.Sessioned would, so an
+	// open, its lock states and its grants carry one mark from one source,
+	// the open's session, and reinstateLease derives the same mark from the
+	// same open after a restart. Every grant is offered on an open; mark one
+	// from its caller if a grant is ever minted on none, as a directory
+	// delegation would be.
+	ref, err := t.mintUnder(e, who.Client, o.sessioned(), f.Shard, StateGrant, func(StateRef) error {
 		if !t.current(who.Client) || t.granted[who.Client] >= maxGrants {
 			return &DelayError{DelayResources} // offered none: the open stands without it
 		}
@@ -436,7 +443,7 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 	if err != nil {
 		return nil // a grant is offered, never owed: the open stands without one
 	}
-	g := &grant{id: GrantID{ref.Shard, ref.Instance, ref.Token}, client: who.Client, key: r.Lease, parent: r.Parent, fsm: grantfsm.New(k, epoch), counted: true, sessioned: who.Sessioned}
+	g := &grant{id: GrantID{ref.Shard, ref.Instance, ref.Token}, client: who.Client, key: r.Lease, parent: r.Parent, fsm: grantfsm.New(k, epoch), counted: true, sessioned: o.sessioned()}
 	if smb && r.Lease == (LeaseKey{}) {
 		g.open = o
 	}

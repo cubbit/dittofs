@@ -72,9 +72,10 @@ type ClientStatus struct {
 // principal it runs as, mapped and never squashed, and the request's
 // protocol, which a rule that differs by protocol reads. The protocol is the
 // caller's to state on every call, never looked up from a client record:
-// NFSv3 has no client. Sessioned is whether the call has a session: copied
-// onto the state the call creates, and a call without one is refused state
-// so marked, ErrNotYoursSessioned.
+// NFSv3 has no client. Sessioned is whether the call has a session: a call
+// without one is refused state created on one, ErrNotYoursSessioned. State
+// takes its mark from its open, created on a session when its
+// OpenRequest.Session is set, and the call opening it says Sessioned too.
 type Caller struct {
 	Client    entity.ClientID
 	Principal entity.Principal
