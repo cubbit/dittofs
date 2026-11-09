@@ -165,11 +165,11 @@ func (e *Engine) syncMarks(ctx context.Context, b *binding, ids ...journal.FileI
 // drain applies the loss events the journal reported since the last drain,
 // read by their sequence numbers: each corrupt or failed-window loss of an
 // unoffloaded write raises its file's sequence, a gap in the ring raises
-// every file's, a corrupt loss of a write still pending marks the run of
-// that write it names lost, so its existence commit records that run lost
-// and charges nothing for it, and a failed window's loss drops its pending
-// write, calling its Done, charging nothing, and records its file as raised
-// by its window.
+// every file's, a loss that drops its write (see drops) drops its pending
+// write, calling its Done and charging nothing, any other corrupt loss of a
+// write still pending marks the run of that write it names lost, so its
+// existence commit records that run lost and charges nothing for it, and a
+// failed window's loss records its file as raised by its window.
 //
 // The drain holds the journal's loss lock until every write it marks is
 // marked, so a drain that finds an event already applied finds its write
@@ -189,11 +189,6 @@ func (e *Engine) syncMarks(ctx context.Context, b *binding, ids ...journal.FileI
 // raises the sequence but cannot mark a write already committed. That is no
 // worse than draining by the generation was. Revisit if the journal ever
 // publishes an event before it raises the generation for it.
-//
-// decision: a corrupt loss of a pending write is taken as of a synced write
-// and committed lost, and a failed window's as of an unsynced one, dropped,
-// since the journal's loss event says why but not whether the write was
-// synced. Revisit when the event says it.
 func (e *Engine) drain(b *binding) {
 	l := &b.gc.losses
 	var dones []func()
@@ -220,6 +215,14 @@ func (e *Engine) drain(b *binding) {
 		f := entity.FileID(ev.File.Bytes())
 		l.raise(f)
 		lost = append(lost, ev)
+		// decision: only a failed window's loss marks its file raised by its
+		// window, not a corrupt loss of an unsynced write, though both drop
+		// it: a corrupt drop in a healthy segment comes with no SyncError,
+		// so a mark of it would swallow the raise of a later SyncError no
+		// event covers, failing open. A corrupt drop from a window that
+		// failed costs one more raise when that window's SyncError arrives,
+		// which only moves the verifier further. Revisit if the event ever
+		// says whether its window failed.
 		if ev.Reason == journal.LossFailedWindow {
 			if l.windows == nil {
 				l.windows = map[entity.FileID]bool{}
@@ -236,11 +239,12 @@ func (e *Engine) drain(b *binding) {
 }
 
 // markLost applies ev to the pending write of f whose record it dropped, the
-// one at ev's version: a corrupt loss marks the run of it ev names lost, the
-// rest of the write committed and charged as written; a failed window's drops
-// it, out of the entry, or, when a batch claimed it, out of that batch, which
-// neither commits it nor calls its Done. An event that finds no pending write
-// is kept, under the entry's lock, for the write's insert, which applies it.
+// one at ev's version: a loss that drops its write (see drops) takes it out
+// of the entry, or, when a batch claimed it, out of that batch, which neither
+// commits it nor calls its Done; any other marks the run of it ev names lost,
+// the rest of the write committed and charged as written. An event that
+// finds no pending write is kept, under the entry's lock, for the write's
+// insert, which applies it.
 // It answers the Done of a dropped write, which the caller runs once its
 // locks are released. The caller holds the journal's loss lock, which is
 // taken before an entry's.
@@ -254,7 +258,7 @@ func (e *Engine) markLost(l *losses, f entity.FileID, ev journal.LossEvent) (don
 			continue
 		}
 		found = true
-		if ev.Reason != journal.LossFailedWindow {
+		if !drops(ev) {
 			op.lost = lostRuns(op.lost, entity.Extent{Offset: op.extent.Off, Length: op.extent.Len}, ev.Extent)
 			continue
 		}
@@ -346,6 +350,14 @@ func (e *Engine) lostWhole(j Journal) {
 	g.broadcastLocked() // every waiter then finds the journal lost
 	g.mu.Unlock()
 	runAll(dones)
+}
+
+// drops is whether ev drops its write as never made rather than losing the
+// run of it ev names: a failed window's loss, and a corrupt loss of a record
+// never synced, after which the journal holds again what the write
+// overwrote, so the file reads as it did before the write (RFC 8 §5.1).
+func drops(ev journal.LossEvent) bool {
+	return ev.Reason == journal.LossFailedWindow || ev.Reason == journal.LossCorrupt && !ev.Synced
 }
 
 // lostRuns is runs, a write's lost runs, with the part of the write w that

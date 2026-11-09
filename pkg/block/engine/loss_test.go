@@ -80,7 +80,7 @@ func TestALossPublishedAfterItsGenerationIsDrained(t *testing.T) {
 	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 	f := made.ID
 	u.write(t, f, 0, []byte("lost"))
-	publish := u.j.LoseLater(journal.NewFileID(f), journal.Extent{Len: 4}, journal.LossCorrupt)
+	publish := u.j.LoseLater(journal.NewFileID(f), journal.Extent{Len: 4}, journal.LossCorrupt, true)
 	_ = u.e.LossSeq(u.share.ID, f) // a drain between the raise and the event
 	publish()
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {

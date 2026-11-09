@@ -204,22 +204,23 @@ func (j *FakeJournal) Close() error {
 
 // Lose drops what file id holds in e as the journal does on a loss: the bytes
 // are no longer held, and the loss, at the newest version it dropped, is an
-// event in the loss ring and, unless its sync window failed, a synced change
-// Since reports; a corrupt loss and a failed window's also raise the loss
-// generation, a stale one does not. A loss of nothing held records nothing.
+// event in the loss ring saying whether the dropped record was synced and,
+// when it was, a synced change Since reports; a corrupt loss and a failed
+// window's also raise the loss generation, a stale one does not. A loss of
+// nothing held records nothing.
 //
 // ponytail: a failed window's loss cuts the extent and raises the generation
 // once per call, where RFC 1 holds again what the failed writes superseded
 // and raises the generation once per window. Model both once a test drops
 // several extents in one window or reads what a failed write overwrote.
-func (j *FakeJournal) Lose(id journal.FileID, e journal.Extent, why journal.LossReason) {
-	j.LoseLater(id, e, why)()
+func (j *FakeJournal) Lose(id journal.FileID, e journal.Extent, why journal.LossReason, synced bool) {
+	j.LoseLater(id, e, why, synced)()
 }
 
 // LoseLater is Lose with the event held back until publish is called, as
 // the journal raises the generation before it publishes the event: in
 // between, Stats shows the raised generation and a ring without the event.
-func (j *FakeJournal) LoseLater(id journal.FileID, e journal.Extent, why journal.LossReason) (publish func()) {
+func (j *FakeJournal) LoseLater(id journal.FileID, e journal.Extent, why journal.LossReason, synced bool) (publish func()) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	f := j.files[id]
@@ -230,7 +231,7 @@ func (j *FakeJournal) LoseLater(id journal.FileID, e journal.Extent, why journal
 	if !ok {
 		return func() {}
 	}
-	if why != journal.LossFailedWindow { // a failed window's loss was never synced, so Since has nothing of it
+	if synced { // Since has nothing of a record never synced
 		f.changes = append(f.changes, journal.Change{Kind: journal.ChangeLoss, Extent: e, Version: v})
 	}
 	if why == journal.LossCorrupt || why == journal.LossFailedWindow {
@@ -239,7 +240,7 @@ func (j *FakeJournal) LoseLater(id journal.FileID, e journal.Extent, why journal
 	return func() {
 		j.mu.Lock()
 		defer j.mu.Unlock()
-		j.losses = append(j.losses, journal.LossEvent{SeqNum: j.nextSeq(), Share: f.tag, File: id, Extent: e, Version: v, Reason: why})
+		j.losses = append(j.losses, journal.LossEvent{SeqNum: j.nextSeq(), Share: f.tag, File: id, Extent: e, Version: v, Reason: why, Synced: synced})
 	}
 }
 
@@ -509,7 +510,7 @@ func (j *FakeJournal) Durable(id journal.FileID) bool {
 // file that had a write in it. Each of also, and id, is left undurable until
 // a Sync of it succeeds, as a failed window promises nothing durable.
 func (j *FakeJournal) FailSync(id journal.FileID, e journal.Extent, also ...journal.FileID) {
-	j.Lose(id, e, journal.LossFailedWindow)
+	j.Lose(id, e, journal.LossFailedWindow, false)
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.failing == nil {

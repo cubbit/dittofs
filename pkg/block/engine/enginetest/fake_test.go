@@ -127,8 +127,8 @@ func TestFakeRemovalsLeaveMarkersUntilSettled(t *testing.T) {
 func TestFakeLossRingAndGeneration(t *testing.T) {
 	j, h := fake(t, 0)
 	v := write(t, h, fileA, 0, "abcd")
-	j.Lose(fileA, ext(0, 2), journal.LossCorrupt)
-	j.Lose(fileB, ext(0, 2), journal.LossCorrupt)
+	j.Lose(fileA, ext(0, 2), journal.LossCorrupt, true)
+	j.Lose(fileB, ext(0, 2), journal.LossCorrupt, true)
 	s := j.Stats()
 	if s.LossGeneration != 1 || len(s.Losses) != 1 {
 		t.Fatalf("generation %d, ring %+v; want one loss", s.LossGeneration, s.Losses)
@@ -143,11 +143,11 @@ func TestFakeLossRingAndGeneration(t *testing.T) {
 	if got := changes(t, h, fileA, journal.Version{}); len(got) != 2 || got[1].Kind != journal.ChangeLoss {
 		t.Errorf("Since = %+v; want the write's rest, then the loss", got)
 	}
-	j.Lose(fileA, ext(2, 1), journal.LossStale)
+	j.Lose(fileA, ext(2, 1), journal.LossStale, true)
 	if s := j.Stats(); s.LossGeneration != 1 || len(s.Losses) != 2 {
 		t.Errorf("after a stale loss: generation %d, ring %+v; want generation 1, two losses", s.LossGeneration, s.Losses)
 	}
-	j.Lose(fileA, ext(3, 1), journal.LossFailedWindow)
+	j.Lose(fileA, ext(3, 1), journal.LossFailedWindow, false)
 	if s := j.Stats(); s.LossGeneration != 2 || len(s.Losses) != 3 {
 		t.Errorf("after a failed window's loss: generation %d, ring %+v; want generation 2, three losses", s.LossGeneration, s.Losses)
 	}
