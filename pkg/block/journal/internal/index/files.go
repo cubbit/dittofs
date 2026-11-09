@@ -113,6 +113,13 @@ type files struct {
 	// It is maintained by apply, under each file's lock, so it stays exact
 	// beside whatever an entry's ranges hold.
 	dropRanges atomic.Int64
+
+	// conflicts is the set of rivalled files, whose cost TagConflicts is
+	// proportional to and whose every member the set is told once, where the
+	// rival mark lands under the file's lock and where the entry leaves the
+	// map or the tags are cleared. A rebuild's replays feed it as many files
+	// in parallel as there are shards, and a reader walks it beside both.
+	conflicts conflictSet
 }
 
 type fileShard struct {
@@ -419,8 +426,12 @@ func (fs *files) commit(id core.FileID, admitted int64, fn func(*file) error) (H
 // exact if a future fn errs after changing something.
 func (f *file) apply(fs *files, s *fileShard, id core.FileID, before, admitted int64, fn func(*file) error) (d HeldDelta, err error) {
 	rangesBefore := f.nranges
+	wasRivalled := f.rivalled
 	was := f.totals()
+	// The unlock is deferred first, so it runs last: even a panic in any of
+	// the settling below cannot leave the file locked.
 	defer f.mu.Unlock()
+	defer func() { f.conflictDiff(fs, id, wasRivalled) }()
 	defer func() { d = f.delta(id, was) }()
 	defer func() { fs.dropRanges.Add(int64(f.nranges - rangesBefore)) }()
 	defer f.counted(fs, before, admitted)
@@ -472,6 +483,12 @@ func (f *file) settle(fs *files, s *fileShard, id core.FileID) {
 	f.held = heldSet{acct: f.held.acct}
 	if len(f.segs) > 0 || f.retained.len() > 0 {
 		return
+	}
+	if f.rivalled {
+		// The last of the entry goes with its marks still set, so the set's
+		// takeback cannot wait on apply's diff. The file's lock is still
+		// held here, and the set's is taken last, under none of them.
+		fs.conflicts.drop(id)
 	}
 	f.gone = true
 	s.mu.Lock()
