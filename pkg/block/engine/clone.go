@@ -385,7 +385,14 @@ func (e *Engine) runClone(c *cloneRun) {
 func (e *Engine) attempt(ctx context.Context, c *cloneRun, r *removal) answer {
 	if !c.copied {
 		if err := e.copyAll(ctx, c); err != nil {
-			if ctx.Err() == nil {
+			switch {
+			case ctx.Err() != nil:
+			case errors.Is(err, journal.ErrJournalReadOnly):
+				// Refused until the journal is reopened: noteReadOnly logs
+				// the state once, not once per retry.
+				e.noteReadOnly(true, err)
+				e.d.Logger.Debug("a clone's copies refused by the read-only journal: retried", "src", c.src, "dst", c.dst, "err", err)
+			default:
 				e.d.Logger.Error("a clone's copies failed after its journal step: retried", "src", c.src, "dst", c.dst, "err", err)
 			}
 			return itemRetry
@@ -482,6 +489,7 @@ func (e *Engine) copyRuns(ctx context.Context, c *cloneRun) (journal.Version, er
 			fe.insert(pendingOp{version: v, kind: opWrite, extent: journal.Extent{Off: off, Len: h.Extent.Len},
 				at: now, setsMtime: true, copy: true})
 			e.files.unlock(c.dst, fe)
+			e.issued(c.db.vl, v)
 			newest = newer(newest, v)
 		}
 	}

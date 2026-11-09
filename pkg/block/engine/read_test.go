@@ -10,6 +10,7 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -927,5 +928,39 @@ func TestAStoreRefusalCrossesARead(t *testing.T) {
 				t.Errorf("a store answering %v: Read: %v", c.err, err)
 			}
 		})
+	}
+}
+
+// eioRead is a handle whose every read the device fails with EIO.
+type eioRead struct{ engine.Handle }
+
+func (eioRead) ReadAt(context.Context, journal.FileID, int64, []byte) (int, []journal.Extent, []journal.Held, journal.Version, error) {
+	return 0, nil, nil, journal.Version{}, fmt.Errorf("read segment: %w", syscall.EIO)
+}
+
+// A read the journal's device fails with EIO is ErrIO, not ErrUnavailable,
+// which a client would retry.
+func TestAJournalReadEIOIsErrIO(t *testing.T) {
+	u := newUnitWith(t, unitConfig{wrap: func(h engine.Handle) engine.Handle { return eioRead{h} }})
+	f := u.create(t, "a")
+	if _, err := u.e.Read(t.Context(), u.share.ID, f, 0, make([]byte, 4)); !errors.Is(err, vfserr.ErrIO) || errors.Is(err, vfserr.ErrUnavailable) {
+		t.Errorf("Read: %v, want ErrIO alone", err)
+	}
+}
+
+// eioWrite is a handle whose every write the device fails with EIO.
+type eioWrite struct{ engine.Handle }
+
+func (eioWrite) WriteAt(context.Context, journal.FileID, int64, []byte, int64) (journal.Version, error) {
+	return journal.Version{}, fmt.Errorf("write segment: %w", syscall.EIO)
+}
+
+// A write the journal's device fails with EIO is not ErrIO, which names a
+// failed read, but ErrUnavailable.
+func TestAJournalWriteEIOIsNotErrIO(t *testing.T) {
+	u := newUnitWith(t, unitConfig{wrap: func(h engine.Handle) engine.Handle { return eioWrite{h} }})
+	f := u.create(t, "a")
+	if _, err := u.e.Write(t.Context(), u.share.ID, f, 0, fill(4, 'a'), engine.WriteOpts{Done: func() {}}); errors.Is(err, vfserr.ErrIO) || !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Errorf("Write: %v, want ErrUnavailable, not ErrIO", err)
 	}
 }

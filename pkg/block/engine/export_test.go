@@ -3,7 +3,11 @@ package engine
 import (
 	"context"
 	"maps"
+	"runtime"
 	"slices"
+	"sync"
+	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -24,11 +28,77 @@ var (
 	ErrNotRaised    = errNotRaised
 )
 
-// SetJournalsForTest sets the journals the engine has open, as Start will.
+// SetJournalsForTest sets the journals the engine has open, as Start will,
+// each with the limit last passed read from the journal itself, so the engine
+// and the journal agree on it.
 func (e *Engine) SetJournalsForTest(js ...Journal) {
+	vls := make([]*versionLimit, 0, len(js))
+
+	for _, j := range js {
+		vl := newVersionLimit(j)
+		vl.last.Store(j.Stats().VersionLimit.Counter)
+		vls = append(vls, vl)
+	}
+
 	e.mu.Lock()
-	e.journals = js
+	e.journals = vls
 	e.mu.Unlock()
+}
+
+// SetBlockForTest sets the versions one raise of the version limit covers,
+// before Start or Bind.
+func (e *Engine) SetBlockForTest(n uint64) {
+	e.block = n
+}
+
+// TrackRaisesForTest counts the version limit raise goroutines alive and
+// keeps the clock channels they wait on to retry, for WaitRaises, and counts
+// every one started, for RaisesStarted. Call it before Start or Bind.
+func (e *Engine) TrackRaisesForTest() {
+	e.raising.count = &atomic.Int32{}
+	e.raising.started = &atomic.Int64{}
+	e.raising.timers = &sync.Map{}
+}
+
+// RaisesStarted is how many raise goroutines started since
+// TrackRaisesForTest.
+func (e *Engine) RaisesStarted() int64 {
+	return e.raising.started.Load()
+}
+
+// WaitRaises returns once every version limit raise has ended or waits on
+// the test clock to retry, so a test reads what the raises did. It fails the
+// test when a raise does neither within 5 s, which only wrong code reaches.
+// A raise counts as waiting while the clock channel it waits on is still
+// open: one the clock has closed but whose raise has not run yet is not, so a
+// test that advances the clock then waits for the retry. Other waits on the
+// clock, as the group commit's, are not counted.
+func (e *Engine) WaitRaises(t testing.TB) {
+	t.Helper()
+
+	count, timers := e.raising.count, e.raising.timers
+
+	if count == nil {
+		t.Fatal("WaitRaises: TrackRaisesForTest was not called")
+	}
+
+	// Correct raises settle at once; the deadline is met only by a raise
+	// stuck on something other than the clock.
+	deadline := time.Now().Add(5 * time.Second)
+
+	for {
+		n := count.Load()
+
+		if n == 0 || int(n) <= openTimers(timers) {
+			return
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("WaitRaises: a raise neither ended nor waits to retry")
+		}
+
+		runtime.Gosched()
+	}
 }
 
 // MarkRaisedForTest records shard as raised by this process, as Start does.
@@ -177,6 +247,7 @@ func (e *Engine) SetPrimary(s entity.ShareID, node entity.NodeID, nodeEpoch, inc
 	b := &binding{
 		share:       old.share,
 		j:           old.j,
+		vl:          old.vl,
 		h:           old.h,
 		incarnation: incarnation,
 		primary:     primary{node, nodeEpoch},
@@ -326,6 +397,12 @@ func RetryingOwner(ctx context.Context) bool { return isRetryingOwner(ctx) }
 // installed; the clone then stops, its registrations undone, answering
 // ErrUnbuilt: a test of admission alone.
 func (e *Engine) SetAfterRegister(h func()) { e.afterRegister = h }
+
+// SetCloneMarkerHook makes h run for each clone marker start step 3 finds,
+// standing in for the clone's rebuild.
+func (e *Engine) SetCloneMarkerHook(h cloneMarkerFunc) {
+	e.cloneMarker = h
+}
 
 // FakeCloneDone lets a clone run past its registrations to its done signal,
 // standing in for the joins a served engine does not have yet.
@@ -589,4 +666,22 @@ func (e *Engine) EntryLocked(f entity.FileID) bool {
 	}
 	fe.mu.Unlock()
 	return false
+}
+
+// openTimers is how many of the raises' clock channels the clock has not
+// closed yet.
+func openTimers(timers *sync.Map) int {
+	n := 0
+
+	timers.Range(func(_, v any) bool {
+		select {
+		case <-v.(<-chan struct{}):
+		default:
+			n++
+		}
+
+		return true
+	})
+
+	return n
 }
