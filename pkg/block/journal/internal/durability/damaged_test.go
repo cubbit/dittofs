@@ -48,7 +48,7 @@ func TestDamagedStaysAfterReclaimBlockEnds(t *testing.T) {
 	a := cr.write(t, f, 0, "aaaa")
 	b := cr.write(t, f, 100, "bbbb")
 	if a.loc.Segment != b.loc.Segment {
-		t.Skip("the two records are in different segments")
+		t.Fatal("the two records are in different segments")
 	}
 	seg := a.loc.Segment
 	if cr.d.ReclaimBlocked(seg) {
@@ -97,7 +97,7 @@ func TestDamagedIsIdempotentPerSegment(t *testing.T) {
 	a := cr.write(t, f, 0, "aaaa")
 	b := cr.write(t, f, 100, "bbbb")
 	if a.loc.Segment != b.loc.Segment {
-		t.Skip("the two records are in different segments")
+		t.Fatal("the two records are in different segments")
 	}
 	cr.corrupt(t, a.c)
 	cr.corrupt(t, b.c)
@@ -134,5 +134,40 @@ func TestStatsDamagedServedWithoutLocks(t *testing.T) {
 		unlock()
 		st.mu.Unlock()
 		<-got
+	}
+}
+
+// TestDamagedCountsWhenWorkerAlreadyFailedRecord covers a record the worker
+// already failed: the read still proved it unreadable, so its segment counts.
+func TestDamagedCountsWhenWorkerAlreadyFailedRecord(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cr := newCorruptRig(t, nil)
+	f := file(1)
+	w := cr.write(t, f, 0, "aaaa")
+	cr.failSegmentOf(t, w.loc.Segment, f)
+	cr.awaitResolved(t)
+	cr.awaitRecord(t, w.c.Seq)
+
+	cr.corrupt(t, w.c)
+	p := cr.d.Stats()
+	if _, ok := rowOf(p, w.loc.Segment); p.DamagedSegments != 1 || !ok {
+		t.Fatalf("count %d, rows %+v, want 1 and a row for segment %d", p.DamagedSegments, p.Segments, w.loc.Segment)
+	}
+}
+
+// TestDamagedCountsWhenIndexNoLongerNamesRecord covers a record an overwrite
+// already took out of the index: it was still read as unreadable, so its
+// segment counts although nothing is lost.
+func TestDamagedCountsWhenIndexNoLongerNamesRecord(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cr := newCorruptRig(t, nil)
+	f := file(1)
+	old := cr.write(t, f, 0, "aaaa")
+	cr.write(t, f, 0, "bbbb")
+
+	cr.corrupt(t, old.c)
+	p := cr.d.Stats()
+	if _, ok := rowOf(p, old.loc.Segment); p.DamagedSegments != 1 || !ok {
+		t.Fatalf("count %d, rows %+v, want 1 and a row for segment %d", p.DamagedSegments, p.Segments, old.loc.Segment)
 	}
 }

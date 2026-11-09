@@ -54,6 +54,9 @@ func (d *Durability) Retired(seg core.SegmentID) {
 // ReclaimBlocked reports whether seg is damaged and still backs held extents
 // it cannot produce. It turns false once none is held, which is the signal
 // that the segment is ready to be repacked; the row and the count stay.
+//
+// decision: nothing but tests calls this; its signature is held up only by the
+// later reclamation work that selects segments.
 func (d *Durability) ReclaimBlocked(seg core.SegmentID) bool {
 	d.dmu.Lock()
 	_, ok := d.damaged[seg]

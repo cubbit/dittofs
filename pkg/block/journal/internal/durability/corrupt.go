@@ -88,6 +88,12 @@ func (d *Durability) Corrupt(ctx context.Context, c Corruption) (CorruptOutcome,
 	if st == nil {
 		return CorruptOutcome{}, fmt.Errorf("durability: the layer is not started: %w", core.ErrClosed)
 	}
+	// The segment is counted damaged here, on the reader's goroutine and before
+	// any return below, so the count reads 1 from the moment Corrupt returns
+	// whatever the index or the worker had already done with the record; the
+	// worker, which only records the loss, would leave a window where it still
+	// read 0.
+	d.markDamaged(c.Record.Segment)
 	dropped := CorruptOutcome{Kind: CorruptDropped}
 
 	unlock := func() {}
@@ -115,10 +121,6 @@ func (d *Durability) Corrupt(ctx context.Context, c Corruption) (CorruptOutcome,
 		d.log.Error("journal could not drop a corrupt record from the index", "file", c.File, "seq", c.Seq, "err", err)
 	}
 	d.accountDelta(hd)
-	// The segment is counted damaged here, on the reader's goroutine, so the
-	// count reads 1 from the moment Corrupt returns; the worker, which only
-	// records the loss, would leave a window where it still read 0.
-	d.markDamaged(c.Record.Segment)
 	for _, cv := range fw.Covers {
 		if !d.hasEntry(st, c.File, cv) {
 			d.lift(c.File, cv.Version, cv.Extent)
