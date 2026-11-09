@@ -49,7 +49,14 @@ type CorruptOutcome struct {
 	Copy segment.Location
 }
 
-// Corrupt handles a record a reader found not to verify: it drops the extents
+// Corrupt handles a record a reader found not to verify. It first looks for
+// another copy of the record with the same sequence number in the copy table
+// and reads it, with no lock of this layer held. A copy that verifies is
+// served: the index is repointed to it under the file's domain, no loss is
+// recorded, and Corrupt returns CorruptUseCopy with its location. A read of
+// the copy that fails with an error that shows nothing about it is returned
+// as that error, with nothing marked or dropped (readCopy says which). With no
+// copy, or one that does not verify, it drops the extents
 // the record backs from the index, raises the loss generation for a dirty
 // one, and hands the loss record to the stream's worker. It returns
 // CorruptDropped, after which the caller reports the extents missing. The
@@ -88,6 +95,29 @@ func (d *Durability) Corrupt(ctx context.Context, c Corruption) (CorruptOutcome,
 	if st == nil {
 		return CorruptOutcome{}, fmt.Errorf("durability: the layer is not started: %w", core.ErrClosed)
 	}
+	// Another copy of the record is read before any lock of this layer is
+	// taken, and a read that shows nothing about it returns here, before
+	// anything is marked or dropped.
+	cp, haveCopy := d.copyOf(c.Seq)
+	if haveCopy {
+		verdict, err := d.readCopy(st, cp)
+		if err != nil {
+			return CorruptOutcome{}, err
+		}
+		haveCopy = verdict == copyVerifies
+	}
+
+	unlock := func() {}
+	if !c.DomainHeld {
+		unlock = d.domains.Lock(c.File)
+	}
+	if haveCopy {
+		if out, ok := d.useCopy(st, c, cp); ok {
+			unlock()
+			return out, nil
+		}
+	}
+
 	// The segment is counted damaged here, on the reader's goroutine and before
 	// any return below, so the count reads 1 from the moment Corrupt returns
 	// whatever the index or the worker had already done with the record; the
@@ -96,10 +126,6 @@ func (d *Durability) Corrupt(ctx context.Context, c Corruption) (CorruptOutcome,
 	d.markDamaged(c.Record.Segment)
 	dropped := CorruptOutcome{Kind: CorruptDropped}
 
-	unlock := func() {}
-	if !c.DomainHeld {
-		unlock = d.domains.Lock(c.File)
-	}
 	synced, known := c.Synced, c.AtOpen
 	if !known {
 		var lost bool

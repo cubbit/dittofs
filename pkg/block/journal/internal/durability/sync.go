@@ -239,6 +239,17 @@ type Durability struct {
 	dmu     sync.Mutex
 	damaged map[core.SegmentID]*damagedRow
 
+	// copyMu guards copies, the table of other copies of re-appended records.
+	// It is a leaf mutex, held only for a map access.
+	copyMu sync.Mutex
+	copies map[core.Seq]copyEntry
+
+	// readCopyAt and onHoldCopy are test hooks, nil in production. readCopyAt
+	// replaces the stream's read of a copy; onHoldCopy runs, under the file's
+	// domain, before each hand-off of a served copy to holdCopy.
+	readCopyAt func(seg core.SegmentID, p []byte, off int64) (int, error)
+	onHoldCopy func(ownedCopy)
+
 	// pieces holds every (dropped seq, extent) a Lose or a Place has taken,
 	// so one piece of a dropped record is reported once, while another piece
 	// of the same record, which a reconcile can drop alone, is reported on

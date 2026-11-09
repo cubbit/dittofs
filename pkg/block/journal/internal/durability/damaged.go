@@ -40,15 +40,16 @@ func (d *Durability) markDamaged(seg core.SegmentID) {
 }
 
 // Retired is the runtime's hook for a retired segment: a damaged segment's row
-// is marked retired and kept, so the count survives the retirement. A segment
-// with no row is left alone.
+// is marked retired and kept, so the count survives the retirement, and the
+// copies the table holds in the segment are dropped, so the table is bounded
+// by the failed segments still on disk. A segment with no row keeps no row.
 func (d *Durability) Retired(seg core.SegmentID) {
 	d.dmu.Lock()
-	defer d.dmu.Unlock()
 	if r, ok := d.damaged[seg]; ok {
 		r.retired = true
 	}
-	// The segment's copy-table entries are dropped here once the table exists.
+	d.dmu.Unlock()
+	d.dropCopies(seg)
 }
 
 // ReclaimBlocked reports whether seg is damaged and still backs held extents
