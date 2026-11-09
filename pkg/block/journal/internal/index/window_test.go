@@ -236,3 +236,29 @@ func TestFailedWindowNamesEachRecordOfASplitCoverWithItsOwnExtent(t *testing.T) 
 		t.Fatal("the lift of the first record dropped the second's part")
 	}
 }
+
+// TestFailedWindowNamesACoverOfASplitSiblingOutsideTheWindow: a write split in
+// two records of one version, of which the window holds the first and a later
+// segment the second. The part handed to the second record is no part of the
+// window's own records, so it is named as a cover: the lift when that record's
+// sync completes must find it, or it would stay retained for good once the
+// record has already synced.
+func TestFailedWindowNamesACoverOfASplitSiblingOutsideTheWindow(t *testing.T) {
+	var f file
+	f.write(write(0, 8, rec(1, 0), 1))
+	f.writeRetain(write(0, 8, rec(2, 0), 2)) // in the window
+	f.writeRetain(write(0, 4, rec(2, 8), 3)) // the split write's first record, in the window
+	f.writeRetain(write(4, 4, rec(3, 0), 3)) // its second, in a segment of its own
+	_, covers, _ := f.failWindow([]WindowRecord{
+		{Record: rec(2, 0), Version: ver(2), Extent: ext(0, 8)},
+		{Record: rec(2, 8), Version: ver(3), Extent: ext(0, 4)},
+	}, nil)
+	want := []Cover{{Version: ver(3), Extent: ext(4, 4)}}
+	if !slices.Equal(covers, want) {
+		t.Fatalf("covers = %+v, want %+v", covers, want)
+	}
+	f.retained.drop(whole, supersededBy(ver(3), ext(4, 4)), nil)
+	if left := f.retained.list(nil); len(left) != 0 {
+		t.Fatalf("retained %+v after the sibling's lift, want none", left)
+	}
+}
