@@ -351,7 +351,8 @@ func (h *FakeHandle) file(id journal.FileID, claim bool) (*fakeFile, error) {
 }
 
 // WriteAt holds p at off under a new version, refused by the share's limit
-// on held bytes or the version limit.
+// on held bytes or the version limit. A zero-length p holds nothing and
+// answers the zero version, as the journal does.
 func (h *FakeHandle) WriteAt(_ context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error) {
 	j := h.j
 	j.mu.Lock()
@@ -359,12 +360,9 @@ func (h *FakeHandle) WriteAt(_ context.Context, id journal.FileID, off int64, p 
 	if j.refusal != nil {
 		return journal.Version{}, j.refusal
 	}
-	f, err := h.file(id, true)
-	if err != nil {
+	f, err := h.file(id, len(p) > 0)
+	if err != nil || len(p) == 0 {
 		return journal.Version{}, err
-	}
-	if len(p) == 0 {
-		return journal.Version{}, journal.ErrZeroLength
 	}
 	// ponytail: the share's limit counts held bytes, not record bytes, so an
 	// overwrite counts its new bytes only once the old are cut. A unit test of
