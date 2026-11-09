@@ -40,6 +40,19 @@ func newRaiser(t *testing.T, age time.Duration, opts ...starterOption) *starter 
 	s.e.SetBlockForTest(testBlock)
 	s.e.TrackRaisesForTest()
 
+	// Registered after the store's own cleanup, so it runs before the store
+	// closes: a raise still retrying on the test clock is cancelled and
+	// joined, not left to fail against a closed store.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+		defer cancel()
+
+		if err := s.e.Close(ctx); err != nil {
+			t.Errorf("close the engine: %v", err)
+		}
+	})
+
 	if age != 0 {
 		applyAge(t, s, age)
 	}
@@ -595,7 +608,7 @@ func TestLateShareBindRaisesItself(t *testing.T) {
 	_, err = s.e.Write(
 		ctx,
 		late.ID,
-		entity.FileID{0xda},
+		file.ID,
 		0,
 		[]byte("x"),
 		engine.WriteOpts{
@@ -623,7 +636,13 @@ func TestRaiseDueOnNextDraw(t *testing.T) {
 		t.Fatalf("raised to %d with %d versions left at a peak of 122 a second", got, left(s))
 	}
 
-	if err := s.write(t, s.one.ID); err != nil {
+	_, made := s.fs.Create(t, s.fs.Admin, s.fs.Root, "w", kvstore.Regular(0o644))
+	opts := engine.WriteOpts{
+		Done: func() {
+		},
+	}
+
+	if _, err := s.e.Write(t.Context(), s.one.ID, made.ID, 0, []byte("x"), opts); err != nil {
 		t.Fatalf("the write that crosses the trigger: %v", err)
 	}
 
@@ -1114,8 +1133,9 @@ func TestRequestNeverWaitsForRaise(t *testing.T) {
 	}
 
 	done := make(chan struct{})
+	_, made := s.fs.Create(t, s.fs.Admin, s.fs.Root, "r", kvstore.Regular(0o644))
 
-	go requestDuringRaise(t, s, done)
+	go requestDuringRaise(t, s, made.ID, done)
 
 	waits := requestWaits(done)
 
@@ -1149,7 +1169,7 @@ func drawPastTrigger(t *testing.T, s *starter, done chan<- struct{}) {
 }
 
 // requestDuringRaise draws a version and writes a byte past the trigger.
-func requestDuringRaise(t *testing.T, s *starter, done chan<- struct{}) {
+func requestDuringRaise(t *testing.T, s *starter, file entity.FileID, done chan<- struct{}) {
 	defer close(done)
 
 	if _, err := s.e.Draw(context.Background(), s.one.ID, drawFile); err != nil {
@@ -1159,7 +1179,7 @@ func requestDuringRaise(t *testing.T, s *starter, done chan<- struct{}) {
 	_, err := s.e.Write(
 		context.Background(),
 		s.one.ID,
-		entity.FileID{0xd8},
+		file,
 		0,
 		[]byte("x"),
 		engine.WriteOpts{
