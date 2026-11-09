@@ -10,7 +10,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -48,7 +48,7 @@ func newProbeRig(t *testing.T) *probeRig {
 
 func newUnwatchedProbeRig(t *testing.T) *probeRig {
 	t.Helper()
-	clock := journaltest.NewStopwatchClock()
+	clock := kit.NewStopwatchClock()
 	r := &probeRig{clock: clock, timers: &afterCounter{Clock: clock}}
 	d, err := durability.New(durability.Config{
 		Clock:    r.timers,
@@ -241,7 +241,7 @@ func TestProbeStartsOnceAcrossEnters(t *testing.T) {
 // leaves the state as it was.
 func TestProbeNilHooks(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	clock := journaltest.NewStopwatchClock()
+	clock := kit.NewStopwatchClock()
 	timers := &afterCounter{Clock: clock}
 	d, err := durability.New(durability.Config{
 		Clock: timers, Domains: noDomains{}, Index: index.New(1 << 20), Dir: t.TempDir(),
@@ -270,7 +270,7 @@ func TestProbeNilHooks(t *testing.T) {
 // MakeSpare the passing Check leads to runs before Stop returns, never after.
 func TestProbeStopWaitsForACheckInFlight(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	clock := journaltest.NewStopwatchClock()
+	clock := kit.NewStopwatchClock()
 	timers := &afterCounter{Clock: clock}
 	inCheck, gate := make(chan struct{}), make(chan struct{})
 	var checkReturned, stopReturned, lateCall atomic.Bool
