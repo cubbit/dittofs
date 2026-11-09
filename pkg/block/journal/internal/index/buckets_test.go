@@ -759,13 +759,12 @@ func TestRaiseFloor_NeverLowersABucket(t *testing.T) {
 	ix.RaiseFloor(ver(500_000_000))
 
 	for b := 0; b < floorBuckets; b += 97 {
-		want := uint64(900_000_000)
-		if b == 3 {
-			want = 950_000_000
+		if got := ix.fs.buckets[b].Load(); got != 900_000_000 {
+			t.Fatalf("bucket %d = %d after a lower floor, want 900000000", b, got)
 		}
-		if got := ix.fs.buckets[b].Load(); got != want {
-			t.Fatalf("bucket %d = %d after a lower floor, want %d", b, got, want)
-		}
+	}
+	if got := ix.fs.buckets[bucketOf(high)].Load(); got != 950_000_000 {
+		t.Fatalf("the high bucket = %d after a lower floor, want 950000000", got)
 	}
 	if got := ix.AsOf(high).Counter; got != 950_000_000 {
 		t.Fatalf("AsOf of the high bucket = %d, want 950000000", got)

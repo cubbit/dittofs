@@ -3,7 +3,6 @@ package datapath
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -194,41 +193,42 @@ func TestNoVersionRepeats_ConcurrentDrawAndWrite(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		if seen[v] {
-			panic(fmt.Sprintf("%s returned %v twice", where, v))
+			t.Errorf("%s returned %v twice", where, v)
 		}
 		seen[v] = true
 	}
 
 	var wg sync.WaitGroup
 	for g := range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			f := testFile(byte(g + 1))
 			for range 200 {
 				v, err := c.Draw()
 				if err != nil {
-					panic(err)
+					t.Errorf("Draw: %v", err)
+					return
 				}
 				add(v, "Draw")
 				var w core.Version
+				deadline := time.Now().Add(5 * time.Second)
 				for {
 					w, err = c.WriteAt(context.Background(), s, f, 0, []byte("x"), 1)
 					// A roll that finds no spare ready is refused, retryable by
 					// design; the pool readies one shortly.
 					var ns *core.NoSpaceError
-					if errors.As(err, &ns) && ns.Limit == core.LimitSpare {
+					if errors.As(err, &ns) && ns.Limit == core.LimitSpare && time.Now().Before(deadline) {
 						time.Sleep(time.Millisecond)
 						continue
 					}
 					break
 				}
 				if err != nil {
-					panic(err)
+					t.Errorf("WriteAt: %v", err)
+					return
 				}
 				add(w, "WriteAt")
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if n := len(seen); n != 8*(200+200) {

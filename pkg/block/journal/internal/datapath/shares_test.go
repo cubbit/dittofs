@@ -31,7 +31,7 @@ func shareTags(c *Core) []core.ShareTag {
 // own handle's tag.
 func TestShare_TwoHandlesWriteTheirOwnTag(t *testing.T) {
 	c, seam := newTestCore(t)
-	a, b := mustShare(t, c, 11), mustShare(t, c, 22)
+	a, b := mustShare(t, c, 0x11), mustShare(t, c, 0x22)
 	fa, fb := fileWith(0x22, 0x11), fileWith(0x11, 0x22)
 	ctx := context.Background()
 	if _, err := c.WriteAt(ctx, a, fa, 0, []byte("aaaa"), 1); err != nil {
@@ -47,8 +47,8 @@ func TestShare_TwoHandlesWriteTheirOwnTag(t *testing.T) {
 		}
 		got[r.Header.File] = r.Header.Tag
 	}
-	if got[fa] != 11 || got[fb] != 22 {
-		t.Fatalf("record tags = %v for %v and %v, want 11 and 22", got, fa, fb)
+	if got[fa] != 0x11 || got[fb] != 0x22 {
+		t.Fatalf("record tags = %v for %v and %v, want 0x11 and 0x22", got, fa, fb)
 	}
 }
 
