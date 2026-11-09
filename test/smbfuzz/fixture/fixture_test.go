@@ -30,11 +30,14 @@ func TestMountOptions(t *testing.T) {
 	}
 }
 
+// CleanRef refuses, by itself, a name that is not one round directory: any
+// other error, such as docker finding no reference container, is not the
+// refusal under test.
 func TestCleanRefRefusesEscapes(t *testing.T) {
 	h := Hooks{}
 	for _, d := range []string{"", "../x", "a/b", ".", ".."} {
-		if err := h.CleanRef(d); err == nil {
-			t.Errorf("CleanRef(%q) accepted", d)
+		if err := h.CleanRef(d); err == nil || !strings.HasPrefix(err.Error(), "refusing to remove") {
+			t.Errorf("CleanRef(%q) = %v, want a refusal", d, err)
 		}
 	}
 }
