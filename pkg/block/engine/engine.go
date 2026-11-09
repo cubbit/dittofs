@@ -60,6 +60,13 @@ type Engine struct {
 	afterRegister   func()                                                                     // a test's hook: run once a clone's registrations are installed, the clone then stopping
 	fakeCloneDone   atomic.Bool                                                                // a test's stand-in for the joins of a running clone: set, a clone runs past its registrations
 	noGuardSkip     atomic.Bool                                                                // a test's seam: capture takes a guarded file, so a test proves the stop at a removal alone
+
+	// cloneMarker is called by start step 3 for each clone marker the journal
+	// yields above a file's applied version, with the share, the file, the
+	// marker's spec and its version. Nothing above the marker is applied. It
+	// is the seam where a clone is rebuilt from its marker, and nil does
+	// nothing.
+	cloneMarker cloneMarkerFunc
 }
 
 // New checks d and builds the engine. It takes no settings, opens nothing and
@@ -200,6 +207,10 @@ func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
 	}
 
 	if err := e.raiseAtStart(ctx, &o); err != nil {
+		return opened{}, u.unwind(err)
+	}
+
+	if err := e.replay(ctx, &o); err != nil {
 		return opened{}, u.unwind(err)
 	}
 

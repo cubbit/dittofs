@@ -105,10 +105,12 @@ func (l *losses) raiseAll() {
 // loss ring, so a caller that commits existence after it never commits a
 // write the journal dropped as data.
 //
-// decision: every Sync the engine makes goes through this function, so no
-// existence commit follows a sync whose losses were not drained first. A
-// call of b.h.Sync elsewhere breaks that; revisit only if the journal ever
-// reports its losses with its Sync's answer.
+// decision: every Sync the engine makes goes through this function, except
+// the one in start step 3's replay, which runs before the journal's group
+// commit exists and takes the losses from Since instead, so no other
+// existence commit follows a sync whose losses were not drained first. A call
+// of b.h.Sync elsewhere breaks that; revisit only if the journal ever reports
+// its losses with its Sync's answer.
 //
 // A failed sync window, the journal's SyncError, is not an error of the sync:
 // the drain drops the window's pending writes, each file the error names that
