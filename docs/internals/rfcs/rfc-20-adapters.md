@@ -1159,11 +1159,20 @@ func RestartRequired(old, next Settings) error
   `restart:"true"`; a live one carries none. `RestartRequired` reads the tags,
   so a field cannot be added without a mark, and a test compares every field's
   mark with RFC 13 Appendix B's class.
+- **Defaults are struct tags too.** A field's default is a `default:"…"`
+  tag, read by the record loader that builds the shape; `Validate` never
+  fills a default, and refuses a zero value where a value is required.
+- **Nested blocks are unnamed struct fields**, so the package exports no type
+  beyond the three shapes: `NFS.TLS{CertFile, KeyFile, ClientCA, MinVersion,
+  Mode}` and `SMB.Dialects{Min, Max}`, a dialect written as a string, `"2.1"`,
+  `"3.0"`, `"3.0.2"` or `"3.1.1"`.
 - **One validator, `Validate`**, run by `New`, by `Reconfigure` and by the
   control plane, which has none of its own
   ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)). A setting that
-  cannot be applied — a certificate that does not load — is refused there,
-  at configured (§3.1).
+  cannot be applied is refused there, at configured (§3.1): `Validate` loads
+  the TLS certificate files with the standard library, so an unloadable
+  certificate is refused at `New` and `Reconfigure`, and the package stays a
+  leaf, importing nothing under `internal/`.
 
 > decision: no adapter field is restart-only today. Every adapter row of RFC
 > 13 Appendix B is live, and `Addrs`, which RFC 13 marks restart-only for the
@@ -1665,28 +1674,33 @@ it holds — the service counts nothing about holds:
   against a floor of 256 requests and 32 MiB of write data, and past it against
   the node's hold pool
   ([RFC 24 §4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go));
-  a request neither can take, when its hold starts on an `ErrDelay` the service
+  a request neither can take, when its hold starts on an error the service
   returned, is answered `STATUS_INSUFFICIENT_RESOURCES` at once, holds nothing
   and is counted (§10.1). A call still in the service when its interim goes out
   is counted and never refused, as below. The count lives and dies with the
   connection, so it needs no key across processes;
 - **the interim response is the adapter's timer.** An SMB request still
   unanswered a short interval after it reached the service — a call waiting
-  behind a clone — or answered `ErrDelay` of a class that holds gets its
+  behind a clone — or answered an error whose row has a `Hold` gets its
   interim `STATUS_PENDING` from the adapter's own timer, so nothing crosses
   into the service to announce a hold;
 - each attempt re-runs the held `Invocation`'s `Resolve` and `Call` (§4.7), with
   a fresh 30 s attempt deadline inside the hold's bound (§6.4) —
   the same decoded arguments, the wire IDs resolved again, so an open closed
   meanwhile is seen;
-- how long a request is held is the protocol's bound for the delay's cause
-  ([RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)),
-  applied by the pipeline from the `Delay`'s cause; a handler never chooses;
+- how long a request is held is its row's `Hold` (§4.7's `ErrorRow`),
+  evaluated on each attempt's error from the hold's start; a row without
+  `Hold` is answered at once with its status. A handler never chooses. The
+  bounds are the protocol's ([RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)). It
+  is a function because the settings behind it are live and a freeze's bound
+  comes from the error itself (`Delay.Until`, a grace's end); it is on the row
+  so that policy and final status stay together and the totality test (§7.3)
+  covers both;
 - a client `CANCEL` or a closed connection ends the hold, and for a waiting lock
   calls `CancelLock` before answering ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks));
 - every request pending on a connection, held past its interim or parked,
   counts toward one ceiling, `Stages.MaxPending` (SMB: 511, RFC 22 §3.3). It is
-  checked when a hold starts on an `ErrDelay` the service returned, and in
+  checked when a hold starts on an error the service returned, and in
   `Park`; past it the request is answered at once with `ErrTooManyPending`. A
   call the interim timer finds still in the service goes pending past it, and
   past the hold floor with the hold pool full; its interim then withholds its
@@ -1909,7 +1923,7 @@ const (
 // Bind joins a row's codec pair and handler, type-checked against each other,
 // and returns the row's Decode.
 func Bind[Req, Rep any](
-	dec func(b []byte, v Version, req *Req) error,
+	dec func(b []byte, v Version, req *Req) (n int, err error), // n: the bytes of b it consumed, which Decode returns
 	bound func(req *Req) int,
 	resolve func(r *Request, req *Req) error, // nil: the operation names no wire ID
 	role func(r *Request, req *Req) Role,     // nil: Op.Role decides alone
@@ -1918,7 +1932,8 @@ func Bind[Req, Rep any](
 	enc func(rep *Rep, v Version, out *Buf) error,
 ) func([]byte, Version) (Invocation, int, error)
 
-// NewOpTable builds a table and checks it: codes unique, ranges well formed.
+// NewOpTable builds a table and checks it: codes unique, ranges well formed,
+// and no ErrorRow.Hold unless holds.
 func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
 
 // Version is a protocol's version, minor version or dialect; Range a closed
@@ -1954,6 +1969,11 @@ type ErrorRow struct {
 	Ops      []uint32 // nil: every operation
 	Versions *Range   // nil: every version
 	NoReply  bool     // no final reply (ErrDraining, and ErrMoved where no move signal fits, §3.1); a table that Holds sends an interim granting the request's credits; Status unused
+	// Hold, only in a table that Holds (NewOpTable refuses it elsewhere): a
+	// request whose latest attempt maps here is held and re-driven until the
+	// deadline Hold returns, counted from the hold's start, and is then
+	// answered Status. nil: answered Status at once.
+	Hold     func(err error, start time.Time) time.Time
 	Status   Status
 }
 func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable
@@ -1991,7 +2011,7 @@ role := op.Role
 if draining || expired(r) { role = roleOf(op, inv, r) } // inv.Role(r), or op.Role where nil; not asked otherwise
 if err == nil && expired(r) && !op.Expired && role != RoleRelease { err = ErrExpired } // §4.4
 if err == nil && draining && role == RoleNone { err = drainErr(ctx, r, inv) } // §3.1: ErrMoved if MoveTarget names a gateway for inv.Handle's share, else ErrDraining; never per operation in a single-reply compound (below)
-if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve when tbl.Holds
+if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve until the Hold of the row err maps to passes (§4.6)
 st, send := tbl.Errors.Map(err, op, h.Version())
 if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); return } // a NoReply row: no final reply; where the table holds (SMB) an interim grants the request's credits back, and those of the chain members after it, whose headers it is handed (none outside a chain) (HoldCodec.Interim)
 reply := encode(stages.Header, h, st, inv)
@@ -2024,9 +2044,9 @@ its handles carry over. It encodes each member's reply, joins them with
 signs each member over its own bytes, `NextCommand` and padding included, and
 encrypts the record once.
 
-A member before the last that the service answered `ErrDelay` of a holding
-class, so applied nothing, is answered in one of two ways, as
-`HoldCodec.Pends` says for its cause: at once, the runner replacing the
+A member before the last that the service answered an error whose row holds
+(an `ErrDelay`, a grace, an unavailable share), so applied nothing, is
+answered in one of two ways, as `HoldCodec.Pends` says for that error: at once, the runner replacing the
 `ErrDelay` with `ErrNotLast` before its table maps it, since a hold row's
 status speaks for a hold that will not happen, and the chain goes on; or pending, as the last member is, the
 replies before it and its interim going out as one chain and the members after
@@ -2097,7 +2117,7 @@ reply, otherwise: a compound that reaches its share another way, as a
 `LOOKUP` across a junction from `PUTROOTFH` does, is left unanswered, and the
 client retries.
 
-> decision: `Pends` is asked only for an `ErrDelay` the service returned. A
+> decision: `Pends` is asked only for an error the service returned. A
 > call still in the service can apply after any answer, so answering it at
 > once could report a failed `WRITE` whose data lands a moment later; such a
 > member always goes pending. Withdraw it only if the service gains a way to
@@ -2204,11 +2224,11 @@ type HoldCodec interface {
 	// what the interim granted of them; otherwise none.
 	Final(h Header, grant bool) Header
 	Cancels(h Header) (key uint64, ok bool) // a CANCEL ends the hold it names and gets no reply
-	// Pends says whether a chain member before the last, answered ErrDelay
-	// with cause, goes pending (true) or is answered at once as ErrNotLast.
-	// It is asked only for an ErrDelay the service returned;
+	// Pends says whether a chain member before the last, answered err whose
+	// row holds, goes pending (true) or is answered at once as ErrNotLast.
+	// It is asked only for an error the service returned;
 	// a member the interim timer finds still in the service always pends.
-	Pends(h Header, cause vfs.DelayCause) bool
+	Pends(h Header, err error) bool
 }
 
 // ErrParked is what a handler returns, with its reply value, after Park:
@@ -2719,7 +2739,7 @@ inside the service, or a reply reservation's deadline, before it — is one clas
 `ErrDelay` with `DelayResources`
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), which the
 adapter builds itself for its own reply-reservation refusal. A request whose
-hold starts on an `ErrDelay` the service returned, past its connection's hold
+hold starts on an error the service returned, past its connection's hold
 floor with the hold pool full, is the adapter's own refusal; a call still in
 the service is never refused (§4.6). The error table answers both at once and holds neither; the statuses
 are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),

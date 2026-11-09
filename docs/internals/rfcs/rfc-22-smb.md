@@ -2560,7 +2560,7 @@ step 2 refuses it. A write a user's own `read` grant refuses is `ErrAccess`,
 
 **Chains and `core`'s own refusals.** Of the `ErrDelay`s the service returns
 before the last member of a chain, only a `CREATE` held on a lease or oplock
-break pends (`HoldCodec.Pends` true, MS-SMB2 3.3.5.2.7); any other is answered
+break pends (`HoldCodec.Pends(h, err)` true, MS-SMB2 3.3.5.2.7); any other is answered
 `STATUS_INTERNAL_ERROR`, as Windows answers it, never with a hold row's cap
 status. A member still in the service when the interim timer fires always
 pends ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).

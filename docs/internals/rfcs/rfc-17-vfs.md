@@ -1353,7 +1353,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrRangeNotLocked` | an `Unlock` named a range the owner does not hold | — |
 | `ErrShareViolation` | a deny mode others hold conflicts, decided after handle caching is broken ([§5.3](#5.3%20Open%20and%20close)) | — |
 | `ErrDeletePending` | the file is marked delete on close ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)) | — |
-| `ErrGrace` | the shard is in grace and the request needs, or conflicts with, state that may still be reclaimed | — |
+| `ErrGrace` | the shard is in grace and the request needs, or conflicts with, state that may still be reclaimed | `*Grace{Until}`: when the shard's grace ends, so a holding adapter bounds its hold from the error (RFC 20 §4.6) |
 | `ErrDelay` | retry shortly | `*Delay{Cause; Until; Moved}`, below |
 | `ErrBlocked` | a lock waits, and will be granted through `LockWaitOver`: the service's answer for RFC 14's `LockResult{Waiting: true}` | — |
 | `ErrWrongSecurity` | the share's policy does not admit the call's flavour ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)) | — |
