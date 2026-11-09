@@ -255,3 +255,38 @@ func TestKnownDivergenceEndsRoundWhenTreesMaySplit(t *testing.T) {
 		}
 	}
 }
+
+// A plan file's paths, in its steps and in its tree, stay inside the round
+// directory: one that is absolute or climbs out with ".." is refused before
+// any worker sees it.
+func TestPlanPathsStayInTheRound(t *testing.T) {
+	r := &Runner{env: Env{RefRoot: "/r", DutRoot: "/d"}, resolver: testResolver()}
+	for _, text := range []string{
+		"01 admin  stat       ../../etc\n",
+		"01 admin  stat       d0/../../x\n",
+		"01 admin  rename     d0 ../d0 flags=0\n",
+		"01 admin  stat       /etc\n",
+		"# tree file ../x len=0 data=zero\n",
+	} {
+		p, err := ParsePlan(strings.NewReader("# smbfuzz plan gen=1 round=1 root=open\n" + text))
+		if err != nil {
+			t.Fatalf("%q: %v", text, err)
+		}
+		steps := p.Steps
+		for _, ts := range p.Tree.SetupSteps() {
+			steps = append(steps, ts.Step)
+		}
+		refused := false
+		for i, s := range steps {
+			if _, err := r.resolve(1, "r1-a1", SideRef, i+1, s); err != nil {
+				refused = true
+			}
+		}
+		if !refused {
+			t.Errorf("%q: resolved", text)
+		}
+	}
+	if _, err := r.resolve(1, "r1-a1", SideRef, 1, Step{Op: "stat", Args: map[string]string{"path": "d0/.hidden"}}); err != nil {
+		t.Errorf("a path inside the round: %v", err)
+	}
+}

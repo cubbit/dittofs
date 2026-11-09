@@ -111,8 +111,7 @@ func fixtureCmd(args []string) error {
 		fmt.Printf("fixture up: ref %s, dut %s\n", env.RefRoot, env.DutRoot)
 		return nil
 	case "down":
-		fixture.Down(ctx, c)
-		return nil
+		return fixture.Down(ctx, c)
 	}
 	usage()
 	return nil

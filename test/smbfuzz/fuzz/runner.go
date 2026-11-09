@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -271,7 +272,13 @@ func (r *Runner) root(side string) string {
 func (r *Runner) resolve(round uint64, dir, side string, n int, s Step) (*Request, error) {
 	req := &Request{Step: n, Side: side, Op: s.Op, Seed: round}
 	a := s.Args
-	abs := func(p string) string { return filepath.Join(r.root(side), dir, ExpandPath(p)) }
+	var err error
+	abs := func(p string) string {
+		if e := planPath(p); e != nil && err == nil {
+			err = e
+		}
+		return filepath.Join(r.root(side), dir, ExpandPath(p))
+	}
 	if p, ok := a["path"]; ok {
 		req.Path = abs(p)
 	}
@@ -287,7 +294,6 @@ func (r *Runner) resolve(round uint64, dir, side string, n int, s Step) (*Reques
 	if s.Out != "" {
 		req.Slot2 = side + ":" + s.Out
 	}
-	var err error
 	size := func(k string) int64 {
 		if err != nil {
 			return 0
@@ -417,6 +423,19 @@ func (r *Runner) resolve(round uint64, dir, side string, n int, s Step) (*Reques
 		Pattern(pat, round, n, req.XValue)
 	}
 	return req, err
+}
+
+// planPath checks a path a plan names. A plan file can come from outside the
+// run, so a path must be relative and have no ".." component: joined to the
+// round directory, it then stays inside it.
+func planPath(p string) error {
+	if path.IsAbs(p) {
+		return fmt.Errorf("path %q is absolute", p)
+	}
+	if slices.Contains(strings.Split(p, "/"), "..") {
+		return fmt.Errorf("path %q has a .. component", p)
+	}
+	return nil
 }
 
 // localID maps a trustee to the local id chown sends. In the sd profile the

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,6 +62,37 @@ func (c Config) dutMount() string { return filepath.Join(c.State, "mnt", "dut") 
 func (c Config) dfsDir() string   { return filepath.Join(c.State, "dfs") }
 func (c Config) keytabs() string  { return filepath.Join(c.State, "keytabs") }
 
+// stateDir makes the state directory dir, or checks the one already there,
+// when create is false. Root reads and writes every file of the fixture below
+// it, and kills the process its dfs.pid names, so dir must be a directory, not
+// a symbolic link, that this user owns and nobody else can write to, in a
+// parent where nobody else can rename it: one that only this user can write
+// to, or a sticky one like /var/tmp. Its mode is 0711, not 0700: the workers
+// run under the domain users' uids, and reach the mounts below it.
+func stateDir(dir string, create bool) error {
+	if create {
+		if err := os.Mkdir(dir, 0o711); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+	}
+	for _, d := range []string{filepath.Dir(dir), dir} {
+		fi, err := os.Lstat(d)
+		if err != nil {
+			return err
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		switch {
+		case !fi.IsDir():
+			return fmt.Errorf("state directory %s: %s is not a directory", dir, d)
+		case d == dir && (!ok || int(st.Uid) != os.Geteuid()):
+			return fmt.Errorf("state directory %s belongs to another user", dir)
+		case fi.Mode().Perm()&0o022 != 0 && (d == dir || fi.Mode()&fs.ModeSticky == 0):
+			return fmt.Errorf("state directory %s: others can write to %s", dir, d)
+		}
+	}
+	return nil
+}
+
 func (c Config) logf(format string, a ...any) {
 	_, _ = fmt.Fprintf(c.Log, "[fixture] "+format+"\n", a...)
 }
@@ -92,13 +124,13 @@ var users = []struct {
 
 // Up builds everything and writes env.json.
 func Up(ctx context.Context, c Config) (*fuzz.Env, error) {
-	if err := os.MkdirAll(c.State, 0o755); err != nil {
+	if err := stateDir(c.State, true); err != nil {
 		return nil, err
 	}
 	// A keytab or ready marker left by an earlier domain would be taken for
 	// this one's: the DC entrypoint exports a keytab only when none exists.
 	_ = os.RemoveAll(c.keytabs())
-	if err := os.MkdirAll(c.keytabs(), 0o777); err != nil {
+	if err := os.MkdirAll(c.keytabs(), 0o755); err != nil {
 		return nil, err
 	}
 	c.logf("building the AD-DC image")
@@ -558,10 +590,19 @@ func (h Hooks) Ticket(account, path string) error {
 	return os.WriteFile(path, b, 0o600)
 }
 
-// Down removes everything Up made.
-func Down(ctx context.Context, c Config) {
+// Down removes everything Up made. What it reads from the state directory, it
+// reads only from one stateDir accepts; the containers, the network, /etc/hosts
+// and the local users go regardless.
+func Down(ctx context.Context, c Config) error {
 	removeHostsBlock()
 	removeLocalUsers(ctx)
+	_, _ = run(ctx, "docker", "rm", "-f", refName, dcName)
+	_, _ = run(ctx, "docker", "network", "rm", network)
+	if err := stateDir(c.State, false); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
 	if _, err := os.Stat(filepath.Join(c.State, "created-krb5.conf")); err == nil {
 		_ = os.Remove(krb5Conf)
 		_ = os.Remove(filepath.Join(c.State, "created-krb5.conf"))
@@ -573,12 +614,14 @@ func Down(ctx context.Context, c Config) {
 		_, _ = run(ctx, "umount", "-l", d)
 	}
 	_ = c.stopDFS()
-	_, _ = run(ctx, "docker", "rm", "-f", refName, dcName)
-	_, _ = run(ctx, "docker", "network", "rm", network)
+	return nil
 }
 
 // Load reads env.json written by Up.
 func Load(c Config) (*fuzz.Env, error) {
+	if err := stateDir(c.State, false); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
 	b, err := os.ReadFile(c.envFile())
 	if err != nil {
 		return nil, fmt.Errorf("no fixture (run `smbfuzz fixture up` first): %w", err)
