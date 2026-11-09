@@ -392,6 +392,24 @@ which epic owns the rest.
   member's operation code (R58–R60), so the runner checks the cap, decodes exactly `Count`
   members and refuses trailing bytes before any runs; RFC 20 §4.7's `decision:` gives the
   reason.
+- **D22, the open-unlinked hold stays, fed by a plain setter.** GC and the stranded-row
+  reaper must not reclaim a file still open after its last link. The hold that keeps them off
+  it is protocol-neutral (its dedup, stale-handle skip, fail-closed rule and payload hold), so
+  it stays with its tests; only its feed changes, from the adapter-provider lookup T1.2 deletes
+  to one setter on the Runtime. Nothing sets it on this branch, so it holds nothing; a
+  `decision:` at the setter names the ceiling: a served protocol that keeps files open past
+  their last link without setting it loses their data.
+- **D23, the runtime's share-policy gates go.** `CheckShareAccess`, `CheckNetgroupAccess` with
+  its memo, and `SquashMode.RootKeepsAdmin` have no caller once v1 is gone, and v2 admits
+  through `internal/vfs/admit` (RFC 18, RFC 19). They are deleted with their tests, and this
+  branch's `CLAUDE.md` stops describing them as the share gate; develop keeps the v1 text.
+- **D24, the connection and mount registries go.** Nothing can add a record to them once v1 is
+  gone, so the registries, their sweeper and the `/clients` and `/mounts` listings are deleted
+  rather than left answering an empty list.
+- **D25, the `require_kerberos` boot refusal goes.** It refused to boot when a share required
+  Kerberos, Kerberos was off and an NFS adapter row was enabled. A fresh database no longer gets
+  that row, so the refusal fired only on old databases, for a protocol nothing serves. It comes
+  back with the NFS adapter.
 
 ## 5. Target tree
 
@@ -521,7 +539,7 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
     `grace/end`, netgroups, the legacy identity-mappings duplicate), `GET /api/v1/grace` and
     `DELETE /api/v1/clients/{id}`; their handlers (`adapters.go`, `adapter_settings.go`,
     `grace.go`, `nfs_clients.go`, `netgroups.go`) and integration tests; readiness without the
-    adapter and grace checks. The `/clients`, `/mounts` and `/durable-handles` listings stay;
+    adapter and grace checks. The `/clients` and `/mounts` listings and their registries go (D24), the `/durable-handles` listing stays; the share-policy gates go (D23); the open-unlinked hold stays behind a setter (D22); the `require_kerberos` boot refusal goes (D25);
   - `dfsctl adapter`, `grace`, `netgroup` and `client`; `pkg/apiclient` as D5 says;
     `dfsctl share mount` on default ports (D5);
   - `test/harness/fixture/api.go`'s adapter calls and `check()`'s adapter listing;
@@ -736,6 +754,17 @@ cannot build apart.
 - `vfs.Shares.MoveTarget` (D16), named in RFC 17 by T1.9, in `pkg/vfs`, `*vfs.Filesystem`,
   `vfstest.Null` and `vfstest.Record`. Owner: RFC 17's plan, before E4 calls it; until RFC
   15's topology exists it answers none.
+- The open-unlinked hold's feed (D22): whatever tracks open files in v2 (RFC 17's opens,
+  through the adapters) sets it before any protocol is served. Owner: the cutover.
+- The share-policy gates (D23): flavor and Kerberos-level policy, the netgroup allowlist and
+  root's admin bypass at the share gate are re-derived in `internal/vfs/admit`, develop's
+  `export_auth_policy.go` and `share_permission.go` the reference. Owner: RFC 18's and RFC 19's
+  plans.
+- Netgroups can still be attached to a share's NFS config (D4 keeps the route) but no longer
+  managed, since T1.2 deletes their routes and commands. Owner: RFC 23, with its records.
+- The `require_kerberos` boot refusal (D25). Owner: RFC 21's plan, with the NFS adapter.
+- The NFS lock grace period setting, which the start path no longer applies, though D4 keeps
+  the row that holds it. Owner: RFC 21's plan.
 
 **Settings v1 had that RFC 13 and RFC 20 do not.** develop's operators tune
 `LeaseTime`, `GracePeriod`, `DelegationRecallTimeout`, `CallbackTimeout`, `LeaseBreakTimeout`,
