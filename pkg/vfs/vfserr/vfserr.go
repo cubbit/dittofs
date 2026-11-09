@@ -172,11 +172,14 @@ func (e *Delay) Is(target error) bool {
 
 // StateError is an ErrState naming why: a client-held name of state cannot
 // be used as given. Admin tells, for StateRevoked, an administrator's revoke
-// from a recall missed. Under errors.Is it matches ErrState and any
-// *StateError of the same Kind and Admin.
+// from a recall missed. Sessioned tells, for StateNotYours, state created on
+// a session presented by a call with none, which the state's own mark
+// refuses whatever the caller's principal. Under errors.Is it matches
+// ErrState and any *StateError of the same Kind, Admin and Sessioned.
 type StateError struct {
-	Kind  StateKind
-	Admin bool
+	Kind      StateKind
+	Admin     bool
+	Sessioned bool
 }
 
 // StateKind is why a name of state was refused.
@@ -215,15 +218,18 @@ var stateKinds = [...]string{
 func (k StateKind) Valid() bool { return k >= 1 && k < stateKindEnd }
 
 func (e *StateError) Error() string {
-	if e.Admin {
+	switch {
+	case e.Admin:
 		return ErrState.Error() + ": " + kindName(stateKinds[:], e.Kind) + " by an administrator"
+	case e.Sessioned:
+		return ErrState.Error() + ": " + kindName(stateKinds[:], e.Kind) + ", created on a session, presented without one"
 	}
 	return ErrState.Error() + ": " + kindName(stateKinds[:], e.Kind)
 }
 
 func (e *StateError) Is(target error) bool {
 	if t, ok := target.(*StateError); ok {
-		return t != nil && t.Kind == e.Kind && t.Admin == e.Admin
+		return t != nil && t.Kind == e.Kind && t.Admin == e.Admin && t.Sessioned == e.Sessioned
 	}
 	return target == ErrState
 }

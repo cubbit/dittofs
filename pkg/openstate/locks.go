@@ -142,6 +142,32 @@ type lockState struct {
 	offers []offer     // callback grants whose answer is outstanding
 }
 
+// sessioned is whether ls was created on a session: its open's mark, as the
+// lock state of an owner under an open is only ever minted by a call the
+// open's own mark admitted. One under no open, an NLM owner's, never is.
+func (ls *lockState) sessioned() bool { return ls.open != nil && ls.open.sessioned() }
+
+// ownerOnSession refuses who, a call with no session naming owner o rather
+// than a reference, when a lock state of o on e was created on a session:
+// ErrNotYoursSessioned, as mine refuses a reference to it.
+//
+// decision: only TestLock and ReleaseLockOwner, NFSv4's calls naming an
+// owner alone, run it; CancelLock and WaitAnswered do not. Those are NLM's and
+// SMB's: an NLM owner's lock state is under no open and never marked, and an
+// SMB call always has a session, while WaitAnswered's callback answer comes
+// with no call at all. Run it there too if an NFSv4 call ever reaches them.
+func ownerOnSession(e *entry, who Caller, o LockOwner) error {
+	if who.Sessioned {
+		return nil
+	}
+	for _, ls := range e.lstates {
+		if sameOwner(ls.owner, o) && ls.sessioned() {
+			return ErrNotYoursSessioned
+		}
+	}
+	return nil
+}
+
 // offer is a callback grant whose answer is outstanding.
 type offer struct {
 	asked LockRange   // the grant, which WaitAnswered matches
@@ -454,7 +480,7 @@ func (t *Table) lockStateFor(ctx context.Context, e *entry, o LockOwner, op *ope
 			return nil, false, err
 		}
 	}
-	ref, err := t.mintUnder(e, o.Client, s, StateLock, func(StateRef) error {
+	ref, err := t.mintUnder(e, o.Client, op != nil && op.sessioned(), s, StateLock, func(StateRef) error {
 		if !t.current(o.Client) {
 			return ErrStaleClient
 		}
@@ -698,7 +724,7 @@ func (t *Table) lockTarget(e *entry, who Caller, ref OpenRef) (op *open, ls *loc
 	case RefAnonymous:
 		return nil, nil, 0, nil
 	case RefLocked:
-		if _, err := t.resolve(who.Client, e.file, ref.State); err != nil {
+		if _, err := t.resolve(who, e.file, ref.State); err != nil {
 			return nil, nil, 0, err
 		}
 		if ls = e.lstates[ref.State.Token]; ls == nil {
@@ -1051,6 +1077,9 @@ func (v locks) TestLock(ctx context.Context, who Caller, f FileKey, o LockOwner,
 		if _, err := t.admit(who, f.Shard, false); err != nil {
 			return err
 		}
+		if err := ownerOnSession(e, who, o); err != nil {
+			return err
+		}
 		held = e.blocker(o, LockRange{r, exclusive}, len(e.waiters))
 		return nil
 	})
@@ -1149,6 +1178,9 @@ func (v locks) ReleaseLockOwner(ctx context.Context, who Caller, o LockOwner) er
 	// Both passes visit the files in a fixed order.
 	slices.SortFunc(files, func(a, b entity.FileID) int { return bytes.Compare(a[:], b[:]) })
 	holds := func(e *entry) error {
+		if err := ownerOnSession(e, who, o); err != nil {
+			return err
+		}
 		for _, ls := range e.lstates {
 			if sameOwner(ls.owner, o) && len(ls.locks) > 0 {
 				return ErrLocksHeld

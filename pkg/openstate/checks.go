@@ -165,12 +165,12 @@ func (t *Table) throughGrant(who Caller, ref OpenRef, write bool, fn func(e *ent
 	if err != nil {
 		return err
 	}
-	h, err := t.resolve(who.Client, f, ref.State)
+	h, err := t.resolve(who, f, ref.State)
 	if err != nil {
 		return err
 	}
 	return t.step(h.file, func(e *entry) error {
-		if _, err := t.resolve(who.Client, e.file, ref.State); err != nil {
+		if _, err := t.resolve(who, e.file, ref.State); err != nil {
 			return err
 		}
 		g := e.grants[ref.State.Token]
@@ -301,7 +301,7 @@ func (t *Table) throughLockState(who Caller, ref OpenRef, fn func(e *entry, op *
 	if err != nil {
 		return err
 	}
-	h, err := t.resolve(who.Client, f, ref.State)
+	h, err := t.resolve(who, f, ref.State)
 	if err != nil {
 		return err
 	}

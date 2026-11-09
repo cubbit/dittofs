@@ -610,7 +610,7 @@ func (t *Table) reinstateLease(e *entry, o *open, s ShardID, l *entity.Lease, ou
 		}
 	}
 	k := kindOf(l.State)
-	ref, err := t.mintUnder(e, o.Client, s, StateGrant, func(StateRef) error {
+	ref, err := t.mintUnder(e, o.Client, o.sessioned(), s, StateGrant, func(StateRef) error {
 		if k == GrantNone {
 			return nil
 		}
@@ -623,7 +623,7 @@ func (t *Table) reinstateLease(e *entry, o *open, s ShardID, l *entity.Lease, ou
 		return err
 	}
 	g := &grant{id: GrantID{s, ref.Instance, ref.Token}, client: o.Client, key: o.lease, parent: LeaseKey(l.ParentKey),
-		fsm: grantfsm.Grant{Kind: k, Epoch: l.Epoch, V2: l.V2}, counted: k != GrantNone}
+		fsm: grantfsm.Grant{Kind: k, Epoch: l.Epoch, V2: l.V2}, counted: k != GrantNone, sessioned: o.sessioned()}
 	if e.grants == nil {
 		e.grants = map[uint64]*grant{}
 	}

@@ -72,11 +72,14 @@ type ClientStatus struct {
 // principal it runs as, mapped and never squashed, and the request's
 // protocol, which a rule that differs by protocol reads. The protocol is the
 // caller's to state on every call, never looked up from a client record:
-// NFSv3 has no client.
+// NFSv3 has no client. Sessioned is whether the call has a session: copied
+// onto the state the call creates, and a call without one is refused state
+// so marked, ErrNotYoursSessioned.
 type Caller struct {
 	Client    entity.ClientID
 	Principal entity.Principal
 	Protocol  entity.Protocol // zero: NFSv3, which holds no client
+	Sessioned bool            // the call has a session: SMB and NFSv4.1 do, NFSv4.0, NFSv3 and NLM do not
 }
 
 // Clients is the view of client records and leases; it runs at the client's
@@ -786,7 +789,7 @@ func (t *Table) revoke(ctx context.Context, c entity.ClientID, out *outbox) erro
 	t.idx.Lock()
 	for k, h := range t.refs {
 		if h.client == c {
-			t.revoked[k] = revokedRef{c, h.typ, RevokedByAdmin}
+			t.revoked[k] = revokedRef{c, h.typ, RevokedByAdmin, h.sessioned}
 		}
 	}
 	t.idx.Unlock()

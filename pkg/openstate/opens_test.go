@@ -25,7 +25,8 @@ func (f *fixture) caller(t *testing.T, c Client) Caller {
 	if p.IsZero() {
 		p = entity.NewUser()
 	}
-	return Caller{Client: f.connect(t, c), Principal: p, Protocol: c.Protocol}
+	// An SMB call always has a session; an NFS one here has none.
+	return Caller{Client: f.connect(t, c), Principal: p, Protocol: c.Protocol, Sessioned: c.Protocol == entity.ProtocolSMB}
 }
 
 func (f *fixture) open(who Caller, file FileKey, r OpenRequest) (Open, error) {
