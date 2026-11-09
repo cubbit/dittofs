@@ -463,7 +463,7 @@ func TestImagesUseTheModuleToolchain(t *testing.T) {
 	}
 	want := regexp.MustCompile(`golangci-lint@(v[0-9.]+)`).FindSubmatch(files["test/harness/docker/dev.Dockerfile"])[1]
 	for f, pin := range map[string]string{
-		".github/workflows/tests.yml":   `(?m)^\s+version: (v[0-9.]+)\r?$`,
+		".github/workflows/tests.yml":   `(?m)^\s+repo: golangci/golangci-lint\r?\n\s+tag: (v[0-9.]+)\r?$`,
 		"k8s/dittofs-operator/Makefile": `(?m)^GOLANGCI_LINT_VERSION \?= (v[0-9.]+)\r?$`,
 	} {
 		if m := regexp.MustCompile(pin).FindSubmatch(read(f)); m == nil || !bytes.Equal(m[1], want) {
