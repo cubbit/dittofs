@@ -38,7 +38,7 @@ restating it.
 ### 1.1 In scope
 
 §3's requirements, through §6's subtasks; the `kvstore` changes they need (`PendingOp`'s
-modify and change times, `OpLost`, the marks write) and the test components they add to E2's
+modify and change times, a whole loss's `Lost` extent, the marks write) and the test components they add to E2's
 (the fake journal's sync marks, `Report`, `FailSync(also)` and `Durable`, the fixture's
 `FailNextSync` and `Stall`, and `newUnitOver`).
 
@@ -165,7 +165,7 @@ modify and change times, `OpLost`, the marks write) and the test components they
 | 8 Real dependencies | T4.1, T4.2, T4.3, T4.4, T4.6 | every conformance row runs over the real journal and `kvstore`; the fake journal is for the unit tests of the engine's logic only, none of which stands in for a row |
 | 9 Comments | all | the markers of §4 at their code sites, and three of RFC 8 §5.1's: the loss sequence's floor (`ponytail:`, T4.5), the lazy existence of appends (`decision:`, T4.2) and the stable-overwrite cost (`ponytail:`, T4.2) |
 | 10 Tests can fail | all | each test below names the change it catches |
-| 11 Exports | all | nothing new is exported from `engine`; the test hooks live in `export_test.go`, the reservation counter in `enginetest`. `kvstore.PendingOp`'s new fields and `OpLost` are `kvstore`'s own, used by its caller |
+| 11 Exports | all | nothing new is exported from `engine`; the test hooks live in `export_test.go`, the reservation counter in `enginetest`. `kvstore.PendingOp`'s new fields, `Lost` among them, are `kvstore`'s own, used by its caller |
 | 12 Creates only what it declares | all | the per-file commit lands in T4.3 with its first consumer, `Commit` (T4.2); the sync function lands in T4.5 with its first consumer, the drain; the retrying-owner mark lands in T4.4 with its first setter, the group commit, or its reader, epic 7's T7.2, whichever lands first: epic 4 blocks epic 7, so a dependency of T4.4 on T7.2 would be a cycle, and T7.2 does not depend on T4.4 |
 
 ## 3. Requirements and invariants
@@ -307,7 +307,7 @@ Only what the RFC leaves to the code. Ids are stable; a missing number became a 
   `Ctime` where they read `Time`. `PendingOp` also gains `Over`, the runs where a write
   overlaps an earlier pending write of the file (R48), over which `Existence.Commit`
   writes an overwrite record; `Remove` and `Clone` commit pending operations through it.
-  A new kind, `kvstore.OpLost`, commits an extent uncarved,
+  A whole loss is an `OpWrite` with all of its extent in `PendingOp.Lost`, committed uncarved,
   holding nothing, and changes neither `Charged` nor the usage counters.
 - **D7, the failing file's backoff** (RFC 8 §5.2). A file failing alone goes back on the due
   set at once, held by a doubling backoff from 100 ms to 30 s. A `ponytail:` marker: a fixed
@@ -318,7 +318,7 @@ Only what the RFC leaves to the code. Ids are stable; a missing number became a 
   the generation moved past the last one applied; a gap in `SeqNum` raises the floor.
   `Offloaded` and `LossStale` events raise nothing. `LossFailedWindow` raises the file's
   sequence (the write's drop is T4.6's). `LossCorrupt` of a pending write commits it as
-  `OpLost`. A `decision:` marker names the cases, since `LossEvent` carries no synced flag
+  a whole loss. A `decision:` marker names the cases, since `LossEvent` carries no synced flag
   (§9, point 2).
 - **D9, the one sync function.** Every engine `Sync` goes through one function: the group
   commit's, `Commit`'s, epic 5's phase 1, epic 6's recovery, epic 7's capacity sync and epic
@@ -345,7 +345,7 @@ Only what the RFC leaves to the code. Ids are stable; a missing number became a 
 - **D12, a write on a halted journal** answers `ErrUnavailable` and calls no `Done`. A
   `decision:` marker, withdrawn if the service needs a cause it can retry (`ErrDelay`).
 - **D13, a loss reported after the batch built its operations.** One found before commits
-  the write as `OpLost` from that batch; one reported between `pending()` and the commit is
+  the write as a whole loss from that batch; one reported between `pending()` and the commit is
   committed as written. A `decision:` marker names the fix, the store-side loss path
   (§9, point 5).
 
@@ -369,7 +369,7 @@ pkg/block/engine/
     rfc8_commit_test.go  T4.1–T4.4, T4.6  the rows of rule 6
 pkg/metadata/kvstore/
   existence.go      T4.3  PendingOp's Mtime, Ctime and Over (D6), the marks write
-                    T4.5  OpLost (D6)
+                    T4.5  PendingOp.Lost (D6)
 test/engine/known.yaml  T4.1–T4.4, T4.6  their entries
 ```
 
@@ -444,7 +444,7 @@ listed test fails on the regression it names (after "catches").
   commit or alone, and what a committed one recorded handed to `MarksRecorded` (RFC 8 §5.2's
   second rule); on return, `Settle(id, v)` per committed file at the
   highest version committed for it, which also drops a truncate up's marker (epic 5's D4)
-  and a synced loss's `OpLost` (RFC 1 §3.6, §3.10), its operations removed and their `Done`s
+  and a synced loss's whole-loss write (RFC 1 §3.6, §3.10), its operations removed and their `Done`s
   called, the mark cleared and its waiters woken, an empty entry dropped marked dead under
   its own lock (epic 3's `unlock`); `engine_pending_existence_ops`; `waitBatch`,
   `commitNow`, `commitThrough` and `commitAll` (D10); `dropShare(s)`, which removes a share's
@@ -535,17 +535,17 @@ listed test fails on the regression it names (after "catches").
 - **Deliverables:** in `loss.go`: the sync function (D9), which the group commit then uses;
   per journal, the floor and the per-file entries with RFC 8 §5.1's `ponytail:`, the last
   generation applied and the last event seen; the drain (D8), run by the sync function and
-  `LossSeq`; `LossSeq`; a synced pending write committed from its loss event as `OpLost`
+  `LossSeq`; `LossSeq`; a synced pending write committed from its loss event as a whole loss
   through T4.3's batch, its `Done` from that commit; `lostWhole` (D11), `Write`'s refusal
   (D12) and its hook. **The unmatched loss:** `Write` takes its version from `WriteAt` before
   it inserts the operation under the entry's lock, so a drain in that gap finds no write.
   `markLost` keeps such an event per file in the journal's loss state, under the lock the
   insert takes; the insert checks it and inserts a write whose version it names marked
-  lost, committed as `OpLost`; a kept event below the write's version is a committed
+  lost, committed as a whole loss; a kept event below the write's version is a committed
   write's, discarded, since a file's writes arrive in version order (epic 3's D3). A
   `decision:` marker at the discard names that order, withdrawn with epic 3's D3. A
   `ponytail:` marker: a kept event of a file never written again stays until the process
-  ends; prune it with §9 point 5's loss path. `kvstore`'s `OpLost` (D6), with its own test.
+  ends; prune it with §9 point 5's loss path. `kvstore`'s `PendingOp.Lost` (D6), with its own test.
   E2's fake journal gains `Report`, which injects a loss event, an offloaded one included,
   and a gap in the ring.
 - **Rows:** none of its own; the verifier after a loss is T4.6's.
@@ -554,9 +554,9 @@ listed test fails on the regression it names (after "catches").
   (catches a raise RFC 8 §4.1's "on nothing else" forbids); a gap raises a file with no event
   (catches a drain that trusts the ring); `LossSeq` after a loss with no `Commit` is raised
   (catches a drain only in `Commit`); a corrupt loss reported between a batch's capture and
-  its sync is committed as `OpLost` (catches a store operation built at capture, before the
+  its sync is committed as a whole loss (catches a store operation built at capture, before the
   drain). A hook between `Write`'s `WriteAt` and its insert reports a corrupt loss of that
-  write and runs `LossSeq`: the next batch commits it as `OpLost`, a `Read` answers `ErrLost`
+  write and runs `LossSeq`: the next batch commits it as a whole loss, a `Read` answers `ErrLost`
   and its `Done` runs once (catches an event the drain advances past unmarked, committed as
   data). Over the real `kvstore`: the loss event's commit leaves the extent uncarved, a
   `Read` answers `ErrLost`, and `Charged` and the usage counters are unchanged (catches a
@@ -672,7 +672,7 @@ RFC gaps go to the RFC, not here; each is listed until its RFC change merges.
    enough, or refuse a `Sync` until the engine has caught up. No RFC change yet.
 5. **RFC gap: a synced loss of committed, unoffloaded content reaches no metadata,** [#3734](https://github.com/cubbit/dittofs/issues/3734).
    A loss reported once its write is committed as written (D13, or one a ring gap hides)
-   lands at or below `applied`, where `kvstore` skips an `OpLost`; the extent still reads
+   lands at or below `applied`, where `kvstore` skips a whole loss; the extent still reads
    **Lost**, but the File marks no loss and the charge is never released, while RFC 1 §3.10
    counts the loss recorded, its write's existence committed, so `Settle` drops its record.
    The planned fix is epic 4's: a store-side loss path, driven from T4.5's discard of a kept event below a
