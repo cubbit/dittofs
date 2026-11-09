@@ -366,6 +366,32 @@ func (r *Runner) resolve(round uint64, dir, side string, n int, s Step) (*Reques
 		if err == nil {
 			req.SD = d.Marshal()
 		}
+	case "aceadd":
+		req.Part, req.Index = a["part"], a["index"]
+		// One entry travels as a one-entry descriptor, in the list its type
+		// belongs to.
+		list := "D:"
+		if strings.HasPrefix(a["ace"], "(AU;") || strings.HasPrefix(a["ace"], "(ML;") {
+			list = "S:"
+		}
+		var d *sd.SD
+		d, err = r.resolver.Parse(list + a["ace"])
+		if err == nil {
+			req.SD = d.Marshal()
+		}
+	case "acedel":
+		req.Part, req.Index = a["part"], a["index"]
+	case "aceedit":
+		req.Part, req.Index = a["part"], a["index"]
+		flags := a["aceflags"]
+		if flags == "-" {
+			flags = ""
+		}
+		var d *sd.SD
+		d, err = r.resolver.Parse("D:(A;" + flags + ";" + a["mask"] + ";;;WD)")
+		if err == nil {
+			req.AceMask, req.AceFlags = d.DACL.ACEs[0].Mask, d.DACL.ACEs[0].Flags
+		}
 	case "setowner":
 		req.Part = "owner"
 		var d *sd.SD
@@ -504,14 +530,26 @@ func (r *Runner) Run(p *Plan) *Result {
 			res.Err = fmt.Errorf("step %d: %s%s", i+1, sr.Ref.Fatal, sr.Dut.Fatal)
 			return res
 		}
-		if sr.Diverge != nil {
-			if r.known != nil && r.known.Has(sr.Diverge.Sig) {
-				res.Known = append(res.Known, sr.Diverge.Sig)
-				continue
-			}
+		if sr.Diverge != nil && !r.passKnown(res, sr.Diverge) {
 			res.Diverge = sr.Diverge
 			r.checkDut(res)
 			return res
+		}
+		// What a descriptor write left is read back at once, as admin, and
+		// compared entry by entry in order (DESIGN.md §9.1), so a server that
+		// reorders, merges or drops entries diverges at the write that did it.
+		if IsSDWrite(s.Op) && sr.Ref.Errno == 0 && sr.Dut.Errno == 0 && sr.Diverge == nil {
+			rb := r.readBack(p.Round, dir, i+1, s, cmp)
+			res.Steps = append(res.Steps, rb)
+			if rb.Ref.Fatal != "" || rb.Dut.Fatal != "" {
+				res.Err = fmt.Errorf("step %dR: %s%s", i+1, rb.Ref.Fatal, rb.Dut.Fatal)
+				return res
+			}
+			if rb.Diverge != nil && !r.passKnown(res, rb.Diverge) {
+				res.Diverge = rb.Diverge
+				r.checkDut(res)
+				return res
+			}
 		}
 	}
 	r.sweep(p.Round, dir, cmp, res)
@@ -519,6 +557,23 @@ func (r *Runner) Run(p *Plan) *Result {
 		r.checkDut(res)
 	}
 	return res
+}
+
+// readBack reads the descriptor a write step left, as admin: owner, group and
+// DACL, and the SACL too when the write was of the full descriptor. Its
+// divergence is signed "<op>:readback:<part>", apart from a plan's getacl.
+func (r *Runner) readBack(round uint64, dir string, n int, w Step, cmp *comparer) StepResult {
+	part := "ntsd"
+	if w.Args["part"] == "ntsd_full" {
+		part = "ntsd_full"
+	}
+	s := Step{User: "admin", Op: "getacl", Args: map[string]string{"path": w.Args["path"], "part": part}}
+	sr := r.runStep(round, dir, n, fmt.Sprintf("%02dR", n), s, cmp)
+	sr.Line = fmt.Sprintf("%02dR", n) + strings.TrimLeft(sr.Line, "0123456789")
+	if sr.Diverge != nil {
+		sr.Diverge.Sig = w.Op + ":readback:" + strings.TrimPrefix(sr.Diverge.Sig, "getacl:")
+	}
+	return sr
 }
 
 func (r *Runner) checkDut(res *Result) {

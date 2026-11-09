@@ -525,6 +525,11 @@ the lock succeeded). It knows the tree (§6.3), because the tree is in the plan:
   looked at, and §9.4 compares their attributes against what they were before;
 - `rename` and `link` draw their two names together, §7.3;
 - `unlink` picks, with probability 0.3, a file an earlier step opened;
+- `getacl` picks, with probability 0.5, a path an earlier step wrote a descriptor on
+  (`setacl`, `setowner`, an ACE edit), and is then made, with probability 0.7, by a user other
+  than the writer if the draw named the writer: whether the descriptor just written lets
+  someone else read it is the test. An ACE edit picks such a path with probability 0.5, so
+  entries are added to and taken from lists the plan built as well as inherited ones;
 - `readdir` picks, with probability 0.3, the wide directory when the tree filled it;
 - a data, truncate or lock operation on a file some earlier step locked picks, with
   probability 0.5, an offset and length that overlap that lock: the same range, a range
@@ -887,6 +892,18 @@ self-relative descriptor straight to `QUERY_INFO`/`SET_INFO`:
 | `getacl(path, part)` | §6.3; part `dacl` (`system.cifs_acl`) 30, `ntsd` (`system.cifs_ntsd`, owner+group+DACL) 50, `ntsd_full` (`system.cifs_ntsd_full`, + SACL) 20 | the descriptor, normalised (§9.3) |
 | `setacl(path, part, sd)` | §6.3; part as above; `sd` from §8 | — |
 | `setowner(path, owner, group)` | §6.3; owner and group from §6.2 — a set of `system.smb3_ntsd_owner`, which the client sends as owner and group together | — |
+| `aceadd(path, part, index, ace)` | §6.3; part `dacl` 50, `ntsd` 30, `ntsd_full` 20; index `0` 30, `1` 20, `last` 20, `end` 30; `ace` from §8.1, an audit entry going to the SACL | the descriptor as read before the edit |
+| `acedel(path, part, index)` | as above; index `0` 40, `1` 25, `last` 35 | as above |
+| `aceedit(path, part, index, mask, aceflags)` | as `acedel`; mask and flags from §8.1, written over the entry's, its type and trustee kept | as above |
+
+**Editing one entry.** `setacl` writes a whole descriptor drawn from scratch; tools that grant
+or revoke one entry (`icacls /grant`, Explorer) instead read the descriptor, insert, remove or
+change one entry, and write the whole list back, including the entries the server returned as
+inherited. The three edit operations do that, each on its own side from what its own server
+returned: `index` is the position (`last` the last entry, `end` one past it), and a position
+past the list, or a DACL that is null or absent for a removal or a change, is refused by the
+worker with `ENOENT`, alike on both sides when the two lists agree. Adding to a null DACL
+creates a list with that one entry. What was read is compared even when the write then fails.
 
 The client has no owner-only set, so owner and group always travel together.
 `setowner` is how the `sd` profile changes ownership: setting the owner to oneself, to a group
@@ -920,7 +937,7 @@ and DittoFS's audit stream is [RFC 25](../../docs/internals/rfcs/rfc-25-observab
 | namespace | 14 | `mkdir` 3, `rmdir` 1, `unlink` 2, `rename` 3, `link` 1, `readdir` 2 |
 | attributes | 12 | `stat` 4, `lstat` 1, `fstat` 2, `utimensat` 1, `getdosattr` 1.5, `setdosattr` 2, `getbtime` 0.5, `setbtime` 0.5, xattr ops 0.5 each, `statfs` 0.5 |
 | locks | 14 | `lock` 5, `unlock` 3, `testlock` 1, `flock` 1 |
-| security descriptors | 22 | `getacl` 4, `setacl` 4, `setowner` 1.5 |
+| security descriptors | 22 | `getacl` 4, `setacl` 3, `setowner` 1.5, `aceadd` 2, `acedel` 1.5, `aceedit` 1.5 |
 
 In the `posix` profile `chmod` and `chown` take 2 and 1 within the attribute group.
 
@@ -1015,6 +1032,13 @@ Drawn for every `setacl` of part `ntsd_full`; absent (cleared) with p = 0.3.
 Each step runs on `ref`, then on `dut`, and is compared before the next step starts. The
 first new divergence ends the round: after it the two trees differ, and every later
 comparison would report the difference again in another form.
+
+**Every descriptor write is read back.** After a `setacl`, `setowner` or ACE edit that
+succeeds on both sides, admin reads the descriptor at once — owner, group and DACL, plus the
+SACL when the write was of the full descriptor — and it is compared entry by entry in order
+(§9.3). A server that reorders, merges, canonicalises or drops entries diverges at the write
+that did it, signed `<op>:readback:<part>` (`aceadd:readback:dacl`), and the step shows in a
+trace as `NNR`.
 
 A **known** divergence (§12.2) does not end the round. It is recorded and the round goes on,
 because a known difference that leaves the trees alike — a descriptor reported with another

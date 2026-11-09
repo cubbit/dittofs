@@ -17,6 +17,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/cubbit/dittofs/test/smbfuzz/sd"
 )
 
 // WorkerConfig is how a worker signs in (DESIGN.md §4.2).
@@ -113,7 +115,8 @@ func (w *worker) fd(slot string) (int, bool) {
 func (w *worker) do(r *Request) Reply {
 	out, err := w.exec(r)
 	if err != nil {
-		return Reply{Errno: errnoOf(err)}
+		// An ACE edit returns what it read even when its write fails.
+		return Reply{Errno: errnoOf(err), Out: out}
 	}
 	return Reply{Out: out}
 }
@@ -505,8 +508,87 @@ func (w *worker) exec(r *Request) (*Output, error) {
 		return &Output{Bytes: b}, nil
 	case "setacl", "setowner":
 		return nil, unix.Setxattr(r.Path, aclXattr(r.Part), r.SD, 0)
+	case "aceadd", "acedel", "aceedit":
+		return editACL(r)
 	case "noop":
 		return nil, nil
 	}
 	return nil, fmt.Errorf("unknown op %q: %w", r.Op, unix.ENOSYS)
+}
+
+// aceIndex resolves an ACE position against a list of n entries: "0" and "1"
+// as written, "last" the last entry, "end" one past it.
+func aceIndex(index string, n int) int {
+	switch index {
+	case "last":
+		return n - 1
+	case "end":
+		return n
+	case "1":
+		return 1
+	}
+	return 0
+}
+
+// editACL reads the descriptor part, inserts, removes or changes one ACE, and
+// writes it back, the way a tool that grants or revokes one entry does: the
+// entries the server returned, inherited ones included, are written back as
+// read. It returns the descriptor as read, so a difference in the starting
+// point shows before the write. A position past the list is refused with
+// ENOENT by the worker itself, alike on both sides when the lists agree.
+func editACL(r *Request) (*Output, error) {
+	name := aclXattr(r.Part)
+	before, err := getxattr(r.Path, name)
+	if err != nil {
+		return nil, err
+	}
+	out := &Output{Bytes: before}
+	d, err := sd.Unmarshal(before)
+	if err != nil {
+		return out, unix.EBADMSG
+	}
+	if err := applyACEEdit(d, r); err != nil {
+		return out, err
+	}
+	return out, unix.Setxattr(r.Path, name, d.Marshal(), 0)
+}
+
+// applyACEEdit inserts, removes or changes the one entry r names in d.
+func applyACEEdit(d *sd.SD, r *Request) error {
+	switch r.Op {
+	case "aceadd":
+		add, err := sd.Unmarshal(r.SD)
+		if err != nil {
+			return unix.EINVAL
+		}
+		// The entry comes as a one-entry descriptor: in its SACL when it is
+		// an audit or label entry, in its DACL otherwise.
+		target, from := &d.DACL, add.DACL
+		if add.SACL != nil && len(add.SACL.ACEs) > 0 {
+			target, from = &d.SACL, add.SACL
+		}
+		if from == nil || len(from.ACEs) == 0 {
+			return unix.EINVAL
+		}
+		if *target == nil {
+			*target = &sd.ACL{} // a null DACL becomes a list with one entry
+		}
+		l := *target
+		i := min(max(aceIndex(r.Index, len(l.ACEs)), 0), len(l.ACEs))
+		l.ACEs = append(l.ACEs[:i], append([]sd.ACE{from.ACEs[0]}, l.ACEs[i:]...)...)
+	case "acedel", "aceedit":
+		if d.DACL == nil {
+			return unix.ENOENT
+		}
+		i := aceIndex(r.Index, len(d.DACL.ACEs))
+		if i < 0 || i >= len(d.DACL.ACEs) {
+			return unix.ENOENT
+		}
+		if r.Op == "acedel" {
+			d.DACL.ACEs = append(d.DACL.ACEs[:i], d.DACL.ACEs[i+1:]...)
+		} else {
+			d.DACL.ACEs[i].Mask, d.DACL.ACEs[i].Flags = r.AceMask, r.AceFlags
+		}
+	}
+	return nil
 }

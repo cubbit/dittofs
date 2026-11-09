@@ -97,6 +97,9 @@ var opList = []OpSpec{
 	{Name: "getacl", Params: []param{{"path", kPath}, {"part", kEnum}}},
 	{Name: "setacl", Params: []param{{"path", kPath}, {"part", kEnum}, {"sd", kSD}}},
 	{Name: "setowner", Params: []param{{"path", kPath}, {"owner", kTrustee}, {"group", kTrustee}}},
+	{Name: "aceadd", Params: []param{{"path", kPath}, {"part", kEnum}, {"index", kEnum}, {"ace", kSD}}},
+	{Name: "acedel", Params: []param{{"path", kPath}, {"part", kEnum}, {"index", kEnum}}},
+	{Name: "aceedit", Params: []param{{"path", kPath}, {"part", kEnum}, {"index", kEnum}, {"mask", kEnum}, {"aceflags", kEnum}}},
 }
 
 // Ops indexes opList by name.

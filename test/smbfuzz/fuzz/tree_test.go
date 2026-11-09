@@ -134,3 +134,30 @@ func TestComparerSeedsSetTimes(t *testing.T) {
 		t.Fatalf("got %+v", d)
 	}
 }
+
+// After a descriptor write, a getacl of that path by another user is
+// reached: whether the new descriptor lets them read it is compared.
+func TestOtherUserReadsWrittenACL(t *testing.T) {
+	reads, edits := 0, 0
+	const rounds = 2000
+	for round := uint64(1); round <= rounds; round++ {
+		p, _ := Generate(1, round)
+		writer := map[string]string{}
+		for _, s := range p.Steps {
+			switch s.Op {
+			case "setacl", "setowner", "aceadd", "acedel", "aceedit":
+				writer[s.Args["path"]] = s.User
+				if s.Op != "setacl" && s.Op != "setowner" {
+					edits++
+				}
+			case "getacl":
+				if w, ok := writer[s.Args["path"]]; ok && w != s.User {
+					reads++
+				}
+			}
+		}
+	}
+	if reads < rounds/10 || edits < rounds/2 {
+		t.Fatalf("over %d rounds: %d reads by another user after a write, %d ACE edits", rounds, reads, edits)
+	}
+}

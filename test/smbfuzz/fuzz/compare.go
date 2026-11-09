@@ -137,6 +137,11 @@ func (c *comparer) compare(s Step, ref, dut Reply) (*Divergence, []string) {
 		return d, nil
 	}
 	if ref.Errno != 0 {
+		// An ACE edit that read the descriptor and failed to write it still
+		// compares what it read.
+		if isACEEdit(s.Op) && ref.Out != nil && dut.Out != nil {
+			return c.compareSD(s, ref.Out.Bytes, dut.Out.Bytes), nil
+		}
 		return nil, nil
 	}
 	path := c.pathOf(s)
@@ -217,6 +222,10 @@ func (c *comparer) compare(s Step, ref, dut Reply) (*Divergence, []string) {
 	case "getbtime":
 		rv, dv := int64(le64(ro.Bytes)), int64(le64(do.Bytes))
 		if d := c.compareTime(s, path, "ftbtime", rv, dv, 1); d != nil {
+			return d, nil
+		}
+	case "aceadd", "acedel", "aceedit":
+		if d := c.compareSD(s, ro.Bytes, do.Bytes); d != nil {
 			return d, nil
 		}
 	case "getxattr", "getacl":
@@ -435,4 +444,12 @@ func le64(b []byte) uint64 {
 		return 0
 	}
 	return binary.LittleEndian.Uint64(b)
+}
+
+func isACEEdit(op string) bool { return op == "aceadd" || op == "acedel" || op == "aceedit" }
+
+// IsSDWrite reports whether op writes a security descriptor: the runner reads
+// the result back after each one (DESIGN.md §9.1).
+func IsSDWrite(op string) bool {
+	return op == "setacl" || op == "setowner" || isACEEdit(op)
 }

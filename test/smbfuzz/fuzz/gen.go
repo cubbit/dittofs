@@ -56,7 +56,8 @@ var opWeights = func() []WeightedChoice[string] {
 			{"setdosattr", 2}, {"getbtime", 0.5}, {"setbtime", 0.5}, {"getxattr", 0.5}, {"setxattr", 0.5},
 			{"removexattr", 0.5}, {"listxattr", 0.5}, {"statfs", 0.5}, {"chmod", 2}, {"chown", 1}}},
 		{14, []WeightedChoice[string]{{"lock", 5}, {"unlock", 3}, {"testlock", 1}, {"flock", 1}}},
-		{22, []WeightedChoice[string]{{"getacl", 4}, {"setacl", 4}, {"setowner", 1.5}}},
+		{22, []WeightedChoice[string]{{"getacl", 4}, {"setacl", 3}, {"setowner", 1.5},
+			{"aceadd", 2}, {"acedel", 1.5}, {"aceedit", 1.5}}},
 	}
 	var out []WeightedChoice[string]
 	for _, g := range groups {
@@ -83,7 +84,8 @@ type genState struct {
 	writes  []lockRef         // ranges pwrite and fallocate named, per path
 	slotOf  map[string]string // slot -> path
 	tree    Tree
-	touched []string // paths a namespace step changed, and their parents
+	touched []string  // paths a namespace step changed, and their parents
+	sdWrote []slotRef // descriptor writes so far: who wrote which path
 }
 
 func genV1(round uint64) *Plan {
@@ -483,6 +485,17 @@ func mustEval(expr string) int64 {
 
 func parentOf(p string) string { return path.Dir(p) }
 
+// otherUser draws a user other than u, by weight.
+func (g *genState) otherUser(u string) string {
+	var others []WeightedChoice[string]
+	for _, x := range Users {
+		if x.V != u {
+			others = append(others, x)
+		}
+	}
+	return PickW(g.r, others)
+}
+
 func (g *genState) wideFilled() bool {
 	for _, o := range g.tree {
 		if o.Path == WideDir && o.Fill > 0 {
@@ -631,17 +644,55 @@ func (g *genState) step(user, op string) Step {
 		handle()
 		a["how"] = PickW(r, []WeightedChoice[string]{{"LOCK_SH|LOCK_NB", 40}, {"LOCK_EX|LOCK_NB", 40}, {"LOCK_UN", 20}})
 	case "getacl":
-		a["path"] = g.observed(objAny)
+		// With probability 0.5 a path an earlier step wrote a descriptor on,
+		// read, with probability 0.7, by a user other than the writer: whether
+		// the descriptor just written lets them read it is part of the test.
+		if len(g.sdWrote) > 0 && r.Chance(0.5) {
+			w := Pick(r, g.sdWrote)
+			a["path"] = w.path
+			if s.User == w.user && r.Chance(0.7) {
+				s.User = g.otherUser(w.user)
+			}
+		} else {
+			a["path"] = g.observed(objAny)
+		}
 		a["part"] = PickW(r, []WeightedChoice[string]{{"dacl", 30}, {"ntsd", 50}, {"ntsd_full", 20}})
 	case "setacl":
 		a["path"] = g.path()
 		part := PickW(r, []WeightedChoice[string]{{"dacl", 30}, {"ntsd", 50}, {"ntsd_full", 20}})
 		a["part"] = part
 		a["sd"] = g.descriptor(part)
+		g.sdWrote = append(g.sdWrote, slotRef{user: s.User, path: a["path"]})
 	case "setowner":
 		a["path"] = g.path()
 		a["owner"] = PickW(r, Owners)
 		a["group"] = PickW(r, Owners)
+		g.sdWrote = append(g.sdWrote, slotRef{user: s.User, path: a["path"]})
+	case "aceadd", "acedel", "aceedit":
+		// Edits favour a path whose descriptor an earlier step wrote, with
+		// probability 0.5, so an entry is added to or taken from a list the
+		// plan built, as well as from what the tree inherited.
+		if len(g.sdWrote) > 0 && r.Chance(0.5) {
+			a["path"] = Pick(r, g.sdWrote).path
+		} else {
+			a["path"] = g.path()
+		}
+		part := PickW(r, []WeightedChoice[string]{{"dacl", 50}, {"ntsd", 30}, {"ntsd_full", 20}})
+		a["part"] = part
+		if op == "aceadd" {
+			a["index"] = PickW(r, []WeightedChoice[string]{{"0", 30}, {"1", 20}, {"last", 20}, {"end", 30}})
+			a["ace"] = g.ace(part == "ntsd_full" && r.Chance(0.3))
+		} else {
+			a["index"] = PickW(r, []WeightedChoice[string]{{"0", 40}, {"1", 25}, {"last", 35}})
+		}
+		if op == "aceedit" {
+			a["mask"] = fmt.Sprintf("0x%x", g.aceMask())
+			a["aceflags"] = aceFlagText(g.aceFlags(false))
+			if a["aceflags"] == "" {
+				a["aceflags"] = "-"
+			}
+		}
+		g.sdWrote = append(g.sdWrote, slotRef{user: s.User, path: a["path"]})
 	default:
 		panic("fuzz: no generator for " + op)
 	}
@@ -789,6 +840,14 @@ func (g *genState) ace(sacl bool) string {
 	} else if r.Chance(0.4) {
 		typ = "D"
 	}
+	mask := g.aceMask()
+	flags := g.aceFlags(sacl)
+	return fmt.Sprintf("(%s;%s;0x%x;;;%s)", typ, aceFlagText(flags), mask, PickW(r, Trustees))
+}
+
+// aceMask draws an ACE's access mask (DESIGN.md §8.1).
+func (g *genState) aceMask() uint32 {
+	r := g.r
 	var mask uint32
 	for _, bit := range rightBits {
 		if r.Chance(0.35) {
@@ -804,6 +863,13 @@ func (g *genState) ace(sacl bool) string {
 	if r.Chance(0.03) {
 		mask |= 0x200
 	}
+	return mask
+}
+
+// aceFlags draws an ACE's flags (DESIGN.md §8.1); an audit entry's also say
+// which outcomes it audits.
+func (g *genState) aceFlags(sacl bool) byte {
+	r := g.r
 	var flags byte
 	for _, f := range []struct {
 		bit byte
@@ -821,7 +887,7 @@ func (g *genState) ace(sacl bool) string {
 			flags |= sd.FailedAccess
 		}
 	}
-	return fmt.Sprintf("(%s;%s;0x%x;;;%s)", typ, aceFlagText(flags), mask, PickW(r, Trustees))
+	return flags
 }
 
 func aceFlagText(f byte) string {

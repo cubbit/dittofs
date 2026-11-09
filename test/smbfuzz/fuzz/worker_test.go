@@ -189,3 +189,60 @@ func TestTreeSetupLocal(t *testing.T) {
 		t.Fatalf("wide directory: %v, %d entries", err, len(ents))
 	}
 }
+
+// An ACE edit, resolved from a plan step as the runner resolves it, inserts,
+// removes or changes exactly the entry it names and keeps every other entry,
+// inherited ones included, in its place.
+func TestApplyACEEdit(t *testing.T) {
+	res := testResolver()
+	r := &Runner{env: Env{RefRoot: "/r", DutRoot: "/d"}, resolver: res}
+	const start = "D:(A;;FA;;;alice)(D;;FR;;;bob)(A;ID;FR;;;WD)"
+	for _, c := range []struct {
+		step Step
+		want string
+		err  error
+	}{
+		{Step{Op: "aceadd", Args: map[string]string{"part": "dacl", "index": "0", "ace": "(D;;0x1;;;carol)"}},
+			"D:(D;;0x1;;;carol)(A;;FA;;;alice)(D;;FR;;;bob)(A;ID;FR;;;WD)", nil},
+		{Step{Op: "aceadd", Args: map[string]string{"part": "dacl", "index": "1", "ace": "(A;OICI;0x2;;;devs)"}},
+			"D:(A;;FA;;;alice)(A;OICI;0x2;;;devs)(D;;FR;;;bob)(A;ID;FR;;;WD)", nil},
+		{Step{Op: "aceadd", Args: map[string]string{"part": "dacl", "index": "end", "ace": "(A;;0x1;;;carol)"}},
+			"D:(A;;FA;;;alice)(D;;FR;;;bob)(A;ID;FR;;;WD)(A;;0x1;;;carol)", nil},
+		{Step{Op: "aceadd", Args: map[string]string{"part": "ntsd_full", "index": "0", "ace": "(AU;SAFA;0x1;;;WD)"}},
+			"D:(A;;FA;;;alice)(D;;FR;;;bob)(A;ID;FR;;;WD)S:(AU;SAFA;0x1;;;WD)", nil},
+		{Step{Op: "acedel", Args: map[string]string{"part": "dacl", "index": "last"}},
+			"D:(A;;FA;;;alice)(D;;FR;;;bob)", nil},
+		{Step{Op: "acedel", Args: map[string]string{"part": "dacl", "index": "1"}},
+			"D:(A;;FA;;;alice)(A;ID;FR;;;WD)", nil},
+		{Step{Op: "aceedit", Args: map[string]string{"part": "dacl", "index": "1", "mask": "0x2", "aceflags": "OICI"}},
+			"D:(A;;FA;;;alice)(D;OICI;0x2;;;bob)(A;ID;FR;;;WD)", nil},
+		{Step{Op: "aceedit", Args: map[string]string{"part": "dacl", "index": "0", "mask": "0x1", "aceflags": "-"}},
+			"D:(A;;0x1;;;alice)(D;;FR;;;bob)(A;ID;FR;;;WD)", nil},
+	} {
+		d, err := res.Parse(start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.step.Args["path"] = "f0"
+		req, err := r.resolve(1, "", SideRef, 1, c.step)
+		if err != nil {
+			t.Fatalf("%s: resolve: %v", FormatStep(1, c.step), err)
+		}
+		if err := applyACEEdit(d, req); err != c.err {
+			t.Fatalf("%s: %v, want %v", FormatStep(1, c.step), err, c.err)
+		}
+		want, _ := res.Parse(c.want)
+		if got, w := res.Format(d), res.Format(want); got != w {
+			t.Errorf("%s:\n got %s\nwant %s", FormatStep(1, c.step), got, w)
+		}
+	}
+	// A position past the list, or a list that is not there, is refused.
+	empty, _ := res.Parse("D:")
+	if err := applyACEEdit(empty, &Request{Op: "acedel", Index: "0"}); err != unix.ENOENT {
+		t.Fatalf("acedel on an empty DACL: %v", err)
+	}
+	null, _ := res.Parse("D:NO_ACCESS_CONTROL")
+	if err := applyACEEdit(null, &Request{Op: "aceedit", Index: "0"}); err != unix.ENOENT {
+		t.Fatalf("aceedit on a null DACL: %v", err)
+	}
+}

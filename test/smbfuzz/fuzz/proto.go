@@ -32,6 +32,9 @@ type Request struct {
 	LockType int16  `json:"locktype,omitempty"`
 	Part     string `json:"part,omitempty"`
 	SD       []byte `json:"sd,omitempty"`
+	Index    string `json:"index,omitempty"` // aceadd, acedel, aceedit: 0, 1, last, end
+	AceMask  uint32 `json:"ace_mask,omitempty"`
+	AceFlags byte   `json:"ace_flags,omitempty"`
 	UID      int    `json:"uid,omitempty"`
 	GID      int    `json:"gid,omitempty"`
 }
