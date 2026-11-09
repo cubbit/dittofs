@@ -3,6 +3,7 @@
 package fuzz
 
 import (
+	"io"
 	"path"
 	"strings"
 	"testing"
@@ -161,5 +162,62 @@ func TestOtherUserReadsWrittenACL(t *testing.T) {
 	}
 	if reads < rounds/10 || edits < rounds/2 {
 		t.Fatalf("over %d rounds: %d reads by another user after a write, %d ACE edits", rounds, reads, edits)
+	}
+}
+
+type remountHooks struct{ remounts *int }
+
+func (remountHooks) CleanRef(string) error       { return nil }
+func (remountHooks) ResetDut() error             { return nil }
+func (remountHooks) DutAlive() (bool, string)    { return true, "" }
+func (remountHooks) Ticket(string, string) error { return nil }
+func (h remountHooks) Remount() error            { *h.remounts++; return nil }
+
+// A mount that lost server inode numbers cannot fail the inode relation: the
+// round's inode divergence is not run, and both shares are mounted again.
+func TestServerinoLossIsNotRun(t *testing.T) {
+	const on = "//10.0.0.1/p /s/mnt/ref cifs rw,vers=3.1.1,serverino,soft 0 0\n" +
+		"//127.0.0.1/p /s/mnt/dut cifs rw,vers=3.1.1,serverino,soft 0 0\n"
+	const refOff = "//10.0.0.1/p /s/mnt/ref cifs rw,vers=3.1.1,noserverino,soft 0 0\n" +
+		"//127.0.0.1/p /s/mnt/dut cifs rw,vers=3.1.1,serverino,soft 0 0\n"
+	n := 0
+	r := &Runner{env: Env{RefRoot: "/s/mnt/ref", DutRoot: "/s/mnt/dut"}, hooks: remountHooks{&n}, log: io.Discard}
+	inode := func() *Result { return &Result{Diverge: &Divergence{Sig: "stat:inode", Field: "inode"}} }
+
+	res := inode()
+	r.checkServerino(res, on)
+	if res.Diverge == nil || res.Err != nil || n != 0 {
+		t.Fatalf("both mounts on: diverge %v, err %v, %d remounts", res.Diverge, res.Err, n)
+	}
+	res = inode()
+	r.checkServerino(res, refOff)
+	if res.Diverge != nil || res.Err == nil || n != 1 {
+		t.Fatalf("ref off: diverge %v, err %v, %d remounts; want not run and one remount", res.Diverge, res.Err, n)
+	}
+	res = &Result{Diverge: &Divergence{Sig: "stat:size", Field: "size"}}
+	r.checkServerino(res, refOff)
+	if res.Diverge == nil || res.Err != nil {
+		t.Fatalf("ref off: a size divergence became %v / %v", res.Diverge, res.Err)
+	}
+}
+
+// No directory gets a second name by case alone: neither in the pool nor by
+// a rename that changes a directory's case (poolSpecial says why).
+func TestNoDirectoryCaseAlias(t *testing.T) {
+	for _, d := range Pool {
+		for _, o := range Pool {
+			if d.Dir && o.Path != d.Path && strings.EqualFold(o.Path, d.Path) {
+				t.Errorf("pool directory %s has the case alias %s", d.Path, o.Path)
+			}
+		}
+	}
+	for round := uint64(1); round <= 2000; round++ {
+		p, _ := Generate(1, round)
+		for _, s := range p.Steps {
+			if s.Op == "rename" && !poolFile(s.Args["path"]) && s.Args["path2"] != s.Args["path"] &&
+				strings.EqualFold(s.Args["path2"], s.Args["path"]) {
+				t.Fatalf("round %d renames directory %s to %s", round, s.Args["path"], s.Args["path2"])
+			}
+		}
 	}
 }

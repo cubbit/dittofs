@@ -592,8 +592,11 @@ later steps can still reach what moved:
 - directories `d0`, `d1` at the top, in each of them, and in each of those: 14 directories,
   `d0/d1/d0` the deepest;
 - files `f0`, `f1` at the top and in every directory: 30 files, `d1/d0/d1/f1` the deepest;
-- case: `F0`, `D0`, `D0/f0`, `d0/F0`, `d1/F0` (each share's case rule decides whether these are
-  new names, [RFC 22 §12.2](../../docs/internals/rfcs/rfc-22-smb.md#12.2%20Case));
+- case: `F0`, `d0/F0`, `d1/F0` (each share's case rule decides whether these are new names,
+  [RFC 22 §12.2](../../docs/internals/rfcs/rfc-22-smb.md#12.2%20Case)). Only files have case
+  aliases, and a rename changes the case of a file's name only: when a case-insensitive server
+  gives a second name of a directory the first one's file id, the client turns server inode
+  numbers off for the whole mount, and §9.4's inode relation then compares nothing;
 - awkward but legal on both: `a b` (space), `é` (NFC), `É` (case of a non-ASCII letter),
   `.hidden`;
 - long: a 255-byte name (`l` repeated);
@@ -1094,7 +1097,7 @@ server's local accounts compare by role, not by machine.
 | file type | exact |
 | size | exact |
 | nlink | exact |
-| inode | never as a number, which is each server's own; as a relation only: two paths of the round that have equal inode numbers on one side must have equal ones on the other. A removed name is forgotten with every name below it, so a number one server reuses is never related to a name gone |
+| inode | never as a number, which is each server's own; as a relation only: two paths of the round that have equal inode numbers on one side must have equal ones on the other. A removed name is forgotten with every name below it, so a number one server reuses is never related to a name gone. After each round the runner checks that both mounts still have `serverino` in `/proc/mounts`; when either lost it (a step made a directory under a file's case alias), an inode divergence of that round is reported as not run, and both shares are mounted again |
 | uid, gid, permission bits | `posix` profile only, exact |
 | mtime, btime | the first look at a time compares the two values, which may be up to 1 s apart (each step runs on one server and then the other); every later look is **relative**: per path, each side remembers the last value it observed, and the comparison is "unchanged", "advanced" or "went back". A time the plan sets — `utimensat`, `setbtime`, the tree's setup — becomes the remembered value on both sides, so "unchanged" after it means both kept exactly what was set, truncated to 100 ns. A rename carries what is remembered of the source, and of every name below it, to the target: a later look at a moved object compares against what it was before the move |
 | atime | not compared (the reference's mount options decide when it moves) |

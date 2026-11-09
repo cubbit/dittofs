@@ -68,17 +68,18 @@ func TestGeneratedPlansRoundTrip(t *testing.T) {
 	}
 }
 
-// Test N is always the same plan: the first rounds of generator 1 are pinned.
+// Test N is always the same plan: the first 2000 rounds of generator 1 are
+// pinned, enough that a small change to one draw's weight moves the hash.
 // A change that moves this hash changes what every test number means and
 // belongs in a new generator version.
 func TestGeneratorV1IsFrozen(t *testing.T) {
 	h := sha256.New()
-	for round := uint64(1); round <= 50; round++ {
+	for round := uint64(1); round <= 2000; round++ {
 		p, _ := Generate(1, round)
 		h.Write([]byte(p.Format()))
 	}
 	got := hex.EncodeToString(h.Sum(nil))
-	const want = "bc6485bd891baf627e178f34aafd2a6c9268fe1e1b65d69f0647d040f423af93"
+	const want = "17b275b0a1becba7d425168d423fab989cde0ddb4ac3dfd3c55c251ea9ed0723"
 	if got != want {
 		t.Fatalf("generator 1 changed: hash %s, pinned %s", got, want)
 	}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,6 +64,8 @@ type Hooks interface {
 	DutAlive() (bool, string)
 	// Ticket writes a Kerberos credential cache for account at path.
 	Ticket(account, path string) error
+	// Remount mounts both shares again, with the fixture's options.
+	Remount() error
 }
 
 // Runner executes plans.
@@ -501,6 +504,11 @@ func (r *Runner) Run(p *Plan) *Result {
 	dir := fmt.Sprintf("r%d-a%d", p.Round, r.attempt)
 	r.mu.Unlock()
 	res := &Result{Plan: p, Dir: dir}
+	defer func() {
+		if b, err := os.ReadFile("/proc/mounts"); err == nil {
+			r.checkServerino(res, string(b))
+		}
+	}()
 	defer r.cleanup(dir)
 	if err := r.setupRound(dir, p.Root); err != nil {
 		res.Err = err
@@ -574,6 +582,46 @@ func (r *Runner) readBack(round uint64, dir string, n int, w Step, cmp *comparer
 		sr.Diverge.Sig = w.Op + ":readback:" + strings.TrimPrefix(sr.Diverge.Sig, "getacl:")
 	}
 	return sr
+}
+
+// checkServerino runs after a round, given /proc/mounts. The cifs client
+// turns server inode numbers off for a whole mount when it meets a second
+// name of a directory, and only a remount turns them back on, so a mount that
+// lost them gives inode numbers of its own and §9.4's relation compares
+// nothing on it. Its round cannot fail on the relation, which is reported as
+// not run instead, and both shares are mounted again, so the next round
+// starts with both alike rather than with only the share a reset remounted.
+func (r *Runner) checkServerino(res *Result, mounts string) {
+	off := serverinoOff(mounts, r.env.RefRoot, r.env.DutRoot)
+	if len(off) == 0 {
+		return
+	}
+	if res.Diverge != nil && res.Diverge.Field == "inode" {
+		res.Err = fmt.Errorf("%s lost server inode numbers, so the inode relation compared nothing: %s",
+			strings.Join(off, " and "), res.Diverge.Sig)
+		res.Diverge = nil
+	}
+	if r.hooks != nil {
+		if err := r.hooks.Remount(); err != nil {
+			_, _ = fmt.Fprintf(r.log, "remount after %s lost server inode numbers: %v\n", strings.Join(off, " and "), err)
+		}
+	}
+}
+
+// serverinoOff returns the mountpoints among roots that mounts, in
+// /proc/mounts' format, lists without the serverino option.
+func serverinoOff(mounts string, roots ...string) []string {
+	var off []string
+	for _, line := range strings.Split(mounts, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 || !slices.Contains(roots, f[1]) {
+			continue
+		}
+		if !slices.Contains(strings.Split(f[3], ","), "serverino") {
+			off = append(off, f[1])
+		}
+	}
+	return off
 }
 
 func (r *Runner) checkDut(res *Result) {

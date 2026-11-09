@@ -58,13 +58,18 @@ var Pool = buildPool()
 // case aliases of pool names, names awkward on the wire, a 255-byte name.
 // The case aliases are never created by the tree, which would make them
 // collide with the names they alias.
+//
+// decision: only files have case aliases. When a case-insensitive server
+// gives a second name of a directory the first one's file id, the cifs client
+// turns server inode numbers off for the whole mount, and §9.4's inode
+// relation stops meaning anything on that side. A step can still make a
+// directory where a file alias is, which the runner catches after the round
+// (Runner.checkServerino).
 var poolSpecial = []struct {
 	obj       PoolObj
 	creatable bool
 }{
 	{PoolObj{"F0", false}, false},
-	{PoolObj{"D0", true}, false},
-	{PoolObj{"D0/f0", false}, false},
 	{PoolObj{"d0/F0", false}, false},
 	{PoolObj{"d1/F0", false}, false},
 	{PoolObj{"a b", false}, true},

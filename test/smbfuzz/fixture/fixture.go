@@ -618,6 +618,9 @@ func (h Hooks) ResetDut() error {
 	return nil
 }
 
+// Remount mounts both shares again.
+func (h Hooks) Remount() error { return h.C.mount(context.Background()) }
+
 // DutAlive reports whether dfs runs, with its log tail when it does not.
 func (h Hooks) DutAlive() (bool, string) {
 	b, err := os.ReadFile(filepath.Join(h.C.State, "dfs.pid"))

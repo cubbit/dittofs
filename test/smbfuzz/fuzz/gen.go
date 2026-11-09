@@ -201,6 +201,16 @@ func (g *genState) touch(paths ...string) {
 	}
 }
 
+// poolFile reports whether the pool has p as a file.
+func poolFile(p string) bool {
+	for _, o := range Pool {
+		if o.Path == p {
+			return !o.Dir
+		}
+	}
+	return false
+}
+
 func inPool(p string) bool {
 	for _, o := range Pool {
 		if o.Path == p {
@@ -302,7 +312,8 @@ func (g *genState) renameArgs() (string, string) {
 // the same kind in its directory (which may exist: a file to replace, a
 // directory empty or not); with 0.2 the same name in another directory at the
 // same depth, so the subtree that moves stays named by the pool; with 0.1 a
-// name inside src itself; with 0.05 src with its last name's case changed;
+// name inside src itself; with 0.05 src with its last name's case changed,
+// when the pool has src as a file (poolSpecial says why not a directory);
 // with 0.05 src itself; otherwise any path.
 func (g *genState) renameTarget(src string) string {
 	r := g.r
@@ -327,8 +338,10 @@ func (g *genState) renameTarget(src string) string {
 		}
 		return src + "/f0"
 	case x < 0.65:
-		dir, base := path.Dir(src), path.Base(src)
-		return joinRel(dir, strings.ToUpper(base[:1])+base[1:])
+		if poolFile(src) {
+			dir, base := path.Dir(src), path.Base(src)
+			return joinRel(dir, strings.ToUpper(base[:1])+base[1:])
+		}
 	case x < 0.7:
 		return src
 	}
