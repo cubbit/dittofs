@@ -1682,9 +1682,11 @@ after a loss, each client resends its recent unstable writes once.
   state, which fails one SMB flush per open that was open across the loss
   ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens), [RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)). The engine raises it from the journal's loss events;
   so that a `Commit` never reads it before the event that should raise it, a
-  `Commit` that finds the journal's loss generation above the last one the
-  engine applied first drains the journal's loss ring up to it, and where the
-  ring reports events missed, raises the sequence of every file of that journal.
+  `Commit` first drains the journal's loss ring past the last event the engine
+  applied, by the events' sequence numbers, never by the loss generation, which
+  rises before its event is published and sometimes with none
+  ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), and where the ring reports events
+  missed, raises the sequence of every file of that journal.
   **A device lost whole raises every attached file's sequence.** A journal
   device that dies under the running process, or a journal found missing or
   foreign at open whose loss an operator acknowledges ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1), writes
