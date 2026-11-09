@@ -36,7 +36,7 @@ var (
 	// PlaceholderRE matches a {name}, or a shell's ${VAR}, which Placeholders
 	// and dt run leave alone.
 	PlaceholderRE = regexp.MustCompile(`\$?\{([A-Za-z0-9_.-]+)\}`)
-	// toolRE matches the tool's name after a {tools}, as /pjdfstest.
+	// toolRE matches the name after a {tools} or a {bin}, as /pjdfstest.
 	toolRE = regexp.MustCompile(`^/([A-Za-z0-9_.-]+)`)
 )
 
@@ -267,9 +267,14 @@ func checkUnit(root string, u *Suite) []error {
 		for _, p := range u.Unknown(s) {
 			fail("unknown placeholder {%s}", p)
 		}
-		for _, name := range toolRefs(s) {
+		for _, name := range refs(s, "tools") {
 			if _, ok := ToolDirs[name]; !ok {
 				fail("{tools}/%s: no such tool; write {tools}/NAME, NAME one of %s", name, strings.Join(slices.Sorted(maps.Keys(ToolDirs)), ", "))
+			}
+		}
+		for _, name := range refs(s, "bin") {
+			if _, ok := BinPackages[name]; !ok && name != "" {
+				fail("{bin}/%s: no such program; NAME is one of %s", name, strings.Join(slices.Sorted(maps.Keys(BinPackages)), ", "))
 			}
 		}
 	}
@@ -475,10 +480,16 @@ func (a Axis) fillNames() []string {
 
 // Tools returns the test tools the suite names, as {tools}/NAME in any of its
 // fields, each once, sorted by name.
-func (u *Suite) Tools() []string {
+func (u *Suite) Tools() []string { return u.named("tools") }
+
+// Bins returns the programs the suite names, as {bin}/NAME in any of its
+// fields, each once, sorted by name.
+func (u *Suite) Bins() []string { return u.named("bin") }
+
+func (u *Suite) named(placeholder string) []string {
 	var out []string
 	for _, s := range u.allStrings() {
-		for _, name := range toolRefs(s) {
+		for _, name := range refs(s, placeholder) {
 			if name != "" && !slices.Contains(out, name) {
 				out = append(out, name)
 			}
@@ -488,12 +499,12 @@ func (u *Suite) Tools() []string {
 	return out
 }
 
-// toolRefs returns the tool each {tools} in s names as {tools}/NAME, or ""
-// for one that names none. A shell's ${tools} is the shell's own.
-func toolRefs(s string) []string {
+// refs returns what each {placeholder} in s names as {placeholder}/NAME, or
+// "" for one that names none. A shell's ${tools} is the shell's own.
+func refs(s, placeholder string) []string {
 	var out []string
 	for _, m := range PlaceholderRE.FindAllStringSubmatchIndex(s, -1) {
-		if s[m[0]] == '$' || s[m[2]:m[3]] != "tools" {
+		if s[m[0]] == '$' || s[m[2]:m[3]] != placeholder {
 			continue
 		}
 		name := ""

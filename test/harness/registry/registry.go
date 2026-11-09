@@ -41,6 +41,12 @@ var ToolDirs = map[string]string{"cthon04": "share/cthon04", "nfstest": ".", "pj
 // special/op_chmod is where the server's handling of that write stays visible.
 var ToolCopies = []string{"cthon04"}
 
+// BinPackages maps each program {bin} can hold to the package it is built
+// from. dfs and dfsctl are built into every {bin}; another is built only for
+// a suite that names it as {bin}/NAME, as smb-fuzz names its fuzzer, which
+// runs as root and so may not build itself.
+var BinPackages = map[string]string{"dfs": "./cmd/dfs", "dfsctl": "./cmd/dfsctl", "smbfuzz": "./test/smbfuzz/cmd/smbfuzz"}
+
 // Registry is the whole file.
 type Registry struct {
 	Version  int                 `yaml:"version"`

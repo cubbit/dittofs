@@ -224,15 +224,16 @@ func conflict(a, b Cell) bool {
 // that run at once. A step that fails is said here and left to the cells,
 // which try it again and report it as their own.
 func prepare(ctx context.Context, cells []Cell, o Options, dir string) {
-	var tools []string
+	var tools, progs []string
 	bin := false
 	for _, c := range cells {
 		tools = append(tools, c.Unit.Tools()...)
-		bin = bin || c.Unit.Fixture != nil && c.Unit.Fixture.Server != "knfsd" || c.Unit.Format == "go-json" && asRoot(c)
+		progs = append(progs, c.Unit.Bins()...)
+		bin = bin || c.Unit.Fixture != nil && c.Unit.Fixture.Server != "knfsd" || c.Unit.Format == "go-json" && asRoot(c) || len(c.Unit.Bins()) > 0
 	}
 	if bin {
-		if err := buildBin(ctx, o.Root, filepath.Join(dir, "bin"), os.Environ(), o.Out); err != nil {
-			_, _ = fmt.Fprintf(o.Out, "[dt] dfs and dfsctl didn't build: %v\n", err)
+		if err := buildBin(ctx, o.Root, filepath.Join(dir, "bin"), progs, os.Environ(), o.Out); err != nil {
+			_, _ = fmt.Fprintf(o.Out, "[dt] {bin} didn't build: %v\n", err)
 		}
 	}
 	if len(tools) > 0 {
@@ -371,8 +372,8 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 		lists["packages"] = pkgs
 	}
-	if c.Unit.Format == "go-json" && asRoot(c) {
-		vals["bin"] = filepath.Join(dir, "bin") // goJSON builds it before the commands run
+	if c.Unit.Format == "go-json" && asRoot(c) || len(c.Unit.Bins()) > 0 {
+		vals["bin"] = filepath.Join(dir, "bin") // built below, or by goJSON, before the commands run
 	}
 	if len(c.Unit.Tools()) > 0 {
 		vals["tools"] = filepath.Join(dir, "tools") // laid out below, before the tests are found
@@ -449,11 +450,13 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 		return didntRun(step + ": " + err.Error())
 	}
+	if c.Unit.Fixture != nil || len(c.Unit.Bins()) > 0 {
+		if err := buildBin(setup, o.Root, vals["bin"], c.Unit.Bins(), os.Environ(), w); err != nil {
+			return setupFailed("{bin} didn't build", err)
+		}
+	}
 	var server fixtureServer
 	if c.Unit.Fixture != nil {
-		if err := buildBin(setup, o.Root, vals["bin"], os.Environ(), w); err != nil {
-			return setupFailed("the fixture", fmt.Errorf("dfs and dfsctl didn't build: %w", err))
-		}
 		if spec.Kerberos {
 			build := []string{"docker", "build", "-q", "-t", fixture.KDCImage, filepath.Join("test", "smb-conformance", "kdc")}
 			_, _ = fmt.Fprintf(w, "[dt] $ %s\n", strings.Join(build, " "))
