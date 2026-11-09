@@ -30,7 +30,7 @@ var (
 
 	// runFlags are dt run's flags, the planned ones included, which no option
 	// may share a name with.
-	runFlags = set("ci", "tier", "only", "skip", "parallel", "retry", "in", "results", "changed", "help")
+	runFlags = set("ci", "tier", "only", "skip", "parallel", "retry", "in", "results", "place", "base", "changed", "help")
 
 	nameRE = regexp.MustCompile(`^[a-z0-9-]+$`)
 	// PlaceholderRE matches a {name}, or a shell's ${VAR}, which Placeholders

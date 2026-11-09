@@ -568,12 +568,13 @@ func testFiles(root string, flags ...string) (map[string]string, error) {
 var unbuilt = regexp.MustCompile(`(^|/)(testdata|[._][^/]+)(/|$)`)
 
 // changedPackages lists the packages the patterns match that hold a file
-// changed between base and HEAD: a Go file counts for the package of its own
-// directory, and any other file, or one under a directory go doesn't build,
-// for the nearest package above it, as an embedded or testdata file does. A
-// package whose files all need a build tag, or that the change deletes, isn't
-// one. Without a base, or with go.mod, go.sum or go.work changed, it's the
-// patterns themselves: every package.
+// committed between base and HEAD: a Go file counts for the package of its
+// own directory, and any other file, or one under a directory go doesn't
+// build, for the nearest package above it, as an embedded or testdata file
+// does. A package whose files all need a build tag, or that the change
+// deletes, isn't one. Without a base, with go.mod, go.sum or go.work changed,
+// or with a changed file that no package is above, which any test may read,
+// as a script or a doc, it's the patterns themselves: every package.
 //
 // decision: a package is tested for a change to its own files only, not to a
 // package it imports, so a change that breaks the tests of a package that
@@ -611,8 +612,11 @@ func changedPackages(root, base string, patterns []string) ([]string, error) {
 				changed = append(changed, pkg)
 				break
 			}
-			if goFile || dir == "." {
+			if goFile {
 				break
+			}
+			if dir == "." {
+				return patterns, nil
 			}
 		}
 	}

@@ -313,8 +313,9 @@ func changeModule(t *testing.T) (string, func(change map[string]string)) {
 
 // --changed's packages are those of the patterns with a file changed since
 // the base: a Go file's own, the nearest above any other file, and every one
-// for a go.mod change or with no base. A package outside the patterns, one
-// whose files all need a tag, and one deleted aren't any.
+// for a go.mod change, a file no package is above, or with no base. A package
+// outside the patterns, one whose files all need a tag, and one deleted aren't
+// any.
 func TestChangedPackages(t *testing.T) {
 	root, commit := changeModule(t)
 	all := []string{"./pkg/..."}
@@ -328,9 +329,13 @@ func TestChangedPackages(t *testing.T) {
 		{"a Go file: its package", map[string]string{"pkg/a/a.go": "package a\n\nvar V int\n"}, all, []string{a}},
 		{"a testdata file: its package", map[string]string{"pkg/a/testdata/in.txt": "changed\n"}, all, []string{a}},
 		{"a Go file in testdata: its package", map[string]string{"pkg/a/testdata/fixture.go": "package fixture\n"}, all, []string{a}},
+		{"a Go file under _: its package", map[string]string{"pkg/a/_x/x.go": "package x\n"}, all, []string{a}},
+		{"a Go file under .: its package", map[string]string{"pkg/a/.x/x.go": "package x\n"}, all, []string{a}},
 		{"an embedded file below: the nearest package", map[string]string{"pkg/b/files/x.txt": "changed\n"}, all, []string{b}},
 		{"a moved file: both packages", map[string]string{"pkg/b/files/x.txt": "", "pkg/a/testdata/x.txt": "x\n"}, all, []string{a, b}},
 		{"go.mod: every package", map[string]string{"go.mod": goModule["go.mod"] + "\n// changed\n"}, all, all},
+		{"a file in no package: every package", map[string]string{"scripts/env.sh": "x\n"}, all, all},
+		{"a file at the root, in no package of the patterns: every package", map[string]string{"README.md": "x\n"}, all, all},
 		{"outside the patterns: none", map[string]string{"other/other.go": "package other\n\nvar V int\n"}, all, nil},
 		{"files that all need a tag: none", map[string]string{"pkg/a/e2e/e2e_test.go": "//go:build e2e\n\npackage e2e\n\nvar V int\n"}, all, nil},
 		{"a pattern naming a package whose files all need a tag: none", map[string]string{"pkg/a/e2e/e2e_test.go": "//go:build e2e\n\npackage e2e\n\nvar V int\n"}, []string{"./pkg/a/e2e"}, nil},

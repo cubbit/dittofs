@@ -1191,7 +1191,7 @@ workflow's.
 | `--in host\|container\|auto` | where the whole run happens: `host` here; `container` in `dtc`, which runs the same command with `--in host`, and whose exit status is the run's, any but 1 to 3 as 2; `auto`, the default, moves to `dtc` when Docker, which `dtc` runs in, is here, a cell needs what the host lacks and the container gives, and no cell needs what the host has and the container lacks, such as macOS. A cell `dtc` can't run, as one whose fixture has `users: self`, which refuses root, counts for neither, unless it runs here, which keeps the run here. With `--ci` the default is `host`: in CI the plan picks the place. Inside `dtc` the run stays there whatever `--in` says |
 | `--results DIR` | where results go (default `test/harness/results/`, gitignored) |
 | `--base REF` | the ref `{base}` stands for in the commands that use it, instead of the base dt finds (`origin/develop` here, the event's in CI); a ref that names no commit in the checkout stops the run before any cell starts |
-| `--changed` | where a cell's `packages` gives patterns and each of its commands takes `{packages}`, `{packages}` holds only the packages they match with a file changed since `{base}` (`git diff BASE...HEAD`): a Go file counts for its own directory's package, and any other file, or one under `testdata`, for the nearest package above it, as an embedded file does. A package outside the patterns, one the change deletes or one whose files all need a build tag isn't tested; every package is, with no `{base}` or with `go.mod`, `go.sum` or `go.work` changed. With none changed, the commands are skipped and the cell passes, as without `{base}` (§4.8); a diff that fails leaves it not run. A change to a package doesn't test the packages that import it: the full run after the merge does |
+| `--changed` | where a cell's `packages` gives patterns and each of its commands takes `{packages}`, `{packages}` holds only the packages they match with a file committed since `{base}` (`git diff BASE...HEAD`; edits not committed don't count): a Go file counts for its own directory's package, and any other file, or one under a directory Go doesn't build (`testdata`, or a name that begins with `.` or `_`), for the nearest package above it, as an embedded file does. A package outside the patterns, one the change deletes or one whose files all need a build tag isn't tested; every package is, with no `{base}`, with `go.mod`, `go.sum` or `go.work` changed, or with a changed file that no package is above, since any test may read it, as `cmd/dt`'s read its scripts and `cmd/gendocs`'s walk `docs/`. With none changed, the commands are skipped and the cell passes, as without `{base}` (§4.8); a diff that fails leaves it not run. A change to a package doesn't test the packages that import it: the full run after the merge does |
 
 | Exit status | Meaning |
 |---|---|
@@ -1751,9 +1751,9 @@ One workflow, `tests.yml`, runs every registered suite:
   rest. The `run` job starts the services a cell's needs name (`dt services up postgres kmip` for
   `integration`) and rpcbind for a cell that needs it running (`integration/portmap`), and for the
   `unit` cell uploads the coverage profile `unit` writes to its `{out}` to Codecov, as the unit job
-  did, unless a retry rewrote it with the retried tests' alone. Codecov's project
-  check, set in `codecov.yml`, fails only on a drop of more than 0.5% in total coverage, since the
-  profile moves by up to about 0.1% between runs of the same code. A fixed job's
+  did, unless a retry rewrote it with the retried tests' alone. Codecov sets no status, comment
+  or annotation (`codecov.yml`) while the code moves fast, so the upload only keeps the coverage
+  history for when its checks come back on. A fixed job's
   artifact is `dt-run-SUITE-ATTEMPT`, and `gate` needs every fixed job, so its report has theirs
   too. On a push to develop,
   `{base}` is the commit before the push, so the commit checks still cover commits pushed straight
