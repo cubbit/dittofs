@@ -50,9 +50,12 @@ func TestCheckTagRefusesOtherOwner(t *testing.T) {
 	}
 }
 
-// TestCheckTagClaimsNothing: a check of a file nobody owns passes clean on an
-// untagged entry and on one with no entry at all, creating nothing, and a
-// later write through the checked tag still succeeds.
+// TestCheckTagClaimsNothing: a check claims nothing, on a file nobody owns
+// and on one with no entry at all. The untagged entry is built to persist —
+// a write's segment is noted, so the tag-only life lasts, then ClearTag
+// drops the tag whole — so a check through another tag must leave it
+// untagged: still nobody's for a later write through any tag, and empty of
+// the checked tag's claim.
 func TestCheckTagClaimsNothing(t *testing.T) {
 	other := fid(9)
 	if err := New(1<<20).CheckTag(testTag, other); err != nil {
@@ -66,13 +69,41 @@ func TestCheckTagClaimsNothing(t *testing.T) {
 	if n := ix.fs.len(); n != before {
 		t.Fatalf("the check left %d new entries, want none", n-before)
 	}
-	// The owner's own tag checks clean too, and the file still takes a write
-	// after the check.
+
+	// An untagged entry: a write claims the file and notes its segment, so
+	// the entry outlives ClearTag as a tag-only one the map still holds.
 	writeRetained(t, ix, write(0, 4096, rec(1, 0), 1))
-	if err := ix.CheckTag(testTag, testFile); err != nil {
-		t.Fatalf("CheckTag of the owner's own file = %v, want nil", err)
+	if err := ix.ClearTag(testFile); err != nil {
+		t.Fatalf("ClearTag: %v", err)
 	}
-	writeRetained(t, ix, write(0, 4096, rec(2, 0), 2))
+	var tagged, rivalled bool
+	var tag core.ShareTag
+	ix.fs.view(testFile, func(f *file) {
+		tag, tagged = f.owner()
+		rivalled = f.rivalled
+	})
+	if tagged || rivalled {
+		t.Fatalf("after ClearTag the entry is still tagged (%v, tag %d) or rivalled (%v)", tagged, tag, rivalled)
+	}
+	if n := ix.fs.len(); n != 1 {
+		t.Fatalf("entries = %d, want 1: the segment must keep the untagged entry", n)
+	}
+
+	// The check through another tag passes clean and must not claim the
+	// entry for it: a write through a third tag still succeeds, and the
+	// entry still holds no tag.
+	if err := ix.CheckTag(testTag+1, testFile); err != nil {
+		t.Fatalf("CheckTag of an untagged file = %v, want nil", err)
+	}
+	ix.fs.view(testFile, func(f *file) {
+		tag, tagged = f.owner()
+	})
+	if tagged {
+		t.Fatalf("the check claimed the file for tag %d, want no claim", tag)
+	}
+	if _, err := ix.WriteRetain(testTag+2, testFile, write(0, 4096, rec(2, 0), 2), 2); err != nil {
+		t.Fatalf("WriteRetain through a third tag after the check: %v", err)
+	}
 }
 
 // TestTagConflictsFromRebuild: a file rebuilt with records under two tags is
@@ -174,5 +205,42 @@ func TestTagConflictsLeaveWithTheEntry(t *testing.T) {
 	}
 	if err := ix.CheckTag(testTag+1, id); err != nil {
 		t.Fatalf("CheckTag after the entry left = %v, want nil", err)
+	}
+}
+
+// TestTagConflictsDropWhenTheEntryLeavesLater: a rivalled file that is in the
+// conflict set — the marking update has returned — and whose entry leaves the
+// map only in a later update, which reclaims the file's last segments, is
+// taken back out of the set by the settle that removes it. This is the drop
+// settle itself makes, distinct from the one-update window above, where the
+// file never reached the set at all.
+func TestTagConflictsDropWhenTheEntryLeavesLater(t *testing.T) {
+	ix := New(1 << 20)
+	id := fid(4)
+	// Two tags' records note two segments, so the file is rivalled and the
+	// two segments keep both its tag and its entry.
+	_, _ = ix.fs.update(id, func(f *file) error {
+		return f.recorded(1, ext(0, 4), nums(1, 1), testTag, id)
+	})
+	_, _ = ix.fs.update(id, func(f *file) error {
+		return f.recorded(9, ext(0, 4), nums(2, 2), testTag+1, id)
+	})
+	if cs := ix.TagConflicts(); len(cs) != 1 {
+		t.Fatalf("TagConflicts() with the rivalled entry present = %+v, want one conflict", cs)
+	}
+	// A later update reclaims both segments, so the entry empties and leaves
+	// the map with its marks still set.
+	segs := []core.SegmentID{1, 9}
+	_, _ = ix.fs.update(id, func(f *file) error {
+		for _, seg := range segs {
+			f.segmentGone(seg)
+		}
+		return nil
+	})
+	if got := ix.fs.len(); got != 0 {
+		t.Fatalf("entries = %d, want 0: reclaiming the last segments must empty the entry", got)
+	}
+	if cs := ix.TagConflicts(); len(cs) != 0 {
+		t.Fatalf("TagConflicts() after the entry left the map = %+v, want none", cs)
 	}
 }
