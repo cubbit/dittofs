@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -14,16 +15,28 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
-// TestASyncNamingFilesOnTwoStreamsReportsBothFailures covers R17 and R44 across
-// streams: one Sync names every file the failures of both streams took, and
-// clears the mark of each, so no later Sync reports an old failure again.
-func TestASyncNamingFilesOnTwoStreamsReportsBothFailures(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-	r := newRigConfigured(t, 2, func(*Config) {})
+// failOnTwoStreams publishes a record of a file on each of two streams, fails
+// the first sync of each, and returns the files, with the layer's windows
+// recorded: every returned window has been failed by the worker, which is what
+// Config.Resolved announces. gate, when set, is called by the worker with the
+// segment of each window before the window is failed, and held, when set, is
+// called with the two records' locations before any sync fails.
+func failOnTwoStreams(t *testing.T, gate func(core.SegmentID), held func(lf, lg segment.Location)) (r *rig, f, g core.FileID, resolved *recorder[resolvedAt]) {
+	t.Helper()
+	resolved = &recorder[resolvedAt]{}
+	r = newRigConfigured(t, 2, func(c *Config) {
+		c.Resolved = func(stream uint32, seg core.SegmentID) { resolved.add(resolvedAt{stream, seg}) }
+	})
+	if gate != nil {
+		r.d.beforeFail = func(w *window) { gate(w.seg) }
+	}
 	r.d.Start(r.streams)
-	f, g := r.fileOn(t, 0), r.fileOn(t, 1)
+	f, g = r.fileOn(t, 0), r.fileOn(t, 1)
 	lf, _ := r.publish(t, f, 0, "aaaa")
 	lg, _ := r.publish(t, g, 0, "gggg")
+	if held != nil {
+		held(lf, lg)
+	}
 	if err := r.seam.Schedule(
 		journaltest.Failing(journaltest.OpSync, format.SegmentName(lf.Segment), 1, errors.New("boom f")),
 		journaltest.Failing(journaltest.OpSync, format.SegmentName(lg.Segment), 1, errors.New("boom g")),
@@ -36,8 +49,16 @@ func TestASyncNamingFilesOnTwoStreamsReportsBothFailures(t *testing.T) {
 		r.clock.Advance(2 * core.SyncBound)
 		return r.d.Stats().SyncFailures >= 2
 	})
-	r.waitResolved(t, 0)
-	r.waitResolved(t, 1)
+	return r, f, g, resolved
+}
+
+// TestASyncNamingFilesOnTwoStreamsReportsBothFailures covers R17 and R44 across
+// streams: one Sync names every file the failures of both streams took, and
+// clears the mark of each, so no later Sync reports an old failure again.
+func TestASyncNamingFilesOnTwoStreamsReportsBothFailures(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r, f, g, resolved := failOnTwoStreams(t, nil, nil)
+	eventually(t, "both windows to be failed", func() bool { return len(resolved.all()) == 2 })
 
 	err := mustReturn(t, "Sync of both", r.syncAsync(context.Background(), f, g))
 	var se *core.SyncError
@@ -50,6 +71,103 @@ func TestASyncNamingFilesOnTwoStreamsReportsBothFailures(t *testing.T) {
 	for _, id := range []core.FileID{f, g} {
 		if err := mustReturn(t, "Sync after the report", r.syncAsync(context.Background(), id)); err != nil {
 			t.Errorf("Sync(%v) after the report = %v, want nil: its mark was left set", id, err)
+		}
+	}
+}
+
+// TestASyncWaitsForAFailureInFlightOnAnotherStream pins that a Sync naming
+// files of two streams, whose first stream has failed its window, does not
+// return that failure alone while the other stream's window is taken but not
+// yet failed: the call names both files at once, and the second file is not
+// left to be told by its next Sync.
+func TestASyncWaitsForAFailureInFlightOnAnotherStream(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	var heldSeg atomic.Uint64
+	gate, open := releaser(t)
+	// The window of g's stream waits at the gate before it is failed; f's does
+	// not.
+	r, f, g, resolved := failOnTwoStreams(t, func(seg core.SegmentID) {
+		if heldSeg.Load() == uint64(seg) {
+			<-gate
+		}
+	}, func(_, lg segment.Location) { heldSeg.Store(uint64(lg.Segment)) })
+	// Registered after the rig's own cleanups, so it runs before the layer
+	// stops: a worker parked at the gate would stop the stop.
+	t.Cleanup(open)
+	eventually(t, "f's window to be failed", func() bool { return len(resolved.all()) == 1 })
+
+	done := r.syncAsync(context.Background(), f, g)
+	mustBlock(t, "Sync of both files with g's failure in flight", done)
+	open()
+	err := mustReturn(t, "Sync of both", done)
+	var se *core.SyncError
+	if !errors.As(err, &se) {
+		t.Fatalf("Sync = %v, want a *core.SyncError", err)
+	}
+	if !slices.Contains(se.Files, f) || !slices.Contains(se.Files, g) {
+		t.Errorf("SyncError.Files = %v, want both files", se.Files)
+	}
+	if err := mustReturn(t, "Sync of g after the report", r.syncAsync(context.Background(), g)); err != nil {
+		t.Errorf("Sync(g) after the report = %v, want nil: its mark was left set", err)
+	}
+}
+
+// TestASyncThatEndsEarlyStillReportsTheMarksItTook pins that when a later
+// stream answers core.ErrClosed after an earlier one gave up its marks, the
+// call returns the failure it took, not the closed error: nothing else would
+// report it, its mark being cleared.
+func TestASyncThatEndsEarlyStillReportsTheMarksItTook(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r, f, g, resolved := failOnTwoStreams(t, nil, nil)
+	eventually(t, "both windows to be failed", func() bool { return len(resolved.all()) == 2 })
+	// g's stream closes under a record of another file, h, that no sync
+	// reached and that owes no failure.
+	var h core.FileID
+	for b := 1; b < 255; b++ {
+		if c := file(byte(b)); c != g && r.streams.For(c) == r.streams.Stream(1) {
+			h = c
+			break
+		}
+	}
+	r.publish(t, h, 4, "hhhh")
+	st1 := r.d.made[1]
+	st1.mu.Lock()
+	st1.closed = true
+	st1.mu.Unlock()
+
+	// The streams are consulted in the order given, f's first, so f's mark is
+	// taken before g's stream answers.
+	ids := []core.FileID{f, h}
+	ws := []work{
+		{st: r.d.made[0], ids: ids, targets: r.d.made[0].targetsOf(ids)},
+		{st: st1, ids: ids, targets: st1.targetsOf(ids)},
+	}
+	err := r.d.await(context.Background(), ws, true)
+	var se *core.SyncError
+	if !errors.As(err, &se) || !slices.Contains(se.Files, f) {
+		t.Fatalf("await = %v, want the SyncError naming f, whose mark it took", err)
+	}
+}
+
+// TestMergedFailuresNameTheOldestWindow pins that the failure a Sync across
+// streams names is the one of the oldest window, whichever stream it came
+// from: window ids are global, the streams are consulted in no fixed order.
+func TestMergedFailuresNameTheOldestWindow(t *testing.T) {
+	older := func() *owedFailure {
+		return &owedFailure{err: &core.SyncError{Segment: 2, Err: errors.New("older"), Files: []core.FileID{file(1)}}, window: 3}
+	}
+	newer := func() *owedFailure {
+		return &owedFailure{err: &core.SyncError{Segment: 5, Err: errors.New("newer"), Files: []core.FileID{file(2)}}, window: 9}
+	}
+	for name, got := range map[string]*owedFailure{
+		"older first": mergeOwed(older(), newer()),
+		"newer first": mergeOwed(newer(), older()),
+	} {
+		if got.err.Segment != 2 || got.err.Err.Error() != "older" || got.window != 3 {
+			t.Errorf("%s: merged failure names segment %d (%v) of window %d, want the older window's", name, got.err.Segment, got.err.Err, got.window)
+		}
+		if len(got.err.Files) != 2 {
+			t.Errorf("%s: merged files = %v, want both", name, got.err.Files)
 		}
 	}
 }

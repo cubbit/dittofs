@@ -57,7 +57,10 @@ func TestASealThatFindsAFailedSyncDoesNotCountItAgain(t *testing.T) {
 // its window is taken, satisfies none of the window's records.
 func TestALateSyncReportNeverSatisfiesAFailedWindow(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	r := newRigUnstarted(t, 1)
+	var resolved atomic.Int32
+	r := newRigConfigured(t, 1, func(c *Config) {
+		c.Resolved = func(uint32, core.SegmentID) { resolved.Add(1) }
+	})
 	f := file(1)
 	var a segment.Location
 	var once sync.Once
@@ -74,9 +77,10 @@ func TestALateSyncReportNeverSatisfiesAFailedWindow(t *testing.T) {
 		r.clock.Advance(2 * core.SyncBound)
 		return r.d.Stats().SyncFailures == 1
 	})
-	eventually(t, "the window to be resolved", func() bool {
-		return r.d.Stats().SyncFailures == 1 && len(r.windowsOf(0)) == 0
-	})
+	// Announced once the worker has taken the window and failed its record: a
+	// count of the failure alone passes before the window exists, and a report
+	// landing then is not the late report the test is about.
+	eventually(t, "the window to be taken and resolved", func() bool { return resolved.Load() == 1 })
 	r.sinks[0].Synced(a.Segment, a.Off+a.Len)
 	if r.d.Durable(a) {
 		t.Error("a record of the failed window reads durable after a late report")

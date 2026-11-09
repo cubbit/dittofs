@@ -2,7 +2,6 @@ package durability
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"slices"
 	"sync"
@@ -749,73 +748,101 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 
 // await waits until no target of any stream is pending. failFast makes a
 // target of a failed segment end the wait with its SyncError.
+//
+// decision: a failure found on one stream does not end the wait while another
+// stream still has a target in a failed segment it has not answered yet, so
+// one Sync names every file the call lost, as a Sync naming files of several
+// streams is owed (R44). A stream whose targets are merely waiting for a sync
+// that has not failed does not hold the answer back: a failure is returned as
+// soon as no failure is in flight, and a failure the call could not know of is
+// told, mark and all, to the file's next Sync. The failures taken so far are
+// never dropped: a call that ends early, because the layer stopped or the
+// context is done, returns them in place of that error, since their marks are
+// cleared and nothing else would report them.
 func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error {
+	var owed *owedFailure
+	// early is the answer for a call that cannot wait any longer.
+	early := func(err error) error {
+		if owed != nil {
+			return owed.err
+		}
+		return err
+	}
 	for {
 		// Taken before the checks, so a change after one is never missed, and
 		// shared by every stream so a change on any of them wakes the caller.
 		wait := d.changes()
-		pending := false
-		var told *core.SyncError
+		pending, failing := false, false
 		for _, w := range ws {
-			p, err := w.st.check(w.ids, w.targets, failFast)
-			var se *core.SyncError
-			if failFast && errors.As(err, &se) {
-				// A failure ends the wait, but every stream owes the call its
-				// marks, and a mark left on one stream would be told to the
-				// file's next Sync again: the rest are taken before returning,
-				// each under its own stream's mutex, and one error names them.
-				told = mergeSyncErrors(told, se)
+			p, f, found, err := w.st.check(w.ids, w.targets, failFast)
+			if found != nil {
+				// Every stream owes the call its marks, and a mark left on one
+				// stream would be told to the file's next Sync again: the rest
+				// are taken before returning, each under its own stream's
+				// mutex, and one error names them.
+				owed = mergeOwed(owed, found)
 				continue
 			}
 			if err != nil {
-				return err
+				return early(err)
 			}
-			pending = pending || p
+			pending, failing = pending || p, failing || f
 		}
-		if told != nil {
-			return told
+		if owed != nil && !failing {
+			return owed.err
 		}
-		if !pending {
+		if !pending && owed == nil {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return early(ctx.Err())
 		case <-wait:
 		case <-d.done:
-			return core.ErrClosed
+			return early(core.ErrClosed)
 		}
 	}
 }
 
-// mergeSyncErrors joins two failures of one Sync: the first's segment and
-// error, the files of both.
-func mergeSyncErrors(into, from *core.SyncError) *core.SyncError {
+// owedFailure is a failure one stream owes a Sync, with the id of the window
+// it belongs to.
+type owedFailure struct {
+	err    *core.SyncError
+	window uint64
+}
+
+// mergeOwed joins two failures of one Sync: the older window's segment and
+// error, the files of both. Window ids are global, so the order of the
+// streams the failures came from does not matter.
+func mergeOwed(into, from *owedFailure) *owedFailure {
 	if into == nil {
 		return from
 	}
-	for _, f := range from.Files {
-		if !slices.Contains(into.Files, f) {
-			into.Files = append(into.Files, f)
+	if from.window < into.window {
+		into.err.Segment, into.err.Err, into.window = from.err.Segment, from.err.Err, from.window
+	}
+	for _, f := range from.err.Files {
+		if !slices.Contains(into.err.Files, f) {
+			into.err.Files = append(into.err.Files, f)
 		}
 	}
 	return into
 }
 
-// answersFailureLocked reports whether the record at loc is a header-only
-// record of a pending window that failWindow has run for: the only record that
-// answers a Sync with its failure. A record still in the ledger, or in a
+// answersFailureLocked returns the id of the window, and true, when the record
+// at loc is a header-only record of a pending window that failWindow has run
+// for: the only record that answers a Sync with its failure. A record still in the ledger, or in a
 // window not yet failed, answers nothing, so that the loss generation is
 // raised before any Sync the failure fails returns. The caller holds mu.
-func (st *stream) answersFailureLocked(loc segment.Location) bool {
+func (st *stream) answersFailureLocked(loc segment.Location) (uint64, bool) {
 	for _, w := range st.windows {
 		for i := range w.entries {
 			if w.entries[i].w.Loc == loc {
-				return w.failed && !isContent(w.entries[i].w)
+				return w.id, w.failed && !isContent(w.entries[i].w)
 			}
 		}
 	}
-	return false
+	return 0, false
 }
 
 // check looks at one stream's targets, and with failFast first answers the
@@ -849,16 +876,17 @@ func (st *stream) answersFailureLocked(loc segment.Location) bool {
 // with both is told by its marks first and never twice for one Sync. Until
 // then the target waits. Overturned by the re-append of a header-only record,
 // which must wait for the new sync (RFC 1 §5.3) instead of failing at once.
-func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (bool, error) {
+func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pending, failing bool, found *owedFailure, err error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if failFast {
-		if err := st.takeMarksLocked(ids); err != nil {
-			return false, err
+		if o := st.takeMarksLocked(ids); o != nil {
+			return false, false, o, nil
 		}
 	}
-	pending, lead := false, false
+	lead := false
 	var failSeg core.SegmentID
+	var failWindow uint64
 	var failErr error
 	for _, t := range targets {
 		if _, lost := st.lost[t.loc]; lost {
@@ -877,9 +905,13 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (boo
 			// the wait is for that, which another sync does not hasten.
 			continue
 		}
-		if err, bad := st.failed[t.loc.Segment]; bad {
-			if failFast && failErr == nil && st.answersFailureLocked(t.loc) {
-				failSeg, failErr = t.loc.Segment, err
+		if e, bad := st.failed[t.loc.Segment]; bad {
+			// The segment failed, so the record's failure is on its way, from
+			// a mark the worker has yet to set or an answer it has yet to
+			// allow: the caller waits for it rather than for a sync.
+			failing = true
+			if id, ok := st.answersFailureLocked(t.loc); failFast && failErr == nil && ok {
+				failSeg, failWindow, failErr = t.loc.Segment, id, e
 			}
 			continue
 		}
@@ -892,10 +924,10 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (boo
 		}
 	}
 	if !pending {
-		return false, nil
+		return false, false, nil, nil
 	}
 	if st.closed {
-		return false, core.ErrClosed
+		return false, false, nil, core.ErrClosed
 	}
 	if failErr != nil {
 		se := &core.SyncError{Segment: failSeg, Err: failErr}
@@ -904,11 +936,11 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (boo
 				se.Files = append(se.Files, t.file)
 			}
 		}
-		return false, se
+		return false, false, &owedFailure{err: se, window: failWindow}, nil
 	}
 	if lead && !st.syncing && !st.want {
 		st.want = true
 		st.wake()
 	}
-	return true, nil
+	return true, failing, nil, nil
 }

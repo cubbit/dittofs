@@ -138,6 +138,19 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	}
 
 	st.mu.Lock()
+	// decision: the window is the entries no sync has covered when the worker
+	// takes the event, and no Synced report for the failed segment is refused
+	// in the gap between the failure and this point, because none can arrive:
+	// a failed sync freezes the segment's tracker under the append domain
+	// before the failure is returned (syncFail), and a failed write freezes the
+	// prefix at the record, so no later sync of that segment is reported
+	// (syncDone is false) and no report can cover a record the failure took.
+	// Every report made before the failure was ordered before it under the
+	// same domain and covers records that are rightly not in the window. A
+	// test that injects a report into the sink after the failure is making one
+	// the stream never would. Withdrawn if the tracker stops freezing, or a
+	// second source of Synced reports exists: the sink then refuses a report
+	// for a segment in st.failed.
 	w := &window{id: d.windowSeq.Add(1), seg: ev.Segment, cause: ev.Cause, err: ev.Err}
 	st.removeLocked(func(e *entry) bool {
 		return e.w.Loc.Segment == ev.Segment && !st.covered(e.w.Loc)

@@ -33,10 +33,10 @@ func (st *stream) markLocked(w *window, file core.FileID) {
 
 // takeMarksLocked answers a Sync naming ids with the failures the stream owes
 // them: one *core.SyncError for the oldest window, naming every file of the
-// call that was owed one, with every mark of those files cleared. It returns
-// nil when none is owed. The check and the clear are one step under mu, so one
+// call that was owed one, with every mark of those files cleared, and that
+// window's id. It returns nil when none is owed. The check and the clear are one step under mu, so one
 // failure is answered to one caller. The caller holds mu.
-func (st *stream) takeMarksLocked(ids []core.FileID) error {
+func (st *stream) takeMarksLocked(ids []core.FileID) *owedFailure {
 	if len(st.marks) == 0 {
 		return nil
 	}
@@ -73,7 +73,7 @@ func (st *stream) takeMarksLocked(ids []core.FileID) error {
 		}
 		delete(st.marks, id)
 	}
-	return se
+	return &owedFailure{err: se, window: oldest.window}
 }
 
 // windowPendingLocked reports whether the window numbered id is pending. The
