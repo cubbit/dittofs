@@ -947,3 +947,20 @@ func TestAJournalReadEIOIsErrIO(t *testing.T) {
 		t.Errorf("Read: %v, want ErrIO alone", err)
 	}
 }
+
+// eioWrite is a handle whose every write the device fails with EIO.
+type eioWrite struct{ engine.Handle }
+
+func (eioWrite) WriteAt(context.Context, journal.FileID, int64, []byte, int64) (journal.Version, error) {
+	return journal.Version{}, fmt.Errorf("write segment: %w", syscall.EIO)
+}
+
+// A write the journal's device fails with EIO is not ErrIO, which names a
+// failed read, but ErrUnavailable.
+func TestAJournalWriteEIOIsNotErrIO(t *testing.T) {
+	u := newUnitWith(t, unitConfig{wrap: func(h engine.Handle) engine.Handle { return eioWrite{h} }})
+	f := u.create(t, "a")
+	if _, err := u.e.Write(t.Context(), u.share.ID, f, 0, fill(4, 'a'), engine.WriteOpts{Done: func() {}}); errors.Is(err, vfserr.ErrIO) || !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Errorf("Write: %v, want ErrUnavailable, not ErrIO", err)
+	}
+}
