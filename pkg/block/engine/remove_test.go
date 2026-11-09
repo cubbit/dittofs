@@ -106,17 +106,16 @@ func newHookedUnit(t *testing.T, deps ...func(*engine.Deps)) (*unit, *hookedHand
 
 // removing is the store's existence view counting its removals.
 type removing struct {
-	engine.Existence
 	removes atomic.Int32
 	on      func() // run before each removal reaches the store
 }
 
-func (x *removing) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+func (x *removing) remove(ctx context.Context, next engine.Existence, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
 	x.removes.Add(1)
 	if x.on != nil {
 		x.on()
 	}
-	return x.Existence.Remove(ctx, share, file, epoch, op, pending)
+	return next.Remove(ctx, share, file, epoch, op, pending)
 }
 
 func (u *unit) size(t *testing.T, f entity.FileID) int64 {
@@ -260,7 +259,7 @@ func TestATruncateWaitsOutABatchInFlight(t *testing.T) {
 // truncate's phase 1 committed.
 func TestACloneWaitsOutATruncateInFlight(t *testing.T) {
 	x := &removing{}
-	u := cloneUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u := cloneUnit(t, onRemove(x.remove))
 	f, dst := u.create(t, "src"), u.create(t, "dst")
 	u.write(t, f, 0, fill(16, 'a'))
 	var phase1 atomic.Bool
@@ -285,44 +284,27 @@ func TestACloneWaitsOutATruncateInFlight(t *testing.T) {
 	}
 }
 
-// A truncate into an extent a clone registered, its source's or anywhere in
-// its destination, answers DelayClone with nothing removed.
-func TestATruncateIntoARegistrationIsDelayClone(t *testing.T) {
-	for _, onDst := range []bool{false, true} {
-		t.Run(map[bool]string{false: "source", true: "destination"}[onDst], func(t *testing.T) {
-			u := cloneUnit(t)
-			src, dst := u.create(t, "src"), u.create(t, "dst")
-			in, out := make(chan struct{}), make(chan struct{})
-			u.e.SetAfterRegister(func() { close(in); <-out })
-			go func() {
-				_ = u.e.Clone(context.Background(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{SrcOff: 0, DstOff: 1 << 20, Len: 8})
-			}()
-			<-in
-			f := src
-			if onDst {
-				f = dst
-			}
-			if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); !isDelay(err, vfserr.DelayClone) {
-				t.Errorf("truncate: %v, want ErrDelay(DelayClone)", err)
-			}
-			close(out)
-		})
+// A truncate or a deallocate into an extent a clone registered as its
+// source, or anywhere in a file holding its destination, answers DelayClone
+// with nothing removed; a deallocate starting a byte past the source extent
+// is served.
+func TestAChangeIntoARegistrationIsDelayClone(t *testing.T) {
+	truncate := func(u *unit, f entity.FileID, _ int64) error { return u.e.Truncate(t.Context(), u.share.ID, f, 4) }
+	deallocate := func(u *unit, f entity.FileID, off int64) error {
+		return u.e.Deallocate(t.Context(), u.share.ID, f, off, 4)
 	}
-}
-
-// A deallocate inside an extent a clone registered as its source, or
-// anywhere in a file holding its destination, answers DelayClone; one
-// starting a byte past the source extent is served.
-func TestADeallocateIntoARegistrationIsDelayClone(t *testing.T) {
 	for _, c := range []struct {
 		name    string
+		change  func(u *unit, f entity.FileID, off int64) error
 		onDst   bool
 		off     int64
 		refused bool
 	}{
-		{"inside the source extent", false, 2, true},
-		{"a byte past the source extent", false, 8, false},
-		{"in the destination, outside its extent", true, 0, true},
+		{"a truncate of the source", truncate, false, 0, true},
+		{"a truncate of the destination", truncate, true, 0, true},
+		{"a deallocate inside the source extent", deallocate, false, 2, true},
+		{"a deallocate a byte past the source extent", deallocate, false, 8, false},
+		{"a deallocate in the destination, outside its extent", deallocate, true, 0, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			u := cloneUnit(t)
@@ -336,16 +318,16 @@ func TestADeallocateIntoARegistrationIsDelayClone(t *testing.T) {
 			if c.onDst {
 				f = dst
 			}
-			err := u.e.Deallocate(t.Context(), u.share.ID, f, c.off, 4)
+			err := c.change(u, f, c.off)
 			close(out)
 			if err := <-cloned; !errors.Is(err, engine.ErrUnbuilt) {
 				t.Errorf("clone: %v, want the unbuilt answer", err)
 			}
 			if c.refused && !isDelay(err, vfserr.DelayClone) {
-				t.Errorf("deallocate: %v, want ErrDelay(DelayClone)", err)
+				t.Errorf("%s: %v, want ErrDelay(DelayClone)", c.name, err)
 			}
 			if !c.refused && err != nil {
-				t.Errorf("deallocate: %v, want it served", err)
+				t.Errorf("%s: %v, want it served", c.name, err)
 			}
 		})
 	}
@@ -355,7 +337,7 @@ func TestADeallocateIntoARegistrationIsDelayClone(t *testing.T) {
 // phase 1, and the group commit commits the new size.
 func TestATruncateUpIsAGrow(t *testing.T) {
 	x := &removing{}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u := newUnit(t, onRemove(x.remove))
 	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 	f := made.ID
 	u.clock.Advance(time.Since(u.clock.Now()) + time.Hour) // past the store's own time of the create
@@ -446,17 +428,16 @@ func TestADeallocateRecordsItsHoleAtOnce(t *testing.T) {
 // conflictingRemove is the store's existence view answering every removal a
 // conflict while on, counting the removals it answered.
 type conflictingRemove struct {
-	engine.Existence
 	on    atomic.Bool
 	calls atomic.Int32
 }
 
-func (x *conflictingRemove) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
+func (x *conflictingRemove) remove(ctx context.Context, next engine.Existence, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
 	x.calls.Add(1)
 	if x.on.Load() {
 		return kvstore.ErrConflict
 	}
-	return x.Existence.Remove(ctx, share, file, epoch, op, pending)
+	return next.Remove(ctx, share, file, epoch, op, pending)
 }
 
 // retriedTruncate truncates f to size with its phase 1 conflictingRemove, staging
@@ -488,7 +469,7 @@ func (u *unit) retriedTruncate(t *testing.T, x *conflictingRemove, f entity.File
 // the truncate as applied.
 func TestAGroupCommitStopsAtARetriedRemoval(t *testing.T) {
 	x := &conflictingRemove{}
-	u, h := newHookedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u, h := newHookedUnit(t, onRemove(x.remove))
 	u.e.NoGuardSkip()
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a')) // due, and below the truncate

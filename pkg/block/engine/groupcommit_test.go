@@ -532,24 +532,23 @@ func TestAFailingFileFailsNoOther(t *testing.T) {
 // conflicting is a store whose existence commits of files, once set, answer
 // a conflict.
 type conflicting struct {
-	engine.Existence
 	on    atomic.Bool
 	calls atomic.Int32 // the commits answered a conflict
 }
 
-func (x *conflicting) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+func (x *conflicting) commit(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	if x.on.Load() && len(p) > 0 {
 		x.calls.Add(1)
 		return nil, kvstore.ErrConflict
 	}
-	return x.Existence.Commit(ctx, p, marks)
+	return next.Commit(ctx, p, marks)
 }
 
 // A conflict unresolved at a Commit's deadline is ErrDelay with
 // DelayConflict, never an I/O error.
 func TestAConflictAtTheDeadlineIsDelayConflict(t *testing.T) {
 	c := &conflicting{}
-	u := newUnit(t, func(d *engine.Deps) { c.Existence = d.Existence; d.Existence = c })
+	u := newUnit(t, onCommit(c.commit))
 	f := committedFile(t, u, "a", 4)
 	c.on.Store(true)
 	u.write(t, f, 0, []byte("over"))
@@ -764,18 +763,17 @@ func TestACorruptFileFailsNoOther(t *testing.T) {
 // refusingMarks is a store that, while on, refuses every call carrying marks
 // with err, counting those calls.
 type refusingMarks struct {
-	engine.Existence
 	err   error
 	on    atomic.Bool
 	calls atomic.Int32
 }
 
-func (x *refusingMarks) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+func (x *refusingMarks) commit(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	if marks != nil && x.on.Load() {
 		x.calls.Add(1)
 		return nil, x.err
 	}
-	return x.Existence.Commit(ctx, p, marks)
+	return next.Commit(ctx, p, marks)
 }
 
 // A batch whose marks the store refuses because another open moved the open
@@ -784,7 +782,7 @@ func (x *refusingMarks) Commit(ctx context.Context, p []kvstore.PendingExistence
 func TestAMovedOpenGenerationStopsTheMarks(t *testing.T) {
 	x := &refusingMarks{err: kvstore.ErrOpenGenMoved}
 	x.on.Store(true)
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u := newUnit(t, onCommit(x.commit))
 	a, b := u.create(t, "a"), u.create(t, "b")
 	u.write(t, a, 0, []byte("a"))
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
@@ -818,7 +816,7 @@ func TestAMovedOpenGenerationStopsTheMarks(t *testing.T) {
 func TestMarksNotWrittenAreRetriedAlone(t *testing.T) {
 	x := &refusingMarks{err: kvstore.ErrSyncMarks}
 	x.on.Store(true)
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u := newUnit(t, onCommit(x.commit))
 	a := u.create(t, "a")
 	u.write(t, a, 0, []byte("a"))
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)

@@ -221,7 +221,7 @@ func heldClone(t *testing.T, u *unit, src, dst entity.FileID) (release func()) {
 // the source extent, answer DelayClone at once, staging nothing and calling
 // no Done; a write one byte past either extent is served. A read or an
 // allocation of the destination extent answers DelayClone; a read of the
-// source extent is served, and an allocation before the destination extent
+// source extent, or of no byte inside the destination's, is served, and an allocation before the destination extent
 // stops at it.
 func TestARegistrationHoldsBothExtents(t *testing.T) {
 	u := cloneUnit(t)
@@ -263,6 +263,9 @@ func TestARegistrationHoldsBothExtents(t *testing.T) {
 	}
 	if _, err := u.e.Read(ctx, u.share.ID, dst, 7*mib, make([]byte, 2*mib)); !isDelay(err, vfserr.DelayClone) {
 		t.Errorf("a read starting before the destination extent and running into it: %v, want DelayClone", err)
+	}
+	if n, err := u.e.Read(ctx, u.share.ID, dst, 9*mib, nil); n != 0 || err != nil {
+		t.Errorf("a read of no byte inside the destination extent: %d, %v; want 0, nil", n, err)
 	}
 	if _, err := u.e.Read(ctx, u.share.ID, src, 0, make([]byte, 4)); isDelay(err, vfserr.DelayClone) {
 		t.Errorf("a read of the source extent: %v, want served", err)

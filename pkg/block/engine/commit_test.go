@@ -497,11 +497,7 @@ func (x *overwritesStore) Overwrites(ctx context.Context, s entity.ShareID, f en
 func TestACommitOverAnOverwriteReadsTheStoreOnce(t *testing.T) {
 	x := &overwritesStore{}
 	m := &refusingMarks{err: kvstore.ErrSyncMarks}
-	u := newUnit(t, func(d *engine.Deps) {
-		m.Existence = d.Existence
-		x.Existence = m
-		d.Existence = x
-	})
+	u := newUnit(t, onCommit(m.commit), func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("committed"))
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {

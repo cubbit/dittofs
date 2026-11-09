@@ -43,7 +43,7 @@ func TestAFailedWindowTakesAWriteOutOfItsBatch(t *testing.T) {
 // once, after the commit that succeeded.
 func TestARetriedBatchCallsEachDoneOnce(t *testing.T) {
 	c := &conflicting{}
-	u := newUnit(t, func(d *engine.Deps) { c.Existence = d.Existence; d.Existence = c })
+	u := newUnit(t, onCommit(c.commit))
 	res := enginetest.NewReservations(t)
 	f := u.create(t, "a")
 	o, answered := res.Opts()
@@ -137,7 +137,7 @@ func TestEveryAcceptedWriteGetsOneDone(t *testing.T) {
 // Done runs once, the dropped write's from the drop.
 func TestABatchRetriesAfterADrop(t *testing.T) {
 	c := &conflicting{}
-	u := newUnit(t, func(d *engine.Deps) { c.Existence = d.Existence; d.Existence = c })
+	u := newUnit(t, onCommit(c.commit))
 	res := enginetest.NewReservations(t)
 	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 	f := made.ID

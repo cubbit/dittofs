@@ -289,7 +289,7 @@ func guardKeepsACloneOut(t *testing.T, skip bool) {
 	}
 }
 
-// R42: phase 1 passes each pending write of the destination with the runs
+// Phase 1 passes each pending write of the destination with the runs
 // where it overlaps an earlier one, as a batch does: a write outside the
 // extent and an overwrite of part of it, both pending below the clone, leave
 // an overwrite record over the overlapped run once phase 1 commits, whose

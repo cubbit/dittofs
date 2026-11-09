@@ -187,7 +187,7 @@ func TestAnAbortKeepsTheWritesAboveIt(t *testing.T) {
 // the last group commit commit the write above it, and settle past it.
 func TestALoopEndingLeavesARetriedPhase1ForRecovery(t *testing.T) {
 	x := &conflictingRemove{}
-	u, h := newHookedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u, h := newHookedUnit(t, onRemove(x.remove))
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a')) // due, and below the truncate
 	tv := u.retriedTruncate(t, x, f, 3, 8, 4)
