@@ -600,10 +600,11 @@ Every adapter runs through the same four states, driven by the node
   behind a `GETATTR` runs, and a client told the share moved can read
   `fs_locations`. Any other new request gets the drain's error: `ErrMoved` when
   the service names another gateway node the request's share can move to,
-  `ErrDraining` when it names none (the only node stopping). `core` asks the
-  service for each request it refuses, so each share is judged on its own;
-  the call is [RFC 17](rfc-17-vfs.md)'s to provide, and until
-  [RFC 15](rfc-15-topology.md)'s topology exists it answers none. A table maps `ErrMoved` to the protocol's move signal where
+  `ErrDraining` when it names none (the only node stopping) or the request
+  names no filehandle. `core` asks the service's `MoveTarget`
+  ([RFC 17](rfc-17-vfs.md)) for each request it refuses, about the handle the
+  request names (§4.7's `Invocation.Handle`), so each share is judged on its
+  own; until [RFC 15](rfc-15-topology.md)'s topology exists it answers none. A table maps `ErrMoved` to the protocol's move signal where
   the operation can carry one (`NFS4ERR_MOVED` with `fs_locations`,
   [RFC 21 §7.4](rfc-21-nfs.md#7.4%20Pseudo-filesystem%2C%20SECINFO%20and%20locations);
   Witness `CLIENT_MOVE` first, [RFC 22 §14](rfc-22-smb.md#14.%20Witness)), and
@@ -890,9 +891,9 @@ type Adapter interface {
 	// deadline; requests still running at it are abandoned (§3.1). A request
 	// refused while draining gets ErrMoved when the service names another
 	// gateway node for its share (RFC 15 §5.3), as RFC 21 §7.4's
-	// fs_locations does, and ErrDraining otherwise; core asks per request
-	// (§3.1). Stop is idempotent: a second call returns once the adapter is
-	// stopped.
+	// fs_locations does, and ErrDraining otherwise; core asks the service's
+	// MoveTarget per request (§3.1). Stop is idempotent: a second call
+	// returns once the adapter is stopped.
 	Stop(ctx context.Context) error
 
 	// Health is ready when serving with every listener bound; configured and
@@ -1874,6 +1875,14 @@ type Invocation struct {
 	Resolve func(r *Request) error                     // wire IDs to service values
 	Call    func(ctx context.Context, r *Request) error // the handler
 	Encode  func(out *Buf, v Version) error
+	// Handle is the filehandle the request's own arguments name (a PUTFH's),
+	// read before Resolve, which core hands the service to learn a draining
+	// request's move target (§3.1); the service resolves it, core never parses
+	// it. nil: the request names none.
+	Handle func() (vfs.Handle, bool)
+	// Count is a compound row's: the members its arguments say follow, which
+	// its Decode sets on what Bind returned. 0 on every other row.
+	Count int
 	// Role says what this request does to state: an SMB LOCK whose elements
 	// unlock releases it, a WRITE to an open under a break flushes it, an
 	// NFSv4 OPEN that claims a delegated open flushes it. It is called in
@@ -1904,6 +1913,7 @@ func Bind[Req, Rep any](
 	bound func(req *Req) int,
 	resolve func(r *Request, req *Req) error, // nil: the operation names no wire ID
 	role func(r *Request, req *Req) Role,     // nil: Op.Role decides alone
+	handle func(req *Req) (vfs.Handle, bool), // nil: the arguments name no filehandle
 	h Handler[Req, Rep],
 	enc func(rep *Rep, v Version, out *Buf) error,
 ) func([]byte, Version) (Invocation, int, error)
@@ -1956,7 +1966,7 @@ A table is built beside its handlers, one line per operation:
 func (h *Handlers) OpTable() *core.OpTable {
 	return core.NewOpTable(errorTable, false,
 		&core.Op{Name: "WRITE", Code: proc3Write,
-			Decode: core.Bind(xdr.DecodeWRITE3args, writeBound, nil, nil, h.Write, xdr.EncodeWRITE3res)},
+			Decode: core.Bind(xdr.DecodeWRITE3args, writeBound, nil, nil, nil, h.Write, xdr.EncodeWRITE3res)},
 		// … one row per procedure
 	)
 }
@@ -1980,7 +1990,7 @@ err = inv.Resolve(r)
 role := op.Role
 if draining || expired(r) { role = roleOf(op, inv, r) } // inv.Role(r), or op.Role where nil; not asked otherwise
 if err == nil && expired(r) && !op.Expired && role != RoleRelease { err = ErrExpired } // §4.4
-if err == nil && draining && role == RoleNone { err = drainErr(r) } // §3.1: ErrMoved if the service names a gateway for r's share, else ErrDraining; never per operation in a single-reply compound (below)
+if err == nil && draining && role == RoleNone { err = drainErr(ctx, r, inv) } // §3.1: ErrMoved if MoveTarget names a gateway for inv.Handle's share, else ErrDraining; never per operation in a single-reply compound (below)
 if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve when tbl.Holds
 st, send := tbl.Errors.Map(err, op, h.Version())
 if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); return } // a NoReply row: no final reply; where the table holds (SMB) an interim grants the request's credits back, and those of the chain members after it, whose headers it is handed (none outside a chain) (HoldCodec.Interim)
@@ -1992,10 +2002,16 @@ conn.write(reply) // the writer's queue (§6.2)
 
 For NFSv4 the RPC procedure is `COMPOUND`, a compound row: its `Members` is
 the minor version's operation table. Its `Decode` decodes the compound's own
-arguments and returns the bytes they took; from there the runner reads each
-member's operation code with `Members.ReadOp`, decodes the member with that
-row's `Decode`, and moves on by the bytes it returned, until the body is
-consumed, so every member is decoded before any runs. An SMB chain
+arguments, sets `Invocation.Count` to the array's count and returns the bytes
+they took. The runner refuses a count past the compound cap with `ErrTooLong`
+before it decodes any member (§4.3); otherwise it decodes exactly `Count`
+members, each's operation code read with `Members.ReadOp` and its arguments
+with that row's `Decode`, moving on by the bytes each returned, and refuses
+bytes left after the last as the compound's decode error (§5.2), before any
+member runs. Outside a drain, a member k that does not decode — its arguments
+malformed, or a code its table has no row for, which RFC 21 answers from its
+`ILLEGAL` row — is answered with that error once the members before it have
+run; nothing past it runs, and the reply ends there. An SMB chain
 reaches the same runner from one record, each member with its own header at
 its own offset (`Decode(rec, off)`, `Header.Next`). The runner repeats the
 steps from `check` to `encode` per operation, carrying the compound state in
@@ -2029,7 +2045,9 @@ which grants its credits and those of the members after it, and no final
 reply follows. The members after it are not otherwise decoded, so the runner
 decodes only their headers, with `HeaderCodec.Decode`, and hands them to
 `HoldCodec.Interim` as `after`. That costs one header decode per later member,
-into a slice the connection keeps and reuses, and only on a drain's refusal.
+into a slice taken from a `sync.Pool` and put back once the interim is encoded
+(a connection runs up to its cap of requests at once, so no per-connection
+slice is safe), and only on a drain's refusal.
 A later member whose header does not decode ends the chain there: the interim
 grants the credits of those before it that decoded, and nothing past it is
 read. One before it that went pending gets its final reply as usual.
@@ -2066,7 +2084,18 @@ as they run: a compound that began while serving runs whole. Judged per
 operation, a drain starting between its `CLOSE` and its `READ` would apply the
 `CLOSE` and leave the reply unsent, with the slot unchanged, so the
 retransmission would meet `NFS4ERR_BAD_STATEID`. An operation that does not
-decode counts as refused with a `NoReply` row.
+decode counts as refused with a `NoReply` row; this is the only place a
+member that does not decode is judged rather than answered.
+
+Which drain error the compound's refused members get is decided once, with
+the rest. The runner hands the service each filehandle a member's decoded
+arguments name (`Invocation.Handle`, a `PUTFH`'s), and the service's
+`MoveTarget` ([RFC 17](rfc-17-vfs.md)) resolves it; the adapter never parses
+it. The refusal is `ErrMoved` only when the compound names at least one
+handle and every one names a share with a target, and `ErrDraining`, so no
+reply, otherwise: a compound that reaches its share another way, as a
+`LOOKUP` across a junction from `PUTROOTFH` does, is left unanswered, and the
+client retries.
 
 > decision: `Pends` is asked only for an `ErrDelay` the service returned. A
 > call still in the service can apply after any answer, so answering it at
@@ -2266,15 +2295,13 @@ one of them (§7), so the surface is proven before either protocol is built on
 it.
 
 > decision: a compound row is named by one field and split by one hook.
-> `Op.Decode` returns the bytes it consumed and `Op.Members` names the
-> members' table, so the runner can decode every member before any runs, as
+> `Op.Decode` returns the bytes it consumed, `Op.Members` names the members'
+> table and `Invocation.Count` the members to expect, so the runner checks the
+> cap, decodes every member and refuses trailing bytes before any runs, as
 > judging a compound whole while draining needs. Reading a member's operation
-> code is the members' table's `ReadOp`, because its encoding is the protocol's
-> (an XDR `argop` for NFSv4) and no existing stage reads inside a body. The
-> array's own count is not compared with the members decoded: a body holding
-> more members than its count runs them all. Return the count from the
-> compound row's `Decode` if a client is found that relies on the count
-> cutting a body short.
+> code is the members' table's `ReadOp`, because its encoding is the
+> protocol's (an XDR `argop` for NFSv4) and no stage reads inside a body.
+> Revisit if a protocol's compound cannot state its count before its members.
 
 > decision: four additions proposed from prior servers add no surface, since
 > each need is met inside a body. A release hook on `Invocation`: a held

@@ -1566,7 +1566,9 @@ reached — is returned only for a drain
 
 - a gateway node draining towards another answers operations on a share with
   `NFS4ERR_MOVED`, and `fs_locations` names that node, in the same
-  installation and at the same path. `NFS4ERR_MOVED` goes only on an
+  installation and at the same path, as the service's `MoveTarget` reports it
+  for the share
+  ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)). `NFS4ERR_MOVED` goes only on an
   operation that uses the current filehandle, the only place RFC 8881 allows
   it; a compound holding any other operation the drain refuses is left
   unanswered, and none of its operations runs. A `GETATTR`

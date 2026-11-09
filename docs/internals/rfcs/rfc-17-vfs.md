@@ -490,7 +490,7 @@ internal/vfs/                the filesystem, one file per operation; the gateway
   commit.go                  Commit, and the write verifier (§5.8)
   deallocate.go copy.go      Deallocate; Copy and Clone (§5.9)
   lock.go grant.go watch.go  Lock, CancelLock, TestLock, Unlock (§5.11); AckRecall; Watch, Unwatch
-  shares.go                  Root, SecInfo, ListShares, StatFS, Quota, Snapshots (§4.9)
+  shares.go                  Root, SecInfo, ListShares, StatFS, Quota, Snapshots, MoveTarget (§4.9)
   release.go grace.go        the four moments of release (§5.3); grace and pending-release recovery
   arch_test.go               imports, call sites and the gateway's fields (§8)
 ```
@@ -791,6 +791,7 @@ type Shares interface {
 	StatFS(ctx context.Context, c Call, h Handle) (FilesystemInfo, error)                // the share's, or the tighter of it and h's project
 	Quota(ctx context.Context, c Call, h Handle, p Principal) (Usage, Quota, error)      // p's own, else the share's default for its kind
 	Snapshots(ctx context.Context, c Call, h Handle) ([]SnapshotInfo, error)             // the snapshots visible at h's path (RFC 12 §2.5)
+	MoveTarget(ctx context.Context, c Call, h Handle) (netip.Addr, error)               // while this node drains: another gateway node serving h's share at the same path (RFC 15 §5.3), for an adapter's ErrMoved and NFSv4's fs_locations; the zero Addr when none, which is every answer until RFC 15's topology exists
 }
 ```
 
@@ -838,7 +839,7 @@ So no handler follows a mutation with a `GetAttr`
 client record or lease — and a handler may make any number of them:
 `Propose`, `Record`, `TestState`, `Lookup`, `ReadDir`, `GetAttr`, `GetACL`,
 `Xattrs`, `Streams`, `Access`, `Read`, `Seek`, `TestLock`, `Root`, `SecInfo`,
-`ListShares`, `StatFS`, `Quota`, `Snapshots` and `Spell`. Every other method may change
+`ListShares`, `StatFS`, `Quota`, `Snapshots`, `MoveTarget` and `Spell`. Every other method may change
 state, and RFC 20 §4.3 allows a handler one. `vfs.Mutates(op Op) bool` answers
 it, so `vfstest.Record` and the adapters' one-call test read it from one place.
 `Propose` is on the list because its record is volatile and nothing reads it
@@ -1262,6 +1263,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `SignIn`, `Spell`, `Find` | RFC 18's authenticator and principal mapping, held by the filesystem ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface), [§4.1](rfc-18-identity.md#4.1%20Two%20directions%2C%20one%20mapping)) | — | the local filesystem; never forwarded |
 | `StatFS`, `Quota` | `Capacity.Info`, `Capacity.Usage`; the quota record (gap: no view but `ControlPlane.Quotas`) | — | primary |
 | `Snapshots` | RFC 12 `Snapshots.List`, filtered by the handle's path | — | primary |
+| `MoveTarget` | RFC 15 §5.3's topology, once it exists; until then nothing, and the answer is none | — | the local filesystem; never forwarded |
 
 **A change to a file's attributes or data is reported under the entry its open
 was made through.** A watch's `Change` names an entry of the directory it is
