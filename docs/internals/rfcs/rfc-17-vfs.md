@@ -1398,15 +1398,24 @@ type Delay struct {
 type DelayCause uint8
 
 const (
-	DelayRecall    DelayCause = iota // a caching grant is being recalled (§3.2)
-	DelayClone                       // a running clone or copy chunk holds the extent past the call's hold (§5.9)
-	DelayConflict                    // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2), or an open-state owner's own numbered request in flight (RFC 14 §2.8)
-	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away; or a share not attached here (RFC 8 §12.1), or an open-state shard not yet served here (RFC 14 §11.3); or its journal's content not yet reconciled after damage (RFC 8 §2.5)
-	DelayCapacity                    // the journal's capacity or a share's journal limit (RFC 8 §10.2)
-	DelayCommit                      // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6); or a stable write's sync may have lost it (§5.8)
-	DelayResources                   // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
+	// Zero is no cause: every Delay names one of these.
+	DelayRecall    DelayCause = iota + 1 // a caching grant is being recalled (§3.2)
+	DelayClone                           // a running clone or copy chunk holds the extent past the call's hold (§5.9)
+	DelayConflict                        // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2), or an open-state owner's own numbered request in flight (RFC 14 §2.8)
+	DelayFrozen                          // the share is quiesced, frozen for a move, or moved away; or a share not attached here (RFC 8 §12.1), or an open-state shard not yet served here (RFC 14 §11.3); or its journal's content not yet reconciled after damage (RFC 8 §2.5)
+	DelayCapacity                        // the journal's capacity or a share's journal limit (RFC 8 §10.2)
+	DelayCommit                          // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6); or a stable write's sync may have lost it (§5.8)
+	DelayResources                       // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
 )
 ```
+
+Each typed error matches, under `errors.Is`, its sentinel and any value of its
+own type with the same kind, so an adapter's error table
+([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)) can name a kind
+rather than only its sentinel. The kind is `Cause` for `AccessError`, `Scope`
+for `QuotaError`, `Cause` and `Moved` for `Delay`, `Kind` with `Sessioned` and
+`Admin` for `StateError`, and `Kind` for `CrossError`. `Delay`'s `Until` is a
+bound, not a kind, and is not compared; a zero `Cause` matches only another.
 
 `Cause` labels metrics and selects how long an adapter holds the request and
 its final status (§3.2). **A transient refusal never becomes `ErrNoSpace` because a
