@@ -259,15 +259,15 @@ which epic owns the rest.
 | R59 | `Op` carries §4.2's columns as data: `Code`, `Name`, `Versions Range`, `Needs`, `Cacheable`, `Role`, `Expired`, `Decode func(body []byte, v Version) (inv Invocation, n int, err error)` returning the bytes it consumed, `Members *OpTable` marking a compound row; per-protocol policy and version gating are columns, never handler checks (checks: E5) | MUST | §4.2, §4.7, §2.5 rule 2 | T1.7 |
 | R60 | `Invocation` is a struct of closures `Bound`, `Resolve`, `Call`, `Encode`, `Role`, `Handle func() (vfs.Handle, bool)`, and `Count int`, the members a compound row's arguments count (0 elsewhere), not an interface; `Bind` is its only producer | MUST | §4.7 | T1.7 |
 | R61 | `Role uint8` with `RoleNone`, `RoleContext`, `RoleFlush`, `RoleRelease` in that order; `Op.Role` is what the operation always does, `Invocation.Role` decides per request: before `Resolve`, reading only the decoded arguments and the state an explicit stateid among them names, when a single-reply compound is judged whole while draining; after `Resolve`, and only while draining or on an expired credential, everywhere else; and a nil one leaves `Op.Role` alone (drain and expiry filters: E5) | MUST | §4.7, §3.1 | T1.7 |
-| R62 | `Bind[Req, Rep any](dec, bound, resolve, role, handle, h Handler[Req, Rep], enc)` type-checks the codec pair against the handler and returns the row's `Decode`; the `Invocation` it returns hands `Bound`, `Resolve`, `Role`, `Call` and `Encode` the request `dec` decoded; a nil `resolve` means the operation names no wire ID, a nil `role` leaves `Invocation.Role` nil, a nil `handle` leaves `Invocation.Handle` nil | MUST | §4.7, §4.3 | T1.7 (body and test) |
+| R62 | `Bind[Req, Rep any](dec, bound, resolve, role, handle, h Handler[Req, Rep], enc)` type-checks the codec pair against the handler and returns the row's `Decode`; `dec` is `func(b []byte, v Version, req *Req) (n int, err error)`, and `Decode` returns its `n`; the `Invocation` it returns hands `Bound`, `Resolve`, `Role`, `Call` and `Encode` the request `dec` decoded; a nil `resolve` means the operation names no wire ID, a nil `role` leaves `Invocation.Role` nil, a nil `handle` leaves `Invocation.Handle` nil | MUST | §4.7, §4.3 | T1.7 (body and test) |
 | R63 | `Handler[Req, Rep any] func(ctx context.Context, r *core.Request, req *Req) (*Rep, error)` | MUST | §4.3 | T1.7 |
 | R64 | `Version uint32`; `Range{First, Last Version}`, a closed span (`Range{0, 0}` is NFSv4.0 alone); `Needs uint8` ordered `NeedsNothing` < `NeedsNegotiated` < `NeedsSession` < `NeedsTree`, with `NeedsFH Needs = 1 << 7` or-ed; `Status uint32` | MUST | §4.7, §4.2 | T1.7 |
-| R65 | `ErrorTable` is opaque; `ErrorRow{Err, Ops, Versions *Range, NoReply, Status}`; `NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable`; `(*ErrorTable).Map(err, op *Op, v Version) (s Status, reply bool)` (order, refusal of equal rows, totality helper: E5) ; `NoReply` means no final reply, and a table that holds answers it with an interim granting the request's credits (sending it: E5) | MUST | §4.7, §4.5 | T1.7 |
+| R65 | `ErrorTable` is opaque; `ErrorRow{Err, Ops, Versions *Range, NoReply, Hold func(err error, start time.Time) time.Time, Status}`, `Hold` only in a table that Holds, which `NewOpTable` checks (E5); `NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable`; `(*ErrorTable).Map(err, op *Op, v Version) (s Status, reply bool)` (order, refusal of equal rows, totality helper: E5) ; `NoReply` means no final reply, and a table that holds answers it with an interim granting the request's credits (sending it: E5) | MUST | §4.7, §4.5 | T1.7 |
 | R66 | `Call func(ctx context.Context, r *Request) error` and `Middleware func(next Call) Call` (the chain and its order: E5) | MUST | §4.7 | T1.7 |
 | R67 | `Header` is `{Op() uint32; Version() Version; Next() int; Related() bool}`; `core` reads a header only through these | MUST | §4.7 | T1.7 |
 | R68 | `Request` exports `Call vfs.Call`, `Version`, `Level Needs`, `Conn *Conn`, `State any`, the rest unexported; `(*Request).Park(cancel func()) (done func(err error), err error)` (semantics: E5) | MUST | §4.7 | T1.7 |
 | R69 | `Conn` is opaque; a protocol reaches it only through `Send(h Header, msg *Buf, before uint64) error`, `Established()`, `Keep() (release func())`, `Settings() config.Settings` (D15), `Close(err error)` (bodies: E4, E5) | MUST | §4.7 | T1.7 |
-| R70 | `HoldCodec` is `{Key(h) uint64; Interim(h, grant bool, after []Header, out *Buf) error; Final(h, grant bool) Header; Cancels(h) (key uint64, ok bool); Pends(h, cause vfs.DelayCause) bool}` | MUST | §4.7 | T1.7 |
+| R70 | `HoldCodec` is `{Key(h) uint64; Interim(h, grant bool, after []Header, out *Buf) error; Final(h, grant bool) Header; Cancels(h) (key uint64, ok bool); Pends(h, err error) bool}` | MUST | §4.7 | T1.7 |
 | R71 | `ErrParked` and core's refusals `ErrNotSupported`, `ErrVersion`, `ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree`, `ErrNoFH`, `ErrTooLong`, `ErrExpired`, `ErrNotLast`, `ErrTooManyPending`, `ErrMoved`, `ErrDraining` are distinct sentinels; `Errors() []error` (body: E5) | MUST | §4.7 | T1.7 |
 | R72 | `Dispatcher` is `{Dispatch(ctx, c *Conn, rec *Buf); Drain()}`, `ErrMoved` or `ErrDraining` decided per request (D16), the seam a connection's own tests stub | MUST | §4.7 | T1.7 |
 | R73 | `NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)`; `Listener{Network string; Port uint16; Protocol Protocol}`; `*Server` implements `adapter.Adapter` (bodies: E4) | MUST | §4.7, §3.4, §2.5 | T1.7 |
@@ -280,7 +280,7 @@ which epic owns the rest.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R77 | `ReplayCache.Store` carries §4.7's `ponytail:` on the copies charged to no pool | MUST | §4.7; rule 7 | T1.7 |
-| R78 | `HoldCodec` carries §4.7's `ponytail:` on the cancel record's 5 s and its `decision:` that `Pends` is asked only for an `ErrDelay` the service returned | MUST | §4.7; rule 7 | T1.7 |
+| R78 | `HoldCodec` carries §4.7's `ponytail:` on the cancel record's 5 s and its `decision:` that `Pends` is asked only for an error the service returned | MUST | §4.7; rule 7 | T1.7 |
 
 ## 4. Decisions this epic takes
 
@@ -410,6 +410,10 @@ which epic owns the rest.
   Kerberos, Kerberos was off and an NFS adapter row was enabled. A fresh database no longer gets
   that row, so the refusal fired only on old databases, for a protocol nothing serves. It comes
   back with the NFS adapter.
+- **D26, hold policy is a column of the error row.** `ErrorRow.Hold` returns a hold's deadline
+  from each attempt's error and the hold's start, and `HoldCodec.Pends` takes the error, so a
+  grace or unavailable error before the last chain member is covered too (R65, R70; RFC 20
+  §4.6). RFC 17's `vfs.Grace{Until}` gives a grace hold its bound (§9).
 
 ## 5. Target tree
 
@@ -434,6 +438,7 @@ internal/
       hold.go                        HoldCodec, ErrParked
       server.go                      Server, NewServer, Listener
       bind_test.go exports_test.go
+                                     pipeline.go, compound.go, middleware.go: §2.5's other three, with their bodies in E4 and E5
   controlplane/runtimetest/          T1.2  moved from internal/adapter/testruntime (D2)
 pkg/
   adapter/                           T1.1  deleted, then recreated:
@@ -473,7 +478,10 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
   - D18's `NewBufPool` (RFC 24 §2.5) and `BufPool.Get`'s key;
   - D10's `Deps.Metrics` and D11's `*resources.Buf`;
   - D19's `Interim` parameter and `Invocation.Role`'s two cases;
-  - D21's compound split;
+  - D21's compound split, with `Bind`'s decoder returning its length;
+  - D26's `ErrorRow.Hold` and `Pends(h Header, err error) bool`, and RFC 17's `vfs.Grace{Until}`;
+  - RFC 20 §3.6's default tags, unnamed nested TLS and dialect fields, and certificates loaded
+    by `Validate`;
   - RFC 17 amended too: `MoveTarget` on its `Shares` area (D16), and RFC 21 §7.4's
     `fs_locations` pointing at it;
   - RFC 13 Appendix B's `adapters.smb.dialects` row; RFC 23's re-enabled adapter built with
@@ -630,7 +638,13 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
   operations switched off by name, NFS's TLS block, SMB's dialect range; not the node's
   connection limit, R38); `Addrs` with §3.6's `decision:` marker; the sealed `Settings`,
   `AdapterOf` and `Validate` (D15), run by `New`; `ErrRestartRequired` and `RestartRequired` with its `decision:`
-  marker (D6).
+  marker (D6). As RFC 20 §3.6 states: defaults are `default:"…"` tags read by the record
+  loader, and `Validate` fills none and refuses a zero value where one is required; NFS's TLS
+  block and SMB's dialect range are unnamed nested fields (`NFS.TLS{CertFile, KeyFile,
+  ClientCA, MinVersion, Mode}`, `SMB.Dialects{Min, Max}`, dialects the strings `"2.1"`,
+  `"3.0"`, `"3.0.2"`, `"3.1.1"`), so no type is exported for them; `Validate` loads the
+  certificate files with the standard library, so an unloadable one is refused at `New` and
+  `Reconfigure`.
 - **Acceptance criteria:**
   - An out-of-range value is refused with an error naming the field and the rule, never
     clamped or replaced by a default.
@@ -670,12 +684,12 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
 
 - **Track:** the team. **Depends on:** T1.4, T1.5, T1.6.
 - **Covers:** R11, R13, R17, R18, R19, R21, R30, R31, R54–R78.
-- **Deliverables:** the six files of §5 with every §4.7 symbol (as amended by T1.9), their doc comments as RFC 20 states them after the review follow-ups (`ErrorRow.NoReply`, `HoldCodec.Interim`) and stub
+- **Deliverables:** the six files of §5, named as RFC 20 §2.5 names them, with every §4.7 symbol (as amended by T1.9), their doc comments as RFC 20 states them after the review follow-ups (`ErrorRow.NoReply`, `HoldCodec.Interim`) and stub
   bodies per D12; `Conn.Settings` and `NewServer` taking `config.Settings` (D15);
   `var _ adapter.Adapter = (*Server)(nil)`; `Bind`'s body; the `ponytail:` on
   `ReplayCache.Store`'s uncharged copies, and on `HoldCodec` the cancel record's 5 s
-  `ponytail:` and the `decision:` that `Pends` is asked only for an `ErrDelay` the service
-  returned; the per-change vet cell running `GOOS=windows` and `GOOS=darwin` `go vet` over
+  `ponytail:` and the `decision:` that `Pends` is asked only for an error the service
+  returned; `ErrorRow.Hold` and `Pends(h Header, err error) bool` (D26); the per-change vet cell running `GOOS=windows` and `GOOS=darwin` `go vet` over
   `./pkg/adapter/...`, `./pkg/resources/...` and `./internal/adapter/...`.
 - **Acceptance criteria:**
   - `core` imports no protocol package and nothing §2.3 forbids.
@@ -751,6 +765,7 @@ cannot build apart.
 - `pkg/apiclient`'s adapter and netgroup methods kept for e2e helpers (D5). Owner: the cutover.
 - `metrics.Registry` an alias of the branch's `Metrics` rather than RFC 25's registry (D10).
   Owner: RFC 25.
+- `vfs.Grace{Until}` (D26), named in RFC 17 by T1.9. Owner: RFC 17's plan, before E5's T5.5.
 - `vfs.Shares.MoveTarget` (D16), named in RFC 17 by T1.9, in `pkg/vfs`, `*vfs.Filesystem`,
   `vfstest.Null` and `vfstest.Record`. Owner: RFC 17's plan, before E4 calls it; until RFC
   15's topology exists it answers none.

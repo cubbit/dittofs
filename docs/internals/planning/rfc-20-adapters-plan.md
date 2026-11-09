@@ -472,7 +472,9 @@ deleted).
 - T1.6 `pkg/resources`: `Budget`, `Reservation`, `Pools`, `Buf`, `BufPool`, `NewBufPool`,
   classes, as stubs; `pkg/metrics`' `Registry` alias. 1.25 man-days.
 - T1.7 `internal/adapter/core`'s surface, RFC 20 §4.7, with stub bodies; `Bind`'s body, with
-  the test that its `Invocation` hands each closure the request it decoded; the `GOOS=windows`
+  the test that its `Invocation` hands each closure the request it decoded; `ErrorRow.Hold`,
+  `HoldCodec.Pends(h Header, err error) bool` and `Bind`'s decoder returning its length as
+  RFC 20 §4.7 states them; the `GOOS=windows`
   and `GOOS=darwin` vet cell for the adapter packages. 2.5 man-days.
 - T1.8 `pkg/adapter/nfs.New` and `pkg/adapter/smb.New` stubs, validating before they refuse.
   0.5 man-days.
@@ -610,11 +612,16 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   `HoldCodec` name (past the ceiling; past the floor with the hold pool full; cancelled; a chain
   member after members already answered), a cancel (`HoldCodec.Cancels`) and close ending a hold with no reply
   to the cancel, and a cancel that arrives first remembered; the write data's `Buf` kept across
-  re-drives; chain members held: RFC 20 §4.7. Past the ceiling no test asserts a count of pending
+  re-drives; chain members held: RFC 20 §4.7. How long a request is held is its row's
+  `ErrorRow.Hold`, evaluated on each attempt's error from the hold's start, and answered the
+  row's status once it passes; `testproto`'s hold operation is given a row with a bound, and a
+  row without `Hold` is answered at once; `Pends` asked with the error, a grace or unavailable
+  error before the last member included. Past the ceiling no test asserts a count of pending
   calls: a call kept in the service adds one per round trip, and bytes bound them (RFC 20 §4.6).
 - T5.6 The middleware chain: recovery (server fault, logged with the stack, the connection's
   other requests unharmed), trace span, metrics, deadline; order pinned by a test.
-- T5.7 `ErrorTable`: mapping by error, operations and version, and `NoReply` (`Map`'s reply flag,
+- T5.7 `ErrorTable`: mapping by error, operations and version, `NewOpTable` refusing an
+  `ErrorRow.Hold` in a table that does not hold, and `NoReply` (`Map`'s reply flag,
   the reply reservation freed with no final reply, and on a table that holds an interim granting the request's credits); `core.Errors()`; `ReplayCache`'s own copy; a kind named by a typed value under `errors.Is` (RFC 17 §4.3; `vfserr` matches by kind from #3869), most specific row first in §4.7's total order; an unmapped
   error answered server fault and counted; the totality check against `vfs.Errors()` as a
   helper each protocol's table will call.
@@ -764,6 +771,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | the packages deleted in T1.1 for having no importer: `pkg/discovery/mdns` and `wsd`; `pkg/auth`, `pkg/auth/kerberos`, `pkg/identity/kerberos`, `internal/auth/kerberos`; `internal/mfsymlink` | nothing imports them once v1 is gone | discovery: cutover; Kerberos and `pkg/auth`: RFC 18 plan; `mfsymlink`: RFC 22 plan | each lifted from develop's history by its consumer |
 | `pkg/apiclient`'s adapter and netgroup methods, kept for the e2e helpers `lint-go` vets; their routes answer 404 | compiled tests still call them | cutover | with their routes |
 | `metrics.Registry` an alias of `pkg/metrics`' `Metrics` (T1.6), not RFC 25 §8.2's registry | the registry is not built | RFC 25 | when the registry is built |
+| `vfs.Grace{Until}`, the typed `ErrGrace` carrying the shard's grace end, which an `ErrorRow.Hold` reads to bound a hold (RFC 17 §4.3) | named in RFC 17 by T1.9; not yet in `pkg/vfs` | RFC 17 plan: the type in `pkg/vfs`, returned by `*vfs.Filesystem` | before E5's T5.5 |
 | `vfs.Shares.MoveTarget`, which says whether a draining request's share has a gateway to move to (`ErrMoved`) or none (`ErrDraining`), asked per request (RFC 20 §3.1) | named in RFC 17 by T1.9; not yet in `pkg/vfs` | RFC 17 plan: the method in `pkg/vfs`, `*vfs.Filesystem`, `vfstest.Null` and `vfstest.Record`, answering none | before E4's T4.5 calls it; a real target once RFC 15's topology exists |
 
 ## 7. RFC coverage
