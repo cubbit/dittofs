@@ -11,7 +11,8 @@ import (
 )
 
 // run is one stream's worker: on each wake it takes the windows of the
-// segments that ended, fails their content records, completes the entries a
+// segments that ended, fails their content records (or, once the journal is
+// read-only, every unsynced record of the stream), completes the entries a
 // sync covered, stamps the ones it has not seen, issues the sync a waiter asked for
 // or the sync bound's timer calls for, and arms the timer, until Stop closes
 // done.
@@ -28,7 +29,11 @@ func (d *Durability) run(st *stream) {
 			fire, fired = nil, true
 		}
 		d.takeWindows(st)
-		d.failWindows(st)
+		if d.Admit() != nil {
+			d.failReadOnly(st)
+		} else {
+			d.failWindows(st)
+		}
 		d.complete(st)
 		d.stamp(st)
 		d.syncStep(st, fired)

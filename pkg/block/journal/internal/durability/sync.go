@@ -2,6 +2,7 @@ package durability
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"sync"
@@ -55,6 +56,15 @@ type Config struct {
 	// the changed file's append domain held. It must therefore not wait on a
 	// Sync or take a file's append domain.
 	Account func(index.HeldDelta)
+
+	// Undo, when set, undoes in memory one header-only record a read-only
+	// journal fails: a truncate, deallocate, delete, release or any other kind
+	// that is neither content nor a loss record. It reverses what the record's
+	// publish changed in the index and returns that change as a held delta,
+	// which the layer hands to Account. It runs on the record's stream worker
+	// with the record's file append domain held, so it must not wait on a
+	// Sync or take a file's append domain. Nil undoes nothing.
+	Undo func(w segment.Written) index.HeldDelta
 }
 
 // SyncDurationBounds are the upper bounds of the sync duration histogram's
@@ -105,6 +115,9 @@ type Durability struct {
 	log     *slog.Logger
 
 	index *index.Index
+	// undo is Config.Undo: the in-memory undo of a header-only record a
+	// read-only journal fails.
+	undo func(segment.Written) index.HeldDelta
 
 	// windowSeq numbers the windows the workers take, so a window is named
 	// across the streams.
@@ -119,6 +132,10 @@ type Durability struct {
 	// by Start. It is nil before Start, which Lose reports as an error.
 	streams atomic.Pointer[segment.Streams]
 
+	// workers are the started streams, stored once by Start, so Enter can
+	// wake every worker without taking mu.
+	workers atomic.Pointer[[]*stream]
+
 	// refuse reports why the journal takes no append, or nil. It is never
 	// nil: New installs Admit, which refuses once the journal is read-only.
 	refuse func() error
@@ -129,11 +146,11 @@ type Durability struct {
 
 	// afterAppend, afterPass, beforeWait, beforeSync, beforeFail and afterFail
 	// are test hooks, nil in production. beforeFail runs on the worker once per
-	// window, before its content records are failed, and afterFail once they
-	// are failed and reported, before the window is resolved; afterPass runs at
-	// the end of each worker pass, once the pass has done everything it will do
-	// for the wake that started it; beforeWait runs in a caller's await each
-	// time it is about to park, after its checks found something still
+	// window, before its records are failed, and afterFail once they are
+	// failed and reported, before the window is resolved; afterPass runs at
+	// the end of each worker pass, once the pass has done everything it will
+	// do for the wake that started it; beforeWait runs in a caller's await
+	// each time it is about to park, after its checks found something still
 	// pending. None is called with a lock held.
 	afterAppend func()
 	afterPass   func()
@@ -252,6 +269,7 @@ func New(cfg Config) (*Durability, error) {
 		log:      log,
 		resolved: cfg.Resolved,
 		index:    cfg.Index,
+		undo:     cfg.Undo,
 		made:     map[uint32]*stream{},
 		done:     make(chan struct{}),
 		change:   make(chan struct{}),
@@ -333,15 +351,15 @@ type stream struct {
 	// windows are the pending windows, in end order.
 	windows []*window
 	// lost holds the locations of the records a failed window dropped from the
-	// index, each with the error that ended its segment, so that none reads
-	// durable once the window no longer names it, and a Sync that targeted one
-	// still answers the failure.
+	// index, or a read-only journal failed, so that none reads durable once
+	// the window no longer names it, and a Sync that targeted one still
+	// answers the failure.
 	//
 	// ponytail: one entry per failed record for the life of the stream, never
 	// pruned, so it follows the number of records a failure took. Upgrade to
 	// dropping an entry once the record's segment is retired from the journal,
 	// when a stream with a long failure history shows up in a heap profile.
-	lost map[segment.Location]error
+	lost map[segment.Location]lostRecord
 	// marks are the failures no Sync has reported yet, per file, oldest
 	// first; told holds, per pending window, the files already told of it.
 	//
@@ -396,7 +414,7 @@ func newStream(d *Durability, no uint32) *stream {
 		failed:  map[core.SegmentID]error{},
 		ending:  map[core.SegmentID]struct{}{},
 		counted: map[core.SegmentID]struct{}{},
-		lost:    map[segment.Location]error{},
+		lost:    map[segment.Location]lostRecord{},
 		kick:    make(chan struct{}, 1),
 		buckets: make([]atomic.Uint64, len(SyncDurationBounds)+1),
 	}
@@ -440,6 +458,13 @@ func (d *Durability) Sink(no uint32) segment.Sink {
 			st.wake()
 		},
 		Synced: func(seg core.SegmentID, through int64) {
+			// A sync reported once the journal is read-only moves nothing,
+			// even one in flight at the transition that succeeded: every
+			// record it covered that was not completed is failed, and no
+			// Sync of one may return nil.
+			if d.Admit() != nil {
+				return
+			}
 			st.mu.Lock()
 			if through > st.synced[seg] {
 				st.synced[seg] = through
@@ -478,10 +503,18 @@ func (d *Durability) Start(streams *segment.Streams) {
 	}
 	d.started = true
 	d.streams.Store(streams)
+	d.workers.Store(&started)
 	streams.OnEnd(d.onEnd)
 	for _, st := range started {
 		d.wg.Add(1)
 		go d.run(st)
+	}
+	// An Enter that ran before the workers were stored woke none of them; the
+	// state is read after the store, so one of the two wakes them.
+	if d.Admit() != nil {
+		for _, st := range started {
+			st.wake()
+		}
 	}
 }
 
@@ -643,7 +676,11 @@ func (st *stream) inWindowLocked(loc segment.Location) bool {
 // returns at once with no sync. The error is a *core.SyncError when a sync
 // covering a record failed, core.ErrClosed once the layer stopped, and
 // ctx.Err() when ctx is done first; a cancelled caller changes no state and
-// the sync it may have led runs on for the other waiters.
+// the sync it may have led runs on for the other waiters. Once the journal is
+// read-only, a failure matches core.ErrJournalReadOnly too: a content record
+// it failed is reported as a failed window is, a *core.SyncError wrapping the
+// refusal, and a header-only record it undid fails every Sync waiting on it
+// with the refusal.
 //
 // A failed window is reported once per file: the first Sync naming a file
 // that lost a record in it returns the *core.SyncError and clears the file's
@@ -677,13 +714,16 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) error {
 	return d.await(ctx, ws, true)
 }
 
-// WaitDurable returns nil once the record at the location is durable, or
-// core.ErrClosed once the layer stopped. It takes no context and never
-// returns a *core.SyncError: a record of a segment whose sync failed keeps
-// waiting until Stop, since following a re-append and the read-only wake are
-// not part of this layer yet. It consults and clears no marks, which belong to
-// the Sync that names the file. A record with no sync running for it gets one,
-// as a Sync would. The caller holds no file's append domain, as for Sync.
+// WaitDurable returns nil once the record at the location is durable,
+// core.ErrClosed once the layer stopped, or, once the journal is read-only and
+// the record is failed, the refusal, which matches core.ErrJournalReadOnly. It
+// takes no context and never returns a *core.SyncError: while the journal
+// takes writes, a record of a segment whose sync failed keeps waiting, since
+// following a re-append is not part of this layer yet, until Stop or until the
+// journal turns read-only, which wakes every such waiter. It consults and
+// clears no marks, which belong to the Sync that names the file. A record with
+// no sync running for it gets one, as a Sync would. The caller holds no file's
+// append domain, as for Sync.
 func (d *Durability) WaitDurable(at segment.Location) error {
 	var ws []work
 	for _, st := range d.snapshot() {
@@ -755,7 +795,10 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 // await waits until no target of any stream is pending. With failFast, the
 // failures owed to the call (its files' marks, and the answer of a header-only
 // record of a failed window) end the wait once no failure is still in flight
-// on any stream, and the call returns them as one error.
+// on any stream, and the call returns them as one error. Once the journal is
+// read-only, a target it failed ends the wait the same way, with or without
+// failFast: its refusal is the answer, joined with any failure the call is
+// owed that does not already carry it.
 //
 // decision: a failure found on a stream does not end the wait while any stream
 // of the call, that one included, still has a target in a failed segment whose
@@ -771,10 +814,25 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 // since a Sync would then hang on it rather than return the failure it holds.
 func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error {
 	var owed *owedFailure
+	var refused error
+	// answer joins what the call is owed: the failures it took and the
+	// read-only refusal of a target the read-only journal failed. A failure
+	// the read-only journal reported already matches the refusal, so it is
+	// returned alone.
+	answer := func() error {
+		switch {
+		case owed != nil && refused != nil && !errors.Is(owed.err, core.ErrJournalReadOnly):
+			return errors.Join(owed.err, refused)
+		case owed != nil:
+			return owed.err
+		default:
+			return refused
+		}
+	}
 	// early is the answer for a call that cannot wait any longer.
 	early := func(err error) error {
-		if owed != nil {
-			return owed.err
+		if owed != nil || refused != nil {
+			return answer()
 		}
 		return err
 	}
@@ -792,15 +850,22 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 				// mutex, and one error names them.
 				owed = mergeOwed(owed, found)
 			}
+			if errors.Is(err, core.ErrJournalReadOnly) {
+				// A record the read-only journal failed ends the wait too, and
+				// the other streams still owe their marks.
+				refused = err
+				failing = failing || f
+				continue
+			}
 			if err != nil {
 				return early(err)
 			}
 			pending, failing = pending || p, failing || f
 		}
-		if owed != nil && !failing {
-			return owed.err
+		if (owed != nil || refused != nil) && !failing {
+			return answer()
 		}
-		if !pending && owed == nil {
+		if !pending && owed == nil && refused == nil {
 			return nil
 		}
 		if d.beforeWait != nil {
@@ -862,8 +927,10 @@ func (st *stream) answersFailureLocked(loc segment.Location) (uint64, bool) {
 // any target is pending, whether a target sits in a failed segment whose
 // failure is not yet answered (failing), and the failure owed to the call: the
 // marks it took, joined with the answer of a header-only record whose window
-// has been failed. It returns an error only for a closed layer, and then only
-// when it owes no failure. It also leads a sync when the targets need one.
+// has been failed. It returns an error for a closed layer, and then only when
+// it owes no failure, and the read-only refusal once a target is a record the
+// read-only journal failed, alongside whatever failure it owes. It also leads
+// a sync when the targets need one.
 //
 // decision: one sync per stream runs at a time and covers every waiter (group
 // commit). The waiter that finds none in flight and none asked for leads: it sets
@@ -894,7 +961,9 @@ func (st *stream) answersFailureLocked(loc segment.Location) (uint64, bool) {
 // would never end; the call's other targets still decide whether a failure is
 // in flight, so the answer is returned with them and not ahead of them.
 // Overturned by the re-append of a header-only record, which must wait for the
-// new sync instead of failing at once.
+// new sync instead of failing at once. Once the journal is read-only the
+// record is undone and failed (failReadOnly), and every wait on it then ends
+// with the refusal.
 func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pending, failing bool, found *owedFailure, err error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -906,12 +975,27 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 	var failSeg core.SegmentID
 	var failWindow uint64
 	var failErr error
+	var refused error
 	for _, t := range targets {
-		if _, lost := st.lost[t.loc]; lost {
+		if l, lost := st.lost[t.loc]; lost {
+			if l.undone {
+				// A header-only record the read-only journal undid fails every
+				// Sync and WaitDurable that waits on it.
+				refused = l.err
+				continue
+			}
+			if !failFast {
+				// A durability wait on a failed record ends with the
+				// read-only refusal; while the journal takes writes it keeps
+				// waiting, as the record is never durable.
+				if err := st.d.Admit(); err != nil {
+					refused = err
+					continue
+				}
+				pending = true
+			}
 			// Failed and gone from its window: the mark told the file, so a
-			// Sync has nothing more to wait for, and a durability wait keeps
-			// waiting, as the record is never durable.
-			pending = pending || !failFast
+			// Sync has nothing more to wait for.
 			continue
 		}
 		if !st.pending(t.loc) {
@@ -946,6 +1030,25 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 			lead = true
 		}
 	}
+	// answered is the failure owed to the call once the header-only answer
+	// found, if any, is joined to the marks taken.
+	answered := func() *owedFailure {
+		if failErr == nil {
+			return owed
+		}
+		se := &core.SyncError{Segment: failSeg, Err: failErr}
+		for _, t := range targets {
+			if t.loc.Segment == failSeg && st.pending(t.loc) {
+				se.Files = append(se.Files, t.file)
+			}
+		}
+		return mergeOwed(owed, &owedFailure{err: se, window: failWindow})
+	}
+	if refused != nil {
+		// A target the read-only journal failed ends this stream's wait; a
+		// failure still in flight on it holds the answer back as any other.
+		return false, failing, answered(), refused
+	}
 	if !pending {
 		return false, false, owed, nil
 	}
@@ -956,13 +1059,7 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 		return false, false, nil, core.ErrClosed
 	}
 	if failErr != nil {
-		se := &core.SyncError{Segment: failSeg, Err: failErr}
-		for _, t := range targets {
-			if t.loc.Segment == failSeg && st.pending(t.loc) {
-				se.Files = append(se.Files, t.file)
-			}
-		}
-		return false, failing, mergeOwed(owed, &owedFailure{err: se, window: failWindow}), nil
+		return false, failing, answered(), nil
 	}
 	if lead && !st.syncing && !st.want {
 		st.want = true

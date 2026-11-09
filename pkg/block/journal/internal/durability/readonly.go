@@ -3,6 +3,7 @@ package durability
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"syscall"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -17,25 +18,60 @@ type roState struct {
 	// refusal is what Admit returns: core.ErrJournalReadOnly wrapping Err. It
 	// is built once, on entry, so a refused write allocates nothing.
 	refusal error
+
+	// raise raises the loss generation once for every record the entry
+	// fails, on whichever stream's worker fails one first. It is made on
+	// entry and shared by every later snapshot of the state.
+	raise *sync.Once
+
+	// woke wakes every Sync and WaitDurable waiter once, on the first worker
+	// pass after entry, so a wait on a record failed before the entry, which
+	// no pass changes, is answered with the refusal.
+	woke *sync.Once
 }
 
-// Enter makes the journal read-only because of cause. It is idempotent: the
-// first cause is kept and a later call changes nothing. It takes no lock and
-// is safe from any goroutine.
+// Enter makes the journal read-only because of cause, and wakes every
+// stream's worker to fail what is unsynced (failReadOnly). It is idempotent:
+// the first cause is kept and a later call changes nothing. It takes no lock
+// and is safe from any goroutine.
 func (d *Durability) Enter(cause error) {
 	for {
 		cur := d.ro.Load()
 		if cur != nil && cur.ReadOnly {
 			return
 		}
-		next := &roState{refusal: fmt.Errorf("%w: %w", core.ErrJournalReadOnly, cause)}
+		next := &roState{refusal: fmt.Errorf("%w: %w", core.ErrJournalReadOnly, cause), raise: new(sync.Once), woke: new(sync.Once)}
 		if cur != nil {
 			next.ReadOnlyState = cur.ReadOnlyState
 		}
 		next.ReadOnly, next.Err = true, cause
 		if d.ro.CompareAndSwap(cur, next) {
-			return
+			break
 		}
+	}
+	// Loaded after the swap, while Start stores the workers before it reads
+	// the state, so a worker started meanwhile is woken by one of the two.
+	if ws := d.workers.Load(); ws != nil {
+		for _, st := range *ws {
+			st.wake()
+		}
+	}
+}
+
+// raiseOnce raises the loss generation for the read-only entry, once however
+// many streams and passes fail records under it. A concurrent caller waits
+// for the raise to land, so no stream publishes a loss or answers a Sync
+// before the generation is up.
+func (d *Durability) raiseOnce() {
+	if st := d.ro.Load(); st != nil && st.raise != nil {
+		st.raise.Do(func() { d.RaiseWindow() })
+	}
+}
+
+// wakeOnce wakes every waiter once for the read-only entry.
+func (d *Durability) wakeOnce() {
+	if st := d.ro.Load(); st != nil && st.woke != nil {
+		st.woke.Do(d.notifyAll)
 	}
 }
 
