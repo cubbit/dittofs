@@ -67,8 +67,7 @@ func mountNFS(sharePath, mountPoint string, port int, serverHost, nfsVersion str
 			"the Windows NFS client does not support mounting from a custom port (server is using port %d)\n\n"+
 				"The Windows 'mount' command only connects to the standard NFS port (2049).\n"+
 				"To resolve this, either:\n\n"+
-				"  1. Configure the NFS adapter to use port 2049 (requires Administrator on the server):\n"+
-				"     dfsctl adapter edit nfs --config '{\"port\": 2049}'\n\n"+
+				"  1. Serve NFS on port 2049 on the server (requires Administrator there).\n\n"+
 				"  2. Set up port forwarding from 2049 to %d (requires Administrator):\n"+
 				"     netsh interface portproxy add v4tov4 listenport=2049 listenaddress=127.0.0.1 connectport=%d connectaddress=127.0.0.1\n\n"+
 				"     Then retry the mount command.",
@@ -140,8 +139,7 @@ func mountSMB(sharePath, mountPoint string, port int, serverHost string) error {
 				"mount failed: %w\nOutput: %s\n\n"+
 					"The /TCPPORT flag requires Windows 11 Insider Build 25992+ or Windows Server 2025+.\n"+
 					"On older Windows versions, you can either:\n\n"+
-					"  1. Configure the SMB adapter to use port 445 (requires Administrator on the server):\n"+
-					"     dfsctl adapter edit smb --config '{\"port\": 445}'\n\n"+
+					"  1. Serve SMB on port 445 on the server (requires Administrator there).\n\n"+
 					"  2. Set up port forwarding from 445 to %d (requires Administrator):\n"+
 					"     netsh interface portproxy add v4tov4 listenport=445 listenaddress=127.0.0.1 connectport=%d connectaddress=127.0.0.1\n"+
 					"     Then retry: dfsctl share mount --protocol smb %s %s",

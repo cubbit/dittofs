@@ -193,7 +193,7 @@ func formatMountError(err error, output, protocol string, port int) error {
 		keywords []string
 		hint     string
 	}{
-		{[]string{"connection refused"}, fmt.Sprintf("Is the %s adapter running? Check with 'dfsctl adapter list'", protocol)},
+		{[]string{"connection refused"}, fmt.Sprintf("Is the server serving %s on its default port?", protocol)},
 		{[]string{"not found", "no such file", "does not exist"}, "Does the share exist? Check with 'dfsctl share list'"},
 		{[]string{"permission denied", "operation not permitted"}, "Mount commands may require sudo privileges"},
 		{[]string{"already mounted", "busy"}, "The mount point may already be in use. Check with 'mount' command"},
@@ -216,5 +216,5 @@ func formatMountError(err error, output, protocol string, port int) error {
 		return fmt.Errorf("mount failed: %w\nOutput: %s\nHint: Server closed the connection unexpectedly. Check %s adapter logs with 'dfs logs'", err, output, protocol)
 	}
 
-	return fmt.Errorf("mount failed: %w\nOutput: %s\nHint: Server may be running on port %d. Check with 'dfsctl adapter list'", err, output, port)
+	return fmt.Errorf("mount failed: %w\nOutput: %s\nHint: The mount used port %d. Is the server serving it there?", err, output, port)
 }

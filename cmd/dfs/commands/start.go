@@ -71,7 +71,7 @@ var notifySignals = func() (<-chan os.Signal, func()) {
 
 // serveRuntime runs the runtime's serving loop. Indirected so a test can reach
 // the serving state and return from it on demand, which is the seam #2675 asks
-// for: rt.Serve only returns once the adapters have drained, so the shutdown
+// for: rt.Serve only returns once the runtime has drained, so the shutdown
 // defer's ordering could not otherwise be exercised from a test without
 // signalling the process running the assertions.
 var serveRuntime = func(ctx context.Context, rt *runtime.Runtime) error {
@@ -340,9 +340,8 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 	}
 	logger.Info("Per-share BlockStores created during share loading")
 
-	// Build the metrics registry unconditionally so inline instruments (adapter
-	// RED, connection, auth counters) always record; only the /metrics listener
-	// is gated by config. The runtime carries the handle to every adapter.
+	// Build the metrics registry unconditionally so inline instruments always
+	// record; only the /metrics listener is gated by config.
 	//
 	// This has to precede every goroutine below that reaches the metrics
 	// handle: the GC sweeps read it without synchronisation, so installing it
@@ -382,13 +381,12 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 	// Configure runtime
 	rt.SetShutdownTimeout(cfg.ShutdownTimeout)
 	// Seed an operator-pinned machine SID (if configured) BEFORE Serve so the
-	// machine SID is resolved before any adapter reads the SID mapper. Pinning
+	// machine SID is resolved before anything reads the SID mapper. Pinning
 	// the same SID on every node yields identical local UID->SID encoding.
 	rt.SetPinnedMachineSID(cfg.Identity.MachineSID)
 
-	// Build the single, process-wide NETLOGON authenticator before the adapter
-	// factory so every SMB adapter instance shares it (one machine account per
-	// process). The online-join provider persists its rotated secret in the
+	// Build the single, process-wide NETLOGON authenticator (one machine account
+	// per process). The online-join provider persists its rotated secret in the
 	// control-plane settings store, so it survives restarts. nlAuth is nil when
 	// machine_account is disabled. nlRotation drives periodic password rotation
 	// and is started below / stopped on shutdown.
@@ -445,9 +443,9 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 		defer func() { _ = os.Remove(pidFile) }()
 	}
 
-	// Start runtime in background (loads adapters from store automatically).
+	// Start runtime in background.
 	// Indirected through serveRuntime so a test can reach the serving state and
-	// return from it on demand; rt.Serve only returns once the adapters have
+	// return from it on demand; rt.Serve only returns once the runtime has
 	// drained, which a test cannot trigger without a signal or a real failure.
 	serverDone := make(chan error, 1)
 	go func() {
@@ -476,7 +474,7 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 		logger.Info("Shutdown signal received, initiating graceful shutdown")
 		cancel()
 
-		// Wait for the runtime to drain (snapshots -> StopAllAdapters -> flush
+		// Wait for the runtime to drain (snapshots -> flush
 		// -> close stores -> stop API). The drain runs these stages serially
 		// and most are individually bounded by the configured shutdown timeout,
 		// but a wedged stage (e.g. a stuck store flush or an unbounded store
@@ -587,7 +585,7 @@ func buildMetricsListener(cfg *config.MetricsConfig, m *metrics.Metrics) (*metri
 // published is judged against a server that always looks Kerberos-less, and a
 // valid require_kerberos share stops the boot it should have survived.
 //
-// It returns the effective Kerberos config for the adapter factory alongside
+// It returns the effective Kerberos config alongside
 // the share-load error, which the caller grades.
 func loadSharesWithKerberosCapability(
 	ctx context.Context,
@@ -609,7 +607,7 @@ func loadSharesWithKerberosCapability(
 // the file/env config and the control-plane database. A persisted row (managed
 // over the API) takes precedence; when no row exists the file/env config seeds
 // the database on first boot. It sets the runtime's LDAP config directly and
-// returns the effective Kerberos config for the adapter factory.
+// returns the effective Kerberos config.
 //
 // Note: the API does not manage Kerberos static IdentityMapping entries, so a
 // DB-sourced Kerberos config carries none — those are configured via the
@@ -678,18 +676,6 @@ func resolveIdentityProviders(ctx context.Context, cpStore store.Store, rt *runt
 	// upgrade relocating the keytab), the stale DB-row path must not win and
 	// crash the server on a missing file. See overlayDeploymentPaths.
 	kerberos = overlayDeploymentPaths(kerberos, cfg.Kerberos)
-
-	// Seed the runtime's hot-reloadable NETLOGON machine credential from the
-	// effective Kerberos machine-account config (#1325). nil disables passthrough.
-	// The SMB adapter reads this on an identity-provider config change to rebuild
-	// its secure channel without a restart. (Online-join supplies its own
-	// credential via the RotationManager, so the seeded credential is the
-	// offline/static one.)
-	if cred, ok := netlogonCredentialFromConfig(kerberos); ok {
-		rt.SetNetlogonCredential(&cred)
-	} else {
-		rt.SetNetlogonCredential(nil)
-	}
 
 	return kerberos
 }

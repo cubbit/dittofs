@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"slices"
 	"sync"
 	"time"
 
@@ -173,14 +172,6 @@ type Runtime struct {
 	runtimeCtx    context.Context
 	runtimeCancel context.CancelFunc
 
-	identityChangeCallbacks callbackList
-
-	// identityProviderChangeCallbacks fire when an identity provider's
-	// configuration (LDAP/Kerberos) is changed via the API. Adapters register a
-	// closure that rebuilds and re-injects their identity resolver so a new
-	// directory config takes effect without a restart.
-	identityProviderChangeCallbacks callbackList
-
 	// ldapConfig is the optional LDAP/AD identity provider configuration set at
 	// startup from the server config. When present and Enabled, BuildIdentityResolver
 	// registers an LDAP provider in the identity resolution chain. Guarded by mu.
@@ -190,14 +181,6 @@ type Runtime struct {
 	// configured, so the share-config API can refuse a per-share policy only
 	// Kerberos could satisfy. Set at startup by SetKerberosEnabled. Guarded by mu.
 	kerberosEnabled bool
-
-	// netlogonCredential is the optional NETLOGON machine credential / DC binding
-	// used for SMB NTLM pass-through. Set at startup from the Kerberos
-	// machine-account config and updated by the identity-provider API; nil when
-	// passthrough is disabled. The SMB adapter reads it from its
-	// OnIdentityProviderConfigChange callback to hot-reload the secure channel
-	// without a restart (#1325). Guarded by mu.
-	netlogonCredential *netlogon.MachineCredential
 
 	// netlogonController is the NETLOGON machine-account controller the admin
 	// API reports on and rotates through; nil when passthrough is not
@@ -889,7 +872,7 @@ func (r *Runtime) drainStartupWorkers(ctx context.Context) {
 // ShutdownSnapshots exposes shutdownSnapshots for the lifecycle.Service
 // shutdown sequence so the normal server path (signal -> ctx cancel ->
 // lifecycle.shutdown) drains in-flight snapshot goroutines BEFORE
-// StopAllAdapters / CloseMetadataStores. It exists to satisfy
+// CloseMetadataStores. It exists to satisfy
 // lifecycle.SnapshotDrainer without exporting internal lifecycle details, and
 // a test that has finished with a runtime is its only other caller.
 func (r *Runtime) ShutdownSnapshots(ctx context.Context) {
@@ -1098,26 +1081,6 @@ func (r *Runtime) ResolveDirectoryPrincipalSID(ctx context.Context, name string,
 	return provider.ResolvePrincipalSID(ctx, name, isGroup)
 }
 
-// SetNetlogonCredential sets the NETLOGON machine credential / DC binding used
-// for SMB NTLM pass-through. A nil value disables passthrough. It is set at
-// startup from the Kerberos machine-account config and updated by the
-// identity-provider API; the SMB adapter reads it on an
-// OnIdentityProviderConfigChange notification to hot-reload its secure channel.
-func (r *Runtime) SetNetlogonCredential(cred *netlogon.MachineCredential) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.netlogonCredential = cred
-}
-
-// NetlogonCredential returns the configured NETLOGON machine credential, or nil
-// when passthrough is disabled. The returned pointer is the live value; callers
-// must not mutate it.
-func (r *Runtime) NetlogonCredential() *netlogon.MachineCredential {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.netlogonCredential
-}
-
 // SetNetlogonController registers the NETLOGON machine-account controller so the
 // admin API (`netlogon status` / `netlogon rotate`) can introspect and rotate the
 // machine account on the running server. Set once at startup when passthrough is
@@ -1136,91 +1099,17 @@ func (r *Runtime) NetlogonController() *netlogon.Controller {
 	return r.netlogonController
 }
 
-// callbackList is a subscribe/notify list of parameterless callbacks. The zero
-// value is ready to use. Unsubscribing nils the slot rather than removing it,
-// so indices handed to earlier subscribers stay valid; notify snapshots the
-// slice and fires outside the lock, so a callback may re-enter the list.
-type callbackList struct {
-	mu  sync.Mutex
-	fns []func()
-}
-
-// add registers fn and returns a function that unsubscribes it.
-func (c *callbackList) add(fn func()) func() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.fns = append(c.fns, fn)
-	idx := len(c.fns) - 1
-	return func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.fns[idx] = nil
-	}
-}
-
-// notify fires every registered callback.
-func (c *callbackList) notify() {
-	c.mu.Lock()
-	fns := slices.Clone(c.fns)
-	c.mu.Unlock()
-	for _, fn := range fns {
-		if fn != nil {
-			fn()
-		}
-	}
-}
-
-// OnIdentityMappingChange registers a callback invoked when identity mappings
-// are created or deleted via the API. Adapters use this to invalidate their
-// identity resolver caches. Returns an unsubscribe function.
-func (r *Runtime) OnIdentityMappingChange(fn func()) func() {
-	return r.identityChangeCallbacks.add(fn)
-}
-
-// NotifyIdentityMappingChange fires all registered identity change callbacks.
-//
-// It also raises an auth-cache invalidation, which re-reads each session's user
-// record and re-resolves every tree's share permission against it.
-//
-// decision: that is less than it sounds, and deliberately so. The sweep looks
-// the session's user up by the username it authenticated as and reuses the PAC
-// SIDs stored on the session, so it picks up a changed or deleted user record
-// and changed grants — but it does not re-run the principal-to-username mapping
-// itself. A session admitted under a mapping that has since been deleted keeps
-// the identity it was admitted with until it re-authenticates. Remapping an
-// established session would mean publishing a new user record onto it, and that
-// field is read unlocked on the dispatch path. Withdraw this exemption by
-// revoking the affected sessions outright, which is the same machinery
-// RevalidateAuthorization already uses for a deleted user, if a mapping delete
-// ever needs to take effect mid-connection.
+// NotifyIdentityMappingChange raises an auth-cache invalidation when identity
+// mappings are created or deleted via the API, so whatever resolved a share
+// permission from the old mapping re-decides it.
 func (r *Runtime) NotifyIdentityMappingChange() {
-	r.identityChangeCallbacks.notify()
 	r.InvalidateAuthCache()
 }
 
-// OnIdentityProviderConfigChange registers a callback invoked when an identity
-// provider's configuration is changed via the API. Adapters use this to rebuild
-// and re-inject their identity resolver so a new LDAP directory config takes
-// effect without a restart. Returns an unsubscribe function.
-func (r *Runtime) OnIdentityProviderConfigChange(fn func()) func() {
-	return r.identityProviderChangeCallbacks.add(fn)
-}
-
-// NotifyIdentityProviderConfigChange fires all registered identity-provider
-// config change callbacks.
-//
-// It also raises an auth-cache invalidation: the callbacks rebuild the resolver
-// but re-decide nothing that was already resolved, and a directory config
-// change rewrites how group membership and foreign SIDs resolve — which is what
+// NotifyIdentityProviderConfigChange raises an auth-cache invalidation when an
+// identity provider's configuration is changed via the API: a directory config
+// change rewrites how group membership and foreign SIDs resolve, which is what
 // share grants are evaluated against.
-//
-// decision: as with NotifyIdentityMappingChange, the sweep re-resolves an
-// established session's grants but not its identity. It carries the session's
-// stored PAC SIDs into the new resolution rather than rebuilding them from the
-// changed provider, so a directory change reaches an established session only
-// through the grants it re-evaluates. Same withdrawal condition: revoke the
-// affected sessions if a provider change has to land mid-connection.
 func (r *Runtime) NotifyIdentityProviderConfigChange() {
-	r.identityProviderChangeCallbacks.notify()
 	r.InvalidateAuthCache()
 }

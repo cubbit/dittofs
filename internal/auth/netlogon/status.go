@@ -65,7 +65,7 @@ type Status struct {
 }
 
 // Controller is the runtime handle for the NETLOGON machine-account subsystem.
-// The wiring layer registers it with the Runtime (SetAdapterProvider "netlogon")
+// The wiring layer registers it with the Runtime (SetNetlogonController)
 // so the admin API can introspect machine-account / secure-channel state and
 // force a machine-password rotation on the running server — without reaching into
 // the SMB adapter or the process-local authenticator.
