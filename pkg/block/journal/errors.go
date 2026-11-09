@@ -19,6 +19,7 @@ var (
 	ErrNotOffered       = core.ErrNotOffered
 	ErrOfferEnded       = core.ErrOfferEnded
 	ErrZeroLength       = core.ErrZeroLength
+	ErrInvalidExtent    = core.ErrInvalidExtent
 	ErrSyncFailed       = core.ErrSyncFailed
 	ErrNoSpace          = core.ErrNoSpace
 	ErrOtherShare       = core.ErrOtherShare

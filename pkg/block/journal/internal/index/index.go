@@ -38,6 +38,13 @@ func (ix *Index) WriteRetain(tag core.ShareTag, id core.FileID, p Placed, seq co
 	})
 }
 
+// Lose applies a synced loss of e at v to id under the file's lock, with no
+// admission, and returns the change to the file's held state. A zero-length e
+// is refused with core.ErrZeroLength and changes nothing.
+func (ix *Index) Lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta, error) {
+	return ix.fs.lose(id, e, v)
+}
+
 // Lookup returns the held piece of id that covers off, and false when none
 // does or the file has no entry. It takes the file's lock shared and creates
 // no entry.

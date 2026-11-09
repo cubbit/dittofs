@@ -86,6 +86,13 @@ var (
 	// zero-length extent. Nothing is appended and no version is drawn.
 	ErrZeroLength = errors.New("journal: zero-length extent")
 
+	// ErrInvalidExtent is returned by a write whose extent cannot exist: a
+	// negative file offset, or an offset and length whose end overflows. It is
+	// named apart from ErrZeroLength because a zero-length write is accepted
+	// and does nothing. Nothing is appended and no version is drawn. It is
+	// never retried.
+	ErrInvalidExtent = errors.New("journal: invalid extent")
+
 	// ErrSyncFailed is matched by every SyncError: a sync window failed. The
 	// writes it covered are not durable, and a later successful sync never
 	// stands in for them.
