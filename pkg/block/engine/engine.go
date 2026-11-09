@@ -240,6 +240,10 @@ func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
 		return opened{}, u.unwind(err)
 	}
 
+	if err := e.strandUnclaimed(&o); err != nil {
+		return opened{}, u.unwind(err)
+	}
+
 	return o, nil
 }
 

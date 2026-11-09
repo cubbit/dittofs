@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -174,4 +176,53 @@ func (e *Engine) prune(r *removal) *loopItem {
 			return a
 		},
 	}
+}
+
+// strandUnclaimed is start step 5 (RFC 8 §2.5, RFC 1 §3): every tag the
+// journal names that no share record of the installation names, and no
+// attached share holds, is stranded and reported with its held and dirty
+// bytes, before any file of the journal is served. It runs after every
+// served share is attached, so a tag a share attaches later is not taken for
+// unclaimed: the store's records decide, never the attached set alone.
+//
+// decision: a Strand that fails fails Start, as any step does, since RFC 1 §3
+// has the caller strand each unclaimed tag before it serves. Overturned if the
+// journal can refuse a tag for a cause that leaves it safe to serve.
+func (e *Engine) strandUnclaimed(o *opened) error {
+	if o.journal == nil {
+		return nil
+	}
+
+	claimed := map[journal.ShareTag]bool{}
+
+	for _, r := range o.tags {
+		claimed[journal.ShareTag(r.Tag)] = true
+	}
+
+	for _, b := range o.table {
+		if !b.removed {
+			claimed[b.share.Tag] = true
+		}
+	}
+
+	shares := o.journal.j.Stats().Shares
+
+	for _, tag := range slices.Sorted(maps.Keys(shares)) {
+		if claimed[tag] {
+			continue
+		}
+
+		if err := o.journal.j.Strand(tag); err != nil {
+			return fmt.Errorf("engine: start: strand tag %d: %w", tag, err)
+		}
+
+		e.d.Logger.Warn(
+			"unclaimed tag stranded",
+			"tag", tag,
+			"held", shares[tag].HeldBytes,
+			"dirty", shares[tag].DirtyBytes,
+		)
+	}
+
+	return nil
 }
