@@ -62,7 +62,8 @@ var (
 var ErrFileOpen = errors.New("vfs: release aborted by a holder")
 
 // AccessError is an ErrAccess with its cause. Under errors.Is it matches
-// ErrAccess and any *AccessError of the same Cause.
+// ErrAccess and any *AccessError equal to it: every field is part of the
+// kind.
 type AccessError struct{ Cause AccessCause }
 
 // AccessCause is why access was refused, where the adapter tells one apart.
@@ -84,13 +85,14 @@ func (e *AccessError) Error() string {
 }
 func (e *AccessError) Is(target error) bool {
 	if t, ok := target.(*AccessError); ok {
-		return t != nil && t.Cause == e.Cause
+		return t != nil && *t == *e
 	}
 	return target == ErrAccess
 }
 
 // QuotaError is an ErrQuota naming the first scope exceeded. Under
-// errors.Is it matches ErrQuota and any *QuotaError of the same Scope.
+// errors.Is it matches ErrQuota and any *QuotaError equal to it: every field
+// is part of the kind.
 type QuotaError struct{ Scope QuotaScope }
 
 // QuotaScope is what a quota limits, in the order a refusal names the first
@@ -116,7 +118,7 @@ func (e *QuotaError) Error() string {
 }
 func (e *QuotaError) Is(target error) bool {
 	if t, ok := target.(*QuotaError); ok {
-		return t != nil && t.Scope == e.Scope
+		return t != nil && *t == *e
 	}
 	return target == ErrQuota
 }
@@ -175,7 +177,7 @@ func (e *Delay) Is(target error) bool {
 // from a recall missed. Sessioned tells, for StateNotYours, state created on
 // a session presented by a call with none, which the state's own mark
 // refuses whatever the caller's principal. Under errors.Is it matches
-// ErrState and any *StateError of the same Kind, Admin and Sessioned.
+// ErrState and any *StateError equal to it: every field is part of the kind.
 type StateError struct {
 	Kind      StateKind
 	Admin     bool
@@ -229,13 +231,13 @@ func (e *StateError) Error() string {
 
 func (e *StateError) Is(target error) bool {
 	if t, ok := target.(*StateError); ok {
-		return t != nil && t.Kind == e.Kind && t.Admin == e.Admin && t.Sessioned == e.Sessioned
+		return t != nil && *t == *e
 	}
 	return target == ErrState
 }
 
 // CrossError is an ErrCross naming the boundary. Under errors.Is it matches
-// ErrCross and any *CrossError of the same Kind.
+// ErrCross and any *CrossError equal to it: every field is part of the kind.
 type CrossError struct{ Kind CrossKind }
 
 // CrossKind is the boundary a call spans. The first three are boundaries a
@@ -261,7 +263,7 @@ func (e *CrossError) Error() string { return ErrCross.Error() + ": " + kindName(
 
 func (e *CrossError) Is(target error) bool {
 	if t, ok := target.(*CrossError); ok {
-		return t != nil && t.Kind == e.Kind
+		return t != nil && *t == *e
 	}
 	return target == ErrCross
 }

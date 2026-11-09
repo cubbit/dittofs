@@ -81,19 +81,8 @@ func TestErrorsMatchTheirSentinelAndReadApart(t *testing.T) {
 		}
 		seen[msg] = true
 
-		var sentinel error
-		switch err.(type) {
-		case *vfs.AccessError:
-			sentinel = vfs.ErrAccess
-		case *vfs.QuotaError:
-			sentinel = vfs.ErrQuota
-		case *vfs.Delay:
-			sentinel = vfs.ErrDelay
-		case *vfs.StateError:
-			sentinel = vfs.ErrState
-		case *vfs.CrossError:
-			sentinel = vfs.ErrCross
-		default:
+		sentinel := kindSentinel(err)
+		if sentinel == nil {
 			sentinel = err
 		}
 		for _, other := range sentinels {
