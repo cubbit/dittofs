@@ -214,7 +214,11 @@ func TestSyncOnAnEndedSegmentIssuesNoFsync(t *testing.T) {
 	}
 	// The failed seal is itself reported once, as a failure and an Error log,
 	// when its end event is taken; the Sync below must add nothing to either.
-	eventually(t, "the seal's end event to be counted", func() bool { return r.d.Stats().SyncFailures == 1 })
+	// The worker counts the failure under the stream's lock and logs it after
+	// releasing it, so both are waited for before they are read as the seal's.
+	eventually(t, "the seal's end event to be counted and logged", func() bool {
+		return r.d.Stats().SyncFailures == 1 && logs.n.Load() == 1
+	})
 	sealFailures, sealLogs := r.d.Stats().SyncFailures, logs.n.Load()
 	before := r.syncsOf(a.Segment)
 
