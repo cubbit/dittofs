@@ -392,10 +392,16 @@ suites:
     # tool's own (a DC, a Samba member, DittoFS and two kernel cifs mounts on this host).
     # decision: manual until its cost per round is measured; test/smbfuzz/DESIGN.md §12.3 leaves the tiers open.
     tier: manual
+    # The binary sits outside the fixture's state directory, world-executable, as the workers run
+    # it under the domain users' uids. `fixture down` runs after a failed command too, and removes
+    # the containers, the network, the mounts and dfs that `fixture up` left.
+    # decision: no minimisation until known.yaml is triaged: nearly every round diverges, and
+    # minimising each would take 300 rounds past the test timeout.
     cmd:
-      - go build -o /tmp/smbfuzz ./test/smbfuzz/cmd/smbfuzz
-      - /tmp/smbfuzz fixture up
-      - /tmp/smbfuzz run --from 1 --count 300 --reports {out}/smb-fuzz
+      - go build -o /var/tmp/smbfuzz-bin ./test/smbfuzz/cmd/smbfuzz
+      - /var/tmp/smbfuzz-bin fixture up
+      - /var/tmp/smbfuzz-bin run --from 1 --count 300 --minimise=false --reports {out}/smb-fuzz
+      - /var/tmp/smbfuzz-bin fixture down
     needs: [linux, root, docker, smb-client]
     timeout: { test: 60m, cell: 120m }
   fio-verify:

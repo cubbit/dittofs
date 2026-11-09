@@ -1231,7 +1231,7 @@ the fixture died and could not be restarted).
 ### 12.3 Under `dt`
 
 `smb-fuzz` is a suite of [RFC 29](../../docs/internals/rfcs/rfc-29-test-harness.md)'s registry, with needs
-`[linux, root, docker, cifs]` and a fixture that brings up §3's DC, reference and DittoFS and
+`[linux, root, docker, smb-client]` and a fixture that brings up §3's DC, reference and DittoFS and
 mounts both shares. It reports one CTRF test per round (`smb-fuzz/round-<N>`) and one per
 corpus plan (`smb-fuzz/corpus/<file>`), graded by `dt` like every other suite; a divergence
 attaches §11.4's report. Rounds the run was meant to run and did not are reported as not run
