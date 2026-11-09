@@ -184,9 +184,7 @@ func (d *Durability) reappendHeld(st *stream, c ownedCopy) error {
 		Seq:        c.Seq,
 		Version:    c.Version,
 		File:       c.File,
-		Kind:       format.KindWrite,
 		Extent:     c.Extent,
-		Tag:        c.Share,
 		PayloadCRC: cp.checksum,
 	}}
 	h, body, err := d.rereadRecord(st, e)
@@ -202,6 +200,12 @@ func (d *Durability) reappendHeld(st *stream, c ownedCopy) error {
 	to := index.RecordAt{Segment: p.Loc.Segment, Offset: uint32(p.Loc.Off)}
 	unlock := d.domains.Lock(c.File)
 	if d.index.Names(c.File, from) {
+		// decision: a repoint that fails leaves the record held, so each retry
+		// appends another copy of the same sequence number and version. The
+		// copies are identical in content and the index names one of them, so
+		// the duplicates are harmless, and RepointRecord cannot fail today (its
+		// callback returns no error). Overturned the day it can, which then
+		// needs the retry to reuse the copy it already appended.
 		_, hd, err := d.index.RepointRecord(c.File, from, to)
 		d.accountDelta(hd)
 		if err != nil {

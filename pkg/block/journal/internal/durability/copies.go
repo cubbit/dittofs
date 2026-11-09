@@ -181,9 +181,13 @@ func (d *Durability) readCopy(st *stream, c copyEntry) (copyVerdict, error) {
 // publishes the event, raises the generation and marks the file, although the
 // copy is served until the hold's re-append moves it, which a read-only
 // journal never makes. A copy the re-append registers can reach it, as
-// RegisterCopy is called before the new place is synced. Overturned by
-// re-appending such a record from the copy that verified, as reappendHeld
-// does for a held record, when its re-read from the window fails.
+// RegisterCopy is called before the new place is synced. A hold's re-append
+// and the window's can each append a copy of the record, two records sharing
+// one sequence number and version, which is harmless in content; the loss or
+// replay consequence is the sequence-number exclusion of RFC 1 section 3.8,
+// as for any dropped record's copy. Overturned by re-appending such a record
+// from the copy that verified, as reappendHeld does for a held record, when
+// its re-read from the window fails.
 func (d *Durability) useCopy(st *stream, c Corruption, cp copyEntry) (CorruptOutcome, bool) {
 	synced := c.Synced
 	if !c.AtOpen {
@@ -268,8 +272,12 @@ func (d *Durability) useCopy(st *stream, c Corruption, cp copyEntry) (CorruptOut
 // of its window is the old place of a copy and was never synced there. It
 // changes nothing.
 //
-// ponytail: a linear scan of the ledger, the pending windows and the lost
-// set, as takeCorrupt's, and upgraded with it.
+// ponytail: a linear scan of the ledger, the pending windows, the lost set
+// and the moves, as takeCorrupt's, and upgraded with it.
+//
+// A place in the moves matters here only when the repoint that took the
+// record off it failed, since the index otherwise no longer names it and the
+// read never reaches this far.
 func (st *stream) syncedAt(r index.RecordAt) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()

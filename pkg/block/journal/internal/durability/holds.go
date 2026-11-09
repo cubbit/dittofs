@@ -246,8 +246,8 @@ func segmentGone(set *segment.Set, seg core.SegmentID) bool {
 }
 
 // holdsDueLocked reports whether a hold waits on a retry the worker's tick
-// makes: an owed claim, or, when a re-append is installed, a claimed record
-// not yet re-appended. The caller holds mu.
+// makes: an owed claim, or, when a re-append is installed (always, outside a
+// test that removes it), a claimed record not yet re-appended. The caller holds mu.
 func (st *stream) holdsDueLocked(reappend bool) bool {
 	for _, h := range st.holds {
 		if h.owed || (reappend && len(h.records) != 0) {
@@ -361,6 +361,7 @@ func (d *Durability) moveHeld(st *stream, seg core.SegmentID, h *segHold, c owne
 		unlock()
 		d.letGo(st, seg, h, c, false)
 		return
+	// A nil re-append is only a test's: New installs reappendHeld.
 	case !claimed || d.reappend == nil:
 		unlock()
 		return
@@ -382,6 +383,18 @@ func (d *Durability) moveHeld(st *stream, seg core.SegmentID, h *segHold, c owne
 		d.log.Error("journal could not re-append a held record", "file", c.File, "seq", c.Seq, "err", err)
 		return
 	}
+	// decision: the hold ends when the re-append's append lands, not when the
+	// new place syncs, so the copy's segment is released and announced
+	// resolved while the new record is unsynced. That holds because the new
+	// record is a ledger entry like any other: if its segment's sync fails,
+	// its window re-appends it again under the same sequence number and
+	// version, and a wait on either place follows it to the last, as for a
+	// failed window's own re-append. The ceiling is a new record that cannot
+	// be carried again: one whose re-read from its failed segment does not
+	// verify, or one still unsynced when the journal turns read-only, which
+	// the read-only pass fails, is lost although the released copy may still
+	// be on disk. Overturned if the RFC requires the copy to stay claimed
+	// until the new place is durable.
 	d.letGo(st, seg, h, c, true)
 }
 

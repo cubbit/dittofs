@@ -201,7 +201,9 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	// The re-append of a held record is pinned to one that always fails, so a
 	// hold a test made stays held and its segment claimed while the test reads
 	// the state; a test of the re-append itself installs d.reappendHeld before
-	// the layer starts.
+	// the layer starts. With any non-nil seam the worker repoints the index
+	// to the copy of a held record and, while the seam fails, logs an Error on
+	// every tick.
 	d.reappend = func(*stream, ownedCopy) error { return errPinnedHold }
 	// This seam is the read of both readCopy and the re-read of a failed
 	// window, so production's st.s.ReadAt branch runs only in a test that sets
@@ -260,10 +262,10 @@ func testConfig(t testing.TB, clock core.Clock, domains Domains) Config {
 	}
 }
 
-// file returns a file id distinguished by b.
 // errPinnedHold is what the rig's pinned re-append of a held record returns.
 var errPinnedHold = errors.New("the test pinned the hold")
 
+// file returns a file id distinguished by b.
 func file(b byte) core.FileID { return core.NewFileID([16]byte{b}) }
 
 // appendWrite appends one write record of the file and returns its location.

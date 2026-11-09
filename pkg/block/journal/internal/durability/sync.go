@@ -279,8 +279,8 @@ type Durability struct {
 	// overwritten the record meanwhile.
 	// It runs on the stream's worker, so it must not wait on anything that
 	// worker does, such as a Sync or a WaitDurable of this layer: it may block
-	// on the stream's append and its own fsync of the segment, and on the
-	// record's file append domain. A nil error says the re-append landed and
+	// on the stream's append, which may roll and seal, and on the record's file
+	// append domain. A nil error says the re-append landed and
 	// the record leaves the hold. New installs reappendHeld; a test replaces it
 	// before the layer starts.
 	reappend func(st *stream, c ownedCopy) error

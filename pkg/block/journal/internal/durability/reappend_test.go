@@ -1360,12 +1360,25 @@ func TestAReappendWhoseSyncFailsStartsANewWindow(t *testing.T) {
 
 	wait := waitDurableAsync(fr.d, a2)
 	awaitGate(t, "the first record's append", reached)
+	// The roll out of the second failing segment needs a spare ready: the
+	// refusal of a missing one is retried only at the worker's next tick.
+	fr.settlePool(t)
 	if err := fr.streams.Stream(0).Sync(); err != nil {
 		t.Fatalf("Sync of the new segment = %v, want it to pass", err)
 	}
 	release()
 	if err := mustReturn(t, "WaitDurable on the first place", wait); err != nil {
 		t.Fatalf("WaitDurable = %v, want nil: the record reached the third segment", err)
+	}
+	// The wait returned only once the final segment synced: its copy is
+	// durable now, whatever else syncs later.
+	if hs, _ := fr.durableHeaders(t); !slices.ContainsFunc(hs, func(h format.RecordHeader) bool {
+		return h.Seq == seq2 && h.File == g
+	}) {
+		t.Fatalf("WaitDurable returned before a record of seq %d was durable", seq2)
+	}
+	if h, ok := fr.writesOutside(t, b)[seq2]; !ok || placeOf(h).Segment != c {
+		t.Fatalf("at WaitDurable's return seq %d is durable as %+v, %v, want segment %d", seq2, h, ok, c)
 	}
 	if got := []core.SegmentID{fr.awaitResolved(t), fr.awaitResolved(t)}; got[0] != a1.Segment || got[1] != b {
 		t.Fatalf("resolved segments %v, want %d then %d", got, a1.Segment, b)
@@ -1550,29 +1563,140 @@ func TestAFailedSegmentIsNotAnnouncedWhileAHeldCopyIsNotReappended(t *testing.T)
 	fr.wantNotResolved(t, "twice")
 }
 
-// TestSyncedAtFollowsAReappendedRecord covers the sync state of the old place
-// of a record that was re-appended and whose copy is not yet synced: the old
-// place is not a synced record, so a corrupt read of it never counts its
-// failed segment damaged.
-func TestSyncedAtFollowsAReappendedRecord(t *testing.T) {
+// TestACorruptReadOfAMovedPlaceIsNotCountedDamagedThroughUseCopy covers the
+// sync state useCopy reads for a record whose place the stream has moved: the
+// place was never synced where it was, so serving the record from its copy
+// counts no segment damaged.
+//
+// The state is built by hand: a record's place is in st.moved only after its
+// index entry was repointed away, so a read of that place reaches useCopy
+// with the index still naming it only if RepointRecord failed, which it
+// cannot yet. The index here names the place, and the stream's move table is
+// set directly, so the test stays red if useCopy stops asking syncedAt, or
+// syncedAt stops following moves.
+func TestACorruptReadOfAMovedPlaceIsNotCountedDamagedThroughUseCopy(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	fr := newFailRig(t, nil)
+	cr := newCorruptRig(t, nil)
 	f := file(1)
-	a := fr.appendKind(t, f, format.KindDelete, format.RecordBody{})
-	hold := fr.holdNewSegmentSync(t, a.Segment)
-	fr.failSyncOf(t, a.Segment, errors.New("sync boom"))
-	wait := waitDurableAsync(fr.d, a)
-	select {
-	case <-hold.Reached():
-	case <-time.After(5 * time.Second):
-		t.Fatal("the new segment was never synced")
+	r := cr.reappend(t, f, 0, "aaaa")
+	cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
+	// The second copy is synced and complete, so only the move says it was
+	// ever re-appended.
+	if err := cr.d.Sync(context.Background(), f); err != nil {
+		t.Fatalf("Sync = %v", err)
 	}
+	eventually(t, "the second copy to complete", func() bool { return !cr.inLedger(r.again) })
+	st := cr.d.made[0]
+	st.mu.Lock()
+	st.moved[r.again] = segment.Location{Segment: 999, Off: 48, Len: r.again.Len}
+	st.mu.Unlock()
+
+	out, err := cr.d.Corrupt(context.Background(), r.c)
+	if err != nil || out.Kind != CorruptUseCopy || out.Copy != r.orig {
+		t.Fatalf("Corrupt = %+v, %v, want UseCopy at %+v", out, err, r.orig)
+	}
+	if n, rows := cr.d.damagedReport(); n != 0 || len(rows) != 0 {
+		t.Errorf("damaged = %d, %+v, want no segment counted damaged for a moved place", n, rows)
+	}
+}
+
+// TestAHeldReappendWhoseSyncFailsIsReappendedAgain covers a held record's
+// re-append whose own segment then fails to sync, after an earlier sync of it
+// passed: the hold has ended at the append, the new copy is a record of a new
+// window, and it is re-appended again under the same sequence number and
+// version. A wait on the held re-append's place reaches the final place and
+// returns only once that syncs, and no loss is reported and no generation is
+// raised.
+func TestAHeldReappendWhoseSyncFailsIsReappendedAgain(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	hook, reached, release := gate(t)
+	var appends atomic.Int32
+	fr := newFailRig(t, func(fr *failRig) {
+		fr.d.reappend = fr.d.reappendHeld
+		// The first append is the failed window's re-append, the second the
+		// hold's.
+		fr.d.afterAppend = func() {
+			if appends.Add(1) == 2 {
+				hook()
+			}
+		}
+	})
+	t.Cleanup(release)
+	f := file(1)
+	a, v := fr.publish(t, f, 0, "aaaa")
+	seq := core.Seq(fr.lastSeq.Load())
+	b, c := a.Segment+1, a.Segment+2
+	// The first sync of b, which covers the window's copy, passes, so that the
+	// failure of its second is not a second segment in a row.
+	fr.keptPages.Store(a.Segment, struct{}{})
+	fr.keptPages.Store(b, struct{}{})
+	if err := fr.seam.Schedule(
+		kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, errors.New("first boom")),
+		kit.FailingFrom(kit.OpSync, format.SegmentName(b), 2, 1, errors.New("second boom")),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := mustReturn(t, "Sync", fr.syncAsync(context.Background(), f)); err != nil {
+		t.Fatalf("Sync = %v, want nil", err)
+	}
+	if got := fr.awaitResolved(t); got != a.Segment {
+		t.Fatalf("resolved segment %d, want %d", got, a.Segment)
+	}
+	h, ok := fr.writesOutside(t, a.Segment)[seq]
+	if !ok || placeOf(h).Segment != b {
+		t.Fatalf("seq %d was re-appended as %+v, %v, want segment %d", seq, h, ok, b)
+	}
+	before := fr.d.Generation()
+
+	out, err := fr.d.Corrupt(context.Background(), Corruption{
+		Share: 1, File: f, Record: placeOf(h), Seq: seq, Version: v, Extent: core.Extent{Off: 0, Len: 4},
+	})
+	if err != nil || out.Kind != CorruptUseCopy || out.Copy != a {
+		t.Fatalf("Corrupt = %+v, %v, want UseCopy of the original %+v", out, err, a)
+	}
+	awaitGate(t, "the hold's append", reached)
+	// The hold's copy is the one new ledger entry of the record.
+	var first segment.Location
 	st := fr.d.made[0]
-	if st.syncedAt(placeAt(a)) {
-		t.Error("syncedAt reads the old place of a re-appended, unsynced record as synced")
+	st.mu.Lock()
+	for _, e := range st.ledger {
+		if e.w.Seq == seq {
+			first = e.w.Loc
+		}
 	}
-	hold.Release()
-	if err := mustReturn(t, "WaitDurable", wait); err != nil {
+	st.mu.Unlock()
+	if first == (segment.Location{}) || first.Segment != b {
+		t.Fatalf("the hold's copy is at %+v, want a place in segment %d", first, b)
+	}
+	wait := waitDurableAsync(fr.d, first)
+	// As in the chain test, the roll out of the failing segment needs its
+	// spare ready.
+	fr.settlePool(t)
+	release()
+
+	if err := mustReturn(t, "WaitDurable on the hold's copy", wait); err != nil {
 		t.Fatalf("WaitDurable = %v, want nil", err)
+	}
+	// The wait returned only once segment c synced: the record is durable
+	// there now.
+	if h, ok := fr.writesOutside(t, b)[seq]; !ok || h.Version != v || placeOf(h).Segment != c {
+		t.Fatalf("at WaitDurable's return seq %d is durable as %+v, %v, want version %+v in segment %d", seq, h, ok, v, c)
+	}
+	p, ok := fr.ix.Lookup(f, 0)
+	if !ok || p.Version != v || p.Record.Segment != c {
+		t.Fatalf("Lookup = %+v, %v, want version %+v in segment %d", p, ok, v, c)
+	}
+	// The hold's end announces the original's segment again, then b's window.
+	if got := []core.SegmentID{fr.awaitResolved(t), fr.awaitResolved(t)}; got[0] != a.Segment || got[1] != b {
+		t.Fatalf("resolved segments %v, want %d then %d", got, a.Segment, b)
+	}
+	if got := fr.d.Generation() - before; got != 0 {
+		t.Errorf("the generation rose by %d, want 0", got)
+	}
+	if ev := fr.events(); len(ev) != 0 {
+		t.Errorf("loss events = %+v, want none", ev)
+	}
+	if recs := fr.lossRecordsOnDisk(t); len(recs) != 0 {
+		t.Errorf("durable loss records = %+v, want none", recs)
 	}
 }
