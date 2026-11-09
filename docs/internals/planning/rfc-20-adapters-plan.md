@@ -128,7 +128,9 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   class constants, as signatures.
 - **`pkg/metrics` gains one line.** `Deps.Metrics` is `*metrics.Registry`, RFC 23's and RFC
   25's name; T1.6 adds `type Registry = Metrics`, an alias of the branch's type, with a
-  `ponytail:` naming RFC 25 §8.2's registry as the upgrade. `Metrics.RegisterProvider` reads a
+  `ponytail:` naming the upgrade: grow `Metrics` with RFC 25 §8.2's methods and rename it
+  `Registry`, turning the alias around, since a separate struct would break every `*Metrics`
+  holder. `Metrics.RegisterProvider` reads a
   snapshot per scrape and cannot resolve a counter at table build; the call that does lands
   with its consumer, `core`'s series, in T5.9 (§6.2).
 - **The RFC amendments the surface needs** (T1.9): every point where RFC 20 left the frozen
@@ -474,12 +476,14 @@ deleted).
   and `GOOS=darwin` vet cell for the adapter packages. 2.5 man-days.
 - T1.8 `pkg/adapter/nfs.New` and `pkg/adapter/smb.New` stubs, validating before they refuse.
   0.5 man-days.
-- T1.9 RFC 20 and RFC 24 amended where the frozen surface was ambiguous: the sealed settings
+- T1.9 RFC 20 and RFC 24 amended, with RFC 13, RFC 17 (`Shares.MoveTarget`), RFC 21 and RFC 23
+  where named, where the frozen surface was ambiguous: the sealed settings
   and `Reconfigure`'s parameter, `Validate`, the restart-only tags and their comparison, the
   drain's target asked of the service per request, `Health`'s and `ConnInfo`'s fields,
   `NewBufPool` and `BufPool.Get`'s key, `Deps.Metrics` as `*metrics.Registry`,
   `*resources.Buf` in `core`, the compound row's split (`Op.Decode`'s consumed bytes,
-  `Op.Members`, `OpTable.ReadOp`), `Interim`'s `after` and `Invocation.Role`'s two cases,
+  `Op.Members`, `OpTable.ReadOp`, `Invocation.Count`), `Invocation.Handle` for the drain's
+  target, `Interim`'s `after` and `Invocation.Role`'s two cases,
   `Start` after `Stop` refused and `Stop` idempotent, and the prior-art proposals declined.
   2.5 man-days.
 
@@ -549,11 +553,13 @@ rows, A10, A11, A14, A19, A20.
   in-flight requests awaited up to the drain deadline, then their contexts cancelled and their
   replies dropped; closing cancels each request's context and runs `OnClose`; cleanup keyed by
   session before a reconnect of that session is served.
-- T4.6 `Reconfigure`: validate (the settings' own checks, also run by `New`), refuse restart-only
+- T4.6 `Reconfigure`: refuse the other protocol's settings, validate (`config.Validate`, also
+  run by `New`), refuse restart-only
   with `ErrRestartRequired`, open added listeners before swapping the snapshot, close removed
   ones and their connections after.
 - T4.7 Health (readiness from the state, liveness from accept-loop turns through `Deps.Watch`,
-  a nil `Watch` watching nothing, `adapter_refused`), `Connections()` from a connection map in `Server`, the idle timeout that
+  a nil `Watch` watching nothing, `adapter_listener_lost`; `adapter_refused` is the node's, E7),
+  `Connections()` from a connection map in `Server`, the idle timeout that
   passes over a connection while a `Keep` is held, the handshake deadline that `Established`
   disarms; both on `testproto`'s stateful half.
 - T4.8 TCP: `TCP_NODELAY`, keepalive 15 s and 3 probes 5 s apart, `TCP_USER_TIMEOUT` on Linux,
@@ -758,7 +764,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | the packages deleted in T1.1 for having no importer: `pkg/discovery/mdns` and `wsd`; `pkg/auth`, `pkg/auth/kerberos`, `pkg/identity/kerberos`, `internal/auth/kerberos`; `internal/mfsymlink` | nothing imports them once v1 is gone | discovery: cutover; Kerberos and `pkg/auth`: RFC 18 plan; `mfsymlink`: RFC 22 plan | each lifted from develop's history by its consumer |
 | `pkg/apiclient`'s adapter and netgroup methods, kept for the e2e helpers `lint-go` vets; their routes answer 404 | compiled tests still call them | cutover | with their routes |
 | `metrics.Registry` an alias of `pkg/metrics`' `Metrics` (T1.6), not RFC 25 §8.2's registry | the registry is not built | RFC 25 | when the registry is built |
-| the service call that says whether a draining request's share has a gateway to move to (`ErrMoved`) or none (`ErrDraining`), asked per request (RFC 20 §3.1) | RFC 17 names no such call yet | RFC 17 plan | until RFC 15's topology exists it answers none |
+| `vfs.Shares.MoveTarget`, which says whether a draining request's share has a gateway to move to (`ErrMoved`) or none (`ErrDraining`), asked per request (RFC 20 §3.1) | named in RFC 17 by T1.9; not yet in `pkg/vfs` | RFC 17 plan: the method in `pkg/vfs`, `*vfs.Filesystem`, `vfstest.Null` and `vfstest.Record`, answering none | before E4's T4.5 calls it; a real target once RFC 15's topology exists |
 
 ## 7. RFC coverage
 

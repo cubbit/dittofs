@@ -257,9 +257,9 @@ which epic owns the rest.
 | R57 | Stage interfaces with §4.7's signatures: `HeaderCodec{Decode, Encode, Chain}`, `Router{Route}`, `Security{Unwrap, Wrap}`, `FlowControl{Admit}`, `ReplayCache{Lookup, Store}` | MUST | §4.7 | T1.7 |
 | R58 | `OpTable{Ops map[uint32]*Op; Errors *ErrorTable; Holds bool; ReadOp func(b []byte) (op uint32, n int, err error)}`, `ReadOp` set only on a compound row's `Members` and `NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable` (its checks, codes unique and ranges well formed: E5) | MUST | §4.7, §4.2 | T1.7 |
 | R59 | `Op` carries §4.2's columns as data: `Code`, `Name`, `Versions Range`, `Needs`, `Cacheable`, `Role`, `Expired`, `Decode func(body []byte, v Version) (inv Invocation, n int, err error)` returning the bytes it consumed, `Members *OpTable` marking a compound row; per-protocol policy and version gating are columns, never handler checks (checks: E5) | MUST | §4.2, §4.7, §2.5 rule 2 | T1.7 |
-| R60 | `Invocation` is a struct of closures `Bound`, `Resolve`, `Call`, `Encode`, `Role`, not an interface; `Bind` is its only producer | MUST | §4.7 | T1.7 |
+| R60 | `Invocation` is a struct of closures `Bound`, `Resolve`, `Call`, `Encode`, `Role`, `Handle func() (vfs.Handle, bool)`, and `Count int`, the members a compound row's arguments count (0 elsewhere), not an interface; `Bind` is its only producer | MUST | §4.7 | T1.7 |
 | R61 | `Role uint8` with `RoleNone`, `RoleContext`, `RoleFlush`, `RoleRelease` in that order; `Op.Role` is what the operation always does, `Invocation.Role` decides per request: before `Resolve`, reading only the decoded arguments and the state an explicit stateid among them names, when a single-reply compound is judged whole while draining; after `Resolve`, and only while draining or on an expired credential, everywhere else; and a nil one leaves `Op.Role` alone (drain and expiry filters: E5) | MUST | §4.7, §3.1 | T1.7 |
-| R62 | `Bind[Req, Rep any](dec, bound, resolve, role, h Handler[Req, Rep], enc)` type-checks the codec pair against the handler and returns the row's `Decode`; the `Invocation` it returns hands `Bound`, `Resolve`, `Role`, `Call` and `Encode` the request `dec` decoded; a nil `resolve` means the operation names no wire ID, a nil `role` leaves `Invocation.Role` nil | MUST | §4.7, §4.3 | T1.7 (body and test) |
+| R62 | `Bind[Req, Rep any](dec, bound, resolve, role, handle, h Handler[Req, Rep], enc)` type-checks the codec pair against the handler and returns the row's `Decode`; the `Invocation` it returns hands `Bound`, `Resolve`, `Role`, `Call` and `Encode` the request `dec` decoded; a nil `resolve` means the operation names no wire ID, a nil `role` leaves `Invocation.Role` nil, a nil `handle` leaves `Invocation.Handle` nil | MUST | §4.7, §4.3 | T1.7 (body and test) |
 | R63 | `Handler[Req, Rep any] func(ctx context.Context, r *core.Request, req *Req) (*Rep, error)` | MUST | §4.3 | T1.7 |
 | R64 | `Version uint32`; `Range{First, Last Version}`, a closed span (`Range{0, 0}` is NFSv4.0 alone); `Needs uint8` ordered `NeedsNothing` < `NeedsNegotiated` < `NeedsSession` < `NeedsTree`, with `NeedsFH Needs = 1 << 7` or-ed; `Status uint32` | MUST | §4.7, §4.2 | T1.7 |
 | R65 | `ErrorTable` is opaque; `ErrorRow{Err, Ops, Versions *Range, NoReply, Status}`; `NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable`; `(*ErrorTable).Map(err, op *Op, v Version) (s Status, reply bool)` (order, refusal of equal rows, totality helper: E5) ; `NoReply` means no final reply, and a table that holds answers it with an interim granting the request's credits (sending it: E5) | MUST | §4.7, §4.5 | T1.7 |
@@ -342,8 +342,9 @@ which epic owns the rest.
 - **D10, `pkg/metrics` gains one alias in E1.** RFC 20 §3.4 types `Deps.Metrics` as
   `*metrics.Registry`, RFC 23's and RFC 25's name; the branch has `*metrics.Metrics`, whose
   `RegisterProvider` reads a snapshot per scrape and cannot resolve a counter at table build.
-  T1.6 adds `type Registry = Metrics` with a `ponytail:` naming RFC 25 §8.2's registry as the
-  upgrade, and a ledger row goes to RFC 25. The resolve-once call has no consumer until E5
+  T1.6 adds `type Registry = Metrics` with a `ponytail:` naming the upgrade: grow `Metrics`
+  with RFC 25 §8.2's methods and rename it `Registry`, turning the alias around, since a
+  separate struct would break every `*Metrics` holder. A ledger row goes to RFC 25. The resolve-once call has no consumer until E5
   (T5.9), so it lands there (rule 10).
 - **D11, `core` names `*resources.Buf`.** RFC 20 §4.7 writes `*Buf`; `core`'s signatures use
   `*resources.Buf` and declare no alias, which would be a second exported name for one type.
@@ -368,7 +369,10 @@ which epic owns the rest.
 - **D16, the drain's target is per request.** `Stop(ctx)` keeps its signature and
   `Dispatcher.Drain()` takes no argument: while draining, `core` asks the service for each
   refused request whether its share has a gateway to move to (`ErrMoved`) or none
-  (`ErrDraining`), since RFC 21 decides per share. The call is RFC 17's to provide; until RFC
+  (`ErrDraining`), since RFC 21 decides per share. The call is `vfs.Shares.MoveTarget`, named
+  in RFC 17 by T1.9, since a method added to `vfs.Service` after S1 would break every
+  implementation; core hands it the handle a request names (`Invocation.Handle`), and a
+  single-reply compound is judged by every handle its members name (RFC 20 §4.7). Until RFC
   15's topology exists it answers none (§9). `Start` after `Stop` is refused and `Stop` is
   idempotent.
 - **D17, `Health` reports named conditions.** `Health`, `State` and `ConnInfo` as R23 and R24
@@ -382,10 +386,12 @@ which epic owns the rest.
   records the cost, the undecodable header and the unverified credits.
 - **D20, four prior-art proposals add no surface:** RFC 20 §4.7's `decision:` records each and
   how its need is met.
-- **D21, a compound row is split by one field and one hook.** `Op.Decode` returns the bytes it
-  consumed, `Op.Members` names a compound row's members' table, and that table's `ReadOp`
-  reads each member's operation code (R58, R59), so the runner decodes every member before any
-  runs; RFC 20 §4.7's `decision:` gives the reason and the ceiling.
+- **D21, a compound row is split by one field, one count and one hook.** `Op.Decode` returns
+  the bytes it consumed, `Op.Members` names a compound row's members' table,
+  `Invocation.Count` the members its arguments count, and that table's `ReadOp` reads each
+  member's operation code (R58–R60), so the runner checks the cap, decodes exactly `Count`
+  members and refuses trailing bytes before any runs; RFC 20 §4.7's `decision:` gives the
+  reason.
 
 ## 5. Target tree
 
@@ -397,6 +403,8 @@ docs/internals/rfcs/rfc-20-adapters.md  T1.9  S1 amendments (on feat/storage-v2,
 docs/internals/rfcs/rfc-24-resources.md T1.9
 docs/internals/rfcs/rfc-13-configuration.md T1.9  adapters.smb.dialects row
 docs/internals/rfcs/rfc-23-control-plane.md T1.9  re-enabled adapter built anew
+docs/internals/rfcs/rfc-17-vfs.md      T1.9  Shares.MoveTarget
+docs/internals/rfcs/rfc-21-nfs.md      T1.9  fs_locations from MoveTarget
 docs/guide/cli.md                    T1.2  regenerated
 internal/
   adapter/                           T1.1  deleted, then recreated:
@@ -448,6 +456,8 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
   - D10's `Deps.Metrics` and D11's `*resources.Buf`;
   - D19's `Interim` parameter and `Invocation.Role`'s two cases;
   - D21's compound split;
+  - RFC 17 amended too: `MoveTarget` on its `Shares` area (D16), and RFC 21 §7.4's
+    `fs_locations` pointing at it;
   - RFC 13 Appendix B's `adapters.smb.dialects` row; RFC 23's re-enabled adapter built with
     `New`; `connection_limit` stated as the node's, no adapter field;
   - `Start` after `Stop` refused, and `Stop` idempotent, stated on the contract;
@@ -625,7 +635,7 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
 - **Deliverables:** `budget.go` (`Budget`, `NewBudget`, `Reserve`, `Reserved`, `Reservation`,
   `Release`, `Pools`), `buf.go` (`Buf`, `BufPool`, `NewBufPool` (D18), `Get`, `Retain`, `Release`, the four
   classes, unexported unless T1.9 names them), stub bodies per D12; `pkg/metrics`'
-  `type Registry = Metrics` with its `ponytail:` naming RFC 25 §8.2's registry (D10); a `ponytail:` naming RFC 24
+  `type Registry = Metrics` with its `ponytail:` naming the upgrade D10 states; a `ponytail:` naming RFC 24
   for each part left out (the fair-queue turns, `Reclaim`, `ShareCap`, `Detect`, `Split`).
 - **Acceptance criteria:**
   - The package imports only the standard library and `pkg/metrics`, and has no `Start`,
@@ -723,8 +733,9 @@ cannot build apart.
 - `pkg/apiclient`'s adapter and netgroup methods kept for e2e helpers (D5). Owner: the cutover.
 - `metrics.Registry` an alias of the branch's `Metrics` rather than RFC 25's registry (D10).
   Owner: RFC 25.
-- The service call that names a draining request's share's gateway (D16). Owner: RFC 17's
-  plan; until RFC 15's topology exists it answers none.
+- `vfs.Shares.MoveTarget` (D16), named in RFC 17 by T1.9, in `pkg/vfs`, `*vfs.Filesystem`,
+  `vfstest.Null` and `vfstest.Record`. Owner: RFC 17's plan, before E4 calls it; until RFC
+  15's topology exists it answers none.
 
 **Settings v1 had that RFC 13 and RFC 20 do not.** develop's operators tune
 `LeaseTime`, `GracePeriod`, `DelegationRecallTimeout`, `CallbackTimeout`, `LeaseBreakTimeout`,
