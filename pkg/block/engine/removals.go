@@ -23,6 +23,20 @@ const (
 	itemAdvanced                         // it advanced and has more to do: run again at once, its failures reset
 )
 
+// runResult is a phase-2 run's outcome, one bounded Resume and the prune
+// after it, as engine_removal_runs_total labels it.
+type runResult uint8
+
+const (
+	runDone runResult = iota
+	runAdvanced
+	runConflict
+	runError
+	runResults
+)
+
+var runResultNames = [runResults]string{"done", "advanced", "conflict", "error"}
+
 // stallAfter is the count of consecutive failures after which an item is
 // removal_stalled.
 const stallAfter = 5
@@ -63,8 +77,9 @@ type removalLoop struct {
 	// They are the shape Drop needs: Drop sets it, and the helper goes,
 	// once built. Delete the field and its branches if Drop ends a share's
 	// items some other way.
-	dropped map[entity.ShareID]bool // shares dropped: an item of one, running or enqueued, is ended
-	steps   atomic.Int64            // items run, for a test to wait on a run
+	dropped map[entity.ShareID]bool  // shares dropped: an item of one, running or enqueued, is ended
+	steps   atomic.Int64             // items run, for a test to wait on a run
+	runs    [runResults]atomic.Int64 // engine_removal_runs_total by result
 	wake    chan struct{}
 	stop    chan struct{}
 	done    chan struct{}
@@ -247,13 +262,17 @@ func (e *Engine) phase2(r *removal) *loopItem {
 		if err == nil {
 			err = e.d.Content.PruneRemovals(ctx, share, r.f, v)
 		}
+		res, a := runError, itemRetry
 		switch {
 		case err == nil:
-			return itemDone
+			res, a = runDone, itemDone
 		case advanced:
-			return itemAdvanced
+			res, a = runAdvanced, itemAdvanced
+		case errors.Is(err, kvstore.ErrConflict):
+			res = runConflict
 		}
-		return itemRetry
+		r.b.gc.removals.runs[res].Add(1)
+		return a
 	}}
 }
 

@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 // syncBuffer is a log sink safe for the loop's goroutine and the test.
@@ -223,5 +225,58 @@ func TestADroppedSharesRunningItemIsEnded(t *testing.T) {
 		run: func(context.Context) answer { return itemDone }, end: func() { ended.Add(1) }})
 	if n := ended.Load(); n != 2 {
 		t.Errorf("an item enqueued for the dropped share: ended %d times in all, want it ended at once", n)
+	}
+}
+
+// resumeAnswer is one scripted phase-2 run: what Resume answers, and the
+// prune's error after a Resume that finished.
+type resumeAnswer struct {
+	advanced      bool
+	err, pruneErr error
+}
+
+// scriptedContent answers Resume and PruneRemovals from its script in turn.
+type scriptedContent struct {
+	Content
+	script []resumeAnswer
+	n      int
+}
+
+func (c *scriptedContent) Resume(context.Context, entity.ShareID, entity.FileID) (bool, error) {
+	c.n++
+	return c.script[c.n-1].advanced, c.script[c.n-1].err
+}
+
+func (c *scriptedContent) PruneRemovals(context.Context, entity.ShareID, entity.FileID, entity.JournalVersion) error {
+	return c.script[c.n-1].pruneErr
+}
+
+// Each phase-2 run is counted once in engine_removal_runs_total, by its
+// result: done once Resume and the prune both succeed, advanced when Resume
+// moved the cursor whatever its error, conflict for a store conflict from
+// either, and error for anything else.
+func TestPhase2RunsAreCountedByResult(t *testing.T) {
+	failed := errors.New("a store failure")
+	c := &scriptedContent{script: []resumeAnswer{
+		{},                            // done
+		{advanced: true, err: failed}, // advanced
+		{advanced: true, err: kvstore.ErrConflict}, // advanced
+		{err: kvstore.ErrConflict},                 // conflict
+		{pruneErr: kvstore.ErrConflict},            // conflict
+		{err: failed},                              // error
+		{pruneErr: failed},                         // error
+	}}
+	e := &Engine{d: Deps{Content: c}}
+	e.conflictBound.Store(int64(time.Second))
+	l := newRemovalLoop(e)
+	it := e.phase2(&removal{b: &binding{gc: &groupCommit{removals: l}}, f: entity.NewFileID()})
+	for range c.script {
+		it.run(t.Context())
+	}
+	want := map[string]int64{"done": 1, "advanced": 2, "conflict": 2, "error": 2}
+	for res, name := range runResultNames {
+		if got := l.runs[res].Load(); got != want[name] {
+			t.Errorf("engine_removal_runs_total{result=%q} = %d, want %d", name, got, want[name])
+		}
 	}
 }
