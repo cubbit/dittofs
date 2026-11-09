@@ -445,10 +445,12 @@ flight.
   `MaxTransactSize`) is **8 MiB**, a request costing one credit per 64 KiB.
 - Each connection targets **512** credits outstanding. A synchronous response,
   and the interim response of a request held pending, grants what the client
-  asks, at least 1, up to the target; the final response of a request answered
-  asynchronously grants 0, since its interim response already granted them
-  (below); where the interim granted none, the final response grants them
-  (the exception below). The server never grants past the target and never
+  asks, at least 1, up to the target, but for one exception: an interim that
+  withholds its request's credits (below) grants only what keeps the client's
+  balance at one, which is 0 while it holds more. The final response of a
+  request answered asynchronously grants 0, since its interim response already
+  granted them; where the interim withheld them, the final response grants the
+  rest. The server never grants past the target and never
   revokes credits already granted.
 - Sequence windows, credits and outstanding requests are per connection, in the
   memory of the gateway node.
@@ -457,7 +459,8 @@ flight.
   response (MS-SMB2 3.3.4.2), not held back until the final one, so the
   client keeps sending on its other trees while it waits. The one exception is
   a call still in the service past the pending ceiling, or past the floor with
-  the hold pool full, whose final response grants them (below).
+  the hold pool full, whose interim withholds them but for what keeps the
+  client's balance at one, and whose final response grants the rest (below).
 - **Held requests draw from the node, with a floor per connection.** Credits
   bound what is in flight, not what is held: a request held pending has
   already been granted its credits back, but for that exception, and holds
@@ -492,10 +495,15 @@ flight.
   today; past it a new one is answered `STATUS_INSUFFICIENT_RESOURCES` at once.
   A call still in the service when its interim goes out is never refused, by
   the ceiling or the floor, since it may still apply. Past the ceiling, or past
-  the floor with the hold pool full, its interim grants no credits and its
-  final response grants them instead, so the client sends no more until that
-  final response returns some; past the floor it keeps its receive reservation
-  ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)).
+  the floor with the hold pool full, its interim withholds its credits but for
+  what keeps the client's balance at one, and its final response grants the
+  rest, so the client's balance falls to one and it sends one request at a
+  time until a final response returns more; past the floor it keeps its
+  receive reservation
+  ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)). The balance never
+  reaches zero (MS-SMB2 3.3.1.2), so the client can still acknowledge a lease
+  break the call may be waiting on. Credits of chain members answered before
+  it ride on its interim and are granted in full.
 
 > ponytail: one credit target and one hold floor per connection, neither a
 > setting, over RFC 17's one hold pool per node. 512 credits keep a client's
@@ -2475,7 +2483,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrIO` — a journal read the device could not complete, after its bounded retry ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), on a `READ`, a `FLUSH`, a write-through `WRITE`, or a copychunk or duplicate-extents reading its source | `STATUS_UNEXPECTED_IO_ERROR` at once, never held; a `READ` whose verified bytes reach its `MinimumCount` is answered with them |
 | `ErrUnavailable` — a read, query or control request meeting a remote outage on a block not held locally ([RFC 8 §7.5](rfc-8-engine.md#7.5%20An%20unreachable%20remote%20fails%20the%20read%2C%20distinguishably)) | held pending and re-run up to `smb_pending_cap`, as a store stall is; only there `STATUS_UNEXPECTED_IO_ERROR`. A `READ` whose verified bytes reach its `MinimumCount` is answered with them at once, short; one whose verified bytes fall below `MinimumCount` is held the same way, never answered short, since MS-SMB2 3.3.5.12 fails a read below `MinimumCount` and the client would see an error for a transient outage. `ErrLost` and `ErrCorrupt` are answered at once ([RFC 17 §5.2](rfc-17-vfs.md#5.2%20Read)) |
 | `ErrIncomplete` — a read, through a snapshot or a copy made from one, of a file its cut lists as incomplete ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), or a copychunk or duplicate-extents from such a file, refused before anything changes ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)) | `STATUS_UNEXPECTED_IO_ERROR` at once |
-| no service error — the adapter's own refusal of a request past its connection's floor while the node's hold pool cannot take it (§3.3) | `STATUS_INSUFFICIENT_RESOURCES` at once; nothing is held, never `STATUS_DISK_FULL` or `STATUS_FILE_LOCK_CONFLICT` |
+| no service error — the adapter's own refusal of a request whose hold starts on an `ErrDelay` the service returned, past its connection's floor while the node's hold pool cannot take it; a call still in the service when its interim goes out is never refused (§3.3) | `STATUS_INSUFFICIENT_RESOURCES` at once; nothing is held, never `STATUS_DISK_FULL` or `STATUS_FILE_LOCK_CONFLICT` |
 | `ErrDelay` — a node memory pool spent: the share's cap on the request buffers, open state, or a reply reservation's deadline (`DelayResources`, [RFC 24 §4.2](rfc-24-resources.md#4.2%20Across%20shares%3A%20the%20share%20cap%20at%20admission)) | `STATUS_INSUFFICIENT_RESOURCES` at once; never held, since holding it would spend the hold pool on the share short of memory |
 | `ErrBlocked` — a lock left waiting (§7) | pending, with no deadline; completed on grant, or after `CancelLock` |
 | `ErrStale` — the share is being removed or retired ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)) | `STATUS_NETWORK_NAME_DELETED` for every request on a tree connected to it, so the client drops the tree; a new `TREE_CONNECT` to its name, now free, is `STATUS_BAD_NETWORK_NAME`; a durable handle's reconnect is `STATUS_OBJECT_NAME_NOT_FOUND`. A request held pending on the share's state is answered when `Revoked` reports it with the share-removed reason ([RFC 14 §11](rfc-14-open-state.md#11.%20Interface), [RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)): an outstanding `CHANGE_NOTIFY` with `STATUS_NOTIFY_CLEANUP`, a waiting lock or any other with `STATUS_NETWORK_NAME_DELETED`; the waiter is already gone, so no `CancelLock` precedes it |
@@ -2560,6 +2568,14 @@ replays the lock or the notification once it reconnects, so the application
 sees no `ERROR_OPERATION_ABORTED`. `ErrNotNegotiated`,
 `ErrNoFH` and `ErrTooLong` are settled against MS-SMB2 when the table is
 built; the totality test fails until they have rows.
+
+**What runs while draining** is each command's `Role`
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)):
+releases are `CLOSE`, an `OPLOCK_BREAK` acknowledgement of an oplock or a
+lease, and per request a `LOCK` whose elements unlock; flushes are `FLUSH`, as
+NFS's `COMMIT` is, and per request a `WRITE` through an open under a break,
+which the break waits on. Every other command is refused with the drain's
+error.
 
 ### 16.6 Testing
 
@@ -2647,7 +2663,7 @@ name, a SID, a principal or a client address
 | S24 | A copy or clone of overlapping ranges of one file, or a duplicate-extents over `clone_max_len`, is `STATUS_INVALID_PARAMETER` and changes nothing; one across namespaces is `STATUS_NOT_SUPPORTED`; duplicate-extents is atomic, copychunk runs in bounded chunks. |
 | S25 | No replay is matched by message ID; a replay never runs beside a request still in flight under an earlier channel sequence; a change notification names a file only as a listing would. |
 | S26 | A missed break fences the machine's caching for 90 s, not for the life of its record; at the grant budget no new grant is offered and none held is broken. |
-| S27 | A held request's credits are granted in its interim response and its final response grants none, except a call still in the service past the pending ceiling, or past its floor with the pool spent, whose interim grants none and whose final response grants them; a connection may always hold 256 requests and 32 MiB of writes, more only from the node's hold pool, and a request whose hold starts on a returned `ErrDelay` past its floor with the pool spent is `STATUS_INSUFFICIENT_RESOURCES`, while a call the interim timer finds still in the service there is not refused and keeps its receive reservation. |
+| S27 | A held request's credits are granted in its interim response and its final response grants none, except a call still in the service past the pending ceiling, or past its floor with the pool spent, whose interim grants only what keeps the client's balance at one and whose final response grants the rest; a connection may always hold 256 requests and 32 MiB of writes, more only from the node's hold pool, and a request whose hold starts on a returned `ErrDelay` past its floor with the pool spent is `STATUS_INSUFFICIENT_RESOURCES`, while a call the interim timer finds still in the service there is not refused and keeps its receive reservation. |
 | S28 | Privilege applies to a backup- or restore-intent `CREATE` and every request through its handle, never to another handle or to `MaximalAccess`; take-ownership is a right, not a privilege. |
 | S29 | A successful durable or persistent reconnect attaches the open to the reconnecting session; an open names its session by node, node epoch and session ID; a moved persistent open's timeout starts at its own client's first tree connect to its share at the new owner. |
 | S30 | Times set through an open whose grant holds `FILE_WRITE_ATTRIBUTES` store the client's values; an EA set and a delete-on-close's unlink are decided by the open's grant. |
@@ -2676,7 +2692,7 @@ name, a SID, a principal or a client address
 | §6.3 move with a Windows client | A Windows client holds a profile disk on a continuously available share through a persistent handle with an RWH lease, deny-write, writing throughout, and a tree on an unmoved share of the same connection. Move the namespace and repoint the name within the client's handle timeout: assert the connection is closed, not answered `STATUS_NETWORK_NAME_DELETED`, the client's reconnect at the new owner reclaims the handle with no application error, and the other tree reconnects. Repeat with the repoint after the client's timeout: assert the handle lost, the application told, and its fresh `CREATE` at the new owner granted once `migration.reconnect_wait` ends the orphaned open. The client is Windows, never a harness that reconnects on cue. | a moved share's tree ended by a status the client does not retry, so a persistent handle dies at A |
 | §6.3, §16.5 grace | Fail a primary over; during its grace, a second desktop sends `CREATE` for a file nobody held. Assert `STATUS_PENDING` past `smb_pending_deadline` and success once grace ends; with grace held for its whole period, assert no `STATUS_FILE_NOT_AVAILABLE` before grace's end plus 35 s. | a pending open failed at `smb_pending_deadline` while grace still refuses it |
 | §6.3 fence and budget | Let one break time out; assert the client offered no lease for 90 s and offered one after. Drive one client to the grant budget; assert no lease is offered past it, every lease held is kept, and one is offered again once the count falls. | a fence tied to a lease SMB does not have, or the budget breaking a lease in use |
-| §3.3 credits under a hold | Hold a connection's writes behind a 9-minute store outage while it keeps sending: assert every interim `STATUS_PENDING` grants credits and every final response grants none, the connection's other tree keeps working, and, with the node's hold pool already filled by a second connection's held writes (its size set through the process memory limit, [RFC 24 §2.3](rfc-24-resources.md#2.3%20The%20pools)), once 256 requests or 32 MiB of writes are held a further write is `STATUS_INSUFFICIENT_RESOURCES` at once and `adapter_hold_refusals_total{protocol="smb"}` rises; after the outage every held write succeeds. Then hold the connection's writes behind a clone instead, with 511 requests pending: assert each write's interim grants no credits, its final response grants them, and the client's balance never reaches zero. | held requests escaping the credit bound, a final response granting credits a second time, a final response granting none after an interim that granted none, or a connection starved of credits while it waits |
+| §3.3 credits under a hold | Hold a connection's writes behind a 9-minute store outage while it keeps sending: assert every interim `STATUS_PENDING` grants credits and every final response grants none, the connection's other tree keeps working, and, with the node's hold pool already filled by a second connection's held writes (its size set through the process memory limit, [RFC 24 §2.3](rfc-24-resources.md#2.3%20The%20pools)), once 256 requests or 32 MiB of writes are held a further write is `STATUS_INSUFFICIENT_RESOURCES` at once and `adapter_hold_refusals_total{protocol="smb"}` rises; after the outage every held write succeeds. Then hold the connection's writes behind a clone instead, with 511 requests pending: assert each write's interim grants none of its credits while the client holds more than one and one when it would hold none, its final response grants the rest, the client's balance never reaches zero, and a request sent on that last credit is answered. | held requests escaping the credit bound, a final response granting credits a second time, a final response granting none after an interim that withheld them, or a connection starved of credits while it waits |
 | §3.3 pending ceiling | smbtorture `smb2.credits.1conn_ipc_max_async_credits`: on one connection, `READ`s of empty named pipes on `IPC$` park until 511 are pending, and each one after is `STATUS_INSUFFICIENT_RESOURCES` at once. | no pending ceiling, or one that counts held requests and not parked ones |
 | §3.3 multi-session host through a freeze *(1 node)* | One connection carries 40 sessions, each writing its own 4 GiB profile disk at queue depth 8 with 64 KiB writes. Freeze the share for 20 s, then stall the metadata store for 30 s: assert every write held is answered success after each, none `STATUS_INSUFFICIENT_RESOURCES`, `adapter_held_requests` past 256 during the hold, and `adapter_hold_refusals_total{protocol="smb"}` unchanged. | a per-connection cap that fails a multi-session host's writes during a planned freeze or a short stall |
 | §16.5 share cap on a profile share *(1 node)* | The same 40-session host, its share the only one with calls in flight, the process memory limit set so its writes take the receive pool past three quarters. Assert no `WRITE` is answered `STATUS_INSUFFICIENT_RESOURCES` and `memory_pool_refusals_total{reason="share_cap"}` is unchanged. | a share cap ([RFC 24 §4.2](rfc-24-resources.md#4.2%20Across%20shares%3A%20the%20share%20cap%20at%20admission)) that fails a lone share's guests with I/O errors while no other share waits for the memory |

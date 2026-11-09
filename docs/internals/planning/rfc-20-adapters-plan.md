@@ -10,8 +10,8 @@ develop serves that `feat/storage-v2` stops serving, is in the deferral ledger (
 RFCs, with how far each is in scope:
 
 - [RFC 17](../rfcs/rfc-17-vfs.md), the filesystem service: **constraints only**, except
-  `vfs.WithRequestID` (RFC 17 §4.7) and `vfs.WithHold` (RFC 17 §5.9), which `pkg/vfs` lacks
-  and epic 5 adds. `pkg/vfs`,
+  `vfs.WithHold` (RFC 17 §5.9), which `pkg/vfs` lacks and epic 5 adds; `vfs.WithRequestID`
+  (RFC 17 §4.7) is a ledger row (§6.2). `pkg/vfs`,
   `vfstest.Record` and `vfstest.Null` exist on `feat/storage-v2`.
 - [RFC 24](../rfcs/rfc-24-resources.md), resources: **only the parts this RFC cannot work
   without**: `Budget`, `Reservation`, `Pools`, `Buf` and `BufPool` in `pkg/resources` (epic 3).
@@ -55,11 +55,8 @@ branch is `feat/storage-v2`, on which RFC 17's plan has merged; the plan documen
 | Sidecars | each adapter runs its own group | one runner driven by the serving set |
 | Tests | handlers on real stores; four fakes | `core` on a test-only protocol over `vfstest.Null`; the import test from the first commit |
 
-**Dependency limits.** An adapter imports, of the core, `pkg/vfs`, `pkg/metrics`,
-`pkg/resources`, `pkg/adapter`, `pkg/adapter/config` and `internal/tlsconfig`; beyond the
-standard library it may use `go.opentelemetry.io/otel/trace` and the Prometheus client through
-`pkg/metrics` (RFC 20 §2.3, §7.1). `internal/identity`, `internal/auth`, `pkg/identity`,
-`pkg/health` and every store are out of reach: liveness reaches an adapter as `Deps.Watch`, which
+**Dependency limits.** What an adapter may import is RFC 20 §2.3's list, which its §7.1 import
+test enforces; this plan does not restate it. Liveness reaches an adapter as `Deps.Watch`, which
 the node adapts to RFC 25's watchdog.
 `pkg/adapter`, `pkg/adapter/config` and `pkg/resources` import nothing under `internal/`; only the
 two constructor packages, `pkg/adapter/nfs` and `pkg/adapter/smb`, import `internal/adapter/`.
@@ -142,7 +139,8 @@ what those tests stand on:
 - **`adaptertest/testproto`**: a protocol of length-prefixed frames with operations that echo,
   wait a scripted time, panic, hold (answer `ErrDelay` of a holding class), take a `Role` an
   argument sets (for the drain filter and the expiry gate) and mutate through `vfstest.Null`; toy `Security` (a checksum), `Flow` (a
-  counter) and `Replay` (a map) stages; a version range for the `Versions` column. Tests drive it
+  counter) and `Replay` (a map) stages, and a `HoldCodec` whose interim and final headers carry
+  the credits they grant against a client balance the test reads; a version range for the `Versions` column. Tests drive it
   over a plain `net.Conn`. Its stateful half exercises the rest of RFC 20 §4.7, so the surface frozen
   at S1 is proven at S3 for what SMB needs and not only for what the simplest protocol needs: a
   handshake, session and tree levels, protocol state carried to a related member, kept state
@@ -158,7 +156,7 @@ what those tests stand on:
   at a member it leaves unanswered while a member before it that went pending still gets its
   final reply; a cancel or a drain racing a grant (§4.7's `Park`); a member before the last
   answered `ErrDelay` (§4.7's `Pends`); a call the interim timer finds in the service past the
-  ceiling, and one past the floor with the hold pool full (§4.6); `Park` with the reply pool
+  ceiling, and one past the floor with the hold pool full, each read on the credit balance (§4.6); `Park` with the reply pool
   full (§4.7's `Park`); an expired credential refusing a lock and a write under a break and
   passing an unlock; a parked operation already past its interim sending no second one; a
   cacheable reply under a wrapping `Security`, replayed twice, decoding both times; a connection
@@ -166,7 +164,7 @@ what those tests stand on:
 - **The import test** (RFC 20 §7.1), reusing the `go/parser` walk of
   `internal/vfs/arch_test.go`, and seeded with one violation in its own `testdata`. It checks the
   adapters' imports; `arch_test.go` keeps checking the other direction, that the service imports
-  no adapter. It covers the import list of §1.1, both directions of `pkg/` and `internal/`, `wire`
+  no adapter. It covers RFC 20 §2.3's list, both directions of `pkg/` and `internal/`, `wire`
   purity, test-only packages imported by no non-test package, and the paths v1 used that v2 does
   not (`pkg/controlplane/runtime/adapters`, `internal/adapter/{common,pool,testruntime,auth}`,
   `internal/adapter/nfs/rpc`, `internal/adapter/smb/{session,handlers}`).
@@ -324,6 +322,7 @@ flowchart TD
   E4 & E5 --> S3(["S3 core serves testproto end to end"]):::sync
   S3 -. "New on the real runner" .-> E6
   S4(["S4 internal/node exists, RFC 23"]):::sync --> E7["E7 Integration with the node 🔀"]:::sync
+  E5 -. "WithHold, read by the clone wait" .-> P11(["RFC 17 plan piece 11"]):::sync
   E6 --> E8["E8 E2E green"]
   E7 -. "node-level ledger rows" .-> E8
   classDef blocker stroke:#c0392b,stroke-width:3px
@@ -539,7 +538,7 @@ dispatch seam with a fake sender, then end to end on `Conn` at S3, against `vfst
 
 RFC sections: §3.1's drain filter, §4.1, §4.2, §4.3's runner and reply budget (the one-call rule
 is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's table selection, §6.3,
-§6.4's request deadline and request ID, §6.5's client-cancel half, §6.6, §6.9's request rows,
+§6.4's request deadline (its request ID: §6.2), §6.5's client-cancel half, §6.6, §6.9's request rows,
 §6.10's pipeline row, §10, A4, A6, A7, A15, A16, A17.
 
 - T5.1 The pipeline as RFC 20 §4.7 sketches it: frame to send in order, §4.1's refusals, nil
@@ -558,18 +557,22 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   internals alone.
 - T5.5 Held requests: interim timer and `HoldCodec.Interim`, the final reply under
   `HoldCodec.Final`, re-drive from `Resolve` with a fresh attempt deadline inside the hold bound,
-  `vfs.WithHold` added to `pkg/vfs` (RFC 17 §5.9) and passed on every call, the per-connection
-  floor and the hold pool, a cancel (`HoldCodec.Cancels`) and close ending a hold with no reply
+  `vfs.WithHold` added to `pkg/vfs` (RFC 17 §5.9) and passed on every call, asserted on the
+  context `vfstest.Record` receives (its reader, the clone wait, is RFC 17 plan piece 11's, V30),
+  the per-connection
+  floor and the hold pool, the credits on `testproto`'s balance (a call past the ceiling, and one
+  past the floor with the hold pool full, gets an interim granting none of its own credits but
+  what keeps the balance at one and a final granting the rest, a cancelled one's final too; a
+  chain member's earlier members' credits granted on its interim), a cancel (`HoldCodec.Cancels`) and close ending a hold with no reply
   to the cancel, and a cancel that arrives first remembered; the write data's `Buf` kept across
   re-drives; chain members held: RFC 20 §4.7.
 - T5.6 The middleware chain: recovery (server fault, logged with the stack, the connection's
   other requests unharmed), trace span, metrics, deadline; order pinned by a test.
 - T5.7 `ErrorTable`: mapping by error, operations and version, and `NoReply` (`Map`'s reply flag,
-  the reservation and credit released with no reply); `core.Errors()`; `ReplayCache`'s own copy; `ErrDelay` by cause; an unmapped
+  the reservation and credit released with no reply); `core.Errors()`; `ReplayCache`'s own copy; a kind named by a typed value under `errors.Is` (RFC 17 §4.3; `vfserr` matches by kind from #3869), most specific row first in §4.7's total order; an unmapped
   error answered server fault and counted; the totality check against `vfs.Errors()` as a
   helper each protocol's table will call.
-- T5.8 Request context: the 30 s deadline; `vfs.WithRequestID` added to `pkg/vfs` (RFC 17 §4.7)
-  and set from the protocol's retry identity; cancellation on close and drain.
+- T5.8 Request context: the 30 s deadline; cancellation on close and drain.
 - T5.9 RFC 20 §10's metrics, spans and logs, all in `core`; series resolved at table build.
 - T5.10 The pipeline micro-benchmark on `testproto` over `vfstest.Null`, its allocation ceiling
   checked in and registered in `unit/adapter-allocs`.
@@ -707,6 +710,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | identity-mapping config (deleted in T1.1) | squash and mapping are RFC 18 §6's, per share | RFC 18 plan | its resolution epic |
 | suites skipped on the branch by `tests.yml`'s V2 filter, `integration/kerberos` added to it and its fixed step removed in T1.3; the e2e build tags | nothing to mount | cutover | each green against v2; the V2 filter deleted once the adapters run on `vfs.Service`, as its own comment says |
 | `test/required-tests.json` pins for the adapters' authorization gates | the v1 tests are deleted | RFC 21/22 plans | each gate's test re-written |
+| `vfs.WithRequestID` (RFC 17 §4.7), set from the protocol's retry identity | its one reader is the gateway, which RFC 17's plan leaves to the cluster stage (D2) | RFC 17 cluster stage, with RFC 21/22's handlers | when the gateway is built |
 | docs: architecture's adapter section, the configuration guide's adapter keys, the user guides | describe v1 | cutover | stage 7 |
 
 ## 7. RFC coverage
@@ -754,7 +758,8 @@ feature parity with develop. A row moves only to another owner, never off the le
 
 | Related RFC section | Epic(s) |
 | --- | --- |
-| RFC 17 §4.7 (`WithRequestID`), §5.9 (`WithHold`) | E5 |
+| RFC 17 §5.9 (`WithHold`) | E5 |
+| RFC 17 §4.7 (`WithRequestID`) | §6.2 |
 | RFC 24 §2.5, §3.1, §2.7's zero check | E3, E7 |
 | RFC 13 adapter settings | E1, E7 |
 | RFC 23 §2.2, §2.3 | E7 |

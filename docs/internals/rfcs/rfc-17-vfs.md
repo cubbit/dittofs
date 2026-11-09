@@ -2766,6 +2766,10 @@ tree working:
 | 7 on | the namespace, attributes and the rest; then [RFC 20](rfc-20-adapters.md)'s shared pipeline and error tables | each adapter's copy as its last caller moves; the per-protocol request plumbing |
 | cluster | `vfs.NewGateway`, `vfs.Serve`, and the router and transport behind them, with the multi-node tier (§8) | nothing: a single node is unchanged |
 
+> decision: stage 5 deletes the v1 adapters outright (RFC 20's plan), so the
+> adapter-side deletions of this table happen at once and the allowlist never
+> exists.
+
 - **The RFC moves with the code.** A slice that needs a signature change edits
   this RFC in the same PR, and a reviewer rejects code that disagrees with it.
 - **Copy stays synchronous** ([§5.9](#5.9%20Copy%20and%20clone)).
@@ -2788,10 +2792,7 @@ tree working:
   on a stale one, so the list only shrinks and each PR shows its deletions. At
   empty it is
   replaced by [RFC 20 §7.1](rfc-20-adapters.md#7.1%20Imports%20and%20call%20sites)'s
-  import test and §8's architecture check. On the adapters' side the list goes
-  to empty at once: their v1 code is deleted and rebuilt in RFC 20's shape
-  rather than moved slice by slice, so their import test starts with no
-  allowlist.
+  import test and §8's architecture check.
 
 > decision: slices, each with its RFC edit, and a shrinking allowlist.
 > Rejected: one up-front amendment of every RFC before code, which goes stale

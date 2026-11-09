@@ -625,7 +625,8 @@ Every adapter runs through the same four states, driven by the node
 > `PUTFH` and a `GETATTR` before its `CLOSE` and `DELEGRETURN`, and an NFSv4.0
 > client sends `RENEW` behind the `GETATTR` of `fs_locations`; refusing any of
 > them would stop the release behind it or leave a moved client unable to find
-> the share. None changes state. Withdraw it if a client is found that sends
+> the share. None creates or changes open state; `SEQUENCE` and `RENEW` renew
+> the client's lease, which keeps its state until it moves. Withdraw it if a client is found that sends
 > such a compound to do new work.
 
 > decision: a drain's refusal with no move signal, or no target, is no reply,
@@ -776,7 +777,7 @@ type smbCallbacks struct {
 	sessions *protocol.Table // this node's sessions: each one's current principal, which re-authentication replaces, its channels' writers, its pending requests
 }
 
-func (c *smbCallbacks) RecallGrant(ctx context.Context, s vfs.SessionRef, openers []vfs.Principal, g metadata.CachingGrant, to vfs.GrantKind) (bool, error) {
+func (c *smbCallbacks) RecallGrant(ctx context.Context, s vfs.SessionRef, openers []vfs.Principal, g vfs.CachingGrant, to vfs.GrantKind) (bool, error) {
 	if s == (vfs.SessionRef{}) {
 		sess, ok := c.sessions.SignedInAs(c.client, openers) // every open is disconnected: a session of the client signed in now as an opener
 		if !ok {
@@ -791,7 +792,7 @@ func (c *smbCallbacks) RecallGrant(ctx context.Context, s vfs.SessionRef, opener
 	return c.send(ctx, sess, g, to)
 }
 
-func (c *smbCallbacks) send(ctx context.Context, sess *protocol.Session, g metadata.CachingGrant, to vfs.GrantKind) (bool, error) {
+func (c *smbCallbacks) send(ctx context.Context, sess *protocol.Session, g vfs.CachingGrant, to vfs.GrantKind) (bool, error) {
 	msg := wire.LeaseBreak{Key: leaseKey(g), NewState: leaseState(to)}
 	if err := sess.Notify(ctx, &msg); err != nil { // encoded and queued on a live channel's writer (§6.2); none live is an error
 		return false, err
@@ -1482,6 +1483,15 @@ version:
   protocol's server-fault status and logged at error;
 - an `ErrDelay` is mapped by the cause it carries
   ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), never by the operation;
+- a row names an error's kind by a typed value — `&vfs.Delay{Cause:
+  vfs.DelayRecall}`, `&vfs.StateError{Kind: vfs.StateStaleClient}` — which
+  `errors.Is` matches against a value of the same type and kind only, and the
+  whole class by its sentinel ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values));
+- a row sees the error, the operation and the version, nothing else. An answer
+  that turns on more — NFS's `NoReclaim`, `NFS4ERR_RECLAIM_BAD` in grace and
+  `NFS4ERR_NO_GRACE` outside it ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors)) —
+  is the handler's: it knows the grace and returns its protocol's own error for
+  one of the two, which the table maps beside the service's;
 - expected refusals — `ErrNotFound`, `ErrExist`, `ErrAccess` and the like — are
   logged at debug, unexpected ones at error.
 
@@ -1491,7 +1501,11 @@ protocol choice — which status makes a client retry, reclaim or give up
 [RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)). The rest follow
 from the protocol's own specification, are not restated in any RFC, and live
 only in the adapter's table. This RFC fixes that there is exactly one table per
-protocol and that it is total (§7.3).
+protocol and that it is total (§7.3). In code the protocol's table is built
+once per operation table, from the column its RFC gives that program and
+version — NFSv3, NFSv4, MOUNT, NLM, NSM, SMB — so one table's operation codes
+never collide with another's (NFSv3's procedure 3 is `LOOKUP`, NFSv4's
+operation 3 `ACCESS`).
 
 ### 4.6 Held requests
 
@@ -1547,17 +1561,25 @@ it holds — the service counts nothing about holds:
   checked when a hold starts on an `ErrDelay` the service returned, and in
   `Park`; past it the request is answered at once with `ErrTooManyPending`. A
   call the interim timer finds still in the service goes pending past it, and
-  past the hold floor with the hold pool full; its interim then grants no
-  credits, and its final reply grants them instead.
+  past the hold floor with the hold pool full; its interim then withholds its
+  own credits but for what keeps the client's balance at one, and its final
+  reply grants the rest. The credits of chain members answered before it ride
+  on that interim and are granted in full.
 
 > decision: a call the interim timer finds in the service goes pending past the
 > ceiling, and past the floor with the hold pool full, because answering it at
 > once could report a failure for a call that applies a moment later (§4.7's
-> `Pends` decision). Its interim grants no credits and its final reply grants
-> them instead (`HoldCodec.Interim`, `HoldCodec.Final`), so the client sends
-> nothing more until that final reply returns some: the overshoot is at most
-> the credits the client held when the ceiling, or the floor with the pool
-> full, was reached. Past the floor with the pool full the call is not refused
+> `Pends` decision). Its interim withholds its credits but for what keeps the
+> client's balance at one, and its final reply grants the rest
+> (`HoldCodec.Interim`, `HoldCodec.Final`): the overshoot is at most the
+> client's balance minus one when the ceiling, or the floor with the pool full,
+> was reached, then one call at a time sent on that last credit, each keeping
+> its receive reservation. The balance stays at one because MS-SMB2 3.3.1.2
+> requires that it never reach zero, and a client at zero could not send the lease-break
+> acknowledgement such a call may be waiting on. This departs from MS-SMB2
+> 3.3.4.1.2, where Windows grants the interim's credits to keep the client
+> from stalling: granting them all would let the pending count grow at the
+> client's full rate. Past the floor with the pool full the call is not refused
 > and keeps its receive reservation, where its write data already is (RFC 24
 > §3.2, §4.3), which bounds the bytes. Withdraw it if the service gains a way
 > to withdraw a call it has not applied.
@@ -1635,9 +1657,12 @@ type FlowControl interface {
 }
 type ReplayCache interface {
 	// Lookup returns a fresh copy of a cached reply, charged to a reply
-	// reservation of its size (RFC 24 §3.3), which the pipeline wraps in
-	// place and sends; or a sequence error; or nil, nil to run.
-	Lookup(h Header) (*Buf, error)
+	// reservation of its size (RFC 24 §3.3) that waits under ctx, as the
+	// pipeline's own reservation does; the pipeline wraps the copy in place
+	// and sends it. Or a sequence error, or the reservation's ErrDelay of
+	// DelayResources past ctx's deadline, either mapped by the table; or nil,
+	// nil to run.
+	Lookup(ctx context.Context, h Header) (*Buf, error)
 	// Store keeps its own clear copy of a cacheable row's encoded reply, taken
 	// before Wrap; the caller's reply is then wrapped in place.
 	//
@@ -1759,15 +1784,17 @@ const (
 type Status uint32
 
 // ErrorTable maps a service error to a Status (§4.5). Map takes the most
-// specific row that matches: one naming Ops, Versions or a Cause before one
-// that leaves it open.
+// specific row that matches, in a total order: a row whose Err is a typed
+// value before one whose Err is a sentinel; then, among those, a row naming
+// Ops and Versions, Ops alone, Versions alone, neither. NewErrorTable refuses
+// two rows equal in that order that can match the same error, operation and
+// version.
 type ErrorTable struct{ /* unexported */ }
 type ErrorRow struct {
-	Err      error          // matched with errors.Is
-	Cause    vfs.DelayCause // for ErrDelay rows; the zero cause matches any
-	Ops      []uint32       // nil: every operation
-	Versions *Range         // nil: every version
-	NoReply  bool           // the request is left unanswered (ErrDraining, and ErrMoved where no move signal fits, §3.1); Status unused
+	Err      error    // matched with errors.Is: a sentinel matches its whole class, a typed value its own kind only (RFC 17 §4.3)
+	Ops      []uint32 // nil: every operation
+	Versions *Range   // nil: every version
+	NoReply  bool     // the request is left unanswered (ErrDraining, and ErrMoved where no move signal fits, §3.1); Status unused
 	Status   Status
 }
 func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable
@@ -1794,7 +1821,7 @@ h, err := stages.Header.Decode(rec, off)  // off: 0, then each chain member's h.
 h, err = stages.Security.Unwrap(h, rec, prevH) // prevH: the member before a related one
 if key, ok := stages.Hold.Cancels(h); ok { endHold(key); return } // only once verified; no reply
 release, err := stages.Flow.Admit(ctx, h); defer release()
-if cached, err := stages.Replay.Lookup(h); cached != nil { conn.write(wrap(h, cached)); return } // a fresh copy, under a reply reservation
+if cached, err := stages.Replay.Lookup(ctx, h); cached != nil { conn.write(wrap(h, cached)); return } // a fresh copy, under a reply reservation
 tbl, r, err := stages.Router.Route(h, prev) // prev: the member before a related one
 op := tbl.Ops[h.Op()]               // absent: not supported
 err = check(op, h, r)               // Versions, Needs (§4.2)
@@ -1842,9 +1869,12 @@ member before the last never parks: `Park` refuses it with `ErrNotLast` before
 anything is sent, and its table maps that error. A member whose row sends no
 reply (a drain's refusal) stops the chain: the members after it do not run,
 and neither its reply nor theirs is sent, so the client replays them once it
-reconnects. The members before it stay applied and are answered: their
-replies go out chained, ending at the member before it, and one that went
-pending gets its final reply as usual.
+reconnects. In an SMB chain, where each member has its own reply, the members
+before it stay applied and are answered: their replies go out chained, ending
+at the member before it, and one that went pending gets its final reply as
+usual. An NFSv4 `COMPOUND` has one reply, and a results array cut short
+under `NFS4_OK` is malformed (RFC 8881 §16.2.3), so an operation that sends no
+reply leaves the whole RPC unanswered and its slot caches nothing.
 
 > decision: `Pends` is asked only for an `ErrDelay` the service returned. A
 > call still in the service can apply after any answer, so answering it at
@@ -1931,8 +1961,16 @@ func (c *Conn) Close(err error)
 // cancels that early.
 type HoldCodec interface {
 	Key(h Header) uint64
-	Interim(h Header, grant bool, out *Buf) error // STATUS_PENDING; grants the request's credits if grant (false for a call in the service past MaxPending, or past the hold floor with the hold pool full, §4.6)
-	Final(h Header, grant bool) Header            // the final reply's header: the async ID; grants the request's credits if grant (true only when its interim granted none)
+	// Interim encodes STATUS_PENDING. It grants the request's credits if grant;
+	// if not (a call in the service past MaxPending, or past the hold floor
+	// with the hold pool full, §4.6), only what keeps the client's balance at
+	// one. Either way it grants the credits of the chain members answered
+	// before it, which ride on its header.
+	Interim(h Header, grant bool, out *Buf) error
+	// Final is the final reply's header, with the async ID. If grant (true
+	// only when its interim withheld), it grants the request's credits less
+	// what the interim granted; otherwise none.
+	Final(h Header, grant bool) Header
 	Cancels(h Header) (key uint64, ok bool) // a CANCEL ends the hold it names and gets no reply
 	// Pends says whether a chain member before the last, answered ErrDelay
 	// with cause, goes pending (true) or is answered at once as ErrNotLast.
@@ -2422,9 +2460,10 @@ A call refused for a node memory pool — the share cap or the open-state pool,
 inside the service, or a reply reservation's deadline, before it — is one class:
 `ErrDelay` with `DelayResources`
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), which the
-adapter builds itself for its own reply-reservation refusal. A request past its
-connection's hold floor with the hold pool full is the adapter's own refusal
-(§4.6). The error table answers both at once and holds neither; the statuses
+adapter builds itself for its own reply-reservation refusal. A request whose
+hold starts on an `ErrDelay` the service returned, past its connection's hold
+floor with the hold pool full, is the adapter's own refusal; a call still in
+the service is never refused (§4.6). The error table answers both at once and holds neither; the statuses
 are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
 [RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)).
 
