@@ -277,3 +277,26 @@ func TestTimeoutsAndCrashes(t *testing.T) {
 		}
 	}
 }
+
+// SEEK_DATA answered ENXIO on one side and an offset on the other is an
+// allocation difference, noted like two different offsets; SEEK_HOLE's ENXIO,
+// and SEEK_DATA's other errnos, still diverge.
+func TestSeekDataENXIOIsANote(t *testing.T) {
+	c := newComparer("sd", testResolver())
+	seek := func(whence string) Step {
+		return Step{User: "bob", Op: "lseek", Args: map[string]string{"slot": "bob.h0", "off": "0", "whence": whence}}
+	}
+	enxio, at := Reply{Errno: int(unix.ENXIO)}, Reply{Out: &Output{N: 8192}}
+	for _, x := range []struct{ ref, dut Reply }{{enxio, at}, {at, enxio}} {
+		d, notes := c.compare(seek("SEEK_DATA"), x.ref, x.dut)
+		if d != nil || len(notes) != 1 || !strings.Contains(notes[0], "ENXIO") {
+			t.Errorf("SEEK_DATA %s/%s: diverge %+v, notes %q", errName(x.ref.Errno), errName(x.dut.Errno), d, notes)
+		}
+	}
+	if d, _ := c.compare(seek("SEEK_HOLE"), enxio, at); d == nil || d.Sig != "lseek:errno:ENXIO/OK" {
+		t.Errorf("SEEK_HOLE ENXIO/OK: got %+v", d)
+	}
+	if d, _ := c.compare(seek("SEEK_DATA"), Reply{Errno: int(unix.EINVAL)}, at); d == nil || d.Sig != "lseek:errno:EINVAL/OK" {
+		t.Errorf("SEEK_DATA EINVAL/OK: got %+v", d)
+	}
+}

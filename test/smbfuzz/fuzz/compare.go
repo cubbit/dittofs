@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/cubbit/dittofs/test/smbfuzz/sd"
 )
 
@@ -133,6 +135,9 @@ func (c *comparer) seed(path, field string, v int64) {
 }
 
 func (c *comparer) compare(s Step, ref, dut Reply) (*Divergence, []string) {
+	if n := seekDataNote(s, ref, dut); n != "" {
+		return nil, []string{n}
+	}
 	if ref.Errno != dut.Errno {
 		d := div(s, "errno", errName(ref.Errno), errName(dut.Errno))
 		d.Sig = fmt.Sprintf("%s:errno:%s/%s", s.Op, d.Ref, d.Dut)
@@ -258,6 +263,33 @@ func (c *comparer) compare(s Step, ref, dut Reply) (*Divergence, []string) {
 		}
 	}
 	return nil, notes
+}
+
+// seekDataNote returns the note for a SEEK_DATA answered ENXIO on one side
+// and with an offset on the other, the same allocation difference as two
+// different offsets (DESIGN.md §9.4): Samba reports ext4's allocation, where
+// written zeros are data, DittoFS reports an all-zero cluster as a hole, and
+// the client turns a sparse file's empty allocated range into ENXIO. SEEK_HOLE
+// is not excused: its ENXIO means an offset at or past the size, which both
+// sides agree on.
+func seekDataNote(s Step, ref, dut Reply) string {
+	if s.Op != "lseek" || s.Args["whence"] != "SEEK_DATA" {
+		return ""
+	}
+	enxio := int(unix.ENXIO)
+	if (ref.Errno != enxio || dut.Errno != 0) && (ref.Errno != 0 || dut.Errno != enxio) {
+		return ""
+	}
+	answer := func(r Reply) string {
+		if r.Errno == enxio {
+			return "ENXIO"
+		}
+		if r.Out == nil {
+			return "0"
+		}
+		return fmt.Sprint(r.Out.N)
+	}
+	return fmt.Sprintf("SEEK_DATA: ref %s, dut %s (allocation-dependent)", answer(ref), answer(dut))
 }
 
 func (c *comparer) compareStat(s Step, path string, r, d *StatOut) (*Divergence, []string) {
