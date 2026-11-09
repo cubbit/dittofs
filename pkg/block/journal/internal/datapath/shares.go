@@ -13,11 +13,15 @@ const closedBit = uint64(1) << 63
 // Share is the handle of one share on a core: the tag its writes publish
 // under, its limit, and the count of calls running through it.
 //
-// decision: a Share holds no lock domain: no call takes a lock for it, and a
-// call never waits on another handle. It does carry state, one atomic word
+// decision: a Share holds no lock domain and no call takes a lock for it: a
+// call never waits on another handle. It carries state, one atomic word
 // holding the count of calls in flight and a closed bit, and a channel its
 // Close waits on; that state orders a handle's close against its own calls
-// only. Revisit when a share gains state that writers must serialize.
+// only. The one mutex around handles is the core's registryMu, a leaf that
+// only Share and Close take, outside the domain order: never held while a lock
+// domain is held, while the counters or the index are called, or while Close
+// waits for the drain. Revisit when a share gains state that writers must
+// serialize.
 type Share struct {
 	// Tag is the share's tag, fixed for the handle's life.
 	Tag core.ShareTag
@@ -63,6 +67,13 @@ func (s *Share) exit() {
 // and returns once every call already in flight has returned. The extents the
 // handle's writes published stay held. A later Share on the tag makes a fresh
 // handle; a second or concurrent Close returns core.ErrClosed.
+//
+// decision: Close waits for the calls in flight without a bound and without a
+// context, because it takes none by design, so a Close issued from inside a
+// call made through the same handle never returns. That is accepted because
+// no caller closes a handle from within its own call. Overturned by a caller
+// that does, or by a need for a bounded drain, which would give Close a
+// context or a deadline.
 func (s *Share) Close() error { return s.owner.closeShare(s) }
 
 // Share attaches a handle for tag with limit, after raising the version
