@@ -660,11 +660,26 @@ func (r *Runner) runStep(round uint64, dir string, n int, label string, s Step, 
 	if sr.Ref.Fatal != "" || sr.Dut.Fatal != "" {
 		return sr
 	}
+	if f := fuzzerFailure(sr.Ref, sr.Dut); f != "" {
+		sr.Ref.Fatal = f
+		return sr
+	}
 	sr.Diverge, sr.Notes = cmp.compare(s, sr.Ref, sr.Dut)
 	if sr.Diverge != nil {
 		sr.Diverge.Step = label
 	}
 	return sr
+}
+
+// fuzzerFailure reports a step whose worker timed out or died on both sides
+// (DESIGN.md §9.5). Equal errnos would pass it as agreement, but two servers
+// failing the same step the same way is more likely the fuzzer's own failure,
+// or the client's, than a finding, so the round is not run.
+func fuzzerFailure(ref, dut Reply) string {
+	if ref.Errno >= 0 || dut.Errno >= 0 {
+		return ""
+	}
+	return fmt.Sprintf("the worker gave %s on the reference and %s on DittoFS", errName(ref.Errno), errName(dut.Errno))
 }
 
 // setupRound creates the round directory as admin on both sides and sets the
@@ -772,7 +787,7 @@ func (r *Runner) sweep(round uint64, dir string, cmp *comparer, res *Result) {
 		ls := Step{User: "admin", Op: "readdir", Args: map[string]string{"path": rel}}
 		sr := r.runStep(round, dir, 0, "S", ls, cmp)
 		res.Steps = append(res.Steps, sr)
-		if sr.Diverge != nil && r.ends(res, ls, sr.Diverge) {
+		if sweepFatal(res, sr) || sr.Diverge != nil && r.ends(res, ls, sr.Diverge) {
 			return
 		}
 		if sr.Ref.Out == nil {
@@ -805,7 +820,7 @@ func (r *Runner) sweep(round uint64, dir string, cmp *comparer, res *Result) {
 				sr := r.runStep(round, dir, 0, "S", s, cmp)
 				sr.Line = strings.Replace(sr.Line, "00", " S", 1)
 				res.Steps = append(res.Steps, sr)
-				if sr.Diverge != nil && r.ends(res, s, sr.Diverge) {
+				if sweepFatal(res, sr) || sr.Diverge != nil && r.ends(res, s, sr.Diverge) {
 					return
 				}
 			}
@@ -814,6 +829,16 @@ func (r *Runner) sweep(round uint64, dir string, cmp *comparer, res *Result) {
 			}
 		}
 	}
+}
+
+// sweepFatal ends the sweep when a step of it could not run, as a plan step
+// ends the round.
+func sweepFatal(res *Result, sr StepResult) bool {
+	if sr.Ref.Fatal == "" && sr.Dut.Fatal == "" {
+		return false
+	}
+	res.Err = fmt.Errorf("sweep: %s%s", sr.Ref.Fatal, sr.Dut.Fatal)
+	return true
 }
 
 // unchanging are the operations that change nothing a later step sees. lseek

@@ -1113,11 +1113,18 @@ divergence is still in the report, so a pattern in notes is visible.
 
 ### 9.5 Crashes and hangs
 
-A step that times out on one side and not the other, a worker killed by a signal, or a mount
-that returns `EIO`/`EHOSTDOWN` on one side is a divergence with signature
-`<op>:timeout:<side>` or `<op>:errno:…`. After any of them the fixture checks the DittoFS
-process: if it exited, its exit status and the tail of its log are attached to the report, and
-the fixture restarts it before the next round.
+A step that times out on one side and not the other is a divergence signed
+`<op>:timeout:<side>`, the side that hung (`pread:timeout:dut`), whatever the other side
+answered. A worker killed by a signal on one side (`CRASHED`), or a mount that returns
+`EIO`/`EHOSTDOWN` on one side, is a divergence signed `<op>:errno:…` like any other errno
+difference. After any of them the fixture checks the DittoFS process: if it exited, its exit
+status and the tail of its log are attached to the report, and the fixture restarts it before
+the next round.
+
+A step whose worker times out or dies on **both** sides is not agreement, though the two
+outcomes are equal: two servers failing one step the same way is more likely the fuzzer's own
+failure, or the client's, than a finding. The round is reported as not run, as a plan error
+is, wherever the step is: the tree's setup, a plan step, a read-back or the sweep.
 
 ## 10. Rounds, isolation and cleanup
 

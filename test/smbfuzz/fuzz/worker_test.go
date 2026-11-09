@@ -246,3 +246,34 @@ func TestApplyACEEdit(t *testing.T) {
 		t.Fatalf("aceedit on a null DACL: %v", err)
 	}
 }
+
+// A timeout on one side is signed by that side, whatever the other answered;
+// a timeout or crash on both sides is the fuzzer's failure, not agreement.
+func TestTimeoutsAndCrashes(t *testing.T) {
+	c := newComparer("sd", testResolver())
+	s := Step{User: "bob", Op: "pread", Args: map[string]string{"slot": "bob.h0"}}
+	for _, x := range []struct {
+		ref, dut int
+		sig      string
+	}{
+		{0, errTimeout, "pread:timeout:dut"},
+		{int(unix.EACCES), errTimeout, "pread:timeout:dut"},
+		{errTimeout, 0, "pread:timeout:ref"},
+		{errCrashed, 0, "pread:errno:CRASHED/OK"},
+	} {
+		d, _ := c.compare(s, Reply{Errno: x.ref}, Reply{Errno: x.dut})
+		if d == nil || d.Sig != x.sig {
+			t.Errorf("%s/%s: got %+v, want %s", errName(x.ref), errName(x.dut), d, x.sig)
+		}
+	}
+	for _, x := range [][2]int{{errTimeout, errTimeout}, {errCrashed, errCrashed}, {errTimeout, errCrashed}} {
+		if fuzzerFailure(Reply{Errno: x[0]}, Reply{Errno: x[1]}) == "" {
+			t.Errorf("%s/%s: not a fuzzer failure", errName(x[0]), errName(x[1]))
+		}
+	}
+	for _, x := range [][2]int{{0, 0}, {errTimeout, 0}, {int(unix.EIO), int(unix.EIO)}} {
+		if f := fuzzerFailure(Reply{Errno: x[0]}, Reply{Errno: x[1]}); f != "" {
+			t.Errorf("%s/%s: a fuzzer failure: %s", errName(x[0]), errName(x[1]), f)
+		}
+	}
+}

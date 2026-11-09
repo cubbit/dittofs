@@ -136,6 +136,16 @@ func (c *comparer) compare(s Step, ref, dut Reply) (*Divergence, []string) {
 	if ref.Errno != dut.Errno {
 		d := div(s, "errno", errName(ref.Errno), errName(dut.Errno))
 		d.Sig = fmt.Sprintf("%s:errno:%s/%s", s.Op, d.Ref, d.Dut)
+		// A hang on one side is signed by the side alone (DESIGN.md §9.5):
+		// what the other side answered does not make it another hang, and a
+		// minimiser that kept the other side's errno in the signature would
+		// reject a shrink that changed only that.
+		switch errTimeout {
+		case ref.Errno:
+			d.Sig = s.Op + ":timeout:" + SideRef
+		case dut.Errno:
+			d.Sig = s.Op + ":timeout:" + SideDut
+		}
 		return d, nil
 	}
 	if ref.Errno != 0 {
