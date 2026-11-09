@@ -2572,7 +2572,8 @@ pends ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%2
 `ErrNotLast` to `STATUS_INTERNAL_ERROR`; `ErrTooManyPending` to
 `STATUS_INSUFFICIENT_RESOURCES`; `ErrDraining` and `ErrMoved` to an interim
 `STATUS_PENDING` that grants the request's credits, and the credits of the
-chain members after it, which do not run, and that no final response ever
+chain members after it, which do not run and of which `core` reads only the
+headers (`HoldCodec.Interim`'s `after`), and that no final response ever
 follows (§14's Witness move comes first). A parked request ended by a drain
 gets no final response either, its interim having gone out when it parked: a waiting lock has `CancelLock` called first, and one it reports
 granted is answered success. On a continuously available share the client
