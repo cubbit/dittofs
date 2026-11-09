@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -434,7 +435,7 @@ func (u *unit) withOpenState(t *testing.T, h *recHolds) (*openstate.Table, *engi
 	if err := tb.Recovery().ServeShard(t.Context(), u.share.ID, u.share.Shard, 1); err != nil {
 		t.Fatal(err)
 	}
-	h.next = enginetest.Holds(tb)
+	h.next = enginetest.Holds(tb, u.fs.Store.Opens())
 	return tb, sink
 }
 
@@ -675,5 +676,34 @@ func TestRemovalsOfACloningDestinationWaitForIt(t *testing.T) {
 	}
 	if ch, err := u.e.Delete(ctx, s, dst); ch != nil || err != nil {
 		t.Errorf("the unlink run again: %v, %v; want it released", ch, err)
+	}
+}
+
+// The fixture's hold answers ErrStale only for a source holding no open of
+// the clone's: once open state dropped the source's share, a Hold of the
+// clone's durable open, still in the store, answers an error the engine
+// retries, not the refusal it runs phase 2 without.
+func TestTheFixturesHoldTellsADroppedShareFromNoOpen(t *testing.T) {
+	h := &recHolds{onHold: func(context.Context) error { return errors.New("held off") }}
+	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h })
+	tb, _ := u.withOpenState(t, h)
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.create(t, "dst")
+	u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
+	u.until(t, "the clone's hold asked", func() bool { n, _ := h.counts(); return n > 0 })
+	h.mu.Lock()
+	held := h.holds[0]
+	h.mu.Unlock()
+	fixture := enginetest.Holds(tb, u.fs.Store.Opens())
+	none := held
+	none.Dst = entity.NewFileID()
+	if _, err := fixture.Hold(t.Context(), none); !errors.Is(err, entity.ErrStale) {
+		t.Errorf("a Hold naming no open of the source: %v, want ErrStale", err)
+	}
+	if err := tb.Recovery().DropShare(t.Context(), u.share.ID, netip.Addr{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.Hold(t.Context(), held); err == nil || errors.Is(err, entity.ErrStale) {
+		t.Errorf("a Hold on a dropped share: %v, want an error other than ErrStale", err)
 	}
 }

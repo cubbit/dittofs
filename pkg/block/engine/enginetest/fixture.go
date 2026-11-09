@@ -307,7 +307,7 @@ func (f *Fixture) start() {
 		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed, stalled: &f.stalled},
 		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
 		Lifecycle: f.FS.Store.Lifecycle(),
-		Holds:     Holds(f.Opens),
+		Holds:     Holds(f.Opens, f.FS.Store.Opens()),
 		Clock:     f.Clock,
 		Logger:    f.logger,
 		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
@@ -400,24 +400,44 @@ func (s *Sink) ClosedCalls() []Closed {
 // noOrder takes no admission lock: the fixture has no service holding one.
 func noOrder(entity.FileID) func() { return func() {} }
 
-// Holds adapts t to the engine's CloneHold, as the composition root does.
-// An orphan CloneClose leaves reaches t's Sink.Closed.
-func Holds(t *openstate.Table) engine.CloneHold {
-	return cloneHold{opens: t.Opens(), recovery: t.Recovery()}
+// Holds adapts t, over the store's durable opens, to the engine's
+// CloneHold, as the composition root does. An orphan CloneClose leaves
+// reaches t's Sink.Closed.
+func Holds(t *openstate.Table, records OpenRecords) engine.CloneHold {
+	return cloneHold{opens: t.Opens(), recovery: t.Recovery(), records: records}
+}
+
+// OpenRecords reads a file's durable opens: the store's Opens.
+type OpenRecords interface {
+	Of(ctx context.Context, share entity.ShareID, file entity.FileID) ([]entity.OpenRecord, error)
 }
 
 // cloneHold is the open-state table as the engine's CloneHold.
 type cloneHold struct {
 	opens    openstate.Opens
 	recovery openstate.Recovery
+	records  OpenRecords
 }
 
+// Hold answers ErrStale only for a source holding no open of the clone's.
+// CloneOpen answers ErrBadState for that and for a share whose open state
+// was dropped, so the record is read again to tell them apart; the dropped
+// share's answer crosses as itself, which the engine retries.
 func (h cloneHold) Hold(ctx context.Context, src engine.CloneSrc) (entity.OpenID, error) {
 	id, err := h.opens.CloneOpen(ctx, openstate.FileKey{Share: src.Share, Shard: src.Shard, ID: src.File}, openstate.CloneSource{Dst: src.Dst, Version: src.AsOf})
-	if errors.Is(err, openstate.ErrBadState) {
-		return 0, entity.ErrStale // the source holds no open of the clone's
+	if !errors.Is(err, openstate.ErrBadState) {
+		return id, holdErr(err)
 	}
-	return id, holdErr(err)
+	recs, rerr := h.records.Of(ctx, src.Share, src.File)
+	if rerr != nil {
+		return 0, rerr
+	}
+	if !slices.ContainsFunc(recs, func(r entity.OpenRecord) bool {
+		return r.Kind == entity.OpenCloneSource && r.CloneDst == src.Dst && r.CloneVersion == src.AsOf
+	}) {
+		return 0, entity.ErrStale
+	}
+	return 0, err
 }
 
 func (h cloneHold) Release(ctx context.Context, o entity.OpenID) error {
