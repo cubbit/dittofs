@@ -1354,7 +1354,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrDelay` | retry shortly | `*Delay{Cause; Until; Moved}`, below |
 | `ErrBlocked` | a lock waits, and will be granted through `LockWaitOver`: the service's answer for RFC 14's `LockResult{Waiting: true}` | — |
 | `ErrWrongSecurity` | the share's policy does not admit the call's flavour ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)) | — |
-| `ErrState` | a client-held name of state cannot be used as given | `*StateError{Kind; Sessioned}`, below |
+| `ErrState` | a client-held name of state cannot be used as given | `*StateError{Kind; Admin; Sessioned}`, below |
 | `ErrCross` | the call spans what cannot be spanned | `*CrossError{Kind}`: `CrossNamespace` (a copy or clone between namespaces), `CrossShare` (a rename or link between shares, [RFC 7 §5.1](rfc-7-namespace-metadata.md#5.1%20One%20transaction)), `CrossProject` (a rename or link across tree quotas, [RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%20filesystem)), `OtherShard` (**(cluster)** a clone whose source and destination lie in different shards, [§5.9](#5.9%20Copy%20and%20clone)) — the first three name the boundary a client can see; `OtherShard` names placement, which a client cannot, so adapters fall back rather than report it |
 | `ErrIncomplete` | a read of a file a snapshot lists as incomplete, or a copy or clone from one ([RFC 12 §2.3](rfc-12-snapshots.md#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)) | — |
 | `ErrInconsistent` | a store invariant the filesystem's own state breaks; the store raises a health condition naming the record ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — |
@@ -1398,15 +1398,24 @@ type Delay struct {
 type DelayCause uint8
 
 const (
-	DelayRecall    DelayCause = iota // a caching grant is being recalled (§3.2)
-	DelayClone                       // a running clone or copy chunk holds the extent past the call's hold (§5.9)
-	DelayConflict                    // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2), or an open-state owner's own numbered request in flight (RFC 14 §2.8)
-	DelayFrozen                      // the share is quiesced, frozen for a move, or moved away; or a share not attached here (RFC 8 §12.1), or an open-state shard not yet served here (RFC 14 §11.3); or its journal's content not yet reconciled after damage (RFC 8 §2.5)
-	DelayCapacity                    // the journal's capacity or a share's journal limit (RFC 8 §10.2)
-	DelayCommit                      // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6); or a stable write's sync may have lost it (§5.8)
-	DelayResources                   // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
+	// Zero is no cause: every Delay names one of these.
+	DelayRecall    DelayCause = iota + 1 // a caching grant is being recalled (§3.2)
+	DelayClone                           // a running clone or copy chunk holds the extent past the call's hold (§5.9)
+	DelayConflict                        // a metadata conflict still unresolved at the call's deadline (RFC 0 §9.2), or an open-state owner's own numbered request in flight (RFC 14 §2.8)
+	DelayFrozen                          // the share is quiesced, frozen for a move, or moved away; or a share not attached here (RFC 8 §12.1), or an open-state shard not yet served here (RFC 14 §11.3); or its journal's content not yet reconciled after damage (RFC 8 §2.5)
+	DelayCapacity                        // the journal's capacity or a share's journal limit (RFC 8 §10.2)
+	DelayCommit                          // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6); or a stable write's sync may have lost it (§5.8)
+	DelayResources                       // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
 )
 ```
+
+Each typed error matches, under `errors.Is`, its sentinel and any value of its
+own type with the same kind, so an adapter's error table
+([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)) can name a kind
+rather than only its sentinel. The kind of an `AccessError`, `QuotaError`,
+`StateError` or `CrossError` is every field it has, so a field added later
+joins it; a `Delay`'s is its `Cause` and `Moved`, since `Until` is a bound,
+not a kind, and is not compared. A zero kind matches only another zero one.
 
 `Cause` labels metrics and selects how long an adapter holds the request and
 its final status (§3.2). **A transient refusal never becomes `ErrNoSpace` because a
