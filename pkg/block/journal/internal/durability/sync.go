@@ -889,8 +889,12 @@ func (st *stream) answersFailureLocked(loc segment.Location) (uint64, bool) {
 // for it, but the generation must be up before a Sync the failure fails
 // returns, and the window's content records are failed by then, so a file
 // with both is told by its marks first and never twice for one Sync. Until
-// then the target waits. Overturned by the re-append of a header-only record,
-// which must wait for the new sync (RFC 1 §5.3) instead of failing at once.
+// then the target waits, and counts as a failure in flight. Once answered it
+// no longer does, for it stays in its window until the re-append and the call
+// would never end; the call's other targets still decide whether a failure is
+// in flight, so the answer is returned with them and not ahead of them.
+// Overturned by the re-append of a header-only record, which must wait for the
+// new sync (RFC 1 §5.3) instead of failing at once.
 func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pending, failing bool, found *owedFailure, err error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -923,9 +927,14 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 			// The segment failed, so the record's failure is on its way, from
 			// a mark the worker has yet to set or an answer it has yet to
 			// allow: the caller waits for it rather than for a sync.
-			failing = true
-			if id, ok := st.answersFailureLocked(t.loc); failFast && failErr == nil && ok {
-				failSeg, failWindow, failErr = t.loc.Segment, id, e
+			if id, ok := st.answersFailureLocked(t.loc); failFast && ok {
+				// Answered: its window has been failed, so it is no failure
+				// in flight. Only the first answer is reported.
+				if failErr == nil {
+					failSeg, failWindow, failErr = t.loc.Segment, id, e
+				}
+			} else {
+				failing = true
 			}
 			continue
 		}
@@ -953,7 +962,7 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 				se.Files = append(se.Files, t.file)
 			}
 		}
-		return false, false, mergeOwed(owed, &owedFailure{err: se, window: failWindow}), nil
+		return false, failing, mergeOwed(owed, &owedFailure{err: se, window: failWindow}), nil
 	}
 	if lead && !st.syncing && !st.want {
 		st.want = true
