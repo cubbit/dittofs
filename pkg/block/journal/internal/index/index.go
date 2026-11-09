@@ -66,3 +66,8 @@ func (ix *Index) Retained(id core.FileID) []Retained {
 // SegmentBytes returns the bytes seg backs as held and as retained extents. It
 // takes no file's lock.
 func (ix *Index) SegmentBytes(seg core.SegmentID) SegmentBytes { return ix.fs.segmentBytes(seg) }
+
+// FileEntries returns a copy of id's placement index entries in read-out
+// order, held and retained pieces and removal markers alike; nil when the
+// file holds none. It takes the file's lock shared and creates no entry.
+func (ix *Index) FileEntries(id core.FileID) []Entry { return ix.fs.inspect(id) }

@@ -23,20 +23,45 @@ const (
 
 var testIdentity = core.JournalID{0xd, 0xa, 0x7, 0xa}
 
+// limitCount is the generous version limit newTestCore sets on a core built
+// over a fresh State, so the other tests keep writing without naming a limit
+// themselves.
+const limitCount = uint64(1) << 40
+
 // newTestCore builds a Core over a real directory through the seam, with two
 // streams and small segments, and closes it when the test ends. opts adjust
 // the unexported options before the layers are built.
+//
+// A core built over a fresh State gets a generous version limit, so tests keep
+// writing without naming one; a State that carries its own Counters gets none,
+// and the noLimit option keeps the fresh core limitless too, so a test can hold
+// a core that issues nothing until it sets a limit itself.
 func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *journaltest.Seam) {
+	t.Helper()
+	var o coreOptions
+	for _, f := range opts {
+		f(&o)
+	}
+	c, seam := buildCore(t, o)
+	if o.state.Counters == nil && !o.noLimit {
+		// A fresh core issues no version until a limit is set, so a test that
+		// writes through one without naming a limit gets a generous one here.
+		if err := c.SetVersionLimit(core.Version{Counter: limitCount}); err != nil {
+			t.Fatalf("SetVersionLimit: %v", err)
+		}
+	}
+	return c, seam
+}
+
+// buildCore is newTestCore before the limit is set: the core and the seam it
+// is built over, closed when the test ends, with its spares awaited.
+func buildCore(t *testing.T, o coreOptions) (*Core, *journaltest.Seam) {
 	t.Helper()
 	seam, err := journaltest.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
 
-	var o coreOptions
-	for _, f := range opts {
-		f(&o)
-	}
 	c, err := newCore(Deps{
 		FS:          seam.FS(),
 		Clock:       journaltest.NewStopwatchClock(),
