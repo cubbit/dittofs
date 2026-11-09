@@ -23,6 +23,10 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	if off < 0 || int64(len(p)) > math.MaxInt64-off {
 		return vfserr.Verifier{}, vfserr.ErrInvalid
 	}
+	// The self-fence answers after every refusal of a write that never
+	// reaches the store: a read-only journal's (RFC 8 §11.2), and any capacity
+	// refusal of the journal the RFC places before it. Checks for those go
+	// above this gate, not below it.
 	if err := e.fence.gate(); err != nil {
 		return vfserr.Verifier{}, err
 	}
