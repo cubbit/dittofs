@@ -211,7 +211,7 @@ func (f *fence) condition() (Condition, bool) {
 		Name:    conditionNodeFenced,
 		Subject: Subject{Scope: ScopeNode, ID: f.subject()},
 		Cause:   f.cause(),
-		Detail:  "the metadata store committed no write transaction for 30s",
+		Detail:  "the metadata store committed no write transaction for " + fenceAfter.String(),
 	}, true
 }
 

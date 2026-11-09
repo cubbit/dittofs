@@ -20,7 +20,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// fenceUnit is the unit over T2.3's fault-injecting kv.KV, its log recorded.
+// fenceUnit is the unit over a fault-injecting kv.KV, its log recorded.
 // No real-time bound cuts a store call, so a stall lasts exactly as long as
 // the test clock says.
 type fenceUnit struct {
@@ -362,8 +362,8 @@ func fileRecord(share entity.ShareID, file entity.FileID) string {
 	return keys.Describe(keys.ID(keys.ID([]byte{keys.KindF}, share[:]), file[:]))
 }
 
-// One file's existence commit failing alone at every attempt, T2.3's
-// chosen-file failure, and no other write for a minute: no fence, and
+// One file's existence commit failing alone at every attempt, its record's
+// read answering not found, and no other write for a minute: no fence, and
 // existence_commit_failing names the file. Counting a file's own failure as
 // the store's fences here.
 func TestSelfFenceNotOnAFilesOwnFailure(t *testing.T) {
