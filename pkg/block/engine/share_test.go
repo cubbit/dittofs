@@ -836,3 +836,44 @@ func TestTheTableUnderReadersAndBinds(t *testing.T) {
 		}
 	}
 }
+
+// RFC 8 §2.5: a Bind of a share whose tag already has a handle open, as the
+// reconcile opens one for a tag it visits, takes that handle over rather than
+// opening a second one: the journal's Share returns it, with the version
+// counter raised above the share's floor, so a new version is drawn above
+// the imported content it could overwrite.
+func TestBindTakesOverTheTagsOpenHandle(t *testing.T) {
+	u := newUnitWith(t, unitConfig{unbound: true})
+	ctx := t.Context()
+	_, file := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
+
+	base, err := u.fs.Store.Content().VersionFloor(ctx, []entity.ShareID{u.share.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	imported := entity.VersionOf(base.Counter() + 1e12)
+	u.commitAt(t, file.ID, imported)
+
+	visit, err := u.j.Share(u.share.Tag, u.share.Limit, journal.Version{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := u.e.Bind(ctx, u.share); err != nil {
+		t.Fatal(err)
+	}
+
+	if u.rec.shares() != 1 || u.rec.handles[0].Handle != visit {
+		t.Error("Bind opened a second handle on a tag with one open, want it to take that one over")
+	}
+
+	d, err := u.e.Draw(ctx, u.share.ID, file.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if d.Counter() <= imported.Counter() {
+		t.Errorf("the first version drawn after the takeover is %d, want above the imported %d", d.Counter(), imported.Counter())
+	}
+}
