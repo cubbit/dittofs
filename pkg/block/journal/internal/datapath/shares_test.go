@@ -27,6 +27,23 @@ func shareTags(c *Core) []core.ShareTag {
 	return tags
 }
 
+// closeWithin closes s and reports whether Close returned within closeBound,
+// so a Close that never wakes fails the test on an assertion and not on the
+// package timeout. It is for a Close with nothing in flight, which must
+// return at once.
+func closeWithin(s *Share) (returned bool, err error) {
+	done := make(chan error, 1)
+	go func() { done <- s.Close() }()
+	select {
+	case err = <-done:
+		return true, err
+	case <-time.After(closeBound):
+		return false, nil
+	}
+}
+
+const closeBound = 5 * time.Second
+
 // Two handles on one core write different files and each record carries its
 // own handle's tag.
 func TestShare_TwoHandlesWriteTheirOwnTag(t *testing.T) {
@@ -102,8 +119,8 @@ func TestShare_SameTagReturnsTheSameHandle(t *testing.T) {
 	if v.Counter <= 9e8 {
 		t.Fatalf("version %v is not above the second floor", v)
 	}
-	if err := first.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if returned, err := closeWithin(first); !returned || err != nil {
+		t.Fatalf("Close = %v (returned: %v), want nil at once", err, returned)
 	}
 	if _, err := c.WriteAt(context.Background(), second, testFile(1), 0, []byte("a"), 1); !errors.Is(err, core.ErrClosed) {
 		t.Fatalf("a call through the other reference = %v, want ErrClosed", err)
@@ -304,6 +321,60 @@ func TestHandleClose_WaitsForTheCallInFlight(t *testing.T) {
 	}
 }
 
+// A second Close, from a co-owner of a shared handle, returns ErrClosed only
+// once the calls in flight have returned, like the first, so either caller
+// knows the handle's calls have ended when its Close returns.
+func TestHandleClose_SecondCloseWaitsForTheDrain(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	warm(t, c, s, f)
+	holds := holdRecordWrites(t, c, seam, f)
+	defer holds.release()
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		if _, err := c.WriteAt(context.Background(), s, f, 0, []byte("abcd"), 1); err != nil {
+			t.Errorf("the write in flight: %v", err)
+		}
+	})
+	eventually(t, "the write to reach the seam", func() bool { return holds.waiting() == 1 })
+
+	first := make(chan error, 1)
+	go func() { first <- s.Close() }()
+	eventually(t, "the handle to refuse new calls", func() bool {
+		_, err := c.WriteAt(context.Background(), s, testFile(2), 0, nil, 1)
+		return errors.Is(err, core.ErrClosed)
+	})
+
+	second := make(chan error, 1)
+	go func() { second <- s.Close() }()
+	select {
+	case err := <-second:
+		t.Fatalf("a second Close returned %v while a call was in flight", err)
+	case err := <-first:
+		t.Fatalf("the first Close returned %v while a call was in flight", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	holds.release()
+	wg.Wait()
+	for name, ch := range map[string]chan error{"first": first, "second": second} {
+		want := error(nil)
+		if name == "second" {
+			want = core.ErrClosed
+		}
+		select {
+		case err := <-ch:
+			if !errors.Is(err, want) && err != want {
+				t.Errorf("%s Close = %v, want %v", name, err, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s Close never returned after the call finished", name)
+		}
+	}
+}
+
 // Closing one handle neither fails nor delays another's calls.
 func TestHandleClose_AnotherHandleUnaffected(t *testing.T) {
 	c, seam := newTestCore(t)
@@ -378,8 +449,8 @@ func TestHandleClose_TwiceAndConcurrently(t *testing.T) {
 	if nils != 1 {
 		t.Fatalf("%d Close calls returned nil, want exactly one", nils)
 	}
-	if err := s.Close(); !errors.Is(err, core.ErrClosed) {
-		t.Fatalf("a later Close = %v, want ErrClosed", err)
+	if returned, err := closeWithin(s); !returned || !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("a later Close = %v (returned: %v), want ErrClosed at once", err, returned)
 	}
 }
 
@@ -387,8 +458,8 @@ func TestHandleClose_TwiceAndConcurrently(t *testing.T) {
 func TestHandleClose_RefusedCallLeavesNoCount(t *testing.T) {
 	c, _ := newTestCore(t)
 	s := mustShare(t, c, 1)
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
+	if returned, err := closeWithin(s); !returned || err != nil {
+		t.Fatalf("Close = %v (returned: %v), want nil at once", err, returned)
 	}
 	for range 1000 {
 		if _, err := c.WriteAt(context.Background(), s, testFile(1), 0, []byte("a"), 1); !errors.Is(err, core.ErrClosed) {
@@ -424,8 +495,8 @@ func TestHandleClose_ContextBeforeClosed(t *testing.T) {
 	if got := s.state.Load(); got != 0 {
 		t.Fatalf("in-flight word = %#x after a cancelled call, want 0", got)
 	}
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
+	if returned, err := closeWithin(s); !returned || err != nil {
+		t.Fatalf("Close = %v (returned: %v), want nil at once", err, returned)
 	}
 	if _, err := c.WriteAt(cancelled, s, testFile(1), 0, []byte("a"), 1); !errors.Is(err, context.Canceled) {
 		t.Fatalf("WriteAt on a closed handle = %v, want context.Canceled", err)
@@ -433,8 +504,7 @@ func TestHandleClose_ContextBeforeClosed(t *testing.T) {
 }
 
 // Attach and close on rotating tags while writers write through other handles
-// and a poller reads the registry: no race, and a Share never returns a handle
-// that already refuses a call.
+// and a poller reads the registry: no race.
 func TestShare_RaceAttachCloseAndWrite(t *testing.T) {
 	c, _ := newTestCore(t)
 	const (
@@ -477,7 +547,12 @@ func TestShare_RaceAttachCloseAndWrite(t *testing.T) {
 					t.Errorf("a call on tag %d: %v", tag, err)
 					return
 				}
-				if err := s.Close(); err != nil && !errors.Is(err, core.ErrClosed) {
+				returned, err := closeWithin(s)
+				if !returned {
+					t.Errorf("Close(%d) did not return within %v", tag, closeBound)
+					return
+				}
+				if err != nil && !errors.Is(err, core.ErrClosed) {
 					t.Errorf("Close(%d): %v", tag, err)
 					return
 				}

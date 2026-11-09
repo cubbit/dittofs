@@ -54,7 +54,9 @@ const (
 
 // Close ends the handle. New calls through it fail with ErrClosed, and Close
 // returns once every call already in flight on it has returned. The handle's
-// extents stay held.
+// extents stay held. A second or concurrent Close, such as another owner's of
+// a handle Share returned twice, also waits for those calls and then returns
+// ErrClosed.
 func (h *Handle) Close() error {
 	if err := h.s.Close(); err != nil {
 		return err

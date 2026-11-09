@@ -66,14 +66,22 @@ func (s *Share) exit() {
 // Close refuses new calls through the handle, removes it from the registry
 // and returns once every call already in flight has returned. The extents the
 // handle's writes published stay held. A later Share on the tag makes a fresh
-// handle; a second or concurrent Close returns core.ErrClosed.
+// handle. A second or concurrent Close, from another owner of a shared handle,
+// also waits for the calls in flight and then returns core.ErrClosed, so
+// whichever Close returns, the handle's calls have ended.
 //
 // decision: Close waits for the calls in flight without a bound and without a
 // context, because it takes none by design, so a Close issued from inside a
-// call made through the same handle never returns. That is accepted because
-// no caller closes a handle from within its own call. Overturned by a caller
-// that does, or by a need for a bounded drain, which would give Close a
-// context or a deadline.
+// call made through the same handle never returns, and neither does a second
+// Close issued from inside one. That is accepted because no caller closes a
+// handle from within its own call. Overturned by a caller that does, or by a
+// need for a bounded drain, which would give Close a context or a deadline.
+//
+// decision: Close drops the handle from the registry before it drains, so the
+// registry cannot say that a handle of a tag is still draining. A caller that
+// must know the calls of a closing handle have ended, such as Forget of the
+// tag, has to wait on that handle's own Close, not read the registry.
+// Overturned by a registry that keeps a draining handle visible.
 func (s *Share) Close() error { return s.owner.closeShare(s) }
 
 // Share attaches a handle for tag with limit, after raising the version
@@ -128,6 +136,7 @@ func (c *Core) closeShare(s *Share) error {
 	}
 	if old&closedBit != 0 {
 		c.registryMu.Unlock()
+		<-s.idle
 		return core.ErrClosed
 	}
 	var open []*Share
