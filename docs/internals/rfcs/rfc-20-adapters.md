@@ -607,7 +607,11 @@ Every adapter runs through the same four states, driven by the node
   both errors, everywhere else (NFSv3, MOUNT, NLM, SMB), to no reply: the
   client replays the request once it reconnects, elsewhere or to the node
   restarted, and on a continuously available share the application sees no
-  failed handle.
+  failed handle. SMB, whose client spends a credit on every request, sends an
+  interim `STATUS_PENDING` that grants the request's credits back and no final
+  response, so the client can still send the releases and flushes the drain
+  serves ([RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)). An NFSv4 `COMPOUND`
+  with any operation the drain refuses runs none of them (§4.7).
   Requests already handed to the service run to their answer, and their
   replies are sent. A parked request — a waiting lock, a change notification —
   is cancelled as draining begins and answered as its table answers the drain's
@@ -629,12 +633,18 @@ Every adapter runs through the same four states, driven by the node
 > the client's lease, which keeps its state until it moves. Withdraw it if a client is found that sends
 > such a compound to do new work.
 
-> decision: a drain's refusal with no move signal, or no target, is no reply,
-> not an error. An error is final to the application; an unanswered request is
+> decision: a drain's refusal with no move signal, or no target, is no reply
+> (over SMB, an interim with no final response), not an error. An error is final to the application; an unanswered request is
 > replayed after the reconnect, which a continuously available handle
 > survives. A parked request ended by the drain is answered the same way, so
 > one parked just before the drain and one that reaches `Park` after it end
-> alike. Withdraw it if a client is found that gives up on an unanswered
+> alike. The ceiling: when the only node stops, an SMB open that is not
+> persistent, as on a share that is not continuously available, does not
+> survive the restart
+> ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)),
+> so a write refused through it and replayed after finds no open, and its data
+> is lost, not delayed, unless the client opens the file again by name, as the
+> Linux client does (§7.5's drain row). Withdraw it if a client is found that gives up on an unanswered
 > request rather than reconnecting.
 
 A request still running at the drain deadline is abandoned: its context is
@@ -1488,11 +1498,14 @@ version:
   `errors.Is` matches against a value of the same type and kind only, and the
   whole class by its sentinel ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values));
 - a row sees the error, the operation and the version, nothing else. An answer
-  that turns on more is two kinds the service tells apart: a reclaim is
-  `NFS4ERR_RECLAIM_BAD` in grace and `NFS4ERR_NO_GRACE` outside it
+  that turns on more is two kinds the service tells apart: a refused reclaim is
+  `NFS4ERR_RECLAIM_BAD` while its client still owes reclaims and
+  `NFS4ERR_NO_GRACE` once it has nothing left to reclaim
   ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors)), and the service, which knows
-  the shard's grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)),
-  answers a reclaim outside it as its own kind, mapped by its own row;
+  every shard's grace and the client's progress through it
+  ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)),
+  answers the second as its own kind,
+  `&vfs.StateError{Kind: vfs.StateNoGrace}`, mapped by its own row;
 - expected refusals — `ErrNotFound`, `ErrExist`, `ErrAccess` and the like — are
   logged at debug, unexpected ones at error.
 
@@ -1565,19 +1578,24 @@ it holds — the service counts nothing about holds:
   past the hold floor with the hold pool full; its interim then withholds its
   own credits but for what keeps the client's balance at one, and its final
   reply grants the rest. The credits of chain members answered before it ride
-  on that interim and are granted in full.
+  on that interim and are granted in full. A drain's refusal, answered by an
+  interim that no final follows (§4.7), holds nothing and counts toward
+  neither the ceiling nor the floor.
 
 > decision: a call the interim timer finds in the service goes pending past the
 > ceiling, and past the floor with the hold pool full, because answering it at
 > once could report a failure for a call that applies a moment later (§4.7's
 > `Pends` decision). Its interim withholds its credits but for what keeps the
 > client's balance at one, and its final reply grants the rest
-> (`HoldCodec.Interim`, `HoldCodec.Final`): the overshoot is at most the
-> client's balance minus one when the ceiling, or the floor with the pool full,
-> was reached, then one call at a time sent on that last credit, each keeping
-> its receive reservation: the credit target counts what a withheld interim's
-> final reply still owes, so no other response refills the balance past it
-> (RFC 22 §3.3). The balance stays at one because MS-SMB2 3.3.1.2
+> (`HoldCodec.Interim`, `HoldCodec.Final`): the client's balance falls to one,
+> since the credit target counts what a withheld interim's final reply still
+> owes, so no other response refills the balance past it (RFC 22 §3.3), and it
+> then sends one call at a time on that last credit. That bounds the rate, not
+> the count: a call sent on the last credit that the timer also finds in the
+> service goes pending the same way, so while such calls stay in the service
+> the pending calls grow by one per round trip, each keeping its receive
+> reservation, and bytes bound them — the floor, the hold pool and those
+> reservations — not a number. The balance stays at one because MS-SMB2 3.3.1.2
 > requires that it never reach zero, and a client at zero could not send the lease-break
 > acknowledgement such a call may be waiting on. This departs from MS-SMB2
 > 3.3.4.1.2, which grants an asynchronous request's credits in its interim
@@ -1799,7 +1817,7 @@ type ErrorRow struct {
 	Err      error    // matched with errors.Is: a sentinel matches its whole class, a typed value its own kind only (RFC 17 §4.3)
 	Ops      []uint32 // nil: every operation
 	Versions *Range   // nil: every version
-	NoReply  bool     // the request is left unanswered (ErrDraining, and ErrMoved where no move signal fits, §3.1); Status unused
+	NoReply  bool     // no final reply (ErrDraining, and ErrMoved where no move signal fits, §3.1); a table that Holds sends an interim granting the request's credits; Status unused
 	Status   Status
 }
 func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable
@@ -1835,10 +1853,10 @@ err = reserveReply(ctx, inv.Bound()) // RFC 24 §3.3
 err = inv.Resolve(r)
 role := roleOf(op, inv, r) // inv.Role(r), or op.Role where nil
 if err == nil && expired(r) && !op.Expired && role != RoleRelease { err = ErrExpired } // §4.4
-if err == nil && draining && role == RoleNone { err = drainErr } // §3.1: ErrMoved or ErrDraining
+if err == nil && draining && role == RoleNone { err = drainErr } // §3.1: ErrMoved or ErrDraining; never per operation in a single-reply compound (below)
 if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve when tbl.Holds
 st, send := tbl.Errors.Map(err, op, h.Version())
-if !send { freeReply(); return } // a NoReply row: the reservation and credit are released
+if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); return } // a NoReply row: no final reply; where the table holds (SMB) an interim grants the request's credits back, and after, the credits read from the headers of the chain members after it (0 outside a chain) (HoldCodec.Interim)
 reply := encode(stages.Header, h, st, inv)
 if op.Cacheable { stages.Replay.Store(h, reply) } // a clear copy, before Wrap
 err = stages.Security.Wrap(h, reply) // a chain's replies: once, joined (below)
@@ -1871,15 +1889,42 @@ last, Windows goes pending only for a `CREATE` that triggers an oplock break,
 and answers any other `STATUS_INTERNAL_ERROR`, MS-SMB2 3.3.5.2.7). A member before the last that
 the interim timer finds still waiting in the service always goes pending. A
 member before the last never parks: `Park` refuses it with `ErrNotLast` before
-anything is sent, and its table maps that error. A member whose row sends no
-reply (a drain's refusal) stops the chain: the members after it do not run,
-and neither its reply nor theirs is sent, so the client replays them once it
-reconnects. In an SMB chain, where each member has its own reply, the members
-before it stay applied and are answered: their replies go out chained, ending
-at the member before it, and one that went pending gets its final reply as
-usual. An NFSv4 `COMPOUND` has one reply, and a results array cut short
-under `NFS4_OK` is malformed (RFC 8881 §16.2.3), so an operation that sends no
-reply leaves the whole RPC unanswered and its slot caches nothing.
+anything is sent, and its table maps that error. A member whose row is
+`NoReply` (a drain's refusal) stops the chain: the members after it do not
+run, and the client replays them once it reconnects. In an SMB chain, where
+each member has its own reply, the members before it stay applied and are
+answered: their replies go out chained with the refused member's interim,
+which grants its credits and those of the members after it, and no final
+reply follows. The members after it are never decoded, so the runner reads
+only their headers and passes their credits to `HoldCodec.Interim` as `after`.
+One before it that went pending gets its final reply as usual.
+
+An NFSv4 `COMPOUND` has one reply, and a results array cut short under
+`NFS4_OK` is malformed (RFC 8881 §16.2.3), so a `NoReply` refusal in it leaves
+the whole RPC unanswered. **While draining, the runner judges a single-reply
+compound whole, before any operation runs**: it decodes every operation and
+takes each one's role from the operation and its own arguments alone, never
+from state an earlier operation in the compound would set — `Op.Role`, or
+`Invocation.Role` over its decoded arguments and the state an explicit
+stateid among them names as the compound arrives. An operation naming the
+current stateid takes `Op.Role`, as does any whose role would turn on the
+current filehandle: a `CLOSE`, an unlock or a `DELEGRETURN` is a release
+whatever it names, and a `WRITE` or `LOCK` that flushes only under a
+delegation or a recall is refused, and sent again once the client has moved.
+If any would be refused with a `NoReply` row, it answers nothing and runs
+nothing. No operation is applied,
+and the NFSv4.1 slot keeps its previous sequence ID and reply, so a
+retransmission on the same slot and sequence ID runs again, is never answered
+`NFS4ERR_RETRY_UNCACHED_REP`, and never repeats a `CLOSE` an earlier attempt
+applied. Any other compound runs as usual and is answered, an error included:
+one whose refusal has a reply (`NFS4ERR_MOVED`) runs to it and is answered
+there. The runner reads whether it is draining once per single-reply
+compound, before its first operation, and its operations are not judged again
+as they run: a compound that began while serving runs whole. Judged per
+operation, a drain starting between its `CLOSE` and its `READ` would apply the
+`CLOSE` and leave the reply unsent, with the slot unchanged, so the
+retransmission would meet `NFS4ERR_BAD_STATEID`. An operation that does not
+decode counts as refused with a `NoReply` row.
 
 > decision: `Pends` is asked only for an `ErrDelay` the service returned. A
 > call still in the service can apply after any answer, so answering it at
@@ -1970,8 +2015,13 @@ type HoldCodec interface {
 	// if not (a call in the service past MaxPending, or past the hold floor
 	// with the hold pool full, §4.6), only what keeps the client's balance at
 	// one. Either way it grants the credits of the chain members answered
-	// before it, which ride on its header.
-	Interim(h Header, grant bool, out *Buf) error
+	// before it, which ride on its header. For a NoReply row (a drain's
+	// refusal) it grants the request's credits and after, the credits of the
+	// chain members after it, which do not run: the runner reads them from
+	// those members' headers, since it decodes nothing else of them. No Final
+	// follows, nothing is held, and it counts against no floor or MaxPending.
+	// Every other interim passes after 0.
+	Interim(h Header, grant bool, after uint16, out *Buf) error
 	// Final is the final reply's header, with the async ID. If grant (true
 	// only when its interim withheld), it grants the request's credits less
 	// what the interim granted of them; otherwise none.
@@ -2034,7 +2084,7 @@ var (
 	ErrTooManyPending = errors.New("core: too many pending requests")     // Stages.MaxPending
 	// ErrMoved and ErrDraining are what a request §3.1 does not serve gets
 	// while the adapter drains: ErrMoved where the drain names a takeover
-	// target (the move signal), ErrDraining where it names none (no reply,
+	// target (the move signal), ErrDraining where it names none (no final reply,
 	// ErrorRow.NoReply).
 	ErrMoved    = errors.New("core: moved")
 	ErrDraining = errors.New("core: draining")
@@ -2503,6 +2553,8 @@ with `vfs.WithRequestID`, built from the protocol's retry identity as
 [RFC 15 §4.3](rfc-15-topology.md#4.3%20The%20route%20envelope) says; the
 gateway copies it into the route envelope
 ([RFC 17 §4.7](rfc-17-vfs.md#4.7%20Callable%20across%20the%20network)).
+The gateway is its one reader, so until the gateway exists (RFC 17's cluster
+stage) a single node sets no request ID.
 
 ### 6.5 Cancellation
 
@@ -3158,8 +3210,8 @@ connection, not once per request
 ## Appendix B — where the current code differs
 
 *Non-normative.* The code on the branch this RFC was written against, by section.
-The order in which it moves, and the shrinking allowlist that shows each step,
-are [RFC 17 §9](rfc-17-vfs.md#9.%20Migration)'s.
+The order in which the service lands is [RFC 17 §9](rfc-17-vfs.md#9.%20Migration)'s;
+the current adapters are deleted, not moved, at stage 5 of RFC 20's plan.
 
 **The goal is feature parity, not a port.** Every feature a client sees today
 — each protocol version, operation, side behaviour and setting — is served
