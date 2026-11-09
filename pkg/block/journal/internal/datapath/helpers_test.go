@@ -2,6 +2,8 @@ package datapath
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"testing"
 	"time"
 
@@ -45,7 +47,8 @@ func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *journaltest.
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := c.Close(); err != nil {
+		// A test that crashed the seam closed every descriptor under the core.
+		if err := c.Close(); err != nil && !errors.Is(err, fs.ErrClosed) {
 			t.Errorf("Close: %v", err)
 		}
 	})

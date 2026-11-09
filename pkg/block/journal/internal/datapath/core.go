@@ -80,6 +80,7 @@ type Core struct {
 	domains  durability.Domains
 
 	held, dirty, retained atomic.Int64
+	writtenBytes          atomic.Uint64
 	accountSpy            func(index.HeldDelta)
 
 	closeOnce sync.Once
@@ -167,6 +168,10 @@ func (c *Core) Durability() *durability.Durability { return c.dur }
 
 // Streams returns the append streams.
 func (c *Core) Streams() *segment.Streams { return c.streams }
+
+// WrittenBytes returns the payload bytes WriteAt has published since the core
+// was built: the written_bytes counter.
+func (c *Core) WrittenBytes() uint64 { return c.writtenBytes.Load() }
 
 // AddShare registers a share and returns its handle.
 func (c *Core) AddShare(tag core.ShareTag) *Share { return &Share{Tag: tag} }
