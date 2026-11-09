@@ -154,19 +154,83 @@ func TestTheGroupCommitCommitsNothingOverAReadOnlyJournal(t *testing.T) {
 	}
 }
 
-// A read-only journal raises journal_read_only naming its device and the
-// error that entered the state.
-func TestAReadOnlyJournalRaisesItsCondition(t *testing.T) {
-	u := newUnit(t)
-	u.j.ReadOnly(syscall.EIO)
+// readOnlyCause is the cause of u's journal_read_only, and whether it is
+// raised.
+func readOnlyCause(u *unit) (error, bool) {
 	for _, js := range u.e.Stats().Journals {
 		for _, c := range js.Conditions {
-			if c.Name == "journal_read_only" && c.Subject.Scope == engine.ScopeJournal && errors.Is(c.Cause, syscall.EIO) {
-				return
+			if c.Name == "journal_read_only" && c.Subject.Scope == engine.ScopeJournal {
+				return c.Cause, true
 			}
 		}
 	}
-	t.Errorf("Stats %+v: no journal_read_only naming EIO", u.e.Stats())
+	return nil, false
+}
+
+// A read-only journal raises journal_read_only naming its device and the
+// error that entered the state, and a writable one raises none.
+func TestAReadOnlyJournalRaisesItsCondition(t *testing.T) {
+	u := newUnit(t)
+	if _, ok := readOnlyCause(u); ok {
+		t.Fatal("journal_read_only raised on a writable journal")
+	}
+	u.j.ReadOnly(syscall.EIO)
+	if cause, ok := readOnlyCause(u); !ok || !errors.Is(cause, syscall.EIO) {
+		t.Errorf("journal_read_only %v, %v; want it naming EIO", cause, ok)
+	}
+}
+
+// journal_read_only names the check the journal's probe found failing,
+// which keeps it read-only, over the error that entered the state.
+func TestAReadOnlyJournalNamesItsFailedCheck(t *testing.T) {
+	u := newUnit(t)
+	check := errors.New("probe: write test block")
+	u.j.ReadOnly(syscall.EIO)
+	u.j.FailCheck(check)
+	if cause, ok := readOnlyCause(u); !ok || !errors.Is(cause, check) {
+		t.Errorf("journal_read_only %v, %v; want it naming the failed check", cause, ok)
+	}
+}
+
+// A stable Commit over a journal turned read-only by EROFS is ErrReadOnly:
+// the sync's refusal carries the journal's cause.
+func TestAStableCommitOverAReadOnlyJournalAnswersItsCause(t *testing.T) {
+	u := newUnit(t)
+	f := u.create(t, "a")
+	u.write(t, f, 0, fill(4, 'a'))
+	u.j.ReadOnly(fmt.Errorf("write segment: %w", syscall.EROFS))
+	if _, _, err := u.e.Commit(t.Context(), u.share.ID, f, 0, 4); !errors.Is(err, vfserr.ErrReadOnly) {
+		t.Errorf("Commit: %v, want ErrReadOnly", err)
+	}
+}
+
+// afterSync is a handle whose Sync runs its hook, once a test arms it,
+// after the journal's Sync answered.
+type afterSync struct {
+	engine.Handle
+	hook *armed
+}
+
+func (h afterSync) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
+	marks, err := h.Handle.Sync(ctx, ids...)
+	h.hook.run()
+	return marks, err
+}
+
+// The journal's state is read after its Sync: a journal turned read-only
+// while the group commit's Sync ran commits nothing.
+func TestTheGroupCommitReadsTheStateAfterTheSync(t *testing.T) {
+	hook := &armed{}
+	u := newUnitWith(t, unitConfig{wrap: func(h engine.Handle) engine.Handle { return afterSync{h, hook} }})
+	f := u.create(t, "a")
+	u.write(t, f, 0, fill(4, 'a'))
+	hook.set(func() { u.j.ReadOnly(syscall.EIO) })
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	_ = u.e.CommitNow(ctx, u.share.ID, f)
+	if n := u.size(t, f); n != 0 {
+		t.Errorf("size %d, want 0: the write committed", n)
+	}
 }
 
 // A release retried from the loop that the journal then undid, turning

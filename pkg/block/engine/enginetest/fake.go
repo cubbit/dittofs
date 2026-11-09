@@ -557,6 +557,14 @@ func (j *FakeJournal) ReadOnly(cause error, undone ...journal.FileID) {
 	}
 }
 
+// FailCheck has Stats report err as the check the read-only journal's probe
+// found failing, which keeps it read-only.
+func (j *FakeJournal) FailCheck(err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.readOnly.Check = err
+}
+
 // remove runs a removal of kind k over [from, to) under a new version and
 // leaves its marker.
 func (h *FakeHandle) remove(id journal.FileID, k journal.ChangeKind, from, to int64) (journal.Version, error) {
