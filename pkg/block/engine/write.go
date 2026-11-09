@@ -41,12 +41,12 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	// The write is admitted under the entry's lock, where a clone's
 	// registration is checked and installed, and stays counted until its
 	// operation is in the entry, so a registration waits for it.
-	x := extent{off, off + int64(len(p))}
+	x := entity.Extent{Offset: off, Length: int64(len(p))}
 	fe, err := e.admitAfterStaging(ctx, f)
 	if err != nil {
 		return vfserr.Verifier{}, err
 	}
-	if err := fe.refuseWrite(x.off, x.end); err != nil {
+	if err := fe.refuseWrite(x); err != nil {
 		e.files.unlock(f, fe)
 		return vfserr.Verifier{}, err
 	}

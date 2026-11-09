@@ -31,10 +31,10 @@ func (e *Engine) Allocation(ctx context.Context, s entity.ShareID, f entity.File
 	}
 	limit := int64(math.MaxInt64) // the start of the first destination extent a clone holds past off
 	if fe := e.files.lockOf(f); fe != nil {
-		err := fe.refuseRead(off, off+1)
+		err := fe.refuseRead(entity.Extent{Offset: off, Length: 1})
 		for _, r := range fe.regs {
-			if r.dst && r.off > off {
-				limit = min(limit, r.off)
+			if r.dst && r.Offset > off {
+				limit = min(limit, r.Offset)
 			}
 		}
 		e.files.unlock(f, fe)

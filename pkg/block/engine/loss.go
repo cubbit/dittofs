@@ -183,11 +183,7 @@ func (e *Engine) syncMarks(ctx context.Context, b *binding, ids ...journal.FileI
 func (e *Engine) drain(b *binding) {
 	l := &b.gc.losses
 	var dones []func()
-	defer func() {
-		for _, d := range dones {
-			d()
-		}
-	}()
+	defer func() { runAll(dones) }()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if b.j.Stats().LossGeneration == l.gen {
@@ -338,12 +334,9 @@ func (e *Engine) lostWhole(j Journal) {
 		e.files.unlock(f, fe)
 	}
 	g.mu.Lock()
-	close(g.returned) // wakes every waiter, which then finds the journal lost
-	g.returned = make(chan struct{})
+	g.broadcastLocked() // every waiter then finds the journal lost
 	g.mu.Unlock()
-	for _, d := range dones {
-		d()
-	}
+	runAll(dones)
 }
 
 func overlaps(a, b journal.Extent) bool {

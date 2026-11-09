@@ -53,10 +53,15 @@ type loopItem struct {
 // the scheduler's removal source when offload adds the first work that needs
 // fairness between shares.
 type removalLoop struct {
-	e       *Engine
-	mu      sync.Mutex
-	items   []*loopItem
-	closed  bool
+	e      *Engine
+	mu     sync.Mutex
+	items  []*loopItem
+	closed bool
+	// decision: only a test helper sets dropped, until Drop is built, so the
+	// branches that read it end a dropped share's items for tests alone.
+	// They are the shape Drop needs: Drop sets it, and the helper goes,
+	// once built. Delete the field and its branches if Drop ends a share's
+	// items some other way.
 	dropped map[entity.ShareID]bool // shares dropped: an item of one, running or enqueued, is ended
 	steps   atomic.Int64            // items run, for a test to wait on a run
 	wake    chan struct{}
@@ -65,9 +70,6 @@ type removalLoop struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 }
-
-// removalSeries is engine_removal_batches_total, by result.
-type removalSeries struct{ ok, conflict, failed atomic.Int64 }
 
 func newRemovalLoop(e *Engine) *removalLoop {
 	l := &removalLoop{e: e, wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
@@ -191,31 +193,6 @@ func (l *removalLoop) close() {
 	}
 }
 
-// dropShare takes share s's items off the loop, ending each; one running
-// now is ended when its run returns, and none of the share's is enqueued
-// after.
-func (l *removalLoop) dropShare(s entity.ShareID) {
-	l.mu.Lock()
-	if l.dropped == nil {
-		l.dropped = map[entity.ShareID]bool{}
-	}
-	l.dropped[s] = true
-	var dropped []*loopItem
-	l.items = slices.DeleteFunc(l.items, func(it *loopItem) bool {
-		if it.b.share.ID == s {
-			dropped = append(dropped, it)
-			return true
-		}
-		return false
-	})
-	l.mu.Unlock()
-	for _, it := range dropped {
-		if it.end != nil {
-			it.end()
-		}
-	}
-}
-
 // isDropped reports whether share s was dropped: nothing of it is noted for
 // a commit again.
 func (l *removalLoop) isDropped(s entity.ShareID) bool {
@@ -248,18 +225,6 @@ func (l *removalLoop) stalledOn(f entity.FileID) bool {
 	return false
 }
 
-// count records one batch's result in engine_removal_batches_total.
-func (e *Engine) count(err error) {
-	switch {
-	case err == nil:
-		e.removalBatches.ok.Add(1)
-	case errors.Is(err, kvstore.ErrConflict):
-		e.removalBatches.conflict.Add(1)
-	default:
-		e.removalBatches.failed.Add(1)
-	}
-}
-
 // phase2 is the item that drops r's masked records and prunes its removal
 // record: the store's Resume runs every batch of the file's removals not
 // done, and the prune, with no pass in flight, is at r's own version.
@@ -272,13 +237,12 @@ func (e *Engine) phase2(r *removal) *loopItem {
 		// still finishes, from its cursor, but counts each bounded run as a
 		// failure: removal_stalled after five, though it advances. Bound
 		// each batch, or count a run that advanced, once Resume reports one.
-		ctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+		ctx, cancel := e.bounded(ctx)
 		defer cancel()
 		err := e.d.Content.Resume(ctx, share, r.f)
 		if err == nil {
 			err = e.d.Content.PruneRemovals(ctx, share, r.f, v)
 		}
-		e.count(err)
 		if err != nil {
 			return itemRetry
 		}
@@ -314,10 +278,9 @@ func (e *Engine) retryLater(r *removal, op kvstore.RemoveOp, outcome func(error)
 	}
 	r.b.gc.removals.enqueue(&loopItem{b: r.b, f: r.f, kind: r.kind,
 		run: func(ctx context.Context) answer {
-			ctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+			ctx, cancel := e.bounded(ctx)
 			defer cancel()
 			err := e.tryPhase1(ctx, r, op)
-			e.count(err)
 			switch {
 			case err == nil:
 				tell(nil)

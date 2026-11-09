@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -13,15 +12,10 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// extent is a run of bytes [off, end) of one file.
-type extent struct{ off, end int64 }
-
-func (x extent) overlaps(o, e int64) bool { return x.off < e && o < x.end }
-
 // reg is one running clone's registration on a file: the extent it holds,
 // and whether the file is the clone's destination or its source.
 type reg struct {
-	extent
+	entity.Extent
 	dst bool
 }
 
@@ -34,24 +28,24 @@ type reg struct {
 // Withdraw it if RFC 17 moves that hold into the engine.
 func delayClone() error { return &vfserr.Delay{Cause: vfserr.DelayClone} }
 
-// refuseWrite answers delayClone() if [o, e) of the file overlaps an extent a
+// refuseWrite answers delayClone() if x of the file overlaps an extent a
 // clone registered on it, source or destination; nil otherwise. The caller
 // holds the entry's lock.
-func (fe *fileEntry) refuseWrite(o, e int64) error {
+func (fe *fileEntry) refuseWrite(x entity.Extent) error {
 	for _, r := range fe.regs {
-		if r.overlaps(o, e) {
+		if r.Overlaps(x) {
 			return delayClone()
 		}
 	}
 	return nil
 }
 
-// refuseRead answers delayClone() if [o, e) of the file overlaps an extent a
+// refuseRead answers delayClone() if x of the file overlaps an extent a
 // clone registered on it as its destination, whose content the clone is
 // changing; a source extent reads as it is. The caller holds the entry's lock.
-func (fe *fileEntry) refuseRead(o, e int64) error {
+func (fe *fileEntry) refuseRead(x entity.Extent) error {
 	for _, r := range fe.regs {
-		if r.dst && r.overlaps(o, e) {
+		if r.dst && r.Overlaps(x) {
 			return delayClone()
 		}
 	}
@@ -63,9 +57,9 @@ func (fe *fileEntry) refuseRead(o, e int64) error {
 // one overlapping x, source or destination, or any clone into the file,
 // which holds one clone into it at a time and must not change under it. The
 // caller holds the entry's lock.
-func (fe *fileEntry) refuseChange(x extent) error {
+func (fe *fileEntry) refuseChange(x entity.Extent) error {
 	for _, r := range fe.regs {
-		if r.dst || r.overlaps(x.off, x.end) {
+		if r.dst || r.Overlaps(x) {
 			return delayClone()
 		}
 	}
@@ -74,25 +68,11 @@ func (fe *fileEntry) refuseChange(x extent) error {
 
 // leave removes x, one admitted write, from those writing, and wakes a
 // registration waiting for it. The caller holds the entry's lock.
-func (fe *fileEntry) leave(x extent) {
-	for i, w := range fe.writing {
-		if w == x {
-			fe.writing = append(fe.writing[:i], fe.writing[i+1:]...)
-			break
-		}
+func (fe *fileEntry) leave(x entity.Extent) {
+	if i := slices.Index(fe.writing, x); i >= 0 {
+		fe.writing = slices.Delete(fe.writing, i, i+1)
 	}
 	fe.staged.Broadcast()
-}
-
-// writingInto reports whether an admitted write not yet inserted overlaps x.
-// The caller holds the entry's lock.
-func (fe *fileEntry) writingInto(x extent) bool {
-	for _, w := range fe.writing {
-		if w.overlaps(x.off, x.end) {
-			return true
-		}
-	}
-	return false
 }
 
 // register installs r on f's entry and waits until every write admitted
@@ -113,9 +93,9 @@ func (e *Engine) register(ctx context.Context, f entity.FileID, r *reg) error {
 		// at once rather than behind the guard.
 		var err error
 		if r.dst {
-			err = fe.refuseChange(r.extent)
+			err = fe.refuseChange(r.Extent)
 		} else {
-			err = fe.refuseRead(r.off, r.end)
+			err = fe.refuseRead(r.Extent)
 		}
 		if err != nil {
 			e.files.unlock(f, fe)
@@ -124,37 +104,20 @@ func (e *Engine) register(ctx context.Context, f entity.FileID, r *reg) error {
 		// A removal in flight over the extent is waited out: it checked the
 		// file's registrations before this one, so its phase 1 must end
 		// before the clone reads the file.
-		if fe.removing == nil || !fe.removing.overlaps(r.off, r.end) {
+		if fe.removing == nil || !fe.removing.Overlaps(r.Extent) {
 			break
 		}
-		ch := fe.guardDone
-		e.files.unlock(f, fe)
-		select {
-		case <-ch:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		fe = e.files.lockFor(f)
-	}
-	fe.regs = append(fe.regs, r)
-	if fe.writingInto(r.extent) {
-		stop := context.AfterFunc(ctx, func() {
-			fe.mu.Lock()
-			fe.staged.Broadcast()
-			fe.mu.Unlock()
-		})
-		for fe.writingInto(r.extent) && ctx.Err() == nil {
-			fe.staged.Wait()
-		}
-		stop()
-		if err := ctx.Err(); err != nil {
-			fe.drop(r)
-			e.files.unlock(f, fe)
+		if fe, err = e.awaitGuard(ctx, f, fe); err != nil {
 			return err
 		}
 	}
+	fe.regs = append(fe.regs, r)
+	err := fe.awaitWrites(ctx, func() bool { return slices.ContainsFunc(fe.writing, r.Overlaps) })
+	if err != nil {
+		fe.drop(r)
+	}
 	e.files.unlock(f, fe)
-	return nil
+	return err
 }
 
 // unregister removes r from f's entry, which it kept alive.
@@ -169,11 +132,8 @@ func (e *Engine) unregister(f entity.FileID, r *reg) {
 
 // drop removes r from the entry's registrations. The caller holds its lock.
 func (fe *fileEntry) drop(r *reg) {
-	for i, x := range fe.regs {
-		if x == r {
-			fe.regs = append(fe.regs[:i], fe.regs[i+1:]...)
-			return
-		}
+	if i := slices.Index(fe.regs, r); i >= 0 {
+		fe.regs = slices.Delete(fe.regs, i, i+1)
 	}
 }
 
@@ -219,7 +179,7 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		return fmt.Errorf("engine: no settings applied: %w", vfserr.ErrUnavailable)
 	case x.Len <= 0 || x.SrcOff < 0 || x.DstOff < 0 || x.Len > entity.EndOfFile-max(x.SrcOff, x.DstOff):
 		return vfserr.ErrInvalid
-	case src == dst && extent{x.SrcOff, x.SrcOff + x.Len}.overlaps(x.DstOff, x.DstOff+x.Len):
+	case src == dst && entity.Extent{Offset: x.SrcOff, Length: x.Len}.Overlaps(entity.Extent{Offset: x.DstOff, Length: x.Len}):
 		return vfserr.ErrInvalid
 	case x.Len > st.CloneMaxLen:
 		return vfserr.ErrInvalid
@@ -238,8 +198,8 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	if sb.share.Namespace != db.share.Namespace {
 		return &vfserr.CrossError{Kind: vfserr.CrossNamespace}
 	}
-	rs := &reg{extent: extent{x.SrcOff, x.SrcOff + x.Len}}
-	rd := &reg{extent: extent{x.DstOff, x.DstOff + x.Len}, dst: true}
+	rs := &reg{Extent: entity.Extent{Offset: x.SrcOff, Length: x.Len}}
+	rd := &reg{Extent: entity.Extent{Offset: x.DstOff, Length: x.Len}, dst: true}
 	if err := e.register(ctx, src, rs); err != nil {
 		return err
 	}
@@ -247,7 +207,7 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		e.unregister(src, rs)
 		return err
 	}
-	if h := e.afterRegister; h != nil || !e.fakeCloneDone.Load() {
+	if !e.fakeCloneDone.Load() {
 		// A clone stops once registered while its hold on the source, its
 		// phase 2 and its done signal are not built, as nothing could answer
 		// one past its journal step: a test of admission alone runs its hook
@@ -256,7 +216,7 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		// decision: everything past this gate, step 1, the journal step, the
 		// copies and phase 1, runs only under the test's stand-in, never in a
 		// served engine. Withdraw it when the done signal is built.
-		if h != nil {
+		if h := e.afterRegister; h != nil {
 			h()
 		}
 		e.unregister(dst, rd)
@@ -265,8 +225,7 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	}
 	c := &cloneRun{sb: sb, db: db, src: src, dst: dst, rs: rs, rd: rd, done: make(chan struct{})}
 	if err := e.prepare(ctx, c, x); err != nil {
-		e.unregister(dst, rd)
-		e.unregister(src, rs)
+		e.endClone(c, err)
 		return err
 	}
 	go e.runClone(c)
@@ -357,9 +316,7 @@ func (e *Engine) size(ctx context.Context, c *cloneRun) (journal.Version, error)
 			n += h.Extent.Len
 		}
 		c.runs = append(c.runs, held...)
-		if asOf.Compare(at) < 0 {
-			asOf = at
-		}
+		asOf = newer(asOf, at)
 	}
 	if len(c.runs) > 0 {
 		res, err := c.db.h.Reserve(n, len(c.runs))
@@ -384,22 +341,20 @@ func (e *Engine) size(ctx context.Context, c *cloneRun) (journal.Version, error)
 // retries, Unbind and Close join, replaces it.
 func (e *Engine) runClone(c *cloneRun) {
 	ctx := c.db.gc.removals.ctx
-	r, err := e.guard(ctx, c.db, c.dst, entity.RemoveClone, c.rd.extent)
-	if err != nil {
-		e.cloneFailed(c, err)
-		return
+	r, err := e.begin(ctx, c.db, c.dst, entity.RemoveClone, c.rd.Extent)
+	if err == nil {
+		dx := journal.Extent{Off: c.spec.DstOff, Len: c.spec.Len}
+		if _, err = e.stage(ctx, r, func(*fileEntry) (journal.Version, error) {
+			return c.db.h.CloneTarget(ctx, fileID(c.dst), c.spec)
+		}, opClone, dx, nil); err != nil {
+			e.release(r, false)
+		}
 	}
-	if err := e.waitBatch(ctx, c.dst); err != nil {
-		e.release(r, false)
-		e.cloneFailed(c, err)
-		return
-	}
-	dx := journal.Extent{Off: c.spec.DstOff, Len: c.spec.Len}
-	if _, err := e.stage(ctx, r, func(*fileEntry) (journal.Version, error) {
-		return c.db.h.CloneTarget(ctx, fileID(c.dst), c.spec)
-	}, opClone, dx, nil); err != nil {
-		e.release(r, false)
-		e.cloneFailed(c, err)
+	if err != nil { // before the journal step: nothing changed
+		if errors.Is(err, context.Canceled) {
+			err = errLoopEnded
+		}
+		e.endClone(c, err)
 		return
 	}
 	if e.attempt(ctx, c, r) == itemRetry {
@@ -409,8 +364,8 @@ func (e *Engine) runClone(c *cloneRun) {
 
 // attempt runs what the clone has left past its journal step: its copies
 // and the destination's sync, unless done, then its phase 1, bounded by the
-// conflict bound and counted as a removal batch. It answers itemDone once
-// the clone finished or ended, itemRetry for the loop to run it again.
+// conflict bound. It answers itemDone once the clone finished or ended,
+// itemRetry for the loop to run it again.
 //
 // decision: once the journal step dropped the destination extent no undo
 // exists, so a copy, a sync or a phase 1 that fails is retried by the loop
@@ -432,13 +387,12 @@ func (e *Engine) attempt(ctx context.Context, c *cloneRun, r *removal) answer {
 		c.copied = true
 		e.staged()
 	}
-	pctx, cancel := context.WithTimeout(ctx, conflictBound.Load().(time.Duration))
+	pctx, cancel := e.bounded(ctx)
 	defer cancel()
 	err := e.tryClonePhase1(pctx, c, r)
-	e.count(err)
 	switch {
 	case err == nil:
-		e.cloned(c)
+		e.endClone(c, nil)
 		return itemDone
 	case errors.Is(err, entity.ErrStale):
 		// The store answers stale for either file gone; only the
@@ -479,9 +433,7 @@ func (e *Engine) copyAll(ctx context.Context, c *cloneRun) error {
 		}
 		c.res = nil
 	}
-	if c.newest.Compare(newest) < 0 {
-		c.newest = newest // a failed attempt's copies are committed too, by the one that succeeds
-	}
+	c.newest = newer(c.newest, newest) // a failed attempt's copies are committed too, by the one that succeeds
 	return err
 }
 
@@ -523,9 +475,7 @@ func (e *Engine) copyRuns(ctx context.Context, c *cloneRun) (journal.Version, er
 			fe.insert(pendingOp{version: v, kind: opWrite, extent: journal.Extent{Off: off, Len: h.Extent.Len},
 				at: now, setsMtime: true, copy: true})
 			e.files.unlock(c.dst, fe)
-			if newest.Compare(v) < 0 {
-				newest = v
-			}
+			newest = newer(newest, v)
 		}
 	}
 	return newest, nil
@@ -554,13 +504,9 @@ func (e *Engine) tryClonePhase1(ctx context.Context, c *cloneRun, r *removal) er
 		return err
 	}
 	dones := e.committed(r)
-	if r.through.Compare(c.newest) < 0 {
-		r.through = c.newest
-	}
+	r.through = newer(r.through, c.newest)
 	e.release(r, true)
-	for _, d := range dones {
-		d()
-	}
+	runAll(dones)
 	return nil
 }
 
@@ -574,34 +520,15 @@ func (e *Engine) tryClonePhase1(ctx context.Context, c *cloneRun, r *removal) er
 func (e *Engine) claimAll(ctx context.Context, r *removal) error {
 	fe := e.files.lockFor(r.f)
 	defer e.files.unlock(r.f, fe)
-	defer func() {
-		if fe.staging {
-			fe.staging = false
-			fe.staged.Broadcast()
-		}
-	}()
-	if len(fe.writing) > 0 {
-		fe.staging = true
-		stop := context.AfterFunc(ctx, func() {
-			fe.mu.Lock()
-			fe.staged.Broadcast()
-			fe.mu.Unlock()
-		})
-		for len(fe.writing) > 0 && ctx.Err() == nil {
-			fe.staged.Wait()
-		}
-		stop()
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+	defer fe.endStaging()
+	if err := fe.stageAfterWrites(ctx); err != nil {
+		return err
 	}
 	for i := range fe.ops {
 		op := &fe.ops[i]
 		if !op.dropped && !op.copy && op.version != r.v {
 			op.claimed = true
-			if r.through.Compare(op.version) < 0 {
-				r.through = op.version
-			}
+			r.through = newer(r.through, op.version)
 		}
 	}
 	return nil
@@ -626,62 +553,42 @@ func (e *Engine) claimAll(ctx context.Context, r *removal) error {
 func (e *Engine) retryClone(c *cloneRun, r *removal) {
 	c.db.gc.removals.enqueue(&loopItem{b: c.db, f: c.dst, kind: entity.RemoveClone,
 		run: func(ctx context.Context) answer { return e.attempt(ctx, c, r) },
-		end: func() { e.cloneEnded(c, r, nil) },
+		end: func() { e.endClone(c, errLoopEnded) },
 	})
 }
 
-// cloned is the clone after its phase 1. Its hold on the source, its phase 2
-// and its done signal are not built: a test's stand-in drops the
-// registrations and raises the done signal.
-func (e *Engine) cloned(c *cloneRun) {
-	e.unregister(c.dst, c.rd)
-	e.unregister(c.src, c.rs)
-	close(c.done)
+// cloneEnded ends a clone whose phase 1 will not commit as its destination
+// is gone, err its store error. The destination loses the clone's copies
+// with its own operation: committed as writes, they would raise the
+// destination's applied above the clone, and the next start's rebuild of it
+// would then be skipped as applied. Both registrations go, and the call
+// answers why.
+//
+// A loop's end, as Close's stop of the work queue, ends the clone with
+// endClone alone: the destination is left as it is, its operations, the
+// clone's and its copies included, staying in the entry and its guard held,
+// so no group commit after it commits any, and the journal's marker leaves
+// the clone to the next start, as a removal's cut short phase 1 is left
+// (RFC 8 §2.5 step 2).
+func (e *Engine) cloneEnded(c *cloneRun, r *removal, err error) {
+	fe := e.files.lockFor(c.dst)
+	fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool { return op.copy })
+	e.files.unlock(c.dst, fe)
+	e.unstage(r, err)
+	e.endClone(c, e.storeErr(err))
 }
 
-// cloneEnded ends a clone whose phase 1 will not commit: the destination
-// gone, err its store error, or its loop ended first, err nil. A destination
-// gone loses the clone's copies with its own operation: committed as writes,
-// they would raise the destination's applied above the clone, and the next
-// start's rebuild of it would then be skipped as applied. A loop's end, as
-// Close's stop of the work queue, leaves the destination as it is: its
-// operations, the clone's and its copies included, stay in the entry and its
-// guard stays held, so no group commit after it commits any, and the
-// journal's marker leaves the clone to the next start, as a removal's cut
-// short phase 1 is left (RFC 8 §2.5 step 2). Both registrations go, and the
-// call answers why.
-func (e *Engine) cloneEnded(c *cloneRun, r *removal, err error) {
+// endClone ends c, answering err: its reservation, when one is held, is
+// given back and both registrations go. A clone past its phase 1 ends with
+// a nil err: its hold on the source, its phase 2 and its done signal are not
+// built, and a test's stand-in ends it there.
+func (e *Engine) endClone(c *cloneRun, err error) {
 	if c.res != nil {
 		_ = c.res.Close()
 		c.res = nil
 	}
-	if err != nil {
-		fe := e.files.lockFor(c.dst)
-		fe.ops = slices.DeleteFunc(fe.ops, func(op pendingOp) bool { return op.copy })
-		e.files.unlock(c.dst, fe)
-		e.unstage(r, err)
-	}
 	e.unregister(c.dst, c.rd)
 	e.unregister(c.src, c.rs)
-	if err != nil {
-		c.err = e.storeErr(err)
-	} else {
-		c.err = errLoopEnded
-	}
-	close(c.done)
-}
-
-// cloneFailed fails a clone before its journal step: nothing changed, the
-// reservation is given back and both registrations go.
-func (e *Engine) cloneFailed(c *cloneRun, err error) {
-	if c.res != nil {
-		_ = c.res.Close()
-	}
-	e.unregister(c.dst, c.rd)
-	e.unregister(c.src, c.rs)
-	if errors.Is(err, context.Canceled) {
-		err = errLoopEnded
-	}
 	c.err = err
 	close(c.done)
 }
