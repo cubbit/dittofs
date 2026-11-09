@@ -38,44 +38,28 @@ var (
 )
 
 // observedCalls names every error-returning method of storage.FS and
-// storage.File; each runs one call through the wrapper and returns its error.
-// Name is the one method that cannot fail and is checked separately.
+// storage.File. An FS row runs its call on the wrapped FS; a File row runs it
+// on the file the wrapper returned from Create and, as a separate subtest, on
+// the one returned from Open. Name cannot fail and is checked separately.
 var observedCalls = []struct {
 	name string
-	call func(fs storage.FS) error
+	fs   func(fs storage.FS) error
+	file func(f storage.File) error
 }{
-	{"FS.Create", func(fs storage.FS) error { _, err := fs.Create("a"); return err }},
-	{"FS.Open", func(fs storage.FS) error { _, err := fs.Open("a"); return err }},
-	{"FS.Rename", func(fs storage.FS) error { return fs.Rename("a", "b") }},
-	{"FS.Remove", func(fs storage.FS) error { return fs.Remove("a") }},
-	{"FS.List", func(fs storage.FS) error { _, err := fs.List(); return err }},
-	{"FS.SyncDir", func(fs storage.FS) error { return fs.SyncDir() }},
-	{"File.ReadAt", viaFile(func(f storage.File) error { _, err := f.ReadAt(make([]byte, 1), 0); return err })},
-	{"File.ReadAtDirect", viaFile(func(f storage.File) error { _, err := f.ReadAtDirect(make([]byte, 1), 0); return err })},
-	{"File.WriteAt", viaFile(func(f storage.File) error { _, err := f.WriteAt([]byte{1}, 0); return err })},
-	{"File.Allocate", viaFile(func(f storage.File) error { return f.Allocate(0, 1) })},
-	{"File.Sync", viaFile(func(f storage.File) error { return f.Sync() })},
-	{"File.Truncate", viaFile(func(f storage.File) error { return f.Truncate(0) })},
-	{"File.Size", viaFile(func(f storage.File) error { _, err := f.Size(); return err })},
-	{"File.Close", viaFile(func(f storage.File) error { return f.Close() })},
-}
-
-// viaFile runs call on a file the wrapper returned, from both Create and Open,
-// so each File method is checked on both. The file's error is returned; the
-// open itself succeeds because the fault is armed only for the file.
-func viaFile(call func(storage.File) error) func(storage.FS) error {
-	return func(fs storage.FS) error {
-		for _, open := range []func(string) (storage.File, error){fs.Create, fs.Open} {
-			f, _ := open("a")
-			if f == nil {
-				return errors.New("no file returned")
-			}
-			if err := call(f); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
+	{name: "FS.Create", fs: func(fs storage.FS) error { _, err := fs.Create("a"); return err }},
+	{name: "FS.Open", fs: func(fs storage.FS) error { _, err := fs.Open("a"); return err }},
+	{name: "FS.Rename", fs: func(fs storage.FS) error { return fs.Rename("a", "b") }},
+	{name: "FS.Remove", fs: func(fs storage.FS) error { return fs.Remove("a") }},
+	{name: "FS.List", fs: func(fs storage.FS) error { _, err := fs.List(); return err }},
+	{name: "FS.SyncDir", fs: func(fs storage.FS) error { return fs.SyncDir() }},
+	{name: "File.ReadAt", file: func(f storage.File) error { _, err := f.ReadAt(make([]byte, 1), 0); return err }},
+	{name: "File.ReadAtDirect", file: func(f storage.File) error { _, err := f.ReadAtDirect(make([]byte, 1), 0); return err }},
+	{name: "File.WriteAt", file: func(f storage.File) error { _, err := f.WriteAt([]byte{1}, 0); return err }},
+	{name: "File.Allocate", file: func(f storage.File) error { return f.Allocate(0, 1) }},
+	{name: "File.Sync", file: func(f storage.File) error { return f.Sync() }},
+	{name: "File.Truncate", file: func(f storage.File) error { return f.Truncate(0) }},
+	{name: "File.Size", file: func(f storage.File) error { _, err := f.Size(); return err }},
+	{name: "File.Close", file: func(f storage.File) error { return f.Close() }},
 }
 
 // fileOnlyFS fails only the calls on its files, so a File method's error is
@@ -87,35 +71,61 @@ func (f fileOnlyFS) Open(string) (storage.File, error)   { return faultFile(f.fa
 
 func TestObserveEntersReadOnlyOnEROFSOnly(t *testing.T) {
 	for _, c := range observedCalls {
-		for _, tc := range []struct {
-			name   string
-			err    error
-			wantRO bool
-		}{
-			{"EROFS", syscall.EROFS, true},
-			{"wrapped EROFS", &errWrap{syscall.EROFS}, true},
-			{"EIO", syscall.EIO, false},
-			{"ENOSPC", syscall.ENOSPC, false},
-			{"nil", nil, false},
-		} {
-			t.Run(c.name+"/"+tc.name, func(t *testing.T) {
-				r := newRigUnstarted(t, 1)
-				var base storage.FS = faultFS{tc.err}
-				if len(c.name) > 4 && c.name[:4] == "File" {
-					base = fileOnlyFS{faultFS{tc.err}}
-				}
-				got := c.call(r.d.Observe(base))
-				if got != tc.err && !(tc.wantRO && errors.Is(got, syscall.EROFS)) {
-					t.Fatalf("the call returned %v, want %v unchanged", got, tc.err)
-				}
-				st := r.d.ReadOnlyState()
-				if st.ReadOnly != tc.wantRO {
-					t.Fatalf("ReadOnly = %v, want %v", st.ReadOnly, tc.wantRO)
-				}
-				if tc.wantRO && !errors.Is(st.Err, syscall.EROFS) {
-					t.Fatalf("Err = %v, want EROFS", st.Err)
-				}
-			})
+		type variant struct {
+			name string
+			run  func(fs storage.FS) error
+		}
+		var variants []variant
+		if c.fs != nil {
+			variants = []variant{{"", c.fs}}
+		} else {
+			for _, src := range []string{"Create", "Open"} {
+				variants = append(variants, variant{"/via" + src, func(fs storage.FS) error {
+					var f storage.File
+					var err error
+					if src == "Create" {
+						f, err = fs.Create("a")
+					} else {
+						f, err = fs.Open("a")
+					}
+					if err != nil || f == nil {
+						return errors.New("no clean file returned")
+					}
+					return c.file(f)
+				}})
+			}
+		}
+		for _, v := range variants {
+			for _, tc := range []struct {
+				name   string
+				err    error
+				wantRO bool
+			}{
+				{"EROFS", syscall.EROFS, true},
+				{"wrapped EROFS", &errWrap{syscall.EROFS}, true},
+				{"EIO", syscall.EIO, false},
+				{"ENOSPC", syscall.ENOSPC, false},
+				{"nil", nil, false},
+			} {
+				t.Run(c.name+v.name+"/"+tc.name, func(t *testing.T) {
+					r := newRigUnstarted(t, 1)
+					var base storage.FS = faultFS{tc.err}
+					if c.file != nil {
+						base = fileOnlyFS{faultFS{tc.err}}
+					}
+					got := v.run(r.d.Observe(base))
+					if got != tc.err {
+						t.Fatalf("the call returned %v, want %v unchanged", got, tc.err)
+					}
+					st := r.d.ReadOnlyState()
+					if st.ReadOnly != tc.wantRO {
+						t.Fatalf("ReadOnly = %v, want %v", st.ReadOnly, tc.wantRO)
+					}
+					if tc.wantRO && !errors.Is(st.Err, syscall.EROFS) {
+						t.Fatalf("Err = %v, want EROFS", st.Err)
+					}
+				})
+			}
 		}
 	}
 }
@@ -123,9 +133,12 @@ func TestObserveEntersReadOnlyOnEROFSOnly(t *testing.T) {
 // TestObserveKeepsNameAndPassesFilesThrough covers the methods that cannot fail.
 func TestObserveKeepsNameAndPassesFilesThrough(t *testing.T) {
 	r := newRigUnstarted(t, 1)
-	f, err := r.d.Observe(fileOnlyFS{}).Create("a")
-	if err != nil || f.Name() != "f" {
-		t.Fatalf("Create = %v, %v", f, err)
+	fs := r.d.Observe(fileOnlyFS{})
+	for name, open := range map[string]func(string) (storage.File, error){"Create": fs.Create, "Open": fs.Open} {
+		f, err := open("a")
+		if err != nil || f.Name() != "f" {
+			t.Fatalf("%s = %v, %v", name, f, err)
+		}
 	}
 }
 
