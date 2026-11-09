@@ -259,6 +259,72 @@ func TestCorruptNeighbourStillReads(t *testing.T) {
 	}
 }
 
+// TestCorruptLossNamesThePiecesDropped covers a record partly overwritten
+// before it is found corrupt: each loss names a piece the drop took, the parts
+// either side of the overwrite, never the record's whole extent, in its event,
+// its loss record and, for a synced record, its loss marker.
+func TestCorruptLossNamesThePiecesDropped(t *testing.T) {
+	for _, synced := range []bool{false, true} {
+		name := "unsynced"
+		if synced {
+			name = "synced"
+		}
+		t.Run(name, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+			cr := newCorruptRig(t, nil)
+			f := file(1)
+			a := cr.write(t, f, 0, "aaaaaaaaaaaaaaaa")
+			if synced {
+				if err := cr.d.Sync(context.Background(), f); err != nil {
+					t.Fatalf("Sync of the record: %v", err)
+				}
+			}
+			cr.write(t, f, 4, "bbbb")
+
+			cr.corrupt(t, a.c)
+			cr.d.Stop()
+			want := []core.Extent{{Off: 0, Len: 4}, {Off: 8, Len: 8}}
+			byOff := func(x, y core.Extent) int { return int(x.Off - y.Off) }
+
+			var evs []core.Extent
+			for _, ev := range cr.lossesOf(f) {
+				if ev.Version == a.c.Version {
+					evs = append(evs, ev.Extent)
+				}
+			}
+			slices.SortFunc(evs, byOff)
+			if !slices.Equal(evs, want) {
+				t.Fatalf("events name %+v, want %+v", evs, want)
+			}
+
+			var recs []core.Extent
+			for _, l := range cr.lossesOnDisk(t) {
+				if l.body.Dropped == a.c.Seq {
+					recs = append(recs, l.header.Extent)
+				}
+			}
+			slices.SortFunc(recs, byOff)
+			if !slices.Equal(recs, want) {
+				t.Fatalf("loss records name %+v, want %+v", recs, want)
+			}
+
+			var marks []core.Extent
+			for _, m := range cr.marks() {
+				if m.version == a.c.Version {
+					marks = append(marks, m.extent)
+				}
+			}
+			slices.SortFunc(marks, byOff)
+			if synced && !slices.Equal(marks, want) {
+				t.Fatalf("loss markers name %+v, want %+v", marks, want)
+			}
+			if !synced && len(marks) != 0 {
+				t.Fatalf("loss markers %+v for an unsynced record, want none", marks)
+			}
+		})
+	}
+}
+
 // TestCorruptUnsyncedGetsUnsyncedLossRecordSyncedGetsSynced covers the synced
 // flag of the loss record, decided from the ledger.
 func TestCorruptUnsyncedGetsUnsyncedLossRecordSyncedGetsSynced(t *testing.T) {

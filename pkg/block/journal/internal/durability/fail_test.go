@@ -105,6 +105,23 @@ func (r *rig) events() []core.LossEvent {
 func (r *rig) lossRecordsOnDisk(t *testing.T) []format.Loss {
 	t.Helper()
 	var out []format.Loss
+	for _, l := range r.lossesOnDisk(t) {
+		out = append(out, l.body)
+	}
+	return out
+}
+
+// lossOnDisk is one durable loss record: its header, which names the dropped
+// extent, and its body.
+type lossOnDisk struct {
+	header format.RecordHeader
+	body   format.Loss
+}
+
+// lossesOnDisk returns the durable loss records, in segment order.
+func (r *rig) lossesOnDisk(t *testing.T) []lossOnDisk {
+	t.Helper()
+	var out []lossOnDisk
 	for id := core.SegmentID(1); id < 32; id++ {
 		raw, err := r.seam.Durable(format.SegmentName(id))
 		if err != nil {
@@ -125,7 +142,7 @@ func (r *rig) lossRecordsOnDisk(t *testing.T) []format.Loss {
 				t.Fatalf("record at %d of segment %d: %v", off, id, err)
 			}
 			if h.Kind == format.KindLoss {
-				out = append(out, body.Loss)
+				out = append(out, lossOnDisk{header: h, body: body.Loss})
 			}
 			off += h.Size()
 		}
