@@ -411,3 +411,127 @@ func TestACoverIsHeldOnlyByTheRecordOfItsOwnExtent(t *testing.T) {
 		t.Error("the record whose extent holds the cover was not found")
 	}
 }
+
+// TestASyncWaitsForAFailureInFlightWhenAHeaderOnlyTargetIsAnswered pins that a
+// header-only target whose window has been failed does not end the wait while
+// another file's failed window on the same stream is still being handled: f's
+// delete is failed and answered, g's write in the next segment is failed and
+// its window held, and a Sync naming both returns only after g's window is
+// failed, with the generation raised, and names both files.
+func TestASyncWaitsForAFailureInFlightWhenAHeaderOnlyTargetIsAnswered(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	var heldSeg atomic.Uint64
+	gate, open := releaser(t)
+	resolved := &recorder[resolvedAt]{}
+	r := newRigConfigured(t, 1, func(c *Config) {
+		c.Resolved = func(stream uint32, seg core.SegmentID) { resolved.add(resolvedAt{stream, seg}) }
+	})
+	r.d.beforeFail = func(w *window) {
+		if heldSeg.Load() == uint64(w.seg) {
+			<-gate
+		}
+	}
+	r.d.Start(r.streams)
+	t.Cleanup(open)
+
+	f, g := file(1), file(2)
+	delLoc := r.appendKind(t, f, format.KindDelete, format.RecordBody{})
+	r.failSyncOf(t, delLoc.Segment, errors.New("boom f"))
+	r.stamped(t, 0)
+	eventually(t, "f's sync to fail", func() bool {
+		r.clock.Advance(2 * core.SyncBound)
+		return r.d.Stats().SyncFailures >= 1
+	})
+	// The window stays: a header-only record is not failed, only answered.
+	eventually(t, "f's window to be failed", func() bool {
+		st := r.d.made[0]
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		_, ok := st.answersFailureLocked(delLoc)
+		return ok
+	})
+
+	locG, _ := r.publish(t, g, 4, "gggg")
+	heldSeg.Store(uint64(locG.Segment))
+	r.failSyncOf(t, locG.Segment, errors.New("boom g"))
+	r.stamped(t, 0)
+	eventually(t, "g's window to be taken", func() bool {
+		r.clock.Advance(2 * core.SyncBound)
+		return r.d.Stats().SyncFailures >= 2 && len(r.windowsOf(0)) > 1
+	})
+
+	before := r.d.Generation()
+	done := r.syncAsync(context.Background(), f, g)
+	mustBlock(t, "Sync of both files with g's failure in flight", done)
+	open()
+	err := mustReturn(t, "Sync of both", done)
+	gen := r.d.Generation()
+	var se *core.SyncError
+	if !errors.As(err, &se) {
+		t.Fatalf("Sync = %v, want a *core.SyncError", err)
+	}
+	if !slices.Contains(se.Files, f) || !slices.Contains(se.Files, g) {
+		t.Errorf("SyncError.Files = %v, want both files", se.Files)
+	}
+	if gen <= before {
+		t.Errorf("generation %d after the Sync, was %d before g's window was failed: the Sync returned before the raise", gen, before)
+	}
+}
+
+// TestAFailedWindowLiftsACoverOverItsOwnExtentOnly pins the lift the worker
+// makes for the cover of a failed record, here one record of a write split in
+// two: the first record has synced, so its part is lifted, and the second is
+// still in the ledger, so the part it was handed stays retained until its own
+// sync. The lift names the cover's extent, and not the whole file, which would
+// drop the second record's part.
+func TestAFailedWindowLiftsACoverOverItsOwnExtentOnly(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	// No worker runs, so the test takes the window, completes the first
+	// record's sync and fails the window itself, in that order.
+	r := newRigUnstarted(t, 1)
+	st := r.d.made[0]
+	r.streams.OnEnd(r.d.onEnd)
+	f := file(1)
+
+	r.publish(t, f, 0, "aaaaaaaa")
+	r.syncStream(t, f)
+	r.d.complete(st)
+	// The failing record: it supersedes v1 and fails with its segment.
+	a, _ := r.publish(t, f, 0, "bbbbbbbb")
+	r.failNextWrite(t, a.Segment, errors.New("write boom"))
+	r.appendFailing(t, f, 100)
+	eventually(t, "the end to be queued", func() bool {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return len(st.ends) == 1
+	})
+	r.d.takeWindows(st)
+	if n := len(r.windowsOf(0)); n != 1 {
+		t.Fatalf("%d windows pending, want one", n)
+	}
+
+	// A write split in two records of one version, over the failing record's
+	// extent: the first syncs and completes, the second stays in the ledger.
+	v3, err := r.d.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	r.publishAs(t, f, 0, "cccc", v3, nil)
+	r.syncStream(t, f)
+	r.d.complete(st)
+	r.publishAs(t, f, 4, "dddd", v3, nil)
+	if n := r.ledgerLen(0); n != 1 {
+		t.Fatalf("ledger holds %d entries, want the second record alone", n)
+	}
+
+	r.d.failWindows(st)
+	got := r.retainedBy(f, v3)
+	if len(got) == 0 {
+		t.Fatalf("nothing is retained by the second record, whose sync has not completed: its part was lifted with the first record's")
+	}
+	for _, p := range got {
+		if p.Extent.Off < 4 {
+			t.Errorf("the first record's part %+v is still retained: it synced", p)
+		}
+	}
+}
