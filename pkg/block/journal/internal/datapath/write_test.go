@@ -78,6 +78,7 @@ func crashKeepingAll(t *testing.T, seam *journaltest.Seam) {
 	if n == 64 {
 		mask = ^uint64(0)
 	}
+	crashedSeams.Store(seam, true)
 	if err := seam.Crash(journaltest.Keeping(mask)); err != nil {
 		t.Fatalf("Crash: %v", err)
 	}
@@ -98,6 +99,44 @@ func warm(t *testing.T, c *Core, s *Share, files ...core.FileID) {
 			t.Fatalf("the pool never readied its spares: %+v", c.pool.Counters())
 		}
 	}
+}
+
+// recordHolds are holds on the record writes of the files' active segments.
+type recordHolds []*journaltest.Hold
+
+// holdRecordWrites holds writes to the segment files that the warmed files'
+// last pieces are in, one hold per distinct segment. A background write of
+// the pool goes to another file, so a held call is a record write.
+func holdRecordWrites(t *testing.T, c *Core, seam *journaltest.Seam, files ...core.FileID) recordHolds {
+	t.Helper()
+	var holds recordHolds
+	seen := map[core.SegmentID]bool{}
+	for _, f := range files {
+		p, ok := c.Index().Lookup(f, 1<<20)
+		if !ok {
+			t.Fatalf("file %v has no warm piece", f)
+		}
+		if seen[p.Record.Segment] {
+			continue
+		}
+		seen[p.Record.Segment] = true
+		holds = append(holds, seam.Hold(t, journaltest.OpWrite, format.SegmentName(p.Record.Segment)))
+	}
+	return holds
+}
+
+func (h recordHolds) release() {
+	for _, x := range h {
+		x.Release()
+	}
+}
+
+func (h recordHolds) waiting() int {
+	n := 0
+	for _, x := range h {
+		n += x.Waiting()
+	}
+	return n
 }
 
 func eventually(t *testing.T, what string, cond func() bool) {
@@ -151,7 +190,7 @@ func TestWriteAt_RecordCarriesTagVersionMTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Streams().For(f).Append(format.RecordHeader{Kind: format.KindTruncate, File: f, Seq: seq, Tag: 5}, format.RecordBody{}); err != nil {
+	if _, err := c.Streams().For(f).Append(format.RecordHeader{Kind: format.KindTruncate, File: f, Seq: seq, Tag: 5}, format.RecordBody{MTime: 999}); err != nil {
 		t.Fatalf("Append truncate: %v", err)
 	}
 	var w, tr *onDisk
@@ -181,17 +220,22 @@ func TestWriteAt_PublishFollowsRecordWrite(t *testing.T) {
 	s := c.AddShare(1)
 	f := testFile(3)
 	warm(t, c, s, f)
-	hold := seam.Hold(t, journaltest.OpWrite, "*")
+	holds := holdRecordWrites(t, c, seam, f)
 	done := make(chan error, 1)
 	go func() {
 		_, err := c.WriteAt(context.Background(), s, f, 0, []byte("abcd"), 1)
 		done <- err
 	}()
-	<-hold.Reached()
+	<-holds[0].Reached()
+	select {
+	case err := <-done:
+		t.Fatalf("WriteAt returned (%v) while its record write was held", err)
+	default:
+	}
 	if _, ok := c.Index().Lookup(f, 0); ok {
 		t.Fatal("the piece was published before its record was written")
 	}
-	hold.Release()
+	holds.release()
 	if err := <-done; err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
@@ -204,14 +248,17 @@ func TestWriteAt_PublishDoesNotWaitForSync(t *testing.T) {
 	c, seam := newTestCore(t)
 	s := c.AddShare(1)
 	f := testFile(4)
-	if err := seam.Schedule(journaltest.Failing(journaltest.OpSync, "*", 0, errors.New("sync boom"))); err != nil {
+	warm(t, c, s, f)
+	wp, _ := c.Index().Lookup(f, 1<<20)
+	seg := format.SegmentName(wp.Record.Segment)
+	if err := seam.Schedule(journaltest.Failing(journaltest.OpSync, seg, 0, errors.New("sync boom"))); err != nil {
 		t.Fatal(err)
 	}
-	before := seam.Calls(journaltest.OpSync)
+	before := seam.CallsFor(journaltest.OpSync, seg)
 	if _, err := c.WriteAt(context.Background(), s, f, 0, []byte("abcd"), 1); err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
-	if got := seam.Calls(journaltest.OpSync); got != before {
+	if got := seam.CallsFor(journaltest.OpSync, seg); got != before {
 		t.Fatalf("WriteAt made %d sync calls", got-before)
 	}
 	if _, ok := c.Index().Lookup(f, 0); !ok {
@@ -260,7 +307,7 @@ func TestWriteAt_DifferentFilesRunInParallel(t *testing.T) {
 	s := c.AddShare(1)
 	f1, f2 := testFile(6), testFile(7)
 	warm(t, c, s, f1, f2)
-	hold := seam.Hold(t, journaltest.OpWrite, "*")
+	holds := holdRecordWrites(t, c, seam, f1, f2)
 	var wg sync.WaitGroup
 	for _, f := range []core.FileID{f1, f2} {
 		wg.Add(1)
@@ -271,8 +318,8 @@ func TestWriteAt_DifferentFilesRunInParallel(t *testing.T) {
 			}
 		}()
 	}
-	eventually(t, "both writers to reach the seam at once", func() bool { return hold.Waiting() == 2 })
-	hold.Release()
+	eventually(t, "both writers to reach the seam at once", func() bool { return holds.waiting() == 2 })
+	holds.release()
 	wg.Wait()
 }
 
@@ -346,15 +393,34 @@ func TestWriteAt_OnlyTheFileAppendDomainIsHeldDuringTheRecordWrite(t *testing.T)
 	s := c.AddShare(1)
 	f := testFile(9)
 	warm(t, c, s, f)
-	hold := seam.Hold(t, journaltest.OpWrite, "*")
+	holds := holdRecordWrites(t, c, seam, f)
 	done := make(chan error, 1)
 	go func() {
 		_, err := c.WriteAt(context.Background(), s, f, 0, []byte("abcd"), 1)
 		done <- err
 	}()
-	<-hold.Reached()
+	<-holds[0].Reached()
 	got := probe.snapshot()
-	hold.Release()
+
+	// Nothing but the file's append domain is held: the index's locks, for
+	// this file and another, and the counters' are free during the write.
+	within := func(what string, fn func()) {
+		t.Helper()
+		ok := make(chan struct{})
+		go func() { fn(); close(ok) }()
+		select {
+		case <-ok:
+		case <-time.After(2 * time.Second):
+			t.Errorf("%s waited on the held record write", what)
+		}
+	}
+	within("Lookup of another file", func() { c.Index().Lookup(testFile(99), 0) })
+	within("Lookup of the written file", func() { c.Index().Lookup(f, 1<<20) })
+	within("Account", func() {
+		c.Account(index.HeldDelta{HeldBytes: 1})
+		c.Account(index.HeldDelta{HeldBytes: -1})
+	})
+	holds.release()
 	if err := <-done; err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
@@ -393,9 +459,12 @@ func TestWriteAt_ErrorsAppendNothing(t *testing.T) {
 			s := c.AddShare(1)
 			f := testFile(10)
 			writes := seam.Calls(journaltest.OpWrite)
-			_, err := c.WriteAt(tc.ctx, s, f, tc.off, make([]byte, tc.len), 1)
+			v, err := c.WriteAt(tc.ctx, s, f, tc.off, make([]byte, tc.len), 1)
 			if !tc.want(err) {
 				t.Fatalf("WriteAt = %v", err)
+			}
+			if v != (core.Version{}) {
+				t.Fatalf("a refused write returned version %v", v)
 			}
 			if got := seam.Calls(journaltest.OpWrite); got != writes {
 				t.Fatalf("the refused write made %d write calls", got-writes)
@@ -448,5 +517,35 @@ func TestWriteAt_CountsWrittenBytes(t *testing.T) {
 	}
 	if got := c.WrittenBytes(); got != 9 {
 		t.Fatalf("WrittenBytes = %d, want 9", got)
+	}
+}
+
+// A publish the index refuses after the record was appended returns the zero
+// version with the error; the record stays in its segment.
+func TestWriteAt_PublishRefusalReturnsNoVersion(t *testing.T) {
+	c, seam := newTestCore(t)
+	f := testFile(13)
+	publish(t, c, f, 0, "aaaa") // the file belongs to tag 1
+	v, err := c.WriteAt(context.Background(), c.AddShare(2), f, 8, []byte("bbbb"), 1)
+	if !errors.Is(err, core.ErrOtherShare) {
+		t.Fatalf("WriteAt through another tag = %v, want ErrOtherShare", err)
+	}
+	if v != (core.Version{}) {
+		t.Fatalf("a refused publish returned version %v", v)
+	}
+	if _, ok := c.Index().Lookup(f, 8); ok {
+		t.Fatal("a refused write was published")
+	}
+	if c.WrittenBytes() != 0 {
+		t.Fatalf("WrittenBytes = %d after a refused write", c.WrittenBytes())
+	}
+	var rec int
+	for _, r := range readRecords(t, seam) {
+		if r.Header.Kind == format.KindWrite && r.Header.Tag == 2 {
+			rec++
+		}
+	}
+	if rec != 1 {
+		t.Fatalf("%d records of the refused write on disk, want 1", rec)
 	}
 }

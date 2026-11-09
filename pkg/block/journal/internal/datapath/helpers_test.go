@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,8 +48,14 @@ func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *journaltest.
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() {
-		// A test that crashed the seam closed every descriptor under the core.
-		if err := c.Close(); err != nil && !errors.Is(err, fs.ErrClosed) {
+		err := c.Close()
+		// Only a seam that was crashed closed every descriptor under the core,
+		// so only then may a close error be fs.ErrClosed; any other error
+		// joined with it still fails the test.
+		if _, crashed := crashedSeams.Load(seam); crashed {
+			err = withoutErrClosed(err)
+		}
+		if err != nil {
 			t.Errorf("Close: %v", err)
 		}
 	})
@@ -58,6 +65,29 @@ func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *journaltest.
 		}
 	}
 	return c, seam
+}
+
+// crashedSeams holds the seams a test crashed.
+var crashedSeams sync.Map
+
+// withoutErrClosed returns the leaves of err that are not fs.ErrClosed, joined,
+// or nil when there are none.
+func withoutErrClosed(err error) error {
+	switch e := err.(type) {
+	case nil:
+		return nil
+	case interface{ Unwrap() []error }:
+		var rest []error
+		for _, c := range e.Unwrap() {
+			rest = append(rest, withoutErrClosed(c))
+		}
+		return errors.Join(rest...)
+	default:
+		if errors.Is(err, fs.ErrClosed) {
+			return nil
+		}
+		return err
+	}
 }
 
 // testFile returns a file id distinguished by b.

@@ -23,6 +23,10 @@ import (
 // order they were assigned. The domain is the only one held across the record
 // write, and publishing follows the write: the index never names a record
 // that is not yet in its segment. Publishing never waits on a sync.
+//
+// Any error returns the zero version. A write that fails part-way leaves the
+// pieces it already published held; the error says the write as a whole did
+// not complete.
 func (c *Core) WriteAt(ctx context.Context, s *Share, id core.FileID, off int64, p []byte, mtime int64) (core.Version, error) {
 	if err := ctx.Err(); err != nil {
 		return core.Version{}, err
@@ -53,7 +57,7 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 	for done < int64(len(p)) {
 		seq, err := c.counters.NextSeq()
 		if err != nil {
-			return v, done, err
+			return core.Version{}, done, err
 		}
 		rest := p[done:]
 		pl, err := stream.Append(format.RecordHeader{
@@ -65,15 +69,22 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 			Tag:     s.Tag,
 		}, format.RecordBody{Payload: rest, MTime: mtime})
 		if err != nil {
-			return v, done, err
+			return core.Version{}, done, err
 		}
+		// decision: the index may refuse a publish after its record is in the
+		// segment, by a tag that owns the file elsewhere or by the entry bound.
+		// The caller gets the error and the record stays on disk, never
+		// published by this run. That is accepted because only one share exists
+		// and no bound is set low, so the refusal is unreachable until checks
+		// that refuse before a version is drawn land; they close the window and
+		// this marker goes then.
 		hd, err := c.index.WriteRetain(s.Tag, id, index.Placed{
 			Extent:  core.Extent{Off: off + done, Len: pl.N},
 			Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
 			Version: v,
 		}, seq)
 		if err != nil {
-			return v, done, err
+			return core.Version{}, done, err
 		}
 		c.Account(hd)
 		done += pl.N
