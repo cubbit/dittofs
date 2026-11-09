@@ -195,6 +195,11 @@ type Durability struct {
 	afterFail   func()
 	beforeSync  func()
 
+	// afterCorruptDrop is a test hook, nil in production: Corrupt runs it
+	// under the file's domain on what the index dropped, before it reads the
+	// dropped pieces.
+	afterCorruptDrop func(*index.FailedWindow)
+
 	// lmu guards the loss ring, the counters and pieces, and the generation
 	// read and raise that go with them.
 	//
@@ -366,7 +371,9 @@ type entry struct {
 	done bool
 	// tracked is the entry's place in the stream's Track order, which a
 	// window keeps when it takes the entry, so a read-only journal undoes a
-	// file's records newest first across windows and segments.
+	// file's records newest first across windows and segments. The worker
+	// also finds the entry again by it after Corrupt took an earlier entry
+	// out of the ledger.
 	tracked uint64
 }
 
@@ -384,7 +391,10 @@ type stream struct {
 	// trackedN counts the records the stream tracked; each entry carries its
 	// own count.
 	trackedN uint64
-	// ledger holds the entries in Track order.
+	// ledger holds the entries in Track order. Track only appends, the
+	// worker compacts, and Corrupt takes out an entry no sync covered, so an
+	// entry's index can move down between two steps of the worker, which finds
+	// it again by its count.
 	//
 	// ponytail: one entry per unsynced record, bounded by what a stream
 	// accepts within one sync bound. Durable scans it linearly. Upgrade
@@ -453,6 +463,9 @@ type stream struct {
 	want    bool
 	syncing bool
 
+	// corrupt are the corrupt records' losses Corrupt handed to the worker.
+	corrupt []corruptJob
+
 	// kick wakes the worker; capacity 1, sent without blocking.
 	kick chan struct{}
 
@@ -472,9 +485,10 @@ type stream struct {
 	buckets  []atomic.Uint64
 	sum      atomic.Int64
 
-	// scratch and live are the worker's own, reused by each pass: the indices
-	// it completes and the segments that still hold an entry.
-	scratch []int
+	// scratch and live are the worker's own, reused by each pass: the Track
+	// counts of the entries it completes and the segments that still hold an
+	// entry.
+	scratch []uint64
 	live    map[core.SegmentID]struct{}
 }
 
@@ -688,7 +702,9 @@ func (d *Durability) Stats() Part {
 	return p
 }
 
-// Stop stops the workers and joins them. A second call is a no-op.
+// Stop stops the workers and joins them, then records the corrupt losses
+// still queued, so a loss handed over before Stop has its record appended
+// when Stop returns. A second call is a no-op.
 func (d *Durability) Stop() {
 	d.stop.Do(func() {
 		d.mu.Lock()
@@ -702,6 +718,12 @@ func (d *Durability) Stop() {
 			st.closed = true
 			d.notifyAll()
 			st.mu.Unlock()
+		}
+		// Every Corrupt that queued before closed was set has its loss in a
+		// queue now, and every later one records its loss itself.
+		d.wg.Wait()
+		for _, st := range made {
+			d.drainCorrupt(st)
 		}
 	})
 	d.wg.Wait()
