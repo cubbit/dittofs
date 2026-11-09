@@ -277,204 +277,6 @@ controlplane:
 	}
 }
 
-// TestStart_RequireKerberosWithoutKerberosExitCode pins the other boot-stop
-// branch: a persisted share requiring Kerberos on a server without it is an
-// operator configuration error, so the start command prints the error — which
-// names the share and the missing Kerberos configuration — and exits 78.
-// Without this branch handleLoadSharesError would downgrade it to a warning
-// and the daemon would come up serving a share no client can authenticate to.
-func TestStart_RequireKerberosWithoutKerberosExitCode(t *testing.T) {
-	// handleLoadSharesError writes to the *os.File it is handed, so the pipe
-	// alone captures the directive; os.Stderr stays untouched.
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-
-	loadErr := fmt.Errorf("share %q: %w; enable Kerberos", "/krb-gone", runtime.ErrExportAcceptsNoAuthFlavor)
-	stop := handleLoadSharesError(loadErr, w)
-	if stop == nil {
-		t.Fatal("handleLoadSharesError returned no exit status on an unsatisfiable Kerberos policy")
-	}
-	if stop.code != EX_CONFIG {
-		t.Fatalf("exit code = %d; want %d", stop.code, EX_CONFIG)
-	}
-
-	if err := w.Close(); err != nil {
-		t.Fatalf("close pipe writer: %v", err)
-	}
-	var stderrBuf bytes.Buffer
-	if _, err := stderrBuf.ReadFrom(r); err != nil {
-		t.Fatalf("read stderr pipe: %v", err)
-	}
-	_ = r.Close()
-
-	if !strings.Contains(stderrBuf.String(), "/krb-gone") {
-		t.Fatalf("stderr %q does not name the share", stderrBuf.String())
-	}
-}
-
-// TestStart_RequireKerberosShareLoadsWhenKerberosResolvedFirst pins the
-// ordering the share-load refusal depends on: runStart must publish the
-// effective Kerberos state onto the runtime BEFORE loading the persisted
-// shares. The refusal reads rt.KerberosEnabled(), so resolving the identity
-// providers after the load would see a runtime that still reports Kerberos
-// disabled and refuse every valid require_kerberos share — a boot stop on a
-// correct configuration, on every start.
-//
-// The fixture persists such a share, enables Kerberos in the config file, and
-// drives the real runStart. The run is stopped just past the share load by a
-// metrics token file that does not exist, so it never reaches the listeners;
-// what the test asserts is that the load itself neither refused the share nor
-// exited 78 on the way there.
-func TestStart_RequireKerberosShareLoadsWhenKerberosResolvedFirst(t *testing.T) {
-	// runStart opens the control-plane database and each share's journal and
-	// closes neither, so those handles are still live when the test returns.
-	// t.TempDir's cleanup would try to unlink them and fail the test on Windows,
-	// where an open file cannot be removed, so nothing this run writes lives
-	// under a managed directory and the whole tree is removed best-effort.
-	tmp, err := os.MkdirTemp("", "dittofs-krb-boot-")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
-
-	// Contain every default path the daemon would otherwise resolve under the
-	// developer's real home directory.
-	t.Setenv("HOME", tmp)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "config"))
-	t.Setenv("XDG_STATE_HOME", filepath.Join(tmp, "state"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, "data"))
-	t.Setenv(api.EnvControlPlaneSecret, "")
-	t.Setenv(models.EnvAdminInitialPassword, "")
-
-	dbPath := filepath.Join(tmp, "controlplane.db")
-	journalRoot := filepath.Join(tmp, "journal")
-	tokenPath := filepath.Join(tmp, "metrics-token-that-does-not-exist")
-	cfgPath := filepath.Join(tmp, "config.yaml")
-	cfgBody := fmt.Sprintf(`database:
-  type: sqlite
-  sqlite:
-    path: %s
-controlplane:
-  host: 127.0.0.1
-  port: 0
-  jwt:
-    secret: "%s"
-kerberos:
-  enabled: true
-blockstore:
-  journal:
-    path: %s
-gc:
-  auto_enabled: false
-integrity:
-  auto_enabled: false
-metrics:
-  enabled: true
-  auth: token
-  token_file: %s
-`, dbPath, strings.Repeat("s", 64), journalRoot, tokenPath)
-	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	seedRequireKerberosShare(t, dbPath)
-
-	// Any exit at all means the share load refused: the only exitFn call
-	// reachable on this fixture is handleLoadSharesError's.
-	origExit := exitFn
-	t.Cleanup(func() { exitFn = origExit })
-	exitFn = func(code int) {
-		t.Errorf("start exited with code %d; the require_kerberos share was refused "+
-			"even though Kerberos is enabled", code)
-	}
-
-	origCfgFile, origForeground := cfgFile, foreground
-	t.Cleanup(func() { cfgFile, foreground = origCfgFile, origForeground })
-	cfgFile = cfgPath
-	foreground = true
-
-	err = runStart(startCmd, nil)
-	if err == nil {
-		t.Fatal("start returned nil; it should have stopped on the missing metrics token file, " +
-			"so the share load was never reached (or it refused the share and returned early)")
-	}
-	if !strings.Contains(err.Error(), "metrics token file") {
-		t.Fatalf("start stopped before the metrics listener, so it never got past the share load: %v", err)
-	}
-
-	// The stop point is only a proxy for "the load was reached": move the
-	// metrics setup above the share load and runStart would return this same
-	// error without ever loading a share, leaving the test green over the
-	// regression it exists to catch. Assert on something only a loaded share
-	// produces — AddShare opens the share's journal beneath JournalRoot, so the
-	// directory exists if and only if the share was added.
-	entries, rerr := os.ReadDir(journalRoot)
-	if rerr != nil {
-		t.Fatalf("read journal root: %v", rerr)
-	}
-	var journals []string
-	for _, e := range entries {
-		journals = append(journals, e.Name())
-	}
-	if len(journals) == 0 {
-		t.Fatal("journal root is empty: the share was never added, so this test proves " +
-			"nothing about the ordering it pins")
-	}
-}
-
-// seedRequireKerberosShare persists, into the control-plane database runStart
-// will open, the share an operator would have left behind by setting
-// require_kerberos: a memory-backed share whose NFS export policy requires
-// Kerberos, beside the enabled NFS adapter row the share-load refusal keys on.
-// The boot no longer creates that row, so the seed persists it.
-func seedRequireKerberosShare(t *testing.T, dbPath string) {
-	t.Helper()
-	ctx := context.Background()
-
-	s, err := cpstore.New(&cpstore.Config{
-		Type:   cpstore.DatabaseTypeSQLite,
-		SQLite: cpstore.SQLiteConfig{Path: dbPath},
-	})
-	if err != nil {
-		t.Fatalf("open control-plane store: %v", err)
-	}
-	// Windows refuses to unlink a file another handle still holds, and runStart
-	// opens this same database.
-	defer func() { _ = s.Close() }()
-
-	metaID, err := s.CreateMetadataStore(ctx, &models.MetadataStoreConfig{Name: "meta", Type: "badger", Config: `{"in_memory":true}`})
-	if err != nil {
-		t.Fatalf("CreateMetadataStore: %v", err)
-	}
-	blockID, err := s.CreateBlockStore(ctx, &models.BlockStoreConfig{Name: "blocks", Type: "memory"})
-	if err != nil {
-		t.Fatalf("CreateBlockStore: %v", err)
-	}
-	if _, err := s.EnsureDefaultAdapters(ctx); err != nil {
-		t.Fatalf("EnsureDefaultAdapters: %v", err)
-	}
-	shareID, err := s.CreateShare(ctx, &models.Share{
-		Name:            "/krb-required",
-		MetadataStoreID: metaID,
-		BlockStoreID:    blockID,
-	})
-	if err != nil {
-		t.Fatalf("CreateShare: %v", err)
-	}
-
-	opts := models.DefaultNFSExportOptions()
-	opts.RequireKerberos = true
-	adapterCfg := &models.ShareAdapterConfig{ShareID: shareID, AdapterType: "nfs"}
-	if err := adapterCfg.SetConfig(opts); err != nil {
-		t.Fatalf("SetConfig: %v", err)
-	}
-	if err := s.SetShareAdapterConfig(ctx, adapterCfg); err != nil {
-		t.Fatalf("SetShareAdapterConfig: %v", err)
-	}
-}
-
 // krbMetaStore names the metadata store persistKerberosShare writes, which the
 // tests register by the same name.
 const krbMetaStore = "krb-meta"
@@ -516,15 +318,10 @@ func persistKerberosShare(t *testing.T, ctx context.Context, s cpstore.Store, na
 	}
 }
 
-// TestLoadSharesWithKerberosCapability_PublishesBeforeLoading pins the order
-// inside loadSharesWithKerberosCapability, which nothing else can observe.
-//
-// LoadSharesFromStore reads rt.KerberosEnabled() to refuse a share whose export
-// policy requires a Kerberos the server does not have. Publish the capability
-// after the load instead of before and every other test in this change still
-// passes — they set the capability by hand, which is the step under test — while
-// a server that does have Kerberos refuses to boot over a share that is
-// perfectly valid for it.
+// TestLoadSharesWithKerberosCapability_PublishesBeforeLoading pins that the
+// effective Kerberos config, resolved from the store and the config file, is
+// published on the runtime, where the share-config API reads it to refuse a
+// policy only Kerberos could satisfy, and that the persisted shares load.
 func TestLoadSharesWithKerberosCapability_PublishesBeforeLoading(t *testing.T) {
 	ctx := context.Background()
 	s, err := cpstore.New(&cpstore.Config{
@@ -547,14 +344,13 @@ func TestLoadSharesWithKerberosCapability_PublishesBeforeLoading(t *testing.T) {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 
-	// The server has Kerberos, so the persisted policy is satisfiable and the
-	// share must load.
+	// The server has Kerberos, and the persisted require_kerberos share loads.
 	cfg := &config.Config{}
 	cfg.Kerberos.Enabled = true
 
 	effective, err := loadSharesWithKerberosCapability(ctx, s, rt, cfg)
 	if err != nil {
-		t.Fatalf("share load refused a satisfiable require_kerberos policy: %v", err)
+		t.Fatalf("share load failed: %v", err)
 	}
 	if !effective.Enabled {
 		t.Fatal("effective Kerberos config reports disabled; the capability came from the wrong source")
@@ -623,93 +419,6 @@ metrics:
 		if _, statErr := os.Stat(sidecar); !os.IsNotExist(statErr) {
 			t.Errorf("control-plane store still open: %s survived the aborted start (stat err: %v)",
 				sidecar, statErr)
-		}
-	}
-}
-
-// TestStart_BootGuardExitClosesTheStore covers #2671. The boot guards used to
-// call exitFn (os.Exit in production) from where they were invoked, which runs
-// no defers — so the control-plane store's close defer in runStart was skipped
-// entirely and SQLite was left with its WAL and shared-memory sidecar files on
-// disk, no checkpoint, and an unclosed handle.
-//
-// The guards now return an exit status that runStart acts on, so every defer
-// registered before the guard runs first. This drives the real exit-78 path
-// with a store open and asserts the store was closed: SQLite removes the -wal
-// and -shm sidecars only on a clean Close, so their absence is the observable.
-func TestStart_BootGuardExitClosesTheStore(t *testing.T) {
-	tmp, err := os.MkdirTemp("", "dittofs-exit78-close-")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
-
-	t.Setenv("HOME", tmp)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "config"))
-	t.Setenv("XDG_STATE_HOME", filepath.Join(tmp, "state"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, "data"))
-	t.Setenv(api.EnvControlPlaneSecret, "")
-	t.Setenv(models.EnvAdminInitialPassword, "")
-
-	dbPath := filepath.Join(tmp, "controlplane.db")
-	journalRoot := filepath.Join(tmp, "journal")
-	cfgPath := filepath.Join(tmp, "config.yaml")
-
-	// Kerberos stays DISABLED, so the require_kerberos share seeded below is an
-	// unsatisfiable export policy: loadSharesWithKerberosCapability returns
-	// ErrExportAcceptsNoAuthFlavor and handleLoadSharesError reports exit 78.
-	cfgBody := fmt.Sprintf(`database:
-  type: sqlite
-  sqlite:
-    path: %s
-controlplane:
-  host: 127.0.0.1
-  port: 0
-  jwt:
-    secret: "%s"
-blockstore:
-  journal:
-    path: %s
-gc:
-  auto_enabled: false
-integrity:
-  auto_enabled: false
-`, dbPath, strings.Repeat("s", 64), journalRoot)
-	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	seedRequireKerberosShare(t, dbPath)
-
-	origCfgFile, origForeground := cfgFile, foreground
-	t.Cleanup(func() { cfgFile, foreground = origCfgFile, origForeground })
-	cfgFile = cfgPath
-	foreground = true
-
-	// runStartWithExit is the function that owns the store close defer; runStart
-	// is the thin wrapper that exits after it returns.
-	err = runStartWithExit(startCmd, nil)
-	if err == nil {
-		t.Fatal("start returned nil; the require_kerberos share should have refused on a " +
-			"server without Kerberos")
-	}
-	var st *exitStatus
-	if !errors.As(err, &st) {
-		t.Fatalf("start returned %v; want an exit status from the share-load refusal", err)
-	}
-	if st.code != EX_CONFIG {
-		t.Fatalf("exit code = %d, want %d", st.code, EX_CONFIG)
-	}
-
-	// The store was opened before the guard ran, so it must have been closed on
-	// the way out. A clean Close removes the WAL sidecars; a process that exited
-	// from inside the guard leaves them behind.
-	for _, sidecar := range []string{dbPath + "-wal", dbPath + "-shm"} {
-		if _, statErr := os.Stat(sidecar); statErr == nil {
-			t.Errorf("the control-plane store was left open on the exit-78 path: %s still exists",
-				filepath.Base(sidecar))
-		} else if !os.IsNotExist(statErr) {
-			t.Errorf("stat %s: %v", sidecar, statErr)
 		}
 	}
 }

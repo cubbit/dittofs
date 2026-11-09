@@ -578,15 +578,9 @@ func buildMetricsListener(cfg *config.MetricsConfig, m *metrics.Metrics) (*metri
 }
 
 // loadSharesWithKerberosCapability publishes the server's Kerberos capability on
-// the runtime and only then loads the persisted shares. The two steps are one
-// function because their order is load-bearing and invisible at either call
-// site: LoadSharesFromStore refuses a share whose export policy requires a
-// Kerberos the server does not have, so a share loaded before the capability is
-// published is judged against a server that always looks Kerberos-less, and a
-// valid require_kerberos share stops the boot it should have survived.
-//
-// It returns the effective Kerberos config alongside
-// the share-load error, which the caller grades.
+// the runtime, where the share-config API reads it, and then loads the
+// persisted shares. It returns the effective Kerberos config alongside the
+// share-load error, which the caller grades.
 func loadSharesWithKerberosCapability(
 	ctx context.Context,
 	cpStore store.Store,
@@ -825,22 +819,14 @@ func handleFormatMismatch(err error, stderr *os.File) *exitStatus {
 // handleLoadSharesError centralizes the share-loading error policy so
 // the in-process boot-guard test can exercise the exit-78 path without
 // rebuilding the full daemon setup. Returns a non-nil exit status when the
-// caller should stop runStartWithExit (format-mismatch or unsatisfiable-policy
-// branch hit); nil otherwise (no error, or a warn-and-continue).
+// caller should stop runStartWithExit (format-mismatch branch hit); nil
+// otherwise (no error, or a warn-and-continue).
 func handleLoadSharesError(err error, stderr *os.File) *exitStatus {
 	if err == nil {
 		return nil
 	}
 	if st := handleFormatMismatch(err, stderr); st != nil {
 		return st
-	}
-	// A persisted export policy no auth flavor can satisfy is an operator
-	// configuration error, not a share that can be skipped: the share would
-	// come up refusing every client. The error already names the share and the
-	// setting at fault, so print it as-is and exit 78.
-	if errors.Is(err, runtime.ErrExportAcceptsNoAuthFlavor) {
-		_, _ = fmt.Fprintln(stderr, err)
-		return &exitStatus{code: EX_CONFIG}
 	}
 	logger.Warn("Failed to load some shares", "error", err)
 	return nil

@@ -140,26 +140,11 @@ func configBoolDefault(config map[string]any, key string, def bool) bool {
 	return def
 }
 
-// ErrExportAcceptsNoAuthFlavor reports a persisted share whose NFS export
-// policy leaves no auth flavor a client could use. Two settings reach that
-// state — requiring Kerberos on a server that has none, and forbidding AUTH_SYS
-// with nothing else on offer — and either can be at fault alone or both at
-// once, so the sentinel names the condition rather than a setting and the
-// caller appends the cause. Its message is the one the share-config API raises
-// at write time, so the same unusable policy reads identically whichever path
-// reaches it.
-var ErrExportAcceptsNoAuthFlavor = errors.New("the NFS export policy accepts no auth flavor")
-
 // LoadSharesFromStore loads shares from the database into the runtime.
 func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error {
 	shares, err := s.ListShares(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list shares: %w", err)
-	}
-
-	nfsEnabled, err := nfsAdapterEnabled(ctx, s)
-	if err != nil {
-		return err
 	}
 
 	for _, share := range shares {
@@ -204,56 +189,10 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			continue
 		}
 
-		// The export auth-flavor policy is persisted, so it outlives the server
-		// capability it depends on: require_kerberos survives Kerberos being
-		// decommissioned, and allow_auth_sys=false never needed a capability to
-		// begin with. Either leaves a share that accepts no flavor at all —
-		// AUTH_SYS and AUTH_NONE refused by the policy, RPCSEC_GSS impossible to
-		// negotiate — so it would export while refusing every client, and
-		// SECINFO would narrow to an empty flavor list. Refuse the boot rather
-		// than serve it or silently drop the policy.
-		//
-		// Only where the policy can actually be reached, and the share has to be
-		// one this load actually served, which is why this sits after AddShare
-		// rather than before it — an enabled row that AddShare warns about and
-		// skips exports nothing either.
-		//
-		// decision: the refusal is keyed on the NFS adapter alone, although SMB
-		// applies require_kerberos at TREE_CONNECT too. An SMB-only server boots
-		// with such a share: require_kerberos refuses every session to it, which
-		// fails closed, and allow_auth_sys=false still admits NTLM over SMB.
-		// Refusing the boot there too would stop servers that booted before SMB
-		// honoured the policy. Extend the condition to SMB if an unreachable SMB
-		// share turns out to be a misconfiguration operators miss.
-		if shareConfig.Enabled && nfsEnabled &&
-			ExportAcceptsNoAuthFlavor(shareConfig.RequireKerberos, shareConfig.AllowAuthSys, rt.KerberosEnabled()) {
-			cause, remedy := ExportNoAuthFlavorCause(share.Name, shareConfig.RequireKerberos, shareConfig.AllowAuthSys)
-			return fmt.Errorf("share %q: %w (%s); enable Kerberos (kerberos.enabled / "+
-				"DITTOFS_KERBEROS_ENABLED), disable the NFS adapter, or %s",
-				share.Name, ErrExportAcceptsNoAuthFlavor, cause, remedy)
-		}
-
 		logger.Info("Loaded share", "name", share.Name, "metadata_store", shareConfig.MetadataStore)
 	}
 
 	return nil
-}
-
-// nfsAdapterEnabled reports whether this server will serve NFS at all, which
-// decides whether an NFS-only export policy can be reached. It reads the same
-// adapter rows the adapter service starts from, and the same Enabled field that
-// service skips on, so the two agree on what "serving NFS" means.
-func nfsAdapterEnabled(ctx context.Context, s store.Store) (bool, error) {
-	adapters, err := s.ListAdapters(ctx)
-	if err != nil {
-		return false, fmt.Errorf("failed to list adapters: %w", err)
-	}
-	for _, a := range adapters {
-		if a.Type == "nfs" && a.Enabled {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // buildShareConfig assembles the runtime ShareConfig for a persisted share row,

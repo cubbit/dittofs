@@ -1,8 +1,17 @@
 package runtime
 
 import (
+	"errors"
 	"strings"
 )
+
+// ErrExportAcceptsNoAuthFlavor reports an NFS export policy that leaves no auth
+// flavor a client could use. Two settings reach that state — requiring
+// Kerberos on a server that has none, and forbidding AUTH_SYS with nothing else
+// on offer — and either can be at fault alone or both at once, so the sentinel
+// names the condition rather than a setting and the caller appends the cause.
+// The share-config API refuses such a policy with it at write time.
+var ErrExportAcceptsNoAuthFlavor = errors.New("the NFS export policy accepts no auth flavor")
 
 // ExportAcceptsNoAuthFlavor reports whether a share's NFS export policy leaves
 // no auth flavor a client could ever use.
