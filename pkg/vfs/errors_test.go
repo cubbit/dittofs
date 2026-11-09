@@ -36,6 +36,7 @@ var wantErrors = append(slices.Clone(sentinels),
 	&vfs.Delay{Cause: vfs.DelayCapacity},
 	&vfs.Delay{Cause: vfs.DelayCommit},
 	&vfs.Delay{Cause: vfs.DelayResources},
+	&vfs.Delay{Cause: vfs.DelayJournal},
 	&vfs.Delay{Cause: vfs.DelayFrozen, Moved: true},
 
 	&vfs.StateError{Kind: vfs.StateClientInUse},

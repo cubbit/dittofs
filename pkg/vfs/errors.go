@@ -75,6 +75,7 @@ const (
 	DelayCapacity  = vfserr.DelayCapacity
 	DelayCommit    = vfserr.DelayCommit
 	DelayResources = vfserr.DelayResources
+	DelayJournal   = vfserr.DelayJournal
 )
 
 const (

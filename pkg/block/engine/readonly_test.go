@@ -82,7 +82,7 @@ func TestAWriteToAReadOnlyJournal(t *testing.T) {
 		want  func(error) bool
 	}{
 		{fmt.Errorf("write segment: %w", syscall.EROFS), func(err error) bool { return errors.Is(err, vfserr.ErrReadOnly) }},
-		{syscall.EIO, func(err error) bool { var d *vfserr.Delay; return errors.As(err, &d) }},
+		{syscall.EIO, func(err error) bool { return errors.Is(err, &vfserr.Delay{Cause: vfserr.DelayJournal}) }},
 	} {
 		t.Run(c.cause.Error(), func(t *testing.T) {
 			u := newUnit(t)

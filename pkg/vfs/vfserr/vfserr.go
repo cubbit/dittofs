@@ -147,6 +147,7 @@ const (
 	DelayCapacity                        // the journal's capacity, or a share's journal limit
 	DelayCommit                          // a metadata commit is not landing, a durable open's record included; or a stable write's sync may have lost it
 	DelayResources                       // a node memory pool or an open-state cap is spent
+	DelayJournal                         // the local journal refuses writes for now: read-only for a cause that may pass
 
 	delayCauseEnd
 )
@@ -154,6 +155,7 @@ const (
 var delayCauses = [...]string{
 	DelayRecall: "recall", DelayClone: "clone", DelayConflict: "conflict", DelayFrozen: "frozen",
 	DelayCapacity: "capacity", DelayCommit: "commit", DelayResources: "resources",
+	DelayJournal: "journal",
 }
 
 // Valid reports whether c is a declared cause.

@@ -190,16 +190,12 @@ func (e *Engine) journalErr(err error) error {
 		// a refusal is expected and logged at Debug: the journal_read_only
 		// condition names the state once. EROFS, a remount only an operator
 		// clears, is ErrReadOnly; any other cause may pass, so it is
-		// retry-later (RFC 8 §11.2).
+		// retry-later, DelayJournal (RFC 8 §11.2; the cause per RFC 17 §4.3).
 		e.d.Logger.Debug("journal read-only", "err", err)
 		if errors.Is(err, syscall.EROFS) {
 			return fmt.Errorf("engine: %v: %w", err, vfserr.ErrReadOnly)
 		}
-		// decision: the retry-later is DelayCommit, as the RFC names no
-		// cause for it and the client's next attempt waits on the journal's
-		// reopen, which, like a commit that is not landing, no client
-		// action speeds. Answer the cause the RFC names once it names one.
-		return &vfserr.Delay{Cause: vfserr.DelayCommit}
+		return &vfserr.Delay{Cause: vfserr.DelayJournal}
 	case errors.Is(err, journal.ErrClosed):
 		return fmt.Errorf("engine: journal closed: %w", vfserr.ErrUnavailable)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
