@@ -327,6 +327,12 @@ func RetryingOwner(ctx context.Context) bool { return isRetryingOwner(ctx) }
 // ErrUnbuilt: a test of admission alone.
 func (e *Engine) SetAfterRegister(h func()) { e.afterRegister = h }
 
+// SetCloneMarkerHook makes h run for each clone marker start step 3 finds,
+// standing in for the clone's rebuild.
+func (e *Engine) SetCloneMarkerHook(h cloneMarkerFunc) {
+	e.cloneMarker = h
+}
+
 // FakeCloneDone lets a clone run past its registrations to its done signal,
 // standing in for the joins a served engine does not have yet.
 func (e *Engine) FakeCloneDone() { e.fakeCloneDone.Store(true) }

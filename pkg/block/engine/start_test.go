@@ -43,6 +43,9 @@ type starter struct {
 	two  engine.Share // a second share of the store
 	id   journal.JournalID
 
+	deps  engine.Deps    // what the engine was built from, for a restart over the same store
+	clock *sim.TestClock // the engine's clock
+
 	mu      sync.Mutex
 	opens   []openCall
 	openErr error // what Open answers in place of the journal
@@ -115,6 +118,7 @@ func newStarter(t *testing.T, opts ...starterOption) *starter {
 		logs:  newLogRecorder(),
 		id:    journal.JournalID{'A'},
 		fresh: c.fresh,
+		clock: sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
 	}
 
 	open := kvstoretest.Opener(memKV)
@@ -145,7 +149,7 @@ func newStarter(t *testing.T, opts ...starterOption) *starter {
 		Content:   s.fs.Store.Content(),
 		Lifecycle: s.lc,
 		Holds:     noHolds{},
-		Clock:     sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		Clock:     s.clock,
 		Logger:    slog.New(s.logs),
 		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
 			return ctx, func(error) {
@@ -156,6 +160,8 @@ func newStarter(t *testing.T, opts ...starterOption) *starter {
 	if c.deps != nil {
 		c.deps(&d)
 	}
+
+	s.deps = d
 
 	e, err := engine.New(d)
 	if err != nil {
