@@ -67,7 +67,12 @@ func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 	defer release()
 	if len(src) == 0 { // a write of no byte returns once judged: nothing reserved, cleared, timed or staged
 		unlock()
-		return vfs.WriteResult{}, nil
+		// decision: the verifier stays zero, since only the engine's Write
+		// or Commit answers one and a write of no byte calls neither. A
+		// client comparing it against a later Commit's resends no byte, as
+		// this write held none. Overturned by the engine answering its
+		// verifier without staging.
+		return vfs.WriteResult{WCC: vfs.WCC{Before: &f, After: f}}, nil
 	}
 	var res *quota.Reservation
 	add, err := fs.charges(ctx, f, off, int64(len(src)))
@@ -220,7 +225,8 @@ func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 
 // Deallocate punches a hole of length bytes from off in the file ref names,
 // checked and ordered as a write is, and answers its WCC; an append-only file
-// refuses any, ErrPerm, as one never appends.
+// refuses any, ErrPerm, as one never appends. A hole of no byte, like a
+// write of none, returns once judged and changes nothing.
 func (fs *Filesystem) Deallocate(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off, length int64) (vfs.WCC, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -232,6 +238,10 @@ func (fs *Filesystem) Deallocate(ctx context.Context, c vfs.Call, ref vfs.OpenRe
 		return vfs.WCC{}, err
 	}
 	defer release()
+	if length == 0 { // a hole of no byte returns once judged, as a write of none does
+		unlock()
+		return vfs.WCC{Before: &f, After: f}, nil
+	}
 	w, err := fs.stage(ctx, c, a, ref.Handle, f, off, false, func() error {
 		return fs.engine.Deallocate(ctx, f.Share, f.ID, off, length)
 	})
