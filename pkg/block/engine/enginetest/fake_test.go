@@ -217,3 +217,55 @@ func TestFakeVersionsAboveFloorAndLimit(t *testing.T) {
 		t.Errorf("draw after a floor of 50 = %v, %v; want 51", v, err)
 	}
 }
+
+// Strand records the tag, once however often it is named, refuses tag 0 as
+// Share does, answers ErrClosed once the journal is closed, and is forgotten
+// at a reopen: RFC 1 §3 keeps it in memory, so the caller names its tags
+// again at every start.
+func TestFakeStrandRecordsTheTagAndForgetsItAtAReopen(t *testing.T) {
+	j := NewFakeJournal()
+
+	if err := j.Strand(5); err != nil {
+		t.Fatalf("Strand(5): %v", err)
+	}
+
+	if err := j.Strand(5); err != nil {
+		t.Fatalf("Strand(5) again: %v", err)
+	}
+
+	if got := j.Stranded(); !slices.Equal(got, []journal.ShareTag{5}) {
+		t.Errorf("stranded %v after Strand(5) twice, want [5]", got)
+	}
+
+	if err := j.Strand(0); !errors.Is(err, journal.ErrInvalidSetting) {
+		t.Errorf("Strand(0) = %v, want journal.ErrInvalidSetting", err)
+	}
+
+	j.Reopen()
+
+	if got := j.Stranded(); len(got) != 0 {
+		t.Errorf("stranded %v after a reopen, want none", got)
+	}
+
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := j.Strand(5); !errors.Is(err, journal.ErrClosed) {
+		t.Errorf("Strand(5) after Close = %v, want journal.ErrClosed", err)
+	}
+}
+
+// A tag's dirty bytes are its held bytes less those marked offloaded, as
+// RFC 1 §3.7 has them (dirty is at most held).
+func TestFakeStatsReportsDirtyBytesBelowHeld(t *testing.T) {
+	j, h := fake(t, 0)
+
+	write(t, h, fileA, 0, string(make([]byte, 8192)))
+	j.SetOffloaded(1, 4096)
+
+	got := j.Stats().Shares[1]
+	if got.HeldBytes != 8192 || got.DirtyBytes != 4096 {
+		t.Errorf("held %d dirty %d, want held 8192 dirty 4096", got.HeldBytes, got.DirtyBytes)
+	}
+}

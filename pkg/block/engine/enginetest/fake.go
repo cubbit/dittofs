@@ -42,6 +42,8 @@ type FakeJournal struct {
 	limit     uint64 // no version is issued at or above it; zero until set
 	files     map[journal.FileID]*fakeFile
 	held      map[journal.ShareTag]int64 // held bytes per tag
+	offloaded map[journal.ShareTag]int64 // SetOffloaded's bytes per tag, held and not dirty
+	stranded  []journal.ShareTag         // Strand's tags, in order; forgotten at a reopen
 	losses    []journal.LossEvent
 	gen       uint64
 	closed    bool
@@ -128,7 +130,12 @@ func (p piece) end() int64 { return p.off + int64(len(p.b)) }
 // NewFakeJournal returns an empty fake journal. It issues no version until
 // SetVersionLimit, as the journal does not.
 func NewFakeJournal() *FakeJournal {
-	return &FakeJournal{files: map[journal.FileID]*fakeFile{}, held: map[journal.ShareTag]int64{}, seg: 1}
+	return &FakeJournal{
+		files:     map[journal.FileID]*fakeFile{},
+		held:      map[journal.ShareTag]int64{},
+		offloaded: map[journal.ShareTag]int64{},
+		seg:       1,
+	}
 }
 
 var _ engine.Journal = (*FakeJournal)(nil)
@@ -205,7 +212,10 @@ func (j *FakeJournal) Stats() journal.Stats {
 	}
 
 	for tag, n := range j.held {
-		s.Shares[tag] = journal.ShareStats{HeldBytes: n}
+		s.Shares[tag] = journal.ShareStats{
+			HeldBytes:  n,
+			DirtyBytes: max(0, n-j.offloaded[tag]),
+		}
 		s.HeldBytes += n
 	}
 	return s
@@ -240,6 +250,7 @@ func (j *FakeJournal) Reopen() {
 
 	j.handles = nil
 	j.closed = false
+	j.stranded = nil
 
 	for _, f := range j.files {
 		f.settled = journal.Version{}
@@ -337,7 +348,51 @@ func (j *FakeJournal) Forget(_ context.Context, tag journal.ShareTag) error {
 	return nil
 }
 
-func (j *FakeJournal) Strand(journal.ShareTag) error { return journal.ErrNotImplemented }
+// Strand marks tag as claimed by no share. Like the journal's it refuses tag
+// 0, and keeps the mark in memory only: a reopen forgets it (RFC 1 §3). The
+// fake does not change what a read of the tag's extents answers.
+func (j *FakeJournal) Strand(tag journal.ShareTag) error {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	switch {
+	case j.closed:
+		return journal.ErrClosed
+	case tag == 0:
+		return journal.ErrInvalidSetting
+	}
+
+	if !slices.Contains(j.stranded, tag) {
+		j.stranded = append(j.stranded, tag)
+	}
+
+	return nil
+}
+
+// Stranded is the tags Strand named since the last open, in order.
+func (j *FakeJournal) Stranded() []journal.ShareTag {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	return slices.Clone(j.stranded)
+}
+
+// SetOffloaded makes n of tag's held bytes offloaded, so Stats reports them
+// held but not dirty.
+//
+// ponytail: the fake offloads no extent by itself, so only a test marks bytes
+// offloaded, by count and not by extent. Track the offloaded bit per piece
+// when a test needs which bytes are dirty.
+func (j *FakeJournal) SetOffloaded(tag journal.ShareTag, n int64) {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	j.offloaded[tag] = n
+}
+
 func (j *FakeJournal) Repack(context.Context, int64, journal.RepackScope) (int64, error) {
 	return 0, journal.ErrNotImplemented
 }
