@@ -20,10 +20,16 @@ import (
 // returns the zero version and does nothing: no version is drawn and nothing
 // is appended or counted. A negative off, or an off whose end overflows, is
 // refused with core.ErrInvalidExtent before anything is drawn or appended.
+// A file that belongs to another share is refused with core.ErrOtherShare
+// under the file's append domain, before any version is drawn: nothing is
+// appended, published or counted.
 //
 // The version is drawn, and the record appended and published, with the
 // file's append domain held, so the versions of one file are appended in the
-// order they were assigned. The domain is the only one held across the record
+// order they were assigned. The tag check runs under the same domain,
+// immediately before the draw, so checking a file's tag and claiming it are
+// one step: two first writes of one new FileID through two handles cannot
+// both pass the check. The domain is the only one held across the record
 // write, and publishing follows the write: the index never names a record
 // that is not yet in its segment. Publishing never waits on a sync.
 //
@@ -56,6 +62,14 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 	unlock := c.domains.Lock(id)
 	defer unlock()
 
+	// The tag check runs under the domain the claim publishes under, so the
+	// two are one step: a rivalled first write waits here and meets the
+	// claim, not an empty entry. A refused write draws no version, appends
+	// nothing and counts no written byte. A later capacity admission slots in
+	// after this check, before the draw.
+	if err := c.checkTag(s, id); err != nil {
+		return core.Version{}, 0, err
+	}
 	v, err := c.counters.Draw()
 	if err != nil {
 		return core.Version{}, 0, err
@@ -97,12 +111,16 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 			c.afterAppend()
 		}
 		// decision: the index may refuse a publish after its record is in the
-		// segment, by a tag that owns the file elsewhere or by the entry bound.
-		// The caller gets the error and the record stays on disk, never
-		// published by this run. That is accepted because only one share exists
-		// and no bound is set low, so the refusal is unreachable until checks
-		// that refuse before a version is drawn land; they close the window and
-		// this marker goes then.
+		// segment. The tag check above now refuses a rivalled file before a
+		// version is drawn, so a refusal here is reachable only for a file
+		// that became rivalled between the check and this publish — a second
+		// tag's record reaching the disk inside that window, which only a
+		// fault leaves — or for the entry bound, which no earlier check
+		// holds. The caller gets the error and the record stays on disk,
+		// never published by this run, and a rival-tag refusal marks the file
+		// rivalled, as recovery from those records would. Overturned by a
+		// check of the entry bound before the draw, which leaves the window
+		// reachable only by the fault.
 		hd, err := c.index.WriteRetain(s.Tag, id, index.Placed{
 			Extent:  core.Extent{Off: off + done, Len: pl.N},
 			Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},

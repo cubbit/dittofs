@@ -520,15 +520,21 @@ func TestWriteAt_CountsWrittenBytes(t *testing.T) {
 	}
 }
 
-// A publish the index refuses after the record was appended returns the zero
+// A publish the index refuses after the record was appended — reachable
+// through the entry bound, which no earlier check holds, since the tag check
+// now refuses a rivalled file before its version is drawn — returns the zero
 // version with the error; the record stays in its segment.
 func TestWriteAt_PublishRefusalReturnsNoVersion(t *testing.T) {
-	c, seam := newTestCore(t)
+	c, seam := newTestCore(t, func(o *coreOptions) { o.state = State{Index: index.New(1)} })
+	s := mustShare(t, c, 1)
 	f := testFile(13)
-	publish(t, c, f, 0, "aaaa") // the file belongs to tag 1
-	v, err := c.WriteAt(context.Background(), mustShare(t, c, 2), f, 8, []byte("bbbb"), 1)
-	if !errors.Is(err, core.ErrOtherShare) {
-		t.Fatalf("WriteAt through another tag = %v, want ErrOtherShare", err)
+	// One entry fills the bound, so the next write's publish is refused by
+	// the index at its admission: the record was appended and the write
+	// returns no version, the shape a mid-window fault would reach.
+	publish(t, c, f, 0, "aaaa")
+	v, err := c.WriteAt(context.Background(), s, f, 8, []byte("bbbb"), 1)
+	if !errors.Is(err, core.ErrNoSpace) {
+		t.Fatalf("WriteAt at the entry bound = %v, want ErrNoSpace", err)
 	}
 	if v != (core.Version{}) {
 		t.Fatalf("a refused publish returned version %v", v)
@@ -536,16 +542,18 @@ func TestWriteAt_PublishRefusalReturnsNoVersion(t *testing.T) {
 	if _, ok := c.Index().Lookup(f, 8); ok {
 		t.Fatal("a refused write was published")
 	}
+	// WrittenBytes counts the payload a write published, not what it
+	// appended: the refused record leaves it where it was.
 	if c.WrittenBytes() != 0 {
-		t.Fatalf("WrittenBytes = %d after a refused write", c.WrittenBytes())
+		t.Fatalf("WrittenBytes = %d after a publish refused by the bound, want 0", c.WrittenBytes())
 	}
 	var rec int
 	for _, r := range readRecords(t, seam) {
-		if r.Header.Kind == format.KindWrite && r.Header.Tag == 2 {
+		if r.Header.Kind == format.KindWrite && r.Header.File == f {
 			rec++
 		}
 	}
-	if rec != 1 {
-		t.Fatalf("%d records of the refused write on disk, want 1", rec)
+	if rec != 2 {
+		t.Fatalf("%d records of the file on disk, want the published one and the refused one", rec)
 	}
 }
