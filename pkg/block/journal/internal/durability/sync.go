@@ -253,9 +253,18 @@ type Durability struct {
 	onUnholdCopy func(ownedCopy)
 
 	// reappend appends a held record to a healthy segment from its copy and
-	// repoints the index to the new place. The worker calls it under the
-	// record's file append domain, with no lock of this layer held, once the
-	// copy's segment is claimed and the index repointed to the copy.
+	// repoints the index to the new place. The worker calls it once the copy's
+	// segment is claimed and the index repointed to the copy, with no file
+	// append domain and no lock of this layer held, so a read of the file
+	// never waits on the re-append's fsync. It appends and syncs the new
+	// segment on its own, then takes the record's file append domain only for
+	// its final repoint, which it makes only if the index still names the copy
+	// (Index.Names), since a write may have overwritten the record meanwhile.
+	// It runs on the stream's worker, so it must not wait on anything that
+	// worker does, such as a Sync or a WaitDurable of this layer: it may block
+	// on the stream's append and its own fsync of the segment, and on the
+	// record's file append domain. A nil error says the re-append landed and
+	// the record leaves the hold.
 	//
 	// decision: it is nil until the per-record re-append installs it, and
 	// while it is nil the worker neither repoints a held record nor re-appends

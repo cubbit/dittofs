@@ -54,6 +54,22 @@ func (d *testDomains) Lock(id core.FileID) func() {
 	}
 }
 
+// heldBy reports whether id's file domain is held now, by anyone: a probe
+// that takes the domain only when it is free, and gives it back at once.
+func (d *testDomains) heldBy(id core.FileID) bool {
+	d.mu.Lock()
+	m, ok := d.locks[id]
+	d.mu.Unlock()
+	if !ok {
+		return false
+	}
+	if !m.TryLock() {
+		return true
+	}
+	m.Unlock()
+	return false
+}
+
 // heldNow returns how many file domains are held now.
 func (d *testDomains) heldNow() int {
 	d.mu.Lock()

@@ -33,7 +33,10 @@ import (
 // held segment on each pass, taking that record's file domain and asking the
 // index twice. Upgrade to waking the worker only on a change that can move a
 // hold (a claim let go, a write over a held record, a landed re-append) when a
-// journal with many held records shows the visits in a profile.
+// journal with many held records shows the visits in a profile. A claimed
+// hold whose re-append keeps failing is retried on every pass and at every
+// tick of the sync bound with no backoff; upgrade to a per-hold retry backoff
+// when a persistently failing re-append shows up as worker load or log volume.
 type segHold struct {
 	records map[core.Seq]ownedCopy
 	// claimed says the segment's claim in the set is the hold's; owed says the
@@ -275,38 +278,50 @@ func (d *Durability) retryHold(st *stream, set *segment.Set, seg core.SegmentID)
 	}
 }
 
-// moveHeld handles one held record under its file's append domain: a record
+// moveHeld handles one held record. Under its file's append domain, a record
 // the index names neither at the corrupt place nor at the copy was
 // overwritten, and leaves the hold with no re-append; one the claim covers is
-// repointed to the copy if the index still names the corrupt record,
-// re-appended, and leaves the hold once the re-append lands. A re-append that
-// fails leaves the record held for the next pass.
+// repointed to the copy if the index still names the corrupt record. The
+// domain is then let go, and the record is re-appended with no lock held,
+// leaving the hold once the re-append lands. A re-append that fails, or one
+// not made because the journal turned read-only meanwhile, leaves the record
+// held for the next pass.
 func (d *Durability) moveHeld(st *stream, seg core.SegmentID, h *segHold, c ownedCopy, claimed bool) {
 	unlock := d.domains.Lock(c.File)
-	defer unlock()
 	at := index.RecordAt{Segment: c.Copy.Segment, Offset: uint32(c.Copy.Off)}
 	atRecord := d.index.Names(c.File, c.Record)
-	landed := false
 	switch {
 	case !atRecord && !d.index.Names(c.File, at):
 		// Overwritten: nothing of the record is served from the copy.
-	case !claimed || d.reappend == nil:
+		unlock()
+		d.letGo(st, seg, h, c, false)
 		return
-	default:
-		if atRecord {
-			_, hd, err := d.index.RepointRecord(c.File, c.Record, at)
-			d.accountDelta(hd)
-			if err != nil {
-				d.log.Error("journal could not repoint a held record to its copy", "file", c.File, "seq", c.Seq, "err", err)
-				return
-			}
-		}
-		if err := d.reappend(st, c); err != nil {
-			d.log.Error("journal could not re-append a held record", "file", c.File, "seq", c.Seq, "err", err)
+	case !claimed || d.reappend == nil:
+		unlock()
+		return
+	case atRecord:
+		_, hd, err := d.index.RepointRecord(c.File, c.Record, at)
+		d.accountDelta(hd)
+		if err != nil {
+			unlock()
+			d.log.Error("journal could not repoint a held record to its copy", "file", c.File, "seq", c.Seq, "err", err)
 			return
 		}
-		landed = true
 	}
+	unlock()
+	if d.isReadOnly() {
+		return
+	}
+	if err := d.reappend(st, c); err != nil {
+		d.log.Error("journal could not re-append a held record", "file", c.File, "seq", c.Seq, "err", err)
+		return
+	}
+	d.letGo(st, seg, h, c, true)
+}
+
+// letGo removes c from h, the hold on seg, unless the hold has ended since;
+// landed says a re-append of c landed.
+func (d *Durability) letGo(st *stream, seg core.SegmentID, h *segHold, c ownedCopy, landed bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.holds[seg] != h {

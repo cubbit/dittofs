@@ -208,6 +208,13 @@ func (d *Durability) useCopy(st *stream, c Corruption, cp copyEntry) (CorruptOut
 			// the index still names the corrupt record, and the next read of
 			// it comes back here.
 			d.log.Error("journal could not repoint a corrupt record to its copy", "file", c.File, "seq", c.Seq, "err", err)
+		case moved == 0 && d.index.Names(c.File, to):
+			// Another read repointed the record to this copy between this
+			// read finding it corrupt and taking the domain: the copy is what
+			// the index serves, so this read is served it too and is no loss
+			// (a copy that verifies never is). Nothing was taken out of the
+			// ledger yet, which only the drop does, so nothing is undone; a
+			// hold this call added stays, as the copy is in use.
 		case moved == 0:
 			// A record this call added to the hold set joined it before the
 			// repoint, which moved nothing, so its hold is released here, by

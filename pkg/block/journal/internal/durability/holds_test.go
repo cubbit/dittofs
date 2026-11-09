@@ -170,14 +170,17 @@ type landed struct {
 	// atRecord and atCopy say whether the index named the record that did not
 	// verify, and the copy.
 	atRecord, atCopy bool
+	// domainHeld says the record's file append domain was held when it ran.
+	domainHeld bool
 }
 
 // landing is a re-append double. Without block, every call lands at once.
 // With block, every call is reported on calls and returns what land hands it,
 // so a test sees the worker between two landings.
 type landing struct {
-	ix    *index.Index
-	block bool
+	ix      *index.Index
+	domains *testDomains
+	block   bool
 
 	mu  sync.Mutex
 	got []landed
@@ -194,14 +197,14 @@ func newLanding(block bool) *landing {
 
 // install puts the double on the layer, before it starts.
 func (l *landing) install(cr *corruptRig) {
-	l.ix = cr.ix
+	l.ix, l.domains = cr.ix, cr.domains
 	cr.d.reappend = l.reappend
 }
 
 func (l *landing) reappend(_ *stream, c ownedCopy) error {
 	at := index.RecordAt{Segment: c.Copy.Segment, Offset: uint32(c.Copy.Off)}
 	l.mu.Lock()
-	l.got = append(l.got, landed{c: c, atRecord: l.ix.Names(c.File, c.Record), atCopy: l.ix.Names(c.File, at)})
+	l.got = append(l.got, landed{c: c, atRecord: l.ix.Names(c.File, c.Record), atCopy: l.ix.Names(c.File, at), domainHeld: l.domains.heldBy(c.File)})
 	l.mu.Unlock()
 	if !l.block {
 		return nil
@@ -318,6 +321,7 @@ func TestTwoCopiesOneSegmentResolvesWhenBothLanded(t *testing.T) {
 		t.Fatalf("hold after both landed = %+v, want none", v)
 	}
 	cr.wantRetirable(t, seg)
+	l.wantNoDomain(t)
 	cr.noResolved(t)
 	cr.wantNoLoss(t)
 }
@@ -412,6 +416,7 @@ func TestRepeatedReadWhileOwedAddsNothing(t *testing.T) {
 		t.Fatalf("re-appended %+v, want the one record once", got)
 	}
 	cr.wantRetirable(t, seg)
+	l.wantNoDomain(t)
 	cr.wantNoLoss(t)
 }
 
@@ -449,6 +454,7 @@ func TestOverwrittenOwedRecordRemovedWithoutReappend(t *testing.T) {
 		t.Fatalf("re-appended %+v, want only g's record", got)
 	}
 	cr.wantRetirable(t, seg)
+	l.wantNoDomain(t)
 	cr.wantNoLoss(t)
 }
 
@@ -502,6 +508,7 @@ func TestRepackLetsGoWorkerRetriesAndReappends(t *testing.T) {
 		}
 	}
 	cr.wantRetirable(t, seg)
+	l.wantNoDomain(t)
 	cr.wantNoLoss(t)
 }
 
@@ -551,6 +558,13 @@ func TestRetirementWinsBeforeRetryLosesEveryOwedRecord(t *testing.T) {
 // segment nothing held: a retirement that read it resolved, started while a
 // read of another file's record takes the claim, is refused; and a copy whose
 // segment the set reports retired is a loss.
+//
+// It does not cover a failed segment that was announced resolved, nor a
+// retirement racing the read: the copy segment here is one sealed and never
+// failed, standing for one with no hold, and the steps run in sequence. A
+// failed segment holding registered copies is made only by the per-record
+// re-append, which is when this test should move to one. f's write is only
+// the segment's other file; only g's record is read.
 func TestCopyFromResolvedSegmentUnresolvesAndClaims(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	cr := newCorruptRig(t, nil)
@@ -689,4 +703,88 @@ func TestUnholdReturnsSegmentToPriorResolvedState(t *testing.T) {
 			cr.noResolved(t)
 		})
 	}
+}
+
+// wantNoDomain fails unless every re-append ran with its record's file append
+// domain free: a re-append appends and syncs, and takes the domain only for
+// its own final repoint.
+func (l *landing) wantNoDomain(t *testing.T) {
+	t.Helper()
+	got := l.all()
+	if len(got) == 0 {
+		t.Fatal("nothing was re-appended")
+	}
+	for _, c := range got {
+		if c.domainHeld {
+			t.Fatalf("seq %d was re-appended with its file's append domain held", c.c.Seq)
+		}
+	}
+}
+
+// TestLateReadOfHeldRecordKeepsTheFirstReadsHold covers a read that adds no
+// record to the hold, the record already held by an earlier read, and whose
+// repoint then moves nothing: it does not take back the earlier read's hold,
+// so the segment stays claimed. The file's domain is held throughout, so the
+// worker cannot move the hold meanwhile.
+func TestLateReadOfHeldRecordKeepsTheFirstReadsHold(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	h := &holds{}
+	cr := newCorruptRig(t, func(cr *corruptRig) { h.watch(cr.d) })
+	f := file(1)
+	r := cr.reappend(t, f, 0, "aaaa")
+	cr.register(r)
+	seg := r.orig.Segment
+	cr.useCopy(t, r)
+
+	unlock := cr.domains.Lock(f)
+	defer unlock()
+	// The index stops naming both the corrupt record and the copy, as a later
+	// move of the record would leave it, so the late read's repoint moves
+	// nothing and finds the copy not served either.
+	elsewhere := index.RecordAt{Segment: 999, Offset: 0}
+	if moved, _, err := cr.ix.RepointRecord(f, copyAt(r), elsewhere); err != nil || moved == 0 {
+		t.Fatalf("RepointRecord = %d, %v, want the record moved", moved, err)
+	}
+	late := r.c
+	late.DomainHeld = true
+	if _, err := cr.d.Corrupt(context.Background(), late); err != nil {
+		t.Fatalf("Corrupt: %v", err)
+	}
+	if v := cr.holdOf(seg); !slices.Equal(v.seqs, []core.Seq{r.c.Seq}) || !v.claimed {
+		t.Fatalf("hold after the late read = %+v, want the first read's record, claimed", v)
+	}
+	if _, _, err := cr.set.ClaimRetirement(seg); !errors.Is(err, segment.ErrClaimed) {
+		t.Fatalf("ClaimRetirement = %v, want ErrClaimed", err)
+	}
+	if got := h.released(); len(got) != 0 {
+		t.Fatalf("unholdCopy was handed %+v, want nothing", got)
+	}
+}
+
+// TestReadAfterAnotherReadsRepointServesTheCopy covers two reads of one
+// corrupt record, the second reaching Corrupt after the first repointed the
+// index to the copy: the second is served the copy too, and is no loss, so no
+// loss record, no event, no mark, and the record stays in the ledger.
+func TestReadAfterAnotherReadsRepointServesTheCopy(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cr := newCorruptRig(t, nil)
+	f := file(1)
+	r := cr.reappend(t, f, 0, "aaaa")
+	cr.register(r)
+
+	cr.useCopy(t, r)
+	cr.useCopy(t, r)
+	if got := cr.placedAt(t, f, 0); got != copyAt(r) {
+		t.Fatalf("the extent is served from %+v, want the copy %+v", got, copyAt(r))
+	}
+	if !cr.inLedger(r.again) {
+		t.Fatal("the record left the ledger")
+	}
+	if n := cr.marksOf(f); n != 0 {
+		t.Fatalf("%d marks for the file, want none", n)
+	}
+	if v := cr.holdOf(r.orig.Segment); !slices.Equal(v.seqs, []core.Seq{r.c.Seq}) || !v.claimed {
+		t.Fatalf("hold = %+v, want the one record, claimed", v)
+	}
+	cr.wantNoLoss(t)
 }
