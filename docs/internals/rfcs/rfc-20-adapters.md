@@ -1157,7 +1157,7 @@ How each stage refuses:
 | decode header, decode args | the protocol's garbage-args or invalid-parameter answer |
 | unwrap | SMB: `STATUS_ACCESS_DENIED` on the request's message ID, connection kept; a message that fails decryption closes it (`Conn.Close`, MS-SMB2 3.3.5.2.1.1) ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). `RPCSEC_GSS`: a failed verifier `RPCSEC_GSS_CREDPROBLEM`; a sequence number below the window, or already seen, dropped unanswered; one above it advances the window ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
 | admit | not refused — the connection is not read until a request completes |
-| replay check | the cached reply, or the protocol's sequence error |
+| replay check | the cached reply, or the protocol's sequence error; past the deadline, the reply reservation's `ErrDelay` with `DelayResources` (§4.7's `ReplayCache`) |
 | resolve IDs | a table ID not in its table: the protocol's bad-ID answer. A client-held name is never refused here |
 | send | connection closed |
 
@@ -1488,10 +1488,11 @@ version:
   `errors.Is` matches against a value of the same type and kind only, and the
   whole class by its sentinel ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values));
 - a row sees the error, the operation and the version, nothing else. An answer
-  that turns on more — NFS's `NoReclaim`, `NFS4ERR_RECLAIM_BAD` in grace and
-  `NFS4ERR_NO_GRACE` outside it ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors)) —
-  is the handler's: it knows the grace and returns its protocol's own error for
-  one of the two, which the table maps beside the service's;
+  that turns on more is two kinds the service tells apart: a reclaim is
+  `NFS4ERR_RECLAIM_BAD` in grace and `NFS4ERR_NO_GRACE` outside it
+  ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors)), and the service, which knows
+  the shard's grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)),
+  answers a reclaim outside it as its own kind, mapped by its own row;
 - expected refusals — `ErrNotFound`, `ErrExist`, `ErrAccess` and the like — are
   logged at debug, unexpected ones at error.
 
@@ -1574,12 +1575,16 @@ it holds — the service counts nothing about holds:
 > (`HoldCodec.Interim`, `HoldCodec.Final`): the overshoot is at most the
 > client's balance minus one when the ceiling, or the floor with the pool full,
 > was reached, then one call at a time sent on that last credit, each keeping
-> its receive reservation. The balance stays at one because MS-SMB2 3.3.1.2
+> its receive reservation: the credit target counts what a withheld interim's
+> final reply still owes, so no other response refills the balance past it
+> (RFC 22 §3.3). The balance stays at one because MS-SMB2 3.3.1.2
 > requires that it never reach zero, and a client at zero could not send the lease-break
 > acknowledgement such a call may be waiting on. This departs from MS-SMB2
-> 3.3.4.1.2, where Windows grants the interim's credits to keep the client
-> from stalling: granting them all would let the pending count grow at the
-> client's full rate. Past the floor with the pool full the call is not refused
+> 3.3.4.1.2, which grants an asynchronous request's credits in its interim
+> only, and from 3.3.4.3 and 3.3.4.4, which set an asynchronous final
+> response's `CreditResponse` to 0. Windows grants the interim's credits to
+> keep the client from stalling, but granting them all would let the pending
+> count grow at the client's full rate. Past the floor with the pool full the call is not refused
 > and keeps its receive reservation, where its write data already is (RFC 24
 > §3.2, §4.3), which bounds the bytes. Withdraw it if the service gains a way
 > to withdraw a call it has not applied.
@@ -1969,7 +1974,7 @@ type HoldCodec interface {
 	Interim(h Header, grant bool, out *Buf) error
 	// Final is the final reply's header, with the async ID. If grant (true
 	// only when its interim withheld), it grants the request's credits less
-	// what the interim granted; otherwise none.
+	// what the interim granted of them; otherwise none.
 	Final(h Header, grant bool) Header
 	Cancels(h Header) (key uint64, ok bool) // a CANCEL ends the hold it names and gets no reply
 	// Pends says whether a chain member before the last, answered ErrDelay
@@ -2122,7 +2127,7 @@ is tested once, on its own.
 | Shared | Between | Where | What it is |
 | --- | --- | --- | --- |
 | everything above the handler | all protocols | `core` | connections, pipeline, compound runner, held requests, middleware, metrics, spans (§2.5); buffers from `pkg/resources` (§6.8) |
-| neutral ↔ wire values | all protocols | `translate` | ACLs and security descriptors ([RFC 19 §5.1](rfc-19-authorization.md#5.1%20One%20translation%2C%20two%20spellings)), access masks, times, file types and modes, `metadata.File` to the attributes each protocol reports |
+| neutral ↔ wire values | all protocols | `translate` | ACLs and security descriptors ([RFC 19 §5.1](rfc-19-authorization.md#5.1%20One%20translation%2C%20two%20spellings)), access masks, times, file types and modes, `vfs.File` to the attributes each protocol reports |
 | fitting a listing to the client's buffer | `READDIR`, `READDIRPLUS`, NFSv4 `READDIR`, SMB `QUERY_DIRECTORY` | `translate` | `Fit(entries []vfs.DirEntry, budget int, size func(vfs.DirEntry) int) int`: how many entries of the service's page fit; each protocol supplies its encoded size and resumes from the cursor of the last entry sent |
 | the RPC layer | NFSv3, NFSv4, the auxiliary services | `nfs/protocol`, `nfs/wire` | record marking, RPC header, AUTH_SYS, `RPCSEC_GSS`, routing by program and version |
 | XDR primitives | every NFS program | `nfs/wire` | integers, opaques, strings, bitmaps, file handles — generated |
@@ -2212,7 +2217,7 @@ What follows from the service owning it:
   since a server need not validate a handle until it is used.
 - **Mount-crossing attributes are formatted, not computed.** `fsid`,
   `mounted_on_fileid` and the pseudo directory's change attribute come back
-  in the `metadata.File` the service returns; the attribute encoder writes
+  in the `vfs.File` the service returns; the attribute encoder writes
   them.
 - **No share list in the adapter.** A share added, removed or re-pathed reaches
   every protocol through the service's next call, with nothing to refresh,

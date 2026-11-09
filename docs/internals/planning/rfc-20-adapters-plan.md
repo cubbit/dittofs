@@ -154,7 +154,7 @@ what those tests stand on:
   target's reply, gone after 5 s; a drain that cancels a parked operation and leaves it
   unanswered, serves a context operation and a read before a releasing one, and stops a chain
   at a member it leaves unanswered while a member before it that went pending still gets its
-  final reply; a cancel or a drain racing a grant (§4.7's `Park`); a member before the last
+  final reply, and leaves a single-reply compound unanswered as a whole, caching nothing; a cancel or a drain racing a grant (§4.7's `Park`); a member before the last
   answered `ErrDelay` (§4.7's `Pends`); a call the interim timer finds in the service past the
   ceiling, and one past the floor with the hold pool full, each read on the credit balance (§4.6); `Park` with the reply pool
   full (§4.7's `Park`); an expired credential refusing a lock and a write under a break and
@@ -553,17 +553,17 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   decoded, unwrapped, admitted and looked up on its own, the related-request rule, the replies
   joined with `HeaderCodec.Chain`, a related member routed from the one before it; the drain
   decision per request through `Invocation.Role`, and a member left unanswered stopping the
-  chain; on `testproto`'s chained frames, not on the runner's
+  chain, the members before it answered in a chain and nothing answered or cached in a
+  single-reply compound (RFC 20 §4.7); on `testproto`'s chained frames, not on the runner's
   internals alone.
 - T5.5 Held requests: interim timer and `HoldCodec.Interim`, the final reply under
   `HoldCodec.Final`, re-drive from `Resolve` with a fresh attempt deadline inside the hold bound,
   `vfs.WithHold` added to `pkg/vfs` (RFC 17 §5.9) and passed on every call, asserted on the
   context `vfstest.Record` receives (its reader, the clone wait, is RFC 17 plan piece 11's, V30),
   the per-connection
-  floor and the hold pool, the credits on `testproto`'s balance (a call past the ceiling, and one
-  past the floor with the hold pool full, gets an interim granting none of its own credits but
-  what keeps the balance at one and a final granting the rest, a cancelled one's final too; a
-  chain member's earlier members' credits granted on its interim), a cancel (`HoldCodec.Cancels`) and close ending a hold with no reply
+  floor and the hold pool, the credits on `testproto`'s balance for each case §4.6 and
+  `HoldCodec` name (past the ceiling; past the floor with the hold pool full; cancelled; a chain
+  member after members already answered), a cancel (`HoldCodec.Cancels`) and close ending a hold with no reply
   to the cancel, and a cancel that arrives first remembered; the write data's `Buf` kept across
   re-drives; chain members held: RFC 20 §4.7.
 - T5.6 The middleware chain: recovery (server fault, logged with the stack, the connection's

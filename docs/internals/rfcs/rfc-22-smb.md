@@ -443,7 +443,8 @@ flight.
 
 - The largest read, write and control request (`MaxReadSize`, `MaxWriteSize`,
   `MaxTransactSize`) is **8 MiB**, a request costing one credit per 64 KiB.
-- Each connection targets **512** credits outstanding. A synchronous response,
+- Each connection targets **512** credits outstanding, counting those the client holds and
+  those a withheld interim's final response still owes. A synchronous response,
   and the interim response of a request held pending, grants what the client
   asks, at least 1, up to the target, but for one exception: an interim that
   withholds its request's credits (below) grants only what keeps the client's
@@ -498,7 +499,9 @@ flight.
   the floor with the hold pool full, its interim withholds its credits but for
   what keeps the client's balance at one, and its final response grants the
   rest, so the client's balance falls to one and it sends one request at a
-  time until a final response returns more; past the floor it keeps its
+  time until a final response returns more, since the target counts what
+  those final responses still owe and a synchronous response grants no more
+  than it; past the floor it keeps its
   receive reservation
   ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)). The balance never
   reaches zero (MS-SMB2 3.3.1.2), so the client can still acknowledge a lease
@@ -2571,7 +2574,7 @@ built; the totality test fails until they have rows.
 
 **What runs while draining** is each command's `Role`
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)):
-releases are `CLOSE`, an `OPLOCK_BREAK` acknowledgement of an oplock or a
+releases are `CLOSE`, `LOGOFF`, an `OPLOCK_BREAK` acknowledgement of an oplock or a
 lease, and per request a `LOCK` whose elements unlock; flushes are `FLUSH`, as
 NFS's `COMMIT` is, and per request a `WRITE` through an open under a break,
 which the break waits on. Every other command is refused with the drain's
