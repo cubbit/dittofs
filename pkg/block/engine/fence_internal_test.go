@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // errStoreDown is a store's failure of the whole call.
@@ -119,5 +120,22 @@ func TestFenceBeginRacesAReader(t *testing.T) {
 	wg.Wait()
 	if n := seen.Load(); n > 0 {
 		t.Errorf("%d gate reads fenced a transaction just begun", n)
+	}
+}
+
+// A retrying owner's failure that a commit followed is not the cause of a
+// stall an idle minute later: node_fenced names errNoCommit.
+func TestFenceCauseOfAStallAfterARecoveredFailure(t *testing.T) {
+	f, clock := newClockFence()
+	f.begin()
+	f.end(withRetryingOwner(context.Background()), errStoreDown)
+	f.begin()
+	f.end(context.Background(), nil)
+	clock.Advance(time.Minute)
+	f.begin()
+	clock.Advance(fenceAfter)
+	c, ok := f.condition(entity.NodeID{1})
+	if !ok || c.Cause != errNoCommit {
+		t.Errorf("node_fenced %v naming %v, want errNoCommit", ok, c.Cause)
 	}
 }

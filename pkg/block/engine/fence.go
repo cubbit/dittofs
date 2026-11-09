@@ -170,9 +170,11 @@ func (f *fence) gate() error {
 	return nil
 }
 
-// cause is the store's last error a retrying owner saw, or errNoCommit.
+// cause is the store's error a retrying owner's latest attempt failed with,
+// while one is failing, or errNoCommit. An error a commit since followed is
+// not the cause of a later stall.
 func (f *fence) cause() error {
-	if p := f.lastErr.Load(); p != nil {
+	if p := f.lastErr.Load(); p != nil && f.failing.Load() {
 		return *p
 	}
 	return errNoCommit
