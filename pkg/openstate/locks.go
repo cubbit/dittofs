@@ -151,6 +151,12 @@ func (ls *lockState) sessioned() bool { return ls.open != nil && ls.open.session
 // than a reference, when a lock state of o on e was created on a session:
 // ErrNotYoursSessioned, as mine refuses a reference to it.
 //
+// decision: the check is per file, e's lock states only, so a sessionless
+// TestLock on a file where o holds nothing is answered, not refused. That is
+// harmless: the answer names only the conflicting locks of other owners,
+// which any caller may test for, and nothing of o's state on another file.
+// ReleaseLockOwner runs it on every file o's client holds a lock state on.
+//
 // decision: only TestLock and ReleaseLockOwner, NFSv4's calls naming an
 // owner alone, run it; CancelLock and WaitAnswered do not. Those are NLM's and
 // SMB's: an NLM owner's lock state is under no open and never marked, and an
