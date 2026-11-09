@@ -451,8 +451,8 @@ flight.
   balance at one, which is 0 while it holds more. The final response of a
   request answered asynchronously grants 0, since its interim response already
   granted them; where the interim withheld them, the final response grants the
-  rest. The server never grants past the target and never
-  revokes credits already granted.
+  rest. The server never grants past the target but for the one credit that
+  keeps the client's balance at one, and never revokes credits already granted.
 - Sequence windows, credits and outstanding requests are per connection, in the
   memory of the gateway node.
 - **A held request's credits are granted in its interim response.** A request
