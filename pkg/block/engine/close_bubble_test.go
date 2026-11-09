@@ -269,3 +269,36 @@ func TestACloseWithNoDeadlineGivesUpAtThirtySecondsOfTheTestClock(t *testing.T) 
 		})
 	})
 }
+
+// The last group commit leaves out a file whose removal was cut short, and
+// never waits for its guard: nothing releases it once the loop is stopped.
+func TestACloseNeverWaitsOnAGuardOfACutShortFile(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := engine.NewStubStore()
+		b := newBubble(t, store, nil)
+		s := bubbleShare(7)
+
+		if err := b.e.Bind(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+
+		f := entity.NewFileID()
+		opts := engine.WriteOpts{Done: func() {}}
+
+		if _, err := b.e.Write(context.Background(), s.ID, f, 0, []byte("x"), opts); err != nil {
+			t.Fatal(err)
+		}
+
+		b.e.HoldGuard(f)
+
+		if err := b.e.Close(context.Background()); err != nil {
+			t.Errorf("Close = %v, want nil", err)
+		}
+
+		if n := store.Commits.Load(); n != 0 {
+			t.Errorf("%d existence commits, want none: the guarded file was committed", n)
+		}
+
+		b.e.CloseGroupCommits()
+	})
+}

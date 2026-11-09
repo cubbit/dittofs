@@ -47,7 +47,10 @@ func scripted(t *testing.T, answers ...answer) (l *removalLoop, f entity.FileID,
 		}}}
 	l = newRemovalLoop(e)
 	go l.run()
-	t.Cleanup(l.close)
+
+	t.Cleanup(func() {
+		l.halt(nil)
+	})
 	f = entity.NewFileID()
 	var runs atomic.Int32
 	l.enqueue(&loopItem{b: &binding{}, f: f, kind: entity.RemoveTruncate, run: func(context.Context) answer {
@@ -196,7 +199,10 @@ func TestADroppedSharesRunningItemIsEnded(t *testing.T) {
 		}}}
 	l := newRemovalLoop(e)
 	go l.run()
-	t.Cleanup(l.close)
+
+	t.Cleanup(func() {
+		l.halt(nil)
+	})
 	s := entity.NewShareID()
 	b := &binding{share: Share{ID: s}}
 	running, finish := make(chan struct{}), make(chan struct{})

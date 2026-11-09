@@ -344,6 +344,16 @@ type startLifecycle struct {
 	mu     sync.Mutex
 	plan   []error     // the next RaiseVersionLimits calls fail with these, in order; nil passes
 	limits []raiseCall // every RaiseVersionLimits call, in order
+
+	// onRaise, when set before the first call, is called with the number of
+	// RaiseVersionLimits calls made so far as each one begins, after it is
+	// recorded.
+	onRaise func(calls int)
+
+	// untilCancel makes a call wait for its context to end, or for this
+	// channel to close, and then for this channel, before it answers the
+	// context's error.
+	untilCancel chan struct{}
 }
 
 // heldRaise is a gate for the next RaiseVersionLimits naming share.
@@ -357,6 +367,9 @@ type heldRaise struct {
 type raiseCall struct {
 	shares []entity.ShareID
 	stack  string
+	ctxErr error // the context's error as the call began
+	ctx    context.Context
+	to     map[entity.ShareID]entity.JournalVersion
 }
 
 // failRaises makes the next RaiseVersionLimits calls answer errs, in order.
@@ -428,10 +441,14 @@ func (l *startLifecycle) RaiseVersionLimits(ctx context.Context, to map[entity.S
 	call := raiseCall{
 		shares: slices.Collect(maps.Keys(to)),
 		stack:  string(buf[:runtime.Stack(buf, false)]),
+		ctxErr: ctx.Err(),
+		ctx:    ctx,
+		to:     maps.Clone(to),
 	}
 
 	l.mu.Lock()
 	l.limits = append(l.limits, call)
+	n := len(l.limits)
 
 	var planned error
 
@@ -442,6 +459,10 @@ func (l *startLifecycle) RaiseVersionLimits(ctx context.Context, to map[entity.S
 
 	l.mu.Unlock()
 
+	if l.onRaise != nil {
+		l.onRaise(n)
+	}
+
 	if h := l.hold.Load(); h != nil {
 		_, named := to[h.share]
 
@@ -449,6 +470,17 @@ func (l *startLifecycle) RaiseVersionLimits(ctx context.Context, to map[entity.S
 			close(h.g.entered)
 			<-h.g.release
 		}
+	}
+
+	if l.untilCancel != nil {
+		select {
+		case <-ctx.Done():
+		case <-l.untilCancel:
+		}
+
+		<-l.untilCancel
+
+		return ctx.Err()
 	}
 
 	if planned != nil {
@@ -524,6 +556,10 @@ type logJournal struct {
 	fail      map[string]error
 	limitGate atomic.Pointer[gate]
 	onStrand  func(journal.ShareTag) // a test's hook: run at each Strand call
+
+	// ro, when set, is the read-only state Stats reports, as a journal that
+	// turned read-only does until it is reopened; clearing it is the reopen.
+	ro atomic.Pointer[journal.ReadOnlyState]
 
 	mu     sync.Mutex
 	calls  []string
@@ -628,6 +664,16 @@ func (j *logJournal) Draw() (journal.Version, error) {
 	}
 
 	return j.FakeJournal.Draw()
+}
+
+func (j *logJournal) Stats() journal.Stats {
+	s := j.FakeJournal.Stats()
+
+	if ro := j.ro.Load(); ro != nil {
+		s.ReadOnly = *ro
+	}
+
+	return s
 }
 
 func (j *logJournal) Close() error {

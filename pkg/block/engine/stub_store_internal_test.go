@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -25,6 +26,9 @@ var (
 type StubStore struct {
 	// RaiseErr is what the raise at start and at attach answer, when set.
 	RaiseErr error
+
+	// Commits counts the existence commits asked of the store.
+	Commits atomic.Int32
 }
 
 // NewStubStore is a StubStore that fails nothing.
@@ -128,6 +132,8 @@ func (s *StubStore) Commit(
 	[]kvstore.PendingExistence,
 	*kvstore.MarksWrite,
 ) (map[entity.FileID]error, error) {
+	s.Commits.Add(1)
+
 	return nil, s.unused("Commit")
 }
 

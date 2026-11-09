@@ -145,6 +145,14 @@ func (e *Engine) stop(b *stopBound, r *closeRun) error {
 		return err
 	}
 
+	if err := e.stopGroupCommits(b); err != nil {
+		return err
+	}
+
+	if err := e.stopRaise(b); err != nil {
+		return err
+	}
+
 	r.final = true
 
 	return e.closeAll()
@@ -157,6 +165,70 @@ func stuck(what string) error {
 			"journals and handles left open: %w",
 		what, vfserr.ErrUnavailable,
 	)
+}
+
+// stopGroupCommits commits every file's pending existence in a last group
+// commit per journal, so a clean stop leaves no append or hole fill for the
+// next start to re-apply, and then stops and joins each group commit (RFC 8
+// §2.5 step 2). None starts again.
+func (e *Engine) stopGroupCommits(b *stopBound) error {
+	e.gcMu.Lock()
+	e.gcsClosed = true
+	gcs := slices.Collect(maps.Values(e.gcs))
+	e.gcMu.Unlock()
+
+	for _, g := range gcs {
+		// decision: a journal that is read-only is not synced at Close. Its
+		// sync is refused, so a last group commit over it commits nothing
+		// and waits for the stop bound, while the pending existence is in
+		// the journal, where the next Start's recovery re-applies it (RFC 8
+		// §2.5, Start step 3). The handles and the journal still close, in
+		// reverse order, and the group commits are still stopped and joined:
+		// RFC 1 §8.7 has the journal's Close close every segment descriptor
+		// without a final sync, so it has nothing to refuse on a read-only
+		// device. RFC 1 §5.4 and RFC 8 §2.5 say nothing about the Close of a
+		// read-only journal. Overturned if the journal's Close syncs, or if
+		// the RFC asks Close to report the existence it left.
+		if ro := g.j.Stats().ReadOnly; ro.ReadOnly {
+			e.d.Logger.Warn("close left a read-only journal's pending existence to the next start",
+				"err", ro.Err)
+
+			continue
+		}
+
+		if !g.commitAll(b) {
+			return stuck("the last group commit")
+		}
+	}
+
+	for _, g := range gcs {
+		if !g.halt(b) {
+			return stuck("a group commit")
+		}
+	}
+
+	return nil
+}
+
+// stopRaise cancels the version limit raise and joins it (RFC 8 §2.5 step 3).
+// It follows the work queue and the last group commit: work still running
+// before it can draw a version and wake the raise, and a raise cancelled
+// earlier would then start after its join.
+func (e *Engine) stopRaise(b *stopBound) error {
+	e.raising.cancel()
+
+	raised := make(chan struct{})
+
+	go func() {
+		e.raising.wg.Wait()
+		close(raised)
+	}()
+
+	if !b.join(raised, "a version limit raise") {
+		return stuck("a version limit raise")
+	}
+
+	return nil
 }
 
 // stopWork stops the background work that takes journal versions: each

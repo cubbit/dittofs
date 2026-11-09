@@ -213,12 +213,6 @@ func (l *removalLoop) unstall(it *loopItem) {
 	l.e.conds.clear(condKey{conditionRemovalStalled, it})
 }
 
-// close stops the loop, joins its goroutine and ends every item left, with
-// no end to the wait.
-func (l *removalLoop) close() {
-	l.halt(nil)
-}
-
 // halt stops the loop, joins its goroutine within the bound b and ends every
 // item left. It reports false when the join did not end in b, leaving the
 // loop stopped and its items to be ended by a later halt that joins: the stop
