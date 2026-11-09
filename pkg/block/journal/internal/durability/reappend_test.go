@@ -582,6 +582,32 @@ func TestReappendDoesNotTrustPageCache(t *testing.T) {
 	}
 }
 
+// TestReappendRefusesAHeaderThatNamesAnotherVersion covers a re-read whose
+// header and payload verify but carry another version than the ledger kept:
+// the record is failed, not re-appended under the wrong version.
+func TestReappendRefusesAHeaderThatNamesAnotherVersion(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr, seam := newRereadRig(t)
+	f := file(1)
+	a, _ := fr.publish(t, f, 0, "aaaa")
+	seam.set(a, func(p []byte) (int, error) {
+		real := make([]byte, len(p))
+		_, _ = fr.d.made[0].s.ReadAt(a.Segment, real, a.Off)
+		h, err := format.DecodeRecordHeader(real[:format.RecordHeaderSize], rigIdentity, a.Segment, a.Off)
+		if err != nil {
+			t.Errorf("DecodeRecordHeader: %v", err)
+		}
+		h.Version.Counter++
+		return copy(p, format.AppendRecord(nil, rigIdentity, h, format.RecordBody{Payload: []byte("aaaa"), MTime: 1})), nil
+	})
+	fr.failSyncKeepingPages(t, a.Segment, errors.New("sync boom"))
+	wantSyncError(t, mustReturn(t, "Sync", fr.syncAsync(context.Background(), f)), a.Segment, f)
+	fr.awaitResolved(t)
+	if out := fr.writesOutside(t, a.Segment); len(out) != 0 {
+		t.Errorf("a record with another version was re-appended: %+v", out)
+	}
+}
+
 // TestAMixedWindowIsPartReappendedPartFailed covers a window of two files, one
 // whose record cannot be re-read: the generation is raised once, only that
 // file is marked, and the other's Sync returns nil.
@@ -597,10 +623,7 @@ func TestAMixedWindowIsPartReappendedPartFailed(t *testing.T) {
 	chG := fr.syncAsync(context.Background(), g)
 	wantSyncError(t, mustReturn(t, "Sync of f", fr.syncAsync(context.Background(), f)), a.Segment, f)
 	if err := mustReturn(t, "Sync of g", chG); err != nil {
-		var se *core.SyncError
-		if errors.As(err, &se) && slices.Contains(se.Files, g) {
-			t.Fatalf("g was marked failed: %v", err)
-		}
+		t.Fatalf("Sync of the re-appended file = %v, want nil", err)
 	}
 	fr.awaitResolved(t)
 	if err := mustReturn(t, "second Sync of g", fr.syncAsync(context.Background(), g)); err != nil {
@@ -618,10 +641,18 @@ func TestAMixedWindowIsPartReappendedPartFailed(t *testing.T) {
 // a short read and a segment that is gone each leave the record unverified,
 // so its part fails.
 func TestReappendReadErrorFailsThePart(t *testing.T) {
-	cases := map[string]func(p []byte) (int, error){
-		"EIO":        func([]byte) (int, error) { return 0, syscall.EIO },
-		"short read": func(p []byte) (int, error) { return len(p) / 2, nil },
-		"gone":       func([]byte) (int, error) { return 0, segment.ErrSegmentGone },
+	// real reads the record's true bytes, so each case differs from a good
+	// read only in the fault it adds.
+	cases := map[string]func(p []byte, real func([]byte) (int, error)) (int, error){
+		"EIO": func(p []byte, real func([]byte) (int, error)) (int, error) {
+			_, _ = real(p)
+			return 0, syscall.EIO
+		},
+		"short read": func(p []byte, real func([]byte) (int, error)) (int, error) {
+			_, _ = real(p)
+			return len(p) / 2, nil
+		},
+		"gone": func([]byte, func([]byte) (int, error)) (int, error) { return 0, segment.ErrSegmentGone },
 	}
 	for name, read := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -629,7 +660,9 @@ func TestReappendReadErrorFailsThePart(t *testing.T) {
 			fr, seam := newRereadRig(t)
 			f := file(1)
 			a, _ := fr.publish(t, f, 0, "aaaa")
-			seam.set(a, read)
+			seam.set(a, func(p []byte) (int, error) {
+				return read(p, func(q []byte) (int, error) { return fr.d.made[0].s.ReadAt(a.Segment, q, a.Off) })
+			})
 			gen := fr.d.Generation()
 			fr.failSyncOf(t, a.Segment, errors.New("sync boom"))
 			wantSyncError(t, mustReturn(t, "Sync", fr.syncAsync(context.Background(), f)), a.Segment, f)

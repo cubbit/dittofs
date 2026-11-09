@@ -18,21 +18,6 @@ func recordAt(w segment.Written) index.RecordAt {
 // isLoss reports whether w is a loss record.
 func isLoss(w segment.Written) bool { return w.Kind == format.KindLoss }
 
-// failWindow fails every content record the window holds, the way
-// failEntries does. A record of another kind stays in the window for
-// resolveWindows to re-append. It runs on the stream's worker.
-func (d *Durability) failWindow(st *stream, w *window) {
-	st.mu.Lock()
-	var content []entry
-	for i := range w.entries {
-		if isContent(w.entries[i].w) {
-			content = append(content, w.entries[i])
-		}
-	}
-	st.mu.Unlock()
-	d.failEntries(st, w, content)
-}
-
 // failEntries drops the records es of the window from the index, which holds
 // again what they superseded, raises the loss generation once for the window,
 // and names every dropped record in a loss record and an event. The window's

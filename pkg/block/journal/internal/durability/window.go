@@ -39,11 +39,12 @@ type failStamp struct {
 // with that mutex held, and only the stream's worker creates one (takeWindow,
 // or failReadOnly once the journal is read-only) or drops one (resolve). Its
 // entries are changed only under st.mu, by two writers: the worker, when
-// failWindow or failReadOnly fails them, and Corrupt on a reader's goroutine,
-// which takes one entry out holding that entry's file domain. failFile
-// therefore re-checks, under the same domain, which of its entries are still
-// in a window before it fails them. cause is kept for the code that fails a
-// window's records, which reads why the segment ended.
+// resolveWindows fails or re-appends them or failReadOnly fails them, and
+// Corrupt on a reader's goroutine, which takes one entry out holding that
+// entry's file domain. failFile therefore re-checks, under the same domain,
+// which of its entries are still in a window before it fails them. cause is
+// kept for the code that fails a window's records, which reads why the
+// segment ended.
 type window struct {
 	id      uint64
 	seg     core.SegmentID
@@ -56,7 +57,7 @@ type window struct {
 	// failure state as it is.
 	readOnly bool
 	// raised is set, under st.mu and in the step that raises it, once the
-	// generation was raised for the window: by failWindow before it fails a
+	// generation was raised for the window: by failEntries before it fails a
 	// record, or by Corrupt before it answers the window's failure for a
 	// record it took out. Either raise is the window's one. A read-only
 	// journal raises once for its entry instead (raiseOnce), whatever the
@@ -232,8 +233,8 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 // worker.
 //
 // decision: a window is resolved when it holds no record: at once when it is
-// taken with none, when failWindow has failed its last content record and
-// resolveWindows re-appended its last other record, or when resolveWindows or
+// taken with none, when resolveWindows has failed or re-appended its last
+// record, or when resolveWindows or
 // failReadOnly finds a Corrupt took the last record out before it ran. A
 // window whose record could not be re-appended stays pending and is not
 // announced, and the pass after retries it, until the journal turns
@@ -242,9 +243,10 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 // what is withdrawn is only the window's memory. A window failReadOnly made is
 // resolved without an announcement: its segment did not fail.
 //
-// A record failWindow dropped has left the window and the ledger, which would
-// read it durable: st.lost keeps it out of that answer, and failWindow adds it
-// there in the same critical section that removes it from the window.
+// A record failEntries or failReadOnly dropped has left the window and the
+// ledger, which would read it durable: st.lost keeps it out of that answer,
+// and settle adds it there in the same critical section that removes it from
+// the window.
 func (d *Durability) resolve(st *stream, w *window) {
 	st.mu.Lock()
 	st.windows = slices.DeleteFunc(st.windows, func(o *window) bool { return o == w })

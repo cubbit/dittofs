@@ -118,8 +118,15 @@ func (d *Durability) reappendEntry(st *stream, w *window, e entry) error {
 	defer st.mu.Unlock()
 	i := slices.IndexFunc(w.entries, func(o entry) bool { return o.w.Loc == e.w.Loc })
 	if i < 0 {
-		// A read took the record out of the window meanwhile and reports it
-		// itself; the copy just appended completes like any other record.
+		// decision: a record Corrupt took out of the window while its re-read
+		// was in flight is still appended, so the journal holds a second
+		// durable record of that sequence number that no index entry names;
+		// if Corrupt already wrote a loss record for it, a durable write of
+		// the same number contradicts the loss at recovery. Accepted only
+		// until the repoint step lands, which owns the file's domain and the
+		// index. Overturned by re-checking the window's membership under the
+		// file's domain before the append, or by Corrupt skipping a record
+		// whose re-append is in flight.
 		return nil
 	}
 	w.entries = slices.Delete(w.entries, i, i+1)
@@ -203,7 +210,7 @@ func (d *Durability) rereadRecord(st *stream, e entry) (format.RecordHeader, for
 	if err != nil {
 		return unverified("the header does not decode", err)
 	}
-	if h.Seq != e.w.Seq || h.Size() != e.w.Loc.Len {
+	if h.Seq != e.w.Seq || h.Size() != e.w.Loc.Len || h.File != e.w.File || h.Version != e.w.Version || h.Extent != e.w.Extent {
 		return unverified("the header names another record", nil)
 	}
 	h.PayloadCRC = e.w.PayloadCRC

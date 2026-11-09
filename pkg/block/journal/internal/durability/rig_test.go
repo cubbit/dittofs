@@ -194,6 +194,11 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	t.Cleanup(func() { _ = streams.Close() })
 	t.Cleanup(d.Stop)
 	r := newRigOver(d, streams, seam, clock, domains, pool, set, n, sinks, c, acct)
+	// This seam also reroutes readCopy, so production's st.s.ReadAt branch does
+	// not run in the durability tests that use it. It always reads through
+	// stream 0, and a copy read of a pending window's segment gets EIO by
+	// default, which readCopy treats as deciding nothing. A test of the
+	// production read sets d.readCopyAt to nil.
 	d.readCopyAt = func(seg core.SegmentID, p []byte, off int64) (int, error) {
 		if _, kept := r.keptPages.Load(seg); !kept && r.inPendingWindow(seg) {
 			return 0, syscall.EIO

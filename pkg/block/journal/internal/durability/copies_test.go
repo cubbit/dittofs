@@ -452,9 +452,11 @@ func TestCorruptCopyOverwrittenBeforeRepointReleasesHold(t *testing.T) {
 // TestCorruptUsedCopyThenWindowFailsPinsKnownCeiling pins a known ceiling: a
 // record served from a copy stays in its pending window, and when the window
 // fails, the worker still reports a failed-window loss for it while the index
-// goes on naming the copy. The per-record re-append, which repoints such a
-// record and takes it out of the window instead of failing it, must change
-// this test when it lands.
+// goes on naming the copy. The per-record re-append has landed; the test keeps
+// this path by making the window's re-read fail. The success branch, a record
+// Corrupt served from a copy that stays in the window and is then re-appended,
+// sets moved while the index names the copy, is covered by no test yet and is
+// handed to the repoint step.
 func TestCorruptUsedCopyThenWindowFailsPinsKnownCeiling(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	hook, reached, release := gate(t)

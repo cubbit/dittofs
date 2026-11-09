@@ -351,7 +351,7 @@ func (st *stream) takeCorrupt(c Corruption, dirty bool) (synced, lost bool) {
 			// is reported with it too.
 			//
 			// decision: the error reported for a window's file can differ by
-			// when the mark lands. A failWindow that started before the
+			// when the mark lands. A failEntries that started before the
 			// journal turned read-only, or an owed mark that takeWindow
 			// turns into a mark after the entry, reports the segment's own
 			// error, while Corrupt after the entry reports the read-only
