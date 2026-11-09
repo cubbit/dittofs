@@ -512,8 +512,12 @@ type versionLimit struct {
 
 	// refused is set once the journal refuses a limit: no raise changes
 	// that, so no version wakes a raise again until the journal is opened
-	// anew.
+	// anew. refusal is the error that raise returned, which a Bind that
+	// attaches a share to the journal fails with (RFC 8 §2.7); it is written
+	// before refused is set and, like every other read of it, read under the
+	// raise lock.
 	refused atomic.Bool
+	refusal error
 }
 
 // newVersionLimit is the version limit of journal j, its raise lock free.
@@ -865,7 +869,8 @@ func (e *Engine) raiseLocked(ctx context.Context, vl *versionLimit, also []entit
 	to := map[entity.ShareID]entity.JournalVersion{}
 
 	for id, b := range e.table() {
-		if b.removed || b.vl != vl {
+		// A removed binding carries no journal, so it is not vl's.
+		if b.vl != vl {
 			continue
 		}
 
@@ -881,9 +886,10 @@ func (e *Engine) raiseLocked(ctx context.Context, vl *versionLimit, also []entit
 	}
 
 	if err := vl.j.SetVersionLimit(mark); err != nil {
+		vl.refusal = fmt.Errorf("%w: %w", errLimitRefused, err)
 		vl.refused.Store(true)
 
-		return fmt.Errorf("%w: %w", errLimitRefused, err)
+		return vl.refusal
 	}
 
 	vl.last.Store(mark.Counter)
@@ -896,6 +902,12 @@ func (e *Engine) raiseLocked(ctx context.Context, vl *versionLimit, also []entit
 // raises every served share's limit and s's itself first (RFC 8 §2.5). The
 // caller holds the raise lock.
 func (e *Engine) attachLimit(ctx context.Context, s Share, vl *versionLimit) error {
+	// A journal that refused a limit takes no new share: no raise will lift
+	// it, and its refusal is not retried (RFC 8 §2.7).
+	if vl.refused.Load() {
+		return e.journalErr(vl.refusal)
+	}
+
 	if e.stillDue(vl) {
 		if err := e.raiseLocked(ctx, vl, []entity.ShareID{s.ID}); err != nil {
 			if errors.Is(err, errLimitRefused) {

@@ -915,6 +915,59 @@ func TestRefusedLimitIsNotRetried(t *testing.T) {
 	}
 }
 
+// Once the journal has refused a limit, a Bind that attaches a share to it
+// fails with the journal's error, with no store call and no second
+// SetVersionLimit, whether the counter is within the trigger or, after the
+// peak rate has aged out, outside it (RFC 8 §2.7). The share is not bound.
+func TestBindToARefusedJournalFails(t *testing.T) {
+	limitCalls := func(s *starter) int {
+		return strings.Count(strings.Join(s.j.log(), " "), "limit")
+	}
+
+	for _, c := range []struct {
+		name string
+		wait time.Duration
+	}{
+		{name: "within the trigger"},
+		{name: "outside the trigger", wait: 61 * time.Second},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newRaiser(t, time.Second, withSpare())
+			s.j.mu.Lock()
+			s.j.fail = map[string]error{
+				"limit": journal.ErrUnknownFormat,
+			}
+			s.j.mu.Unlock()
+
+			drawN(t, s, 125)
+			s.e.WaitRaises(t)
+			s.clock.Advance(c.wait)
+
+			base := len(s.lc.raiseCalls())
+			limits := limitCalls(s)
+
+			err := s.e.Bind(t.Context(), s.spare)
+			if !errors.Is(err, vfserr.ErrUnavailable) {
+				t.Fatalf("Bind to a journal that refused a limit = %v, want the journal's error", err)
+			}
+
+			s.e.WaitRaises(t)
+
+			if n := len(s.lc.raiseCalls()) - base; n != 0 {
+				t.Errorf("the refused Bind made %d store calls to raise a limit, want none", n)
+			}
+
+			if n := limitCalls(s) - limits; n != 0 {
+				t.Errorf("the refused Bind passed the journal %d limits, want none", n)
+			}
+
+			if err := s.e.BindingOf(s.spare.ID); err == nil {
+				t.Error("the share is bound to a journal that refused a limit")
+			}
+		})
+	}
+}
+
 // A raise waiting to retry when a Bind's raise has the journal refuse a
 // limit ends without another store call or log: the refusal persists.
 func TestRefusalEndsARaiseWaitingToRetry(t *testing.T) {

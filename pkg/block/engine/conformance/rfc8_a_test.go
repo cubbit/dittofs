@@ -362,7 +362,7 @@ func TestRFC8A_AttachAfterDeviceLoss(t *testing.T) {
 // TestRFC8A_VersionLimit, its start and crash halves: the share's limit is
 // committed before the first version is drawn, and after a crash with a
 // version reported and nothing synced the restarted journal issues above it.
-// The raise halves need the test block of 16, which this package cannot set.
+// The raise halves are TestRFC8A_VersionLimitRaise.
 func TestRFC8A_VersionLimit(t *testing.T) {
 	f := enginetest.New(t)
 	ctx := t.Context()
@@ -400,6 +400,17 @@ func TestRFC8A_VersionLimit(t *testing.T) {
 			before.Counter(),
 		)
 	}
+}
+
+// TestRFC8A_VersionLimitRaise is the raise halves of the version limit row:
+// every step between the raise's start and its crash, at a block of 16, with
+// the store blocking or failing the raise's commit and failing a Bind's limit
+// write. It stays red until the conformance package can set the block, which
+// only the engine's own tests can today.
+func TestRFC8A_VersionLimitRaise(t *testing.T) {
+	enginetest.New(t)
+
+	t.Fatal("the raise halves need a block of 16, which this package cannot set yet")
 }
 
 // A share bound with a limit several blocks above the journal's moves the
