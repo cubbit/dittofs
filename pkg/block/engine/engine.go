@@ -85,8 +85,8 @@ type Engine struct {
 	// seams are a test's hooks in Close: each fires when that wait has to
 	// wait, and is nil in production.
 	seams struct {
-		joining  atomic.Pointer[func()] // a join of Close
-		draining atomic.Pointer[func()] // Close's wait for the lifecycle calls
+		joining  atomic.Pointer[func(what string)] // a join of Close, with what it waits for
+		draining atomic.Pointer[func()]            // Close's wait for the lifecycle calls
 	}
 
 	block   uint64 // the versions one raise of the version limit covers

@@ -244,7 +244,15 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		e.endClone(c, err)
 		return err
 	}
-	go e.runClone(c)
+
+	e.cloning.Add(1)
+
+	go func() {
+		defer e.cloning.Done()
+
+		e.runClone(c)
+	}()
+
 	select {
 	case <-c.done:
 		return c.err

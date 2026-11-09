@@ -570,6 +570,10 @@ func onOverwrites(f overwritesFn) func(*engine.Deps) {
 type events struct {
 	mu  sync.Mutex
 	log []string
+
+	// onAdd, when set before the first event, is called with each event
+	// after it is recorded.
+	onAdd func(what string)
 }
 
 // add appends one event.
@@ -581,6 +585,10 @@ func (l *events) add(what string) {
 	l.mu.Lock()
 	l.log = append(l.log, what)
 	l.mu.Unlock()
+
+	if l.onAdd != nil {
+		l.onAdd(what)
+	}
 }
 
 // list is the events so far.

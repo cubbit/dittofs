@@ -222,6 +222,7 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 		g.cancel()
 		close(g.done)
 		g.removals.closed = true // never started: nothing to join
+		close(g.removals.done)
 		return g
 	}
 	if e.gcs == nil {

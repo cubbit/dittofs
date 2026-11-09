@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,6 +92,23 @@ func holdBind(t *testing.T, e *engine.Engine, fl *faultLifecycle, s engine.Share
 	return h
 }
 
+// joinOf answers a channel closed the first time Close has to wait for what.
+func joinOf(e *engine.Engine, what string) <-chan struct{} {
+	var once sync.Once
+
+	fired := make(chan struct{})
+
+	e.OnJoining(func(got string) {
+		if got == what {
+			once.Do(func() {
+				close(fired)
+			})
+		}
+	})
+
+	return fired
+}
+
 // reached waits for the seam fired, or fails the test if Close returns first.
 func reached(t *testing.T, fired <-chan struct{}, closed <-chan error) {
 	t.Helper()
@@ -105,6 +123,58 @@ func reached(t *testing.T, fired <-chan struct{}, closed <-chan error) {
 // unavailable reports whether err is ErrUnavailable.
 func unavailable(err error) bool {
 	return errors.Is(err, vfserr.ErrUnavailable)
+}
+
+// loopHold is a removal item held in its batch: it ignores its context and
+// ends when both its holds are open.
+type loopHold struct {
+	entered chan struct{}
+	first   chan struct{}
+	second  chan struct{}
+	opened  [2]sync.Once
+	started sync.Once
+}
+
+func newLoopHold() *loopHold {
+	return &loopHold{
+		entered: make(chan struct{}),
+		first:   make(chan struct{}),
+		second:  make(chan struct{}),
+	}
+}
+
+// run is the item: it records that it ended in ev.
+func (h *loopHold) run(ev *events) func(context.Context) {
+	return func(context.Context) {
+		h.started.Do(func() {
+			close(h.entered)
+		})
+
+		<-h.first
+		<-h.second
+
+		ev.add("loop item ended")
+	}
+}
+
+// openFirst lets the item go on to its second hold.
+func (h *loopHold) openFirst() {
+	h.opened[0].Do(func() {
+		close(h.first)
+	})
+}
+
+// openSecond lets the item end.
+func (h *loopHold) openSecond() {
+	h.opened[1].Do(func() {
+		close(h.second)
+	})
+}
+
+// openAll lets the item end.
+func (h *loopHold) openAll() {
+	h.openFirst()
+	h.openSecond()
 }
 
 // handleClose is the event a handle of tag's close records.
@@ -499,11 +569,7 @@ func TestTwoConcurrentCloseCallsReturnOneResult(t *testing.T) {
 
 		reached(t, drained, first)
 
-		waiting := make(chan struct{}, 4)
-		u.e.OnJoining(func() {
-			waiting <- struct{}{}
-		})
-
+		waiting := joinOf(u.e, "the other Close")
 		second := make(chan error, 1)
 
 		go func() {
@@ -549,10 +615,7 @@ func TestTwoConcurrentCloseCallsReturnOneResult(t *testing.T) {
 		reached(t, drained, first)
 		<-ac.armed
 
-		waiting := make(chan struct{}, 4)
-		u.e.OnJoining(func() {
-			waiting <- struct{}{}
-		})
+		waiting := joinOf(u.e, "the other Close")
 
 		// A deadline an hour away arms no default timer of its own, so the
 		// second Close ends only with the first.
@@ -607,6 +670,205 @@ func TestTwoConcurrentCloseCallsReturnOneResult(t *testing.T) {
 
 		if err := <-first; err != nil {
 			t.Errorf("the first Close = %v, want nil", err)
+		}
+	})
+}
+
+// With a deadline the stop bound is the context's alone: a caller who gave
+// 120 s is not cut at the 30 s default.
+func TestACloseWithA120sDeadlineKeepsWaitingPastTheDefault(t *testing.T) {
+	u := newUnit(t)
+	h := newLoopHold()
+
+	t.Cleanup(h.openAll)
+
+	if err := u.e.EnqueueHeld(u.share.ID, h.run(u.ev), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	<-h.entered
+
+	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+
+	defer cancel()
+
+	waiting := joinOf(u.e, "a removal loop")
+	closed := closing(u.e, ctx)
+
+	reached(t, waiting, closed)
+	u.clock.Advance(31 * time.Second)
+	h.openAll()
+
+	if err := <-closed; err != nil {
+		t.Errorf("Close = %v, want nil: the default bound cut a 120 s deadline", err)
+	}
+
+	want := []string{"loop item ended", handleClose(u.share), "journal close"}
+	if got := u.ev.list(); !slices.Equal(got, want) {
+		t.Errorf("events %v, want %v", got, want)
+	}
+}
+
+// A removal batch held when a Close whose deadline passed begins: it gives up
+// at the loop's join and leaves the handle and the journal open, and a later
+// Close joins the loop again before it closes anything. This twin runs over
+// the real store; the bubble twin is in close_bubble_test.go.
+func TestACloseHeldInARemovalBatchPastTheDeadlineOverTheRealStore(t *testing.T) {
+	u := newUnit(t)
+	h := newLoopHold()
+
+	t.Cleanup(h.openAll)
+
+	if err := u.e.EnqueueHeld(u.share.ID, h.run(u.ev), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	<-h.entered
+
+	var joins atomic.Int32
+
+	u.e.OnJoining(func(what string) {
+		if what == "a removal loop" && joins.Add(1) == 2 {
+			h.openSecond()
+		}
+	})
+
+	u.ev.onAdd = func(what string) {
+		if strings.HasPrefix(what, "handle close") {
+			h.openSecond()
+		}
+	}
+
+	past, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+
+	defer cancel()
+
+	err := u.e.Close(past)
+	if !unavailable(err) || !strings.Contains(err.Error(), "removal loop") {
+		t.Errorf("Close = %v, want ErrUnavailable naming the removal loop", err)
+	}
+
+	if got := u.ev.list(); len(got) != 0 {
+		t.Errorf("closes %v after a Close that gave up, want none", got)
+	}
+
+	h.openFirst()
+
+	if err := u.e.Close(context.Background()); err != nil {
+		t.Errorf("the second Close = %v, want nil", err)
+	}
+
+	want := []string{"loop item ended", handleClose(u.share), "journal close"}
+	if got := u.ev.list(); !slices.Equal(got, want) {
+		t.Errorf("events %v, want %v", got, want)
+	}
+}
+
+// Without a deadline the stop bound is 30 s of the engine's clock: 29 s is
+// still waiting, 30 s is the bound. This twin runs over the real store.
+func TestACloseWithNoDeadlineGivesUpAtThirtySecondsOverTheRealStore(t *testing.T) {
+	hold := func(t *testing.T) (*unit, *loopHold) {
+		t.Helper()
+
+		u := newUnit(t)
+		h := newLoopHold()
+
+		t.Cleanup(h.openAll)
+
+		if err := u.e.EnqueueHeld(u.share.ID, h.run(u.ev), nil); err != nil {
+			t.Fatal(err)
+		}
+
+		<-h.entered
+
+		return u, h
+	}
+
+	t.Run("29 s is still waiting", func(t *testing.T) {
+		u, h := hold(t)
+		waiting := joinOf(u.e, "a removal loop")
+		closed := closing(u.e, context.Background())
+
+		reached(t, waiting, closed)
+		u.clock.Advance(29 * time.Second)
+		h.openAll()
+
+		if err := <-closed; err != nil {
+			t.Errorf("Close = %v after 29 s, want nil", err)
+		}
+
+		want := []string{"loop item ended", handleClose(u.share), "journal close"}
+		if got := u.ev.list(); !slices.Equal(got, want) {
+			t.Errorf("events %v, want %v", got, want)
+		}
+	})
+
+	t.Run("30 s is the bound", func(t *testing.T) {
+		u, h := hold(t)
+		waiting := joinOf(u.e, "a removal loop")
+		closed := closing(u.e, context.Background())
+
+		reached(t, waiting, closed)
+		u.clock.Advance(30 * time.Second)
+
+		if err := <-closed; !unavailable(err) {
+			t.Errorf("Close = %v after 30 s, want ErrUnavailable", err)
+		}
+
+		if got := u.ev.list(); len(got) != 0 {
+			t.Errorf("closes %v after a Close that gave up, want none", got)
+		}
+
+		h.openAll()
+	})
+}
+
+// A Close waits for a clone goroutine that ignores its context, and gives up
+// at the stop bound leaving the journal and the handle open.
+func TestCloseJoinsACloneGoroutineThatIgnoresItsContext(t *testing.T) {
+	t.Run("past the bound", func(t *testing.T) {
+		u := clonedUnit(t)
+		src := u.committedFile(t, "src", fill(mib, 's'))
+		dst := u.create(t, "dst")
+		release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{Len: mib})
+		waiting := joinOf(u.e, "a clone goroutine")
+		closed := closing(u.e, context.Background())
+
+		reached(t, waiting, closed)
+		u.clock.Advance(engine.StopBoundDefault)
+
+		err := <-closed
+		if !unavailable(err) || !strings.Contains(err.Error(), "clone goroutine") {
+			t.Errorf("Close = %v, want ErrUnavailable naming the clone goroutine", err)
+		}
+
+		if got := u.ev.list(); len(got) != 0 {
+			t.Errorf("closes %v while the clone goroutine runs, want none", got)
+		}
+
+		release()
+		<-answer
+	})
+
+	t.Run("released", func(t *testing.T) {
+		u := clonedUnit(t)
+		src := u.committedFile(t, "src", fill(mib, 's'))
+		dst := u.create(t, "dst")
+		release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{Len: mib})
+		waiting := joinOf(u.e, "a clone goroutine")
+		closed := closing(u.e, context.Background())
+
+		reached(t, waiting, closed)
+		release()
+		<-answer
+
+		if err := <-closed; err != nil {
+			t.Errorf("Close = %v, want nil", err)
+		}
+
+		want := []string{handleClose(u.share), "journal close"}
+		if got := u.ev.list(); !slices.Equal(got, want) {
+			t.Errorf("events %v, want %v", got, want)
 		}
 	})
 }

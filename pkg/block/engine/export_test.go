@@ -693,6 +693,29 @@ func (e *Engine) FenceBusy() (outstanding int64, failing bool) {
 	return e.fence.outstanding.Load(), e.fence.failing.Load() > 0
 }
 
+// EnqueueHeld posts an item on share s's removal loop that calls run, which
+// the test holds, and then ends; end is called if the loop ends first.
+func (e *Engine) EnqueueHeld(s entity.ShareID, run func(ctx context.Context), end func()) error {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return err
+	}
+
+	b.gc.removals.enqueue(&loopItem{
+		b:    b,
+		f:    entity.NewFileID(),
+		kind: entity.RemoveTruncate,
+		run: func(ctx context.Context) answer {
+			run(ctx)
+
+			return itemDone
+		},
+		end: end,
+	})
+
+	return nil
+}
+
 // StopBoundDefault is the stop bound of a Close whose context has no
 // deadline.
 const StopBoundDefault = stopDefault
@@ -703,8 +726,9 @@ func (e *Engine) OnDraining(f func()) {
 	e.seams.draining.Store(&f)
 }
 
-// OnJoining sets the seam Close fires each time a join has to wait.
-func (e *Engine) OnJoining(f func()) {
+// OnJoining sets the seam Close fires each time a join has to wait, with
+// what the join waits for.
+func (e *Engine) OnJoining(f func(what string)) {
 	e.seams.joining.Store(&f)
 }
 

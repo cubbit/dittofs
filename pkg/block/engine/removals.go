@@ -73,6 +73,7 @@ type removalLoop struct {
 	mu     sync.Mutex
 	items  []*loopItem
 	closed bool
+	ending []*loopItem // the items the stop took, ended once the loop's goroutine has
 	// decision: only a test helper sets dropped, until Drop is built, so the
 	// branches that read it end a dropped share's items for tests alone.
 	// They are the shape Drop needs: Drop sets it, and the helper goes,
@@ -212,27 +213,51 @@ func (l *removalLoop) unstall(it *loopItem) {
 	l.e.conds.clear(condKey{conditionRemovalStalled, it})
 }
 
-// close stops the loop, joins its goroutine and ends every item left. A
-// second close does nothing.
+// close stops the loop, joins its goroutine and ends every item left, with
+// no end to the wait.
 func (l *removalLoop) close() {
+	l.halt(nil)
+}
+
+// halt stops the loop, joins its goroutine within the bound b and ends every
+// item left. It reports false when the join did not end in b, leaving the
+// loop stopped and its items to be ended by a later halt that joins: the stop
+// is signalled once, and each item ended once, by whichever call sees the
+// goroutine end.
+func (l *removalLoop) halt(b *stopBound) bool {
 	l.mu.Lock()
-	if l.closed {
-		l.mu.Unlock()
-		return
+	first := !l.closed
+
+	if first {
+		l.closed = true
+		l.ending = l.items
+		l.items = nil
 	}
-	l.closed = true
-	items := l.items
-	l.items = nil
+
 	l.mu.Unlock()
-	l.cancel()
-	close(l.stop)
-	<-l.done
+
+	if first {
+		l.cancel()
+		close(l.stop)
+	}
+
+	if !b.join(l.done, "a removal loop") {
+		return false
+	}
+
+	l.mu.Lock()
+	items := l.ending
+	l.ending = nil
+	l.mu.Unlock()
+
 	for _, it := range items {
 		l.unstall(it)
 		if it.end != nil {
 			it.end()
 		}
 	}
+
+	return true
 }
 
 // isDropped reports whether share s was dropped: nothing of it is noted for

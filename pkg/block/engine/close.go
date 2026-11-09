@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -49,9 +50,10 @@ func (e *Engine) newBound(ctx context.Context) *stopBound {
 	return b
 }
 
-// join waits for done and reports true, or reports false when the bound ends
-// first. It fires the joining seam once it has to wait.
-func (b *stopBound) join(done <-chan struct{}) bool {
+// join waits for done, which ends what, and reports true, or reports false
+// when the bound ends first. It fires the joining seam with what once it has
+// to wait.
+func (b *stopBound) join(done <-chan struct{}, what string) bool {
 	if b == nil {
 		<-done
 
@@ -65,7 +67,7 @@ func (b *stopBound) join(done <-chan struct{}) bool {
 	}
 
 	if f := b.e.seams.joining.Load(); f != nil {
-		(*f)()
+		(*f)(what)
 	}
 
 	select {
@@ -125,7 +127,7 @@ func (e *Engine) Close(ctx context.Context) error {
 
 // awaitClose is the answer of a Close that arrives while another runs.
 func (e *Engine) awaitClose(ctx context.Context, r *closeRun) error {
-	if !e.newBound(ctx).join(r.done) {
+	if !e.newBound(ctx).join(r.done, "the other Close") {
 		return fmt.Errorf("engine: close: context ended while waiting for the other Close: %w",
 			vfserr.ErrUnavailable)
 	}
@@ -139,9 +141,52 @@ func (e *Engine) stop(b *stopBound, r *closeRun) error {
 		return err
 	}
 
+	if err := e.stopWork(b); err != nil {
+		return err
+	}
+
 	r.final = true
 
 	return e.closeAll()
+}
+
+// stuck is the error of a join that did not end within the stop bound.
+func stuck(what string) error {
+	return fmt.Errorf(
+		"engine: close: %s still running at the end of the stop bound, "+
+			"journals and handles left open: %w",
+		what, vfserr.ErrUnavailable,
+	)
+}
+
+// stopWork stops the background work that takes journal versions: each
+// journal's removal loop, which refuses new dispatch, cancels the batch in
+// flight and ends the items left, and the goroutines of the clones admitted
+// before Close (RFC 8 §2.5 step 2). A clone whose phase 1 was cut short stays
+// in its file's entry for the next start to rebuild.
+func (e *Engine) stopWork(b *stopBound) error {
+	e.gcMu.Lock()
+	gcs := slices.Collect(maps.Values(e.gcs))
+	e.gcMu.Unlock()
+
+	for _, g := range gcs {
+		if !g.removals.halt(b) {
+			return stuck("a removal loop")
+		}
+	}
+
+	cloned := make(chan struct{})
+
+	go func() {
+		e.cloning.Wait()
+		close(cloned)
+	}()
+
+	if !b.join(cloned, "a clone goroutine") {
+		return stuck("a clone goroutine")
+	}
+
+	return nil
 }
 
 // drainLifecycle waits for the lifecycle calls in progress, a Bind, Unbind or Drop
@@ -174,7 +219,7 @@ func (e *Engine) drainLifecycle(b *stopBound) error {
 
 		waited = true
 
-		if !b.join(ended) {
+		if !b.join(ended, "a lifecycle call") {
 			return fmt.Errorf(
 				"engine: close: lifecycle calls still in progress at the end of the stop bound "+
 					"(shares %v, start %t), journals and handles left open: %w",

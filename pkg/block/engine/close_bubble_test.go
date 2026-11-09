@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -146,5 +148,124 @@ func TestAFailedBindsHandleCloseNeverReleasedIsReportedAtTheBound(t *testing.T) 
 		}
 
 		b.e.CloseGroupCommits()
+	})
+}
+
+// heldLoop is a bubble with one share bound and a removal item held in its
+// batch on the share's journal loop.
+func heldLoop(t *testing.T) (*bubble, engine.Share, *loopHold) {
+	t.Helper()
+
+	b := newBubble(t, engine.NewStubStore(), nil)
+	s := bubbleShare(7)
+	h := newLoopHold()
+
+	if err := b.e.Bind(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := b.e.EnqueueHeld(s.ID, h.run(b.ev), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	synctest.Wait()
+
+	return b, s, h
+}
+
+// A Close whose deadline passed while a removal batch still runs gives up at
+// the loop's join and leaves the handle and the journal open. A later Close
+// joins the loop again: the handle closes only after the loop's goroutine
+// ended.
+func TestACloseHeldInARemovalBatchPastTheContextDeadlineLeavesEverythingOpen(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b, s, h := heldLoop(t)
+
+		var joins atomic.Int32
+
+		b.e.OnJoining(func(what string) {
+			if what == "a removal loop" && joins.Add(1) == 2 {
+				h.openSecond()
+			}
+		})
+
+		b.ev.onAdd = func(what string) {
+			if strings.HasPrefix(what, "handle close") {
+				h.openSecond()
+			}
+		}
+
+		past, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+
+		defer cancel()
+
+		err := b.e.Close(past)
+		if !unavailable(err) || !strings.Contains(err.Error(), "removal loop") {
+			t.Errorf("Close = %v, want ErrUnavailable naming the removal loop", err)
+		}
+
+		if got := b.ev.list(); len(got) != 0 {
+			t.Errorf("closes %v after a Close that gave up, want none", got)
+		}
+
+		h.openFirst()
+
+		if err := b.e.Close(context.Background()); err != nil {
+			t.Errorf("the second Close = %v, want nil", err)
+		}
+
+		want := []string{"loop item ended", handleClose(s), "journal close"}
+		if got := b.ev.list(); !slices.Equal(got, want) {
+			t.Errorf("events %v, want %v", got, want)
+		}
+
+		b.e.CloseGroupCommits()
+	})
+}
+
+// Without a deadline the stop bound is 30 s of the engine's clock.
+func TestACloseWithNoDeadlineGivesUpAtThirtySecondsOfTheTestClock(t *testing.T) {
+	t.Run("29 s is still waiting", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			b, s, h := heldLoop(t)
+			closed := closing(b.e, context.Background())
+
+			synctest.Wait()
+			b.clock.Advance(29 * time.Second)
+			synctest.Wait()
+			h.openAll()
+
+			if err := <-closed; err != nil {
+				t.Errorf("Close = %v after 29 s, want nil", err)
+			}
+
+			want := []string{"loop item ended", handleClose(s), "journal close"}
+			if got := b.ev.list(); !slices.Equal(got, want) {
+				t.Errorf("events %v, want %v", got, want)
+			}
+
+			b.e.CloseGroupCommits()
+		})
+	})
+
+	t.Run("30 s is the bound", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			b, _, h := heldLoop(t)
+			closed := closing(b.e, context.Background())
+
+			synctest.Wait()
+			b.clock.Advance(30 * time.Second)
+
+			if err := <-closed; !unavailable(err) {
+				t.Errorf("Close = %v after 30 s, want ErrUnavailable", err)
+			}
+
+			if got := b.ev.list(); len(got) != 0 {
+				t.Errorf("closes %v after a Close that gave up, want none", got)
+			}
+
+			h.openAll()
+			b.e.CloseGroupCommits()
+		})
 	})
 }
