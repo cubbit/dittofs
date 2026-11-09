@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"encoding/binary"
+
 	"bytes"
 	"context"
 	"errors"
@@ -13,16 +15,15 @@ import (
 	"testing"
 	"time"
 
+	badgerdb "github.com/dgraph-io/badger/v4"
+
 	"github.com/cubbit/dittofs/pkg/controlplane/api"
 	"github.com/cubbit/dittofs/pkg/controlplane/models"
 
-	"github.com/cubbit/dittofs/internal/controlplane/runtimetest"
 	"github.com/cubbit/dittofs/internal/logger"
 	"github.com/cubbit/dittofs/pkg/block"
-	"github.com/cubbit/dittofs/pkg/config"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 	cpstore "github.com/cubbit/dittofs/pkg/controlplane/store"
-	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
 // TestStart_FutureFormatExitCode asserts the boot-guard contract:
@@ -35,7 +36,7 @@ import (
 // test asserts on the returned code and never stubs the exit path. runStart is
 // what performs the exit, and it does so only after runStartWithExit has
 // returned — which is what lets the control-plane store close first (see
-// TestStart_BootGuardExitClosesTheStore).
+// TestStart_FormatMismatchExitClosesTheStore).
 //
 // The test uses the package-internal helper `handleLoadSharesError`
 // directly because the full `runStart` cobra path requires DB setup,
@@ -277,92 +278,6 @@ controlplane:
 	}
 }
 
-// krbMetaStore names the metadata store persistKerberosShare writes, which the
-// tests register by the same name.
-const krbMetaStore = "krb-meta"
-
-// persistKerberosShare writes the share row, its metadata and block store, and
-// the NFS adapter config an operator leaves behind by setting require_kerberos
-// while Kerberos is configured.
-func persistKerberosShare(t *testing.T, ctx context.Context, s cpstore.Store, name string) {
-	t.Helper()
-
-	if _, err := s.CreateMetadataStore(ctx, &models.MetadataStoreConfig{
-		Name: krbMetaStore, Type: "badger", Config: `{"in_memory":true}`,
-	}); err != nil {
-		t.Fatalf("CreateMetadataStore: %v", err)
-	}
-	blockStoreID, err := s.CreateBlockStore(ctx, &models.BlockStoreConfig{
-		Name: "krb-blocks", Type: "memory",
-	})
-	if err != nil {
-		t.Fatalf("CreateBlockStore: %v", err)
-	}
-	shareID, err := s.CreateShare(ctx, &models.Share{
-		Name:            name,
-		MetadataStoreID: krbMetaStore,
-		BlockStoreID:    blockStoreID,
-	})
-	if err != nil {
-		t.Fatalf("CreateShare: %v", err)
-	}
-
-	opts := models.DefaultNFSExportOptions()
-	opts.RequireKerberos = true
-	cfg := &models.ShareAdapterConfig{ShareID: shareID, AdapterType: "nfs"}
-	if err := cfg.SetConfig(opts); err != nil {
-		t.Fatalf("SetConfig: %v", err)
-	}
-	if err := s.SetShareAdapterConfig(ctx, cfg); err != nil {
-		t.Fatalf("SetShareAdapterConfig: %v", err)
-	}
-}
-
-// TestLoadSharesWithKerberosCapability_PublishesBeforeLoading pins that the
-// effective Kerberos config, resolved from the store and the config file, is
-// published on the runtime, where the share-config API reads it to refuse a
-// policy only Kerberos could satisfy, and that the persisted shares load.
-func TestLoadSharesWithKerberosCapability_PublishesBeforeLoading(t *testing.T) {
-	ctx := context.Background()
-	s, err := cpstore.New(&cpstore.Config{
-		Type:   cpstore.DatabaseTypeSQLite,
-		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
-	})
-	if err != nil {
-		t.Fatalf("cpstore.New: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-
-	const shareName = "/krb-ordered"
-	persistKerberosShare(t, ctx, s, shareName)
-
-	// The persisted metadata store is registered as runStart's
-	// InitializeFromStore would; without it every share is skipped and the
-	// assertion below would fail for a reason unrelated to the ordering.
-	rt := runtimetest.New(t, s)
-	if err := rt.RegisterMetadataStore(krbMetaStore, badgertest.NewInMemory(t)); err != nil {
-		t.Fatalf("RegisterMetadataStore: %v", err)
-	}
-
-	// The server has Kerberos, and the persisted require_kerberos share loads.
-	cfg := &config.Config{}
-	cfg.Kerberos.Enabled = true
-
-	effective, err := loadSharesWithKerberosCapability(ctx, s, rt, cfg)
-	if err != nil {
-		t.Fatalf("share load failed: %v", err)
-	}
-	if !effective.Enabled {
-		t.Fatal("effective Kerberos config reports disabled; the capability came from the wrong source")
-	}
-	if !rt.KerberosEnabled() {
-		t.Fatal("capability was never published on the runtime")
-	}
-	if !rt.ShareExists(shareName) {
-		t.Fatalf("share %q did not load", shareName)
-	}
-}
-
 // TestStart_ClosesControlPlaneStoreOnFailedBoot asserts that a start which opens
 // the control-plane store and then aborts releases the handle. The store opens
 // SQLite in WAL mode, so the -wal/-shm sidecars outlive exactly a leaked handle.
@@ -420,6 +335,119 @@ metrics:
 			t.Errorf("control-plane store still open: %s survived the aborted start (stat err: %v)",
 				sidecar, statErr)
 		}
+	}
+}
+
+// TestStart_FormatMismatchExitClosesTheStore drives the real start sequence
+// into its exit-78 boot guard with the control-plane store open, and asserts
+// the store was closed on the way out. The guard returns an exit status that
+// runStart acts on only after runStartWithExit has returned, so every defer
+// registered before it runs; a guard that exited in place would skip the
+// store's close. SQLite removes the -wal and -shm sidecars only on a clean
+// Close, so their absence is the observable.
+//
+// The guard is reached through a persisted badger metadata store stamped with
+// a format version newer than this build reads, which InitializeFromStore
+// refuses with block.ErrFutureFormat.
+func TestStart_FormatMismatchExitClosesTheStore(t *testing.T) {
+	tmp, err := os.MkdirTemp("", "dittofs-exit78-close-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
+
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmp, "state"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, "data"))
+	t.Setenv(api.EnvControlPlaneSecret, "")
+	t.Setenv(models.EnvAdminInitialPassword, "")
+
+	dbPath := filepath.Join(tmp, "controlplane.db")
+	metaPath := filepath.Join(tmp, "meta")
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	cfgBody := fmt.Sprintf(`database:
+  type: sqlite
+  sqlite:
+    path: %s
+controlplane:
+  host: 127.0.0.1
+  port: 0
+  jwt:
+    secret: "%s"
+blockstore:
+  journal:
+    path: %s
+gc:
+  auto_enabled: false
+integrity:
+  auto_enabled: false
+`, dbPath, strings.Repeat("s", 64), filepath.Join(tmp, "journal"))
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	seedFutureFormatMetadataStore(t, dbPath, metaPath)
+
+	origCfgFile, origForeground := cfgFile, foreground
+	t.Cleanup(func() { cfgFile, foreground = origCfgFile, origForeground })
+	cfgFile = cfgPath
+	foreground = true
+
+	err = runStartWithExit(startCmd, nil)
+	var st *exitStatus
+	if !errors.As(err, &st) {
+		t.Fatalf("start returned %v; want an exit status from the format-mismatch guard", err)
+	}
+	if st.code != EX_CONFIG {
+		t.Fatalf("exit code = %d, want %d", st.code, EX_CONFIG)
+	}
+
+	for _, sidecar := range []string{dbPath + "-wal", dbPath + "-shm"} {
+		if _, statErr := os.Stat(sidecar); statErr == nil {
+			t.Errorf("the control-plane store was left open on the exit-78 path: %s still exists",
+				filepath.Base(sidecar))
+		}
+	}
+}
+
+// seedFutureFormatMetadataStore persists a badger metadata store at metaPath
+// into the control-plane database at dbPath, and stamps the badger database
+// with a format version newer than this build reads, as a newer release would
+// have left it.
+func seedFutureFormatMetadataStore(t *testing.T, dbPath, metaPath string) {
+	t.Helper()
+	s, err := cpstore.New(&cpstore.Config{
+		Type:   cpstore.DatabaseTypeSQLite,
+		SQLite: cpstore.SQLiteConfig{Path: dbPath},
+	})
+	if err != nil {
+		t.Fatalf("open control-plane store: %v", err)
+	}
+	if _, err := s.CreateMetadataStore(context.Background(), &models.MetadataStoreConfig{
+		Name: "meta", Type: "badger", Config: fmt.Sprintf(`{"path":%q}`, metaPath),
+	}); err != nil {
+		_ = s.Close()
+		t.Fatalf("CreateMetadataStore: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close control-plane store: %v", err)
+	}
+
+	db, err := badgerdb.Open(badgerdb.DefaultOptions(metaPath).WithLogger(nil))
+	if err != nil {
+		t.Fatalf("open badger: %v", err)
+	}
+	var buf [4]byte
+	binary.BigEndian.PutUint32(buf[:], 1<<30)
+	if err := db.Update(func(txn *badgerdb.Txn) error {
+		return txn.Set([]byte("fmt:store"), buf[:])
+	}); err != nil {
+		_ = db.Close()
+		t.Fatalf("stamp format version: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close badger: %v", err)
 	}
 }
 

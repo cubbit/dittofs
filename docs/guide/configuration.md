@@ -1645,7 +1645,6 @@ spec:
 | ⭐ `dittofs_adapter_requests_total{protocol,op,status}` | Per-protocol request RED counter (`status` is `ok` or `error`). |
 | `dittofs_adapter_request_duration_seconds{protocol,op}` | Request latency histogram. |
 | `dittofs_adapter_connections_total{protocol}` | Connections accepted since start, by protocol. |
-| `dittofs_client_connections_active{protocol}` | Active client connections, by protocol. |
 | `dittofs_auth_attempts_total{protocol,mechanism}` / `dittofs_auth_failures_total{protocol,mechanism}` | Authentication attempts and failures (`mechanism` is `sys`/`krb5`/`ntlm`). |
 | ⭐ `dittofs_remote_up{share}` | `1` if the share's remote backend is healthy, else `0`. |
 | ⭐ `dittofs_sync_pending_bytes{share}` | On-disk bytes present locally but not yet mirrored to the remote (data at risk). |

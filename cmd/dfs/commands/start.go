@@ -816,11 +816,11 @@ func handleFormatMismatch(err error, stderr *os.File) *exitStatus {
 	return &exitStatus{code: EX_CONFIG}
 }
 
-// handleLoadSharesError centralizes the share-loading error policy so
-// the in-process boot-guard test can exercise the exit-78 path without
-// rebuilding the full daemon setup. Returns a non-nil exit status when the
-// caller should stop runStartWithExit (format-mismatch branch hit); nil
-// otherwise (no error, or a warn-and-continue).
+// handleLoadSharesError grades a share-load error. Its only exit-78 path is a
+// share whose on-disk format this build cannot read, which it hands to
+// handleFormatMismatch; every other share-load failure is logged and the boot
+// continues. Returns a non-nil exit status when the caller should stop
+// runStartWithExit; nil otherwise.
 func handleLoadSharesError(err error, stderr *os.File) *exitStatus {
 	if err == nil {
 		return nil

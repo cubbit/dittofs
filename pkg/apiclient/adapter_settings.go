@@ -35,23 +35,6 @@ type NFSAdapterSettingsResponse struct {
 	Version                      int      `json:"version"`
 }
 
-// SMBAdapterSettingsResponse is the response for SMB adapter settings.
-type SMBAdapterSettingsResponse struct {
-	MinDialect              string   `json:"min_dialect"`
-	MaxDialect              string   `json:"max_dialect"`
-	SessionTimeout          int      `json:"session_timeout"`
-	OplockBreakTimeout      int      `json:"oplock_break_timeout"`
-	MaxConnections          int      `json:"max_connections"`
-	MaxSessions             int      `json:"max_sessions"`
-	EnableEncryption        bool     `json:"enable_encryption"`
-	Signing                 string   `json:"signing"`
-	DirectoryLeasingEnabled bool     `json:"directory_leasing_enabled"`
-	BlockedOperations       []string `json:"blocked_operations"`
-	MDNSEnabled             bool     `json:"mdns_enabled"`
-	WSDiscoveryEnabled      bool     `json:"wsdiscovery_enabled"`
-	Version                 int      `json:"version"`
-}
-
 // PatchNFSSettingsRequest uses pointer fields for partial updates.
 type PatchNFSSettingsRequest struct {
 	MinVersion                   *string   `json:"min_version,omitempty"`
@@ -79,22 +62,6 @@ type PatchNFSSettingsRequest struct {
 	PortmapperRegisterWithSystem *bool     `json:"portmapper_register_with_system,omitempty"`
 	UDPEnabled                   *bool     `json:"udp_enabled,omitempty"`
 	MDNSEnabled                  *bool     `json:"mdns_enabled,omitempty"`
-}
-
-// PatchSMBSettingsRequest uses pointer fields for partial updates.
-type PatchSMBSettingsRequest struct {
-	MinDialect              *string   `json:"min_dialect,omitempty"`
-	MaxDialect              *string   `json:"max_dialect,omitempty"`
-	SessionTimeout          *int      `json:"session_timeout,omitempty"`
-	OplockBreakTimeout      *int      `json:"oplock_break_timeout,omitempty"`
-	MaxConnections          *int      `json:"max_connections,omitempty"`
-	MaxSessions             *int      `json:"max_sessions,omitempty"`
-	EnableEncryption        *bool     `json:"enable_encryption,omitempty"`
-	Signing                 *string   `json:"signing,omitempty"`
-	DirectoryLeasingEnabled *bool     `json:"directory_leasing_enabled,omitempty"`
-	BlockedOperations       *[]string `json:"blocked_operations,omitempty"`
-	MDNSEnabled             *bool     `json:"mdns_enabled,omitempty"`
-	WSDiscoveryEnabled      *bool     `json:"wsdiscovery_enabled,omitempty"`
 }
 
 // SettingsOption is a functional option for settings API calls.
@@ -151,16 +118,6 @@ func (c *Client) UpdateNFSSettings(req any, opts ...SettingsOption) (*NFSAdapter
 func (c *Client) PatchNFSSettings(req *PatchNFSSettingsRequest, opts ...SettingsOption) (*NFSAdapterSettingsResponse, error) {
 	url := applySettingsOptions("/api/v1/adapters/nfs/settings", opts)
 	var resp NFSAdapterSettingsResponse
-	if err := c.patch(url, req, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
-// PatchSMBSettings performs a partial update (PATCH) of SMB adapter settings.
-func (c *Client) PatchSMBSettings(req *PatchSMBSettingsRequest, opts ...SettingsOption) (*SMBAdapterSettingsResponse, error) {
-	url := applySettingsOptions("/api/v1/adapters/smb/settings", opts)
-	var resp SMBAdapterSettingsResponse
 	if err := c.patch(url, req, &resp); err != nil {
 		return nil, err
 	}

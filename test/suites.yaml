@@ -183,7 +183,7 @@ suites:
           - internal/vfs/**
           - pkg/vfs/**
           - pkg/metadata/**
-          - pkg/controlplane/runtime/**       # CheckShareAccess, ApplyIdentityMapping: both adapters' admission
+          - pkg/controlplane/runtime/**       # the share registry and policy both adapters read
           - pkg/auth/**                       # the SID mapper both adapters call
           - "test/e2e/cross_protocol*"
           - test/e2e/helpers/**               # error_triggers.go, used by CrossProtocol_ErrorConformance

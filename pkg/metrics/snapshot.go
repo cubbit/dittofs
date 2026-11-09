@@ -28,9 +28,6 @@ type Snapshot struct {
 	// Quotas holds per-principal quota usage/limits for principals that have a
 	// quota configured (bounded set). Empty when no quotas are set.
 	Quotas []QuotaSnapshot
-
-	// Clients holds active connection counts per protocol.
-	Clients ClientSnapshot
 }
 
 // ShareSnapshot is the per-share state exposed read-through.
@@ -125,10 +122,4 @@ type QuotaSnapshot struct {
 	LimitBytes  int64
 	UsedInodes  int64
 	LimitInodes int64
-}
-
-// ClientSnapshot holds active client/connection counts per protocol.
-type ClientSnapshot struct {
-	NFS int64
-	SMB int64
 }

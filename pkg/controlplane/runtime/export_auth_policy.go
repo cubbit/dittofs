@@ -34,8 +34,8 @@ func ExportAcceptsNoAuthFlavor(requireKerberos, allowAuthSys, kerberosEnabled bo
 //
 // Both flags can be at fault at once, and clearing only one leaves the export
 // just as unreachable: re-allowing AUTH_SYS while require_kerberos still stands
-// on a server with no Kerberos refuses AUTH_SYS again on the next boot. The
-// two-flag case therefore gets a command that sets both, so following the
+// on a server with no Kerberos is refused again by the same write-time check.
+// The two-flag case therefore gets a command that sets both, so following the
 // remedy actually produces a share that serves.
 func ExportNoAuthFlavorCause(shareName string, requireKerberos, allowAuthSys bool) (cause, remedy string) {
 	set := "`dfsctl share nfs-config set " + shellQuote(shareName) + " "

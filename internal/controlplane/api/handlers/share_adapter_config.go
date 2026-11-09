@@ -156,6 +156,13 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	if req.RequireKerberos != nil {
 		opts.RequireKerberos = *req.RequireKerberos
 	}
+	// decision: this route keeps writing and validating the share's NFS policy
+	// (squash, anonymous UID/GID, netgroup, the flavor pair refused below), and
+	// pushes it into the running share, although nothing on this server reads
+	// it: no protocol is served. It is kept for the v2 adapters, which read the
+	// same stored rows. Delete it, with the policy fields on the runtime share,
+	// if the v2 adapters take their share policy from somewhere else.
+	//
 	// A share reachable by no auth flavor at all would export while refusing
 	// every client, and SECINFO would narrow to an empty list. Two settings
 	// produce it — requiring Kerberos the server does not have, and forbidding

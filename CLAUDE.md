@@ -99,8 +99,8 @@ change the command definitions and rerun `go run ./cmd/gendocs`.
 ## Architecture invariants
 
 The Runtime (`pkg/controlplane/runtime/`) is the single entrypoint for all operations — a
-composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mounts/`,
-`lifecycle/`, `identity/`. API handlers and protocol adapters both go through it.
+composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shares/`,
+`snapshotsched/`, `stores/`, `trash/`. API handlers go through it.
 
 **Key rules you must preserve when editing:**
 
@@ -166,10 +166,9 @@ from an unused import is not proof.
 **When a change starts populating a field that was always empty, audit the cache keys.** Keys,
 dedup keys and equality checks written against the old field set are invisible to `rg` for the
 field name, because the bug is in the key rather than the field. Carrying SID/GroupSIDs into
-`AuthContext.Identity` silently made `authCacheKey`
-(`internal/adapter/nfs/v3/handlers/doc.go`) incomplete: it keyed on share + flavor + uid + gid +
-gids, and two Kerberos principals can share that triple because a user record with no UID
-defaults to 1000 (`pkg/adapter/identity.go`). The second principal would have been served the
+`AuthContext.Identity` silently made the NFSv3 handlers' `authCacheKey` incomplete (in the v1
+NFS adapter, on `develop`): it keyed on share + flavor + uid + gid + gids, and two Kerberos
+principals can share that triple because a user record with no UID defaulted to 1000. The second principal would have been served the
 first's cached identity and inherited its SID-keyed ACE grants — failing **open**, unlike the
 missing-SID bug the change set out to fix.
 
