@@ -38,6 +38,9 @@ func (cr *corruptRig) reappend(t *testing.T, f core.FileID, off int64, payload s
 	seq := core.Seq(cr.lastSeq.Load())
 	kept := cr.keptChecksum(t, orig)
 	x := core.Extent{Off: off, Len: int64(len(payload))}
+	// The append after the seal rolls into a spare, which an earlier roll of
+	// the same test may have taken and the pool not yet made again.
+	cr.settlePool(t)
 	if _, err := cr.streams.For(f).Seal(false); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}

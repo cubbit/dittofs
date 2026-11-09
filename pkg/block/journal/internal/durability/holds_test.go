@@ -43,6 +43,8 @@ func (cr *corruptRig) reappendTogether(t *testing.T, files ...core.FileID) []rea
 			t.Fatalf("the writes landed in segments %d and %d, want one", seg, w.orig.Segment)
 		}
 	}
+	// The appends after the seal roll into a spare the pool must have ready.
+	cr.settlePool(t)
 	if _, err := cr.streams.For(files[0]).Seal(false); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
