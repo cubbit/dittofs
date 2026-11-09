@@ -506,7 +506,7 @@ pkg/resources/              RFC 24's budgets and pooled buffers, shared by every
 pkg/adapter/                the public surface, as pkg/vfs is the service's:
   adapter.go                the contract the node drives: Adapter, Health, ConnInfo, Sidecar, Serving (§3.4, §3.5)
   deps.go                   Deps (§3.4)
-  config/                   the settings shapes, live and restart-only marked (RFC 13): a leaf
+  config/                   the settings shapes, the sealed Settings and RestartRequired (§3.6), restart-only fields tagged (RFC 13): a leaf
   nfs/  smb/                New: one public constructor each, a call into the implementation
 internal/adapter/
   core/                     one package, a file per concern; imports no protocol:
@@ -600,7 +600,8 @@ Every adapter runs through the same four states, driven by the node
   behind a `GETATTR` runs, and a client told the share moved can read
   `fs_locations`. Any other new request gets the drain's error: `ErrMoved` when
   the drain names a takeover target, `ErrDraining` when it names none (the only
-  node stopping). A table maps `ErrMoved` to the protocol's move signal where
+  node stopping); whether it names one, `core` asks the service as the drain
+  begins (§3.4's `Stop`). A table maps `ErrMoved` to the protocol's move signal where
   the operation can carry one (`NFS4ERR_MOVED` with `fs_locations`,
   [RFC 21 §7.4](rfc-21-nfs.md#7.4%20Pseudo-filesystem%2C%20SECINFO%20and%20locations);
   Witness `CLIENT_MOVE` first, [RFC 22 §14](rfc-22-smb.md#14.%20Witness)), and
@@ -871,29 +872,61 @@ package adapter // pkg/adapter
 // implements it for every protocol.
 type Adapter interface {
 	// Start moves configured to serving: every listener bound, or none, and
-	// the error names what failed.
+	// the error names what failed. Start after Stop is refused: a stopped
+	// adapter is never started again, and the node builds a new one with New.
 	Start(ctx context.Context) error
 
 	// Reconfigure adds and removes listeners and applies live settings to
-	// connections set up after it returns (§3.1). A restart-only setting is
-	// refused; the node applies it by Stop and Start.
-	Reconfigure(ctx context.Context, s config.Adapter) error
+	// connections set up after it returns (§3.1). s is the adapter's own
+	// protocol's shape, config.NFS or config.SMB (§3.6). A restart-only
+	// setting is refused with an error wrapping config.ErrRestartRequired;
+	// the node applies it by Stop, New and Start.
+	Reconfigure(ctx context.Context, s config.Settings) error
 
 	// Stop moves serving to draining to stopped. ctx's deadline is the drain
-	// deadline; requests still running at it are abandoned (§3.1). It drains
-	// towards a target (ErrMoved) when the topology names another gateway
-	// node for the shares (RFC 15 §5.3), as RFC 21 §7.4's fs_locations does,
-	// and with none (ErrDraining) otherwise.
+	// deadline; requests still running at it are abandoned (§3.1). As the
+	// drain begins, core asks Deps.Service whether the shares have another
+	// gateway node to move to (RFC 15 §5.3): it drains towards that target
+	// (ErrMoved) when there is one, as RFC 21 §7.4's fs_locations does, and
+	// with none (ErrDraining) otherwise. The call is RFC 17's to provide;
+	// until RFC 15's topology exists it answers none. Stop is idempotent: a
+	// second call returns once the adapter is stopped.
 	Stop(ctx context.Context) error
 
-	// Health is ready when serving with every listener bound; draining reports
-	// not ready (RFC 25 §3.6).
+	// Health is ready when serving with every listener bound; configured and
+	// draining report not ready (RFC 25 §3.6).
 	Health() Health
 
-	// Connections lists the connections open now — protocol, remote address,
-	// session, since — for the API's client list. It is read from core's
-	// connection registry, never written by protocol code.
+	// Connections lists the connections open now, for the API's client
+	// list. It is read from core's connection registry, never written by
+	// protocol code.
 	Connections() iter.Seq[ConnInfo]
+}
+
+// State is one of §3.1's states.
+type State uint8
+
+const (
+	StateConfigured State = iota
+	StateServing
+	StateDraining
+	StateStopped
+)
+
+// Health is what the node reads for readiness and its conditions (§3.7).
+type Health struct {
+	State      State
+	Ready      bool     // serving with every listener bound
+	Err        error    // why the adapter was refused at configured, or why a listener was lost; nil otherwise
+	Conditions []string // §3.7's conditions this adapter raises now, by name: adapter_refused, adapter_listener_lost
+}
+
+// ConnInfo is one open connection.
+type ConnInfo struct {
+	Protocol string         // "nfs", "smb"
+	Remote   netip.AddrPort // the client's address
+	Session  string         // the protocol's session the connection carries, as text; empty where none
+	Since    time.Time      // accepted at
 }
 ```
 
@@ -907,8 +940,8 @@ package adapter // pkg/adapter
 // where it has one.
 type Deps struct {
 	Service vfs.Service       // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
-	Pools   *resources.Pools  // RFC 24 §2.3 (pkg/resources): receive, reply, connection state
-	Metrics *metrics.Registry // RFC 25 §2
+	Pools   *resources.Pools  // RFC 24 §2.5 (pkg/resources): the four budgets on the request path, receive, reply, connection state and hold; core builds its BufPools over them (§6.8)
+	Metrics *metrics.Metrics  // pkg/metrics as it is built today; RFC 25 §8.2's *metrics.Registry replaces it when that is built
 	Tracer  trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
 	Logger  *slog.Logger
 	// Watch registers a loop with the node's liveness watchdog (RFC 25 §3.5):
@@ -934,7 +967,16 @@ func smb.New(d adapter.Deps, s config.SMB) (adapter.Adapter, error) // pkg/adapt
 
 `New` fails on a setting the adapter cannot apply, so the failure is at
 configured, not at the first request (§3.1). Settings arrive in exactly two
-places: `New` and `Reconfigure`.
+places: `New`, which takes its protocol's shape, and `Reconfigure`, which takes
+`config.Settings`, an interface only `config.NFS` and `config.SMB` satisfy
+(§3.6).
+
+`Deps` carries the budgets, never an allocator: each `Server` builds its own
+`resources.BufPool` over `Deps.Pools` (§6.8). `Deps.Metrics` is the registry
+`pkg/metrics` has today, whose providers are read once per scrape; the call
+that resolves `core`'s series once per protocol and operation table, so the
+request path does an atomic add (§10.1), lands with those series, and RFC 25
+§8.2's `*metrics.Registry` takes the field's place when it is built.
 
 
 ### 3.5 Sidecars
@@ -1040,8 +1082,12 @@ Four kinds of change, and only two reach the adapter:
 | --- | --- | --- | --- |
 | share policy | its grants, read-only, netgroups | the next request | the service, which reads the share list by version per request ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); no adapter is touched |
 | share encryption requirement | encryption required | the next tree connect; a tree holds the flag it connected with for its life | the service, at `TreeConnect` |
-| live adapter setting | dialect range, idle timeout, connection limit, a sidecar enabled | connections and sessions set up afterwards | `Reconfigure` |
+| live adapter setting | dialect range, idle timeout, connection limit | connections and sessions set up afterwards | `Reconfigure` |
 | restart-class adapter setting | what [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table marks restart-only | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
+
+A sidecar's enabled flag is not an adapter setting either: the node applies it
+by `Sync`, with the serving adapters or with none (§3.5,
+[RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)).
 
 > decision: a share's encryption requirement is read at tree connect and held
 > for the tree's life. Unwrap enforces it per tree (§5.5); reading the share
@@ -1065,33 +1111,93 @@ the adapter binds each of its listeners on each of them (§4.7's `Listener`).
 > operator, changes `Addrs` while serving. Withdraw it if a bind on a live
 > adapter is found to disturb the connections already accepted.
 
+**The settings shapes.** One shape per protocol, each embedding what every
+adapter reads:
+
+```go
+package config // pkg/adapter/config: a leaf
+
+// Adapter is what every adapter reads; core reads only this.
+type Adapter struct {
+	Addrs []netip.Addr // supplied by the node, live (below)
+	// … RFC 13 Appendix B's adapter rows, each with its default
+}
+
+// NFS and SMB are each protocol's whole shape: the common part, and what
+// only that protocol reads (NFS's TLS, SMB's dialect range).
+type NFS struct {
+	Adapter
+	// …
+}
+type SMB struct {
+	Adapter
+	// …
+}
+
+// Settings is NFS or SMB, and nothing else can be: its one method is
+// unexported. It is what Reconfigure takes, so a protocol's own live settings
+// reach it.
+type Settings interface{ common() Adapter }
+
+// AdapterOf returns the Adapter s embeds.
+func AdapterOf(s Settings) Adapter
+
+// ErrRestartRequired is wrapped by an error refusing a change to a
+// restart-only field.
+var ErrRestartRequired = errors.New("config: restart required")
+
+// RestartRequired compares two shapes of one protocol, field by field. It
+// returns nil when no field tagged restart:"true" differs, and otherwise an
+// error wrapping ErrRestartRequired that names each one that does.
+func RestartRequired(old, next Settings) error
+```
+
+- **A field's mark is a struct tag.** A restart-only field carries
+  `restart:"true"`; a live one carries none. `RestartRequired` reads the tags,
+  so a field cannot be added without a mark, and a test compares every field's
+  mark with RFC 13 Appendix B's class.
+- **One validator per shape**, run by `New`, by `Reconfigure` and by the
+  control plane, which has none of its own
+  ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)).
+
+> decision: no adapter field is restart-only today. Every adapter row of RFC
+> 13 Appendix B is live, and `Addrs`, which RFC 13 marks restart-only for the
+> bootstrap file, is live here (below); so `RestartRequired` returns nil for
+> every pair, and the tag and the comparison exist so that the first
+> restart-only field needs no new mechanism. Tag one when a setting is found
+> that a connection accepted after `Reconfigure` cannot pick up.
+
 **Inside the adapter, settings are one immutable snapshot.**
 
 ```go
 type Server struct {
-	settings atomic.Pointer[config.Adapter]
+	settings atomic.Pointer[config.Settings] // the protocol's whole shape, as New or the last Reconfigure gave it
 	// …
 }
 
-func (s *Server) Reconfigure(ctx context.Context, next config.Adapter) error {
+func (s *Server) Reconfigure(ctx context.Context, next config.Settings) error {
 	if err := validate(next); err != nil {
 		return err // refused; what is running is unchanged
 	}
-	if restartOnly(*s.settings.Load(), next) {
-		return ErrRestartRequired // the node drains and starts instead
+	if err := config.RestartRequired(*s.settings.Load(), next); err != nil {
+		return err // wraps config.ErrRestartRequired: the node drains and starts instead
 	}
-	if err := s.listeners.open(added(next)); err != nil {
+	addrs := config.AdapterOf(next).Addrs
+	if err := s.listeners.open(added(addrs)); err != nil {
 		return err // all or none
 	}
-	s.settings.Store(&next)            // read by the next accept
-	s.listeners.close(ctx, removed(next)) // and their connections (§3.1)
+	s.settings.Store(&next)                // read by the next accept
+	s.listeners.close(ctx, removed(addrs)) // and their connections (§3.1)
 	return nil
 }
 ```
 
 - A connection loads the snapshot once, at accept, and a session at setup;
   neither reads it again. A request therefore never sees two settings, and no
-  lock is on the request path.
+  lock is on the request path. `core` reads the common part through
+  `config.AdapterOf`; a protocol reads its own shape from the connection's
+  snapshot, `Conn.Settings` (§4.7), when `NewConn` builds the connection's
+  stages.
 - New listeners open before the snapshot changes and removed ones close after,
   so a moved address is never unserved between the two.
 - A refusal leaves the running adapter as it was; the node reports it on its
@@ -1632,6 +1738,9 @@ services supply only the two that are required:
 ```go
 package core
 
+// Buf in core's signatures is RFC 24's resources.Buf (§6.8), written
+// *resources.Buf in code; core declares no alias of its own.
+
 // Protocol is what one listener speaks: ONC RPC for NFS and its auxiliary
 // services, SMB2 for SMB. A datagram listener runs the same stages, one record
 // per datagram.
@@ -1740,7 +1849,7 @@ type Op struct {
 	Versions  Range // first and last version or dialect served
 	Needs     Needs // nothing < negotiated < session < tree; plus a current filehandle
 	Cacheable bool
-	Role      Role  // what the operation always does to state (§3.1, §4.4); per request: Invocation.Role
+	Role      Role  // what the operation always does to state (§3.1, §4.4); per request: Invocation.Role, which may run before Resolve
 	Expired   bool  // runs on an expired credential: re-authentication, logoff (§4.4; RFC 18 §3.8)
 	Decode    func(body []byte, v Version) (Invocation, error)
 }
@@ -1753,10 +1862,13 @@ type Invocation struct {
 	Resolve func(r *Request) error                     // wire IDs to service values
 	Call    func(ctx context.Context, r *Request) error // the handler
 	Encode  func(out *Buf, v Version) error
-	// Role, after Resolve, says what this request does to state: an SMB LOCK
-	// whose elements unlock releases it, a WRITE to an open under a break
-	// flushes it, an NFSv4 OPEN that claims a delegated open flushes it. nil:
-	// Op.Role decides alone.
+	// Role says what this request does to state: an SMB LOCK whose elements
+	// unlock releases it, a WRITE to an open under a break flushes it, an
+	// NFSv4 OPEN that claims a delegated open flushes it. It may be called
+	// before Resolve, as the runner judging a single-reply compound whole
+	// does (below), so it reads only the request's decoded arguments and the
+	// state an explicit ID among them names, never a value Resolve sets or
+	// an earlier operation would. nil: Op.Role decides alone.
 	Role func(r *Request) Role
 }
 
@@ -1989,6 +2101,10 @@ func (c *Conn) Established()
 // every release is called (§6.4).
 func (c *Conn) Keep() (release func())
 
+// Settings is the settings snapshot this connection loaded at accept, the
+// protocol's whole shape (§3.6); NewConn reads its own from it.
+func (c *Conn) Settings() config.Settings
+
 // Close ends the connection for a protocol violation the protocol finds: an
 // SMB message that fails decryption, a second NEGOTIATE (MS-SMB2 3.3.5.2.1.1,
 // 3.3.5.4), a moved continuously available share's trees (§3.3). The reader
@@ -2018,9 +2134,11 @@ type HoldCodec interface {
 	// before it, which ride on its header. For a NoReply row (a drain's
 	// refusal) it grants the request's credits and after, the credits of the
 	// chain members after it, which do not run: the runner reads them from
-	// those members' headers, since it decodes nothing else of them. No Final
-	// follows, nothing is held, and it counts against no floor or MaxPending.
-	// Every other interim passes after 0.
+	// those members' headers, since it decodes nothing else of them, and
+	// their sum saturates at the connection's credit target (RFC 22 §3.3)
+	// rather than wrapping in a uint16. No Final follows, nothing is held,
+	// and it counts against no floor or MaxPending. Every other interim
+	// passes after 0.
 	Interim(h Header, grant bool, after uint16, out *Buf) error
 	// Final is the final reply's header, with the async ID. If grant (true
 	// only when its interim withheld), it grants the request's credits less
@@ -2101,8 +2219,9 @@ type Dispatcher interface {
 
 // NewServer returns the adapter New hands back: each listener bound on each
 // of the settings' Addrs, all or none at Start (§3.1); Reconfigure binds them
-// on an added address the same way (§3.6).
-func NewServer(d adapter.Deps, s config.Adapter, ls ...Listener) (*Server, error)
+// on an added address the same way (§3.6). s is the protocol's whole shape,
+// which New was given; core reads its Adapter.
+func NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)
 
 type Listener struct {
 	Network  string // "tcp" or "udp"
@@ -2115,6 +2234,20 @@ These, with the types above, are `core`'s exported surface; a protocol
 reaches nothing else in it. `adaptertest`'s test-only protocol drives every
 one of them (§7), so the surface is proven before either protocol is built on
 it.
+
+> decision: four additions proposed from prior servers add no surface, since
+> each need is met inside a body. A release hook on `Invocation`: a held
+> request keeps its receive `Buf` retained until it ends, so decoded arguments
+> that point into it stay valid across every re-drive (§6.8). A carrier for
+> RPC `PROG_MISMATCH`'s low and high versions: NFS's `HeaderCodec.Encode`
+> writes them from its own tables, which hold the versions each program
+> serves. A non-waiting reserve for `Park`: `Reserve` under a context already
+> past its deadline tries once and fails at once
+> ([RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used)).
+> A guard against a `Reservation` released twice through a copy: `Release`
+> zeroes the `Reservation` it is called on, and a `Reservation` is moved,
+> never copied (RFC 24 §2.5). Add the surface when a body is found that
+> cannot meet its need this way.
 
 **One request, end to end.** An NFSv3 `WRITE`:
 
@@ -2688,11 +2821,16 @@ type Buf struct {
 	res   Reservation
 }
 
+func NewBufPool(b *Budget) *BufPool                             // RFC 24 §2.5: every buffer it hands out is reserved from b
 func (p *BufPool) Get(ctx context.Context, n int) (*Buf, error) // reserve n's class, then take a buffer: refs = 1
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
 ```
 
+- **Each `Server` builds its own.** `core` builds a `BufPool` over each budget
+  of `Deps.Pools` it takes buffers from, receive for requests and reply for
+  replies; `Deps` carries the budgets and no allocator, so nothing outside
+  `core` shares its free lists.
 - **One free list per class.** Each class of
   [RFC 24 §3.1](rfc-24-resources.md#3.1%20Buffer%20classes) has a
   `sync.Pool` of `*Buf`, so a buffer idle across collections is returned to the

@@ -390,17 +390,24 @@ package resources // pkg/resources
 type Budget struct{ /* name, ceiling, waits bool, reserved, per-key DRR queues */ }
 func NewBudget(name string, ceiling int64, waits bool) *Budget
 // Reserve charges n bytes for key. A waiting budget waits within ctx; a refusing one refuses at once.
+// Under a ctx already past its deadline a waiting budget tries once and refuses at once, as Park needs.
 func (b *Budget) Reserve(ctx context.Context, key netip.Addr, n int64) (Reservation, error)
 // Reclaim charges n past the ceiling, refusing only past twice it; a durable one never refuses (§4.6).
 func (b *Budget) Reclaim(n int64, durable bool) (Reservation, error)
 func (b *Budget) Reserved() int64 // for gauges and the leak check (§2.7)
 
-// Reservation is a value; Release is idempotent and returns n to key's count too.
+// Reservation is a value, moved and never copied: Release returns n to the budget
+// and to key's count, then zeroes the Reservation, so a second Release does nothing.
 type Reservation struct{ b *Budget; key netip.Addr; n int64 }
 func (r *Reservation) Release()
 
-// Pools is what an adapter is handed (RFC 20 §4.7): the four budgets on the request path.
+// Pools is what an adapter is handed (RFC 20 §3.4): the four budgets on the request path.
 type Pools struct{ Receive, Reply, Conn, Hold *Budget }
+
+// NewBufPool returns RFC 20 §6.8's pool of reference-counted buffers in §3.1's
+// classes, each reserved from b before it is handed out. Each adapter's core
+// builds its own over the budgets in Pools; no allocator is shared or handed in.
+func NewBufPool(b *Budget) *BufPool
 ```
 
 - Whether a budget waits or refuses is fixed by its pool's row (§2.3), so one
@@ -530,7 +537,7 @@ pkg/resources/
   limit.go        Limit, Detect: the runtime limit, the control group, the host (§2.1)
   split.go        Split, SplitFor, Check: fractions, floors, the ceilings' sum, settings (§2.3, §2.4, §7)
   budget.go       Budget, Reservation, Pools: counted pools and their turns (§2.5, §4.1)
-  buf.go          Buf, BufPool: §3.1's classes, a sync.Pool per class, reference counted, reserved before taken (RFC 20 §6.8)
+  buf.go          Buf, BufPool, NewBufPool: §3.1's classes, a sync.Pool per class, reference counted, reserved before taken (RFC 20 §6.8)
   sharecap.go     ShareCap, WithCharge, ChargeOf (§4.2)
   fd.go           the open-file split and fd_limit_low (§6.3)
   metrics.go      memory_*, cpu_* (§10)
