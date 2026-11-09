@@ -64,12 +64,6 @@ func PrintEntityStatus(ent Entities) {
 	}
 	printSection("Metadata Stores", msRows)
 
-	adapterRows := make([]entityRow, len(ent.Adapters))
-	for i, a := range ent.Adapters {
-		adapterRows[i] = entityRow{a.Type, a.Status}
-	}
-	printSection("Adapters", adapterRows)
-
 	if len(ent.Errors) > 0 {
 		fmt.Println()
 		fmt.Printf("  %s:\n", colorYellow("Warnings"))

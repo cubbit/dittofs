@@ -427,7 +427,8 @@ metrics:
 // seedRequireKerberosShare persists, into the control-plane database runStart
 // will open, the share an operator would have left behind by setting
 // require_kerberos: a memory-backed share whose NFS export policy requires
-// Kerberos.
+// Kerberos, beside the enabled NFS adapter row the share-load refusal keys on.
+// The boot no longer creates that row, so the seed persists it.
 func seedRequireKerberosShare(t *testing.T, dbPath string) {
 	t.Helper()
 	ctx := context.Background()
@@ -450,6 +451,9 @@ func seedRequireKerberosShare(t *testing.T, dbPath string) {
 	blockID, err := s.CreateBlockStore(ctx, &models.BlockStoreConfig{Name: "blocks", Type: "memory"})
 	if err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
+	}
+	if _, err := s.EnsureDefaultAdapters(ctx); err != nil {
+		t.Fatalf("EnsureDefaultAdapters: %v", err)
 	}
 	shareID, err := s.CreateShare(ctx, &models.Share{
 		Name:            "/krb-required",

@@ -31,7 +31,7 @@ var statusCmd = &cobra.Command{
 Checks the health endpoint at http://localhost:8080/health and reports whether
 the server is running, how long it has been up, and whether the control-plane
 database is reachable. When an API token is provided, per-entity status (shares,
-adapters, stores) is also fetched and rendered as a color-coded table.
+stores) is also fetched and rendered as a color-coded table.
 
 Examples:
   # Check status using default settings
@@ -55,24 +55,15 @@ func init() {
 	statusCmd.Flags().StringVar(&statusToken, "api-token", "", "API token for per-entity status (or set DFS_API_TOKEN)")
 }
 
-// GracePeriodInfo holds grace period information for the status output.
-type GracePeriodInfo struct {
-	Active           bool    `json:"active" yaml:"active"`
-	RemainingSeconds float64 `json:"remaining_seconds" yaml:"remaining_seconds"`
-	ExpectedClients  int     `json:"expected_clients" yaml:"expected_clients"`
-	ReclaimedClients int     `json:"reclaimed_clients" yaml:"reclaimed_clients"`
-}
-
 // ServerStatus represents the server status information.
 type ServerStatus struct {
-	Running         bool             `json:"running" yaml:"running"`
-	PID             int              `json:"pid,omitempty" yaml:"pid,omitempty"`
-	Message         string           `json:"message" yaml:"message"`
-	StartedAt       string           `json:"started_at,omitempty" yaml:"started_at,omitempty"`
-	Uptime          string           `json:"uptime,omitempty" yaml:"uptime,omitempty"`
-	Healthy         bool             `json:"healthy" yaml:"healthy"`
-	ControlPlaneDB  string           `json:"control_plane_db,omitempty" yaml:"control_plane_db,omitempty"`
-	GracePeriod     *GracePeriodInfo `json:"grace_period,omitempty" yaml:"grace_period,omitempty"`
+	Running         bool   `json:"running" yaml:"running"`
+	PID             int    `json:"pid,omitempty" yaml:"pid,omitempty"`
+	Message         string `json:"message" yaml:"message"`
+	StartedAt       string `json:"started_at,omitempty" yaml:"started_at,omitempty"`
+	Uptime          string `json:"uptime,omitempty" yaml:"uptime,omitempty"`
+	Healthy         bool   `json:"healthy" yaml:"healthy"`
+	ControlPlaneDB  string `json:"control_plane_db,omitempty" yaml:"control_plane_db,omitempty"`
 	health.Entities `yaml:",inline"`
 }
 
@@ -144,20 +135,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		status.Message = "Server process exists but health check failed"
 	}
 
-	// Fetch grace period status if server is running
-	if status.Running {
-		graceURL := fmt.Sprintf("http://localhost:%d/api/v1/grace", statusAPIPort)
-		graceResp, graceErr := client.Get(graceURL)
-		if graceErr == nil {
-			defer func() { _ = graceResp.Body.Close() }()
-
-			var graceInfo GracePeriodInfo
-			if json.NewDecoder(graceResp.Body).Decode(&graceInfo) == nil && graceInfo.Active {
-				status.GracePeriod = &graceInfo
-			}
-		}
-	}
-
 	// Fetch per-entity status if server is running and token available
 	token := statusToken
 	if token == "" {
@@ -201,11 +178,6 @@ func printStatusTable(status ServerStatus) {
 		}
 		if status.ControlPlaneDB != "" {
 			fmt.Printf("  CP DB:      %s\n", status.ControlPlaneDB)
-		}
-		if status.GracePeriod != nil && status.GracePeriod.Active {
-			remaining := int(status.GracePeriod.RemainingSeconds)
-			fmt.Printf("  Grace:      \033[33m%ds remaining (%d/%d clients reclaimed)\033[0m\n",
-				remaining, status.GracePeriod.ReclaimedClients, status.GracePeriod.ExpectedClients)
 		}
 		health.PrintEntityStatus(status.Entities)
 	} else {

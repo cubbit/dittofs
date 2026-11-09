@@ -474,7 +474,7 @@ Display the current status of the DittoFS server.
 Checks the health endpoint at http://localhost:8080/health and reports whether
 the server is running, how long it has been up, and whether the control-plane
 database is reachable. When an API token is provided, per-entity status (shares,
-adapters, stores) is also fetched and rendered as a color-coded table.
+stores) is also fetched and rendered as a color-coded table.
 
 ```
 dfs status [flags]
