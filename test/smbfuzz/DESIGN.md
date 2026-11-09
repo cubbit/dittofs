@@ -119,12 +119,12 @@ Round 4242. The generator draws this plan (format in [§5.3](#5.3%20The%20plan%2
 3. Steps 1–7 agree. Step 3 is `ENOENT` on both: a plan need not make sense, the two shares
    only have to agree on what it does.
 4. Step 8: Samba answers `EACCES`, because bob's deny entry comes before Everyone's allow;
-   DittoFS answers `0`. That is a divergence with signature `open:errno:EACCES/0`, and the
+   DittoFS answers `0`. That is a divergence with signature `open:errno:EACCES/OK`, and the
    round stops ([§9.1](#9.1%20Lockstep%2C%20and%20the%20first%20divergence%20ends%20the%20round)).
 5. The round is replayed twice more; it diverges the same way every time, so it is stable
    ([§11.1](#11.1%20Replay%20before%20shrinking)).
 6. The minimiser removes one step at a time and keeps each removal after which the replay
-   still ends in `open:errno:EACCES/0`. What is left:
+   still ends in `open:errno:EACCES/OK`. What is left:
 
    ```
    01 alice  open     f0 O_RDWR|O_CREAT|O_EXCL 0644 -> alice.h0
