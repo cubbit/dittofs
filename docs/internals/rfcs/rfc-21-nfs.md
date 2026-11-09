@@ -1540,9 +1540,18 @@ and adds no export of its own:
 reached — is returned only for a drain
 ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)):
 
-- a draining gateway node answers operations on a share with
-  `NFS4ERR_MOVED`, and `fs_locations` names another gateway node of the same
-  installation and the same path;
+- a gateway node draining towards another answers operations on a share with
+  `NFS4ERR_MOVED`, and `fs_locations` names that node, in the same
+  installation and at the same path. `NFS4ERR_MOVED` goes only on an
+  operation that uses the current filehandle, the only place RFC 8881 allows
+  it; any other operation the drain refuses is left unanswered. A `GETATTR`
+  is still served during the drain, and so is an NFSv4.0 `RENEW`, so the
+  client's location query (`PUTFH`, `GETATTR` of `fsid` and `fs_locations`,
+  and for NFSv4.0 `RENEW`) can read where the share went
+  ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states));
+- a node draining with no other gateway to name (the only node stopping)
+  answers no `NFS4ERR_MOVED`: it leaves the request unanswered, and the client
+  retries until the node is back;
 - every other time the attribute lists no location;
 - a referral to another installation is never returned
   ([RFC 17 §1.1](rfc-17-vfs.md#1.1%20Non-goals)), and `fs_locations_info` is not
@@ -2411,7 +2420,8 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrLost` on `Commit` — a loss of unstable writes the client was answered for | the `COMMIT` reply, with the new verifier (§9.1) | the same |
 | `ErrLost` on a stable `Write` — the sync that write waited on failed (§9.1) | `NFS4ERR_IO` | `NFS3ERR_IO` |
 | `ErrGrace` | `NFS4ERR_GRACE` | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
-| `ErrState` (`NoReclaim`) | `NFS4ERR_RECLAIM_BAD` in grace, `NFS4ERR_NO_GRACE` outside it | NLM: `NLM4_DENIED_GRACE_PERIOD` in grace, else `NLM4_DENIED` |
+| `ErrState` (`NoReclaim`) — a reclaim in grace of state the record does not show | `NFS4ERR_RECLAIM_BAD` | NLM: `NLM4_DENIED_GRACE_PERIOD` |
+| a reclaim outside grace — the service, which knows the shard's grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)), answers it as its own kind ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), so no handler splits by grace | `NFS4ERR_NO_GRACE` | NLM: `NLM4_DENIED` |
 | `ErrState` (`ReclaimConflict`) — a reclaim that conflicts with state already reclaimed in the same grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | `NFS4ERR_RECLAIM_CONFLICT` | NLM: `NLM4_DENIED` |
 | `ErrState` (`StaleClient`) — a client that expired, or is marked by a shard's loss ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_STALE_CLIENTID` for an operation naming a client ID, `RENEW` included, and for an NFSv4.0 client a loss awaits (§5.4). A stateid of an expired client is never answered `NFS4ERR_STALE_CLIENTID`, which is not a legal answer to `READ`, `WRITE` and the other stateid operations of RFC 8881: RFC 14 released its record with the client's other state, so it resolves to nothing and is `ErrState` (`BadState`), below. `NFS4ERR_EXPIRED` is never answered, since no expired client's record is kept (§5.1). A stateid of a live client whose state was lost is `ErrState` (`StaleState`), below | NLM: never `NLM4_DENIED`: the adapter connects the host afresh and retries once, then answers `NLM4_DENIED_GRACE_PERIOD` (§6.1) |
 | `ErrState` (`Revoked`, `Admin` naming the cause) — a stateid in its client's revoked set, not yet freed, its client still live: a grant revoked at its recall deadline, or any state an administrator revoked (§5.1, [RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)); state lost with a shard stays `ErrState` (`StaleState`) | by the revocation's cause: `NFS4ERR_ADMIN_REVOKED` for any stateid an administrator revoked (§5.1); `NFS4ERR_DELEG_REVOKED` for a delegation's or layout's revoked at its recall deadline (§5.3) | — |
@@ -2453,6 +2463,36 @@ its room ([RFC 7 §2.8](rfc-7-namespace-metadata.md#2.8%20A%20share%20is%20one%2
 it meets an XFS project quota. A user or group quota is `DQUOT`, what
 `rquota` reports against.
 
+**`core`'s own refusals** ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`Errors()`) map as: `ErrNotSupported` to `NFS4ERR_NOTSUPP` (v4) or
+`PROC_UNAVAIL` (v3) for an operation the minor version defines and the
+adapter does not serve; an operation code the minor version does not define,
+an NFSv4.1 code such as `SEQUENCE` sent under NFSv4.0 included, is routed to
+the `ILLEGAL` row, which answers `NFS4ERR_OP_ILLEGAL`, as develop does; `ErrVersion` to
+`PROG_MISMATCH` for an RPC version, and for an NFSv4 minor version not served
+to `NFS4ERR_MINOR_VERS_MISMATCH`, answered once for the compound before any
+operation runs; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrTooLong` to
+`NFS4ERR_TOO_MANY_OPS` for NFSv4.1 and to `NFS4ERR_RESOURCE` for NFSv4.0,
+which has no such status (two rows, split by `Versions`); `ErrMoved` to
+`NFS4ERR_MOVED` for the NFSv4 operations that use the current filehandle (a
+row of NFSv4's table naming them in `Ops`; NFSv3, MOUNT and NLM each have a
+table of their own, RFC 20 §4.5), §7.4; `ErrDraining`, and `ErrMoved` for any other
+NFSv4 operation and for NFSv3, MOUNT and NLM, which have no move signal, to no
+reply.
+
+**What runs while draining** is each operation's `Role`
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)):
+releases are `CLOSE`, `DELEGRETURN`, `LOCKU`, `FREE_STATEID`, `LAYOUTRETURN`,
+`DESTROY_SESSION`, `DESTROY_CLIENTID`, and NLM's `UNLOCK` and `CANCEL`;
+flushes are `COMMIT`, and per request a `WRITE` or `LOCK` under a delegation
+or a recall and an `OPEN` with `CLAIM_DELEGATE_CUR` or `CLAIM_DELEG_CUR_FH`,
+which a delegation recall waits on (develop serves those claims); context is
+`SEQUENCE`, `PUTFH`, `GETATTR` and `RENEW`. Every other operation is refused
+with the drain's error. `ErrNotLast` and
+`ErrTooManyPending` never reach NFS, which parks nothing, and map to its fault.
+`ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree` and `ErrExpired` are settled
+with the session and GSS tables; the totality test fails until they have rows.
+
 ### 11.6 Testing
 
 The translations are tested as RFC 20 §7 says, as pure functions with no
@@ -2468,6 +2508,14 @@ service, before any wire suite runs:
   input maps to a neutral value or a named refusal, never a default; every
   neutral error in `vfs.Errors()` maps to an NFS status for each version
   (RFC 20 §7.3); where a mapping is invertible, the round trip is the identity.
+- **The drain against Linux's compounds.** On a draining gateway node,
+  `SEQUENCE`, `PUTFH`, `GETATTR`, `CLOSE` and the same with `DELEGRETURN` run
+  whole; NFSv4.0's `PUTFH`, `GETATTR` of `fsid` and `fs_locations`, `RENEW`
+  is answered in full; a `WRITE` gets `NFS4ERR_MOVED`, and `EXCHANGE_ID` no
+  reply. `SEQUENCE` under NFSv4.0 gets `NFS4ERR_OP_ILLEGAL`. On the only node
+  stopping, `SEQUENCE`, `PUTFH`, `WRITE` gets no reply at all, not a results
+  array cut short under `NFS4_OK`, and its slot caches nothing
+  ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
 - **Every decoder is fuzzed.** Go native fuzzing (`testing.F`) of the stateid ↔
   `StateRef` codec, `share_access`/`share_deny` decoding, `LOCK` and NLM
   lock-request decoding, owner-string parsing and the `Adapter`-bytes decoder,
