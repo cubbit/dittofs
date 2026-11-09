@@ -264,3 +264,75 @@ func TestProbeNilHooks(t *testing.T) {
 		t.Fatalf("state %+v", st)
 	}
 }
+
+// TestProbeStopWaitsForACheckInFlight covers Stop racing a probe that is
+// inside Check: Stop does not return until the Check has returned, and the
+// MakeSpare the passing Check leads to runs before Stop returns, never after.
+func TestProbeStopWaitsForACheckInFlight(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	clock := journaltest.NewStopwatchClock()
+	timers := &afterCounter{Clock: clock}
+	inCheck, gate := make(chan struct{}), make(chan struct{})
+	var checkReturned, stopReturned, lateCall atomic.Bool
+	d, err := durability.New(durability.Config{
+		Clock: timers, Domains: noDomains{}, Index: index.New(1 << 20), Dir: t.TempDir(),
+		Counters: &index.Counters{},
+		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error) { return index.HeldDelta{}, nil },
+		Check: func() error {
+			if stopReturned.Load() {
+				lateCall.Store(true)
+			}
+			close(inCheck)
+			<-gate
+			checkReturned.Store(true)
+			return nil
+		},
+		MakeSpare: func() error {
+			if stopReturned.Load() {
+				lateCall.Store(true)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(d.Stop)
+	t.Cleanup(release)
+
+	d.Enter(errors.New("read-only"))
+	eventually(t, "the probe to arm its timer", func() bool { return timers.n.Load() == 1 })
+	clock.Advance(core.ProbeInterval)
+	select {
+	case <-inCheck:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the probe never called Check")
+	}
+
+	stopped := make(chan bool, 1)
+	go func() {
+		d.Stop()
+		stopReturned.Store(true)
+		stopped <- checkReturned.Load()
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while a Check was in flight")
+	case <-time.After(30 * time.Millisecond):
+	}
+	release()
+	select {
+	case returned := <-stopped:
+		if !returned {
+			t.Error("Stop returned before the Check in flight did")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not return once the Check did")
+	}
+	clock.Advance(10 * core.ProbeInterval)
+	if lateCall.Load() {
+		t.Error("the probe called Check or MakeSpare after Stop returned")
+	}
+}
