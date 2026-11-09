@@ -481,7 +481,7 @@ flowchart TB
   suite (§7.2, §6.10, [RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)). Nothing adapter-
   specific is in `pkg/` but `pkg/adapter` below.
 - **`pkg/adapter/`** holds the adapter's public surface, as `pkg/vfs` holds
-  the service's: the contract the node drives (`Adapter`, `Health`,
+  the service's: the contract the node drives (`Adapter`, `State`, `Health`,
   `ConnInfo`, `Sidecar`, `Serving`) and `Deps`, in `pkg/adapter`; the
   settings shapes, in the leaf `pkg/adapter/config`; and one constructor per
   protocol, `pkg/adapter/nfs.New` and `pkg/adapter/smb.New`, each a call into
@@ -504,7 +504,7 @@ pkg/vfs/                    the service interface (RFC 17)
 pkg/vfs/vfstest/            the recording fake and the null service
 pkg/resources/              RFC 24's budgets and pooled buffers, shared by every component (§6.8)
 pkg/adapter/                the public surface, as pkg/vfs is the service's:
-  adapter.go                the contract the node drives: Adapter, Health, ConnInfo, Sidecar, Serving (§3.4, §3.5)
+  adapter.go                the contract the node drives: Adapter, State, Health, ConnInfo, Sidecar, Serving (§3.4, §3.5)
   deps.go                   Deps (§3.4)
   config/                   the settings shapes, the sealed Settings and RestartRequired (§3.6), restart-only fields tagged (RFC 13): a leaf
   nfs/  smb/                New: one public constructor each, a call into the implementation
