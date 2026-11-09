@@ -15,7 +15,11 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
 
-const testSegmentCap = int64(64 << 10)
+const (
+	testSegmentCap = int64(64 << 10)
+	// testStreams is the number of append streams a test core has.
+	testStreams = 2
+)
 
 var testIdentity = core.JournalID{0xd, 0xa, 0x7, 0xa}
 
@@ -28,7 +32,7 @@ func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *journaltest.
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
-	const streams = 2
+
 	var o coreOptions
 	for _, f := range opts {
 		f(&o)
@@ -38,11 +42,11 @@ func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *journaltest.
 		Clock:       journaltest.NewStopwatchClock(),
 		Dir:         t.TempDir(),
 		Identity:    testIdentity,
-		Streams:     streams,
+		Streams:     testStreams,
 		SegmentCap:  testSegmentCap,
 		ExtentLimit: 1 << 20,
 		Descriptors: core.NewDescriptorBudget(64),
-		Targets:     segment.Targets{Content: 2 * streams},
+		Targets:     segment.Targets{Content: 2 * testStreams},
 	}, o.state, o)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -59,7 +63,7 @@ func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *journaltest.
 			t.Errorf("Close: %v", err)
 		}
 	})
-	for deadline := time.Now().Add(5 * time.Second); c.pool.Counters().Spares < 2*streams; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(5 * time.Second); c.pool.Counters().Spares < 2*testStreams; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the pool never readied its spares: %+v", c.pool.Counters())
 		}
@@ -98,6 +102,8 @@ func testFile(b byte) core.FileID { return core.NewFileID([16]byte{b}) }
 // writer does. It returns the write's version.
 func publish(t *testing.T, c *Core, f core.FileID, off int64, payload string) core.Version {
 	t.Helper()
+	unlock := c.domains.Lock(f)
+	defer unlock()
 	v, err := c.counters.Draw()
 	if err != nil {
 		t.Fatalf("Draw: %v", err)
@@ -107,8 +113,6 @@ func publish(t *testing.T, c *Core, f core.FileID, off int64, payload string) co
 		t.Fatalf("NextSeq: %v", err)
 	}
 	x := core.Extent{Off: off, Len: int64(len(payload))}
-	unlock := c.domains.Lock(f)
-	defer unlock()
 	p, err := c.Streams().For(f).Append(format.RecordHeader{
 		Kind: format.KindWrite, File: f, Extent: x, Seq: seq, Version: v, Tag: 1,
 	}, format.RecordBody{Payload: []byte(payload), MTime: 1})

@@ -77,6 +77,9 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 			// this loop append the same rest forever.
 			return core.Version{}, done, fmt.Errorf("datapath: the stream placed no byte of a %d-byte piece of file %v at offset %d", len(rest), id, off+done)
 		}
+		if c.afterAppend != nil {
+			c.afterAppend()
+		}
 		// decision: the index may refuse a publish after its record is in the
 		// segment, by a tag that owns the file elsewhere or by the entry bound.
 		// The caller gets the error and the record stays on disk, never
@@ -93,6 +96,28 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 			return core.Version{}, done, err
 		}
 		c.Account(hd)
+		// decision: the index exports no write that skips retaining what it
+		// supersedes, so a piece whose record a sync already covered lifts
+		// here, straight after the publish, rather than leaving the content
+		// retained until the durability worker's pass. The lift is per record
+		// extent: it drops only what this piece's own record superseded, so a
+		// durable piece never drops what a sibling piece of the same version,
+		// not yet durable, still has to hold. The index's error from the lift
+		// is unreachable today, because the function it runs returns nil; it
+		// is ignored, and the worker lifts again after this write releases the
+		// file's append domain and logs a failure. Its delta is accounted
+		// before the error is looked at. Overturned by an index write that
+		// takes a durable flag per piece.
+		//
+		// ponytail: Durable scans every stream's ledger forward under that
+		// stream's mutex, once per published piece, and a ledger holds up to
+		// one sync bound of writes, so the cost grows with concurrent small
+		// writes. Upgrade to a scan from the end of each ledger, or one stream,
+		// inside Durable when a profile of small concurrent writes shows it.
+		if c.dur.Durable(pl.Loc) {
+			lh, _ := c.index.LiftSuperseded(id, v, core.Extent{Off: off + done, Len: pl.N})
+			c.Account(lh)
+		}
 		done += pl.N
 	}
 	return v, done, nil

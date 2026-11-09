@@ -94,7 +94,7 @@ func warm(t *testing.T, c *Core, s *Share, files ...core.FileID) {
 			t.Fatalf("warm-up WriteAt: %v", err)
 		}
 	}
-	for deadline := time.Now().Add(5 * time.Second); c.pool.Counters().Spares < 4; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(5 * time.Second); c.pool.Counters().Spares < 2*testStreams; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the pool never readied its spares: %+v", c.pool.Counters())
 		}

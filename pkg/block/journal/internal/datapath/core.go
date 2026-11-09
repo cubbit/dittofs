@@ -59,6 +59,9 @@ type coreOptions struct {
 	accountSpy func(index.HeldDelta)
 	// state is the State newCore continues from; the zero State builds fresh.
 	state State
+	// afterAppend runs in WriteAt right after a record is appended and before
+	// it is published, with the file's append domain held.
+	afterAppend func()
 }
 
 // Core is the journal's assembled write path: the placement index, the
@@ -83,6 +86,14 @@ type Core struct {
 	writtenBytes          atomic.Uint64
 	accountSpy            func(index.HeldDelta)
 
+	// afterAppend is a test seam that holds a write in the gap between its
+	// append and its publish.
+	//
+	// decision: it is nil outside tests, where newCore is only reached through
+	// New with no options. It is a field of the core and not of Deps so that no
+	// production wiring can set it.
+	afterAppend func()
+
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -105,6 +116,11 @@ const (
 // deterministic. Overturned by a caller that needs its first write to always
 // succeed, such as the open path, which would then wait on the pool's spare
 // count.
+//
+// decision: New trusts its Deps: Streams, SegmentCap and ExtentLimit are not
+// validated here, because the open path validates the settings before it
+// calls New. Overturned by a caller that builds Deps from user input without
+// that validation.
 func New(deps Deps, state State) (*Core, error) { return newCore(deps, state, coreOptions{}) }
 
 func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
@@ -125,7 +141,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy}
+	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy, afterAppend: o.afterAppend}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)

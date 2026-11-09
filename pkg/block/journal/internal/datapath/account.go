@@ -5,9 +5,9 @@ import "github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 // Account applies one index update's change to the core's held-state counters.
 // A zero delta changes nothing.
 //
-// It is called with the changed file's append domain held, by writers and by
-// the durability worker alike, so it takes no lock and waits on nothing: it
-// only adds to atomics.
+// It takes no lock and needs none: it only adds to atomics, which commute, so
+// the order two callers apply their deltas in does not matter. Most callers
+// hold the changed file's append domain; the loss path does not.
 //
 // decision: the counters follow the index's delta rather than each caller's
 // own arithmetic, because a caller that adjusts a counter itself is a caller

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -315,7 +316,7 @@ func TestWriteAt_ThreePiecesAcrossTwoRolls(t *testing.T) {
 // stay held at the write's version and the failed one leaves nothing the
 // index names.
 func TestWriteAt_LaterPieceFails(t *testing.T) {
-	var armed bool
+	var armed atomic.Bool
 	var c *Core
 	var seam *journaltest.Seam
 	boom := errors.New("injected write failure")
@@ -324,10 +325,10 @@ func TestWriteAt_LaterPieceFails(t *testing.T) {
 		o.accountSpy = func(index.HeldDelta) {
 			// Piece 1 is published: every segment after its own fails to
 			// take a write, so the next piece's record cannot land.
-			if !armed {
+			if !armed.Load() {
 				return
 			}
-			armed = false
+			armed.Store(false)
 			p, ok := c.Index().Lookup(f, 0)
 			if !ok {
 				return
@@ -342,7 +343,7 @@ func TestWriteAt_LaterPieceFails(t *testing.T) {
 		}
 	})
 	s := c.AddShare(1)
-	armed = true
+	armed.Store(true)
 	payload := make([]byte, 2*testSegmentCap)
 	v, err := c.WriteAt(context.Background(), s, f, 0, payload, 1)
 	if !errors.Is(err, boom) {
