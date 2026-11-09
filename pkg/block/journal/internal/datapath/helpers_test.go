@@ -40,7 +40,7 @@ func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *journaltest.
 		ExtentLimit: 1 << 20,
 		Descriptors: core.NewDescriptorBudget(64),
 		Targets:     segment.Targets{Content: 2 * streams},
-	}, State{}, o)
+	}, o.state, o)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

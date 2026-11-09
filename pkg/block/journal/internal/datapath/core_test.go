@@ -1,8 +1,12 @@
 package datapath
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 )
 
@@ -56,5 +60,59 @@ func TestAddShare_ReturnsItsTag(t *testing.T) {
 	c, _ := newTestCore(t)
 	if s := c.AddShare(7); s.Tag != 7 {
 		t.Fatalf("Tag = %d, want 7", s.Tag)
+	}
+}
+
+// A synced loss through the durability layer drops the held bytes from the
+// core's counters once: the layer accounts the delta its marker returns, and
+// the core adds nothing of its own. A marker the index refuses surfaces to the
+// caller of Lose.
+func TestLose_AccountsTheMarkersDeltaOnceAndSurfacesItsError(t *testing.T) {
+	c, _ := newTestCore(t)
+	f := testFile(3)
+	publish(t, c, f, 0, "aaaa")
+	h0, d0, r0 := c.heldBytes()
+	if h0 != 4 || d0 != 4 {
+		t.Fatalf("setup counters = %d/%d/%d, want 4/4/_", h0, d0, r0)
+	}
+	if _, err := c.Durability().Lose(context.Background(), durability.Loss{
+		Share: 1, File: f, Extent: core.Extent{Off: 0, Len: 4}, Version: core.Version{Counter: 1 << 20},
+		Seq: 1000, Synced: true, Deferred: true, Reason: core.LossStale,
+	}); err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+	if h, d, r := c.heldBytes(); h != 0 || d != 0 || r != r0 {
+		t.Fatalf("after the loss counters = %d/%d/%d, want 0/0/%d", h, d, r, r0)
+	}
+	if _, err := c.Durability().Lose(context.Background(), durability.Loss{
+		Share: 1, File: f, Extent: core.Extent{Off: 0, Len: 0}, Version: core.Version{Counter: 1 << 21},
+		Seq: 1001, Synced: true, Deferred: true, Reason: core.LossStale,
+	}); !errors.Is(err, core.ErrZeroLength) {
+		t.Fatalf("Lose of a zero extent = %v, want ErrZeroLength", err)
+	}
+}
+
+// TestNew_UsesTheStatesCounters fails if the layers were built over a second
+// Counters: a loss through the durability layer draws its record's sequence
+// number from the counters it was configured with, so the state's own must
+// have moved.
+func TestNew_UsesTheStatesCounters(t *testing.T) {
+	counters := &index.Counters{}
+	if err := counters.SetVersionLimit(core.Version{Counter: 1 << 40}); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+	c, _ := newTestCore(t, func(o *coreOptions) { o.state = State{Counters: counters} })
+	if c.counters != counters {
+		t.Fatal("the core did not adopt the state's counters")
+	}
+	f := testFile(4)
+	publish(t, c, f, 0, "aaaa") // draws seq 1 from the same counters
+	if _, err := c.Durability().Lose(context.Background(), durability.Loss{
+		Share: 1, File: f, Extent: core.Extent{Off: 0, Len: 4}, Version: core.Version{Counter: 1}, Seq: 1, Synced: true, Reason: core.LossStale,
+	}); err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+	if seq, err := counters.NextSeq(); err != nil || seq < 3 {
+		t.Fatalf("NextSeq = %d, %v; want at least 3: the loss record drew its own from the state's counters", seq, err)
 	}
 }

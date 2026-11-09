@@ -57,6 +57,8 @@ type coreOptions struct {
 	wrapDomains func(durability.Domains) durability.Domains
 	// accountSpy is told every non-zero delta Account applied.
 	accountSpy func(index.HeldDelta)
+	// state is the State newCore continues from; the zero State builds fresh.
+	state State
 }
 
 // Core is the journal's assembled write path: the placement index, the
@@ -84,7 +86,24 @@ type Core struct {
 	closeErr  error
 }
 
+const (
+	// unboundedBytes is the Maker's byte ceiling: none that a journal could
+	// reach, so segment creation is limited only by the pool's targets.
+	unboundedBytes = int64(1) << 62
+	// versionCeiling is the version counter's limit for a fresh Counters:
+	// versions are issued only below it.
+	versionCeiling = uint64(1) << 62
+)
+
 // New assembles a Core over deps, continuing from state, and starts it.
+//
+// decision: New returns without waiting for the pool's first spare segments.
+// A write that arrives before a spare is ready is refused with the named,
+// retryable spare refusal, and the pool's refill makes one, so the retry
+// succeeds. The test helper waits for the spares only so tests are
+// deterministic. Overturned by a caller that needs its first write to always
+// succeed, such as the open path, which would then wait on the pool's spare
+// count.
 func New(deps Deps, state State) (*Core, error) { return newCore(deps, state, coreOptions{}) }
 
 func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
@@ -96,7 +115,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	}
 	if state.Counters == nil {
 		state.Counters = &index.Counters{}
-		if err := state.Counters.SetVersionLimit(core.Version{Counter: 1 << 62}); err != nil {
+		if err := state.Counters.SetVersionLimit(core.Version{Counter: versionCeiling}); err != nil {
 			return nil, err
 		}
 	}
@@ -112,7 +131,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	}
 	c.domains = domains
 
-	maker := segment.NewMaker(deps.FS, state.Set, 1<<62, 0, deps.Log)
+	maker := segment.NewMaker(deps.FS, state.Set, unboundedBytes, 0, deps.Log)
 	c.pool = segment.NewPool(maker, deps.Targets, nil, deps.Log)
 	c.pool.Start()
 	c.cache = segment.NewDescriptors(deps.FS, format.SegmentName, budget)
