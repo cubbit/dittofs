@@ -38,6 +38,7 @@ type Table struct {
 	recalled  map[entity.FileID]time.Duration // the Elapsed reading until which a file is offered no grant, after a recall ended
 	unsent    int                             // recalls started and not yet handed to the Sink
 	parked    map[entity.FileID]struct{}      // the files holding a disconnected open or an unsaved record, which the timer visits
+	nmu       sync.Mutex                      // held from the step that hands a watch's changes until their Notify returns
 	watched   map[entity.FileID]struct{}      // the directories holding a watch that handed changes since the timer last looked, which the timer visits
 	ended     map[sessionKey]time.Duration    // the sessions each client ended here, from the Elapsed reading of their end, for a lease period
 	held      map[heldKey]int                 // what each client holds here of each capped kind

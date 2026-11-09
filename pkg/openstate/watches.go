@@ -168,9 +168,29 @@ func (v watches) Changed(ctx context.Context, dir FileKey, ch Change) {
 			t.watched[e.file] = struct{}{}
 			t.idx.Unlock()
 		}
+		t.notifying(&out)
 		return nil
 	})
-	out.raise(t, sink)
+	t.notified(&out, sink)
+}
+
+// notifying takes the notify lock, under the step that handed out's
+// changes, so that a watch's batches reach the Sink in the order they were
+// handed; notified raises them and lets it go.
+//
+// ponytail: one lock orders every watch's Notify on the node, held only
+// while the Sink queues. Key it by watch if Notify shows up as contention.
+func (t *Table) notifying(out *outbox) {
+	if len(out.notes) > 0 {
+		t.nmu.Lock()
+	}
+}
+
+func (t *Table) notified(out *outbox, sink Sink) {
+	if len(out.notes) > 0 {
+		out.raise(t, sink)
+		t.nmu.Unlock()
+	}
 }
 
 // hold adds ch to w's pending changes; past their bound they collapse to one
@@ -218,8 +238,9 @@ func (t *Table) handWatched(sink Sink, dirs []entity.FileID) {
 				delete(t.watched, d)
 				t.idx.Unlock()
 			}
+			t.notifying(&out)
 			return nil
 		})
-		out.raise(t, sink)
+		t.notified(&out, sink)
 	}
 }
