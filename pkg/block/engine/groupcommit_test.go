@@ -597,20 +597,19 @@ func TestAFailedFileIsRetriedAlone(t *testing.T) {
 	d, a, c := dir.ID, u.create(t, "a"), u.create(t, "c")
 	u.write(t, d, 0, []byte("not content"))
 	u.write(t, a, 0, []byte("a"))
-	eventually(t, "the group commit's timer is set", func() bool { return u.clock.Pending() > 0 })
 	var once sync.Once
 	u.e.OnCapture(func() {
 		once.Do(func() {
 			u.write(t, c, 0, []byte("c"))
-			go func() { _ = u.e.CommitNow(context.Background(), u.share.ID, c) }()
-			eventually(t, "c is due now", func() bool { return u.e.Due(u.rec, c) })
+			u.clock.Advance(time.Second) // c comes due by its age, beside d's retry
 		})
 	})
 	// d and a come due at one instant by their age, so the first batch takes
 	// both: asked for one by one, as CommitAll asks, a batch could take d
 	// before a was asked for, and d would fail alone and back off instead.
-	u.clock.Advance(time.Second)
-	eventually(t, "the batch and the retry", func() bool {
+	// The clock moves until the batches show: a timer armed from a reading
+	// taken before a move waits for the next one.
+	u.until(t, "the batch and the retry", func() bool {
 		log.mu.Lock()
 		defer log.mu.Unlock()
 		return len(log.commits) >= 2
