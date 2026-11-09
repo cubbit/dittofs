@@ -187,6 +187,10 @@ type Runtime struct {
 	// configured. Guarded by mu.
 	netlogonController *netlogon.Controller
 
+	// openFiles are the sources of open handles the open-handle hold consults.
+	// See SetOpenFileEnumerators. Guarded by mu.
+	openFiles []OpenFileEnumerator
+
 	// statusCheckers is the lazy per-entity cached health-checker
 	// map backing [Runtime.BlockStoreChecker],
 	// [Runtime.MetadataStoreChecker], and [Runtime.ShareChecker]. Initialized in [New].
