@@ -409,6 +409,40 @@ func TestAnUnsyncedCorruptLossDropsTheWrite(t *testing.T) {
 	}
 }
 
+// A corrupt loss of a write never synced that names only part of the write,
+// as one of the records of a write split across segments, drops nothing: the
+// journal still serves the other pieces, so the write commits with the run
+// the loss names lost and the rest overwriting what was there.
+func TestAPartialUnsyncedCorruptLossLosesItsRun(t *testing.T) {
+	u := newUnit(t)
+	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
+	f := made.ID
+	u.write(t, f, 0, []byte("aaaaaaaa"))
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	u.write(t, f, 0, []byte("bbbbbbbbcccc"))
+	u.j.Lose(journal.NewFileID(f), journal.Extent{Off: 8, Len: 4}, journal.LossCorrupt, false)
+	u.e.LossSeq(u.share.ID, f) // drains the loss
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Size != 12 {
+		t.Errorf("size %d, want 12: the write commits", got.Size)
+	}
+	p := make([]byte, 8)
+	if _, err := u.e.Read(t.Context(), u.share.ID, f, 0, p); err != nil || string(p) != "bbbbbbbb" {
+		t.Errorf("read of [0, 8): %q, %v; want the write's bbbbbbbb", p, err)
+	}
+	if _, err := u.e.Read(t.Context(), u.share.ID, f, 8, make([]byte, 4)); !errors.Is(err, vfserr.ErrLost) {
+		t.Errorf("read of [8, 12): %v, want ErrLost", err)
+	}
+}
+
 // A corrupt loss of a write never synced comes with no SyncError, so a later
 // SyncError of its file that no event covers still raises the file again.
 func TestAnUnsyncedCorruptLossLeavesALaterSyncErrorRaising(t *testing.T) {

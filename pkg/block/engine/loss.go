@@ -258,7 +258,7 @@ func (e *Engine) markLost(l *losses, f entity.FileID, ev journal.LossEvent) (don
 			continue
 		}
 		found = true
-		if !drops(ev) {
+		if !drops(ev, op.extent) {
 			op.lost = lostRuns(op.lost, entity.Extent{Offset: op.extent.Off, Length: op.extent.Len}, ev.Extent)
 			continue
 		}
@@ -352,12 +352,20 @@ func (e *Engine) lostWhole(j Journal) {
 	runAll(dones)
 }
 
-// drops is whether ev drops its write as never made rather than losing the
-// run of it ev names: a failed window's loss, and a corrupt loss of a record
-// never synced, after which the journal holds again what the write
-// overwrote, so the file reads as it did before the write (RFC 8 §5.1).
-func drops(ev journal.LossEvent) bool {
-	return ev.Reason == journal.LossFailedWindow || ev.Reason == journal.LossCorrupt && !ev.Synced
+// drops is whether ev drops w, its write, as never made rather than losing
+// the run of it ev names: a failed window's loss, and a corrupt loss of a
+// record never synced whose extent covers all of w, after which the journal
+// holds again what the write overwrote, so the file reads as it did before
+// the write (RFC 8 §5.1). A write that crossed a segment's cap is several
+// records under one version and a corrupt drop names only the pieces of its
+// own, so one covering less than w loses that run instead: the journal still
+// serves the write's other pieces, which need its overwrite record.
+func drops(ev journal.LossEvent, w journal.Extent) bool {
+	if ev.Reason == journal.LossFailedWindow {
+		return true
+	}
+	return ev.Reason == journal.LossCorrupt && !ev.Synced &&
+		ev.Extent.Off <= w.Off && w.Off+w.Len <= ev.Extent.Off+ev.Extent.Len
 }
 
 // lostRuns is runs, a write's lost runs, with the part of the write w that

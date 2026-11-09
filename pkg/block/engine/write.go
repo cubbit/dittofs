@@ -68,7 +68,7 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	// it names lost.
 	var lost []entity.Extent
 	for _, ev := range b.gc.losses.unmatched(f, ver) {
-		if !drops(ev) {
+		if !drops(ev, journal.Extent{Off: off, Len: int64(len(p))}) {
 			lost = lostRuns(lost, x, ev.Extent)
 			continue
 		}
