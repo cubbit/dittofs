@@ -489,3 +489,39 @@ func (x resumeHook) Resume(ctx context.Context, s entity.ShareID, file entity.Fi
 func onResume(f resumeFn) func(*engine.Deps) {
 	return func(d *engine.Deps) { d.Content = resumeHook{d.Content, f} }
 }
+
+// allocationFn answers an Allocation in place of the store, next.
+type allocationFn func(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, off int64) (entity.Extent, bool, error)
+
+// allocationHook is the store with its Allocations answered by f.
+type allocationHook struct {
+	engine.Existence
+	f allocationFn
+}
+
+func (x allocationHook) Allocation(ctx context.Context, s entity.ShareID, file entity.FileID, off int64) (entity.Extent, bool, error) {
+	return x.f(ctx, x.Existence, s, file, off)
+}
+
+// onAllocation has f answer the unit's Allocations.
+func onAllocation(f allocationFn) func(*engine.Deps) {
+	return func(d *engine.Deps) { d.Existence = allocationHook{d.Existence, f} }
+}
+
+// overwritesFn answers an Overwrites read in place of the store, next.
+type overwritesFn func(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, xs []entity.Extent) (bool, error)
+
+// overwritesHook is the store with its Overwrites reads answered by f.
+type overwritesHook struct {
+	engine.Existence
+	f overwritesFn
+}
+
+func (x overwritesHook) Overwrites(ctx context.Context, s entity.ShareID, file entity.FileID, xs []entity.Extent) (bool, error) {
+	return x.f(ctx, x.Existence, s, file, xs)
+}
+
+// onOverwrites has f answer the unit's Overwrites reads.
+func onOverwrites(f overwritesFn) func(*engine.Deps) {
+	return func(d *engine.Deps) { d.Existence = overwritesHook{d.Existence, f} }
+}
