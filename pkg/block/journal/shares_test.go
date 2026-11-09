@@ -188,8 +188,18 @@ func TestHandleClose_PublicRefusesAndWaits(t *testing.T) {
 	defer hold.Release()
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		if _, err := h.WriteAt(context.Background(), fileOf(2), 0, []byte("held"), 1); err != nil {
-			t.Errorf("the write in flight: %v", err)
+		// The file's stream may have no spare segment ready yet, which refuses
+		// the write with the retryable spare limit before it reaches the seam.
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+			_, err := h.WriteAt(context.Background(), fileOf(2), 0, []byte("held"), 1)
+			var ns *NoSpaceError
+			if errors.As(err, &ns) && ns.Limit == LimitSpare && time.Now().Before(deadline) {
+				continue
+			}
+			if err != nil {
+				t.Errorf("the write in flight: %v", err)
+			}
+			return
 		}
 	})
 	deadline := time.Now().Add(5 * time.Second)
