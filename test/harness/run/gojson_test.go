@@ -342,6 +342,7 @@ func TestChangedPackages(t *testing.T) {
 		{"a deleted package: none", map[string]string{"pkg/a/old/old.go": ""}, all, nil},
 		{"nothing: none", nil, all, nil},
 		{"nothing, with the root package in the patterns: none", nil, []string{"./..."}, nil},
+		{"go.sum, with the root package in the patterns: every package", map[string]string{"go.sum": "x\n"}, []string{"./..."}, []string{"./..."}},
 	}
 	for _, c := range cases {
 		commit(c.change)
