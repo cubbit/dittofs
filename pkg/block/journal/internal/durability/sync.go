@@ -64,6 +64,13 @@ type Config struct {
 	// which the layer hands to Account. It runs on the record's stream worker
 	// with the record's file append domain held, so it must not wait on a
 	// Sync or take a file's append domain. Nil undoes nothing.
+	//
+	// A file's records are failed newest first, but a window that failed
+	// before the journal turned read-only has already dropped its content and
+	// kept its header-only records, so a header-only record can be undone
+	// after an older write of its file was dropped. Undo must therefore bring
+	// back only what the record's own publish removed and is still owed, never
+	// a piece of a record the index no longer holds.
 	Undo func(w segment.Written) index.HeldDelta
 }
 
@@ -310,6 +317,10 @@ type entry struct {
 	// done is set once the worker has completed the entry under the file's
 	// append domain.
 	done bool
+	// tracked is the entry's place in the stream's Track order, which a
+	// window keeps when it takes the entry, so a read-only journal undoes a
+	// file's records newest first across windows and segments.
+	tracked uint64
 }
 
 // stream is one stream's state.
@@ -323,6 +334,9 @@ type stream struct {
 	s  *segment.Stream
 
 	mu sync.Mutex
+	// trackedN counts the records the stream tracked; each entry carries its
+	// own count.
+	trackedN uint64
 	// ledger holds the entries in Track order.
 	//
 	// ponytail: one entry per unsynced record, bounded by what a stream
@@ -447,7 +461,8 @@ func (d *Durability) Sink(no uint32) segment.Sink {
 	return segment.Sink{
 		Track: func(w segment.Written) {
 			st.mu.Lock()
-			st.ledger = append(st.ledger, entry{w: w})
+			st.trackedN++
+			st.ledger = append(st.ledger, entry{w: w, tracked: st.trackedN})
 			st.lastSeg, st.haveLast = w.Loc.Segment, true
 			// A record a sync already reached, reported before the sink saw
 			// it, still needs a completion pass.
@@ -461,7 +476,10 @@ func (d *Durability) Sink(no uint32) segment.Sink {
 			// A sync reported once the journal is read-only moves nothing,
 			// even one in flight at the transition that succeeded: every
 			// record it covered that was not completed is failed, and no
-			// Sync of one may return nil.
+			// Sync of one may return nil. The Admit read is the report's
+			// linearisation point: a report that read nil just before the
+			// entry and applies after it stands before the entry, so the
+			// records it covered are completed, not failed, which is right.
 			if d.Admit() != nil {
 				return
 			}
@@ -680,7 +698,9 @@ func (st *stream) inWindowLocked(loc segment.Location) bool {
 // read-only, a failure matches core.ErrJournalReadOnly too: a content record
 // it failed is reported as a failed window is, a *core.SyncError wrapping the
 // refusal, and a header-only record it undid fails every Sync waiting on it
-// with the refusal.
+// with the refusal. So in a read-only journal errors.As to *core.SyncError is
+// not guaranteed: a Sync on an undone header-only record returns the bare
+// refusal or a SyncError wrapping it, and both match core.ErrJournalReadOnly.
 //
 // A failed window is reported once per file: the first Sync naming a file
 // that lost a record in it returns the *core.SyncError and clears the file's

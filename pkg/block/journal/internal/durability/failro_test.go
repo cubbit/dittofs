@@ -121,8 +121,8 @@ func (r *rig) accounted(hd index.HeldDelta) bool {
 	return slices.Contains(r.acct.all(), hd)
 }
 
-// TestEnteringReadOnlyFailsTheUnsyncedContentOfEveryStream covers R32 as RFC 1
-// §5.4 states it: every stream's unsynced content is failed, each file is
+// TestEnteringReadOnlyFailsTheUnsyncedContentOfEveryStream covers RFC 1 §5.4:
+// every stream's unsynced content is failed, each file is
 // told through its Sync, the generation rises once for all of them, the
 // events are published and no loss record is appended.
 func TestEnteringReadOnlyFailsTheUnsyncedContentOfEveryStream(t *testing.T) {
@@ -175,8 +175,8 @@ func TestEnteringReadOnlyFailsTheUnsyncedContentOfEveryStream(t *testing.T) {
 	}
 }
 
-// TestEnteringReadOnlyUndoesAHeaderOnlyRecord covers R33 and R86: a truncate
-// is undone once, under its file's append domain, its delta reaches Account,
+// TestEnteringReadOnlyUndoesAHeaderOnlyRecord covers the in-memory undo of a
+// header-only record and its accounting: a truncate is undone once, under its file's append domain, its delta reaches Account,
 // its Sync fails with ErrJournalReadOnly, and its sequence number is listed.
 func TestEnteringReadOnlyUndoesAHeaderOnlyRecord(t *testing.T) {
 	prof.Watch(t, prof.Options{})
@@ -237,8 +237,8 @@ func TestHeaderOnlyRecordsAreUndoneNewestFirst(t *testing.T) {
 	}
 }
 
-// TestEverySyncWaitingOnAnUndoneRecordFails covers R33's "every Sync that
-// waits on one": two Syncs waiting on one truncate when the journal turns
+// TestEverySyncWaitingOnAnUndoneRecordFails covers RFC 1 §5.4's "every Sync
+// that waits on one" of an undone record: two Syncs waiting on one truncate when the journal turns
 // read-only both fail, though the failure is reported to the file once.
 func TestEverySyncWaitingOnAnUndoneRecordFails(t *testing.T) {
 	prof.Watch(t, prof.Options{})
@@ -349,7 +349,8 @@ func TestASyncThatSucceedsAfterEntryMovesNothing(t *testing.T) {
 	}
 }
 
-// TestFailedSeqsAreSeenByALaterDurabilityOnTheDirectory covers R34: every
+// TestFailedSeqsAreSeenByALaterDurabilityOnTheDirectory covers the
+// per-directory failed list: every
 // failed record's sequence number is listed for the directory, a second
 // Durability on it in the process sees them, one on another directory does
 // not.
@@ -390,7 +391,8 @@ func TestFailedSeqsAreSeenByALaterDurabilityOnTheDirectory(t *testing.T) {
 	}
 }
 
-// TestARemovalsWaitDurableReturnsErrJournalReadOnly covers R88: a removal
+// TestARemovalsWaitDurableReturnsErrJournalReadOnly covers a removal's
+// durability wait: a removal
 // waiting for its record's sync is woken by the entry with
 // ErrJournalReadOnly and never a *core.SyncError, whether its record was
 // unsynced or kept by a failed window, and a Stop before entry still gives
@@ -497,5 +499,70 @@ func TestConcurrentEntriesRaiseTheGenerationOnce(t *testing.T) {
 	wantReadOnlySyncError(t, "Sync of stream 1's file", mustReturn(t, "Sync", r.syncAsync(context.Background(), f1)), f1)
 	if got := r.d.Generation(); got != gen+1 {
 		t.Errorf("Generation = %d, want %d", got, gen+1)
+	}
+}
+
+// TestAnEarlierRemovalIsUndoneAfterALaterWriteInAnotherSegment pins the order
+// across segments: a truncate still in the ledger, its segment's seal not
+// reported, and a later write of the same file in another segment's failed
+// window are failed newest first, so the write is dropped before the truncate
+// is undone, though the window was taken before the ledger's records were.
+// The write's segment is numbered above the truncate's in one case and below
+// it in the other, since a segment's number says when its spare was made, not
+// when the stream took it.
+func TestAnEarlierRemovalIsUndoneAfterALaterWriteInAnotherSegment(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		truncSeg, writeSeg core.SegmentID
+	}{
+		{"writeInAHigherSegment", synthSeg + 1, synthSeg + 2},
+		{"writeInALowerSegment", synthSeg + 2, synthSeg + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+			var mu sync.Mutex
+			var order []string
+			note := func(s string) {
+				mu.Lock()
+				defer mu.Unlock()
+				order = append(order, s)
+			}
+			r := newRigConfigured(t, 1, func(c *Config) {
+				c.Account = func(hd index.HeldDelta) { note(fmt.Sprintf("drop %d", hd.HeldBytes)) }
+				c.Undo = func(segment.Written) index.HeldDelta { note("undo"); return index.HeldDelta{} }
+			})
+			f := file(1)
+
+			// The truncate, then the write over it, published into the index
+			// as a writer does.
+			r.sinks[0].Track(segment.Written{File: f, Kind: format.KindTruncate, Seq: 1, Version: core.Version{Counter: 1},
+				Loc: segment.Location{Segment: tc.truncSeg, Off: 64, Len: 64}})
+			write := segment.Written{File: f, Kind: format.KindWrite, Seq: 2, Version: core.Version{Counter: 2}, Tag: 1,
+				Extent: core.Extent{Off: 0, Len: 4}, Loc: segment.Location{Segment: tc.writeSeg, Off: 64, Len: 64}}
+			unlock := r.domains.Lock(f)
+			if _, err := r.ix.WriteRetain(1, f, index.Placed{Extent: write.Extent, Record: recordAt(write), Version: write.Version}, write.Seq); err != nil {
+				t.Fatalf("WriteRetain: %v", err)
+			}
+			unlock()
+			r.sinks[0].Track(write)
+
+			// The write's segment fails and the journal turns read-only before
+			// the worker runs, so its first pass takes the write's window and
+			// then moves the truncate out of the ledger.
+			r.d.onEnd(segment.EndEvent{Stream: 0, Segment: tc.writeSeg, Cause: segment.EndSeal, Err: errors.New("seal boom")})
+			r.d.Enter(syscall.EROFS)
+			r.d.Start(r.streams)
+
+			eventually(t, "both records to be failed", func() bool {
+				mu.Lock()
+				defer mu.Unlock()
+				return len(order) == 2
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			if order[0] != "drop -4" || order[1] != "undo" {
+				t.Fatalf("the layer did %v, want the later write dropped before the earlier truncate is undone", order)
+			}
+		})
 	}
 }

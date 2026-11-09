@@ -1,6 +1,9 @@
 package durability
 
-import "slices"
+import (
+	"cmp"
+	"slices"
+)
 
 // lostRecord is a record a failure took: a failed window dropped it, or a
 // read-only journal failed it.
@@ -16,9 +19,9 @@ type lostRecord struct {
 // failReadOnly fails every record of the stream that no sync covered, once the
 // journal is read-only: each pending window's records, and the ledger's
 // records past the stream's last successful sync, which it first moves into
-// windows of their segments so they read pending throughout. Each window is
-// then failed whole (failWindow with the refusal): content is dropped from the
-// index and named in a loss event with no loss record appended, header-only
+// windows of their segments so they read pending throughout. Every window is
+// then failed whole: content is dropped from the index and named in a loss
+// event with no loss record appended, header-only
 // records are undone through Config.Undo, a loss record's drop stands, and
 // every failed record but a loss record joins the directory's failed list.
 // The generation is raised once for the whole entry, across every stream and
@@ -31,8 +34,16 @@ type lostRecord struct {
 // the entry covers nothing (the Synced sink drops it), so its records are
 // failed here even when the sync succeeded.
 //
-// Windows are failed newest first, and failFile takes each file's records
-// newest first, so every undo and drop finds the index as its record left it.
+// Each file's records are gathered from every window and taken newest first,
+// in the order the stream tracked them, so every undo and drop finds the index
+// as its record left it. Neither the windows' order nor their segments can
+// stand in for that order: st.windows is in end order, a seal of an older
+// segment can end after a newer one failed, the ledger can still hold an
+// older segment's records, its seal in flight, while a newer segment's window
+// is pending, and a segment's number says when its spare was made, not when
+// the stream took it. A file's appends are serialized under its
+// append domain and each is tracked inside its append, so the tracked order
+// is the file's append order.
 //
 // decision: a read-only journal fails header-only records too, against the
 // rule that a failed window keeps them for their re-append, because nothing
@@ -67,20 +78,32 @@ func (d *Durability) failReadOnly(st *stream) {
 	})
 	st.windows = append(st.windows, fresh...)
 	ws := slices.Clone(st.windows)
-	loses := false
+	var all []entry
 	for _, w := range ws {
-		loses = loses || slices.ContainsFunc(w.entries, func(e entry) bool { return !isLoss(e.w) })
+		all = append(all, w.entries...)
 	}
 	st.mu.Unlock()
-	if len(ws) == 0 {
+	if len(all) == 0 {
 		return
 	}
 
-	// A loss record alone loses nothing, so it raises nothing.
-	if loses {
+	// A loss record alone loses nothing, so it raises nothing. The raise
+	// lands before anything is published or answered.
+	if slices.ContainsFunc(all, func(e entry) bool { return !isLoss(e.w) }) {
 		d.raiseOnce()
 	}
-	for i := len(ws) - 1; i >= 0; i-- {
-		d.failWindow(st, ws[i], ro)
+	if d.beforeFail != nil {
+		for _, w := range ws {
+			d.beforeFail(w)
+		}
+	}
+	slices.SortStableFunc(all, func(a, b entry) int { return cmp.Compare(a.tracked, b.tracked) })
+	files, byFile := byFileOf(all)
+	for _, f := range files {
+		d.failFile(st, 0, f, byFile[f], true)
+	}
+	every := func(entry) bool { return true }
+	for _, w := range ws {
+		d.settle(st, w, every, ro, true)
 	}
 }
