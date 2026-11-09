@@ -53,10 +53,11 @@ type ownedCopy struct {
 // left in a failed segment. A later copy of the same number replaces the
 // earlier one. The entry stays until Retired reports loc's segment retired.
 //
-// The re-append calls it only once the new segment's sync has completed and
-// the index is repointed to the new copy, so the record whose re-append
-// registers a copy is synced at its new place, and no failed sync can take it
-// back while the table names its copy. A re-append whose own sync fails
+// The re-append registers its copy, through registerOriginal, only once the
+// new segment's sync has completed and the index is repointed to the new
+// copy, so the record whose re-append registers a copy is synced at its new
+// place, and no failed sync can take it back while the table names its copy.
+// registerOriginal also refuses a copy whose segment has left the set. A re-append whose own sync fails
 // registers nothing: the new copy is a record of a failed window of the new
 // segment, under the same rules as any other. A hold's re-append registers
 // nothing either, so after one the table can still name the earlier copy
@@ -75,6 +76,32 @@ func (d *Durability) RegisterCopy(seq core.Seq, loc segment.Location, checksum u
 		d.copies = map[core.Seq]copyEntry{}
 	}
 	d.copies[seq] = copyEntry{seq: seq, loc: loc, checksum: checksum}
+}
+
+// registerOriginal registers c, the original of a re-appended record whose
+// new place has completed, unless c's segment has already left st's set: a
+// failed segment is announced resolved when its window empties, which is
+// before the new place syncs, so it can be retired in between, and Retired
+// runs once per segment and would never remove the entry. The set is asked
+// under copyMu: a segment the set still holds is removed from it before
+// Retired is called, so that Retired's drop takes copyMu after this call and
+// removes the entry. copyMu is held only across the set's mutex, a leaf
+// that takes nothing while held. It holds no other lock of this layer.
+//
+// decision: the set is asked rather than a record of retired segments kept,
+// which every segment's retirement would grow for the life of the journal,
+// or the damaged rows' retired flag, which only a damaged segment has.
+func (d *Durability) registerOriginal(st *stream, c copyEntry) {
+	set := st.s.Set()
+	d.copyMu.Lock()
+	defer d.copyMu.Unlock()
+	if set != nil && segmentGone(set, c.loc.Segment) {
+		return
+	}
+	if d.copies == nil {
+		d.copies = map[core.Seq]copyEntry{}
+	}
+	d.copies[c.seq] = c
 }
 
 // copyOf returns the table's copy of the record numbered seq.

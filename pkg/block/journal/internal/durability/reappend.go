@@ -229,8 +229,8 @@ func (d *Durability) reappendHeld(st *stream, c ownedCopy) error {
 // original to the copy, takes e out of the window with the old place leading
 // to the new one, and hands the original to the ledger entry of the new place,
 // whose completion registers it in the copy table (complete). A new place
-// already completed is registered here; one whose sync failed, in a window or
-// the lost set, registers nothing. It takes no other domain and holds st.mu
+// whose sync failed, in a window or the lost set, registers nothing. It
+// takes no other domain, registers nothing itself, and holds st.mu
 // only to read and change the window and the ledger, never across the index
 // or the copy table.
 //
@@ -315,32 +315,25 @@ func (d *Durability) repointReappended(st *stream, e entry, to segment.Location)
 		}
 	}
 
-	orig := copyEntry{seq: e.w.Seq, loc: e.w.Loc, checksum: e.w.PayloadCRC}
 	st.mu.Lock()
 	st.leaveWindowLocked(w, e, to)
-	now := st.copyOnCompleteLocked(to, orig)
+	st.copyOnCompleteLocked(to, copyEntry{seq: e.w.Seq, loc: e.w.Loc, checksum: e.w.PayloadCRC})
 	st.mu.Unlock()
-	if now {
-		d.RegisterCopy(orig.seq, orig.loc, orig.checksum)
-	}
 }
 
 // copyOnCompleteLocked hands the original c of a re-appended record to the
-// ledger entry of its new place to, which the completion registers. It
-// reports whether to is already completed, in no ledger, window or lost set,
-// for the caller to register c itself. A new place in a window or the lost set
-// had its sync fail, and gets nothing. The caller holds mu.
-func (st *stream) copyOnCompleteLocked(to segment.Location, c copyEntry) (now bool) {
+// ledger entry of its new place to, which the completion registers. The new
+// place cannot have completed yet: the re-append and the completion both run
+// on the stream's worker, so registration always happens at completion. A
+// new place no longer in the ledger was failed into a window or the lost set,
+// and gets nothing. The caller holds mu.
+func (st *stream) copyOnCompleteLocked(to segment.Location, c copyEntry) {
 	for i := range st.ledger {
 		if e := &st.ledger[i]; e.w.Loc == to {
-			if e.done {
-				return true
-			}
 			e.original = &c
-			return false
+			return
 		}
 	}
-	return !st.heldLocked(to)
 }
 
 // leaveWindowLocked takes the re-appended record e out of the window w, makes

@@ -241,9 +241,10 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 // the copy's sync completes. A window whose record could not be re-appended
 // stays pending and is not announced, and the pass after retries it, until
 // the journal turns read-only, which fails every record of every window and
-// so resolves them all. A pending window never reads durable, so nothing is lost by waiting;
-// what is withdrawn is only the window's memory. A window failReadOnly made is
-// resolved without an announcement: its segment did not fail.
+// so resolves them all. A pending window never reads durable, so nothing is
+// lost by waiting; what is withdrawn is only the window's memory. A window
+// failReadOnly made is resolved without an announcement: its segment did not
+// fail.
 //
 // A record failEntries or failReadOnly dropped has left the window and the
 // ledger, which would read it durable: st.lost keeps it out of that answer,

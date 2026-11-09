@@ -224,12 +224,38 @@ func (d *Durability) complete(st *stream) {
 		st.mu.Lock()
 		i, ok := st.findLocked(no)
 		var w segment.Written
+		var orig *copyEntry
 		if ok {
-			w = st.ledger[i].w
+			w, orig = st.ledger[i].w, st.ledger[i].original
 		}
 		st.mu.Unlock()
 		if !ok {
 			continue
+		}
+		if orig != nil {
+			// The copy is registered with no lock of this layer held, and
+			// before the entry is done, so a Sync that returns on the record
+			// finds it. Corrupt never takes a covered entry, so the entry is
+			// still there when it is marked done below.
+			//
+			// decision: a re-appended record's original is registered only
+			// here, once the new place's sync has completed, never at the
+			// append. Between the append and this pass a read that finds
+			// the new place corrupt finds no registered copy and drops the
+			// record, writing its loss record, although the original may
+			// still verify on disk, which RFC 28 §3.3, which loses a record
+			// only when no copy verifies and sets no sync condition on that
+			// copy, would not drop. The drop is accepted because the record
+			// came out of a failed window and has never been acknowledged
+			// durable at any point: Sync and WaitDurable return on it only
+			// after this pass. Its loss record excludes the original as
+			// well at recovery, by sequence number (RFC 1 §3.8), and
+			// RegisterCopy's contract asks for this order, so the table
+			// names a copy only of a record synced at its new place.
+			// Overturned by a ruling that the drop of a never-acknowledged
+			// record is a loss under RFC 28 §3.3; the registration would
+			// then move to the append.
+			d.registerOriginal(st, *orig)
 		}
 		unlock := d.domains.Lock(w.File)
 		if isContent(w) {
@@ -237,23 +263,6 @@ func (d *Durability) complete(st *stream) {
 			// account is the caller's. The entry is done only after the
 			// lift, so a Sync that returns on it sees the lift.
 			d.lift(w.File, w.Version, w.Extent)
-		}
-		st.mu.Lock()
-		var orig *copyEntry
-		if i, ok := st.findLocked(no); ok {
-			orig = st.ledger[i].original
-		}
-		st.mu.Unlock()
-		if orig != nil {
-			// decision: the copy is registered here, at completion, as
-			// RegisterCopy's contract asks, not when the sync's report
-			// covers the record. A read that finds the new place corrupt
-			// between that report and this pass finds no copy and drops the
-			// record, as any synced record with no copy is dropped.
-			// Overturned if such drops are seen, which would move the
-			// registration to the report. st.mu is not held: the table
-			// takes its own lock.
-			d.RegisterCopy(orig.seq, orig.loc, orig.checksum)
 		}
 		st.mu.Lock()
 		if i, ok := st.findLocked(no); ok {

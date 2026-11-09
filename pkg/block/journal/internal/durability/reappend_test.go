@@ -888,6 +888,40 @@ func TestAReappendWhoseSyncFailsRegistersNothing(t *testing.T) {
 	})
 }
 
+// TestACopyInASegmentRetiredBeforeTheNewPlaceSyncsIsNotRegistered covers a
+// failed segment retired once its window resolved and while the re-appended
+// record's new place is still syncing: the completion that follows registers
+// nothing in the retired segment, since Retired, which runs once per segment,
+// would never remove it.
+func TestACopyInASegmentRetiredBeforeTheNewPlaceSyncsIsNotRegistered(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr := newFailRig(t, nil)
+	f := file(1)
+	a, _ := fr.publish(t, f, 0, "aaaa")
+	seq := core.Seq(fr.lastSeq.Load())
+	hold := fr.holdNewSegmentSync(t, a.Segment)
+	fr.failSyncKeepingPages(t, a.Segment, errors.New("sync boom"))
+	ch := fr.syncAsync(context.Background(), f)
+	if got := fr.awaitResolved(t); got != a.Segment {
+		t.Fatalf("resolved segment %d, want %d", got, a.Segment)
+	}
+	awaitGate(t, "the new segment's sync", hold.Reached())
+	if _, _, err := fr.set.ClaimRetirement(a.Segment); err != nil {
+		t.Fatalf("ClaimRetirement: %v", err)
+	}
+	if _, err := fr.set.Retire(a.Segment); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	fr.d.Retired(a.Segment)
+	hold.Release()
+	if err := mustReturn(t, "Sync", ch); err != nil {
+		t.Fatalf("Sync = %v, want nil", err)
+	}
+	if cp, ok := fr.d.copyOf(seq); ok {
+		t.Errorf("copy table = %+v, a copy in the retired segment %d", cp, a.Segment)
+	}
+}
+
 // TestAWriteBetweenTheCopyAndItsRepointKeepsTheOverwrite covers a write over
 // the record made after its copy is appended and before the repoint: the
 // overwrite stays what the index serves, and the record's retained extent,
