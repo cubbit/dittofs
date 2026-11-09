@@ -2,7 +2,10 @@ package engine
 
 import (
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
@@ -72,4 +75,128 @@ func rowOf(r refusal) (row, bool) {
 	got, ok := refusalTable[r.limit]
 
 	return got, ok
+}
+
+// refusalLogEvery is how often a share's refused writes are logged at Warn: a
+// line that names something noisy is rate-limited to once a minute per
+// subject, with the count suppressed (RFC 25 §5.2).
+const refusalLogEvery = time.Minute
+
+// refusalLimiter decides, for one share, when a refused write is logged: the
+// first, then one a minute later with the count of those in between. It holds
+// no lock and starts no goroutine; it reads the engine's clock where it is
+// asked.
+type refusalLimiter struct {
+	last       atomic.Int64 // the Elapsed of the last line, plus one; zero before any
+	suppressed atomic.Int64
+}
+
+// take reports whether a refusal at engine time now is logged, and how many
+// were suppressed since the last line.
+func (l *refusalLimiter) take(now time.Duration) (bool, int64) {
+	for {
+		last := l.last.Load()
+
+		if last != 0 && now-time.Duration(last-1) < refusalLogEvery {
+			l.suppressed.Add(1)
+
+			return false, 0
+		}
+
+		if l.last.CompareAndSwap(last, int64(now)+1) {
+			return true, l.suppressed.Swap(0)
+		}
+	}
+}
+
+// unknownRow is the answer to a limit the table has no row for: retry-later
+// for capacity, never an I/O error and never a false disk full.
+var unknownRow = row{delay: vfserr.DelayCapacity}
+
+// answer is the error a client gets for a refusal with this row.
+func (r row) answer() error {
+	if r.noSpace {
+		return fmt.Errorf("engine: the journal's device is full: %w", vfserr.ErrNoSpace)
+	}
+
+	return &vfserr.Delay{Cause: r.delay}
+}
+
+// tableAnswer is err as the table answers it when err is a capacity refusal,
+// without counting or logging it: for a call that answers no client.
+func tableAnswer(err error) (error, bool) {
+	r, ok := capacityRefusal(err)
+	if !ok {
+		return nil, false
+	}
+
+	rw, known := rowOf(r)
+	if !known {
+		rw = unknownRow
+	}
+
+	return rw.answer(), true
+}
+
+// answered is err as the table answers it when err is a capacity refusal of
+// b's journal, which it counts and logs, and false for any other error.
+func (e *Engine) answered(b *binding, err error) (error, bool) {
+	r, ok := capacityRefusal(err)
+	if !ok {
+		return nil, false
+	}
+
+	rw, known := rowOf(r)
+	if !known {
+		rw = unknownRow
+
+		if _, seen := e.unknownLimits.LoadOrStore(r.limit, struct{}{}); !seen {
+			e.d.Logger.Error("journal refused by an unknown limit", "limit", r.limit.String())
+		}
+	}
+
+	e.refusals.Add(1)
+
+	answer := rw.answer()
+
+	if logged, suppressed := b.refusals.take(e.d.Clock.Elapsed()); logged {
+		e.d.Logger.Warn("write refused",
+			"share", b.share.ID.String(),
+			"limit", r.String(),
+			"answer", answer.Error(),
+			"suppressed", suppressed,
+		)
+	}
+
+	return answer, true
+}
+
+// String names the refusal for a log line: its limit, or the device.
+func (r refusal) String() string {
+	if r.device {
+		return "device"
+	}
+
+	return r.limit.String()
+}
+
+// answeredRefusal reports whether err is an answer the table gave.
+func answeredRefusal(err error) bool {
+	return errors.Is(err, vfserr.ErrDelay) || errors.Is(err, vfserr.ErrNoSpace)
+}
+
+// refusing runs call, a journal call of binding b's, and answers its error: a
+// capacity refusal as the table rules, anything else as journalErr maps it, so
+// the caller returns the error as it is.
+func refusing[T any](e *Engine, b *binding, call func() (T, error)) (T, error) {
+	got, err := call()
+	if err == nil {
+		return got, nil
+	}
+
+	if answer, ok := e.answered(b, err); ok {
+		return got, answer
+	}
+
+	return got, e.journalErr(err)
 }

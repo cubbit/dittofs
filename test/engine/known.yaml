@@ -366,3 +366,10 @@
   category: feature
   reason: 'Epic 6: an Unbind returns once the removal batch in flight has, and after a Drop the journal names no entry for the share and every accepted write had one Done (§2.3). Init and Open work; the fixture now attaches the share; the row stops at its first journal-backed write, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: until the journal has WriteAt, Sync and Forget.'
   issue: '#3589'
+- test: TestRFC8A_RetryLaterAtTheShareLimit
+  message: 'the write at the limit: vfs: retry shortly: commit, want ErrDelay(DelayCapacity)'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 7: the real journal refuses by the version limit with no raise in flight, so the write is answered retry-later (commit) and the share limit is never reached.'
+  issue: '#3590'

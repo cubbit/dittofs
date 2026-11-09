@@ -37,6 +37,7 @@ type binding struct {
 	gate        gate
 	files       []entity.FileID // the files Drop took off the loops and has not settled
 	seq         uint64          // the order bindings were made in, which Close undoes in reverse
+	refusals    refusalLimiter  // when a refused write of this share is logged
 }
 
 // bindings is the share table, read on every content call without a lock. A
