@@ -1621,8 +1621,9 @@ after a loss, each client resends its recent unstable writes once.
   ([RFC 16 §4.4](rfc-16-metadata-store.md#4.4%20Counters%20that%20many%20writers%20change)) and then calls the write's `Done`, so the filesystem
   service releases its quota reservation only once the usage is visible
   ([RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota)). A write dropped before any existence commit — by a failed
-  window, by the share's `Forget`, or with a journal device lost whole
-  (below) — gets `Done` from the engine when it is dropped, with nothing
+  window, by a corrupt record of it found before its sync that covers the whole
+  write ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), by the share's `Forget`, or with a journal device lost
+  whole (below) — gets `Done` from the engine when it is dropped, with nothing
   charged. A write whose existence is committed from its loss record (below)
   gets it from that commit, which charges nothing either: the extent it commits
   reads **Lost** and holds no content. A node that stops serving a shard —
@@ -3825,7 +3826,7 @@ const (
 
 type WriteOpts struct {
 	Suspend TimeMask // Modify, Access: times this write leaves alone
-	Done    func()   // called exactly once per accepted write: by the existence commit that records its usage or the loss-record commit, or by the engine, charging nothing, when a failed window, Forget, a journal device lost whole or the node ceasing to serve its shard drops it uncommitted (§5.1, RFC 17 §5.6); never if Write fails
+	Done    func()   // called exactly once per accepted write: by the existence commit that records its usage or the loss-record commit, or by the engine, charging nothing, when a failed window, a corrupt unsynced record covering the write, Forget, a journal device lost whole or the node ceasing to serve its shard drops it uncommitted (§5.1, RFC 17 §5.6); never if Write fails
 }
 type Extent = vfserr.Extent // { SrcOff, DstOff, Len int64 }; vfs.Extent aliases it too (RFC 17 §4.3)
 type Overlay struct {
