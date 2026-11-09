@@ -694,7 +694,8 @@ other range's last byte is offset + length − 1, a zero-length one's included
 (MS-FSA 2.1.4.10): a zero-length range at X ends at X − 1, so it conflicts only
 with a range holding both X − 1 and X, held or asked, and one at 0 conflicts
 with nothing. It is still held, and released by an unlock of the same offset
-and length.
+and length. An I/O of no byte crosses no lock at any offset: MS-FSA answers a
+read or write of no byte before it judges byte-range locks (2.1.5.3, 2.1.5.4).
 
 A lock may name no open: it is then held by its owner alone and released by
 unlock, by its host's restart ([§4.5](#4.5%20NLM%20locks%20and%20restart%20notification)) or by revocation. Every other lock
@@ -2175,6 +2176,13 @@ one value per protocol; the matrix is a function of the two.
 A caching grant is recalled by the server in the holder's own protocol, whatever
 protocol caused the conflict ([RFC 17](rfc-17-vfs.md)'s callbacks).
 
+A read or write of no byte conflicts with no grant and no byte-range lock: it
+starts no recall for a grant or lock conflict and crosses no lock ([§2.3](#2.3%20Lock)), as
+MS-FSA answers a read or write of `ByteCount` zero before its oplock break check
+(2.1.5.3, 2.1.5.4; 2.1.4.12) and RFC 8881 lets a count of 0 succeed subject to
+its access checks (§18.22.3, §18.32.3). The access check and the deny-mode
+check, with its handle-caching break, still apply to it.
+
 ### 7.1 Writers that do not coordinate
 
 Two clients that write one file without a lock, a deny mode or a grant are
@@ -3315,7 +3323,7 @@ Deleted numbers are not reused.
 | L65 | The table makes no call before `Start` or after `Stop`, and runs no `Sink` method under a lock. | Every mutating call before `Start` and after `Stop` is `ErrStopped`. A `Sink` that calls back into the table from every method deadlocks nothing. |
 | L66 | An `OpenID` is issued only to an SMB open, a durable open and a clone's source open; an NFS open is named by its token. | Open and close 10⁴ files over NFSv4: no `NextID` for an open is called. Unlink one of them while open: one ID issued, its record at `F‖id‖op‖openID`; abort the unlink: no record, the ID unused. One SMB open: one ID. |
 | L67 | An open asking none of read, execute, write, append or delete is granted against any deny mode and its deny refuses nothing. | Hold an open with all access and share none; open the file asking only read-attributes with share none: granted, with no break of any grant. Reverse the order: the all-access open is granted, and an anonymous write through NFS succeeds. |
-| L68 | A range's last byte is offset + length − 1, a zero-length range's included; to end of file is held as reaching 2⁶⁴−1 without overflow. | Over SMB, hold [10, 20); a zero-length lock at 15: refused; at 10: granted, since byte 9 is not held; at 20: granted; at 0: granted against a lock on [0, 2⁶⁴−1). Hold a zero-length lock at 15: an exclusive lock on [14, 16) is refused, on [15, 16) granted. An NLM lock at offset 2⁶⁴−2 with length 0: held to 2⁶⁴−1, conflicting with an NFSv4 lock on [2⁶⁴−2, all ones). |
+| L68 | A range's last byte is offset + length − 1, a zero-length range's included; to end of file is held as reaching 2⁶⁴−1 without overflow; an I/O of no byte crosses no lock. | Over SMB, hold [10, 20); a zero-length lock at 15: refused; at 10: granted, since byte 9 is not held; at 20: granted; at 0: granted against a lock on [0, 2⁶⁴−1). Hold a zero-length lock at 15: an exclusive lock on [14, 16) is refused, on [15, 16) granted. An NLM lock at offset 2⁶⁴−2 with length 0: held to 2⁶⁴−1, conflicting with an NFSv4 lock on [2⁶⁴−2, all ones). Under another open's exclusive lock on [0, 10), a zero-length read and write at 5, through an open and anonymously, and the holding open's zero-length write at 25 under its own shared lock on [20, 30): admitted. |
 | L69 | Each primary holds, per client, at most 16,384 opens, 65,536 lock ranges, 4,096 lock owners, 1,024 waiters and 1,024 watches; a request past one is refused `ErrDelay` (`DelayResources`) before it changes anything, and a close, a cancel, a refusal of a callback grant, an unlock that splits no range and what a restart installs never are. | A client at 16,384 opens at one primary: the next open `ErrDelay` (`DelayResources`), no grant recalled, no app instance's predecessor closed, the per-client index unchanged; close one: the next open granted. The same at each other cap. At the range cap, a merging owner's unlock of a range's middle: refused; an unlock of a whole range: granted. Restart a primary whose client holds more than a lowered cap: every open, owner and range installed, and counted. |
 | L70 | `CloneClose` returns once the hold is closed, and the freed file is served after the clone is answered. | Clone a 4 KiB extent while an open waits on the source: the clone is answered first and the waiter is served after it, both within 1 s. |
 

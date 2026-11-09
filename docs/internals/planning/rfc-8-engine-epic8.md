@@ -155,7 +155,7 @@ clone marker.
 | --- | --- | --- |
 | 1 Unit tests | all | every subtask tests over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition, with a recording `CloneHold` stub where open state is not the subject; T8.2 extends the fake with `CloneTarget`, `Reserve` and the clone marker `Since` yields |
 | 2 Fuzz | none | no parser. RFC 8 §15's `ponytail:` names `Copy`'s extents among the parts its tables check; T8.5's table test is that check, and the marker already stands at the read-resolution table, so no second one |
-| 3 Observability | T8.2, T8.3, T8.6 | no new counter and no new condition: a clone's phase 2 is a removal of kind clone, counted in epic 5's `engine_removal_batches_total`, `engine_removals_pending` and `engine_removals_oldest_seconds`, and its `removal_stalled` condition is unhealthy, not degraded (RFC 8 §8.1). T8.3 opens each clone's `Resume` as the removal loop's root span, its kind an attribute. RFC 8 §14's span events for a wait on a registration are not recorded: the `Tracer` declares no event, and a call never waits on one here (§9, point 1). T8.2 logs a phase-1 refusal met after the journal step at `Error` (D8); T8.3 a failed `Hold` at `Error`; T8.6 a rebuilt clone at `Info`, naming both files, and reports a rebuilt clone whose source's shard is not served after five backoffs as `removal_stalled` for its clone `Removal` (D11) |
+| 3 Observability | T8.2, T8.3, T8.6 | no new counter and no new condition: a clone's phase 2 is a removal of kind clone, counted in epic 5's `engine_removal_runs_total`, `engine_removals_pending` and `engine_removals_oldest_seconds`, and its `removal_stalled` condition is unhealthy, not degraded (RFC 8 §8.1). T8.3 opens each clone's `Resume` as the removal loop's root span, its kind an attribute. RFC 8 §14's span events for a wait on a registration are not recorded: the `Tracer` declares no event, and a call never waits on one here (§9, point 1). T8.2 logs a phase-1 refusal met after the journal step at `Error` (D8); T8.3 a failed `Hold` at `Error`; T8.6 a rebuilt clone at `Info`, naming both files, and reports a rebuilt clone whose source's shard is not served after five backoffs as `removal_stalled` for its clone `Removal` (D11) |
 | 4 Profiling | all | the unit composition's `prof.Watch` covers every test, a clone's detached goroutine (D6) included: one leaked past `Close` fails it |
 | 5 Public and internal | all | internal tests of admission (T8.1a), the replay of a clone operation (T8.2) and `Copy`'s chunking (T8.5); `Clone` and `Copy` tested through `*Engine`; `-race` in T8.1a, T8.1b, T8.4 and T8.5. The spec handed `CloneTarget` is asserted where the journal yields it back, from `Since` over the real journal (T8.6); the `CloneOp` handed `Existence.Clone` where `kvstore` reads it, by the destination's `Covering` and the source's open record after phase 1 (T8.2); `CloneSrc` where open state matches it, by `CloneOpen` over the real table (T8.3) |
 | 6 Known failures | T8.2, T8.3, T8.4, T8.6 | the test rows of §3 are E2's, red in `known.yaml`; a row this epic turns green over the real journal leaves it in that change. T8.3's tests over the open-state table enter `known.yaml` naming this epic's issue until `Releasing` and the journal's `CloneTarget` and `Reserve` exist |
@@ -456,9 +456,10 @@ listed test fails on the regression it names (after "catches").
 
 **Subtask T8.2 estimate: 5.25 man-days.**
 
-- **Track:** A. **Depends on:** T8.1a, T8.1b; epic 4's T4.3 (the per-file existence commit and
-  `waitBatch`) and T4.5 (the one sync function); epic 5's T5.1 (the guard, phase 1's order)
-  and T5.4 (the retry channel).
+- **Track:** A. **Depends on:** T8.1a, T8.1b; epic 4's T4.3 (the per-file existence commit
+  and `waitBatch`) and T4.5 (the one sync function); epic 5's T5.1 (the guard, phase 1's
+  order) and T5.4 (the retry channel). The `issued` call below lands with whichever of this and
+  epic 6's T6.7 comes second.
 - **Covers:** R4 (the reservation, a source past its end), R10 (the source's release),
   R11–R17, R24, R26 (a store error), R33 (the stall before phase 1), R35 (the refused
   reservation), R38, R41, R42.
@@ -483,7 +484,9 @@ listed test fails on the regression it names (after "catches").
   `ErrUnavailable` at `Close` or `Drop`. The fake journal's `CloneTarget` (removes the extent
   as `Deallocate` does and leaves a marker with the spec), `Reserve` and `Reservation` (draw,
   refusal by an injected `NoSpaceError`, `Close`), and `Since` yielding the marker as
-  `Change.Clone`.
+  `Change.Clone`. The version the journal step returns, and each version a copy's
+  `Reservation.WriteAt` returns, is passed to epic 6's `issued`, as `Write` and `Draw` do
+  (RFC 8 §2.7).
 - **Rows:** §9.1 failure leaves the destination (the refused reservation), §9.1 clone keeps
   writes outside its extent (the stall before phase 1), §9.1 clone never waits.
 - **Tests:** the done signal is T8.3's, so an `export_test.go` hook fakes it, dropping the
@@ -526,7 +529,12 @@ listed test fails on the regression it names (after "catches").
   group commit changes nothing (catches `Clone` setting `applied` over the write, D15); a
   write to the destination outside the extent and an overwrite of part of it, both pending
   below *v*: after phase 1 an overwrite record covers the overlapped runs (catches phase 1
-  passing the destination's writes without their superseded runs).
+  passing the destination's writes without their superseded runs); over the fake, with the
+  test block of 16, a clone whose `CloneTarget` version is past the trigger and no other
+  call issuing a version: the raise runs and the journal gets the new limit (catches a clone
+  target that does not call `issued`); over the fake, a clone that makes three copies: the
+  versions passed to `issued`, counted through an `export_test.go` hook, are the target's
+  and each copy's, four in all (catches a copy that does not call `issued`).
 
 ### T8.3 The clone-kind open and phase 2
 
@@ -642,12 +650,13 @@ listed test fails on the regression it names (after "catches").
 - **Deliverables:** in `start.go`, a clone marker above `applied` handed by start step 3
   rebuilt as a clone: both registrations before either file is served, the destination's
   copies kept (its held extents above *v*), only the source's held runs they do not cover
-  re-made through a new reservation, a refused reservation leaving the clone waiting with the
-  destination answering `DelayCapacity`, then phase 1 and the rest from T8.2; a clone
-  `Removal` not done, from step 4's listing, rebuilt as both registrations (D10, its marker),
-  whose goroutine waits on `Holds.Served` (D11) and then posts it to the loop, which takes
-  T8.3's path, `Hold` finding the hold open state installed; one `Info` line per rebuilt
-  clone. No start step calls `Hold`.
+  re-made through a new reservation, each version a re-made copy's `Reservation.WriteAt`
+  returns passed to epic 6's `issued` as in T8.2, a refused reservation leaving the clone
+  waiting with the destination answering `DelayCapacity`, then phase 1 and the rest from
+  T8.2; a clone `Removal` not done, from step 4's listing, rebuilt as both registrations
+  (D10, its marker), whose goroutine waits on `Holds.Served` (D11) and then posts it to the
+  loop, which takes T8.3's path, `Hold` finding the hold open state installed; one `Info`
+  line per rebuilt clone. No start step calls `Hold`.
 - **Rows:** §9.1 failure leaves the destination (the crashes), §9.1 source registration
   rebuilt (adapted), §9.1 clone never waits (the power cut), §2.5 clone resumed at a full
   limit (adapted). Over E2's fixture, the journal's crash seam and the real open-state table.
@@ -665,7 +674,9 @@ listed test fails on the regression it names (after "catches").
   only when released: no `Resume` before it, `removal_stalled` names the clone `Removal` after
   five backoffs and clears once it returns (catches a silent wait, D11), and an `Unbind` of
   the source's share before then returns only after the stub is released and the clone done
-  (catches a join that abandons the clone).
+  (catches a join that abandons the clone); over the fake, a restart that re-makes two copies
+  of a clone: the versions passed to `issued`, counted through the same hook as T8.2's, are
+  the two copies' (catches a re-made copy that does not call `issued`).
 
 ## 7. Order of work
 
