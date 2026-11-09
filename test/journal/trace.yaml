@@ -471,7 +471,7 @@ rfc1 / 9.4 / A / "read-only fails every stream's unsynced records":
   reason: 'the read-only transition failing every stream''s unsynced records is not built yet'
 rfc1 / 9.4 / C / "`Share` twice on one tag":
   owner: epic 8
-  reason: 'Share of an open tag returning its handle with the new limit is not built yet'
+  reason: 'Share of an open tag is built (T8.3); the row''s Fill waits for T8.7, and the fixture for epic 7''s Init and Open'
 rfc28 / 4.2 / C / "a seal marker only the cache holds":
   owner: epic 7
   reason: 'the open proving seal markers on the device is not built yet'
