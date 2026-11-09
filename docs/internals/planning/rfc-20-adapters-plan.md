@@ -107,7 +107,7 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   fails on an empty manifest. A build tag on `lint-go`'s `go vet -tags=` line stays while any file
   behind it compiles; a tag whose files are all deleted leaves the line.
 - **`pkg/adapter`** (RFC 20 §3.4, §3.5): `Adapter` (`Reconfigure` taking `config.Settings`),
-  `State`, `Health` (`State`, `Ready`, `Err`, `Conditions`), `ConnInfo` (`Protocol`, `Remote`,
+  `State`, `Health` (`State`, `Ready`, `Conditions`), `ConnInfo` (`Protocol`, `Remote`,
   `Session`, `Since`), `Sidecar`, `Serving`, `Deps` (with `Watch`, RFC 20 §3.7).
 - **A test with every new package.** `lint-repo` runs `test/new-package-tests.sh`, which fails a
   directory new to the base branch that has no `_test.go`. Each package epic 1 creates lands with
@@ -119,17 +119,18 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   lands in T1.7: the `Invocation` its `Decode` returns hands `Bound`, `Resolve`, `Role`,
   `Call` and `Encode` the request it decoded.
 - **`pkg/adapter/config`** (RFC 20 §3.6, RFC 13): `Adapter`, and `NFS` and `SMB` embedding it;
-  the sealed `Settings` that only `NFS` and `SMB` satisfy, and `AdapterOf`; each restart-only
+  the sealed `Settings` that only `NFS` and `SMB` satisfy, `AdapterOf` and `Validate`; each restart-only
   field tagged `restart:"true"`; `RestartRequired`, returning an error wrapping
   `ErrRestartRequired`.
 - **`pkg/adapter/nfs.New`, `pkg/adapter/smb.New`**: signatures and stubs returning an error.
 - **`pkg/resources`** (RFC 24 §2.5, §3.1, RFC 20 §6.8): `Budget`, `Reservation`, `Pools`, `Buf`,
   `BufPool` and `NewBufPool` (named apart from `Pools`, since RFC 24's pool is a counter, not an allocator), the
   class constants, as signatures.
-- **`pkg/metrics` gains nothing.** `Deps.Metrics` is typed as the branch's `*metrics.Metrics`,
-  whose `RegisterProvider` reads a snapshot per scrape and cannot resolve a counter at table
-  build; the call that does lands with its consumer, `core`'s series, in T5.9, and RFC 25's
-  registry takes the field's place when it is built (§6.2).
+- **`pkg/metrics` gains one line.** `Deps.Metrics` is `*metrics.Registry`, RFC 23's and RFC
+  25's name; T1.6 adds `type Registry = Metrics`, an alias of the branch's type, with a
+  `ponytail:` naming RFC 25 §8.2's registry as the upgrade. `Metrics.RegisterProvider` reads a
+  snapshot per scrape and cannot resolve a counter at table build; the call that does lands
+  with its consumer, `core`'s series, in T5.9 (§6.2).
 - **The RFC amendments the surface needs** (T1.9): every point where RFC 20 left the frozen
   surface ambiguous is settled in RFC 20 and RFC 24 before it is written, so S1 freezes a
   surface the RFC states.
@@ -463,20 +464,22 @@ deleted).
 - T1.4 `pkg/adapter`: the contract and `Deps`, `Watch` included; `State`, `Health`, `ConnInfo`
   as RFC 20 §3.4 states them. 0.75 man-days.
 - T1.5 `pkg/adapter/config`: the three settings shapes, `NFS` and `SMB` embedding `Adapter`;
-  the sealed `Settings` and `AdapterOf`; restart-only fields tagged and `RestartRequired` over
+  the sealed `Settings`, `AdapterOf` and `Validate`; restart-only fields tagged and `RestartRequired` over
   two `Settings`, wrapping `ErrRestartRequired`; `Addrs` supplied by the node and live.
   2 man-days.
 - T1.6 `pkg/resources`: `Budget`, `Reservation`, `Pools`, `Buf`, `BufPool`, `NewBufPool`,
-  classes, as stubs. 1.25 man-days.
+  classes, as stubs; `pkg/metrics`' `Registry` alias. 1.25 man-days.
 - T1.7 `internal/adapter/core`'s surface, RFC 20 §4.7, with stub bodies; `Bind`'s body, with
   the test that its `Invocation` hands each closure the request it decoded; the `GOOS=windows`
   and `GOOS=darwin` vet cell for the adapter packages. 2.5 man-days.
 - T1.8 `pkg/adapter/nfs.New` and `pkg/adapter/smb.New` stubs, validating before they refuse.
   0.5 man-days.
 - T1.9 RFC 20 and RFC 24 amended where the frozen surface was ambiguous: the sealed settings
-  and `Reconfigure`'s parameter, the restart-only tags and their comparison, `Stop`'s target
-  asked of the service, `Health`'s and `ConnInfo`'s fields, `NewBufPool`, `Deps.Metrics`'s
-  type, `*resources.Buf` in `core`, `Interim`'s `after` and `Invocation.Role` before `Resolve`,
+  and `Reconfigure`'s parameter, `Validate`, the restart-only tags and their comparison, the
+  drain's target asked of the service per request, `Health`'s and `ConnInfo`'s fields,
+  `NewBufPool` and `BufPool.Get`'s key, `Deps.Metrics` as `*metrics.Registry`,
+  `*resources.Buf` in `core`, the compound row's split (`Op.Decode`'s consumed bytes,
+  `Op.Members`, `OpTable.ReadOp`), `Interim`'s `after` and `Invocation.Role`'s two cases,
   `Start` after `Stop` refused and `Stop` idempotent, and the prior-art proposals declined.
   2.5 man-days.
 
@@ -540,7 +543,9 @@ rows, A10, A11, A14, A19, A20.
   receive reservation before the body, frame deadline, hand-off through the dispatch seam.
 - T4.4 `Conn` writer: bounded queue, gathered `net.Buffers` writes, write deadline, a send that
   queues a message ahead of a named reply (RFC 20 §6.2), the reader stopped at a full queue.
-- T4.5 Drain, close and cancellation: no accept; the dispatch seam told the adapter is draining;
+- T4.5 Drain, close and cancellation: no accept; the dispatch seam told the adapter is draining,
+  each refused request answered `ErrMoved` or `ErrDraining` as the service says of its share,
+  through RFC 17's call (none until RFC 15's topology exists, §6.2);
   in-flight requests awaited up to the drain deadline, then their contexts cancelled and their
   replies dropped; closing cancels each request's context and runs `OnClose`; cleanup keyed by
   session before a reconnect of that session is served.
@@ -609,7 +614,7 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   helper each protocol's table will call.
 - T5.8 Request context: the 30 s deadline; cancellation on close and drain.
 - T5.9 RFC 20 §10's metrics, spans and logs, all in `core`; series resolved at table build,
-  through the resolve-once call `pkg/metrics` gains here, its first consumer.
+  through the resolve-once call `metrics.Registry` gains here, its first consumer.
 - T5.10 The pipeline micro-benchmark on `testproto` over `vfstest.Null`, its allocation ceiling
   checked in and registered in `unit/adapter-allocs`.
 - T5.11 Parked requests: RFC 20 §4.7's `Park` as its comment states it, on `testproto`'s parked
@@ -717,7 +722,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | NFSv3 procedures; NFSv4.0, 4.1 and 4.2 operations; the `ops/` tables | handlers are RFC 21's | RFC 21 plan | its handler epics |
 | MOUNT, NLM, NSM, `SM_NOTIFY`; MOUNT, NLM and NSM over UDP (RFC 20 §11 q3) | auxiliary programs are RFC 21's | RFC 21 plan | its auxiliary-services epic |
 | RPCSEC_GSS context table and window; NFSv4.1 slots and reply cache; the v3 and v4.0 duplicate-request cache (RFC 20 §11 q2) | stage state machines, no driver here | RFC 21 plan | with `EXCHANGE_ID`/`CREATE_SESSION` and GSS `INIT` |
-| NFS-over-TLS (`Conn.StartTLS`, `tlsconfig` reload, `require` mode) | starts at the `NULL` handler | RFC 21 plan | with `NULL` |
+| NFS-over-TLS (`Conn.StartTLS`, `tlsconfig` reload, `require` mode); a certificate that does not load refused by `config.Validate` at `New` and `Reconfigure`, at configured (RFC 20 §3.1) | starts at the `NULL` handler; `StartTLS` is a method added to `Conn`, no frozen signature changed | RFC 21 plan | with `NULL` |
 | NFS callbacks (`CB_RECALL`, `CB_NOTIFY`, `CB_RECALL_ANY`, NLM `GRANTED` via `Deps.Dial`) | need sessions and handlers | RFC 21 plan | with delegations and NLM |
 | SMB 2.1–3.1.1 commands and `ioctl/` | handlers are RFC 22's | RFC 22 plan | its handler epics |
 | SMB transform header, signing, encryption, credits, message-ID window, multichannel session registry, `Caps` | stage state machines, no driver here | RFC 22 plan | with `NEGOTIATE` and `SESSION_SETUP` |
@@ -752,7 +757,8 @@ feature parity with develop. A row moves only to another owner, never off the le
 | `dfsctl share mount`'s discovery of a non-default port (`ListAdapterPorts`); it uses each protocol's default port | its route is deleted in T1.2 | cutover | with `/api/v1/adapters` |
 | the packages deleted in T1.1 for having no importer: `pkg/discovery/mdns` and `wsd`; `pkg/auth`, `pkg/auth/kerberos`, `pkg/identity/kerberos`, `internal/auth/kerberos`; `internal/mfsymlink` | nothing imports them once v1 is gone | discovery: cutover; Kerberos and `pkg/auth`: RFC 18 plan; `mfsymlink`: RFC 22 plan | each lifted from develop's history by its consumer |
 | `pkg/apiclient`'s adapter and netgroup methods, kept for the e2e helpers `lint-go` vets; their routes answer 404 | compiled tests still call them | cutover | with their routes |
-| `Deps.Metrics` typed as `pkg/metrics`' `*metrics.Metrics`, not RFC 25 §8.2's `*metrics.Registry` | the registry is not built | RFC 25 | when the registry is built |
+| `metrics.Registry` an alias of `pkg/metrics`' `Metrics` (T1.6), not RFC 25 §8.2's registry | the registry is not built | RFC 25 | when the registry is built |
+| the service call that says whether a draining request's share has a gateway to move to (`ErrMoved`) or none (`ErrDraining`), asked per request (RFC 20 §3.1) | RFC 17 names no such call yet | RFC 17 plan | until RFC 15's topology exists it answers none |
 
 ## 7. RFC coverage
 
