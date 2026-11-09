@@ -70,9 +70,20 @@ func toFormat(r core.LossReason) format.LossReason {
 // rule, counts the loss, and publishes its event, in that order. The event
 // is published last, so a reader that sees it is already owed the record.
 // A piece (Seq and Extent) already taken by an earlier Lose or Place does
-// nothing and returns the zero event. Every other piece, of a Seq already
-// reported or not, goes through all of it, so no event precedes its own
-// record.
+// nothing and returns the zero event with a nil error. That says only that
+// the piece was taken by an earlier call: it says nothing about that call's
+// record being on disk, which may still be in flight, and only the call that
+// took the piece reports whether its record was appended and synced. Every
+// other piece, of a Seq already reported or not, goes through all of it, so
+// no event precedes its own record.
+//
+// decision: Lose applies no admission of its own and does not look at
+// Loss.AtOpen when it appends, so a loss found on a read can draw on the
+// headroom an open reserves for its own records (RFC 1 section 6, "An open
+// keeps part of the headroom for its own records"). Only the data path's
+// record-count admission can keep that reserve for an open's own losses.
+// Withdraw this once that admission exists and Lose is told which class of
+// caller it serves.
 func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return core.LossEvent{}, err
