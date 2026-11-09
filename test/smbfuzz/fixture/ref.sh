@@ -71,7 +71,7 @@ cat > /etc/samba/smb.conf <<EOF
 EOF
 
 log "joining $REALM"
-for i in 1 2 3 4 5; do
+for _ in 1 2 3 4 5; do
     if net ads join -U "Administrator%$ADMIN_PASSWORD" -S "dc.$realm_lc" --no-dns-updates; then
         break
     fi
