@@ -1762,7 +1762,10 @@ One workflow, `tests.yml`, runs every registered suite:
   for. `Unit Tests (1.26.x)` uploads the coverage profile `unit` writes to its `{out}` to Codecov, as
   the unit job did, unless a retry rewrote it with the retried tests' alone. Codecov sets no status,
   comment or annotation (`codecov.yml`) while the code moves fast, so the upload only keeps the
-  coverage history for when its checks come back on. A fixed job's
+  coverage history for when its checks come back on. On feat/storage-v2, `Unit Tests (1.26.x)`
+  runs `unit` with `--changed` on a pull request, from a checkout with the whole history so its
+  base resolves, and uploads no coverage then; the merge queue and a push run every package. A
+  fixed job's
   artifact is `dt-run-SUITE-ATTEMPT`, and `gate` needs every fixed job, so its report has theirs
   too. On a push to develop,
   `{base}` is the commit before the push, so the commit checks still cover commits pushed straight
