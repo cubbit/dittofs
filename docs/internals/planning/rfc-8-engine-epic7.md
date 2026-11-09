@@ -765,9 +765,9 @@ A suggestion only: one pull request per subtask works as well.
    when each is raised and cleared (#3772). This epic raises `journal_full` (D9) and
    `journal_sync_failed` (D10); `stranded_export_failed` goes to the second part with the
    salvage export (§1.2). The half of `journal_sync_failed` raised when the journal turns
-   read-only, and its §15.2 assertion, go with the reopen of a read-only journal, which
-   no epic of this part owns yet (epic 6's §9 point 8); every other mention in this
-   document points here.
+   read-only, and its §15.2 assertion, are T7.3's (#3898): RFC 8 §11.1 raises it from
+   the same loss events as the failed-window half, so it waits for no reopen; every
+   other mention in this document points here.
 2. **The fence's clock** (D6). RFC 8 §11.2 now records the `Clock.Elapsed` of the last
    commit (#3656). RFC 8 §11.2 and RFC 0 §1.4 still read either way on when the 30 s start;
    this document starts them when a transaction becomes outstanding or failing on a node
