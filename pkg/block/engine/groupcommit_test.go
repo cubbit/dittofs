@@ -580,7 +580,7 @@ func TestAConflictAtTheDeadlineIsDelayConflict(t *testing.T) {
 // A file the store names in its map is retried alone in the next batch, even
 // with another file due beside it.
 func TestAFailedFileIsRetriedAlone(t *testing.T) {
-	u, log := newLoggedUnit(t, 24*time.Hour, 64)
+	u, log := newLoggedUnit(t, time.Second, 64)
 	_, dir := u.fs.Create(t, u.fs.Admin, u.fs.Root, "d", kvstore.Dir(0o755))
 	d, a, c := dir.ID, u.create(t, "a"), u.create(t, "c")
 	u.write(t, d, 0, []byte("not content"))
@@ -589,17 +589,23 @@ func TestAFailedFileIsRetriedAlone(t *testing.T) {
 	u.e.OnCapture(func() {
 		once.Do(func() {
 			u.write(t, c, 0, []byte("c"))
-			go func() { _ = u.e.CommitNow(context.Background(), u.share.ID, c) }()
-			eventually(t, "c is due now", func() bool { return u.e.Due(u.rec, c) })
+			u.clock.Advance(time.Second) // c comes due by its age, beside d's retry
 		})
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
-	defer cancel()
-	_ = u.e.CommitAll(ctx, u.rec)
+	// d and a come due at one instant by their age, so the first batch takes
+	// both: asked for one by one, as CommitAll asks, a batch could take d
+	// before a was asked for, and d would fail alone and back off instead.
+	// The clock moves until the batches show: a timer armed from a reading
+	// taken before a move waits for the next one.
+	u.until(t, "the batch and the retry", func() bool {
+		log.mu.Lock()
+		defer log.mu.Unlock()
+		return len(log.commits) >= 2
+	})
 	log.mu.Lock()
 	defer log.mu.Unlock()
-	if len(log.commits) < 2 {
-		t.Fatalf("%d commits, want the batch and the retry", len(log.commits))
+	if b := log.commits[0]; len(b) != 2 || !slices.Contains(b, d) || !slices.Contains(b, a) {
+		t.Fatalf("the first batch holds %v, want d and a", b)
 	}
 	if r := log.commits[1]; len(r) != 1 || r[0] != d {
 		t.Errorf("the retry's batch holds %d files, want d alone", len(r))
@@ -658,13 +664,28 @@ func TestASplitLeafBacksOffAtOnce(t *testing.T) {
 		}
 		return next.Commit(ctx, p, marks)
 	}))
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
 	a := u.create(t, "a")
 	x = u.create(t, "x")
 	u.write(t, a, 0, []byte("a"))
 	u.write(t, x, 0, []byte("x"))
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
-	defer cancel()
-	_ = u.e.CommitAll(ctx, u.rec)
+	// a and x come due at one instant by their age, so the first batch takes
+	// both: asked for one by one, as CommitAll asks, a batch could take x
+	// alone, and x would back off without a split. The clock moves in steps
+	// shorter than the shortest backoff until the store is called, so a step
+	// taken after the split cannot let x's backoff run out and send it again.
+	deadline := time.Now().Add(5 * time.Second)
+	for calls.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("never: the first batch")
+		}
+		u.clock.Advance(10 * time.Millisecond)
+		time.Sleep(time.Millisecond)
+	}
+	// The split commits a and fails x in either order: wait for both.
+	eventually(t, "a committed and x named failing", func() bool { return !u.e.HasEntry(a) && u.e.Failing(u.rec, x) })
 	if n := calls.Load(); n != 2 {
 		t.Errorf("x was sent %d times, want twice: with a, then alone by the split", n)
 	}
