@@ -6,6 +6,7 @@ package enginetest
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"iter"
 	"slices"
 	"sync"
@@ -52,6 +53,10 @@ type FakeJournal struct {
 	seq       uint64                  // the stream's last record's sequence number
 	synced    entity.SyncMark         // the mark of the stream's last sync; zero before one
 	recorded  [][]entity.SyncMark     // what MarksRecorded was handed, in order
+
+	readOnly journal.ReadOnlyState   // ReadOnly's state, reported by Stats
+	refusal  error                   // what a write answers once read-only
+	undone   map[journal.FileID]bool // ReadOnly's files: every Sync naming one answers the refusal
 
 	refuseReserve error           // RefuseReserve's error: the next Reserve answers it
 	reserved      []Reserved      // every Reserve, in order
@@ -179,6 +184,7 @@ func (j *FakeJournal) Stats() journal.Stats {
 		Shares:         map[journal.ShareTag]journal.ShareStats{},
 		VersionLimit:   journal.Version{Counter: j.limit},
 		NextVersion:    journal.Version{Counter: j.last + 1},
+		ReadOnly:       j.readOnly,
 	}
 
 	for tag, n := range j.held {
@@ -350,6 +356,9 @@ func (h *FakeHandle) WriteAt(_ context.Context, id journal.FileID, off int64, p 
 	j := h.j
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.refusal != nil {
+		return journal.Version{}, j.refusal
+	}
 	f, err := h.file(id, true)
 	if err != nil {
 		return journal.Version{}, err
@@ -416,12 +425,20 @@ func (j *FakeJournal) appendRecord(f *fakeFile, n int64) {
 // Sync answers at once: every operation of the fake is durable on return,
 // with the stream's mark over the newest record of the files named, none
 // when none holds a record. The first Sync naming a file FailSync armed
-// answers a SyncError naming those of its files.
+// answers a SyncError naming those of its files. Every Sync naming a file
+// ReadOnly undid answers the refusal bare, never a SyncError, ahead of any
+// FailSync's, as the journal does; one naming no such file answers as above,
+// read-only or not.
 func (h *FakeHandle) Sync(_ context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
 	h.j.mu.Lock()
 	defer h.j.mu.Unlock()
 	if h.closed {
 		return nil, journal.ErrClosed
+	}
+	for _, id := range ids {
+		if h.j.undone[id] {
+			return nil, h.j.refusal
+		}
 	}
 	var failed []journal.FileID
 	for _, id := range ids {
@@ -523,12 +540,34 @@ func (j *FakeJournal) FailSync(id journal.FileID, e journal.Extent, also ...jour
 	}
 }
 
+// ReadOnly turns the journal read-only for cause: every write and removal
+// from then on is refused with journal.ErrJournalReadOnly wrapping cause,
+// and Stats reports the state. Each of undone is a file with a removal the
+// entry undid, so every Sync naming it answers the refusal bare. The fake
+// neither undoes that removal nor restores what it cut: a test reads the
+// engine's answer and the metadata, not the journal's index.
+func (j *FakeJournal) ReadOnly(cause error, undone ...journal.FileID) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.readOnly = journal.ReadOnlyState{ReadOnly: true, Err: cause}
+	j.refusal = fmt.Errorf("%w: %w", journal.ErrJournalReadOnly, cause)
+	if j.undone == nil {
+		j.undone = map[journal.FileID]bool{}
+	}
+	for _, id := range undone {
+		j.undone[id] = true
+	}
+}
+
 // remove runs a removal of kind k over [from, to) under a new version and
 // leaves its marker.
 func (h *FakeHandle) remove(id journal.FileID, k journal.ChangeKind, from, to int64) (journal.Version, error) {
 	j := h.j
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.refusal != nil {
+		return journal.Version{}, j.refusal
+	}
 	f, err := h.file(id, true)
 	if err != nil {
 		return journal.Version{}, err
