@@ -32,8 +32,11 @@ type workerChecks struct{ pool, idle, retire func() error }
 // seam, leaves each of them one piece of work (a pool below its target, an
 // active segment idle past the seal age, a sealed segment awaiting
 // retirement), optionally enters read-only, then drives all three and returns
-// how many times each write op reached the seam since the entry point.
-func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (map[string]int, *durability.Durability) {
+// how many times each write op reached the seam since the entry point, with
+// what one Make of a spare costs in write ops. The layer's probe makes its
+// spare through the same maker, which consults no read-only check, as the
+// probe's spare is the one write a read-only journal makes.
+func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (delta, makeCost map[string]int, d *durability.Durability) {
 	t.Helper()
 	prof.Watch(t, prof.Options{})
 
@@ -42,13 +45,19 @@ func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (map[strin
 		t.Fatalf("the seam could not be made: %v", err)
 	}
 	clock := journaltest.NewStopwatchClock()
-	d, err := durability.New(durability.Config{
+	var maker *segment.Maker
+	d, err = durability.New(durability.Config{
 		Clock:    clock,
 		Domains:  noDomains{},
 		Index:    index.New(1 << 20),
 		Dir:      t.TempDir(),
 		Counters: &index.Counters{},
 		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error) { return index.HeldDelta{}, nil },
+		Check:    func() error { return nil },
+		MakeSpare: func() error {
+			_, err := maker.Make()
+			return err
+		},
 	})
 	if err != nil {
 		t.Fatalf("durability.New: %v", err)
@@ -60,7 +69,7 @@ func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (map[strin
 
 	fsys := d.Observe(seam.FS())
 	set := segment.NewSet(harnessCap, nil)
-	maker := segment.NewMaker(fsys, set, 1<<62, 0, nil)
+	maker = segment.NewMaker(fsys, set, 1<<62, 0, nil)
 	pool := segment.NewPool(maker, segment.Targets{Content: 2}, checks.pool, nil)
 	t.Cleanup(pool.Stop)
 	pool.Start()
@@ -92,10 +101,23 @@ func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (map[strin
 	}
 	awaitSpares(t, pool, segment.Targets{Content: 2})
 
-	// A sealed, not full segment: its retirement is an unlink.
+	// A sealed, not full segment: its retirement is an unlink. Its Make is
+	// the measure of what the probe's spare costs.
+	counts := func() map[string]int {
+		m := map[string]int{}
+		for _, op := range writeOps {
+			m[op] = seam.Calls(op)
+		}
+		return m
+	}
+	beforeMake := counts()
 	retired, err := maker.Make()
 	if err != nil {
 		t.Fatalf("Make: %v", err)
+	}
+	makeCost = counts()
+	for op, n := range beforeMake {
+		makeCost[op] -= n
 	}
 	if err := set.Take(retired); err != nil {
 		t.Fatalf("Take: %v", err)
@@ -111,12 +133,11 @@ func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (map[strin
 	awaitClockArmed(t, clock)
 
 	if enter {
+		armed := clock.Pending()
 		d.Enter(syscall.EROFS)
+		eventually(t, "the probe to arm its wait", func() bool { return clock.Pending() > armed })
 	}
-	before := map[string]int{}
-	for _, op := range writeOps {
-		before[op] = seam.Calls(op)
-	}
+	before := counts()
 
 	// The pool falls below its target, the clock passes the idle seal age and
 	// the probe interval, and the retirement is queued and run directly.
@@ -133,6 +154,7 @@ func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (map[strin
 		if !errors.Is(retireErr, core.ErrJournalReadOnly) || !errors.Is(retireErr, syscall.EROFS) {
 			t.Errorf("Retire in a read-only journal = %v, want core.ErrJournalReadOnly wrapping EROFS", retireErr)
 		}
+		eventually(t, "the probe's spare", func() bool { return d.ReadOnlyState().SpareMade })
 		// A refusal leaves nothing to wait for, so give the workers a bounded
 		// window to prove they stay still.
 		time.Sleep(100 * time.Millisecond)
@@ -146,11 +168,11 @@ func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (map[strin
 		eventually(t, "the pool's refill", func() bool { return pool.Counters().Spares >= 2 })
 	}
 
-	delta := map[string]int{}
-	for _, op := range writeOps {
-		delta[op] = seam.Calls(op) - before[op]
+	delta = counts()
+	for op, n := range before {
+		delta[op] -= n
 	}
-	return delta, d
+	return delta, makeCost, d
 }
 
 func awaitClockArmed(t *testing.T, c journaltest.DrivenClock) {
@@ -172,7 +194,7 @@ func eventually(t *testing.T, what string, cond func() bool) {
 // rename), seals the idle segment (write, sync, and a truncate of the early
 // seal) and unlinks the retired one (remove).
 func TestWorkersCreateSealAndUnlinkBeforeReadOnly(t *testing.T) {
-	delta, _ := runWorkers(t, false, nil)
+	delta, _, _ := runWorkers(t, false, nil)
 	for _, op := range []string{journaltest.OpCreate, journaltest.OpAllocate, journaltest.OpRename, journaltest.OpWrite, journaltest.OpSync, journaltest.OpTruncate, journaltest.OpRemove} {
 		if delta[op] == 0 {
 			t.Errorf("a writable journal's workers made no %s call, so the read-only check below would prove nothing: %v", op, delta)
@@ -181,19 +203,29 @@ func TestWorkersCreateSealAndUnlinkBeforeReadOnly(t *testing.T) {
 }
 
 // TestWorkersMakeNoSpareAndWriteNothingOnceReadOnly asserts the consumer: the
-// storage seam's call log gains no write op after entry, and Admit refuses at
-// once.
+// storage seam's call log gains, after entry, exactly the write ops of one
+// spare, the probe's, and its one create is the only file made; and Admit
+// refuses at once.
 func TestWorkersMakeNoSpareAndWriteNothingOnceReadOnly(t *testing.T) {
 	assertQuiet(t, nil)
 }
 
 func assertQuiet(t *testing.T, mutate func(*workerChecks)) {
 	t.Helper()
-	delta, d := runWorkers(t, true, mutate)
+	delta, makeCost, d := runWorkers(t, true, mutate)
+	if makeCost[journaltest.OpCreate] != 1 {
+		t.Fatalf("one Make cost %v, want exactly one create", makeCost)
+	}
+	if delta[journaltest.OpCreate] != 1 {
+		t.Errorf("the seam saw %d creates after the journal went read-only, want the probe's one: %v", delta[journaltest.OpCreate], delta)
+	}
 	for _, op := range writeOps {
-		if delta[op] != 0 {
-			t.Errorf("the seam saw %d %s call(s) after the journal went read-only: %v", delta[op], op, delta)
+		if delta[op] != makeCost[op] {
+			t.Errorf("the seam saw %d %s call(s) after the journal went read-only, want the probe's spare's %d: %v", delta[op], op, makeCost[op], delta)
 		}
+	}
+	if !d.ReadOnlyState().SpareMade {
+		t.Error("the probe made no spare")
 	}
 	if err := d.Admit(); !errors.Is(err, core.ErrJournalReadOnly) {
 		t.Errorf("Admit = %v, want core.ErrJournalReadOnly", err)

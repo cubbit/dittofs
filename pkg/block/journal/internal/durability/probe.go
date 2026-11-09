@@ -36,6 +36,11 @@ func (d *Durability) stopProbe() {
 // segment for the reopen. It leaves the state in place whatever it finds: the
 // journal is read-only until the caller closes and reopens it.
 //
+// With a real core.Clock, the After(core.ProbeInterval) wait a Stop
+// interrupts stays armed, a timer on a time-based clock rather than a
+// goroutine of the probe, for up to that interval after Stop returns; it then
+// closes a channel nobody reads, which is harmless.
+//
 // ponytail: the interval is a fixed core.ProbeInterval, and the journal stays
 // read-only, reads included, until its caller closes and reopens it. Upgrade
 // to a Resume that leaves the state in place, with a backoff on the probe,

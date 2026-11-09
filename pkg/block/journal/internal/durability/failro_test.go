@@ -566,3 +566,139 @@ func TestAnEarlierRemovalIsUndoneAfterALaterWriteInAnotherSegment(t *testing.T) 
 		})
 	}
 }
+
+// TestAReadOnlyJournalIssuesNoFurtherSync covers RFC 1 §5.4's "once writes
+// cannot succeed, the journal stops trying": a Sync waiting at the
+// transition asks for another sync of the stream, and the worker, now
+// read-only, issues none, so the seam sees no further fsync and the sync
+// counters keep describing the failures before the entry.
+func TestAReadOnlyJournalIssuesNoFurtherSync(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r, _ := newRORig(t, 1, "")
+	f := file(1)
+	loc, _ := r.publish(t, f, 0, "aaaa")
+	name := format.SegmentName(loc.Segment)
+	hold := r.seam.HoldFirst(t, journaltest.OpSync, name)
+	ch := r.syncAsync(context.Background(), f)
+	select {
+	case <-hold.Reached():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the worker's sync never reached storage")
+	}
+	held := r.syncsOf(loc.Segment)
+	// Every later sync of the segment fails, as it would on a read-only
+	// device.
+	if err := r.seam.Schedule(journaltest.FailingFrom(journaltest.OpSync, name, held+1, 0, syscall.EROFS)); err != nil {
+		t.Fatal(err)
+	}
+	before := r.d.Stats()
+
+	// The file's domain is held so the failure pass stops after moving the
+	// record into its window, where the waiter, woken by the held sync's end,
+	// still finds it pending and asks for another sync.
+	unlock := r.domains.Lock(f)
+	r.d.Enter(syscall.EROFS)
+	hold.Release()
+	st := r.d.made[0]
+	eventually(t, "the waiter to ask for another sync", func() bool {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return st.want
+	})
+	unlock()
+	wantReadOnlySyncError(t, "Sync", mustReturn(t, "Sync", ch), f)
+	eventually(t, "the worker to answer the request", func() bool {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return !st.want && !st.syncing
+	})
+
+	if got := r.syncsOf(loc.Segment); got != held {
+		t.Errorf("the seam saw %d syncs of the segment, want %d: none after entry", got, held)
+	}
+	after := r.d.Stats()
+	if after.SyncFailures != before.SyncFailures || after.LastSyncError != before.LastSyncError {
+		t.Errorf("sync failures went from %d (%v) to %d (%v), want them unchanged by the read-only journal",
+			before.SyncFailures, before.LastSyncError, after.SyncFailures, after.LastSyncError)
+	}
+}
+
+// publishDelta is publish returning the delta the index made, which a writer
+// accounts itself.
+func (r *rig) publishDelta(t *testing.T, f core.FileID, off int64, payload string) (segment.Location, index.HeldDelta) {
+	t.Helper()
+	v, err := r.d.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	seq, err := r.d.counters.NextSeq()
+	if err != nil {
+		t.Fatalf("NextSeq: %v", err)
+	}
+	x := core.Extent{Off: off, Len: int64(len(payload))}
+	unlock := r.domains.Lock(f)
+	defer unlock()
+	p, err := r.streams.For(f).Append(format.RecordHeader{
+		Kind: format.KindWrite, File: f, Extent: x, Seq: seq, Version: v, Tag: 1,
+	}, format.RecordBody{Payload: []byte(payload), MTime: 1})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	hd, err := r.ix.WriteRetain(1, f, index.Placed{Extent: x, Record: recordAt(segment.Written{Loc: p.Loc}), Version: v}, seq)
+	if err != nil {
+		t.Fatalf("WriteRetain: %v", err)
+	}
+	return p.Loc, hd
+}
+
+// TestContentOnBothSidesOfAnUndoneRecordIsAccountedBack fails one file's
+// write, truncate and write at entry, which the pass splits into two drops
+// around the undo: every byte the writes added is accounted back, nothing
+// stays retained, and what the index serves is the synced write's.
+func TestContentOnBothSidesOfAnUndoneRecordIsAccountedBack(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := newRigConfigured(t, 1, func(c *Config) {
+		c.Undo = func(segment.Written) index.HeldDelta { return index.HeldDelta{} }
+	})
+	r.d.Start(r.streams)
+	f := file(1)
+	synced, _ := r.publish(t, f, 0, "aaaaaaaa")
+	if err := r.d.Sync(context.Background(), f); err != nil {
+		t.Fatalf("Sync of the synced write: %v", err)
+	}
+	base := len(r.acct.all())
+
+	var sum index.HeldDelta
+	add := func(hd index.HeldDelta) {
+		sum.HeldBytes += hd.HeldBytes
+		sum.DirtyBytes += hd.DirtyBytes
+		sum.RetainedBytes += hd.RetainedBytes
+	}
+	_, hd := r.publishDelta(t, f, 0, "bbbbbbbb")
+	add(hd)
+	trunc, _ := r.appendHeader(t, f, format.KindTruncate, format.RecordBody{})
+	_, hd = r.publishDelta(t, f, 4, "cccccccc")
+	add(hd)
+
+	r.d.Enter(syscall.EROFS)
+	wantReadOnly(t, "WaitDurable of the truncate", mustReturn(t, "WaitDurable", r.waitDurableAsync(trunc)))
+	for _, hd := range r.acct.all()[base:] {
+		add(hd)
+	}
+	if sum.HeldBytes != 0 || sum.DirtyBytes != 0 || sum.RetainedBytes != 0 {
+		t.Errorf("the writes and the pass account %+v in all, want every figure back to zero", sum)
+	}
+	if got := r.ix.Retained(f); len(got) != 0 {
+		t.Errorf("retained %+v after the pass, want none", got)
+	}
+	want := recordAt(segment.Written{Loc: synced})
+	for off := int64(0); off < 12; off++ {
+		p, ok := r.ix.Lookup(f, off)
+		switch {
+		case off < 8 && (!ok || p.Record != want):
+			t.Errorf("Lookup(%d) = %+v, %v, want the synced write", off, p, ok)
+		case off >= 8 && ok:
+			t.Errorf("Lookup(%d) = %+v, want nothing past the synced write", off, p)
+		}
+	}
+}

@@ -242,8 +242,9 @@ func TestProbeStartsOnceAcrossEnters(t *testing.T) {
 func TestProbeNilHooks(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	clock := journaltest.NewStopwatchClock()
+	timers := &afterCounter{Clock: clock}
 	d, err := durability.New(durability.Config{
-		Clock: clock, Domains: noDomains{}, Index: index.New(1 << 20), Dir: t.TempDir(),
+		Clock: timers, Domains: noDomains{}, Index: index.New(1 << 20), Dir: t.TempDir(),
 		Counters: &index.Counters{},
 		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error) { return index.HeldDelta{}, nil },
 	})
@@ -252,8 +253,11 @@ func TestProbeNilHooks(t *testing.T) {
 	}
 	t.Cleanup(d.Stop)
 	d.Enter(errors.New("read-only"))
-	for i := 0; i < 3; i++ {
-		time.Sleep(10 * time.Millisecond)
+	// Each advance waits for the timer it fires, and a timer is armed only
+	// after the previous tick's probe ran with both hooks nil, so the third
+	// timer proves two probes ran.
+	for i := int64(1); i <= 3; i++ {
+		eventually(t, "the probe to arm its timer", func() bool { return timers.n.Load() >= i })
 		clock.Advance(core.ProbeInterval)
 	}
 	if st := d.ReadOnlyState(); st.SpareMade || st.Check != nil || !st.ReadOnly {

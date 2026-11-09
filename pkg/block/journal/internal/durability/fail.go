@@ -115,8 +115,11 @@ func (d *Durability) settle(st *stream, w *window, fails func(entry) bool, err e
 	// whose only failed records are loss records is not marked: a loss
 	// record's drop stands, so its file is owed nothing. A file with an undone
 	// header-only record is marked like one with content, so a Sync issued
-	// after the failure still hears of it; one already waiting on the record
-	// when another took the mark fails through st.lost instead.
+	// after the failure hears of it, unless a Sync was already told of the
+	// window for that file, when its content failed earlier: the mark is then
+	// not set again (markErrLocked) and a later Sync of the file returns nil.
+	// One already waiting on the record when another took the mark fails
+	// through st.lost instead.
 	st.mu.Lock()
 	var marked []core.FileID
 	for _, e := range w.entries {
@@ -147,7 +150,8 @@ func (d *Durability) settle(st *stream, w *window, fails func(entry) bool, err e
 // failFile fails the records of one file, given in the order they were
 // appended: the index first, under the file's domain, then a loss record for
 // each piece the failure dropped. win names the failed window in the log, 0
-// for a read-only pass, which fails several windows at once. Outside a
+// for a read-only pass, which fails several windows at once and is logged as
+// that pass instead. Outside a
 // read-only journal every entry is content and is dropped in one step. In a
 // read-only journal (ro) the entries are taken newest first, so each change
 // is reversed on the index its record left: a run of content records is
@@ -214,7 +218,12 @@ func (d *Durability) failContent(st *stream, win uint64, f core.FileID, entries 
 	if err != nil {
 		// The drop did not happen, so the index may still hold the failed
 		// bytes; the records are lost all the same.
-		d.log.Error("journal could not fail a window's records in the index", "stream", st.no, "window", win, "file", f, "err", err)
+		which := []any{"window", win}
+		if win == 0 {
+			which = []any{"pass", "read-only"}
+		}
+		d.log.Error("journal could not fail a window's records in the index",
+			append([]any{"stream", st.no}, append(which, "file", f, "err", err)...)...)
 	}
 	d.accountDelta(hd)
 	// A newer record that took over what a failed one had superseded holds it

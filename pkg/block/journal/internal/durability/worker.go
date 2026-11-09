@@ -48,7 +48,7 @@ func (d *Durability) run(st *stream) {
 
 // syncStep issues the sync a waiter asked for, or, when the timer fired and the
 // oldest uncovered record is past the bound, the bound's sync, with no lock
-// held.
+// held, unless the journal is read-only.
 // A failure is recorded against the segment the sync was of, as the stream
 // reports it, and is never retried: the segment's tracker froze at the
 // failure and will not report it again.
@@ -64,6 +64,15 @@ func (d *Durability) syncStep(st *stream, fired bool) {
 		now = d.clock.Elapsed()
 	}
 	st.mu.Lock()
+	if d.Admit() != nil {
+		// A read-only journal issues no sync, neither one a waiter asked for
+		// nor the bound's: every record it would cover is failed, and its
+		// failure would overwrite the counters that describe the entering
+		// one and end the active segment for nothing.
+		st.want = false
+		st.mu.Unlock()
+		return
+	}
 	if !st.want {
 		seen, ok := st.oldestLocked()
 		if !fired || !ok || now-seen < core.SyncBound {

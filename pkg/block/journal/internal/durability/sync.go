@@ -70,7 +70,11 @@ type Config struct {
 	// kept its header-only records, so a header-only record can be undone
 	// after an older write of its file was dropped. Undo must therefore bring
 	// back only what the record's own publish removed and is still owed, never
-	// a piece of a record the index no longer holds.
+	// a piece of a record the index no longer holds. A record that names no
+	// file (a hold, unhold, stamp, offloaded, unmark or forget record) is
+	// undone under the zero file's domain, a placeholder that excludes nothing
+	// its publish holds, so its undo can race its own publish; see the
+	// decision at failFile.
 	Undo func(w segment.Written) index.HeldDelta
 
 	// Check runs the checks open makes of the journal's mount and directory.
@@ -83,6 +87,14 @@ type Config struct {
 	// goroutine with no lock held. An EROFS it returns reaches Enter only if
 	// the maker's storage is wrapped by Observe. Nil means the probe can make
 	// no spare.
+	//
+	// The maker it calls must not consult the read-only check the pool's
+	// refill consults: that check refuses while the journal is read-only, and
+	// the probe's spare is the one write a read-only journal wants, so a
+	// maker gated on it would never make one. A failed MakeSpare must leave
+	// nothing on disk: the probe tries again at the next tick after any
+	// failure but an EROFS, and a failure that left a file behind would pile
+	// up spares where the probe holds at most one.
 	MakeSpare func() error
 }
 
