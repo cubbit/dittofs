@@ -343,24 +343,31 @@ func TestMandatoryLocksRefuseIO(t *testing.T) {
 }
 
 // A zero-length read or write touches no byte, so no mandatory lock refuses
-// it, though a zero-length range at 5 ends at 4 and so overlaps a lock
-// holding both 4 and 5.
+// it: not another open's or an anonymous one under an exclusive lock, nor the
+// holding open's write under its own shared one, though a zero-length range
+// at 5 ends at 4 and so overlaps a lock holding both 4 and 5, as one at 25
+// overlaps a lock holding 24 and 25.
 func TestZeroLengthIOCrossesNoLock(t *testing.T) {
 	f := newFixture(t)
 	s, n := f.caller(t, smb("pc")), f.caller(t, nfs("host-n", 1, entity.NewUser()))
 	file := anyFile()
 	os := f.mustOpen(t, s, file, OpenRequest{Access: rd | wr})
 	on := f.mustOpen(t, n, file, OpenRequest{Access: rd | wr})
-	f.mustLock(t, s, file, LockReq{Owner: smbOwner(s, os), Open: refOf(os), Ranges: []LockRange{x(0, 10)}})
+	f.mustLock(t, s, file, LockReq{Owner: smbOwner(s, os), Open: refOf(os), Ranges: []LockRange{x(0, 10), sh(20, 10)}})
 	for _, c := range []struct {
 		what string
 		who  Caller
 		o    OpenRef
-	}{{"another open's", n, refOf(on)}, {"an anonymous", Caller{}, none}} {
+		off  uint64
+	}{
+		{"another open's", n, refOf(on), 5},
+		{"an anonymous", Caller{}, none, 5},
+		{"the holding open's", s, refOf(os), 25},
+	} {
 		c.o.Handle = handle(file.ID)
 		for _, write := range []bool{false, true} {
-			if err := f.Checks().CheckIO(ctx, c.who, file, c.o, br(5, 0), ioWant(write)); err != nil {
-				t.Errorf("%s zero-length I/O (write %v) at 5 under an exclusive lock: %v, want nil", c.what, write, err)
+			if err := f.Checks().CheckIO(ctx, c.who, file, c.o, br(c.off, 0), ioWant(write)); err != nil {
+				t.Errorf("%s zero-length I/O (write %v) at %d: %v, want nil", c.what, write, c.off, err)
 			}
 		}
 	}
