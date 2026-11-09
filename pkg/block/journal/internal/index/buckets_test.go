@@ -717,3 +717,105 @@ func TestAsOfAllocatesNothing(t *testing.T) {
 		t.Fatalf("asOf of a missing file allocated %v times per call, want 0", allocs)
 	}
 }
+
+// TestRaiseFloor_FileWithNoEntryReportsTheFloor: a share attached after open
+// brings a floor above the buckets' start. A file with no entry then reports
+// that floor, and the index's fill refuses a fill read below it, writing
+// nothing.
+func TestRaiseFloor_FileWithNoEntryReportsTheFloor(t *testing.T) {
+	ix := New(1 << 20)
+	ix.fs.openBuckets(ver(1000))
+	id := idInBucket(7)
+
+	ix.RaiseFloor(ver(900_000_000))
+
+	p := Placed{Extent: ext(0, 4096), Record: RecordAt{Segment: 1}, Version: ver(5)}
+	_, err := ix.fs.fill(core.ShareTag(1), id, p, ver(1000))
+	if !errors.Is(err, core.ErrStaleFill) {
+		t.Errorf("fill read at 1000 = %v, want ErrStaleFill", err)
+	}
+	if got := ix.AsOf(id); got.Counter < 900_000_000 {
+		t.Errorf("AsOf = %v, want at least the raised floor", got)
+	}
+	if es := ix.FileEntries(id); len(es) != 0 {
+		t.Fatalf("a refused fill left entries: %v", es)
+	}
+	if n := ix.fs.len(); n != 0 {
+		t.Fatalf("a refused fill left %d file entries", n)
+	}
+}
+
+// TestRaiseFloor_NeverLowersABucket: a floor below a bucket leaves it where
+// it is, including a bucket another raise took higher.
+func TestRaiseFloor_NeverLowersABucket(t *testing.T) {
+	ix := New(1 << 20)
+	ix.fs.openBuckets(ver(1000))
+	ix.RaiseFloor(ver(900_000_000))
+
+	// Take one bucket above the floor, as a drop would.
+	high := idInBucket(3)
+	raise(&ix.fs.buckets[bucketOf(high)], 950_000_000)
+
+	ix.RaiseFloor(ver(500_000_000))
+
+	for b := 0; b < floorBuckets; b += 97 {
+		want := uint64(900_000_000)
+		if b == 3 {
+			want = 950_000_000
+		}
+		if got := ix.fs.buckets[b].Load(); got != want {
+			t.Fatalf("bucket %d = %d after a lower floor, want %d", b, got, want)
+		}
+	}
+	if got := ix.AsOf(high).Counter; got != 950_000_000 {
+		t.Fatalf("AsOf of the high bucket = %d, want 950000000", got)
+	}
+}
+
+// TestRaiseFloor_ClampsToTheGreatestVersion: a floor above every version the
+// journal issues raises the buckets to the greatest, as the counters clamp it.
+func TestRaiseFloor_ClampsToTheGreatestVersion(t *testing.T) {
+	ix := New(1 << 20)
+	ix.RaiseFloor(core.Version{Counter: ^uint64(0)})
+	if got := ix.fs.buckets[0].Load(); got != maxVersion {
+		t.Fatalf("bucket = %d, want %d", got, uint64(maxVersion))
+	}
+}
+
+// TestRaiseFloor_ConcurrentWithReads runs raises beside readers of AsOf and
+// fills under -race: a reader sees a bucket only ever rise.
+func TestRaiseFloor_ConcurrentWithReads(t *testing.T) {
+	ix := New(1 << 20)
+	ix.fs.openBuckets(ver(10))
+	ids := []core.FileID{idInBucket(0), idInBucket(1), idInBucket(2000), idInBucket(4095)}
+
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			last := make([]uint64, len(ids))
+			for range 500 {
+				for i, id := range ids {
+					got := ix.AsOf(id).Counter
+					if got < last[i] {
+						t.Errorf("AsOf fell from %d to %d", last[i], got)
+						return
+					}
+					last[i] = got
+					p := Placed{Extent: ext(0, 4096), Record: RecordAt{Segment: 1}, Version: ver(1)}
+					_, _ = ix.fs.fill(core.ShareTag(1), id, p, ver(got))
+				}
+			}
+		}()
+	}
+	for r := uint64(1); r <= 200; r++ {
+		ix.RaiseFloor(ver(r * 1000))
+	}
+	wg.Wait()
+	for i, id := range ids {
+		if got := ix.AsOf(id).Counter; got != 200_000 {
+			t.Fatalf("file %d: AsOf = %d, want 200000", i, got)
+		}
+	}
+}

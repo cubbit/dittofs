@@ -71,3 +71,19 @@ func (ix *Index) SegmentBytes(seg core.SegmentID) SegmentBytes { return ix.fs.se
 // order, held and retained pieces and removal markers alike; nil when the
 // file holds none. It takes the file's lock shared and creates no entry.
 func (ix *Index) FileEntries(id core.FileID) []Entry { return ix.fs.inspect(id) }
+
+// AsOf returns the change version a read of id reports.
+//
+// decision: exported ahead of its caller, for the datapath tests that observe
+// the bucket raise of RaiseFloor. It is withdrawn if the read path does not
+// take it.
+func (ix *Index) AsOf(id core.FileID) core.Version { return ix.fs.asOf(id) }
+
+// RaiseFloor raises every floor bucket to floor's counter, clamped to the
+// greatest version as the counters clamp it, so a file with no entry reports
+// at least the floor and a fill read below it is refused. It never lowers a
+// bucket and is safe beside readers. The floor's epoch must already be
+// validated: the counters refuse a non-zero one first.
+func (ix *Index) RaiseFloor(floor core.Version) {
+	ix.fs.raiseBuckets(min(floor.Counter, maxVersion))
+}

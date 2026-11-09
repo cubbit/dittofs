@@ -244,15 +244,26 @@ func (fs *files) indexRefusals() uint64 { return fs.refusals.Load() }
 // any reader or writer runs. A start with a non-zero epoch never reaches it:
 // the counters refuse one first.
 //
-// This is the only thing that seeds the buckets. Attaching a share later
-// raises the counter above that share's floor but touches no bucket, so a
-// share attached after open must seed the buckets itself if an asOf stored
-// in one of its earlier incarnations is to stay refused here.
+// This is the only thing that seeds the buckets at open. Attaching a share
+// later raises the counter above that share's floor and calls raiseBuckets
+// with it, so an asOf stored in one of its earlier incarnations stays
+// refused here; opened is left where open put it.
 func (fs *files) openBuckets(start core.Version) {
 	for i := range fs.buckets {
 		fs.buckets[i].Store(start.Counter)
 	}
 	fs.opened = start.Counter
+}
+
+// raiseBuckets raises every bucket to counter, never lowering one: each
+// bucket is raised by compare-and-swap, so a bucket a drop or an earlier
+// raise took higher stays there, and it is safe beside readers and drops. It
+// leaves opened alone, so an entry changed since open is still checked
+// against its own version.
+func (fs *files) raiseBuckets(counter uint64) {
+	for i := range fs.buckets {
+		raise(&fs.buckets[i], counter)
+	}
 }
 
 // checkedAgainst returns the version f, id's entry, is checked against: its
