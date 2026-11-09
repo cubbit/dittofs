@@ -456,7 +456,7 @@ names through `Peers.ClientState`
 > `Serve` then takes that and a `Service`. The adapters are not this RFC's to build: `node.New` builds
 each one last, as [RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface) and
 [§4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)
-say, and hands it the filesystem or the gateway as `core.Deps.Service` (§2), and
+say, and hands it the filesystem or the gateway as `adapter.Deps.Service` (§2), and
 nothing else of the service.
 
 ### 2.4 Package layout
@@ -2788,6 +2788,10 @@ tree working:
 | 6 | range-list `Lock` and `Unlock`, then `Copy` and `Clone` | the copychunk loops, `common/clone.go` |
 | 7 on | the namespace, attributes and the rest; then [RFC 20](rfc-20-adapters.md)'s shared pipeline and error tables | each adapter's copy as its last caller moves; the per-protocol request plumbing |
 | cluster | `vfs.NewGateway`, `vfs.Serve`, and the router and transport behind them, with the multi-node tier (§8) | nothing: a single node is unchanged |
+
+> decision: stage 5 deletes the v1 adapters outright (RFC 20's plan), so the
+> adapter-side deletions of this table happen at once and the allowlist never
+> exists.
 
 - **The RFC moves with the code.** A slice that needs a signature change edits
   this RFC in the same PR, and a reviewer rejects code that disagrees with it.
