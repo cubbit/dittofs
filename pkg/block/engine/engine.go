@@ -97,7 +97,7 @@ func New(d Deps) (*Engine, error) {
 		}
 	}
 	d.Logger = d.Logger.With("component", "engine")
-	f := &fence{clock: d.Clock, logger: d.Logger}
+	f := &fence{clock: d.Clock, logger: d.Logger, node: d.Node}
 	d.Existence = fencedExistence{d.Existence, f}
 	d.Content = fencedContent{d.Content, f}
 	d.Lifecycle = fencedLifecycle{d.Lifecycle, f}
@@ -272,7 +272,7 @@ func (e *Engine) Stats() Stats {
 	s := e.health.clone()
 	e.mu.Unlock()
 
-	if c, ok := e.fence.condition(e.d.Node); ok {
+	if c, ok := e.fence.condition(); ok {
 		s.Node.Conditions = append(s.Node.Conditions, c)
 	}
 	s.SelfFences = e.fence.fences.Load()

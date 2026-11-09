@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // errStoreDown is a store's failure of the whole call.
@@ -134,7 +133,7 @@ func TestFenceCauseOfAStallAfterARecoveredFailure(t *testing.T) {
 	clock.Advance(time.Minute)
 	f.begin()
 	clock.Advance(fenceAfter)
-	c, ok := f.condition(entity.NodeID{1})
+	c, ok := f.condition()
 	if !ok || c.Cause != errNoCommit {
 		t.Errorf("node_fenced %v naming %v, want errNoCommit", ok, c.Cause)
 	}

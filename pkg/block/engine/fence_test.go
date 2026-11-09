@@ -117,9 +117,23 @@ func (u *fenceUnit) advanceInSteps(d time.Duration) {
 	}
 }
 
-// logged reports whether a record at level carries msg.
-func (u *fenceUnit) logged(level slog.Level, msg string) bool {
-	return slices.ContainsFunc(u.logs.records(), func(r slog.Record) bool { return r.Level == level && r.Message == msg })
+// logged answers the attributes of the first record at level carrying msg.
+func (u *fenceUnit) logged(level slog.Level, msg string) (map[string]slog.Value, bool) {
+	recs := u.logs.records()
+	i := slices.IndexFunc(recs, func(r slog.Record) bool { return r.Level == level && r.Message == msg })
+	if i < 0 {
+		return nil, false
+	}
+	attrs := map[string]slog.Value{}
+	recs[i].Attrs(func(a slog.Attr) bool { attrs[a.Key] = a.Value; return true })
+	return attrs, true
+}
+
+// conditionLogged reports that attrs name node_fenced's condition, subject c
+// and a cause, and carry duration.
+func conditionLogged(attrs map[string]slog.Value, c engine.Condition, duration time.Duration) bool {
+	return attrs["condition"].String() == "node_fenced" && attrs["subject"].String() == c.Subject.ID &&
+		attrs["cause"].Any() != nil && attrs["duration"].Duration() == duration
 }
 
 // A store stalled for 10 s fences nothing; at 31 s writes and stability
@@ -127,7 +141,9 @@ func (u *fenceUnit) logged(level slog.Level, msg string) bool {
 // the store, the fence is counted once however many writes see it, and its
 // entry is logged at Error. Once the stalled transaction commits, the next
 // write is acknowledged under the same verifier, the lift is logged at Info,
-// and the shard's incarnation and grace instance are as they were.
+// and the shard's incarnation and grace instance are as they were. Both logs
+// carry the condition's name, subject and cause; the entry's duration is the
+// time since the last commit, the lift's how long the fence held.
 func TestSelfFenceThreshold(t *testing.T) {
 	u := newFenceUnit(t)
 	ctx := t.Context()
@@ -169,8 +185,8 @@ func TestSelfFenceThreshold(t *testing.T) {
 	if n := u.e.Stats().SelfFences; n != 1 {
 		t.Errorf("engine_self_fences_total %d after one fence seen by many writes, want 1", n)
 	}
-	if !u.logged(slog.LevelError, "node_fenced: the metadata store committed no write transaction") {
-		t.Error("entering the fence logged nothing at Error")
+	if attrs, ok := u.logged(slog.LevelError, "node_fenced: the metadata store committed no write transaction"); !ok || !conditionLogged(attrs, c, 31*time.Second) {
+		t.Errorf("entering the fence logged %v %v at Error, want node_fenced, the node, a cause and 31s", ok, attrs)
 	}
 
 	u.clock.Advance(9 * time.Second) // the stall ends and its transaction commits
@@ -187,8 +203,8 @@ func TestSelfFenceThreshold(t *testing.T) {
 	if _, ok := u.nodeFenced(); ok {
 		t.Error("node_fenced still raised after a commit")
 	}
-	if !u.logged(slog.LevelInfo, "node_fenced cleared") {
-		t.Error("leaving the fence logged nothing at Info")
+	if attrs, ok := u.logged(slog.LevelInfo, "node_fenced cleared"); !ok || !conditionLogged(attrs, c, 9*time.Second) {
+		t.Errorf("leaving the fence logged %v %v at Info, want node_fenced, the node, a cause and 9s", ok, attrs)
 	}
 	if got, err := u.fs.Store.Shard(ctx, u.share.Shard); err != nil || got.Incarnation != shard.Incarnation || got.GraceInstance != shard.GraceInstance {
 		t.Errorf("the shard after the fence: %+v %v, want incarnation %d and grace %d as before", got, err, shard.Incarnation, shard.GraceInstance)

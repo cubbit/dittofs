@@ -34,14 +34,15 @@ var errNoCommit = errors.New("engine: the metadata store committed no write tran
 type fence struct {
 	clock  Clock
 	logger *slog.Logger
+	node   entity.NodeID // node_fenced's subject
 
 	lastCommit  atomic.Int64 // the clock's Elapsed at the last commit, in nanoseconds
 	since       atomic.Int64 // the Elapsed at which the node last went from no transaction outstanding or failing to one
 	outstanding atomic.Int64 // write transactions running now
 	failing     atomic.Bool  // the latest attempt of a retrying owner failed at the store as a whole
 	lastErr     atomic.Pointer[error]
-	fenced      atomic.Bool
-	fences      atomic.Int64 // engine_self_fences_total{reason="store"}
+	entered     atomic.Pointer[fenceEntry] // the fence's entry while it holds, nil while lifted
+	fences      atomic.Int64               // engine_self_fences_total{reason="store"}
 }
 
 // begin brackets one write transaction's start. A start on a node with none
@@ -141,19 +142,40 @@ func (f *fence) holds() bool {
 		f.lift()
 		return false
 	}
-	if f.fenced.CompareAndSwap(false, true) {
-		f.fences.Add(1)
-		f.logger.Error("node_fenced: the metadata store committed no write transaction", "after", fenceAfter, "err", f.cause())
+	if f.entered.Load() == nil {
+		e := &fenceEntry{at: now, cause: f.cause()}
+		if f.entered.CompareAndSwap(nil, e) {
+			f.fences.Add(1)
+			// The duration is the time since the last commit, which an idle
+			// spell before the stall lengthens past fenceAfter.
+			f.logger.Error("node_fenced: the metadata store committed no write transaction",
+				"condition", conditionNodeFenced, "subject", f.subject(), "cause", e.cause,
+				"duration", time.Duration(now-f.lastCommit.Load()))
+		}
 	}
 	return true
 }
 
-// lift ends the fence if it holds, logging it once.
+// fenceEntry is when the fence was entered and why.
+type fenceEntry struct {
+	at    int64 // the clock's Elapsed, in nanoseconds
+	cause error
+}
+
+// lift ends the fence if it holds, logging it once with how long it held.
 func (f *fence) lift() {
-	if f.fenced.Load() && f.fenced.CompareAndSwap(true, false) {
-		f.logger.Info("node_fenced cleared")
+	if f.entered.Load() == nil {
+		return
+	}
+	if e := f.entered.Swap(nil); e != nil {
+		f.logger.Info("node_fenced cleared",
+			"condition", conditionNodeFenced, "subject", f.subject(), "cause", e.cause,
+			"duration", time.Duration(int64(f.clock.Elapsed())-e.at))
 	}
 }
+
+// subject is the node node_fenced is raised for, as its condition names it.
+func (f *fence) subject() string { return hex.EncodeToString(f.node[:]) }
 
 // gate is a write's or a stability point's answer while the fence holds:
 // ErrDelay with DelayCommit, else nil.
@@ -181,13 +203,13 @@ func (f *fence) cause() error {
 }
 
 // condition is node_fenced while the fence holds.
-func (f *fence) condition(node entity.NodeID) (Condition, bool) {
+func (f *fence) condition() (Condition, bool) {
 	if !f.holds() {
 		return Condition{}, false
 	}
 	return Condition{
 		Name:    conditionNodeFenced,
-		Subject: Subject{Scope: ScopeNode, ID: hex.EncodeToString(node[:])},
+		Subject: Subject{Scope: ScopeNode, ID: f.subject()},
 		Cause:   f.cause(),
 		Detail:  "the metadata store committed no write transaction for 30s",
 	}, true
