@@ -124,14 +124,17 @@ type Durability struct {
 	// replaces it.
 	refuse func() error
 
-	// afterAppend, afterPass, beforeSync, beforeFail and afterFail are test
-	// hooks, nil in production. beforeFail runs on the worker once per window,
-	// before its content records are failed, and afterFail once they are failed
-	// and reported, before the window is resolved; afterPass runs at the end of
-	// each worker pass, once the pass has done everything it will do for the
-	// wake that started it. None is called with a lock held.
+	// afterAppend, afterPass, beforeWait, beforeSync, beforeFail and afterFail
+	// are test hooks, nil in production. beforeFail runs on the worker once per
+	// window, before its content records are failed, and afterFail once they
+	// are failed and reported, before the window is resolved; afterPass runs at
+	// the end of each worker pass, once the pass has done everything it will do
+	// for the wake that started it; beforeWait runs in a caller's await each
+	// time it is about to park, after its checks found something still
+	// pending. None is called with a lock held.
 	afterAppend func()
 	afterPass   func()
+	beforeWait  func()
 	beforeFail  func(*window)
 	afterFail   func()
 	beforeSync  func()
@@ -799,6 +802,9 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 		}
 		if !pending && owed == nil {
 			return nil
+		}
+		if d.beforeWait != nil {
+			d.beforeWait()
 		}
 		select {
 		case <-ctx.Done():

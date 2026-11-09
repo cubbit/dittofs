@@ -239,7 +239,15 @@ func TestASyncOfTwoFilesNamesTheOldestWindowAcrossThem(t *testing.T) {
 // reports a failed window nor takes the report a Sync is owed.
 func TestWaitDurableNeverConsultsTheMarks(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	fr := newFailRig(t, nil)
+	parked := make(chan struct{}, 1)
+	fr := newFailRig(t, func(fr *failRig) {
+		fr.d.beforeWait = func() {
+			select {
+			case parked <- struct{}{}:
+			default:
+			}
+		}
+	})
 	f := file(1)
 	loc, _ := fr.publish(t, f, 0, "aaaa")
 	fr.failByTimer(t, loc.Segment)
@@ -247,9 +255,14 @@ func TestWaitDurableNeverConsultsTheMarks(t *testing.T) {
 
 	got := make(chan error, 1)
 	go func() { got <- fr.d.WaitDurable(loc) }()
-	// The Sync is told of the failure the wait left alone, and the wait is
-	// still there when the layer stops, which is the only thing that ends it:
-	// an earlier return would be a nil, or the SyncError, in got.
+	// The wait is parked before the Sync is told of the failure it left alone,
+	// and it is still there when the layer stops, which is the only thing that
+	// ends it: an earlier return would be a nil, or the SyncError, in got.
+	select {
+	case <-parked:
+	case err := <-got:
+		t.Fatalf("WaitDurable of a failed record returned %v, want it to wait", err)
+	}
 	wantSyncError(t, mustReturn(t, "Sync", fr.syncAsync(context.Background(), f)), loc.Segment, f)
 	fr.d.Stop()
 	if err := mustReturn(t, "WaitDurable", got); !errors.Is(err, core.ErrClosed) {

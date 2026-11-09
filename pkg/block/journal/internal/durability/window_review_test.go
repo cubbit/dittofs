@@ -52,9 +52,9 @@ func TestASealThatFindsAFailedSyncDoesNotCountItAgain(t *testing.T) {
 	}
 }
 
-// TestALateSyncReportNeverSatisfiesAFailedWindow covers R14 at the layer that
-// consumes the report: a Synced value for the failed segment, before and after
-// its window is taken, satisfies none of the window's records.
+// TestALateSyncReportNeverSatisfiesAFailedWindow pins, at the layer that
+// consumes the report, that a Synced value for the failed segment, before and
+// after its window is taken, satisfies none of the window's records.
 func TestALateSyncReportNeverSatisfiesAFailedWindow(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	var resolved atomic.Int32
@@ -323,16 +323,27 @@ func TestASealEndAfterTheFailureWasPrunedDoesNotCountItAgain(t *testing.T) {
 	}
 }
 
-// TestAHeaderOnlyAnswerWaitsForTheLossGenerationOfItsWindow covers R51 for a
-// window holding a header-only and a content record of one file: the sync's
-// failure is recorded the moment it happens, but a Sync the failure fails must
-// not return before the worker has failed the window and raised the loss
-// generation, and the file is told once, by that one Sync.
+// TestAHeaderOnlyAnswerWaitsForTheLossGenerationOfItsWindow pins, for a window
+// holding a header-only and a content record of one file, that a Sync the
+// failure fails does not return before the worker has failed the window and
+// raised the loss generation, although the sync's failure is recorded the
+// moment it happens, and that the file is told once, by that one Sync.
 func TestAHeaderOnlyAnswerWaitsForTheLossGenerationOfItsWindow(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRigUnstarted(t, 1)
 	gate, open := releaser(t)
 	r.d.beforeFail = func(*window) { <-gate }
+	parked := make(chan struct{}, 16)
+	// A park counts only once the window is taken: the worker holds it at the
+	// gate, so the Sync parked with the window pending and not yet failed.
+	r.d.beforeWait = func() {
+		if len(r.windowsOf(0)) > 0 {
+			select {
+			case parked <- struct{}{}:
+			default:
+			}
+		}
+	}
 	t.Cleanup(open)
 	r.d.Start(r.streams)
 	f := file(1)
@@ -353,11 +364,12 @@ func TestAHeaderOnlyAnswerWaitsForTheLossGenerationOfItsWindow(t *testing.T) {
 	// The window is taken and held before its records are failed: the failure
 	// is known, and the Sync, whose target is the header-only record, must
 	// wait for the window to be failed.
-	eventually(t, "the window to be taken", func() bool { return len(r.windowsOf(0)) > 0 })
+	// The Sync has looked at its targets with the window held and is parked, or
+	// it has returned early.
 	select {
 	case got := <-done:
 		t.Fatalf("Sync returned (%v) before the window was failed, generation %v", got.err, got.gen)
-	case <-time.After(30 * time.Millisecond):
+	case <-parked:
 	}
 	open()
 	var got result
