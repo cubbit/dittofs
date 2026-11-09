@@ -290,3 +290,54 @@ func TestPlanPathsStayInTheRound(t *testing.T) {
 		t.Errorf("a path inside the round: %v", err)
 	}
 }
+
+// A file's case alias names the same object: removing or moving the object
+// under its other name forgets what the alias saw, so a number the reference
+// reuses is not related to it. And a rename that changes the object's id on
+// one side diverges at the next look under the new name.
+func TestInodeRelationFollowsAliasesAndRenames(t *testing.T) {
+	ok := Reply{}
+	stat := func(c *comparer, p string, ref, dut uint64) *Divergence {
+		s := Step{User: "bob", Op: "stat", Args: map[string]string{"path": p}}
+		d, _ := c.compare(s, Reply{Out: &Output{Stat: &StatOut{Type: "file", Ino: ref}}},
+			Reply{Out: &Output{Stat: &StatOut{Type: "file", Ino: dut}}})
+		return d
+	}
+	step := func(c *comparer, op, p, p2 string) {
+		a := map[string]string{"path": p}
+		if p2 != "" {
+			a["path2"] = p2
+		}
+		if d, _ := c.compare(Step{User: "bob", Op: op, Args: a}, ok, ok); d != nil {
+			t.Fatal(d)
+		}
+	}
+
+	c := newComparer("sd", testResolver())
+	if d := stat(c, "d0/F0", 7, 9); d != nil {
+		t.Fatal(d)
+	}
+	step(c, "unlink", "d0/f0", "")
+	if d := stat(c, "d0/f1", 7, 11); d != nil {
+		t.Fatalf("unlinked under its other name, then reused: %+v", d)
+	}
+
+	c = newComparer("sd", testResolver())
+	if d := stat(c, "F0", 7, 9); d != nil {
+		t.Fatal(d)
+	}
+	step(c, "rename", "f0", "d1/f0")
+	step(c, "unlink", "d1/f0", "")
+	if d := stat(c, "f1", 7, 11); d != nil {
+		t.Fatalf("moved under its other name, removed, then reused: %+v", d)
+	}
+
+	c = newComparer("sd", testResolver())
+	if d := stat(c, "f0", 7, 9); d != nil {
+		t.Fatal(d)
+	}
+	step(c, "rename", "f0", "f1")
+	if d := stat(c, "f1", 7, 10); d == nil || d.Sig != "stat:inode" {
+		t.Fatalf("a rename changed the id on DittoFS only: got %+v", d)
+	}
+}

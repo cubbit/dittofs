@@ -68,19 +68,41 @@ func under(p, from, to string) (string, bool) {
 	return "", false
 }
 
+// aliasOf reports whether p is of, or below it, compared without case,
+// component by component.
+func aliasOf(p, of string) bool {
+	pc, oc := strings.Split(p, "/"), strings.Split(of, "/")
+	if len(pc) < len(oc) {
+		return false
+	}
+	for i := range oc {
+		if !strings.EqualFold(pc[i], oc[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 // forget drops what the comparer knows about paths whose object went away,
-// and every path below them.
+// every path below them, and every name that differs from them only in case.
+//
+// decision: names are matched without case whatever the share's case rule.
+// Both shares are mounted without POSIX extensions, so both servers compare
+// names without case, and a file's case alias (F0 of f0) names the object
+// that went away; a stale entry for it would relate a number one server
+// reuses to a name gone. On a case-sensitive server the match only forgets
+// more than needed, which loses a comparison and never makes one up.
 func (c *comparer) forget(paths ...string) {
 	for _, p := range paths {
 		for i := range c.ino {
 			for k := range c.ino[i] {
-				if _, ok := under(k, p, ""); ok {
+				if aliasOf(k, p) {
 					delete(c.ino[i], k)
 				}
 			}
 			for k := range c.prev[i] {
 				kp, _, _ := strings.Cut(k, "|")
-				if _, ok := under(kp, p, ""); ok {
+				if aliasOf(kp, p) {
 					delete(c.prev[i], k)
 				}
 			}
@@ -91,32 +113,36 @@ func (c *comparer) forget(paths ...string) {
 // move carries what the comparer knows about from, and every path below it,
 // to to, after a rename: the objects are the same, so a later look at them
 // under their new names compares against what was seen under the old ones —
-// a time a rename must not move shows as unchanged.
+// a time a rename must not move shows as unchanged. What was known under the
+// case aliases of from, and under to and its aliases, is forgotten.
 func (c *comparer) move(from, to string) {
 	if from == to {
 		return
 	}
-	c.forget(to)
+	var moved [2]map[string]uint64
+	var prev [2]map[string]int64
 	for i := range c.ino {
-		moved := map[string]uint64{}
+		moved[i], prev[i] = map[string]uint64{}, map[string]int64{}
 		for k, v := range c.ino[i] {
 			if np, ok := under(k, from, to); ok {
 				delete(c.ino[i], k)
-				moved[np] = v
+				moved[i][np] = v
 			}
 		}
-		for k, v := range moved {
-			c.ino[i][k] = v
-		}
-		prev := map[string]int64{}
 		for k, v := range c.prev[i] {
 			kp, field, _ := strings.Cut(k, "|")
 			if np, ok := under(kp, from, to); ok {
 				delete(c.prev[i], k)
-				prev[np+"|"+field] = v
+				prev[i][np+"|"+field] = v
 			}
 		}
-		for k, v := range prev {
+	}
+	c.forget(from, to)
+	for i := range c.ino {
+		for k, v := range moved[i] {
+			c.ino[i][k] = v
+		}
+		for k, v := range prev[i] {
 			c.prev[i][k] = v
 		}
 	}
@@ -328,7 +354,15 @@ func (c *comparer) compareStat(s Step, path string, r, d *StatOut) (*Divergence,
 		}
 	}
 	// Inodes compare as a relation: paths sharing an inode on one side must
-	// share it on the other.
+	// share it on the other. A path's own earlier number, carried by a
+	// rename, is one of them: it is related before the look overwrites it,
+	// so a rename that changed the object's id on one side diverges.
+	if pr, ok := c.ino[0][path]; ok {
+		if pd, ok := c.ino[1][path]; ok && (pr == r.Ino) != (pd == d.Ino) {
+			return div(s, "inode", fmt.Sprintf("same as before: %v", pr == r.Ino),
+				fmt.Sprintf("same as before: %v", pd == d.Ino)), nil
+		}
+	}
 	c.ino[0][path], c.ino[1][path] = r.Ino, d.Ino
 	for other, ri := range c.ino[0] {
 		if other == path {
