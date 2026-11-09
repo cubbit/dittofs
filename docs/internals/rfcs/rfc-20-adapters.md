@@ -1899,6 +1899,8 @@ type Invocation struct {
 	// Encode runs on every request that gets a final reply, so its reply may
 	// be nil: the request refused before Call, or a handler that returned
 	// (nil, err). An encoder accepts a nil reply and encodes the status alone.
+	// A handler may return a reply with its error, as an NFSv3 failure carries
+	// its WCC data: Call keeps whatever reply the handler returned.
 	Encode  func(out *Buf, v Version) error
 	// Handle is the filehandle the request's own arguments name (a PUTFH's),
 	// read before Resolve, which core hands the service to learn a draining
