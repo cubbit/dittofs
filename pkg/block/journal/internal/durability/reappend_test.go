@@ -3,7 +3,10 @@ package durability
 import (
 	"context"
 	"errors"
+	"io"
 	"slices"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -414,4 +417,232 @@ func (r *rig) keptByItsFailedWindow(t *testing.T, f core.FileID, loc segment.Loc
 	})
 	mustBlock(t, "Sync of a record a failed window keeps", sync)
 	return sync
+}
+
+// rereadSeam is a test seam for the re-read of a failed segment: a place with
+// a verdict gets that verdict's bytes or error, every other read goes to the
+// stream.
+type rereadSeam struct {
+	mu   sync.Mutex
+	st   func() *stream
+	over map[segment.Location]func(p []byte) (int, error)
+}
+
+func (s *rereadSeam) set(loc segment.Location, f func(p []byte) (int, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.over == nil {
+		s.over = map[segment.Location]func(p []byte) (int, error){}
+	}
+	s.over[loc] = f
+}
+
+func (s *rereadSeam) read(seg core.SegmentID, p []byte, off int64) (int, error) {
+	s.mu.Lock()
+	var f func(p []byte) (int, error)
+	for loc, g := range s.over {
+		if loc.Segment == seg && loc.Off == off {
+			f = g
+		}
+	}
+	s.mu.Unlock()
+	if f != nil {
+		return f(p)
+	}
+	return s.st().s.ReadAt(seg, p, off)
+}
+
+// newRereadRig is a fail rig whose re-read goes through the returned seam.
+func newRereadRig(t *testing.T) (*failRig, *rereadSeam) {
+	t.Helper()
+	s := &rereadSeam{}
+	var fr *failRig
+	s.st = func() *stream { return fr.d.made[0] }
+	fr = newFailRig(t, func(fr *failRig) { fr.d.readCopyAt = s.read })
+	return fr, s
+}
+
+// writesOutside returns the durable write records that lie outside the
+// segment seg, by sequence number.
+func (r *rig) writesOutside(t *testing.T, seg core.SegmentID) map[core.Seq]format.RecordHeader {
+	t.Helper()
+	hs, _ := r.durableHeaders(t)
+	out := map[core.Seq]format.RecordHeader{}
+	for _, h := range hs {
+		if h.Kind == format.KindWrite && h.Segment != seg {
+			if _, dup := out[h.Seq]; dup {
+				t.Errorf("seq %d is durable twice outside segment %d", h.Seq, seg)
+			}
+			out[h.Seq] = h
+		}
+	}
+	return out
+}
+
+// TestReappendContentVerifiesAgainstTheKeptChecksum covers a window of two
+// writes whose segment's bytes read back whole: both are re-appended with the
+// bytes read back, at their original sequence numbers and versions, with no
+// loss and no generation raised.
+func TestReappendContentVerifiesAgainstTheKeptChecksum(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr := newFailRig(t, nil)
+	f, g := file(1), file(2)
+	a, va := fr.publish(t, f, 0, "aaaa")
+	seqA := core.Seq(fr.lastSeq.Load())
+	b, vb := fr.publish(t, g, 4, "bbbbbb")
+	seqB := core.Seq(fr.lastSeq.Load())
+	if a.Segment != b.Segment {
+		t.Fatal("the records did not share a segment")
+	}
+	gen := fr.d.Generation()
+	fr.failSyncKeepingPages(t, a.Segment, errors.New("sync boom"))
+	if err := mustReturn(t, "Sync", fr.syncAsync(context.Background(), f, g)); err != nil {
+		t.Fatalf("Sync = %v, want nil: both writes were re-appended", err)
+	}
+	if got := fr.awaitResolved(t); got != a.Segment {
+		t.Fatalf("resolved segment %d, want %d", got, a.Segment)
+	}
+	hs, bs := fr.durableHeaders(t)
+	if len(hs) != 2 {
+		t.Fatalf("%d durable records, want 2: %+v", len(hs), hs)
+	}
+	want := []struct {
+		f       core.FileID
+		seq     core.Seq
+		v       core.Version
+		ext     core.Extent
+		payload string
+	}{
+		{f, seqA, va, core.Extent{Off: 0, Len: 4}, "aaaa"},
+		{g, seqB, vb, core.Extent{Off: 4, Len: 6}, "bbbbbb"},
+	}
+	for i, w := range want {
+		h := hs[i]
+		if h.Kind != format.KindWrite || h.File != w.f || h.Seq != w.seq || h.Version != w.v || h.Extent != w.ext || h.Segment == a.Segment {
+			t.Errorf("durable record %d = %+v, want a write of %v seq %d version %+v extent %+v in a new segment", i, h, w.f, w.seq, w.v, w.ext)
+		}
+		if string(bs[i].Payload) != w.payload {
+			t.Errorf("durable record %d payload = %q, want %q", i, bs[i].Payload, w.payload)
+		}
+	}
+	if got := fr.d.Generation(); got != gen {
+		t.Errorf("the loss generation moved from %d to %d, a re-append raises none", gen, got)
+	}
+	if ev := fr.events(); len(ev) != 0 {
+		t.Errorf("%d loss events published, want none: %+v", len(ev), ev)
+	}
+}
+
+// TestReappendDoesNotTrustPageCache covers a re-read that returns stale bytes
+// for one record, bytes whose header and checksum verify against themselves:
+// the kept checksum refuses them, the record's part fails with a loss event,
+// a mark and one raise of the generation, and the other record is re-appended.
+func TestReappendDoesNotTrustPageCache(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr, seam := newRereadRig(t)
+	f, g := file(1), file(2)
+	a, _ := fr.publish(t, f, 0, "aaaa")
+	seqA := core.Seq(fr.lastSeq.Load())
+	fr.publish(t, g, 0, "bbbb")
+	seqB := core.Seq(fr.lastSeq.Load())
+	seam.set(a, func(p []byte) (int, error) {
+		real := make([]byte, len(p))
+		if _, err := fr.d.made[0].s.ReadAt(a.Segment, real, a.Off); err != nil && !errors.Is(err, io.EOF) {
+			t.Errorf("ReadAt: %v", err)
+		}
+		h, err := format.DecodeRecordHeader(real[:format.RecordHeaderSize], rigIdentity, a.Segment, a.Off)
+		if err != nil {
+			t.Errorf("DecodeRecordHeader: %v", err)
+		}
+		stale := format.AppendRecord(nil, rigIdentity, h, format.RecordBody{Payload: []byte("ZZZZ"), MTime: 1})
+		return copy(p, stale), nil
+	})
+	gen := fr.d.Generation()
+	fr.failSyncKeepingPages(t, a.Segment, errors.New("sync boom"))
+	wantSyncError(t, mustReturn(t, "Sync", fr.syncAsync(context.Background(), f, g)), a.Segment, f)
+	fr.awaitResolved(t)
+	if err := mustReturn(t, "Sync of the other file", fr.syncAsync(context.Background(), g)); err != nil {
+		t.Fatalf("Sync of the re-appended file = %v, want nil", err)
+	}
+	if got := fr.d.Generation(); got != gen+1 {
+		t.Errorf("generation = %d, want %d: raised once", got, gen+1)
+	}
+	if ev := fr.events(); len(ev) != 1 || ev[0].File != f {
+		t.Errorf("loss events = %+v, want the stale record's alone", ev)
+	}
+	if ls := fr.lossRecordsOnDisk(t); len(ls) != 1 {
+		t.Errorf("%d loss records on disk, want 1", len(ls))
+	}
+	out := fr.writesOutside(t, a.Segment)
+	if _, ok := out[seqA]; ok {
+		t.Errorf("the stale record seq %d was re-appended", seqA)
+	}
+	if _, ok := out[seqB]; !ok {
+		t.Errorf("the verified record seq %d was not re-appended: %+v", seqB, out)
+	}
+}
+
+// TestAMixedWindowIsPartReappendedPartFailed covers a window of two files, one
+// whose record cannot be re-read: the generation is raised once, only that
+// file is marked, and the other's Sync returns nil.
+func TestAMixedWindowIsPartReappendedPartFailed(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr, seam := newRereadRig(t)
+	f, g := file(1), file(2)
+	a, _ := fr.publish(t, f, 0, "aaaa")
+	fr.publish(t, g, 0, "bbbb")
+	seam.set(a, func([]byte) (int, error) { return 0, syscall.EIO })
+	gen := fr.d.Generation()
+	fr.failSyncOf(t, a.Segment, errors.New("sync boom"))
+	chG := fr.syncAsync(context.Background(), g)
+	wantSyncError(t, mustReturn(t, "Sync of f", fr.syncAsync(context.Background(), f)), a.Segment, f)
+	if err := mustReturn(t, "Sync of g", chG); err != nil {
+		var se *core.SyncError
+		if errors.As(err, &se) && slices.Contains(se.Files, g) {
+			t.Fatalf("g was marked failed: %v", err)
+		}
+	}
+	fr.awaitResolved(t)
+	if err := mustReturn(t, "second Sync of g", fr.syncAsync(context.Background(), g)); err != nil {
+		t.Fatalf("Sync of the re-appended file = %v, want nil", err)
+	}
+	if got := fr.d.Generation(); got != gen+1 {
+		t.Errorf("generation = %d, want %d", got, gen+1)
+	}
+	if ev := fr.events(); len(ev) != 1 || ev[0].File != f {
+		t.Errorf("loss events = %+v, want f's alone", ev)
+	}
+}
+
+// TestReappendReadErrorFailsThePart covers a re-read that fails: an I/O error,
+// a short read and a segment that is gone each leave the record unverified,
+// so its part fails.
+func TestReappendReadErrorFailsThePart(t *testing.T) {
+	cases := map[string]func(p []byte) (int, error){
+		"EIO":        func([]byte) (int, error) { return 0, syscall.EIO },
+		"short read": func(p []byte) (int, error) { return len(p) / 2, nil },
+		"gone":       func([]byte) (int, error) { return 0, segment.ErrSegmentGone },
+	}
+	for name, read := range cases {
+		t.Run(name, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+			fr, seam := newRereadRig(t)
+			f := file(1)
+			a, _ := fr.publish(t, f, 0, "aaaa")
+			seam.set(a, read)
+			gen := fr.d.Generation()
+			fr.failSyncOf(t, a.Segment, errors.New("sync boom"))
+			wantSyncError(t, mustReturn(t, "Sync", fr.syncAsync(context.Background(), f)), a.Segment, f)
+			fr.awaitResolved(t)
+			if got := fr.d.Generation(); got != gen+1 {
+				t.Errorf("generation = %d, want %d", got, gen+1)
+			}
+			if ev := fr.events(); len(ev) != 1 {
+				t.Errorf("%d loss events, want 1: %+v", len(ev), ev)
+			}
+			if out := fr.writesOutside(t, a.Segment); len(out) != 0 {
+				t.Errorf("a record that did not verify was re-appended: %+v", out)
+			}
+		})
+	}
 }

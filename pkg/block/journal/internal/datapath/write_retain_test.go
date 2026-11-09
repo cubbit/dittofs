@@ -131,6 +131,9 @@ func (h *syncWhileHeld) syncNow(fail bool) {
 				continue
 			}
 			rules = append(rules, kit.Failing(kit.OpSync, format.SegmentName(id), 1, errors.New("injected sync failure")))
+			// The failed segment's pages do not read back either, so its
+			// window cannot re-append the records from them and fails them.
+			rules = append(rules, kit.Failing(kit.OpRead, format.SegmentName(id), 0, errors.New("injected read failure")))
 		}
 		if err := h.seam.Schedule(rules...); err != nil {
 			panic(err)

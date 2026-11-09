@@ -312,6 +312,8 @@ func TestACoverStillInALaterWindowIsNotLiftedWhenAnEarlierOneFails(t *testing.T)
 	r := newRigUnstarted(t, 1)
 	f := file(1)
 	st := r.d.made[0]
+	// Start binds the stream; the test does the same without the worker.
+	st.s = r.streams.Stream(0)
 	r.streams.OnEnd(r.d.onEnd)
 
 	_, v1 := r.publish(t, f, 0, "aaaa")
@@ -503,6 +505,8 @@ func TestAFailedWindowLiftsACoverOverItsOwnExtentOnly(t *testing.T) {
 	// record's sync and fails the window itself, in that order.
 	r := newRigUnstarted(t, 1)
 	st := r.d.made[0]
+	// Start binds the stream; the test does the same without the worker.
+	st.s = r.streams.Stream(0)
 	r.streams.OnEnd(r.d.onEnd)
 	f := file(1)
 

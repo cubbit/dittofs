@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
@@ -457,11 +458,23 @@ func TestCorruptCopyOverwrittenBeforeRepointReleasesHold(t *testing.T) {
 func TestCorruptUsedCopyThenWindowFailsPinsKnownCeiling(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	hook, reached, release := gate(t)
-	cr := newCorruptRig(t, func(cr *corruptRig) { cr.d.beforeFail = func(*window) { hook() } })
+	// The window's re-read fails, so the window fails the record rather than
+	// re-appending it; the read of the copy goes through.
+	var rereadFails atomic.Uint32
+	cr := newCorruptRig(t, func(cr *corruptRig) {
+		cr.d.beforeFail = func(*window) { hook() }
+		cr.d.readCopyAt = func(seg core.SegmentID, p []byte, off int64) (int, error) {
+			if uint32(seg) == rereadFails.Load() {
+				return 0, syscall.EIO
+			}
+			return cr.streams.For(file(1)).ReadAt(seg, p, off)
+		}
+	})
 	t.Cleanup(release)
 	f := file(1)
 	r := cr.reappend(t, f, 0, "aaaa")
 	cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
+	rereadFails.Store(uint32(r.again.Segment))
 	cr.failByTimer(t, r.again.Segment)
 	<-reached
 

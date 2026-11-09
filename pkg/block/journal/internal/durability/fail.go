@@ -18,12 +18,28 @@ func recordAt(w segment.Written) index.RecordAt {
 // isLoss reports whether w is a loss record.
 func isLoss(w segment.Written) bool { return w.Kind == format.KindLoss }
 
-// failWindow drops the window's content records from the index, which holds
+// failWindow fails every content record the window holds, the way
+// failEntries does. A record of another kind stays in the window for
+// resolveWindows to re-append. It runs on the stream's worker.
+func (d *Durability) failWindow(st *stream, w *window) {
+	st.mu.Lock()
+	var content []entry
+	for i := range w.entries {
+		if isContent(w.entries[i].w) {
+			content = append(content, w.entries[i])
+		}
+	}
+	st.mu.Unlock()
+	d.failEntries(st, w, content)
+}
+
+// failEntries drops the records es of the window from the index, which holds
 // again what they superseded, raises the loss generation once for the window,
-// and names every dropped record in a loss record and an event. A record of
-// another kind stays in the window for resolveWindows to re-append. It runs on
-// the stream's worker while the journal takes writes; a read-only journal
-// fails its windows in failReadOnly instead.
+// and names every dropped record in a loss record and an event. The window's
+// other records are left as they are, so a window passing only its unverified
+// part raises the generation for that part alone. It runs on the stream's
+// worker while the journal takes writes; a read-only journal fails its
+// windows in failReadOnly instead.
 //
 // The index is changed under the file's append domain, one file at a time, so
 // a writer that appended into the failed segment and has not yet published
@@ -31,20 +47,11 @@ func isLoss(w segment.Written) bool { return w.Kind == format.KindLoss }
 // records are appended with no domain held: an append may roll, seal and sync,
 // and a read of the file must not wait on it. st.mu is never held across a
 // call into the index or the domains.
-func (d *Durability) failWindow(st *stream, w *window) {
-	st.mu.Lock()
-	var failing []entry
-	for i := range w.entries {
-		if isContent(w.entries[i].w) {
-			failing = append(failing, w.entries[i])
-		}
-	}
-	if len(failing) == 0 {
+func (d *Durability) failEntries(st *stream, w *window, content []entry) {
+	if len(content) == 0 {
 		// Nothing to drop and no generation to raise.
-		st.mu.Unlock()
 		return
 	}
-	st.mu.Unlock()
 	if d.beforeFail != nil {
 		d.beforeFail(w)
 	}
@@ -61,11 +68,13 @@ func (d *Durability) failWindow(st *stream, w *window) {
 	}
 	st.mu.Unlock()
 
-	files, byFile := byFileOf(failing)
+	files, byFile := byFileOf(content)
 	for _, f := range files {
 		d.failFile(st, w.id, f, byFile[f], false)
 	}
-	d.settle(st, w, func(e entry) bool { return isContent(e.w) }, w.err, false)
+	d.settle(st, w, func(o entry) bool {
+		return slices.ContainsFunc(content, func(e entry) bool { return e.w.Loc == o.w.Loc })
+	}, w.err, false)
 }
 
 // byFileOf groups entries by file, the files in the order they first appear

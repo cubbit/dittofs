@@ -3,8 +3,10 @@ package durability
 import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -96,6 +98,10 @@ type rig struct {
 	acct *accountLog
 	// lastSeq is the sequence number the last publish drew.
 	lastSeq atomic.Uint64
+	// keptPages holds the segments of a failed window whose pages still read
+	// back; the re-read of any other failed window's segment fails with an I/O
+	// error, as a segment whose pages a failed sync left unreliable.
+	keptPages sync.Map
 }
 
 // accountLog records every delta the layer accounts.
@@ -187,6 +193,36 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	})
 	t.Cleanup(func() { _ = streams.Close() })
 	t.Cleanup(d.Stop)
+	r := newRigOver(d, streams, seam, clock, domains, pool, set, n, sinks, c, acct)
+	d.readCopyAt = func(seg core.SegmentID, p []byte, off int64) (int, error) {
+		if _, kept := r.keptPages.Load(seg); !kept && r.inPendingWindow(seg) {
+			return 0, syscall.EIO
+		}
+		return streams.Stream(0).ReadAt(seg, p, off)
+	}
+	return r
+}
+
+// inPendingWindow reports whether a pending window of any stream is of seg.
+func (r *rig) inPendingWindow(seg core.SegmentID) bool {
+	r.d.mu.Lock()
+	sts := make([]*stream, 0, len(r.d.made))
+	for _, st := range r.d.made {
+		sts = append(sts, st)
+	}
+	r.d.mu.Unlock()
+	for _, st := range sts {
+		st.mu.Lock()
+		found := slices.ContainsFunc(st.windows, func(w *window) bool { return w.seg == seg })
+		st.mu.Unlock()
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+func newRigOver(d *Durability, streams *segment.Streams, seam *kit.Seam, clock kit.DrivenClock, domains *testDomains, pool *segment.Pool, set *segment.Set, n int, sinks map[uint32]segment.Sink, c Config, acct *accountLog) *rig {
 	return &rig{d: d, streams: streams, seam: seam, clock: clock, domains: domains, pool: pool, set: set, spares: int64(2 * n), sinks: sinks, ix: c.Index, acct: acct}
 }
 
