@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
@@ -527,4 +528,62 @@ func TestReadUnknownSeqRecordNoLongerNamedResolvesAgain(t *testing.T) {
 	flip(t, seam, pc.Record.Segment, int64(pc.Record.Offset)+50)
 
 	readUntouched(t, c, s, f, 0, 4<<10, []core.Extent{{Off: 0, Len: 4 << 10}})
+}
+
+// releaseProbe runs probe after each release of id's append domain once armed
+// is set, on the goroutine that released it.
+type releaseProbe struct {
+	durability.Domains
+	id    core.FileID
+	armed *atomic.Bool
+	probe func()
+}
+
+func (d releaseProbe) Lock(id core.FileID) func() {
+	unlock := d.Domains.Lock(id)
+	return func() {
+		unlock()
+		if id == d.id && d.armed.Load() {
+			d.probe()
+		}
+	}
+}
+
+// TestTrackedIsFalseOnceTheSyncCompletedTheRecord checks that the ledger
+// stops naming a record once its sync completed it, before it is compacted
+// away. A Sync of the file can return as soon as the record is completed,
+// while the worker still holds the file's domain and has not compacted, so a
+// read that then finds the record damaged must learn its sequence number from
+// nothing but its header, whether or not the compaction has run.
+func TestTrackedIsFalseOnceTheSyncCompletedTheRecord(t *testing.T) {
+	f := testFile(1)
+	var armed atomic.Bool
+	var c *Core
+	var rec index.RecordAt
+	tracked := make(chan bool, 1)
+	c, _ = newTestCore(t, func(o *coreOptions) {
+		o.wrapDomains = func(d durability.Domains) durability.Domains {
+			return releaseProbe{Domains: d, id: f, armed: &armed, probe: func() {
+				// The worker releases the file's domain once it marked the
+				// record completed, and compacts the ledger only after.
+				if armed.CompareAndSwap(true, false) {
+					_, ok := c.Durability().Tracked(f, rec)
+					tracked <- ok
+				}
+			}}
+		}
+	})
+	s := mustShare(t, c, 1)
+	if _, err := c.WriteAt(context.Background(), s, f, 0, pattern(4<<10, 7), 1); err != nil {
+		t.Fatal(err)
+	}
+	rec = recordOf(t, c, f, 0).Record
+	armed.Store(true)
+	syncFiles(t, c, f)
+	if _, ok := c.Durability().Tracked(f, rec); ok {
+		t.Fatal("the ledger still names the record after Sync returned")
+	}
+	if within(t, tracked, "the worker's release of the file's domain after completing the record") {
+		t.Fatal("the ledger still names the record its sync completed, before compacting it")
+	}
 }

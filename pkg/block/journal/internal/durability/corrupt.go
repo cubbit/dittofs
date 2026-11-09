@@ -399,9 +399,11 @@ func (d *Durability) Tracked(file core.FileID, r index.RecordAt) (segment.Writte
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	match := func(w segment.Written) bool { return w.File == file && recordAt(w) == r }
+	// A done entry is completed: the worker marked it so before compacting it
+	// away, and a Sync of its file may already have returned on it.
 	for i := range st.ledger {
-		if match(st.ledger[i].w) {
-			return st.ledger[i].w, true
+		if e := &st.ledger[i]; !e.done && match(e.w) {
+			return e.w, true
 		}
 	}
 	for _, w := range st.windows {
