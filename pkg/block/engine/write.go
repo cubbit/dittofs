@@ -67,10 +67,10 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	// to and was kept: one that drops its write (see drops) drops it, its
 	// Done run and nothing charged, any other inserts the write with the run
 	// it names lost.
-	var lost []entity.Extent
+	var lost, unsynced []entity.Extent
 	for _, ev := range b.gc.losses.unmatched(f, ver) {
 		if !drops(ev, journal.Extent{Off: off, Len: int64(len(p))}) {
-			lost = lostRuns(lost, x, ev.Extent)
+			lost, unsynced = addLoss(lost, unsynced, journal.Extent{Off: off, Len: int64(len(p))}, ev)
 			continue
 		}
 		e.files.unlock(f, fe)
@@ -98,9 +98,15 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 		at:        now,
 		setsMtime: mtime != 0,
 		lost:      lost,
+		unsynced:  unsynced,
 		done:      o.Done,
 	})
+	// A loss drained between this write's WriteAt and its insert may have
+	// left an earlier write's pieces covered only once this one is in the
+	// entry, and this write's own kept losses may cover it: drop what is.
+	dones := fe.dropCovered()
 	e.files.unlock(f, fe)
+	runAll(dones)
 	e.issued(b.vl, ver)
 
 	return v, nil

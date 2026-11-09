@@ -444,6 +444,79 @@ func TestAPartialUnsyncedCorruptLossLosesItsRun(t *testing.T) {
 	}
 }
 
+// A write never synced whose middle a later write overwrote comes back from
+// a corrupt record as one event per piece the journal still held, none of
+// them covering the write: the write is dropped once its pieces and the
+// later write cover it, so the file reads as before it, with the later write
+// over it, and its Done runs once, whether the losses drain while the later
+// write is pending or between its WriteAt and its insert. A synced record's
+// pieces are lost as before, the write committing with their runs lost.
+//
+// The file is empty before the write, since the fake cuts what a write
+// overwrote and so cannot serve it again after the drop.
+func TestUnsyncedCorruptPiecesAroundALaterWriteDropTheWrite(t *testing.T) {
+	head, tail := journal.Extent{Off: 0, Len: 4}, journal.Extent{Off: 8, Len: 4}
+	for _, tc := range []struct {
+		name          string
+		synced, early bool
+		order         []journal.Extent
+	}{
+		{"unsynced, head first", false, false, []journal.Extent{head, tail}},
+		{"unsynced, tail first", false, false, []journal.Extent{tail, head}},
+		{"unsynced, before the later write's insert", false, true, []journal.Extent{head, tail}},
+		{"synced", true, false, []journal.Extent{head, tail}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newUnit(t)
+			h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
+			f := made.ID
+			var dones atomic.Int32
+			if _, err := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("bbbbbbbbbbbb"), engine.WriteOpts{Done: func() { dones.Add(1) }}); err != nil {
+				t.Fatal(err)
+			}
+			lose := func() {
+				for _, x := range tc.order {
+					if tc.synced {
+						u.j.LoseLater(journal.NewFileID(f), x, journal.LossCorrupt)()
+					} else {
+						u.j.LoseUnsynced(journal.NewFileID(f), x)
+					}
+				}
+				u.e.LossSeq(u.share.ID, f) // drains the losses
+			}
+			if tc.early {
+				var once sync.Once
+				u.e.OnWritten(func() { once.Do(lose) })
+			}
+			u.write(t, f, 4, []byte("cccc"))
+			if !tc.early {
+				lose()
+			}
+			if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+				t.Fatal(err)
+			}
+			if n := dones.Load(); n != 1 {
+				t.Errorf("Done ran %d times, want once", n)
+			}
+			got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := make([]byte, 12)
+			n, err := u.e.Read(t.Context(), u.share.ID, f, 0, p)
+			if tc.synced {
+				if got.Size != 12 || !errors.Is(err, vfserr.ErrLost) {
+					t.Errorf("size %d, read %q, %v; want 12 and [0, 4) lost", got.Size, p[:n], err)
+				}
+				return
+			}
+			if want := "\x00\x00\x00\x00cccc"; got.Size != 8 || err != nil || string(p[:n]) != want {
+				t.Errorf("size %d, read %q, %v; want 8 and %q: the file as before the write, with the later one over it", got.Size, p[:n], err, want)
+			}
+		})
+	}
+}
+
 // A corrupt loss of a write never synced comes with no SyncError, so a later
 // SyncError of its file that no event covers still raises the file again.
 func TestAnUnsyncedCorruptLossLeavesALaterSyncErrorRaising(t *testing.T) {
