@@ -318,3 +318,58 @@ func TestASealEndAfterTheFailureWasPrunedDoesNotCountItAgain(t *testing.T) {
 		t.Errorf("one failed fsync counted %d times", got)
 	}
 }
+
+// TestAHeaderOnlyAnswerWaitsForTheLossGenerationOfItsWindow covers R51 for a
+// window holding a header-only and a content record of one file: the sync's
+// failure is recorded the moment it happens, but a Sync the failure fails must
+// not return before the worker has failed the window and raised the loss
+// generation, and the file is told once, by that one Sync.
+func TestAHeaderOnlyAnswerWaitsForTheLossGenerationOfItsWindow(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := newRigUnstarted(t, 1)
+	gate, open := releaser(t)
+	r.d.beforeFail = func(*window) { <-gate }
+	t.Cleanup(open)
+	r.d.Start(r.streams)
+	f := file(1)
+	loc, _ := r.publish(t, f, 0, "aaaa")
+	r.appendKind(t, f, format.KindDelete, format.RecordBody{})
+	before := r.d.Generation()
+	r.failSyncOf(t, loc.Segment, errors.New("sync boom"))
+
+	type result struct {
+		err error
+		gen uint64
+	}
+	done := make(chan result, 1)
+	go func() {
+		err := r.d.Sync(context.Background(), f)
+		done <- result{err, r.d.Generation()}
+	}()
+	// The window is taken and held before its records are failed: the failure
+	// is known, and the Sync, whose target is the header-only record, must
+	// wait for the window to be failed.
+	eventually(t, "the window to be taken", func() bool { return len(r.windowsOf(0)) > 0 })
+	select {
+	case got := <-done:
+		t.Fatalf("Sync returned (%v) before the window was failed, generation %v", got.err, got.gen)
+	case <-time.After(30 * time.Millisecond):
+	}
+	open()
+	var got result
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Sync did not return")
+	}
+	var se *core.SyncError
+	if !errors.As(got.err, &se) {
+		t.Fatalf("Sync = %v, want a *core.SyncError", got.err)
+	}
+	if len(se.Files) != 1 || se.Files[0] != f {
+		t.Errorf("SyncError.Files = %v, want the file once", se.Files)
+	}
+	if got.gen == before {
+		t.Errorf("the generation was %v at the moment Sync returned the failure, want it raised", got.gen)
+	}
+}

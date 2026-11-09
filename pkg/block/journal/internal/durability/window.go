@@ -46,6 +46,11 @@ type window struct {
 	cause   segment.EndCause
 	err     error   // why the segment ended
 	entries []entry // moved from the ledger, in Track order
+	// failed is set once failWindow has run for the window: its content
+	// records are dropped and the generation raised, or it holds none and
+	// needed no raise. A header-only record answers a Sync's failure only
+	// after that.
+	failed bool
 }
 
 // onEnd is the consumer of every stream's end events (D13). It runs on the

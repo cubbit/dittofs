@@ -56,10 +56,17 @@ func (d *Durability) failWindow(st *stream, w *window) {
 			content = append(content, w.entries[i])
 		}
 	}
-	st.mu.Unlock()
 	if len(content) == 0 {
+		// Nothing to drop and no generation to raise, but the window is
+		// processed: a header-only record may now answer its Sync.
+		if !w.failed {
+			w.failed = true
+			st.d.notifyAll()
+		}
+		st.mu.Unlock()
 		return
 	}
+	st.mu.Unlock()
 	if d.beforeFail != nil {
 		d.beforeFail(w)
 	}
@@ -91,6 +98,7 @@ func (d *Durability) failWindow(st *stream, w *window) {
 	for _, f := range files {
 		st.markLocked(w, f)
 	}
+	w.failed = true
 	empty := len(w.entries) == 0
 	st.d.notifyAll()
 	st.mu.Unlock()

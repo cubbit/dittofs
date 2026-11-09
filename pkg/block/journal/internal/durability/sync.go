@@ -802,24 +802,20 @@ func mergeSyncErrors(into, from *core.SyncError) *core.SyncError {
 	return into
 }
 
-// contentLocked reports whether the record at loc is a content record, one a
-// failed window fails. A record the stream holds in neither the ledger nor a
-// window is reported as content; the callers only ask about a held one. The
-// caller holds mu.
-func (st *stream) contentLocked(loc segment.Location) bool {
-	for i := len(st.ledger) - 1; i >= 0; i-- {
-		if st.ledger[i].w.Loc == loc {
-			return isContent(st.ledger[i].w)
-		}
-	}
+// answersFailureLocked reports whether the record at loc is a header-only
+// record of a pending window that failWindow has run for: the only record that
+// answers a Sync with its failure. A record still in the ledger, or in a
+// window not yet failed, answers nothing, so that the loss generation is
+// raised before any Sync the failure fails returns. The caller holds mu.
+func (st *stream) answersFailureLocked(loc segment.Location) bool {
 	for _, w := range st.windows {
 		for i := range w.entries {
 			if w.entries[i].w.Loc == loc {
-				return isContent(w.entries[i].w)
+				return w.failed && !isContent(w.entries[i].w)
 			}
 		}
 	}
-	return true
+	return false
 }
 
 // check looks at one stream's targets, and with failFast first answers the
@@ -845,10 +841,13 @@ func (st *stream) contentLocked(loc segment.Location) bool {
 // target any more: a Sync that targeted it and finds no mark left returns, as
 // another Sync of the file took the report, and a failure is told once.
 //
-// decision: a header-only target in a pending window, or in a failed segment,
-// answers its *core.SyncError at once, as before marks existed: such a record
-// is not failed, it stays in the window with nothing to wait for, and no mark
-// is ever set for it. Overturned by the re-append of a header-only record,
+// decision: a header-only target in a pending window answers its
+// *core.SyncError once failWindow has run for that window, and not before:
+// such a record is not failed, it stays in the window, and no mark is ever set
+// for it, but the generation must be up before a Sync the failure fails
+// returns, and the window's content records are failed by then, so a file
+// with both is told by its marks first and never twice for one Sync. Until
+// then the target waits. Overturned by the re-append of a header-only record,
 // which must wait for the new sync (RFC 1 §5.3) instead of failing at once.
 func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (bool, error) {
 	st.mu.Lock()
@@ -879,7 +878,7 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (boo
 			continue
 		}
 		if err, bad := st.failed[t.loc.Segment]; bad {
-			if failFast && failErr == nil && !st.contentLocked(t.loc) {
+			if failFast && failErr == nil && st.answersFailureLocked(t.loc) {
 				failSeg, failErr = t.loc.Segment, err
 			}
 			continue
