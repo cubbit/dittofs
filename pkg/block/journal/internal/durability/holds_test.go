@@ -554,6 +554,11 @@ func TestRetirementWinsBeforeRetryLosesEveryOwedRecord(t *testing.T) {
 		t.Fatalf("re-appended %+v from a retired segment, want nothing", got)
 	}
 	cr.noResolved(t)
+	cr.d.dmu.Lock()
+	defer cr.d.dmu.Unlock()
+	if len(cr.d.unproduced) != 0 {
+		t.Fatalf("unproduced = %v once the hold is gone, want none", cr.d.unproduced)
+	}
 }
 
 // TestCopyFromResolvedSegmentUnresolvesAndClaims covers a copy used from a
