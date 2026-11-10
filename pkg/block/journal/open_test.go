@@ -1,0 +1,700 @@
+package journal
+
+import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"hash/crc32"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
+)
+
+// openSegmentCap is the segment size the opens here pass, small enough that a
+// spare the pool makes is a real file in no time and the spare the open's
+// targets want never reach past the temporary directory.
+const openSegmentCap = 64 << 10
+
+// openLimit is the generous version limit an open's caller sets once it has
+// the journal, as the journal issues nothing until its first limit.
+var openLimit = Version{Counter: 1 << 40}
+
+// openSettings returns the settings with a small segment cap, so the pool's
+// spares stay small in a temporary directory.
+func openSettings() Settings {
+	var s Settings
+	core.SetSegmentCap(&s, openSegmentCap)
+	return s
+}
+
+// openOpts returns the options an open takes: the test clock, the settings and
+// the view of the seam. The clock is shared with what the caller built before
+// only through the seam's directory; every journal gets a fresh one, since the
+// options of an open name a process that has not started yet.
+func openOpts(seam *kit.Seam, clock core.Clock) []Option {
+	return []Option{
+		WithClock(clock),
+		WithSettings(openSettings()),
+		WithStorage(seam.FS()),
+	}
+}
+
+// initAndOpen inits a journal through the seam and opens it with the identity
+// Init returned, on a fresh clock, no floor and the small-cap settings. The
+// journal is closed when the test ends, so its background work never outlives
+// a failed assertion.
+func initAndOpen(t *testing.T) (*Journal, seamDir, JournalID) {
+	t.Helper()
+
+	s := newSeam(t)
+	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	j, err := Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if j == nil {
+		t.Fatal("Open returned nil and no error")
+	}
+	t.Cleanup(func() {
+		// A second Close answers the core's own first close: it joins nothing
+		// and reports what the first did, which is no error here.
+		if err := j.Close(); err != nil {
+			t.Errorf("close the opened journal: %v", err)
+		}
+	})
+	return j, s, id
+}
+
+// TestOpen_FreshRoundTrip fails an Open that never reaches the core: the
+// identity Init returns opens the journal, a share attaches, and a write
+// through it reads back whole. The whole cycle — init, open, write, read,
+// close — runs under the profiler, so an open that starts background work it
+// never joins, or a close that leaves it running, fails here.
+func TestOpen_FreshRoundTrip(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	j, _, id := initAndOpen(t)
+	if err := j.SetVersionLimit(openLimit); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+	h, err := j.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+	f := fileOf(1)
+	v := writeReady(t, h, f, "round trip")
+	if v == (Version{}) {
+		t.Fatal("the write drew no version")
+	}
+	p := []byte("..........")
+	n, missing, held, asOf, err := h.ReadAt(context.Background(), f, 0, p)
+	if err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	if n != 10 || string(p) != "round trip" || len(missing) != 0 {
+		t.Fatalf("ReadAt = n %d, %q, missing %+v; want the write back whole", n, p, missing)
+	}
+	if len(held) != 1 || held[0].Version.Compare(v) != 0 || asOf == (Version{}) {
+		t.Fatalf("held = %+v, asOf = %v, want the write's version %v", held, asOf, v)
+	}
+
+	// A read at a version the identity does not name: the handle works, and the
+	// second Share of one tag returns one handle.
+	h2, err := j.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("second Share: %v", err)
+	}
+	if h2 != h {
+		t.Fatal("a second Share of the open tag returned another handle")
+	}
+	if _, _, _, _, err := h2.ReadAt(context.Background(), f, 4, p[:4]); err != nil {
+		t.Fatalf("ReadAt through the shared handle: %v", err)
+	}
+
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close the handle: %v", err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if id == (JournalID{}) {
+		t.Fatal("Init returned the zero identity")
+	}
+}
+
+// TestOpen_WrongIdentity_IdentityErrorNamesFound fails an Open that accepts
+// any identity or answers one the caller cannot act on: a directory whose
+// format names another journal is refused, and the error names the identity
+// found, the installation it was made under and that no segment is held.
+func TestOpen_WrongIdentity_IdentityErrorNamesFound(t *testing.T) {
+	s := newSeam(t)
+	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	var wrong JournalID
+	wrong[0] = id[0] ^ 0xff
+	_, err = Open(context.Background(), s.dir, Version{}, wrong, openOpts(s.seam, kit.NewStopwatchClock())...)
+	var ie *IdentityError
+	if !errors.As(err, &ie) {
+		t.Fatalf("Open with the wrong identity returned %v, want an IdentityError", err)
+	}
+	if !errors.Is(err, ErrIdentityMismatch) {
+		t.Errorf("the IdentityError does not match ErrIdentityMismatch")
+	}
+	if got := JournalID(ie.Found); got != id {
+		t.Errorf("the error names the identity %v, want the one the format holds %v", [16]byte(got), [16]byte(id))
+	}
+	if ie.Installation != installID {
+		t.Errorf("the error names the installation %v, want %v",
+			[16]byte(ie.Installation), [16]byte(installID))
+	}
+	if ie.Segments {
+		t.Error("the error says a segment is held, want none in a fresh journal")
+	}
+}
+
+// TestOpen_ExpectZero_IdentityErrorNames fails an Open that invents a journal
+// where the caller recorded none: expect zero always refuses, and on a
+// directory holding a journal the refusal names the identity and installation
+// it found and that no segment is held, so the caller can tell a lost store
+// from a lost device.
+func TestOpen_ExpectZero_IdentityErrorNames(t *testing.T) {
+	s := newSeam(t)
+	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	_, err = Open(context.Background(), s.dir, Version{}, JournalID{}, openOpts(s.seam, kit.NewStopwatchClock())...)
+	var ie *IdentityError
+	if !errors.As(err, &ie) {
+		t.Fatalf("Open with expect zero returned %v, want an IdentityError", err)
+	}
+	if got := JournalID(ie.Found); got != id {
+		t.Errorf("the error names the identity %v, want the one the format holds %v", [16]byte(got), [16]byte(id))
+	}
+	if ie.Installation != installID {
+		t.Errorf("the error names the installation %v, want %v",
+			[16]byte(ie.Installation), [16]byte(installID))
+	}
+	if ie.Segments {
+		t.Error("the error says a segment is held, want none in a fresh journal")
+	}
+}
+
+// TestOpen_ExpectZero_EmptyDir_ErrNoJournal fails an Open that creates a
+// journal where the caller recorded one, or takes an empty directory for a
+// lost journal: with expect zero and no journal in the directory, the refusal
+// is ErrNoJournal and nothing is created.
+func TestOpen_ExpectZero_EmptyDir_ErrNoJournal(t *testing.T) {
+	s := newSeam(t)
+
+	_, err := Open(context.Background(), s.dir, Version{}, JournalID{}, openOpts(s.seam, kit.NewStopwatchClock())...)
+	if !errors.Is(err, ErrNoJournal) {
+		t.Fatalf("Open with expect zero on an empty directory returned %v, want ErrNoJournal", err)
+	}
+	if names := s.listSeam(t); len(names) != 0 {
+		t.Errorf("after the refusal the directory holds %v, want nothing created", names)
+	}
+}
+
+// TestOpen_MissingDir_ErrNoJournal_CreatesNothing fails an Open that checks
+// the platform of, or creates anything in, a directory that does not exist:
+// it fails as on a directory that holds no journal, before the platform
+// checks run, and nothing is made. The directory's absence is read through
+// the operating system's files, so the open runs with the open path's own
+// default storage rather than one injected.
+func TestOpen_MissingDir_ErrNoJournal_CreatesNothing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "absent")
+
+	// The check is swapped for one that fails the test when reached: a missing
+	// directory is not checked.
+	swapCheckDir(t, func(string) error {
+		t.Error("the platform check ran on a directory that does not exist")
+		return nil
+	})
+
+	if _, err := Open(context.Background(), dir, Version{}, JournalID{0x01},
+		WithClock(kit.NewStopwatchClock())); !errors.Is(err, ErrNoJournal) {
+		t.Fatalf("Open of a missing directory returned %v, want ErrNoJournal", err)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the refused Open left %s behind, want nothing created", dir)
+	}
+}
+
+// TestOpen_EmptyDir_ErrNoJournal_CreatesNothing fails an Open that creates a
+// journal in a directory that holds no journal: an empty directory, checked
+// and listed whole, is refused with ErrNoJournal and left empty.
+func TestOpen_EmptyDir_ErrNoJournal_CreatesNothing(t *testing.T) {
+	s := newSeam(t)
+
+	expected := JournalID{0x01}
+	if _, err := Open(context.Background(), s.dir, Version{}, expected, openOpts(s.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrNoJournal) {
+		t.Fatalf("Open of an empty directory returned %v, want ErrNoJournal", err)
+	}
+	if names := s.listSeam(t); len(names) != 0 {
+		t.Errorf("after the refusal the directory holds %v, want it empty", names)
+	}
+}
+
+// TestOpen_NeitherFormatNorSegment_ErrNoJournal fails an Open that takes a
+// directory of files it does not recognise for a journal or for a lost device:
+// names the journal could not have written, with neither a format file nor a
+// segment among them, hold no journal, and the directory is left as it is.
+func TestOpen_NeitherFormatNorSegment_ErrNoJournal(t *testing.T) {
+	s := newSeam(t)
+	s.create(t, "a foreign entry")
+
+	expected := JournalID{0x01}
+	if _, err := Open(context.Background(), s.dir, Version{}, expected, openOpts(s.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrNoJournal) {
+		t.Fatalf("Open of a directory holding only a foreign entry returned %v, want ErrNoJournal", err)
+	}
+	if names := s.listSeam(t); !slices.Equal(names, []string{"a foreign entry"}) {
+		t.Errorf("after the refusal the directory holds %v, want nothing touched", names)
+	}
+}
+
+// TestOpen_SegmentNoFormat_ErrUnidentified_Untouched fails an Open that
+// takes a directory holding segments and no format file for anything else:
+// such a journal cannot be identified, so it is refused with ErrUnidentified,
+// whatever the caller expected, and written, removed and attached nothing.
+// A spare's temporary name counts too: a spare half-made is a segment the
+// directory holds, and neither it nor a finished segment is ever mistaken
+// for an empty journal.
+func TestOpen_SegmentNoFormat_ErrUnidentified_Untouched(t *testing.T) {
+	for name, seg := range map[string]string{
+		"a segment":                 format.SegmentName(1),
+		"a spare's tmp name":        format.SpareName(1),
+		"a name of the wrong width": "000000000000000000001.seg",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newSeam(t)
+			s.create(t, seg)
+
+			expected := JournalID{0x01}
+			_, err := Open(context.Background(), s.dir, Version{}, expected, openOpts(s.seam, kit.NewStopwatchClock())...)
+			if !errors.Is(err, ErrUnidentified) {
+				t.Fatalf("a directory holding %s and no format: Open returned %v, want ErrUnidentified", seg, err)
+			}
+			if names := s.listSeam(t); !slices.Equal(names, []string{seg}) {
+				t.Errorf("after the refusal the directory holds %v, want the segment alone", names)
+			}
+			b, err := s.seam.Durable(seg)
+			if err != nil || len(b) != 0 {
+				t.Errorf("the refusal touched the segment: %d bytes, %v, want none and no error", len(b), err)
+			}
+		})
+	}
+}
+
+// TestOpen_SecondOpenAfterClose_ErrNotImplemented fails an Open that recovers
+// a journal this implementation cannot yet: a reopen of a directory whose
+// journal has run — even one whose only segments are the spares the spare pool
+// made — is refused with ErrNotImplemented, and the directory is left as it
+// is, since rebuilding its state is a later step.
+func TestOpen_SecondOpenAfterClose_ErrNotImplemented(t *testing.T) {
+	j, seam, id := initAndOpen(t)
+	if err := j.SetVersionLimit(openLimit); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+	h, err := j.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+	writeReady(t, h, fileOf(1), "run")
+
+	// Close the handle and the journal, so every file the run touched is
+	// closed and the directory's names are all there is to see. The journal's
+	// own cleanup would close it again, so it is dropped first.
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close the handle: %v", err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	names := listOS(t, dirOfSeam(seam))
+	segmentsBefore := countSegments(names)
+	if segmentsBefore == 0 {
+		t.Fatalf("the run left no segment: %v", names)
+	}
+
+	_, err = Open(context.Background(), dirOfSeam(seam), Version{}, id, openOpts(seam.seam, kit.NewStopwatchClock())...)
+	if !errors.Is(err, ErrNotImplemented) {
+		t.Fatalf("a second Open of a journal that has run returned %v, want ErrNotImplemented", err)
+	}
+	if got := countSegments(listOS(t, dirOfSeam(seam))); got != segmentsBefore {
+		t.Errorf("after the refusal the directory holds %d segment names, want the %d it held", got, segmentsBefore)
+	}
+}
+
+// TestOpen_UnsuitableChecksBeforeWrite fails an Open that builds the journal
+// before the platform checks run, or not at all: the check runs before
+// anything is written, and an unsuitable directory is refused with
+// ErrUnsuitableStorage, matching no other refusal, with the directory left as
+// it is.
+func TestOpen_UnsuitableChecksBeforeWrite(t *testing.T) {
+	s := newSeam(t)
+	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	swapCheckDir(t, func(string) error { return ErrUnsuitableStorage })
+
+	if _, err := Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnsuitableStorage) {
+		t.Fatalf("an unsuitable directory: Open returned %v, want ErrUnsuitableStorage", err)
+	}
+	for _, target := range []error{ErrNoJournal, ErrNotImplemented, ErrIdentityMismatch} {
+		if errors.Is(err, target) {
+			t.Errorf("the unsuitable refusal also matches %v, want it matching no other refusal", target)
+		}
+	}
+	if names := s.listSeam(t); !slices.Equal(names, []string{format.FormatFileName}) {
+		t.Errorf("after the refusal the directory holds %v, want the format file alone", names)
+	}
+}
+
+// TestOpen_CheckError_ReturnedAsItself fails an Open that turns an error met
+// while checking into a refusal: an I/O error or a mount table that does not
+// describe the directory is returned as itself, matching no refusal, so a
+// caller can tell a fault to fix from a directory to refuse.
+func TestOpen_CheckError_ReturnedAsItself(t *testing.T) {
+	s := newSeam(t)
+	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	probe := errors.New("the mount table does not parse")
+	swapCheckDir(t, func(string) error { return probe })
+
+	_, err = Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...)
+	if !errors.Is(err, probe) {
+		t.Fatalf("Open returned %v, want the probe's error as itself", err)
+	}
+	for _, target := range []error{ErrUnsuitableStorage, ErrNoJournal, ErrNotImplemented} {
+		if errors.Is(err, target) {
+			t.Errorf("the probe's error matches %v, want it matching no refusal", target)
+		}
+	}
+}
+
+// TestOpen_NoClock fails an Open that reaches its directory with no clock: a
+// journal has no default clock to fall back on, so a call without one fails
+// with ErrNoClock before any directory access — proven by a storage whose every
+// call fails, which would name itself in the answer if it were reached — and
+// the check is no respecter of the missing directory, so the directory's own
+// absence cannot mask it.
+func TestOpen_NoClock(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, err := Open(context.Background(), dir, Version{}, JournalID{0x01}, WithStorage(failFS{})); !errors.Is(err, ErrNoClock) {
+		t.Fatalf("Open with no clock returned %v, want ErrNoClock", err)
+	}
+	if names := listOS(t, dir); len(names) != 0 {
+		t.Errorf("after the refusal the directory holds %v, want nothing created", names)
+	}
+}
+
+// TestOpen_CtxCheckedFirst fails an Open that reads its directory with a
+// cancelled context: the context is checked after the settings and the clock
+// and before any directory access, and its error is returned having changed
+// nothing.
+func TestOpen_CtxCheckedFirst(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	s := newSeam(t)
+	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if _, err := Open(ctx, s.dir, Version{}, id, append(openOpts(s.seam, kit.NewStopwatchClock()), WithStorage(failFS{}))...); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a cancelled context: Open returned %v, want context.Canceled", err)
+	}
+	if names := s.listSeam(t); !slices.Equal(names, []string{format.FormatFileName}) {
+		t.Errorf("after the cancelled call the directory holds %v, want the format file alone", names)
+	}
+}
+
+// TestOpen_CorruptFormat_ErrCorrupt fails an Open that repairs or ignores a
+// format file whose checksum does not verify: the open fails with ErrCorrupt
+// and writes nothing.
+func TestOpen_CorruptFormat_ErrCorrupt(t *testing.T) {
+	s := newSeam(t)
+	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	damageFormat(t, s.dir)
+
+	if _, err := Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("Open of a corrupt format returned %v, want ErrCorrupt", err)
+	}
+	for _, target := range []error{ErrUnknownFormat, ErrNoJournal, ErrIdentityMismatch} {
+		if errors.Is(err, target) {
+			t.Errorf("the corrupt refusal also matches %v, want it matching no other refusal", target)
+		}
+	}
+}
+
+// TestOpen_UnknownFormatVersion fails an Open that upgrades or ignores a
+// format file naming a version this binary does not read: the open fails with
+// ErrUnknownFormat and writes nothing. The file stands in the directory
+// before the seam is made, so the seam's own view of the files the directory
+// holds includes it.
+func TestOpen_UnknownFormatVersion(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeUnknownFormat(t, dir); err != nil {
+		t.Fatalf("write the future format: %v", err)
+	}
+	seam, err := kit.NewSeam(dir)
+	if err != nil {
+		t.Fatalf("the seam could not be made: %v", err)
+	}
+
+	if _, err := Open(context.Background(), dir, Version{}, JournalID{0x01},
+		openOpts(seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
+		t.Fatalf("Open of an unknown format version returned %v, want ErrUnknownFormat", err)
+	}
+	for _, target := range []error{ErrCorrupt, ErrNoJournal, ErrIdentityMismatch} {
+		if errors.Is(err, target) {
+			t.Errorf("the unknown-version refusal also matches %v, want it matching no other refusal", target)
+		}
+	}
+}
+
+// TestOpen_FloorRaisesCounter fails an Open that leaves the counter where a
+// crashed journal's records found it: the floor is raised before the journal
+// is returned, so the first version the journal issues exceeds the floor even
+// before a share of its own has raised it. A fresh journal issues nothing
+// until its first limit, so the check sets one before it draws.
+func TestOpen_FloorRaisesCounter(t *testing.T) {
+	s := newSeam(t)
+	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	floor := Version{Counter: 1 << 30}
+	j, err := Open(context.Background(), s.dir, floor, id, openOpts(s.seam, kit.NewStopwatchClock())...)
+	if err != nil {
+		t.Fatalf("Open with a floor: %v", err)
+	}
+	if err := j.SetVersionLimit(Version{Counter: floor.Counter + 1<<20}); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+	v, err := j.Draw()
+	if err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	if v.Compare(floor) <= 0 {
+		t.Fatalf("the first version drawn = %v, want one above the floor %v", v, floor)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// A floor with a non-zero epoch is refused and opens nothing.
+	s2 := newSeam(t)
+	id2, err := Init(context.Background(), s2.dir, installID, WithStorage(s2.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if _, err := Open(context.Background(), s2.dir, Version{Epoch: 1, Counter: 5}, id2, openOpts(s2.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
+		t.Fatalf("Open with an epochal floor returned %v, want ErrUnknownFormat", err)
+	}
+	if got := countSegments(listOS(t, s2.dir)); got != 0 {
+		t.Errorf("the refused open left %d segment names behind, want none: it must create nothing", got)
+	}
+}
+
+// TestOpen_RefusedFloor_LeaksNothing_CreatesNothing fails an Open that builds
+// the core before the floor is refused: a refused floor must leak no
+// goroutine and no descriptor — checked under the profiler — and must create
+// nothing, so the directory it leaves holds exactly the format file, with no
+// spare's segment name ever appearing in it: a spare is a segment file, and a
+// journal whose open failed cannot be left holding segments, which no later
+// open could refuse cleanly. The check watches a little past the refusal,
+// because the spare pool makes its files off the open path and one could land
+// after the open returned.
+func TestOpen_RefusedFloor_LeaksNothing_CreatesNothing(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := newSeam(t)
+	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if _, err := Open(context.Background(), s.dir, Version{Epoch: 1, Counter: 5}, id, openOpts(s.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
+		t.Fatalf("Open with an epochal floor returned %v, want ErrUnknownFormat", err)
+	}
+
+	var bad []string
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		for _, name := range listOS(t, s.dir) {
+			if name != format.FormatFileName {
+				bad = append(bad, name)
+			}
+		}
+		if len(bad) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(bad) > 0 {
+		t.Fatalf("a refused open left %v in the directory, want the format file alone", bad)
+	}
+}
+
+// TestOpen_ConcurrentCalls_IndependentJournalEach fails an Open that shares
+// state across directories: four journals opened on four directories at once,
+// written through concurrently, serve their own files and stay free of each
+// other's. The seams and inits are made before the goroutines, so nothing in
+// them may fail the test outright.
+func TestOpen_ConcurrentCalls_IndependentJournalEach(t *testing.T) {
+	const n = 4
+	seams := make([]*kit.Seam, n)
+	ids := make([]JournalID, n)
+	dirs := make([]string, n)
+	for i := range seams {
+		s := newSeam(t)
+		id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+		if err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		seams[i] = s.seam
+		ids[i] = id
+		dirs[i] = s.dir
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := range errs {
+		wg.Go(func() {
+			j, err := Open(context.Background(), dirs[i], Version{}, ids[i], openOpts(seams[i], kit.NewStopwatchClock())...)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			if err := j.SetVersionLimit(openLimit); err != nil {
+				errs[i] = err
+				return
+			}
+			h, err := j.Share(1, 0, Version{})
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			// The spare pool readies its spares off the open path, so the
+			// first write may find none yet: retry the refused one, as the
+			// caller of a retry-later refusal does.
+			var v Version
+			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+				v, err = h.WriteAt(context.Background(), fileOf(1), 0, []byte("each its own"), 1)
+				var ns *NoSpaceError
+				if errors.As(err, &ns) && ns.Limit == LimitSpare && time.Now().Before(deadline) {
+					continue
+				}
+				break
+			}
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			if v == (Version{}) {
+				errs[i] = errors.New("the concurrent write drew no version")
+				return
+			}
+			p := []byte("............")
+			if _, _, _, _, err := h.ReadAt(context.Background(), fileOf(1), 0, p); err != nil || string(p) != "each its own" {
+				errs[i] = errors.Join(err, errRoundTrip(p))
+				return
+			}
+			if err := h.Close(); err != nil {
+				errs[i] = err
+				return
+			}
+			if err := j.Close(); err != nil {
+				errs[i] = err
+			}
+		})
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("journal %d: %v", i, err)
+		}
+	}
+}
+
+// errRoundTrip names a failed round trip what the joined error above cannot.
+func errRoundTrip(p []byte) error {
+	return errors.New("the read served " + string(p) + ", want the write back")
+}
+
+// damageFormat flips a byte of the format file in the real directory dir, so
+// its checksum does not verify.
+func damageFormat(t *testing.T, dir string) {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, format.FormatFileName))
+	if err != nil {
+		t.Fatalf("read the format file: %v", err)
+	}
+	b[8] ^= 0xff
+	if err := os.WriteFile(filepath.Join(dir, format.FormatFileName), b, 0o600); err != nil {
+		t.Fatalf("damage the format file: %v", err)
+	}
+}
+
+// writeUnknownFormat writes a format file naming a version no binary of this
+// format reads, whole and verifying by checksum, so the version alone is what
+// refuses it.
+func writeUnknownFormat(t *testing.T, dir string) error {
+	t.Helper()
+	var id JournalID
+	id[0] = 0x55
+	b := format.AppendFormatFile(nil, format.FormatFile{Identity: id, Installation: installID})
+	binary.LittleEndian.PutUint16(b[4:6], 99) // a future version, whose file this is not
+	c := crc32.Checksum(b[:52], crc32.MakeTable(crc32.Castagnoli))
+	binary.LittleEndian.PutUint32(b[52:56], c)
+	return os.WriteFile(filepath.Join(dir, format.FormatFileName), b, 0o600)
+}
+
+// dirOfSeam returns the real directory the seam serves, where the seam
+// serves its directory as s.dir does; the seam keeps it private, so the
+// helper holds the pair the callers of these tests need.
+func dirOfSeam(s seamDir) string { return s.dir }
+
+// countSegments returns how many names in names are segment files: a segment
+// ends in .seg or a spare's .spare.tmp, recognised or not, format files
+// excepted. A spare's finished name is a segment file, so it counts too.
+func countSegments(names []string) int {
+	n := 0
+	for _, name := range names {
+		if strings.HasSuffix(name, ".seg") || strings.HasSuffix(name, ".spare.tmp") {
+			n++
+		}
+	}
+	return n
+}

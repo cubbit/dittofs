@@ -3,11 +3,18 @@ package journal
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"strings"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/datapath"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/platform"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
@@ -212,5 +219,202 @@ func removePartialFormat(fs storage.FS) {
 // Open requires WithClock. Without it, Open fails with ErrNoClock and opens
 // nothing.
 func Open(ctx context.Context, dir string, floor Version, expect JournalID, opts ...Option) (*Journal, error) {
-	return nil, ErrNotImplemented
+	cfg, err := resolveConfig(dir, opts)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Clock == nil {
+		return nil, ErrNoClock
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// The order of the first two steps is the contract's, not convenience: a
+	// directory that does not exist fails as one that holds no journal — the
+	// same refusal an empty directory takes — and is never checked on, its
+	// platform included. The listing is the probe: storage is the only reach
+	// the journal trusts, whatever route the options named, and a listing of a
+	// missing directory reports not-found, so the check on the platform follows
+	// it rather than running first as the init path's does.
+	names, err := cfg.Storage.List()
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %s", ErrNoJournal, dir)
+		}
+		return nil, err
+	}
+	if err := checkDir(dir); err != nil {
+		return nil, err
+	}
+
+	hasFormat, hasSegment := classifyListing(names)
+	switch {
+	case !hasFormat && !hasSegment:
+		return nil, fmt.Errorf("%w: %s holds neither a format file nor a segment", ErrNoJournal, dir)
+	case !hasFormat:
+		return nil, fmt.Errorf("%w: %s holds a segment and no format file", ErrUnidentified, dir)
+	}
+
+	f, err := cfg.Storage.Open(format.FormatFileName)
+	if err != nil {
+		return nil, err
+	}
+	b := make([]byte, format.FormatFileSize)
+	n, rerr := f.ReadAt(b, 0)
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	// A file shorter than a format file is damaged like one whose bytes do
+	// not verify: the decoder judges its length, so a short read is handed
+	// to it rather than answered as an error of the storage's own.
+	if rerr != nil && !errors.Is(rerr, io.EOF) {
+		return nil, rerr
+	}
+	ff, err := format.DecodeFormatFile(b[:n])
+	switch {
+	case err == nil:
+	case errors.Is(err, format.ErrUnknownVersion):
+		return nil, fmt.Errorf("%w: the format file names a version this binary does not read: %v", ErrUnknownFormat, err)
+	case errors.Is(err, format.ErrDamaged):
+		return nil, fmt.Errorf("%w: the format file is damaged: %v", ErrCorrupt, err)
+	default:
+		return nil, err
+	}
+
+	if expect == (JournalID{}) || expect != ff.Identity {
+		return nil, &IdentityError{Found: ff.Identity, Installation: ff.Installation, Segments: hasSegment}
+	}
+	if hasSegment {
+		// decision: a directory holding a segment is refused with
+		// ErrNotImplemented, not recovered: rebuilding the state on disk is
+		// the one piece of a recovering open this implementation does not
+		// have yet. Every reopen of a journal that has run meets this,
+		// because the spare pool leaves its finished spares as segment
+		// files, so no journal that has served can be opened again here.
+		// The refusal keeps the directory as it found it, so the recovery
+		// that exists later takes it whole.
+		return nil, fmt.Errorf("%w: %s holds a segment; opening it", ErrNotImplemented, dir)
+	}
+
+	// The counter is raised before the core is built: a refused floor must
+	// find the directory exactly as it left it, and a built core makes spare
+	// segment files durable in its own background, which a refused open may
+	// not leave behind — the next open would find the segments it made.
+	counters := &index.Counters{}
+	if err := counters.RaiseFloor(floor); err != nil {
+		return nil, err
+	}
+
+	s := resolveDefaults(cfg.Settings)
+	c, err := datapath.New(datapath.Deps{
+		FS:          cfg.Storage,
+		Clock:       cfg.Clock,
+		Tracer:      cfg.Tracer,
+		Log:         cfg.Logger,
+		Dir:         dir,
+		Identity:    ff.Identity,
+		Streams:     s.Streams,
+		SegmentCap:  core.SegmentCapOf(s),
+		ExtentLimit: s.ExtentLimit,
+		Descriptors: cfg.Budget,
+		Targets:     buildTargets(s),
+	}, datapath.State{Counters: counters})
+	if err != nil {
+		// datapath.New takes its own cleanup when a layer below it fails, and
+		// nothing runs after it here, so no error from the open itself can
+		// leave the core it stopped. Any step added between the core and the
+		// journal it serves must close the core on its error before
+		// returning it.
+		return nil, err
+	}
+	return newJournal(c), nil
 }
+
+// classifyListing says whether the names a directory holds include a format
+// file and a segment. A segment ending in .seg or a spare's .spare.tmp
+// counts whether or not the journal could have written the name: a file that
+// shape is a segment or a segment in the making, and the open refuses the
+// directory rather than sorting data it cannot read from data it cannot
+// write. A format.tmp counts as neither.
+func classifyListing(names []string) (hasFormat, hasSegment bool) {
+	for _, name := range names {
+		switch kind, _ := format.ClassifyName(name); kind {
+		case format.NameFormat:
+			hasFormat = true
+		case format.NameSegment, format.NameSpare:
+			hasSegment = true
+		}
+		if !hasSegment && looksSegmental(name) {
+			// A name of the same shape the classifier refuses — a segment or
+			// spare of the wrong width or with the id zero.
+			hasSegment = true
+		}
+	}
+	return hasFormat, hasSegment
+}
+
+// looksSegmental reports whether name is shaped like a segment or a spare the
+// classifier refused: ending in .seg or .spare.tmp already marks the file as
+// a segment-shaped one, so the open fails closed on it.
+func looksSegmental(name string) bool {
+	return strings.HasSuffix(name, ".seg") || strings.HasSuffix(name, ".spare.tmp")
+}
+
+// buildTargets returns the spare pool's targets from the settings, which
+// resolveDefaults has already given their defaults: the spare target one per
+// append stream, so every stream can roll once without waiting for a spare to
+// be made. The headroom keeps the reserved records of settings standing:
+// each is charged the largest of them with its footer entry, so they take a
+// whole number of segments rounded up and never less than one. The repack
+// reserve keeps at least one segment's cap, the most live payload one segment
+// can hold.
+func buildTargets(s core.Settings) segment.Targets {
+	segCap := core.SegmentCapOf(s)
+	headroom := (int64(headroomRecordBytes)*int64(s.HeadroomRecords) + segCap - 1) / segCap
+	return segment.Targets{
+		Content:  s.SpareTarget,
+		Headroom: int(max(headroom, 1)),
+		Reserve:  1,
+	}
+}
+
+// resolveDefaults returns the settings with every zero naming its default:
+// the append streams, the extent limit, the headroom's records and the spare
+// target, which defaults to one spare per stream. Nothing here refuses: a
+// negative setting was already refused when the options were resolved.
+//
+// decision: MaxBytes is left at what the caller named or zero. The journal's
+// maximum bounds the storage a write may allocate, and the core that
+// allocates it takes no maximum from the open yet — no reservation a write
+// path makes is checked against it. Admitting the maximum, so a write past
+// it is refused naming the journal, is the one piece of the capacity path
+// this open leaves out; until it lands, a journal opened with MaxBytes set is
+// no smaller than one opened without it.
+func resolveDefaults(s core.Settings) core.Settings {
+	if s.Streams < 1 {
+		s.Streams = defaultStreams
+	}
+	if s.ExtentLimit < 1 {
+		s.ExtentLimit = defaultExtentLimit
+	}
+	if s.HeadroomRecords < 1 {
+		s.HeadroomRecords = defaultHeadroomRecords
+	}
+	if s.SpareTarget < 1 {
+		s.SpareTarget = s.Streams
+	}
+	return s
+}
+
+// headroomRecordBytes is what one reserved header-only record is charged: the
+// largest of them with its footer entry, a 96-byte header, a payload of at
+// most 56 bytes and a 72-byte footer entry.
+const headroomRecordBytes = 96 + 56 + 72
+
+// The settings' defaults, where the caller named none.
+const (
+	defaultStreams         = 16
+	defaultExtentLimit     = 1 << 26
+	defaultHeadroomRecords = 65536
+)
