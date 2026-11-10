@@ -17,6 +17,7 @@ import (
 
 	badgerdb "github.com/dgraph-io/badger/v4"
 
+	"github.com/cubbit/dittofs/pkg/config"
 	"github.com/cubbit/dittofs/pkg/controlplane/api"
 	"github.com/cubbit/dittofs/pkg/controlplane/models"
 
@@ -595,5 +596,23 @@ integrity:
 		} else if !os.IsNotExist(statErr) {
 			t.Errorf("stat %s: %v", sidecar, statErr)
 		}
+	}
+}
+
+// TestLoadSharesWithKerberosCapability_Publishes pins that the effective
+// Kerberos capability is published on the runtime, where the share-config API
+// reads it to judge whether a require_kerberos policy can be satisfied.
+func TestLoadSharesWithKerberosCapability_Publishes(t *testing.T) {
+	s, err := cpstore.New(&cpstore.Config{Type: cpstore.DatabaseTypeSQLite, SQLite: cpstore.SQLiteConfig{Path: ":memory:"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	rt := runtime.New(s)
+	cfg := &config.Config{}
+	cfg.Kerberos.Enabled = true
+	eff, err := loadSharesWithKerberosCapability(context.Background(), s, rt, cfg)
+	if err != nil || !eff.Enabled || !rt.KerberosEnabled() {
+		t.Fatalf("capability not published (err %v): the share-config API would refuse require_kerberos on a Kerberos server", err)
 	}
 }
