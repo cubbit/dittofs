@@ -138,6 +138,18 @@ const (
 
 	// designFailsSync makes the small writer's first measured Sync fail.
 	designFailsSync mixedDesign = "failing sync"
+
+	// designBacklogWait answers a Sync by chasing the stream: each fsync
+	// pass covers only what was pending as the pass began, so every
+	// interval the stream lands during the wait deserves a park of its
+	// own, and a park that asks is fed — the growth with the other
+	// writer's appends the row's bound exists to fail. Under the gated
+	// feeder every fed interval's record is flushed by a pass of the
+	// measured sync itself, waited-for bytes the bound has no room for at
+	// any file size; the wrong case runs it at the check's own interval
+	// counts, the two files of one and four, so the failure the bound
+	// carries is caught at the pair the check streams.
+	designBacklogWait mixedDesign = "waits the stream's backlog"
 )
 
 // fakeCase is one choreography case: the design the fake journal answers
@@ -491,6 +503,25 @@ func (f *fakeMixed) SyncSmall() error {
 			f.flush()
 		}
 		return nil
+	case designBacklogWait:
+		// The chasing design's first pass covers only what was pending as
+		// it began, and every later pass only what landed during the one
+		// before, so each of the stream's landings during the wait
+		// deserves a park of its own.
+		covered, coveredSmalls := f.pending, f.smallPend
+		f.fsync(f.active)
+		f.durable += covered
+		f.pending -= covered
+		if coveredSmalls > 0 {
+			f.smallPend = 0
+		}
+		for f.pending > 0 {
+			covered = f.pending
+			f.fsync(f.active)
+			f.durable += covered
+			f.pending -= covered
+		}
+		return nil
 	}
 
 	// skip, always, the roll ones and group commit: flushing designs answer
@@ -669,6 +700,12 @@ func TestCounted_MixedChoreography(t *testing.T) {
 		{"never syncs", fakeCase{design: designNeverSyncs}, "less durable than written"},
 		{"failing write", fakeCase{design: designFailsWrite}, "opening write"},
 		{"failing sync", fakeCase{design: designFailsSync}, "measured Sync"},
+		// The chasing design, at the check's own interval counts — the two
+		// files of 64 and 256 one-MiB intervals, one four times the other:
+		// every fed interval is flushed by a pass of the measured sync
+		// itself, so the window's measure fails the bound, the growth with
+		// the other writer's appends the row forbids.
+		{"waits the stream's backlog", fakeCase{design: designBacklogWait, files: fakeCheckFiles, segCap: fakeCheckSegCap}, "durable in one window"},
 		// Names change on every append, so every window is skipped and the
 		// run measures nothing: the vacuity guard is the only thing that
 		// fails it, and this case is the pin that disabling the guard
