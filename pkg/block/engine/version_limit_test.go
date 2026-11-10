@@ -426,9 +426,13 @@ func TestBindWaitEndsAtItsContext(t *testing.T) {
 	done := make(chan error, 1)
 	finished := make(chan struct{})
 
+	// The raise released here must end while the store is still open: one
+	// that met the closed store would wait on the test clock to retry and
+	// outlive the test.
 	t.Cleanup(func() {
 		g.open()
 		<-finished
+		s.e.WaitRaises(t)
 	})
 
 	go func() {
