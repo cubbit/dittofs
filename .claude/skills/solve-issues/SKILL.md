@@ -217,8 +217,8 @@ problem: do not *wait* for the matrix before checking Copilot either.
 ## 5. Shepherd the merge queue
 
 Do not merge by hand. Each agent opened its PR with auto-merge on (`pr-opening`),
-and `develop`'s merge queue serializes the landing: it tests every PR on top of
-`develop` plus the entries ahead of it, so a green check on a stale base no longer
+and the target's merge queue serializes the landing: it tests every PR on top of
+the target plus the entries ahead of it, so a green check on a stale base no longer
 decides anything, and nothing needs rebasing just because another PR landed.
 
 What the queue does not do is your part:
@@ -230,15 +230,16 @@ What the queue does not do is your part:
   lands, not after.
 - **Order, when it matters.** The queue lands PRs in the order they become ready.
   Where one must land before another, the PRs are stacked (`pr-opening`), and the
-  upper one is retargeted onto `develop` after the lower one merges. An agent that
+  upper one is retargeted onto the target after the lower one merges. An agent that
   holds several issues on the same code (step 1) is the usual case.
 - **Ejections.** A PR that conflicts or turns a check red inside the queue is
   removed from it. Hand it back to that issue's agent with the failure — it has the
   context you do not — and once fixed, it re-queues with `gh pr merge <PR> --auto`.
 
-The issues close themselves on merge: `develop` is the default branch. To add
-verification notes use `gh issue comment` — `gh issue close --comment` on an
-already-closed issue exits 0 and drops the comment.
+On `develop`, the default branch, the issues close themselves on merge; on any
+other target, close them by hand. To add verification notes use
+`gh issue comment` — `gh issue close --comment` on an already-closed issue exits
+0 and drops the comment.
 
 Once everything is landed:
 

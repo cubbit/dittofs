@@ -325,11 +325,13 @@ go run ./cmd/gendocs      # rewrites docs/guide/cli.md
 
 ## 8. Open the PR
 
-Follow the `pr-opening` skill: rebase, push, base, assignee, auto-merge and
+Follow the `pr-opening` skill: target, rebase, push, assignee, auto-merge and
 stacking all live there.
 
-The body's `Closes #<N>` matters here: `develop` is the default branch, so GitHub's native auto-close fires on merge and the issue closes
-itself — do not also close it by hand. `gh issue close --comment` on an
+The body's `Closes #<N>` matters here. On `develop`, the default branch, GitHub's
+native auto-close fires on merge and the issue closes itself — do not also close
+it by hand; on any other target it does not, and you close it after the merge.
+`gh issue close --comment` on an
 already-closed issue exits 0 and silently discards the comment, so verification
 notes posted that way are lost; use `gh issue comment` for those.
 `.github/workflows/close-linked-issues.yml` still runs at release time as a
@@ -372,7 +374,7 @@ else that is red gets fixed, on this branch, and the loop returns to step 6.
 
 Auto-merge, enabled when the PR was opened, puts it in the merge queue once it is
 approved and green, so do not merge by hand — but every Copilot comment must be
-addressed before the approval lands. The issue closes itself on merge (step 8).
+addressed before the approval lands. The issue closes as step 8 says.
 Once merged:
 
 ```bash
@@ -393,8 +395,8 @@ miss: a stale graph sends the next agent to the wrong files, and it degrades
 silently rather than erroring. Pull `develop` first so the graph reflects the
 squashed commit, not your branch.
 
-Under `solve-issues` you do not reach this step at all — the orchestrator holds
-the merge and refreshes the graph once after the whole batch lands, since
+Under `solve-issues` you do not reach this step at all — the orchestrator follows
+the merge queue and refreshes the graph once after the whole batch lands, since
 rebuilding it per-PR across six merges is wasted work.
 
 ## When to stop and come back
