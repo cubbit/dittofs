@@ -1913,8 +1913,12 @@ copied. On the wire:
   each one small atomic clone, so only the current chunk's source range is
   frozen and a writer of the source waits at most one chunk; nothing freezes the
   whole source for the copy. The reply reports the bytes copied: at the
-  caller's deadline the copy stops after its current chunk and answers a short
-  `wr_count`, which RFC 7862 §15.2 allows, and the client continues from there.
+  caller's deadline the copy answers the chunks done, a short `wr_count`, which
+  RFC 7862 §15.2 allows, and leaves the chunk it was in to complete past that
+  count; the client continues from there, rewriting that chunk. A range that
+  ends past the source's size is `NFS4ERR_INVAL` before anything is copied, as
+  RFC 7862 §15.2.3 requires; a count of 0, copy to end of file, is turned into
+  that length first.
   Its `wr_committed` is `UNSTABLE4` with the write verifier of §9.1, since the
   copied ranges are journal writes like any other, and a `COMMIT` of the
   destination makes them stable.
