@@ -787,7 +787,8 @@ against the remote tier's adapter alike ([§8.1](#8.1%20Kinds%20of%20test)). A f
 - hold every call until the test releases it;
 - fail or pass the probe of either direction, its own or a shared one.
 
-And the store records its own load, with the syncer's own per-flow counters beside it: calls in
+And the in-memory store keeps its own record of its load, an output of the verified
+implementation, with the syncer's own per-flow counters beside it: calls in
 flight, per store and per flow, and their peak (S1,
 S17); the order calls reached it (S13, S18); attempts per block; bytes it holds.
 
