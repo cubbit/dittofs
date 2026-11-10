@@ -1103,6 +1103,15 @@ and the change, evaluated through the chokepoint ([§4.6](#4.6%20One%20chokepoin
 at delivery. A recursive watch never reports names below a directory its holder
 cannot enter.
 
+**A watch's changes arrive in the order they committed.** `Notify` hands a
+client the changes of one watch in the order their operations committed in the
+watched directory, one delivery after another, never two at once: SMB's
+CHANGE_NOTIFY reports changes in the order they occurred
+([MS-FSA 2.1.5.10](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/)), and a
+create followed by a delete reported the other way round leaves a client
+believing the name exists. A slow client holds back its own later changes, not
+another client's.
+
 ### 3.3 Event hooks
 
 ```go
@@ -1414,6 +1423,7 @@ const (
 	DelayCapacity                        // the journal's capacity or a share's journal limit (RFC 8 §10.2)
 	DelayCommit                          // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6); or a stable write's sync may have lost it (§5.8)
 	DelayResources                       // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
+	DelayJournal                         // the local journal is read-only for now: a device error that may clear, or a removal past its journal step waiting for the reopen (RFC 8 §8.1, §11.2)
 )
 
 

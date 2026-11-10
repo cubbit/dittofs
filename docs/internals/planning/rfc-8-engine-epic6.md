@@ -12,7 +12,7 @@ unsuitable, `Bind`'s attach, stop steps 1 to 5), §2.7, §12.1 (`Start`, `Close`
 §3.1 and §3.4, for the floor and `expect`; [RFC 14](../rfcs/rfc-14-open-state.md) §4.4, for
 what a raised incarnation does to the grace instance.
 **Track:** C.
-**Epic 6 estimate: 11 subtasks, 39.75 man-days.**
+**Epic 6 estimate: 12 subtasks, 40.25 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Engine`, `Deps`,
 `Journal`, `Handle`, `Lifecycle`, `Share`, `ShareState`, `Stats`) and E2's fixture and fake
 journal. T6.1 also needs the RFC 8 §2.1 and RFC 16 §3 text that settles #3631 and #3632, and
@@ -84,8 +84,8 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
   past an acknowledged loss goes with that step (§9 point 14).
 - The salvage export of a stranded tag and its `Forget` while serving (`salvage.path`): the
   second part. Here a stranded tag stays stranded until the next start.
-- A read-only journal reopened in place (RFC 8 §2.5, E42): it needs RFC 1 §5.4's read-only
-  state, spares and probe, which `journal` does not have. No epic of this part owns it
+- A read-only journal reopened in place (RFC 8 §2.5, E42): RFC 1 §5.4's read-only state,
+  spares and probe are built in `journal`, but no epic of this part owns the reopen yet
   (§9 point 8).
 - `Bind` with `State: Closing` (a re-home's finish, RFC 27) and `Fenced` (RFC 8 §11.2's
   copied-image row): out, and epic 7 for the self-fence, which is not a share state.
@@ -254,6 +254,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R26 | A clone marker is a clone, never applied as a plain removal | invariant | §2.5 step 3 | T6.5 |
 | R27 | A release marker whose phase 1 aborts on a holder is settled without its removal and reported as data loss naming the file, so no later start re-applies it | invariant | §2.5 step 3, §8.1 | T6.5 |
 | R28 | No file is served before step 3 has run for it; a clone's destination waits for its clone (epic 8) | invariant | §2.5 step 8, E15 | T6.5 |
+| R50 | Each re-applied write commits with the `Change.Over` `Since` yields as its `PendingOp.Over`, not with runs computed from the replay's own batch, so a write that superseded one already gone from the journal's index still has its overwrite record | invariant | §2.5 step 3; RFC 1 §3.10; RFC 6 §3.3 | T6.12 |
 | R29 | Unfinished removals are found by listing each shard's `S‖id‖rr` index, never by scanning files, and run from the removal loop once serving, each one not done batch by batch and each done one by its prune, a release's leftover keys included, so start time does not grow with the removals pending | invariant | §2.5 step 4, RFC 16 §4.2 | T6.6 |
 | R30 | Once every share the journal serves is attached, and before any file of the journal is served, every tag `Stats` names that no share record of the installation names is stranded and reported with its held and dirty bytes; a tag a share record names is never stranded | MUST | §2.5 step 5, RFC 1 §3 | T6.6 |
 | R31 | A journal whose `Open` refuses with `ErrUnsuitableStorage` at `Start`: its shares are not attached, `Stats` names each with its device and the rule, `journal_unsuitable` is raised, `Start` succeeds, nothing in the directory changes, and the open is retried every 30 s | invariant | §2.5, RFC 1 §3, §5.4 | T6.10 |
@@ -481,6 +482,7 @@ pkg/block/engine/
                      T6.7  the version limit: the trigger, the peak rate, the raise
                            goroutine and its lock (D6)
                      T6.10 the retried open and the late attach
+                     T6.12 a write's Over taken from Since
   health.go          T6.3  refused shares and the journal conditions, recorded in the one
                            condition set Stats reports, which T6.3 or epic 7's T7.3
                            creates, whichever lands first
@@ -488,6 +490,7 @@ pkg/block/engine/
   enginetest/
     fake.go          T6.3  Open's refusals, Forget, Strand, Stats' tags and versions
                      T6.5  Files, Since, Settle
+                     T6.12 Change.Over
                      T6.7  SetVersionLimit and a counter bounded by it
     fixture.go       T6.1  the real Lifecycle and RecordJournal after Init
                      T6.2  a second share on the fixture's journal
@@ -1019,6 +1022,25 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   batch by a counting `kv.KV` (catches one read per share, the round trips #3741 counts).
   FoundationDB's five seconds are not tested here: no unit test runs `fdbkv`.
 
+### T6.12 The replay takes a write's `Over` from `Since`
+
+**Subtask T6.12 estimate: 0.5 man-days.**
+
+- **Track:** C. **Depends on:** T6.5; the journal's `Change.Over` (journal epic 8's T8.9, its
+  R112; recovery's half in journal epic 7).
+- **Covers:** R50.
+- **Deliverables:** step 3's replay passes each write's `Change.Over` into
+  `kvstore.PendingOp.Over`, which `Existence.Commit` already writes overwrite records over
+  (epic 4's D6), in place of the runs it computes from its own batch; that computation and its
+  `decision:` waiting for `Change.Over` removed. E2's fake journal yields `Over` as RFC 1
+  §3.10 states it, and `PendingOp.Over`'s comment names the replay's runs from `Since`.
+- **Acceptance criteria:**
+  - A replayed write whose `Since` entry names an `Over` run commits an overwrite record there,
+    though no write of the batch covers it.
+- **Tests:** over the fake and the real `kvstore`: `Since` yields a write at v5 with `Over`
+  `[0, 4)` KiB and no v3 write (it left the index before the crash); after the replay,
+  an overwrite record at v5 covers `[0, 4)` KiB (catches runs taken from the batch alone, R50).
+
 ## 7. Order of work
 
 ```mermaid
@@ -1041,6 +1063,8 @@ flowchart TD
   T6_8 --> T6_9["T6.9 Unbind and Drop"]
   J(["journal: ErrUnsuitableStorage"]):::sync -.-> T6_10
   T6_6 & T6_9 --> T6_10["T6.10 Unsuitable journal at start"]
+  T6_5 --> T6_12["T6.12 Over from Since"]
+  J2(["journal: Change.Over"]):::sync -.-> T6_12
   T6_6 & T6_9 & T6_10 --> S3(["S3 engine complete over the fake journal"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
@@ -1063,6 +1087,7 @@ T6.6: a restart over the fake journal recovers every file.
 | 4 | T6.5, T6.6 | 7.5 | PR 2; T4.3, T5.3, T5.4 | recovery: existence re-applied, removals resumed, tags stranded |
 | 5 | T6.8, T6.9 | 8 | PR 3, PR 4; T4.7; T8.6 for the `Served` wait's test | the ends of the engine and of a share: `Close`, `Unbind`, `Drop` |
 | 6 | T6.10 | 3.75 | PR 4, PR 5; `ErrUnsuitableStorage` | the retried open and the late attach, which reuse steps 1 to 5 and call `Close` and `Unbind` |
+| 7 | T6.12 | 0.5 | PR 4; the journal's `Change.Over` | the replay's last batch-local shortcut, replaced once the journal yields `Over` |
 
 A suggestion only: one pull request per subtask works as well. PR 3 can be open beside PR 2
 and PR 4.
@@ -1106,10 +1131,12 @@ and PR 4.
    estimates include them. E2's fault-injecting `kv.KV` (its T2.3) is not built either.
    T6.4 and T6.7 depend on it, and its days stay in E2's estimate.
 8. **A read-only journal reopened in place** (RFC 8 §2.5, E42, and §15.2's read-only row) is
-   in no epic of this part. It needs RFC 1 §5.4's read-only state, which `journal` does not
-   have yet; once it does, it is a subtask of this epic or of the second part. That subtask
-   also adds the drain's closing mark to epic 4's group commit (RFC 8 §2.5) and passes
-   §15.2's "the marks fence is per open" row.
+   in no epic of this part. RFC 1 §5.4's read-only state is now built in `journal`, and the
+   engine already refuses writes and syncs while it holds (RFC 8 §2.5, §11.2): until the
+   reopen, a read-only journal stays read-only until a restart. The reopen is a subtask
+   still to schedule, in this epic or the second part. It also adds the drain's closing
+   mark to epic 4's group commit (RFC 8 §2.5) and passes §15.2's "the marks fence is per
+   open" row.
 9. **`Unbind` with `keepHolds`** is refused: no snapshot exists in this part. A removal that
    keeps snapshots is RFC 12's, out.
 10. **No row over the real journal turns green in this epic** until `journal`'s `Init`,
