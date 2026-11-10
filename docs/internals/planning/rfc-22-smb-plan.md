@@ -47,7 +47,7 @@ so no name carries a version.
 state (an adapter holds none durably, RFC 20 A2), and the cutover, programme stage 7, wires the
 adapters into `dfs` and turns the protocol suites back on.
 **Estimates** are human man-days on the shared scale of `rfc-to-epic-plan`, kept as they are
-although the code is written by an agent; a scale for agent-written work is proposed on #3524.
+although the code is written by an agent; a scale for agent-written work was proposed in #3524.
 **Defaults used from Step 0:** dashboards none (#9); output path the default (#10). Where v2 lives
 is RFC 20's plan §4's layout, its differences flagged in §6.2. The target branch is
 `feat/storage-v2`; the plan document itself lands on `develop` and is cherry-picked, as the other
@@ -96,7 +96,7 @@ epic burns the SMB suites down and runs the end-to-end, Windows and benchmark ro
 - **`config.SMB`'s RFC 22 fields** (RFC 13 Appendix B), those RFC 20's epic 1 does not already
   add: `smb_pending_deadline` and `smb_pending_cap`, validated as RFC 13 says where the adapter can
   check it (the deadline above the 35 s break deadline), and marked live as RFC 13 marks them. How a
-  live change reaches a serving adapter is an open point (§6.1, gap 7).
+  live change reaches a serving adapter is an open point (plan gap 7).
 - **`smb/protocol`'s request state** (RFC 20 §4.7's `Request.State`, §4.9's `Caps`): the session,
   the tree, `Caps`, the session's `FileId` table and the chain's current open, as handlers read
   them, with stub bodies. Every handler epic, on three tracks, reads it.
@@ -538,7 +538,8 @@ sites, file sizes), §7.2 (handlers on a recording service).
   the reply bytes compared, an error mapped through a given table; its own test proving a second
   mutating call and a wrong byte each fail it.
 - T2.2 Reference captures: a script recording Samba per command area into `test/pcap-corpus/smb`,
-  and `adaptertest/golden`, which cuts captured messages into golden files.
+  against the AD domain controller and Samba member of `test/smbfuzz`'s fixture rather than a
+  second fixture, and `adaptertest/golden`, which cuts captured messages into golden files.
 - T2.3 The import test: entry methods (`Root`, `SecInfo`, `ListShares`) called only from RFC 20
   §4.10's entry files, and adapter files over 800 lines against an allowlist that may only shrink,
   each with a seeded violation it must report.
@@ -563,15 +564,15 @@ RFC sections: §3.1, §3.2, §3.3's credits and pending ceiling, §4.1's signing
 - T3.2 `NEGOTIATE`: the highest of 3.1.1, 3.0.2, 3.0 and 2.1; SMB1 answered with the multi-protocol
   response or closed; 2.0.2 alone `STATUS_NOT_SUPPORTED`; capabilities exactly as §3.1's table, "if
   asked" bits only when asked; `SIGNING_REQUIRED` always; 8 MiB sizes; `Caps`; the `ClientGuid` kept
-  on the connection; a second `NEGOTIATE` closes it; the server GUID per §6.1, gap 5.
+  on the connection; a second `NEGOTIATE` closes it; the server GUID per plan gap 5.
 - T3.3 Key derivation and signing: each dialect's keys (3.1.1's from the preauthentication hash),
   HMAC-SHA256, AES-CMAC and AES-GMAC; an unsigned request after setup and a bad signature each
   `STATUS_ACCESS_DENIED` on its message ID with the connection kept; keyless sessions exempt;
   MS-SMB2's test vectors.
 - T3.4 Encryption: the transform header; AES-128 and AES-256, CCM and GCM, in place, with room for
-  the transform header in reply buffers; a message that fails decryption, or names no session,
-  closes the connection; a tree's encryption requirement checked in `Unwrap`; interims sealed; a
-  chain signed per member and encrypted once, its members' offsets counted from the record's start.
+  the transform header in reply buffers; a message that fails decryption closes the connection; a
+  tree's encryption requirement checked in `Unwrap`; interims sealed; a chain signed per member and
+  encrypted once, its members' offsets counted from the record's start.
 - T3.5 Preauthentication integrity: SHA-512 per connection and per session over `NEGOTIATE` and
   `SESSION_SETUP`; `VALIDATE_NEGOTIATE_INFO` for 3.0 and 3.0.2, the first `ioctl/` row.
 - T3.6 `Flow` and `Replay`: credits as RFC 22 §3.3 states them (a target of 512 counting what
@@ -580,12 +581,13 @@ RFC sections: §3.1, §3.2, §3.3's credits and pending ceiling, §4.1's signing
   message-ID window.
 - T3.7 `HoldCodec`: the key, a synchronous `CANCEL`'s message ID and an asynchronous one's async ID
   both mapped to it; `Interim` granting or withholding to a balance of one, with `after`; `Final`;
-  `Cancels`; `Pends` for a `CREATE` before the last member held on a break (§6.1, gap 8);
+  `Cancels`; `Pends` true only for a `CREATE` before the last member held on a lease or oplock
+  break (RFC 22 §16.5's chain paragraph);
   `MaxPending` 511.
 - T3.8 The error table: every row of RFC 22 §16.5 and `core`'s refusals, by typed kinds; `NoReply`
   rows for `ErrDraining` and `ErrMoved`; each command's drain role (`RoleRelease`, `RoleFlush`); a
-  golden vector per row; the totality test over `vfs.Errors()` and `core.Errors()` (§6.1, gaps 1
-  and 6).
+  golden vector per row; the totality test over `vfs.Errors()` and `core.Errors()` (plan gap 6);
+  the held rows' `Hold` is T9.5's.
 - T3.9 `ECHO` and `CANCEL`; at S3, `NEGOTIATE` for each dialect, `ECHO` and chains of `ECHO`
   members over loopback through `core`; §18's §3.1 dialect and capability rows.
 
@@ -672,7 +674,7 @@ lsarpc.
   share's flags and Appendix C's; `MaximalAccess` from `Access` on the root, through T7.4's
   translation; null and guest
   confinement; a client that cannot encrypt refused at an encrypting share; `IPC$` marked as the
-  pipe endpoint with no call; tree IDs never reissued while a held request names one.
+  pipe endpoint with no call; tree IDs never reissued while a held request names one (RFC 20 §2.2).
 - T6.2 DCE/RPC: NDR codecs, bind and alter-context, request, response and fault PDUs, fragments;
   each interface a table keyed by opnum; an unknown opnum `DCERPC_FAULT_OP_RNG_ERROR`.
 - T6.3 Named pipes on `IPC$`: the pipe endpoints E7's `CREATE`, `WRITE` and `READ` rows dispatch to
@@ -683,7 +685,7 @@ lsarpc.
   `NetWkstaGetInfo`; `ListShares` from these files alone; hidden shares omitted.
 - T6.5 lsarpc: `OpenPolicy2`, `LookupSids2/3`, `LookupNames3/4` and `Close` through `Spell` and
   `Find`, names in RFC 18 §4.6's qualified spelling.
-- T6.6 Witness over DCE/RPC (§6.1, gap 3): `WitnessrGetInterfaceList`, `WitnessrRegister` and
+- T6.6 Witness over DCE/RPC (plan gap 3): `WitnessrGetInterfaceList`, `WitnessrRegister` and
   `RegisterEx`, `WitnessrAsyncNotify` with `RESOURCE_CHANGE`, `CLIENT_MOVE` before a drain and
   `IP_CHANGE`; registrations in memory.
 
@@ -703,10 +705,10 @@ Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4
 - T7.1 `CREATE` and `CLOSE` codecs, with every create context of Appendix D decoded and the response
   contexts encoded.
 - T7.2 `FileId`s: the persistent half from the open's `OpenID` and shard, through `pkg/vfs`'s codec;
-  the volatile half in the session's table, never reissued while held; a related member's current
-  open.
+  the volatile half in the session's table, never reissued while held (RFC 20 §2.2); a related
+  member's current open.
 - T7.3 Path resolution: a `CREATE`'s or rename target's components looked up from the tree's root,
-  the last one opened (§6.1, gap 6).
+  the last one opened (plan gap 6).
 - T7.4 Access translation in `translate`: generic rights to `FILE_GENERIC_*`, `ShareAccess` to the
   deny mode, `MAXIMUM_ALLOWED` through `Access` with the directory and every right as `want`, an
   empty grant refused, backup intent's maximal request; masks total and round-tripping.
@@ -749,7 +751,7 @@ Appendix F's reparse codes; RFC 20 §4.9's `Fit`, §6.10's `QUERY_INFO` gate.
 - T8.6 `QUERY_DIRECTORY`: `ReadDir` by cursor, `Fit` to the client's buffer, every directory class,
   MS-FSA's wildcards, the restart and single-entry flags, hidden names skipped.
 - T8.7 Reparse points (§12.4): symlink and junction tags, targets translated both ways,
-  `STATUS_STOPPED_ON_SYMLINK` with its error response, the reparse codes (§6.1, gap 11), other tags
+  `STATUS_STOPPED_ON_SYMLINK` with its error response, the reparse codes (plan gap 11), other tags
   refused.
 - T8.8 Streams: `FileStreamInformation`, stream names folded by the share's upcase table; §18's §9
   and §12 rows on `vfstest.Record`.
@@ -773,16 +775,18 @@ bounds by cause; Appendix D's `RqLs`; Appendix G's `OPLOCK_BREAK`; RFC 20 §3.3'
   `OpenRequest.Conn`; a key naming a grant on another file; the response's lease context.
 - T9.3 Callbacks: `RecallGrant` on the session the service names, or one signed in as an opener;
   breaks sealed under their session; when an acknowledgement is required; the order of a break
-  before its cause's reply (§6.1, gap 4); `Revoked` by reason, a moved or removed share's trees
+  before its cause's reply (plan gap 4); `Revoked` by reason, a moved or removed share's trees
   ended and a continuously available share's connections closed.
 - T9.4 `OPLOCK_BREAK` acknowledgements as `AckRecall`: checked against the open's principal, made
   as the session the break went to on its connection; `NoRecall` and `ErrInvalid` answered for a
-  lease and for an oplock (§6.1, gap 6).
-- T9.5 Holds by cause: RFC 22 §16.5's bounds (`smb_pending_deadline`, `smb_pending_cap`, a freeze's
-  `Until` plus 35 s, grace, a read below its `MinimumCount`, `DelayResources` at once, a moved share
-  not held) and the status at each, through `core`'s hold (§6.1, gaps 1, 7 and 9); `WithHold` for
-  SMB; a `WRITE` under a break as a flush; §18's delay-cause, freeze, grace and full-journal rows on
-  `vfstest.Record` with a fake clock.
+  lease and for an oplock (plan gap 6).
+- T9.5 Holds by cause, SMB's rows and their tests: each held row's `Hold` and status as RFC 22
+  §16.5 bounds them (`smb_pending_deadline`, `smb_pending_cap`, a freeze's `Until` plus 35 s,
+  grace's `Until` plus 35 s, a read below its `MinimumCount`, `DelayResources` at once, a moved
+  share not held), each `Hold` a closure over the live settings (plan gap 7); the clone-wait row
+  `core` passes as `WithHold`; a `WRITE` under a break as a flush; §18's delay-cause, freeze, grace
+  and full-journal rows on `vfstest.Record` with a fake clock. `core`'s side is RFC 20's plan's
+  T1.7, T5.5 and T5.7.
 - T9.6 §18's lease and break rows over loopback: handle caching broken before a sharing violation,
   a timed-out break downgrading, credits under a hold, the multi-session host through a freeze, and
   a related `CREATE`, `QUERY_INFO` and `CLOSE` under a break.
@@ -804,7 +808,7 @@ RFC 20 §4.7's `Keep`, §6.4.
 - T10.2 Reconnect: routed by the `FileId`'s persistent half, never the path; the client, create
   GUID, lease key, principal and share passed for RFC 14's match; the open attached to the
   reconnecting session; otherwise `STATUS_OBJECT_NAME_NOT_FOUND`; each channel kept by `Keep` while
-  its session holds a durable open (§6.1, gap 10).
+  its session holds a durable open (plan gap 10).
 - T10.3 Replay: a replayed `CREATE` by its create GUID, `ErrCreateInUse` as
   `STATUS_DUPLICATE_OBJECTID`; the request's `Channel` from its channel sequence and replay flag on
   3.x; no replay matched by message ID.
@@ -851,8 +855,8 @@ classes; RFC 19 §2, §3.4, §3.5, §4.4, §5.1, §5.2; RFC 18 §4.4.
 - T12.1 The security descriptor codec: self-relative form, SIDs, ACLs and every entry kind, the
   refused ones included.
 - T12.2 `translate`'s `DescriptorFromACL` and `ACLFromDescriptor`: the owner and group fold, control
-  bits, flags by name, order kept, §11's refusals, the null DACL, `Normalised`; names through
-  `Spell` and `Find` bound to the call; round-trip property tests.
+  bits, flags by name, order kept, §11's refusals, the null DACL, `Normalised` (RFC 19 §5.1); names
+  through `Spell` and `Find` bound to the call; round-trip property tests.
 - T12.3 Principals by SID: §16.3's well-known SIDs, a deleted principal as `S-1-0-0`.
 - T12.4 Security `QUERY_INFO` and `SET_INFO`: the parts the security-information bits name, through
   the open; the owner and group refusals; the auto-inherit request; the SACL behind
@@ -888,8 +892,9 @@ RFC 17 §5.2, §5.9; RFC 12 §2.5, §2.10.
 
 The differential runs of RFC 20 §8 for SMB: one script sent to Samba and to DittoFS, both
 captured, normalised field by field and compared, every difference that survives a bug or a
-recorded divergence citing an RFC 22 rule. The runner and the scripts are built against Samba alone;
-the DittoFS side waits for S5.
+recorded divergence citing an RFC 22 rule. The runner and the scripts are built against Samba alone,
+the AD domain controller and Samba member of `test/smbfuzz`'s fixture, reused rather than a second
+fixture; the DittoFS side waits for S5.
 
 RFC sections: RFC 20 §8, Appendix C; RFC 22 §18's wire-test paragraph (the SMB divergence list).
 
@@ -900,8 +905,8 @@ RFC sections: RFC 20 §8, Appendix C; RFC 22 §18's wire-test paragraph (the SMB
   caching grants, and locks.
 - T14.3 SMB scripts for listings at buffer edges, information queries, every status the error table
   produces, and the commands answered not supported.
-- T14.4 The divergence list from RFC 22's rules (SMB1 refused, no 8.3 names, no compression, …),
-  and a nightly suite, its pull request adding it to RFC 22's suites paragraph (§6.1, gap 12).
+- T14.4 The divergence list from RFC 22's rules (SMB1 refused, no 8.3 names, no compression, …);
+  no suite is registered while plan gap 12 is open.
 
 ### Epic 15 - Integration with the node 🔀
 
@@ -909,14 +914,14 @@ RFC sections: RFC 20 §8, Appendix C; RFC 22 §18's wire-test paragraph (the SMB
 
 Waits for the node to build, start and reconfigure the SMB adapter (RFC 20's epic 7, after its S4)
 and for `dfs` to serve it (programme stage 7). Then: RFC 13's SMB settings reaching `config.SMB` at
-`New` and, as RFC 20 comes to allow, while serving (§6.1, gap 7); Witness's listener under the node
-(gap 3); the durable-handles listing over RFC 23 §4.2's records, the row RFC 20's ledger gives this
-plan; `smbtorture`, `smbtorture/kerberos`, `wpts`, `clients/windows` and the SMB rows of `e2e` and
-`e2e/cross-protocol` out of the V2 filter, their `known.yaml` rewritten for v2 with each entry naming
-this plan's epic issue; the user guide's SMB pages.
+`New` and, as RFC 20 comes to allow, while serving (plan gap 7); Witness's listener under the node
+(plan gap 3); the durable-handles listing, the row RFC 20's ledger gives this plan, once an RFC
+defines it (plan gap 13); `smbtorture`, `smbtorture/kerberos`, `wpts`, `clients/windows` and the SMB
+rows of `e2e` and `e2e/cross-protocol` out of the V2 filter, their `known.yaml` rewritten for v2
+with each entry naming this plan's epic issue; the user guide's SMB pages.
 
 RFC sections: RFC 20 §3.4's node build, §3.6's live settings, §3.7; RFC 13 Appendix B's SMB
-settings; RFC 23 §4.2; RFC 22 §18's suites paragraph.
+settings; RFC 14 §8.1's durable opens; RFC 22 §18's suites paragraph.
 
 ### Epic 16 - E2E green 🔀
 
@@ -940,7 +945,8 @@ suites; RFC 20 §6.10's end-to-end benchmark, §7.4, §7.5; RFC 18 §10's and RF
 - T16.3 `smbtorture`, `smbtorture/kerberos` and `wpts` burned down to the failures RFC 22 §18 names
   (`smb2.streams.io`, `.names`, `.rename`, `.rename2`, `.basefile-rename-with-open-stream`).
 - T16.4 `e2e`: RFC 20 §7.5's SMB halves (drain under `tar`, slow client, reconnect after a restart,
-  cancel, order, Kerberos and AD with NTLM pass-through) and §18's Linux kernel client rows.
+  cancel, order, and its §4.4 row's Kerberos and NTLM pass-through for a domain user) and §18's
+  Linux kernel client rows.
 - T16.5 `clients/windows` and `system`: §18's rows that need Windows, and §2's profile-container run
   at 30 GB per file with AD sign-in.
 - T16.6 `e2e/cross-protocol`: SMB's halves of RFC 20 §7.4, §16.6's lock and deny-mode rows and §18's
@@ -957,14 +963,14 @@ suites; RFC 20 §6.10's end-to-end benchmark, §7.4, §7.5; RFC 18 §10's and RF
 ### 6.1 RFC gaps
 
 Each is a finding for an RFC, raised on [#3615](https://github.com/cubbit/dittofs/issues/3615)
-for a pull request to the RFC named; none is settled here.
+for a pull request to the RFC named; none is settled here. A gap the RFCs have since settled keeps
+its number, with what settled it.
 
-1. **How `core` learns what SMB holds, and for how long** (RFC 20 §4.6, §4.7; RFC 22 §16.5). §4.6
-   has the pipeline apply "the protocol's bound for the delay's cause", but §4.7's surface has no
-   seam for it: `OpTable.Holds` is one flag, and neither `ErrorRow` nor `HoldCodec` names which
-   errors hold (an `ErrDelay` by cause, `ErrGrace`, `ErrUnavailable` on a read below its
-   `MinimumCount`), each one's bound, or the status at the bound. RFC 20's S1 freezes §4.7, so this
-   is needed before it. Epics 3 and 9.
+1. **How `core` learns what SMB holds, and for how long** (RFC 20 §4.6, §4.7; RFC 22 §16.5).
+   Settled by #3906 (its decision D26), which #3961 brought to `develop`: RFC 20 §4.7's `ErrorRow`
+   carries a `Hold` that gives the row's bound from the error and the hold's start, a row without
+   one is answered at once with its status, and `HoldCodec.Pends` takes the error. The core side is
+   RFC 20's plan's T1.7, T5.5 and T5.7; SMB's rows are T9.5's. Epics 3 and 9.
 2. **Who records RFC 22 §19's `smb_` series** (RFC 20 §10, RFC 22 §19, RFC 25 §2.1). RFC 20 §10 has
    `core` record every metric and protocol code none; `smb_sessions`, `smb_channels`,
    `smb_async_pending{reason}`, `smb_reconnects_total`, `smb_bind_refused_total`,
@@ -977,31 +983,39 @@ for a pull request to the RFC named; none is settled here.
    port and the port it hands out), its place in the layout, and where the adapter learns every
    gateway node's floating addresses and a drain's target without importing topology. Epics 6
    and 15.
-4. **A break before its cause's reply** (RFC 20 §4.7's `Send`, §6.2; RFC 17 §3.2). `Send` takes
-   `before`, the key of the request whose reply the break must precede, but `RecallGrant` carries
-   nothing naming the request that caused the recall, on one node or from a primary. A held
-   request's final reply follows its break anyway; the gap is a request that breaks a grant and is
-   answered at once. Epic 9.
+4. **A break before its cause's reply** (RFC 17 §3.2; RFC 20 §3.3, §4.7's `Send`, §6.2). `Send`
+   takes `before`, the key of the request whose reply the break must precede, but `RecallGrant`
+   names no causing request. On one node it needs none if `sent` means the break is queued on the
+   session's writer before the causing call returns: the writer's queue keeps order (RFC 20 §6.2),
+   so the break goes out before the reply with `before` 0. RFC 20 §3.3 says the callback returns
+   once the message is queued; RFC 17 §3.2 says only "sent: whether it sent". Proposed resolution:
+   a one-line RFC 17 §3.2 clarification that `sent` means queued on a live channel's writer before
+   the call that started the recall returns. What stays open is a break on another channel of the
+   session than the causing request's, or from another node (cluster); `Send`'s `before` has no SMB
+   use on one node and can wait for the cluster. Epic 9.
 5. **The server GUID** (RFC 22 §3.1). `NEGOTIATE` answers a `ServerGuid`, which clients compare
    across channels and reconnects; RFC 22 names no source: per node or per installation, stable
    across a restart or not. Epic 3.
-6. **Answers that turn on more than the error, operation and version** (RFC 20 §4.5; RFC 22 §6.2,
-   §13, §16.5; RFC 17 §4.3). `ErrNotFound` as `STATUS_OBJECT_PATH_NOT_FOUND` for an earlier
+6. **Answers that turn on more than the error, operation and version** (RFC 20 §4.5's table key;
+   RFC 22 §6.2, §13, §16.5). `ErrNotFound` as `STATUS_OBJECT_PATH_NOT_FOUND` for an earlier
    component when `CREATE` resolves its path by `Lookup`; `NoRecall` and `ErrInvalid` answered
    differently for a lease's and an oplock's acknowledgement, which share one command code;
    `ErrInvalid` as `STATUS_OBJECT_NAME_INVALID` for a name and `STATUS_INVALID_PARAMETER` otherwise;
-   `ErrShareViolation` as `STATUS_ACCESS_DENIED` only for a directory with an open child. RFC 20
-   §4.5 says such an answer is two kinds the service tells apart; RFC 17 §4.3 names none of them.
-   Epics 3, 7, 8 and 9.
+   `ErrShareViolation` as `STATUS_ACCESS_DENIED` only for a directory with an open child. The
+   adapter can tell each case from the request it decoded, but an RFC 20 §4.5 row sees only the
+   error, the operation and the version, and §4.5 sends an answer that turns on more to two kinds
+   the service tells apart. The finding is §4.5's key. Epics 3, 7, 8 and 9.
 7. **Live SMB settings** (RFC 13 Appendix B; RFC 20 §3.4, §3.6). RFC 13 marks
    `smb_pending_deadline` and `smb_pending_cap` live; RFC 20 hands `config.SMB` only to `New`, and
    `Reconfigure` takes `config.Adapter`. Epics 1, 9 and 15.
-8. **A causeless `ErrDelay` before a chain's last member** (RFC 22 §16.5). Only a `CREATE` held on a
-   lease or oplock break pends there, and a causeless `ErrDelay` is held "as a break is"; whether a
-   `CREATE` answered one pends, which `HoldCodec.Pends` must say, is not stated. Epic 3.
-9. **The end of grace** (RFC 22 §6.3, §16.5; RFC 17 §4.3). A request refused `ErrGrace` is held
-   until grace's end plus 35 s, but `ErrGrace` carries no end, so the adapter cannot place the
-   bound. Epic 9.
+8. **A causeless `ErrDelay` before a chain's last member** (RFC 22 §16.5; RFC 17 §4.3). Settled:
+   RFC 22 §16.5's chain paragraph pends only a `CREATE` held on a lease or oplock break
+   (`HoldCodec.Pends(h, err)`), and RFC 17 §4.3 has every `Delay` name a cause, so none without
+   one reaches the table. §16.5's sentence on an `ErrDelay` with no cause covers a case RFC 17
+   rules out, a wording point for RFC 22. Epic 3.
+9. **The end of grace** (RFC 22 §6.3, §16.5; RFC 17 §4.3). Settled by #3906 (D26): RFC 17 §4.3's
+   `ErrGrace` is typed `*Grace{Until}`, so a grace row's `Hold` reads the end from the error. The
+   type reaches `pkg/vfs` through RFC 20's plan's ledger row, RFC 17's plan's. Epic 9.
 10. **Re-deciding a reconnect** (RFC 19 §10 question 7; RFC 22 §6.4). Whether a durable or
     persistent reconnect keeps the open's stored grant or is decided again against an ACL that has
     since narrowed is RFC 19's open question; RFC 22 §6.4's checks do not include it. Epic 10.
@@ -1009,8 +1023,12 @@ for a pull request to the RFC named; none is settled here.
     records it: no call turns an existing empty file into a symlink, which is how Windows makes one.
     Epic 8.
 12. **The wire tests' suite** (RFC 22 §18's suites paragraph). It says no suite runs the wire tests
-    yet. T14.4 registers a nightly one, and its pull request adds it to the paragraph for the RFC's
-    author to review.
+    yet, and this plan registers none: until the paragraph names one, E14's differential runs are
+    run by hand and fail no pull request. Epic 14.
+13. **The durable-handles listing has no RFC** (RFC 20's plan's ledger; RFC 14 §8.1; RFC 23).
+    RFC 20's plan gives `/durable-handles` to this plan, but RFC 23 defines no endpoint or record
+    for it. Either RFC 23 adds one over RFC 14's durable opens, or the row is dropped there by
+    decision, as client eviction is. Epic 15.
 
 ### 6.2 Programme and ownership
 
@@ -1058,8 +1076,8 @@ thread is named.
 10. **Namespace moves** (RFC 27, out of scope). RFC 22 §18's move rows need a move between
     installations, parked until RFC 27 is built.
 11. **Layout beyond RFC 20's** (RFC 20 §2.5; RFC 20's plan, §4). `adaptertest/smbclient/` for the
-    scripted client, `dcerpc/witness/` with a listener of its own (gap 3) and `test/wire/` for the
-    wire tests are proposed here; neither RFC 20 §2.5 nor RFC 20's plan places them.
+    scripted client, `dcerpc/witness/` with a listener of its own (plan gap 3) and `test/wire/` for
+    the wire tests are proposed here; neither RFC 20 §2.5 nor RFC 20's plan places them.
 12. **The burn-down's size.** T16.3's 8 man-days are an estimate: v2's failures in the SMB suites
     are known only once E15 turns them on. Revised after E15.
 
@@ -1068,8 +1086,9 @@ thread is named.
 1. **Track A is the critical path.** E3, E5, E9 and E10 run in sequence, and the workload's handle
    needs all four plus S5 and S6a outside this plan; its run with Windows needs S6b and S7 too.
 2. **S1 freezes RFC 20 §4.7 before SMB exercises it.** `testproto` proves the surface's mechanisms,
-   not SMB's holds by cause or a break's order; gaps 1 and 4 are §4.7 changes, cheapest before
-   RFC 20's S1.
+   not SMB's holds by cause or a break's order. Gap 1 is settled; plan gap 4's resolution is an
+   RFC 17 clarification that leaves §4.7 as it is, and plan gap 6 is an RFC 20 §4.5 change,
+   cheapest before RFC 20's S1.
 3. **Points outside the plan with no owner.** S5, S6a and S6b have none yet; if they come late,
    E14's DittoFS side and E16's in-process rows wait, and track B, which ends first, has nothing to
    fill with but E16's rows.
@@ -1098,7 +1117,7 @@ thread is named.
 | wire tests against Samba (RFC 20 §8) | E14 |
 | the end-to-end benchmark, nightly tracking, a soak | E16 |
 | the authenticator | not here: RFC 18 (§6.2, point 1) |
-| the `/durable-handles` listing | E15 |
+| the `/durable-handles` listing | E15, once an RFC defines it (plan gap 13) |
 | `test/required-tests.json` pins for SMB's authorization gates | E16 |
 | SMB's suites skipped by the V2 filter | E15 (turned on), E16 (green) |
 
@@ -1136,7 +1155,7 @@ thread is named.
 | §16.4 (open state) | E5 (client rows), E7 (open rows, `Adapter` bytes), E9 (grant rows), E10 (durable rows), E11 (lock and watch rows) |
 | §16.5 (errors) | E3 (the table, chains, `core`'s refusals, drain roles), E9 (holds by cause) |
 | §16.6 (testing) | each epic's vectors, properties and fuzz targets; E16 (cross-protocol and end-to-end rows) |
-| §16.7, §19 (monitoring, observability) | rule 3; §19's recorder: §6.1, gap 2 |
+| §16.7, §19 (monitoring, observability) | rule 3; §19's recorder: plan gap 2 |
 | §17 (invariants) | S1, S11, S27's credits: E3; S2, S20: E5; S19: E6; S3, S10's stability, S22, S28's open: E7; S7, S8, S15's IDs and change time, S17, S30: E8; S5, S6, S12, S13, S23, S26, S27's holds: E9; S4, S14, S25's replay, S29: E10; S16, S21, S25's names: E11; S15's SACL, S28's handle: E12; S18, S24: E13; S9: rule 8 and E7 |
 | §18 (conformance) | each epic's rows on `vfstest.Record` and over loopback; E14 (wire tests); E16 (in-process, suites, clients) |
 | §20 (open questions) | not planned |
