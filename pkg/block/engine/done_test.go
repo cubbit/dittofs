@@ -50,8 +50,6 @@ func TestARetriedBatchCallsEachDoneOnce(t *testing.T) {
 	res := enginetest.NewReservations(t)
 	f := u.create(t, "a")
 	o, answered := res.Opts()
-	done := o.Done
-	o.Done = func() { time.Sleep(5 * time.Millisecond); done() } // slow, so a waiter woken before it fails
 	_, err := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("abc"), o)
 	answered(err)
 	c.on.Store(true)
@@ -66,9 +64,10 @@ func TestARetriedBatchCallsEachDoneOnce(t *testing.T) {
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
-	if n := res.Outstanding(); n != 0 {
-		t.Errorf("after the retry %d writes await their Done, want none", n)
-	}
+	// The advanced clock also fires the retry on the group commit's own
+	// timer, and a CommitNow that finds that batch settled returns before its
+	// Dones ran (the decision at runAll in groupCommit.commit): wait for them.
+	eventually(t, "the retry calls the write's Done", func() bool { return res.Outstanding() == 0 })
 }
 
 // Failed windows, corrupt losses and a device lost whole, interleaved with
@@ -148,8 +147,6 @@ func TestABatchRetriesAfterADrop(t *testing.T) {
 	f := made.ID
 	for _, off := range []int64{0, 4} {
 		o, answered := res.Opts()
-		done := o.Done
-		o.Done = func() { time.Sleep(5 * time.Millisecond); done() } // slow, so a waiter woken before it fails
 		_, err := u.e.Write(t.Context(), u.share.ID, f, off, []byte("four"), o)
 		answered(err)
 	}
@@ -174,7 +171,6 @@ func TestABatchRetriesAfterADrop(t *testing.T) {
 	if got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h); err != nil || got.Size != 4 {
 		t.Errorf("committed size %d, %v; want 4, the dropped write left out", got.Size, err)
 	}
-	if n := res.Outstanding(); n != 0 {
-		t.Errorf("%d writes without their Done", n)
-	}
+	// As in TestARetriedBatchCallsEachDoneOnce, the retry may be the timer's.
+	eventually(t, "the retry calls the kept write's Done", func() bool { return res.Outstanding() == 0 })
 }
