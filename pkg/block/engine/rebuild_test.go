@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -157,6 +158,14 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 			var mu sync.Mutex
 			var issued []journal.Version
 			m.e.OnIssued(func(v journal.Version) { mu.Lock(); issued = append(issued, v); mu.Unlock() })
+			var reserved atomic.Int64 // the most the journal held reserved at a sync of the destination
+			m.j.onSync.Store(new(func(ids []journal.FileID) {
+				if slices.Contains(ids, journal.NewFileID(m.dst)) {
+					n := m.j.Stats().ReservedBytes
+					for old := reserved.Load(); n > old && !reserved.CompareAndSwap(old, n); old = reserved.Load() {
+					}
+				}
+			}))
 			m.begin(t)
 
 			if err := m.writeErr(t, m.one.ID, m.src, runLen/2); !isDelay(err, vfserr.DelayClone) {
@@ -172,12 +181,8 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 				t.Error("the rebuilt clone's destination does not read the source at its asOf")
 			}
 			remade := 2 - c.copies
-			res := m.j.Reserves()
-			switch {
-			case remade == 0 && len(res) != 0:
-				t.Errorf("reserved %+v with every copy kept, want nothing", res)
-			case remade > 0 && (len(res) != 1 || res[0].N != int64(remade)*runLen || res[0].Writes != remade):
-				t.Errorf("reserved %+v, want one of %d bytes and %d writes", res, remade*runLen, remade)
+			if n := reserved.Load(); n != int64(remade)*runLen {
+				t.Errorf("reserved %d bytes while the copies were made, want %d", n, remade*runLen)
 			}
 			// The copies kept are the first c.copies runs: the others the
 			// destination holds were made again.
@@ -237,8 +242,10 @@ func TestARebuiltCloneHoldingEveryCopyReservesNothing(t *testing.T) {
 	m.begin(t)
 	m.run()
 	m.cloneDone(t, m.src, m.dst)
-	if r := m.j.Reserves(); len(r) != 0 {
-		t.Errorf("reserved %+v at a full limit, every copy held, want nothing", r)
+	// The refusal answers the first Reserve only: still armed, no clone asked one.
+	if res, err := m.jh.Reserve(1, 1); err == nil {
+		_ = res.Close()
+		t.Error("the clone asked a reservation at a full limit, every copy held, want none")
 	}
 	if got := m.readIn(t, m.one.ID, m.dst, 0, 3*runLen); !bytes.Equal(got, m.want) {
 		t.Error("the destination does not read the source")

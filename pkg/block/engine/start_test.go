@@ -523,7 +523,8 @@ type logJournal struct {
 	*enginetest.FakeJournal
 	fail      map[string]error
 	limitGate atomic.Pointer[gate]
-	onStrand  func(journal.ShareTag) // a test's hook: run at each Strand call
+	onStrand  func(journal.ShareTag)                 // a test's hook: run at each Strand call
+	onSync    atomic.Pointer[func([]journal.FileID)] // a test's hook: run at each Sync on a handle, before the journal's
 
 	mu     sync.Mutex
 	calls  []string
