@@ -594,9 +594,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, release, truncate and repack.'
+  reason: 'The journal opens; the check fails on a stub call. The workers run concurrently, so the first stub call to report varies between runs. Needs MarkOffloaded, the data path, release, truncate and repack.'
   issue: '#3379'
-  message: 'stub: Repack'
+  message: 'stub: '
 
 - test: TestRFC1D_SegmentHeldBytes
   status: fail
