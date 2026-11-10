@@ -2922,8 +2922,8 @@ mkdir -p ~/mnt/dittofs && dfsctl share mount /export --protocol smb ~/mnt/dittof
 Flags:
 
 ```
-      --dir-mode string      Directory permissions for SMB mount (octal) (default "0777")
-      --file-mode string     File permissions for SMB mount (octal, default 0777 on macOS since uid/gid not supported) (default "0777")
+      --dir-mode string      Directory permissions for SMB mount (octal) (default "0755")
+      --file-mode string     File permissions for SMB mount (octal) (default "0755")
       --nfs-version string   NFS protocol version for NFS mounts (3, 4, 4.0, 4.1, 4.2). v4 carries locking in-protocol; v3 locking needs the server UDP transport + portmapper (default "3")
   -P, --password string      Password for SMB mount (will prompt if not provided)
   -p, --protocol string      Protocol to use (nfs or smb) (required)
