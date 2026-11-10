@@ -122,6 +122,31 @@ func clonedHookedUnit(t *testing.T, deps ...func(*engine.Deps)) (*unit, *hookedH
 	return u, h
 }
 
+// cloneMarkers is every clone target marker the journal holds for f,
+// settled or not.
+func (u *unit) cloneMarkers(f entity.FileID) []journal.Change {
+	return slices.DeleteFunc(u.j.Markers(journal.NewFileID(f)), func(c journal.Change) bool {
+		return c.Kind != journal.ChangeCloneTarget
+	})
+}
+
+// heldIn is the versions of the pieces handle h holds of file f inside
+// [off, off+n), in version order: a clone's copies, when [off, off+n) is its
+// destination extent.
+func heldIn(t *testing.T, h engine.Handle, f entity.FileID, off, n int64) []journal.Version {
+	t.Helper()
+	var vs []journal.Version
+	for c, err := range h.Since(t.Context(), journal.NewFileID(f), journal.Version{}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Kind == journal.ChangeWrite && c.Extent.Off >= off && c.Extent.Off+c.Extent.Len <= off+n {
+			vs = append(vs, c.Version)
+		}
+	}
+	return vs
+}
+
 // heldBeforePhase1 starts a clone of x and returns once it is held between
 // its copies' sync and its phase 1, h the share's handle, with the function
 // that lets it go on and the channel of its answer.
@@ -155,8 +180,8 @@ func TestARefusedReservationChangesNothing(t *testing.T) {
 	if !isDelay(err, vfserr.DelayCapacity) {
 		t.Fatalf("a refused reservation: %v, want DelayCapacity", err)
 	}
-	if n := len(u.j.CloneTargets()); n != 0 {
-		t.Errorf("%d CloneTarget calls after a refused reservation, want none", n)
+	if m := u.cloneMarkers(dst); len(m) != 0 {
+		t.Errorf("the journal holds clone markers %+v after a refused reservation, want none", m)
 	}
 	for _, f := range []entity.FileID{src, dst} {
 		if s, d := u.e.Registrations(f); s+d != 0 {
@@ -183,8 +208,8 @@ func TestACloneOfASourcePastItsEndIsRefused(t *testing.T) {
 	if !errors.Is(err, vfserr.ErrInvalid) {
 		t.Fatalf("a clone past the source's end: %v, want ErrInvalid", err)
 	}
-	if n := len(u.j.CloneTargets()); n != 0 {
-		t.Errorf("%d CloneTarget calls, want none", n)
+	if m := u.cloneMarkers(dst); len(m) != 0 {
+		t.Errorf("the journal holds clone markers %+v, want none", m)
 	}
 	if got := u.read(t, dst, 0, 2*mib); !bytes.Equal(got, fill(2*mib, 'd')) {
 		t.Error("the destination lost its prior content to a refused clone")
@@ -208,13 +233,13 @@ func TestACloneReservesItsCopiesAndWritesThemAboveItsVersion(t *testing.T) {
 	if r := u.j.Reserves(); len(r) != 1 || r[0].N != 2*mib+mib/2 || r[0].Writes != 3 {
 		t.Errorf("reserved %+v, want one of %d bytes and 3 writes", r, 2*mib+mib/2)
 	}
-	ct := u.j.CloneTargets()
+	ct := u.cloneMarkers(dst)
 	if len(ct) != 1 {
-		t.Fatalf("%d CloneTarget calls, want one", len(ct))
+		t.Fatalf("the journal holds clone markers %+v, want one", ct)
 	}
-	copies := u.j.ReservedWrites()
+	copies := heldIn(t, u.h, dst, 0, 4*mib+mib/2)
 	if len(copies) != 3 {
-		t.Fatalf("%d copies through the reservation, want 3", len(copies))
+		t.Fatalf("the destination holds %d copies, want 3", len(copies))
 	}
 	newest := copies[0]
 	for _, v := range copies {
@@ -398,7 +423,7 @@ func TestPhase1HoldsTheSourceAndHoldsTheDestinationExtent(t *testing.T) {
 		return nil
 	}
 	u.clone(t, src, dst, vfserr.Extent{Len: mib})
-	v := entity.JournalVersion(u.j.CloneTargets()[0].Version.Bytes())
+	v := entity.JournalVersion(u.cloneMarkers(dst)[0].Version.Bytes())
 	if atHold != 1 || heldAt != v {
 		t.Errorf("the source's clone-kind opens at the hold: %d at %v; want one naming the destination at %v", atHold, heldAt, v)
 	}
@@ -915,8 +940,8 @@ func TestACloneWithoutItsDoneSignalIsUnbuilt(t *testing.T) {
 	if err := u.e.Clone(t.Context(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: mib}); !errors.Is(err, engine.ErrUnbuilt) {
 		t.Errorf("a clone with no done signal: %v, want ErrUnbuilt", err)
 	}
-	if n := len(u.j.CloneTargets()); n != 0 || u.e.HasEntry(src) || u.e.HasEntry(dst) {
-		t.Errorf("an unbuilt clone left %d CloneTargets, entries %v %v", n, u.e.HasEntry(src), u.e.HasEntry(dst))
+	if n := len(u.cloneMarkers(dst)); n != 0 || u.e.HasEntry(src) || u.e.HasEntry(dst) {
+		t.Errorf("an unbuilt clone left %d clone markers, entries %v %v", n, u.e.HasEntry(src), u.e.HasEntry(dst))
 	}
 }
 
@@ -936,7 +961,7 @@ func TestACloneHandsTheStoreNoCopy(t *testing.T) {
 	u.write(t, dst, 4*mib, fill(10, 'w'))
 	u.clone(t, src, dst, vfserr.Extent{Len: mib})
 	copies := map[entity.JournalVersion]bool{}
-	for _, v := range u.j.ReservedWrites() {
+	for _, v := range heldIn(t, u.h, dst, 0, mib) {
 		copies[entity.JournalVersion(v.Bytes())] = true
 	}
 	mu.Lock()
@@ -1004,8 +1029,8 @@ func TestACloneIntoADestinationStillCloningIsDelayedBeforeItsJournalStep(t *test
 	if !isDelay(err, vfserr.DelayClone) {
 		t.Fatalf("a second clone into the destination: %v, want DelayClone", err)
 	}
-	if n := len(u.j.CloneTargets()); n != 1 {
-		t.Errorf("the journal saw %d CloneTargets, want the first clone's alone", n)
+	if n := len(u.cloneMarkers(dst)); n != 1 {
+		t.Errorf("the journal holds %d clone markers, want the first clone's alone", n)
 	}
 	if err := u.e.Truncate(ctx, u.share.ID, dst, 4*mib); err != nil {
 		t.Errorf("a grow of the destination: %v, want its guard free", err)

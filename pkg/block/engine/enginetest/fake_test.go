@@ -85,9 +85,9 @@ func TestFakeReadServesHeldAndReportsMissing(t *testing.T) {
 
 // Removals stop holding their range and leave markers; Since yields what is
 // above its from in version order, and Settle drops markers at or below its
-// version.
+// version from Since while Markers keeps them all.
 func TestFakeRemovalsLeaveMarkersUntilSettled(t *testing.T) {
-	_, h := fake(t, 0)
+	j, h := fake(t, 0)
 	ctx := t.Context()
 	w := write(t, h, fileA, 0, "abcdefgh")
 	d, err := h.Deallocate(ctx, fileA, ext(2, 2))
@@ -117,6 +117,9 @@ func TestFakeRemovalsLeaveMarkersUntilSettled(t *testing.T) {
 	h.Settle(fileA, d)
 	if got := changes(t, h, fileA, w); len(got) != 1 || got[0].Kind != journal.ChangeTruncate {
 		t.Errorf("after Settle(%v): Since = %+v; want the truncate alone", d, got)
+	}
+	if m := j.Markers(fileA); len(m) != 2 || m[0].Version != d || m[1].Version != tr {
+		t.Errorf("Markers after Settle(%v) = %+v; want the deallocate and the truncate, settled or not", d, m)
 	}
 }
 

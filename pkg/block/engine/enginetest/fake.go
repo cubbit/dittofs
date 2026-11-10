@@ -55,30 +55,20 @@ type FakeJournal struct {
 	end       int64                   // the end of the stream's last record in seg
 	seq       uint64                  // the stream's last record's sequence number
 	synced    entity.SyncMark         // the mark of the stream's last sync; zero before one
-	recorded  [][]entity.SyncMark     // what MarksRecorded was handed, in order
+	recorded  []entity.SyncMark       // the marks MarksRecorded was last handed
 
 	readOnly journal.ReadOnlyState   // ReadOnly's state, reported by Stats
 	refusal  error                   // what a write answers once read-only
 	undone   map[journal.FileID]bool // ReadOnly's files: every Sync naming one answers the refusal
 
-	refuseReserve error           // RefuseReserve's error: the next Reserve answers it
-	reserved      []Reserved      // every Reserve, in order
-	cloneTargets  []CloneTargeted // every CloneTarget, in order
-	reservedAt    []journal.Version
+	refuseReserve error      // RefuseReserve's error: the next Reserve answers it
+	reserved      []Reserved // every Reserve, in order
 }
 
 // Reserved is one Reserve: the bytes and writes it asked.
 type Reserved struct {
 	N      int64
 	Writes int
-}
-
-// CloneTargeted is one CloneTarget: the file, its spec and the version it
-// was given.
-type CloneTargeted struct {
-	File    journal.FileID
-	Spec    journal.CloneSpec
-	Version journal.Version
 }
 
 // fakeFile is one file: its tag, its held pieces in offset order, and its
@@ -619,15 +609,16 @@ func (j *FakeJournal) SyncMarks() []entity.SyncMark {
 	return []entity.SyncMark{j.synced}
 }
 
-// MarksRecorded logs marks.
+// MarksRecorded keeps marks as the newest the metadata recorded.
 func (j *FakeJournal) MarksRecorded(marks []entity.SyncMark) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	j.recorded = append(j.recorded, slices.Clone(marks))
+	j.recorded = slices.Clone(marks)
 }
 
-// Recorded is what MarksRecorded was handed, call by call.
-func (j *FakeJournal) Recorded() [][]entity.SyncMark {
+// RecordedMarks is the marks the journal last learned the metadata
+// recorded, nil before it learned any.
+func (j *FakeJournal) RecordedMarks() []entity.SyncMark {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return slices.Clone(j.recorded)
@@ -823,7 +814,6 @@ func (h *FakeHandle) CloneTarget(_ context.Context, id journal.FileID, spec jour
 	defer j.mu.Unlock()
 	f := j.files[id]
 	f.changes[len(f.changes)-1].Clone = &spec
-	j.cloneTargets = append(j.cloneTargets, CloneTargeted{File: id, Spec: spec, Version: v})
 	return v, nil
 }
 
@@ -859,18 +849,17 @@ func (j *FakeJournal) Reserves() []Reserved {
 	return slices.Clone(j.reserved)
 }
 
-// CloneTargets is every CloneTarget so far, in order.
-func (j *FakeJournal) CloneTargets() []CloneTargeted {
+// Markers is every removal marker the journal holds for file id, settled or
+// not, in version order: what Since yields of them after a reopen, as
+// recovery rebuilds them (RFC 1 §3.10).
+func (j *FakeJournal) Markers(id journal.FileID) []journal.Change {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return slices.Clone(j.cloneTargets)
-}
-
-// ReservedWrites is the version of every reservation's write so far.
-func (j *FakeJournal) ReservedWrites() []journal.Version {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	return slices.Clone(j.reservedAt)
+	f := j.files[id]
+	if f == nil {
+		return nil
+	}
+	return slices.DeleteFunc(slices.Clone(f.changes), func(c journal.Change) bool { return c.Kind == journal.ChangeLoss })
 }
 
 // fakeReservation is what Reserve took: writes it may still take.
@@ -890,13 +879,7 @@ func (r *fakeReservation) WriteAt(ctx context.Context, id journal.FileID, off in
 	r.left--
 	h := *r.h
 	h.limit = 0
-	v, err := h.WriteAt(ctx, id, off, p, mtime)
-	if err == nil {
-		r.h.j.mu.Lock()
-		r.h.j.reservedAt = append(r.h.j.reservedAt, v)
-		r.h.j.mu.Unlock()
-	}
-	return v, err
+	return h.WriteAt(ctx, id, off, p, mtime)
 }
 
 // Close gives back what the reservation did not use.

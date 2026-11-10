@@ -103,7 +103,7 @@ func TestEveryVersionIssueCountsTowardsTheRaise(t *testing.T) {
 				dueOnVersion(t, u, 1)
 				u.clone(t, src, dst, vfserr.Extent{Len: mib})
 
-				if n := len(u.j.ReservedWrites()); n != 0 {
+				if n := len(heldIn(t, u.h, dst, 0, mib)); n != 0 {
 					t.Fatalf("the clone copied %d runs, want none", n)
 				}
 			},
@@ -118,7 +118,7 @@ func TestEveryVersionIssueCountsTowardsTheRaise(t *testing.T) {
 				dueOnVersion(t, u, 2)
 				u.clone(t, src, dst, vfserr.Extent{Len: mib})
 
-				if n := len(u.j.ReservedWrites()); n != 1 {
+				if n := len(heldIn(t, u.h, dst, 0, mib)); n != 1 {
 					t.Fatalf("the clone copied %d runs, want 1", n)
 				}
 			},

@@ -331,9 +331,8 @@ func TestCommitWaitsForTheMarksOverCommittedContent(t *testing.T) {
 	if len(u.e.Pending(f)) != 1 {
 		t.Errorf("the append's existence is no longer pending: %+v", u.e.Pending(f))
 	}
-	rec := u.j.Recorded()
-	if len(rec) == 0 || !slices.Equal(rec[len(rec)-1], marks.Marks) {
-		t.Errorf("MarksRecorded was last handed %v, want %v", rec, marks.Marks)
+	if rec := u.j.RecordedMarks(); !slices.Equal(rec, marks.Marks) {
+		t.Errorf("the journal holds %v as recorded, want %v", rec, marks.Marks)
 	}
 }
 

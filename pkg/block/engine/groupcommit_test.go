@@ -149,8 +149,8 @@ func TestDueFilesCommitInBoundedBatches(t *testing.T) {
 	if got, want := log.marks[3].Marks, u.j.SyncMarks(); !slices.Equal(got, want) {
 		t.Errorf("the marks carried are %v, want %v, read after the last sync", got, want)
 	}
-	if got := u.j.Recorded(); len(got) != 1 || !slices.Equal(got[0], log.marks[3].Marks) {
-		t.Errorf("MarksRecorded was handed %v, want the one write's %v", got, log.marks[3].Marks)
+	if got := u.j.RecordedMarks(); !slices.Equal(got, log.marks[3].Marks) {
+		t.Errorf("the journal holds %v as recorded, want the one write's %v", got, log.marks[3].Marks)
 	}
 }
 
@@ -176,8 +176,8 @@ func TestMarksOfAFailedCallAreNotRecorded(t *testing.T) {
 	if err := u.e.CommitNow(ctx, u.share.ID, f); err == nil {
 		t.Fatal("a commit under a conflict succeeded")
 	}
-	if got := u.j.Recorded(); len(got) != 0 {
-		t.Errorf("MarksRecorded was handed %v by a call that failed", got)
+	if got := u.j.RecordedMarks(); got != nil {
+		t.Errorf("the journal holds %v as recorded by a call that failed", got)
 	}
 }
 
@@ -819,8 +819,8 @@ func TestAMovedOpenGenerationStopsTheMarks(t *testing.T) {
 	if n := x.calls.Load(); n != 1 {
 		t.Errorf("%d calls carried marks, want only the one refused", n)
 	}
-	if got := u.j.Recorded(); len(got) != 0 {
-		t.Errorf("MarksRecorded was handed %v", got)
+	if got := u.j.RecordedMarks(); got != nil {
+		t.Errorf("the journal holds %v as recorded", got)
 	}
 }
 
@@ -845,7 +845,7 @@ func TestMarksNotWrittenAreRetriedAlone(t *testing.T) {
 	// The clock moves until the marks show: a poke left in the wake channel
 	// can have the loop read the backoff before a move and arm its timer
 	// after it, and that timer waits for the next move.
-	u.until(t, "the marks are recorded alone", func() bool { return len(u.j.Recorded()) == 1 })
+	u.until(t, "the marks are recorded alone", func() bool { return u.j.RecordedMarks() != nil })
 }
 
 // syncFailing is a handle whose syncs, once on, fail, logging how many files
