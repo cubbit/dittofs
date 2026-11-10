@@ -40,15 +40,19 @@ var allowed = map[string][]string{
 	module + "pkg/metadata/kv/keys":               {"enginetest", unitTests},
 	module + "pkg/metadata/kv/kvtest":             {"enginetest", unitTests},
 	module + "pkg/metadata/kvstore/kvstoretest":   {"enginetest", unitTests},
-	module + "pkg/sim":                            {"enginetest", unitTests},
+	module + "pkg/sim":                            {"enginetest", unitTests, internalTests},
 }
 
 // unitTests names the engine's external test package, whose unit
 // composition runs the engine over the fake journal, the real store on an
 // in-memory kv.KV, a test clock and the profiler, and whose start failure
 // tests put the fault-injecting kv.KV under that store. The engine's own
-// files, tests in its package included, import none of them.
+// files import none of them.
 const unitTests = "._test"
+
+// internalTests names the engine's test files in its own package, which may
+// import the test clock and nothing else of the unit composition.
+const internalTests = "._internal"
 
 // TestImportRule walks every package under this directory, test packages
 // included, and fails on any import the engine may not have: anything but
@@ -65,10 +69,17 @@ func TestImportRule(t *testing.T) {
 			return filepath.SkipDir
 		}
 		rel := filepath.ToSlash(dir)
-		imports, xtest := packageImports(t, dir)
+		imports, internal, xtest := packageImports(t, dir)
 		for _, imp := range imports {
 			if why := forbidden(rel, imp); why != "" {
 				t.Errorf("%s: forbidden import %q: %s", rel, imp, why)
+			}
+		}
+		for _, imp := range internal {
+			// A package's tests may import what the package may, and the
+			// test clock besides.
+			if why := forbidden(rel+"_internal", imp); why != "" && forbidden(rel, imp) != "" {
+				t.Errorf("%s (its tests): forbidden import %q: %s", rel, imp, why)
 			}
 		}
 		for _, imp := range xtest {
@@ -139,10 +150,10 @@ func within(path, root string) bool {
 }
 
 // packageImports returns every import of the package in dir: its files built
-// for this platform, its test files in the package, and its files built only
-// for another platform, which go/build would otherwise leave unlisted; and,
-// apart, those of its external test package.
-func packageImports(t *testing.T, dir string) (imports, xtest []string) {
+// for this platform and its files built only for another platform, which
+// go/build would otherwise leave unlisted; apart, those of its test files in
+// the package; and apart, those of its external test package.
+func packageImports(t *testing.T, dir string) (imports, internal, xtest []string) {
 	t.Helper()
 	pkg, err := build.ImportDir(dir, 0)
 	if err != nil {
@@ -151,7 +162,7 @@ func packageImports(t *testing.T, dir string) (imports, xtest []string) {
 			t.Fatalf("build.ImportDir %s: %v", dir, err)
 		}
 	}
-	imports = append(append([]string{}, pkg.Imports...), pkg.TestImports...)
+	imports = append([]string{}, pkg.Imports...)
 	fset := token.NewFileSet()
 	for _, name := range pkg.IgnoredGoFiles {
 		f, err := parser.ParseFile(fset, filepath.Join(pkg.Dir, name), nil, parser.ImportsOnly)
@@ -166,7 +177,7 @@ func packageImports(t *testing.T, dir string) (imports, xtest []string) {
 			imports = append(imports, p)
 		}
 	}
-	return imports, pkg.XTestImports
+	return imports, pkg.TestImports, pkg.XTestImports
 }
 
 // TestImportRuleKeepsTheCompositionInTests pins that the unit composition's

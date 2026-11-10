@@ -12,14 +12,15 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // errStoreDown is a store's failure of the whole call.
 var errStoreDown = errors.New("the store is down")
 
 // newClockFence is a fence over a test clock that has run for an idle minute.
-func newClockFence() (*fence, *stepClock) {
-	clock := &stepClock{}
+func newClockFence() (*fence, *sim.TestClock) {
+	clock := sim.NewTestClock(time.Time{})
 	clock.Advance(time.Minute)
 	return &fence{clock: clock, logger: slog.New(slog.DiscardHandler)}, clock
 }
@@ -95,7 +96,7 @@ func TestFenceFailingWhileIdle(t *testing.T) {
 // none fences, each start beginning a fresh bound. A start that raises the
 // count before it stores since is seen busy with the last spell's since.
 func TestFenceBeginRacesAReader(t *testing.T) {
-	clock := &stepClock{}
+	clock := sim.NewTestClock(time.Time{})
 	f := &fence{clock: clock, logger: slog.New(slog.DiscardHandler)}
 	stop := make(chan struct{})
 	var seen atomic.Int64

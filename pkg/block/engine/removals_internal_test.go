@@ -13,6 +13,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // syncBuffer is a log sink safe for the loop's goroutine and the test.
@@ -33,60 +34,12 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-// stepClock is a clock moved only by Advance, whose After fires once the
-// clock reaches its deadline.
-type stepClock struct {
-	mu     sync.Mutex
-	now    time.Time
-	timers []stepTimer
-}
-
-type stepTimer struct {
-	at time.Time
-	c  chan struct{}
-}
-
-func (c *stepClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *stepClock) Elapsed() time.Duration { return c.Now().Sub(time.Time{}) }
-
-func (c *stepClock) After(d time.Duration) <-chan struct{} {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	ch := make(chan struct{})
-	if d <= 0 {
-		close(ch)
-		return ch
-	}
-	c.timers = append(c.timers, stepTimer{c.now.Add(d), ch})
-	return ch
-}
-
-func (c *stepClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-	kept := c.timers[:0]
-	for _, tm := range c.timers {
-		if tm.at.After(c.now) {
-			kept = append(kept, tm)
-		} else {
-			close(tm.c)
-		}
-	}
-	c.timers = kept
-}
-
 // scripted runs a loop over a test clock with one item answering answers in
 // turn, and returns a step that advances the clock by one backoff and waits
 // until the item has run once more and is back on the loop, or finished.
 func scripted(t *testing.T, answers ...answer) (l *removalLoop, f entity.FileID, step func(), log *syncBuffer) {
 	t.Helper()
-	clock := &stepClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	clock := sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	log = &syncBuffer{}
 	e := &Engine{d: Deps{Clock: clock, Logger: slog.New(slog.NewTextHandler(log, nil)),
 		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
@@ -193,7 +146,7 @@ func TestAnUncountedRetryLeavesTheCount(t *testing.T) {
 // returns, rather than putting it back, and no item of the share is taken
 // after.
 func TestADroppedSharesRunningItemIsEnded(t *testing.T) {
-	clock := &stepClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	clock := sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	e := &Engine{d: Deps{Clock: clock, Logger: slog.New(slog.NewTextHandler(&syncBuffer{}, nil)),
 		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
 			return ctx, func(error) {}
