@@ -191,8 +191,10 @@ go test ./pkg/metadata/store/badger/
 ### Integration Tests
 
 Integration tests carry the `integration` build tag and need the services `test/suites.yaml`
-lists for them: Postgres for the control-plane store and a KMIP server. `dt` starts them and runs
-the suite as CI does:
+lists for them: a KMIP server for the key provider. Don't add a Postgres test: the stores are
+Badger, and FoundationDB for a cluster. The suite still starts Postgres for the control-plane
+store's existing tests, until RFC 23 moves the control plane into the one store. `dt` starts the
+services and runs the suite as CI does:
 
 ```bash
 test/harness/bin/dt services up postgres kmip
