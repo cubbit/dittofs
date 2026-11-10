@@ -23,19 +23,21 @@ type TLS struct {
 	ClientCA string `json:"client_ca"`
 }
 
-type NFS struct {
-	Adapter
-	TLS TLS `json:"tls"`
-}
-
-type Dialects struct {
+type VersionRange struct {
 	Min string `json:"min"`
 	Max string `json:"max"`
 }
 
+type NFS struct {
+	Adapter
+	TLS TLS `json:"tls"`
+
+	Versions VersionRange `json:"versions"`
+}
+
 type SMB struct {
 	Adapter
-	Dialects Dialects `json:"dialects"`
+	Dialects VersionRange `json:"dialects"`
 
 	PendingTimeout time.Duration `json:"pending_timeout"`
 

@@ -65,23 +65,29 @@ type TLS struct {
 	ClientCA string `json:"client_ca"` // set: a client certificate is required and verified
 }
 
-// NFS is the NFS adapter's whole shape: the common part and NFS over TLS.
+// VersionRange is the versions an adapter serves, inclusive, as the protocol
+// names them. A change applies to connections accepted afterwards; a
+// connection keeps what it negotiated.
+type VersionRange struct {
+	Min string `json:"min"`
+	Max string `json:"max"`
+}
+
+// NFS is the NFS adapter's whole shape: the common part, NFS over TLS and the
+// versions served.
 type NFS struct {
 	Adapter
 	TLS TLS `json:"tls"`
-}
-
-// Dialects are the lowest and highest SMB dialect served.
-type Dialects struct {
-	Min string `json:"min"`
-	Max string `json:"max"`
+	// Versions are among "3", "4.0", "4.1" and "4.2"; "3" includes its
+	// auxiliary programs MOUNT, NLM and NSM.
+	Versions VersionRange `json:"versions"`
 }
 
 // SMB is the SMB adapter's whole shape: the common part, the dialect range
 // and how long a request is held pending.
 type SMB struct {
 	Adapter
-	Dialects Dialects `json:"dialects"`
+	Dialects VersionRange `json:"dialects"` // among "2.1", "3.0", "3.0.2" and "3.1.1"
 	// PendingTimeout is the longest a request refused for a transient cause
 	// is held pending before it is answered.
 	PendingTimeout time.Duration `json:"pending_timeout"`
@@ -110,14 +116,18 @@ func defaultAdapter() Adapter {
 
 // DefaultNFS is every NFS setting's default.
 func DefaultNFS() NFS {
-	return NFS{Adapter: defaultAdapter(), TLS: TLS{Mode: "off"}}
+	return NFS{
+		Adapter:  defaultAdapter(),
+		TLS:      TLS{Mode: "off"},
+		Versions: VersionRange{Min: "3", Max: "4.2"},
+	}
 }
 
 // DefaultSMB is every SMB setting's default.
 func DefaultSMB() SMB {
 	return SMB{
 		Adapter:        defaultAdapter(),
-		Dialects:       Dialects{Min: "2.1", Max: "3.1.1"},
+		Dialects:       VersionRange{Min: "2.1", Max: "3.1.1"},
 		PendingTimeout: 10 * time.Minute,
 		RecallTimeout:  60 * time.Second,
 	}
@@ -129,10 +139,12 @@ const (
 	requestDeadline = 30 * time.Second
 )
 
-// tlsModes and dialects are the values those fields take; dialects in order.
+// tlsModes, nfsVersions and dialects are the values those fields take;
+// versions and dialects in order.
 var (
-	tlsModes = []string{"off", "opportunistic", "require"}
-	dialects = []string{"2.1", "3.0", "3.0.2", "3.1.1"}
+	tlsModes    = []string{"off", "opportunistic", "require"}
+	nfsVersions = []string{"3", "4.0", "4.1", "4.2"}
+	dialects    = []string{"2.1", "3.0", "3.0.2", "3.1.1"}
 )
 
 // refusals collects Validate's errors, each naming its field and rule.
@@ -149,6 +161,7 @@ func (r *refusals) refuse(field, format string, args ...any) {
 func (s NFS) Validate() error {
 	var r refusals
 	s.validate(&r)
+	s.Versions.validate(&r, "Versions", nfsVersions)
 	t := s.TLS
 	switch {
 	case !slices.Contains(tlsModes, t.Mode):
@@ -180,16 +193,7 @@ func (s NFS) Validate() error {
 func (s SMB) Validate() error {
 	var r refusals
 	s.validate(&r)
-	lo, hi := slices.Index(dialects, s.Dialects.Min), slices.Index(dialects, s.Dialects.Max)
-	if lo < 0 {
-		r.refuse("Dialects.Min", "%q is not one of %q", s.Dialects.Min, dialects)
-	}
-	if hi < 0 {
-		r.refuse("Dialects.Max", "%q is not one of %q", s.Dialects.Max, dialects)
-	}
-	if lo >= 0 && hi >= 0 && lo > hi {
-		r.refuse("Dialects.Max", "%s is below Dialects.Min %s", s.Dialects.Max, s.Dialects.Min)
-	}
+	s.Dialects.validate(&r, "Dialects", dialects)
 	if s.PendingTimeout <= 0 {
 		r.refuse("PendingTimeout", "%s is not positive", s.PendingTimeout)
 	}
@@ -197,6 +201,21 @@ func (s SMB) Validate() error {
 		r.refuse("RecallTimeout", "%s does not exceed the break deadline (%s)", s.RecallTimeout, breakDeadline)
 	}
 	return errors.Join(r...)
+}
+
+// validate refuses a bound not among known, which is in order, and Min above
+// Max, naming field.Min or field.Max.
+func (v VersionRange) validate(r *refusals, field string, known []string) {
+	lo, hi := slices.Index(known, v.Min), slices.Index(known, v.Max)
+	if lo < 0 {
+		r.refuse(field+".Min", "%q is not one of %q", v.Min, known)
+	}
+	if hi < 0 {
+		r.refuse(field+".Max", "%q is not one of %q", v.Max, known)
+	}
+	if lo >= 0 && hi >= 0 && lo > hi {
+		r.refuse(field+".Max", "%s is below %s.Min %s", v.Max, field, v.Min)
+	}
 }
 
 func (a Adapter) validate(r *refusals) {

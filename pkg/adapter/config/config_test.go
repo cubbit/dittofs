@@ -21,10 +21,10 @@ func TestDefaultsAreRFC13s(t *testing.T) {
 		HandshakeTimeout: 30 * time.Second,
 		ReadTimeout:      30 * time.Second,
 	}
-	wantNFS := NFS{Adapter: common, TLS: TLS{Mode: "off"}}
+	wantNFS := NFS{Adapter: common, TLS: TLS{Mode: "off"}, Versions: VersionRange{Min: "3", Max: "4.2"}}
 	wantSMB := SMB{
 		Adapter:        common,
-		Dialects:       Dialects{Min: "2.1", Max: "3.1.1"},
+		Dialects:       VersionRange{Min: "2.1", Max: "3.1.1"},
 		PendingTimeout: 10 * time.Minute,
 		RecallTimeout:  60 * time.Second,
 	}
@@ -118,6 +118,9 @@ func TestValidateRefusesNamingTheField(t *testing.T) {
 		{"TLS.KeyFile", nfs(func(s *NFS) { s.TLS.Mode, s.TLS.CertFile = "opportunistic", "tls.crt" })},
 		{"PendingTimeout", smb(func(s *SMB) { s.PendingTimeout = 0 })},
 		{"RecallTimeout", smb(func(s *SMB) { s.RecallTimeout = 35 * time.Second })},
+		{"Versions.Min", nfs(func(s *NFS) { s.Versions.Min = "2" })},
+		{"Versions.Max", nfs(func(s *NFS) { s.Versions.Max = "4.3" })},
+		{"Versions.Max", nfs(func(s *NFS) { s.Versions = VersionRange{Min: "4.1", Max: "4.0"} })},
 		{"Dialects.Min", smb(func(s *SMB) { s.Dialects.Min = "2.0.2" })},
 		{"Dialects.Max", smb(func(s *SMB) { s.Dialects.Max = "3.2" })},
 		{"Dialects.Max", smb(func(s *SMB) { s.Dialects.Min, s.Dialects.Max = "3.1.1", "3.0" })},
@@ -138,6 +141,20 @@ func TestTLSModesWithFilesAccepted(t *testing.T) {
 		if err := s.Validate(); err != nil {
 			t.Errorf("Mode %s with a certificate and key: %v, want accepted", mode, err)
 		}
+	}
+}
+
+// A range of one version is accepted.
+func TestSingleVersionRange(t *testing.T) {
+	n := validNFS()
+	n.Versions = VersionRange{Min: "4.1", Max: "4.1"}
+	if err := n.Validate(); err != nil {
+		t.Errorf("NFS 4.1..4.1: %v, want accepted", err)
+	}
+	s := validSMB()
+	s.Dialects = VersionRange{Min: "3.0.2", Max: "3.0.2"}
+	if err := s.Validate(); err != nil {
+		t.Errorf("SMB 3.0.2..3.0.2: %v, want accepted", err)
 	}
 }
 
