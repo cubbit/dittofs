@@ -22,6 +22,7 @@ func valid() config.SMB {
 		FrameDeadline:     30 * time.Second,
 	}}
 	s.Dialects.Min, s.Dialects.Max = "2.1", "3.1.1"
+	s.PendingCap, s.PendingDeadline = 10*time.Minute, 60*time.Second
 	return s
 }
 

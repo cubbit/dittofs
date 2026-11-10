@@ -43,8 +43,10 @@ var rfc13 = map[reflect.Type]map[string]field{
 		"TLS.Mode":       {def: "opportunistic", hasDefault: true},
 	}),
 	reflect.TypeFor[SMB](): with(common, map[string]field{
-		"Dialects.Min": {def: "2.1", hasDefault: true},
-		"Dialects.Max": {def: "3.1.1", hasDefault: true},
+		"Dialects.Min":    {def: "2.1", hasDefault: true},
+		"Dialects.Max":    {def: "3.1.1", hasDefault: true},
+		"PendingCap":      {def: "10m", hasDefault: true},
+		"PendingDeadline": {def: "60s", hasDefault: true},
 	}),
 }
 
@@ -121,6 +123,7 @@ func validNFS() NFS {
 func validSMB() SMB {
 	s := SMB{Adapter: validAdapter()}
 	s.Dialects.Min, s.Dialects.Max = "2.1", "3.1.1"
+	s.PendingCap, s.PendingDeadline = 10*time.Minute, 60*time.Second
 	return s
 }
 
@@ -157,6 +160,8 @@ func TestValidateRefusesNamingTheField(t *testing.T) {
 		{"TLS.CertFile", nfs(func(s *NFS) { s.TLS.KeyFile = "tls.key" })},
 		{"TLS.CertFile", nfs(func(s *NFS) { s.TLS.Mode = "require" })},
 		{"TLS.ClientCA", nfs(func(s *NFS) { s.TLS.ClientCA = "ca.crt" })},
+		{"PendingCap", smb(func(s *SMB) { s.PendingCap = 0 })},
+		{"PendingDeadline", smb(func(s *SMB) { s.PendingDeadline = 35 * time.Second })},
 		{"Dialects.Min", smb(func(s *SMB) { s.Dialects.Min = "2.0.2" })},
 		{"Dialects.Max", smb(func(s *SMB) { s.Dialects.Max = "3.2" })},
 		{"Dialects.Max", smb(func(s *SMB) { s.Dialects.Min, s.Dialects.Max = "3.1.1", "3.0" })},

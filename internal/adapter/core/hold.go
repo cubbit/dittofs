@@ -20,7 +20,7 @@ import (
 // connection's message-ID window passes the key if a client is found that
 // cancels that early.
 type HoldCodec interface {
-	Key(h Header) uint64
+	Key(h Header) uint64 // never 0, which Conn.Send's before reserves for none
 	// Interim encodes STATUS_PENDING: it grants the request's credits if
 	// grant, else only what keeps the client's balance at one, and always
 	// those of chain members answered before it. For a drain's refusal it is

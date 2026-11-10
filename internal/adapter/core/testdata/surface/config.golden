@@ -33,6 +33,10 @@ type SMB struct {
 		Min string `default:"2.1"`
 		Max string `default:"3.1.1"`
 	}
+
+	PendingCap time.Duration `default:"10m"`
+
+	PendingDeadline time.Duration `default:"60s"`
 }
 
 type Settings interface{ common() Adapter }

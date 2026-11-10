@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -152,23 +153,15 @@ func TestSurfaceIsFrozen(t *testing.T) {
 
 // diff lists the lines of got that want lacks, and the reverse.
 func diff(want, got []byte) string {
-	in := func(lines []string, l string) bool {
-		for _, x := range lines {
-			if x == l {
-				return true
-			}
-		}
-		return false
-	}
 	w, g := strings.Split(string(want), "\n"), strings.Split(string(got), "\n")
 	var b strings.Builder
 	for _, l := range g {
-		if !in(w, l) {
+		if !slices.Contains(w, l) {
 			b.WriteString("+ " + l + "\n")
 		}
 	}
 	for _, l := range w {
-		if !in(g, l) {
+		if !slices.Contains(g, l) {
 			b.WriteString("- " + l + "\n")
 		}
 	}

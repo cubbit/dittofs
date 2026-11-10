@@ -6,7 +6,8 @@
 // Nothing here has a lifecycle: NewBudget and NewBufPool start no goroutine
 // and open nothing, and there is no Start or Close.
 //
-// ponytail: RFC 24's Detect, Split, ShareCap and Reclaim are absent; each lands with its first caller.
+// ponytail: RFC 24's Detect, Split, ShareCap, Reclaim and §4.1's turns are
+// absent; each lands with its first caller.
 package resources
 
 import (

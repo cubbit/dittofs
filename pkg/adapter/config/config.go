@@ -72,12 +72,19 @@ type SMB struct {
 		Min string `default:"2.1"`
 		Max string `default:"3.1.1"`
 	}
+	// PendingCap is the longest a request refused for a transient cause is
+	// held pending before it is answered.
+	PendingCap time.Duration `default:"10m"`
+	// PendingDeadline is the longest a request held pending on a recall may
+	// wait; it exceeds the break deadline.
+	PendingDeadline time.Duration `default:"60s"`
 }
 
-// Settings is NFS or SMB. Its one method is unexported, but a type embedding
-// either satisfies it too, as does a pointer to either: Validate,
-// RestartRequired and AdapterOf refuse any type but the NFS and SMB values. Reconfigure takes it so that a protocol's own live settings
-// reach it; Reconfigure refuses the other protocol's shape.
+// Settings is what Reconfigure takes, so that a protocol's own live settings
+// reach it. Its one method is unexported, but a *NFS, or a struct elsewhere
+// embedding NFS, satisfies it too: Validate, RestartRequired and AdapterOf
+// accept only an NFS or SMB value, and Reconfigure refuses the other
+// protocol's shape.
 type Settings interface{ common() Adapter }
 
 func (s NFS) common() Adapter { return s.Adapter }
@@ -149,6 +156,12 @@ func Validate(s Settings) error {
 		}
 		if lo >= 0 && hi >= 0 && lo > hi {
 			refuse("Dialects.Max", "%s is below Dialects.Min %s", v.Dialects.Max, v.Dialects.Min)
+		}
+		if v.PendingCap <= 0 {
+			refuse("PendingCap", "%s is not positive", v.PendingCap)
+		}
+		if v.PendingDeadline <= breakDeadline {
+			refuse("PendingDeadline", "%s does not exceed the break deadline (%s)", v.PendingDeadline, breakDeadline)
 		}
 	default:
 		return fmt.Errorf("config: %T is not config.NFS or config.SMB", s)
