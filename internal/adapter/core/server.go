@@ -19,7 +19,7 @@ var _ adapter.Adapter = (*Server)(nil)
 
 // Listener is one protocol on one port, bound on each of the settings' Addrs.
 type Listener struct {
-	Service  string // the name Addrs and a sidecar know it by: "nfs", "mount", "nlm"
+	Service  string // the name Addrs and a sidecar know it by: "nfs", "mount", "nlm", "nsm", "smb"
 	Network  string // "tcp" or "udp"
 	Port     uint16 // 0: one the system picks, which Addrs reports
 	Protocol Protocol
@@ -51,8 +51,9 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 
 // Addrs is every address each listener is bound on now, by service and
-// network: a port of 0 resolved, an address Reconfigure added included. It is
-// empty before Start and after Stop.
+// network, in a fresh map the caller owns: a port of 0 resolved, an address
+// Reconfigure added included and one it removed gone. It is empty before
+// Start and after Stop.
 func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort {
 	panic("not implemented")
 }
