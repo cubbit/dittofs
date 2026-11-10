@@ -83,7 +83,7 @@ func (cr *corruptRig) reappendTogether(t *testing.T, files ...core.FileID) []rea
 // register puts each write's first copy in the copy table.
 func (cr *corruptRig) register(rs ...reappended) {
 	for _, r := range rs {
-		cr.d.registerCopy(r.c.Seq, r.orig, r.kept)
+		cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
 	}
 }
 

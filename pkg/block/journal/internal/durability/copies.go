@@ -94,6 +94,26 @@ func (d *Durability) registerOriginal(st *stream, c copyEntry) {
 	d.copies[c.seq] = c
 }
 
+// RegisterCopy puts a copy of the record numbered seq at loc, written with the
+// payload checksum checksum, in the copy table directly, as registerOriginal
+// does once a re-append's new place has completed, without asking the set
+// whether loc's segment is still there.
+//
+// decision: only tests call it, the durability tests and the datapath tests
+// that stage a copy of a record, and it stays exported because the datapath
+// tests are in another package. It skips registerOriginal's check for a
+// segment that has left the set, which a test staging a copy never needs.
+// Overturned by a shared test kit that can reach the table, which would let
+// this method go.
+func (d *Durability) RegisterCopy(seq core.Seq, loc segment.Location, checksum uint32) {
+	d.copyMu.Lock()
+	defer d.copyMu.Unlock()
+	if d.copies == nil {
+		d.copies = map[core.Seq]copyEntry{}
+	}
+	d.copies[seq] = copyEntry{seq: seq, loc: loc, checksum: checksum}
+}
+
 // copyOf returns the table's copy of the record numbered seq.
 func (d *Durability) copyOf(seq core.Seq) (copyEntry, bool) {
 	d.copyMu.Lock()
