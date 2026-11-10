@@ -410,21 +410,20 @@ func buildTargets(s core.Settings) segment.Targets {
 // target, which defaults to one spare per stream. Nothing here refuses: a
 // negative setting was already refused when the options were resolved.
 //
-// decision: MaxBytes is left at what the caller named or zero. The journal's
-// maximum bounds the storage a write may allocate, and the core that
-// allocates it takes no maximum from the open yet — no reservation a write
-// path makes is checked against it. Admitting the maximum, so a write past
-// it is refused naming the journal, is the one piece of the capacity path
-// this open leaves out; until it lands, a journal opened with MaxBytes set is
-// no smaller than one opened without it. The open itself makes some storage
-// whatever MaxBytes says, because the spare pool's targets are built before
-// any write is admitted: with the default settings — 16 streams, whose spare
-// target defaults to one spare per stream, a headroom of 65536 records no
-// larger than the segment cap, and a repack reserve of one segment — the pool
+// ponytail: MaxBytes is left at what the caller named or zero. The journal's
+// maximum bounds the storage a write may allocate, but no write path admits
+// against it yet — the core that allocates takes no maximum from the open — so
+// a journal opened with MaxBytes set is no smaller than one opened without it,
+// and a write past it is not refused. The open also makes storage whatever
+// MaxBytes says, because the spare pool's targets are built before any write
+// is admitted: with the default settings — 16 streams, whose spare target
+// defaults to one spare per stream, a headroom of 65536 records no larger
+// than the segment cap, and a repack reserve of one segment — a fresh Open
 // makes 18 spares of SegmentCap bytes each (16 content + 1 headroom + 1
-// reserve, about 4.5 GiB at the format's 256 MiB cap), per fresh Open. The
-// spares hold no write data; they are the segments writes roll onto, and the
-// capacity admission that admits MaxBytes is what can bound them to it.
+// reserve, about 4.5 GiB at the format's 256 MiB cap). The spares hold no
+// write data; they are the segments writes roll onto. Upgrade with capacity
+// admission that reserves each spare's cap against the maximum, so a write
+// past it is refused naming the journal and the pool is bounded by it.
 func resolveDefaults(s core.Settings) core.Settings {
 	if s.Streams < 1 {
 		s.Streams = defaultStreams
