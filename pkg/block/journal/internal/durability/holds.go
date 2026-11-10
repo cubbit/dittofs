@@ -10,10 +10,10 @@ import (
 )
 
 // segHold is the hold on one failed segment while copies in it are in use:
-// the records served from a copy in the segment that no re-append has moved
-// out yet, keyed by sequence number, and the segment's claim. A segment with
-// a hold is unresolved: no window of it is announced resolved while the hold
-// lives, and the hold's end announces it.
+// the records served from a copy in the segment whose re-append has not yet
+// completed at a new place, keyed by sequence number, and the segment's claim.
+// A segment with a hold is unresolved: no window of it is announced resolved
+// while the hold lives, and the hold's end announces it.
 //
 // decision: the holds sit in st.holds under the stream's leaf mutex st.mu,
 // not under any file's append domain: a segment holds the records of many
@@ -32,7 +32,7 @@ import (
 // use from failed segments, and the worker visits every held record of every
 // held segment on each pass, taking that record's file domain and asking the
 // index twice. Upgrade to waking the worker only on a change that can move a
-// hold (a claim let go, a write over a held record, a landed re-append) when a
+// hold (a claim let go, a write over a held record, a new place completed) when a
 // journal with many held records shows the visits in a profile. A claimed
 // hold whose re-append keeps failing is retried on every pass and at every
 // tick of the sync bound with no backoff; upgrade to a per-hold retry backoff
@@ -47,8 +47,13 @@ type segHold struct {
 	// withheld says a window of the segment resolved while it was held, so its
 	// announcement waits for the hold to end.
 	withheld bool
-	// landed says a re-append of a held record landed.
+	// landed says a held record left the segment by a re-append: its new
+	// place completed, or was lost after the index had moved off the copy.
 	landed bool
+	// placed are the held records already re-appended, keyed by sequence
+	// number: the place each was appended at, which the record leaves the
+	// hold for once that place has completed.
+	placed map[core.Seq]segment.Location
 	// pinned are the held records the index may still name at their corrupt
 	// place, keyed by sequence number: each counts once toward its corrupt
 	// record's segment in d.unproduced.
@@ -104,6 +109,7 @@ func (d *Durability) unpin(st *stream, seg core.SegmentID, seq core.Seq) {
 func (st *stream) dropHeldLocked(h *segHold, seq core.Seq) {
 	st.pinLocked(h, seq, false)
 	delete(h.records, seq)
+	delete(h.placed, seq)
 }
 
 // holdVerdict is what holdCopy decided for a record served from a copy.
@@ -207,9 +213,9 @@ func (d *Durability) unholdCopy(st *stream, c ownedCopy) {
 
 // releaseLocked ends h, the hold on seg, once it holds no record: it leaves
 // st.holds and its claim is released. It reports whether the segment is to be
-// announced resolved: a re-append landed or a resolution was withheld, and no
-// window of the segment is pending, whose own resolution then announces it.
-// The caller holds mu.
+// announced resolved: a held record left it by a re-append or a resolution was
+// withheld, and no window of the segment is pending, whose own resolution then
+// announces it. The caller holds mu.
 func (st *stream) releaseLocked(set *segment.Set, seg core.SegmentID, h *segHold) bool {
 	if len(h.records) != 0 || st.holds[seg] != h {
 		return false
@@ -246,11 +252,22 @@ func segmentGone(set *segment.Set, seg core.SegmentID) bool {
 }
 
 // holdsDueLocked reports whether a hold waits on a retry the worker's tick
-// makes: an owed claim, or, once the re-append is installed, a claimed
-// record not yet re-appended. The caller holds mu.
-func (st *stream) holdsDueLocked(reappend bool) bool {
+// makes: an owed claim, or a claimed record not yet re-appended or whose new
+// place has not yet completed. The caller holds mu.
+func (st *stream) holdsDueLocked() bool {
 	for _, h := range st.holds {
-		if h.owed || (reappend && len(h.records) != 0) {
+		if h.owed || len(h.records) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// placingLocked reports whether a held record waits on its new place to
+// complete. The caller holds mu.
+func (st *stream) placingLocked() bool {
+	for _, h := range st.holds {
+		if len(h.placed) != 0 {
 			return true
 		}
 	}
@@ -261,8 +278,9 @@ func (st *stream) holdsDueLocked(reappend bool) bool {
 // at each tick of the sync bound. For each it retries an owed claim; when the
 // set no longer holds the segment, it loses every held record; otherwise it
 // removes each record the index no longer names, re-appends each the claim
-// covers, and ends the hold once it holds nothing. In a read-only journal it
-// does nothing: nothing is claimed or re-appended there.
+// covers, removes each whose new place has completed, and ends the hold once
+// it holds nothing. In a read-only journal it does nothing: nothing is
+// claimed, re-appended or released there.
 func (d *Durability) reappendStep(st *stream) {
 	st.mu.Lock()
 	segs := make([]core.SegmentID, 0, len(st.holds))
@@ -341,13 +359,22 @@ func (d *Durability) retryHold(st *stream, set *segment.Set, seg core.SegmentID)
 }
 
 // moveHeld handles one held record. Under its file's append domain, a record
-// the index names neither at the corrupt place nor at the copy was
-// overwritten, and leaves the hold with no re-append; one the claim covers is
-// repointed to the copy if the index still names the corrupt record. The
-// domain is then let go, and the record is re-appended with no lock held,
-// leaving the hold once the re-append lands. A re-append that fails, or one
-// not made because the journal turned read-only meanwhile, leaves the record
-// held for the next pass.
+// not yet re-appended that the index names neither at the corrupt place nor at
+// the copy was overwritten, and leaves the hold with no re-append; one the
+// claim covers is repointed to the copy if the index still names the corrupt
+// record. The domain is then let go, and the record is re-appended with no
+// lock held, and stays held with the place it was appended at until that
+// place completes. A re-append that fails, or one not made because the
+// journal turned read-only meanwhile, leaves the record held for the next
+// pass. A record already re-appended leaves the hold once its new place has
+// completed (followed through any later re-append of a window of its own),
+// and is re-appended again if a read has repointed the index back to the copy
+// since.
+//
+// The hold lasts until the new place completes, not until its append, because
+// a held record was acknowledged at the place found corrupt: the copy is the
+// only verified place of it until another syncs, and a released copy's segment
+// could be repacked away before then, losing the record to a crash.
 func (d *Durability) moveHeld(st *stream, seg core.SegmentID, h *segHold, c ownedCopy, claimed bool) {
 	unlock := d.domains.Lock(c.File)
 	at := index.RecordAt{Segment: c.Copy.Segment, Offset: uint32(c.Copy.Off)}
@@ -355,13 +382,27 @@ func (d *Durability) moveHeld(st *stream, seg core.SegmentID, h *segHold, c owne
 	if !atRecord {
 		d.unpin(st, seg, c.Seq)
 	}
+	atCopy := d.index.Names(c.File, at)
+	if placed, ok := d.placedOf(st, seg, h, c); ok {
+		if !atCopy {
+			// Decided under the domain, so a read that repoints the index back
+			// to the copy is wholly before this, and seen above, or wholly
+			// after the record left the hold, and holds it again.
+			d.settlePlaced(st, seg, h, c, placed)
+			unlock()
+			return
+		}
+		// A read found the new place corrupt and repointed the index back to
+		// the copy, which it verified: the record is re-appended again.
+		d.unplace(st, seg, h, c)
+	}
 	switch {
-	case !atRecord && !d.index.Names(c.File, at):
+	case !atRecord && !atCopy:
 		// Overwritten: nothing of the record is served from the copy.
 		unlock()
 		d.letGo(st, seg, h, c, false)
 		return
-	case !claimed || d.reappend == nil:
+	case !claimed:
 		unlock()
 		return
 	case atRecord:
@@ -378,15 +419,93 @@ func (d *Durability) moveHeld(st *stream, seg core.SegmentID, h *segHold, c owne
 	if d.isReadOnly() {
 		return
 	}
-	if err := d.reappend(st, c); err != nil {
+	to, err := d.reappend(st, c)
+	if err != nil {
 		d.log.Error("journal could not re-append a held record", "file", c.File, "seq", c.Seq, "err", err)
+		return
+	}
+	st.mu.Lock()
+	recorded := false
+	if cur, ok := h.records[c.Seq]; ok && cur == c && st.holds[seg] == h {
+		if h.placed == nil {
+			h.placed = map[core.Seq]segment.Location{}
+		}
+		h.placed[c.Seq] = to
+		recorded = true
+	}
+	st.mu.Unlock()
+	if !recorded {
+		return
+	}
+	// The stream tracks a record inside its append, so a new place is pending
+	// here unless it is already complete, which only a re-append that tracked
+	// nothing leaves. A read that repointed the index back to the copy since
+	// leaves the record for the next pass, which re-appends it again.
+	unlock = d.domains.Lock(c.File)
+	if !d.index.Names(c.File, at) {
+		d.settlePlaced(st, seg, h, c, to)
+	}
+	unlock()
+}
+
+// placedOf returns where the held record c was re-appended, if it was. It
+// takes mu.
+func (d *Durability) placedOf(st *stream, seg core.SegmentID, h *segHold, c ownedCopy) (segment.Location, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.holds[seg] != h {
+		return segment.Location{}, false
+	}
+	to, ok := h.placed[c.Seq]
+	return to, ok
+}
+
+// unplace forgets where the held record c was re-appended, so the next step
+// re-appends it again. It takes mu.
+func (d *Durability) unplace(st *stream, seg core.SegmentID, h *segHold, c ownedCopy) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.holds[seg] == h {
+		delete(h.placed, c.Seq)
+	}
+}
+
+// settlePlaced decides the held record c, re-appended at placed, whose copy
+// the index no longer names: it leaves the hold once the record's last place,
+// placed or a place a window's re-append moved it to, has completed, and stays
+// while that place is pending. The caller holds c.File's append domain.
+//
+// decision: a record whose last place was lost also leaves the hold. That
+// place is lost only when its window's re-read did not verify or a read found
+// it corrupt with no copy verifying, and each of those has already dropped the
+// record's extents from the index and reported it lost, its loss record
+// excluding every copy of its sequence number at recovery, so the copy keeps
+// nothing a release could cost. The ceiling is that the drop itself is the
+// loss of an acknowledged record whose held copy may still verify: the
+// failure path fails the new place without asking whether a hold backs it.
+// A read-only journal never reaches here, as its step returns early and the
+// mode is never left: there the new place stays held and claimed, and
+// failReadOnly still drops its extents and publishes an event although the
+// held copy may verify. No loss record is written, so a restart in a new
+// process replays the copy and brings the record back, while a reopen in this
+// process drops every copy of its sequence number with the other records the
+// pass failed (RFC 1 §5.4). Overturned by a ruling that such
+// a record must survive, which needs the failure path to repoint the index
+// back to the held copy instead of dropping it.
+func (d *Durability) settlePlaced(st *stream, seg core.SegmentID, h *segHold, c ownedCopy, placed segment.Location) {
+	st.mu.Lock()
+	last := st.followLocked(placed)
+	_, lost := st.lost[last]
+	pending := !lost && st.pending(last)
+	st.mu.Unlock()
+	if pending {
 		return
 	}
 	d.letGo(st, seg, h, c, true)
 }
 
 // letGo removes c from h, the hold on seg, unless the hold has ended since;
-// landed says a re-append of c landed.
+// landed says c left the segment by a re-append.
 func (d *Durability) letGo(st *stream, seg core.SegmentID, h *segHold, c ownedCopy, landed bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()

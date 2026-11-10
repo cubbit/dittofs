@@ -118,9 +118,8 @@ func FuzzSyncInterleaving(f *testing.F) {
 						}
 					}
 					// A file that lost a record may hear of a failure again: its
-					// loss record can sit in a failed segment's window as a
-					// header-only record, which fails every Sync naming the
-					// file until it is re-appended.
+					// loss record is appended into a later segment, and a failure
+					// of that segment is one more window for the file.
 					for _, l := range locs[i] {
 						hit = hit || maybeFailed[l.Segment]
 					}
@@ -277,10 +276,11 @@ func FuzzFailedSyncWindow(f *testing.F) {
 				case errors.Is(err, core.ErrSyncFailed):
 					// decision: a file that lost a record may hear of a failure
 					// again, since its loss record is appended into the stream's
-					// next segment, and a sync failure of that segment leaves
-					// the loss record, a header-only one, pending in its window
-					// until it is re-appended, which fails every Sync naming
-					// the file. Withdrawn once that re-append exists.
+					// next segment, and a sync failure of that segment is one
+					// more window for the file. The loss record itself is
+					// re-appended and fails no Sync, but the check stays this
+					// wide because the run cannot tell which record a failure
+					// found.
 					if !doomedFile && !lossAtRisk {
 						t.Fatalf("Sync of file %d failed with no failure scheduled for it, or was told before: %v", i, err)
 					}
