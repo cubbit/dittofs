@@ -470,7 +470,7 @@ adds to that composition, and nothing else, is this section's:
   gateway and `vfs.Serve` stop.
 
 > ponytail: the node both builds and drives its components. Split the builder
-> out when it gains dependencies a multi-node test cannot fake cheaply.
+> out when it gains dependencies a multi-node test cannot build in memory cheaply.
 
 ### 2.5 The cut
 
@@ -948,10 +948,12 @@ embedded single-node store gives none.
   refused by node epoch and the second write's bytes survive (T7). A takeover
   that does not fence first fails this.
 - **The gateway decides nothing (cluster):** drive every `vfs.Service` method
-  through a `vfs.Gateway` over a fake `vfs.Router` and `vfs.Transport`, with a
-  local `vfs.Service` that records its calls. Assert each call reaches the local
-  service or the transport unchanged, and that the gateway makes no other call
-  (T12). A gateway that admits or squashes fails this.
+  through a `vfs.Gateway` whose router reads an in-memory control-plane store,
+  over the in-memory `vfs.Transport` to a second in-memory filesystem, with an
+  in-memory filesystem as its local `vfs.Service`. Assert each call's effect
+  lands at the primary the router names, under the caller's `Identity`, and its
+  answer is the one a direct call there gives (T12). A gateway that admits or
+  squashes fails this.
 - **Node channels:** send a replication message and a forwarded call from a peer
   without an issued credential, and from an authenticated peer naming another
   node. Assert both refused (T9).
@@ -991,7 +993,9 @@ embedded single-node store gives none.
 
 **Multi-node tests** run two nodes, each built by `node.New`, over an in-memory
 control-plane store and a loopback `vfs.Transport`, and drive changes by writing
-to the store:
+to the store. The loopback transport is held to the transport conformance suite
+the network transport passes, and its faults are a wrapper around it
+([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)):
 
 - **Routing:** the filesystem service's conformance suite **MUST** pass
   unchanged through a gateway whose every call is forwarded, and with a stale
