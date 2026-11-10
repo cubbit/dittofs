@@ -1,6 +1,7 @@
 package index
 
 import (
+	"slices"
 	"testing"
 	"unsafe"
 
@@ -57,8 +58,8 @@ func TestHeldPiecesCarryTheirRecordsSeq(t *testing.T) {
 func TestFillCarriesTheFillsSeq(t *testing.T) {
 	ix := New(1 << 20)
 	seqWrite(t, ix, write(100, 100, rec(1, 64), 1), 5)
-	fp := Placed{Extent: ext(0, 300), Record: rec(2, 64), Version: ver(1), Seq: 11}
-	if _, err := ix.fs.fill(testTag, testFile, fp, ver(1)); err != nil {
+	fp := Placed{Extent: ext(0, 300), Record: rec(2, 64), Version: ver(1)}
+	if _, err := ix.fs.fill(testTag, testFile, fp, 11, ver(1)); err != nil {
 		t.Fatalf("fill: %v", err)
 	}
 	placed, _ := ix.Span(testFile, ext(0, 300))
@@ -81,8 +82,8 @@ func TestFillUnderAMarkerCarriesTheFillsSeq(t *testing.T) {
 	if _, err := ix.Lose(testFile, ext(100, 100), ver(3)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
-	fp := Placed{Extent: ext(0, 300), Record: rec(2, 64), Version: ver(2), Seq: 12}
-	if _, err := ix.fs.fill(testTag, testFile, fp, ver(3)); err != nil {
+	fp := Placed{Extent: ext(0, 300), Record: rec(2, 64), Version: ver(2)}
+	if _, err := ix.fs.fill(testTag, testFile, fp, 12, ver(3)); err != nil {
 		t.Fatalf("fill: %v", err)
 	}
 	held := ix.HeldAt(testFile, rec(2, 64))
@@ -204,4 +205,52 @@ func TestOwnerNamesTheFilesTag(t *testing.T) {
 	if tag, ok := ix.Owner(testFile); !ok || tag != testTag {
 		t.Fatalf("Owner = %d, %v; want %d", tag, ok, testTag)
 	}
+}
+
+// TestSplitsAndCutsKeepEachPiecesSeq checks that an offloaded mark that splits
+// a piece and rejoins it, a cut below a version and a release leave every
+// remaining piece with the seq of its record.
+func TestSplitsAndCutsKeepEachPiecesSeq(t *testing.T) {
+	seqs := func(s *heldSet) []core.Seq {
+		var out []core.Seq
+		for _, p := range s.pieces(nil) {
+			out = append(out, p.Seq)
+		}
+		return out
+	}
+	held := func() *heldSet {
+		var s heldSet
+		s.insert(seqd(write(0, 8, rec(1, 0), 1), 4))
+		s.insert(seqd(write(8, 8, rec(2, 0), 2), 6))
+		return &s
+	}
+	check := func(t *testing.T, s *heldSet, want ...core.Seq) {
+		t.Helper()
+		if got := seqs(s); !slices.Equal(got, want) {
+			t.Fatalf("seqs = %v, want %v", got, want)
+		}
+	}
+
+	t.Run("markOffloaded splits and rejoins", func(t *testing.T) {
+		s := held()
+		s.markOffloaded(ext(2, 4), ver(1), ver(1))
+		check(t, s, 4, 4, 4, 6)
+		s.markOffloaded(ext(0, 8), ver(1), ver(1))
+		check(t, s, 4, 6)
+	})
+	t.Run("cutBelow", func(t *testing.T) {
+		s := held()
+		s.cutBelow(ext(0, 12), ver(2))
+		check(t, s, 6)
+		s.cutBelow(ext(10, 4), ver(3))
+		check(t, s, 6, 6)
+	})
+	t.Run("release", func(t *testing.T) {
+		s := held()
+		s.markOffloaded(ext(0, 16), ver(1), ver(2))
+		if _, err := s.release(ext(2, 8), nil); err != nil {
+			t.Fatalf("release: %v", err)
+		}
+		check(t, s, 4, 6)
+	})
 }

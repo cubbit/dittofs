@@ -132,10 +132,11 @@ func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileI
 //
 // decision: the header is checked against the index entry that sent the read
 // there, not against a catalog: the running journal keeps no catalog in
-// memory, and the index entry holds the catalog's fields for the record. A
-// journal rebuilt from a catalog compares against the entries its recovery
-// placed in the index, which are the catalog's. Overturned by a catalog kept
-// in memory, which would then be the one compared.
+// memory, and the index entry carries the fields the check compares: file,
+// version, sequence number and placement. Kind is checked only as write or
+// fill. A journal rebuilt from a catalog compares against the entries its
+// recovery placed in the index, which are the catalog's. Overturned by a
+// catalog kept in memory, which would then be the one compared.
 func headerMatches(h format.RecordHeader, id core.FileID, pieces []index.Placed) bool {
 	if h.Kind != format.KindWrite && h.Kind != format.KindFill {
 		return false
