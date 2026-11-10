@@ -49,6 +49,11 @@ while IFS= read -r pkg; do
     esac
 done <<< "$PKGS"
 
+# Git exports GIT_DIR and its siblings to a hook; a test that runs git in a
+# repository of its own would otherwise commit into this one.
+# shellcheck disable=SC2046  # one variable name per word
+unset $(git rev-parse --local-env-vars)
+
 test_packages() {
     local module="$1" packages="$2"
     # Go decides what is left to test: a package the branch deletes, or one
