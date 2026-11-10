@@ -557,10 +557,10 @@ RFC sections: §3.1 (states, drain, abandon at the deadline, auxiliary listeners
 rows, A10, A11, A14, A19, A20.
 
 - T4.1 `Server`: configured, serving, draining, stopped; `Start` binds every listener or none;
-  `NewServer` refuses a listener naming no service or an empty one, and two naming the same
-  `adapter.Socket` or the same network and nonzero port. `Addrs()`'s body (stub from the
-  Serving/Addrs surface change): one `adapter.Socket` per service of each listener, all at its
-  bound port, with one test per promise: the map and its slices are the caller's (the test
+  `NewServer` refuses a listener naming no service, an empty one or one twice, and two naming
+  the same `adapter.Socket` or the same network and nonzero port. `Addrs()`'s body (stub from the
+  Serving/Addrs surface change): one `adapter.Socket` per service of each listener, each address
+  at the port bound there, with one test per promise: the map and its slices are the caller's (the test
   mutates both, calls `Addrs` again and finds the server unchanged); port 0 is resolved; an
   address `Reconfigure` adds is present and one it removes gone (with T4.6); the map is empty
   before `Start` and after `Stop`. If it moves the first
@@ -589,9 +589,9 @@ rows, A10, A11, A14, A19, A20.
   asserted on an accepted socket; buffers left to the kernel.
 - T4.9 The sidecar runner, lifted from v1's `pkg/adapter/sidecar.Group` on `develop`, each
   `Serving` built from `Adapter.Addrs()`: `Sync` with
-  the serving set after an adapter is serving, again after a `Reconfigure` that adds an address
-  and before one that removes it, without the addresses it removes, and before it drains, each
-  tested on a `testproto` adapter, the address change by adding and removing one; idempotent, a disabled
+  the serving set after an adapter is serving, before a `Reconfigure` that removes an address
+  (that address left out), again after every `Reconfigure` returns, and before it drains, the
+  address change tested by adding one, removing one and a removal `Reconfigure` refuses; idempotent, a disabled
   sidecar synced with the empty set, a failing one raising `sidecar_failed` without touching the
   adapters or readiness; tested with `testproto` adapters and a trivial real sidecar, its
   failure given by a fault wrapper.
@@ -707,7 +707,7 @@ and SMB rows, §5.1, §5.2, §5.4 for the headers, §6.10's codec gate for the h
 Waits for RFC 23's `internal/node`. Then: `node.New` builds each enabled adapter through
 `pkg/adapter/nfs.New` and `smb.New` from its `Deps`, starts them last, applies a settings
 generation by `Reconfigure` or by stop, `New` and start, drives the sidecar runner (its `Sync`
-after a `Reconfigure` that adds an address and before one that removes it, RFC 20 §3.5), reports
+before a `Reconfigure` that removes an address and after every `Reconfigure`, RFC 20 §3.5), reports
 `Health` and `Connections()` to the control plane's client list, and checks every budget at zero
 after the adapters stop. It also takes the ledger rows that need a node: the config loader for
 `pkg/adapter/config`, `core`'s conditions in RFC 25 §3.9's registry and the alert rules for

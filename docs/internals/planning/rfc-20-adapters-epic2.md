@@ -168,7 +168,7 @@ names the epic that owns the rest.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R32 | A test reaches a `core` server listening on `127.0.0.1:0` through `Addrs()`, keyed by `adapter.Socket` (`Service`, `Network`), one per service its listener names, each key holding every bound address with port 0 resolved | MUST | RFC 20 §3.4 and §4.7 as the Serving/Addrs surface change amends them; the epic's owner's decision | T2.1 (body: E4's T4.1) |
+| R32 | A test reaches a `core` server listening on `127.0.0.1:0` through `Addrs()`, keyed by `adapter.Socket` (`Service`, `Network`), one per service its listener names, each key holding every bound address with port 0 resolved | MUST | RFC 20 §3.4 and §4.7 as the Serving/Addrs surface change amends them; owner decision | T2.1 (body: E4's T4.1) |
 
 ## 4. Decisions this epic takes
 
@@ -336,14 +336,14 @@ names the epic that owns the rest.
   `adapter.Socket{Service, Network}`, `Serving.Listeners map[Socket][]netip.AddrPort`,
   `core.Listener` gaining `Services`, and `Addrs() map[Socket][]netip.AddrPort` on
   `adapter.Adapter`, which `*core.Server` implements, from which the node builds each `Serving`
-  as it stands, with no ordering to rebuild. `Addrs` is on the contract because the node holds
-  only the `adapter.Adapter` that `New` returns and RFC 20 §2.5 bans finding a capability by type
-  assertion. A listener names every service it carries, because one port carries several: NFS's
-  listener `{Services: ["nfs", "mount", "nlm", "nsm"], Network: "tcp", Port: 2049}` yields
-  `{nfs, tcp}`, `{mount, tcp}`, `{nlm, tcp}` and `{nsm, tcp}`, each holding `0.0.0.0:2049`, and a
-  second listener on UDP names `nlm` and `nsm`; a second listener on the same port would fail
-  `Start` with `EADDRINUSE`. `Listener` keeps `Network` and a list of services rather than
-  embedding `Socket`, which names one service. The
+  with no ordering to rebuild, leaving out, before a `Reconfigure` that removes an address, the
+  entries at that address. `Addrs` is on the contract because the node holds only the
+  `adapter.Adapter` that `New` returns, and RFC 20 §2.5 bans finding a capability by type
+  assertion. A listener names every service its port carries: NFS's
+  `{Services: ["nfs", "mount", "nlm", "nsm"], Network: "tcp", Port: 2049}` yields `{nfs, tcp}`,
+  `{mount, tcp}`, `{nlm, tcp}` and `{nsm, tcp}`, each holding `0.0.0.0:2049` (RFC 20 §4.8's
+  example adds NLM and NSM over UDP). `Listener` keeps `Network` and a list of services rather
+  than embedding `Socket`, which names one service, and a `decision:` at the type says so. The
   prior art: `net.Listener.Addr` reports per socket what was bound; rpcbind registers each
   program, version and netid separately (RFC 1833), which `Socket`'s network mirrors; DNS-SD
   responders such as Avahi advertise every address a host has, which the slice keeps. The change

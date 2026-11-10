@@ -44,8 +44,8 @@ type Adapter interface {
 	Stop(ctx context.Context) error
 
 	// Addrs is every address each listener is bound on now, by service and
-	// network, in a fresh map the caller owns, its slices copied too: a port
-	// of 0 resolved, an address Reconfigure added included and one it removed
+	// network, in a fresh map the caller owns, slices included: a port of 0
+	// resolved, an address Reconfigure added included and one it removed
 	// gone. It is empty before Start and after Stop. The node builds each
 	// Serving from it.
 	Addrs() map[Socket][]netip.AddrPort

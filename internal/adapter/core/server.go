@@ -18,10 +18,13 @@ type Server struct{}
 var _ adapter.Adapter = (*Server)(nil)
 
 // Listener is one protocol on one port, bound on each of the settings' Addrs.
-// Addrs reports it under one Socket per service it names, each on its
-// network and all at its one bound port. It names its services, not one
-// Socket, because one port carries several: NFS's carries NFS, MOUNT, NLM and
-// NSM, told apart by RPC program.
+// Addrs reports it under one Socket per service it names, on its network,
+// each address at the port bound there.
+//
+// decision: a listener names its services rather than holding a Socket,
+// because one port carries several: NFS's carries NFS, MOUNT, NLM and NSM,
+// told apart by RPC program. So Network repeats Socket's field, and a field
+// added to Socket must be added here too, or Addrs builds incomplete keys.
 type Listener struct {
 	Services []string // the names Addrs and a sidecar know it by: "nfs", "mount", "nlm", "nsm", "smb"
 	Network  string   // "tcp" or "udp"
@@ -32,9 +35,9 @@ type Listener struct {
 // NewServer returns the adapter New hands back: each listener bound on each
 // of the settings' Addrs, all or none at Start; Reconfigure binds them on an
 // added address the same way. s is the protocol's whole shape, which New was
-// given; core reads its Common part. It refuses a listener naming no service
-// or an empty one, and two listeners naming the same Socket or the same
-// network and nonzero port.
+// given; core reads its Adapter. It refuses a listener naming no service, an
+// empty one or one twice, and two listeners naming the same Socket or the
+// same network and nonzero port.
 func NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error) {
 	return nil, fmt.Errorf("core: new server: %w", errors.ErrUnsupported)
 }
@@ -57,8 +60,8 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 
 // Addrs is every address each listener is bound on now, by service and
-// network, in a fresh map the caller owns, its slices copied too: a port
-// of 0 resolved, an address Reconfigure added included and one it removed
+// network, in a fresh map the caller owns, slices included: a port of 0
+// resolved, an address Reconfigure added included and one it removed
 // gone. It is empty before Start and after Stop. The node builds each
 // Serving from it.
 func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort {

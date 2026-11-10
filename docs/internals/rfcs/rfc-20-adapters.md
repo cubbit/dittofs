@@ -897,8 +897,8 @@ type Adapter interface {
 	Stop(ctx context.Context) error
 
 	// Addrs is every address each listener is bound on now, by service and
-	// network, in a fresh map the caller owns, its slices copied too: a port
-	// of 0 resolved, an address Reconfigure added included and one it removed
+	// network, in a fresh map the caller owns, slices included: a port of 0
+	// resolved, an address Reconfigure added included and one it removed
 	// gone. It is empty before Start and after Stop. The node builds each
 	// Serving from it (§3.5).
 	Addrs() map[Socket][]netip.AddrPort
@@ -1047,15 +1047,14 @@ type Socket struct {
 > rpcbind registers per program and netid, and DNS-SD advertises every address
 > of a host; withdraw the slice if a sidecar is found that can advertise only
 > one address per service. A listener that carries several services on one
-> port, as NFS's carries NFS, MOUNT, NLM and NSM, is one key per service, each
-> holding that port (§4.7).
+> port, as NFS's carries NFS, MOUNT, NLM and NSM, is one key per service (§4.7).
 
-- **Order.** The node builds each `Serving` from the adapter's `Addrs` (§3.4)
-  and calls `Sync` after the adapter is serving, again after a `Reconfigure`
-  that adds an address and before one that removes it, without the addresses
-  it removes, and before the adapter starts draining, so nothing is advertised
-  that cannot be reached, and an advertisement is withdrawn while the adapter
-  still answers.
+- **Order.** The node builds each `Serving` from the adapter's `Addrs` (§3.4).
+  It calls `Sync` after the adapter is serving, before a `Reconfigure` that
+  removes an address (that address left out), again after every `Reconfigure`
+  returns, whatever it returned, and before the adapter starts draining. So
+  nothing is advertised that cannot be reached, and an advertisement is
+  withdrawn while the adapter still answers.
 - **A failing sidecar fails only itself.** It raises `sidecar_failed` naming it
   (§3.7); the adapters keep serving. A client that cannot find the server by
   discovery can still be given its address.
@@ -1104,6 +1103,9 @@ sequenceDiagram
   R->>M: reads the settings generation once a second
   R->>R: running vs desired: what changed, and is it live?
   alt live setting
+    opt it removes an address
+      R->>S: Sync(serving, without the removed addresses)
+    end
     R->>A: Reconfigure(ctx, settings at G)
   else restart-class setting
     R->>A: Stop (drain), New, Start — this adapter only
@@ -2386,15 +2388,18 @@ func Errors() []error
 // of the settings' Addrs, all or none at Start (§3.1); Reconfigure binds them
 // on an added address the same way (§3.6). s is the protocol's whole shape,
 // which New was given; core reads its Adapter. It refuses a listener naming
-// no service or an empty one, and two listeners naming the same Socket or the
-// same network and nonzero port.
+// no service, an empty one or one twice, and two listeners naming the same
+// Socket or the same network and nonzero port.
 func NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)
 
 // Listener is one protocol on one port, bound on each of the settings' Addrs.
-// Addrs reports it under one Socket per service it names, each on its
-// network and all at its one bound port. It names its services, not one
-// Socket, because one port carries several: NFS's carries NFS, MOUNT, NLM and
-// NSM, told apart by RPC program.
+// Addrs reports it under one Socket per service it names, on its network,
+// each address at the port bound there.
+//
+// decision: a listener names its services rather than holding a Socket,
+// because one port carries several: NFS's carries NFS, MOUNT, NLM and NSM,
+// told apart by RPC program. So Network repeats Socket's field, and a field
+// added to Socket must be added here too, or Addrs builds incomplete keys.
 type Listener struct {
 	Services []string // the names Addrs and a sidecar know it by: "nfs", "mount", "nlm", "nsm", "smb"
 	Network  string   // "tcp" or "udp"
@@ -2500,11 +2505,11 @@ func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) {
 		NLM:   nlm.Table(&nlm.Handlers{VFS: d.VFS}),
 		NSM:   nsm.Table(&nsm.Handlers{VFS: d.VFS}),
 	}
-	p := protocol.New(t)
 	// Addrs reports nfs, mount, nlm and nsm over TCP, and nlm and nsm over UDP, all at 2049.
 	return core.NewServer(d, s,
-		core.Listener{Services: []string{"nfs", "mount", "nlm", "nsm"}, Network: "tcp", Port: 2049, Protocol: p},
-		core.Listener{Services: []string{"nlm", "nsm"}, Network: "udp", Port: 2049, Protocol: p})
+		core.Listener{Services: []string{"nfs", "mount", "nlm", "nsm"}, Network: "tcp", Port: 2049, Protocol: protocol.New(t)},
+		core.Listener{Services: []string{"nlm", "nsm"}, Network: "udp", Port: 2049,
+			Protocol: protocol.New(protocol.Tables{NLM: t.NLM, NSM: t.NSM})})
 }
 
 // ops/v3/table.go: the row list, one line per operation; each row is built in its operation's own file
