@@ -138,6 +138,14 @@ func (r *reading) serveRecord(g recordPieces, again bool) error {
 	case segmentGone(err):
 		return r.resolveAgain(g, again)
 	case err != nil:
+		// decision: an I/O error, a short read among them, is not a
+		// verification failure: it shows nothing about the record, so the
+		// read returns it, serves nothing of the record, drops nothing and
+		// hands nothing to Corrupt. The ceiling: a segment truncated under a
+		// record reads short on every read of it, and so errors every read of
+		// that range, until the journal's open recovery truncates the tail
+		// it scans. Overturned by a ruling that a persistent short read or
+		// EIO drops the extent, which would then hand it to Corrupt.
 		return err
 	case verdict == recordVerifies:
 		r.copyOut(payload, g.pieces)

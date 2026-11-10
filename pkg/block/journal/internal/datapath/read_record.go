@@ -121,17 +121,18 @@ func headerMatches(h format.RecordHeader, id core.FileID, pieces []index.Placed)
 
 // readFull reads len(b) bytes of seg at off through ref, a reference to seg.
 // A read that fills b and also reports io.EOF read every byte asked for; a
-// read that does not fill b is an io.ErrUnexpectedEOF.
+// read that does not fill b, with no error or with io.EOF, ran past the end of
+// the segment's file and is an io.ErrUnexpectedEOF.
 func readFull(ref segment.Ref, seg core.SegmentID, b []byte, off int64) error {
 	n, err := ref.ReadAt(b, off)
 	if n == len(b) && errors.Is(err, io.EOF) {
 		err = nil
 	}
 	switch {
+	case n < len(b) && (err == nil || errors.Is(err, io.EOF)):
+		return fmt.Errorf("datapath: reading %d bytes of segment %d at %d: %w: %d read", len(b), seg, off, io.ErrUnexpectedEOF, n)
 	case err != nil:
 		return fmt.Errorf("datapath: reading %d bytes of segment %d at %d: %w", len(b), seg, off, err)
-	case n < len(b):
-		return fmt.Errorf("datapath: reading %d bytes of segment %d at %d: %w: %d read", len(b), seg, off, io.ErrUnexpectedEOF, n)
 	}
 	return nil
 }

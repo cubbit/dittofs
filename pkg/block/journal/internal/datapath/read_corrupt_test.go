@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"slices"
 	"sync/atomic"
 	"syscall"
@@ -723,5 +724,45 @@ func TestTrackedIsFalseOnceTheSyncCompletedTheRecord(t *testing.T) {
 	}
 	if within(t, tracked, "the worker's release of the file's domain after completing the record") {
 		t.Fatal("the ledger still names the record its sync completed, before compacting it")
+	}
+}
+
+// TestReadShortRecordIsAnIOErrorThatDropsNothing truncates a segment under a
+// record: the body reads short. A short read shows nothing about the record,
+// so it is returned as an error wrapping io.ErrUnexpectedEOF, not handed to
+// Corrupt: nothing is served, nothing dropped, no loss queued.
+func TestReadShortRecordIsAnIOErrorThatDropsNothing(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	if _, err := c.WriteAt(context.Background(), s, f, 0, pattern(4<<10, 22), 1); err != nil {
+		t.Fatal(err)
+	}
+	syncFiles(t, c, f)
+	before := recordOf(t, c, f, 0)
+	file, err := seam.Open(format.SegmentName(before.Record.Segment))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(int64(before.Record.Offset) + format.RecordHeaderSize + 100); err != nil {
+		t.Fatal(err)
+	}
+	_ = file.Close()
+
+	p := sentinels(4 << 10)
+	n, missing, held, _, err := c.ReadAt(context.Background(), s, f, 0, p)
+	if !errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, core.ErrCorrupt) {
+		t.Fatalf("err = %v, want an error wrapping io.ErrUnexpectedEOF and not core.ErrCorrupt", err)
+	}
+	if n != 0 || len(held) != 0 || len(missing) != 0 || !bytes.Equal(p, sentinels(4<<10)) {
+		t.Fatalf("the short read reports %d bytes, held %v, missing %v", n, held, missing)
+	}
+	if after := recordOf(t, c, f, 0); after != before {
+		t.Fatalf("the index changed on a short read: %+v, was %+v", after, before)
+	}
+	for _, ev := range c.Durability().Stats().Losses {
+		if ev.File == f {
+			t.Fatalf("a short read queued a loss: %+v", ev)
+		}
 	}
 }
