@@ -460,9 +460,11 @@ func (e *Engine) clonePhase2(c *cloneRun, r *removal) *loopItem {
 		// step 2).
 		//
 		// decision: a dropped destination share releases the hold mid-clone,
-		// as the clone's removal record goes with the share and no start
-		// rebuilds it to release the source later. Withdraw it if Drop ends
-		// a share's clones some other way.
+		// as Drop is to take the clone's removal record with the share,
+		// leaving no start to rebuild it. Drop is not built, so only the test
+		// seam reaches this today. The source's clone-kind open record stays
+		// in the source share and holds it again at the next start, so Drop
+		// must delete it too (dropCloneHold).
 		if held && (p2done || c.db.gc.removals.isDropped(c.db.share.ID)) {
 			if err := release(context.Background()); err != nil {
 				e.d.Logger.Warn("a clone's release of its source at its loop's end failed", "src", c.src, "dst", c.dst, "err", err)

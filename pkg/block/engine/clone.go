@@ -439,10 +439,9 @@ func (e *Engine) size(ctx context.Context, c *cloneRun) (journal.Version, error)
 // and fails the clone; from CloneTarget on it never fails: what attempt
 // cannot finish, the loop retries, the guard held.
 //
-// ponytail: Close joins the goroutine (e.cloning), but nothing keeps it
-// where Unbind or a retry with the same spec could find it, so Unbind joins
-// it only through the loop context's end; the engine's map of running
-// clones, which retries and Unbind join, replaces it.
+// ponytail: Close joins the goroutine (e.cloning), but nothing joins it at
+// Unbind or keeps it where a retry with the same spec could find it; the
+// engine's map of running clones, which retries and Unbind join, replaces it.
 func (e *Engine) runClone(c *cloneRun) {
 	ctx := c.db.gc.removals.ctx
 	r, err := e.begin(ctx, c.db, c.dst, entity.RemoveClone, c.rd.Extent)

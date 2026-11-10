@@ -96,6 +96,7 @@ func TestCloseJoinsARebuiltCloneWaitingForItsSourcesShard(t *testing.T) {
 	closed := closing(m.e, context.Background())
 
 	reached(t, waiting, closed)
+	stays(t, closed, &events{}) // Close is still in the clone join
 	m.clock.Advance(engine.StopBoundDefault)
 
 	if err := <-closed; !unavailable(err) || !strings.Contains(err.Error(), "clone goroutine") {
