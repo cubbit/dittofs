@@ -178,8 +178,8 @@ Copied verbatim from [the plan](rfc-1-journal-plan.md) §1.5, as its instruction
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
-   to fake (rule 12). Every test double is one of the three kinds of
-   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles).
+   to fake (rule 12). Every double is one of
+   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference
@@ -296,21 +296,26 @@ unlinks, and the seam drops unsynced allocations at a crash (`storage.File`'s co
 file allocated and never synced comes back short or unallocated."). The RFC 28 §4.2 row "a
 spare is whole or absent" is amended to say so (#3409).
 
-**D6. System calls go through an unexported per-OS table.**
-A test replaces the table and asserts which call was made and on which descriptor: `fdatasync`
-on a file and `fsync` on the directory on Linux, `F_FULLFSYNC` on both on macOS,
-`FlushFileBuffers` on the file and on the directory handle opened with backup semantics on
-Windows. This is what makes the macOS and Windows legs able to fail (rule 10) without a power
-cut. A second test pins the production table itself: each entry is compared, by function
-pointer, with the `golang.org/x/sys` function the RFC's call goes through. Entries are
-never wrappers: the command is passed as data, so `Sync` calls
-`calls.fcntl(fd, unix.F_FULLFSYNC, 0)` and the recording fake asserts the command. A
+**D6. System calls go through an unexported per-OS table, and the table is data.**
+Each operation has one entry per OS: the `golang.org/x/sys` function the RFC's call goes
+through, its command as data, and the descriptor it takes: `fdatasync` on a file and `fsync`
+on the directory on Linux, `fcntl` with `F_FULLFSYNC` on both on macOS, `FlushFileBuffers` on
+the file and on the directory handle opened with backup semantics on Windows. `Sync` only
+reads its entry, so `Sync` calls `calls.fcntl(fd, calls.syncCmd, 0)`. A test reads each OS's
+table and asserts its contents: each function compared, by function pointer, with the `x/sys`
+function, and each command with the RFC's. No test swaps the table for a recording one. This
+is what makes the macOS and Windows legs able to fail (rule 10) without a power cut. Entries
+are never wrappers: a
 wrapper that calls `unix.Fsync` would pass a pin on the wrapper; it fails a pin on the
 `x/sys` function:
 
 ```go
-func TestSyscallTableIsReal(t *testing.T) {
-	// One case per entry: each is the x/sys function itself, never a wrapper.
+func TestSyscallTable(t *testing.T) {
+	// One case per entry: each is the x/sys function itself, never a wrapper, and its
+	// command is the RFC's.
+	if realTable.syncCmd != unix.F_FULLFSYNC {
+		t.Fatal("Sync is not F_FULLFSYNC")
+	}
 	if reflect.ValueOf(realTable.fcntl).Pointer() != reflect.ValueOf(unix.FcntlInt).Pointer() {
 		t.Fatal("fcntl is not unix.FcntlInt")
 	}
@@ -643,9 +648,8 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
 - **Done when:**
   - the contract test of `storage.FS` passes on `platform.OS` in a real directory and on
     the seam;
-  - in `TestSyncCalls`, the recording table sees `fdatasync` per `Sync` and `fsync` on the
-    directory per `SyncDir`, and `TestSyscallTableIsReal` pins each production entry to its
-    `x/sys` function (D6);
+  - `TestSyscallTable` reads the Linux table: `Sync` is `fdatasync` on the file and
+    `SyncDir` is `fsync` on the directory, each entry pinned to its `x/sys` function (D6);
   - an injected sync error is returned once and the next `Sync` issues a new call: a failed
     call is never retried; only a call interrupted by a signal (EINTR) is made again, as the
     `os` package does.
@@ -665,9 +669,9 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
     unwritten extents on ext4 and XFS";
   - RFC 28 §2.2: "An allocated region no record has reached reads as zeros."
 - **Done when:**
-  - its allocated size covers the cap, and the table records `fallocate` then zero writes
-    over the whole range;
-  - the linux case of `TestSyscallTableIsReal` pins the allocation's entries to their
+  - its allocated size covers the cap, and the table's `Allocate` entry is `fallocate` then
+    zero writes over the whole range;
+  - the linux case of `TestSyscallTable` pins the allocation's entries to their
     `x/sys` functions, `fallocate` to `unix.Fallocate` (D6).
 - **Rules:** 2: does not apply, no parser. 9: RFC 28's zero-fill `decision:` at the Linux
   allocation.
@@ -686,12 +690,11 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
     retried silently");
   - RFC 28 Appendix A: "`fcntl(F_PREALLOCATE)` then setting the size on macOS".
 - **Done when:**
-  - where a Mac runs `go test` (P22), the darwin case of `TestSyncCalls` sees
-    `fcntl(fd, F_FULLFSYNC, 0)` for every `Sync` and `SyncDir`, and the darwin case of
-    `TestSyscallTableIsReal` pins `fcntl` to `unix.FcntlInt` (D6);
-  - the recording table sees `F_PREALLOCATE`, its `Fstore_t` asking for the whole range with
-    `F_ALLOCATEALL`, then the size set, for every `Allocate`; the darwin case pins
-    `fcntlFstore` to `unix.FcntlFstore` and the size set to `unix.Ftruncate` (D6);
+  - where a Mac runs `go test` (P22), the darwin case of `TestSyscallTable` reads `Sync` and `SyncDir` as `fcntl` with
+    `F_FULLFSYNC`, `fcntl` pinned to `unix.FcntlInt` (D6);
+  - its `Allocate` entry is `F_PREALLOCATE` with `F_ALLOCATEALL` over the whole range, then the
+    size set, `fcntlFstore` pinned to `unix.FcntlFstore` and the size set to `unix.Ftruncate`
+    (D6);
   - the contract test of `storage.FS` (3.7) passes on APFS.
 - **Rules:** 2: does not apply, no parser. 8: real APFS only where a Mac runs the tests
   (P22); power-loss durability is not provable here (§8).
@@ -713,13 +716,12 @@ commits its fuzz target with a seed corpus, and every golden vector follows D1.
     writing zeros over the whole segment, on Windows".
 - **Done when:**
   - on the Windows runner a file open for reading is renamed and removed;
-  - the table records `FlushFileBuffers` on the file and on the directory handle opened
-    with backup semantics, and the windows case of `TestSyscallTableIsReal` pins each
+  - the table's `Sync` and `SyncDir` entries are `FlushFileBuffers` on the file and on the
+    directory handle opened with backup semantics, and the windows case of `TestSyscallTable` pins each
     production entry to its `x/sys/windows` function: `FlushFileBuffers` to
     `windows.FlushFileBuffers`, the directory open to `windows.CreateFile` (D6);
-  - the table records, for every `Allocate`, the size read, then the allocation size
-    and end of file when the file is shorter, then the zero writes, and no
-    `SetFileValidData`; the same case pins their entries (D6);
+  - the table's `Allocate` entry is the size read, then the allocation size and end of
+    file when the file is shorter, then the zero writes, and no `SetFileValidData`; the same case pins their entries (D6);
   - the contract test of `storage.FS` (3.7) passes on NTFS.
 - **Rules:** 2: does not apply, no parser. 9: the `FILE_SHARE_DELETE` `decision:` as in
   `journaltest/open_windows.go`.
@@ -805,7 +807,7 @@ row here, "directory flush on NTFS", it parks with the reason below.
 | --- | --- | --- |
 | RFC 28 Appendix A, ext4, XFS and Btrfs mounted without cache flushes | `TestCheckMountOptions` | 3.11 |
 | RFC 28 Appendix A, copy-on-write disabled, and the Btrfs subvolume root | `TestCheckCopyOnWrite` | 3.11 |
-| RFC 28 Appendix A, `F_FULLFSYNC` for every sync | `TestSyncCalls` and `TestSyscallTableIsReal`, their darwin cases | 3.7, 3.9 |
+| RFC 28 Appendix A, `F_FULLFSYNC` for every sync | `TestSyscallTable`, its darwin case | 3.7, 3.9 |
 | RFC 28 Appendix A, Windows write-cache flushing off by policy | `TestCheckWriteCachePolicy` | 3.12 |
 | RFC 28 §4.2, "directory flush on NTFS" | parked, needs host: real NTFS and a power cut (§8) | |
 | `rfc-1-journal-plan.md` §5, epic 3, "on epic 2's device fixtures" | parked, needs host: no runner has loop devices (§8) | |

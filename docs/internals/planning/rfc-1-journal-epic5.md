@@ -108,8 +108,8 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
-   to fake (rule 12). Every test double is one of the three kinds of
-   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles).
+   to fake (rule 12). Every double is one of
+   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference
@@ -573,9 +573,9 @@ pkg/block/journal/internal/
   followed by two appends, asserting both synced-through values; the allocation count of the
   reservation; a lock-held-during-I/O check on the segment append lock (catches R12); the
   seam's write log and the allocated size against the accounted one (catches a record written
-  twice, R87, and accounting that trails the filesystem, R75); a recording sink across appends of
-  several kinds and a failed one (catches a record that reaches the sink twice, or not at all, or
-  before its bytes are written, R88); `-race` with 16 appenders and a reader.
+  twice, R87, and accounting that trails the filesystem, R75); a sink that keeps what it is
+  delivered, across appends of several kinds and a failed one (catches a record that reaches the
+  sink twice, or not at all, or before its bytes are written, R88); `-race` with 16 appenders and a reader.
 
 ### T5.5 The spare pool
 
@@ -637,7 +637,7 @@ pkg/block/journal/internal/
   - With a reservation holding the last content spare, an unreserved roll is refused `spare`
     and the reserved write's roll succeeds.
 - **Tests:** the straddling write across a roll, asserting the predecessor and the seal's
-  order against the roll in the seam's call log (catches a successor taken before the seal is
+  order against the roll in the seam's log (catches a successor taken before the seal is
   durable); a pool emptied, then the refusal with the seam's call count unchanged; the
   `ENOSPC` variant after a failed `Make`, with nothing queued for retirement (T5.11 adds the
   queue); `-race` with 16 appenders over 4 streams and a refill; the spare-refusal counter; a
@@ -679,7 +679,7 @@ pkg/block/journal/internal/
   extra flush on the roll path; a merged step is caught by the order assertions that follow);
   a crash after each step and E3's reader on each durable state; an append racing a seal under
   `-race` (catches a record after the marker, R85); a torn second step; the failure injections
-  of both steps and of the truncation; a second seal's call log.
+  of both steps and of the truncation; a second seal's seam log.
 
 ### T5.8 Idle seal
 
@@ -756,7 +756,7 @@ pkg/block/journal/internal/
   - With the read-only check failing, the worker unlinks and recycles nothing.
   - The retired-segment hook runs once per retirement, after the segment left the set, on an
     unlink, a recycle and the fallback to an unlink, and not for a refused or failed retirement.
-- **Tests:** the seam's call log for a recycle, and the footprint around it (R72, R78); the
+- **Tests:** the seam's log for a recycle, and the footprint around it (R72, R78); the
   four failure injections; the pool target moved across the retirement (catches a decision
   made at seal); a reader holding a reference while a retirement runs, which must wait and
   then find the segment gone (R76; it fails if `Close(id)` stops waiting); two goroutines
@@ -765,9 +765,9 @@ pkg/block/journal/internal/
   (R79); a crash at each durable state with the directory listing; a write log showing a
   recycle writes only the two slots (R87); an unlink that fails and is retried; an active
   segment and a pooled spare refused (R82); a queued retirement with the read-only check
-  failing, and the seam's call log unchanged (R89); a recording hook asserting one call per
-  retirement through each of the three paths, made after the set no longer holds the segment, and
-  none for a refused retirement.
+  failing, and the seam's log unchanged (R89); a hook that keeps the retirements it is
+  delivered, holding one per retirement through each of the three paths, delivered after the
+  set no longer holds the segment, and none for a refused retirement.
 
 ### T5.10 Ending a segment after a failed append
 

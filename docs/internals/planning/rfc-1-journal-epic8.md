@@ -141,8 +141,8 @@ format, no recovery and no reclamation.
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
-   to fake (rule 12). Every test double is one of the three kinds of
-   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles).
+   to fake (rule 12). Every double is one of
+   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference
@@ -848,7 +848,7 @@ before admission). The recorder's order across a tagged write is T8.11's test.
   - A refusal changes no extent's offloaded bit and evicts nothing.
   - A write refused by capacity holds no lock on the file index and no domain after it returns.
 - **Tests:** `TestRFC1B_Reservation` with 16 writers (R66, R68); `TestRFC1B_NamedRefusal`
-  (R69, R70); the recorder asserting `Pool.Hold` runs with D9's mutex released (catches a capacity lock taken under another of its domain, RFC 1 §8.3); a test of many small writes on one stream against fewer ready spares, counting the pool's holds (catches a spare held for a write that fits, R66); a retirement through the executor with the copy table read back (catches a `Retired` left unwired); `TestRFC1B_ShareLimit` (R67); `TestEdge_ReservationExactFitShare` and
+  (R69, R70); the lock-order recorder of T8.11 reporting no violation across `Take`, its own output, which it reports if `Pool.Hold` runs under D9's mutex (catches a capacity lock taken under another of its domain, RFC 1 §8.3); a test of many small writes on one stream against fewer ready spares, with the pool's held spares read from its state after each (catches a spare held for a write that fits, R66); a retirement through the executor with the copy table read back (catches a `Retired` left unwired); `TestRFC1B_ShareLimit` (R67); `TestEdge_ReservationExactFitShare` and
   `TestEdge_ReservationExactFitJournal` (R104); `TestEdge_FilesystemENOSPCIsNotErrNoSpace` (R72);
   a test that fills a share and the journal and asserts which limit is named for each
   combination, `spare` last (R71); a test that counts the seam's calls across a refusal and finds
