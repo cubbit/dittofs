@@ -191,7 +191,8 @@ Epic 2 builds what those tests stand on:
   cacheable reply under a wrapping `Security`, replayed twice, decoding both times; a connection
   closed on a scripted violation.
 - **The import test** (RFC 20 §7.1), reusing the `go/parser` walk of
-  `internal/vfs/arch_test.go`, and seeded with one violation in its own `testdata`. It checks the
+  `internal/vfs/arch_test.go`, and seeded in its own `testdata` with one violation per rule and one allowed import per
+  allowance, which it must not report. It checks the
   adapters' imports; `arch_test.go` keeps checking the other direction, that the service imports
   no adapter. It covers RFC 20 §2.3's list, both directions of `pkg/` and `internal/`, `wire`
   purity, test-only packages imported by no non-test package, and the paths v1 used that v2 does
@@ -289,8 +290,8 @@ and 5.
    `sync.Pool` per class, no self-probe. `pkg/resources`'s missing turns, `Reclaim`, `ShareCap`
    and `Split` each carry a `ponytail:` naming RFC 24.
 8. **A test must be able to fail.** Keep a test only if a plausible change would make it fail and
-   nothing else would catch that change. The import test proves it can by reporting its seeded
-   violation; the budget leak check by failing a test that keeps a `Buf`.
+   nothing else would catch that change. The import test proves it can by reporting each of its seeded
+   violations, one per rule; the budget leak check by failing a test that keeps a `Buf`.
 9. **A symbol is exported only if RFC 20's interface uses it.** `pkg/adapter`,
    `pkg/adapter/config`, `pkg/resources` and the two `New` are the public surface. `core`'s
    exported symbols are those RFC 20 §4.7 names, frozen at S1; everything else in `core` is
@@ -310,16 +311,16 @@ its entries come and go; the skipped suites come back through the ledger); a rea
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | Delete v1, fix the surface | v1 and the Runtime's adapter half deleted, suites off, required tests repinned; RFC 20 and 24 amended; `pkg/adapter`, `pkg/adapter/config`, `pkg/resources`, `core`'s §4.7 surface | 9 | 15.5 | team | all |
-| E2 ⛔ | Test foundations | `testproto` and its stateful half, the import test, the leak checks, the red suite | 4 | 10.25 | team | E3–E6 |
+| E2 ⛔ | Test foundations | `testproto` and its stateful half, the import test, the leak checks, the red suite, `Server.Addrs` | 4 | 10.75 | team | E3–E6 |
 | E3 | Budgets and buffers | `pkg/resources`: `Budget`, `Reservation`, `Buf`, `BufPool` | 3 | 5.5 | A | E4, E5 (partly) |
 | E4 | Connections and lifecycle | `Server` states, accept, limits, `Conn` reader and writer, drain, `Reconfigure`, health, TCP; the sidecar runner | 9 | 20 | B | E5 (partly), E6 via 🔀 S3 |
 | E5 | Dispatch | pipeline, tables, compound runner and chains, held and parked requests, middleware, error tables, request context, §10, benchmark | 11 | 26.5 | A | E6 via 🔀 S3 |
 | E6 | Protocol scaffolds | `wire/`, `protocol/` and `New` for SMB and NFS; not supported end to end | 4 | 11.5 | C | E8 |
 | E7 🔀 | Integration with the node | `internal/node` builds, starts, reconciles and stops adapters and sidecars | — | planned after S4 | team | E8 (partly) |
 | E8 | E2E green | the allocation cell checked, the ledger handed over | 2 | 1.5 | team | — |
-| | **Total** | | **42** | **90.75** | | |
+| | **Total** | | **42** | **91.25** | | |
 
-**Plan estimate: 42 subtasks, 90.75 man-days, not counting epic 7.**
+**Plan estimate: 42 subtasks, 91.25 man-days, not counting epic 7.**
 
 The estimate `N = round(2785 / 400) = 7` against four middle epics: RFC 20's handler, codec,
 security and translation areas (§4.3–§4.4, §4.9–§4.10, most of §5) are ledger rows for RFC 21 and
@@ -368,7 +369,7 @@ flowchart TD
   `core` is in that surface, and `testproto`'s stateful half proves it by S3.
   Unblocks E2, and through it every middle epic.
 - **S2 testproto and the import test in CI** (after E2). `testproto` runs over a `net.Conn`; the
-  import test runs in `unit` and reports its seeded violation. Unblocks E3, E4 and E6's `wire/`
+  import test runs in `unit` and reports each seeded violation and no seeded allowance. Unblocks E3, E4 and E6's `wire/`
   and `protocol/`.
 - **🔀 S3 `core` serves `testproto` end to end** (after E4 and E5). A `testproto` request goes
   accept → frame → pipeline → `vfstest.Memory` → reply; drain serves what its `Role` allows (RFC 20 §3.1)
@@ -503,7 +504,7 @@ deleted).
 
 ### Epic 2 — Test foundations ⛔
 
-**Epic 2 estimate: 4 subtasks, 10.25 man-days.**
+**Epic 2 estimate: 4 subtasks, 10.75 man-days.**
 
 What every later test stands on (§1.4). Its green tests run in `unit`; the specifications only
 a later epic can turn green run red in `adapter-conformance`, which it registers.
@@ -511,10 +512,11 @@ a later epic can turn green run red in `adapter-conformance`, which it registers
 RFC sections: §7 (the layers; the `core` layer on a test-only protocol), §7.1's import checks.
 
 - T2.1 `testproto`: frames, operations (echo, panic, a settable `Role`, one service call), versions;
-  driven over a plain `net.Conn`; the unit/adapter-allocs cell with its header gate.
+  driven over a plain `net.Conn`; the unit/adapter-allocs cell with its header gate; `core.Server.Addrs()`
+  added to RFC 20 §4.7 with a stub, for a test on `127.0.0.1:0` to learn its bound port.
 - T2.2 `testproto`'s stateful half, as §1.4 describes, so every symbol of RFC 20 §4.7 has a
   caller in `testproto`.
-- T2.3 The import test, on `arch_test.go`'s walker, with its seeded violation; `arch_test.go`
+- T2.3 The import test, on `arch_test.go`'s walker, with one seeded violation per rule and a seed per allowance; `arch_test.go`
   keeps checking that the service imports no adapter.
 - T2.4 The leak checks on the moved profiler, and the `adapter-conformance` suite.
 
@@ -555,7 +557,9 @@ RFC sections: §3.1 (states, drain, abandon at the deadline, auxiliary listeners
 §3.6, §3.7, §6.1, §6.2, §6.4, §6.5's close and drain halves, §6.7, §6.9's connection and registry
 rows, A10, A11, A14, A19, A20.
 
-- T4.1 `Server`: configured, serving, draining, stopped; `Start` binds every listener or none.
+- T4.1 `Server`: configured, serving, draining, stopped; `Start` binds every listener or none;
+  `Addrs()`'s body, the bound addresses with port 0 resolved (stub from E2). If it moves the first
+  failure of `adapter-conformance`'s end-to-end test, it updates that entry's `message`.
 - T4.2 Accept: connection limit per node and a quarter per address, closed at accept; the
   connection-state charge; backoff 10 ms to 1 s and `adapter_listener_lost` after 60 s.
 - T4.3 `Conn` reader: one small-class read buffer, records cut from it or read into their class,
@@ -607,6 +611,8 @@ is read from `vfstest.Memory`'s record of mutating calls, §7.2), §4.5, §4.6, 
   `known.yaml` entry it removes once CI shows the test passing (S3).
 - T5.2 `OpTable`, `Bind`, `Invocation` (§4.7); the checks of §4.2 (`Needs`, `Versions`, an
   absent or switched-off operation) and §4.4's expired-credential gate, in §4.7's pipeline order.
+  With T5.7, the tables build; if that moves the first failure of `adapter-conformance`'s
+  end-to-end test, the change updates that entry's `message`.
 - T5.3 Admission: the per-connection cap of 64 where `Flow` is nil; the reply-bound reservation
   before the call, its refusal as `ErrDelay` with `DelayResources`.
 - T5.4 The compound runner: stop at the first failure, a cap refused before any operation, the

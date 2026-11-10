@@ -6,7 +6,7 @@ and its closing sentence: the test-only protocol drives every symbol), §7 (the 
 §7.1 (imports), §9 A1 and A8, the suites paragraph; [RFC 29](../rfcs/rfc-29-test-harness.md)
 §4.7 (known failures) and §4.11 (test doubles); `CLAUDE.md`, "Writing tests", as `develop` has it.
 **Track:** the team.
-**Epic 2 estimate: 4 subtasks, 10.25 man-days.**
+**Epic 2 estimate: 4 subtasks, 10.75 man-days.**
 **Depends on:** **S1, surface frozen**: E1's `internal/adapter/core` surface (RFC 20 §4.7, with
 stub bodies and a working `Bind`), `pkg/adapter`'s `Deps`, `pkg/resources`' `Budgets`, `Buf` and
 `BufPool`, and `pkg/vfs`' `Service` and error set. T2.3 also needs `vfstest.Memory` (§9).
@@ -34,8 +34,11 @@ their own, the specifications that only a later epic's bodies can turn green.
   replies grant;
 - the import test runs in `unit`, reports each of its seeded violations and none of its seeded
   allowed imports, and finds no violation in the tree;
-- `adaptertest.CheckLeaks` fails a test that leaves a goroutine, a descriptor or heap behind
-  (through the profiler moved out of the journal's tree), or a budget charged;
+- `adaptertest.CheckLeaks` fails a test that leaves a goroutine or a descriptor behind (through
+  the profiler moved out of the journal's tree), or a budget charged; its heap check runs only
+  without `-race`, which no adapter cell runs it in, so it gives no heap coverage in CI;
+- `core.Server` gains `Addrs()`, the bound address of each listener, as an RFC 20 §4.7
+  amendment with a stub body E4 fills;
 - `unit/adapter-allocs` runs `testproto`'s gate per change, and `adapter-conformance` runs the
   red specifications, each listed in its `known.yaml` with the issue of the epic that turns it
   green.
@@ -49,7 +52,7 @@ end-to-end test written here lands red.
 `internal/adapter/adaptertest/testproto` (format, codec, stages, operations, tables, client);
 the import test and its seeds; the leak check and the profiler's move to `internal/prof`; the
 `unit/adapter-allocs` cell with `testproto`'s gate; the `adapter-conformance` suite with its
-`known.yaml` and three red specifications; deleting `core.Dispatcher`; moving two existing test
+`known.yaml` and four red specifications; deleting `core.Dispatcher`; moving two existing test
 files to `vfstest.Memory`.
 
 ### 1.2 Out of scope
@@ -156,9 +159,15 @@ names the epic that owns the rest.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R29 | One call fails a test that leaves behind a goroutine it started, naming each with its stack; it polls the goroutines themselves, never a fixed sleep, with one backstop timeout; no new dependency | MUST | rule 4; `CLAUDE.md` "Writing tests" | T2.4 |
+| R29 | One call fails a test that leaves behind a goroutine or a descriptor it opened, naming each goroutine with its stack; it polls the goroutines themselves, never a fixed sleep, with one backstop timeout; no new dependency | MUST | rule 4; `CLAUDE.md` "Writing tests" | T2.4 |
 | R30 | The same call fails when any of `Deps.Budgets`' four budgets reads above zero, naming it | MUST | rule 4, rule 8; §6.8; §9 A18 | T2.4 (green with E3) |
 | R31 | A test that can pass only once a later epic fills a stub lands red in the `adapter-conformance` suite, behind its own build tag, with one `known.yaml` entry giving its failure message and the issue of the epic that turns it green; that epic removes the entry once CI shows the test passing; the suite is named in RFC 20's suites paragraph and its tag in `lint-go`'s vet line | MUST | RFC 29 §4.7, §4.9; owner decision | T2.4 |
+
+**The surface amendment**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R32 | `core.Server` reports each listener's bound address once `Start` has bound it, a port of 0 resolved to the one the system chose, so a test listening on `127.0.0.1:0` and the node's sidecar report can reach it; the method is added to RFC 20 §4.7 and to the frozen surface's golden file before it is written | MUST | owner decision (the user's); rule 9 | T2.1 (body: E4) |
 
 ## 4. Decisions this epic takes
 
@@ -216,7 +225,8 @@ names the epic that owns the rest.
   marker says a table check failing shows at the first request rather than at `New`, which a
   test protocol can afford.
 - **D8, the error tables are not total.** They map `core`'s refusals, `vfs.ErrDelay` (with a
-  bounded `Hold` in version 2) and `core.ErrDraining` (`NoReply`), each status named with the
+  bounded `Hold` in version 2), `context.Canceled` (`StatusCancelled`, what a parked or held
+  request its client cancelled is answered) and `core.ErrDraining` (`NoReply`), each status named with the
   later test that reads it, and nothing else, so an unmapped service error, answered server
   fault and counted (E5's T5.7), is reachable. `ErrMoved` has no row: `MoveTarget` answers none
   until RFC 15's topology exists, so no test can reach it, and its row comes with the first that
@@ -234,7 +244,9 @@ names the epic that owns the rest.
   build-tagged files are read whatever their tags, so an import behind a tag is not hidden. A
   `ponytail:` names the ceiling: a package's path is read from its directory, so a `replace` or a
   vendored copy would be missed; move to `go/packages`, inside the test alone, if the module ever
-  has one.
+  has one. The test's two lists, the allowed imports and the v1 paths, are each one Go slice with
+  a comment per entry; an entry is added by the change that needs it, with its reason. Every
+  later package lands under them, so their shape is settled here.
 - **D11, red specifications land in `adapter-conformance`.** A test that is the specification a
   later epic builds to lands now, red, rather than with that epic: the budget half of the leak
   check (E3), `ReplayCache`'s copy (E3) and one `testproto` request end to end (E4 and E5). Each
@@ -243,9 +255,18 @@ names the epic that owns the rest.
   `reason`, the `message` its stub fails with, and `issue:` quoted. The epic that turns a test green
   removes its entry once CI shows the test passing, and that epic's document lists the removal:
   E3's for the budget and replay entries, E5's for the end-to-end one, which E4's server and E5's
-  pipeline turn green together at S3. A stub that panics
-  (`Reserved`) is turned into a failure by a deferred `recover` in the test, so one panic does not
-  stop the cell's other tests. The suite is `engine-conformance`'s shape, `tier: pr`.
+  pipeline turn green together at S3. Each entry's `message` is the specification's first failure,
+  which must stay the same until the epic that removes the entry, or a new panic or error would
+  be graded new. The end-to-end specification is the one whose path crosses two epics, so it
+  runs its stages in order in the test goroutine: first `testproto`'s tables, built through a
+  first `Route` and recovered there (`testproto: tables: not implemented` until E5's T5.2 and
+  T5.7 give `NewOpTable` and `NewErrorTable` their bodies), then `NewServer` and `Start` (`core:
+  new server` until E4), then the reply. Whichever of E4 and E5 moves the first failure updates
+  the entry's `message` in that change; E4's and E5's descriptions say so. A panicking stub is
+  never reached from a server goroutine, where it would stop the binary, because the tables are
+  built before the server starts. The budget specifications reserve through `WaitBudget.Reserve`
+  (`resources: reserve`), not `BufPool.Get`. The suite is `engine-conformance`'s shape,
+  `tier: pr`.
 - **D12, the allocation cell lands here; the user chose this.** `testproto`'s header gate is the
   first allocation gate written, so `unit/adapter-allocs` and its fixed `dt run` step in the unit
   job, as `unit/journal-index` has, land with it in T2.1 rather than with `BufPool`'s in E3. E3's
@@ -254,13 +275,17 @@ names the epic that owns the rest.
   `pkg/block/journal/journaltest/prof` already fails a test that leaves goroutines (compared by ID
   from `runtime.Stack`, polled to a backstop), descriptors or live heap behind, and says to move
   it out of the journal's tree once a package outside it needs one. T2.4 moves it to
-  `internal/prof` (import path `github.com/cubbit/dittofs/internal/prof`), unchanged, with its
-  tests, updating its importers (the journal's and engine's tests, `pkg/metadata/kv/kvtest/fault_test.go`),
+  `internal/prof` (import path `github.com/cubbit/dittofs/internal/prof`), its exports unchanged,
+  with its tests, its doc's paragraph that leans on the journal's import rule replaced by a test
+  of its own that its non-test files import only the standard library, updating its importers (the journal's and engine's tests, `pkg/metadata/kv/kvtest/fault_test.go`),
   `unit/journal-index`'s command in `test/suites.yaml`, and `pkg/block/engine/imports_test.go`'s
-  allowlist entry; `CheckLeaks`
-  calls `prof.Watch` and adds only the budget check, and `testproto`'s gate reads
-  `prof.RaceEnabled`. Its ceiling, which goleak shares, is its own `decision:`: a watched test
-  does not run in parallel.
+  allowlist entry, and `pkg/block/journal/imports_test.go`'s `forbidden`, which allows the journal
+  only the standard library and its own packages and so must allow `internal/prof` in
+  `journaltest` and in test files, with a seed in its own table; `CheckLeaks` calls `prof.Watch`
+  and adds only the budget check, and `testproto`'s gate reads `prof.RaceEnabled`. `prof`'s
+  `decision:` on parallel tests moves with it. Its heap check is skipped under `-race`, and
+  every adapter cell but `unit/adapter-allocs` runs with it, so `CheckLeaks` promises no heap
+  coverage.
 - **D14, E1's two import-shape tests fold into the import test.** `pkg/adapter`'s
   `TestImportsOnlyTheContractsItNames` and `pkg/adapter/config`'s
   `TestImportsOnlyTheStandardLibrary` stood in for this test until it landed; R7 now holds both
@@ -286,11 +311,8 @@ names the epic that owns the rest.
   - `testproto.New(d adapter.Deps)`, `Bare`, the operation codes and statuses (typed as `core`'s
     `uint32` code and `core.Version`, so no test converts), `Msg`, `Reply`, `Append` and `Client`:
     every `core` test builds its requests and reads its replies through them;
-  - the import test's lists, the allowed imports and the v1 paths, each one Go slice with a
-    comment per entry: an entry is added by the change that needs it, with its reason;
-  - the record and header layout (D2, D4): only `testproto`'s own vectors and fuzz seeds read the
-    bytes, so a change costs those alone, but it is written as final, since E5's chain and
-    compound tests depend on what it can say.
+  - `core.Server.Addrs()` (D19): E4's tests, the end-to-end specification and the node's
+    sidecar report read it, so a changed shape is an RFC amendment and an edit of each.
   What is deferred is additive and in one place: the import test's entry-method, 800-line and
   `translate` clauses are new cases and seeds (RFC 21 and 22); a golden-vector helper is E6's,
   inside each `wire` package; a new operation a later `core` test needs is a new row and new
@@ -303,6 +325,21 @@ names the epic that owns the rest.
   `internal/adapter/core/testdata/surface/core.golden`. The RFC needs no amendment, since §4.7
   never named it. Removing it after E4 has built the connection would mean reworking the
   connection's tests, so it is settled before any body exists.
+- **D19, `core.Server.Addrs()`; the user chose this.** A test listening on `127.0.0.1:0` cannot
+  learn the port the system chose: `core.Listener` holds only the port asked for, and nothing
+  reports what was bound. `func (s *Server) Addrs() []netip.AddrPort` returns, once `Start` has
+  bound them, every bound address: for each listener in `NewServer`'s order, one per address of
+  the settings' `Addrs`, in that order, port 0 resolved; nil before `Start` and after `Stop`. It
+  is a slice, not a map like `adapter.Serving.Listeners` (keyed by service: `"nfs"`, `"mount"`):
+  a `Listener` carries no service name to key by, and `config.Adapter.Addrs` gives one listener
+  several addresses, which a map of one `netip.AddrPort` per key cannot hold. The node knows the
+  service of each listener it passed to `New`, so it builds `Serving` from the slice (E4's T4.9).
+  The prior art is `net.Listener.Addr` and `httptest.Server.URL`, which report the address the
+  system bound. T2.1 adds it to RFC 20 §4.7, on `feat/storage-v2`, in the same pull request, with
+  the stub body and its declaration in `core.golden`. By E1's stub convention a method with no
+  error to return panics with "not implemented"; E4's T4.1 writes the body. That
+  `Serving.Listeners` holds one address per service, where a listener may have several, is a §9
+  point for RFC 20 §3.5.
 
 ## 5. Target tree
 
@@ -324,8 +361,9 @@ internal/adapter/adaptertest/
     stages_test.go                 T2.2  the stages as state machines, NewConn's stages
     state_test.go                  T2.2  the registry, the compound row's Decode, the coverage check
     conformance_test.go            T2.1, T2.2  red: one request end to end; ReplayCache's copy
+internal/adapter/core/server.go    T2.1  Addrs, its stub (D19)
 internal/adapter/core/conn.go      T2.2  Dispatcher deleted (D18)
-internal/adapter/core/testdata/surface/core.golden  T2.2  Dispatcher's entry deleted (D18)
+internal/adapter/core/testdata/surface/core.golden  T2.1  Addrs added; T2.2  Dispatcher's entry deleted
 pkg/block/journal/journaltest/prof/  T2.4  moved out; its importers updated
 pkg/block/engine/imports_test.go   T2.4  allowlist entry for internal/prof
 pkg/metadata/kv/kvtest/fault_test.go  T2.4  imports internal/prof
@@ -336,28 +374,30 @@ pkg/adapter/smb/smb_test.go        T2.3  vfstest.Memory for internal/vfs (D15)
 test/adapter/known.yaml            T2.4  the red specifications (D11)
 test/suites.yaml                   T2.1  unit/adapter-allocs cell; T2.4  adapter-conformance suite, its tag in lint-go's vet line, unit/journal-index's prof path
 .github/workflows/tests.yml        T2.1  unit/adapter-allocs' fixed step; T2.4  adapter-conformance in the branch's cell filter
-docs/internals/rfcs/rfc-20-adapters.md  T2.4  the suites paragraph names adapter-conformance
+docs/internals/rfcs/rfc-20-adapters.md  T2.1  §4.7 gains Server.Addrs; T2.4  the suites paragraph names adapter-conformance
+pkg/block/journal/imports_test.go  T2.4  internal/prof allowed in journaltest and tests
 docs/internals/testing.md          T2.4  regenerated by dt docs
 ```
 
 The exported surface this epic adds or changes:
 
 ```go
-package prof // moved: github.com/cubbit/dittofs/internal/prof, its exports unchanged
-func Watch(tb testing.TB, opts Options)
-type Options struct{ HeapSlack uint64 }
-func LiveHeap() uint64
-func Descriptors() (int, bool)
-const RaceEnabled bool
+// prof moves from pkg/block/journal/journaltest/prof to internal/prof, its exports unchanged.
+// core.Dispatcher is deleted (D18).
 
-package core // removed: no longer exported
-// type Dispatcher interface { Dispatch(ctx context.Context, c *Conn, rec *resources.Buf); Drain() }
+package core
+
+// Addrs is every address the server's listeners are bound to, once Start has
+// bound them: each listener in NewServer's order, one per address of the
+// settings' Addrs, port 0 resolved. Nil before Start and after Stop (D19).
+func (s *Server) Addrs() []netip.AddrPort
 
 package adaptertest
 
 // CheckLeaks, called first in a test, fails it at its end when a goroutine or
-// descriptor opened since is still open, the live heap grew, or a budget of b
-// (nil: none) still holds bytes.
+// descriptor opened since is still open, the live heap grew past prof's default
+// slack (16 MiB; checked only without -race), or a budget of b (nil: none)
+// still holds bytes.
 func CheckLeaks(t testing.TB, b *resources.Budgets)
 
 package testproto
@@ -443,7 +483,7 @@ func (c *Client) Balance() int
 
 ### T2.4 The leak check and the red suite
 
-**Subtask T2.4 estimate: 1.5 man-days.**
+**Subtask T2.4 estimate: 1.75 man-days.**
 
 - **Track:** the team. **Depends on:** S1. First, since T2.1 and T2.2 read `prof` and land red
   specifications in the suite this registers.
@@ -452,9 +492,13 @@ func (c *Client) Balance() int
   - `pkg/block/journal/journaltest/prof` moved to `internal/prof` with its tests (D13); every
     importer's import line (the journal's and engine's tests and fixtures,
     `pkg/metadata/kv/kvtest/fault_test.go`), `pkg/block/engine/imports_test.go`'s allowlist entry
-    (its line 37), and `unit/journal-index`'s command in `test/suites.yaml` updated;
+    (its line 37), `pkg/block/journal/imports_test.go`'s `forbidden` allowing `internal/prof` in
+    `journaltest` and test files with a seed, `prof`'s own stdlib-only import test, and
+    `unit/journal-index`'s command in `test/suites.yaml` updated;
   - `leak.go`: `budgetsHeld(b *resources.Budgets) error`, naming each of `Receive`, `Reply`,
-    `Connection` and `Hold` whose `Reserved` is above zero; `CheckLeaks(t, b)`, which calls
+    `Connection` and `Hold` whose `Reserved` is above zero, a panic of `Reserved` recovered and
+    returned as an error, so a budget that cannot report fails the test rather than stopping the
+    binary from a cleanup, with a `decision:` marker naming that; `CheckLeaks(t, b)`, which calls
     `prof.Watch(t, prof.Options{})` and registers a `t.Cleanup` reporting `budgetsHeld`;
   - the `adapter-conformance` suite in `test/suites.yaml` (`format: go-json`, `cmd: go test -race
     -tags=adapter_conformance -run ^TestConformance ./internal/adapter/...`, `known:
@@ -462,9 +506,11 @@ func (c *Client) Balance() int
     `lint-go`'s `go vet -tags=` line; the suite in `tests.yml`'s branch cell filter beside
     `engine-conformance`; RFC 20's suites paragraph naming it; `docs/internals/testing.md`
     regenerated with `test/harness/bin/dt docs`;
-  - `leak_conformance_test.go`: `TestConformanceBudgetsHeldNamesACharged` and its
-    `known.yaml` entry (`message: 'resources: get'`, the stub `BufPool.Get`'s error, which the test
-    meets before `Reserved` panics; `issue: "#3964"`).
+  - `leak_conformance_test.go`: `TestConformanceBudgetsHeldNamesACharged`, a reservation taken
+    with `WaitBudget.Reserve` and kept, `budgetsHeld` naming `Reply` (`message: 'resources:
+    reserve'`); and `TestConformanceCheckLeaksPassesOnZeroBudgets`, the consumer, `CheckLeaks(t,
+    b)` on budgets reserved and released before the test ends (`message: 'resources: reserve'`);
+    both `issue: "#3964"`.
 - **Consumers:** every E4, E5 and E6 test that runs the pipeline (rule 4); E3, which turns the
   budget specification green and removes its entry; the end-to-end and replay specifications of
   T2.1 and T2.2.
@@ -474,18 +520,21 @@ func (c *Client) Balance() int
   - `test/harness/bin/dt run adapter-conformance` grades the budget specification as its known
     failure, and fails the run if the test passes while its entry remains.
   - `test/harness/bin/dt docs --check` passes with the new suite.
-- **Tests:** `prof`'s own tests, moved (they catch a goroutine, descriptor or heap check that
-  never fails); the budget specification, a `Buf` reserved and kept past the check, asserting
-  `budgetsHeld` names `Reply` (red until E3: catches a check that reads one budget, or none). Run
+- **Tests:** `prof`'s own tests, moved (they catch a goroutine or descriptor check that never
+  fails), and its new import test (catches the moved package taking a dependency the journal's
+  rule used to forbid); the journal's import test with its new seed (catches `internal/prof`
+  allowed in the journal's production code); the predicate specification (red until E3: catches
+  a check that reads one budget, or none) and the consumer specification (red until E3: catches a
+  `CheckLeaks` that never reads `b`, or reports a budget its test released). Run
   with `test/harness/bin/dt run unit` and `test/harness/bin/dt run adapter-conformance`.
 - **Rules:** rule 8: D11; rule 10: D13.
 
 ### T2.1 `testproto`: frames, header, client and the stateless operations
 
-**Subtask T2.1 estimate: 3 man-days.**
+**Subtask T2.1 estimate: 3.25 man-days.**
 
 - **Track:** the team. **Depends on:** T2.4.
-- **Covers:** R14, R16, R17, R24, R25, R26, R27, R28.
+- **Covers:** R14, R16, R17, R24, R25, R26, R27, R28, R32.
 - **Deliverables:**
   - `wire.go`: the format in the package doc (D2); `Framer` (`HeaderLen` 4, `BodyLen`
     refusing a length past 1 MiB); the header type of D4 and its `Op`, `Version`, `Next` and
@@ -499,12 +548,15 @@ func (c *Client) Balance() int
     its contract.
   - `unit/adapter-allocs` in `test/suites.yaml`, its command `go test` over
     `./internal/adapter/adaptertest/testproto/`, and its fixed `dt run` step in the unit job (D12).
-  - `conformance_test.go`: `TestConformanceEchoEndToEnd`, a `core.NewServer` on `testproto` over
-    `127.0.0.1:0`, one `Echo` sent by the client and its reply read, `CheckLeaks` clean after
-    `Stop`; its `known.yaml` entry (`message: 'core: new server'`, `issue: "#3966"`, its reason
-    naming E4's server and E5's pipeline).
+  - `core.Server.Addrs()`: the RFC 20 §4.7 amendment, the stub (D19) and its `core.golden`
+    declaration;
+  - `conformance_test.go`: `TestConformanceEchoEndToEnd`, `testproto`'s tables built first (D11),
+    then a `core.NewServer` on `testproto` over `127.0.0.1:0`, started, dialled at `Addrs()[0]`,
+    one `Echo` sent by the client and its reply read, `CheckLeaks` clean after `Stop`; its
+    `known.yaml` entry (`message: 'testproto: tables: not implemented'`, `issue: "#3966"`, its
+    reason naming E5's tables and pipeline and E4's server).
 - **Consumers:** E4's accept, reader, writer and sidecar-runner tests (T4.1–T4.4, T4.9: `Echo`,
-  `Client`, `Bare` as the second listener); E5's T5.1 (nil stages over `Bare`, `Echo`'s role),
+  `Client`, `Bare` as the second listener, `Addrs` for the bound port and the `Serving` report); E5's T5.1 (nil stages over `Bare`, `Echo`'s role),
   T5.2 (`Versions`, `Needs`), T5.3 (the cap of 64 over `Bare`), T5.5 (`Create` held), T5.6
   (`Panic`), T5.10 (the benchmark over `Echo`).
 - **Acceptance criteria:**
@@ -531,7 +583,9 @@ func (c *Client) Balance() int
   pair, the read end compared with the vector, and the balance after a scripted reply sequence
   (catches an interim counted twice); `NewConn`'s stages (catches a `Bare` carrying `Flow`, under
   which E5's cap-of-64 test would not test the default, or a `Hold` missing on the full protocol,
-  R17); the end-to-end specification (red until E4 and E5: it is S3's definition, R24). Run with
+  R17); E1's `exports_test.go` against `core.golden` with `Addrs` (fails if the method is dropped or
+  its signature drifts from the RFC, R32); the end-to-end specification (red until E4 and E5: it is
+  S3's definition and reads `Addrs`, R24, R32). Run with
   `test/harness/bin/dt run unit`, `test/harness/bin/dt run unit/adapter-allocs` and
   `test/harness/bin/dt run adapter-conformance`.
 - **Rules:** rule 2 and rule 4 as §2 says; rule 7: D1, D5, D7 and D8.
@@ -666,8 +720,8 @@ green.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T2.4 | 1.5 | — | the profiler's move, the leak check and the red suite every later red test joins |
-| 2 | T2.1, T2.2 | 6.75 | PR 1 | `testproto` whole, so its coverage check runs on the protocol it covers |
+| 1 | T2.4 | 1.75 | — | the profiler's move, the leak check and the red suite every later red test joins |
+| 2 | T2.1, T2.2 | 7 | PR 1 | `testproto` whole, so its coverage check runs on the protocol it covers |
 | 3 | T2.3 | 2 | — | the import test; open beside PR 1 and 2 once `vfstest.Memory` has landed |
 
 A suggestion only: one pull request per subtask works as well.
@@ -678,8 +732,7 @@ A suggestion only: one pull request per subtask works as well.
   D15; `testproto`'s service calls first run on both in E4. Deferral-ledger row: `Memory`,
   `Faults`, and `Faults`' fault that holds a call until the test releases it (an event, since a
   timed wait is forbidden), on which D5 and D6 rest; owner RFC 17's plan, before T2.3 and E4's
-  first test. `vfstest.Null` is not a substitute: RFC 20 §7 keeps it for the allocation gate and
-  the benchmarks.
+  first test.
 - **Deferral-ledger row this breakdown adds:** the import test's clause that `translate` imports
   only neutral types (RFC 20 §2.3), with `translate`'s first package, owner RFC 21's and 22's
   plans.
@@ -688,11 +741,15 @@ A suggestion only: one pull request per subtask works as well.
     check's failing test lands here red (D11), so E3's estimate falls by about 0.5 man-days;
   - no operation that waits a given time or answers `ErrDelay` itself, and no test hook that
     completes a request: delays, holds and parks wait on `vfstest.Faults` (D5, D6);
-  - `core.Dispatcher` is deleted here, not by E4 (D18);
+  - `core.Dispatcher` is deleted here, not by E4 (D18), and `core.Server.Addrs()` is added to the
+    frozen surface (D19);
   - the journal's profiler moves to `internal/prof` and is the leak check's goroutine half (D13);
   - a red suite is registered, `adapter-conformance`, against "registers no red suite";
-  - the total is 10.25 man-days against the first figure of 8: the client, D3's second table,
-    the cell, the profiler's move, the red suite and its three specifications, and D18.
+  - the total is 10.75 man-days against the first figure of 8: the client, D3's second table,
+    the cell, the profiler's move, the red suite and its four specifications, D18 and D19.
+- **`adapter.Serving.Listeners` holds one address per service** (RFC 20 §3.5), while a listener
+  binds one address per entry of `config.Adapter.Addrs`. D19 reports them all; RFC 20 §3.5
+  should say which the sidecars advertise, or make the value a slice.
 - **The least certain estimates:** T2.2 (the most pieces, and the compound row's `Decode` is the
   one written directly rather than through `Bind`) and T2.4 (the profiler's importers are spread
   over the journal's, engine's and `kvtest`'s tests, and the suite touches the registry, the workflow, the
