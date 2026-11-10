@@ -289,16 +289,6 @@ func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
 	return o, nil
 }
 
-// Unbind admits nothing new for the share and joins what it has in flight.
-// While Start runs it answers ErrDelay.
-func (e *Engine) Unbind(ctx context.Context, id entity.ShareID, keepHolds bool) error {
-	if err := e.whileStarting(); err != nil {
-		return err
-	}
-
-	return errUnbuilt
-}
-
 // Drop closes the share's handles and forgets its tag in every journal.
 // While Start runs it answers ErrDelay.
 func (e *Engine) Drop(ctx context.Context, id entity.ShareID) error {

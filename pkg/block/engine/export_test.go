@@ -778,12 +778,13 @@ func (e *Engine) InFlightForTest(s entity.ShareID) int64 {
 	return e.table()[s].gate.st.Load() &^ shutBit
 }
 
-// ShutForTest shuts share s's gate, as Unbind does.
-func (e *Engine) ShutForTest(s entity.ShareID) {
-	e.table()[s].gate.shut()
-}
+// LifecycleLockFree reports whether the lifecycle mutex is free now.
+func (e *Engine) LifecycleLockFree() bool {
+	if !e.mu.TryLock() {
+		return false
+	}
 
-// WaitForTest waits, as Unbind does, until share s's gate is idle.
-func (e *Engine) WaitForTest(ctx context.Context, s entity.ShareID) error {
-	return e.joinWork(ctx, &e.table()[s].gate)
+	e.mu.Unlock()
+
+	return true
 }

@@ -12,15 +12,42 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// unbind shuts the unit's share and waits for its units, as Unbind does.
+// unbind unbinds the unit's share.
 func (u *unit) unbind(t *testing.T) {
 	t.Helper()
 
-	u.e.ShutForTest(u.share.ID)
-
-	if err := u.e.WaitForTest(t.Context(), u.share.ID); err != nil {
-		t.Fatalf("wait for the share's units: %v", err)
+	if err := u.e.Unbind(t.Context(), u.share.ID, false); err != nil {
+		t.Fatalf("Unbind: %v", err)
 	}
+}
+
+// joins answers a channel that receives what each join of the engine waits
+// for, once it has to wait.
+func joins(e *engine.Engine) <-chan string {
+	out := make(chan string, 8)
+
+	e.OnJoining(func(what string) {
+		select {
+		case out <- what:
+		default:
+		}
+	})
+
+	return out
+}
+
+// unbinding runs Unbind of the unit's share in a goroutine and answers its
+// result.
+func (u *unit) unbinding(t *testing.T) <-chan error {
+	t.Helper()
+
+	out := make(chan error, 1)
+
+	go func() {
+		out <- u.e.Unbind(t.Context(), u.share.ID, false)
+	}()
+
+	return out
 }
 
 // isStale reports whether err is ErrStale and not a Delay.
@@ -41,7 +68,14 @@ func TestEnterIsRefusedWithStaleOnceTheGateIsShut(t *testing.T) {
 		t.Fatalf("enter on an open gate: %v", err)
 	}
 
-	u.e.ShutForTest(u.share.ID)
+	joined := joins(u.e)
+	unbound := u.unbinding(t)
+
+	select {
+	case <-joined:
+	case err := <-unbound:
+		t.Fatalf("Unbind = %v with a unit still entered, want it to wait", err)
+	}
 
 	if _, err := u.e.EnterForTest(u.share.ID); !isStale(err) {
 		t.Errorf("enter on a shut gate = %v, want exactly ErrStale", err)
@@ -59,6 +93,10 @@ func TestEnterIsRefusedWithStaleOnceTheGateIsShut(t *testing.T) {
 	}
 
 	leave()
+
+	if err := <-unbound; err != nil {
+		t.Errorf("Unbind after the unit left = %v, want nil", err)
+	}
 }
 
 // A call that enters two shares and is refused by the second leaves nothing
@@ -69,10 +107,8 @@ func TestATwoShareRegistrationWithOneShareRemovingLeavesNothingOnTheOther(t *tes
 	src, dst := entity.NewFileID(), entity.NewFileID()
 	x := vfserr.Extent{Len: 1}
 
-	u.e.ShutForTest(removing)
-
-	if err := u.e.WaitForTest(t.Context(), removing); err != nil {
-		t.Fatal(err)
+	if err := u.e.Unbind(t.Context(), removing, false); err != nil {
+		t.Fatalf("Unbind: %v", err)
 	}
 
 	t.Run("the destination is removing", func(t *testing.T) {
