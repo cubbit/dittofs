@@ -1531,3 +1531,38 @@ func TestWriteAdmittedBelowHalfHeadroomOffTheLimit(t *testing.T) {
 		t.Fatalf("ReservationRefused = %d, want %d", got, beforeRefused+1)
 	}
 }
+
+// TestFillRefusedBelowHalfHeadroom: a fill is admitted like a write, every
+// limit but the version limit, so on a journal at its limit with the headroom
+// below half it is refused naming the headroom, with nothing appended and
+// nothing held.
+func TestFillRefusedBelowHalfHeadroom(t *testing.T) {
+	c, seam := newTestCore(t,
+		capacityCoreOption(5*testSegmentCap),
+		func(o *coreOptions) { o.headroomRecords = headroomFixture })
+	s := mustShare(t, c, 1)
+	ctx := context.Background()
+
+	if _, err := c.WriteAt(ctx, s, testFile(1), 0, make([]byte, roomAfter(0)+1), 1); err != nil {
+		t.Fatalf("the warm write: %v", err)
+	}
+	waitIn(t, 5*time.Second, "the pool to settle at its last two spares", func() bool {
+		pc := c.pool.Counters()
+		return pc.Spares == 2 && pc.Held == 0
+	})
+	drawHeadroom(t, c, 3)
+
+	beforeC := seamCensus(seam)
+	f := testFile(2)
+	err := c.Fill(ctx, s, f, 0, ff(1), c.Index().AsOf(f), ver(1))
+	_ = refused(t, err, core.LimitHeadroom)
+	if afterC := seamCensus(seam); afterC != beforeC {
+		t.Fatalf("the refusal made %d seam calls, want none", afterC-beforeC)
+	}
+	if _, ok := c.Index().Lookup(f, 0); ok {
+		t.Fatal("the refused fill was published")
+	}
+	if got := c.ReservedBytes(); got != 0 {
+		t.Fatalf("ReservedBytes = %d after the refusal, want 0", got)
+	}
+}
