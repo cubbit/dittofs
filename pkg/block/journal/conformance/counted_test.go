@@ -202,7 +202,13 @@ func TestCounted_SyncsPerWrite(t *testing.T) {
 			defer wg.Done()
 			id := journaltest.File(w)
 			for range countedRounds {
-				_, err := h.WriteAt(t.Context(), id, 0, make([]byte, countedWrite), 0)
+				// Concurrent writers can find the pool's content spares taken
+				// for a moment; retrying the spare refusal, as the fixture's
+				// other writers do, keeps the check on the syncs it counts.
+				err := journaltest.RetrySpare(func() error {
+					_, e := h.WriteAt(t.Context(), id, 0, make([]byte, countedWrite), 0)
+					return e
+				})
 				if err != nil {
 					errs <- err
 					gate.finished()
