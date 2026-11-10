@@ -19,11 +19,12 @@ import (
 // once Start has published it.
 //
 // decision: a rebuilt clone runs in a served engine although nothing joins a
-// running clone at Unbind or Close yet, which keeps a live Clone behind a
-// test's stand-in: refusing Start instead would leave every file of the share
-// unserved, and a rebuilt clone ends at its loop's end, leaving the marker or
-// the removal record for the next start, as a live clone's retry does.
-// Withdraw it with that stand-in, once the running clones are joined.
+// running clone at Unbind yet, which keeps a live Clone behind a test's
+// stand-in: refusing Start instead would leave every file of the share
+// unserved. Close joins it, its wait for the source's shard included, and a
+// rebuilt clone ends at its loop's end, leaving the marker or the removal
+// record for the next start, as a live clone's retry does. Withdraw it with
+// that stand-in, once Unbind joins the running clones.
 
 // errSourceNotServed fails a Start that finds a clone to rebuild whose
 // source share it does not serve: the destination may not be served before
@@ -214,7 +215,15 @@ func (e *Engine) rebuildRemoval(o *opened, b *binding, f entity.FileID, u kvstor
 		v: journal.VersionFromBytes(u.Version), at: e.d.Clock.Now()}
 	it := e.clonePhase2(c, r)
 
-	o.rebuilt = append(o.rebuilt, func() { go e.awaitServed(c, it) })
+	o.rebuilt = append(o.rebuilt, func() {
+		e.cloning.Add(1)
+
+		go func() {
+			defer e.cloning.Done()
+
+			e.awaitServed(c, it)
+		}()
+	})
 	e.d.Logger.Info("clone rebuilt at start from its removal record", "src", c.src, "dst", f)
 
 	return nil
@@ -225,7 +234,8 @@ func (e *Engine) rebuildRemoval(o *opened, b *binding, f entity.FileID, u kvstor
 // destination journal's loop, so the loop never holds the wait. The wait runs
 // in rounds of the loop's backoff; after five it is removal_stalled for the
 // destination, cleared once the shard is served. The loop's end ends the
-// clone, leaving its removal for the next start.
+// clone, leaving its removal for the next start, and Close joins the
+// goroutine (e.cloning), so no end runs after Close returned.
 func (e *Engine) awaitServed(c *cloneRun, it *loopItem) {
 	l := c.db.gc.removals
 
