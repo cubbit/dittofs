@@ -942,10 +942,9 @@ func (r *Runtime) LDAPConfig() *ldap.Config {
 }
 
 // SetKerberosEnabled records whether the server has Kerberos configured,
-// sourced from the same effective Kerberos config the adapter factory is built
-// with at startup. A Kerberos config change applies on the next restart -- the
-// NFS and SMB adapters read it at startup -- so a value fixed at startup here
-// matches what the adapters actually run with.
+// sourced from the effective Kerberos config resolved at startup. A Kerberos
+// config change applies on the next restart, so a value fixed at startup here
+// matches the config the server runs with.
 func (r *Runtime) SetKerberosEnabled(enabled bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

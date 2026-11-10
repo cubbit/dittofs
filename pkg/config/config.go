@@ -33,7 +33,7 @@ import (
 // Block store sizing (cache, syncer) is auto-deduced from system resources
 // at startup. Per-share overrides can be configured via dfsctl.
 //
-// Dynamic configuration (users, groups, shares, stores, adapters) is managed
+// Dynamic configuration (users, groups, shares, stores) is managed
 // through the REST API and stored in the control plane database.
 //
 // Configuration sources (in order of precedence):
@@ -900,9 +900,8 @@ func setupViper(v *viper.Viper, configPath string) {
 // configEnvKeys returns every dot-separated mapstructure key path in the
 // Config struct, so each can be bound for AutomaticEnv resolution. Nested
 // structs are walked recursively; leaf fields (including maps and slices)
-// contribute their own key. Maps with dynamic keys (e.g. the Kerberos
-// static_map) bind at the container level only — env cannot address
-// arbitrary map entries.
+// contribute their own key. Maps with dynamic keys bind at the container
+// level only: env cannot address arbitrary map entries.
 func configEnvKeys() []string {
 	var keys []string
 	collectMapstructureKeys(reflect.TypeOf(Config{}), "", &keys)

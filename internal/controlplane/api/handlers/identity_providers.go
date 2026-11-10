@@ -338,9 +338,8 @@ func ldapConfigToDTO(cfg *ldap.Config) ldapConfigDTO {
 // control-plane API package, so importing it into a handler would create an
 // import cycle. The handler therefore owns a plain DTO and validates inline;
 // cmd/dfs maps the persisted DTO onto config.KerberosConfig at startup. A
-// Kerberos config change applies on the next server restart (the NFS/SMB
-// adapters consume it at startup), so PutConfig persists but does not
-// hot-reload.
+// Kerberos config change applies on the next server restart (cmd/dfs reads
+// it at startup), so PutConfig persists but does not hot-reload.
 
 func (h *IdentityProviderHandler) putKerberos(w http.ResponseWriter, r *http.Request) {
 	var dto KerberosConfigDTO

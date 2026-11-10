@@ -266,7 +266,7 @@ func buildShareConfig(ctx context.Context, s store.Store, share *models.Share) (
 		MetadataStore:                    metaStoreCfg.Name,
 		RootAttr:                         rootAttr,
 		ReadOnly:                         share.ReadOnly,
-		Enabled:                          share.Enabled, // propagate DB Enabled flag so adapter gates read the correct runtime value.
+		Enabled:                          share.Enabled, // propagate DB Enabled flag so the runtime's enabled checks read the correct value.
 		EncryptData:                      share.EncryptData,
 		AclFlagInheritedCanonicalization: share.AclFlagInheritedCanonicalization,
 		AccessBasedEnumeration:           share.AccessBasedEnumeration,

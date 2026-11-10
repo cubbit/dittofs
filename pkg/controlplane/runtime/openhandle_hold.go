@@ -116,9 +116,9 @@ func (r *Runtime) forEachOpenUnlinkedFile(ctx context.Context, scope map[string]
 }
 
 // openHandleHoldProvider implements gc.HoldProvider by injecting the
-// block hashes of every open-but-unlinked file into the GC mark live set
-// (#1448). The store live-set query (EnumerateFileChunks) deliberately
-// excludes nlink=0 inodes (#1433) so deleted files are reclaimed; this hold
+// block hashes of every open-but-unlinked file into the GC mark live set.
+// The store live-set query (EnumerateFileChunks) deliberately
+// excludes nlink=0 inodes so deleted files are reclaimed; this hold
 // re-adds exactly the unlinked files that still have a live open handle
 // (NFSv4 open stateids, SMB open table), restoring POSIX
 // unlink-while-open semantics beyond the grace period. Once the last handle

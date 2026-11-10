@@ -602,10 +602,6 @@ func loadSharesWithKerberosCapability(
 // over the API) takes precedence; when no row exists the file/env config seeds
 // the database on first boot. It sets the runtime's LDAP config directly and
 // returns the effective Kerberos config.
-//
-// Note: the API does not manage Kerberos static IdentityMapping entries, so a
-// DB-sourced Kerberos config carries none — those are configured via the
-// separate /api/v1/identity-mappings routes.
 func resolveIdentityProviders(ctx context.Context, cpStore store.Store, rt *runtime.Runtime, cfg *config.Config) config.KerberosConfig {
 	// LDAP: DB row wins; else seed from file/env when enabled.
 	if row, err := cpStore.GetIdentityProviderConfig(ctx, models.IdentityProviderTypeLDAP); err == nil {

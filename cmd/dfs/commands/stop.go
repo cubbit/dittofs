@@ -24,7 +24,7 @@ var stopCmd = &cobra.Command{
 	Long: `Stop a running DittoFS server.
 
 Sends SIGTERM to the server process identified by the PID file, which triggers
-a graceful shutdown: in-flight NFS/SMB requests are drained, snapshot jobs are
+a graceful shutdown: in-flight requests are drained, snapshot jobs are
 flushed, and block stores are closed before the process exits. Use --force to
 send SIGKILL instead when a graceful stop is not responding.
 
