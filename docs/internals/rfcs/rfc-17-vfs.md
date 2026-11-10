@@ -471,7 +471,7 @@ pkg/vfs/                     the contract adapters build against
                              *CrossError, all of DelayCause and CrossKind, and Extent; standard library only
   callbacks.go               Callbacks, Revocation (§3.2)
   events.go                  Events, AccessEvent and QuotaEvent (§3.3)
-  vfstest/                   Faults and Callbacks, hand-written (§8)
+  vfstest/                   Memory, Faults and Callbacks; Null for benchmarks (§8)
     suite/                   suite.Run: the conformance suite, one file per area (§8)
 internal/vfs/                the filesystem, one file per operation; the gateway and its receive side
   filesystem.go              Filesystem, New(Deps), Start, Drain, Stop, JoinShare (§2.5); Content
@@ -2719,11 +2719,14 @@ driven by `Call` values of different `Protocol` with no adapter, and
 service is tested end to end before any adapter calls it. Its doubles are the three kinds
 [RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) allows, and no test asserts which
 calls a `Service` received. A test that needs a `Service` uses an in-memory
-filesystem: `vfs.New` over the in-memory store, open state and `Content`, each held to its
-conformance suite. `pkg/vfs/vfstest` holds two hand-written helpers: `Faults`, a wrapper around
+filesystem, `vfstest.Memory`: `vfs.New` over the in-memory store, open state and `Content`,
+each held to its conformance suite, and itself held to this one. `pkg/vfs/vfstest` also holds
+two hand-written helpers: `Faults`, a wrapper around
 any `Service` that fails or delays a call on cue, implementing every method explicitly and
 embedding nothing, so a method added to `Service` fails to compile until it wraps it; and
 `Callbacks`, which keeps what the service delivered, its output, for a test to assert on.
+`Null`, a `Service` answering every call at once, is for benchmarks only: it passes no suite, so
+no test asserts on what it answers.
 
 **Fuzzing.** Every input a client chooses has a `testing.F` target, seeded
 with the golden vectors and the suite's own values:
