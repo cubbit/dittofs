@@ -254,6 +254,24 @@ implementation, the test stays green while guarding nothing.
 External systems (a KDC, a domain controller, an LDAP directory, S3) are tested for real at the
 integration tier. Their parsing and logic are pure functions with unit tests.
 
+**A test must be able to fail.** Break the code it guards and watch it fail **on its
+assertion**. See "Verifying a change" below. A test that has never failed is unverified.
+
+**Synchronise on events, never on time.** Don't use `time.Sleep` to wait for a goroutine,
+callback or state change. Wait on a channel, a `sync.WaitGroup` or the condition itself, with
+one generous timeout as a backstop. On a loaded CI box, a sleep is long enough until the day it
+isn't.
+
+**No fixed ports, paths or global state.** Bind to `:0`, write under `t.TempDir()`, and clean
+up with `t.Cleanup`, so tests run in parallel and on any host.
+
+**Fix a flake, never retry it.** A flaky test is either a race in the code or a race in the
+test, and both are bugs. Don't add retries, raise timeouts or skip it to get green.
+
+**Assertions name what they check.** A failure message says which value was wrong and what was
+expected (`got %v, want %v`, naming the field or the operation). Prefer table-driven cases when
+several inputs exercise one rule.
+
 ## Verifying a change
 
 Two failure modes this codebase has actually hit. Both are invisible to a passing test suite,
