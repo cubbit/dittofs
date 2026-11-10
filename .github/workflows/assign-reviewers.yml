@@ -4,10 +4,10 @@
 #
 # A stacked PR, one whose base branch is the head of another open PR, instead
 # inherits the people of the PR below it: its author, whoever is still
-# requested there and whoever has already reviewed it, the upper PR's author
-# left out. So when A and B stack PRs on each other, each reviews the other's
-# rather than a stranger from the pool. Only when that leaves nobody does it
-# fall through to the pool.
+# requested there and whoever has already reviewed it, limited to the known
+# maintainers and with the upper PR's author left out. So when A and B stack
+# PRs on each other, each reviews the other's rather than a stranger from the
+# pool. Only when that leaves nobody does it fall through to the pool.
 #
 # pull_request_target runs the copy of this file on the PR's base branch, so a
 # PR is assigned only if its base branch carries this file. That is why the
@@ -37,17 +37,26 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           # Stacked PR: take the author and reviewers of the open PR whose head
-          # is our base. Bots (Copilot, Dependabot) and our own author are left out.
+          # is our base, keeping only the maintainers in the table below, so a
+          # bot or an outside reviewer can't make --add-reviewer refuse the lot.
+          # Our own author is left out. The step runs under -eo pipefail, so the
+          # `|| true` keeps a grep that filters everyone out from ending the
+          # step before the pool is reached.
+          #
+          # decision: the journal rule further down is not applied here. A
+          # stacked PR is reviewed in the context of the PR below it, so whoever
+          # knows that one is the right reviewer even when rif's stacked change
+          # touches the journal (a journal test fix on top of a harness PR).
+          # Withdraw this if a stacked PR is ever where a journal change itself
+          # needs a reviewer other than Lucian.
+          known="didimelli llucian-iws rif viquitorreis marmos91 simonebaracchi"
           lower_pr=$(gh api "repos/$REPO/pulls?head=$OWNER:$BASE&state=open" --jq '.[0].number // empty')
           if [ -n "$lower_pr" ]; then
             inherited=$( {
-              gh api "repos/$REPO/pulls/$lower_pr" \
-                --jq 'select(.user.type == "User") | .user.login'
-              gh api "repos/$REPO/pulls/$lower_pr/requested_reviewers" \
-                --jq '.users[] | select(.type == "User") | .login'
-              gh api "repos/$REPO/pulls/$lower_pr/reviews" --paginate \
-                --jq '.[] | select(.user.type == "User") | .user.login'
-            } | sort -u | grep -vx "$AUTHOR" | paste -sd, -)
+              gh api "repos/$REPO/pulls/$lower_pr" --jq '.user.login'
+              gh api "repos/$REPO/pulls/$lower_pr/requested_reviewers" --jq '.users[].login'
+              gh api "repos/$REPO/pulls/$lower_pr/reviews" --paginate --jq '.[].user.login'
+            } | sort -u | grep -xF -f <(printf '%s\n' $known) | grep -vx "$AUTHOR" | paste -sd, - || true)
             if [ -n "$inherited" ]; then
               echo "Stacked on #$lower_pr: requesting $inherited"
               gh pr edit "$PR" --repo "$REPO" --add-reviewer "$inherited"
