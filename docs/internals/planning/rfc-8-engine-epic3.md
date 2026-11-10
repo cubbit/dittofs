@@ -94,7 +94,10 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
    that has landed, and E2's test components: above all the fake journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12).
+   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
+   three kinds: the test clock, an in-memory implementation held to its interface's
+   conformance suite, or a fault wrapper. A test asserts on the engine's answers, on resulting
+   state and on what a double records of its own outputs, never on which calls the engine made.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -136,7 +139,9 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
    check about what the real thing does: the real journal on a real directory, with its crash
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
    commits and conflicts on. The fake journal is for the engine's pure logic only, and no
-   conformance row runs over it.
+   engine conformance row runs over it. It is held to the real journal by the journal's own
+   conformance suite (RFC 1 §9.4): it passes the suite's rows that need no crash, fault or
+   platform, the rows the real journal passes on `platform.OS`.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -433,8 +438,8 @@ test/engine/known.yaml    T3.2  its entry
   truncate to 4 KiB at v5 (`SizeSet`, `Size` 4 KiB); a write ending at 12 KiB at v6 (`Size`
   12 KiB, `SizeSet` still true); a write ending at 2 KiB at v7 (`Size` 12 KiB, `SizeSet` true,
   `Version` v7). A `max` replay fails the v5 case, one ignoring order the v7 case. The same
-  operations inserted out of order replay the same. `Overlay` with every store call failing
-  the test (catches a metadata read, R13); `testing.AllocsPerRun` of `Overlay` on a file
+  operations inserted out of order replay the same. `Overlay` with a fault wrapper failing
+  every store call still answers (catches a metadata read, R13); `testing.AllocsPerRun` of `Overlay` on a file
   with nothing pending is 0 (R16); a suspended write leaves `Mtime` at the earlier write's
   time and moves `Ctime`.
 
@@ -456,11 +461,12 @@ test/engine/known.yaml    T3.2  its entry
     zeros.
   - A re-asked extent that the journal now holds returns its bytes; one still missing with
     `applied` and its overwrite version at or below the new `asOf` fails `ErrLost`.
-- **Tests:** the table test over a stub `Content` answering each class, `dst` prefilled with
-  0xFF: hole and zero ref read zeros, uncarved at or below `asOf` `ErrLost`, carved
+- **Tests:** the table test over the real `kvstore` holding each class, a fault wrapper
+  answering the ones it cannot hold, `dst` prefilled with 0xFF: hole and zero ref read zeros, uncarved at or below `asOf` `ErrLost`, carved
   `ErrUnavailable`, past the end a short read (a build serving zeros for any other row
-  fails it, R19, R26, R29); a stub recording calls: none before `ReadAt`, one per missing
-  extent with its exact bounds, none when nothing is missing (R17); over the real
+  fails it, R19, R26, R29); a fault wrapper failing every `Covering` call made before
+  `ReadAt` answers or outside a missing extent's exact bounds: reads with and without missing
+  extents still succeed (R17); over the real
   `kvstore`, with a `Content` wrapper that commits existence through `Existence.Commit`
   between the journal step and `Covering`: an overwrite, a hole fill and a growing write
   each read back, never `ErrLost`; keying the re-ask on overwrite records alone fails the
@@ -501,7 +507,7 @@ test/engine/known.yaml    T3.2  its entry
   then loses still answers data (catches an answer from what the journal holds, R30); a
   committed hole under a pending write answers data over the write and hole after it
   (R31); a pending deallocate inside committed data splits the run; a pending truncate
-  ends it; a `Journal` stub failing the test on any call.
+  ends it; under a fault wrapper failing every journal call, `Allocation` still answers.
 
 ## 7. Order of work
 
