@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"slices"
 	"sync/atomic"
 
@@ -190,9 +191,7 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	switch {
 	case st == nil:
 		return fmt.Errorf("engine: no settings applied: %w", vfserr.ErrUnavailable)
-	case x.Len <= 0 || x.SrcOff < 0 || x.DstOff < 0 || x.Len > entity.EndOfFile-max(x.SrcOff, x.DstOff):
-		return vfserr.ErrInvalid
-	case src == dst && entity.Extent{Offset: x.SrcOff, Length: x.Len}.Overlaps(entity.Extent{Offset: x.DstOff, Length: x.Len}):
+	case invalid(x, src == dst):
 		return vfserr.ErrInvalid
 	case x.Len > st.CloneMaxLen:
 		return vfserr.ErrInvalid
@@ -252,6 +251,77 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	case <-ctx.Done():
 		return delayClone() // it may have changed the destination: never answered as refused
 	}
+}
+
+// invalid reports whether x is refused ErrInvalid whatever its length: a
+// zero or negative length or offset, an end past EndOfFile, or, oneFile when
+// source and destination are one file, a source and destination that overlap.
+func invalid(x vfserr.Extent, oneFile bool) bool {
+	return x.Len <= 0 || x.SrcOff < 0 || x.DstOff < 0 || x.Len > entity.EndOfFile-max(x.SrcOff, x.DstOff) ||
+		oneFile && entity.Extent{Offset: x.SrcOff, Length: x.Len}.Overlaps(entity.Extent{Offset: x.DstOff, Length: x.Len})
+}
+
+// copyChunk is the longest clone a copy runs: a writer of the source meeting
+// a copy waits behind one chunk, not the whole copy.
+//
+// decision: the copy chunk is fixed, not a setting: it bounds how long a
+// writer of the source is held, and a held writer resumes when the chunk ends
+// rather than after a client's retry pause, so the wait a client sees is the
+// chunk's own time. 64 MiB is a proposal, not a measurement; overturned if
+// the source-write wait measured at the client during a COPY shows writers
+// stalling for a visible fraction of their deadline.
+//
+// decision: a copy's edges. The chunk is the smaller of copyChunk and
+// clone_max_len, so no chunk is one the length rule refuses. At the caller's
+// deadline Copy answers the bytes of the chunks done and leaves the running
+// chunk to finish; with no chunk done it answers the first chunk's error, a
+// Delay, never 0, which an NFSv4.2 client would read as nothing left to copy.
+const copyChunk = 64 << 20
+
+// chunks yields xs in order, each cut into clones of at most the smaller of
+// copyChunk and maxLen, in offset order.
+func chunks(xs []vfserr.Extent, maxLen int64) iter.Seq[vfserr.Extent] {
+	n := min(copyChunk, maxLen)
+	return func(yield func(vfserr.Extent) bool) {
+		for _, x := range xs {
+			for at := int64(0); at < x.Len; at += n {
+				if !yield(vfserr.Extent{SrcOff: x.SrcOff + at, DstOff: x.DstOff + at, Len: min(n, x.Len-at)}) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// Copy copies xs of src into dst in order, as clones of at most a chunk
+// each, and answers the bytes copied. Every extent is validated as Clone
+// validates one before any chunk runs, so an invalid one, an overlap within
+// one file included, answers ErrInvalid with nothing copied. A chunk's
+// failure after earlier chunks are done answers the short count of those and
+// nil, from which the client continues; only the first chunk's failure
+// answers its error. A chunk that meets the caller's deadline is left
+// running and is not counted (copyChunk).
+func (e *Engine) Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfserr.Extent) (int64, error) {
+	for _, x := range xs {
+		if invalid(x, src == dst) {
+			return 0, vfserr.ErrInvalid
+		}
+	}
+	st := e.settings.Load()
+	if st == nil {
+		return 0, fmt.Errorf("engine: no settings applied: %w", vfserr.ErrUnavailable)
+	}
+	var done int64
+	for c := range chunks(xs, st.CloneMaxLen) {
+		if err := e.Clone(ctx, srcShare, src, dstShare, dst, c); err != nil {
+			if done > 0 {
+				return done, nil
+			}
+			return 0, err
+		}
+		done += c.Len
+	}
+	return done, nil
 }
 
 // cloneRun is one clone past its admission: its two files and bindings,
