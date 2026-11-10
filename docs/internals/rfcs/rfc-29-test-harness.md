@@ -1954,6 +1954,9 @@ kind 2's own record or from the record above. A per-OS table is data, tested by 
 and a tunable such as a sampling rate is an input passed through the constructor. A `Null`
 service answers every call at once to measure the adapter's own cost (the allocation gate and
 benchmarks); nothing asserts on its answers, so it is a load, not a double.
+A hook in the code under test that pauses it at a point, or delivers what it reached there, is
+not a double either: it is set per instance from `export_test.go`, never through a package
+variable, and never answers in place of the code.
 
 A deterministic simulation is built from these three, so it is allowed. Not allowed: a canned
 stub written for one test; a recording or counting fake used to check which calls were made; a
