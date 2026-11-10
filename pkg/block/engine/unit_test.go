@@ -20,6 +20,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
+	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -35,7 +36,9 @@ type unit struct {
 	clock *sim.TestClock
 	limit uint64 // the fake journal's version limit once the unit was built
 	share engine.Share
-	h     engine.Handle // the share's handle on the fake journal, as its Share returned it
+	h     engine.Handle    // the share's handle on the fake journal, as its Share returned it
+	tb    *openstate.Table // the open-state table withOpenState composed, if it ran
+	sink  *enginetest.Sink // tb's sink
 }
 
 // unitLimit is a version above every one the fake journal issues in a unit

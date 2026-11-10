@@ -18,127 +18,185 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// recHolds is a recording CloneHold. Each Hold runs onHold, when set, and
-// answers its error; otherwise next's answer, or a new hold when next is
-// nil. Each Release runs onRel, when set, and answers its error; otherwise
-// next's, or nil, counted in freed once it answers nil.
-type recHolds struct {
-	mu       sync.Mutex
-	next     engine.CloneHold
-	holds    []engine.CloneSrc
-	releases []entity.OpenID
-	freed    int
-	ids      entity.OpenID
-	onHold   func(ctx context.Context) error
-	onRel    func(ctx context.Context) error
+// faultHolds is the real open-state table, next, behind fault hooks: each
+// Hold runs onHold, when set, and answers its error, and each Release runs
+// onRel so; otherwise next answers.
+type faultHolds struct {
+	mu     sync.Mutex
+	next   engine.CloneHold
+	onHold func(ctx context.Context) error
+	onRel  func(ctx context.Context) error
 }
 
-func (h *recHolds) Hold(ctx context.Context, src engine.CloneSrc) (entity.OpenID, error) {
+func (h *faultHolds) Hold(ctx context.Context, src engine.CloneSrc) (entity.OpenID, error) {
 	h.mu.Lock()
-	h.holds = append(h.holds, src)
-	on := h.onHold
+	on, next := h.onHold, h.next
 	h.mu.Unlock()
 	if on != nil {
 		if err := on(ctx); err != nil {
 			return 0, err
 		}
 	}
-	if h.next != nil {
-		return h.next.Hold(ctx, src)
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.ids++
-	return h.ids, nil
+	return next.Hold(ctx, src)
 }
 
-func (h *recHolds) Release(ctx context.Context, o entity.OpenID) error {
+func (h *faultHolds) Release(ctx context.Context, o entity.OpenID) error {
 	h.mu.Lock()
-	h.releases = append(h.releases, o)
-	on := h.onRel
+	on, next := h.onRel, h.next
 	h.mu.Unlock()
 	if on != nil {
 		if err := on(ctx); err != nil {
 			return err
 		}
 	}
-	if h.next != nil {
-		if err := h.next.Release(ctx, o); err != nil {
-			return err
+	return next.Release(ctx, o)
+}
+
+func (h *faultHolds) Served(ctx context.Context, s entity.ShardID) error {
+	h.mu.Lock()
+	next := h.next
+	h.mu.Unlock()
+	return next.Served(ctx, s)
+}
+
+// cloneRecord is the source's open record of the clone onto dst in the
+// store, which phase 1 writes and phase 2's last batch deletes.
+func (u *unit) cloneRecord(t *testing.T, src, dst entity.FileID) (entity.OpenRecord, bool) {
+	t.Helper()
+	recs, err := u.fs.Store.Opens().Of(context.Background(), u.share.ID, src)
+	if err != nil {
+		t.Error(err)
+	}
+	i := slices.IndexFunc(recs, func(o entity.OpenRecord) bool {
+		return o.Kind == entity.OpenCloneSource && o.CloneDst == dst
+	})
+	if i < 0 {
+		return entity.OpenRecord{}, false
+	}
+	return recs[i], true
+}
+
+// holdsSource reports whether open state holds an open of src, a clone's
+// hold included: Releasing refuses src then, and otherwise marks it, the
+// mark ended at once with nothing changed.
+func (u *unit) holdsSource(t *testing.T, src entity.FileID) bool {
+	done, err := u.tb.Opens().Releasing(context.Background(), openstate.FileKey{Share: u.share.ID, Shard: u.share.Shard, ID: src})
+	if errors.Is(err, openstate.ErrFileOpen) {
+		return true
+	}
+	if err != nil {
+		t.Errorf("Releasing the source: %v", err)
+		return false
+	}
+	done(false)
+	return false
+}
+
+// released waits for open state to hold src no longer, then checks the
+// table holds the clone's open id no longer either.
+func (u *unit) released(t *testing.T, src entity.FileID, id entity.OpenID) {
+	t.Helper()
+	u.until(t, "the clone's hold released", func() bool { return !u.holdsSource(t, src) })
+	if err := u.tb.Opens().CloneClose(t.Context(), id); !errors.Is(err, openstate.ErrBadState) {
+		t.Errorf("closing the clone's hold once released: %v, want ErrBadState", err)
+	}
+}
+
+// phase2Done reports whether dst's extent [0, n) is served, its clone's
+// phase 2 done: until then the covering lookup over it answers ErrDelay.
+func (u *unit) phase2Done(dst entity.FileID, n int64) bool {
+	for _, err := range u.fs.Store.Content().Covering(context.Background(), u.share.ID, dst, 0, n) {
+		if errors.Is(err, entity.ErrDelay) {
+			return false
 		}
 	}
-	h.mu.Lock()
-	h.freed++
-	h.mu.Unlock()
-	return nil
+	return true
 }
 
-// released reports how many Releases answered nil.
-func (h *recHolds) released() int {
+// holdOf has h read, at each Hold before onHold, the open record of the
+// clone of src onto dst, which phase 2's last batch deletes, and answers
+// the ID last read: the open the clone's Hold takes.
+func (u *unit) holdOf(t *testing.T, h *faultHolds, src, dst entity.FileID) func() entity.OpenID {
+	var id atomic.Uint64
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.freed
-}
-
-func (h *recHolds) Served(ctx context.Context, s entity.ShardID) error {
-	if h.next != nil {
-		return h.next.Served(ctx, s)
+	on := h.onHold
+	h.onHold = func(ctx context.Context) error {
+		if r, ok := u.cloneRecord(t, src, dst); ok {
+			id.Store(uint64(r.ID))
+		}
+		if on != nil {
+			return on(ctx)
+		}
+		return nil
 	}
-	return nil
+	h.mu.Unlock()
+	return func() entity.OpenID { return entity.OpenID(id.Load()) }
 }
 
-func (h *recHolds) counts() (holds, releases int) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return len(h.holds), len(h.releases)
-}
-
-// A clone calls its store and open state in order: phase 1's Clone, then
-// Hold, the Resume of its batches, and Release once they are done, after
-// the clone is answered, none of them under either file's entry lock or the
-// destination's guard. The hold is keyed in the source share's own shard, the
-// one Bind named: with the share bound on shard 7, not the default, and open
-// state serving that shard alone, Hold names it and CloneOpen finds the record
-// there.
+// A clone holds its source across its phase 2, none of its Hold, Resume or
+// Release under either file's entry lock or the destination's guard: at the
+// Hold, phase 1 has written the clone's open record and phase 2 has not run;
+// at the destination's Resume, open state holds the source; at the Release,
+// phase 2 is done; and once released, the table holds the open no longer. The hold is keyed in the source share's own shard, the one
+// Bind named: with the share bound on shard 7, not the default, and open
+// state serving that shard alone, a Hold naming another shard never answers
+// and the clone never ends.
 func TestAClonesHoldSpansItsPhase2(t *testing.T) {
-	h := &recHolds{}
+	h := &faultHolds{}
 	var mu sync.Mutex
-	var calls, locked []string
+	var wrong []string
 	var u *unit
 	var src, dst entity.FileID
-	log := func(what string) {
+	var held entity.OpenRecord
+	check := func(what string) {
 		mu.Lock()
 		defer mu.Unlock()
-		calls = append(calls, what)
-		if what == "Clone" {
-			return // phase 1 runs under the destination's guard
-		}
 		for _, f := range []entity.FileID{src, dst} {
 			if u.e.EntryLocked(f) {
-				locked = append(locked, what+" under an entry lock")
+				wrong = append(wrong, what+" under an entry lock")
 			}
 		}
 		if u.e.GuardHeld(dst) {
-			locked = append(locked, what+" under the destination's guard")
+			wrong = append(wrong, what+" under the destination's guard")
 		}
 	}
-	h.onHold = func(context.Context) error { log("Hold"); return nil }
-	h.onRel = func(context.Context) error { log("Release"); return nil }
+	h.onHold = func(context.Context) error {
+		check("Hold")
+		r, ok := u.cloneRecord(t, src, dst)
+		mu.Lock()
+		defer mu.Unlock()
+		if !ok {
+			wrong = append(wrong, "Hold before phase 1 wrote the clone's open record")
+		}
+		if u.phase2Done(dst, mib) {
+			wrong = append(wrong, "Hold after phase 2")
+		}
+		held = r
+		return nil
+	}
+	h.onRel = func(context.Context) error {
+		check("Release")
+		if !u.phase2Done(dst, mib) {
+			mu.Lock()
+			wrong = append(wrong, "Release before phase 2 was done")
+			mu.Unlock()
+		}
+		return nil
+	}
 	u = clonedUnitWith(t, unitConfig{unbound: true, deps: []func(*engine.Deps){
 		func(d *engine.Deps) { d.Holds = h },
 		onResume(func(ctx context.Context, next engine.Content, s entity.ShareID, file entity.FileID) (bool, error) {
-			log("Resume")
+			check("Resume")
+			if file == dst && !u.holdsSource(t, src) {
+				mu.Lock()
+				wrong = append(wrong, "Resume with the source not held")
+				mu.Unlock()
+			}
 			return next.Resume(ctx, s, file)
-		}),
-		onClone(func(ctx context.Context, next engine.Existence, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
-			err := next.Clone(ctx, op, pending)
-			log("Clone")
-			return err
 		})}})
 	u.share.Shard = 7
 	if err := u.e.Bind(t.Context(), u.share); err != nil {
@@ -148,51 +206,52 @@ func TestAClonesHoldSpansItsPhase2(t *testing.T) {
 	src = u.committedFile(t, "src", fill(mib, 's'))
 	dst = u.create(t, "dst")
 	u.clone(t, src, dst, vfserr.Extent{Len: mib})
-	u.until(t, "the hold released", func() bool { return h.released() > 0 })
+	mu.Lock()
+	id := held.ID
+	mu.Unlock()
+	u.released(t, src, id)
 	mu.Lock()
 	defer mu.Unlock()
-	if want := []string{"Clone", "Hold", "Resume", "Release"}; !slices.Equal(calls, want) {
-		t.Errorf("the clone's calls: %v, want %v", calls, want)
+	if len(wrong) > 0 {
+		t.Errorf("the clone's calls: %v", wrong)
 	}
-	if len(locked) > 0 {
-		t.Errorf("called under a lock: %v", locked)
-	}
-	if len(h.holds) == 0 {
-		return
-	}
-	if got := h.holds[0]; got.Share != u.share.ID || got.Shard != 7 || got.File != src || got.Dst != dst ||
-		got.AsOf != entity.JournalVersion(u.j.CloneTargets()[0].Version.Bytes()) {
-		t.Errorf("Hold(%+v), want the source's share, shard 7 and file, the destination and the clone's version", got)
+	if got := u.read(t, dst, 0, mib); !bytes.Equal(got, fill(mib, 's')) {
+		t.Error("the destination does not read the source")
 	}
 }
 
 // A Hold answering DelayFrozen, a shard not yet served, holds phase 2 and
 // is retried without counting toward removal_stalled: answered so more
-// times than the stall allows, Resume runs only once it holds.
+// times than the stall allows, the clone then holds its source, phase 2 not
+// yet run, and releases it once done.
 func TestAFrozenHoldIsRetriedUncounted(t *testing.T) {
-	x := newResuming()
 	logs := newLogRecorder()
-	h := &recHolds{}
-	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h; x.Content = d.Content; d.Content = x; d.Logger = slog.New(logs) })
+	h := &faultHolds{}
+	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h; d.Logger = slog.New(logs) })
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	const frozen = 6 // one more than removal_stalled's five
-	var early atomic.Int64
+	var asked atomic.Int64
+	var early atomic.Bool
+	var id atomic.Uint64
 	h.onHold = func(context.Context) error {
-		if x.resumed(dst) > 0 {
-			early.Add(1)
-		}
-		if n, _ := h.counts(); n <= frozen {
+		if asked.Add(1) <= frozen {
 			return &vfserr.Delay{Cause: vfserr.DelayFrozen}
 		}
+		early.Store(u.phase2Done(dst, mib))
+		r, _ := u.cloneRecord(t, src, dst)
+		id.Store(uint64(r.ID))
 		return nil
 	}
 	if err := u.answered(t, "the clone", u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
-	if n, _ := h.counts(); n != frozen+1 || early.Load() != 0 || x.resumed(dst) == 0 {
-		t.Errorf("%d Holds, %d with Resume run before, Resume run %d times; want %d, none, and Resume after the last",
-			n, early.Load(), x.resumed(dst), frozen+1)
+	if early.Load() {
+		t.Error("phase 2 ran before the clone held its source")
+	}
+	u.released(t, src, entity.OpenID(id.Load()))
+	if got := u.read(t, dst, 0, mib); !bytes.Equal(got, fill(mib, 's')) {
+		t.Error("the destination does not read the source")
 	}
 	for _, r := range logs.records() {
 		if strings.HasPrefix(r.Message, "removal_stalled") {
@@ -202,20 +261,20 @@ func TestAFrozenHoldIsRetriedUncounted(t *testing.T) {
 }
 
 // A Hold refused for good, no open of the clone's on the source, is logged
-// at Error once, and phase 2 runs without it: Resume runs and no Release
-// follows.
+// at Error once, and phase 2 runs without it: the clone ends, its removal
+// done, and the destination reads the source.
 func TestARefusedHoldRunsPhase2WithoutARelease(t *testing.T) {
-	x := newResuming()
 	logs := newLogRecorder()
-	h := &recHolds{onHold: func(context.Context) error { return entity.ErrStale }}
-	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h; x.Content = d.Content; d.Content = x; d.Logger = slog.New(logs) })
+	h := &faultHolds{onHold: func(context.Context) error { return entity.ErrStale }}
+	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h; d.Logger = slog.New(logs) })
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	if err := u.answered(t, "the clone", u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
-	if holds, releases := h.counts(); holds != 1 || releases != 0 || x.resumed(dst) == 0 {
-		t.Errorf("%d Holds, %d Releases, Resume run %d times; want one Hold, no Release, Resume run", holds, releases, x.resumed(dst))
+	u.until(t, "the clone's removal done", func() bool { return u.e.RemovalsPending() == 0 })
+	if got := u.read(t, dst, 0, mib); !bytes.Equal(got, fill(mib, 's')) {
+		t.Error("the destination does not read the source")
 	}
 	errs := 0
 	for _, r := range logs.records() {
@@ -232,12 +291,13 @@ func TestARefusedHoldRunsPhase2WithoutARelease(t *testing.T) {
 // in a row raise removal_stalled for the destination, with no phase 2 run,
 // another file's removal on the same journal runs meanwhile, and once Hold
 // answers the clone runs its phase 2. A Release that never answers is cut
-// so too, and retried.
+// so too, and retried until the hold is released.
 func TestAHungHoldOrReleaseIsCutAndCounted(t *testing.T) {
 	x := newResuming()
-	h := &recHolds{}
-	var hung atomic.Bool
+	h := &faultHolds{}
+	var hung, relHung atomic.Bool
 	hung.Store(true)
+	relHung.Store(true)
 	h.onHold = func(ctx context.Context) error {
 		if hung.Load() {
 			<-ctx.Done()
@@ -246,7 +306,7 @@ func TestAHungHoldOrReleaseIsCutAndCounted(t *testing.T) {
 		return nil
 	}
 	h.onRel = func(ctx context.Context) error {
-		if _, releases := h.counts(); releases == 1 {
+		if relHung.Swap(false) {
 			<-ctx.Done()
 			return ctx.Err()
 		}
@@ -258,32 +318,33 @@ func TestAHungHoldOrReleaseIsCutAndCounted(t *testing.T) {
 	dst := u.create(t, "dst")
 	g := u.committedFile(t, "g", fill(16, 'g'))
 	errc := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
-	u.until(t, "the clone's hold asked", func() bool { n, _ := h.counts(); return n > 0 })
+	var held entity.OpenRecord
+	u.until(t, "the clone's phase 1", func() bool { var ok bool; held, ok = u.cloneRecord(t, src, dst); return ok })
 	if err := u.e.Truncate(t.Context(), u.share.ID, g, 4); err != nil {
 		t.Fatal(err)
 	}
 	u.until(t, "another file's removal pruned while the hold hangs", func() bool { _, ok := x.prunedAt(g); return ok })
 	u.until(t, "removal_stalled for the destination", func() bool { return u.e.RemovalStalled(dst) })
-	if n, _ := h.counts(); n < 5 || x.resumed(dst) != 0 {
-		t.Errorf("stalled after %d Holds with Resume run %d times; want five failures first and no phase 2", n, x.resumed(dst))
+	if u.phase2Done(dst, mib) {
+		t.Error("phase 2 ran while the hold hung")
 	}
 	hung.Store(false)
 	if err := u.answered(t, "the clone", errc); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
-	u.until(t, "the hold released", func() bool { return h.released() > 0 })
-	if _, releases := h.counts(); releases != 2 || x.resumed(dst) == 0 {
-		t.Errorf("%d Releases, Resume run %d times; want the hung one cut and the hold released after phase 2", releases, x.resumed(dst))
+	u.released(t, src, held.ID)
+	if got := u.read(t, dst, 0, mib); !bytes.Equal(got, fill(mib, 's')) {
+		t.Error("the destination does not read the source")
 	}
 }
 
 // A Release that fails is retried alone, after the clone is answered:
-// while it keeps failing, the clone's registrations are gone and its
-// destination extent is written; phase 2 is not run again, so
-// engine_removal_runs_total{result="done"} moves once; and the Release is
-// retried until it succeeds.
+// while it keeps failing, counted to removal_stalled, the clone's
+// registrations are gone and its destination extent is written; phase 2 is
+// not run again, so engine_removal_runs_total{result="done"} moves once; and
+// the Release is retried until the hold is released.
 func TestAFailedReleaseRetriesOnlyTheRelease(t *testing.T) {
-	h := &recHolds{}
+	h := &faultHolds{}
 	var failing atomic.Bool
 	failing.Store(true)
 	h.onRel = func(context.Context) error {
@@ -295,11 +356,12 @@ func TestAFailedReleaseRetriesOnlyTheRelease(t *testing.T) {
 	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h })
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
+	hold := u.holdOf(t, h, src, dst)
 	before := u.e.Stats().RemovalRuns["done"]
 	if err := u.answered(t, "the clone while its Release fails", u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
-	u.until(t, "three failed Releases", func() bool { _, r := h.counts(); return r >= 3 })
+	u.until(t, "removal_stalled for the failing Release", func() bool { return u.e.RemovalStalled(dst) })
 	s, _ := u.e.Registrations(src)
 	_, d := u.e.Registrations(dst)
 	if s+d != 0 {
@@ -308,8 +370,11 @@ func TestAFailedReleaseRetriesOnlyTheRelease(t *testing.T) {
 	if _, err := u.e.Write(t.Context(), u.share.ID, dst, 0, []byte("x"), engine.WriteOpts{Done: func() {}}); err != nil {
 		t.Errorf("a write into the destination extent while the Release fails: %v, want served", err)
 	}
+	if !u.holdsSource(t, src) {
+		t.Error("the hold was released while every Release failed")
+	}
 	failing.Store(false)
-	u.until(t, "the Release retried to success", func() bool { return h.released() == 1 })
+	u.released(t, src, hold())
 	if got := u.e.Stats().RemovalRuns["done"] - before; got != 1 {
 		t.Errorf("engine_removal_runs_total{done} moved by %d, want 1 for the clone's one phase 2", got)
 	}
@@ -319,7 +384,7 @@ func TestAFailedReleaseRetriesOnlyTheRelease(t *testing.T) {
 // share dropped while its phase 2 runs ends the clone, unavailable, with
 // the hold released, so open state keeps no open of the clone's.
 func TestALoopEndReleasesTheClonesHold(t *testing.T) {
-	h := &recHolds{}
+	h := &faultHolds{}
 	var dst entity.FileID
 	entered, open := make(chan struct{}), make(chan struct{})
 	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h },
@@ -337,6 +402,7 @@ func TestALoopEndReleasesTheClonesHold(t *testing.T) {
 		}))
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst = u.create(t, "dst")
+	hold := u.holdOf(t, h, src, dst)
 	errc := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
 	<-entered
 	if err := u.e.DropShare(t.Context(), u.rec, u.share.ID); err != nil {
@@ -346,28 +412,46 @@ func TestALoopEndReleasesTheClonesHold(t *testing.T) {
 	if err := u.answered(t, "the dropped clone", errc); !errors.Is(err, vfserr.ErrUnavailable) {
 		t.Errorf("a clone of a dropped share: %v, want ErrUnavailable", err)
 	}
-	if holds, releases := h.counts(); holds != 1 || releases != 1 {
-		t.Errorf("%d Holds, %d Releases; want the hold released once", holds, releases)
-	}
+	u.released(t, src, hold())
 }
 
 // A clone whose loop ends while its Release fails, its phase 2 done and the
-// clone answered, releases the hold once more at the loop's end, and is not
-// ended a second time.
+// clone answered, releases the hold once more at the loop's end. The loop
+// retries only as the clock moves, and the clock stands still from the
+// first failure to the loop's end, so only the loop's end can release it.
 func TestALoopEndRetriesAFailedRelease(t *testing.T) {
-	h := &recHolds{onRel: func(context.Context) error { return errors.New("an injected release failure") }}
+	h := &faultHolds{}
+	var failing atomic.Bool
+	failing.Store(true)
+	failed := make(chan struct{})
+	var once sync.Once
+	h.onRel = func(context.Context) error {
+		if failing.Load() {
+			once.Do(func() { close(failed) })
+			return errors.New("an injected release failure")
+		}
+		return nil
+	}
 	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h })
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
-	if err := u.answered(t, "the clone", u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})); err != nil {
-		t.Fatalf("Clone: %v", err)
+	hold := u.holdOf(t, h, src, dst)
+	// Answered with the clock unmoved, so the failed Release is never due again.
+	select {
+	case err := <-u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib}):
+		if err != nil {
+			t.Fatalf("Clone: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the clone was never answered")
 	}
-	u.until(t, "a failed Release", func() bool { _, r := h.counts(); return r > 0 })
-	_, before := h.counts()
+	<-failed
+	failing.Store(false)
+	if !u.holdsSource(t, src) {
+		t.Fatal("the hold was released before the loop's end")
+	}
 	u.e.StopRemovalLoops()
-	if _, after := h.counts(); after <= before {
-		t.Errorf("%d Releases at the loop's end after %d, want one more", after, before)
-	}
+	u.released(t, src, hold())
 }
 
 // A clone's phase 2 failing past removal_stalled's five raises it naming
@@ -419,8 +503,8 @@ func logged(logs logRecorder, msg string, f entity.FileID) bool {
 }
 
 // withOpenState composes the real open-state table over the unit's store,
-// serving its share's shard, behind h, and answers it with its sink.
-func (u *unit) withOpenState(t *testing.T, h *recHolds) (*openstate.Table, *enginetest.Sink) {
+// serving its share's shard, behind h, and keeps it and its sink on u.
+func (u *unit) withOpenState(t *testing.T, h *faultHolds) {
 	t.Helper()
 	tb, err := openstate.New(openstate.Deps{Records: u.fs.Store, Clock: u.clock, Rand: rand.Reader,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
@@ -435,8 +519,10 @@ func (u *unit) withOpenState(t *testing.T, h *recHolds) (*openstate.Table, *engi
 	if err := tb.Recovery().ServeShard(t.Context(), u.share.ID, u.share.Shard, 1); err != nil {
 		t.Fatal(err)
 	}
+	h.mu.Lock()
 	h.next = enginetest.Holds(tb, u.fs.Store.Opens())
-	return tb, sink
+	h.mu.Unlock()
+	u.tb, u.sink = tb, sink
 }
 
 // unlink removes name, the last entry of key's file, from the share's
@@ -471,7 +557,7 @@ func TestASourceUnlinkedBeforeTheHoldIsReleasedAfterTheClone(t *testing.T) {
 		{"refused", entity.ErrStale, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			h := &recHolds{}
+			h := &faultHolds{}
 			var held atomic.Bool // the clone is held: Hold answers c.hold, phase 2 fails
 			held.Store(true)
 			h.onHold = func(context.Context) error {
@@ -488,12 +574,13 @@ func TestASourceUnlinkedBeforeTheHoldIsReleasedAfterTheClone(t *testing.T) {
 					}
 					return next.Resume(ctx, s, file)
 				}))
-			tb, _ := u.withOpenState(t, h)
+			tb := u.tb
 			src := u.committedFile(t, "src", fill(mib, 's'))
 			dst = u.create(t, "dst")
+			hold := u.holdOf(t, h, src, dst)
 			key := openstate.FileKey{Share: u.share.ID, Shard: u.share.Shard, ID: src}
 			errc := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
-			u.until(t, "the clone's hold asked", func() bool { n, _ := h.counts(); return n > 0 })
+			u.until(t, "the clone's hold asked", func() bool { return hold() != 0 })
 
 			u.unlink(t, tb, key, "src")
 			done, err := tb.Opens().Releasing(t.Context(), key)
@@ -528,7 +615,9 @@ func TestASourceUnlinkedBeforeTheHoldIsReleasedAfterTheClone(t *testing.T) {
 			}
 			// The clone's open, which the Release closes after the clone is
 			// answered, holds the source until then.
-			u.until(t, "the hold released", func() bool { return c.always || h.released() > 0 })
+			if !c.always {
+				u.released(t, src, hold())
+			}
 			done, err = tb.Opens().Releasing(t.Context(), key)
 			if err != nil {
 				t.Fatalf("Releasing the source after the clone: %v", err)
@@ -545,12 +634,9 @@ func TestASourceUnlinkedBeforeTheHoldIsReleasedAfterTheClone(t *testing.T) {
 // the clone's open, so the release is refused, and only after Release does
 // Sink.Closed report the orphan, whose release then runs.
 func TestASourceUnlinkedDuringPhase2IsAnOrphanAfterRelease(t *testing.T) {
-	h := &recHolds{}
-	var released atomic.Bool
-	h.onRel = func(context.Context) error { released.Store(true); return nil }
 	var dst entity.FileID
 	entered, open := make(chan struct{}), make(chan struct{})
-	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h },
+	u := clonedUnit(t,
 		onResume(func(ctx context.Context, next engine.Content, s entity.ShareID, file entity.FileID) (bool, error) {
 			if file == dst {
 				select { // the first Resume of dst waits; its run then finishes the clone
@@ -562,7 +648,7 @@ func TestASourceUnlinkedDuringPhase2IsAnOrphanAfterRelease(t *testing.T) {
 			}
 			return next.Resume(ctx, s, file)
 		}))
-	tb, sink := u.withOpenState(t, h)
+	tb, sink := u.tb, u.sink
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst = u.create(t, "dst")
 	key := openstate.FileKey{Share: u.share.ID, Shard: u.share.Shard, ID: src}
@@ -584,7 +670,6 @@ func TestASourceUnlinkedDuringPhase2IsAnOrphanAfterRelease(t *testing.T) {
 	if err := u.answered(t, "the clone", errc); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
-	u.until(t, "the clone's Release", released.Load)
 	u.until(t, "the orphan reported", func() bool {
 		return slices.ContainsFunc(sink.ClosedCalls(), func(c enginetest.Closed) bool { return c.File == src && c.Result.Orphan })
 	})
@@ -684,16 +769,15 @@ func TestRemovalsOfACloningDestinationWaitForIt(t *testing.T) {
 // clone's durable open, still in the store, answers an error the engine
 // retries, not the refusal it runs phase 2 without.
 func TestTheFixturesHoldTellsADroppedShareFromNoOpen(t *testing.T) {
-	h := &recHolds{onHold: func(context.Context) error { return errors.New("held off") }}
+	h := &faultHolds{onHold: func(context.Context) error { return errors.New("held off") }}
 	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h })
-	tb, _ := u.withOpenState(t, h)
+	tb := u.tb
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
-	u.until(t, "the clone's hold asked", func() bool { n, _ := h.counts(); return n > 0 })
-	h.mu.Lock()
-	held := h.holds[0]
-	h.mu.Unlock()
+	var rec entity.OpenRecord
+	u.until(t, "the clone's open record", func() bool { var ok bool; rec, ok = u.cloneRecord(t, src, dst); return ok })
+	held := engine.CloneSrc{Share: u.share.ID, Shard: u.share.Shard, File: src, Dst: dst, AsOf: rec.CloneVersion}
 	fixture := enginetest.Holds(tb, u.fs.Store.Opens())
 	none := held
 	none.Dst = entity.NewFileID()

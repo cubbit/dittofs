@@ -21,19 +21,25 @@ import (
 )
 
 // clonedUnit is a cloneUnit whose clones run to their done signal, past
-// the gate a served engine keeps, over a recording CloneHold unless opts
-// sets another.
+// the gate a served engine keeps, holding their sources in the real
+// open-state table, behind a faultHolds that opts may set.
 func clonedUnit(t *testing.T, opts ...func(*engine.Deps)) *unit {
 	t.Helper()
 	return clonedUnitWith(t, unitConfig{deps: opts})
 }
 
-// clonedUnitWith is clonedUnit as c asks.
+// clonedUnitWith is clonedUnit as c asks. An unbound unit composes open
+// state itself, with withOpenState, once its share is bound.
 func clonedUnitWith(t *testing.T, c unitConfig) *unit {
 	t.Helper()
-	c.deps = append([]func(*engine.Deps){func(d *engine.Deps) { d.Holds = &recHolds{} }}, c.deps...)
+	var h *faultHolds
+	c.deps = append([]func(*engine.Deps){func(d *engine.Deps) { d.Holds = &faultHolds{} }}, c.deps...)
+	c.deps = append(c.deps, func(d *engine.Deps) { h, _ = d.Holds.(*faultHolds) })
 	u := cloneUnitWith(t, c)
 	u.e.FakeCloneDone()
+	if h != nil && !c.unbound {
+		u.withOpenState(t, h)
+	}
 	return u
 }
 
@@ -341,7 +347,7 @@ func TestAWriteOutsideTheExtentDuringACloneSurvives(t *testing.T) {
 // the clone's version, and the destination's covering lookup over the
 // extent waits for the clone to be done; once done, the record is gone.
 func TestPhase1HoldsTheSourceAndHoldsTheDestinationExtent(t *testing.T) {
-	h := &recHolds{}
+	h := &faultHolds{}
 	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h })
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
