@@ -197,12 +197,14 @@ func (fs *files) checkFill(tag core.ShareTag, id core.FileID, asOf core.Version,
 // file's read lock, claims nothing, reserves nothing and creates no entry.
 // A refusal counts and names itself as the bound's others do.
 //
-// decision: the wiring that predicts a fill before it has resolved its
-// version — the admission the capacity gate runs — runs this tag-free bound
-// alone, so a file another share owns or a fill a later change stays is
-// caught by the fill's own checks where the tag and the asOf live, not here.
-// Overturned by a wiring that supplies both the tag and the version at
-// admission time, which should call CheckFill instead.
+// decision: the capacity gate runs this tag-free bound over the hull of a
+// fill's gaps, after the fill has already run CheckFill under the file's
+// append domain with the exact gaps and its own version. The gate's figure is
+// an upper bound on those gaps, so it can refuse a fill CheckFill passed when
+// the count stands within a few entries of the bound — a masked part the hull
+// still counts. That over-refusal is accepted: it fails closed, and only at
+// the bound, where a write is refused too. Overturned by a fill refused there
+// that a caller needs to land, which would pass the gaps into the admission.
 func (ix *Index) CheckFillIndexBound(id core.FileID, e core.Extent) error {
 	// A file with no entry holds nothing: a fill of bytes occupies one
 	// wholly absent extent, a zero-length one none — as FillGaps answers it.

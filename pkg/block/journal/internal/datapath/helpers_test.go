@@ -75,6 +75,7 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 		SegmentCap:  segCap,
 		ExtentLimit: 1 << 20,
 		Descriptors: core.NewDescriptorBudget(64),
+		Tracer:      o.tracer,
 		Targets:     segment.Targets{Content: 2 * testStreams},
 	}, o.state, o)
 	if err != nil {

@@ -40,3 +40,7 @@ const SpanSync SpanOp = "sync"
 // SpanReserveRefused covers one reservation the journal refused by a named
 // limit before any byte was written. It ends with the refusal's own error.
 const SpanReserveRefused SpanOp = "reserve_refused"
+
+// SpanFill covers one fill the journal runs: the parts of an extent nothing
+// held, appended and held offloaded. It ends with the fill's own error.
+const SpanFill SpanOp = "fill"
