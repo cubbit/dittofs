@@ -147,6 +147,60 @@ func (fs *files) admitFill(id core.FileID, p Placed) (int64, error) {
 	return fs.reserve(max(n, 0))
 }
 
+// checkFill predicts a fill's staleness and admission without reserving: it
+// runs the tag check and the staleness comparison files.fill makes — the
+// entry's checkedAgainst against asOf, its counter halves alone — and then
+// the bound over the entries the gaps would hold. The gaps are the caller's
+// FillGaps answer for the same version, put as a fill puts them, so the
+// entries they name are the ones the fill's admission would reserve, exactly
+// once each. The bound here is the one checkWrite applies: what fillAdds
+// would predict over the file's current content, which the gaps already
+// account for, never more. It touches no count, so a caller that checked and
+// then admitted finds it where the check left it, and it creates no entry.
+func (fs *files) checkFill(tag core.ShareTag, id core.FileID, asOf core.Version, gaps []core.Extent) error {
+	var refused error
+	if !fs.view(id, func(f *file) {
+		if refused = f.check(tag, id); refused != nil {
+			return
+		}
+		if fs.checkedAgainst(f, id).Counter > asOf.Counter {
+			refused = core.ErrStaleFill
+			return
+		}
+		gaps = fillGapExtents(f, gaps)
+	}) {
+		// A file with no entry is nobody's, so no tag check refused, and it
+		// is checked against its floor bucket alone. It holds nothing, so
+		// every gap is wholly absent, which the caller's FillGaps answer
+		// already names.
+		if fs.buckets[bucketOf(id)].Load() > asOf.Counter {
+			return core.ErrStaleFill
+		}
+	} else if refused != nil {
+		return refused
+	}
+	c, limit := fs.count.Load(), fs.limit.Load()
+	if c+int64(len(gaps)) > limit {
+		fs.refusals.Add(1)
+		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + int64(len(gaps)) - limit, Unit: core.UnitEntries}
+	}
+	return nil
+}
+
+// fillGapExtents rebuilds the caller's gaps as they stand against the file's
+// current content, in a fresh slice: the parts of them nothing held covers.
+// The caller holds the file's lock. A caller that passed the gaps of an older
+// read is told the truer figure the content now stands at, so the check never
+// refuses a fill the admission would admit. The result never shares the
+// caller's backing array, which the check leaves the caller in control of.
+func fillGapExtents(f *file, gaps []core.Extent) []core.Extent {
+	var out []core.Extent
+	for _, e := range gaps {
+		_, out = f.held.span(e, nil, out)
+	}
+	return out
+}
+
 // reserve adds want to the count when the limit allows it, or refuses with a
 // NoSpaceError naming the index, counting the refusal. A reservation of
 // nothing is refused while the count stands above the limit — the first
