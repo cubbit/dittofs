@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 func TestValidateMountPoint_DriveLetters(t *testing.T) {
@@ -91,11 +89,7 @@ func TestCheckMountPrivileges(t *testing.T) {
 }
 
 func TestMountNFS_RejectsNonStandardPort(t *testing.T) {
-	adapters := []apiclient.Adapter{
-		{Type: "nfs", Port: 12049, Enabled: true},
-	}
-
-	err := mountNFS("/export", "Z:", adapters, "localhost", "3")
+	err := mountNFS("/export", "Z:", 12049, "localhost", "3")
 	if err == nil {
 		t.Fatal("mountNFS() expected error for non-standard port, got nil")
 	}
@@ -112,11 +106,7 @@ func TestMountNFS_AcceptsStandardPort(t *testing.T) {
 		t.Skip("mount command not available, skipping")
 	}
 
-	adapters := []apiclient.Adapter{
-		{Type: "nfs", Port: 2049, Enabled: true},
-	}
-
-	err := mountNFS("/export", "Z:", adapters, "localhost", "3")
+	err := mountNFS("/export", "Z:", 2049, "localhost", "3")
 	// The mount will likely fail because there is no NFS server running,
 	// but the error should NOT be about port validation.
 	if err != nil {

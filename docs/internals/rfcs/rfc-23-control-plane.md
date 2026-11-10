@@ -382,7 +382,7 @@ store configuration, and the last storage binding to close one releases it.
 | 7 | identity ([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)), built once and shared by row 8 and the management API | RFC 18 §2.6's `Deps` | the metadata store, the directory | 5 / 7 |
 | 8 | `*vfs.Filesystem`, by `vfs.New` ([RFC 17](rfc-17-vfs.md)) | `Meta` (the metadata store), `Open` (open state), `Engine` (the engine); from identity, `Identity` (its `Resolver`), `Auth` (its `Authenticator`) and `Names` (its `Identities`) | identity, open state, the metadata views, the engine | 6 / 6 |
 | 9 | **(cluster)** `vfs.Serve`, then the gateway by `vfs.NewGateway` ([RFC 17](rfc-17-vfs.md)) | `Serve`: the filesystem, the `Transport`, the `Router`; the gateway: `Local` (the checked `Service` that `Serve` returns), `Router`, `Transport` | `Serve`: the fence, the dedup, then the filesystem; the gateway: `Service`, `Router`, `Transport` | 6 / 4 |
-| 10 | adapters ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) | `Service`, the `vfs.Service` — the gateway in a cluster, the filesystem on one node — and nothing of identity | `vfs.Service`, sign-in and principal spellings included | 9 / 2 |
+| 10 | adapters ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) | `VFS`, the `vfs.Service` — the gateway in a cluster, the filesystem on one node — and nothing of identity | `vfs.Service`, sign-in and principal spellings included | 9 / 2 |
 
 **What `New` looks like.** The sketch is illustrative and elides errors and
 the values beside the rows. Where a component's RFC declares a constructor or a
@@ -411,7 +411,7 @@ func New(cfg Config) (*Node, error) {
 		checked := vfs.Serve(n.fs, cfg.Transport, n.router, ...)        // the fence and the dedup around the filesystem
 		svc = vfs.NewGateway(vfs.GatewayDeps{Local: checked, Router: n.router, Transport: cfg.Transport})
 	}
-	n.adapters = adapter.Deps{Service: svc, ...}                        // handed to each adapter's factory as reconcile enables it; no identity
+	n.adapters = adapter.Deps{VFS: svc, ...}                        // handed to each adapter's factory as reconcile enables it; no identity
 	n.api      = api.New(api.Deps{SignIn: n.ident, ...})                // the same identity, called directly, never through vfs (RFC 18 §8.1)
 	return n, nil                                                       // only the metadata store opened; nothing started
 }
@@ -641,7 +641,7 @@ The node holds two pictures: the **desired** one, read from records, and the
 | a remote store's live or next-write setting — endpoint, credential reference, storage class, block target, the transform chain but its encrypt stage, as [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) classes them | is applied once per store, to the component that reads it: endpoint, credential reference and storage class to the one store client every context on that store shares ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)), after [RFC 13 §5.2](rfc-13-configuration.md#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) has proven a new endpoint or credential; the block target to the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)) and the transform chain to the engine's codec ([RFC 5 §2.2](rfc-5-transforms.md#2.2%20Where%20it%20runs)), GC's relocation included, for the store's contexts. No storage binding is replaced |
 | a `Secret`'s new version | the component holding the reference resolves it again within the live bound, and the node reports the version it holds (§2.4, [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)) |
 | a change [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) counts as a change of a share's backends | builds the new context beside the old, `Fenced` while its namespace answers copy, switches admission to it, then joins and closes the old one. A new context that fails to build leaves the old one serving and the record refused |
-| an adapter enabled or disabled | starts it, or drains and stops it |
+| an adapter enabled or disabled | builds it with `New` and starts it, or drains and stops it; one enabled again is built anew with `New`, since a stopped adapter is never started again ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) |
 | an adapter's live setting | applies it to connections set up afterwards ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)) |
 | an adapter's restart-class setting | builds a new adapter through its factory with the new settings. `New` opens nothing, so a setting it refuses leaves the old adapter serving and the record refused. Only then the node drains and stops the old adapter and starts the new one; the others keep serving. If the new one fails to start, the node builds and starts one with the last settings that served, and reports the record refused (§2.4) |
 | a sidecar enabled or disabled | `Sync` with the serving adapters, or with none ([RFC 20 §3.5](rfc-20-adapters.md#3.5%20Sidecars)) |
@@ -886,8 +886,10 @@ with nothing of it dropped, and the result says so.
 
 ### 3.4 Adapters
 
-An adapter is configured by settings at installation scope, which a node record
-**MAY** override ([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)); its listen addresses are bootstrap facts of
+An adapter is configured by its own record, at installation scope per adapter
+([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)): every key is
+`adapters.<protocol>.<field>`, the common timeouts included, so each adapter
+carries its own copy; its listen addresses are bootstrap facts of
 each host ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)), not records. The resource is
 `/adapters/{protocol}`, with `enabled` and the protocol's settings:
 

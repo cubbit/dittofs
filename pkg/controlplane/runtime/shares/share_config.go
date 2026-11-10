@@ -60,7 +60,7 @@ func (s *Service) applyShareUpdate(name string, readOnly *bool, defaultPermissio
 // anonymous UID/GID) for a share, so an NFS squash-config change applies to
 // active clients without an adapter restart. The on-disk config is persisted
 // separately by the API handler; this only refreshes the runtime Share that
-// ResolveSharePermission / ApplyIdentityMapping read from. anonUID/anonGID are
+// share policy is read from. anonUID/anonGID are
 // pointers so an unspecified field is left unchanged. Mirrors UpdateShare's
 // lock+mutate pattern; GetShare hands callers a snapshot copy, so mutating the
 // registry entry under the lock is race-free.
@@ -222,10 +222,8 @@ func (s *Service) SetShareTrashConfig(store ShareStore, name string, cfg TrashSe
 }
 
 // SetShareNetgroup updates the live netgroup association for a share's NFS
-// export. An empty netgroupName clears the association (allow-all). The change
-// takes effect immediately: CheckNetgroupAccess reads NetgroupName from this
-// runtime registry, so subsequent NFS operations and SMB requests honour the
-// new allowlist without an adapter restart. Returns an error if the share is unknown.
+// export. An empty netgroupName clears the association (allow-all). Returns an
+// error if the share is unknown.
 func (s *Service) SetShareNetgroup(name, netgroupName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -236,23 +234,6 @@ func (s *Service) SetShareNetgroup(name, netgroupName string) error {
 	}
 	share.NetgroupName = netgroupName
 	return nil
-}
-
-// GetShareNetgroupName returns the live netgroup association for a share,
-// read under s.mu. Callers (e.g. CheckNetgroupAccess) must use this rather
-// than reading NetgroupName off a *Share returned by GetShare: GetShare hands
-// back the shared registry pointer with the lock already dropped, so reading
-// the field there races with SetShareNetgroup's write under s.mu. The bool is
-// false when the share is unknown.
-func (s *Service) GetShareNetgroupName(name string) (string, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	share, exists := s.registry[name]
-	if !exists {
-		return "", false
-	}
-	return share.NetgroupName, true
 }
 
 // DisableShare sets enabled=false on the share's DB row and runtime Share

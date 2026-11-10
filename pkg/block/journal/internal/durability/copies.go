@@ -48,17 +48,19 @@ type ownedCopy struct {
 	Synced  bool
 }
 
-// RegisterCopy records that the record numbered seq has another copy at loc,
-// written with the payload checksum checksum, as the original a re-append
-// left in a failed segment. A later copy of the same number replaces the
-// earlier one. The entry stays until Retired reports loc's segment retired.
+// registerOriginal registers c, the original of a re-appended record whose
+// new place has completed, as another copy of the record, unless c's segment
+// has already left st's set. A later copy of the same number replaces the
+// earlier one, and the entry stays until Retired reports its segment retired.
 //
-// The re-append calls it only once the new segment's sync has completed and
-// the index is repointed to the new copy, so a record a registered copy serves
-// is always synced, and no failed sync can take it back while the table names
-// its copy. A re-append whose own sync fails registers nothing: the new copy
-// is a record of a failed window of the new segment, under the same rules as
-// any other.
+// It is called only once the new segment's sync has completed and the index
+// is repointed to the new copy, so the record whose re-append registers a
+// copy is synced at its new place, and no failed sync can take it back while
+// the table names its copy. A re-append whose own sync fails registers
+// nothing: the new copy is a record of a failed window of the new segment,
+// under the same rules as any other. A hold's re-append registers nothing
+// either, so after one the table can still name the earlier copy while the
+// record's newest place is unsynced (useCopy names that ceiling).
 //
 // ponytail: the table knows only the copies registered here, the originals of
 // re-appends in failed segments. Copies a repack carried are not registered,
@@ -66,6 +68,43 @@ type ownedCopy struct {
 // Upgrade to registering the source of a carry once a loss is seen that a
 // surviving copy would have spared. Retired scans the whole table, which is
 // bounded by the records re-appended out of failed segments still on disk.
+//
+// A segment that has left the set is refused because a failed segment is
+// announced resolved when its window empties, which is before the new place
+// syncs, so it can be retired in between, and Retired runs once per segment
+// and would never remove the entry. The set is asked
+// under copyMu: a segment the set still holds is removed from it before
+// Retired is called, so that Retired's drop takes copyMu after this call and
+// removes the entry. copyMu is held only across the set's mutex, a leaf
+// that takes nothing while held. It holds no other lock of this layer.
+//
+// decision: the set is asked rather than a record of retired segments kept,
+// which every segment's retirement would grow for the life of the journal,
+// or the damaged rows' retired flag, which only a damaged segment has.
+func (d *Durability) registerOriginal(st *stream, c copyEntry) {
+	set := st.s.Set()
+	d.copyMu.Lock()
+	defer d.copyMu.Unlock()
+	if set != nil && segmentGone(set, c.loc.Segment) {
+		return
+	}
+	if d.copies == nil {
+		d.copies = map[core.Seq]copyEntry{}
+	}
+	d.copies[c.seq] = c
+}
+
+// RegisterCopy puts a copy of the record numbered seq at loc, written with the
+// payload checksum checksum, in the copy table directly, as registerOriginal
+// does once a re-append's new place has completed, without asking the set
+// whether loc's segment is still there.
+//
+// decision: only tests call it, the durability tests and the datapath tests
+// that stage a copy of a record, and it stays exported because the datapath
+// tests are in another package. It skips registerOriginal's check for a
+// segment that has left the set, which a test staging a copy never needs.
+// Overturned by a shared test kit that can reach the table, which would let
+// this method go.
 func (d *Durability) RegisterCopy(seq core.Seq, loc segment.Location, checksum uint32) {
 	d.copyMu.Lock()
 	defer d.copyMu.Unlock()
@@ -165,18 +204,26 @@ func (d *Durability) readCopy(st *stream, c copyEntry) (copyVerdict, error) {
 // complete or fail, and what it superseded is lifted or held again as for any
 // other record. The answer can be stale by a sync the worker has not applied,
 // which only decides whether the segment is counted damaged. The ceiling: a
-// served record left in a window that then fails, or left unsynced when the
-// journal turns read-only, is failed by the worker as any other, and although
-// the index names the copy and nothing is dropped, the worker still writes a
+// served record left in a window that then fails is re-appended from its
+// failed segment, and repointed from the copy, only when that re-read
+// verifies; when it does not, or when it is left unsynced as the journal turns
+// read-only, it is failed by the worker as any other, and although the index
+// names the copy and nothing is dropped, the worker still writes a
 // failed-window loss record for it (a read-only journal only tries to),
-// publishes the event, raises the generation and marks the file, while the
-// copy goes on being served. No copy the re-append registers reaches it, as
-// RegisterCopy is called only after the record it serves for is synced, which
-// no window then holds and the read-only pass does not fail; only a copy
-// registered for an unsynced record would. Overturned if a copy is ever
-// registered before that sync, or by a per-record re-append of a served record
-// still in a window, which would take it out of the window instead of failing
-// it.
+// publishes the event, raises the generation and marks the file, although the
+// copy is served until the hold's re-append moves it, which a read-only
+// journal never makes. No copy the window's re-append registers reaches it on
+// that re-append alone, as registerOriginal is called only after the record it
+// serves for is synced, which no window then holds and the read-only pass
+// does not fail; only a copy that outlives that place does, once a hold's
+// re-append has moved the record to a place not yet synced. A hold's re-append
+// and the window's can each append a copy of the record, two records sharing
+// one sequence number and version, which is harmless in content; the loss or
+// replay consequence is the sequence-number exclusion of RFC 1 section 3.8,
+// as for any dropped record's copy. Overturned if a copy is ever registered
+// before that sync, or by re-appending such a record from the copy that
+// verified, as reappendHeld does for a held record, when its re-read from the
+// window fails.
 func (d *Durability) useCopy(st *stream, c Corruption, cp copyEntry) (CorruptOutcome, bool) {
 	synced := c.Synced
 	if !c.AtOpen {
@@ -256,14 +303,27 @@ func (d *Durability) useCopy(st *stream, c Corruption, cp copyEntry) (CorruptOut
 }
 
 // syncedAt reports whether the record at r was synced: one in the ledger
-// that a sync covered, or one in neither the ledger, a pending window nor the
-// lost set, as takeCorrupt decides it. It changes nothing.
+// that a sync covered, or one in none of the ledger, a pending window, the
+// lost set and the moves, as takeCorrupt decides it. A record re-appended out
+// of its window is the old place of a copy and was never synced there. It
+// changes nothing.
 //
-// ponytail: a linear scan of the ledger, the pending windows and the lost
-// set, as takeCorrupt's, and upgraded with it.
+// ponytail: a linear scan of the ledger, the pending windows, the lost set
+// and the moves, as takeCorrupt's, and upgraded with it.
+//
+// A place in the moves matters here only when the repoint that took the
+// record off it failed, since the index otherwise no longer names it and the
+// read never reaches this far.
 func (st *stream) syncedAt(r index.RecordAt) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	// A record re-appended out of its window, whose copy has not completed,
+	// was never synced where it was: its old place leads to the copy.
+	for loc := range st.moved {
+		if loc.Segment == r.Segment && loc.Off == int64(r.Offset) {
+			return false
+		}
+	}
 	for i := range st.ledger {
 		if recordAt(st.ledger[i].w) == r {
 			return st.covered(st.ledger[i].w.Loc)

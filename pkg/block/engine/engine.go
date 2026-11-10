@@ -37,6 +37,7 @@ type Engine struct {
 	instance [16]byte                       // the process instance, a verifier input
 	sample   func(*binding) vfserr.Verifier // samples a write's verifier, before it is staged
 	reads    readSeries
+	fence    *fence // the self-fence, which the store views record into
 	lost     lostLog
 
 	// mu is the lifecycle mutex: Bind takes it only to read and swap the
@@ -105,8 +106,13 @@ func New(d Deps) (*Engine, error) {
 		}
 	}
 	d.Logger = d.Logger.With("component", "engine")
+	f := &fence{clock: d.Clock, logger: d.Logger, node: d.Node}
+	d.Existence = fencedExistence{d.Existence, f}
+	d.Content = fencedContent{d.Content, f}
+	d.Lifecycle = fencedLifecycle{d.Lifecycle, f}
 
 	e := &Engine{
+		fence:    f,
 		d:        d,
 		files:    newFiles(d.Clock),
 		instance: instanceID(),
@@ -299,6 +305,7 @@ func (e *Engine) whileStarting() error {
 // Stats reports the engine's counters and conditions: before Start, none.
 // A read-only journal's condition is read from the journal on each call, so
 // it clears once the journal takes writes again.
+// It evaluates the self-fence, as a write's gate does.
 func (e *Engine) Stats() Stats {
 	e.mu.Lock()
 	s := e.health.clone()
@@ -313,6 +320,11 @@ func (e *Engine) Stats() Stats {
 			s.Journals[dir] = js
 		}
 	}
+
+	if c, ok := e.fence.condition(); ok {
+		s.Node.Conditions = append(s.Node.Conditions, c)
+	}
+	s.SelfFences = e.fence.fences.Load()
 
 	return s
 }

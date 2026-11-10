@@ -29,7 +29,7 @@ suites:
       - go vet ./...
       # Tagged tests compile in no other check, so one could stop compiling without anything
       # going red. None of these tags excludes another.
-      - go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress,journal_conformance,journal_plant_split,engine_conformance ./...
+      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,engine_conformance ./...
       - go run ./test/spec-citations          # the MS-FSCC, MS-FSA and MS-SMB2 citations
       # The tests that pin an authorization or encryption gate, run by name: the edit that
       # reopens a gate can delete its test in the same change.
@@ -183,7 +183,7 @@ suites:
           - internal/vfs/**
           - pkg/vfs/**
           - pkg/metadata/**
-          - pkg/controlplane/runtime/**       # CheckShareAccess, ApplyIdentityMapping: both adapters' admission
+          - pkg/controlplane/runtime/**       # the share registry and policy both adapters read
           - pkg/auth/**                       # the SID mapper both adapters call
           - "test/e2e/cross_protocol*"
           - test/e2e/helpers/**               # error_triggers.go, used by CrossProtocol_ErrorConformance

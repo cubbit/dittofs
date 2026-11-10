@@ -10,8 +10,7 @@
 // configuration explicitly opts in (Config.AllowPlaintext). The default posture
 // requires LDAPS or a StartTLS upgrade.
 //
-// The provider implements identity.IdentityProvider and mirrors the structure
-// of pkg/identity/kerberos.
+// The provider implements identity.IdentityProvider.
 package ldap
 
 import (

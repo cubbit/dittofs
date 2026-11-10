@@ -51,13 +51,15 @@ type lostRecord struct {
 // can be appended. They are undone in memory rather than kept because the
 // engine syncs a removal before its metadata transaction: a failed Sync means
 // the removal did not happen, and a removal kept in memory would hide content
-// the metadata still names. The ceiling is a restart while read-only: the
-// failed list lives in the process, so the next start's recovery can find a
+// the metadata still names. The ceiling is a restart in a new process while read-only: the
+// failed list lives in the process, so the next process's recovery can find a
 // failed truncate or deallocate whole, even one a sync in flight at the
 // transition made durable, and apply it after its Sync was told it failed.
 // Overturned by a journal that keeps a second device it can still append to,
 // or by failed removals seen to survive a restart, which would record them in
 // the metadata store.
+// A held record's failed end place is dropped here although its held copy may
+// verify; the decision on settlePlaced (holds.go) states the ceiling.
 func (d *Durability) failReadOnly(st *stream) {
 	ro := d.Admit()
 	if ro == nil {
@@ -110,6 +112,8 @@ func (d *Durability) failReadOnly(st *stream) {
 	}
 	every := func(entry) bool { return true }
 	for _, w := range ws {
-		d.settle(st, w, every, ro, true)
+		if d.settle(st, w, every, ro, true) {
+			d.resolve(st, w)
+		}
 	}
 }

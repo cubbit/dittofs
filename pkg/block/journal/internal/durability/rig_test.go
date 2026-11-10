@@ -1,10 +1,12 @@
 package durability
 
 import (
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
+	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 const rigCap = int64(64 << 10)
@@ -27,6 +30,8 @@ type testDomains struct {
 	// held is how many file domains are held now, and mostHeld the most that
 	// were held at once.
 	held, mostHeld int
+	// order is every file whose domain was taken, in the order taken.
+	order []core.FileID
 }
 
 func (d *testDomains) Lock(id core.FileID) func() {
@@ -45,6 +50,7 @@ func (d *testDomains) Lock(id core.FileID) func() {
 	d.mu.Lock()
 	d.held++
 	d.mostHeld = max(d.mostHeld, d.held)
+	d.order = append(d.order, id)
 	d.mu.Unlock()
 	return func() {
 		d.mu.Lock()
@@ -96,6 +102,10 @@ type rig struct {
 	acct *accountLog
 	// lastSeq is the sequence number the last publish drew.
 	lastSeq atomic.Uint64
+	// keptPages holds the segments of a failed window whose pages still read
+	// back; the re-read of any other failed window's segment fails with an I/O
+	// error, as a segment whose pages a failed sync left unreliable.
+	keptPages sync.Map
 }
 
 // accountLog records every delta the layer accounts.
@@ -187,6 +197,50 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	})
 	t.Cleanup(func() { _ = streams.Close() })
 	t.Cleanup(d.Stop)
+	r := newRigOver(d, streams, seam, clock, domains, pool, set, n, sinks, c, acct)
+	// The re-append of a held record is pinned to one that always fails, so a
+	// hold a test made stays held and its segment claimed while the test reads
+	// the state; a test of the re-append itself installs d.reappendHeld before
+	// the layer starts. With any non-nil seam the worker repoints the index
+	// to the copy of a held record and, while the seam fails, logs an Error on
+	// every tick.
+	d.reappend = func(*stream, ownedCopy) (segment.Location, error) { return segment.Location{}, errPinnedHold }
+	// This seam is the read of both readCopy and the re-read of a failed
+	// window, so production's st.s.ReadAt branch runs only in a test that sets
+	// d.readCopyAt to nil before Start, as
+	// TestReappendReadsTheFailedSegmentThroughTheStream does. It always reads
+	// through stream 0, and a read of a pending window's segment gets EIO
+	// unless keptPages lists the segment: readCopy treats that as deciding
+	// nothing, and the re-read fails the record.
+	d.readCopyAt = func(seg core.SegmentID, p []byte, off int64) (int, error) {
+		if _, kept := r.keptPages.Load(seg); !kept && r.inPendingWindow(seg) {
+			return 0, syscall.EIO
+		}
+		return streams.Stream(0).ReadAt(seg, p, off)
+	}
+	return r
+}
+
+// inPendingWindow reports whether a pending window of any stream is of seg.
+func (r *rig) inPendingWindow(seg core.SegmentID) bool {
+	r.d.mu.Lock()
+	sts := make([]*stream, 0, len(r.d.made))
+	for _, st := range r.d.made {
+		sts = append(sts, st)
+	}
+	r.d.mu.Unlock()
+	for _, st := range sts {
+		st.mu.Lock()
+		found := slices.ContainsFunc(st.windows, func(w *window) bool { return w.seg == seg })
+		st.mu.Unlock()
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+func newRigOver(d *Durability, streams *segment.Streams, seam *kit.Seam, clock kit.DrivenClock, domains *testDomains, pool *segment.Pool, set *segment.Set, n int, sinks map[uint32]segment.Sink, c Config, acct *accountLog) *rig {
 	return &rig{d: d, streams: streams, seam: seam, clock: clock, domains: domains, pool: pool, set: set, spares: int64(2 * n), sinks: sinks, ix: c.Index, acct: acct}
 }
 
@@ -207,6 +261,9 @@ func testConfig(t testing.TB, clock core.Clock, domains Domains) Config {
 		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error) { return index.HeldDelta{}, nil },
 	}
 }
+
+// errPinnedHold is what the rig's pinned re-append of a held record returns.
+var errPinnedHold = errors.New("the test pinned the hold")
 
 // file returns a file id distinguished by b.
 func file(b byte) core.FileID { return core.NewFileID([16]byte{b}) }

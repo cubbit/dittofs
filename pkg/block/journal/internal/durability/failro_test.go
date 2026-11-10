@@ -528,14 +528,14 @@ func TestARemovalsWaitDurableReturnsErrJournalReadOnly(t *testing.T) {
 		r, _ := newRORig(t, 1, "")
 		f := file(1)
 		loc, _ := r.appendHeader(t, f, format.KindDelete, format.RecordBody{})
-		r.failSyncOf(t, loc.Segment, errors.New("sync boom"))
-		wantSyncError(t, mustReturn(t, "Sync", r.syncAsync(context.Background(), f)), loc.Segment, f)
+		sync := r.keptByItsFailedWindow(t, f, loc)
 		ch := r.waitDurableAsync(loc)
 		mustBlock(t, "WaitDurable on a record a failed window keeps", ch)
 		r.d.Enter(syscall.EROFS)
 		err := mustReturn(t, "WaitDurable", ch)
 		wantReadOnly(t, "WaitDurable", err)
 		notSyncError(t, err)
+		wantReadOnly(t, "Sync", mustReturn(t, "Sync", sync))
 	})
 
 	t.Run("lostToAFailedWindow", func(t *testing.T) {
@@ -562,14 +562,16 @@ func TestARemovalsWaitDurableReturnsErrJournalReadOnly(t *testing.T) {
 		r, _ := newRORig(t, 1, "")
 		f := file(1)
 		loc, _ := r.appendHeader(t, f, format.KindDelete, format.RecordBody{})
-		r.failSyncOf(t, loc.Segment, errors.New("sync boom"))
-		wantSyncError(t, mustReturn(t, "Sync", r.syncAsync(context.Background(), f)), loc.Segment, f)
+		sync := r.keptByItsFailedWindow(t, f, loc)
 		ch := r.waitDurableAsync(loc)
 		mustBlock(t, "WaitDurable on a record a failed window keeps", ch)
 		r.d.Stop()
 		r.d.Enter(syscall.EROFS)
 		if err := mustReturn(t, "WaitDurable", ch); !errors.Is(err, core.ErrClosed) {
 			t.Errorf("WaitDurable = %v, want core.ErrClosed", err)
+		}
+		if err := mustReturn(t, "Sync", sync); !errors.Is(err, core.ErrClosed) {
+			t.Errorf("Sync = %v, want core.ErrClosed", err)
 		}
 	})
 }

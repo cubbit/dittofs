@@ -138,17 +138,6 @@ func applyKerberosDefaults(cfg *KerberosConfig) {
 	if cfg.MaxContexts == 0 {
 		cfg.MaxContexts = 10000
 	}
-
-	// Identity mapping defaults
-	if cfg.IdentityMapping.Strategy == "" {
-		cfg.IdentityMapping.Strategy = "static"
-	}
-	if cfg.IdentityMapping.DefaultUID == 0 {
-		cfg.IdentityMapping.DefaultUID = 65534 // nobody
-	}
-	if cfg.IdentityMapping.DefaultGID == 0 {
-		cfg.IdentityMapping.DefaultGID = 65534 // nogroup
-	}
 }
 
 // GetDefaultConfig returns a Config struct with all default values applied.

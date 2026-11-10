@@ -21,6 +21,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
@@ -75,7 +77,8 @@ type Fixture struct {
 
 	t      *testing.T
 	logger *slog.Logger
-	starts uint64 // the processes started, each serving the shard under a new grace instance
+	faults *kvtest.FaultKV // the store's kv.KV, failing or stalling its calls as a row asks
+	starts uint64          // the processes started, each serving the shard under a new grace instance
 	// crashed fences the running engine's existence and content views: once
 	// set, by Crash, that engine's closing changes nothing in the store.
 	crashed *atomic.Bool
@@ -306,7 +309,8 @@ func newFixture(t *testing.T, wrap func(kv.KV) kv.KV) *Fixture {
 			db = wrap(db)
 		}
 
-		f.kv = &failingKV{KV: db}
+		f.faults = kvtest.NewFaultKV(db)
+		f.kv = &failingKV{KV: f.faults}
 		f.kv.left.Store(-1)
 
 		return f.kv
@@ -711,4 +715,60 @@ func (c fencedContent) PruneRemovals(ctx context.Context, share entity.ShareID, 
 		return errCrashed
 	}
 	return c.Content.PruneRemovals(ctx, share, file, atOrBelow)
+}
+
+// errFaulted is what a store call FailWrites fails answers.
+var errFaulted = errors.New("fixture: an injected store failure")
+
+// FailWrites makes every write transaction of the store fail at once from
+// now on, its reads served. The channel closes once one has been tried.
+func (f *Fixture) FailWrites() <-chan struct{} {
+	return f.fault(sim.Rule{Op: kvtest.OpUpdate, Key: "*", Action: sim.FaultAction{Err: errFaulted}})
+}
+
+// HoldNextWrite holds the store's next write transaction for d on the clock,
+// then fails it with err, or runs it when err is nil. The channel closes once
+// it reached the store.
+func (f *Fixture) HoldNextWrite(d time.Duration, err error) <-chan struct{} {
+	return f.fault(sim.Rule{Op: kvtest.OpUpdate, Key: "*", Count: 1, Action: sim.FaultAction{Delay: d, Err: err}})
+}
+
+// FailFile makes every existence commit of file id fail for that file alone,
+// as an absent record, the other files of the same commit committing. The
+// channel closes once a write transaction reached the store.
+func (f *Fixture) FailFile(id entity.FileID) <-chan struct{} {
+	key := keys.Describe(keys.ID(keys.ID([]byte{keys.KindF}, f.Share.ID[:]), id[:]))
+	return f.fault(sim.Rule{Op: kvtest.OpGet, Key: key, Action: sim.FaultAction{Err: kv.ErrNotFound}})
+}
+
+// Heal lifts every fault: the store serves every call from now on.
+func (f *Fixture) Heal() { f.faults.SetFault(nil) }
+
+// fault replaces the store's faults with rules, delays on the fixture's
+// clock, and answers a channel closed once the store first runs a write
+// transaction under them.
+func (f *Fixture) fault(rules ...sim.Rule) <-chan struct{} {
+	f.t.Helper()
+	s, err := sim.NewSchedule(1, f.Clock, rules...)
+	if err != nil {
+		f.t.Fatalf("fixture: fault schedule: %v", err)
+	}
+	e := &entered{Schedule: s, ch: make(chan struct{})}
+	f.faults.SetFault(e)
+	return e.ch
+}
+
+// entered is a schedule that closes its channel when the store first runs a
+// write transaction under it.
+type entered struct {
+	*sim.Schedule
+	once sync.Once
+	ch   chan struct{}
+}
+
+func (e *entered) At(op string, key []byte) (time.Duration, int, error) {
+	if op == kvtest.OpUpdate {
+		e.once.Do(func() { close(e.ch) })
+	}
+	return e.Schedule.At(op, key)
 }

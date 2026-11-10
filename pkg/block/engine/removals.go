@@ -117,6 +117,7 @@ func (l *removalLoop) enqueue(it *loopItem) {
 
 func (l *removalLoop) run() {
 	defer close(l.done)
+	defer l.e.fence.release(ownerOf(l.ctx)) // a stopped owner fails no more
 	for {
 		it, wait := l.next()
 		if it != nil {

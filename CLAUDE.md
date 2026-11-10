@@ -99,8 +99,8 @@ change the command definitions and rerun `go run ./cmd/gendocs`.
 ## Architecture invariants
 
 The Runtime (`pkg/controlplane/runtime/`) is the single entrypoint for all operations — a
-composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mounts/`,
-`lifecycle/`, `identity/`. API handlers and protocol adapters both go through it.
+composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shares/`,
+`snapshotsched/`, `stores/`, `trash/`. API handlers go through it.
 
 **Key rules you must preserve when editing:**
 
@@ -108,56 +108,11 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    dispatch, type conversion. Permission checks, file ops, and directory traversal belong in
    `pkg/metadata/` and the store implementations. Don't inline business logic into handlers.
 
-2. **Every operation carries an `*metadata.AuthContext`.** For NFS it is built in two steps.
-   Dispatch copies the RPC credentials into a handler context (`middleware.ExtractHandlerContext`
-   for v3, `ExtractV4HandlerContext` for v4). The handler then builds the `*metadata.AuthContext`,
-   with share permission and squashing applied (`BuildAuthContextWithMapping` for v3, reached
-   through `GetCachedAuthContext`; `buildV4AuthContext` for v4). For SMB it is built in the SMB
-   session layer (`BuildAuthContextFromUser`). It threads through handler → store. The share's
-   squash maps the identity in one place both adapters call, `Runtime.ApplyIdentityMapping`
-   (`pkg/controlplane/runtime/identity`), after the share's grants have resolved against the
-   unsquashed identity, so only file operations run as the squashed one. SMB guest sessions are
-   not mapped: they stay at the unprivileged nobody identity under every mode. Root's admin bypass
-   at the share gate is `models.SquashMode.RootKeepsAdmin`, which both `ResolveSharePermission`
-   (`internal/adapter/nfs/auth/share_permission.go`) and the SMB Tree Connect check
-   (`internal/adapter/smb/handlers/tree_connect.go`) use.
-
-   The share policy (`AllowAuthSys`, `RequireKerberos`, `MinKerberosLevel`, the netgroup client
-   allowlist) lives once, protocol-neutral, in `runtime.CheckShareAccess`
-   (`pkg/controlplane/runtime/export_auth_policy.go`). NFS's `CheckExportAccess`
-   (`internal/adapter/nfs/auth/export_access.go`) translates an RPC flavor and GSS service into a
-   proof and a protection, and applies the netgroup check only when its caller supplies a lookup.
-   It has three callers: MOUNT supplies one, the NFSv3 per-operation dispatch does not, and the
-   NFSv4 auth-context builder does not either, because it runs its own netgroup check first with
-   its own status. SMB maps a session onto the same two (`checkSharePolicy`,
-   `internal/adapter/smb/handlers/tree_connect.go`) in `admitTreeConnect`, which TREE_CONNECT and
-   the srvsvc share list both apply, and on every request in `prepareDispatch`
-   (`internal/adapter/smb/response.go`), CLOSE, TREE_DISCONNECT and LOCK exempt (LOCK's handler
-   checks an acquisition itself). COPYCHUNK also checks its source handle's tree, which the
-   request's TreeID does not name. `allow_auth_sys=false` refuses only a request nothing verified
-   (AUTH_SYS, AUTH_NULL, an SMB guest or anonymous session), so NTLM passes it, and
-   `min_kerberos_level` is the floor for NTLM too. The flavor gates run per operation, not only at
-   mount.
-
-   **NFSv4 needs a second gate, and it is not that one.** A compound can enter a share's handle
-   and then run only operations that make no metadata call of their own (LOCK, LOCKT, LOCKU and
-   GET_DIR_DELEGATION among them), so the share is also gated where its handle *enters* the
-   compound. There are exactly two such places: PUTFH, and a LOOKUP that crosses an export
-   junction out of the pseudo-fs. Both route through `shareEntryStatus`
-   (`internal/adapter/nfs/v4/handlers/helpers.go`) — keep it that way rather than growing a second
-   copy. Its two checks previously existed at one of the two sites only, which is how both a
-   quiesced share and a netgroup-restricted one stayed reachable by walking the pseudo-fs.
-
-   **That gate covers the share's enabled flag and its netgroup allowlist, not the flavor
-   policy.** Refusing a flavor at PUTFH would answer NFS4ERR_WRONGSEC, which sends the client to
-   SECINFO rather than to a stronger flavor, so `CheckExportAccess` runs only where an auth
-   context is built. LOCK, LOCKT and LOCKU therefore call `refuseCurrentFHAccess`, and
-   GET_DIR_DELEGATION calls `CheckCurrentFHAccess`, just before they touch state. Both reach
-   `currentFHAccessStatus` (also in `helpers.go`), which runs `buildV4AuthContext` and so
-   `CheckExportAccess`. Those four operations are gated twice: at handle entry for the enabled
-   flag and the netgroup allowlist, and per operation for the flavor policy and share permission.
-   Do not write a comment or a rule asserting the handle-entry path is fully gated: two comments
-   claimed exactly that, in opposite directions, and both were wrong.
+2. **On this branch the v1 adapters and their share gates are gone.** The NFS and SMB
+   adapters, their `AuthContext` builders, and the runtime's share-access, netgroup and
+   squash gates were deleted with them; nothing serves a file protocol. Admission is
+   `internal/vfs/admit` (RFC 18 and RFC 19), and RFC 20's v2 adapters reach the
+   filesystem only through `vfs.Service`. `develop` keeps the v1 description of this rule.
 
 3. **File handles are opaque.** Generated by the metadata store; they encode share identity so
    the Runtime can route. Handlers never parse or interpret them. They must stay stable across
@@ -211,10 +166,9 @@ from an unused import is not proof.
 **When a change starts populating a field that was always empty, audit the cache keys.** Keys,
 dedup keys and equality checks written against the old field set are invisible to `rg` for the
 field name, because the bug is in the key rather than the field. Carrying SID/GroupSIDs into
-`AuthContext.Identity` silently made `authCacheKey`
-(`internal/adapter/nfs/v3/handlers/doc.go`) incomplete: it keyed on share + flavor + uid + gid +
-gids, and two Kerberos principals can share that triple because a user record with no UID
-defaults to 1000 (`pkg/adapter/identity.go`). The second principal would have been served the
+`AuthContext.Identity` silently made the NFSv3 handlers' `authCacheKey` incomplete (in the v1
+NFS adapter, on `develop`): it keyed on share + flavor + uid + gid + gids, and two Kerberos
+principals can share that triple because a user record with no UID defaulted to 1000. The second principal would have been served the
 first's cached identity and inherited its SID-keyed ACE grants — failing **open**, unlike the
 missing-SID bug the change set out to fix.
 

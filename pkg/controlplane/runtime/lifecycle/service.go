@@ -19,17 +19,6 @@ type AuxiliaryServer interface {
 	Port() int
 }
 
-type SettingsInitializer interface {
-	LoadInitial(ctx context.Context) error
-	Start(ctx context.Context)
-	Stop()
-}
-
-type AdapterLoader interface {
-	LoadAdaptersFromStore(ctx context.Context) error
-	StopAllAdapters() error
-}
-
 type MetadataFlusher interface {
 	FlushAllPendingWritesForShutdown(timeout time.Duration) (int, error)
 }
@@ -43,7 +32,7 @@ type StoreCloser interface {
 // snapshot orchestration cannot use-after-close the metadata stores or
 // control-plane DB during graceful shutdown — without this hook the
 // normal server path (signal -> ctx cancel -> lifecycle.shutdown) would
-// call StopAllAdapters + CloseMetadataStores directly while snapshot
+// call CloseMetadataStores directly while snapshot
 // goroutines still hold references to the closing stores.
 type SnapshotDrainer interface {
 	ShutdownSnapshots(ctx context.Context)
@@ -61,8 +50,7 @@ type SnapshotDrainer interface {
 // commit with "sql: database is closed" and leaves the chunks it was carving
 // local and unmirrored.
 //
-// Called AFTER StopAllAdapters, so no new client writes create fresh carve
-// work, and BEFORE the stores close. Pass nil to skip (tests with no data
+// Called BEFORE the stores close. Pass nil to skip (tests with no data
 // plane). The closes run concurrently, so ctx is a single wall-clock budget
 // they all share rather than one divided between them. It bounds the WAIT, not
 // a close: on expiry the step returns and lets the metadata stores close while
@@ -73,7 +61,7 @@ type BlockStoreCloser interface {
 }
 
 // BackgroundWorkerStopper stops the runtime's background workers that are not
-// owned by the adapter, snapshot or block-store machinery — the recycle-bin
+// owned by the snapshot or block-store machinery — the recycle-bin
 // reaper and any async block GC run in flight. Both write through the metadata
 // stores, so they are signalled first, before any teardown step runs.
 //
@@ -109,7 +97,6 @@ type Service struct {
 	startupDone chan struct{}
 
 	// sidMapper is the machine SID mapper, initialized on first Serve().
-	// It is exposed via SIDMapper() for adapters to use.
 	sidMapper *sid.SIDMapper
 
 	// pinnedMachineSID, when non-empty, is an operator-supplied machine SID
@@ -138,10 +125,9 @@ func (s *Service) SetShutdownTimeout(d time.Duration) {
 }
 
 // SIDMapper returns the machine SID mapper initialized during Serve().
-// Returns nil if Serve() has not been called yet. Safe to read from an
-// adapter, which Serve starts after publishing the mapper; reading it from a
-// goroutine that runs CONCURRENTLY with Serve is a race, and waiting for
-// startup is what StartupDone is for.
+// Returns nil if Serve() has not been called yet. Reading it from a goroutine
+// that runs CONCURRENTLY with Serve is a race, and waiting for startup is what
+// StartupDone is for.
 func (s *Service) SIDMapper() *sid.SIDMapper {
 	return s.sidMapper
 }
@@ -174,8 +160,6 @@ func (s *Service) SetPinnedMachineSID(machineSID string) {
 //  2. Otherwise the stored SID (first boot generated + persisted) is loaded,
 //     keeping mapping stable across restarts.
 //  3. Otherwise a new random SID is generated and persisted.
-//
-// This MUST be called before any adapters are started.
 func (s *Service) initMachineSID(ctx context.Context, store MachineSIDStore) error {
 	const machineSIDKey = "machine_sid"
 
@@ -263,15 +247,8 @@ func (s *Service) SetAPIServer(server AuxiliaryServer) {
 }
 
 // Deps are the collaborators Serve drives through startup and shutdown. Every
-// field except AdapterLoader is optional; a nil field skips the step it owns.
+// field is optional; a nil field skips the step it owns.
 type Deps struct {
-	// Settings loads adapter settings once and then polls for changes.
-	Settings SettingsInitializer
-
-	// AdapterLoader starts the configured adapters and stops them on shutdown.
-	// Required.
-	AdapterLoader AdapterLoader
-
 	// MetadataFlusher drains pending metadata writes during shutdown.
 	MetadataFlusher MetadataFlusher
 
@@ -283,7 +260,7 @@ type Deps struct {
 	MachineSIDStore MachineSIDStore
 
 	// SnapshotDrainer cancels and drains in-flight snapshot orchestration
-	// goroutines BEFORE StopAllAdapters + CloseMetadataStores — otherwise those
+	// goroutines BEFORE CloseMetadataStores — otherwise those
 	// goroutines would race a closing metadata store / control-plane DB.
 	SnapshotDrainer SnapshotDrainer
 
@@ -296,14 +273,8 @@ type Deps struct {
 	BackgroundWorkerStopper BackgroundWorkerStopper
 }
 
-// Serve starts all components and blocks until shutdown. It fails fast when
-// Deps.AdapterLoader is missing, which both startup and shutdown dereference
-// unconditionally.
+// Serve starts all components and blocks until shutdown.
 func (s *Service) Serve(ctx context.Context, deps Deps) error {
-	if deps.AdapterLoader == nil {
-		return fmt.Errorf("lifecycle: Deps.AdapterLoader is required")
-	}
-
 	var err error
 
 	s.serveOnce.Do(func() {
@@ -317,21 +288,10 @@ func (s *Service) Serve(ctx context.Context, deps Deps) error {
 func (s *Service) serve(ctx context.Context, deps Deps) error {
 	logger.Info("Starting DittoFS runtime")
 
-	// Initialize machine SID BEFORE any adapters start.
-	// This ensures consistent identity mapping for all connections.
+	// Initialize the machine SID before startup completes, so every reader
+	// that waits on StartupDone sees it.
 	if err := s.initMachineSID(ctx, deps.MachineSIDStore); err != nil {
 		return fmt.Errorf("failed to initialize machine SID: %w", err)
-	}
-
-	if deps.Settings != nil {
-		if err := deps.Settings.LoadInitial(ctx); err != nil {
-			logger.Warn("Failed to load initial adapter settings", "error", err)
-		}
-		deps.Settings.Start(ctx)
-	}
-
-	if err := deps.AdapterLoader.LoadAdaptersFromStore(ctx); err != nil {
-		return fmt.Errorf("failed to load adapters: %w", err)
 	}
 
 	apiErrChan := make(chan error, 1)
@@ -372,36 +332,8 @@ func (s *Service) shutdown(deps Deps) {
 		deps.BackgroundWorkerStopper.StopBackgroundWorkers()
 	}
 
-	if deps.Settings != nil {
-		// Bounded, because Stop waits for a poll already in flight and takes no
-		// context of its own. On the API-error path the root context is still
-		// live, so a settings query wedged in the store would hold this shutdown
-		// — and with it Serve, and with it the caller's store close, which is
-		// the one thing that has to happen for the process to leave.
-		stopped := make(chan struct{})
-		go func() {
-			defer close(stopped)
-			deps.Settings.Stop()
-		}()
-		select {
-		case <-stopped:
-			// decision: this returns while Settings.Stop may still be inside a
-			// control-plane query, and the caller closes that store next. Stop
-			// cancels the poll's context before waiting, so a store call that
-			// honours cancellation returns and this bound is never reached; what
-			// it covers is one that does not. Losing the race costs an error
-			// from a closed store, logged by the poll and discarded, on a
-			// process that is leaving. Withdraw the bound if a poll ever
-			// performs a write whose partial application outlives the process —
-			// the same condition that governs the scheduler's join.
-		case <-time.After(s.shutdownTimeout):
-			logger.Warn("settings watcher was not joined within the shutdown timeout; " +
-				"a poll may still be running against the control-plane store")
-		}
-	}
-
-	// Drain in-flight snapshot orchestration goroutines BEFORE stopping
-	// adapters / closing metadata stores — those goroutines hold
+	// Drain in-flight snapshot orchestration goroutines BEFORE closing
+	// metadata stores — those goroutines hold
 	// references to both. ShutdownSnapshots cancels runtimeCtx (every
 	// per-snap ctx derives from it) and waits, bounded by the shutdown
 	// timeout. Orphans after the timeout will still exit on their own
@@ -411,11 +343,6 @@ func (s *Service) shutdown(deps Deps) {
 		drainCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 		deps.SnapshotDrainer.ShutdownSnapshots(drainCtx)
 		cancel()
-	}
-
-	logger.Info("Stopping all adapters")
-	if err := deps.AdapterLoader.StopAllAdapters(); err != nil {
-		logger.Warn("Error stopping adapters", "error", err)
 	}
 
 	if deps.MetadataFlusher != nil {

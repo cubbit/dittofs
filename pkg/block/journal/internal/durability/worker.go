@@ -13,8 +13,9 @@ import (
 )
 
 // run is one stream's worker: on each wake it takes the windows of the
-// segments that ended, fails their content records (or, once the journal is
-// read-only, every unsynced record of the stream), records the losses of the
+// segments that ended, fails their content records and re-appends the rest
+// (or, once the journal is read-only, fails every unsynced record of the
+// stream), records the losses of the
 // corrupt records reads handed it, completes the entries a
 // sync covered, stamps the ones it has not seen, issues the sync a waiter asked for
 // or the sync bound's timer calls for, and arms the timer, until Stop closes
@@ -35,7 +36,7 @@ func (d *Durability) run(st *stream) {
 		if d.Admit() != nil {
 			d.failReadOnly(st)
 		} else {
-			d.failWindows(st)
+			d.resolveWindows(st)
 		}
 		d.reappendStep(st)
 		if d.afterHolds != nil {
@@ -194,10 +195,12 @@ func bucketOf(d time.Duration) int {
 // done under its file's append domain, one domain at a time, so a record whose
 // sync landed is never dropped in the gap between a writer's append and the
 // accounting it does under that same domain. A content record's superseded
-// extents stop being retained under the same hold. Corrupt can take an
-// uncovered entry out between the steps, which moves the later ones down, so
-// each covered entry is found again by its count; Corrupt never takes a
-// covered one, so it is always there.
+// extents stop being retained under the same hold, and the original of a
+// re-appended record is registered in the copy table there, before the entry
+// is done, so a Sync that returns on the record finds the copy. Corrupt can
+// take an uncovered entry out between the steps, which moves the later ones
+// down, so each covered entry is found again by its count; Corrupt never takes
+// a covered one, so it is always there.
 func (d *Durability) complete(st *stream) {
 	st.mu.Lock()
 	if !st.reported {
@@ -221,12 +224,41 @@ func (d *Durability) complete(st *stream) {
 		st.mu.Lock()
 		i, ok := st.findLocked(no)
 		var w segment.Written
+		var orig *copyEntry
 		if ok {
-			w = st.ledger[i].w
+			w, orig = st.ledger[i].w, st.ledger[i].original
 		}
 		st.mu.Unlock()
 		if !ok {
 			continue
+		}
+		if orig != nil {
+			// The copy is registered with no lock of this layer held, and
+			// before the entry is done, so a Sync that returns on the record
+			// finds it. Corrupt never takes a covered entry, so the entry is
+			// still there when it is marked done below.
+			//
+			// decision: a re-appended record's original is registered only
+			// here, once the new place's sync has completed, never at the
+			// append. Between the append and this pass a read that finds
+			// the new place corrupt finds no registered copy and drops the
+			// record, writing its loss record, although the original may
+			// still verify on disk, which RFC 28 §3.3, which loses a record
+			// only when no copy verifies and sets no sync condition on that
+			// copy, would not drop. The drop is accepted because the record
+			// came out of a failed window and has never been acknowledged
+			// durable at any point: Sync and WaitDurable return on it only
+			// after this pass. Its loss record excludes the original as
+			// well at recovery, by sequence number (RFC 1 §3.8), and
+			// registerOriginal's contract asks for this order, so the table
+			// names a copy only of a record synced at its new place.
+			// Overturned by a ruling that the drop of a never-acknowledged
+			// record is a loss under RFC 28 §3.3. The cheap upgrade then is
+			// for Corrupt to consult the new place's ledger entry, whose
+			// original names the verified place before any registration,
+			// and serve from it, so the table still never names a copy of
+			// an unsynced record; registering at the append is the other way.
+			d.registerOriginal(st, *orig)
 		}
 		unlock := d.domains.Lock(w.File)
 		if isContent(w) {
@@ -245,9 +277,15 @@ func (d *Durability) complete(st *stream) {
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	st.removeLocked(func(e *entry) bool { return e.done }, nil)
+	st.removeLocked(func(e *entry) bool { return e.done }, func(e entry) { st.forgetMovedLocked(e.w.Loc) })
 	// A Sync waits for its records to be completed, not only covered.
 	d.notifyAll()
+	// A held record leaves its hold on the pass after its new place completes,
+	// which the step over the holds, run before this one, decides: that pass is
+	// asked for now rather than left to the next tick of the sync bound.
+	if st.placingLocked() {
+		st.wake()
+	}
 	live := st.live
 	clear(live)
 	// A segment with a pending window keeps its failure and its synced value.

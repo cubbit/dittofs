@@ -16,7 +16,23 @@ import (
 )
 
 // failSyncOf schedules one failing sync of the segment's file at the seam.
+//
+// A failed segment's pages are unreliable by default: the layer's re-read of
+// its records fails, so a window of content records is failed whole. A test of
+// a record that survives the re-read uses failSyncKeepingPages.
 func (r *rig) failSyncOf(t *testing.T, seg core.SegmentID, err error) {
+	t.Helper()
+	r.scheduleFailedSync(t, seg, err)
+}
+
+// failSyncKeepingPages is failSyncOf for a segment whose pages still read back.
+func (r *rig) failSyncKeepingPages(t *testing.T, seg core.SegmentID, err error) {
+	t.Helper()
+	r.keptPages.Store(seg, struct{}{})
+	r.scheduleFailedSync(t, seg, err)
+}
+
+func (r *rig) scheduleFailedSync(t *testing.T, seg core.SegmentID, err error) {
 	t.Helper()
 	if e := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(seg), 1, err)); e != nil {
 		t.Fatal(e)

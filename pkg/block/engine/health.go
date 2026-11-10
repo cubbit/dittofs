@@ -58,10 +58,16 @@ type Scope uint8
 
 const (
 	ScopeJournal Scope = iota + 1 // a journal device: ID its identity, Name its directory
+	ScopeNode                     // this node: ID its identity
 )
 
 // JournalStats is one device's journal, as Stats reports it.
 type JournalStats struct {
+	Conditions []Condition
+}
+
+// NodeStats is this node, as Stats reports it.
+type NodeStats struct {
 	Conditions []Condition
 }
 

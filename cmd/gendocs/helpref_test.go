@@ -378,10 +378,14 @@ func TestSourceStringCommandReferences(t *testing.T) {
 // TestDocsCommandReferences checks the hand-written guides. cli.md is generated
 // and skipped; everything around it is prose an author has to keep in step by
 // hand, which is how a whole page came to document a flag layout the CLI had
-// stopped using.
+// stopped using. RFCs and plans are records of decisions, which name commands
+// a change removes or has yet to build, so they are not held to today's tree.
 func TestDocsCommandReferences(t *testing.T) {
 	var problems []string
 	err := filepath.WalkDir("../../docs", func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() && (d.Name() == "rfcs" || d.Name() == "planning") {
+			return filepath.SkipDir
+		}
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
 			return nil //nolint:nilerr // an unreadable doc is not this test's business
 		}

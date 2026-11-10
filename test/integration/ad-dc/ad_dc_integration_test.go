@@ -1,18 +1,8 @@
 //go:build ad_dc
 
-// Package ad_dc_test provides an integration test for AD-1 (#1233): decoding
-// the Kerberos PAC of an Active Directory ticket and surfacing the user's
-// transitive group SIDs through the shared KerberosService.AuthResult.
-//
-// Unlike test/integration/kerberos (an MIT KDC, auth only, no PAC), this test
-// stands up a real Samba Active Directory Domain Controller in Docker. The DC
-// issues service tickets carrying a Microsoft PAC (MS-PAC) whose
-// GroupMembershipSIDs include the user's full transitive group set — AD
-// resolves nested membership at the DC. The test logs in as alice (a member of
-// devs, which is nested under engineering), obtains a service ticket for the
-// SMB SPN, builds the AP-REQ, and asserts that KerberosService.Authenticate
-// returns a non-empty GroupSIDs containing BOTH the devs and engineering
-// domain group SIDs plus a populated UserSID.
+// Package ad_dc_test provides integration tests against a real Samba Active
+// Directory Domain Controller in Docker: NETLOGON pass-through, online join and
+// LDAP lookups. This file holds the DC fixture the tests share.
 //
 // Run with: go test -tags=ad_dc -v -timeout 20m ./test/integration/ad-dc/
 // Requires: Docker (the samba-ad-dc image builds + provisions under linux/amd64
@@ -30,15 +20,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jcmturner/gokrb5/v8/client"
-	krb5config "github.com/jcmturner/gokrb5/v8/config"
-	"github.com/jcmturner/gokrb5/v8/messages"
-	"github.com/jcmturner/gokrb5/v8/types"
-
-	kerbauth "github.com/cubbit/dittofs/internal/auth/kerberos"
-	"github.com/cubbit/dittofs/pkg/auth/kerberos"
-	dconfig "github.com/cubbit/dittofs/pkg/config"
 )
 
 const (
@@ -55,12 +36,6 @@ const (
 
 	adUserAlice = "alice"
 	adUserPass  = "TestPassword01!"
-
-	// SMB service principal the DittoFS server presents; the fixture exports
-	// its key into dittofs.keytab. spnShort is the form gokrb5 uses to request
-	// a service ticket (no realm); spnFull is what Authenticate validates against.
-	adSMBSPNShort = "cifs/dittofs.dittofs.ad"
-	adSMBSPNFull  = "cifs/dittofs.dittofs.ad@DITTOFS.AD"
 )
 
 // adContainerName is the container the current test's fixture is running in. It
@@ -114,80 +89,6 @@ func adDockerCombined(sub string, args ...string) ([]byte, error) {
 // none can block past adExecTimeout, and a failure keeps Docker's stderr.
 func adDockerExec(args ...string) ([]byte, error) {
 	return adDockerCombined("exec", append([]string{adContainerName}, args...)...)
-}
-
-// TestADGroupSIDsFromPAC exercises the full AD-1 path: a real AD ticket's PAC
-// group SIDs flow into the KerberosService AuthResult.
-func TestADGroupSIDsFromPAC(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping AD-DC integration test in short mode")
-	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not found, skipping AD-DC integration test")
-	}
-
-	// krb5ConfPath already encodes the mapped KDC port, so the gokrb5 client
-	// reaches the DC without a separate port argument.
-	_, keytabPath, krb5ConfPath, cleanup := setupADDC(t)
-	defer cleanup()
-
-	// Build the shared KerberosService from a provider backed by the exported
-	// service keytab. This is the same construction the SMB session layer uses.
-	cfg := &dconfig.KerberosConfig{
-		Enabled:          true,
-		KeytabPath:       keytabPath,
-		ServicePrincipal: adSMBSPNFull,
-		Krb5Conf:         krb5ConfPath,
-		MaxClockSkew:     5 * time.Minute,
-		ContextTTL:       10 * time.Minute,
-		MaxContexts:      100,
-	}
-	provider, err := kerberos.NewProvider(cfg)
-	if err != nil {
-		t.Fatalf("create kerberos provider: %v", err)
-	}
-	defer provider.Close()
-
-	service := kerbauth.NewKerberosService(provider)
-
-	// alice authenticates against the DC and obtains a service ticket for the
-	// SMB SPN, then we build the raw AP-REQ (Authenticate expects the raw
-	// AP-REQ, not a GSS-wrapped token).
-	apReqBytes := getADAPREQ(t, krb5ConfPath)
-
-	result, err := service.Authenticate(apReqBytes, adSMBSPNFull)
-	if err != nil {
-		t.Fatalf("Authenticate failed: %v", err)
-	}
-
-	t.Logf("Authenticated principal=%q realm=%q user_sid=%q group_sids=%v",
-		result.Principal, result.Realm, result.UserSID, result.GroupSIDs)
-
-	// UserSID must be populated from the PAC (logon domain SID + RID).
-	if result.UserSID == "" {
-		t.Error("expected non-empty UserSID from PAC, got empty")
-	} else if !strings.HasPrefix(result.UserSID, "S-1-5-21-") {
-		t.Errorf("UserSID %q does not look like a domain SID (S-1-5-21-...)", result.UserSID)
-	}
-
-	// GroupSIDs must be non-empty and contain BOTH the devs and engineering
-	// group SIDs. AD resolves the nesting (devs ⊂ engineering) at the DC and
-	// stamps both into alice's ticket PAC — no LDAP group-walk required.
-	if len(result.GroupSIDs) == 0 {
-		t.Fatal("expected non-empty GroupSIDs from PAC, got none")
-	}
-
-	devsSID := lookupGroupSID(t, "devs")
-	engineeringSID := lookupGroupSID(t, "engineering")
-
-	if !containsSID(result.GroupSIDs, devsSID) {
-		t.Errorf("GroupSIDs %v missing devs SID %q", result.GroupSIDs, devsSID)
-	}
-	if !containsSID(result.GroupSIDs, engineeringSID) {
-		t.Errorf("GroupSIDs %v missing engineering (nested) SID %q", result.GroupSIDs, engineeringSID)
-	}
-
-	t.Logf("PAC carried devs=%s and engineering=%s (nested resolved at DC) ✓", devsSID, engineeringSID)
 }
 
 // AD-DC Docker Setup
@@ -287,7 +188,7 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 	// Write a host-side krb5.conf that points the realm KDC at the mapped host
 	// port (force TCP, the mapped port is TCP only). The Samba-generated
 	// krb5.conf in the container references the DC hostname, which the host
-	// cannot resolve — so we synthesise a minimal one like the MIT KDC test.
+	// cannot resolve — so we synthesise a minimal one.
 	krb5ConfPath = filepath.Join(tmpDir, "krb5.conf")
 	hostKrb5Conf := fmt.Sprintf(`[libdefaults]
     default_realm = %s
@@ -386,15 +287,6 @@ func lookupGroupSID(t *testing.T, group string) string {
 	return ""
 }
 
-func containsSID(sids []string, want string) bool {
-	for _, s := range sids {
-		if strings.EqualFold(s, want) {
-			return true
-		}
-	}
-	return false
-}
-
 func dumpADLogs(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), adExecTimeout)
@@ -402,70 +294,4 @@ func dumpADLogs(t *testing.T) {
 	out, _ := exec.CommandContext(ctx, "docker",
 		"logs", "--tail", "100", adContainerName).CombinedOutput()
 	t.Logf("---- AD-DC container logs (tail) ----\n%s\n-------------------------------------", out)
-}
-
-// Real AD Ticket Generation
-
-// getADAPREQ logs in as alice against the AD-DC and returns the raw AP-REQ
-// bytes for the SMB SPN (NOT GSS-wrapped — KerberosService.Authenticate
-// expects the raw AP-REQ).
-func getADAPREQ(t *testing.T, krb5ConfPath string) []byte {
-	t.Helper()
-
-	cfg, err := krb5config.Load(krb5ConfPath)
-	if err != nil {
-		t.Fatalf("load krb5.conf: %v", err)
-	}
-
-	// kinit equivalent. DisablePAFXFAST avoids an unnecessary preauth round.
-	cl := client.NewWithPassword(adUserAlice, adRealm, adUserPass, cfg, client.DisablePAFXFAST(true))
-	if err := cl.Login(); err != nil {
-		dumpADLogs(t)
-		t.Fatalf("kinit as alice: %v", err)
-	}
-	defer cl.Destroy()
-	t.Log("alice obtained a TGT from the AD-DC")
-
-	// TGS-REQ for the SMB service principal.
-	tkt, sessionKey, err := cl.GetServiceTicket(adSMBSPNShort)
-	if err != nil {
-		t.Fatalf("get service ticket for %s: %v", adSMBSPNShort, err)
-	}
-	t.Logf("alice obtained a service ticket for %s (enctype=%d)", adSMBSPNShort, sessionKey.KeyType)
-
-	apReqBytes := buildAPREQ(t, cl, tkt, sessionKey)
-	t.Logf("Built raw AP-REQ (%d bytes)", len(apReqBytes))
-	return apReqBytes
-}
-
-// buildAPREQ marshals a raw AP-REQ for the given service ticket.
-func buildAPREQ(t *testing.T, cl *client.Client, tkt messages.Ticket, sessionKey types.EncryptionKey) []byte {
-	t.Helper()
-
-	auth, err := types.NewAuthenticator(cl.Credentials.Domain(), cl.Credentials.CName())
-	if err != nil {
-		t.Fatalf("create authenticator: %v", err)
-	}
-
-	apReq, err := messages.NewAPReq(tkt, sessionKey, auth)
-	if err != nil {
-		t.Fatalf("build AP-REQ: %v", err)
-	}
-
-	apReqBytes, err := apReq.Marshal()
-	if err != nil {
-		t.Fatalf("marshal AP-REQ: %v", err)
-	}
-	// Sanity: a marshalled AP-REQ starts with APPLICATION 14 (0x6e).
-	if len(apReqBytes) == 0 || apReqBytes[0] != 0x6e {
-		t.Fatalf("unexpected AP-REQ prefix: %x", firstBytes(apReqBytes))
-	}
-	return apReqBytes
-}
-
-func firstBytes(b []byte) []byte {
-	if len(b) > 8 {
-		return b[:8]
-	}
-	return b
 }

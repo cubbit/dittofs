@@ -118,7 +118,11 @@ type Histogram struct {
 // Part is the layer's report, read from counters kept at each sync.
 type Part struct {
 	Syncs, SyncFailures uint64
-	SyncDuration        Histogram
+	// ReappendedBytes counts the bytes of the records a failed window's
+	// re-append, or a held copy's, placed again: the length each record has at
+	// its new place. An append the stream refused counts nothing.
+	ReappendedBytes uint64
+	SyncDuration    Histogram
 	// LastSyncError is the most recent sync failure across the streams, nil
 	// when none has failed.
 	LastSyncError *SyncFailure
@@ -272,23 +276,18 @@ type Durability struct {
 	// repoints the index to the new place. The worker calls it once the copy's
 	// segment is claimed and the index repointed to the copy, with no file
 	// append domain and no lock of this layer held, so a read of the file
-	// never waits on the re-append's fsync. It appends and syncs the new
-	// segment on its own, then takes the record's file append domain only for
-	// its final repoint, which it makes only if the index still names the copy
-	// (Index.Names), since a write may have overwritten the record meanwhile.
+	// never waits on the re-append's fsync. It appends to the stream, which
+	// the worker syncs like any other record, then takes the record's file
+	// append domain only for its final repoint, which it makes only if the
+	// index still names the copy (Index.Names), since a write may have
+	// overwritten the record meanwhile.
 	// It runs on the stream's worker, so it must not wait on anything that
 	// worker does, such as a Sync or a WaitDurable of this layer: it may block
-	// on the stream's append and its own fsync of the segment, and on the
-	// record's file append domain. A nil error says the re-append landed and
-	// the record leaves the hold.
-	//
-	// decision: it is nil until the per-record re-append installs it, and
-	// while it is nil the worker neither repoints a held record nor re-appends
-	// it, so a held record stays held and its segment claimed. Nothing lets a
-	// hold go but a landed re-append, a lost record or a record a later write
-	// overwrote, and only the first of these can make the segment resolved by
-	// the copy's own content. Withdrawn once the re-append is installed.
-	reappend func(st *stream, c ownedCopy) error
+	// on the stream's append, which may roll and seal, and on the record's file
+	// append domain. A nil error returns the place the record was appended at,
+	// and the record leaves the hold once that place has completed. New
+	// installs reappendHeld; a test replaces it before the layer starts.
+	reappend func(st *stream, c ownedCopy) (segment.Location, error)
 
 	// afterHolds is a test hook, nil in production: the worker runs it with
 	// no lock held after each pass's step over the held segments.
@@ -415,6 +414,7 @@ func New(cfg Config) (*Durability, error) {
 	}
 	d.refuse = d.Admit
 	d.readOnly = d.Enter
+	d.reappend = d.reappendHeld
 	return d, nil
 }
 
@@ -449,6 +449,13 @@ type entry struct {
 	// also finds the entry again by it after Corrupt took an earlier entry
 	// out of the ledger.
 	tracked uint64
+	// original is set on the new place of a re-appended content record: the
+	// place the record was read from and the checksum the ledger kept for it.
+	// The completion registers it in the copy table, so the table names a
+	// copy only of a record whose new place has synced. An entry that leaves
+	// the ledger any other way, failed by its window, undone or taken by
+	// Corrupt, takes it along unregistered.
+	original *copyEntry
 }
 
 // stream is one stream's state.
@@ -511,6 +518,19 @@ type stream struct {
 	// dropping an entry once the record's segment is retired from the journal,
 	// when a stream with a long failure history shows up in a heap profile.
 	lost map[segment.Location]lostRecord
+	// moved maps the place of a record that was re-appended to the place it
+	// was re-appended at, so a waiter that holds the old place finds the
+	// record, and Corrupt reads the old place as unsynced. A record that
+	// moved twice has a chain, which followLocked walks to its end. complete
+	// drops an entry once the record at its end is done, together with the
+	// entries that lead to it.
+	//
+	// ponytail: one entry per re-appended record not yet completed, so it is
+	// bounded by what a failed window held and the new segment's sync clears,
+	// and an entry whose last place was lost stays for the life of the stream,
+	// as lost does. Upgrade to a table per window when a profile shows the scan
+	// complete makes for each record it finishes.
+	moved map[segment.Location]segment.Location
 	// marks are the failures no Sync has reported yet, per file, oldest
 	// first; told holds, per pending window, the files already told of it.
 	//
@@ -564,7 +584,8 @@ type stream struct {
 
 	// The counters have one writer, the worker, and are read by Stats
 	// without mu, so a poll never waits on a lock an append takes.
-	syncs, failures atomic.Uint64
+	// reappended counts the bytes of the records placed again, as placed.
+	syncs, failures, reappended atomic.Uint64
 	// lastFail is the last sync failure, stored by the worker and read by
 	// Stats without mu.
 	lastFail atomic.Pointer[failStamp]
@@ -588,6 +609,7 @@ func newStream(d *Durability, no uint32) *stream {
 		ending:  map[core.SegmentID]struct{}{},
 		counted: map[core.SegmentID]struct{}{},
 		lost:    map[segment.Location]lostRecord{},
+		moved:   map[segment.Location]segment.Location{},
 		kick:    make(chan struct{}, 1),
 		buckets: make([]atomic.Uint64, len(SyncDurationBounds)+1),
 	}
@@ -722,6 +744,8 @@ func (d *Durability) Durable(at segment.Location) bool {
 	made := d.snapshot()
 	for _, st := range made {
 		st.mu.Lock()
+		// A re-appended record is asked about where it landed.
+		at := st.followLocked(at)
 		for i := range st.ledger {
 			if st.ledger[i].w.Loc == at {
 				ok := st.covered(at)
@@ -762,6 +786,7 @@ func (d *Durability) Stats() Part {
 		}
 		p.Syncs += st.syncs.Load()
 		p.SyncFailures += st.failures.Load()
+		p.ReappendedBytes += st.reappended.Load()
 		p.SyncDuration.Sum += time.Duration(st.sum.Load())
 		for i := range st.buckets {
 			p.SyncDuration.Counts[i] += st.buckets[i].Load()
@@ -915,20 +940,22 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) error {
 }
 
 // WaitDurable returns nil once the record at the location is durable,
-// core.ErrClosed once the layer stopped, or, once the journal is read-only and
-// the record is failed, the refusal, which matches core.ErrJournalReadOnly. It
-// takes no context and never returns a *core.SyncError: while the journal
-// takes writes, a record of a segment whose sync failed keeps waiting, since
-// following a re-append is not part of this layer yet, until Stop or until the
-// journal turns read-only, which wakes every such waiter. It consults and
-// clears no marks, which belong to the Sync that names the file. A record with
-// no sync running for it gets one, as a Sync would. The caller holds no file's
-// append domain, as for Sync.
+// core.ErrClosed once the layer stopped, or, once the journal is read-only
+// and the record is failed, the refusal, which matches
+// core.ErrJournalReadOnly. It takes no context and never returns a
+// *core.SyncError. A header-only record of a segment whose sync failed is
+// re-appended, and the wait follows it to its new place and ends when that
+// is durable. While the journal takes writes, a content record of such a
+// segment is failed and keeps waiting, since it is never durable, until Stop
+// or until the journal turns read-only, which wakes every such waiter. It
+// consults and clears no marks, which belong to the Sync that names the
+// file. A record with no sync running for it gets one, as a Sync would. The
+// caller holds no file's append domain, as for Sync.
 func (d *Durability) WaitDurable(at segment.Location) error {
 	var ws []work
 	for _, st := range d.snapshot() {
 		st.mu.Lock()
-		ok := st.pending(at)
+		ok := st.pending(st.followLocked(at))
 		st.mu.Unlock()
 		if ok {
 			ws = append(ws, work{st: st, targets: []target{{loc: at}}})
@@ -981,8 +1008,7 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 	}
 	// A pending window's records are targets whatever the segment's synced
 	// offset. A content record is answered from the mark its failure leaves; a
-	// header-only one, which no failure takes, gets the SyncError once its
-	// window has been failed.
+	// header-only one is followed to where it is re-appended.
 	for j := len(st.windows) - 1; j >= 0; j-- {
 		w := st.windows[j]
 		for i := len(w.entries) - 1; i >= 0; i-- {
@@ -993,12 +1019,11 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 }
 
 // await waits until no target of any stream is pending. With failFast, the
-// failures owed to the call (its files' marks, and the answer of a header-only
-// record of a failed window) end the wait once no failure is still in flight
-// on any stream, and the call returns them as one error. Once the journal is
-// read-only, a target it failed ends the wait the same way, with or without
-// failFast: its refusal is the answer, joined with any failure the call is
-// owed that does not already carry it.
+// failures owed to the call (its files' marks) end the wait once no failure is
+// still in flight on any stream, and the call returns them as one error. Once
+// the journal is read-only, a target it failed ends the wait the same way,
+// with or without failFast: its refusal is the answer, joined with any failure
+// the call is owed that does not already carry it.
 //
 // decision: a failure found on a stream does not end the wait while any stream
 // of the call, that one included, still has a target in a failed segment whose
@@ -1113,20 +1138,37 @@ func mergeOwed(into, from *owedFailure) *owedFailure {
 	return into
 }
 
-// answersFailureLocked returns the id of the window, and true, when the record
-// at loc is a header-only record of a pending window that failWindow has run
-// for: the only record that answers a Sync with its failure. A record still in the ledger, or in a
-// window not yet failed, answers nothing, so that the loss generation is
-// raised before any Sync the failure fails returns. The caller holds mu.
-func (st *stream) answersFailureLocked(loc segment.Location) (uint64, bool) {
-	for _, w := range st.windows {
-		for i := range w.entries {
-			if w.entries[i].w.Loc == loc {
-				return w.id, w.failed && !isContent(w.entries[i].w)
+// followLocked returns where the record last placed at loc is now: loc itself
+// for a record that never moved, otherwise the end of the chain of places the
+// stream re-appended it to. The caller holds mu.
+func (st *stream) followLocked(loc segment.Location) segment.Location {
+	for {
+		next, ok := st.moved[loc]
+		if !ok {
+			return loc
+		}
+		loc = next
+	}
+}
+
+// forgetMovedLocked drops the entries of moved that lead to loc, the place of
+// a record that is done: the entry that names loc, the one that names its
+// key, and so on. The caller holds mu.
+func (st *stream) forgetMovedLocked(loc segment.Location) {
+	for len(st.moved) != 0 {
+		from, found := segment.Location{}, false
+		for k, v := range st.moved {
+			if v == loc {
+				from, found = k, true
+				break
 			}
 		}
+		if !found {
+			return
+		}
+		delete(st.moved, from)
+		loc = from
 	}
-	return 0, false
 }
 
 // undoingLocked reports whether the stream holds a header-only record of one
@@ -1160,9 +1202,8 @@ func (st *stream) undoingLocked(ids []core.FileID) bool {
 // check looks at one stream's targets. With failFast it first takes the marks
 // owed to ids, and still evaluates the targets afterwards. It reports whether
 // any target is pending, whether a target sits in a failed segment whose
-// failure is not yet answered (failing), and the failure owed to the call: the
-// marks it took, joined with the answer of a header-only record whose window
-// has been failed. It returns an error for a closed layer, and then only when
+// failure is not yet handled (failing), and the failure owed to the call: the
+// marks it took. It returns an error for a closed layer, and then only when
 // it owes no failure, and the read-only refusal once a target is a record the
 // read-only journal failed, or, with failFast, once a file of ids has a
 // header-only record it undid, alongside whatever failure it owes. It also leads
@@ -1186,22 +1227,20 @@ func (st *stream) undoingLocked(ids []core.FileID) bool {
 // target any more: a Sync that targeted it and finds no mark left returns, as
 // another Sync of the file took the report, and a failure is told once.
 //
-// decision: a header-only target in a pending window answers its
-// *core.SyncError once failWindow has run for that window, and not before:
-// such a record is not failed, it stays in the window, and no mark is ever set
-// for it, but the generation must be up before a Sync the failure fails
-// returns, and the window's content records are failed by then, so a file
-// with both is told by its marks first and never twice for one Sync. Until
-// then the target waits, and counts as a failure in flight. Once answered it
-// no longer does, for it stays in its window until the re-append and the call
-// would never end; the call's other targets still decide whether a failure is
-// in flight, so the answer is returned with them and not ahead of them.
-// Overturned by the re-append of a header-only record, which must wait for the
-// new sync instead of failing at once. Once the journal is read-only the
-// record is undone and failed (failReadOnly), every wait on it then ends with
-// the refusal, and so does every later Sync naming its file (st.undone); until
-// the pass has undone it, it counts as a failure in flight for a Sync naming
-// its file (undoingLocked), so no other failure is answered ahead of it.
+// decision: a header-only target of a failed segment waits like a content
+// one until the worker has handled its window, and is then followed to the
+// place the record was re-appended at, so the Sync returns once the new
+// segment syncs and never answers the failure of the old one: the record is
+// carried forward, not lost, and no mark is set for it. A file with both kinds
+// is told its content losses by its marks, and its header-only record waits
+// for the new sync. The wait ends with core.ErrClosed if the layer stops, and
+// a record the stream cannot re-append, as when the stream stopped, is waited
+// for until then. Once the journal is read-only the record, at whichever
+// place it was last appended and not yet synced, is undone and failed
+// (failReadOnly), every wait on it then ends with the refusal, and so does
+// every later Sync naming its file (st.undone); until the pass has undone it,
+// it counts as a failure in flight for a Sync naming its file (undoingLocked),
+// so no other failure is answered ahead of it.
 func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pending, failing bool, found *owedFailure, err error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -1216,9 +1255,6 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 	if failFast && st.owesLocked(ids) {
 		pending, failing = true, true
 	}
-	var failSeg core.SegmentID
-	var failWindow uint64
-	var failErr error
 	var refused error
 	if failFast {
 		// A file with a header-only record the read-only journal undid is
@@ -1239,7 +1275,9 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 		}
 	}
 	for _, t := range targets {
-		if l, lost := st.lost[t.loc]; lost {
+		// A record re-appended since the call began is found where it is now.
+		loc := st.followLocked(t.loc)
+		if l, lost := st.lost[loc]; lost {
 			if l.undone {
 				// A header-only record the read-only journal undid fails every
 				// Sync and WaitDurable that waits on it.
@@ -1260,56 +1298,34 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 			// Sync has nothing more to wait for.
 			continue
 		}
-		if !st.pending(t.loc) {
+		if !st.pending(loc) {
 			continue
 		}
 		pending = true
-		if st.covered(t.loc) && !st.inWindowLocked(t.loc) {
+		if st.covered(loc) && !st.inWindowLocked(loc) {
 			// A sync covers it and the worker is lifting what it superseded:
 			// the wait is for that, which another sync does not hasten.
 			continue
 		}
-		if e, bad := st.failed[t.loc.Segment]; bad {
+		if _, bad := st.failed[loc.Segment]; bad {
 			// The segment failed, so the record's failure is on its way, from
-			// a mark the worker has yet to set or an answer it has yet to
-			// allow: the caller waits for it rather than for a sync.
-			if id, ok := st.answersFailureLocked(t.loc); failFast && ok {
-				// Answered: its window has been failed, so it is no failure
-				// in flight. Only the first answer is reported.
-				if failErr == nil {
-					failSeg, failWindow, failErr = t.loc.Segment, id, e
-				}
-			} else {
-				failing = true
-			}
+			// a mark the worker has yet to set, or its re-append is: the
+			// caller waits for that rather than for a sync.
+			failing = true
 			continue
 		}
 		// A target in an older segment is waited on and never leads: the
 		// seal of its segment syncs it and reports through the sink. One in a
 		// segment a sync found ended never leads either: the segment takes
 		// no sync, and its end event is on its way.
-		if _, ended := st.ending[t.loc.Segment]; !ended && st.haveLast && t.loc.Segment == st.lastSeg {
+		if _, ended := st.ending[loc.Segment]; !ended && st.haveLast && loc.Segment == st.lastSeg {
 			lead = true
 		}
-	}
-	// answered is the failure owed to the call once the header-only answer
-	// found, if any, is joined to the marks taken.
-	answered := func() *owedFailure {
-		if failErr == nil {
-			return owed
-		}
-		se := &core.SyncError{Segment: failSeg, Err: failErr}
-		for _, t := range targets {
-			if t.loc.Segment == failSeg && st.pending(t.loc) {
-				se.Files = append(se.Files, t.file)
-			}
-		}
-		return mergeOwed(owed, &owedFailure{err: se, window: failWindow})
 	}
 	if refused != nil {
 		// A target the read-only journal failed ends this stream's wait; a
 		// failure still in flight on it holds the answer back as any other.
-		return false, failing, answered(), refused
+		return false, failing, owed, refused
 	}
 	if !pending {
 		return false, false, owed, nil
@@ -1319,9 +1335,6 @@ func (st *stream) check(ids []core.FileID, targets []target, failFast bool) (pen
 			return false, false, owed, nil
 		}
 		return false, false, nil, core.ErrClosed
-	}
-	if failErr != nil {
-		return false, failing, answered(), nil
 	}
 	if lead && !st.syncing && !st.want {
 		st.want = true

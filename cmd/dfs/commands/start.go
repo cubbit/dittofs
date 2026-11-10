@@ -14,12 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cubbit/dittofs/internal/auth/netlogon"
 	"github.com/cubbit/dittofs/internal/controlplane/api/handlers"
 	"github.com/cubbit/dittofs/internal/logger"
-	"github.com/cubbit/dittofs/pkg/adapter/nfs"
-	"github.com/cubbit/dittofs/pkg/adapter/smb"
-	"github.com/cubbit/dittofs/pkg/auth/kerberos"
 	"github.com/cubbit/dittofs/pkg/block"
 	"github.com/cubbit/dittofs/pkg/config"
 	"github.com/cubbit/dittofs/pkg/controlplane/api"
@@ -75,7 +71,7 @@ var notifySignals = func() (<-chan os.Signal, func()) {
 
 // serveRuntime runs the runtime's serving loop. Indirected so a test can reach
 // the serving state and return from it on demand, which is the seam #2675 asks
-// for: rt.Serve only returns once the adapters have drained, so the shutdown
+// for: rt.Serve only returns once the runtime has drained, so the shutdown
 // defer's ordering could not otherwise be exercised from a test without
 // signalling the process running the assertions.
 var serveRuntime = func(ctx context.Context, rt *runtime.Runtime) error {
@@ -95,9 +91,9 @@ var startCmd = &cobra.Command{
 
 By default, the server daemonizes into the background and writes its PID to
 $XDG_STATE_HOME/dittofs/dittofs.pid. Use --foreground when running under a
-process supervisor (systemd, Docker) or for interactive debugging. The NFS
-adapter listens on port 12049 and the SMB adapter on port 12445 by default;
-the control-plane REST API is available at http://localhost:8080.
+process supervisor (systemd, Docker) or for interactive debugging. The
+server serves no file protocol: it runs the control plane, whose REST API is
+available at http://localhost:8080, and the metrics endpoint when enabled.
 
 Examples:
   # Start in background (daemon mode)
@@ -286,15 +282,6 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 		logger.Info("Default groups created", "groups", "admins, operators, users")
 	}
 
-	// Ensure default adapters exist (NFS and SMB)
-	adaptersCreated, err := cpStore.EnsureDefaultAdapters(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to ensure default adapters: %w", err)
-	}
-	if adaptersCreated {
-		logger.Info("Default adapters created", "adapters", "nfs, smb")
-	}
-
 	// Wire operator-configured Badger metadata-cache defaults into the badger
 	// engine BEFORE any metadata store is opened (InitializeFromStore opens
 	// them). Zero values leave that dimension to RAM-relative auto-sizing
@@ -333,22 +320,6 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 		CompactionLiveRatio: cfg.GC.CompactionLiveRatio,
 	})
 
-	// Thread the operator-configured lock-manager grace period into the
-	// MetadataService BEFORE loading shares: AddShare registers each share's
-	// lock manager and enters the post-restart grace window, so the duration
-	// must be set first. LoadInitial is idempotent (the lifecycle Serve loop
-	// loads settings again); a nil/zero value falls back to the 90s default,
-	// which matches the DB default for grace_period.
-	if sw := rt.GetSettingsWatcher(); sw != nil {
-		if err := sw.LoadInitial(ctx); err != nil {
-			logger.Warn("Failed to load initial adapter settings for lock grace period", "error", err)
-		}
-		if nfsSettings := rt.GetNFSSettings(); nfsSettings != nil && nfsSettings.GracePeriod > 0 {
-			rt.GetMetadataService().SetLockGracePeriod(
-				time.Duration(nfsSettings.GracePeriod) * time.Second)
-		}
-	}
-
 	// Legacy-layout detection is a hard boot stop. Other share-loading failures
 	// stay best-effort (logged + ignored, the historical behavior).
 	effectiveKerberos, loadErr := loadSharesWithKerberosCapability(ctx, cpStore, rt, cfg)
@@ -369,9 +340,8 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 	}
 	logger.Info("Per-share BlockStores created during share loading")
 
-	// Build the metrics registry unconditionally so inline instruments (adapter
-	// RED, connection, auth counters) always record; only the /metrics listener
-	// is gated by config. The runtime carries the handle to every adapter.
+	// Build the metrics registry unconditionally so inline instruments always
+	// record; only the /metrics listener is gated by config.
 	//
 	// This has to precede every goroutine below that reaches the metrics
 	// handle: the GC sweeps read it without synchronisation, so installing it
@@ -411,13 +381,12 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 	// Configure runtime
 	rt.SetShutdownTimeout(cfg.ShutdownTimeout)
 	// Seed an operator-pinned machine SID (if configured) BEFORE Serve so the
-	// machine SID is resolved before any adapter reads the SID mapper. Pinning
+	// machine SID is resolved before anything reads the SID mapper. Pinning
 	// the same SID on every node yields identical local UID->SID encoding.
 	rt.SetPinnedMachineSID(cfg.Identity.MachineSID)
 
-	// Build the single, process-wide NETLOGON authenticator before the adapter
-	// factory so every SMB adapter instance shares it (one machine account per
-	// process). The online-join provider persists its rotated secret in the
+	// Build the single, process-wide NETLOGON authenticator (one machine account
+	// per process). The online-join provider persists its rotated secret in the
 	// control-plane settings store, so it survives restarts. nlAuth is nil when
 	// machine_account is disabled. nlRotation drives periodic password rotation
 	// and is started below / stopped on shutdown.
@@ -439,8 +408,6 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 	if nlController != nil {
 		rt.SetNetlogonController(nlController)
 	}
-
-	rt.SetAdapterFactory(createAdapterFactory(&effectiveKerberos, nlAuth))
 
 	// Create and set API server
 	apiServer, err = api.NewServer(cfg.ControlPlane, rt, cpStore, api.Timeouts{
@@ -476,9 +443,9 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 		defer func() { _ = os.Remove(pidFile) }()
 	}
 
-	// Start runtime in background (loads adapters from store automatically).
+	// Start runtime in background.
 	// Indirected through serveRuntime so a test can reach the serving state and
-	// return from it on demand; rt.Serve only returns once the adapters have
+	// return from it on demand; rt.Serve only returns once the runtime has
 	// drained, which a test cannot trigger without a signal or a real failure.
 	serverDone := make(chan error, 1)
 	go func() {
@@ -507,7 +474,7 @@ func runStartWithExit(cmd *cobra.Command, args []string) error {
 		logger.Info("Shutdown signal received, initiating graceful shutdown")
 		cancel()
 
-		// Wait for the runtime to drain (snapshots -> StopAllAdapters -> flush
+		// Wait for the runtime to drain (snapshots -> flush
 		// -> close stores -> stop API). The drain runs these stages serially
 		// and most are individually bounded by the configured shutdown timeout,
 		// but a wedged stage (e.g. a stuck store flush or an unbounded store
@@ -611,15 +578,9 @@ func buildMetricsListener(cfg *config.MetricsConfig, m *metrics.Metrics) (*metri
 }
 
 // loadSharesWithKerberosCapability publishes the server's Kerberos capability on
-// the runtime and only then loads the persisted shares. The two steps are one
-// function because their order is load-bearing and invisible at either call
-// site: LoadSharesFromStore refuses a share whose export policy requires a
-// Kerberos the server does not have, so a share loaded before the capability is
-// published is judged against a server that always looks Kerberos-less, and a
-// valid require_kerberos share stops the boot it should have survived.
-//
-// It returns the effective Kerberos config for the adapter factory alongside
-// the share-load error, which the caller grades.
+// the runtime, where the share-config API reads it, and then loads the
+// persisted shares. It returns the effective Kerberos config alongside the
+// share-load error, which the caller grades.
 func loadSharesWithKerberosCapability(
 	ctx context.Context,
 	cpStore store.Store,
@@ -640,7 +601,7 @@ func loadSharesWithKerberosCapability(
 // the file/env config and the control-plane database. A persisted row (managed
 // over the API) takes precedence; when no row exists the file/env config seeds
 // the database on first boot. It sets the runtime's LDAP config directly and
-// returns the effective Kerberos config for the adapter factory.
+// returns the effective Kerberos config.
 //
 // Note: the API does not manage Kerberos static IdentityMapping entries, so a
 // DB-sourced Kerberos config carries none — those are configured via the
@@ -709,18 +670,6 @@ func resolveIdentityProviders(ctx context.Context, cpStore store.Store, rt *runt
 	// upgrade relocating the keytab), the stale DB-row path must not win and
 	// crash the server on a missing file. See overlayDeploymentPaths.
 	kerberos = overlayDeploymentPaths(kerberos, cfg.Kerberos)
-
-	// Seed the runtime's hot-reloadable NETLOGON machine credential from the
-	// effective Kerberos machine-account config (#1325). nil disables passthrough.
-	// The SMB adapter reads this on an identity-provider config change to rebuild
-	// its secure channel without a restart. (Online-join supplies its own
-	// credential via the RotationManager, so the seeded credential is the
-	// offline/static one.)
-	if cred, ok := netlogonCredentialFromConfig(kerberos); ok {
-		rt.SetNetlogonCredential(&cred)
-	} else {
-		rt.SetNetlogonCredential(nil)
-	}
 
 	return kerberos
 }
@@ -844,157 +793,6 @@ func kerberosDTOToConfig(dto handlers.KerberosConfigDTO) config.KerberosConfig {
 	return c
 }
 
-// createAdapterFactory returns a factory function that creates protocol adapters
-// from configuration. This factory is used by Runtime to create adapters
-// dynamically when loading from store or when created via API.
-//
-// nlAuth is the shared, process-wide NETLOGON authenticator (one machine
-// account per process). It is built once by the caller — so the online-join
-// provider joins / loads the persisted secret exactly once regardless of how
-// many SMB adapter instances the runtime spins up — and injected here. It is
-// nil when machine_account is disabled.
-func createAdapterFactory(kerberosConfig *config.KerberosConfig, nlAuth *netlogon.Authenticator) runtime.AdapterFactory {
-	return func(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error) {
-		switch cfg.Type {
-		case "nfs":
-			return createNFSAdapter(cfg, kerberosConfig)
-		case "smb":
-			return createSMBAdapter(cfg, kerberosConfig, nlAuth)
-		default:
-			return nil, fmt.Errorf("unknown adapter type: %s", cfg.Type)
-		}
-	}
-}
-
-func createNFSAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig) (runtime.ProtocolAdapter, error) {
-	port := cfg.Port
-	if port == 0 {
-		port = models.DefaultNFSPort
-	}
-
-	nfsCfg := nfs.NFSConfig{Enabled: true, Port: port}
-
-	parsedConfig, err := cfg.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse adapter config: %w", err)
-	}
-	if tlsCfg, ok := parsedConfig["tls"].(map[string]any); ok {
-		if v, ok := tlsCfg["cert_file"].(string); ok {
-			nfsCfg.TLS.CertFile = v
-		}
-		if v, ok := tlsCfg["key_file"].(string); ok {
-			nfsCfg.TLS.KeyFile = v
-		}
-		if v, ok := tlsCfg["client_ca"].(string); ok {
-			nfsCfg.TLS.ClientCA = v
-		}
-		if v, ok := tlsCfg["min_version"].(string); ok {
-			nfsCfg.TLS.MinVersion = v
-		}
-		if v, ok := tlsCfg["mode"].(string); ok {
-			nfsCfg.TLS.Mode = v
-		}
-	}
-
-	adapter := nfs.New(nfsCfg)
-	if kerberosConfig != nil && kerberosConfig.Enabled {
-		adapter.SetKerberosConfig(kerberosConfig)
-	}
-	return adapter, nil
-}
-
-// applyParsedSMBConfig copies the adapter JSON fields this process honors.
-// Signing was already copied. encryption_mode is documented on the same
-// object and has to be copied too: without it, start stays on the preferred
-// default and there is no way to select required. It is read through the
-// same parser Validate uses, so a malformed encryption object is refused here
-// too instead of starting on preferred.
-//
-// An unknown mode is returned from here. smb.New panics on it, and this
-// string comes from a persisted adapter row. Boot has no recover above the
-// factory, so the row has to be refused as a config error.
-func applyParsedSMBConfig(smbCfg *smb.Config, parsedConfig map[string]any) error {
-	if parsedConfig == nil {
-		return nil
-	}
-	if bindAddr, ok := parsedConfig["bind_address"].(string); ok {
-		smbCfg.BindAddress = bindAddr
-	}
-	if signingCfg, ok := parsedConfig["signing"].(map[string]any); ok {
-		if enabled, ok := signingCfg["enabled"].(bool); ok {
-			smbCfg.Signing.Enabled = &enabled
-		}
-		if required, ok := signingCfg["required"].(bool); ok {
-			smbCfg.Signing.Required = required
-		}
-	}
-	mode, err := models.SMBEncryptionMode(parsedConfig)
-	if err != nil {
-		return err
-	}
-	if mode != "" {
-		if err := smb.ValidateEncryptionMode(mode); err != nil {
-			return err
-		}
-		smbCfg.Encryption.Mode = mode
-	}
-	return nil
-}
-
-func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig, nlAuth *netlogon.Authenticator) (runtime.ProtocolAdapter, error) {
-	port := cfg.Port
-	if port == 0 {
-		port = models.DefaultSMBPort
-	}
-
-	smbCfg := smb.Config{Enabled: true, Port: port}
-
-	parsedConfig, err := cfg.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse adapter config: %w", err)
-	}
-
-	if err := applyParsedSMBConfig(&smbCfg, parsedConfig); err != nil {
-		return nil, err
-	}
-
-	smbAdapter := smb.New(smbCfg)
-
-	// Wire Kerberos provider for SPNEGO authentication. When Kerberos is not
-	// configured, the SMB adapter only accepts NTLM/guest auth.
-	if kerberosConfig != nil && kerberosConfig.Enabled {
-		provider, err := kerberos.NewProvider(kerberosConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize SMB Kerberos provider: %w", err)
-		}
-		smbAdapter.SetKerberosProvider(provider)
-	}
-
-	// Wire the shared NETLOGON authenticator for domain-controller NTLM
-	// pass-through. It is built once by the caller (one machine account per
-	// process) and injected, regardless of kerberosConfig.Enabled — an NTLM-only
-	// / legacy deployment sets kerberos.enabled=false but still needs NETLOGON
-	// passthrough when machine_account.enabled=true. nlAuth is nil when
-	// MachineAccount.Enabled is false, so SetNetlogonAuthenticator no-ops then.
-	if kerberosConfig != nil {
-		// When NTLM pass-through is active, the SMB handler must advertise, in its
-		// NTLM CHALLENGE TargetInfo, both the AD NetBIOS/DNS domain AND the AD
-		// machine-account computer name. Domain clients echo these into their
-		// NTLMv2 response; if the advertised domain is WORKGROUP or the computer
-		// name is the bare OS hostname (not the machine account), Samba's NETLOGON
-		// SamLogon rejects the otherwise-valid response (#1357). SetKerberosProvider
-		// covers the SPNEGO-enabled path, but NTLM-only members (kerberos.enabled
-		// =false) never reach it, so set it explicitly here. The computer name is
-		// the same workstation name the NETLOGON secure channel authenticates as.
-		if nlAuth != nil {
-			smbAdapter.SetADDomain(kerberosConfig.NetBIOSDomain, kerberosConfig.DNSDomain, netbiosWorkstation(*kerberosConfig))
-		}
-		smbAdapter.SetNetlogonAuthenticator(nlAuth)
-	}
-
-	return smbAdapter, nil
-}
-
 // handleFormatMismatch prints the operator directive and reports exit 78 when
 // err describes on-disk state this build cannot read. Returns a non-nil status
 // when it did, so the caller stops; the caller performs the exit.
@@ -1018,25 +816,17 @@ func handleFormatMismatch(err error, stderr *os.File) *exitStatus {
 	return &exitStatus{code: EX_CONFIG}
 }
 
-// handleLoadSharesError centralizes the share-loading error policy so
-// the in-process boot-guard test can exercise the exit-78 path without
-// rebuilding the full daemon setup. Returns a non-nil exit status when the
-// caller should stop runStartWithExit (format-mismatch or unsatisfiable-policy
-// branch hit); nil otherwise (no error, or a warn-and-continue).
+// handleLoadSharesError grades a share-load error. Its only exit-78 path is a
+// share whose on-disk format this build cannot read, which it hands to
+// handleFormatMismatch; every other share-load failure is logged and the boot
+// continues. Returns a non-nil exit status when the caller should stop
+// runStartWithExit; nil otherwise.
 func handleLoadSharesError(err error, stderr *os.File) *exitStatus {
 	if err == nil {
 		return nil
 	}
 	if st := handleFormatMismatch(err, stderr); st != nil {
 		return st
-	}
-	// A persisted export policy no auth flavor can satisfy is an operator
-	// configuration error, not a share that can be skipped: the share would
-	// come up refusing every client. The error already names the share and the
-	// setting at fault, so print it as-is and exit 78.
-	if errors.Is(err, runtime.ErrExportAcceptsNoAuthFlavor) {
-		_, _ = fmt.Fprintln(stderr, err)
-		return &exitStatus{code: EX_CONFIG}
 	}
 	logger.Warn("Failed to load some shares", "error", err)
 	return nil

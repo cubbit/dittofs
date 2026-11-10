@@ -175,3 +175,56 @@ func TestHeldAtReturnsTheRecordsHeldPieces(t *testing.T) {
 		t.Fatalf("HeldAt of a record no piece sits at = %+v, want none", got)
 	}
 }
+
+// TestATruncateOverAReappendedRecordStillOutranksIt: a record re-appended
+// under its original sequence number and version stays below a truncate drawn
+// over the original, both in the running index, where the re-append repoints
+// the record, and in one rebuilt from the records on disk, where the copy sits
+// in a segment after the truncate's. A copy that took a new version would beat
+// the truncate, which is why the re-append keeps the original's numbers.
+func TestATruncateOverAReappendedRecordStillOutranksIt(t *testing.T) {
+	f := fid(1)
+	x := core.Extent{Off: 0, Len: 4}
+	orig := RecordAt{Segment: 1, Offset: 64}
+	again := RecordAt{Segment: 3, Offset: 64}
+	wrote := Numbers{Version: ver(10), Seq: 20}
+	cut := Numbers{Version: ver(11), Seq: 21}
+
+	ix := New(1 << 20)
+	if _, err := ix.WriteRetain(1, f, Placed{Extent: x, Record: orig, Version: wrote.Version}, wrote.Seq); err != nil {
+		t.Fatalf("WriteRetain: %v", err)
+	}
+	if _, err := ix.fs.update(f, func(fl *file) error { fl.truncate(0, cut.Version); return nil }); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if _, _, err := ix.RepointRecord(f, orig, again); err != nil {
+		t.Fatalf("RepointRecord: %v", err)
+	}
+	if p, ok := ix.Lookup(f, 0); ok {
+		t.Fatalf("the running index serves %+v over a truncate, want nothing", p)
+	}
+
+	rebuild := func(copyAt Numbers) (Placed, bool) {
+		ix := New(1 << 20)
+		b := newRebuilder(&ix.fs, &Counters{})
+		for _, r := range []Record{
+			{Kind: RecWrite, File: f, Tag: 1, Segment: orig.Segment, At: orig.Offset, Off: x.Off, Len: x.Len, Numbers: wrote},
+			{Kind: RecTruncate, File: f, Tag: 1, Segment: 2, At: 64, Off: 0, Numbers: cut},
+			{Kind: RecWrite, File: f, Tag: 1, Segment: again.Segment, At: again.Offset, Off: x.Off, Len: x.Len, Numbers: copyAt},
+		} {
+			if err := b.Feed(r); err != nil {
+				t.Fatalf("Feed(%+v): %v", r, err)
+			}
+		}
+		if err := b.Finish(ver(0)); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		return ix.Lookup(f, 0)
+	}
+	if p, ok := rebuild(wrote); ok {
+		t.Fatalf("the rebuilt index serves the re-appended copy %+v over the truncate, want nothing", p)
+	}
+	if _, ok := rebuild(Numbers{Version: ver(12), Seq: 22}); !ok {
+		t.Fatal("a copy above the truncate's version is not served: the check would not catch a re-append that took new numbers")
+	}
+}

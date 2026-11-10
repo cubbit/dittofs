@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
@@ -72,9 +73,9 @@ func (cr *corruptRig) reappend(t *testing.T, f core.FileID, off int64, payload s
 
 // keptChecksum returns the payload checksum the ledger holds for the record
 // at loc.
-func (cr *corruptRig) keptChecksum(t *testing.T, loc segment.Location) uint32 {
+func (r *rig) keptChecksum(t *testing.T, loc segment.Location) uint32 {
 	t.Helper()
-	st := cr.d.made[0]
+	st := r.d.made[0]
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	for _, e := range st.ledger {
@@ -87,9 +88,9 @@ func (cr *corruptRig) keptChecksum(t *testing.T, loc segment.Location) uint32 {
 }
 
 // placedAt returns the record the index serves offset off of f from.
-func (cr *corruptRig) placedAt(t *testing.T, f core.FileID, off int64) index.RecordAt {
+func (r *rig) placedAt(t *testing.T, f core.FileID, off int64) index.RecordAt {
 	t.Helper()
-	p, ok := cr.ix.Lookup(f, off)
+	p, ok := r.ix.Lookup(f, off)
 	if !ok {
 		t.Fatalf("offset %d of the file is not in the index", off)
 	}
@@ -450,18 +451,33 @@ func TestCorruptCopyOverwrittenBeforeRepointReleasesHold(t *testing.T) {
 
 // TestCorruptUsedCopyThenWindowFailsPinsKnownCeiling pins a known ceiling: a
 // record served from a copy stays in its pending window, and when the window
-// fails, the worker still reports a failed-window loss for it while the index
-// goes on naming the copy. The per-record re-append, which repoints such a
-// record and takes it out of the window instead of failing it, must change
-// this test when it lands.
+// fails, the worker still reports a failed-window loss for it although the
+// record is not lost: the index names the copy, and then the place the hold's
+// re-append of the copy put it at. The test keeps this path by making the
+// window's re-read fail. The success branch, where the
+// re-read verifies and the record is re-appended and repointed from the copy,
+// is TestACopyServedRecordInTheWindowIsRepointedFromTheCopy.
 func TestCorruptUsedCopyThenWindowFailsPinsKnownCeiling(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	hook, reached, release := gate(t)
-	cr := newCorruptRig(t, func(cr *corruptRig) { cr.d.beforeFail = func(*window) { hook() } })
+	// The window's re-read fails, so the window fails the record rather than
+	// re-appending it; the read of the copy goes through.
+	var rereadFails atomic.Uint32
+	cr := newCorruptRig(t, func(cr *corruptRig) {
+		cr.d.reappend = cr.d.reappendHeld
+		cr.d.beforeFail = func(*window) { hook() }
+		cr.d.readCopyAt = func(seg core.SegmentID, p []byte, off int64) (int, error) {
+			if uint32(seg) == rereadFails.Load() {
+				return 0, syscall.EIO
+			}
+			return cr.streams.For(file(1)).ReadAt(seg, p, off)
+		}
+	})
 	t.Cleanup(release)
 	f := file(1)
 	r := cr.reappend(t, f, 0, "aaaa")
 	cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
+	rereadFails.Store(uint32(r.again.Segment))
 	cr.failByTimer(t, r.again.Segment)
 	<-reached
 
@@ -473,14 +489,19 @@ func TestCorruptUsedCopyThenWindowFailsPinsKnownCeiling(t *testing.T) {
 	if got := cr.awaitResolved(t); got != r.again.Segment {
 		t.Fatalf("resolved segment %d, want %d", got, r.again.Segment)
 	}
+	// The hold's re-append of the copy that verified moves the record off the
+	// copy, which the failed window's loss does not take back.
+	eventually(t, "the hold's re-append to move the record off the copy", func() bool {
+		p, ok := cr.ix.Lookup(f, 0)
+		return ok && p.Record != copyAt(r) && p.Record != placeAt(r.again)
+	})
 	cr.d.Stop()
 
 	evs := cr.lossesOf(f)
 	if len(evs) != 1 || evs[0].Reason != core.LossFailedWindow || evs[0].Version != r.c.Version {
 		t.Fatalf("events = %+v, want exactly one failed-window loss of the record", evs)
 	}
-	want := index.RecordAt{Segment: r.orig.Segment, Offset: uint32(r.orig.Off)}
-	if got := cr.placedAt(t, f, 0); got != want {
-		t.Fatalf("the extent is served from %+v, want the copy %+v", got, want)
+	if p, ok := cr.ix.Lookup(f, 0); !ok || p.Version != r.c.Version {
+		t.Fatalf("Lookup = %+v, %v, want the record's version %+v still served", p, ok, r.c.Version)
 	}
 }

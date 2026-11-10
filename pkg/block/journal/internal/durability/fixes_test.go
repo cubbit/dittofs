@@ -140,9 +140,13 @@ func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
 	// stream's first append.
 	r.d.Start(r.streams)
 	f := file(1)
-	// r1 is a header-only record: a failed window keeps it pending, and no loss
-	// record is appended into the new segment ahead of the test's own append.
+	// r1 is a header-only record whose kept bytes are damaged, so no pass can
+	// re-append it: it stays pending in its window, and nothing is appended
+	// into the new segment ahead of the test's own append.
 	a := r.appendKind(t, f, format.KindDelete, format.RecordBody{})
+	r.d.made[0].mu.Lock()
+	r.d.made[0].ledger[0].w.Bytes = make([]byte, format.RecordHeaderSize)
+	r.d.made[0].mu.Unlock()
 	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
 		t.Fatal(err)
 	}
@@ -193,48 +197,64 @@ func (c *errorCounter) Handle(_ context.Context, r slog.Record) error {
 func (c *errorCounter) WithAttrs([]slog.Attr) slog.Handler { return c }
 func (c *errorCounter) WithGroup(string) slog.Handler      { return c }
 
-// TestSyncOnAnEndedSegmentIssuesNoFsync pins that a Sync which reaches a
-// segment that has ended is refused without an fsync: the waiter still fails
-// with a SyncError, but no sync is counted as issued or as failed and nothing
-// is logged at Error.
+// TestSyncOnAnEndedSegmentIssuesNoFsync pins that a sync the worker issues for
+// a segment that has ended, before it has taken the segment's end event, is
+// refused without an fsync: no sync is counted as failed and nothing is logged
+// at Error for it. The waiter then returns nil once the record, re-appended
+// when the end event is taken, is synced in the next segment.
 func TestSyncOnAnEndedSegmentIssuesNoFsync(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	logs := &errorCounter{}
 	r := newRigLogging(t, 1, nil, slog.New(logs))
+	// The worker is stopped after its window step, once armed, so the seal
+	// below ends the segment with its event still untaken when the sync runs.
+	var armed atomic.Bool
+	reached := make(chan struct{}, 16)
+	gate, open := releaser(t)
+	t.Cleanup(open)
+	r.d.afterHolds = func() {
+		if armed.Load() {
+			reached <- struct{}{}
+			<-gate
+		}
+	}
 	r.d.Start(r.streams)
 	f := file(1)
-	// A header-only record, which a failed window keeps: failing a content
-	// record appends a loss record, and its sync would count here.
 	a := r.appendKind(t, f, format.KindDelete, format.RecordBody{})
+	armed.Store(true)
+	r.d.made[0].wake()
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the worker never reached its hold step")
+	}
 	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, errors.New("seal boom"))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.streams.For(f).Seal(false); err == nil {
 		t.Fatal("the seal was expected to fail")
 	}
+	before := r.syncsOf(a.Segment)
+	done := r.syncAsync(context.Background(), f)
+	mustBlock(t, "Sync", done)
+	armed.Store(false)
+	open()
+
+	if err := mustReturn(t, "Sync on the ended segment", done); err != nil {
+		t.Fatalf("Sync = %v, want nil: the record is re-appended", err)
+	}
 	// The failed seal is itself reported once, as a failure and an Error log,
-	// when its end event is taken; the Sync below must add nothing to either.
+	// when its end event is taken; the refused sync adds nothing to either.
 	// The worker counts the failure under the stream's lock and logs it after
 	// releasing it, so both are waited for before they are read as the seal's.
 	eventually(t, "the seal's end event to be counted and logged", func() bool {
 		return r.d.Stats().SyncFailures == 1 && logs.n.Load() == 1
 	})
-	sealFailures, sealLogs := r.d.Stats().SyncFailures, logs.n.Load()
-	before := r.syncsOf(a.Segment)
-
-	err := mustReturn(t, "Sync on the ended segment", r.syncAsync(context.Background(), f))
-	var se *core.SyncError
-	if !errors.As(err, &se) || se.Segment != a.Segment {
-		t.Fatalf("Sync = %v, want a SyncError of segment %d", err, a.Segment)
-	}
 	if got := r.syncsOf(a.Segment); got != before {
 		t.Errorf("the ended segment saw %d fsyncs after the Sync, want %d", got, before)
 	}
-	st := r.d.Stats()
-	if st.Syncs != 0 || st.SyncFailures != sealFailures {
-		t.Errorf("Stats = %d syncs, %d failures for a call that issued no fsync, want 0 and %d", st.Syncs, st.SyncFailures, sealFailures)
-	}
-	if n := logs.n.Load(); n != sealLogs {
-		t.Errorf("%d Error logs after the refused sync, want the seal's %d", n, sealLogs)
+	// The one fsync issued is the new segment's, for the re-appended record.
+	if st := r.d.Stats(); st.Syncs != 1 || st.SyncFailures != 1 {
+		t.Errorf("Stats = %d syncs, %d failures, want 1 and the seal's 1", st.Syncs, st.SyncFailures)
 	}
 }
