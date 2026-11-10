@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"go/parser"
 	"go/token"
 	"net/netip"
@@ -43,7 +44,7 @@ func TestDefaultsAreRFC13s(t *testing.T) {
 }
 
 // Every field read from a record names its key in a json tag; Addrs, which
-// the node supplies, is "-".
+// the node supplies, is no key, as TestRecordNamingAddrsIsRefused checks.
 func TestEveryFieldNamesItsKey(t *testing.T) {
 	var walk func(typ reflect.Type, path string)
 	walk = func(typ reflect.Type, path string) {
@@ -54,12 +55,7 @@ func TestEveryFieldNamesItsKey(t *testing.T) {
 				continue
 			}
 			tag, ok := f.Tag.Lookup("json")
-			switch {
-			case f.Name == "Addrs":
-				if tag != "-" {
-					t.Errorf("%sAddrs: json tag %q, want \"-\": the node supplies it", path, tag)
-				}
-			case !ok || tag == "" || tag == "-":
+			if f.Name != "Addrs" && (!ok || tag == "" || tag == "-") {
 				t.Errorf("%s%s has no json key", path, f.Name)
 			}
 			if f.Type.Kind() == reflect.Struct && f.Type.PkgPath() == typ.PkgPath() {
@@ -144,17 +140,53 @@ func TestTLSModesWithFilesAccepted(t *testing.T) {
 	}
 }
 
-// A range of one version is accepted.
-func TestSingleVersionRange(t *testing.T) {
-	n := validNFS()
-	n.Versions = VersionRange{Min: "4.1", Max: "4.1"}
-	if err := n.Validate(); err != nil {
-		t.Errorf("NFS 4.1..4.1: %v, want accepted", err)
+// Every range of known versions in order is accepted: a single version, NFSv3
+// alone and NFSv4 alone among them.
+func TestVersionRangesAccepted(t *testing.T) {
+	for _, v := range []VersionRange{{"3", "3"}, {"4.0", "4.2"}, {"4.1", "4.1"}} {
+		n := validNFS()
+		n.Versions = v
+		if err := n.Validate(); err != nil {
+			t.Errorf("NFS %s..%s: %v, want accepted", v.Min, v.Max, err)
+		}
 	}
 	s := validSMB()
 	s.Dialects = VersionRange{Min: "3.0.2", Max: "3.0.2"}
 	if err := s.Validate(); err != nil {
 		t.Errorf("SMB 3.0.2..3.0.2: %v, want accepted", err)
+	}
+}
+
+// decode decodes a record over dst as the loader does: over the defaults,
+// refusing a key the shape does not name.
+//
+// ponytail: encoding/json stands in for the node's loader, which does not
+// exist yet; once it does, these cases run through it instead.
+func decode(record string, dst any) error {
+	d := json.NewDecoder(strings.NewReader(record))
+	d.DisallowUnknownFields()
+	return d.Decode(dst)
+}
+
+// A record decoded over the defaults changes only what it names, down to one
+// field of a nested range.
+func TestDecodeOverDefaultsKeepsWhatTheRecordOmits(t *testing.T) {
+	got := DefaultSMB()
+	if err := decode(`{"dialects": {"max": "3.0"}}`, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := DefaultSMB()
+	want.Dialects.Max = "3.0"
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("decoded %+v, want %+v", got, want)
+	}
+}
+
+// Addrs is the node's: a record naming it is refused as an unknown field.
+func TestRecordNamingAddrsIsRefused(t *testing.T) {
+	s := DefaultNFS()
+	if err := decode(`{"addrs": ["127.0.0.1"]}`, &s); err == nil || !strings.Contains(err.Error(), `unknown field "addrs"`) {
+		t.Errorf("decode of a record naming addrs: %v, want refused as an unknown field", err)
 	}
 }
 
