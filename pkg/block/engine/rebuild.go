@@ -61,6 +61,10 @@ func (e *Engine) rebuildRun(o *opened, db *binding, dst entity.FileID, spec jour
 		fe.regs = append(fe.regs, x.r)
 		e.files.unlock(x.f, fe)
 	}
+	o.undoRebuilds = append(o.undoRebuilds, func() {
+		e.unregister(c.dst, c.rd)
+		e.unregister(c.src, c.rs)
+	})
 
 	return c, nil
 }
@@ -89,6 +93,17 @@ func (e *Engine) rebuildMarker(ctx context.Context, o *opened, b *binding, f ent
 	if err != nil {
 		return fmt.Errorf("engine: start: rebuild the clone into file %v: %w", f, err)
 	}
+	o.undoRebuilds = append(o.undoRebuilds, func() {
+		fe := e.files.lockFor(f)
+		// The replay commits through the store and leaves nothing on an
+		// entry, so every operation here is the rebuild's.
+		fe.ops = nil
+		fe.removing = nil
+		fe.guarded.Store(false)
+		close(fe.guardDone)
+		fe.guardDone = nil
+		e.files.unlock(f, fe)
+	})
 
 	r.v = v
 	dx := journal.Extent{Off: spec.DstOff, Len: spec.Len}

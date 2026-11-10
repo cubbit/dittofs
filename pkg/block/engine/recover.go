@@ -57,6 +57,11 @@ type opened struct {
 	// rebuilt are the clones step 4 rebuilt, each started once the table
 	// is published.
 	rebuilt []func()
+
+	// undoRebuilds takes back, in reverse, what the rebuilt clones put on the
+	// files: their registrations and the destination's guard and entry. A
+	// start step that fails after a rebuild runs it, so Start can run again.
+	undoRebuilds []func()
 }
 
 // openJournal is start step 1 for the one device (RFC 8 §2.5): it reads the

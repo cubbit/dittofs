@@ -235,16 +235,25 @@ func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
 		return opened{}, u.unwind(err)
 	}
 
-	if err := e.replay(ctx, &o); err != nil {
+	// From the replay on, a step can rebuild a clone onto the files, which
+	// a later failure must take back before the journal is closed.
+	fail := func(err error) (opened, error) {
+		for i := len(o.undoRebuilds) - 1; i >= 0; i-- {
+			o.undoRebuilds[i]()
+		}
 		return opened{}, u.unwind(err)
+	}
+
+	if err := e.replay(ctx, &o); err != nil {
+		return fail(err)
 	}
 
 	if err := e.collectRemovals(ctx, &o); err != nil {
-		return opened{}, u.unwind(err)
+		return fail(err)
 	}
 
 	if err := e.strandUnclaimed(&o); err != nil {
-		return opened{}, u.unwind(err)
+		return fail(err)
 	}
 
 	return o, nil

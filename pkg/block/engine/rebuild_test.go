@@ -3,6 +3,7 @@ package engine_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"testing"
@@ -331,5 +332,44 @@ func TestARebuiltCloneWaitsForItsSourcesShard(t *testing.T) {
 	}
 	if got := m.readIn(t, m.one.ID, m.dst, 0, runLen); !bytes.Equal(got, m.want) {
 		t.Error("the rebuilt clone's destination does not read the source")
+	}
+}
+
+// A Start that fails after it rebuilt a clone takes back what the rebuild put
+// on the files, the destination's guard and both registrations, so Start runs
+// again as on a new engine: it rebuilds the clone once more, without waiting
+// on a guard the failed Start left, and the clone finishes with one
+// registration on each file, not a stale pair that would answer DelayClone
+// for good.
+func TestAStartThatFailsAfterARebuildRunsAgain(t *testing.T) {
+	m := newMarkerCrash(t, 0)
+	m.content.listErr = errors.New("the listing failed")
+	m.atRestart()
+	if err := m.start(t); err == nil {
+		t.Fatal("Start with a failing listing succeeded")
+	}
+	if s, _ := m.e.Registrations(m.src); s != 0 {
+		t.Errorf("after the failed Start the source holds %d registrations, want 0", s)
+	}
+	if _, d := m.e.Registrations(m.dst); d != 0 {
+		t.Errorf("after the failed Start the destination holds %d registrations, want 0", d)
+	}
+
+	m.content.listErr = nil
+	m.j.Reopen()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := m.e.Start(ctx, append([]engine.Share{m.one, m.two}, m.more...)); err != nil {
+		t.Fatalf("Start again after a failed one: %v", err)
+	}
+	s, _ := m.e.Registrations(m.src)
+	_, d := m.e.Registrations(m.dst)
+	if s != 1 || d != 1 {
+		t.Errorf("the rebuilt clone holds %d source and %d destination registrations, want 1 and 1", s, d)
+	}
+	m.run()
+	m.cloneDone(t, m.src, m.dst)
+	if got := m.readIn(t, m.one.ID, m.dst, 0, 3*runLen); !bytes.Equal(got, m.want) {
+		t.Error("the clone rebuilt by the second Start does not read the source at its asOf")
 	}
 }
