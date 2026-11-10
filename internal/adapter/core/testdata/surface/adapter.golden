@@ -1,0 +1,68 @@
+const (
+	StateConfigured State = iota
+	StateServing
+	StateDraining
+	StateStopped
+)
+
+func (h Health) Ready() bool
+
+func (s State) String() string
+
+type Adapter interface {
+	Start(ctx context.Context) error
+
+	Reconfigure(ctx context.Context, s config.Settings) error
+
+	Stop(ctx context.Context) error
+
+	Health() Health
+
+	Connections() iter.Seq[ConnInfo]
+}
+
+type ConnInfo struct {
+	Protocol string
+	Remote   netip.AddrPort
+	Session  string
+	Since    time.Time
+}
+
+type Deps struct {
+	VFS vfs.Service
+
+	Budgets *resources.Budgets
+	Metrics *metrics.Registry
+	Tracer  trace.Tracer
+	Logger  *slog.Logger
+
+	Watch func(loop string) Loop
+
+	DialClient func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+}
+
+type Health struct {
+	State      State
+	Conditions []string
+}
+
+type Loop interface {
+	Turn()
+	Idle()
+	Close()
+}
+
+type Serving struct {
+	Adapter   string
+	Listeners map[string]netip.AddrPort
+}
+
+type Sidecar interface {
+	Name() string
+	Adapters() []string
+
+	Sync(ctx context.Context, serving []Serving) error
+}
+
+type State uint8
+

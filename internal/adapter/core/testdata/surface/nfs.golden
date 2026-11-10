@@ -1,0 +1,2 @@
+func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error)
+
