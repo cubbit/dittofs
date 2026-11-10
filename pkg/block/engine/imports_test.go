@@ -51,7 +51,8 @@ var allowed = map[string][]string{
 const unitTests = "._test"
 
 // internalTests names the engine's test files in its own package, which may
-// import the test clock and nothing else of the unit composition.
+// import pkg/sim, the test clock's package, and nothing else of the unit
+// composition.
 const internalTests = "._internal"
 
 // TestImportRule walks every package under this directory, test packages
@@ -184,6 +185,14 @@ func packageImports(t *testing.T, dir string) (imports, internal, xtest []string
 // store, clock and profiler are allowed in the engine's external test
 // package and refused in the engine itself.
 func TestImportRuleKeepsTheCompositionInTests(t *testing.T) {
+	if why := forbidden(internalTests, module+"pkg/sim"); why != "" {
+		t.Errorf("the engine's own tests may not import the test clock: %s", why)
+	}
+	for _, path := range []string{module + "pkg/metadata/kv/badgerkv", module + "pkg/metadata/kvstore/kvstoretest"} {
+		if forbidden(internalTests, path) == "" {
+			t.Errorf("the engine's own tests may import %s", path)
+		}
+	}
 	for _, path := range []string{module + "pkg/sim", module + "pkg/metadata/kv/badgerkv", module + "pkg/metadata/kvstore/kvstoretest"} {
 		if forbidden(".", path) == "" {
 			t.Errorf("the engine may import %s", path)

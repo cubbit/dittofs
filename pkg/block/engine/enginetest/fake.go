@@ -37,25 +37,26 @@ const fakeStream uint32 = 3
 // files it names; SyncMarks is the mark of the stream's last sync, over its
 // every record. Each mark names the stream, fakeStream.
 type FakeJournal struct {
-	mu        sync.Mutex
-	last      uint64 // the counter of the last version issued
-	limit     uint64 // no version is issued at or above it; zero until set
-	files     map[journal.FileID]*fakeFile
-	held      map[journal.ShareTag]int64 // held bytes per tag
-	used      map[journal.ShareTag]int64 // record bytes appended per tag, never given back
-	offloaded map[journal.ShareTag]int64 // SetOffloaded's bytes per tag, held and not dirty
-	stranded  []journal.ShareTag         // Strand's tags, in order; forgotten at a reopen
-	losses    []journal.LossEvent
-	gen       uint64
-	closed    bool
-	handles   []*FakeHandle
-	failing   map[journal.FileID]bool // FailSync's files: the next Sync naming one fails its window
-	undurable map[journal.FileID]bool // files a failed window left undurable, until a Sync of theirs succeeds
-	seg       uint64                  // the stream's segment, from 1
-	end       int64                   // the end of the stream's last record in seg
-	seq       uint64                  // the stream's last record's sequence number
-	synced    entity.SyncMark         // the mark of the stream's last sync; zero before one
-	recorded  []entity.SyncMark       // the marks MarksRecorded was last handed
+	mu            sync.Mutex
+	last          uint64 // the counter of the last version issued
+	limit         uint64 // no version is issued at or above it; zero until set
+	files         map[journal.FileID]*fakeFile
+	held          map[journal.ShareTag]int64 // held bytes per tag
+	used          map[journal.ShareTag]int64 // record bytes appended per tag, never given back
+	reservedBytes int64                      // bytes held by reservations not yet closed
+	offloaded     map[journal.ShareTag]int64 // SetOffloaded's bytes per tag, held and not dirty
+	stranded      []journal.ShareTag         // Strand's tags, in order; forgotten at a reopen
+	losses        []journal.LossEvent
+	gen           uint64
+	closed        bool
+	handles       []*FakeHandle
+	failing       map[journal.FileID]bool // FailSync's files: the next Sync naming one fails its window
+	undurable     map[journal.FileID]bool // files a failed window left undurable, until a Sync of theirs succeeds
+	seg           uint64                  // the stream's segment, from 1
+	end           int64                   // the end of the stream's last record in seg
+	seq           uint64                  // the stream's last record's sequence number
+	synced        entity.SyncMark         // the mark of the stream's last sync; zero before one
+	recorded      []entity.SyncMark       // the marks MarksRecorded was last handed
 
 	readOnly journal.ReadOnlyState   // ReadOnly's state, reported by Stats
 	refusal  error                   // what a write answers once read-only
@@ -210,6 +211,7 @@ func (j *FakeJournal) Stats() journal.Stats {
 		VersionLimit:   journal.Version{Counter: j.limit},
 		NextVersion:    journal.Version{Counter: j.last + 1},
 		ReadOnly:       j.readOnly,
+		ReservedBytes:  j.reservedBytes,
 	}
 
 	for tag, n := range j.held {
@@ -832,7 +834,8 @@ func (h *FakeHandle) Reserve(n int64, writes int) (engine.Reservation, error) {
 		j.refuseReserve = nil
 		return nil, err
 	}
-	return &fakeReservation{h: h, left: writes}, nil
+	j.reservedBytes += n
+	return &fakeReservation{h: h, left: writes, n: n}, nil
 }
 
 // RefuseReserve arms the next Reserve to answer err.
@@ -866,6 +869,7 @@ func (j *FakeJournal) Markers(id journal.FileID) []journal.Change {
 type fakeReservation struct {
 	h      *FakeHandle
 	left   int
+	n      int64 // the bytes it reserved, given back at Close
 	closed bool
 }
 
@@ -888,5 +892,8 @@ func (r *fakeReservation) Close() error {
 		return journal.ErrClosed
 	}
 	r.closed = true
+	r.h.j.mu.Lock()
+	r.h.j.reservedBytes -= r.n
+	r.h.j.mu.Unlock()
 	return nil
 }

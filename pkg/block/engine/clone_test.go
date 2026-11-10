@@ -91,6 +91,9 @@ func TestCloneAdmission(t *testing.T) {
 	if n := u.e.FileEntries(); n != 0 {
 		t.Errorf("%d entries left after the clones, want none: a registration outlived its clone", n)
 	}
+	// The journal's state is unchanged, reservations included; a call that
+	// changes nothing the journal reports, such as a Settle on a file it does
+	// not hold, is not visible here.
 	if after := u.j.Stats(); !reflect.DeepEqual(after, before) {
 		t.Errorf("the journal after admission: %+v, want it as before, %+v", after, before)
 	}
