@@ -10,8 +10,8 @@ and its closing sentence: the test-only protocol drives every symbol), §7 (the 
 **Depends on:** **S1, surface frozen**: E1's `internal/adapter/core` surface (RFC 20 §4.7, with
 stub bodies and a working `Bind`), `pkg/adapter`'s `Deps`, `pkg/resources`' `Budgets`, `Buf` and
 `BufPool`, and `pkg/vfs`' `Service` and error set; **the Serving/Addrs surface change**, which lands in
-this document's own pull request, in a commit ahead of it: RFC 20 §3.5 and §4.7 amended, `adapter.Socket`, `Serving.Listeners map[Socket][]netip.AddrPort`,
-`core.Listener.Service` and the `(*Server).Addrs()` stub, with both golden files (D19). T2.3 also
+this document's own pull request, in a commit ahead of it: RFC 20 §3.4, §3.5 and §4.7 amended, `adapter.Socket`, `Serving.Listeners map[Socket][]netip.AddrPort`,
+`Adapter.Addrs()`, `core.Listener.Services` and the `(*Server).Addrs()` stub, with both golden files (D19). T2.3 also
 needs `vfstest.Memory` (§9).
 **Blocks:** E3, which turns the budget and replay specifications green and registers `BufPool`'s
 gate in the allocation cell this epic creates; E4 and E5, whose tests run `core` on `testproto`
@@ -92,7 +92,7 @@ files to `vfstest.Memory`.
 
 ## 2. General rules for each epic
 
-Each of the programme's ten general rules for an epic, and how it applies here or why it does not.
+Each of the programme's ten general rules for an epic ([`rfc-20-adapters-plan.md` §1.5](rfc-20-adapters-plan.md#15-general-rules-for-each-epic)), and how it applies here or why it does not.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
@@ -168,7 +168,7 @@ names the epic that owns the rest.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R32 | A test reaches a `core` server listening on `127.0.0.1:0` through `Addrs()`, keyed by its listener's `adapter.Socket` (`Service`, `Network`), each key holding every bound address with port 0 resolved | MUST | RFC 20 §4.7 as the Serving/Addrs surface change amends it; owner decision (the user's) | T2.1 (body: E4's T4.1) |
+| R32 | A test reaches a `core` server listening on `127.0.0.1:0` through `Addrs()`, keyed by `adapter.Socket` (`Service`, `Network`), one per service its listener names, each key holding every bound address with port 0 resolved | MUST | RFC 20 §3.4 and §4.7 as the Serving/Addrs surface change amends them; the epic's owner's decision | T2.1 (body: E4's T4.1) |
 
 ## 4. Decisions this epic takes
 
@@ -205,7 +205,7 @@ names the epic that owns the rest.
   record's `Buf` is retained, which `core` does for a request's life (RFC 20 §4.7's release-hook
   `decision:`). A `decision:` marker at the type names that bound: withdraw it if `core` ever
   releases a record before its request ends.
-- **D5, delays, holds and transient errors come only from `vfstest.Faults`; the user chose this.**
+- **D5, delays, holds and transient errors come only from `vfstest.Faults`; the epic's owner chose this.**
   RFC 20 §7 gives the test protocol's delays to the fault wrapper, and RFC 29 §4.11 gives an
   error answer to a fault wrapper too. So `Create`, the operation that calls the service, is the
   delay (a `Faults` hold the test releases) and the hold (a `Faults` `ErrDelay` mapped to version
@@ -268,11 +268,11 @@ names the epic that owns the rest.
   built before the server starts. The budget specifications reserve through `WaitBudget.Reserve`
   (`resources: reserve`), not `BufPool.Get`. The suite is `engine-conformance`'s shape,
   `tier: pr`.
-- **D12, the allocation cell lands here; the user chose this.** `testproto`'s header gate is the
+- **D12, the allocation cell lands here; the epic's owner chose this.** `testproto`'s header gate is the
   first allocation gate written, so `unit/adapter-allocs` and its fixed `dt run` step in the unit
   job, as `unit/journal-index` has, land with it in T2.1 rather than with `BufPool`'s in E3. E3's
   T3.3 adds its package to the cell's command.
-- **D13, the leak check is the journal's profiler, moved; goroutine IDs, the user chose this.**
+- **D13, the leak check is the journal's profiler, moved; goroutine IDs, the epic's owner chose this.**
   `pkg/block/journal/journaltest/prof` already fails a test that leaves goroutines (compared by ID
   from `runtime.Stack`, polled to a backstop), descriptors or live heap behind, and says to move
   it out of the journal's tree once a package outside it needs one. T2.4 moves it to
@@ -312,14 +312,14 @@ names the epic that owns the rest.
   - `testproto.New(d adapter.Deps)`, `Bare`, the operation codes and statuses (typed as `core`'s
     `uint32` code and `core.Version`, so no test converts), `Msg`, `Reply`, `Append` and `Client`:
     every `core` test builds its requests and reads its replies through them;
-  - `core.Server.Addrs()` and `adapter.Serving` (D19): E4's tests, the end-to-end specification,
+  - `adapter.Adapter.Addrs()`, `core.Listener.Services` and `adapter.Serving` (D19): E4's tests, the end-to-end specification,
     the node's sidecar report and every sidecar read them, so a changed shape is an RFC amendment
-    and an edit of each; the user settled them before any body exists.
+    and an edit of each; the epic's owner settled them before any body exists.
   What is deferred is additive and in one place: the import test's entry-method, 800-line and
   `translate` clauses are new cases and seeds (RFC 21 and 22); a golden-vector helper is E6's,
   inside each `wire` package; a new operation a later `core` test needs is a new row and new
   `Msg` fields. None changes a signature another epic calls.
-- **D18, `core.Dispatcher` is deleted; the user chose this.** E1's `conn.go` exports a
+- **D18, `core.Dispatcher` is deleted; the epic's owner chose this.** E1's `conn.go` exports a
   `Dispatcher` interface between the connection and the pipeline and says a connection's tests
   supply a stub. RFC 20 §4.7 says the pipeline is a concrete type with no interface between
   them and that a connection's tests run the real pipeline (E1's R72), and a stub is a banned
@@ -327,20 +327,28 @@ names the epic that owns the rest.
   `internal/adapter/core/testdata/surface/core.golden`. The RFC needs no amendment, since §4.7
   never named it. Removing it after E4 has built the connection would mean reworking the
   connection's tests, so it is settled before any body exists.
-- **D19, a typed key for what is bound; the user chose this.** A test on `127.0.0.1:0` must learn
+- **D19, a typed key for what is bound; the epic's owner chose this.** A test on `127.0.0.1:0` must learn
   the port the system chose, and a sidecar must advertise every address the adapter is bound
   to. The earlier `Serving.Listeners map[string]netip.AddrPort` lost addresses: one service
   binds every entry of `config.Adapter.Addrs`, NLM and NSM listen on both TCP and UDP under one
   service name, and since `Addrs` is live, rebuilding the map from listener order would race a
   `Reconfigure`. So the surface keys by service and network and holds every address:
   `adapter.Socket{Service, Network}`, `Serving.Listeners map[Socket][]netip.AddrPort`,
-  `core.Listener` gaining `Service`, and `(*Server).Addrs() map[adapter.Socket][]netip.AddrPort`,
-  from which the node builds each `Serving` as it stands, with no ordering to rebuild. The
+  `core.Listener` gaining `Services`, and `Addrs() map[Socket][]netip.AddrPort` on
+  `adapter.Adapter`, which `*core.Server` implements, from which the node builds each `Serving`
+  as it stands, with no ordering to rebuild. `Addrs` is on the contract because the node holds
+  only the `adapter.Adapter` that `New` returns and RFC 20 §2.5 bans finding a capability by type
+  assertion. A listener names every service it carries, because one port carries several: NFS's
+  listener `{Services: ["nfs", "mount", "nlm", "nsm"], Network: "tcp", Port: 2049}` yields
+  `{nfs, tcp}`, `{mount, tcp}`, `{nlm, tcp}` and `{nsm, tcp}`, each holding `0.0.0.0:2049`, and a
+  second listener on UDP names `nlm` and `nsm`; a second listener on the same port would fail
+  `Start` with `EADDRINUSE`. `Listener` keeps `Network` and a list of services rather than
+  embedding `Socket`, which names one service. The
   prior art: `net.Listener.Addr` reports per socket what was bound; rpcbind registers each
   program, version and netid separately (RFC 1833), which `Socket`'s network mirrors; DNS-SD
   responders such as Avahi advertise every address a host has, which the slice keeps. The change
   (the Serving/Addrs surface change) lands in this document's pull request, in a commit ahead of
-  the document, and amends RFC 20 §3.5 and §4.7 and adds the types, the stub and both golden files; this epic
+  the document, and amends RFC 20 §3.4, §3.5 and §4.7 and adds the types, the stub and both golden files; this epic
   only reads it. E4 writes the bodies: `Addrs` in T4.1, the `Serving` report in T4.9.
 
 ## 5. Target tree
@@ -387,7 +395,7 @@ The exported surface this epic adds or changes:
 // prof moves from pkg/block/journal/journaltest/prof to internal/prof, its exports unchanged.
 // core.Dispatcher is deleted (D18).
 // Read, not added, here: adapter.Socket, Serving.Listeners map[Socket][]netip.AddrPort,
-// core.Listener.Service and (*core.Server).Addrs() map[adapter.Socket][]netip.AddrPort,
+// Adapter.Addrs() map[Socket][]netip.AddrPort and core.Listener.Services,
 // from the Serving/Addrs surface change (D19).
 
 package adaptertest
@@ -549,7 +557,7 @@ func (c *Client) Balance() int
   - `unit/adapter-allocs` in `test/suites.yaml`, its command `go test` over
     `./internal/adapter/adaptertest/testproto/`, and its fixed `dt run` step in the unit job (D12).
   - `conformance_test.go`: `TestConformanceEchoEndToEnd`, `testproto`'s tables built first (D11),
-    then a `core.NewServer` on `testproto` over `127.0.0.1:0`, started, dialled at `Addrs()[adapter.Socket{Service: "testproto", Network: "tcp"}][0]`,
+    then a `core.NewServer` on `testproto` over `127.0.0.1:0`, its listener's `Services` `{"testproto"}`, started, dialled at `Addrs()[adapter.Socket{Service: "testproto", Network: "tcp"}][0]`,
     one `Echo` sent by the client and its reply read, `CheckLeaks` clean after `Stop`; its
     `known.yaml` entry (`message: 'testproto: tables: not implemented'`, `issue: "#3966"`, its
     reason naming E5's tables and pipeline and E4's server).

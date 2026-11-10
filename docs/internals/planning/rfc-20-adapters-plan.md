@@ -291,7 +291,7 @@ and 5.
    and `Split` each carry a `ponytail:` naming RFC 24.
 8. **A test must be able to fail.** Keep a test only if a plausible change would make it fail and
    nothing else would catch that change. The import test proves it can by reporting each of its seeded
-   violations, one per rule; the budget leak check by failing a test that keeps a `Buf`.
+   violations, one per rule; the budget leak check by its red specification, a reservation kept, which E3 turns green.
 9. **A symbol is exported only if RFC 20's interface uses it.** `pkg/adapter`,
    `pkg/adapter/config`, `pkg/resources` and the two `New` are the public surface. `core`'s
    exported symbols are those RFC 20 §4.7 names, frozen at S1; everything else in `core` is
@@ -418,7 +418,7 @@ pkg/
     budget.go                 Budget, WaitBudget, Reservation, Budgets
     buf.go                    Buf, BufPool, NewBufPool, classes
   adapter/                    E1
-    adapter.go                Adapter, State, Health, ConnInfo, Sidecar, Serving, Loop
+    adapter.go                Adapter, State, Health, ConnInfo, Sidecar, Serving, Socket, Loop
     deps.go                   Deps
     config/                   Adapter, NFS, SMB, TLS, Settings, DefaultNFS, DefaultSMB
     nfs/  smb/                New: E1 stub, E6 body
@@ -557,8 +557,13 @@ RFC sections: §3.1 (states, drain, abandon at the deadline, auxiliary listeners
 rows, A10, A11, A14, A19, A20.
 
 - T4.1 `Server`: configured, serving, draining, stopped; `Start` binds every listener or none;
-  `Addrs()`'s body, every bound address keyed by `adapter.Socket`, port 0 resolved (stub from the
-  Serving/Addrs surface change). If it moves the first
+  `NewServer` refuses a listener naming no service or an empty one, and two naming the same
+  `adapter.Socket` or the same network and nonzero port. `Addrs()`'s body (stub from the
+  Serving/Addrs surface change): one `adapter.Socket` per service of each listener, all at its
+  bound port, with one test per promise: the map and its slices are the caller's (the test
+  mutates both, calls `Addrs` again and finds the server unchanged); port 0 is resolved; an
+  address `Reconfigure` adds is present and one it removes gone (with T4.6); the map is empty
+  before `Start` and after `Stop`. If it moves the first
   failure of `adapter-conformance`'s end-to-end test, it updates that entry's `message`.
 - T4.2 Accept: connection limit per node and a quarter per address, closed at accept; the
   connection-state charge; backoff 10 ms to 1 s and `adapter_listener_lost` after 60 s.
@@ -583,8 +588,10 @@ rows, A10, A11, A14, A19, A20.
 - T4.8 TCP: `TCP_NODELAY`, keepalive 15 s and 3 probes 5 s apart, `TCP_USER_TIMEOUT` on Linux,
   asserted on an accepted socket; buffers left to the kernel.
 - T4.9 The sidecar runner, lifted from v1's `pkg/adapter/sidecar.Group` on `develop`, each
-  `Serving` built from `Server.Addrs()`: `Sync` with
-  the serving set after an adapter is serving and before it drains, idempotent, a disabled
+  `Serving` built from `Adapter.Addrs()`: `Sync` with
+  the serving set after an adapter is serving, again after a `Reconfigure` that adds an address
+  and before one that removes it, without the addresses it removes, and before it drains, each
+  tested on a `testproto` adapter, the address change by adding and removing one; idempotent, a disabled
   sidecar synced with the empty set, a failing one raising `sidecar_failed` without touching the
   adapters or readiness; tested with `testproto` adapters and a trivial real sidecar, its
   failure given by a fault wrapper.
@@ -699,7 +706,8 @@ and SMB rows, §5.1, §5.2, §5.4 for the headers, §6.10's codec gate for the h
 
 Waits for RFC 23's `internal/node`. Then: `node.New` builds each enabled adapter through
 `pkg/adapter/nfs.New` and `smb.New` from its `Deps`, starts them last, applies a settings
-generation by `Reconfigure` or by stop, `New` and start, drives the sidecar runner, reports
+generation by `Reconfigure` or by stop, `New` and start, drives the sidecar runner (its `Sync`
+after a `Reconfigure` that adds an address and before one that removes it, RFC 20 §3.5), reports
 `Health` and `Connections()` to the control plane's client list, and checks every budget at zero
 after the adapters stop. It also takes the ledger rows that need a node: the config loader for
 `pkg/adapter/config`, `core`'s conditions in RFC 25 §3.9's registry and the alert rules for

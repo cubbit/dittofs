@@ -130,7 +130,7 @@ type Invocation struct {
 }
 
 type Listener struct {
-	Service  string
+	Services []string
 	Network  string
 	Port     uint16
 	Protocol Protocol

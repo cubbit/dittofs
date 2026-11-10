@@ -16,6 +16,8 @@ type Adapter interface {
 
 	Stop(ctx context.Context) error
 
+	Addrs() map[Socket][]netip.AddrPort
+
 	Health() Health
 
 	Connections() iter.Seq[ConnInfo]

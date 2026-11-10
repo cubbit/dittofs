@@ -43,6 +43,13 @@ type Adapter interface {
 	// adapter is stopped.
 	Stop(ctx context.Context) error
 
+	// Addrs is every address each listener is bound on now, by service and
+	// network, in a fresh map the caller owns, its slices copied too: a port
+	// of 0 resolved, an address Reconfigure added included and one it removed
+	// gone. It is empty before Start and after Stop. The node builds each
+	// Serving from it.
+	Addrs() map[Socket][]netip.AddrPort
+
 	// Health is ready when serving with every listener bound; configured and
 	// draining report not ready.
 	Health() Health

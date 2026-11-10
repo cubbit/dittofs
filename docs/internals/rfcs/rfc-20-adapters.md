@@ -506,7 +506,7 @@ pkg/vfs/                    the service interface (RFC 17)
 pkg/vfs/vfstest/            the in-memory service, its fault wrapper, the null service
 pkg/resources/              RFC 24's budgets and pooled buffers, shared by every component (§6.8)
 pkg/adapter/                the public surface, as pkg/vfs is the service's:
-  adapter.go                the contract the node drives: Adapter, State, Health, ConnInfo, Sidecar, Serving, Loop (§3.4, §3.5)
+  adapter.go                the contract the node drives: Adapter, State, Health, ConnInfo, Sidecar, Serving, Socket, Loop (§3.4, §3.5)
   deps.go                   Deps (§3.4)
   config/                   the settings shapes, their defaults and Settings (§3.6): a leaf
   nfs/  smb/                New: one public constructor each, a call into the implementation
@@ -896,6 +896,13 @@ type Adapter interface {
 	// returns once the adapter is stopped.
 	Stop(ctx context.Context) error
 
+	// Addrs is every address each listener is bound on now, by service and
+	// network, in a fresh map the caller owns, its slices copied too: a port
+	// of 0 resolved, an address Reconfigure added included and one it removed
+	// gone. It is empty before Start and after Stop. The node builds each
+	// Serving from it (§3.5).
+	Addrs() map[Socket][]netip.AddrPort
+
 	// Health is ready when serving with no condition raised; configured and
 	// draining report not ready (RFC 25 §3.6).
 	Health() Health
@@ -1039,12 +1046,16 @@ type Socket struct {
 > served over both TCP and UDP, which the port mapper answers per protocol.
 > rpcbind registers per program and netid, and DNS-SD advertises every address
 > of a host; withdraw the slice if a sidecar is found that can advertise only
-> one address per service.
+> one address per service. A listener that carries several services on one
+> port, as NFS's carries NFS, MOUNT, NLM and NSM, is one key per service, each
+> holding that port (§4.7).
 
-- **Order.** The node calls `Sync` after an adapter is serving, again after
-  every `Reconfigure` that changes its `Addrs`, and before it starts draining,
-  so nothing is advertised that cannot be reached, and an advertisement is
-  withdrawn while the adapter still answers.
+- **Order.** The node builds each `Serving` from the adapter's `Addrs` (§3.4)
+  and calls `Sync` after the adapter is serving, again after a `Reconfigure`
+  that adds an address and before one that removes it, without the addresses
+  it removes, and before the adapter starts draining, so nothing is advertised
+  that cannot be reached, and an advertisement is withdrawn while the adapter
+  still answers.
 - **A failing sidecar fails only itself.** It raises `sidecar_failed` naming it
   (§3.7); the adapters keep serving. A client that cannot find the server by
   discovery can still be given its address.
@@ -2374,22 +2385,22 @@ func Errors() []error
 // NewServer returns the adapter New hands back: each listener bound on each
 // of the settings' Addrs, all or none at Start (§3.1); Reconfigure binds them
 // on an added address the same way (§3.6). s is the protocol's whole shape,
-// which New was given; core reads its Adapter.
+// which New was given; core reads its Adapter. It refuses a listener naming
+// no service or an empty one, and two listeners naming the same Socket or the
+// same network and nonzero port.
 func NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)
 
+// Listener is one protocol on one port, bound on each of the settings' Addrs.
+// Addrs reports it under one Socket per service it names, each on its
+// network and all at its one bound port. It names its services, not one
+// Socket, because one port carries several: NFS's carries NFS, MOUNT, NLM and
+// NSM, told apart by RPC program.
 type Listener struct {
-	Service  string // the name Addrs and a sidecar know it by: "nfs", "mount", "nlm", "nsm", "smb"
-	Network  string // "tcp" or "udp"
-	Port     uint16 // 0: one the system picks, which Addrs reports
+	Services []string // the names Addrs and a sidecar know it by: "nfs", "mount", "nlm", "nsm", "smb"
+	Network  string   // "tcp" or "udp"
+	Port     uint16   // 0: one the system picks, which Addrs reports
 	Protocol Protocol
 }
-
-// Addrs is every address each listener is bound on now, by service and
-// network, in a fresh map the caller owns: a port of 0 resolved, an address
-// Reconfigure added included and one it removed gone. It is empty before
-// Start and after Stop. A test binds port 0 and dials what Addrs reports; the
-// node builds each Serving from it (§3.5).
-func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort
 ```
 
 These, with the types above, are `core`'s exported surface; a protocol
@@ -2489,7 +2500,11 @@ func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) {
 		NLM:   nlm.Table(&nlm.Handlers{VFS: d.VFS}),
 		NSM:   nsm.Table(&nsm.Handlers{VFS: d.VFS}),
 	}
-	return core.NewServer(d, s, core.Listener{Network: "tcp", Port: 2049, Protocol: protocol.New(t)})
+	p := protocol.New(t)
+	// Addrs reports nfs, mount, nlm and nsm over TCP, and nlm and nsm over UDP, all at 2049.
+	return core.NewServer(d, s,
+		core.Listener{Services: []string{"nfs", "mount", "nlm", "nsm"}, Network: "tcp", Port: 2049, Protocol: p},
+		core.Listener{Services: []string{"nlm", "nsm"}, Network: "udp", Port: 2049, Protocol: p})
 }
 
 // ops/v3/table.go: the row list, one line per operation; each row is built in its operation's own file
