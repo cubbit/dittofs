@@ -33,7 +33,7 @@ func TestFailWindowServesTheLastSyncedWriteAndDropsOnlyThatRecord(t *testing.T) 
 	if !ok || got.Version != ver(5) || got.Record != rec(1, 0) {
 		t.Fatalf("Lookup = %+v, %v; want the synced v5 in record (1,0)", got, ok)
 	}
-	want := []Piece{piece(0, 4096, rec(2, 0), 0, 10, false)}
+	want := []Piece{written(piece(0, 4096, rec(2, 0), 0, 10, false))}
 	if !slices.Equal(fw.Dropped, want) {
 		t.Fatalf("Dropped = %+v, want %+v", fw.Dropped, want)
 	}
@@ -62,8 +62,8 @@ func TestFailWindowLeavesOtherRecordsAlone(t *testing.T) {
 	// The held-again half and the untouched half of v7 are adjacent parts of
 	// one record and read back as one piece.
 	want := []Piece{
-		piece(0, 4096, rec(1, 0), 0, 5, false),
-		piece(8192, 4096, rec(1, 4096), 0, 7, false),
+		written(piece(0, 4096, rec(1, 0), 0, 5, false)),
+		written(piece(8192, 4096, rec(1, 4096), 0, 7, false)),
 	}
 	if !slices.Equal(pieces, want) {
 		t.Fatalf("held:\n got  %+v\n want %+v", pieces, want)

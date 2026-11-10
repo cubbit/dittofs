@@ -177,6 +177,7 @@ func (f *file) fillParts(p Placed, fn func(Placed)) {
 			Record:  p.Record,
 			Skip:    p.Skip + uint32(lo-p.Extent.Off),
 			Version: p.Version,
+			Seq:     p.Seq,
 		})
 	}
 	for _, e := range masks {

@@ -141,7 +141,7 @@ func TestBytesPerEntryFailsWithOneMoreField(t *testing.T) {
 	}
 	const n = 1_000_000
 	heldVal := func(i int) held {
-		return held{version: ver(uint64(i + 1)), segment: core.SegmentID(1 + i/60_000), recordOff: uint32(i%60_000) * pieceLen, len: pieceLen}
+		return held{counter: uint64(i + 1), seq: core.Seq(i + 1), segment: core.SegmentID(1 + i/60_000), recordOff: uint32(i%60_000) * pieceLen, len: pieceLen}
 	}
 	fieldedVal := func(i int) heldPlusField {
 		return heldPlusField{held: heldVal(i), extra: uint64(i)}

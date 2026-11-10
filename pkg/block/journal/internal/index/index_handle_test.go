@@ -22,6 +22,13 @@ func writeRetained(t *testing.T, ix *Index, p Placed) HeldDelta {
 	return d
 }
 
+// written is p as writeRetained holds it: under the sequence number it gives
+// a write, its version's counter.
+func written(p Piece) Piece {
+	p.Seq = core.Seq(p.Version.Counter)
+	return p
+}
+
 // TestHandleWriteRetainServesNewestAndRetainsTheOlder: a write over an older
 // one is what a read finds, and the older stays retained as superseded by it,
 // still counted against its own segment, until the lift drops it.

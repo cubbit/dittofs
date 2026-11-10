@@ -483,7 +483,7 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 		e := core.Extent{Off: r.off, Len: r.n}
 		switch r.kind {
 		case RecWrite:
-			f.write(Placed{Extent: e, Record: RecordAt{Segment: r.seg, Offset: r.at}, Version: r.numbers.Version})
+			f.write(Placed{Extent: e, Record: RecordAt{Segment: r.seg, Offset: r.at}, Version: r.numbers.Version, Seq: r.numbers.Seq})
 		case RecFill:
 			// decision: a fill replays as a plain put. A fill record
 			// covers exactly the extents that were absent when its journal
@@ -495,7 +495,7 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 			// by a fill record whose extent names bytes its journal still
 			// held when it appended the record, which the mask would have
 			// left alone and a put supersedes.
-			f.held.put(Piece{Extent: e, Record: RecordAt{Segment: r.seg, Offset: r.at}, Version: r.numbers.Version})
+			f.held.put(Piece{Extent: e, Record: RecordAt{Segment: r.seg, Offset: r.at}, Version: r.numbers.Version, Seq: r.numbers.Seq})
 			// A fill's own mark, so an unmark's order against it matters
 			// exactly as against a real offloaded record: filled content
 			// enters the journal already offloaded, from the remote tier.

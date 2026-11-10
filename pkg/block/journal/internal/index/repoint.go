@@ -3,8 +3,9 @@ package index
 import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 
 // RepointRecord moves every held and retained piece of id that sits at record
-// from to record to, keeping each piece's extent, skip, version, offloaded bit
-// and superseder: the record is the same one, read from another place. It
+// from to record to, keeping each piece's extent, skip, version, sequence
+// number, offloaded bit and superseder: the record is the same one, read from
+// another place, and a copy carries its original's sequence number. It
 // returns the number of pieces moved. It takes the file's lock exclusively. A
 // file with no entry, or none of whose pieces sit at from, changes nothing and
 // creates no entry.
@@ -89,4 +90,11 @@ func (f *file) repointRecord(from, to RecordAt) int {
 		n += f.retained.repoint(a.e, from, to, a.skip)
 	}
 	return n
+}
+
+// Owner returns the tag that owns id, and false when none does or the file has
+// no entry. It takes the file's lock shared and creates no entry.
+func (ix *Index) Owner(id core.FileID) (tag core.ShareTag, ok bool) {
+	ix.fs.view(id, func(f *file) { tag, ok = f.owner() })
+	return tag, ok
 }
