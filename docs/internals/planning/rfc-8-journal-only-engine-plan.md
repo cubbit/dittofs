@@ -263,7 +263,8 @@ temporary directory, `kvstore` on an in-memory `kv.KV` and `sim.TestClock`; a
 fault-injecting `kv.KV` consulting `sim.Fault` (stalls, errors, and a chosen file failing,
 which reaches the engine as that file's entry in `Existence.Commit`'s
 `map[FileID]error`), counting transactions with `kv.Counts`; a fake journal and handle
-implementing epic 1's interfaces, for pure-logic unit tests; and the journal's profiling
+implementing epic 1's interfaces and held to the journal's conformance suite (§1.5 rule 8),
+for pure-logic unit tests; and the journal's profiling
 harness (`journaltest/prof`) wired to the fixture.
 
 ### 1.5 General rules for each epic
@@ -311,7 +312,10 @@ harness (`journaltest/prof`) wired to the fixture.
    that has landed, and E2's test components: above all the fake journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12).
+   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
+   three kinds: the test clock, an in-memory implementation held to its interface's
+   conformance suite, or a fault wrapper. A test asserts on the engine's answers, on resulting
+   state and on what a double records of its own outputs, never on which calls the engine made.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -351,7 +355,9 @@ harness (`journaltest/prof`) wired to the fixture.
    check about what the real thing does: the real journal on a real directory, with its crash
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
    commits and conflicts on. The fake journal is for the engine's pure logic only, and no
-   conformance row runs over it.
+   engine conformance row runs over it. It is held to the real journal by the journal's own
+   conformance suite (RFC 1 §9.4): it passes the suite's rows that need no crash, fault or
+   platform, the rows the real journal passes on `platform.OS`.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -519,8 +525,9 @@ flowchart TD
   track A builds it then and track C keeps the rest of epic 7. T8.1a's admission checks,
   which need no removal, fill the rest.
 - **The fake journal grows with the epics:** T2.4's fake covers the data path's calls only,
-  and each middle epic extends `enginetest`'s fake with the journal calls it owns, so no
-  track waits on another for a fake.
+  and each middle epic extends `enginetest`'s fake with the journal calls it owns, held to
+  the journal conformance suite's rows for those calls (rule 8), so no track waits on another
+  for a fake.
 
 ## 4. Directory layout proposed for epic 1
 
@@ -597,7 +604,8 @@ owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition r
   transaction counts from `kv.Counts`.
 - T2.4 The fake journal and handle: versions, held and missing extents, `asOf`, markers,
   `Since`, the loss ring and generation, named refusals; for unit tests only (rule 8). It
-  covers the data path's calls; each middle epic extends it with the journal calls it owns
+  covers the data path's calls and passes the journal conformance suite's rows for them
+  (rule 8); each middle epic extends it with the journal calls it owns, and their rows
   (rule 12).
 - T2.5 Group A rows of the data path and the stability point (12): §4.1, §5.1, §7.1, §8.2.
 - T2.6 Group A rows of the lifecycle and clone (14): §2.5, §2.7, §9.1.
@@ -1130,7 +1138,10 @@ follows the journal's, not this part's (§6 point 7).
    with no open among its Needs, since stage 2's clone path calls `Clone` and takes no open
    (point 13).
 10. **The fake `Content`** moves from `internal/vfs/content_test.go` to an importable package
-    so the `Content` check runs over it (T9.2).
+    so the `Content` check runs over it (T9.2). That check is the conformance suite holding it
+    to the engine, so the fake is an allowed double
+    ([RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)) only once the check
+    runs over both.
 11. **Open state's `Releasing`**, the stage 1 follow-up, gates T5.4's tests and T8.3's
     unlink during `Resume`. The same
     follow-up could lift T8.6's ceiling: `CloneClose` reporting an orphan for a source whose
@@ -1188,8 +1199,10 @@ follows the journal's, not this part's (§6 point 7).
 **Risks**
 - The journal sets the pace (§3.3): until its S3, no row is green over the real journal, and
   the fake journal is the only check of the engine's logic.
-- The fake journal can drift from the real one. Rule 8 bounds that: no conformance row runs
-  over it, so a drift shows as a row that is green on unit tests and red in the suite.
+- The fake journal can drift from the real one where the journal's conformance suite has no
+  row. Rule 8 bounds that: the fake passes the suite's storage-agnostic rows, and no engine
+  conformance row runs over it, so a drift the suite misses shows as a row that is green on
+  unit tests and red in the suite.
 
 ## 7. RFC coverage
 
