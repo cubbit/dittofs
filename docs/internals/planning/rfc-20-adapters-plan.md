@@ -311,16 +311,16 @@ its entries come and go; the skipped suites come back through the ledger); a rea
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | Delete v1, fix the surface | v1 and the Runtime's adapter half deleted, suites off, required tests repinned; RFC 20 and 24 amended; `pkg/adapter`, `pkg/adapter/config`, `pkg/resources`, `core`'s §4.7 surface | 9 | 15.5 | team | all |
-| E2 ⛔ | Test foundations | `testproto` and its stateful half, the import test, the leak checks, the red suite, `Server.Addrs` | 4 | 10.75 | team | E3–E6 |
+| E2 ⛔ | Test foundations | `testproto` and its stateful half, the import test, the leak checks, the red suite | 4 | 10.5 | team | E3–E6 |
 | E3 | Budgets and buffers | `pkg/resources`: `Budget`, `Reservation`, `Buf`, `BufPool` | 3 | 5.5 | A | E4, E5 (partly) |
 | E4 | Connections and lifecycle | `Server` states, accept, limits, `Conn` reader and writer, drain, `Reconfigure`, health, TCP; the sidecar runner | 9 | 20 | B | E5 (partly), E6 via 🔀 S3 |
 | E5 | Dispatch | pipeline, tables, compound runner and chains, held and parked requests, middleware, error tables, request context, §10, benchmark | 11 | 26.5 | A | E6 via 🔀 S3 |
 | E6 | Protocol scaffolds | `wire/`, `protocol/` and `New` for SMB and NFS; not supported end to end | 4 | 11.5 | C | E8 |
 | E7 🔀 | Integration with the node | `internal/node` builds, starts, reconciles and stops adapters and sidecars | — | planned after S4 | team | E8 (partly) |
 | E8 | E2E green | the allocation cell checked, the ledger handed over | 2 | 1.5 | team | — |
-| | **Total** | | **42** | **91.25** | | |
+| | **Total** | | **42** | **91** | | |
 
-**Plan estimate: 42 subtasks, 91.25 man-days, not counting epic 7.**
+**Plan estimate: 42 subtasks, 91 man-days, not counting epic 7.**
 
 The estimate `N = round(2785 / 400) = 7` against four middle epics: RFC 20's handler, codec,
 security and translation areas (§4.3–§4.4, §4.9–§4.10, most of §5) are ledger rows for RFC 21 and
@@ -504,7 +504,7 @@ deleted).
 
 ### Epic 2 — Test foundations ⛔
 
-**Epic 2 estimate: 4 subtasks, 10.75 man-days.**
+**Epic 2 estimate: 4 subtasks, 10.5 man-days.**
 
 What every later test stands on (§1.4). Its green tests run in `unit`; the specifications only
 a later epic can turn green run red in `adapter-conformance`, which it registers.
@@ -512,8 +512,7 @@ a later epic can turn green run red in `adapter-conformance`, which it registers
 RFC sections: §7 (the layers; the `core` layer on a test-only protocol), §7.1's import checks.
 
 - T2.1 `testproto`: frames, operations (echo, panic, a settable `Role`, one service call), versions;
-  driven over a plain `net.Conn`; the unit/adapter-allocs cell with its header gate; `core.Server.Addrs()`
-  added to RFC 20 §4.7 with a stub, for a test on `127.0.0.1:0` to learn its bound port.
+  driven over a plain `net.Conn`; the unit/adapter-allocs cell with its header gate.
 - T2.2 `testproto`'s stateful half, as §1.4 describes, so every symbol of RFC 20 §4.7 has a
   caller in `testproto`.
 - T2.3 The import test, on `arch_test.go`'s walker, with one seeded violation per rule and a seed per allowance; `arch_test.go`
@@ -558,7 +557,8 @@ RFC sections: §3.1 (states, drain, abandon at the deadline, auxiliary listeners
 rows, A10, A11, A14, A19, A20.
 
 - T4.1 `Server`: configured, serving, draining, stopped; `Start` binds every listener or none;
-  `Addrs()`'s body, the bound addresses with port 0 resolved (stub from E2). If it moves the first
+  `Addrs()`'s body, every bound address keyed by `adapter.Bind`, port 0 resolved (stub from the
+  Serving/Addrs surface change). If it moves the first
   failure of `adapter-conformance`'s end-to-end test, it updates that entry's `message`.
 - T4.2 Accept: connection limit per node and a quarter per address, closed at accept; the
   connection-state charge; backoff 10 ms to 1 s and `adapter_listener_lost` after 60 s.
@@ -582,7 +582,8 @@ rows, A10, A11, A14, A19, A20.
   disarms; both on `testproto`'s stateful half.
 - T4.8 TCP: `TCP_NODELAY`, keepalive 15 s and 3 probes 5 s apart, `TCP_USER_TIMEOUT` on Linux,
   asserted on an accepted socket; buffers left to the kernel.
-- T4.9 The sidecar runner, lifted from v1's `pkg/adapter/sidecar.Group` on `develop`: `Sync` with
+- T4.9 The sidecar runner, lifted from v1's `pkg/adapter/sidecar.Group` on `develop`, each
+  `Serving` built from `Server.Addrs()`: `Sync` with
   the serving set after an adapter is serving and before it drains, idempotent, a disabled
   sidecar synced with the empty set, a failing one raising `sidecar_failed` without touching the
   adapters or readiness; tested with `testproto` adapters and a trivial real sidecar, its
