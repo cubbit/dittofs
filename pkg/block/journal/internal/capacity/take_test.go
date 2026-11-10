@@ -186,6 +186,7 @@ func newRig(t *testing.T, o rigOpts) *rig {
 		},
 		ReadySpares: r.pool.ReadyContent,
 		Hold:        r.hold,
+		BelowHalf:   func() bool { return false },
 		MaxBytes:    o.maxBytes,
 		SegmentCap:  testCap,
 	}
