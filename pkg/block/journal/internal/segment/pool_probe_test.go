@@ -55,3 +55,13 @@ func (r *Retirer) ExtraNamesForTest(id core.SegmentID) int {
 	defer r.mu.Unlock()
 	return len(r.extra[id])
 }
+
+// ParkedWaitersForTest reports how many WaitSpares calls are parked on the
+// pool's settle condition now, so a test sequences a stop (or a release)
+// against a wait it has confirmed is parked, rather than racing the wait's
+// arrival with a sleep.
+func (p *Pool) ParkedWaitersForTest() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.parked
+}

@@ -117,15 +117,20 @@ type Pool struct {
 	deviceFull bool                          // guarded by mu
 	retirer    *Retirer                      // the source of recycled spares, nil when none; guarded by mu
 
-	// settled wakes WaitSpares, and settles counts every wake by its cause:
-	// a refill pass on its way out, or a Stop. No spare is being made
-	// between them, so a waiter that reads a settle holds the pool's own
-	// word for where its fill stands. filling says a pass is running now:
-	// a waiter that arrives while one runs parks for its answer, while one
-	// that arrives over a pool left short by a pass already ended refuses
-	// at once, however long ago that pass settled. Guarded by mu.
+	// parked counts the WaitSpares calls sitting on the settle condition,
+	// for the test that sequences an event against a wait it must confirm is
+	// parked rather than racing its arrival. Guarded by mu.
+	parked int
+
+	// settled wakes WaitSpares, broadcast by every refill pass on its way
+	// out and by Stop. filling says a pass is running or a kick is queued:
+	// true from the moment work is promised — Start's own first pass, the
+	// kick any take or retirement enqueues — until the pass it promised ends
+	// at a settle. A waiter parks while filling, and reads a pool that holds
+	// no promised or running pass however it likes: one short of its targets
+	// then is the pool's own last word, whatever pass last left it there,
+	// and however long ago. Guarded by mu.
 	settled *sync.Cond
-	settles int
 	filling bool
 
 	// spareRefusals counts each roll the pool refused naming `spare`. The
@@ -534,12 +539,20 @@ func (p *Pool) recycleFailed(c Class) {
 
 // Kick wakes the refill worker, coalescing: one kick that arrives while a
 // pass runs holds the next. The worker checks done between its makes, so a
-// kick after Stop is a drop.
+// kick after Stop is a drop. The enqueue runs under mu and marks the pass it
+// promises, so a waiter arriving between a kick and the pass it asked for
+// parks for that pass's settle rather than reading the pool as idle and
+// short; a kick dropped on a stopped pool promises nothing.
 func (p *Pool) Kick() {
-	select {
-	case p.kick <- struct{}{}:
-	default:
+	p.mu.Lock()
+	if !p.stopped {
+		p.filling = true
+		select {
+		case p.kick <- struct{}{}:
+		default:
+		}
 	}
+	p.mu.Unlock()
 }
 
 // ReadyContent returns the content spares an unreserved take can still reach:
@@ -587,24 +600,30 @@ func (p *Pool) Counters() PoolCounters {
 	}
 }
 
-// WaitSpares blocks until every class holds the spares its target names —
-// counted exactly as the refill counts them, by the same predicate — or the
-// pool reports it cannot reach its targets: a pass has ended since the call
-// began and still left a class short, or the pool has stopped. It returns nil
-// once no class is short, core.ErrClosed once the pool has stopped, the
-// context's error once it is done, and the spare refusal naming LimitSpare
-// when the pool settled short.
+// WaitSpares blocks until every class holds the spares its target names,
+// ready to take — or the pool reports it cannot reach its targets: no pass
+// is running, none is queued, and a class still holds fewer ready spares
+// than its target — or the pool has stopped. It returns nil once no class is
+// ready-short, core.ErrClosed once the pool has stopped, the context's error
+// once it is done — checked before every other answer — and the spare
+// refusal naming LimitSpare when the pool stands idle and short. Held and
+// pending spares ride above the targets and the wait does not count them,
+// and neither does it count a recycle reserved but not landed: its failure
+// leaves the class short with no wake, so the wait reads only what a roll
+// can take.
 //
 // decision: the wait is event-driven, woken by settle alone. The mechanism is
 // a condition under the pool's own mutex, broadcast by every refill pass on
-// its way out and by Stop, so a pass that ends while the caller was already
-// waiting is the signal — a wait over a pool settled before the call reads
-// the predicate and returns without parking at all, and no polling measures
-// anything. It is a test-facing surface only: the journal whose writes are
-// refused for want of a spare answers retry, never waits (RFC 1 §3), so
-// nothing production reaches this. Withdrawn together with a both-ends answer
-// — a Stats that reports the ready spares, or a WriteAt that waits — by
-// whoever needs one; the other end then carries it.
+// its way out and by Stop, and the fill the pool promises — a pass a kick has
+// queued — is marked before any waiter can read the pool as idle, so a wait
+// parks for the settle of the pass it raced and never answers a queued
+// refill as a shortage. A wait over a pool already idle reads its state and
+// returns without parking at all, and no polling measures anything. It is a
+// test-facing surface only: the journal whose writes are refused for want of
+// a spare answers retry, never waits (RFC 1 §3), so nothing production
+// reaches this. Withdrawn together with a both-ends answer — a Stats that
+// reports the ready spares, or a WriteAt that waits — by whoever needs one;
+// the other end then carries it.
 func (p *Pool) WaitSpares(ctx context.Context) error {
 	p.mu.Lock()
 	switch {
@@ -639,47 +658,60 @@ func (p *Pool) WaitSpares(ctx context.Context) error {
 			close(answered)
 			return err
 		}
-		// decision: a stopped pool answers ErrClosed before any settle the
-		// stop itself sent, so a waiter woken by a stop reads the stop and
-		// not the pool's last-word shortage: the wait is over, and a caller
-		// that retried on a shortage would retry a pool that is gone.
+		// decision: the context's error is answered first on every wake —
+		// including a wake a cancel sent over a state the pool changed
+		// since — because a caller that stopped waiting is done whatever
+		// the pool did. A stopped pool answers ErrClosed before any settle
+		// the stop itself sent, so a waiter woken by a stop reads the stop
+		// and not the pool's last-word shortage: the wait is over, and a
+		// caller that retried on a shortage would retry a pool that is gone.
 		if p.stopped {
 			p.mu.Unlock()
 			close(answered)
 			return core.ErrClosed
 		}
-		if !p.shortLocked() {
+		if !p.readyShortLocked() {
 			p.mu.Unlock()
 			// A pass that filled while the caller was arriving still counts:
 			// the wait answer is the pool's word, not the caller's timing.
+			// The ready counts, not the refill's, are what it reads: a spare a
+			// roll can take is the wait's whole subject.
 			close(answered)
 			return nil
 		}
 		if !p.filling {
-			// No pass is running and the pool stands short of its targets:
-			// the pool's own word for where its fill stopped, whether the
-			// wait arrives before the settle's wake or after it, is the
-			// refusal to answer — a parked-short pool stays parked until
-			// the next kick refills it.
+			// No pass is running and none is queued, and the pool holds
+			// fewer ready spares than its targets name: the pool's own word
+			// for where its fill stopped — whether the wait arrives before
+			// the settle's wake or after it — is the refusal to answer, for
+			// a caller that cannot wait for a refill nothing queued will
+			// run. The next kick refills, and a caller that wants to ride it
+			// calls again.
 			refusal := &core.NoSpaceError{Limit: core.LimitSpare, Missing: max(p.shortAtLocked(), 1), Unit: core.UnitSegments}
 			p.mu.Unlock()
 			close(answered)
 			return refusal
 		}
+		p.parked++
 		p.settled.Wait()
+		p.parked--
 	}
 }
 
-// shortLocked reports whether the refill would choose a class: a class below
-// its target once what fills it is counted, exactly the switch the refill
-// runs. The caller holds mu.
-func (p *Pool) shortLocked() bool {
+// readyShortLocked reports whether the pool holds, ready to take, fewer
+// spares than every class's target — the count a wait answers by, which the
+// refill's own shortness does not: a recycle reserved in flight fills a class
+// without holding it, and its failure leaves the class short again with no
+// settle to wake a waiter that had read the reservation as a spare. A wait
+// reads the spares a roll can take now, and the next settle — the failed
+// recycle's, or a pass's — answers whatever moved. The caller holds mu.
+func (p *Pool) readyShortLocked() bool {
 	switch {
-	case len(p.ready[Headroom])+p.incoming[Headroom] < p.t.Headroom:
+	case len(p.ready[Headroom]) < p.t.Headroom:
 		return true
-	case len(p.ready[Reserve])+p.incoming[Reserve] < p.t.Reserve:
+	case len(p.ready[Reserve]) < p.t.Reserve:
 		return true
-	case len(p.ready[Content])+p.incoming[Content] < p.t.Content+p.held+p.pending:
+	case len(p.ready[Content]) < p.t.Content:
 		return true
 	}
 	return false
@@ -689,13 +721,13 @@ func (p *Pool) shortLocked() bool {
 // across its classes, counted as the refill chooses them. The caller holds mu.
 func (p *Pool) shortAtLocked() int64 {
 	var missing int64
-	if d := p.t.Headroom - len(p.ready[Headroom]) - p.incoming[Headroom]; d > 0 {
+	if d := p.t.Headroom - len(p.ready[Headroom]); d > 0 {
 		missing += int64(d)
 	}
-	if d := p.t.Reserve - len(p.ready[Reserve]) - p.incoming[Reserve]; d > 0 {
+	if d := p.t.Reserve - len(p.ready[Reserve]); d > 0 {
 		missing += int64(d)
 	}
-	if d := p.t.Content + p.held + p.pending - len(p.ready[Content]) - p.incoming[Content]; d > 0 {
+	if d := p.t.Content - len(p.ready[Content]); d > 0 {
 		missing += int64(d)
 	}
 	return missing
@@ -707,7 +739,6 @@ func (p *Pool) shortAtLocked() int64 {
 // takes mu, so no caller of it holds it.
 func (p *Pool) settle() {
 	p.mu.Lock()
-	p.settles++
 	p.filling = false
 	p.settled.Broadcast()
 	p.mu.Unlock()
@@ -716,7 +747,6 @@ func (p *Pool) settle() {
 // settleLocked is settle for a caller that holds mu: the broadcast reaches the
 // waiters before the state the caller built is let go of.
 func (p *Pool) settleLocked() {
-	p.settles++
 	p.filling = false
 	p.settled.Broadcast()
 }
@@ -771,10 +801,6 @@ func (p *Pool) worker() {
 // refill runs one pass. It returns false once the pool is stopped, so the
 // worker exits; true otherwise, whether or not the pass made a spare.
 func (p *Pool) refill() bool {
-	p.mu.Lock()
-	p.filling = true
-	p.mu.Unlock()
-
 	for {
 		p.mu.Lock()
 		if p.stopped {
