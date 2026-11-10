@@ -87,7 +87,8 @@ func TestCopyRefusedChunk(t *testing.T) {
 	// The third chunk reaches past the source's end, which its admission
 	// refuses: the route of a source truncated between two chunks of a copy
 	// that was valid when it came in. A copy past the source's end at its
-	// start is refused before the engine, by the filesystem service.
+	// start is for the filesystem service to refuse before the engine
+	// (RFC 17 §5.9 step 2), which does not check it yet.
 	n, err := u.copy(t.Context(), src, dst, vfserr.Extent{Len: 3 * chunk})
 	if err != nil || n != 2*chunk {
 		t.Fatalf("Copy with its third chunk refused: %d, %v; want %d, nil", n, err, 2*chunk)
