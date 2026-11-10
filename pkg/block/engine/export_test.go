@@ -307,7 +307,6 @@ func (e *Engine) ClearOps(f entity.FileID) {
 	e.files.unlock(f, fe)
 }
 
-
 // CommitNow is commitNow on share s's file f.
 func (e *Engine) CommitNow(ctx context.Context, s entity.ShareID, f entity.FileID) error {
 	b, err := e.bindingOf(s)
