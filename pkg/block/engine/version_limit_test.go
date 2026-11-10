@@ -906,14 +906,10 @@ func TestRefusedLimitIsNotRetried(t *testing.T) {
 }
 
 // Once the journal has refused a limit, a Bind that attaches a share to it
-// fails with the journal's error, with no store call and no second
-// SetVersionLimit, whether the counter is within the trigger or, after the
+// fails with the journal's error, writing no limit for the share and passing
+// the journal none, whether the counter is within the trigger or, after the
 // peak rate has aged out, outside it (RFC 8 §2.7). The share is not bound.
 func TestBindToARefusedJournalFails(t *testing.T) {
-	limitCalls := func(s *starter) int {
-		return strings.Count(strings.Join(s.j.log(), " "), "limit")
-	}
-
 	for _, c := range []struct {
 		name string
 		wait time.Duration
@@ -933,8 +929,13 @@ func TestBindToARefusedJournalFails(t *testing.T) {
 			s.e.WaitRaises(t)
 			s.clock.Advance(c.wait)
 
-			base := len(s.lc.raiseCalls())
-			limits := limitCalls(s)
+			// The journal takes limits again, so one the Bind passed would
+			// show in its limit.
+			s.j.mu.Lock()
+			s.j.fail = nil
+			s.j.mu.Unlock()
+
+			spare, l0 := limitOf(t, s, s.spare.ID), limit(s)
 
 			err := s.e.Bind(t.Context(), s.spare)
 			if !errors.Is(err, vfserr.ErrUnavailable) {
@@ -943,12 +944,12 @@ func TestBindToARefusedJournalFails(t *testing.T) {
 
 			s.e.WaitRaises(t)
 
-			if n := len(s.lc.raiseCalls()) - base; n != 0 {
-				t.Errorf("the refused Bind made %d store calls to raise a limit, want none", n)
+			if got := limitOf(t, s, s.spare.ID); got != spare {
+				t.Errorf("the refused Bind moved its share's stored limit from %d to %d", spare, got)
 			}
 
-			if n := limitCalls(s) - limits; n != 0 {
-				t.Errorf("the refused Bind passed the journal %d limits, want none", n)
+			if got := limit(s); got != l0 {
+				t.Errorf("the refused Bind moved the journal's limit from %d to %d", l0, got)
 			}
 
 			if err := s.e.BindingOf(s.spare.ID); err == nil {
