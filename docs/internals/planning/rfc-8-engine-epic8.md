@@ -89,7 +89,10 @@ clone marker.
    that has landed, and E2's test components: above all the fake journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12).
+   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
+   three kinds: the test clock, an in-memory implementation held to its interface's
+   conformance suite, or a fault wrapper. A test asserts on the engine's answers, on resulting
+   state and on what a double records of its own outputs, never on which calls the engine made.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -129,7 +132,9 @@ clone marker.
    check about what the real thing does: the real journal on a real directory, with its crash
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
    commits and conflicts on. The fake journal is for the engine's pure logic only, and no
-   conformance row runs over it.
+   engine conformance row runs over it. It is held to the real journal by the journal's own
+   conformance suite (RFC 1 §9.4): it passes the suite's rows that need no crash, fault or
+   platform, the rows the real journal passes on `platform.OS`.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -153,7 +158,7 @@ clone marker.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| 1 Unit tests | all | every subtask tests over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition, with a recording `CloneHold` stub where open state is not the subject; T8.2 extends the fake with `CloneTarget`, `Reserve` and the clone marker `Since` yields |
+| 1 Unit tests | all | every subtask tests over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition, with the real open-state table as `Deps.Holds`, behind a fault wrapper where a test needs an answer it cannot produce; T8.2 extends the fake with `CloneTarget`, `Reserve` and the clone marker `Since` yields |
 | 2 Fuzz | none | no parser. RFC 8 §15's `ponytail:` names `Copy`'s extents among the parts its tables check; T8.5's table test is that check, and the marker already stands at the read-resolution table, so no second one |
 | 3 Observability | T8.2, T8.3, T8.6 | no new counter and no new condition: a clone's phase 2 is a removal of kind clone, counted in epic 5's `engine_removal_runs_total`, `engine_removals_pending` and `engine_removals_oldest_seconds`, and its `removal_stalled` condition is unhealthy, not degraded (RFC 8 §8.1). T8.3 opens each clone's `Resume` as the removal loop's root span, its kind an attribute. RFC 8 §14's span events for a wait on a registration are not recorded: the `Tracer` declares no event, and a call never waits on one here (§9, point 1). T8.2 logs a phase-1 refusal met after the journal step at `Error` (D8); T8.3 a failed `Hold` at `Error`; T8.6 a rebuilt clone at `Info`, naming both files, and reports a rebuilt clone whose source's shard is not served after five backoffs as `removal_stalled` for its clone `Removal` (D11) |
 | 4 Profiling | all | the unit composition's `prof.Watch` covers every test, a clone's detached goroutine (D6) included: one leaked past `Close` fails it |
@@ -416,11 +421,11 @@ listed test fails on the regression it names (after "catches").
   `types.go`; the hooks in `export_test.go`.
 - **Rows:** §9.1 overlapping clone; §9.1 refusals and §9.1 clone never waits, their
   admission halves.
-- **Tests:** a table of refusals with a journal wrapper counting every call and `kv.Counts` on
-  the store: `f[0, 8 MiB)` onto `f[1, 9 MiB)` `ErrInvalid`, one byte over `clone_max_len`
+- **Tests:** a table of refusals over the fake and the in-memory `kv.KV`'s committed
+  transactions: `f[0, 8 MiB)` onto `f[1, 9 MiB)` `ErrInvalid`, one byte over `clone_max_len`
   `ErrInvalid`, a zero length `ErrInvalid`, two namespaces `ErrCross` with `CrossNamespace`,
-  an unbound share on either side `DelayFrozen`, each with zero journal calls and zero
-  transactions (catches a check after `CloneTarget`); `f[0, 4 MiB)` onto `f[8, 12 MiB)`
+  an unbound share on either side `DelayFrozen`, each leaving the fake unchanged and zero
+  transactions committed (catches a check after `CloneTarget`); `f[0, 4 MiB)` onto `f[8, 12 MiB)`
   admitted (catches overlap judged by file alone); a write held between `entryFor` and
   `WriteAt` by a hook, then a clone's registration: it returns only after the write staged
   (catches registering without waiting, which yields a source written after `asOf`); after
@@ -532,9 +537,9 @@ listed test fails on the regression it names (after "catches").
   passing the destination's writes without their superseded runs); over the fake, with the
   test block of 16, a clone whose `CloneTarget` version is past the trigger and no other
   call issuing a version: the raise runs and the journal gets the new limit (catches a clone
-  target that does not call `issued`); over the fake, a clone that makes three copies: the
-  versions passed to `issued`, counted through an `export_test.go` hook, are the target's
-  and each copy's, four in all (catches a copy that does not call `issued`).
+  target that does not call `issued`); over the fake, a clone that makes three copies, each
+  copy's version past the trigger in turn: the raise runs after each and the journal gets
+  each new limit (catches a copy that does not call `issued`).
 
 ### T8.3 The clone-kind open and phase 2
 
@@ -562,12 +567,14 @@ listed test fails on the regression it names (after "catches").
   signal raised.
 - **Rows:** §9.1 removals of a cloning destination, its last assertion (the source's
   clone-kind open record gone after the clone).
-- **Tests:** a recording `CloneHold` and a `Content` wrapper logging calls: the order is
-  `Clone`, `Hold`, `Resume`, `Release`, none under an admission or entry lock (catches a
-  `Hold` before phase 1, which `CloneOpen` refuses with `ErrBadState`, or a `Release` before
-  the last batch); `Hold` answering `DelayFrozen` twice: `Resume` runs on the third try and no
-  `removal_stalled` is raised (catches the retries counted as failures); `Hold` answering
-  another error: `Resume` runs, no `Release` follows, one `Error` line; `Resume` failing six
+- **Tests:** over the real open-state table and `kvstore`, the clone completes and the
+  source's clone-kind open record is present until its last batch commits, with a fault
+  wrapper holding each of `Clone`, `Hold`, `Resume` and `Release` in turn while a write to
+  another file is served (catches a `Hold` before phase 1, which `CloneOpen` refuses with
+  `ErrBadState`, a `Release` before the last batch, or a call made under an admission or entry
+  lock); a fault wrapper answering `Hold` with `DelayFrozen` twice: `Resume` runs on the third try and no
+  `removal_stalled` is raised (catches the retries counted as failures); the wrapper answering
+  `Hold` with another error: `Resume` runs, no `Release` follows, one `Error` line; `Resume` failing six
   times: `removal_stalled` names the file, the registrations held, cleared on success. Over
   E2's fixture and the real open-state table: the source unlinked between phase 1 and `Hold`,
   held there by `DelayFrozen`, keeps its content, its release answered pending with no byte
@@ -625,7 +632,7 @@ listed test fails on the regression it names (after "catches").
   order, each run as a clone; the count of the chunks done; D12's edges; RFC 8 §9.1's chunk
   `decision:` marker and D12's beside it.
 - **Rows:** §9.1 refusals, the `COPY` half (engine side).
-- **Tests:** the chunk table over a recording clone hook, for extents of 1 byte, exactly
+- **Tests:** the chunk table, read from the clone markers the fake's `Since` yields, for extents of 1 byte, exactly
   64 MiB, 200 MiB (64, 64, 64, 8), two extents, and `clone_max_len` below 64 MiB (catches an
   off-by-one chunk end, reordering, or chunks the length rule refuses); a `Copy` whose
   extents overlap in one file answers `ErrInvalid` before any chunk; the third chunk refused
@@ -670,13 +677,13 @@ listed test fails on the regression it names (after "catches").
   after the answer: the destination reads the source (catches an answer before the copies are
   synced); a crash after the copies synced on a share at its journal limit: the restart's
   reservation asks for nothing, every other file is served, and the clone finishes (catches a
-  restart re-making the copies, which the full limit refuses); a `Served` stub that returns
-  only when released: no `Resume` before it, `removal_stalled` names the clone `Removal` after
+  restart re-making the copies, which the full limit refuses); a fault wrapper holding `Served`
+  until released: the destination unfinished before it, `removal_stalled` names the clone `Removal` after
   five backoffs and clears once it returns (catches a silent wait, D11), and an `Unbind` of
-  the source's share before then returns only after the stub is released and the clone done
+  the source's share before then returns only after the wrapper releases it and the clone is done
   (catches a join that abandons the clone); over the fake, a restart that re-makes two copies
-  of a clone: the versions passed to `issued`, counted through the same hook as T8.2's, are
-  the two copies' (catches a re-made copy that does not call `issued`).
+  of a clone, each copy's version past the trigger in turn: the raise runs after each, as in
+  T8.2 (catches a re-made copy that does not call `issued`).
 
 ## 7. Order of work
 
