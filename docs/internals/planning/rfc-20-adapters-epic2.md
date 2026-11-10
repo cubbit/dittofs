@@ -6,10 +6,13 @@ and its closing sentence: the test-only protocol drives every symbol), §7 (the 
 §7.1 (imports), §9 A1 and A8, the suites paragraph; [RFC 29](../rfcs/rfc-29-test-harness.md)
 §4.7 (known failures) and §4.11 (test doubles); `CLAUDE.md`, "Writing tests", as `develop` has it.
 **Track:** the team.
-**Epic 2 estimate: 4 subtasks, 10.75 man-days.**
+**Epic 2 estimate: 4 subtasks, 10.5 man-days.**
 **Depends on:** **S1, surface frozen**: E1's `internal/adapter/core` surface (RFC 20 §4.7, with
 stub bodies and a working `Bind`), `pkg/adapter`'s `Deps`, `pkg/resources`' `Budgets`, `Buf` and
-`BufPool`, and `pkg/vfs`' `Service` and error set. T2.3 also needs `vfstest.Memory` (§9).
+`BufPool`, and `pkg/vfs`' `Service` and error set; **the Serving/Addrs surface change** on the
+branch: RFC 20 §3.5 and §4.7 amended, `adapter.Bind`, `Serving.Listeners map[Bind][]netip.AddrPort`,
+`core.Listener.Service` and the `(*Server).Addrs()` stub, with both golden files (D19). T2.3 also
+needs `vfstest.Memory` (§9).
 **Blocks:** E3, which turns the budget and replay specifications green and registers `BufPool`'s
 gate in the allocation cell this epic creates; E4 and E5, whose tests run `core` on `testproto`
 over loopback, end with the leak check, and turn the end-to-end specification green; E6, whose
@@ -37,8 +40,6 @@ their own, the specifications that only a later epic's bodies can turn green.
 - `adaptertest.CheckLeaks` fails a test that leaves a goroutine or a descriptor behind (through
   the profiler moved out of the journal's tree), or a budget charged; its heap check runs only
   without `-race`, which no adapter cell runs it in, so it gives no heap coverage in CI;
-- `core.Server` gains `Addrs()`, the bound address of each listener, as an RFC 20 §4.7
-  amendment with a stub body E4 fills;
 - `unit/adapter-allocs` runs `testproto`'s gate per change, and `adapter-conformance` runs the
   red specifications, each listed in its `known.yaml` with the issue of the epic that turns it
   green.
@@ -167,7 +168,7 @@ names the epic that owns the rest.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R32 | `core.Server` reports each listener's bound address once `Start` has bound it, a port of 0 resolved to the one the system chose, so a test listening on `127.0.0.1:0` and the node's sidecar report can reach it; the method is added to RFC 20 §4.7 and to the frozen surface's golden file before it is written | MUST | owner decision (the user's); rule 9 | T2.1 (body: E4) |
+| R32 | A test reaches a `core` server listening on `127.0.0.1:0` through `Addrs()`, keyed by its listener's `adapter.Bind` (`Service`, `Network`), each key holding every bound address with port 0 resolved | MUST | RFC 20 §4.7 as the Serving/Addrs surface change amends it; owner decision (the user's) | T2.1 (body: E4's T4.1) |
 
 ## 4. Decisions this epic takes
 
@@ -311,8 +312,9 @@ names the epic that owns the rest.
   - `testproto.New(d adapter.Deps)`, `Bare`, the operation codes and statuses (typed as `core`'s
     `uint32` code and `core.Version`, so no test converts), `Msg`, `Reply`, `Append` and `Client`:
     every `core` test builds its requests and reads its replies through them;
-  - `core.Server.Addrs()` (D19): E4's tests, the end-to-end specification and the node's
-    sidecar report read it, so a changed shape is an RFC amendment and an edit of each.
+  - `core.Server.Addrs()` and `adapter.Serving` (D19): E4's tests, the end-to-end specification,
+    the node's sidecar report and every sidecar read them, so a changed shape is an RFC amendment
+    and an edit of each; the user settled them before any body exists.
   What is deferred is additive and in one place: the import test's entry-method, 800-line and
   `translate` clauses are new cases and seeds (RFC 21 and 22); a golden-vector helper is E6's,
   inside each `wire` package; a new operation a later `core` test needs is a new row and new
@@ -325,21 +327,21 @@ names the epic that owns the rest.
   `internal/adapter/core/testdata/surface/core.golden`. The RFC needs no amendment, since §4.7
   never named it. Removing it after E4 has built the connection would mean reworking the
   connection's tests, so it is settled before any body exists.
-- **D19, `core.Server.Addrs()`; the user chose this.** A test listening on `127.0.0.1:0` cannot
-  learn the port the system chose: `core.Listener` holds only the port asked for, and nothing
-  reports what was bound. `func (s *Server) Addrs() []netip.AddrPort` returns, once `Start` has
-  bound them, every bound address: for each listener in `NewServer`'s order, one per address of
-  the settings' `Addrs`, in that order, port 0 resolved; nil before `Start` and after `Stop`. It
-  is a slice, not a map like `adapter.Serving.Listeners` (keyed by service: `"nfs"`, `"mount"`):
-  a `Listener` carries no service name to key by, and `config.Adapter.Addrs` gives one listener
-  several addresses, which a map of one `netip.AddrPort` per key cannot hold. The node knows the
-  service of each listener it passed to `New`, so it builds `Serving` from the slice (E4's T4.9).
-  The prior art is `net.Listener.Addr` and `httptest.Server.URL`, which report the address the
-  system bound. T2.1 adds it to RFC 20 §4.7, on `feat/storage-v2`, in the same pull request, with
-  the stub body and its declaration in `core.golden`. By E1's stub convention a method with no
-  error to return panics with "not implemented"; E4's T4.1 writes the body. That
-  `Serving.Listeners` holds one address per service, where a listener may have several, is a §9
-  point for RFC 20 §3.5.
+- **D19, a typed key for what is bound; the user chose this.** A test on `127.0.0.1:0` must learn
+  the port the system chose, and a sidecar must advertise every address the adapter is bound
+  to. The earlier `Serving.Listeners map[string]netip.AddrPort` lost addresses: one service
+  binds every entry of `config.Adapter.Addrs`, NLM and NSM listen on both TCP and UDP under one
+  service name, and since `Addrs` is live, rebuilding the map from listener order would race a
+  `Reconfigure`. So the surface keys by service and network and holds every address:
+  `adapter.Bind{Service, Network}`, `Serving.Listeners map[Bind][]netip.AddrPort`,
+  `core.Listener` gaining `Service`, and `(*Server).Addrs() map[adapter.Bind][]netip.AddrPort`,
+  from which the node builds each `Serving` as it stands, with no ordering to rebuild. The
+  prior art: `net.Listener.Addr` reports per socket what was bound; rpcbind registers each
+  program, version and netid separately (RFC 1833), which `Bind`'s network mirrors; DNS-SD
+  responders such as Avahi advertise every address a host has, which the slice keeps. The change
+  lands before this epic, in its own pull request (the Serving/Addrs surface change), which
+  amends RFC 20 §3.5 and §4.7 and adds the types, the stub and both golden files; this epic
+  only reads it. E4 writes the bodies: `Addrs` in T4.1, the `Serving` report in T4.9.
 
 ## 5. Target tree
 
@@ -347,7 +349,8 @@ names the epic that owns the rest.
 internal/prof/                     T2.4  moved from pkg/block/journal/journaltest/prof, unchanged (D13)
 internal/adapter/adaptertest/
   leak.go                          T2.4  CheckLeaks, budgetsHeld
-  leak_conformance_test.go         T2.4  red: the budget check fails on a charged budget
+  leak_conformance_test.go         T2.4  red: budgetsHeld names a charged budget
+  leakspec/leak_conformance_test.go  T2.4  red: CheckLeaks on released budgets, alone in its package
   imports_test.go                  T2.3  the import test
   testdata/imports/                T2.3  one seed per rule and per allowance
   testproto/
@@ -361,9 +364,8 @@ internal/adapter/adaptertest/
     stages_test.go                 T2.2  the stages as state machines, NewConn's stages
     state_test.go                  T2.2  the registry, the compound row's Decode, the coverage check
     conformance_test.go            T2.1, T2.2  red: one request end to end; ReplayCache's copy
-internal/adapter/core/server.go    T2.1  Addrs, its stub (D19)
 internal/adapter/core/conn.go      T2.2  Dispatcher deleted (D18)
-internal/adapter/core/testdata/surface/core.golden  T2.1  Addrs added; T2.2  Dispatcher's entry deleted
+internal/adapter/core/testdata/surface/core.golden  T2.2  Dispatcher's entry deleted
 pkg/block/journal/journaltest/prof/  T2.4  moved out; its importers updated
 pkg/block/engine/imports_test.go   T2.4  allowlist entry for internal/prof
 pkg/metadata/kv/kvtest/fault_test.go  T2.4  imports internal/prof
@@ -374,7 +376,7 @@ pkg/adapter/smb/smb_test.go        T2.3  vfstest.Memory for internal/vfs (D15)
 test/adapter/known.yaml            T2.4  the red specifications (D11)
 test/suites.yaml                   T2.1  unit/adapter-allocs cell; T2.4  adapter-conformance suite, its tag in lint-go's vet line, unit/journal-index's prof path
 .github/workflows/tests.yml        T2.1  unit/adapter-allocs' fixed step; T2.4  adapter-conformance in the branch's cell filter
-docs/internals/rfcs/rfc-20-adapters.md  T2.1  §4.7 gains Server.Addrs; T2.4  the suites paragraph names adapter-conformance
+docs/internals/rfcs/rfc-20-adapters.md  T2.4  the suites paragraph names adapter-conformance
 pkg/block/journal/imports_test.go  T2.4  internal/prof allowed in journaltest and tests
 docs/internals/testing.md          T2.4  regenerated by dt docs
 ```
@@ -384,13 +386,9 @@ The exported surface this epic adds or changes:
 ```go
 // prof moves from pkg/block/journal/journaltest/prof to internal/prof, its exports unchanged.
 // core.Dispatcher is deleted (D18).
-
-package core
-
-// Addrs is every address the server's listeners are bound to, once Start has
-// bound them: each listener in NewServer's order, one per address of the
-// settings' Addrs, port 0 resolved. Nil before Start and after Stop (D19).
-func (s *Server) Addrs() []netip.AddrPort
+// Read, not added, here: adapter.Bind, Serving.Listeners map[Bind][]netip.AddrPort,
+// core.Listener.Service and (*core.Server).Addrs() map[adapter.Bind][]netip.AddrPort,
+// from the Serving/Addrs surface change (D19).
 
 package adaptertest
 
@@ -496,9 +494,7 @@ func (c *Client) Balance() int
     `journaltest` and test files with a seed, `prof`'s own stdlib-only import test, and
     `unit/journal-index`'s command in `test/suites.yaml` updated;
   - `leak.go`: `budgetsHeld(b *resources.Budgets) error`, naming each of `Receive`, `Reply`,
-    `Connection` and `Hold` whose `Reserved` is above zero, a panic of `Reserved` recovered and
-    returned as an error, so a budget that cannot report fails the test rather than stopping the
-    binary from a cleanup, with a `decision:` marker naming that; `CheckLeaks(t, b)`, which calls
+    `Connection` and `Hold` whose `Reserved` is above zero; `CheckLeaks(t, b)`, which calls
     `prof.Watch(t, prof.Options{})` and registers a `t.Cleanup` reporting `budgetsHeld`;
   - the `adapter-conformance` suite in `test/suites.yaml` (`format: go-json`, `cmd: go test -race
     -tags=adapter_conformance -run ^TestConformance ./internal/adapter/...`, `known:
@@ -508,9 +504,13 @@ func (c *Client) Balance() int
     regenerated with `test/harness/bin/dt docs`;
   - `leak_conformance_test.go`: `TestConformanceBudgetsHeldNamesACharged`, a reservation taken
     with `WaitBudget.Reserve` and kept, `budgetsHeld` naming `Reply` (`message: 'resources:
-    reserve'`); and `TestConformanceCheckLeaksPassesOnZeroBudgets`, the consumer, `CheckLeaks(t,
-    b)` on budgets reserved and released before the test ends (`message: 'resources: reserve'`);
-    both `issue: "#3964"`.
+    reserve'`: the stub's error comes before any `Reserved` call, so it never panics);
+  - `leakspec/leak_conformance_test.go`, package `leakspec_test`, holding only
+    `TestConformanceCheckLeaksPassesOnZeroBudgets`, the consumer: `CheckLeaks(t, b)` on budgets
+    reserved and released before the test ends (`message: 'resources: reserve'`). Until E3 its
+    cleanup calls the stub `Reserved`, which panics; the panic still reports a fail event for
+    this test, which `dt` grades against its entry, and the only loss, later tests of the package
+    not running, costs nothing in a package of one test. Both entries `issue: "#3964"`.
 - **Consumers:** every E4, E5 and E6 test that runs the pipeline (rule 4); E3, which turns the
   budget specification green and removes its entry; the end-to-end and replay specifications of
   T2.1 and T2.2.
@@ -531,7 +531,7 @@ func (c *Client) Balance() int
 
 ### T2.1 `testproto`: frames, header, client and the stateless operations
 
-**Subtask T2.1 estimate: 3.25 man-days.**
+**Subtask T2.1 estimate: 3 man-days.**
 
 - **Track:** the team. **Depends on:** T2.4.
 - **Covers:** R14, R16, R17, R24, R25, R26, R27, R28, R32.
@@ -548,10 +548,8 @@ func (c *Client) Balance() int
     its contract.
   - `unit/adapter-allocs` in `test/suites.yaml`, its command `go test` over
     `./internal/adapter/adaptertest/testproto/`, and its fixed `dt run` step in the unit job (D12).
-  - `core.Server.Addrs()`: the RFC 20 §4.7 amendment, the stub (D19) and its `core.golden`
-    declaration;
   - `conformance_test.go`: `TestConformanceEchoEndToEnd`, `testproto`'s tables built first (D11),
-    then a `core.NewServer` on `testproto` over `127.0.0.1:0`, started, dialled at `Addrs()[0]`,
+    then a `core.NewServer` on `testproto` over `127.0.0.1:0`, started, dialled at `Addrs()[adapter.Bind{Service: "testproto", Network: "tcp"}][0]`,
     one `Echo` sent by the client and its reply read, `CheckLeaks` clean after `Stop`; its
     `known.yaml` entry (`message: 'testproto: tables: not implemented'`, `issue: "#3966"`, its
     reason naming E5's tables and pipeline and E4's server).
@@ -583,8 +581,7 @@ func (c *Client) Balance() int
   pair, the read end compared with the vector, and the balance after a scripted reply sequence
   (catches an interim counted twice); `NewConn`'s stages (catches a `Bare` carrying `Flow`, under
   which E5's cap-of-64 test would not test the default, or a `Hold` missing on the full protocol,
-  R17); E1's `exports_test.go` against `core.golden` with `Addrs` (fails if the method is dropped or
-  its signature drifts from the RFC, R32); the end-to-end specification (red until E4 and E5: it is
+  R17); the end-to-end specification (red until E4 and E5: it is
   S3's definition and reads `Addrs`, R24, R32). Run with
   `test/harness/bin/dt run unit`, `test/harness/bin/dt run unit/adapter-allocs` and
   `test/harness/bin/dt run adapter-conformance`.
@@ -721,7 +718,7 @@ green.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T2.4 | 1.75 | — | the profiler's move, the leak check and the red suite every later red test joins |
-| 2 | T2.1, T2.2 | 7 | PR 1 | `testproto` whole, so its coverage check runs on the protocol it covers |
+| 2 | T2.1, T2.2 | 6.75 | PR 1 | `testproto` whole, so its coverage check runs on the protocol it covers |
 | 3 | T2.3 | 2 | — | the import test; open beside PR 1 and 2 once `vfstest.Memory` has landed |
 
 A suggestion only: one pull request per subtask works as well.
@@ -741,15 +738,12 @@ A suggestion only: one pull request per subtask works as well.
     check's failing test lands here red (D11), so E3's estimate falls by about 0.5 man-days;
   - no operation that waits a given time or answers `ErrDelay` itself, and no test hook that
     completes a request: delays, holds and parks wait on `vfstest.Faults` (D5, D6);
-  - `core.Dispatcher` is deleted here, not by E4 (D18), and `core.Server.Addrs()` is added to the
-    frozen surface (D19);
+  - `core.Dispatcher` is deleted here, not by E4 (D18); the Serving/Addrs surface change lands
+    before this epic, in its own pull request (D19);
   - the journal's profiler moves to `internal/prof` and is the leak check's goroutine half (D13);
   - a red suite is registered, `adapter-conformance`, against "registers no red suite";
-  - the total is 10.75 man-days against the first figure of 8: the client, D3's second table,
-    the cell, the profiler's move, the red suite and its four specifications, D18 and D19.
-- **`adapter.Serving.Listeners` holds one address per service** (RFC 20 §3.5), while a listener
-  binds one address per entry of `config.Adapter.Addrs`. D19 reports them all; RFC 20 §3.5
-  should say which the sidecars advertise, or make the value a slice.
+  - the total is 10.5 man-days against the first figure of 8: the client, D3's second table,
+    the cell, the profiler's move, the red suite and its four specifications, and D18.
 - **The least certain estimates:** T2.2 (the most pieces, and the compound row's `Decode` is the
   one written directly rather than through `Bind`) and T2.4 (the profiler's importers are spread
   over the journal's, engine's and `kvtest`'s tests, and the suite touches the registry, the workflow, the
