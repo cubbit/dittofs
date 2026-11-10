@@ -160,6 +160,63 @@ func TestLoseRaisesTheGenerationAndCountsByReasonAndOffloadedBit(t *testing.T) {
 	}
 }
 
+// TestLoseCountsSupersededExtents catches a superseded loss uncounted, counted
+// under another reason's counter, or counted twice for one piece, and a
+// superseded loss that raises the generation: it never does, and one already
+// named does nothing.
+func TestLoseCountsSupersededExtents(t *testing.T) {
+	e := newEnv(t)
+
+	for i := range 3 {
+		l := loss(core.Seq(i + 1))
+		l.Reason = core.LossSuperseded
+		l.Synced = i%2 == 0
+		l.Offloaded = i%2 == 1
+		if _, err := e.d.Lose(context.Background(), l); err != nil {
+			t.Fatalf("Lose %d: %v", i, err)
+		}
+	}
+	p := e.d.Stats()
+	if p.SupersededExtents != 3 {
+		t.Errorf("SupersededExtents = %d after 3 superseded losses, want 3", p.SupersededExtents)
+	}
+	if p.CorruptDataLoss != 0 || p.CorruptRepairable != 0 || p.StaleExtents != 0 {
+		t.Errorf("a superseded loss moved another counter: data loss %d, repairable %d, stale %d, want all 0",
+			p.CorruptDataLoss, p.CorruptRepairable, p.StaleExtents)
+	}
+	if p.LossGeneration != 0 || e.d.Generation() != 0 {
+		t.Errorf("the generation rose on a superseded loss: Stats %d, Generation %d, want both 0",
+			p.LossGeneration, e.d.Generation())
+	}
+
+	// A second Lose of a piece already named counts nothing: the piece was
+	// taken by the first call.
+	l := loss(core.Seq(1))
+	l.Reason = core.LossSuperseded
+	if _, err := e.d.Lose(context.Background(), l); err != nil {
+		t.Fatalf("second Lose of an already-named piece: %v", err)
+	}
+	if got := e.d.Stats().SupersededExtents; got != 3 {
+		t.Errorf("SupersededExtents = %d after a piece was reported twice, want 3", got)
+	}
+
+	// A loss of another reason moves its own counter, not this one.
+	other := loss(core.Seq(4))
+	other.Reason = core.LossStale
+	if _, err := e.d.Lose(context.Background(), other); err != nil {
+		t.Fatalf("Lose of a stale loss: %v", err)
+	}
+	p = e.d.Stats()
+	if p.SupersededExtents != 3 || p.StaleExtents != 1 {
+		t.Errorf("after a stale loss: SupersededExtents %d, StaleExtents %d, want 3 and 1",
+			p.SupersededExtents, p.StaleExtents)
+	}
+	if p.CorruptDataLoss != 0 || p.CorruptRepairable != 0 {
+		t.Errorf("a stale loss moved a corrupt counter: data loss %d, repairable %d, want both 0",
+			p.CorruptDataLoss, p.CorruptRepairable)
+	}
+}
+
 // TestLoseOfAFailedWindowRaisesNothingBeyondTheWindowsOwnRaise catches a
 // generation raised once per record of a window rather than once per window.
 func TestLoseOfAFailedWindowRaisesNothingBeyondTheWindowsOwnRaise(t *testing.T) {
