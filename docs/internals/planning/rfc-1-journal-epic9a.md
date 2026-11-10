@@ -191,9 +191,58 @@ epic leaves.
 
 ## 2. General rules for each epic
 
-The twelve rules of [the plan's §1.5](rfc-1-journal-plan.md) apply to every epic, and are cited
-below by number and title, not copied. Code comments follow `CLAUDE.md`'s "Code comments"
-(`ponytail:` and `decision:` markers), and tests follow its "Verifying a change".
+1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
+   epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
+   an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
+   to fake (rule 12).
+2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
+   bytes the journal did not just write: records, segment headers, seal markers, catalogs,
+   trailers, the `format` file. Also fuzz-drive operation sequences against the reference
+   model. The property is that any input is either accepted as valid or rejected: never a
+   panic, and never an extent the bytes do not contain.
+3. **Metrics, and tracing where relevant.** Every counter and gauge RFC 1 §3.7 and §3.9
+   assigns to the epic's area is maintained, and exposed through `Stats` (served from
+   maintained counters, never a walk). Spans go through epic 1's standard-library
+   `Tracer` and logs through the injected `*slog.Logger`, never a metrics or tracing
+   library. Operations worth a span:
+   open and recovery, sync, offload pass, repack pass, fill, and a refused reservation.
+4. **Profiling.** Tests and benchmarks run under epic 2's profiling harness and fail on
+   goroutine, descriptor or memory leaks and on anomalous resource growth. Hot paths
+   (`WriteAt`, `ReadAt`, `Stats`, `report`, index lookup and insert) carry
+   allocations-per-op assertions and the counted checks of RFC 1 §9.7. Allocation and
+   heap assertions run outside `-race` only, because `-race` changes both.
+5. **Public interface and internals.** Tests cover the epic's internal package API and the
+   public v2 interface behaviour it enables, including concurrency under `-race`. Per the
+   project rules, test at the layer that **consumes** a value, not the one that produces
+   it. A regression test is validated by reverting the fix and watching it fail **on its
+   assertion**.
+6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
+   known-failure list in the same change. The runner fails if a listed test passes.
+7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
+   v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
+   bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
+   checks only whether v1 state exists, to refuse it at start (E10), and never reads
+   v1's format.
+8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
+   about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory
+   stand-ins are allowed only for pure logic (index, codecs).
+9. **Code comment conventions** (`CLAUDE.md`). No epic, issue or plan IDs in source
+   comments. Use `ponytail:` for knowingly-simple implementations and `decision:` for
+   deliberate behaviour. Where the RFC already carries a ponytail or decision note, its
+   marker goes at the code site that implements it.
+10. **A test must be able to fail.** Every test is code maintained for the life of the
+    project. Keep a test only if a plausible change would make it fail and nothing else
+    would catch that change: not the compiler, not the PR diff, not a later epic's tests.
+    A test that checks two `errors.New` values differ, that the standard library's
+    `errors.As` works, or that a stub returns zero does not qualify. A test that a
+    little-endian `Version.Bytes` would fail does. Review rules that no test can check
+    (for example, stubs never panic) stay review rules.
+11. **A symbol is exported only if RFC 1 §3 uses it.** Everything exported is frozen at
+    S1, so a helper exported for convenience becomes a contract. Helpers the internal
+    packages need (`Less`, `IsZero`, `End`, `Overlaps`, `Seq`, the proposed constants)
+    stay in `internal/core`.
+12. **Each subtask creates only what it declares.** No empty package and no stub without
+    a caller. A package, an option or a test helper lands with its first consumer.
 
 ### 2.1 How the rules apply
 
