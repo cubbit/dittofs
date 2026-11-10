@@ -300,7 +300,7 @@ func (p *Pool) Hold(n int) (*Hold, error) {
 		return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: int64(n), Unit: core.UnitSegments}
 	}
 	// The spare refusal is the one that clears on its own: a Hold that falls
-	// short records its shortfall as the demand the refill makes up, so the
+	// short records its ask as the demand the refill makes up, so the
 	// retry finds it served. Held spares ride above the content target
 	// rather than inside it — the target exists so every stream can roll
 	// once without waiting for a spare — so the refill is what keeps an open

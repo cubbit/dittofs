@@ -1476,7 +1476,7 @@ func TestPoolRefusedHoldRetriesDoNotAccumulateDemand(t *testing.T) {
 }
 
 // TestPoolAHoldClosedDuringAMakeLeavesTheTarget: a hold closed while a make
-// it drew is still in flight must not drag the demand level below zero. The
+// it drew is still in flight leaves the pool refilling back to its target. The
 // make was drawn by the hold's demand, the close returns that demand, and
 // the spare it lands sits above the target's need: the level pays for
 // nothing there, and the pool settles at its target rather than one spare
@@ -1506,8 +1506,7 @@ func TestPoolAHoldClosedDuringAMakeLeavesTheTarget(t *testing.T) {
 	h.Close()
 
 	// Freed, the make lands: three ready over a target of two with no holds
-	// open — one spare above what the pool needs. The level clamps at zero
-	// rather than paying for a demand that closed.
+	// open — one spare above what the pool needs.
 	park.Release()
 	awaitCounters(t, "the in-flight make landed above the target", p,
 		func(c segment.PoolCounters) bool { return c.Spares == 3 })
@@ -1765,7 +1764,7 @@ func TestPoolRefillMakesNoSpareForAnIncomingRecycle(t *testing.T) {
 // refill served, not demand that must be served twice. It catches a recycled
 // spare that leaves the level standing, whose next refused take would make
 // one spare the pool does not owe.
-func TestPoolARecycledContentSparePaysTheDemandLevel(t *testing.T) {
+func TestPoolARecycledContentSpareClearsTheDemandLevel(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
@@ -1804,15 +1803,11 @@ func TestPoolARecycledContentSparePaysTheDemandLevel(t *testing.T) {
 	}
 
 	// The parked make was drawn for the level the refill owed: released, it
-	// lands one spare over the target and the level the recycle paid, the
-	// overlap wantRecycle's ponytail accepts, and the settle must not run the
-	// level negative — the pool settles, not stores one spare per refusal.
+	// lands one spare over the target and the level the recycle cleared, the
+	// overlap wantRecycle's ponytail accepts.
 	park.Release()
 	awaitCounters(t, "the demand's make landed", p,
 		func(c segment.PoolCounters) bool { return c.Spares == 3 })
-	if got := p.PendingForTest(); got != 0 {
-		t.Fatalf("after the parked make landed the demand level is %d, want 0", got)
-	}
 	p.Stop()
 }
 
@@ -1936,4 +1931,26 @@ func TestPoolReadOnlyMakesNoSpare(t *testing.T) {
 	// Stopped here rather than left to the cleanup, so a Stop that wedges
 	// fails this test on its own line rather than at the cleanup's.
 	p.Stop()
+}
+
+// TestPoolAnAbandonedAskIsClearedByTheSpareThatCoversIt: a Hold refused once
+// and never retried leaves no standing demand once the refill has made up
+// its ask, so the pool does not refill above its target after every take.
+func TestPoolAnAbandonedAskIsClearedByTheSpareThatCoversIt(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, _, _, p := poolOf(t, segment.Targets{Content: 2}, noMax, 0, nil)
+	p.Start()
+	defer p.Stop()
+	awaitCounters(t, "the target's two spares ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	// Refused once and never retried: the caller gave up.
+	_, err := p.Hold(4)
+	assertSpareRefusal(t, "the Hold(4) over two ready spares", err, 2)
+	awaitCounters(t, "the refill made up the ask", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 4 })
+	if got := p.PendingForTest(); got != 0 {
+		t.Fatalf("the made spare that covered the ask left the level at %d, want 0", got)
+	}
 }
