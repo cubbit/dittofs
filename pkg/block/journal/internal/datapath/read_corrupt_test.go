@@ -112,39 +112,44 @@ func lossOf(t *testing.T, c *Core, f core.FileID) core.LossEvent {
 	return evs[0]
 }
 
-// seenCorruption records the last Corruption a read handed to Corrupt.
-type seenCorruption struct {
-	mu sync.Mutex
-	cr []durability.Corruption
+// lossOnDisk is one durable loss record: its header and its body.
+type lossOnDisk struct {
+	header format.RecordHeader
+	body   format.Loss
 }
 
-func (s *seenCorruption) see(cr durability.Corruption) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cr = append(s.cr, cr)
-}
-
-func (s *seenCorruption) all() []durability.Corruption {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.cr)
-}
-
-// newSeeingCore is newTestCore with every Corruption a read hands to Corrupt
-// recorded in seen.
-func newSeeingCore(t *testing.T, seen *seenCorruption, opts ...func(*coreOptions)) (*Core, *kit.Seam) {
+// lossRecordsOnDisk returns the loss records that reached durable storage, in
+// segment order. Each segment is scanned, so a record whose header was damaged
+// in an earlier slot does not hide the ones after it.
+func lossRecordsOnDisk(t *testing.T, seam *kit.Seam) []lossOnDisk {
 	t.Helper()
-	return newTestCore(t, append(opts, func(o *coreOptions) { o.beforeCorrupt = seen.see })...)
+	var out []lossOnDisk
+	for id := core.SegmentID(1); id < 32; id++ {
+		raw, err := seam.Durable(format.SegmentName(id))
+		if err != nil {
+			continue
+		}
+		sc, err := format.ScanSegment(bytes.NewReader(raw), int64(len(raw)), testIdentity, id)
+		if err != nil {
+			t.Fatalf("scanning segment %d: %v", id, err)
+		}
+		for _, r := range sc.Records {
+			if r.Header.Kind == format.KindLoss {
+				out = append(out, lossOnDisk{header: r.Header, body: r.Body.Loss})
+			}
+		}
+	}
+	return out
 }
 
 // assertDroppedSynced checks the read of [0,4096) of f dropped before, a
 // synced dirty record of share 1 whose header named no trustworthy number:
 // nothing is served and p is untouched, the extent is reported missing and
 // leaves the index, so a second read reports it missing too, the generation
-// rose once, the segment is counted damaged, the one Corruption the read
-// handed to Corrupt named the index entry's sequence number, and the worker
+// rose once, the segment is counted damaged, the one loss record on
+// disk names the sequence number the index entry carried, and the worker
 // published the loss of the whole extent as synced and not offloaded.
-func assertDroppedSynced(t *testing.T, c *Core, s *Share, f core.FileID, before index.Placed, seen *seenCorruption) {
+func assertDroppedSynced(t *testing.T, c *Core, seam *kit.Seam, s *Share, f core.FileID, before index.Placed) {
 	t.Helper()
 	gen := c.Durability().Generation()
 	readUntouched(t, c, s, f, 0, 4<<10, []core.Extent{{Off: 0, Len: 4 << 10}})
@@ -158,11 +163,15 @@ func assertDroppedSynced(t *testing.T, c *Core, s *Share, f core.FileID, before 
 	if st := c.Durability().Stats(); st.DamagedSegments != 1 {
 		t.Fatalf("damaged segments %d, want 1", st.DamagedSegments)
 	}
-	crs := seen.all()
-	if len(crs) != 1 || crs[0].Seq != before.Seq || crs[0].Record != before.Record || crs[0].Version != before.Version {
-		t.Fatalf("Corruptions handed over %+v, want one naming seq %d of %+v", crs, before.Seq, before.Record)
-	}
 	ev := lossOf(t, c, f)
+	var onDisk []lossOnDisk
+	eventually(t, "the loss record on disk", func() bool {
+		onDisk = lossRecordsOnDisk(t, seam)
+		return len(onDisk) > 0
+	})
+	if len(onDisk) != 1 || onDisk[0].body.Dropped != before.Seq || onDisk[0].header.File != f {
+		t.Fatalf("loss records on disk %+v, want one of file %v dropping seq %d", onDisk, f, before.Seq)
+	}
 	if ev.Share != 1 || ev.Extent != (core.Extent{Off: 0, Len: 4 << 10}) || ev.Version != before.Version ||
 		ev.Reason != core.LossCorrupt || !ev.Synced || ev.Offloaded {
 		t.Fatalf("loss = %+v, want share 1, [0,4096), version %v, corrupt, synced, dirty", ev, before.Version)
@@ -308,8 +317,7 @@ func TestReadHeaderForAnotherExtentIsCorruption(t *testing.T) {
 // read hands Corrupt the number f's index entry carries, never the header's,
 // so g's copy is neither served nor repointed to: f's record is dropped.
 func TestReadHeaderOfAnotherFilesRecordIsDroppedNotRepointed(t *testing.T) {
-	var seen seenCorruption
-	c, seam := newSeeingCore(t, &seen)
+	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
 	f, g := testFile(1), testFile(2)
 	gdata := pattern(4<<10, 12)
@@ -330,7 +338,7 @@ func TestReadHeaderOfAnotherFilesRecordIsDroppedNotRepointed(t *testing.T) {
 	gh.Version = before.Version
 	forgeHeader(t, seam, before.Record, gh, format.RecordBody{Payload: gdata, MTime: 1})
 
-	assertDroppedSynced(t, c, s, f, before, &seen)
+	assertDroppedSynced(t, c, seam, s, f, before)
 	if c.Index().Names(f, index.RecordAt{Segment: gcopy.Segment, Offset: uint32(gcopy.Off)}) {
 		t.Fatal("f's entries were repointed to g's copy")
 	}
@@ -391,8 +399,7 @@ func TestReadHeaderNamingAnotherFileOnly(t *testing.T) {
 // number comes from the index entry, and the record is dropped like one whose
 // payload does not verify.
 func TestReadDamagedHeaderOfSyncedRecordIsDropped(t *testing.T) {
-	var seen seenCorruption
-	c, seam := newSeeingCore(t, &seen)
+	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
 	f := testFile(1)
 	if _, err := c.WriteAt(context.Background(), s, f, 0, pattern(4<<10, 7), 1); err != nil {
@@ -405,7 +412,7 @@ func TestReadDamagedHeaderOfSyncedRecordIsDropped(t *testing.T) {
 	}
 	flip(t, seam, before.Record.Segment, int64(before.Record.Offset)+50)
 
-	assertDroppedSynced(t, c, s, f, before, &seen)
+	assertDroppedSynced(t, c, seam, s, f, before)
 }
 
 // TestReadDamagedHeaderServedFromRegisteredCopy damages the header of a
@@ -434,10 +441,11 @@ func TestReadDamagedHeaderServedFromRegisteredCopy(t *testing.T) {
 
 // TestReadHeaderWithAnotherSeqIsCorruption forges a header that agrees with
 // the index entry in kind, file, version and extent, and names another
-// sequence number: it is not the record the entry names, so it is dropped.
+// sequence number and another share's tag: it is not the record the entry
+// names, so it is dropped, and the loss names the share of the file, not the
+// header's tag.
 func TestReadHeaderWithAnotherSeqIsCorruption(t *testing.T) {
-	var seen seenCorruption
-	c, seam := newSeeingCore(t, &seen)
+	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
 	f := testFile(1)
 	data := pattern(4<<10, 24)
@@ -448,9 +456,10 @@ func TestReadHeaderWithAnotherSeqIsCorruption(t *testing.T) {
 	before := recordOf(t, c, f, 0)
 	h := headerAt(t, seam, before.Record)
 	h.Seq += 1000
+	h.Tag = 2
 	forgeHeader(t, seam, before.Record, h, format.RecordBody{Payload: data, MTime: 1})
 
-	assertDroppedSynced(t, c, s, f, before, &seen)
+	assertDroppedSynced(t, c, seam, s, f, before)
 }
 
 func TestReadDamagedHeaderOfUnsyncedRecordIsDropped(t *testing.T) {
@@ -689,8 +698,7 @@ func TestReadHeaderOverrunningItsSegmentIsDamaged(t *testing.T) {
 }
 
 func TestReadHeaderOfAnotherKindIsDropped(t *testing.T) {
-	var seen seenCorruption
-	c, seam := newSeeingCore(t, &seen)
+	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
 	f := testFile(1)
 	if _, err := c.WriteAt(context.Background(), s, f, 0, pattern(4<<10, 15), 1); err != nil {
@@ -705,7 +713,7 @@ func TestReadHeaderOfAnotherKindIsDropped(t *testing.T) {
 	h.Kind = format.KindLoss
 	forgeHeaderOnly(t, seam, before.Record, h, format.RecordBody{Loss: format.Loss{Dropped: h.Seq, Reason: format.LossCorrupt}})
 
-	assertDroppedSynced(t, c, s, f, before, &seen)
+	assertDroppedSynced(t, c, seam, s, f, before)
 }
 
 // TestReadRecordAnotherReadDroppedIsMissing drops a damaged record through

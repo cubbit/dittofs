@@ -65,9 +65,6 @@ type coreOptions struct {
 	// afterCorrupt runs in ReadAt after Corrupt answered a record that did not
 	// verify and before the read goes on from that answer.
 	afterCorrupt func()
-	// beforeCorrupt runs in ReadAt with the Corruption it is about to hand
-	// to Corrupt.
-	beforeCorrupt func(durability.Corruption)
 	// segmentCap replaces the test helper's segment size, so a test can write
 	// a record larger than the default segment holds.
 	segmentCap int64
@@ -121,10 +118,6 @@ type Core struct {
 	// reason afterAppend is.
 	afterCorrupt func()
 
-	// beforeCorrupt is a test seam that sees the Corruption a read hands to
-	// Corrupt. It is nil outside tests, for the same reason afterAppend is.
-	beforeCorrupt func(durability.Corruption)
-
 	// registry is the open handles, replaced whole under registryMu and read
 	// through the pointer alone. See shares.go.
 	registry   atomic.Pointer[[]*Share]
@@ -172,7 +165,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, beforeCorrupt: o.beforeCorrupt}
+	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)

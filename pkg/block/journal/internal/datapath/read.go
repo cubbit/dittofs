@@ -170,9 +170,6 @@ func (r *reading) serveRecord(g recordPieces, again bool) error {
 	// readRecord released its segment reference before it returned,
 	// and the read holds no domain: Corrupt takes the file's append domain
 	// itself.
-	if r.c.beforeCorrupt != nil {
-		r.c.beforeCorrupt(cr)
-	}
 	out, err := r.c.dur.Corrupt(r.ctx, cr)
 	if err != nil {
 		return err
