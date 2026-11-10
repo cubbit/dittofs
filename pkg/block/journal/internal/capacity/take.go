@@ -32,8 +32,8 @@ import (
 // it is read — because every field is set once at construction and never
 // after; the funcs it carries are the wiring's lock discipline to keep, and
 // the ones that take a capacity-domain lock (the pool's ReadySpares, the
-// set's Footprint and ShareFigures) are called as snapshots outside the
-// decision section, never under it.
+// headroom's BelowHalf, the set's Footprint and ShareFigures) are called
+// as snapshots outside the decision section, never under it.
 type Config struct {
 	// Admit is the read-only check: a non-nil error is the sentinel that
 	// journal-wide state carries, and a write is refused with it at once,
@@ -74,6 +74,14 @@ type Config struct {
 	// Hold takes n content spares from the pool, held for the grant and
 	// returned to it when the write no longer needs them.
 	Hold func(n int) (*segment.Hold, error)
+
+	// BelowHalf reports whether the headroom's drawing side — its size
+	// without the open reserve — has fallen below half while the journal
+	// holds its limit: the content-write throttle. It takes no lock of this
+	// domain itself but reads the pool's and the set's, so Take reads it
+	// as a snapshot outside the decision section, like the pool's and the
+	// set's reads beside it.
+	BelowHalf func() bool
 
 	// Tracer opens the spans the refusals are recorded in; nil traces
 	// nothing.
@@ -208,7 +216,7 @@ type Capacity struct {
 func New(cfg Config) *Capacity {
 	if cfg.Admit == nil || cfg.CheckIndex == nil || cfg.VersionsLeft == nil ||
 		cfg.Footprint == nil || cfg.ShareFigures == nil || cfg.Room == nil ||
-		cfg.ReadySpares == nil || cfg.Hold == nil {
+		cfg.ReadySpares == nil || cfg.Hold == nil || cfg.BelowHalf == nil {
 		panic("capacity: the admission needs every injected fact")
 	}
 	if cfg.SegmentCap <= 0 {
@@ -265,12 +273,12 @@ type Grant struct {
 // refused. It runs with no file-index lock held.
 //
 // A refusal is a *core.NoSpaceError naming the limit that refused, in this
-// order: the read-only sentinel, then the headroom threshold's slot (left
-// open until that check exists — it runs first among the limits because
-// only the engine's own reclaim clears it), the version limit, the index
-// bound, the share's limit, the journal's maximum, and the spare pool
-// last — naming its own missing amount and unit. A refusal performs no
-// I/O, never waits and never evicts; each is counted by RefusedCount and
+// order: the read-only sentinel, then the headroom threshold — a content
+// write below half the headroom's drawing side, first among the limits
+// because only the engine's own reclaim clears it — then the version
+// limit, the index bound, the share's limit, the journal's maximum, and
+// the spare pool last — naming its own missing amount and unit. A
+// refusal performs no I/O, never waits and never evicts; each is counted by RefusedCount and
 // opened as one reserve_refused span. An error the filesystem itself
 // returned (ENOSPC from a spare the pool reached for) is passed through
 // as itself and counts nothing.
@@ -326,6 +334,16 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// set's own lock — is what the ordering forbids.
 	readySnap := c.cfg.ReadySpares()
 	footSnap := c.cfg.Footprint()
+	// The headroom's gate reads the pool's and the set's counters under
+	// their own locks, so it joins the snapshots: never under the section.
+	belowHalf := c.cfg.BelowHalf()
+	// The headroom threshold: a content write is refused while the journal
+	// holds its limit and the headroom's drawing side has fallen below
+	// half — one entry short, nothing held, the one limit only the
+	// engine's own reclaim clears.
+	if belowHalf {
+		return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitHeadroom, Missing: 1, Unit: core.UnitEntries})
+	}
 	// The share's settled figure is seeded once per tag, read from the set
 	// before the section — the set's lock is of this same domain, so the
 	// seed never runs under mu — and every move after the seed is this

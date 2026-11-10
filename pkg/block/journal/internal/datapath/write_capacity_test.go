@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
@@ -103,6 +104,37 @@ func waitIn(t *testing.T, d time.Duration, what string, cond func() bool) {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
 		}
+	}
+}
+
+// A journal that holds its limit with its headroom drawn below half refuses
+// a content write naming the headroom — the throttle keeping the half the
+// records that return space draw on — and refuses it before the limits the
+// write would also meet. The core below reserves a headroom small enough to
+// draw through: its spare is one pool spare, its records whole at the
+// charge the table draws by.
+
+// headroomFixture is the headroom a content-throttle core reserves, in
+// records without bytes: eight, whose open reserve is half — four — so its
+// drawing side is four records and half falls at two drawn. Three
+// admissions past two put it below half.
+const headroomFixture = 8
+
+// drawHeadroom drives n release admissions through the core's headroom and
+// hands each to Drawn, as the removal paths that append the records will:
+// the journal's limit-gated drawings move the figure the half rule reads,
+// Drawn the counter each appended record raises.
+func drawHeadroom(t *testing.T, c *Core, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		d, err := c.headroom.Admit(context.Background(), capacity.Release)
+		if err != nil {
+			t.Fatalf("headroom admission %d: %v", i+1, err)
+		}
+		if !d.Append {
+			t.Fatalf("headroom admission %d was told not to append", i+1)
+		}
+		c.headroom.Drawn(d)
 	}
 }
 
@@ -1313,5 +1345,117 @@ func TestWriteAt_HeldSparesCoverEveryPieceOfAMultiSegmentWrite(t *testing.T) {
 	}
 	if got := c.ReservedBytes(); got != 0 {
 		t.Fatalf("ReservedBytes = %d after the refusal, want 0", got)
+	}
+}
+
+// TestWriteRefusedBelowHalfHeadroom drives a core whose journal sits at its
+// limit — the footprint at the maximum, the pool settled — draws the
+// headroom below half and checks the next content write is refused naming
+// the headroom: at once, before its version is drawn, nothing appended, no
+// seam call made, no reservation held, and the spares the write found still
+// ready.
+func TestWriteRefusedBelowHalfHeadroom(t *testing.T) {
+	c, seam := newTestCore(t,
+		capacityCoreOption(5*testSegmentCap),
+		func(o *coreOptions) { o.headroomRecords = headroomFixture })
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	ctx := context.Background()
+
+	// The warm write takes two of the pool's four content spares — one it
+	// fills, one its last byte rolls onto — so the footprint settles at the
+	// maximum of five caps (the headroom's spare among them) with two
+	// spares ready: the maker refuses every further reservation before any
+	// I/O, and the journal holds its limit.
+	if _, err := c.WriteAt(ctx, s, f, 0, make([]byte, roomAfter(0)+1), 1); err != nil {
+		t.Fatalf("the warm write: %v", err)
+	}
+	waitIn(t, 5*time.Second, "the pool to settle at its last two spares", func() bool {
+		pc := c.pool.Counters()
+		return pc.Spares == 2 && pc.Held == 0
+	})
+
+	drawHeadroom(t, c, 3) // three records drawn, one past the drawing side's half
+
+	beforeV := c.counters.NextVersion()
+	beforeC := seamCensus(seam)
+	beforeRefused := c.ReservationRefused()
+
+	ns := refused(t, func() error {
+		_, err := c.WriteAt(ctx, s, f, 1<<20, []byte("w"), 1)
+		return err
+	}(), core.LimitHeadroom)
+	if ns.Missing < 1 || ns.Unit != core.UnitEntries {
+		t.Fatalf("the headroom refusal = %d %s, want at least one entry missing", ns.Missing, ns.Unit)
+	}
+
+	afterC := seamCensus(seam)
+	if afterC != beforeC {
+		t.Fatalf("the refusal made %d seam calls, want none", afterC-beforeC)
+	}
+	if afterV := c.counters.NextVersion(); afterV != beforeV {
+		t.Fatalf("the refusal drew a version: next %v was %v", afterV, beforeV)
+	}
+	if _, ok := c.Index().Lookup(f, 1<<20); ok {
+		t.Fatal("the refused write was published")
+	}
+	if got := c.ReservedBytes(); got != 0 {
+		t.Fatalf("ReservedBytes = %d after the refusal, want 0", got)
+	}
+	if got := c.ReservationRefused(); got != beforeRefused+1 {
+		t.Fatalf("ReservationRefused = %d, want %d", got, beforeRefused+1)
+	}
+	if got := c.pool.Counters().Spares; got != 2 {
+		t.Fatalf("the refusal took a spare: %d ready, want the 2 it found", got)
+	}
+}
+
+// TestWriteAtLimitNamesHeadroomOverSpare checks the order the limits refuse
+// in on a journal at its limit with the headroom below half: a roomless
+// write whose three whole segments not one ready spare covers — a write the
+// spare pool would refuse, and the journal's maximum after it — is refused
+// naming the headroom, the first limit in the order, with nothing of it
+// published and no version drawn.
+func TestWriteAtLimitNamesHeadroomOverSpare(t *testing.T) {
+	c, _ := newTestCore(t,
+		capacityCoreOption(5*testSegmentCap),
+		func(o *coreOptions) { o.headroomRecords = headroomFixture })
+	s := mustShare(t, c, 1)
+	warm := testFile(1)
+	f := testFile(2)
+	if streamOf(c, f) == streamOf(c, warm) {
+		t.Fatal("the two files share a stream; the fresh-stream leg cannot run")
+	}
+	ctx := context.Background()
+	if _, err := c.WriteAt(ctx, s, warm, 0, make([]byte, roomAfter(0)+1), 1); err != nil {
+		t.Fatalf("the warm write: %v", err)
+	}
+	waitIn(t, 5*time.Second, "the pool to settle at its last two spares", func() bool {
+		pc := c.pool.Counters()
+		return pc.Spares == 2 && pc.Held == 0
+	})
+	drawHeadroom(t, c, 3)
+
+	// Drain the ready content spares, so the write's own hold would be the
+	// pool's refusal: only the order the refusal names is left to observe.
+	hold, err := c.pool.Hold(2)
+	if err != nil {
+		t.Fatalf("draining the pool's ready spares: %v", err)
+	}
+	defer hold.Close()
+	if got := c.pool.ReadyContent(); got != 0 {
+		t.Fatalf("the drain left %d content spares ready", got)
+	}
+
+	beforeV := c.counters.NextVersion()
+	_ = refused(t, func() error {
+		_, err := c.WriteAt(ctx, s, f, 0, make([]byte, testSegmentCap*5/2), 1)
+		return err
+	}(), core.LimitHeadroom)
+	if afterV := c.counters.NextVersion(); afterV != beforeV {
+		t.Fatalf("the refusal drew a version: next %v was %v", afterV, beforeV)
+	}
+	if _, ok := c.Index().Lookup(f, 0); ok {
+		t.Fatal("the refused write was published")
 	}
 }

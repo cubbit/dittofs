@@ -117,8 +117,8 @@ type Headroom struct {
 	reserve int // the open reserve, in records, fixed at construction
 
 	mu sync.Mutex
-	// drawn is the record bytes the headroom has admitted since nothing
-	// returns them; guarded by mu.
+	// drawn is the record bytes the headroom has admitted and no Refund
+	// has returned; guarded by mu.
 	//
 	// ponytail: drawn only grows until a retirement returns headroom,
 	// upgrade by crediting it from the retirement path when repack lands.
@@ -234,6 +234,10 @@ func (h *Headroom) Admit(ctx context.Context, c RecordClass) (Draw, error) {
 	return Draw{Append: true, drew: true}, nil
 }
 
+// Drawn counts one admitted record once it has appended: the headroom_draws
+// counter, raised only for a draw the journal's limit gated and only while
+// it still holds the limit — records appended below the limit drew nothing
+// and count nothing.
 func (h *Headroom) Drawn(d Draw) {
 	// A draw that never happened counts nothing: records appended while
 	// at the limit are the counter's figure, and an admission that drew

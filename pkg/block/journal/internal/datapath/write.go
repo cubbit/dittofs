@@ -30,8 +30,9 @@ import (
 // The write's record bytes are reserved against the journal's limits before
 // its version is drawn or a byte written: the one admission, capacity.Take,
 // refuses naming the limit that would not take them — the share's, the
-// journal's, the index's, the version limit's or the spare pool's — with the
-// shortfall, at once, with no I/O and holding nothing behind. Its grant
+// journal's, the index's, the version limit's, the headroom's or the spare
+// pool's — with the shortfall, at once, with no I/O and holding nothing
+// behind. Its grant
 // covers the pieces the split it sized drew: they take their spares from
 // the grant's hold, and the unused part returns when the write does. One
 // piece more than the split can still be drawn — the room another appender
@@ -100,8 +101,9 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	stream := c.streams.For(id)
 	// The reservation first: the write's payload, its record bytes drawn
 	// by the take from the room the stream names — against the share's
-	// limit, the journal's maximum, the index's bound, the version limit
-	// and the spares its pieces need, in one decision.
+	// limit, the journal's maximum, the index's bound, the version limit,
+	// the headroom's half rule and the spares its pieces need, in one
+	// decision.
 	grant, err := c.cap.Take(ctx, capacity.Request{
 		Tag:        s.Tag,
 		File:       id,
