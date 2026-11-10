@@ -44,9 +44,10 @@ func (u *unit) unlinked(t *testing.T, res *enginetest.Reservations) entity.FileI
 // A release whose phase 1 commits within its call answers a nil channel and
 // nil; the file is gone, its writes' Dones ran, and the journal is settled.
 func TestAReleaseCommitsWithinItsCall(t *testing.T) {
-	u, h := newHookedUnit(t)
+	u := newUnit(t)
 	res := enginetest.NewReservations(t)
 	f := u.unlinked(t, res)
+	written := u.e.Pending(f)[0].Version
 	ch, err := u.e.Delete(t.Context(), u.share.ID, f)
 	if ch != nil || err != nil {
 		t.Fatalf("Delete: %v, %v; want a nil channel and nil", ch, err)
@@ -57,8 +58,8 @@ func TestAReleaseCommitsWithinItsCall(t *testing.T) {
 	if n := res.Outstanding(); n != 0 {
 		t.Errorf("%d writes without their Done", n)
 	}
-	if len(h.settleLog()) != 1 {
-		t.Errorf("settles %+v, want one", h.settleLog())
+	if got := u.j.Settled(journal.NewFileID(f)); got.Compare(written) <= 0 {
+		t.Errorf("settled through %v, want the release's version, above the write's %v", got, written)
 	}
 }
 
@@ -93,9 +94,10 @@ func TestAnAbortedReleaseAnswersErrFileOpen(t *testing.T) {
 // store recovers and the loop's retry commits, the journal settled.
 func TestAStalledReleaseIsPending(t *testing.T) {
 	on := new(atomic.Bool)
-	u, h := newHookedUnit(t, onRemove(removalStalledWhile(on)))
+	u := newUnit(t, onRemove(removalStalledWhile(on)))
 	res := enginetest.NewReservations(t)
 	f := u.unlinked(t, res)
+	written := u.e.Pending(f)[0].Version
 	on.Store(true)
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
@@ -116,8 +118,8 @@ func TestAStalledReleaseIsPending(t *testing.T) {
 	if got != nil {
 		t.Errorf("the channel yields %v, want nil", got)
 	}
-	if len(h.settleLog()) != 1 {
-		t.Errorf("settles %+v, want one", h.settleLog())
+	if got := u.j.Settled(journal.NewFileID(f)); got.Compare(written) <= 0 {
+		t.Errorf("settled through %v, want the release's version, above the write's %v", got, written)
 	}
 	if n := res.Outstanding(); n != 0 {
 		t.Errorf("%d writes without their Done", n)

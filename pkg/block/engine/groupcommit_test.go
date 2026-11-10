@@ -447,20 +447,6 @@ func TestAFileHeldByAnUncapturedOperationStaysDue(t *testing.T) {
 	eventually(t, "f is back on the due set", func() bool { return u.e.Due(u.rec, f) })
 }
 
-// settlesLog is a handle that records each Settle.
-type settlesLog struct {
-	engine.Handle
-	mu      sync.Mutex
-	settled map[journal.FileID]journal.Version
-}
-
-func (h *settlesLog) Settle(id journal.FileID, v journal.Version) {
-	h.mu.Lock()
-	h.settled[id] = v
-	h.mu.Unlock()
-	h.Handle.Settle(id, v)
-}
-
 // A committed file is settled in the journal through the newest version its
 // batch committed, and one staged after the capture is not.
 func TestACommitSettlesTheJournal(t *testing.T) {

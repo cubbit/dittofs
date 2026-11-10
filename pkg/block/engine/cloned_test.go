@@ -662,7 +662,7 @@ func (u *unit) retriedClone(t *testing.T, x *refusingClone, src, dst entity.File
 // write above it, and settle past it.
 func TestALoopEndingLeavesARetriedCloneForRecovery(t *testing.T) {
 	x := &refusingClone{}
-	u, h := clonedHookedUnit(t, onClone(x.clone))
+	u := clonedUnit(t, onClone(x.clone))
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	u.write(t, dst, 4*mib, fill(10, 'w'))
@@ -679,10 +679,8 @@ func TestALoopEndingLeavesARetriedCloneForRecovery(t *testing.T) {
 	if applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst); !applied.IsZero() {
 		t.Errorf("the last group commit committed the destination at %v", applied)
 	}
-	for _, s := range h.settleLog() {
-		if s.v.Compare(cv) >= 0 {
-			t.Errorf("settled at %v, at or above the cut-short clone's %v", s.v, cv)
-		}
+	if got := u.j.Settled(journal.NewFileID(dst)); got.Compare(cv) >= 0 {
+		t.Errorf("settled at %v, at or above the cut-short clone's %v", got, cv)
 	}
 	if p := u.e.Pending(dst); len(p) != before || p[1].Version != cv {
 		t.Errorf("after the loop ended the entry holds %+v, want its %d operations, the clone's among them", p, before)

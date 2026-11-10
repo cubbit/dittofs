@@ -20,8 +20,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// hookedHandle is the unit's handle with seams inside its removals and a
-// log of its Settles, each with whether the file's guard was held then.
+// hookedHandle is the unit's handle with seams inside its removals.
 type hookedHandle struct {
 	engine.Handle
 	e           *engine.Engine
@@ -33,14 +32,6 @@ type hookedHandle struct {
 	written     armed     // run inside WriteAt, after the journal's, once set
 	writes      atomic.Int32
 	deletes     atomic.Int32
-	mu          sync.Mutex
-	settles     []settled
-}
-
-type settled struct {
-	v       journal.Version
-	guarded bool
-	pending int // the file's pending operations then
 }
 
 func (h *hookedHandle) Truncate(ctx context.Context, id journal.FileID, size int64) (journal.Version, error) {
@@ -77,20 +68,10 @@ func (h *hookedHandle) WriteAt(ctx context.Context, id journal.FileID, off int64
 }
 
 func (h *hookedHandle) Settle(id journal.FileID, v journal.Version) {
-	h.mu.Lock()
-	f := entity.FileID(id.Bytes())
-	h.settles = append(h.settles, settled{v, h.e.GuardHeld(f), len(h.e.Pending(f))})
-	h.mu.Unlock()
 	if h.settle != nil {
 		h.settle()
 	}
 	h.Handle.Settle(id, v)
-}
-
-func (h *hookedHandle) settleLog() []settled {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return append([]settled(nil), h.settles...)
 }
 
 // filesHook is a hook handed the files of the call it runs in, once set.
@@ -189,6 +170,13 @@ func TestATruncateCommitsItsPhase1(t *testing.T) {
 	o, answered := res.Opts()
 	_, err := u.e.Write(t.Context(), u.share.ID, f, 0, fill(16, 'a'), o)
 	answered(err)
+	written := u.e.Pending(f)[0].Version
+	var guarded atomic.Bool
+	var pending atomic.Int32
+	h.settle = func() {
+		guarded.Store(u.e.GuardHeld(f))
+		pending.Store(int32(len(u.e.Pending(f))))
+	}
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 3); err != nil {
 		t.Fatal(err)
 	}
@@ -198,9 +186,11 @@ func TestATruncateCommitsItsPhase1(t *testing.T) {
 	if n := res.Outstanding(); n != 0 {
 		t.Errorf("%d writes without their Done", n)
 	}
-	s := h.settleLog()
-	if len(s) != 1 || s[0].guarded || s[0].pending != 0 {
-		t.Errorf("settles %+v, want one, after the guard's release, the entry emptied before it", s)
+	if got := u.j.Settled(journal.NewFileID(f)); got.Compare(written) <= 0 {
+		t.Errorf("settled through %v, want the truncate's version, above the write's %v", got, written)
+	}
+	if guarded.Load() || pending.Load() != 0 {
+		t.Errorf("at the settle: guard %v, %d pending; want it after the guard's release, the entry emptied before it", guarded.Load(), pending.Load())
 	}
 	if p := u.e.Pending(f); len(p) != 0 {
 		t.Errorf("after phase 1 the entry holds %+v, want nothing", p)

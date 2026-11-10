@@ -239,16 +239,11 @@ func TestARefusedPhase1EndsAndReleasesTheGuard(t *testing.T) {
 // of a file that still exists (RFC 8 §8.1).
 func TestARefusedPhase1SettlesItsMarker(t *testing.T) {
 	var logged lockedBuffer
-	var log *settlesLog
 	u := newUnitWith(t, unitConfig{
 		deps: []func(*engine.Deps){func(d *engine.Deps) {
 			d.Existence = removeHook{d.Existence, refused}
 			d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
 		}},
-		wrap: func(h engine.Handle) engine.Handle {
-			log = &settlesLog{Handle: h, settled: map[journal.FileID]journal.Version{}}
-			return log
-		},
 	})
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
@@ -259,10 +254,7 @@ func TestARefusedPhase1SettlesItsMarker(t *testing.T) {
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err == nil {
 		t.Fatal("a refused phase 1 answered nil")
 	}
-	log.mu.Lock()
-	got := log.settled[journal.NewFileID(f)]
-	log.mu.Unlock()
-	if got.Compare(written) <= 0 {
+	if got := u.j.Settled(journal.NewFileID(f)); got.Compare(written) <= 0 {
 		t.Errorf("settled through %v after the refusal, want the truncate's version, above the write's %v", got, written)
 	}
 	if s := logged.String(); !strings.Contains(s, "level=ERROR") || !strings.Contains(s, "marker settled") {
@@ -409,22 +401,24 @@ func TestATerminalRemovalCommitsALossBelowItBeforeItsSettle(t *testing.T) {
 // loop with the guard held, and the marker stays unsettled until it commits.
 func TestATerminalRemovalsFailedCommitIsRetried(t *testing.T) {
 	x := &endingStore{}
-	u, h := newHookedUnit(t, onRemove(refused), onCommit(x.commit))
+	u := newUnit(t, onRemove(refused), onCommit(x.commit))
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
+	written := u.e.Pending(f)[0].Version
+	id := journal.NewFileID(f)
 	const failing = 1 << 20
 	x.fail.Store(failing)
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 8); err == nil {
 		t.Fatal("a refused phase 1 answered nil")
 	}
 	u.until(t, "the loop retrying the commit", func() bool { return x.fail.Load() <= failing-3 })
-	if !u.e.GuardHeld(f) || len(h.settleLog()) != 0 {
-		t.Fatalf("while the commit fails: guard %v, settles %+v; want the guard held and none", u.e.GuardHeld(f), h.settleLog())
+	if got := u.j.Settled(id); !u.e.GuardHeld(f) || got != (journal.Version{}) {
+		t.Fatalf("while the commit fails: guard %v, settled through %v; want the guard held and nothing settled", u.e.GuardHeld(f), got)
 	}
 	x.fail.Store(0)
 	u.until(t, "the retried commit", func() bool { return !u.e.GuardHeld(f) })
-	if s := h.settleLog(); len(s) != 1 {
-		t.Errorf("settles %+v, want one once the commit was retried", s)
+	if got := u.j.Settled(id); got.Compare(written) <= 0 {
+		t.Errorf("settled through %v once the commit was retried, want the truncate's version, above the write's %v", got, written)
 	}
 	if n := u.size(t, f); n != 16 {
 		t.Errorf("the store's size %d, want the write's 16", n)
