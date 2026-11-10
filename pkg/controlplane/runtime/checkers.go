@@ -23,7 +23,7 @@ const StatusCacheTTL = 5 * time.Second
 // entity namespaces disjoint (e.g. a share and a metadata store that
 // share a name).
 type statusKey struct {
-	kind string // "meta" | "adapter" | "share" | "block-local" | "block-remote"
+	kind string // "meta" | "share" | "block-local" | "block-remote"
 	name string
 }
 
@@ -139,15 +139,6 @@ func (r *Runtime) InvalidateMetadataStoreChecker(name string) {
 	r.statusCheckers.Delete(statusKey{kind: "meta", name: name})
 }
 
-// InvalidateAdapterChecker evicts any cached health checker for the
-// named adapter type.
-func (r *Runtime) InvalidateAdapterChecker(adapterType string) {
-	if r == nil || r.statusCheckers == nil {
-		return
-	}
-	r.statusCheckers.Delete(statusKey{kind: "adapter", name: adapterType})
-}
-
 // InvalidateShareChecker evicts any cached health checker for the
 // named share.
 func (r *Runtime) InvalidateShareChecker(name string) {
@@ -188,21 +179,6 @@ func (r *Runtime) MetadataStoreChecker(name string) health.Checker {
 			return unknownReport(start, "metadata store "+name+" not loaded")
 		}
 		return metaStore.Healthcheck(ctx)
-	})
-}
-
-// AdapterChecker returns a cached [health.Checker] for the named
-// adapter. When no adapter of that type is running the probe reports
-// [health.StatusUnknown] with a "not running" message. Resolution is
-// lazy, so restarts are picked up after the TTL window closes.
-func (r *Runtime) AdapterChecker(adapterType string) health.Checker {
-	return r.cachedChecker(statusKey{kind: "adapter", name: adapterType}, func(ctx context.Context) health.Report {
-		start := time.Now()
-		adp := r.adaptersSvc.GetAdapter(adapterType)
-		if adp == nil {
-			return unknownReport(start, "adapter "+adapterType+" not running")
-		}
-		return adp.Healthcheck(ctx)
 	})
 }
 

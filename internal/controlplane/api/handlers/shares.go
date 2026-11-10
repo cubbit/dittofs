@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -354,7 +355,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Validate BlockedOperations entries
 	if req.BlockedOperations != nil {
 		for _, op := range *req.BlockedOperations {
-			if !isValidBlockedOperation(op) {
+			if !slices.Contains(blockableOperations, op) {
 				BadRequest(w, "Unknown blocked operation: "+op)
 				return
 			}
@@ -787,7 +788,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.BlockedOperations != nil {
 		for _, op := range *req.BlockedOperations {
-			if !isValidBlockedOperation(op) {
+			if !slices.Contains(blockableOperations, op) {
 				BadRequest(w, "Unknown blocked operation: "+op)
 				return
 			}
@@ -1758,7 +1759,19 @@ func (h *ShareHandler) Status(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, h.shareStatus(ctx, name))
 }
 
-// isValidBlockedOperation checks if a blocked operation name is valid for any protocol.
-func isValidBlockedOperation(op string) bool {
-	return isValidNFSOperation(op) || isValidSMBOperation(op)
+// blockableOperations lists the NFS and SMB operation names a share may block.
+var blockableOperations = []string{
+	// NFSv3 procedures
+	"NULL", "GETATTR", "SETATTR", "LOOKUP", "ACCESS", "READLINK",
+	"READ", "WRITE", "CREATE", "MKDIR", "SYMLINK", "MKNOD",
+	"REMOVE", "RMDIR", "RENAME", "LINK", "READDIR", "READDIRPLUS",
+	"FSSTAT", "FSINFO", "PATHCONF", "COMMIT",
+	// NFSv4 operations
+	"OPEN", "CLOSE", "LOCK", "LOCKT", "LOCKU", "DELEGRETURN",
+	"PUTFH", "PUTROOTFH", "GETFH", "SAVEFH", "RESTOREFH",
+	"VERIFY", "NVERIFY", "SECINFO", "SETCLIENTID", "RENEW",
+	// SMB2 commands
+	"NEGOTIATE", "SESSION_SETUP", "LOGOFF", "TREE_CONNECT", "TREE_DISCONNECT",
+	"FLUSH", "IOCTL", "CANCEL", "ECHO", "QUERY_DIRECTORY", "CHANGE_NOTIFY",
+	"QUERY_INFO", "SET_INFO", "OPLOCK_BREAK",
 }

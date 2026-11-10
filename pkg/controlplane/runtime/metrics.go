@@ -54,11 +54,6 @@ func (r *Runtime) MetricsSnapshot(ctx context.Context) metrics.Snapshot {
 		}
 	}
 
-	if reg := r.Clients(); reg != nil {
-		snap.Clients.NFS = int64(len(reg.ListByProtocol("nfs")))
-		snap.Clients.SMB = int64(len(reg.ListByProtocol("smb")))
-	}
-
 	return snap
 }
 

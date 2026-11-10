@@ -63,6 +63,10 @@ dfsctl share create --name /<share> --metadata <store> --block-store <block stor
 Keep the old server running throughout. You copy the files from its shares to
 shares on a second server running the new version, then switch clients over.
 
+This build serves no file protocol, so a new instance running it cannot be
+mounted for the copy. Run the steps below with a release that serves NFS and
+SMB again.
+
 1. **Install the new version beside the old one**, with its own configuration:
 
    ```bash
@@ -104,24 +108,18 @@ shares on a second server running the new version, then switch clients over.
    Two servers must never use one bucket and prefix: each counts and garbage-collects
    the objects it finds there as its own.
 
-3. **Enable the adapters on other ports** than the old server's:
-
-   ```bash
-   dfsctl adapter enable nfs --port 12050
-   dfsctl adapter enable smb --port 12446
-   ```
+3. **Run the new instance's adapters on other ports** than the old server's,
+   for example NFS on `12050` and SMB on `12446`.
 
 4. **Mount both shares on one client and copy.** Run the copy as root, so that
    `rsync` can keep owners. By default both shares map root to guest, which has
    no access to them, so turn that off on both servers for the copy. A squash
-   change applies when the NFS adapter restarts. On the old server, that
-   briefly disconnects its NFS clients:
+   change applies when the NFS adapter restarts, so restart it on both servers
+   after the change. On the old server, that briefly disconnects its NFS clients:
 
    ```bash
    # on each server (dfsctl context use <name>), for each share you copy
    dfsctl share nfs-config set /export --squash none
-   dfsctl adapter disable nfs
-   dfsctl adapter enable nfs --port <that server's NFS port>
 
    # the remaining steps run on the new instance
    dfsctl context use new
@@ -148,10 +146,9 @@ shares on a second server running the new version, then switch clients over.
 
 6. **Switch over.** Before clients connect, set squashing back on the new
    instance (`dfsctl share nfs-config set /export --squash root_to_guest`); it
-   applies when you restart or edit the NFS adapter below. Then stop the old
+   applies when you restart the NFS adapter below. Then stop the old
    server, move the new instance's adapters to the ports clients use
-   (`dfsctl adapter edit nfs --port 12049`, and the same for SMB), and have
-   clients remount: file handles from the old server do not carry over.
+   (`12049` for NFS, `12445` for SMB), and have clients remount: file handles from the old server do not carry over.
 
 ## What does not move
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/cubbit/dittofs/internal/logger"
 	"github.com/cubbit/dittofs/pkg/block"
@@ -12,35 +13,40 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
-// OpenFileEnumerator is implemented by protocol adapters that track live open
-// handles server-side (the NFSv4 state manager and the SMB open-file table).
-// Any adapter provider registered via SetAdapterProvider that implements this
-// interface contributes its open files to the block-GC open-handle hold
-// (#1448): an open-but-unlinked file's blocks must survive GC until last
-// close, not merely for the grace period.
+// OpenFileEnumerator is implemented by whatever tracks live open handles
+// server-side. Every enumerator installed with SetOpenFileEnumerators
+// contributes its open files to the block-GC open-handle hold: an
+// open-but-unlinked file's blocks must survive GC until last close, not merely
+// for the grace period.
 //
 // EnumerateOpenFiles streams the opaque metadata file handle of every file
 // that currently has at least one open handle. Handles may be stale (share
 // removed, file purged) — the consumer skips those. fn must not be called
-// while adapter-internal locks are held if fn can block (the hold consumer
+// while enumerator-internal locks are held if fn can block (the hold consumer
 // performs metadata-store reads inside fn).
 type OpenFileEnumerator interface {
 	EnumerateOpenFiles(ctx context.Context, fn func(fileHandle []byte) error) error
 }
 
-// openFileEnumerators snapshots the currently registered adapter providers
-// that implement OpenFileEnumerator. NFSv4 registers its state manager under
-// the "nfs" provider key; SMB registers its handler under "smb_open_files".
+// SetOpenFileEnumerators installs the sources of open handles the open-handle
+// hold consults, replacing any installed before.
+//
+// decision: nothing on this server calls it, because no protocol is served
+// and nothing holds a file open, so the hold holds nothing. The ceiling is
+// data loss: a served protocol that keeps a file open past its last link
+// without installing its enumerator here lets GC and the stranded-row reaper
+// reclaim blocks that open handle still reads.
+func (r *Runtime) SetOpenFileEnumerators(e ...OpenFileEnumerator) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.openFiles = slices.Clone(e)
+}
+
+// openFileEnumerators snapshots the installed enumerators.
 func (r *Runtime) openFileEnumerators() []OpenFileEnumerator {
-	r.adapterProvidersMu.RLock()
-	defer r.adapterProvidersMu.RUnlock()
-	var out []OpenFileEnumerator
-	for _, p := range r.adapterProviders {
-		if e, ok := p.(OpenFileEnumerator); ok {
-			out = append(out, e)
-		}
-	}
-	return out
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.openFiles
 }
 
 // forEachOpenUnlinkedFile streams every currently-open file that belongs to

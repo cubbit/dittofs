@@ -324,9 +324,6 @@ func (s *Server) setUp(ctx context.Context, b *bucket, password string) error {
 	if err := s.check(c, b); err != nil {
 		return err
 	}
-	if s.f.RPCBind == "host" {
-		return s.registered(ctx)
-	}
 	return nil
 }
 

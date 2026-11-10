@@ -39,20 +39,10 @@ const passwordChangePath = "/api/v1/users/me/password"
 //   - POST /api/v1/users/me/password - Change own password
 //   - /api/v1/users/* - User management (admin only)
 //   - /api/v1/groups/* - Group management (admin only)
-//   - /api/v1/shares/* - Share management (admin only)
+//   - /api/v1/shares/* - Share management, including each share's NFS config (admin only)
 //   - /api/v1/store/metadata/* - Metadata store management (admin only)
 //   - /api/v1/store/block/* - Block store management (admin only)
-//   - GET /api/v1/adapters - Adapter list (admin + operator)
-//   - /api/v1/adapters/* - Adapter management (admin only)
-//   - /api/v1/adapters/{type}/settings - Adapter settings (admin only)
-//   - /api/v1/clients - Unified client listing and disconnect (admin only)
-//   - /api/v1/adapters/nfs/clients/{id}/sessions - NFS client sessions (admin only)
-//   - /api/v1/adapters/{type}/grace - NFS grace period management (admin only)
-//   - /api/v1/adapters/{type}/netgroups - NFS netgroup management (admin only)
-//   - /api/v1/adapters/{type}/identity-mappings - NFS identity mapping management (admin only)
-//   - /api/v1/adapters/{type}/mounts - Protocol-specific mount listing (admin only)
 //   - /api/v1/settings/* - System settings management (admin only)
-//   - /api/v1/mounts - Unified mount listing (admin only)
 //   - GET /api/v1/durable-handles - List active durable handles (admin only)
 //   - DELETE /api/v1/durable-handles/{id} - Force-close a durable handle (admin only)
 func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.Store, pprofEnabled bool, timeouts Timeouts) http.Handler {
@@ -110,19 +100,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 		r.Get("/", healthHandler.Liveness)
 		r.Get("/ready", healthHandler.Readiness)
 	})
-
-	// Grace period status — admin-authenticated. It exposes NFSv4 server
-	// state (in-grace, time remaining, confirmed-client count) and pairs with
-	// the admin-only /grace/end control, so it carries the same JWTAuth +
-	// RequireAdmin gate rather than sitting open like the health probes.
-	if graceHandler := newGraceHandler(rt); graceHandler != nil {
-		r.Group(func(r chi.Router) {
-			r.Use(apiMiddleware.JWTAuth(jwtService))
-			r.Use(apiMiddleware.RequirePasswordChange(passwordChangePath))
-			r.Use(apiMiddleware.RequireAdmin())
-			r.Get("/api/v1/grace", graceHandler.Status)
-		})
-	}
 
 	// Root redirect to health for convenience
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
@@ -215,7 +192,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			blockAuditHandler := handlers.NewBlockStoreAuditHandler(rt)
 			manifestCheckHandler := handlers.NewBlockStoreManifestCheckHandler(rt)
 			usageRecomputeHandler := handlers.NewUsageRecomputeHandler(rt)
-			mountHandler := handlers.NewMountHandler(rt)
 
 			// Share management (admin only)
 			r.Route("/shares", func(r chi.Router) {
@@ -374,97 +350,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				})
 			})
 
-			// Adapter configuration - split read/write access
-			//
-			// All adapter routes (generic CRUD, settings, and protocol-specific)
-			// are nested under /adapters/{type} to avoid chi routing conflicts.
-			// Previously, separate /adapters/nfs and /adapters/smb route groups
-			// shadowed the /{type} parameterized routes for those adapter types.
-			r.Route("/adapters", func(r chi.Router) {
-				adapterHandler := handlers.NewAdapterHandler(rt)
-				settingsHandler := handlers.NewAdapterSettingsHandler(cpStore, rt)
-
-				// Port discovery: any authenticated user. Returns only
-				// type/port/enabled/running (no adapter Config), so a plain
-				// share-user can find the port to mount without the
-				// admin/operator management view.
-				r.Get("/ports", adapterHandler.ListPorts)
-
-				// Read endpoint: admin + operator (list only)
-				r.Group(func(r chi.Router) {
-					r.Use(apiMiddleware.RequireRole("admin", "operator"))
-					r.Get("/", adapterHandler.List)
-				})
-
-				// Write endpoints + individual get: admin only
-				r.Group(func(r chi.Router) {
-					r.Use(apiMiddleware.RequireAdmin())
-					r.Post("/", adapterHandler.Create)
-
-					// All type-scoped routes under /{type}
-					r.Route("/{type}", func(r chi.Router) {
-						// Adapter CRUD
-						r.Get("/", adapterHandler.Get)
-						r.Put("/", adapterHandler.Update)
-						r.Delete("/", adapterHandler.Remove)
-						r.Get("/status", adapterHandler.Status)
-
-						// Adapter settings
-						r.Route("/settings", func(r chi.Router) {
-							r.Get("/", settingsHandler.GetSettings)
-							r.Put("/", settingsHandler.PutSettings)
-							r.Patch("/", settingsHandler.PatchSettings)
-							r.Get("/defaults", settingsHandler.GetDefaults)
-							r.Post("/reset", settingsHandler.ResetSettings)
-						})
-
-						// Protocol-specific mount listing
-						r.Get("/mounts", func(w http.ResponseWriter, req *http.Request) {
-							adapterType := chi.URLParam(req, "type")
-							mountHandler.ListByProtocol(adapterType)(w, req)
-						})
-
-						// NFS-specific session management (handlers are nil if NFS state not available)
-						if nfsClientHandler := newNfsClientHandler(rt); nfsClientHandler != nil {
-							r.Route("/clients/{id}/sessions", func(r chi.Router) {
-								r.Get("/", nfsClientHandler.ListSessions)
-								r.Delete("/{sid}", nfsClientHandler.ForceDestroySession)
-							})
-						}
-
-						// NFS grace period management
-						if graceHandler := newGraceHandler(rt); graceHandler != nil {
-							r.Route("/grace", func(r chi.Router) {
-								r.Post("/end", graceHandler.ForceEnd)
-							})
-						}
-
-						// NFS netgroup management - requires NetgroupStore capability
-						if ns, ok := cpStore.(store.NetgroupStore); ok {
-							r.Route("/netgroups", func(r chi.Router) {
-								netgroupHandler := handlers.NewNetgroupHandler(ns)
-								r.Post("/", netgroupHandler.Create)
-								r.Get("/", netgroupHandler.List)
-								r.Get("/{name}", netgroupHandler.Get)
-								r.Delete("/{name}", netgroupHandler.Remove)
-								r.Post("/{name}/members", netgroupHandler.AddMember)
-								r.Delete("/{name}/members/{id}", netgroupHandler.RemoveMember)
-							})
-						}
-
-						// Legacy identity mapping route (deprecated: use /api/v1/identity-mappings instead)
-						if ims, ok := cpStore.(store.IdentityMappingStore); ok {
-							r.Route("/identity-mappings", func(r chi.Router) {
-								legacyHandler := handlers.NewIdentityMappingHandler(ims, rt.NotifyIdentityMappingChange)
-								r.Get("/", legacyHandler.List)
-								r.Post("/", legacyHandler.Create)
-								r.Delete("/{principal}", legacyHandler.RemoveLegacy)
-							})
-						}
-					})
-				})
-			})
-
 			// Identity mappings — links external identities to DittoFS users (admin only)
 			if ims, ok := cpStore.(store.IdentityMappingStore); ok {
 				r.Route("/identity-mappings", func(r chi.Router) {
@@ -531,21 +416,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				}
 			}
 
-			// Unified client listing and disconnect (admin only) - all protocols
-			if clientHandler := handlers.NewClientHandler(rt); clientHandler != nil {
-				r.Route("/clients", func(r chi.Router) {
-					r.Use(apiMiddleware.RequireAdmin())
-					r.Get("/", clientHandler.List)
-					r.Delete("/{id}", clientHandler.Disconnect)
-				})
-			}
-
-			// Unified mount listing (admin only) - all protocols
-			r.Route("/mounts", func(r chi.Router) {
-				r.Use(apiMiddleware.RequireAdmin())
-				r.Get("/", mountHandler.List)
-			})
-
 			// Durable handle management (admin only)
 			r.Route("/durable-handles", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
@@ -557,22 +427,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 	})
 
 	return r
-}
-
-// newNfsClientHandler returns an NfsClientHandler if an NFS adapter with state management is configured.
-func newNfsClientHandler(rt *runtime.Runtime) *handlers.NfsClientHandler {
-	if rt == nil {
-		return nil
-	}
-	return handlers.NewNfsClientHandlerFromProvider(rt.GetAdapterProvider("nfs"))
-}
-
-// newGraceHandler returns a GraceHandler if an NFS adapter with state management is configured.
-func newGraceHandler(rt *runtime.Runtime) *handlers.GraceHandler {
-	if rt == nil {
-		return nil
-	}
-	return handlers.NewGraceHandlerFromProvider(rt.GetAdapterProvider("nfs"))
 }
 
 // isHealthPath returns true if the request path is a healthcheck endpoint.

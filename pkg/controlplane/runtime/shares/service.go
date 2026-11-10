@@ -227,13 +227,6 @@ type ShareConfig struct {
 	RelaxedMetadataCommit bool
 }
 
-// LegacyMountInfo is the legacy NFS mount record format.
-type LegacyMountInfo struct {
-	ClientAddr string
-	ShareName  string
-	MountTime  int64
-}
-
 // MetadataStoreProvider looks up metadata stores by name.
 type MetadataStoreProvider interface {
 	GetMetadataStore(name string) (metadata.Store, error)

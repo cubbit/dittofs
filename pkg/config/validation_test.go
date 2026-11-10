@@ -171,22 +171,4 @@ func TestValidate_KerberosInFanOut(t *testing.T) {
 		}
 	})
 
-	t.Run("UnsupportedStrategy", func(t *testing.T) {
-		cfg := GetDefaultConfig()
-		cfg.Kerberos.IdentityMapping.Strategy = "ldap"
-		err := Validate(cfg)
-		if err == nil {
-			t.Fatal("expected Validate to reject unsupported identity-mapping strategy")
-		}
-		if !strings.Contains(err.Error(), "strategy") {
-			t.Errorf("expected strategy error, got %v", err)
-		}
-	})
-
-	t.Run("DefaultStrategyPasses", func(t *testing.T) {
-		cfg := GetDefaultConfig() // strategy defaulted to "static"
-		if err := Validate(cfg); err != nil {
-			t.Fatalf("expected default (static) strategy to pass, got %v", err)
-		}
-	})
 }

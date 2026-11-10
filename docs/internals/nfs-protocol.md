@@ -690,24 +690,14 @@ When a directory is deleted (REMOVE/RMDIR), any directory delegations on that di
 
 ### Configuration
 
-Directory delegation settings are managed via `dfsctl adapter settings nfs`:
+Directory delegation settings are NFS adapter settings stored in the
+control-plane database; this build has no command to change them:
 
 | Setting | Default | Description |
 | --------- | --------- | ------------- |
 | `delegations_enabled` | `true` | Enable/disable all delegations (file and directory) |
 | `max_delegations` | `10000` | Maximum concurrent delegations across all clients |
-| `dir_deleg_batch_window_ms` | `50` | Notification batch window in milliseconds |
-
-```bash
-# Enable delegations
-dfsctl adapter settings nfs update --delegations-enabled=true
-
-# Set maximum delegations
-dfsctl adapter settings nfs update --max-delegations 1000
-
-# Adjust batch window (lower = more responsive, higher = less backchannel traffic)
-dfsctl adapter settings nfs update --dir-deleg-batch-window-ms 100
-```
+| `dir_deleg_batch_window_ms` | `50` | Notification batch window in milliseconds (lower = more responsive, higher = less backchannel traffic) |
 
 ### Prometheus Metrics
 

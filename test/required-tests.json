@@ -24,22 +24,9 @@
     "have."
   ],
   "packages": {
-    "./internal/adapter/nfs/auth": [
-      "TestAdvertisedAuthFlavors",
-      "TestCheckExportAccess_AuthFlavorPolicy",
-      "TestCheckExportAccess_Netgroup",
-      "TestResolveSharePermission_DefaultPermissionNoneDeniesUnknownUID",
-      "TestResolveSharePermission_RootPromotedToAdmin"
-    ],
-    "./internal/adapter/smb": [
-      "TestCheckEncryptionRequired_GlobalMode"
-    ],
-    "./internal/adapter/smb/handlers": [
-      "TestCreate_DaclEnforcement_DeniesWhenBitNotGranted",
-      "TestCreate_MaxAllowedPlusExplicitDeniedBit_ReturnsAccessDenied",
-      "TestShouldRejectUnencryptedTreeConnect_SMB2DialectRejected",
-      "TestShouldRejectUnencryptedTreeConnect_SMB2WithCrypto",
-      "TestTreeConnect_RequiredModeRejectsUnencryptedSession"
+    "./internal/vfs/admit": [
+      "TestAnUnmappedClaimedRootIsPrivileged",
+      "TestNoAnonymousPrincipalFailsClosed"
     ]
   }
 }

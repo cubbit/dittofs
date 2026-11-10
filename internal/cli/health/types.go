@@ -53,19 +53,11 @@ type MetadataStoreListItem struct {
 	Status StatusReport `json:"status"`
 }
 
-// AdapterListItem deserializes adapter list entries with status.
-type AdapterListItem struct {
-	Type    string       `json:"type"`
-	Running bool         `json:"running"`
-	Status  StatusReport `json:"status"`
-}
-
 // Entities holds per-entity status lists fetched from the API.
 type Entities struct {
 	Shares      []ShareListItem         `json:"shares,omitempty" yaml:"shares,omitempty"`
 	BlockStores []BlockStoreListItem    `json:"block_stores,omitempty" yaml:"block_stores,omitempty"`
 	MetaStores  []MetadataStoreListItem `json:"metadata_stores,omitempty" yaml:"metadata_stores,omitempty"`
-	Adapters    []AdapterListItem       `json:"adapters,omitempty" yaml:"adapters,omitempty"`
 	Errors      []string                `json:"errors,omitempty" yaml:"errors,omitempty"`
 }
 
@@ -97,7 +89,7 @@ func FetchEntities(client *http.Client, baseURL, token string) Entities {
 		return json.NewDecoder(resp.Body).Decode(target)
 	}
 
-	wg.Add(4)
+	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
@@ -137,20 +129,6 @@ func FetchEntities(client *http.Client, baseURL, token string) Entities {
 		} else {
 			mu.Lock()
 			ent.Errors = append(ent.Errors, fmt.Sprintf("metadata stores: %v", err))
-			mu.Unlock()
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		var adapters []AdapterListItem
-		if err := doGet(baseURL+"/adapters", &adapters); err == nil {
-			mu.Lock()
-			ent.Adapters = adapters
-			mu.Unlock()
-		} else {
-			mu.Lock()
-			ent.Errors = append(ent.Errors, fmt.Sprintf("adapters: %v", err))
 			mu.Unlock()
 		}
 	}()

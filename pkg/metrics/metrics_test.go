@@ -40,7 +40,6 @@ func TestRuntimeCollector_EmitsExpectedSeries(t *testing.T) {
 			Scope: "user", Principal: "1000", Share: "alpha",
 			UsedBytes: 50, LimitBytes: 100, UsedInodes: 5, LimitInodes: 10,
 		}},
-		Clients: ClientSnapshot{NFS: 4, SMB: 1},
 	}
 	m := newTestMetrics(t, snap)
 
@@ -57,17 +56,12 @@ dittofs_remote_up{share="alpha"} 1
 # HELP dittofs_quota_used_bytes Bytes used by a quota principal.
 # TYPE dittofs_quota_used_bytes gauge
 dittofs_quota_used_bytes{principal="1000",scope="user",share="alpha"} 50
-# HELP dittofs_client_connections_active Active client connections per protocol.
-# TYPE dittofs_client_connections_active gauge
-dittofs_client_connections_active{protocol="nfs"} 4
-dittofs_client_connections_active{protocol="smb"} 1
 `
 	if err := testutil.GatherAndCompare(m.Registry(), strings.NewReader(expected),
 		"dittofs_localstore_disk_used_bytes",
 		"dittofs_sync_pending_bytes",
 		"dittofs_remote_up",
 		"dittofs_quota_used_bytes",
-		"dittofs_client_connections_active",
 	); err != nil {
 		t.Fatalf("unexpected metrics: %v", err)
 	}
@@ -124,7 +118,7 @@ dittofs_build_info{commit="deadbeef",version="v1.2.3"} 1
 }
 
 func TestHandlerServesText(t *testing.T) {
-	m := newTestMetrics(t, Snapshot{Clients: ClientSnapshot{NFS: 2}})
+	m := newTestMetrics(t, Snapshot{})
 	srv := httptest.NewServer(m.Handler())
 	defer srv.Close()
 

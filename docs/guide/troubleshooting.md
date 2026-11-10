@@ -147,10 +147,8 @@ mount.nfs: access denied by server while mounting
    ```bash
    dfsctl share nfs-config show /export
    ```
-   Confirm your IP is in the netgroup, or clear the association to allow all
-   clients:
+   Clear the association to allow all clients:
    ```bash
-   dfsctl netgroup show <netgroup-name>
    dfsctl share nfs-config set /export --netgroup ""
    ```
 
@@ -646,12 +644,8 @@ mount.nfs4: Protocol not supported
 ```
 
 **Solutions:**
-1. Verify NFSv4 is enabled in the adapter settings:
-   ```bash
-   dfsctl adapter settings nfs
-   ```
-2. Check that the client supports NFSv4. Some older clients default to NFSv3.
-3. Try mounting with explicit version:
+1. Check that the client supports NFSv4. Some older clients default to NFSv3.
+2. Try mounting with explicit version:
    ```bash
    sudo mount -t nfs4 localhost:/export /mnt/test
    ```
@@ -665,11 +659,7 @@ NFS4ERR_EXPIRED or NFS4ERR_STALE_CLIENTID
 
 **Solutions:**
 1. The server may have restarted, causing session loss. Remount the share.
-2. Check the grace period status:
-   ```bash
-   dfsctl grace status
-   ```
-3. If in grace period, wait for it to complete before retrying.
+2. If the server is in its grace period, wait for it to complete before retrying.
 
 ### Kerberos Authentication Issues
 
