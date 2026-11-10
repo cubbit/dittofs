@@ -1200,6 +1200,47 @@ func TestPoolHoldAboveTheTargetIsSatisfiableOnRetry(t *testing.T) {
 	p.Stop()
 }
 
+// TestPoolHoldShortByMoreThanOneIsSatisfiableOnRetry: a reservation short by
+// more than one spare is served on a bounded retry, as one short by one is.
+// Each landed spare must close the gap between the pool and the refused ask
+// by exactly one. It catches a refill whose goal falls as each spare lands
+// while the ready count rises, so the gap closes by two a spare and the
+// refill stops one spare short of an ask whose shortfall exceeds one: the
+// retried hold is then refused for ever.
+func TestPoolHoldShortByMoreThanOneIsSatisfiableOnRetry(t *testing.T) {
+	for _, ask := range []int{4, 5} {
+		t.Run(fmt.Sprintf("Hold(%d)", ask), func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+
+			_, _, _, p := poolOf(t, segment.Targets{Content: 2}, noMax, 0, nil)
+			p.Start()
+			defer p.Stop()
+			awaitCounters(t, "the target's two spares ready", p,
+				func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+			var h *segment.Hold
+			for range poolAttempts {
+				var err error
+				if h, err = p.Hold(ask); err == nil {
+					break
+				}
+				var ns *core.NoSpaceError
+				if !errors.As(err, &ns) || ns.Limit != core.LimitSpare {
+					t.Fatalf("a retried Hold(%d): %v, want served or refused `spare`", ask, err)
+				}
+				runtime.Gosched()
+			}
+			if h == nil {
+				t.Fatalf("the retried Hold(%d) never cleared: the pool stopped at %+v", ask, p.Counters())
+			}
+			if c := p.Counters(); c.Held != int64(ask) {
+				t.Fatalf("after the retried hold the pool owes %d spares, want the hold's %d", c.Held, ask)
+			}
+			h.Close()
+		})
+	}
+}
+
 // TestPoolOpenHoldDoesNotStarveUnreservedRolls: a hold's spares ride above
 // the content target rather than inside it, so an open reservation does not
 // consume the spares the target exists to keep: every stream can still roll
@@ -1719,11 +1760,11 @@ func TestPoolRefillMakesNoSpareForAnIncomingRecycle(t *testing.T) {
 }
 
 // TestPoolARecycledContentSparePaysTheDemandLevel: a recycled content spare
-// pays the demand level down exactly as a made one does — the landed spare
-// stands above the content target, and the level a refused Hold recorded is
-// demand the refill served, not demand that must be served twice. It catches
-// a recycled spare that leaves the level standing, whose next refused take
-// would make one spare the pool does not owe.
+// serves the demand level exactly as a made one does — the landed spare makes
+// up the refused ask, and the level a refused Hold recorded is demand the
+// refill served, not demand that must be served twice. It catches a recycled
+// spare that leaves the level standing, whose next refused take would make
+// one spare the pool does not owe.
 func TestPoolARecycledContentSparePaysTheDemandLevel(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -1733,7 +1774,7 @@ func TestPoolARecycledContentSparePaysTheDemandLevel(t *testing.T) {
 		func(c segment.PoolCounters) bool { return c.Spares == 1 })
 
 	// Park the worker's makes, so the refused Hold below records its
-	// shortfall as a level while its demand's make is still parked at the
+	// ask as a level while its demand's make is still parked at the
 	// create and nothing else lands in between. The test waits for the make
 	// to reach the hold: a pass that had not yet chosen its class when the
 	// recycle landed would find the level paid and make nothing, and the
@@ -1741,22 +1782,22 @@ func TestPoolARecycledContentSparePaysTheDemandLevel(t *testing.T) {
 	park := seam.Hold(t, kit.OpCreate, "*")
 	_, err := p.Hold(2)
 	assertSpareRefusal(t, "the Hold(2) over one ready spare", err, 1)
-	if got := p.PendingForTest(); got != 1 {
-		t.Fatalf("the refused Hold recorded the demand level %d, want 1", got)
+	if got := p.PendingForTest(); got != 2 {
+		t.Fatalf("the refused Hold recorded the demand level %d, want its ask of 2", got)
 	}
 	awaitHoldReached(t, park)
 
-	// A recycle reserves the open content slot — below the target plus the
-	// level, the make in flight invisible to the reservation — and the
-	// recycled spare lands above the target, paying the level down as a made
-	// one would.
+	// A recycle reserves the open content slot — below the goal the level
+	// sets, the make in flight invisible to the reservation — and the
+	// recycled spare lands, making up the ask and clearing the level as a
+	// made one would.
 	class, ok := p.WantRecycleForTest()
 	if !ok || class != segment.Content {
 		t.Fatalf("no recycle was wanted for the content class: (%v, %v), want (Content, true)", class, ok)
 	}
 	p.RecycledForTest(core.SegmentID(99), segment.Content)
 	if got := p.PendingForTest(); got != 0 {
-		t.Fatalf("after the recycled spare landed the demand level stands at %d, want 0: a recycled content spare pays the level down exactly as a made one does", got)
+		t.Fatalf("after the recycled spare landed the demand level stands at %d, want 0: a recycled content spare clears the level exactly as a made one does", got)
 	}
 	if c := p.Counters(); c.Spares != 2 {
 		t.Fatalf("with the demand's make parked the pool holds %d content spares, want 2: the target's and the recycled one", c.Spares)

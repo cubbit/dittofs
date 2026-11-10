@@ -27,7 +27,7 @@ func RetryEveryForTest(r *Retirer, d time.Duration) { r.retryEvery = d }
 func (r *Retirer) KickForTest() { r.kickWorker() }
 
 // PendingForTest reads the demand level a refused Hold recorded, so a check
-// can assert what a made or recycled spare paid down.
+// can assert the ask it records and that a made or recycled spare cleared it.
 func (p *Pool) PendingForTest() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
