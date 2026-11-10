@@ -277,10 +277,10 @@ several inputs exercise one rule.
 `test/suites.yaml` defines how CI runs each suite, and `test/harness/bin/dt` runs one locally.
 Never run two suites at once: they collide on ports and mounts.
 
-**Integration** (`-tags=integration`, `-p 1`) runs against real backends: Badger on disk,
-Postgres, S3 through Localstack. Durability, ordering and fault-in changes need a test at this
+**Integration** (`-tags=integration`, `-p 1`) runs against real backends: Badger on disk and
+a real S3 endpoint. Durability, ordering and fault-in changes need a test at this
 tier or above, because a memory backend proves nothing about fsync or a crash. A backend the
-host lacks is a skip that says what to set (`t.Skip("set DITTOFS_TEST_POSTGRES_DSN")`), never a
+host lacks is a skip that names the environment variable to set, never a
 pass. Each test builds its own state and leaves nothing behind.
 
 **E2E** (`-tags=e2e`, sudo, a kernel client) is for what only a real mount shows: client
