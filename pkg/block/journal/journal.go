@@ -3,6 +3,7 @@ package journal
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/datapath"
 )
@@ -13,6 +14,10 @@ import (
 // A Journal is built only by Open. Its methods are safe for concurrent use.
 type Journal struct {
 	core *datapath.Core
+
+	// closed is set by the first Close, so a later one answers ErrClosed
+	// without closing the core again.
+	closed atomic.Bool
 
 	// handlesMu guards handles. Only Share and Handle.Close take it, and no
 	// lock domain is held when they do. Share holds it across the core's
@@ -56,13 +61,17 @@ func Restamp(ctx context.Context, dir string, expect JournalID, install Installa
 // Close returns once all of that has happened. Calling it again returns
 // ErrClosed.
 func (j *Journal) Close() error {
-	// decision: this closes the core and nothing else. The full close the
-	// contract above names — new calls failing with ErrClosed the moment one
-	// begins, the in-flight calls waited for before it, and a second Close
-	// answering ErrClosed — is the cancellation piece of a broader step of the
-	// journal's own; until it lands, Close joins the core's background work
-	// and releases its descriptors, and the calls in flight are joined by the
-	// core's own shutdown. Withdraw the narrow behaviour when that step lands.
+	// decision: this closes the core and nothing else, and answers a second
+	// call with ErrClosed. The rest of the close the contract above names — new
+	// calls failing with ErrClosed the moment one begins, and the in-flight
+	// calls waited for before it — is the cancellation piece of a broader step
+	// of the journal's own; until it lands, Close joins the core's background
+	// work and releases its descriptors, and the calls in flight are joined by
+	// the core's own shutdown. Withdraw the narrow behaviour when that step
+	// lands.
+	if !j.closed.CompareAndSwap(false, true) {
+		return ErrClosed
+	}
 	if j.core == nil {
 		// The zero Journal, which a test helper builds and a cleanup of its own
 		// closes, owns nothing to shut down.

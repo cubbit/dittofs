@@ -69,9 +69,9 @@ func initAndOpen(t *testing.T) (*Journal, seamDir, JournalID) {
 		t.Fatal("Open returned nil and no error")
 	}
 	t.Cleanup(func() {
-		// A second Close answers the core's own first close: it joins nothing
-		// and reports what the first did, which is no error here.
-		if err := j.Close(); err != nil {
+		// A test that closed the journal itself leaves this second Close
+		// answering ErrClosed, which is not a failure.
+		if err := j.Close(); err != nil && !errors.Is(err, ErrClosed) {
 			t.Errorf("close the opened journal: %v", err)
 		}
 	})
@@ -947,5 +947,19 @@ func TestOpen_SparesReady_CloseDuringTheWait(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Close never joined the make its stop was held on")
+	}
+}
+
+// TestJournal_SecondCloseIsErrClosed fails a Close that answers a second call
+// as if it were the first: the documented answer to a journal already closed
+// is ErrClosed, so a caller can tell a double close from a clean one.
+func TestJournal_SecondCloseIsErrClosed(t *testing.T) {
+	j, _, _ := initAndOpen(t)
+
+	if err := j.Close(); err != nil {
+		t.Fatalf("the first Close returned %v, want nil", err)
+	}
+	if err := j.Close(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("the second Close returned %v, want ErrClosed", err)
 	}
 }
