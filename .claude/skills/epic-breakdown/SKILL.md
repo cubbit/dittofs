@@ -550,6 +550,8 @@ subtasks come long after the epic issue.
   id=$(gh api "repos/$R/issues/<child-number>" --jq .id)
   gh api -X POST "repos/$R/issues/<parent-number>/sub_issues" -F sub_issue_id="$id"
   ```
+  Moving an issue that already has a parent (6.4's match under another part's epic issue)
+  needs `-F replace_parent=true` on the same call; without it the API refuses the child.
 - **Every issue joins the "DittoFS" project** (`marmos91`, project 3). Only subtask issues
   get `Estimate`, their man-days from §6: a figure on the epic or the roadmap epic too would
   count it twice in the project's sums. Look the ids up rather than hard-coding them:
