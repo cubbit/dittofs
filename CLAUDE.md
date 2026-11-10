@@ -70,9 +70,10 @@ in `.gitignore`, which graphify merges.
 go build -o dfs    cmd/dfs/main.go
 go build -o dfsctl cmd/dfsctl/main.go
 
-# Unit/integration
-go test ./...
-go test -race ./...
+# Unit/integration, as CI runs them (tags, known failures)
+test/harness/bin/dt run unit
+test/harness/bin/dt run integration
+go test -race ./...          # a quick local pass
 
 # E2E (Linux, a kernel NFS client and passwordless sudo; dt runs it as root)
 test/harness/bin/dt services up localstack           # the S3 the store matrix needs
@@ -286,6 +287,18 @@ several inputs exercise one rule.
 why; `test/harness/bin/dt` runs one locally. What follows is only what those don't say.
 Don't start two suites by hand at once: they collide on ports and mounts. `dt` runs cells in
 parallel only where the registry says each one is isolated (`parallel: true`).
+Run a suite as CI does, `test/harness/bin/dt run <suite>`, rather than a bare `go test` that
+misses its tags and its known failures.
+
+**A test written before its code lands red, as a known failure.** It runs in a suite whose
+registry entry names a `known:` file, with one entry per test carrying every field RFC 29 §4.7
+requires, `fix: planned` and the `issue:` that turns it green among them, never `intermittent`.
+Its `message:` is the text of the check that fails, specific enough that no other failure
+contains it, since it is matched as a substring. The entry is written with the test, and CI on
+that pull request confirms it. A Go suite with a `known` file is registered for the purpose:
+its own build tag, `format: go-json`, `tier: pr` and `known:`, the tag added to lint-go's
+`go vet -tags=` list, as `engine-conformance` is on `feat/storage-v2`. The change that makes the
+test pass removes its entry (§4.7 fails a run whose known failure passes).
 
 **Integration** (`-tags=integration`, `-p 1`) is for a backend the host must provide: a KMIP
 server for the key provider, and a real S3-compatible endpoint. Postgres is gone: the stores are
