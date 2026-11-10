@@ -1176,12 +1176,13 @@ func TestTake_BytesOverflowSafe(t *testing.T) {
 	}
 }
 
-// TestTake_ShareFigureIsExactUnderLandings drives concurrent takes at a
-// share whose limit leaves room for exactly one of them, where every
-// earlier grant also completes its Wrote in flight — the landing that once
-// escaped a snapshot pair — and checks the figure decides exactly: of two
-// racing takes at a one-slot limit with landings interleaved, exactly one
-// is granted, never one more than the limit holds, and never one less.
+// TestTake_ShareFigureIsExactUnderLandings parks one take between the
+// set's read of the share figure and its decision, runs a whole other
+// write to completion inside the park (its grant, its landing in the set and
+// its Wrote), and checks the parked take is then refused: the figure it
+// decides on includes the record that landed after its read. The limit
+// leaves room for exactly one ask, so a take that decides on its stale read
+// would be granted too.
 func TestTake_ShareFigureIsExactUnderLandings(t *testing.T) {
 	// The limits: each take asks the 3000 record bytes a 2896-byte payload
 	// costs, against a limit holding exactly one ask over the 1000-byte
@@ -1245,9 +1246,7 @@ func TestTake_ShareFigureIsExactUnderLandings(t *testing.T) {
 	g := r.grant(t, q)
 	r.land(t, g, 2896)
 	g.Release()
-	for range 2 {
-		_ = r.refused(t, q, core.LimitShare)
-	}
+	_ = r.refused(t, q, core.LimitShare) // the landed record is already in the figure
 
 	// Only now does the victim's decision run, on the figure its stale read
 	// seeded: the tally the landing moved, not the read it returns.
@@ -1376,6 +1375,7 @@ func TestTake_RetiredLowersTheTally(t *testing.T) {
 	r.seal(t)
 	r.retire(t, seg)
 	r.c.Retired(tag1)
+	q.ShareLimit = segment.RecordBytes(2896) // fits only if the tally fell to 0
 	g2 := r.grant(t, q)
 	g2.Release()
 }
