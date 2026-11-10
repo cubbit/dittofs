@@ -1730,6 +1730,21 @@ func (s *Stream) ReadAt(seg core.SegmentID, p []byte, off int64) (int, error) {
 	return n, rerr
 }
 
+// AcquireRead takes a reference to segment seg for a reader that reads one
+// record in more than one read: every read through the reference sees the
+// same open descriptor, and a retirement's drain of seg waits until the
+// caller releases it. The caller releases it with Ref.Release, holding no lock
+// across the reads, and before it takes any lock that ranks above the
+// storage guard. A closed stream refuses it with ErrStreamClosed; a segment
+// whose Close has begun or whose file is gone answers ErrSegmentGone, as
+// ReadAt does.
+func (s *Stream) AcquireRead(seg core.SegmentID) (Ref, error) {
+	if s.readClosed.Load() {
+		return Ref{}, ErrStreamClosed
+	}
+	return s.cache.Acquire(seg)
+}
+
 // Identity returns the journal identity the stream seeds its records'
 // checksums with, so a reader of a positioned record can verify it.
 func (s *Stream) Identity() core.JournalID { return s.identity }

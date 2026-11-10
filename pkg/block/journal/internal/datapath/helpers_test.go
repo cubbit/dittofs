@@ -62,13 +62,17 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
 
+	segCap := testSegmentCap
+	if o.segmentCap != 0 {
+		segCap = o.segmentCap
+	}
 	c, err := newCore(Deps{
 		FS:          seam.FS(),
 		Clock:       kit.NewStopwatchClock(),
 		Dir:         t.TempDir(),
 		Identity:    testIdentity,
 		Streams:     testStreams,
-		SegmentCap:  testSegmentCap,
+		SegmentCap:  segCap,
 		ExtentLimit: 1 << 20,
 		Descriptors: core.NewDescriptorBudget(64),
 		Targets:     segment.Targets{Content: 2 * testStreams},
@@ -88,12 +92,21 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 			t.Errorf("Close: %v", err)
 		}
 	})
+	awaitSpares(t, c)
+	return c, seam
+}
+
+// awaitSpares waits until the pool has readied its content spares to its
+// target. The pool makes spares one at a time and stops once the target is
+// met, so after it returns no spare is being made, and none lands later
+// unless something takes one.
+func awaitSpares(t *testing.T, c *Core) {
+	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); c.pool.Counters().Spares < 2*testStreams; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the pool never readied its spares: %+v", c.pool.Counters())
 		}
 	}
-	return c, seam
 }
 
 // crashedSeams holds the seams a test crashed.

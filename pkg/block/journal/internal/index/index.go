@@ -55,6 +55,18 @@ func (ix *Index) Lookup(id core.FileID, off int64) (Placed, bool) {
 	return p, ok
 }
 
+// Span returns the pieces of id held inside e, clipped to it, and the exact
+// gaps between them, both in offset order. A file with no entry has nothing
+// held, so a non-empty e comes back wholly missing. Neighbouring pieces of one
+// record that differ only in their offloaded bit are returned as one. It takes
+// the file's lock shared, does no I/O and creates no entry.
+func (ix *Index) Span(id core.FileID, e core.Extent) (placed []Placed, missing []core.Extent) {
+	if !ix.fs.view(id, func(f *file) { placed, missing = f.held.span(e, nil, nil) }) && e.Len > 0 {
+		missing = []core.Extent{e}
+	}
+	return placed, missing
+}
+
 // Retained returns a copy of id's retained pieces, in offset, version and
 // superseder order. It takes the file's lock shared and creates no entry.
 func (ix *Index) Retained(id core.FileID) []Retained {
@@ -78,9 +90,9 @@ func (ix *Index) FileEntries(id core.FileID) []Entry { return ix.fs.inspect(id) 
 
 // AsOf returns the change version a read of id reports.
 //
-// decision: exported ahead of its caller, for the datapath tests that observe
-// the bucket raise of RaiseFloor. It is withdrawn if the read path does not
-// take it.
+// It takes the file's lock shared and creates no entry. A caller that needs
+// the version to never name a change its span did not see reads it with the
+// file's append domain held.
 func (ix *Index) AsOf(id core.FileID) core.Version { return ix.fs.asOf(id) }
 
 // RaiseFloor raises every floor bucket to floor's counter, clamped to the
