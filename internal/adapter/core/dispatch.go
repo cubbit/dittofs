@@ -162,17 +162,6 @@ const (
 	NeedsFH Needs = 1 << 7 // or-ed with one of the above
 )
 
-// Status is a protocol's wire status: an NFS stat, an RPC accept or reject
-// state, an NTSTATUS.
-type Status uint32
-
-// Call is one step of the middleware chain: the handler, or what wraps it.
-type Call func(ctx context.Context, r *Request) error
-
-// Middleware wraps a Call: recovery, trace span, metrics, deadline, in that
-// fixed order.
-type Middleware func(next Call) Call
-
 // Request is one message as the router built it. A handler reads Call and its
 // protocol's State; core reads Level and the rest.
 type Request struct {

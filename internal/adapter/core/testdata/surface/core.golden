@@ -88,12 +88,6 @@ const (
 	NeedsFH Needs = 1 << 7
 )
 
-type Status uint32
-
-type Call func(ctx context.Context, r *Request) error
-
-type Middleware func(next Call) Call
-
 type Request struct {
 	Call    vfs.Call
 	Version Version
@@ -104,6 +98,8 @@ type Request struct {
 }
 
 func (r *Request) Park(cancel func()) (done func(err error), err error)
+
+type Status uint32
 
 type ErrorTable struct{}
 
@@ -152,6 +148,10 @@ type HoldCodec interface {
 }
 
 var ErrParked = errors.New("core: parked")
+
+type Call func(ctx context.Context, r *Request) error
+
+type Middleware func(next Call) Call
 
 type Protocol interface {
 	Framer() Framer

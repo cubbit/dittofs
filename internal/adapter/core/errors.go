@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+// Status is a protocol's wire status: an NFS stat, an RPC accept or reject
+// state, an NTSTATUS.
+type Status uint32
+
 // ErrorTable maps a service error to a Status. Map takes the most specific
 // row that matches, in a total order: a row whose Err is a typed value before
 // one whose Err is a sentinel; then, among those, a row naming Ops and
