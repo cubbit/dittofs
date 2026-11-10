@@ -546,7 +546,6 @@ func TestARefusedClonePinsItsGuardAndNothingElse(t *testing.T) {
 
 // gatedCommit is the store's existence view holding its commits while on.
 type gatedCommit struct {
-	engine.Existence
 	on               atomic.Bool
 	entered, open    chan struct{}
 	commitReturned   atomic.Bool
@@ -554,19 +553,19 @@ type gatedCommit struct {
 	cloned           atomic.Bool
 }
 
-func (x *gatedCommit) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+func (x *gatedCommit) commit(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	if x.on.CompareAndSwap(true, false) {
 		close(x.entered)
 		<-x.open
 		defer x.commitReturned.Store(true)
 	}
-	return x.Existence.Commit(ctx, p, marks)
+	return next.Commit(ctx, p, marks)
 }
 
-func (x *gatedCommit) Clone(ctx context.Context, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
+func (x *gatedCommit) clone(ctx context.Context, next engine.Existence, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
 	x.cloneAfterCommit.Store(x.commitReturned.Load())
 	x.cloned.Store(true)
-	return x.Existence.Clone(ctx, op, pending)
+	return next.Clone(ctx, op, pending)
 }
 
 // A batch held between its capture and its existence commit on the
@@ -574,7 +573,7 @@ func (x *gatedCommit) Clone(ctx context.Context, op kvstore.CloneOp, pending []k
 // returns.
 func TestACloneWaitsOutABatchInFlight(t *testing.T) {
 	x := &gatedCommit{entered: make(chan struct{}), open: make(chan struct{})}
-	u := clonedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u := clonedUnit(t, onCommit(x.commit), onClone(x.clone))
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	u.write(t, dst, 4*mib, fill(10, 'w'))
@@ -992,8 +991,8 @@ func TestACloneHandsTheStoreNoCopy(t *testing.T) {
 // clone lands below the offset asked, since a store lookup over a clone not
 // done waits for it.
 func TestAllocationReadsAgainAfterAClonesPhase1BetweenItsReads(t *testing.T) {
-	ce := &committingExistence{}
-	u := clonedUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	ce := &committing{}
+	u := clonedUnit(t, onAllocation(ce.allocation))
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.committedFile(t, "dst", fill(2*mib, 'd'))
 	u.write(t, dst, 2*mib, fill(8*kib, 'w'))

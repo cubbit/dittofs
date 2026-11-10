@@ -150,7 +150,9 @@ type FakeHandle struct {
 
 var _ engine.Handle = (*FakeHandle)(nil)
 
-// Share attaches tag with limit, raising the version counter above floor.
+// Share attaches tag with limit, raising the version counter above floor. A
+// tag whose handle is open gets that handle back, its limit replaced by
+// limit, so one Close closes it for every caller, as the journal's Share does.
 func (j *FakeJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version) (engine.Handle, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -161,6 +163,12 @@ func (j *FakeJournal) Share(tag journal.ShareTag, limit int64, floor journal.Ver
 		return nil, journal.ErrInvalidSetting
 	}
 	j.last = max(j.last, floor.Counter)
+	for _, h := range j.handles {
+		if h.tag == tag && !h.closed {
+			h.limit = limit
+			return h, nil
+		}
+	}
 	h := &FakeHandle{j: j, tag: tag, limit: limit}
 	j.handles = append(j.handles, h)
 	return h, nil

@@ -44,22 +44,20 @@ func (h loggedHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]entity
 	return h.Handle.Sync(ctx, ids...)
 }
 
-type loggedExistence struct {
-	engine.Existence
-	log *callLog
-}
-
-func (x loggedExistence) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
-	var fs []entity.FileID
-	for _, pe := range p {
-		fs = append(fs, pe.File)
+// logCommits logs each existence commit to log, with its files and marks.
+func logCommits(log *callLog) commitFn {
+	return func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+		var fs []entity.FileID
+		for _, pe := range p {
+			fs = append(fs, pe.File)
+		}
+		log.mu.Lock()
+		log.calls = append(log.calls, "commit")
+		log.commits = append(log.commits, fs)
+		log.marks = append(log.marks, marks)
+		log.mu.Unlock()
+		return next.Commit(ctx, p, marks)
 	}
-	x.log.mu.Lock()
-	x.log.calls = append(x.log.calls, "commit")
-	x.log.commits = append(x.log.commits, fs)
-	x.log.marks = append(x.log.marks, marks)
-	x.log.mu.Unlock()
-	return x.Existence.Commit(ctx, p, marks)
 }
 
 // newLoggedUnit is a unit whose share's handle and store log their calls,
@@ -68,7 +66,7 @@ func newLoggedUnit(t *testing.T, age time.Duration, maxFiles int) (*unit, *callL
 	t.Helper()
 	log := &callLog{}
 	u := newUnitWith(t, unitConfig{
-		deps: []func(*engine.Deps){func(d *engine.Deps) { d.Existence = loggedExistence{d.Existence, log} }},
+		deps: []func(*engine.Deps){onCommit(logCommits(log))},
 		wrap: func(h engine.Handle) engine.Handle { return loggedHandle{h, log} },
 	})
 	if err := u.e.Apply(engine.Settings{ExistenceAge: age, GroupCommitMaxFiles: maxFiles, CloneMaxLen: 1 << 30}); err != nil {
@@ -883,9 +881,7 @@ func TestAFailureThatBlamesNoFileRetriesTheBatchWhole(t *testing.T) {
 	}{
 		{"the store closed", func(log *callLog) (unitConfig, *atomic.Bool) {
 			on := new(atomic.Bool)
-			return unitConfig{deps: []func(*engine.Deps){func(d *engine.Deps) {
-				d.Existence = loggedExistence{commitHook{d.Existence, closedWhile(on)}, log}
-			}}}, on
+			return unitConfig{deps: []func(*engine.Deps){onCommit(closedWhile(on)), onCommit(logCommits(log))}}, on
 		}},
 		{"a failed sync", func(log *callLog) (unitConfig, *atomic.Bool) {
 			on := &atomic.Bool{}
@@ -997,14 +993,12 @@ func TestAWriteToAFileWithPendingWritesIsRefusedAfterClose(t *testing.T) {
 func TestMarksGoAloneAfterAFailureThatIsNoConflict(t *testing.T) {
 	var failed atomic.Bool // the first call carrying marks beside files fails, with no conflict
 	log := &callLog{}
-	u := newUnitWith(t, unitConfig{deps: []func(*engine.Deps){func(d *engine.Deps) {
-		d.Existence = loggedExistence{commitHook{d.Existence, func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
-			if marks != nil && len(p) > 0 && failed.CompareAndSwap(false, true) {
-				return nil, errors.New("the store failed the call")
-			}
-			return next.Commit(ctx, p, marks)
-		}}, log}
-	}}})
+	u := newUnitWith(t, unitConfig{deps: []func(*engine.Deps){onCommit(func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+		if marks != nil && len(p) > 0 && failed.CompareAndSwap(false, true) {
+			return nil, errors.New("the store failed the call")
+		}
+		return next.Commit(ctx, p, marks)
+	}), onCommit(logCommits(log))}})
 	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 16, CloneMaxLen: 1 << 30}); err != nil {
 		t.Fatal(err)
 	}
@@ -1031,31 +1025,30 @@ func TestMarksGoAloneAfterAFailureThatIsNoConflict(t *testing.T) {
 // markedStore records, for each store call, whether its context carries the
 // retrying-owner mark.
 type markedStore struct {
-	engine.Existence
 	mu      sync.Mutex
 	commits []bool
 	reads   []bool
 }
 
-func (x *markedStore) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+func (x *markedStore) commit(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	x.mu.Lock()
 	x.commits = append(x.commits, engine.RetryingOwner(ctx))
 	x.mu.Unlock()
-	return x.Existence.Commit(ctx, p, marks)
+	return next.Commit(ctx, p, marks)
 }
 
-func (x *markedStore) Overwrites(ctx context.Context, s entity.ShareID, f entity.FileID, xs []entity.Extent) (bool, error) {
+func (x *markedStore) overwrites(ctx context.Context, next engine.Existence, s entity.ShareID, f entity.FileID, xs []entity.Extent) (bool, error) {
 	x.mu.Lock()
 	x.reads = append(x.reads, engine.RetryingOwner(ctx))
 	x.mu.Unlock()
-	return x.Existence.Overwrites(ctx, s, f, xs)
+	return next.Overwrites(ctx, s, f, xs)
 }
 
 // Every store call the group commit makes, and retries itself, carries the
 // retrying-owner mark; a stability point's own read of the store does not.
 func TestTheGroupCommitsStoreCallsCarryTheRetryingOwnerMark(t *testing.T) {
 	x := &markedStore{}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u := newUnit(t, onCommit(x.commit), onOverwrites(x.overwrites))
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("committed"))
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {

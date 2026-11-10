@@ -477,18 +477,17 @@ func TestACommitWhoseExtentOverflowsIsInvalid(t *testing.T) {
 // overwritesStore counts the store's Overwrites reads and, once stall is
 // set, holds each until its context ends.
 type overwritesStore struct {
-	engine.Existence
 	reads atomic.Int64
 	stall atomic.Bool
 }
 
-func (x *overwritesStore) Overwrites(ctx context.Context, s entity.ShareID, f entity.FileID, xs []entity.Extent) (bool, error) {
+func (x *overwritesStore) overwrites(ctx context.Context, next engine.Existence, s entity.ShareID, f entity.FileID, xs []entity.Extent) (bool, error) {
 	x.reads.Add(1)
 	if x.stall.Load() {
 		<-ctx.Done()
 		return false, ctx.Err()
 	}
-	return x.Existence.Overwrites(ctx, s, f, xs)
+	return next.Overwrites(ctx, s, f, xs)
 }
 
 // A Commit over an overwrite of committed content reads the store once: the
@@ -497,7 +496,7 @@ func (x *overwritesStore) Overwrites(ctx context.Context, s entity.ShareID, f en
 func TestACommitOverAnOverwriteReadsTheStoreOnce(t *testing.T) {
 	x := &overwritesStore{}
 	m := &refusingMarks{err: kvstore.ErrSyncMarks}
-	u := newUnit(t, onCommit(m.commit), func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u := newUnit(t, onCommit(m.commit), onOverwrites(x.overwrites))
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("committed"))
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
@@ -521,7 +520,7 @@ func TestACommitOverAnOverwriteReadsTheStoreOnce(t *testing.T) {
 // error.
 func TestACommitWhoseOverwritesReadStallsAnswersErrDelay(t *testing.T) {
 	x := &overwritesStore{}
-	u := newUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u := newUnit(t, onOverwrites(x.overwrites))
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("x"))
 	x.stall.Store(true)
