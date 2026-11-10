@@ -116,14 +116,16 @@ type Headroom struct {
 	cfg     HeadroomConfig
 	reserve int // the open reserve, in records, fixed at construction
 
-	mu    sync.Mutex
-	drawn int64 // the record bytes the headroom has admitted; guarded by mu
-	// outstanding is the draws admissions hold whose record has neither
-	// appended (Drawn) nor failed (Refund); guarded by mu.
-	outstanding int
+	mu sync.Mutex
+	// drawn is the record bytes the headroom has admitted since nothing
+	// returns them; guarded by mu.
+	//
 	// ponytail: drawn only grows until a retirement returns headroom,
 	// upgrade by crediting it from the retirement path when repack lands.
-	draws uint64 // the headroom_draws counter; guarded by mu
+	drawn int64
+	// draws is the headroom_draws counter, records appended while the
+	// journal was at its limit; guarded by mu.
+	draws uint64
 }
 
 // NewHeadroom returns a Headroom over cfg. A nil injected func is a wiring
@@ -145,6 +147,11 @@ func NewHeadroom(cfg HeadroomConfig) *Headroom {
 // which is the safe direction.
 type Draw struct {
 	Append bool
+	// drew names whether this admission moved the drawn figure — true only
+	// while the journal was at its limit — so its Drawn and Refund hand
+	// back exactly what it took: a below-limit admission drew nothing and
+	// counts nothing, whichever way the limit moved in between.
+	drew bool
 }
 
 // Admit consults the headroom for one record of class c, returning whether
@@ -203,9 +210,8 @@ func (h *Headroom) Admit(ctx context.Context, c RecordClass) (Draw, error) {
 		// an open's own records still draw on, down to nothing.
 		if c == Open && free > 0 {
 			h.drawn += RecordCharge
-			h.outstanding++
 			h.mu.Unlock()
-			return Draw{Append: true}, nil
+			return Draw{Append: true, drew: true}, nil
 		}
 		h.mu.Unlock()
 		return Draw{}, refuseHeadroom(1)
@@ -218,68 +224,50 @@ func (h *Headroom) Admit(ctx context.Context, c RecordClass) (Draw, error) {
 			return Draw{}, refuseHeadroom(1)
 		case Offloaded:
 			h.mu.Unlock()
+			// The bits are set in memory only; no record is appended and
+			// nothing is drawn.
 			return Draw{Append: false}, nil
 		}
 	}
 	h.drawn += RecordCharge
-	h.outstanding++
 	h.mu.Unlock()
-	return Draw{Append: true}, nil
+	return Draw{Append: true, drew: true}, nil
 }
 
-// Drawn tells the headroom one admitted record of class c has been
-// appended: it moves the headroom_draws counter when the journal is at its
-// limit — the footprint plus a segment cap past the maximum — and nothing
-// else, for the drawn figure moved already, in Admit's own section.
-//
-// decision: the charge moves at admission rather than at the landing —
-// Admit and Drawn are separate calls, so only a draw inside Admit keeps
-// the check honest under interleaving: an admission of the last free record
-// must refuse the next one, whichever caller's append lands first, which a
-// figure that moved only at Drawn could not do. An Offloaded record below
-// half was never drawn, so it moves nothing here either.
-func (h *Headroom) Drawn(c RecordClass) {
-	// A repack copy draws on the repack reserve, not the headroom, so it
-	// moves no counter here.
-	if c == RepackCopy {
+func (h *Headroom) Drawn(d Draw) {
+	// A draw that never happened counts nothing: records appended while
+	// at the limit are the counter's figure, and an admission that drew
+	// nothing — below the limit, a repack copy, or an Offloaded record
+	// never appended — has none to count.
+	if !d.drew {
 		return
 	}
 	// The at-limit read runs before the section: the set's lock is of this
 	// same capacity domain, and no two locks of one domain are held at
 	// once.
 	atLimit := h.atLimit()
+	if !atLimit {
+		return
+	}
 	h.mu.Lock()
-	if h.outstanding > 0 {
-		// The append settles the draw it was admitted with, whichever way
-		// the limit moved in between.
-		h.outstanding--
-	}
-	if atLimit {
-		h.draws++
-	}
+	h.draws++
 	h.mu.Unlock()
 }
 
 // Refund returns one admission's draw when the append it admitted failed:
 // the record never landed, so the headroom never spent it. It is a no-op
-// for an admission that drew nothing — below the limit, a RepackCopy, or
-// an Offloaded record below half, which was never appended at all — and it
+// for an admission that drew nothing — below the limit, a RepackCopy, or an
+// Offloaded record below half, which was never appended at all — and it
 // reverses nothing in headroom_draws, which counts only records that
 // appended.
-func (h *Headroom) Refund(c RecordClass) {
-	// A repack copy's admission drew on the repack reserve, never here, so
-	// its refund has nothing to return — whichever other draws are still
-	// outstanding.
-	if c == RepackCopy {
+func (h *Headroom) Refund(d Draw) {
+	if !d.drew {
 		return
 	}
 	h.mu.Lock()
-	if h.outstanding > 0 {
-		h.outstanding--
-		h.drawn -= RecordCharge
-		if h.drawn < 0 {
-			h.drawn = 0
-		}
+	h.drawn -= RecordCharge
+	if h.drawn < 0 {
+		h.drawn = 0
 	}
 	h.mu.Unlock()
 }
@@ -303,8 +291,18 @@ func (h *Headroom) Draws() uint64 {
 
 // BelowHalf reports whether the headroom's drawing side has fallen below
 // half its size without the open reserve — the content-write check this
-// table consults beside its own classes.
+// table consults beside its own classes. It reads true only while the
+// journal is at its limit: headroom drawn during a past episode does not
+// throttle content writes once the journal left the limit.
+//
+// decision: the gate is the same at-limit predicate the draw itself runs
+// under, so the figure BelowHalf reports moves only with admissions the
+// limit gated. The footprint read runs before the section for the same
+// domain reason as Admit's.
 func (h *Headroom) BelowHalf() bool {
+	if !h.atLimit() {
+		return false
+	}
 	pool := recordsOf(h.clampedPool())
 	size := pool - h.reserve
 	h.mu.Lock()

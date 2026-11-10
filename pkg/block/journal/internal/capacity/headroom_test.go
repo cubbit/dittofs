@@ -222,20 +222,33 @@ func TestHeadroomDrawsOnlyAtLimit(t *testing.T) {
 	// The journal is at its limit when the footprint plus a segment cap
 	// would pass the maximum; a record appended otherwise moves nothing.
 	h, f := newFull(t, 1024)
-	h.Drawn(Release)
+	below, err := h.Admit(context.Background(), Release)
+	if err != nil {
+		t.Fatalf("the below-limit admission was refused: %v", err)
+	}
+	h.Drawn(below)
 	if got := h.Draws(); got != 0 {
-		t.Fatalf("a record drawn below the limit moved headroom_draws to %d, want 0", got)
+		t.Fatalf("a record appended below the limit moved headroom_draws to %d, want 0", got)
 	}
 
 	f.footprint.Store(1 << 40) // the maximum: any roll would pass it
-	h.Drawn(Release)
-	h.Drawn(Truncate)
+	at, err := h.Admit(context.Background(), Release)
+	if err != nil {
+		t.Fatalf("the at-limit admission was refused: %v", err)
+	}
+	mid, err := h.Admit(context.Background(), Truncate)
+	if err != nil {
+		t.Fatalf("the at-limit truncate admission was refused: %v", err)
+	}
+	h.Drawn(mid) // the journal left the limit between the admission and the landing
+	h.Drawn(at)
 	if got := h.Draws(); got != 2 {
 		t.Fatalf("records drawn at the limit moved headroom_draws to %d, want 2", got)
 	}
 
 	f.footprint.Store(0)
-	h.Drawn(Release)
+	below2, _ := h.Admit(context.Background(), Release)
+	h.Drawn(below2)
 	if got := h.Draws(); got != 2 {
 		t.Fatalf("a record drawn below the limit moved headroom_draws to %d, want 2", got)
 	}
@@ -259,7 +272,7 @@ func TestRepackCopyNeverRefused(t *testing.T) {
 	if !got.Append {
 		t.Fatalf("a repack copy was told not to append")
 	}
-	h.Drawn(RepackCopy)
+	h.Drawn(got)
 	if h.Draws() != drawsBefore {
 		t.Fatalf("the repack copy moved headroom_draws from %d to %d", drawsBefore, h.Draws())
 	}
@@ -274,17 +287,19 @@ func TestAdmitThenDrawnChargesOneRecord(t *testing.T) {
 	h, f := newFull(t, bigRecords)
 	f.footprint.Store(1 << 40)
 	for i := 0; i < bigRecords-4097; i++ {
-		if _, err := h.Admit(context.Background(), Release); err != nil {
+		d, err := h.Admit(context.Background(), Release)
+		if err != nil {
 			t.Fatalf("draw %d toward the reserve edge failed: %v", i, err)
 		}
-		h.Drawn(Release)
+		h.Drawn(d)
 	}
 	// reserve+1 records remain: the next removal is admitted and consumes
 	// the last drawing-side record; the one after is refused.
-	if _, err := h.Admit(context.Background(), Release); err != nil {
+	last, err := h.Admit(context.Background(), Release)
+	if err != nil {
 		t.Fatalf("with one record over the reserve a removal was refused: %v", err)
 	}
-	h.Drawn(Release)
+	h.Drawn(last)
 	if _, err := h.Admit(context.Background(), Release); !errors.Is(err, core.ErrNoSpace) {
 		t.Fatalf("after the reserve-edge record landed, the next removal answered %v, want ErrNoSpace", err)
 	}
@@ -309,7 +324,7 @@ func TestAdmitBelowTheLimit(t *testing.T) {
 		if !got.Append {
 			t.Fatalf("admission %d below the limit was told not to append", i+1)
 		}
-		h.Drawn(Release)
+		h.Drawn(got)
 	}
 	if got := h.Draws(); got != 0 {
 		t.Fatalf("records appended below the limit moved headroom_draws to %d, want 0", got)
@@ -317,10 +332,11 @@ func TestAdmitBelowTheLimit(t *testing.T) {
 
 	f.parkAtLimit()
 	for i := 0; i < bigRecords-4096; i++ {
-		if _, err := h.Admit(context.Background(), Release); err != nil {
+		d, err := h.Admit(context.Background(), Release)
+		if err != nil {
 			t.Fatalf("draw %d at the limit toward the reserve edge failed: %v", i, err)
 		}
-		h.Drawn(Release)
+		h.Drawn(d)
 	}
 	_, err := h.Admit(context.Background(), Release)
 	noSpaceOrFatal(t, err)
@@ -399,19 +415,23 @@ func TestConcurrentAdmitNeverOverdraws(t *testing.T) {
 
 func TestRefundRestoresOneRecord(t *testing.T) {
 	// The append an admission drew for failed: Refund hands the record
-	// back, and the same count of admissions fits again after the whole
-	// drawing side has been drawn and refunded once.
+	// back — and only that admission's record — so the same count of
+	// admissions fits again after the whole drawing side was drawn.
 	h, f := newFull(t, bigRecords)
 	f.parkAtLimit()
-	drawWith(t, h, Release, bigRecords-4096)
+	drawWith(t, h, Release, bigRecords-4097) // one record short of exhaustion
 
-	// The last admission's append failed; the one beside it, withdrew.
-	h.Refund(Release)
+	// The last admission's append failed.
+	last, err := h.Admit(context.Background(), Release)
+	if err != nil {
+		t.Fatalf("the last admission over the reserve edge was refused: %v", err)
+	}
+	h.Refund(last)
 	if _, err := h.Admit(context.Background(), Release); err != nil {
 		t.Fatalf("after a refund of the failed append's draw, the removal was still refused: %v", err)
 	}
 	// And the headroom_draws counter still counts what actually appended:
-	// the refunded record never landed, so it was never drawn here.
+	// the refunded record never landed, so it was never counted.
 	if got := h.Draws(); got != 0 {
 		t.Fatalf("the refund moved headroom_draws to %d, want 0", got)
 	}
@@ -422,17 +442,22 @@ func TestRefundAfterNoDrawIsNoop(t *testing.T) {
 
 	// Below the limit nothing drew: a refund returns nothing, and the
 	// drawing side stays whole for the later at-limit run.
-	h.Refund(Release)
+	below, err := h.Admit(context.Background(), Release)
+	if err != nil {
+		t.Fatalf("the below-limit admission was refused: %v", err)
+	}
+	h.Refund(below)
 	f.parkAtLimit()
 	drawWith(t, h, Release, bigRecords-4096)
-	for i := 0; i < bigRecords-4096; i++ {
-		h.Drawn(Release) // each record appended: its draw is settled
-	}
-	_, err := h.Admit(context.Background(), Release)
+	_, err = h.Admit(context.Background(), Release)
 	noSpaceOrFatal(t, err)
 
 	// A repack copy drew on the repack reserve: nothing to refund.
-	h.Refund(RepackCopy)
+	rc, err := h.Admit(context.Background(), RepackCopy)
+	if err != nil {
+		t.Fatalf("the repack copy was refused: %v", err)
+	}
+	h.Refund(rc)
 	if _, err := h.Admit(context.Background(), Release); err == nil {
 		t.Fatalf("refunding a repack copy returned a headroom record anyway")
 	}
@@ -442,14 +467,17 @@ func TestRefundAfterNoDrawIsNoop(t *testing.T) {
 	h2, f2 := newFull(t, bigRecords)
 	f2.parkAtLimit()
 	drawWith(t, h2, Release, 2049)
-	for i := 0; i < 2049; i++ {
-		h2.Drawn(Release)
-	}
 	_, err = h2.Admit(context.Background(), Hold)
 	noSpaceOrFatal(t, err)
-	h2.Refund(Hold)
-	h2.Refund(Offloaded)
-	// Both refunds returned nothing: the drawing side is still one record
+	off, err := h2.Admit(context.Background(), Offloaded)
+	if err != nil {
+		t.Fatalf("below half, the Offloaded record was refused: %v", err)
+	}
+	if off.Append {
+		t.Fatalf("below half, the Offloaded record was told to append")
+	}
+	h2.Refund(off) // a Draw never drawn: no-op by its token
+	// The refunds returned nothing: the drawing side is still one record
 	// past half, so a removal is admitted and the half refusal stands for
 	// the class that frees nothing.
 	if _, err := h2.Admit(context.Background(), Hold); err == nil {
@@ -462,19 +490,64 @@ func TestRefundAfterNoDrawIsNoop(t *testing.T) {
 
 func TestRefundAtTheOpenReserveEdge(t *testing.T) {
 	// An Open's draw on its reserve is refundable like any other: a failed
-	// open loss record hands its reserve record back, and a refund past
-	// every draw clamps at zero.
+	// open loss record hands its record back. The token a Draw carries is
+	// the fact that its admission drew, not a one-use right: refunding it
+	// twice returns the record twice, so pairing one Refund with one failed
+	// append is the caller's to keep — the clamp at zero is the only wall
+	// the headroom holds.
 	h, f := newFull(t, bigRecords)
 	f.parkAtLimit()
 	drawWith(t, h, Delete, bigRecords-4096) // the whole drawing side
-	drawWith(t, h, Open, 4096)              // the whole open reserve
-	h.Refund(Open)
+	lastOpen, err := h.Admit(context.Background(), Open)
+	if err != nil {
+		t.Fatalf("the first Open on the reserve was refused: %v", err)
+	}
+	h.Refund(lastOpen)
 	if _, err := h.Admit(context.Background(), Open); err != nil {
 		t.Fatalf("a failed open record's draw was not refunded: %v", err)
 	}
-	h.Refund(Open) // settled: nothing outstanding; must clamp, not go below zero
-	h.Refund(Open)
+	h.Refund(lastOpen) // replayed: returns the same record again
 	if _, err := h.Admit(context.Background(), Open); err != nil {
-		t.Fatalf("a refund past the settled draws returned headroom anyway: %v", err)
+		t.Fatalf("a replayed refund returned nothing, want the record back once more")
+	}
+}
+
+func TestRefundOfABelowLimitAdmissionStealsNoDraw(t *testing.T) {
+	// A below-limit admission drew nothing, so its failed append has
+	// nothing to refund — even once the journal has reached the limit and
+	// other callers hold real draws: the refund must not return one of
+	// theirs.
+	h, f := newFull(t, bigRecords)
+	below, err := h.Admit(context.Background(), Release)
+	if err != nil {
+		t.Fatalf("the below-limit admission was refused: %v", err)
+	}
+	f.parkAtLimit()
+	drawWith(t, h, Release, bigRecords-4096) // other callers draw the side
+	_, err = h.Admit(context.Background(), Release)
+	noSpaceOrFatal(t, err)
+	h.Refund(below) // the journal reached the limit in between: still its own draw token, drew nothing
+	if _, err := h.Admit(context.Background(), Release); err == nil {
+		t.Fatalf("the refund of an admission that drew nothing returned another caller's draw")
+	}
+}
+
+func TestBelowHalfGatedAtTheLimit(t *testing.T) {
+	// Below half is a state of the journal at its limit: headroom drawn in
+	// a past episode must not throttle content writes once the journal left
+	// the limit, and must re-arm the moment it is back.
+	h, f := newFull(t, bigRecords)
+	f.parkAtLimit()
+	drawWith(t, h, Release, 3000) // half is 2,048: well below
+	if !h.BelowHalf() {
+		t.Fatalf("at the limit and below half, BelowHalf reads false")
+	}
+	f.footprint.Store(0)
+	if h.BelowHalf() {
+		t.Fatalf("below the limit, BelowHalf still reads true, throttling content writes from a past episode")
+	}
+	f.parkAtLimit()
+	if !h.BelowHalf() {
+		t.Fatalf("back at the limit, BelowHalf reads false over the same drawn figure")
 	}
 }
