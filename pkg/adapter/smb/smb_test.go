@@ -5,25 +5,39 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/config"
 	"github.com/cubbit/dittofs/pkg/adapter/smb"
+	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 )
 
 func valid() config.SMB {
-	s := config.SMB{Adapter: config.Adapter{
-		Addrs:             []netip.Addr{netip.MustParseAddr("127.0.0.1")},
-		DrainDeadline:     90 * time.Second,
-		IdleTimeout:       15 * time.Minute,
-		WriteDeadline:     60 * time.Second,
-		HandshakeDeadline: 30 * time.Second,
-		FrameDeadline:     30 * time.Second,
-	}}
-	s.Dialects.Min, s.Dialects.Max = "2.1", "3.1.1"
-	s.PendingCap, s.PendingDeadline = 10*time.Minute, 60*time.Second
+	s := config.DefaultSMB()
+	s.Addrs = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
 	return s
+}
+
+// deps is the Deps New requires, Service and Budgets, and nothing else.
+func deps() adapter.Deps {
+	return adapter.Deps{Service: vfstest.Null{}, Budgets: &resources.Budgets{}}
+}
+
+// New refuses Deps missing Service or Budgets, naming the field, and accepts
+// every other field nil.
+func TestNewRequiresServiceAndBudgets(t *testing.T) {
+	for field, d := range map[string]adapter.Deps{
+		"Deps.Service": {Budgets: &resources.Budgets{}},
+		"Deps.Budgets": {Service: vfstest.Null{}},
+	} {
+		if _, err := smb.New(d, valid()); err == nil || errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), field) {
+			t.Errorf("New without %s: %v, want refused naming %s", field, err, field)
+		}
+	}
+	if _, err := smb.New(deps(), valid()); !errors.Is(err, errors.ErrUnsupported) {
+		t.Errorf("New with only Service and Budgets: %v, want accepted as far as errors.ErrUnsupported", err)
+	}
 }
 
 // New refuses an invalid setting with the validator's error, naming the field,
@@ -31,10 +45,10 @@ func valid() config.SMB {
 func TestNewValidatesFirst(t *testing.T) {
 	bad := valid()
 	bad.Dialects.Min = "2.0.2"
-	if a, err := smb.New(adapter.Deps{}, bad); a != nil || err == nil || !strings.Contains(err.Error(), "Dialects.Min") || errors.Is(err, errors.ErrUnsupported) {
+	if a, err := smb.New(deps(), bad); a != nil || err == nil || !strings.Contains(err.Error(), "Dialects.Min") || errors.Is(err, errors.ErrUnsupported) {
 		t.Errorf("New with a bad Dialects.Min: %v, %v; want the validator's error naming Dialects.Min", a, err)
 	}
-	if a, err := smb.New(adapter.Deps{}, valid()); a != nil || !errors.Is(err, errors.ErrUnsupported) {
+	if a, err := smb.New(deps(), valid()); a != nil || !errors.Is(err, errors.ErrUnsupported) {
 		t.Errorf("New with valid settings: %v, %v; want errors.ErrUnsupported", a, err)
 	}
 }

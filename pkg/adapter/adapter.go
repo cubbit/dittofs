@@ -6,6 +6,7 @@ package adapter
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"net/netip"
 	"time"
@@ -30,9 +31,8 @@ type Adapter interface {
 
 	// Reconfigure adds and removes listeners and applies live settings to
 	// connections set up after it returns. s is the adapter's own protocol's
-	// shape, config.NFS or config.SMB; the other protocol's is refused with an
-	// error. A restart-only setting is refused with an error wrapping
-	// config.ErrRestartRequired; the node applies it by Stop, New and Start.
+	// shape, config.NFS or config.SMB; the other protocol's, or any other
+	// type, is refused with an error.
 	Reconfigure(ctx context.Context, s config.Settings) error
 
 	// Stop moves serving to draining to stopped. ctx's deadline is the drain
@@ -63,12 +63,29 @@ const (
 	StateStopped
 )
 
+// String is the state's name, as logs and the API spell it.
+func (s State) String() string {
+	switch s {
+	case StateConfigured:
+		return "configured"
+	case StateServing:
+		return "serving"
+	case StateDraining:
+		return "draining"
+	case StateStopped:
+		return "stopped"
+	}
+	return fmt.Sprintf("State(%d)", uint8(s))
+}
+
 // Health is what the node reads for readiness and its conditions.
 type Health struct {
 	State      State
-	Ready      bool     // serving with every listener bound
 	Conditions []string // the conditions this adapter raises now, by name: adapter_listener_lost
 }
+
+// Ready is serving with no condition raised, so every listener bound.
+func (h Health) Ready() bool { return h.State == StateServing && len(h.Conditions) == 0 }
 
 // ConnInfo is one open connection.
 type ConnInfo struct {

@@ -19,19 +19,35 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/config"
 	"github.com/cubbit/dittofs/pkg/adapter/nfs"
+	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 )
 
 func valid() config.NFS {
-	s := config.NFS{Adapter: config.Adapter{
-		Addrs:             []netip.Addr{netip.MustParseAddr("127.0.0.1")},
-		DrainDeadline:     90 * time.Second,
-		IdleTimeout:       15 * time.Minute,
-		WriteDeadline:     60 * time.Second,
-		HandshakeDeadline: 30 * time.Second,
-		FrameDeadline:     30 * time.Second,
-	}}
-	s.TLS.MinVersion, s.TLS.Mode = "1.3", "opportunistic"
+	s := config.DefaultNFS()
+	s.Addrs = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
 	return s
+}
+
+// deps is the Deps New requires, Service and Budgets, and nothing else.
+func deps() adapter.Deps {
+	return adapter.Deps{Service: vfstest.Null{}, Budgets: &resources.Budgets{}}
+}
+
+// New refuses Deps missing Service or Budgets, naming the field, and accepts
+// every other field nil.
+func TestNewRequiresServiceAndBudgets(t *testing.T) {
+	for field, d := range map[string]adapter.Deps{
+		"Deps.Service": {Budgets: &resources.Budgets{}},
+		"Deps.Budgets": {Service: vfstest.Null{}},
+	} {
+		if _, err := nfs.New(d, valid()); err == nil || errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), field) {
+			t.Errorf("New without %s: %v, want refused naming %s", field, err, field)
+		}
+	}
+	if _, err := nfs.New(deps(), valid()); !errors.Is(err, errors.ErrUnsupported) {
+		t.Errorf("New with only Service and Budgets: %v, want accepted as far as errors.ErrUnsupported", err)
+	}
 }
 
 // New refuses an invalid setting with the validator's error, naming the field,
@@ -39,10 +55,10 @@ func valid() config.NFS {
 func TestNewValidatesFirst(t *testing.T) {
 	bad := valid()
 	bad.TLS.Mode = "always"
-	if a, err := nfs.New(adapter.Deps{}, bad); a != nil || err == nil || !strings.Contains(err.Error(), "TLS.Mode") || errors.Is(err, errors.ErrUnsupported) {
+	if a, err := nfs.New(deps(), bad); a != nil || err == nil || !strings.Contains(err.Error(), "TLS.Mode") || errors.Is(err, errors.ErrUnsupported) {
 		t.Errorf("New with a bad TLS.Mode: %v, %v; want the validator's error naming TLS.Mode", a, err)
 	}
-	if a, err := nfs.New(adapter.Deps{}, valid()); a != nil || !errors.Is(err, errors.ErrUnsupported) {
+	if a, err := nfs.New(deps(), valid()); a != nil || !errors.Is(err, errors.ErrUnsupported) {
 		t.Errorf("New with valid settings: %v, %v; want errors.ErrUnsupported", a, err)
 	}
 }
@@ -92,10 +108,10 @@ func TestNewLoadsTheTLSFiles(t *testing.T) {
 	write(t, garbage, []byte("not a certificate"))
 	tlsOn := func(cert, key, ca string) config.NFS {
 		s := valid()
-		s.TLS.CertFile, s.TLS.KeyFile, s.TLS.ClientCA = cert, key, ca
+		s.TLS = config.TLS{Mode: "require", CertFile: cert, KeyFile: key, ClientCA: ca}
 		return s
 	}
-	if _, err := nfs.New(adapter.Deps{}, tlsOn(cert, key, cert)); !errors.Is(err, errors.ErrUnsupported) {
+	if _, err := nfs.New(deps(), tlsOn(cert, key, cert)); !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatalf("a self-signed pair and CA: %v, want past loading to errors.ErrUnsupported", err)
 	}
 	for _, c := range []struct {
@@ -109,7 +125,7 @@ func TestNewLoadsTheTLSFiles(t *testing.T) {
 		{"missing CA", missing, tlsOn(cert, key, missing)},
 		{"garbage CA", garbage, tlsOn(cert, key, garbage)},
 	} {
-		_, err := nfs.New(adapter.Deps{}, c.s)
+		_, err := nfs.New(deps(), c.s)
 		if err == nil || errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), c.file) {
 			t.Errorf("%s: %v, want refused naming %s", c.name, err, c.file)
 		}

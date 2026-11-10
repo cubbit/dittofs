@@ -26,7 +26,7 @@ type Listener struct {
 // NewServer returns the adapter New hands back: each listener bound on each
 // of the settings' Addrs, all or none at Start; Reconfigure binds them on an
 // added address the same way. s is the protocol's whole shape, which New was
-// given; core reads its Adapter.
+// given; core reads its Common part.
 func NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error) {
 	return nil, fmt.Errorf("core: new server: %w", errors.ErrUnsupported)
 }
@@ -37,7 +37,8 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 // Reconfigure applies next, the server's own protocol's shape, to connections
-// set up after it returns.
+// set up after it returns; the other protocol's, or any other type, is
+// refused.
 func (s *Server) Reconfigure(ctx context.Context, next config.Settings) error {
 	return fmt.Errorf("core: reconfigure: %w", errors.ErrUnsupported)
 }

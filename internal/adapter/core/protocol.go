@@ -81,9 +81,9 @@ type ReplayCache interface {
 	// before Wrap; the caller's reply is then wrapped in place.
 	//
 	// ponytail: the copies Store keeps for NFSv3's and NFSv4.0's duplicate
-	// request cache and for SMB's replay are charged to no pool; only
+	// request cache and for SMB's replay are charged to no budget; only
 	// NFSv4.1's slot cache is charged. Charge them to the connection-state
-	// pool when a replay cache's size shows in a profile.
+	// budget when a replay cache's size shows in a profile.
 	Store(h Header, reply *resources.Buf)
 }
 

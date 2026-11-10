@@ -10,18 +10,25 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter/config"
 )
 
-// New builds the NFS adapter, configured: it validates s and loads its TLS
-// files, refusing a setting it cannot apply, and opens nothing.
+// New builds the NFS adapter, configured: it validates s and d's required
+// fields and loads the TLS files, refusing what it cannot apply, and opens
+// nothing.
 func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) {
-	if err := config.Validate(s); err != nil {
+	if err := s.Validate(); err != nil {
 		return nil, err
 	}
-	if s.TLS.CertFile != "" {
+	switch {
+	case d.Service == nil:
+		return nil, errors.New("nfs: Deps.Service is required")
+	case d.Budgets == nil:
+		return nil, errors.New("nfs: Deps.Budgets is required")
+	}
+	if s.TLS.Mode != "off" {
 		if _, err := tlsconfig.ServerConfig(tlsconfig.Config{
 			CertFile:   s.TLS.CertFile,
 			KeyFile:    s.TLS.KeyFile,
 			ClientCA:   s.TLS.ClientCA,
-			MinVersion: s.TLS.MinVersion,
+			MinVersion: "1.3",
 		}); err != nil {
 			return nil, fmt.Errorf("nfs: TLS: %w", err)
 		}

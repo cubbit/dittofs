@@ -1,51 +1,57 @@
 type Adapter struct {
-	Addrs []netip.Addr
+	Addrs []netip.Addr `json:"-"`
 
-	DrainDeadline time.Duration `default:"90s"`
+	DrainTimeout time.Duration `json:"drain_timeout"`
 
-	IdleTimeout time.Duration `default:"15m"`
+	IdleTimeout time.Duration `json:"idle_timeout"`
 
-	WriteDeadline time.Duration `default:"60s"`
+	WriteTimeout time.Duration `json:"write_timeout"`
 
-	HandshakeDeadline time.Duration `default:"30s"`
+	HandshakeTimeout time.Duration `json:"handshake_timeout"`
 
-	FrameDeadline time.Duration `default:"30s"`
+	ReadTimeout time.Duration `json:"read_timeout"`
 
-	Disabled []string `default:""`
+	DisabledOperations []string `json:"disabled_operations"`
+}
+
+func (a Adapter) Common() Adapter
+
+type TLS struct {
+	Mode     string `json:"mode"`
+	CertFile string `json:"cert_file"`
+	KeyFile  string `json:"key_file"`
+	ClientCA string `json:"client_ca"`
 }
 
 type NFS struct {
 	Adapter
+	TLS TLS `json:"tls"`
+}
 
-	TLS struct {
-		CertFile   string `default:""`
-		KeyFile    string `default:""`
-		ClientCA   string `default:""`
-		MinVersion string `default:"1.3"`
-		Mode       string `default:"opportunistic"`
-	}
+type Dialects struct {
+	Min string `json:"min"`
+	Max string `json:"max"`
 }
 
 type SMB struct {
 	Adapter
+	Dialects Dialects `json:"dialects"`
 
-	Dialects struct {
-		Min string `default:"2.1"`
-		Max string `default:"3.1.1"`
-	}
+	PendingTimeout time.Duration `json:"pending_timeout"`
 
-	PendingCap time.Duration `default:"10m"`
-
-	PendingDeadline time.Duration `default:"60s"`
+	RecallTimeout time.Duration `json:"recall_timeout"`
 }
 
-type Settings interface{ common() Adapter }
+type Settings interface {
+	Validate() error
+	Common() Adapter
+}
 
-func AdapterOf(s Settings) Adapter
+func DefaultNFS() NFS
 
-func Validate(s Settings) error
+func DefaultSMB() SMB
 
-var ErrRestartRequired = errors.New("config: restart required")
+func (s NFS) Validate() error
 
-func RestartRequired(old, next Settings) error
+func (s SMB) Validate() error
 

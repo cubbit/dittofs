@@ -33,11 +33,12 @@ type Buf struct {
 // fixed-size slab per class, allocated once at start, when a profile shows
 // collection time from transfer-class buffers limiting throughput.
 type BufPool struct {
-	budget *Budget
+	budget *WaitBudget
 }
 
-// NewBufPool builds a pool whose every buffer is reserved from b.
-func NewBufPool(b *Budget) *BufPool {
+// NewBufPool builds a pool whose every buffer is reserved from b, a receive
+// or reply budget.
+func NewBufPool(b *WaitBudget) *BufPool {
 	return &BufPool{budget: b}
 }
 

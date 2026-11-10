@@ -19,11 +19,14 @@ const (
 	StateStopped
 )
 
+func (s State) String() string
+
 type Health struct {
 	State      State
-	Ready      bool
 	Conditions []string
 }
+
+func (h Health) Ready() bool
 
 type ConnInfo struct {
 	Protocol string
@@ -47,13 +50,19 @@ type Serving struct {
 type Deps struct {
 	Service vfs.Service
 
-	Pools   *resources.Pools
+	Budgets *resources.Budgets
 	Metrics *metrics.Registry
 	Tracer  trace.Tracer
 	Logger  *slog.Logger
 
-	Watch func(loop string) (turn, idle, stop func())
+	Watch func(loop string) Loop
 
 	Dial func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+}
+
+type Loop interface {
+	Turn()
+	Idle()
+	Close()
 }
 
