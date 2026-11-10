@@ -630,7 +630,7 @@ func TestLossOutranksContentBelowItsVersion(t *testing.T) {
 
 	// A fill resolved below the loss's version is masked inside its extent.
 	b := rec(2, 0)
-	if _, err := fs.fill(7, id, write(0, 12, b, 2), ver(3)); err != nil {
+	if _, err := fs.fill(7, id, write(0, 12, b, 2), 1, ver(3)); err != nil {
 		t.Fatalf("fill = %v, want no error", err)
 	}
 	for _, p := range heldPieces(&fs, id) {

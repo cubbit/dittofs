@@ -202,11 +202,15 @@ func (f *file) fillParts(p Placed, fn func(Placed)) {
 // winning the comparison. The checks and the insert run under the file's
 // lock, in one update, whose delta it returns.
 //
+// The fill's record is held under seq, which is required: p.Seq is ignored,
+// as WriteRetain ignores it. A record's seq is never 0, so an entry held under
+// 0 would fail every read's header check.
+//
 // A fill refused for either reason changes nothing, the claim included: the
 // file is claimed only once both checks pass. On a file with no entry it
 // leaves no entry, since an update that leaves nothing behind drops the empty
 // entry it was given.
-func (fs *files) fill(tag core.ShareTag, id core.FileID, p Placed, asOf core.Version) (HeldDelta, error) {
+func (fs *files) fill(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq, asOf core.Version) (HeldDelta, error) {
 	return fs.update(id, func(f *file) error {
 		if err := f.check(tag, id); err != nil {
 			return err
@@ -217,6 +221,7 @@ func (fs *files) fill(tag core.ShareTag, id core.FileID, p Placed, asOf core.Ver
 		if err := f.claim(tag, id); err != nil {
 			return err
 		}
+		p.Seq = seq
 		f.fill(p)
 		return nil
 	})

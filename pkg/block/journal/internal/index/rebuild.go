@@ -246,6 +246,10 @@ func (b *rebuilder) Feed(r Record) error {
 // land and need the superseded pieces the replay cuts, in which case the
 // replay grows a hook at the cut computing what a hold keeps.
 //
+// The piece must carry its record's sequence number in r.Seq: a retained piece
+// is held again as it is when its record fails, and a held entry with no
+// sequence number fails every read's header check.
+//
 // Once Finish has begun the piece is refused with errRebuilt: a piece the
 // shard has already drained would never reach the file it names.
 func (b *rebuilder) Retain(id core.FileID, r Retained) error {

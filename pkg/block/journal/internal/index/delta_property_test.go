@@ -162,7 +162,7 @@ func (w *deltaWorld) run(f *deltaFile, kind int) {
 		if e == whole {
 			e = ext(0, 1+int64(w.rng.IntN(4096)))
 		}
-		d, err = w.fs.fill(f.tag, f.id, Placed{Extent: e, Record: r, Version: ver(v)}, w.fs.asOf(f.id))
+		d, err = w.fs.fill(f.tag, f.id, Placed{Extent: e, Record: r, Version: ver(v)}, 1, w.fs.asOf(f.id))
 		if err != nil {
 			w.fatalf(f, "fill refused: %v", err)
 		}

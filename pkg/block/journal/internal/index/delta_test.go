@@ -231,21 +231,21 @@ func TestMutatorDeltas(t *testing.T) {
 		{"writeRetain/refusal", dirty4k, through(rival, ok(func(f *file) { f.writeRetain(write(0, 4096, rec(2, 0), 10)) })), zero, isOther},
 
 		{"fill/hit: a gap", dirty4k, func(fs *files, id core.FileID) (HeldDelta, error) {
-			return fs.fill(owner, id, write(4096, 4096, rec(2, 0), 5), ver(1))
+			return fs.fill(owner, id, write(4096, 4096, rec(2, 0), 5), 1, ver(1))
 		}, at(HeldDelta{HeldBytes: 4096}), nil},
 		{"fill/miss: under held content", dirty4k, func(fs *files, id core.FileID) (HeldDelta, error) {
-			return fs.fill(owner, id, write(0, 4096, rec(2, 0), 0), ver(1))
+			return fs.fill(owner, id, write(0, 4096, rec(2, 0), 0), 1, ver(1))
 		}, zero, nil},
 		{"fill/refusal: stale", dirty4k, func(fs *files, id core.FileID) (HeldDelta, error) {
-			return fs.fill(owner, id, write(4096, 4096, rec(2, 0), 5), ver(0))
+			return fs.fill(owner, id, write(4096, 4096, rec(2, 0), 5), 1, ver(0))
 		}, zero, is(core.ErrStaleFill)},
 		// A stale fill by a rival is refused with the other-share error, not
 		// ErrStaleFill: the tag check runs before the staleness check.
 		{"fill/refusal: another share's file, stale", dirty4k, func(fs *files, id core.FileID) (HeldDelta, error) {
-			return fs.fill(rival, id, write(4096, 4096, rec(2, 0), 5), ver(0))
+			return fs.fill(rival, id, write(4096, 4096, rec(2, 0), 5), 1, ver(0))
 		}, zero, isOther},
 		{"fill/refusal: another share's file", dirty4k, func(fs *files, id core.FileID) (HeldDelta, error) {
-			return fs.fill(rival, id, write(4096, 4096, rec(2, 0), 5), ver(1))
+			return fs.fill(rival, id, write(4096, 4096, rec(2, 0), 5), 1, ver(1))
 		}, zero, isOther},
 
 		{"truncate/hit: all the dirty content", dirty4k, through(owner, ok(func(f *file) { f.truncate(0, ver(10)) })),
@@ -349,7 +349,7 @@ func TestFillClaimsTheFile(t *testing.T) {
 	p := write(0, 4096, rec(2, 0), 5)
 
 	var fs files
-	d, err := fs.fill(owner, id, p, ver(1))
+	d, err := fs.fill(owner, id, p, 1, ver(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestFillClaimsTheFile(t *testing.T) {
 			return nil
 		})
 		fs.settleRemovals(id, ver(3))
-		d, err := fs.fill(owner, id, p, asOf)
+		d, err := fs.fill(owner, id, p, 1, asOf)
 		if !errors.Is(err, core.ErrStaleFill) || d != (HeldDelta{}) {
 			t.Fatalf("fill = (%+v, %v), want the zero delta and ErrStaleFill", d, err)
 		}
@@ -400,7 +400,7 @@ func TestFillClaimsTheFile(t *testing.T) {
 			}
 		})
 		before := fs.inspect(id)
-		d, err := fs.fill(owner, id, p, ver(0))
+		d, err := fs.fill(owner, id, p, 1, ver(0))
 		if !errors.Is(err, core.ErrStaleFill) || d != (HeldDelta{}) {
 			t.Fatalf("fill = (%+v, %v), want the zero delta and ErrStaleFill", d, err)
 		}
@@ -417,11 +417,11 @@ func TestFillClaimsTheFile(t *testing.T) {
 	// A fill of a file another tag owns changes nothing, and the owner stays.
 	t.Run("another share's", func(t *testing.T) {
 		var fs files
-		if _, err := fs.fill(owner, id, p, ver(1)); err != nil {
+		if _, err := fs.fill(owner, id, p, 1, ver(1)); err != nil {
 			t.Fatal(err)
 		}
 		before := fs.inspect(id)
-		d, err := fs.fill(rival, id, write(8192, 4096, rec(3, 0), 6), ver(1))
+		d, err := fs.fill(rival, id, write(8192, 4096, rec(3, 0), 6), 1, ver(1))
 		var other *core.OtherShareError
 		if !errors.As(err, &other) || d != (HeldDelta{}) {
 			t.Fatalf("fill = (%+v, %v), want the zero delta and an OtherShareError", d, err)
