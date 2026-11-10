@@ -878,8 +878,9 @@ under its delegation's stateid for any of its open-owners and principals
 (RFC 8881 §9.1.3), so an `OpenRef` naming a delegation is not bound to a
 principal. The service **MUST** refuse it with `NotYours` unless the delegation
 is held by the call's client on a session (`Call.Session` set); a `Delegated`
-reference on a call with no session is `NotYours`, since NFSv4.0 is offered no
-delegation. More generally, a `Service` call with no session that presents
+reference on a call with no session is `StateError{NotYours, Sessioned: true}`,
+since NFSv4.0 is offered no delegation and every delegation is created on a
+session. More generally, a `Service` call with no session that presents
 a reference to state created on a session — an `OpenRef`, `StateRef` or
 `GrantID`, or a lock owner whose lock state was — is
 `StateError{NotYours, Sessioned: true}`, whatever its principal: the state
@@ -1376,8 +1377,13 @@ again, [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)),
 shard's open state, by the grace-instance rule of §3.4), `OldState` (a stateid
 seqid older than the state's current one), `BadState` (every
 other stateid or `FileId` whose record is missing — expired, freed, a removed or
-moved share's, never issued), `NoReclaim` (a reclaim in a shard the client's
-record does not list, an administrator's revoke having emptied it included),
+moved share's, never issued), `NoReclaim` (one reclaim refused while its
+client still owes reclaims: a shard the client's record does not list, or state
+the shard does not hold; or a reconnect whose open is gone),
+`NoGrace` (a reclaim from a client with nothing left to reclaim: no shard its
+record lists is in a grace instance it has not finished, an administrator's
+revoke having emptied its list included,
+[RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)),
 `ReclaimConflict` (a reclaim that conflicts with one already reclaimed in the
 same grace), `LocksHeld` (a lock owner released, or a lock state freed, while
 it still holds locks; a live open or grant freed), `BadSeqID` (an
@@ -2781,19 +2787,19 @@ tree working:
 
 | Slice | What moves | What is deleted or closed |
 | --- | --- | --- |
-| 0 | the neutral value types (§3.0) and errors out of `pkg/metadata` into `pkg/vfs` | nothing yet: the adapters keep importing `pkg/metadata` until stage 5 deletes them |
+| 0 | the neutral value types (§3.0) and errors out of `pkg/metadata` into `pkg/vfs` | nothing yet: the adapters keep importing `pkg/metadata` until RFC 20's plan, stage 5, deletes them |
 | 1 | `vfs.Service` and `vfs.New` with its lifecycle (§2.5), the filesystem delegating to today's `metadata.Service`; `vfstest`'s `Record`, `Null` and `RecordingCallbacks`; the integration tier's harness | nothing: this is the harness every later slice tests against |
 | 2 | shares, identity and admission: `Root`, `SecInfo`, `ListShares` and the pseudo-filesystem into the service; a cross-protocol test that a quiesced or netgroup-restricted share is refused on every entry path | the four admission paths and three auth-context builders, `v4/pseudofs`, `shareEntryStatus`, the NFSv3 permission cache; closes #3040 and E-01. An adapter's own admission check stays until every operation on its path calls the service: removed earlier, it fails open |
 | 3 | the filesystem reaches today's lock manager through RFC 14 §11.3's seven views, served by a shim over the manager, so `Write`'s `CheckIO` and every other open-state call go through one seam. RFC 14's open state is built new, and its `*openstate.Table` then replaces the shim behind the same views | nothing yet; `pkg/metadata/lock` is deleted once the table replaces it, never ported, and none of its lock persistence carries forward |
 | 4 | `Write`, `Read` and `Commit`, with the attempt deadline and the write verifier — the four copies of the write sequence become §5.1, returning `WCC` | the adapters' copies and the payload-scope call sites |
 | 5 | `Open` and `Close`: deny modes, delete on close, releases | the six deny-mode sites; closes E-08 and #2927 |
 | 6 | range-list `Lock` and `Unlock`, then `Copy` and `Clone` | the copychunk loops, `common/clone.go` |
-| 7 on | the namespace, attributes and the rest; then [RFC 20](rfc-20-adapters.md)'s shared pipeline and error tables | each adapter's copy as its last caller moves; the per-protocol request plumbing |
+| 7 on | the namespace, attributes and the rest; then [RFC 20](rfc-20-adapters.md)'s shared pipeline and error tables | the per-protocol request plumbing; each adapter's copy goes with the v1 adapters (below) |
 | cluster | `vfs.NewGateway`, `vfs.Serve`, and the router and transport behind them, with the multi-node tier (§8) | nothing: a single node is unchanged |
 
-> decision: stage 5 deletes the v1 adapters outright (RFC 20's plan), so the
-> adapter-side deletions of this table happen at once and the allowlist never
-> exists.
+> decision: RFC 20's plan, stage 5, deletes the v1 adapters outright, so the
+> adapter-side deletions of this table, in slices 2 and 4 to 7, happen at once
+> and no allowlist of adapter imports exists.
 
 - **The RFC moves with the code.** A slice that needs a signature change edits
   this RFC in the same PR, and a reviewer rejects code that disagrees with it.

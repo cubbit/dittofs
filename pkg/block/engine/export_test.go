@@ -404,6 +404,12 @@ func (e *Engine) SetCloneMarkerHook(h cloneMarkerFunc) {
 	e.cloneMarker = h
 }
 
+// SetCloneRemovalHook makes h run for each clone removal start step 4 finds,
+// standing in for the clone's rebuild.
+func (e *Engine) SetCloneRemovalHook(h cloneRemovalFunc) {
+	e.cloneRemoval = h
+}
+
 // FakeCloneDone lets a clone run past its registrations to its done signal,
 // standing in for the joins a served engine does not have yet.
 func (e *Engine) FakeCloneDone() { e.fakeCloneDone.Store(true) }
@@ -425,6 +431,28 @@ func (e *Engine) RemovalRunsDone(s entity.ShareID) int64 {
 		return 0
 	}
 	return b.gc.removals.runs[runDone].Load()
+}
+
+// RemovalRunsError is engine_removal_runs_total{result="error"} on the
+// share's journal's loop.
+func (e *Engine) RemovalRunsError(s entity.ShareID) int64 {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return 0
+	}
+
+	return b.gc.removals.runs[runError].Load()
+}
+
+// RemovalRunsConflict is engine_removal_runs_total{result="conflict"} on the
+// share's journal's loop.
+func (e *Engine) RemovalRunsConflict(s entity.ShareID) int64 {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return 0
+	}
+
+	return b.gc.removals.runs[runConflict].Load()
 }
 
 // Registrations is the count of f's source and destination registrations.
@@ -532,6 +560,47 @@ func (e *Engine) StageGrow(s entity.ShareID, f entity.FileID, size int64) error 
 
 // The calls below are what Close and Drop will run once built; until then
 // only tests call them, so they live here rather than in the engine.
+
+// HoldRemovalLoop builds j's group commit and removal loop as the first Start
+// would, and runs the group commit but not the loop, so what Start posts to
+// the loop stays on it, counted by RemovalsPending. The function returned
+// starts the loop, once.
+//
+// It copies how groupCommitFor assembles a group commit, so the two must
+// change together: a field groupCommitFor sets that this does not leaves the
+// held one different from the one Start builds.
+func (e *Engine) HoldRemovalLoop(j Journal) (run func()) {
+	e.gcMu.Lock()
+	defer e.gcMu.Unlock()
+
+	g := &groupCommit{
+		e:        e,
+		j:        j,
+		due:      map[entity.FileID]*dueFile{},
+		returned: make(chan struct{}),
+		wake:     make(chan struct{}, 1),
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+	g.ctx, g.cancel = context.WithCancel(withRetryingOwner(context.Background()))
+	g.removals = newRemovalLoop(e)
+
+	if e.gcs == nil {
+		e.gcs = map[Journal]*groupCommit{}
+	}
+
+	e.gcs[j] = g
+
+	go g.run()
+
+	var once sync.Once
+
+	return func() {
+		once.Do(func() {
+			go g.removals.run()
+		})
+	}
+}
 
 // CloseGroupCommits stops every journal's group commit and joins its
 // goroutine, as Close will: a batch in flight has its context cancelled, and
