@@ -262,7 +262,8 @@ extent read as zeros or end of file. It runs over stage 2's fake and the engine 
 temporary directory, `kvstore` on an in-memory `kv.KV` and `sim.TestClock`; a
 fault-injecting `kv.KV` consulting `sim.Fault` (stalls, errors, and a chosen file failing,
 which reaches the engine as that file's entry in `Existence.Commit`'s
-`map[FileID]error`), counting transactions with `kv.Counts`; a fake journal and handle
+`map[FileID]error`), around the in-memory `kv.KV`, whose own record (`Counts`) gives the
+transaction counts; a fake journal and handle
 implementing epic 1's interfaces and held to the journal's conformance suite (§1.5 rule 8),
 for pure-logic unit tests; and the journal's profiling
 harness (`journaltest/prof`) wired to the fixture.
@@ -312,10 +313,8 @@ harness (`journaltest/prof`) wired to the fixture.
    that has landed, and E2's test components: above all the fake journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
-   three kinds: the test clock, an in-memory implementation held to its interface's
-   conformance suite, or a fault wrapper. A test asserts on the engine's answers, on resulting
-   state and on what a double records of its own outputs, never on which calls the engine made.
+   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -356,8 +355,7 @@ harness (`journaltest/prof`) wired to the fixture.
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
    commits and conflicts on. The fake journal is for the engine's pure logic only, and no
    engine conformance row runs over it. It is held to the real journal by the journal's own
-   conformance suite (RFC 1 §9.4): it passes the suite's rows that need no crash, fault or
-   platform, the rows the real journal passes on `platform.OS`.
+   conformance suite (RFC 1 §9.4): it passes the RFC 1 §3 rows that need no real storage.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -600,8 +598,8 @@ owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition r
   it sits behind `engine_conformance`, listed in `known.yaml` until the journal calls it needs
   land (rule 6).
 - T2.3 The fault-injecting `kv.KV`: stalls, errors, and a chosen file's failure surfacing as
-  its entry in `Existence.Commit`'s `map[FileID]error`, from a `sim.Fault` schedule;
-  transaction counts from `kv.Counts`.
+  its entry in `Existence.Commit`'s `map[FileID]error`, from a `sim.Fault` schedule,
+  around the in-memory `kv.KV`; transaction counts come from that `kv.KV`'s own record (`Counts`).
 - T2.4 The fake journal and handle: versions, held and missing extents, `asOf`, markers,
   `Since`, the loss ring and generation, named refusals; for unit tests only (rule 8). It
   covers the data path's calls and passes the journal conformance suite's rows for them
@@ -1138,10 +1136,9 @@ follows the journal's, not this part's (§6 point 7).
    with no open among its Needs, since stage 2's clone path calls `Clone` and takes no open
    (point 13).
 10. **The fake `Content`** moves from `internal/vfs/content_test.go` to an importable package
-    so the `Content` check runs over it (T9.2). That check is the conformance suite holding it
-    to the engine, so the fake is an allowed double
-    ([RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)) only once the check
-    runs over both.
+    so the `Content` check, the conformance suite the engine also passes, runs over it (T9.2).
+    Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
+    three kinds.
 11. **Open state's `Releasing`**, the stage 1 follow-up, gates T5.4's tests and T8.3's
     unlink during `Resume`. The same
     follow-up could lift T8.6's ceiling: `CloneClose` reporting an orphan for a source whose
