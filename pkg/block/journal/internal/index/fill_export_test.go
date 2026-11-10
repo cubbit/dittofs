@@ -216,50 +216,51 @@ func TestFillExportHoldsOffloaded(t *testing.T) {
 	}
 }
 
-// TestCheckFillIndexBoundTagFree: the tag-free bound check predicts a fill's entries
-// the way a fill at no version would — every marker above it masks — so its
-// figure is never below the fill a checked caller admits: a gap under a marker
-// is refused here too, never passed and caught only later. It reserves
-// nothing, claims nothing and leaves no tag on the file it checked.
+// TestCheckFillIndexBoundTagFree: the tag-free bound check counts every
+// gap a fill of e could add — a marker only ever shrinks a real fill's
+// parts, so a mask never shrinks the figure: a marker a fill's version
+// outlives is caught here too, never only by the fill's own admission.
+// It reserves nothing, claims nothing and creates no entry.
 func TestCheckFillIndexBoundTagFree(t *testing.T) {
-	ix := New(4)
+	// Held [0,20) and [30,40) with a marker at version 5 over [20,30): a
+	// fill resolved above the marker holds [20,30) as one entry — the
+	// figure the bound must name. The count of three (two pieces and the
+	// marker) sits at the bound, so that fourth entry is refused; a figure
+	// that let the marker mask its gap would have passed it.
+	ix := New(3)
 	id := fid(51)
-	// One held piece stands in the count already.
-	if _, err := ix.WriteRetain(testTag, id, write(0, 10, rec(1, 0), 1), 1); err != nil {
-		t.Fatalf("WriteRetain: %v", err)
+	for i, p := range []Placed{write(0, 20, rec(1, 0), 1), write(30, 10, rec(1, 30), 2)} {
+		if _, err := ix.WriteRetain(testTag, id, p, core.Seq(i+1)); err != nil {
+			t.Fatalf("WriteRetain: %v", err)
+		}
 	}
-	// A marker above the fill's version masks [20,30) of it, so a fill of
-	// [10,40) at no version holds two gaps: [10,20) and [30,40).
 	if _, err := ix.Lose(id, ext(20, 10), ver(5)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
-	if err := ix.CheckFillIndexBound(id, ext(10, 40)); err != nil {
-		t.Fatalf("CheckFillIndexBound of two gaps at headroom = %v, want nil", err)
+	if err := ix.CheckFillIndexBound(id, ext(0, 40)); err == nil {
+		t.Fatal("CheckFillIndexBound of the gap the marker could not mask was granted at the bound, want a refusal")
 	}
-	// At the bound the figure is the one a checked caller could not resolve
-	// below: of [0,50) the marker masks [20,30), so the tag-free figure names
-	// three gaps ([0,10) is held and costs nothing), two over the headroom
-	// this bound leaves and refused.
-	ix2 := New(3)
-	if _, err := ix2.WriteRetain(testTag, id, write(0, 10, rec(1, 0), 1), 1); err != nil {
+	// The refused check reserved nothing: the count still stands at three.
+	if c := ix.fs.extentCount(); c != 3 {
+		t.Fatalf("after the check, count = %d, want 3", c)
+	}
+	// A fill inside a held piece adds no entry, so it fits the headroom.
+	if err := ix.CheckFillIndexBound(id, ext(5, 5)); err != nil {
+		t.Fatalf("CheckFillIndexBound inside a held piece = %v, want nil", err)
+	}
+
+	// A file with no entry holds nothing, so a fill of bytes is one wholly
+	// absent extent; at a bound holding one entry already, that second one
+	// is refused — and the check leaves the file table as it was.
+	ix2 := New(1)
+	if _, err := ix2.WriteRetain(testTag, fid(53), write(0, 10, rec(1, 0), 1), 1); err != nil {
 		t.Fatalf("WriteRetain: %v", err)
 	}
-	if _, err := ix2.Lose(id, ext(20, 10), ver(5)); err != nil {
-		t.Fatalf("Lose: %v", err)
-	}
-	if err := ix2.CheckFillIndexBound(id, ext(0, 50)); err == nil {
-		t.Fatal("CheckFillIndexBound over the bound was granted, want a refusal")
-	}
-	// The check claims nothing and reserves nothing: the count still stands
-	// at the two entries the fixture wrote — the held piece and the marker.
-	if c := ix2.fs.extentCount(); c != 2 {
-		t.Fatalf("after the checks, count = %d, want 2", c)
-	}
 	fresh := fid(52)
-	if err := ix.CheckFillIndexBound(fresh, ext(0, 100)); err != nil {
-		t.Fatalf("CheckFillIndexBound of a file with no entry = %v, want nil", err)
+	if err := ix2.CheckFillIndexBound(fresh, ext(0, 100)); err == nil {
+		t.Fatal("CheckFillIndexBound of a wholly absent file was granted at the bound, want a refusal")
 	}
-	if n := ix.fs.len(); n != 1 {
-		t.Fatalf("file table holds %d entries, want 1: the check created none", n)
+	if n := ix2.fs.len(); n != 1 {
+		t.Fatalf("file table holds %d entries, want the one the fixture wrote: the check created none", n)
 	}
 }

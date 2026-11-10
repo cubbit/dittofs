@@ -187,14 +187,15 @@ func (fs *files) checkFill(tag core.ShareTag, id core.FileID, asOf core.Version,
 	return nil
 }
 
-// checkFillIndexBound predicts a fill of e against the index's bound alone,
+// CheckFillIndexBound predicts a fill of e against the index's bound alone,
 // the one piece CheckFill needs beside the tag and staleness checks the
-// caller owns: it asks the same entry figure fillAdds draws — the gaps as a
-// fill at no version would hold, every marker above it — so the bound it
-// predicts can never name fewer entries than the fill a checked caller goes
-// on to admit, and a passing fill is never refused the wiring's own check
-// did not foresee. It takes the file's read lock, claims nothing and creates
-// no entry, exactly as FillGaps and checkFill do.
+// caller owns: it counts the gaps of e over the file's held pieces with no
+// marker masking any — only the fill's own version can lift a mask, and this
+// check runs before that version is known — so the figure is the ceiling the
+// fill's version can never exceed: whatever parts its resolution trims away,
+// the check never passes a fill the admission would refuse. It takes the
+// file's read lock, claims nothing, reserves nothing and creates no entry.
+// A refusal counts and names itself as the bound's others do.
 //
 // decision: the wiring that predicts a fill before it has resolved its
 // version — the admission the capacity gate runs — runs this tag-free bound
@@ -203,8 +204,13 @@ func (fs *files) checkFill(tag core.ShareTag, id core.FileID, asOf core.Version,
 // Overturned by a wiring that supplies both the tag and the version at
 // admission time, which should call CheckFill instead.
 func (ix *Index) CheckFillIndexBound(id core.FileID, e core.Extent) error {
-	var n int64
-	ix.fs.view(id, func(f *file) { n = f.fillAdds(Placed{Extent: e}) })
+	// A file with no entry holds nothing: a fill of bytes occupies one
+	// wholly absent extent, a zero-length one none — as FillGaps answers it.
+	n := int64(0)
+	if e.Len > 0 {
+		n = 1
+		ix.fs.view(id, func(f *file) { n = f.held.gaps(e) })
+	}
 	c, limit := ix.fs.count.Load(), ix.fs.limit.Load()
 	if c+max(n, 0) > limit {
 		ix.fs.refusals.Add(1)
