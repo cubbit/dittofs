@@ -38,6 +38,10 @@ const (
 type Stats struct {
 	Journals map[string]JournalStats // per device, as Deps.Devices names it
 	Shares   map[entity.ShareID]ShareStats
+	Node     NodeStats
+	// SelfFences is engine_self_fences_total{reason="store"}: each time the
+	// node fenced for a store that committed no write transaction.
+	SelfFences int64
 }
 
 // WriteOpts is what a write carries besides its bytes.

@@ -485,10 +485,9 @@ func (u *undo) unwind(err error) error {
 
 // The version limit while the journal serves (RFC 8 §2.7).
 const (
-	rateWindow          = 60               // the seconds the peak version rate looks back over
-	fenceAfter          = 30 * time.Second // the self-fence's window (RFC 8 §11.2)
-	triggerSampling     = time.Second      // the trigger's own sampling
-	defaultExistenceAge = time.Second      // RFC 13's proposed existence_age, with no settings
+	rateWindow          = 60          // the seconds the peak version rate looks back over
+	triggerSampling     = time.Second // the trigger's own sampling
+	defaultExistenceAge = time.Second // RFC 13's proposed existence_age, with no settings
 	retryFirst          = 10 * time.Millisecond
 	retryMost           = time.Second
 )
@@ -760,7 +759,10 @@ func (e *Engine) raiseLoop(vl *versionLimit) {
 		defer c.Add(-1)
 	}
 
-	ctx := e.raising.ctx
+	// Each raise loop is one retrying owner, for its whole life.
+	ctx := withRetryingOwner(e.raising.ctx)
+	defer e.fence.release(ownerOf(ctx)) // a stopped owner fails no more
+
 	wait := retryFirst
 
 	for {

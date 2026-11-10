@@ -22,13 +22,17 @@ import (
 // write's existence; and when the extent covers committed content, it waits
 // for recorded sync marks to cover the marks its sync returned. Under a store
 // that commits nothing either wait answers ErrDelay at the caller's deadline,
-// never success.
+// never success. While the self-fence holds it answers ErrDelay with
+// DelayCommit at once, or a read-only journal's refusal ahead of it.
 func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, off, n int64) (vfserr.Verifier, uint64, error) {
 	if off < 0 || n < 0 || n > math.MaxInt64-off {
 		return vfserr.Verifier{}, 0, vfserr.ErrInvalid
 	}
 	b, err := e.bindingOf(s)
 	if err != nil {
+		return vfserr.Verifier{}, 0, err
+	}
+	if err := e.fenceGate(b); err != nil {
 		return vfserr.Verifier{}, 0, err
 	}
 	e.stabilityPoints.Add(1)

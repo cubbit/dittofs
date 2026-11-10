@@ -940,8 +940,12 @@ func TestMarksRideOnABatchWhileFilesStayReady(t *testing.T) {
 	u, _ := newLoggedUnit(t, time.Millisecond, 1)
 	a := u.create(t, "a")
 	u.write(t, a, 0, []byte("committed"))
-	u.clock.Advance(time.Millisecond)
-	eventually(t, "a's write is committed", func() bool { return u.e.FileEntries() == 0 })
+	// The clock keeps moving: an advance before the group commit arms its timer
+	// would leave the write waiting for a tick that never comes.
+	eventually(t, "a's write is committed", func() bool {
+		u.clock.Advance(time.Millisecond)
+		return u.e.FileEntries() == 0
+	})
 	var pool []entity.FileID
 	for i := range 8 {
 		pool = append(pool, u.create(t, string(rune('p'+i))))

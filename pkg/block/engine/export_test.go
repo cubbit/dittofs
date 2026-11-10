@@ -391,7 +391,7 @@ func (e *Engine) Failing(j Journal, f entity.FileID) bool {
 func (e *Engine) SetConflictBound(d time.Duration) { e.conflictBound.Store(int64(d)) }
 
 // RetryingOwner reports whether ctx carries the retrying-owner mark.
-func RetryingOwner(ctx context.Context) bool { return isRetryingOwner(ctx) }
+func RetryingOwner(ctx context.Context) bool { return ownerOf(ctx) != nil }
 
 // SetAfterRegister makes h run once each clone's registrations are
 // installed; the clone then stops, its registrations undone, answering
@@ -753,4 +753,20 @@ func openTimers(timers *sync.Map) int {
 	})
 
 	return n
+}
+
+// WithRetryingOwner is ctx with the retrying-owner mark, so a test calls the
+// recorded store views as an owner that retries them does.
+func WithRetryingOwner(ctx context.Context) context.Context { return withRetryingOwner(ctx) }
+
+// StoreViews are the store views as the engine calls them, recorded by the
+// self-fence.
+func (e *Engine) StoreViews() (Existence, Content, Lifecycle) {
+	return e.d.Existence, e.d.Content, e.d.Lifecycle
+}
+
+// FenceBusy is the self-fence's count of write transactions outstanding and
+// whether a retrying owner's latest attempt failed.
+func (e *Engine) FenceBusy() (outstanding int64, failing bool) {
+	return e.fence.outstanding.Load(), e.fence.failing.Load() > 0
 }
