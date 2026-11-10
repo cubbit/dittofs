@@ -126,10 +126,8 @@ part can pass, and §15.2's §11.1 rows for `journal_full` and `journal_sync_fai
    that has landed, and E2's test components: above all the fake journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
-   three kinds: the test clock, an in-memory implementation held to its interface's
-   conformance suite, or a fault wrapper. A test asserts on the engine's answers, on resulting
-   state and on what a double records of its own outputs, never on which calls the engine made.
+   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -170,8 +168,7 @@ part can pass, and §15.2's §11.1 rows for `journal_full` and `journal_sync_fai
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
    commits and conflicts on. The fake journal is for the engine's pure logic only, and no
    engine conformance row runs over it. It is held to the real journal by the journal's own
-   conformance suite (RFC 1 §9.4): it passes the suite's rows that need no crash, fault or
-   platform, the rows the real journal passes on `platform.OS`.
+   conformance suite (RFC 1 §9.4): it passes the RFC 1 §3 rows that need no real storage.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -676,9 +673,10 @@ already took.
   `UsedBytes` in `Stats` equals the journal's for its tag (catches a share read from the
   wrong tag); a journal-maximum refusal whose `Missing` is above the room left, nothing
   freed: `Stats` still reports `journal_full` (catches a clear on room for the missing
-  amount alone, D9); on a full device with nothing written, a counting `FreeSpace` is
-  called once at the wake, then no more than once per second of the test clock, and never
-  by a `Stats` read (catches a clear nothing triggers, or a `Stats` that reads, D9, R32);
+  amount alone, D9); on a full device with nothing written, the seam's own record of the
+  `FreeSpace` reads it answered shows one at the wake, then no more than one per second of
+  the test clock, and none for a `Stats` read (catches a clear nothing triggers, or a `Stats`
+  that reads, D9, R32);
   with a file's state lock held through `export_test.go`, `Stats` returns within a second
   (catches a `Stats` that takes it, R32), and `Stats` under `-race` beside writes and the
   group commit.
