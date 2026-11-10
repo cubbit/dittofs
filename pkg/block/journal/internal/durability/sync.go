@@ -145,6 +145,9 @@ type Part struct {
 	CorruptRepairable uint64
 	// StaleExtents counts the losses of the stale reason.
 	StaleExtents uint64
+	// SupersededExtents counts the losses of the superseded reason, which
+	// never raise the generation.
+	SupersededExtents uint64
 
 	// DamagedSegments counts the segments that held a record which did not
 	// verify when it was read. A segment stays counted, with its row in
@@ -245,6 +248,7 @@ type Durability struct {
 	corruptDataLoss   uint64
 	corruptRepairable uint64
 	stale             uint64
+	superseded        uint64
 
 	// dmu guards damaged and unproduced.
 	//
@@ -805,6 +809,7 @@ func (d *Durability) Stats() Part {
 	p.CorruptDataLoss = d.corruptDataLoss
 	p.CorruptRepairable = d.corruptRepairable
 	p.StaleExtents = d.stale
+	p.SupersededExtents = d.superseded
 	// The generation is read in the same section as the ring: Lose raises it
 	// and publishes in one section, so the snapshot never holds the raise
 	// without its event, nor an event without its raise.

@@ -35,6 +35,9 @@ rfc1 / 9.4 / A / "repack under read":
   tests: [TestRFC1A_RepackUnderRead]
 rfc1 / 9.4 / A / "removals survive to `Since`":
   tests: [TestRFC1A_RemovalsSurviveToSince]
+rfc1 / 9.4 / A / "`Since` yields `Over` after the superseded write left the index":
+  owner: epic 4
+  reason: 'each held write keeps its Over, rebuilt from the records it superseded'
 rfc1 / 9.4 / A / "`Settle` drops by version, never content":
   owner: epic 8
   reason: 'Settle over held extents, both markers and synced loss records needs the data path''s Settle over the real journal'
@@ -201,7 +204,7 @@ rfc1 / 9.4 / D / "backlog age":
 rfc1 / 9.4 / D / "clean bytes count as occupancy":
   tests: [TestRFC1D_CleanBytesCountAsOccupancy]
 rfc1 / 9.4 / D / "metrics are reachable":
-  tests: [TestRFC1D_MetricsAreReachable]
+  tests: [TestRFC1D_MetricsAreReachable, TestMetrics_ConditionsMoveTheirMetric]
 rfc1 / 9.4 / D / "loss events":
   tests: [TestRFC1D_LossEvents]
 rfc1 / 9.4 / D / "segment held-bytes":

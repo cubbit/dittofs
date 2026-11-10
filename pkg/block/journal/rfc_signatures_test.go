@@ -113,7 +113,7 @@ var (
 		WrittenBytes: 0, FilledBytes: 0, FillRefused: 0, OfferedBytes: 0, MarkedBytes: 0,
 		ReleasedBytes: 0, FreedBytes: 0, RepackedBytes: 0, ReservationRefused: 0,
 		Syncs: 0, SyncFailures: 0, SyncReappendedBytes: 0, HeadroomDraws: 0,
-		CorruptExtentsDataLoss: 0, CorruptExtentsRepairable: 0, StaleExtents: 0,
+		CorruptExtentsDataLoss: 0, CorruptExtentsRepairable: 0, StaleExtents: 0, SupersededExtents: 0,
 		TornTails: 0, ScanResyncs: 0, IndexRefusals: 0, SegmentReopens: 0,
 		SpareRefusals: 0, DoubleRetires: 0,
 	}

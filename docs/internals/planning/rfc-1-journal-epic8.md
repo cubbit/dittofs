@@ -8,7 +8,7 @@ share's"), §3.1, §3.2, §3.4, §3.6, §3.7, §3.9 (the counters this epic incr
 parts the write and read paths touch: serialised appends, the record's fields, the whole-payload
 check, the header checked against its catalog entry).
 **Track:** B.
-**Epic 8 estimate: 15 subtasks, 60.25 man-days.**
+**Epic 8 estimate: 15 subtasks, 60.75 man-days.**
 **Depends on:** sync point **S2, red suite in CI**; epic 1's public types, error set and
 `Stats`; epic 2's reference model, fixture, profiler and test clock; epic 4's placement index
 (the per-file index, version counters, change version and floor buckets, extent bound, markers,
@@ -308,6 +308,7 @@ sections found every one of them below, in §1.2, or in the closing note of this
 | R55 | A held extent is reported as a write, whether `WriteAt` or `Fill` made it. A fill's version is at or below the caller's `applied`, so it is not yielded | invariant | RFC 1 §3.10 | T8.9 |
 | R56 | `Since` reads a consistent view of the file and never blocks writes to it for longer than a read does | MUST NOT | RFC 1 §3.10 | T8.9 |
 | R57 | A write's modification time is read from its record when `Since` yields it, verified like any record read, and is 0 for every other kind. A record that does not verify goes to epic 6's `Corrupt`, as a read's does | invariant | RFC 28 §2.3, §2.4, §3.3 | T8.9 |
+| R112 | A yielded write carries `Over`: the runs where it superseded another write of the file whose version is above `from`, taken from E4's per-extent record (epic 4's R50) even where the superseded write has left the index, and empty for every other kind. Without it the engine's existence commit writes no overwrite record there, and a later loss of the write reads as the older content instead of **Lost** | invariant | RFC 1 §3.10, RFC 6 §3.3 | T8.9 |
 | R58 | `Settle(id, v)` drops the markers of `id` at or below `v`, removal markers and synced loss records alike, every older unsettled one included (it works by version, not by record), and never a held extent, whatever its version. It appends nothing and is not persisted. A caller may also use it to discard a marker it will never apply; the removal's extent then reads lost wherever nothing offloaded holds it, and recovery yields the marker again after a crash (RFC 1 §3.10 as #3731 states it) | invariant | RFC 1 §3.10, RFC 8 §8.1 | T8.9 |
 | R59 | `Files` lists a file with a held extent, an unsettled removal marker or an unsettled synced loss record, in this share. `Extents` lists a file's held extents in offset order and is an answer about what the journal holds, not about what exists | invariant | RFC 1 §3.7 | T8.9 |
 | R60 | `DirtyFiles` is kept as a per-journal list of dirty files keyed by their oldest dirty byte's write time. A write that sets a file's first unset offloaded bit adds it. A removal that leaves a file no held or retained extent with an unset bit drops it, and a retained extent counts. It costs O(dirty files) | MUST | RFC 1 §3.7 | T8.9 |
@@ -439,8 +440,8 @@ the rule that a persisted index is not authoritative (E3, E5, epic 7).
   uses a pooled buffer, so its allocations stay flat (R101).
 - **D5, "the catalog entry that sent a read there" is the index's entry.** RFC 28 §2.4 asks a
   read to compare the header it finds with the catalog entry. The running journal has no
-  catalog in memory: it has the index entry, which holds the same fields (file, offset, length,
-  kind, sequence number, version, record offset) and the segment id. The read compares the
+  catalog in memory: it has the index entry, which holds the fields the comparison needs (file, version,
+  sequence number, and placement: segment, record offset, skip, extent). The read compares the
   header it finds with them. A `decision:` marker at the comparison says so, and that a
   journal rebuilt from a catalog compares against the entries recovery placed in the index,
   which are the catalog's.
@@ -991,11 +992,11 @@ its counter (R75); `ReservedBytes` read at the
 
 ### T8.9 `Since`, `Settle`, `Extents`, `Files` and `DirtyFiles`
 
-**Subtask T8.9 estimate: 4.75 man-days.**
+**Subtask T8.9 estimate: 5.25 man-days.**
 
 - **Track:** B. **Depends on:** T8.1, T8.8; E4's `Since` side, markers and file map (E4-3,
   E4-5); E5's positioned read; T6.2's loss records; T6.7's `Corrupt`.
-- **Covers:** R16, R53–R61, R108.
+- **Covers:** R16, R53–R61, R108, R112.
 - **Deliverables:** `since.go`: `Since(ctx, h, id, from)` yields, in version order, every held
   extent as a write, every unsettled marker (a marker to the end of the file with
   `Len = MaxInt64 - Off`) and every synced loss of the file, which T6.2's `Lose` registers as a marker in E4's marker set (epic 6's R84), above `from`, none
@@ -1005,6 +1006,8 @@ its counter (R75); `ReservedBytes` read at the
   yielding the extent on `UseCopy`; on `Dropped` of a synced record it yields the loss in its
   place, since the loss marker `Lose` registers postdates the view and a later `Settle` above it
   would otherwise erase a loss `Since` never reported (R53, R57, RFC 1 §3.10, RFC 28 §3.3), and ends with the context's error when the context is done (R16).
+  A write carries `Over` from E4-5's per-extent runs, filtered by `from` (R112); `Change` gains
+  the field RFC 1 §3.10 declares.
   `Settle(id, v)` drops the markers at or below `v` through E4-5, every older one too, and no held
   extent, appending nothing (R58).
   `Extents` and `Files` report held extents in offset order and the share's files with a held
@@ -1027,7 +1030,13 @@ its counter (R75); `ReservedBytes` read at the
   - `DirtyFiles` lists a file with a retained extent whose bit is unset, drops it when nothing
     unset remains, and a call costs O(dirty files) with no index walk and no record read.
   - A writer to the file during a `Since` is never blocked longer than a read would block it.
-- **Tests:** `TestRFC1A_RemovalsSurviveToSince` and `RemovalMarkers` at zero after `Settle` (R53 to
+  - A write that wholly superseded an older write above `from` is yielded with that write's
+    runs in `Over`, though the older write left the index; a removal, a loss and a write
+    above nothing else carry none.
+- **Tests:** `TestRFC1A_SinceYieldsOver`, the §9.4 "`Since` yields `Over` after the superseded
+  write left the index" row in the part before the crash, which stays in `known.yaml` for its
+  reopen until epic 7 (catches `Over` read from what the index still holds, R112);
+  `TestRFC1A_RemovalsSurviveToSince` and `RemovalMarkers` at zero after `Settle` (R53 to
   R58); a held extent written above a removal's marker, then a `Settle` above both, with the extent
   still held and read (catches a `Settle` that drops what is held, R58); two markers of one file
   and one `Settle` above both (R58); a marker discarded unapplied, a read of its extent, then a
@@ -1363,7 +1372,7 @@ Checkpoints:
 | 2 | T8.3, T8.15 | 8 | PR 1, E3 `format` | shares and the minimal `Open`: with PR 1, the S3 half this epic owes |
 | 3 | T8.4, T8.5, T8.6 | 12.25 | PR 2, E5's pool, roll and T5.9, E6's T6.6 and T6.7 | the tag rule, capacity and its headroom: the checks every appending call makes before it appends, in D6's order |
 | 4 | T8.7, T8.8 | 7 | PR 3, E6's T6.5 | the two paths that append beyond a plain write, which share the claim and the admission |
-| 5 | T8.9 | 4.75 | PR 4, E6 loss markers | the engine's surface for re-applying |
+| 5 | T8.9 | 5.25 | PR 4, E6 loss markers | the engine's surface for re-applying |
 | 6 | T8.10 | 4 | PR 3, E5's pool holding spares | reserving ahead, which can be open beside PR 4 and PR 5 |
 | 7 | T8.11, T8.12 | 8 | PR 5, PR 6 | the lock order over every package, the context rules every call then obeys, and the close that joins background work, which edit the same locks |
 | 8 | T8.13, T8.14 | 7.5 | PR 7 | `Stats` over every counter and the counted checks that read it |
@@ -1396,9 +1405,8 @@ A suggestion only: one pull request per subtask works as well.
   `Share(tag, limit, floor)` and no policy. This breakdown follows the RFC: epic 6's T6.1 removes
   the policy from the code, and its T6.6 adds `ErrJournalReadOnly`. Epic 1's document is revised
   to match in the same change as this breakdown.
-- **Floor buckets after open (R10).** RFC 1 §3.4 seeds the floor buckets only at open; T8.3 has
-  `Share` raise them to the share's floor, which the RFC does not state. Confirm with the RFC's
-  author and say it in RFC 1 §3.
+- **Floor buckets after open (R10).** Settled: RFC 1 §3.4 now states that `Share` raises every
+  bucket to its floor, never lowering one, as T8.3 builds it.
 - **The order in which refusals are named (D6) is this epic's.** RFC 1 §6 fixes only that `spare`
   is named last. Confirm the order with the RFC's author, and put it in the RFC.
 - **The open reserve's size and who may draw it (R111).** RFC 1 §6 sets aside 4,096 records (a

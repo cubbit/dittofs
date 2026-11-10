@@ -1,0 +1,59 @@
+func (a Adapter) Common() Adapter
+
+func (s NFS) Validate() error
+
+func (s SMB) Validate() error
+
+func DefaultNFS() NFS
+
+func DefaultSMB() SMB
+
+type Adapter struct {
+	Addrs []netip.Addr `json:"-"`
+
+	DrainTimeout time.Duration `json:"drain_timeout"`
+
+	IdleTimeout time.Duration `json:"idle_timeout"`
+
+	WriteTimeout time.Duration `json:"write_timeout"`
+
+	HandshakeTimeout time.Duration `json:"handshake_timeout"`
+
+	ReadTimeout time.Duration `json:"read_timeout"`
+
+	DisabledOperations []string `json:"disabled_operations"`
+}
+
+type NFS struct {
+	Adapter
+	TLS TLS `json:"tls"`
+
+	Versions VersionRange `json:"versions"`
+}
+
+type SMB struct {
+	Adapter
+	Dialects VersionRange `json:"dialects"`
+
+	PendingTimeout time.Duration `json:"pending_timeout"`
+
+	RecallTimeout time.Duration `json:"recall_timeout"`
+}
+
+type Settings interface {
+	Validate() error
+	Common() Adapter
+}
+
+type TLS struct {
+	Mode     string `json:"mode"`
+	CertFile string `json:"cert_file"`
+	KeyFile  string `json:"key_file"`
+	ClientCA string `json:"client_ca"`
+}
+
+type VersionRange struct {
+	Min string `json:"min"`
+	Max string `json:"max"`
+}
+

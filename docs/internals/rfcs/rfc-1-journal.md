@@ -1183,7 +1183,12 @@ or once everything it held was released — and dropping it raises the file's
 bucket to the entry's version. A file with no entry is compared against
 its bucket. At open every bucket starts at the highest content version on disk or
 in the floor, whichever is higher:
-no read that began before the open can still fill. A file that has an entry at
+no read that began before the open can still fill. `Share` raises every bucket
+to its `floor` before it returns the handle, never lowering one, since the
+buckets are seeded only at open: a `Fill` whose `asOf` came from an earlier
+incarnation of the share is then refused for a file with no entry. The raise
+is journal-wide, so an attach refuses the fills in flight of every share's files
+with no entry; attaches are rare, and a needless refusal costs a cache miss. A file that has an entry at
 open is held to the same rule: until its next change, the change version a read
 reports for it, and a `Fill` is checked against, may be anything from its
 entry's version up to its bucket's. So is a file whose entry a `Fill` created,
@@ -1608,8 +1613,11 @@ at or below `applied` and is not yielded. A write's `Over` names the runs where
 it superseded another write of the file whose version is above `from`: by the
 existence commit the superseded write has left the index, so only the journal
 can tell metadata, which writes an overwrite record there
-([RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)). The journal keeps it per held extent until `Settle` passes it,
-and recovery rebuilds it from the records on disk. `Since` of an unread file
+([RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)). The journal keeps it per held extent until a `Settle` at or above the write's
+version, which the caller issues only once that write's existence, with its `Over`, has
+committed ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)). Recovery rebuilds it from the records on disk, which is
+enough: `Over` matters only while a record of the superseded write is on disk, and once
+repack has dropped that record nothing of it is left to be held again. `Since` of an unread file
 yields `ErrUnreadable` and nothing else. `Since` reads a consistent view of the file
 and **MUST NOT** block writes to it for longer than a read does.
 
@@ -1746,17 +1754,19 @@ The rest of this section specifies the placement index. In memory, the journal
 maintains for each `FileID` the tag that owns it, kept while any segment holds a
 record of the file ([§3](#3.%20Interface)), and an offset-ordered set
 of disjoint held extents, each
-mapped to a record location and carrying its content version and offloaded bit,
+mapped to a record location and carrying its record's sequence number, its content version and its offloaded bit,
 together with the file's removal markers ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)), which carry a version and no
 location, and its **retained extents** ([§3.11](#3.11%20Snapshot%20holds)): superseded content still kept for
-offload, each with its extent, version, record location and offloaded bit. Retained
+offload, each with its extent, version, record location, sequence number and offloaded bit. Retained
 extents are a separate set, never consulted to serve a read, and may overlap held
 extents and each other.
 
 Extents **MUST** be disjoint: a write superseding part of an existing extent
 **MUST** split or narrow it, never leave two extents covering one offset. A
 lookup **MUST** be unambiguous without consulting sequence numbers — they order
-records during recovery, not during a read.
+records during recovery, not during a read. The entry carries its record's
+sequence number only so a read can compare it with the header it finds and so a
+record that does not verify can be named.
 
 ### 4.1 What it must answer
 
@@ -1807,8 +1817,15 @@ An entry costs about 53 bytes in order and 69 in random order, so the index's
 footprint tracks how many extents exist and is independent of how much content
 they describe.
 
-Measured with a 64-bit version, an entry is 40 bytes and 43 in a B-tree layout;
-with the 128-bit version of [§4.3](#4.3%20Versions) it is about 53, measured in one file of 10^6 extents.
+An entry is 48 bytes: the 8-byte start offset that keys it and a 40-byte value. The
+value keeps the version's 64-bit counter half, the epoch half being zero in this format
+version ([§4.3](#4.3%20Versions)), and the record's 64-bit sequence number, which a read
+compares with the header it finds
+([RFC 28 §2.4](rfc-28-journal-format.md#2.4%20The%20segment%20catalog)). With the tree
+around it, it measures about 53 bytes, in one file of 10^6 extents. A format version
+that raises the epoch widens the entry by eight bytes, to about 61 with the tree, above
+[§9.7](#9.7%20What%20CI%20checks%20instead%20of%20timing)'s 56-byte bound, so it has to
+restate both.
 That is for extents written in order. Written in random order, a B-tree's nodes
 are less full. One whose full node first hands its last key to a right sibling
 with room, splitting only when the sibling is full too, measures about 69 bytes
@@ -1923,7 +1940,8 @@ counter or sequence number is the largest 64-bit value: the journal never issues
 it, since its version limit is exclusive, so such a record comes from damage or
 from another writer. The width is fixed now so that a
 later format version can raise the epoch ([RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)) without changing the
-record layout or the metadata that stores versions. Every version the journal
+record layout or the metadata that stores versions; the in-memory index stores only the
+counter half while the epoch is zero ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)). Every version the journal
 assigns **MUST** exceed every version on disk and the floor supplied at open
 ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)). Once the epoch half is raised, the floor is compared
 on the counter half only: epochs are ordered per file by the extension that
@@ -3304,6 +3322,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§8.5](#8.5%20Protecting%20readers%20from%20reclamation) repack under read | Same, with a repack copy and unlink instead; assert the read sees the old or the new location, never neither. |
 | [§3.10](#3.10%20Settle%20and%20Since) removals survive to `Since` | Write, then truncate, deallocate and delete across three files; crash before any `Settle`; reopen; assert `Since(id, 0)` yields each held extent and each removal marker at its version, and `Since(id, v)` for a removal's own version `v` does not yield it. `Settle` each file at its removal's version; assert `Since` no longer yields the marker and `RemovalMarkers` is zero. Crash and reopen again; assert the markers are back, unsettled. |
 | [§3.10](#3.10%20Settle%20and%20Since) `Settle` drops by version, never content | Hold an extent above a truncate's marker and `Settle` at a version above both: assert the extent is still held and readable. Truncate a file twice, at v1 and v2, and `Settle` it at v2: assert `Since(id, 0)` yields neither marker. Write and sync a record, report it lost synced, and `Settle` at its version: assert `Since` stops yielding the loss. |
+| [§3.10](#3.10%20Settle%20and%20Since) `Since` yields `Over` after the superseded write left the index | Write `[0, 4)` KiB of F at v3, then `[0, 8)` KiB at v5, so v3 is wholly superseded and leaves the index. Assert `Since(F, 0)` yields only the v5 write, with `Over` `[0, 4)` KiB, and `Since(F, 3)` yields it with `Over` empty. Crash before any `Settle`; reopen; assert the same. `Settle(F, 5)`; assert `Since(F, 0)` still yields the v5 write, with `Over` empty. A journal that derives `Over` from what the index still holds yields it empty, and metadata, writing no overwrite record, reads a later loss of v5 as the older content instead of **Lost**. |
 | [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete) no resurrection | Write at v2, deallocate at v3 over it, then `Fill` the extent with a current `asOf` and version v2; assert the extent reads `missing`, and still does after reopen. Repeat with version v3: assert the fill is held, since only content below the marker's version is excluded. |
 | [§7.2](#7.2%20Repack) removal outlives its segment | Write a file, overwrite it, delete it, then reclaim until the segment holding the delete is the only one selected; crash and reopen. Assert the file does not exist. Repeat with the delete settled by `Settle(id, deleteVersion)` before reclamation and the unlink of the segments holding the old bytes not yet durable: hold their directory sync, let reclamation reach the segment holding the delete, crash and reopen; assert the file still does not exist. A reclaim gate that counts only content records treats a segment holding just a removal as empty; one that drops a removal before the unlink it covers is durable brings the old bytes back. |
 | [§3.3](#3.3%20Offload) removal during offload | Truncate an offered extent while `fn` runs, then read `offered`; assert it returns the offered bytes, `ReadAt` reports the extent missing, and a report naming it marks nothing. Repeat with delete. |
@@ -3387,7 +3406,7 @@ A check here fails by **coming back up describing something other than what is o
 | [§4.3](#4.3%20Versions) epoch half is zero | Write a record whose version has a non-zero epoch half into a segment; assert the open fails, as for an unknown kind. |
 | [§4.3](#4.3%20Versions) monotonicity | Reopen after a crash; assert the next sequence number and the next assigned content version each exceed every one on disk, and that recovery in shuffled segment order yields an identical index. |
 | [§3](#3.%20Interface) attached share raises the counter | Open a journal whose counter stands at 10^3; attach a share with a floor of 9×10^8; assert the first write through it is assigned a version above the floor, and that a design attaching without raising assigns one below the share's imported refs. |
-| [§3](#3.%20Interface) `Share` twice on one tag | Open tag T with a journal limit of 1 GiB at floor 10; call `Share(T, 2 GiB, 9×10^8)`. Assert it returns the same handle, the next write through it is assigned a version above 9×10^8, the handle's journal limit is 2 GiB, and one `Close` closes it for both callers: a later call through either is refused. |
+| [§3](#3.%20Interface) `Share` twice on one tag | Open tag T with a journal limit of 1 GiB at floor 10; call `Share(T, 2 GiB, 9×10^8)`. Assert it returns the same handle, the next write through it is assigned a version above 9×10^8, a `Fill` of a file with no entry, with an `asOf` read before the call, is refused, the handle's journal limit is 2 GiB, and one `Close` closes it for both callers: a later call through either is refused. |
 | [§3](#3.%20Interface) unclaimed tags are the caller's to name | Write and offload file F under tag T and dirty file G under tag P; reopen and attach only a new tag U. Assert the journal forgets neither T nor P on its own and serves G under P once P attaches; then `Forget(T)` as the caller names it and assert no read of F serves the old bytes and `Since` yields nothing of T. A journal that forgets every tag not yet attached drops P's acknowledged writes. |
 | [§3](#3.%20Interface) a cancelled call changes nothing or completes | Call `WriteAt`, `Release` and `Forget` with a context already done: assert each returns the context's error and appends no record, and a crash and reopen finds nothing of them. Cancel the context of a `WriteAt` held at the storage seam after its record is appended: assert it returns its version and the extent reads back. Cancel a `Sync` while it waits, then fail that sync at the seam: assert the cancelled call returned the context's error and the next `Sync` of the file reports the failure; fail another sync, call `Sync` with a done context, and assert the `Sync` after it still reports that failure. Fill a share to its limit and call `WriteAt` with a done context: assert it returns the context's error and takes no reservation. A journal that checks the context after appending leaves a write the caller was told failed but that recovery serves. |
 | [§3](#3.%20Interface) restamp after a lost store | `Init` a journal under installation I1 and write F; `Restamp` it to I2 with its own identity as `expect`; reopen. Assert `format` names I2, F still reads, and `Restamp` with another identity is refused and changes nothing. |
