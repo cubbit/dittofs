@@ -261,16 +261,19 @@ assertion**. See "Verifying a change" below. A test that has never failed is unv
 callback or state change. Wait on a channel, a `sync.WaitGroup` or the condition itself, with
 one generous timeout as a backstop. Polling the real condition with a short pause between polls
 counts as waiting on it; sleeping a fixed time and then checking does not. A duration the code
-under test waits on is advanced on the injected clock, not slept. On a loaded CI box, a sleep is
-long enough until the day it isn't.
+under test waits on is advanced on the injected clock, not slept; to show something does not
+happen, advance the clock past its deadline and assert. Where no clock can be injected, a bounded
+wait is the assertion, and a comment says so. On a loaded CI box, a sleep is long enough until
+the day it isn't.
 
 **No fixed ports, paths or global state.** Bind to `127.0.0.1:0`, write under `t.TempDir()`, and clean
 up with `t.Cleanup`, so tests run in parallel and on any host.
 
 **Fix a flake, never retry it.** A flaky test is either a race in the code or a race in the
 test, and both are bugs. Don't add retries, raise timeouts or skip it to get green. The
-harness's own policy (RFC 29 §4.7): no retries on pull requests; the retry on develop and
-nightly only labels a failure flaky. A flake you can't fix now is quarantined in
+harness's own policy (RFC 29 §4.7): no retries on pull requests; on develop and nightly a failure
+that passes on retry lets the cell through as flaky, recorded in `dt history` but not alerted.
+A flake you can't fix now is quarantined in
 `test/harness/quarantine.yaml` with an issue and an expiry date, and the issue fixes it.
 
 **Assertions name what they check.** A failure message says which value was wrong and what was
@@ -284,9 +287,11 @@ why; `test/harness/bin/dt` runs one locally. What follows is only what those don
 Don't start two suites by hand at once: they collide on ports and mounts. `dt` runs cells in
 parallel only where the registry says each one is isolated (`parallel: true`).
 
-**Integration** (`-tags=integration`, `-p 1`) is for a backend the host must provide: a real
-S3-compatible endpoint, beside Badger on disk. CI starts no such endpoint yet, so a test that
-needs it skips in every run and guards nothing until one is wired in; don't count it as
+**Integration** (`-tags=integration`, `-p 1`) is for a backend the host must provide. Today CI
+starts Postgres and a KMIP server for it (`needs:` in `test/suites.yaml`), so control-plane
+Postgres and the KMIP key provider are tested there. The tier is moving to a real S3-compatible
+endpoint beside Badger on disk, and away from Postgres. CI starts no S3 endpoint yet, so a test
+that needs one skips in every run and guards nothing until one is wired in; don't count it as
 coverage. Badger under `t.TempDir()` and in-memory SQLite are real implementations, and their
 tests run untagged. Durability and ordering changes need a test on a real filesystem with
 the crash simulated beneath the code under test (RFC 1 §1.3), because a memory backend proves
@@ -296,8 +301,9 @@ leaves nothing behind.
 
 **E2E** (`-tags=e2e`, sudo, a kernel client) is for what only a real mount shows: client
 caching, the mount handshake, interop. A rule that a unit or integration test can check belongs
-there instead. E2E has no `known` file yet (RFC 29 §4.7), so a failing e2e test is fixed, not
-listed.
+there instead. E2E has no `known` file yet (RFC 29 §4.7), so until it has one a failing e2e test
+is fixed, not listed; once it does, a known failure goes there only after CI shows it, with the
+fields §4.7 requires.
 
 **Build tags hide a whole file from `go build`, `go vet` and the linter.** A tagged test must
 compile under `go vet -tags=…`: a new tag goes into lint-go's list in `test/suites.yaml` in the
