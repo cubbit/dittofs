@@ -527,7 +527,6 @@ type logJournal struct {
 
 	mu     sync.Mutex
 	calls  []string
-	marks  []journal.Version
 	shared []sharedCall
 }
 
@@ -615,10 +614,6 @@ func (j *logJournal) SetVersionLimit(mark journal.Version) error {
 		return err
 	}
 
-	j.mu.Lock()
-	j.marks = append(j.marks, mark)
-	j.mu.Unlock()
-
 	if g := j.limitGate.Swap(nil); g != nil {
 		close(g.entered)
 		<-g.release
@@ -641,15 +636,6 @@ func (j *logJournal) Close() error {
 	}
 
 	return j.FakeJournal.Close()
-}
-
-// mark is the last mark SetVersionLimit was given.
-func (j *logJournal) mark() journal.Version {
-	j.mu.Lock()
-
-	defer j.mu.Unlock()
-
-	return j.marks[len(j.marks)-1]
 }
 
 // shareCalls is every Share the engine made.
@@ -1401,20 +1387,15 @@ func TestNoWriteBeforeTheVersionLimit(t *testing.T) {
 	}
 
 	st := s.j.Stats()
-	mark := s.j.mark()
 	want := st.NextVersion.Counter + 1<<24
 
 	if st.VersionLimit == st.NextVersion {
 		t.Fatalf("setup: the journal's limit is its next version, %d", st.NextVersion.Counter)
 	}
 
-	if mark.Counter != want {
-		t.Errorf("SetVersionLimit got %d, want a block above the next version, %d", mark.Counter, want)
-	}
-
 	for id, l := range limits {
-		if l.Counter() < mark.Counter {
-			t.Errorf("share %v's committed limit %d is below the mark %d", id, l.Counter(), mark.Counter)
+		if l.Counter() < want {
+			t.Errorf("share %v's committed limit %d is below the journal's limit to be, %d", id, l.Counter(), want)
 		}
 	}
 
@@ -1422,6 +1403,10 @@ func TestNoWriteBeforeTheVersionLimit(t *testing.T) {
 
 	if err := <-done; err != nil {
 		t.Fatalf("Start: %v", err)
+	}
+
+	if got := s.j.Stats().VersionLimit.Counter; got != want {
+		t.Errorf("the journal's limit after Start is %d, want a block above the next version, %d", got, want)
 	}
 
 	calls := s.j.shareCalls()

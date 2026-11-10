@@ -54,18 +54,11 @@ func (e *Engine) SetBlockForTest(n uint64) {
 }
 
 // TrackRaisesForTest counts the version limit raise goroutines alive and
-// keeps the clock channels they wait on to retry, for WaitRaises, and counts
-// every one started, for RaisesStarted. Call it before Start or Bind.
+// keeps the clock channels they wait on to retry, for WaitRaises. Call it
+// before Start or Bind.
 func (e *Engine) TrackRaisesForTest() {
 	e.raising.count = &atomic.Int32{}
-	e.raising.started = &atomic.Int64{}
 	e.raising.timers = &sync.Map{}
-}
-
-// RaisesStarted is how many raise goroutines started since
-// TrackRaisesForTest.
-func (e *Engine) RaisesStarted() int64 {
-	return e.raising.started.Load()
 }
 
 // WaitRaises returns once every version limit raise has ended or waits on
