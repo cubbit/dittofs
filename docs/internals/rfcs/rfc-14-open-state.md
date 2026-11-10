@@ -3378,19 +3378,20 @@ The table is tested in layers, cheapest first, as
 | --- | --- |
 | pure units | each subpackage of §11.1 alone: `ranges` (range algebra), `conflict` (§6's matrix cell by cell, §5.2's table), `sequence` (the owner sequence and the lock replay index), `grantfsm`, `grace` (`Done` marks and early end) |
 | table suite | §12's rows: the whole `*Table` through its seven views over the fixture — the in-memory store, a `Sink` that keeps what the table delivered, the fake clock, a seeded `Deps.Rand` |
-| fault injection | below the real table, not in place of it: a fault KV under the store, a failing `Sink`, the fake clock |
+| fault injection | below the real table, not in place of it: a fault KV under the store, a `Sink` under a fault wrapper, the fake clock |
 | model | interleavings of open, lock, recall and expiry under `-race`, against a sequential model; model-based fuzzing, below |
 | fuzz | every client-chosen input, below |
 | multi-node simulation | deterministic: fake clock, in-memory transport, injected faults, below |
 | service, cross-protocol | RFC 17 `vfstest/suite`'s `crossproto.go` (L1, L20); each adapter's translation is RFC 21's and RFC 22's |
 | e2e | RFC 29, below |
 
-A consumer of open state is tested over the real `*Table` on the in-memory
-store and the fake clock, through the view it uses: a test of the service's lock
-area takes `Locks` from it, and no consumer stands in for a view
-([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). The `Sink` keeps what the
-table delivered, its output, and a row asserts on that or on the table's state,
-never on which calls were made. Only the table suite covers every row, since a
+The views exist so that each area depends only on what it reads, which keeps
+the interfaces small. A consumer of open state is tested over the real `*Table`
+on the in-memory store and the fake clock, through the view it uses: a test of
+the service's lock area takes `Locks` from it, and no consumer stands in for a
+view ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). The `Sink` is an
+output sink: it keeps what the table delivered, and a row asserts on that or on
+the table's state, never on which calls were made. Only the table suite covers every row, since a
 rule that crosses views — a deny mode against a lock, an expiry releasing every
 kind — is a property of the one step.
 
