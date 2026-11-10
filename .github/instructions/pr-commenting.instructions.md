@@ -2,11 +2,11 @@
 applyTo: "**"
 ---
 
-# Writing PRs, review comments and replies
+# Writing review comments and replies
 
 Everything you write on a PR will be read by a person who is also reviewing other PRs today. Long, multi-point walls of text get skimmed or ignored, and information gets lost. Your job is to save the reader's time, not to look thorough.
 
-## Ground rules (apply to everything below)
+## Ground rules (apply to everything below, and to the PR description)
 
 - **Lead with the point.** First sentence says what matters. No preamble, no restating the task, the code or the comment you are answering.
 - **Code over prose.** If a fix or alternative can be shown, show it as a snippet instead of describing it.
@@ -16,7 +16,7 @@ Everything you write on a PR will be read by a person who is also reviewing othe
 
 ## PR title and description
 
-Follow [`.github/pull_request_template.md`](../pull_request_template.md), including the guidance in its comments.
+Opening a PR, title and description included, is covered by [`pr-opening.instructions.md`](pr-opening.instructions.md).
 
 ## Review comments
 

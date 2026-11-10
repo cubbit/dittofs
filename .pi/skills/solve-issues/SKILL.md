@@ -1,6 +1,6 @@
 ---
 name: solve-issues
-description: Work several DittoFS issues at once by fanning out one subagent per issue group, each working the fix-issue skill in its own worktree, then serializing the merges back into develop. Use whenever more than one DittoFS issue number is handed over in a single ask ("/solve-issues 1823 1843", "fix 1888 and 1923", "clear these four issues", "work through the audit backlog"). For a single issue, work fix-issue directly instead.
+description: Work several DittoFS issues at once by fanning out one subagent per issue group, each working the fix-issue skill in its own worktree, then shepherding their PRs through the merge queue. Use whenever more than one DittoFS issue number is handed over in a single ask ("/solve-issues 1823 1843", "fix 1888 and 1923", "clear these four issues", "work through the audit backlog"). For a single issue, work fix-issue directly instead.
 ---
 
 # Solving several issues in parallel
@@ -84,8 +84,9 @@ Each child prompt says explicitly which skill to work and where the boundaries
 are — the three genuinely shared resources below, plus this deviation:
 
 - **STOP after the PR is green and every Copilot comment is addressed. Do NOT
-  merge.** Report the PR number and a one-paragraph summary of the root cause.
-  Merges are serialized by the orchestrator (step 5).
+  merge by hand** — the PR was opened with auto-merge on. Report the PR number
+  and a one-paragraph summary of the root cause. The orchestrator follows the
+  merge queue (step 5).
 - **Scratchpad filenames must be issue-scoped** (`pr-body-1958.md`, not
   `pr-body.md`) and re-read immediately before publishing — a generic filename
   once carried the wrong `Closes #NNNN` onto a PR.
@@ -125,28 +126,25 @@ While children run, you hold the contended resources. When one asks:
   yourself, and hand the agent the IP. You own the teardown, including the
   identity check.
 
-## 5. Merge serially
+## 5. Shepherd the merge queue
 
-Never merge concurrently. Each squash-merge moves `develop`, which invalidates
-every other branch's base — CI green on a stale base proves nothing about the
-tree that actually results. Order by blast radius, smallest first. For each PR
-in turn:
+Do not merge by hand. Each PR was opened with auto-merge on
+(`.github/instructions/pr-opening.instructions.md`), and the target's merge queue
+serializes the landing: it tests every PR on top of the target plus the entries
+ahead of it, so nothing needs rebasing just because another PR landed.
 
-```bash
-gh pr checks <PR>                                  # still green on the current base?
-gh pr merge <PR> --squash --delete-branch
-```
+What the queue does not do is your part:
 
-Then, before the next one, rebase it:
-
-```bash
-cd ~/dittofs-worktrees/<next-slug>
-git fetch origin && git rebase origin/develop && git push --force-with-lease
-```
-
-and wait for its checks again. If a rebase conflicts or turns a check red, hand
-it back to that issue's agent through the supervisor channel — it has the
-context you do not.
+- **Check `Closes #NNNN` on every PR** (`gh pr view <PR> --json body`) before it
+  is approved.
+- **Gate the approval on Copilot.** Auto-merge fires once the PR is approved and
+  green, so every Copilot finding must be addressed before approval lands.
+- **Order, when it matters.** The queue lands PRs in the order they become ready;
+  where one must land before another, the PRs are stacked.
+- **Ejections.** A PR that conflicts or turns a check red inside the queue is
+  removed from it. Hand it back to that issue's agent through the supervisor
+  channel — it has the context you do not — and once fixed, re-queue it with
+  `gh pr merge <PR> --auto`.
 
 Once everything is landed, in the MAIN checkout on merged code:
 
