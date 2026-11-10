@@ -62,14 +62,7 @@ type FakeJournal struct {
 	refusal  error                   // what a write answers once read-only
 	undone   map[journal.FileID]bool // ReadOnly's files: every Sync naming one answers the refusal
 
-	refuseReserve error      // RefuseReserve's error: the next Reserve answers it
-	reserved      []Reserved // every Reserve, in order
-}
-
-// Reserved is one Reserve: the bytes and writes it asked.
-type Reserved struct {
-	N      int64
-	Writes int
+	refuseReserve error // RefuseReserve's error: the next Reserve answers it
 }
 
 // fakeFile is one file: its tag, its held pieces in offset order, and its
@@ -829,7 +822,6 @@ func (h *FakeHandle) Reserve(n int64, writes int) (engine.Reservation, error) {
 	if h.closed {
 		return nil, journal.ErrClosed
 	}
-	j.reserved = append(j.reserved, Reserved{N: n, Writes: writes})
 	if err := j.refuseReserve; err != nil {
 		j.refuseReserve = nil
 		return nil, err
@@ -843,13 +835,6 @@ func (j *FakeJournal) RefuseReserve(err error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.refuseReserve = err
-}
-
-// Reserves is every Reserve so far, in order.
-func (j *FakeJournal) Reserves() []Reserved {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	return slices.Clone(j.reserved)
 }
 
 // Markers is every removal marker the journal holds for file id, settled or
