@@ -1922,10 +1922,10 @@ func waitSpares(t *testing.T, p *segment.Pool) error {
 
 // waitStillParked asserts the wait does not answer on its own: the wait is
 // started, confirmed parked on the pool's settle condition, and only then
-// bounded by a short context, so a wait that never parks fails on a real
-// answer rather than on the absence of one, and a wait that wrongly wakes
-// fails on its wrong answer rather than on the bound. It returns what the
-// wait answered when the bound crossed it — waits expected to stay parked.
+// cancelled — no timer takes part, so a wait that never parks fails on the
+// parked count and a wait that wrongly wakes fails on its wrong answer. It
+// returns what the wait answered when the cancel reached it, which waits
+// expected to stay parked read as their context's cancellation.
 func waitStillParked(t *testing.T, p *segment.Pool) error {
 	t.Helper()
 
@@ -1933,12 +1933,13 @@ func waitStillParked(t *testing.T, p *segment.Pool) error {
 		err error
 	}
 	done := make(chan answered, 1)
-	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	go func() {
 		done <- answered{p.WaitSpares(ctx)}
 	}()
 	awaitParked(t, p, 1)
+	cancel()
 	select {
 	case a := <-done:
 		return a.err
@@ -1965,8 +1966,8 @@ func TestPoolWaitSparesReturnsOnlyOnceSettled(t *testing.T) {
 	h1 := seam.HoldFirst(t, kit.OpCreate, "*")
 	p.Start()
 	err := waitStillParked(t, p)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("WaitSpares while the fill's first make was held returned %v, want the context's deadline", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitSpares while the fill's first make was held returned %v, want the context's cancellation", err)
 	}
 	var ns *core.NoSpaceError
 	if errors.As(err, &ns) {
@@ -2007,56 +2008,87 @@ func awaitParked(t *testing.T, p *segment.Pool, n int) {
 	t.Fatalf("the pool never showed %d waits parked: %d are", n, p.ParkedWaitersForTest())
 }
 
+// awaitKickQueued waits for the pool's kick channel to report want, within a
+// bounded count of yields.
+func awaitKickQueued(t *testing.T, p *segment.Pool, want bool) {
+	t.Helper()
+
+	for range poolAttempts {
+		if p.KickQueuedForTest() == want {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("the pool's kick channel never reported %v", want)
+}
+
 // TestPoolWaitSparesQueuedKickIsNotAShortage: the kick a take enqueues while
-// the pool's pass has already settled stands as a promised pass — a wait
-// arriving in the gap between the settle and the worker's relaying of the
-// queued kick parks for that pass and is not answered as a shortage, and the
-// pass it was promised fills the spare the take drew.
+// the pool's worker is inside a pass stands as a promised pass — a wait
+// arriving in the gap between the pass's settle and the pass the queued kick
+// will run parks for that pass, and is not answered as a shortage, because
+// the settle sees the kick still queued.
 func TestPoolWaitSparesQueuedKickIsNotAShortage(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	seam, set, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
-	p.Start()
-	awaitCounters(t, "the content spare ready", p,
-		func(c segment.PoolCounters) bool { return c.Spares == 1 })
 
-	// The take hands the pool a spare and asks for its replacement, and a
-	// second hold parks the replacement's make the moment the worker
-	// relays the queued kick: whatever the worker has reached — take, ask,
-	// or the held make — the wait below must cross it as a promised pass
-	// and answer the refill, never the shortage of a pool it read idle.
-	h2 := seam.HoldFirst(t, kit.OpCreate, "*")
-	if id, err := p.Take(segment.Content); err != nil || id == 0 {
-		h2.Release()
-		t.Fatalf("the take of the ready spare: (%d, %v)", id, err)
+	// The worker is held inside the first pass, parked at the make the
+	// first hold takes, before any spare exists: a take now cannot be
+	// served from the pool — it refuses, naming spare — and the kick it
+	// enqueues cannot be consumed, because the worker is busy in the pass
+	// the hold has not released. The take's refusal is what places the ask
+	// without consuming anything.
+	h1 := seam.HoldFirst(t, kit.OpCreate, "*")
+	p.Start()
+	awaitCounters(t, "the worker parked at the first held make", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 0 })
+	<-h1.Reached()
+	if _, err := p.Take(segment.Content); !errors.Is(err, core.ErrNoSpace) {
+		h1.Release()
+		t.Fatalf("the take over an empty pool returned %v, want the spare refusal", err)
 	}
-	// The wait runs beside the parked make: an unmarked kick is answered
-	// as a shortage while the make it asked for still sits held, so the
-	// wait is joined on a goroutine, confirmed parked, and only then is the
-	// make let go — the wait that answers afterwards reads the refill, not
-	// a deadline and not a shortage.
+	awaitKickQueued(t, p, true)
+
+	// The waiter now arrives in the gap the review's case names: the pass
+	// is still inside its held make, the kick for the take's replacement
+	// sits queued. An unmarked settle — the make failing, or the pass
+	// ending below target — answers a wait arriving here as a shortage the
+	// queued pass will lift; with the kick the settle leaves the pool
+	// filling, and the wait parks for the pass the queue holds. The wait
+	// is joined, confirmed parked, and only then is the hold let go, so
+	// the pass completes, the queued pass runs, and the wait reads the
+	// refill.
+	// A single create failure is armed while the held make still sits in
+	// the seam: the fault is consulted when the call resumes, so the held
+	// make itself fails on release, the pass ends at its make-failure
+	// settle — and the take's kick still sits queued. That settle is the
+	// review's case in miniature: the queue holds a pass that will retry,
+	// and the parked waiter must read it as promised, never as a pool
+	// standing short.
+	if err := seam.Schedule(kit.Failing(kit.OpCreate, "*", 1, syscall.ENOSPC)); err != nil {
+		h1.Release()
+		t.Fatal(err)
+	}
 	answered := make(chan error, 1)
 	go func() { answered <- p.WaitSpares(t.Context()) }()
 	awaitParked(t, p, 1)
-	h2.Release()
+	h1.Release()
 	select {
 	case err := <-answered:
 		if err != nil {
 			t.Fatalf("WaitSpares over a take's queued kick answered %v, want the refill it promised", err)
 		}
 	case <-time.After(10 * time.Second):
-		h2.Release()
-		t.Fatal("WaitSpares never answered the refill its pass was holding")
+		h1.Release()
+		t.Fatal("WaitSpares never answered the fill its queued pass owed")
 	}
-	awaitCounters(t, "the take's replacement ready", p,
-		func(c segment.PoolCounters) bool { return c.Spares == 1 })
-	awaitCounters(t, "the take's replacement ready", p,
+
+	// The queued pass ran after the failed one: the fault spent its single
+	// failure, and the pool holds the content spare its target names.
+	awaitCounters(t, "the content spare the queued pass owed", p,
 		func(c segment.PoolCounters) bool { return c.Spares == 1 })
 	if err := set.Check(); err != nil {
-		t.Fatalf("the ledger after the take and its refill: %v", err)
-	}
-	if seam.Calls(kit.OpCreate) != 2 {
-		t.Fatalf("the pool made %d spares for a target of 1, want the take's one replacement", seam.Calls(kit.OpCreate))
+		t.Fatalf("the ledger after the fill: %v", err)
 	}
 	p.Stop()
 }
@@ -2099,9 +2131,6 @@ func TestPoolWaitSparesShortWhenAMakeFails(t *testing.T) {
 	p.Stop()
 }
 
-// TestPoolWaitSparesStoppedDuringTheWait: a wait blocked on a fill the seam
-// holds returns core.ErrClosed once the pool stops, and the Stop joins the
-// worker with the waiter gone, leaking nothing.
 // TestPoolWaitSparesStoppedDuringTheWait: a wait blocked on a fill the seam
 // holds returns core.ErrClosed once the pool stops, and the Stop joins the
 // worker with the waiter gone, leaking nothing. The wait is confirmed parked

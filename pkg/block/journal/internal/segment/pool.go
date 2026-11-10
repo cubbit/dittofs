@@ -618,12 +618,25 @@ func (p *Pool) Counters() PoolCounters {
 // queued — is marked before any waiter can read the pool as idle, so a wait
 // parks for the settle of the pass it raced and never answers a queued
 // refill as a shortage. A wait over a pool already idle reads its state and
-// returns without parking at all, and no polling measures anything. It is a
-// test-facing surface only: the journal whose writes are refused for want of
-// a spare answers retry, never waits (RFC 1 §3), so nothing production
-// reaches this. Withdrawn together with a both-ends answer — a Stats that
-// reports the ready spares, or a WriteAt that waits — by whoever needs one;
-// the other end then carries it.
+// returns without parking at all, and no polling measures anything.
+//
+// decision: the wait guarantees one thing only — that every class holds its
+// target of ready spares, and that the pool is not mid-fill when it says so.
+// It is not a promise the caller's next roll lands: a hold that claimed all
+// the ready spares makes an unreserved take refuse with the pool at its
+// targets, and a recycle reserved in flight can leave a class short again
+// the moment its settles — the wait reads ready counts, not reservations, so
+// it can answer nil while a waiter's roll is refused either way. Neither
+// deadlock nor hang comes of it: a refusal is the caller's retry, and the
+// next settle answers the move. Overturned only by a caller that needs the
+// wait to promise the roll: then the predicate must count what holds and
+// recycles claim, and the recycle paths must settle.
+//
+// decision: the wait is a test-facing surface only. The journal whose writes
+// are refused for want of a spare answers retry, never waits (RFC 1 §3), so
+// nothing production reaches this. Withdrawn together with a both-ends
+// answer — a Stats that reports the ready spares, or a WriteAt that waits —
+// by whoever needs one; the other end then carries it.
 func (p *Pool) WaitSpares(ctx context.Context) error {
 	p.mu.Lock()
 	switch {
@@ -735,11 +748,14 @@ func (p *Pool) shortAtLocked() int64 {
 
 // settle records a refill pass on its way out — or a Stop — as the pool's
 // settle event, waking every waiter: whatever a pass left the pool at is now
-// what a waiter reads, and no spare is being made until the next kick. It
-// takes mu, so no caller of it holds it.
+// what a waiter reads. A kick the pass leaves queued still promises the pass
+// it asked for, so the pool settles as filling only when its kick channel is
+// empty: a waiter arriving between a settle and the pass the queued kick
+// will run parks for that pass, and is not answered as a shortage the queued
+// retry will lift. It takes mu, so no caller of it holds it.
 func (p *Pool) settle() {
 	p.mu.Lock()
-	p.filling = false
+	p.filling = len(p.kick) > 0
 	p.settled.Broadcast()
 	p.mu.Unlock()
 }
@@ -747,7 +763,7 @@ func (p *Pool) settle() {
 // settleLocked is settle for a caller that holds mu: the broadcast reaches the
 // waiters before the state the caller built is let go of.
 func (p *Pool) settleLocked() {
-	p.filling = false
+	p.filling = len(p.kick) > 0
 	p.settled.Broadcast()
 }
 
