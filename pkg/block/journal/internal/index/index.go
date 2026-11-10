@@ -52,6 +52,57 @@ func (ix *Index) CheckWrite(id core.FileID, e core.Extent) error {
 	return ix.fs.checkWrite(id, e, false)
 }
 
+// FillGaps returns the sub-extents of e where a fill at v would hold
+// content: where nothing is held and no removal marker above v masks — a
+// marker at v masks nothing, since only content below a marker's version is
+// excluded — in offset order. It takes the file's lock shared, as a read, and
+// creates no entry: a file with no entry holds nothing, so a positive e comes
+// back whole, and a zero-length e has no gaps.
+func (ix *Index) FillGaps(id core.FileID, e core.Extent, v core.Version) []core.Extent {
+	var gaps []core.Extent
+	var placed []Placed
+	if e.Len <= 0 {
+		return gaps
+	}
+	if !ix.fs.view(id, func(f *file) {
+		f.fillParts(Placed{Extent: e, Version: v}, func(part Placed) {
+			placed, gaps = f.held.span(part.Extent, placed, gaps)
+		})
+	}) {
+		gaps = []core.Extent{e}
+	}
+	return gaps
+}
+
+// CheckFill predicts a fill on id against the file's tag and staleness
+// without reserving: it returns the refusal the fill itself would —
+// ErrOtherShare when the file is another share's, then ErrStaleFill when the
+// version id is checked against stands above asOf, the comparison files.fill
+// makes. It checks no bound: CheckFillIndexBound is the read-only one, and Fill
+// admits the real one. It claims nothing, creates no entry and takes the named file's
+// lock shared.
+func (ix *Index) CheckFill(tag core.ShareTag, id core.FileID, asOf core.Version) error {
+	return ix.fs.checkFill(tag, id, asOf)
+}
+
+// Fill holds the parts of p a fill at p's version holds — where nothing is
+// held, outside every marker above that version — as offloaded, under seq
+// rather than p.Seq, claiming id for tag when both checks pass, and returns
+// the change the fill made to the file's held state. It is refused with
+// the claim's OtherShareError when another share owns the file, and with
+// core.ErrStaleFill — matched with errors.Is — when the version id is
+// checked against stands above asOf. A fill changes no change version, so a
+// read's AsOf is unmoved. A fill refused by the tag check changes
+// nothing; one refused as stale or by the bound notes its record in the file's
+// drop ranges and claims the file, the record being in its segment already.
+// It admits the entries it adds against the extent bound, as a write does, and
+// is refused with a NoSpaceError naming the index when they would raise the
+// count above it; a refusal reserves nothing. It takes the file's lock
+// exclusively.
+func (ix *Index) Fill(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq, asOf core.Version) (HeldDelta, error) {
+	return ix.fs.fill(tag, id, p, seq, asOf)
+}
+
 // Refused returns the index's refusals counter: how many refusals naming
 // the index the bound has made — through an admission and a pre-check
 // alike — since the index was built.

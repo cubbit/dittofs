@@ -301,6 +301,7 @@ func TestMutatorDeltas(t *testing.T) {
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			var fs files
+			fs.setExtentLimit(1 << 20)
 			id := fid(1)
 			if _, err := fs.commit(id, 0, func(f *file) error {
 				seq++
@@ -341,14 +342,16 @@ func TestMutatorDeltas(t *testing.T) {
 
 // TestFillClaimsTheFile: a fill on a file no tag owns yet claims it in its own
 // update, so its delta carries the tag and a release through that share takes
-// the bytes back out of the same tag's sum. A fill refused for either reason
-// leaves no entry behind and does not claim.
+// the bytes back out of the same tag's sum. A fill refused by the tag check
+// leaves no entry behind and does not claim; one refused as stale claims the
+// file and keeps an entry noting its record.
 func TestFillClaimsTheFile(t *testing.T) {
 	const owner, rival core.ShareTag = 7, 8
 	id := fid(1)
 	p := write(0, 4096, rec(2, 0), 5)
 
 	var fs files
+	fs.setExtentLimit(1 << 20)
 	d, err := fs.fill(owner, id, p, 1, ver(1))
 	if err != nil {
 		t.Fatal(err)
@@ -368,6 +371,7 @@ func TestFillClaimsTheFile(t *testing.T) {
 	// delete, which leaves the bucket's version behind and the entry gone.
 	t.Run("stale", func(t *testing.T) {
 		var fs files
+		fs.setExtentLimit(1 << 20)
 		asOf := fs.asOf(id)
 		change(t, &fs, id, func(f *file) error {
 			f.write(write(0, 4, rec(1, 0), 2))
@@ -379,16 +383,21 @@ func TestFillClaimsTheFile(t *testing.T) {
 		if !errors.Is(err, core.ErrStaleFill) || d != (HeldDelta{}) {
 			t.Fatalf("fill = (%+v, %v), want the zero delta and ErrStaleFill", d, err)
 		}
-		if fs.view(id, func(*file) {}) {
-			t.Fatalf("a stale fill left an entry: %+v", fs.inspect(id))
+		// The record is in a segment: the entry noting it stays, holding nothing.
+		if !fs.view(id, func(f *file) {
+			if tag, ok := f.owner(); !ok || tag != owner {
+				t.Fatalf("a stale fill's owner = %d, %v, want the fill's tag", tag, ok)
+			}
+		}) || len(fs.inspect(id)) != 0 {
+			t.Fatalf("a stale fill's entry = %+v, want one noting its record and holding nothing", fs.inspect(id))
 		}
 	})
 
 	// A stale fill of a file with content and no owner, as a rebuild given
-	// only a retained piece leaves it, must not claim: the entry survives the
-	// refusal, so a claim made before the staleness check would stay.
+	// only a retained piece leaves it, claims it: its record is in a segment.
 	t.Run("stale, on a file with content and no owner", func(t *testing.T) {
 		var fs files
+		fs.setExtentLimit(1 << 20)
 		change(t, &fs, id, func(f *file) error {
 			f.retained.add(Retained{Piece: Piece{Extent: ext(0, 4096), Record: rec(1, 0), Version: ver(2)}, By: ver(6)})
 			f.change = ver(3) // a change the fill's asOf predates
@@ -405,18 +414,19 @@ func TestFillClaimsTheFile(t *testing.T) {
 			t.Fatalf("fill = (%+v, %v), want the zero delta and ErrStaleFill", d, err)
 		}
 		fs.view(id, func(f *file) {
-			if tag, ok := f.owner(); ok {
-				t.Fatalf("a stale fill claimed the file for %d", tag)
+			if tag, ok := f.owner(); !ok || tag != owner {
+				t.Fatalf("a stale fill's owner = %d, %v, want the fill's tag", tag, ok)
 			}
 		})
-		if !reflect.DeepEqual(fs.inspect(id), before) {
-			t.Fatalf("a refused fill changed the file:\n before %+v\n after  %+v", before, fs.inspect(id))
+		if got := fs.inspect(id); len(got) != len(before) {
+			t.Fatalf("a stale fill held content:\n before %+v\n after  %+v", before, got)
 		}
 	})
 
 	// A fill of a file another tag owns changes nothing, and the owner stays.
 	t.Run("another share's", func(t *testing.T) {
 		var fs files
+		fs.setExtentLimit(1 << 20)
 		if _, err := fs.fill(owner, id, p, 1, ver(1)); err != nil {
 			t.Fatal(err)
 		}

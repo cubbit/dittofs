@@ -44,6 +44,12 @@ type Config struct {
 	// index's bound without reserving; its refusal is returned untouched.
 	CheckIndex func(file core.FileID, e core.Extent) error
 
+	// CheckFillIndex predicts the index entries a fill of an extent would
+	// add against the index's bound without reserving; its refusal is
+	// returned untouched. Take runs it in CheckIndex's place for a request
+	// whose Fill flag is set.
+	CheckFillIndex func(file core.FileID, e core.Extent) error
+
 	// VersionsLeft reports how many versions remain below the version
 	// limit; zero means the next draw is refused.
 	VersionsLeft func() uint64
@@ -121,6 +127,11 @@ type Request struct {
 	// ShareLimit is the share's record-byte limit as the call read it.
 	// Zero or negative bounds nothing.
 	ShareLimit int64
+	// Fill marks the request a fill's admission, not a client write's: the
+	// version limit does not gate it and CheckFillIndex runs in CheckIndex's
+	// place, every other limit unchanged. It is set by the journal's own
+	// fill path alone, for the public Fill carries no such parameter.
+	Fill bool
 }
 
 // Capacity is the journal's admission function and its reservation
@@ -214,7 +225,8 @@ type Capacity struct {
 // New returns a Capacity over cfg. A nil injected func is a wiring bug and
 // panics here.
 func New(cfg Config) *Capacity {
-	if cfg.Admit == nil || cfg.CheckIndex == nil || cfg.VersionsLeft == nil ||
+	if cfg.Admit == nil || cfg.CheckIndex == nil || cfg.CheckFillIndex == nil ||
+		cfg.VersionsLeft == nil ||
 		cfg.Footprint == nil || cfg.ShareFigures == nil || cfg.Room == nil ||
 		cfg.ReadySpares == nil || cfg.Hold == nil || cfg.BelowHalf == nil {
 		panic("capacity: the admission needs every injected fact")
@@ -279,7 +291,10 @@ type Grant struct {
 // limit, the index bound, the share's limit, the journal's maximum, and
 // the spare pool last — naming its own missing amount and unit. A refusal
 // performs no I/O, never waits and never evicts; each is counted by
-// RefusedCount and opened as one reserve_refused span. An error the
+// RefusedCount and opened as one reserve_refused span. A fill request (Request.Fill) is
+// gated by the same limits in the same order, with two differences: a fill
+// draws no version, so the version limit passes it, and CheckFillIndex runs
+// in CheckIndex's place. An error the
 // filesystem itself returned (ENOSPC from a spare the pool reached for) is
 // passed through as itself and counts nothing.
 //
@@ -414,7 +429,11 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 
 	// Version limit: a write with no version left to draw is refused
 	// naming it before any byte is reserved.
-	if c.cfg.VersionsLeft() == 0 {
+	//
+	// decision: a fill skips this check because it draws no version — its
+	// content lands under the version the caller read at — so the version
+	// limit does not gate it. Withdraw the skip if a fill ever draws one.
+	if !r.Fill && c.cfg.VersionsLeft() == 0 {
 		c.mu.Unlock()
 		return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitVersion, Missing: 1, Unit: core.UnitVersions})
 	}
@@ -424,8 +443,13 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// in its own counter too — that is its count of the refusals its bound
 	// caused, and this one is Take's of the reservation it refused; neither
 	// counts the other's, so the one reservation is never counted twice
-	// here.
-	if err := c.cfg.CheckIndex(r.File, r.Extent); err != nil {
+	// here. A fill's request runs the fill pre-check here, in the write's
+	// place.
+	check := c.cfg.CheckIndex
+	if r.Fill {
+		check = c.cfg.CheckFillIndex
+	}
+	if err := check(r.File, r.Extent); err != nil {
 		c.mu.Unlock()
 		if ns := asNoSpace(err); ns != nil {
 			return nil, c.refuse(ctx, *ns)

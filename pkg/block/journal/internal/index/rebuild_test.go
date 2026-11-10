@@ -648,6 +648,7 @@ func TestRebuildMarksNeverTouchRetainedBits(t *testing.T) {
 func TestRebuildCountersAndBuckets(t *testing.T) {
 	mk := func() (*files, *Counters, *rebuilder, core.FileID) {
 		fs := &files{}
+		fs.setExtentLimit(1 << 20)
 		ctr := &Counters{}
 		_ = ctr.SetVersionLimit(ver(math.MaxUint64 - 1))
 		b := newRebuilder(fs, ctr)

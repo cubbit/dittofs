@@ -120,8 +120,7 @@ func (f *file) splits(e core.Extent) bool {
 // an offload report on the same file, which can make the committed delta
 // differ from the admitted one. commit applies the true delta, so the count
 // never drifts. The overshoot is at most the entries a racing release or
-// report can split in, and a fill racing a splitting removal's admission can
-// add one more split that nothing reserved. Revisit if the count is seen
+// report can split in. Revisit if the count is seen
 // above the bound by more than a handful of entries.
 func (fs *files) admitWrite(id core.FileID, e core.Extent, retain bool) (int64, error) {
 	// A file with no entry holds nothing: a write of bytes adds one entry
@@ -134,8 +133,10 @@ func (fs *files) admitWrite(id core.FileID, e core.Extent, retain bool) (int64, 
 	return fs.reserve(max(n, 0))
 }
 
-// admitFill reserves the entries a fill of p on id would add. It is refused
-// as admitWrite is, and races as admitWrite does.
+// admitFill reserves the entries a fill of p on id would add, and reports them
+// for files.fill to commit. It is refused as admitWrite is, and races as
+// admitWrite does. The fill's record is in its segment by then, so the caller
+// notes it before returning a refusal.
 func (fs *files) admitFill(id core.FileID, p Placed) (int64, error) {
 	// A file with no entry holds nothing, so a fill of bytes occupies a whole
 	// absent extent — one entry — and a zero-length one occupies none.
@@ -145,6 +146,68 @@ func (fs *files) admitFill(id core.FileID, p Placed) (int64, error) {
 		fs.view(id, func(f *file) { n = f.fillAdds(p) })
 	}
 	return fs.reserve(max(n, 0))
+}
+
+// checkFill predicts a fill's refusals without reserving: it runs the tag
+// check and the staleness comparison files.fill makes — the entry's
+// checkedAgainst against asOf, its counter halves alone. It does not check the
+// bound: that is the capacity gate's, after its read-only gate. It touches no
+// count and creates no entry.
+func (fs *files) checkFill(tag core.ShareTag, id core.FileID, asOf core.Version) error {
+	var refused error
+	if !fs.view(id, func(f *file) {
+		if refused = f.check(tag, id); refused != nil {
+			return
+		}
+		if fs.checkedAgainst(f, id).Counter > asOf.Counter {
+			refused = core.ErrStaleFill
+		}
+	}) {
+		// A file with no entry is nobody's, so no tag check refused, and it
+		// is checked against its floor bucket alone.
+		if fs.buckets[bucketOf(id)].Load() > asOf.Counter {
+			return core.ErrStaleFill
+		}
+		return nil
+	}
+	return refused
+}
+
+// CheckFillIndexBound predicts a fill of e against the index's bound alone,
+// run by the capacity gate after its read-only gate so a fill the bound would
+// refuse is refused before any I/O: it counts the gaps of e over the file's
+// held pieces with no marker masking any — only the fill's own version can
+// lift a mask, and this check runs before that version is known — so the
+// figure is the ceiling the fill's version can never exceed. It takes the
+// file's read lock, claims nothing, reserves nothing and creates no entry. A
+// refusal counts and names itself as the bound's others do.
+//
+// decision: this is a read-only over-count, not the reservation: the entries
+// are reserved by Index.Fill's admission at publish, so fills of different
+// files that all pass this check at the bound's edge cannot all commit. The
+// check can refuse a fill the admission would admit when the count stands
+// within a few entries of the bound — a masked part the hull still counts. That
+// over-refusal fails closed and only at the bound, where a write is refused
+// too. It can also pass a fill that publish then refuses part-way: a gap that
+// crosses a segment boundary is counted as one entry but adds one per piece,
+// so a later piece's admission is refused after its I/O with the earlier
+// pieces published. That too fails closed. Overturned when an index a few
+// entries over its bound causes a visible refusal, which would pass the exact
+// gaps into the admission.
+func (ix *Index) CheckFillIndexBound(id core.FileID, e core.Extent) error {
+	// A file with no entry holds nothing: a fill of bytes occupies one
+	// wholly absent extent, a zero-length one none — as FillGaps answers it.
+	n := int64(0)
+	if e.Len > 0 {
+		n = 1
+		ix.fs.view(id, func(f *file) { n = f.held.gaps(e) })
+	}
+	c, limit := ix.fs.count.Load(), ix.fs.limit.Load()
+	if c+max(n, 0) > limit {
+		ix.fs.refusals.Add(1)
+		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(n, 1) - limit, Unit: core.UnitEntries}
+	}
+	return nil
 }
 
 // reserve adds want to the count when the limit allows it, or refuses with a

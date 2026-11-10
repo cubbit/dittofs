@@ -422,8 +422,9 @@ func (fs *files) commit(id core.FileID, admitted int64, fn func(*file) error) (H
 // byte counters after settle and before the unlock.
 //
 // decision: the delta is returned whatever fn returned, not zeroed on error.
-// A refusal returns the zero delta because every mutator refuses before it
-// changes anything, which the per-mutator table test pins; reporting what the
+// A refusal returns the zero delta because every mutator but fill refuses
+// before it changes anything (fill notes its record before a stale refusal,
+// holding nothing, so its delta is zero too), which the per-mutator table test pins; reporting what the
 // update actually did, even beside an error, keeps the caller's counters
 // exact if a future fn errs after changing something.
 func (f *file) apply(fs *files, s *fileShard, id core.FileID, before, admitted int64, fn func(*file) error) (d HeldDelta, err error) {

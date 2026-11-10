@@ -71,6 +71,8 @@ type coreOptions struct {
 	wrapDomains func(durability.Domains) durability.Domains
 	// accountSpy is told every non-zero delta Account applied.
 	accountSpy func(index.HeldDelta)
+	// tracer is the Tracer the core's Deps carry; nil means no tracing.
+	tracer core.Tracer
 	// state is the State newCore continues from; the zero State builds fresh.
 	state State
 	// afterAppend runs in WriteAt right after a record is appended and before
@@ -128,6 +130,9 @@ type Core struct {
 
 	held, dirty, retained atomic.Int64
 	writtenBytes          atomic.Uint64
+	filledBytes           atomic.Uint64
+	fillRefused           atomic.Uint64
+	tracer                core.Tracer
 	accountSpy            func(index.HeldDelta)
 
 	// afterAppend is a test seam that holds a write in the gap between its
@@ -204,7 +209,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt}
+	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)
@@ -302,18 +307,19 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// by the set the State carries, so a State that rebuilds a set of
 	// another size must have its admission agree with what its streams do.
 	c.cap = capacity.New(capacity.Config{
-		Admit:        d.Admit,
-		CheckIndex:   state.Index.CheckWrite,
-		VersionsLeft: state.Counters.VersionsLeft,
-		Footprint:    func() (used int64) { return state.Set.Counters().UsedBytes },
-		ShareFigures: state.Set.ShareBytesAndRetired,
-		Room:         func(stream int) int64 { return c.streams.Stream(stream).Room() },
-		ReadySpares:  c.pool.ReadyContent,
-		Hold:         c.pool.Hold,
-		BelowHalf:    c.headroom.BelowHalf,
-		Tracer:       deps.Tracer,
-		MaxBytes:     maxBytes,
-		SegmentCap:   state.Set.Cap(),
+		Admit:          d.Admit,
+		CheckIndex:     state.Index.CheckWrite,
+		CheckFillIndex: state.Index.CheckFillIndexBound,
+		VersionsLeft:   state.Counters.VersionsLeft,
+		Footprint:      func() (used int64) { return state.Set.Counters().UsedBytes },
+		ShareFigures:   state.Set.ShareBytesAndRetired,
+		Room:           func(stream int) int64 { return c.streams.Stream(stream).Room() },
+		ReadySpares:    c.pool.ReadyContent,
+		Hold:           c.pool.Hold,
+		BelowHalf:      c.headroom.BelowHalf,
+		Tracer:         deps.Tracer,
+		MaxBytes:       maxBytes,
+		SegmentCap:     state.Set.Cap(),
 	})
 	c.streams = segment.NewStreams(deps.Streams, deps.Identity, state.Set, c.pool, c.cache, d.Sink)
 
@@ -353,6 +359,14 @@ func (c *Core) Streams() *segment.Streams { return c.streams }
 // WrittenBytes returns the payload bytes WriteAt has published since the core
 // was built: the written_bytes counter.
 func (c *Core) WrittenBytes() uint64 { return c.writtenBytes.Load() }
+
+// FilledBytes returns the payload bytes Fill has published since the core was
+// built: the filled_bytes counter.
+func (c *Core) FilledBytes() uint64 { return c.filledBytes.Load() }
+
+// FillRefused returns how many fills were refused as stale since the core was
+// built: the fill_refused counter.
+func (c *Core) FillRefused() uint64 { return c.fillRefused.Load() }
 
 // ReservedBytes returns what open reservations hold and their records have
 // not yet filled: the gauge of the writes a limit admitted and whose pieces
