@@ -41,8 +41,8 @@ planned separately with the same skill afterwards.
 8. The generic sidecar runner (§3.5), decided by the owner: `internal/sidecar`'s root package
    drives a set of `Sidecar`s from the adapters' states — `Sync` with the serving set after an
    adapter is serving and before it drains, a disabled sidecar synced with the empty set, a failing
-   one raising `sidecar_failed` without touching the adapters or readiness (A19). Proven with fake
-   sidecars and `testproto` adapters. The concrete sidecars (mDNS, WS-Discovery, port mapper,
+   one raising `sidecar_failed` without touching the adapters or readiness (A19). Proven with a
+   trivial real sidecar under a fault wrapper and `testproto` adapters. The concrete sidecars (mDNS, WS-Discovery, port mapper,
    rpcbind) stay out; `pkg/discovery/mdns` and `wsd` move onto the runner at cutover.
 
 ## Non-goals
@@ -113,8 +113,8 @@ protocol. Decided: `adaptertest` carries a test-only protocol — length-prefixe
 operation, a delay, an operation that panics, one that holds — and every `core` test
 (lifecycle, drain, reconfigure, connection limit, flow control, writer order, slow-client
 isolation, panic recovery, cancellation, no buffer leaked) and §6.10's pipeline micro-benchmark run
-on it over loopback, the tests against `vfstest.Memory` and the benchmark against `vfstest.Null`. The plan includes the amendment to RFC 20 §7 (and the
-§3.6 and §6.10 sentences that name NFSv3 for this) saying so.
+on it over loopback, the tests against `vfstest.Memory` and the benchmark and allocation gate
+against `vfstest.Null`. The plan includes the amendment to RFC 20 §7 (and the §3.6 and §6.10 sentences that name NFSv3 for this) saying so.
 
 ### What a protocol scaffold is
 
@@ -179,7 +179,7 @@ indicative; directories are not.
 ```text
 pkg/
   vfs/                      (exists) the service interface and value types (RFC 17)
-    vfstest/                (exists) Record, Null, the service suite; gains Memory and Faults
+    vfstest/                (exists) Null, the service suite; gains Memory and Faults; Record goes
   metrics/                  (exists)
   resources/                RFC 24's package, minimal, shared by every component
     budget.go               Budget, Reservation, Pools
@@ -268,7 +268,7 @@ The skill derives the test set from RFC 20's obligations, and each is a `dt` sui
   protocol; the import
   and call-site test (§7.1), seeded with one violation it must report; the `TCP_NODELAY` and
   keepalive assertion (§6.7); the middleware-order pin; the one-mutating-call
-  check of §7.1.
+  check, read from `vfstest.Memory`'s record (§7.2).
 - `unit/adapter-allocs`, per change and non-race: §6.10's codec 0-alloc gates and the pipeline
   allocation ceiling. `unit/nonrace` is nightly, and the nightly never runs `feat/storage-v2`.
 - Registered but not yet run (they need handlers): error-table totality per protocol (§7.3), the
