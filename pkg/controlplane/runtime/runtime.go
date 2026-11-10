@@ -56,12 +56,6 @@ type Runtime struct {
 	mu    sync.RWMutex
 	store store.Store
 
-	// identityStoreOverride, when non-nil, is returned by GetIdentityStore in
-	// place of store. Test-only (set via SetIdentityStoreForTesting) so NFS
-	// auth tests can inject a lightweight IdentityStore without a full
-	// store.Store implementation.
-	identityStoreOverride models.IdentityStore
-
 	metadataService *metadata.Service
 
 	storesSvc    *stores.Service
@@ -640,13 +634,6 @@ func (r *Runtime) GetShare(name string) (*Share, error) {
 	return r.sharesSvc.GetShare(name)
 }
 
-// SetEnabledForTesting overrides a share's Enabled flag in the registry under
-// the share service lock. Test-only — use instead of mutating a *Share
-// returned by GetShare, which is now a snapshot copy.
-func (r *Runtime) SetEnabledForTesting(name string, enabled bool) error {
-	return r.sharesSvc.SetEnabledForTesting(name, enabled)
-}
-
 func (r *Runtime) GetRootHandle(shareName string) (metadata.FileHandle, error) {
 	return r.sharesSvc.GetRootHandle(shareName)
 }
@@ -931,51 +918,10 @@ func (r *Runtime) UploadProgress() int64 { return 0 }
 // nothing is written.
 func (r *Runtime) UnsyncedBytes() int64 { return 0 }
 
-func (r *Runtime) GetUserStore() models.UserStore { return r.store }
-
-func (r *Runtime) GetIdentityStore() models.IdentityStore {
-	if r.identityStoreOverride != nil {
-		return r.identityStoreOverride
-	}
-	return r.store
-}
-
-// SetIdentityStoreForTesting overrides the identity store returned by
-// GetIdentityStore. Test-only.
-func (r *Runtime) SetIdentityStoreForTesting(s models.IdentityStore) {
-	r.identityStoreOverride = s
-}
-
-// SetSharePolicyForTesting overrides a registered share's DefaultPermission and
-// Squash mode. Test-only.
-func (r *Runtime) SetSharePolicyForTesting(name, defaultPermission string, squash models.SquashMode) error {
-	return r.sharesSvc.SetSharePolicyForTesting(name, defaultPermission, squash)
-}
-
 // SetExportAuthPolicyForTesting overrides a registered share's AllowAuthSys and
 // RequireKerberos export auth-flavor fields. Test-only.
 func (r *Runtime) SetExportAuthPolicyForTesting(name string, allowAuthSys, requireKerberos bool) error {
 	return r.sharesSvc.SetExportAuthPolicyForTesting(name, allowAuthSys, requireKerberos)
-}
-
-// SetRootHandleForTesting sets a registered share's root filehandle. Test-only.
-func (r *Runtime) SetRootHandleForTesting(name string, handle metadata.FileHandle) error {
-	return r.sharesSvc.SetRootHandleForTesting(name, handle)
-}
-
-// SetMinKerberosLevelForTesting overrides a registered share's MinKerberosLevel
-// GSS protection floor ("", "krb5", "krb5i", "krb5p"). Test-only.
-func (r *Runtime) SetMinKerberosLevelForTesting(name, minLevel string) error {
-	return r.sharesSvc.SetMinKerberosLevelForTesting(name, minLevel)
-}
-
-// GetIdentityMappingStore returns the identity mapping store if supported.
-// Returns nil if the underlying store does not implement IdentityMappingStore.
-func (r *Runtime) GetIdentityMappingStore() store.IdentityMappingStore {
-	if ims, ok := r.store.(store.IdentityMappingStore); ok {
-		return ims
-	}
-	return nil
 }
 
 // SetLDAPConfig sets the LDAP/AD identity provider configuration, sourced from
