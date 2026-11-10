@@ -207,16 +207,16 @@ func TestASuspendedWriteCommitsItsChangeTimeAlone(t *testing.T) {
 	}
 }
 
-// heldBatch holds the group commit's next batch after its capture until
-// release is called.
-func heldBatch(u *unit) (captured <-chan struct{}, release func()) {
+// heldBatch holds the group commit's next batch in its sync, after its
+// capture, until release is called.
+func heldBatch(h *hookedHandle) (captured <-chan struct{}, release func()) {
 	c, r := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	u.e.OnCapture(func() {
-		once.Do(func() {
+	var once atomic.Bool // not a sync.Once, whose Do would hold every other sync too
+	h.sync.set(func([]journal.FileID) {
+		if once.CompareAndSwap(false, true) {
 			close(c)
 			<-r
-		})
+		}
 	})
 	return c, sync.OnceFunc(func() { close(r) })
 }
@@ -226,10 +226,10 @@ func heldBatch(u *unit) (captured <-chan struct{}, release func()) {
 // and a commitNow for a write staged after the capture waits for the next
 // batch, not the held one.
 func TestABatchInFlight(t *testing.T) {
-	u := newUnit(t)
+	u, h := newHookedUnit(t)
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("abc"))
-	captured, release := heldBatch(u)
+	captured, release := heldBatch(h)
 	defer release()
 	first := make(chan error, 1)
 	go func() { first <- u.e.CommitNow(context.Background(), u.share.ID, f) }()
@@ -405,10 +405,10 @@ func TestNoGroupCommitStartsAfterClose(t *testing.T) {
 // commitAll waits for a batch already in flight, though the due set is
 // empty while it runs.
 func TestCommitAllWaitsForTheBatchInFlight(t *testing.T) {
-	u := newUnit(t)
+	u, h := newHookedUnit(t)
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("abc"))
-	captured, release := heldBatch(u)
+	captured, release := heldBatch(h)
 	defer release()
 	go func() { _ = u.e.CommitNow(context.Background(), u.share.ID, f) }()
 	<-captured
@@ -465,7 +465,7 @@ func (h *settlesLog) Settle(id journal.FileID, v journal.Version) {
 // batch committed, and one staged after the capture is not.
 func TestACommitSettlesTheJournal(t *testing.T) {
 	var log *settlesLog
-	u := newUnitWith(t, unitConfig{wrap: func(h engine.Handle) engine.Handle {
+	u, jh := newHookedUnitWith(t, unitConfig{wrap: func(h engine.Handle) engine.Handle {
 		log = &settlesLog{Handle: h, settled: map[journal.FileID]journal.Version{}}
 		return log
 	}})
@@ -474,7 +474,7 @@ func TestACommitSettlesTheJournal(t *testing.T) {
 	u.write(t, f, 3, []byte("two"))
 	newest := u.e.Pending(f)[1].Version
 	var once sync.Once
-	u.e.OnCapture(func() { once.Do(func() { u.write(t, f, 6, []byte("late")) }) })
+	jh.sync.set(func([]journal.FileID) { once.Do(func() { u.write(t, f, 6, []byte("late")) }) })
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
@@ -578,13 +578,20 @@ func TestAConflictAtTheDeadlineIsDelayConflict(t *testing.T) {
 // A file the store names in its map is retried alone in the next batch, even
 // with another file due beside it.
 func TestAFailedFileIsRetriedAlone(t *testing.T) {
-	u, log := newLoggedUnit(t, time.Second, 64)
+	log := &callLog{}
+	u, jh := newHookedUnitWith(t, unitConfig{
+		deps: []func(*engine.Deps){onCommit(logCommits(log))},
+		wrap: func(h engine.Handle) engine.Handle { return loggedHandle{h, log} },
+	})
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
 	_, dir := u.fs.Create(t, u.fs.Admin, u.fs.Root, "d", kvstore.Dir(0o755))
 	d, a, c := dir.ID, u.create(t, "a"), u.create(t, "c")
 	u.write(t, d, 0, []byte("not content"))
 	u.write(t, a, 0, []byte("a"))
 	var once sync.Once
-	u.e.OnCapture(func() {
+	jh.sync.set(func([]journal.FileID) {
 		once.Do(func() {
 			u.write(t, c, 0, []byte("c"))
 			u.clock.Advance(time.Second) // c comes due by its age, beside d's retry

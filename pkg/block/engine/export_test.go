@@ -307,8 +307,6 @@ func (e *Engine) ClearOps(f entity.FileID) {
 	e.files.unlock(f, fe)
 }
 
-// OnCapture runs f after each batch's capture, before its sync.
-func (e *Engine) OnCapture(f func()) { e.hooks.captured.Store(&f) }
 
 // CommitNow is commitNow on share s's file f.
 func (e *Engine) CommitNow(ctx context.Context, s entity.ShareID, f entity.FileID) error {
@@ -338,9 +336,6 @@ func (e *Engine) Due(j Journal, f entity.FileID) bool {
 
 // LostWhole is lostWhole on journal j.
 func (e *Engine) LostWhole(j Journal) { e.lostWhole(j) }
-
-// OnWritten runs f in each Write between its journal's WriteAt and its insert.
-func (e *Engine) OnWritten(f func()) { e.hooks.written.Store(&f) }
 
 // OnDrain runs f in each drain that read new losses, before it marks writes.
 func (e *Engine) OnDrain(f func()) { e.hooks.drained.Store(&f) }
@@ -430,9 +425,6 @@ func (e *Engine) PendingWrites(f entity.FileID, off, end int64) int {
 	}
 	return n
 }
-
-// OnStaged runs f in each removal between its journal step and its phase 1.
-func (e *Engine) OnStaged(f func()) { e.hooks.staged.Store(&f) }
 
 // OnIssued runs f with each version the engine counts as issued toward its
 // version limit.

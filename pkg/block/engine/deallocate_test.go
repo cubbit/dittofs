@@ -29,14 +29,14 @@ func TestADeallocateWaitsOutAnAdmittedWrite(t *testing.T) {
 // Between a deallocate's journal step and its phase 1, a read of the extent
 // finds the pending deallocate and reads zeros.
 func TestADeallocatedExtentReadsZerosBeforeItsPhase1(t *testing.T) {
-	u := newUnit(t)
+	u, h := newHookedUnit(t)
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
 	u.commit(t, f)
 	got := make([]byte, 8)
 	var n int
 	var rerr error
-	u.e.OnStaged(func() { n, rerr = u.e.Read(context.Background(), u.share.ID, f, 4, got) })
+	h.guardedSync(&h.sync, f, func() { n, rerr = u.e.Read(context.Background(), u.share.ID, f, 4, got) })
 	if err := u.e.Deallocate(t.Context(), u.share.ID, f, 4, 8); err != nil {
 		t.Fatal(err)
 	}

@@ -20,9 +20,10 @@ import (
 )
 
 // readOnlyOnStaged turns u's journal read-only for cause once a removal of
-// f is staged, the removal undone by the journal when undid.
-func readOnlyOnStaged(u *unit, f entity.FileID, cause error, undid bool) {
-	u.e.OnStaged(func() {
+// f is staged, before its phase 1's sync, h the share's handle, the removal
+// undone by the journal when undid.
+func readOnlyOnStaged(u *unit, h *hookedHandle, f entity.FileID, cause error, undid bool) {
+	h.guardedSync(&h.sync, f, func() {
 		var undone []journal.FileID
 		if undid {
 			undone = append(undone, journal.NewFileID(f))
@@ -65,9 +66,9 @@ func TestARemovalAReadOnlyJournalUndidFails(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var removes atomic.Int32
-			u := newUnit(t, removeCounter(&removes))
+			u, h := newHookedUnit(t, removeCounter(&removes))
 			f := u.committedFile(t, "a", fill(10, 'a'))
-			readOnlyOnStaged(u, f, c.cause, true)
+			readOnlyOnStaged(u, h, f, c.cause, true)
 			if err := c.check(t, u, f); !errors.Is(err, c.want) {
 				t.Fatalf("removal: %v, want %v", err, c.want)
 			}
@@ -95,9 +96,9 @@ func TestATruncateSyncedBeforeTheJournalTurnedReadOnlyIsRetried(t *testing.T) {
 	for _, cause := range []error{syscall.EIO, fmt.Errorf("write segment: %w", syscall.EROFS)} {
 		t.Run(cause.Error(), func(t *testing.T) {
 			var removes atomic.Int32
-			u := newUnit(t, removeCounter(&removes))
+			u, h := newHookedUnit(t, removeCounter(&removes))
 			f := u.committedFile(t, "a", fill(10, 'a'))
-			readOnlyOnStaged(u, f, cause, false)
+			readOnlyOnStaged(u, h, f, cause, false)
 			if err := u.e.Truncate(t.Context(), u.share.ID, f, 5); !errors.Is(err, &vfserr.Delay{Cause: vfserr.DelayJournal}) {
 				t.Fatalf("Truncate: %v, want ErrDelay (DelayJournal)", err)
 			}

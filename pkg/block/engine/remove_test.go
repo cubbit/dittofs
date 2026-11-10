@@ -25,10 +25,12 @@ import (
 type hookedHandle struct {
 	engine.Handle
 	e           *engine.Engine
-	truncate    func() // run inside Truncate, after the journal's removal
-	settle      func() // run inside Settle, before the journal's
-	cloneTarget armed  // run inside CloneTarget, after the journal's, once set
-	sync        armed  // run inside Sync, before the journal's, once set
+	truncate    func()    // run inside Truncate, after the journal's removal
+	settle      func()    // run inside Settle, before the journal's
+	cloneTarget armed     // run inside CloneTarget, after the journal's, once set
+	sync        filesHook // run inside Sync, before the journal's, once set
+	synced      filesHook // run inside Sync, after the journal's, once set
+	written     armed     // run inside WriteAt, after the journal's, once set
 	writes      atomic.Int32
 	deletes     atomic.Int32
 	mu          sync.Mutex
@@ -56,8 +58,10 @@ func (h *hookedHandle) CloneTarget(ctx context.Context, id journal.FileID, spec 
 }
 
 func (h *hookedHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
-	h.sync.run()
-	return h.Handle.Sync(ctx, ids...)
+	h.sync.run(ids)
+	marks, err := h.Handle.Sync(ctx, ids...)
+	h.synced.run(ids)
+	return marks, err
 }
 
 func (h *hookedHandle) Delete(ctx context.Context, id journal.FileID) (journal.Version, error) {
@@ -67,7 +71,9 @@ func (h *hookedHandle) Delete(ctx context.Context, id journal.FileID) (journal.V
 
 func (h *hookedHandle) WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error) {
 	h.writes.Add(1)
-	return h.Handle.WriteAt(ctx, id, off, p, mtime)
+	v, err := h.Handle.WriteAt(ctx, id, off, p, mtime)
+	h.written.run()
+	return v, err
 }
 
 func (h *hookedHandle) Settle(id journal.FileID, v journal.Version) {
@@ -87,11 +93,43 @@ func (h *hookedHandle) settleLog() []settled {
 	return append([]settled(nil), h.settles...)
 }
 
-// hooked is c with the unit's share's handle a hookedHandle, which it
-// returns: its e is set once the unit is built.
+// filesHook is a hook handed the files of the call it runs in, once set.
+type filesHook struct {
+	f atomic.Pointer[func([]journal.FileID)]
+}
+
+func (a *filesHook) set(f func([]journal.FileID)) { a.f.Store(&f) }
+
+func (a *filesHook) run(ids []journal.FileID) {
+	if f := a.f.Load(); f != nil {
+		(*f)(ids)
+	}
+}
+
+// guardedSync has hook run fn once, in the first Sync naming f made while
+// f's guard is held: a removal's or a clone's own sync, as a batch captures
+// no guarded file. A removal's phase 1 syncs right after its journal step
+// and its hold on the operations below it; a clone syncs its copies right
+// before its phase 1.
+func (h *hookedHandle) guardedSync(hook *filesHook, f entity.FileID, fn func()) {
+	id := journal.NewFileID(f)
+	var once atomic.Bool
+	hook.set(func(ids []journal.FileID) {
+		if slices.Contains(ids, id) && h.e.GuardHeld(f) && once.CompareAndSwap(false, true) {
+			fn()
+		}
+	})
+}
+
+// hooked is c with the unit's share's handle a hookedHandle over the one c
+// wraps, which it returns: its e is set once the unit is built.
 func hooked(c unitConfig) (unitConfig, *hookedHandle) {
 	h := &hookedHandle{}
+	inner := c.wrap
 	c.wrap = func(x engine.Handle) engine.Handle {
+		if inner != nil {
+			x = inner(x)
+		}
 		if h.Handle != nil {
 			return x // another share's
 		}
@@ -104,7 +142,14 @@ func hooked(c unitConfig) (unitConfig, *hookedHandle) {
 // newHookedUnit is newUnit with its share's handle a hookedHandle.
 func newHookedUnit(t *testing.T, deps ...func(*engine.Deps)) (*unit, *hookedHandle) {
 	t.Helper()
-	c, h := hooked(unitConfig{deps: deps})
+	return newHookedUnitWith(t, unitConfig{deps: deps})
+}
+
+// newHookedUnitWith is newUnitWith with its share's handle a hookedHandle
+// over the one c wraps.
+func newHookedUnitWith(t *testing.T, c unitConfig) (*unit, *hookedHandle) {
+	t.Helper()
+	c, h := hooked(c)
 	u := newUnitWith(t, c)
 	h.e = u.e
 	return u, h
@@ -166,16 +211,16 @@ func TestATruncateCommitsItsPhase1(t *testing.T) {
 // truncate and stays pending: phase 1 commits only below it, and the write
 // commits after, so the file ends the truncate's size grown by the write.
 // Claiming it with the rest raises applied past the truncate, which the store
-// then skips, leaving the size from before.
+// then skips, leaving the size from before. The write is staged while phase
+// 1 retries a conflict, so the retry's hold finds it in the entry.
 func TestAWriteAboveATruncateCommitsAfterIt(t *testing.T) {
-	u := newUnit(t)
+	x := &conflictingRemove{}
+	u := newUnit(t, onRemove(x.remove))
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
-	u.e.OnStaged(func() { u.write(t, f, 8, fill(4, 'b')) })
-	if err := u.e.Truncate(t.Context(), u.share.ID, f, 3); err != nil {
-		t.Fatal(err)
-	}
-	u.e.OnStaged(func() {})
+	u.retriedTruncate(t, x, f, 3, 8, 4)
+	x.on.Store(false)
+	u.until(t, "phase 1 committing", func() bool { return !u.e.GuardHeld(f) })
 	if n := u.size(t, f); n != 3 {
 		t.Errorf("after phase 1 the size is %d, want 3", n)
 	}
@@ -221,17 +266,23 @@ func TestAGroupCommitSkipsAGuardedFile(t *testing.T) {
 // A truncate waits out a batch in flight on its file: its phase 1 starts
 // only once the batch returned, and the batch's writes are committed once.
 func TestATruncateWaitsOutABatchInFlight(t *testing.T) {
-	u := newUnit(t)
+	u, jh := newHookedUnit(t)
 	res := enginetest.NewReservations(t)
 	f := u.create(t, "a")
 	o, answered := res.Opts()
 	_, err := u.e.Write(t.Context(), u.share.ID, f, 0, fill(16, 'a'), o)
 	answered(err)
 	held, release := make(chan struct{}), make(chan struct{})
-	var once, freed sync.Once
+	var once atomic.Bool // not a sync.Once, whose Do would hold the truncate's own sync too
+	var freed sync.Once
 	free := func() { freed.Do(func() { close(release) }) }
 	defer free() // a failure below still lets the batch, and the unit's cleanup, finish
-	u.e.OnCapture(func() { once.Do(func() { close(held); <-release }) })
+	jh.sync.set(func([]journal.FileID) {
+		if once.CompareAndSwap(false, true) {
+			close(held)
+			<-release
+		}
+	})
 	commit := make(chan error, 1)
 	go func() { commit <- u.e.CommitNow(context.Background(), u.share.ID, f) }()
 	<-held
@@ -265,7 +316,9 @@ func TestATruncateWaitsOutABatchInFlight(t *testing.T) {
 // truncate's phase 1 committed.
 func TestACloneWaitsOutATruncateInFlight(t *testing.T) {
 	x := &removing{}
-	u := cloneUnit(t, onRemove(x.remove))
+	c, h := hooked(unitConfig{deps: []func(*engine.Deps){onRemove(x.remove)}})
+	u := cloneUnitWith(t, c)
+	h.e = u.e
 	f, dst := u.create(t, "src"), u.create(t, "dst")
 	u.write(t, f, 0, fill(16, 'a'))
 	var phase1 atomic.Bool
@@ -275,7 +328,7 @@ func TestACloneWaitsOutATruncateInFlight(t *testing.T) {
 		}
 	})
 	cloned := make(chan error, 1)
-	u.e.OnStaged(func() {
+	h.guardedSync(&h.sync, f, func() {
 		go func() {
 			cloned <- u.e.Clone(context.Background(), u.share.ID, f, u.share.ID, dst, vfserr.Extent{SrcOff: 0, DstOff: 0, Len: 8})
 		}()
@@ -376,15 +429,15 @@ func TestATruncateUpIsAGrow(t *testing.T) {
 // A Commit on a file whose truncate is in flight waits for the truncate
 // rather than asking batch after batch, each of which skips the file.
 func TestACommitWaitsOutATruncateInFlight(t *testing.T) {
-	u := newUnit(t)
+	u, h := newHookedUnit(t)
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(8, 'a'))
 	var takes atomic.Int32
 	u.e.OnTake(func() { takes.Add(1) })
 	blocked, unblock := make(chan struct{}), make(chan struct{})
-	// Held between the journal's truncate and phase 1: the guard is held and
-	// the entry's lock is free.
-	u.e.OnStaged(func() { close(blocked); <-unblock })
+	// Held in phase 1's sync, past the journal's truncate: the guard is held
+	// and the entry's lock is free.
+	h.guardedSync(&h.sync, f, func() { close(blocked); <-unblock })
 	done := make(chan error, 1)
 	go func() { done <- u.e.Truncate(context.Background(), u.share.ID, f, 2) }()
 	<-blocked
@@ -446,18 +499,18 @@ func (x *conflictingRemove) remove(ctx context.Context, next engine.Existence, s
 	return next.Remove(ctx, share, file, epoch, op, pending)
 }
 
-// retriedTruncate truncates f to size with its phase 1 conflictingRemove, staging
-// a write of [off, off+n) above it before phase 1, and returns once the loop
-// retried phase 1 at least once, with the truncate's version.
+// retriedTruncate truncates f to size with its phase 1 conflictingRemove,
+// staging a write of [off, off+n) above it while phase 1 retries, and
+// returns once the loop retried phase 1 at least once, with the truncate's
+// version.
 func (u *unit) retriedTruncate(t *testing.T, x *conflictingRemove, f entity.FileID, size, off int64, n int) journal.Version {
 	t.Helper()
 	x.on.Store(true)
-	u.e.OnStaged(func() { u.write(t, f, off, fill(n, 'b')) })
 	var d *vfserr.Delay
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, size); !errors.As(err, &d) || d.Cause != vfserr.DelayConflict {
 		t.Fatalf("a conflictingRemove truncate: %v, want ErrDelay(DelayConflict)", err)
 	}
-	u.e.OnStaged(func() {})
+	u.write(t, f, off, fill(n, 'b'))
 	u.until(t, "the loop retrying phase 1", func() bool { return x.calls.Load() >= 2 })
 	p := u.e.Pending(f)
 	if len(p) < 2 || p[len(p)-2].Len != 0 {
@@ -526,7 +579,7 @@ func TestAFailedBatchDuringPhaseOneLeavesItsHold(t *testing.T) {
 	u.write(t, f, 0, fill(16, 'a'))
 	var first atomic.Bool
 	h.truncate = func() {
-		h.sync.set(func() {
+		h.sync.set(func([]journal.FileID) {
 			if !first.CompareAndSwap(false, true) {
 				return // the batch's own sync
 			}
@@ -627,9 +680,9 @@ func TestCommitAllWaitsForARemovalsGuardWithoutSpinning(t *testing.T) {
 // while it waits wait for it in turn, so writers overlapping each other do
 // not hold it, and its guard, to its deadline.
 func TestATruncateWaitsOnlyForTheWritesAdmittedBeforeIt(t *testing.T) {
-	u := newUnit(t)
+	u, jh := newHookedUnit(t)
 	f := u.create(t, "a")
-	u.e.OnWritten(func() { time.Sleep(5 * time.Millisecond) }) // each write stays admitted a while
+	jh.written.set(func() { time.Sleep(5 * time.Millisecond) }) // each write stays admitted a while
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	for w := range 4 {
@@ -664,11 +717,11 @@ func TestATruncateWaitsOnlyForTheWritesAdmittedBeforeIt(t *testing.T) {
 // journal after the truncate, never ahead of it with a lower version, so the
 // truncate does not cut it.
 func TestAWriteArrivingWhileATruncateWaitsLandsAfterIt(t *testing.T) {
-	u := newUnit(t)
+	u, jh := newHookedUnit(t)
 	f := u.create(t, "a")
 	hold, held := make(chan struct{}), make(chan struct{})
 	var first sync.Once
-	u.e.OnWritten(func() { first.Do(func() { close(held); <-hold }) })
+	jh.written.set(func() { first.Do(func() { close(held); <-hold }) })
 	wrote := make(chan error, 2)
 	go func() {
 		_, err := u.e.Write(context.Background(), u.share.ID, f, 0, make([]byte, 8), engine.WriteOpts{Done: func() {}})

@@ -161,11 +161,11 @@ func TestAStalledReleaseEndedByAnAbort(t *testing.T) {
 // An aborted release drops only the pending writes below it: a write staged
 // after the journal's Delete stays pending, its Done not run.
 func TestAnAbortKeepsTheWritesAboveIt(t *testing.T) {
-	u := newUnit(t)
+	u, h := newHookedUnit(t)
 	f := u.create(t, "a") // linked: its name aborts the release
 	u.write(t, f, 0, fill(8, 'a'))
 	var later atomic.Bool
-	u.e.OnStaged(func() {
+	h.guardedSync(&h.sync, f, func() {
 		_, _ = u.e.Write(context.Background(), u.share.ID, f, 8, fill(4, 'b'), engine.WriteOpts{Done: func() { later.Store(true) }})
 	})
 	if _, err := u.e.Delete(t.Context(), u.share.ID, f); !errors.Is(err, vfserr.ErrFileOpen) {

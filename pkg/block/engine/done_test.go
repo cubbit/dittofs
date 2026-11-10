@@ -10,6 +10,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
@@ -18,7 +19,7 @@ import (
 // the batch commits excludes it, and its Done runs once, from the drop. The
 // other's runs before CommitNow returns, however slow the Done.
 func TestAFailedWindowTakesAWriteOutOfItsBatch(t *testing.T) {
-	u := newUnit(t)
+	u, jh := newHookedUnit(t)
 	res := enginetest.NewReservations(t)
 	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 	f := made.ID
@@ -30,7 +31,7 @@ func TestAFailedWindowTakesAWriteOutOfItsBatch(t *testing.T) {
 		answered(err)
 	}
 	var once sync.Once
-	u.e.OnCapture(func() { once.Do(func() { u.failWindow(f, 4, 4) }) })
+	jh.sync.set(func([]journal.FileID) { once.Do(func() { u.failWindow(f, 4, 4) }) })
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +142,7 @@ func TestEveryAcceptedWriteGetsOneDone(t *testing.T) {
 // Done runs once, the dropped write's from the drop.
 func TestABatchRetriesAfterADrop(t *testing.T) {
 	c := &conflicting{}
-	u := newUnit(t, onCommit(c.commit))
+	u, jh := newHookedUnit(t, onCommit(c.commit))
 	res := enginetest.NewReservations(t)
 	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 	f := made.ID
@@ -151,7 +152,7 @@ func TestABatchRetriesAfterADrop(t *testing.T) {
 		answered(err)
 	}
 	var once sync.Once
-	u.e.OnCapture(func() {
+	jh.sync.set(func([]journal.FileID) {
 		once.Do(func() {
 			u.failWindow(f, 4, 4)
 			c.on.Store(true)

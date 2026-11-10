@@ -447,9 +447,6 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 			g.mu.Unlock()
 		}
 	}
-	if h := g.e.hooks.captured.Load(); h != nil {
-		(*h)()
-	}
 	failed, alone, syncErr := g.e.syncAndCommit(ctx, g, batch, last)
 	// A failed sync or a store-wide failure blames no file: the files keep
 	// their batch and wait out one backoff the whole group commit shares
