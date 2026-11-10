@@ -14,9 +14,9 @@ RFCs, with how far each is in scope:
   (RFC 17 §4.7) is a ledger row (§6.2). `pkg/vfs`,
   `vfstest.Record` and `vfstest.Null` exist on `feat/storage-v2`.
 - [RFC 24](../rfcs/rfc-24-resources.md), resources: **only the parts this RFC cannot work
-  without**: `Budget`, `Reservation`, `Pools`, `Buf` and `BufPool` in `pkg/resources` (epic 3).
+  without**: `Budget`, `WaitBudget`, `Reservation`, `Budgets`, `Buf` and `BufPool` in `pkg/resources` (epic 3).
 - [RFC 13](../rfcs/rfc-13-configuration.md), configuration: **only the parts this RFC cannot work
-  without**: the adapters' settings shapes and their live or restart-only marks.
+  without**: the adapters' settings shapes, their keys and their defaults.
 - [RFC 25](../rfcs/rfc-25-observability.md) and [RFC 29](../rfcs/rfc-29-test-harness.md): the
   rules every epic follows (§1.5 rules 3 and 4), and RFC 20 §10's series.
 - [RFC 23](../rfcs/rfc-23-control-plane.md), the node: **constraints only**. `internal/node` does
@@ -107,24 +107,25 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   fails on an empty manifest. A build tag on `lint-go`'s `go vet -tags=` line stays while any file
   behind it compiles; a tag whose files are all deleted leaves the line.
 - **`pkg/adapter`** (RFC 20 §3.4, §3.5): `Adapter` (`Reconfigure` taking `config.Settings`),
-  `State`, `Health` (`State`, `Ready`, `Conditions`), `ConnInfo` (`Protocol`, `Remote`,
-  `Session`, `Since`), `Sidecar`, `Serving`, `Deps` (with `Watch`, RFC 20 §3.7).
+  `State` (with `String`), `Health` (`State`, `Conditions`, and `Ready()` derived), `ConnInfo`
+  (`Protocol`, `Remote`, `Session`, `Since`), `Sidecar`, `Serving`, `Loop`, `Deps` (`Budgets`;
+  `Watch` returning a `Loop`, RFC 20 §3.7; only `Service` and `Budgets` required).
 - **A test with every new package.** `lint-repo` runs `test/new-package-tests.sh`, which fails a
   directory new to the base branch that has no `_test.go`. Each package epic 1 creates lands with
   a test that can fail (rule 8): `pkg/adapter`'s imports checked against RFC 20 §2.3's list (a
   nil `Watch` watching nothing is the accept loop's behaviour, tested with it in T4.7),
-  `pkg/resources`' class sizes ascending as RFC 24 §2.5 lists them, the settings' live and
-  restart-only marks, `ErrRestartRequired`
-  on a restart-only change, `New` refusing invalid settings, and for `core` `Bind`, whose body
+  `pkg/resources`' class sizes ascending as RFC 24 §2.5 lists them, the settings' defaults
+  validating and every field carrying its key, `New` refusing invalid settings, and for `core` `Bind`, whose body
   lands in T1.7: the `Invocation` its `Decode` returns hands `Bound`, `Resolve`, `Role`,
   `Call` and `Encode` the request it decoded.
 - **`pkg/adapter/config`** (RFC 20 §3.6, RFC 13): `Adapter`, and `NFS` and `SMB` embedding it;
-  `Settings`, whose `NFS` and `SMB` values alone `Validate` and `RestartRequired` accept, `AdapterOf` and `Validate`; each restart-only
-  field tagged `restart:"true"`; `RestartRequired`, returning an error wrapping
-  `ErrRestartRequired`.
+  `TLS`; `Settings{Validate() error; Common() Adapter}`; `DefaultNFS` and `DefaultSMB`; every
+  key `adapters.<protocol>.<field>` from a `json` tag; no restart machinery, since every
+  adapter setting is live.
 - **`pkg/adapter/nfs.New`, `pkg/adapter/smb.New`**: signatures and stubs returning an error.
-- **`pkg/resources`** (RFC 24 §2.5, §3.1, RFC 20 §6.8): `Budget`, `Reservation`, `Pools`, `Buf`,
-  `BufPool` and `NewBufPool` (named apart from `Pools`, since RFC 24's pool is a counter, not an allocator), the
+- **`pkg/resources`** (RFC 24 §2.5, §3.1, RFC 20 §6.8): `Budget`, `WaitBudget`, `Reservation`,
+  `Budgets`, `Buf`, `BufPool` and `NewBufPool(*WaitBudget)` (only `BufPool` is called a pool,
+  since RFC 24's counted pool is a budget, not an allocator), the
   class constants, as signatures.
 - **`pkg/metrics` gains one line.** `Deps.Metrics` is `*metrics.Registry`, RFC 23's and RFC
   25's name; T1.6 adds `type Registry = Metrics`, an alias of the branch's type, with a
@@ -189,7 +190,7 @@ what those tests stand on:
   purity, test-only packages imported by no non-test package, and the paths v1 used that v2 does
   not (`pkg/controlplane/runtime/adapters`, `internal/adapter/{common,pool,testruntime,auth}`,
   `internal/adapter/nfs/rpc`, `internal/adapter/smb/{session,handlers}`).
-- **The leak checks**: one helper failing when any `Pools` budget reads above zero, one failing on
+- **The leak checks**: one helper failing when any `Budgets` budget reads above zero, one failing on
   goroutines left behind (a `runtime.NumGoroutine` comparison, no new dependency). The budget
   check proves it can fail in epic 3, once a `Buf` can be kept.
 
@@ -338,7 +339,7 @@ flowchart TD
     E6["E6 Protocol scaffolds"]
   end
   S2 --> E3 & E4 & E6
-  E3 -. "Buf, Pools" .-> E4
+  E3 -. "Buf, Budgets" .-> E4
   E4 -. "Conn behind the dispatch seam" .-> E5
   E4 & E5 --> S3(["S3 core serves testproto end to end"]):::sync
   S3 -. "New on the real runner" .-> E6
@@ -404,12 +405,12 @@ flowchart TD
 ```text
 pkg/
   resources/                  E1 surface, E3 body
-    budget.go                 Budget, Reservation, Pools
+    budget.go                 Budget, WaitBudget, Reservation, Budgets
     buf.go                    Buf, BufPool, NewBufPool, classes
   adapter/                    E1
-    adapter.go                Adapter, State, Health, ConnInfo, Sidecar, Serving
+    adapter.go                Adapter, State, Health, ConnInfo, Sidecar, Serving, Loop
     deps.go                   Deps
-    config/                   Adapter, NFS, SMB, Settings, AdapterOf; restart-only tags, RestartRequired
+    config/                   Adapter, NFS, SMB, TLS, Settings, DefaultNFS, DefaultSMB
     nfs/  smb/                New: E1 stub, E6 body
 internal/
   adapter/
@@ -463,13 +464,13 @@ deleted).
   `dt run integration/kerberos` step removed on the branch; `test/required-tests.json` repinned
   to `internal/vfs/admit`'s gate tests; `lint-go`'s vet tags pruned to those with files left.
   1.25 man-days.
-- T1.4 `pkg/adapter`: the contract and `Deps`, `Watch` included; `State`, `Health`, `ConnInfo`
-  as RFC 20 §3.4 states them. 0.75 man-days.
+- T1.4 `pkg/adapter`: the contract and `Deps`, `Watch` returning a `Loop`; `State`, `Health`
+  with `Ready()`, `ConnInfo` as RFC 20 §3.4 states them. 0.75 man-days.
 - T1.5 `pkg/adapter/config`: the three settings shapes, `NFS` and `SMB` embedding `Adapter`;
-  the sealed `Settings`, `AdapterOf` and `Validate`; restart-only fields tagged and `RestartRequired` over
-  two `Settings`, wrapping `ErrRestartRequired`; `Addrs` supplied by the node and live.
+  `TLS`; `Settings` with the `Validate` and `Common` methods; `DefaultNFS` and `DefaultSMB`;
+  every field's key a `json` tag; `Addrs` supplied by the node and live.
   2 man-days.
-- T1.6 `pkg/resources`: `Budget`, `Reservation`, `Pools`, `Buf`, `BufPool`, `NewBufPool`,
+- T1.6 `pkg/resources`: `Budget`, `WaitBudget`, `Reservation`, `Budgets`, `Buf`, `BufPool`, `NewBufPool`,
   classes, as stubs; `pkg/metrics`' `Registry` alias. 1.25 man-days.
 - T1.7 `internal/adapter/core`'s surface, RFC 20 §4.7, with stub bodies; `Bind`'s body, with
   the test that its `Invocation` hands each closure the request it decoded; `ErrorRow.Hold`,
@@ -479,10 +480,11 @@ deleted).
 - T1.8 `pkg/adapter/nfs.New` and `pkg/adapter/smb.New` stubs, validating before they refuse.
   0.5 man-days.
 - T1.9 RFC 20 and RFC 24 amended, with RFC 13, RFC 17 (`Shares.MoveTarget`), RFC 21 and RFC 23
-  where named, where the frozen surface was ambiguous: the sealed settings
-  and `Reconfigure`'s parameter, `Validate`, the restart-only tags and their comparison, the
+  where named, where the frozen surface was ambiguous: the settings
+  and `Reconfigure`'s parameter, `Validate`, one key tree and defaults as code, every adapter
+  setting live, the
   drain's target asked of the service per request, `Health`'s and `ConnInfo`'s fields,
-  `NewBufPool` and `BufPool.Get`'s key, `Deps.Metrics` as `*metrics.Registry`,
+  `Budget` and `WaitBudget` under `Budgets`, `NewBufPool` and `BufPool.Get`'s key, `Deps.Metrics` as `*metrics.Registry`,
   `*resources.Buf` in `core`, the compound row's split (`Op.Decode`'s consumed bytes,
   `Op.Members`, `OpTable.ReadOp`, `Invocation.Count`), `Invocation.Handle` for the drain's
   target, `Interim`'s `after` and `Invocation.Role`'s two cases,
@@ -555,12 +557,11 @@ rows, A10, A11, A14, A19, A20.
   in-flight requests awaited up to the drain deadline, then their contexts cancelled and their
   replies dropped; closing cancels each request's context and runs `OnClose`; cleanup keyed by
   session before a reconnect of that session is served.
-- T4.6 `Reconfigure`: refuse the other protocol's settings, validate (`config.Validate`, also
-  run by `New`), refuse restart-only
-  with `ErrRestartRequired`, open added listeners before swapping the snapshot, close removed
+- T4.6 `Reconfigure`: refuse the other protocol's settings or any other type, validate (the
+  shape's `Validate`, also run by `New`), load the TLS certificates, open added listeners before swapping the snapshot, close removed
   ones and their connections after.
-- T4.7 Health (readiness from the state, liveness from accept-loop turns through `Deps.Watch`,
-  a nil `Watch` watching nothing, `adapter_listener_lost`; `adapter_refused` is the node's, E7),
+- T4.7 Health (`Health.Ready()` from the state and the conditions, liveness from accept-loop
+  `Loop.Turn` and `Idle` through `Deps.Watch`, a nil `Watch` watching nothing, `adapter_listener_lost`; `adapter_refused` is the node's, E7),
   `Connections()` from a connection map in `Server`, the idle timeout that
   passes over a connection while a `Keep` is held, the handshake deadline that `Established`
   disarms; both on `testproto`'s stateful half.
@@ -741,7 +742,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | NFSv3 procedures; NFSv4.0, 4.1 and 4.2 operations; the `ops/` tables | handlers are RFC 21's | RFC 21 plan | its handler epics |
 | MOUNT, NLM, NSM, `SM_NOTIFY`; MOUNT, NLM and NSM over UDP (RFC 20 §11 q3) | auxiliary programs are RFC 21's | RFC 21 plan | its auxiliary-services epic |
 | RPCSEC_GSS context table and window; NFSv4.1 slots and reply cache; the v3 and v4.0 duplicate-request cache (RFC 20 §11 q2) | stage state machines, no driver here | RFC 21 plan | with `EXCHANGE_ID`/`CREATE_SESSION` and GSS `INIT` |
-| NFS-over-TLS (`Conn.StartTLS`, `tlsconfig` reload, `require` mode); a certificate that does not load refused when `New` loads it (at configured) and when `Reconfigure` does, before the snapshot swap, never by `config.Validate`, which reads no file (RFC 20 §3.6); the loading lands with E4's `Reconfigure` and RFC 21's `New` (E6 has no TLS) | starts at the `NULL` handler; `StartTLS` is a method added to `Conn`, no frozen signature changed | RFC 21 plan | with `NULL` |
+| NFS-over-TLS (`Conn.StartTLS`, `tlsconfig` reload, `require` mode); a certificate that does not load refused when `New` loads it (at configured) and when `Reconfigure` does, before the snapshot swap, never by `Validate`, which reads no file (RFC 20 §3.6); the loading lands with E4's `Reconfigure` and RFC 21's `New` (E6 has no TLS) | starts at the `NULL` handler; `StartTLS` is a method added to `Conn`, no frozen signature changed | RFC 21 plan | with `NULL` |
 | NFS callbacks (`CB_RECALL`, `CB_NOTIFY`, `CB_RECALL_ANY`, NLM `GRANTED` via `Deps.Dial`) | need sessions and handlers | RFC 21 plan | with delegations and NLM |
 | SMB 2.1–3.1.1 commands and `ioctl/` | handlers are RFC 22's | RFC 22 plan | its handler epics |
 | SMB transform header, signing, encryption, credits, message-ID window, multichannel session registry, `Caps` | stage state machines, no driver here | RFC 22 plan | with `NEGOTIATE` and `SESSION_SETUP` |

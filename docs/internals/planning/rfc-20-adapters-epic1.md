@@ -192,7 +192,7 @@ which epic owns the rest.
 | R17 | Every line of implementation is under `internal/adapter/`; only `pkg/adapter/nfs` and `pkg/adapter/smb` import it, each its own protocol; no other package under `pkg/` imports `internal/adapter/`; an implementation package never imports a constructor package | MUST | §2.5, §7.1 | T1.7, T1.8 (T2.3 enforces) |
 | R18 | `core` is one package, a file per concern, and imports no protocol | invariant | §2.5 (rule 1, layout, "not used") | T1.7 |
 | R19 | A non-test file stays under 500 lines | SHOULD (adopted) | §2.5 | T1.4, T1.5, T1.6, T1.7, T1.8 |
-| R20 | `pkg/resources` is one package, no subpackages, a leaf importing only the standard library and the metrics registry; `Budget`, `Reservation`, `Pools` in `budget.go`, `Buf`, `BufPool` in `buf.go` | invariant | RFC 24 §2.8; RFC 20 §2.5, §6.8 | T1.6 |
+| R20 | `pkg/resources` is one package, no subpackages, a leaf importing only the standard library and the metrics registry; `Budget`, `WaitBudget`, `Reservation`, `Budgets` in `budget.go`, `Buf`, `BufPool` in `buf.go` | invariant | RFC 24 §2.8; RFC 20 §2.5, §6.8 | T1.6 |
 | R21 | The packages epic 1 creates under `internal/adapter/` import only §2.3's list (the tracing API `Deps.Tracer` names included), and none of what §2.3 forbids | MUST, MUST NOT | §2.3 | T1.4, T1.7 (T2.3 enforces) |
 
 **Public surface: `pkg/adapter`**
@@ -201,11 +201,11 @@ which epic owns the rest.
 | --- | --- | --- | --- | --- |
 | R22 | `Adapter` has `Start(ctx) error`, `Reconfigure(ctx, config.Settings) error` (D15), `Stop(ctx) error`, `Health() Health`, `Connections() iter.Seq[ConnInfo]`; their behaviour is E4's | MUST | §3.4 | T1.4 |
 | R23 | `ConnInfo` is `{Protocol string; Remote netip.AddrPort; Session string; Since time.Time}` (D17); `Connections()` is read from `core`'s registry, never written by protocol code (E4) | MUST | §3.4 | T1.4 |
-| R24 | `Health` is `{State State; Ready bool; Conditions []string}` (D17), `State` being §3.1's `StateConfigured`, `StateServing`, `StateDraining`, `StateStopped`; it can say ready (serving, every listener bound) or not ready (configured or draining); an adapter whose `New` or `Start` failed has no `Health`, and the node raises `adapter_refused` from the error; E4 fills it | MUST | §3.4, §3.7 | T1.4 |
-| R25 | `Deps` holds `Service vfs.Service`, `Pools *resources.Pools`, `Metrics *metrics.Registry` (D10), `Tracer trace.Tracer`, `Logger *slog.Logger`, `Watch func(loop string) (turn, idle, stop func())`, `Dial func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)` | MUST | §3.4 | T1.4 |
+| R24 | `Health` is `{State State; Conditions []string}` with `Ready() bool`, serving with no condition raised (D17); `State` is §3.1's `StateConfigured`, `StateServing`, `StateDraining`, `StateStopped`, with a `String`; an adapter whose `New` or `Start` failed has no `Health`, and the node raises `adapter_refused` from the error; E4 fills it | MUST | §3.4, §3.7 | T1.4 |
+| R25 | `Deps` holds `Service vfs.Service`, `Budgets *resources.Budgets`, `Metrics *metrics.Registry` (D10), `Tracer trace.Tracer`, `Logger *slog.Logger`, `Watch func(loop string) Loop`, `Dial func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)`; `Loop` is `{Turn(); Idle(); Close()}`; only `Service` and `Budgets` are required (`New` refuses a missing one by name), and each other field has a working zero value | MUST | §3.4 | T1.4 |
 | R26 | A `Deps` field is an interface where it has two implementations and a concrete type where it has one; `Deps` carries no registry or service locator, and `Deps.Service` is the adapter's only path to the service (A16's behaviour: E5) | invariant | §3.4, §2.5 ("not used"), §9 A16 | T1.4 |
-| R27 | A nil `Watch` watches nothing, as in a test; the node adapts `health.Loop`'s `Turn`, `Idle` and `Close` to it (accept loop's calls: E4) | MUST | §3.4, §3.7; RFC 25 §8.1 | T1.4 (the field); E4 T4.7 (the test, D9) |
-| R28 | An adapter takes only the budgets it charges: `Deps` carries `Pools`, never the open-state budget or the share cap | MUST | RFC 24 §2.7 | T1.4 |
+| R27 | A nil `Watch` watches nothing, as in a test; RFC 25's `health.Loop` satisfies `Loop` as it is (accept loop's calls: E4) | MUST | §3.4, §3.7; RFC 25 §8.1 | T1.4 (the field); E4 T4.7 (the test, D9) |
+| R28 | An adapter takes only the budgets it charges: `Deps` carries `Budgets`, never the open-state budget or the share cap | MUST | RFC 24 §2.7 | T1.4 |
 | R29 | `Sidecar` has `Name() string`, `Adapters() []string`, `Sync(ctx, serving []Serving) error` (idempotent: E4); `Serving` is `{Adapter string; Listeners map[string]netip.AddrPort}`; no sidecar method takes the service | MUST | §3.5 | T1.4 |
 | R30 | Only `Sidecar` is a type: an auxiliary service is no type, only more operation tables on its adapter's `core.Server` | invariant | §3.5 (decision) | T1.4, T1.7 |
 | R31 | No base adapter type to embed and override, no capability discovered by type assertion, no service locator | invariant | §2.5 ("not used") | T1.4, T1.7 |
@@ -222,28 +222,28 @@ which epic owns the rest.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R35 | Three shapes: `config.Adapter`, and `config.NFS` and `config.SMB` embedding it; `config.Settings`, whose `NFS` and `SMB` values alone `Validate` and `RestartRequired` accept (anything else refused with an error), `AdapterOf` reading the embedded `Adapter`, and `Validate` (D15) | MUST | §3.4, §3.6 | T1.5 |
-| R36 | Every field is marked live or restart-only, as RFC 13's table classes it: a restart-only field carries the tag `restart:"true"`, a live one none (D6) | MUST | §2.5, §3.6; RFC 13 §5, Appendix B | T1.5 |
-| R37 | `config.Adapter.Addrs` holds the listen addresses the node supplies from the host's bootstrap and the addresses it took over, never from the settings record; it is live, with §3.6's `decision:` marker at the field | MUST | §3.6 (and decision); RFC 13 §2.2; rule 7 | T1.5 |
-| R38 | The adapter settings RFC 13 lists are fields with their stated defaults and marks: `adapter.drain_deadline` 90 s, `adapter.idle_timeout` 15 min, `adapter.write_deadline` 60 s, `adapter.handshake_deadline` 30 s, `adapter.frame_deadline` 30 s, operations switched off by name, all live; `adapters.nfs.tls` (`cert_file`, `key_file`, `client_ca`, `min_version` 1.3, `mode` `opportunistic` or `require`; off), live; `adapters.smb.dialects` (2.1 to 3.1.1), live; `smb_pending_cap` (10 min) and `smb_pending_deadline` (60 s), `config.SMB` fields, live, read by SMB's `Hold` closures from the live settings rather than the connection's snapshot (D27). Not a field: `connection_limit` is node-wide, and the node hands each adapter its share (E4 enforces it, E7 hands it) | MUST | RFC 13 Appendix B; RFC 20 §3.6, §4.2, §6.4 | T1.5 |
-| R39 | Every setting has a default stated in its RFC or is required; the code fills in no unreviewed default | MUST | RFC 13 §4.2 | T1.5 |
+| R35 | Three shapes: `config.Adapter`, and `config.NFS` and `config.SMB` embedding it; `config.Settings` is `{Validate() error; Common() Adapter}`, which both implement, `Common` promoted from `Adapter`; `Reconfigure` refuses another protocol's shape or any other type (D15) | MUST | §3.4, §3.6 | T1.5 |
+| R36 | Every field names its key with a `json:"…"` tag; every key is `adapters.<protocol>.<field>`; every adapter setting is live, RFC 13's table recording each one's class (D6, D28) | MUST | §2.5, §3.6; RFC 13 §5, Appendix B | T1.5 |
+| R37 | `config.Adapter.Addrs` holds the listen addresses the node supplies from the host's bootstrap and the addresses it took over, never from the settings record (`json:"-"`); it is live, with §3.6's `decision:` marker at the field | MUST | §3.6 (and decision); RFC 13 §2.2; rule 7 | T1.5 |
+| R38 | The adapter settings RFC 13 lists are fields with their stated defaults: `drain_timeout` 90 s, `idle_timeout` 15 min, `write_timeout` 60 s, `handshake_timeout` 30 s, `read_timeout` 30 s, `disabled_operations` none; NFS's `tls` (`config.TLS{Mode, CertFile, KeyFile, ClientCA}`, `mode` `off` by default, `opportunistic` or `require`; TLS 1.3 fixed); SMB's `dialects` (2.1 to 3.1.1), `pending_timeout` (10 min) and `recall_timeout` (60 s), read by SMB's `Hold` closures from the live settings rather than the connection's snapshot (D27). Not a field: `connection_limit` is node-wide, and the node hands each adapter its share (E4 enforces it, E7 hands it) | MUST | RFC 13 Appendix B; RFC 20 §3.6, §4.2, §6.4 | T1.5 |
+| R39 | Every default is in `DefaultNFS` or `DefaultSMB`, stated in its RFC, or the setting is required; the code fills in no unreviewed default | MUST | RFC 13 §4.2; RFC 20 §3.6 | T1.5 |
 | R40 | A value out of range or of the wrong type is refused with an error naming the field and the rule; never clamped, rounded or replaced by a default | MUST, MUST NOT | RFC 13 §6 | T1.5 |
-| R41 | The validator is the component's own, `Validate(s Settings) error`, run by `New`, by `Reconfigure` (E4) and by the control plane (E7, cutover), which has none of its own | MUST | RFC 13 §6; RFC 20 §3.6 | T1.5 |
-| R42 | `adapter.drain_deadline` is at least the break deadline (35 s) plus the request deadline (30 s) | bound | RFC 20 §3.1; RFC 13 Appendix B | T1.5 |
-| R43 | A restart-only change is refused with an error wrapping `ErrRestartRequired`, so the node applies it by `Stop`, `New`, `Start`; E1 supplies the error and `RestartRequired(old, next Settings) error`, E4's `Reconfigure` returns what it returns | MUST | §3.4, §3.6 | T1.5 (E4 T4.6) |
+| R41 | The validator is the component's own, `(NFS) Validate() error` and `(SMB) Validate() error`, run by `New`, by `Reconfigure` (E4) and by the control plane (E7, cutover), which has none of its own; it reads no file, and the rule relating `pending_timeout` to `migration.freeze_timeout` is the control plane's cross-component check | MUST | RFC 13 §6; RFC 20 §3.6 | T1.5 |
+| R42 | `drain_timeout` is at least the break deadline (35 s) plus the request deadline (30 s); `recall_timeout` exceeds the break deadline | bound | RFC 20 §3.1, §3.6; RFC 13 Appendix B | T1.5 |
+| R43 | withdrawn: every adapter setting is live, so there is no restart-only comparison or sentinel to supply; the first restart-only setting brings both (D6). Was: a restart-only change refused with a restart-required sentinel | MUST | — | — |
 | R44 | A share's policy and its encryption requirement are not adapter settings: the shapes carry neither | invariant | §3.6 | T1.5 |
 
 **Resources surface: `pkg/resources`**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R45 | `Budget`, `NewBudget(name string, ceiling int64, waits bool) *Budget`, `(*Budget).Reserve(ctx, key netip.Addr, n int64) (Reservation, error)`, `(*Budget).Reserved() int64`; whether a budget waits or refuses is fixed at construction | MUST | RFC 24 §2.5 | T1.6 (body: E3) |
-| R46 | `Reservation` is a value `{b *Budget; key netip.Addr; n int64}`, so taking one allocates nothing; `(*Reservation).Release()` (idempotent: E3) | MUST | RFC 24 §2.5 | T1.6 |
-| R47 | `Pools` is `{Receive, Reply, Conn, Hold *Budget}`, the four budgets on the request path | MUST | RFC 24 §2.5, §2.3 | T1.6 |
-| R48 | The budget and the allocator are kept apart: `Buf` and `BufPool` are distinct from `Budget` and `Pools`, and the pool reserves before it hands out bytes, never waiting in the allocator | invariant | RFC 20 §6.8 | T1.6 |
+| R45 | `Budget` refuses at its ceiling: `NewBudget(name string, ceiling int64) *Budget`, `(*Budget).Reserve(n int64) (Reservation, error)`, `(*Budget).Reserved() int64`; `WaitBudget` waits, fair per key: `NewWaitBudget(name string, ceiling int64) *WaitBudget`, `(*WaitBudget).Reserve(ctx, key netip.Addr, n int64) (Reservation, error)`, `(*WaitBudget).Reserved() int64` | MUST | RFC 24 §2.5 | T1.6 (body: E3) |
+| R46 | `Reservation` is a value from either budget, so taking one allocates nothing; it is moved, never copied, and `(*Reservation).Release()` zeroes it (idempotent: E3) | MUST | RFC 24 §2.5 | T1.6 |
+| R47 | `Budgets` is `{Receive, Reply *WaitBudget; Connection, Hold *Budget}`, the four budgets on the request path | MUST | RFC 24 §2.5, §2.3 | T1.6 |
+| R48 | The budget and the allocator are kept apart: `Buf` and `BufPool` are distinct from `Budget`, `WaitBudget` and `Budgets`; `NewBufPool(b *WaitBudget) *BufPool`, so only receive and reply back buffers, and the pool reserves before it hands out bytes, never waiting in the allocator | invariant | RFC 20 §6.8; RFC 24 §2.5 | T1.6 |
 | R49 | `Buf` is `{B []byte; class uint8; refs atomic.Int32; res Reservation}` with only `B` exported; `(*BufPool).Get(ctx, key netip.Addr, n int) (*Buf, error)`, the key charging the client as `Reserve` does, one reservation of n's class plus the per-request overhead, `(*Buf).Retain() *Buf`, `(*Buf).Release()` | MUST | RFC 20 §6.8 | T1.6 (body: E3) |
 | R50 | Four classes, ascending: small 4 KiB, directory 64 KiB, transfer 1 MiB, large 8 MiB | bound | RFC 24 §3.1; RFC 13 Appendix B | T1.6 |
-| R51 | Nothing in `pkg/resources` has a lifecycle: no `Start` or `Close`, and `NewBudget` starts no goroutine; no adapter can replace or close a shared budget | invariant | RFC 24 §2.7 | T1.6 |
+| R51 | Nothing in `pkg/resources` has a lifecycle: no `Start` or `Close`, and `NewBudget` and `NewWaitBudget` start no goroutine; no adapter can replace or close a shared budget | invariant | RFC 24 §2.7 | T1.6 |
 | R52 | What is not built (§4.1's turns, `Reclaim`, `ShareCap`, `Detect`, `Split`) is absent from the surface and carries a `ponytail:` naming RFC 24 | MUST | RFC 24 §2.5, §2.8; rule 7 | T1.6 |
 | R53 | `Deps.Metrics` lets `core` resolve its series once per protocol and operation table, so the request path does an atomic add; the resolve-once call lands with its consumer in E5 (D10) | MUST | RFC 20 §3.4, §10.1; RFC 25 §8.2 | T1.6 |
 
@@ -318,14 +318,11 @@ which epic owns the rest.
   deleted `dfsctl` commands go (`GraceStatus`, `ForceEndGrace`, `ListClients`,
   `DisconnectClient`, `ListSessions`, `ForceDestroySession`, and those with no caller today).
   `dfsctl share mount` stops calling `ListAdapterPorts` and uses each protocol's default port.
-- **D6, live and restart-only marks.** Each field's mark is a struct tag (`restart:"true"` on
-  a restart-only field, none on a live one), read by one exported comparison in
-  `pkg/adapter/config`, `RestartRequired(old, next Settings) error`, which returns an error
-  wrapping `ErrRestartRequired` (also in `pkg/adapter/config`) and naming the fields. A test fails on
-  any field whose mark disagrees with a table copied from RFC 13 Appendix B. No adapter field
-  is restart-only today, so the comparison returns nil for every pair; a `decision:` marker at
-  it says so and names the evidence that would add one (a setting a connection accepted after
-  `Reconfigure` cannot pick up).
+- **D6, no restart machinery.** Every adapter setting is live, and RFC 13 Appendix B records
+  each one's class, so `pkg/adapter/config` has no restart tag, comparison or sentinel. A
+  `decision:` marker at `Reconfigure` says the first restart-only setting brings a sentinel
+  error and a one-field comparison there, and names the evidence (a setting a connection
+  accepted after `Reconfigure` cannot pick up).
 - **D7, the allocation cell lands with its first gate.** The `unit/adapter-allocs` cell and
   its fixed `dt run` step in the unit job would run nothing at S1. They land with E3's
   `BufPool` gate, the first test the cell runs. A cell with nothing behind it would be a
@@ -362,12 +359,10 @@ which epic owns the rest.
   fails on an export §4.7 does not name, which is rule 9's check until E2's import test
   exists.
 - **D15, settings are `config.Settings`.** `Reconfigure` and `NewServer` take
-  `config.Settings`; `Validate` and `RestartRequired` accept only an `NFS` or `SMB` value and
-  refuse anything else (a `*NFS`, an outside struct embedding one), `AdapterOf` is called only
-  after `Validate` and returns the zero `Adapter` otherwise, and `Reconfigure` refuses the
-  other protocol's shape. `AdapterOf`, `Validate` and `Conn.Settings` are how `core`, the
-  control plane and a protocol read it (R35, R41, R69; RFC 20 §3.6). Each `New` keeps its typed
-  parameter.
+  `config.Settings{Validate() error; Common() Adapter}`, which `NFS` and `SMB` implement;
+  `Reconfigure` refuses another protocol's shape or any other type. `Common`, `Validate` and
+  `Conn.Settings` are how `core`, the control plane and a protocol read it (R35, R41, R69;
+  RFC 20 §3.6). Each `New` keeps its typed parameter.
 - **D16, the drain's target is per request.** `Stop(ctx)` keeps its signature and
   `Dispatcher.Drain()` takes no argument: while draining, `core` asks the service for each
   refused request whether its share has a gateway to move to (`ErrMoved`) or none
@@ -377,11 +372,11 @@ which epic owns the rest.
   single-reply compound is judged by every handle its members name (RFC 20 §4.7). Until RFC
   15's topology exists it answers none (§9). `Start` after `Stop` is refused and `Stop` is
   idempotent.
-- **D17, `Health` reports named conditions.** `Health`, `State` and `ConnInfo` as R23 and R24
-  state them; `adapter_refused` is the node's, raised from the error `New` or `Start` returned.
-- **D18, `core` builds its `BufPool`.** `resources.NewBufPool(b *Budget) *BufPool` is added to
-  RFC 24 §2.5, and `Get` takes the client's key as `Reserve` does; each `Server` builds one
-  over each budget of `Deps.Pools` it takes buffers from, receive and reply. `Deps` carries no
+- **D17, `Health` reports named conditions.** `Health{State, Conditions}` with `Ready()`,
+  `State` with `String()`, and `ConnInfo`, as R23 and R24 state them; `adapter_refused` is the node's, raised from the error `New` or `Start` returned.
+- **D18, `core` builds its `BufPool`.** `resources.NewBufPool(b *WaitBudget) *BufPool` is added
+  to RFC 24 §2.5, and `Get` takes the client's key as `WaitBudget.Reserve` does; each `Server`
+  builds one over each of `Deps.Budgets`' receive and reply. `Deps` carries no
   allocator.
 - **D19, the two gaps the review follow-ups leave.** `HoldCodec.Interim` is handed the later
   chain members' headers (R70), and `Invocation.Role` has two calling cases (R61); RFC 20 §4.7
@@ -419,8 +414,15 @@ which epic owns the rest.
   §4.6). RFC 17's `vfs.Grace{Until}` gives a grace hold its bound (§9). A deadline at or
   before the attempt answers at once; `HoldCodec.Key` never returns 0.
 - **D27, a hold follows the live settings.** SMB's `Hold` closures read the adapter's live
-  `smb_pending_cap` and `smb_pending_deadline`, now `config.SMB` fields, not the connection's
-  snapshot; at arrival the clone-wait row's deadline is passed as `vfs.WithHold` (RFC 20 §4.6).
+  `pending_timeout` and `recall_timeout` (`adapters.smb.*`, formerly the top-level SMB pending
+  keys), `config.SMB` fields, not the connection's snapshot; at arrival the clone-wait row's
+  deadline is passed as `vfs.WithHold` (RFC 20 §4.6).
+- **D28, the public surface is simplified for its users.** One key tree, `adapters.<protocol>.<field>`,
+  with every field's key a `json` tag and each adapter's own copy of the common timeouts;
+  defaults in `DefaultNFS` and `DefaultSMB` rather than struct tags; durations named
+  `…Timeout` as Go names them; `Validate` and `Common` as methods; the waiting and refusing
+  budgets as two types under `Budgets`; `Watch` returning a `Loop`; `Health.Ready()` derived
+  rather than stored; TLS 1.3 fixed. Each removes a way to get the surface wrong (R35–R48).
 
 ## 5. Target tree
 
@@ -471,14 +473,13 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
 
 - **Track:** the team. **Depends on:** RFC 20 as it stands on `feat/storage-v2`, with #3892 and
   #3903's follow-ups; runs beside T1.1–T1.3.
-- **Covers:** R54 (no export §4.7 does not name), R25, R43, R53, R76; it makes R22–R24 and
+- **Covers:** R54 (no export §4.7 does not name), R25, R36, R53, R76; it makes R22–R24 and
   R35–R37 checkable.
 - **Deliverables:** one pull request to `feat/storage-v2` amending RFC 20
   (and RFC 24, RFC 13 and RFC 23 where named), settling each point the frozen surface cannot
   be written without:
-  - D6's `restart:"true"` tags, `RestartRequired` and `ErrRestartRequired` in
-    `pkg/adapter/config`, with the `decision:` that no field is restart-only today;
-  - D15's sealed `config.Settings`, `AdapterOf`, `Validate`, `Conn.Settings`, and
+  - D6's statement that every adapter setting is live, and no restart machinery;
+  - D15's `config.Settings`, `Common`, `Validate`, `Conn.Settings`, and
     `Reconfigure`'s and `NewServer`'s new parameter;
   - D16's per-request service call for the drain's target, and `Drain()` with no argument;
   - D17's `State`, `Health` and `ConnInfo` fields;
@@ -487,14 +488,16 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
   - D19's `Interim` parameter and `Invocation.Role`'s two cases;
   - D21's compound split, with `Bind`'s decoder returning its length;
   - D26's `ErrorRow.Hold` and `Pends(h Header, err error) bool`, and RFC 17's `vfs.Grace{Until}`;
-  - RFC 20 §3.6's default tags, unnamed nested TLS and dialect fields, `Validate` reading no
+  - D28's surface: the `adapters.<protocol>.<field>` key tree in RFC 13 and RFC 23, `DefaultNFS`
+    and `DefaultSMB`, the `…Timeout` fields, `config.TLS` with TLS 1.3 fixed, `Budget` and
+    `WaitBudget` under `Budgets` (RFC 24), `Loop`, `Health.Ready()`; `Validate` reading no
     file, and certificates loaded by `New` and `Reconfigure`;
   - RFC 17 amended too: `MoveTarget` on its `Shares` area (D16), and RFC 21 §7.4's
     `fs_locations` pointing at it;
   - RFC 13 Appendix B's `adapters.smb.dialects` row; RFC 23's re-enabled adapter built with
     `New`; `connection_limit` stated as the node's, no adapter field;
   - `Start` after `Stop` refused, and `Stop` idempotent, stated on the contract;
-  - the text fixes: `Deps.Pools` names four budgets, as RFC 24 §2.5 does; §3.6's table
+  - the text fixes: `Deps.Budgets` names four budgets, as RFC 24 §2.5 does; §3.6's table
     no longer applies a sidecar's enabled flag by `Reconfigure`, since §3.5 and RFC 23 apply it
     by `Sync`.
 
@@ -618,53 +621,58 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
 
 **Subtask T1.4 estimate: 0.75 man-days.**
 
-- **Track:** the team. **Depends on:** T1.9, T1.6 (`Deps` names `resources.Pools`).
+- **Track:** the team. **Depends on:** T1.9, T1.6 (`Deps` names `resources.Budgets`).
 - **Covers:** R13, R14, R15, R19, R21–R31.
-- **Deliverables:** `adapter.go` (`Adapter`, `State`, `Health`, `ConnInfo`, `Sidecar`,
-  `Serving`), `deps.go` (`Deps`, with `Watch` and `Dial`), signatures as RFC 20 §3.4, §3.5
+- **Deliverables:** `adapter.go` (`Adapter`, `State` with `String`, `Health` with `Ready`,
+  `ConnInfo`, `Sidecar`, `Serving`, `Loop`), `deps.go` (`Deps`, with `Watch` and `Dial`), signatures as RFC 20 §3.4, §3.5
   and T1.9 state them, `Health` and `ConnInfo` as D17; a `decision:` marker on `Adapter` saying it is an interface with one
   implementation because the node may not import `internal/` (RFC 20 §2.5).
 - **Acceptance criteria:**
   - The package imports only `pkg/vfs`, `pkg/metrics`, `pkg/resources`, `pkg/adapter/config`,
     the tracing API and the standard library.
-  - `Deps` carries `Pools`, never the open-state budget or a share cap.
+  - `Deps` carries `Budgets`, never the open-state budget or a share cap.
 - **Tests:** an import-shape test parsing the package's files with `go/parser` and failing on
   any import outside that list or under `internal/` (catches a convenience import of `core`,
   which would create the cycle §2.5 forbids) (D9).
-- **Rules:** rule 9: only the seven types, `State`'s four constants and `Deps`' fields.
+- **Tests (also):** `State.String` names each state, and `Health.Ready` is true only serving
+  with no condition (catches a readiness that ignores a raised condition).
+- **Rules:** rule 9: only the eight types, their two methods, `State`'s four constants and
+  `Deps`' fields.
 
-### T1.5 `pkg/adapter/config`: settings with their marks
+### T1.5 `pkg/adapter/config`: settings and their defaults
 
 **Subtask T1.5 estimate: 2 man-days.**
 
 - **Track:** the team. **Depends on:** T1.9.
-- **Covers:** R13, R14, R16, R19, R34–R44.
-- **Deliverables:** `config.go`: `Adapter`, `NFS`, `SMB` in the shape T1.9 settles; the
-  RFC 13 adapter rows as fields with their defaults (`drain_deadline` 90 s, `idle_timeout`
-  15 min, `write_deadline` 60 s, `handshake_deadline` 30 s, `frame_deadline` 30 s,
-  operations switched off by name, NFS's TLS block, SMB's dialect range, `smb_pending_cap`
-  and `smb_pending_deadline`; not the node's
-  connection limit, R38); `Addrs` with §3.6's `decision:` marker; the sealed `Settings`,
-  `AdapterOf` and `Validate` (D15), run by `New`; `ErrRestartRequired` and `RestartRequired` with its `decision:`
-  marker (D6). As RFC 20 §3.6 states: defaults are `default:"…"` tags read by the record
-  loader, and `Validate` fills none and refuses a zero value where one is required; NFS's TLS
-  block and SMB's dialect range are unnamed nested fields (`NFS.TLS{CertFile, KeyFile,
-  ClientCA, MinVersion, Mode}`, `SMB.Dialects{Min, Max}`, dialects the strings `"2.1"`,
-  `"3.0"`, `"3.0.2"`, `"3.1.1"`), so no type is exported for them; `Validate` checks shapes
-  and ranges and reads no file, since the control plane runs it where the certificates may not
-  be; `New` and `Reconfigure` load them (E6 and RFC 21, E4).
+- **Covers:** R13, R14, R16, R19, R34–R42, R44 (R43 withdrawn, D6).
+- **Deliverables:** `config.go`: `Adapter`, `NFS`, `SMB`, `TLS` in the shape RFC 20 §3.6
+  states: every field named by its `json` tag, under `adapters.<protocol>`; the RFC 13 adapter
+  rows as fields (`DrainTimeout`, `IdleTimeout`, `WriteTimeout`, `HandshakeTimeout`,
+  `ReadTimeout`, `DisabledOperations`, NFS's `TLS{Mode, CertFile, KeyFile, ClientCA}`, SMB's
+  `Dialects{Min, Max}`, `PendingTimeout`, `RecallTimeout`; not the node's connection limit,
+  R38); `Addrs` tagged `json:"-"` with §3.6's `decision:` marker; `DefaultNFS` and
+  `DefaultSMB` holding every default; `Settings`, `Common` and the `Validate` methods (D15), run
+  by `New`. `Validate` checks shapes and ranges, fills no default, refuses a zero value where
+  one is required, and reads no file, since the control plane runs it where the certificates may
+  not be; `New` and `Reconfigure` load them (E6 and RFC 21, E4). No restart machinery (D6).
 - **Acceptance criteria:**
   - An out-of-range value is refused with an error naming the field and the rule, never
     clamped or replaced by a default.
-  - A `drain_deadline` below the break deadline plus the request deadline (65 s) is refused.
+  - A `drain_timeout` below the break deadline plus the request deadline (65 s), and a
+    `recall_timeout` not above the break deadline, are refused.
+  - A TLS `mode` other than `off` without `cert_file` and `key_file`, and a file set while
+    `off`, are refused.
+  - A record naming `Addrs` is refused as an unknown field.
   - A share's policy and encryption requirement are no fields here.
-- **Tests:** each field's mark against RFC 13 Appendix B's class, through D6's table (catches a
-  field added unmarked or marked against the RFC); each default against its RFC value (catches
-  an unreviewed default); a table of invalid values, each refused naming its field (catches a
-  clamp); 64 s refused and 65 s accepted for `drain_deadline` (catches the bound); a change to
-  a field tagged restart-only in a test-only type returning an error that `errors.Is` matches
-  to `ErrRestartRequired` and that names the field (catches a comparison that ignores the tag).
-- **Rules:** rule 7: the `Addrs` `decision:` and D6's; rule 9: only what RFC 20 §3.6 names.
+- **Tests:** `DefaultNFS()` and `DefaultSMB()` each pass `Validate`, and each default equals
+  its RFC value (catches an unreviewed default, or defaults that do not validate); every field
+  carries a `json` tag, read by reflection (catches a field added without its key); a table of
+  invalid values, each refused naming its field (catches a clamp); 64 s refused and 65 s
+  accepted for `drain_timeout` (catches the bound); the TLS mode rules (catch a `require`
+  without a certificate); a decode over `DefaultSMB()` of a record naming one field keeps every
+  other default (catches a loader that zeroes what the record omits).
+- **Rules:** rule 7: the `Addrs` `decision:` and D6's at `Reconfigure` (E4); rule 9: only what
+  RFC 20 §3.6 names.
 
 ### T1.6 `pkg/resources`: the budget and buffer surface
 
@@ -672,8 +680,8 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
 
 - **Track:** the team. **Depends on:** T1.9.
 - **Covers:** R13, R19, R20, R45–R52, R53 (as D10 settles it).
-- **Deliverables:** `budget.go` (`Budget`, `NewBudget`, `Reserve`, `Reserved`, `Reservation`,
-  `Release`, `Pools`), `buf.go` (`Buf`, `BufPool`, `NewBufPool` (D18), `Get`, `Retain`, `Release`, the four
+- **Deliverables:** `budget.go` (`Budget`, `NewBudget`, `WaitBudget`, `NewWaitBudget`, their
+  `Reserve` and `Reserved`, `Reservation`, `Release`, `Budgets`), `buf.go` (`Buf`, `BufPool`, `NewBufPool` (D18), `Get`, `Retain`, `Release`, the four
   classes, unexported unless T1.9 names them), stub bodies per D12; `pkg/metrics`'
   `type Registry = Metrics` with its `ponytail:` naming the upgrade D10 states; a `ponytail:` naming RFC 24
   for each part left out (the fair-queue turns, `Reclaim`, `ShareCap`, `Detect`, `Split`).
