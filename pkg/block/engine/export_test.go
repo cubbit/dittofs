@@ -413,10 +413,6 @@ func (e *Engine) PendingWrites(f entity.FileID, off, end int64) int {
 	return n
 }
 
-// OnIssued runs f with each version the engine counts as issued toward its
-// version limit.
-func (e *Engine) OnIssued(f func(journal.Version)) { e.onIssued.Store(&f) }
-
 // GuardHeld reports whether a removal holds f's guard.
 func (e *Engine) GuardHeld(f entity.FileID) bool {
 	fe := e.files.entryOf(f)

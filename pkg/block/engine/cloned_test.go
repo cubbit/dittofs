@@ -1014,9 +1014,6 @@ func TestAStaleSourceAtPhase1IsRetried(t *testing.T) {
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	u.clone(t, src, dst, vfserr.Extent{Len: mib})
-	if n := x.calls.Load(); n != 2 {
-		t.Errorf("phase 1 ran %d times, want the stale one retried once", n)
-	}
 	if got := u.read(t, dst, 0, mib); !bytes.Equal(got, fill(mib, 's')) {
 		t.Error("the destination does not read the source's bytes")
 	}

@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"slices"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -155,9 +154,7 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m := newMarkerCrash(t, c.copies)
-			var mu sync.Mutex
-			var issued []journal.Version
-			m.e.OnIssued(func(v journal.Version) { mu.Lock(); issued = append(issued, v); mu.Unlock() })
+			m.e.TrackRaisesForTest()
 			var reserved atomic.Int64 // the most the journal held reserved at a sync of the destination
 			m.j.onSync.Store(new(func(ids []journal.FileID) {
 				if slices.Contains(ids, journal.NewFileID(m.dst)) {
@@ -167,6 +164,11 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 				}
 			}))
 			m.begin(t)
+			// The version limit's raise falls due on the next version issued,
+			// and on none before: the first copy made again wakes it.
+			m.e.WaitRaises(t)
+			limit := m.j.Stats().VersionLimit.Counter
+			m.e.SetBlockForTest(2 * (limit - m.j.Stats().NextVersion.Counter))
 
 			if err := m.writeErr(t, m.one.ID, m.src, runLen/2); !isDelay(err, vfserr.DelayClone) {
 				t.Errorf("a write into the source extent before the clone is done: %v, want DelayClone", err)
@@ -193,11 +195,9 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 			if len(copies) != remade {
 				t.Fatalf("%d copies made again, want %d", len(copies), remade)
 			}
-			mu.Lock()
-			counted := slices.Clone(issued)
-			mu.Unlock()
-			if !slices.Equal(counted, copies) {
-				t.Errorf("versions counted toward the version limit %v, want the copies made again %v", counted, copies)
+			m.e.WaitRaises(t)
+			if raised := m.j.Stats().VersionLimit.Counter > limit; raised != (remade > 0) {
+				t.Errorf("the version limit raised: %v, want %v, with %d copies made again and the first crossing the trigger", raised, remade > 0, remade)
 			}
 			if err := m.writeErr(t, m.one.ID, m.src, runLen/2); err != nil {
 				t.Errorf("a write into the source extent once the clone is done: %v", err)

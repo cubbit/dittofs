@@ -689,10 +689,6 @@ func (e *Engine) second() uint64 {
 // from the device's peak IOPS rather than the last minute, when the burst
 // check is refused at a rate a deployment reaches.
 func (e *Engine) issued(vl *versionLimit, v journal.Version) {
-	if h := e.onIssued.Load(); h != nil {
-		(*h)(v)
-	}
-
 	peak := vl.rate.add(e.second())
 
 	if vl.refused.Load() {
