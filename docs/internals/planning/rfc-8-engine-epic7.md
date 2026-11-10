@@ -277,12 +277,11 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   repack (with its scope), the last step, retry, or the answer with its cause.
   The engine only sequences: it calls the journal, passes the refusal in, and does what the
   table names, so the table is tested on its own (rule 1). It lives in `capacity.go`, as
-  RFC 8 §2.8 and the plan place "the refusal table", while RFC 8 §10.2 has `admit` decide
-  and §3.1 gives `admit` no refusal among its inputs; this document follows §2.8 until RFC 8
-  settles it, and if RFC 8 instead widens §3.1's signature, the same table moves into
-  `admit` in `policy.go` (§9 point 5). Nothing calls `admit` before a write stages in this
-  part: with no pacing it could only accept, and the journal's reservation is the only check
-  that holds against a concurrent writer (RFC 1 §6). A `Repack` or a scope `Sync` of the
+  RFC 8 §2.8 and the plan place "the refusal table", and RFC 8 §10.2 has it decide the
+  answer to a refusal; §3.1's `admit` acts only before the journal call (§9 point 5).
+  Nothing calls `admit` before a write stages in this part: with no pacing it could only
+  accept, and the journal's reservation is the only check that holds against a concurrent
+  writer (RFC 1 §6). A `Repack` or a scope `Sync` of the
   refusal path that fails with anything but a failed window (T4.6's per-file report) or the
   caller's own context leaves the refusal as the input: the table goes on as if that step
   freed nothing, so the answer still rests on what is left to free. The step's error is
@@ -765,9 +764,9 @@ A suggestion only: one pull request per subtask works as well.
    when each is raised and cleared (#3772). This epic raises `journal_full` (D9) and
    `journal_sync_failed` (D10); `stranded_export_failed` goes to the second part with the
    salvage export (§1.2). The half of `journal_sync_failed` raised when the journal turns
-   read-only, and its §15.2 assertion, wait for RFC 1 §5.4's read-only state, which no
-   epic of this part owns yet (epic 6's §9 point 8); every other mention in this document
-   points here.
+   read-only, and its §15.2 assertion, are T7.3's (#3898): RFC 8 §11.1 raises it from
+   the same loss events as the failed-window half, so it waits for no reopen; every
+   other mention in this document points here.
 2. **The fence's clock** (D6). RFC 8 §11.2 now records the `Clock.Elapsed` of the last
    commit (#3656). RFC 8 §11.2 and RFC 0 §1.4 still read either way on when the 30 s start;
    this document starts them when a transaction becomes outstanding or failing on a node
@@ -786,12 +785,10 @@ A suggestion only: one pull request per subtask works as well.
    commit to clear it. This document counts only retried transactions as failing, and of
    those only an attempt the store failed as a whole, never a file's own failure (RFC 8
    §5.2), and lifts the fence once none is outstanding or failing. Pending #3654.
-5. **`admit`'s signature** (D1). RFC 8 §10.2 has `admit` decide the answer to a refusal,
-   while §3.1 gives `admit` no refusal among its inputs and §2.8 keeps "the refusal table
-   (§10.2)" in `capacity.go`, apart from `policy.go`'s five functions. RFC 8 settles it
-   first: §3.1's signature takes the refusal and the step reached, or §10.2 hands the
-   decision to the refusal table in `capacity.go`. Pending an RFC 8 pull request, before
-   T7.1a starts.
+5. **`admit`'s signature** (D1). Settled: RFC 8 §10.2 now has the refusal table in
+   `capacity.go` decide the answer to a refusal the journal returned, and `admit` act only
+   before the journal call, so §3.1's signature stays as it is and §2.8 keeps the table in
+   `capacity.go` (D1).
 6. **E1's `Stats`, and the journal's figure for D4.** E1 froze `Stats` empty at S1 and RFC
    8 §12.1 names no field; epic 6's T6.3 (#3790) added `Journals`, `Shares`, `Condition`
    and `Subject`, and the fields D8 adds beyond them are to be agreed with the filesystem
