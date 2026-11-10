@@ -301,5 +301,5 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: a failed window with loss records raises journal_sync_failed, which clears an hour later on the test clock, and a restart over the loss record raises none; also the failed window (epic 4) and the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt, Sync and fails windows.'
+  reason: 'Epic 7: a failed window with loss records raises journal_sync_failed, which clears an hour later on the test clock, while a failed sync whose window is re-appended raises none, and neither does a restart over the loss record; also the failed window (epic 4) and the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt, Sync and fails windows.'
   issue: '#3590'

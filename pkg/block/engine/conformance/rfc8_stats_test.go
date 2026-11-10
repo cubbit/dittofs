@@ -21,13 +21,25 @@ func syncFailed(f *enginetest.Fixture) bool {
 
 // §15.2, journal_sync_failed: a failed window with loss records, the journal
 // still writable, raises it, and it clears an hour after the latest failed
-// window on the test clock with no operator step. A restart over the loss
-// record on disk raises none for the loss found at open.
+// window on the test clock with no operator step. A failed sync whose window
+// is re-appended raises none, and a restart over the loss record on disk
+// raises none for the loss found at open.
 func TestRFC8B_JournalSyncFailed(t *testing.T) {
 	f := enginetest.New(t)
 	_, id := f.File("a")
-	write(t, f, id, 0, []byte("in a failed window"))
+
+	// First, as FailNextWindow's stale reads last for the fixture's life.
+	write(t, f, id, 0, []byte("re-appended"))
 	f.FailNextSync()
+	if _, _, err := f.E.Commit(t.Context(), f.Share.ID, id, 0, 0); err != nil {
+		t.Fatalf("Commit over a re-appended window: %v", err)
+	}
+	if syncFailed(f) {
+		t.Error("journal_sync_failed raised for a re-appended window")
+	}
+
+	write(t, f, id, 0, []byte("in a failed window"))
+	f.FailNextWindow()
 	if _, _, err := f.E.Commit(t.Context(), f.Share.ID, id, 0, 0); err != nil {
 		t.Fatalf("Commit over a failed window: %v", err)
 	}
