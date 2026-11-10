@@ -139,10 +139,10 @@ func (r *rig) readIn(t *testing.T, s entity.ShareID, f entity.FileID, off int64,
 // marker: both extents are registered before Start serves a file, so a write
 // into the source extent and a read of the destination's answer ErrDelay;
 // the copies the journal holds are kept, only the others made again through
-// a reservation of their size, each counted toward the version limit as a
-// live copy is; and the clone finishes with the destination reading the
-// source at its asOf, never zeros where it held bytes, as a marker applied
-// as a plain removal would leave it.
+// a reservation of their size, the first of them waking the version limit's
+// raise as a live copy does; and the clone finishes with the destination
+// reading the source at its asOf, never zeros where it held bytes, as a
+// marker applied as a plain removal would leave it.
 func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -155,11 +155,11 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			m := newMarkerCrash(t, c.copies)
 			m.e.TrackRaisesForTest()
-			var reserved atomic.Int64 // the most the journal held reserved at a sync of the destination
+			var reserved atomic.Int64 // the journal's reserved bytes at a sync of the destination that saw any
 			m.j.onSync.Store(new(func(ids []journal.FileID) {
 				if slices.Contains(ids, journal.NewFileID(m.dst)) {
-					n := m.j.Stats().ReservedBytes
-					for old := reserved.Load(); n > old && !reserved.CompareAndSwap(old, n); old = reserved.Load() {
+					if n := m.j.Stats().ReservedBytes; n > 0 {
+						reserved.Store(n)
 					}
 				}
 			}))

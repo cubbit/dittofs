@@ -218,7 +218,7 @@ func TestACloneOfASourcePastItsEndIsRefused(t *testing.T) {
 
 // The reservation is sized from the source's held runs at asOf, and every
 // copy goes through it above the clone's version: three held runs and two
-// holes reserve the runs' bytes and three writes. Phase 1 commits the copies
+// holes reserve the runs' bytes. Phase 1 commits the copies
 // through Copied: the destination's applied is at or above the newest copy,
 // and the copied runs read the source.
 func TestACloneReservesItsCopiesAndWritesThemAboveItsVersion(t *testing.T) {
