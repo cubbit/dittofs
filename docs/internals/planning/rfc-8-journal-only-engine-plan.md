@@ -117,7 +117,8 @@ with stage 2:
 - `Engine`, `New(Deps)`, `Apply(Settings)`, `Start`, `Close`, `Bind`, `Unbind`, `Drop`,
   `Stats` and the twelve content methods, with RFC 8 §12.1's signatures and stub bodies.
 - `Deps` (§2.6) narrowed to this part: `Devices`, `Open`, `Existence`, `Content`, `Lifecycle`,
-  `Holds`, `Clock`, `Logger` and `Tracer`. RFC 8 §2.6 has no `Tracer` yet; RFC 25 §8.1 puts one in
+  `Holds`, `Clock`, `Logger` and `Tracer`, and `sample`, the verifier's sampling function, an
+  input frozen here like the rest. RFC 8 §2.6 has no `Tracer` yet; RFC 25 §8.1 puts one in
   the engine's `Deps`, and #3547 adds it (§6 point 2). RFC 8 §2.6's `Watchdog`
   and `Metrics` are left out: RFC 25's `health` and `metrics` types exist on neither
   `develop` nor `feat/storage-v2`, so the engine uses what exists (rule 3). `Holds` is a
