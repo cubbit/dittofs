@@ -69,4 +69,4 @@ All metadata stores implement the following POSIX fixes:
 
 ## Raw Test Results
 
-Raw test output is stored in `test/posix/results/` with timestamps indicating the test run date and configuration.
+Raw test output is stored in `test/posix/results/` with timestamps indicating the test run date and configuration. The PostgreSQL runs' raw output was dropped with the store; it is in the history before this file's last change.
