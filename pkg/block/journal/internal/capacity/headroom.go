@@ -117,7 +117,12 @@ type Headroom struct {
 	reserve int // the open reserve, in records, fixed at construction
 
 	mu    sync.Mutex
-	drawn int64  // the record bytes the headroom has admitted; guarded by mu
+	drawn int64 // the record bytes the headroom has admitted; guarded by mu
+	// outstanding is the draws admissions hold whose record has neither
+	// appended (Drawn) nor failed (Refund); guarded by mu.
+	outstanding int
+	// ponytail: drawn only grows until a retirement returns headroom,
+	// upgrade by crediting it from the retirement path when repack lands.
 	draws uint64 // the headroom_draws counter; guarded by mu
 }
 
@@ -163,6 +168,12 @@ type Draw struct {
 // appended while the journal serves draws on it: a journal that ran its
 // headroom out before a crash still finds the reserve whole at the next
 // open.
+//
+// decision: the headroom is drawn only while the journal is at its limit —
+// the footprint plus a segment cap past the maximum, the same predicate
+// headroom_draws counts by — because below it a record without bytes lands
+// in a content spare, and burning the headroom on records the content pool
+// already covered would drain the reserve of a healthy journal.
 func (h *Headroom) Admit(ctx context.Context, c RecordClass) (Draw, error) {
 	if err := h.cfg.Admit(); err != nil {
 		return Draw{}, err
@@ -171,6 +182,12 @@ func (h *Headroom) Admit(ctx context.Context, c RecordClass) (Draw, error) {
 		// The repack copy draws on the repack reserve, a reserve of its
 		// own outside the headroom and every share's limit, so no
 		// headroom figure can refuse it.
+		return Draw{Append: true}, nil
+	}
+	// The at-limit read runs before the section: the set's lock is of this
+	// same capacity domain, and no two locks of one domain are held at
+	// once. Below the limit every class is admitted and draws nothing.
+	if !h.atLimit() {
 		return Draw{Append: true}, nil
 	}
 
@@ -186,6 +203,7 @@ func (h *Headroom) Admit(ctx context.Context, c RecordClass) (Draw, error) {
 		// an open's own records still draw on, down to nothing.
 		if c == Open && free > 0 {
 			h.drawn += RecordCharge
+			h.outstanding++
 			h.mu.Unlock()
 			return Draw{Append: true}, nil
 		}
@@ -204,6 +222,7 @@ func (h *Headroom) Admit(ctx context.Context, c RecordClass) (Draw, error) {
 		}
 	}
 	h.drawn += RecordCharge
+	h.outstanding++
 	h.mu.Unlock()
 	return Draw{Append: true}, nil
 }
@@ -225,16 +244,53 @@ func (h *Headroom) Drawn(c RecordClass) {
 	if c == RepackCopy {
 		return
 	}
-	// The footprint is a snapshot read outside the section: the set's own
-	// read takes a lock of this same capacity domain, and no two locks of
-	// one domain are held at once.
-	atLimit := h.cfg.MaxBytes > 0 && h.cfg.Footprint()+h.cfg.SegmentCap > h.cfg.MaxBytes
-	if !atLimit {
+	// The at-limit read runs before the section: the set's lock is of this
+	// same capacity domain, and no two locks of one domain are held at
+	// once.
+	atLimit := h.atLimit()
+	h.mu.Lock()
+	if h.outstanding > 0 {
+		// The append settles the draw it was admitted with, whichever way
+		// the limit moved in between.
+		h.outstanding--
+	}
+	if atLimit {
+		h.draws++
+	}
+	h.mu.Unlock()
+}
+
+// Refund returns one admission's draw when the append it admitted failed:
+// the record never landed, so the headroom never spent it. It is a no-op
+// for an admission that drew nothing — below the limit, a RepackCopy, or
+// an Offloaded record below half, which was never appended at all — and it
+// reverses nothing in headroom_draws, which counts only records that
+// appended.
+func (h *Headroom) Refund(c RecordClass) {
+	// A repack copy's admission drew on the repack reserve, never here, so
+	// its refund has nothing to return — whichever other draws are still
+	// outstanding.
+	if c == RepackCopy {
 		return
 	}
 	h.mu.Lock()
-	h.draws++
+	if h.outstanding > 0 {
+		h.outstanding--
+		h.drawn -= RecordCharge
+		if h.drawn < 0 {
+			h.drawn = 0
+		}
+	}
 	h.mu.Unlock()
+}
+
+// atLimit reports the one state in which the headroom is drawn: the journal
+// at its limit, the footprint plus a segment cap past the maximum — the
+// same predicate headroom_draws counts by. The footprint is a snapshot
+// read outside any held mutex: the set's lock is of this same capacity
+// domain, and no two locks of one domain are held at once.
+func (h *Headroom) atLimit() bool {
+	return h.cfg.MaxBytes > 0 && h.cfg.Footprint()+h.cfg.SegmentCap > h.cfg.MaxBytes
 }
 
 // Draws returns the headroom_draws counter: the records appended while the
