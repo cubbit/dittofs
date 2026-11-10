@@ -526,9 +526,10 @@ type stream struct {
 	// entries that lead to it.
 	//
 	// ponytail: one entry per re-appended record not yet completed, so it is
-	// bounded by what a failed window held and the new segment's sync clears.
-	// Upgrade to a table per window when a profile shows the scan complete
-	// makes for each record it finishes.
+	// bounded by what a failed window held and the new segment's sync clears,
+	// and an entry whose last place was lost stays for the life of the stream,
+	// as lost does. Upgrade to a table per window when a profile shows the scan
+	// complete makes for each record it finishes.
 	moved map[segment.Location]segment.Location
 	// marks are the failures no Sync has reported yet, per file, oldest
 	// first; told holds, per pending window, the files already told of it.

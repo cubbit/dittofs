@@ -64,9 +64,10 @@ type window struct {
 	// raised is set, under st.mu, while a batch of failEntries runs, from its
 	// raise until the batch is settled: a Corrupt of a record of the window
 	// in that time answers the failure after the batch's raise and makes
-	// none of its own. Outside a batch it is clear, so each batch, and each
-	// Corrupt of a record still in the window, raises for the failures it
-	// answers. A read-only journal raises once for its entry instead
+	// none of its own. It is also set by a Corrupt that answered the window's
+	// failure, so a second Corrupt of the window does not raise again, and it
+	// stays set until the next batch is settled. Each batch raises for the
+	// failures it answers whatever it finds set. A read-only journal raises once for its entry instead
 	// (raiseOnce), whatever the window says, so both can land for one window
 	// there: a spare raise, an extra one and never a missing one, which only
 	// makes a client resend. Overturned if that costs something; takeCorrupt

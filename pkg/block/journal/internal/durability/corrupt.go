@@ -99,8 +99,9 @@ type CorruptOutcome struct {
 // whatever the pieces, when it answers a failed window's report for the record
 // (a mark, or a report owed to a window not yet taken), since a failed window
 // raises before any Sync it fails returns. A record in a pending window
-// shares the raise of a batch of the worker's failures that is running
-// (window.raised), and raises on its own otherwise. In a
+// shares the raise of a batch of the worker's failures that is running, or of
+// an earlier Corrupt that answered the window's failure (window.raised), and
+// raises on its own otherwise. In a
 // read-only journal that window raise and the read-only entry's raiseOnce can
 // both land for the same window, as a spare raise: an extra raise, never a
 // missing one, since a raise only makes a client resend and the generation
