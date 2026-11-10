@@ -83,72 +83,20 @@ the import test and its seeded violations; the leak check; the `unit/adapter-all
 
 ## 2. General rules for each epic
 
-1. **Independent unit tests, under `-race`.** Each epic carries its own unit tests. It may use
-   another epic's implementation once that has landed, `vfstest.Memory` and `vfstest.Faults`, and
-   E2's `testproto` and leak checks. Every double is one of
-   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds. `core` is tested from `package core_test` on `testproto` and
-   never through NFS or SMB; no `core` test imports a protocol package. Connections are real TCP
-   over loopback, with real deadlines and socket options read back from the socket. Test at the
-   layer that consumes a value (`CLAUDE.md`, "Verifying a change"): a setting is asserted on a
-   connection accepted after `Reconfigure`, not on the snapshot.
-2. **Fuzz tests where relevant.** Go native fuzzing on every decoder of bytes a peer sent: the
-   NetBIOS and RPC record framers, the SMB2 header, the RPC call header and AUTH_SYS credential,
-   `testproto`'s frame. Seeded with each package's golden vectors. The property: accepted or
-   refused, never a panic, never an allocation past the protocol's cap (RFC 20 §5.2, A8).
-3. **Observability follows RFC 25 and RFC 20 §10.** Every metric, span and log key lives in
-   `core`; protocol code records none. The series are RFC 20 §10.1's that `core` produces here,
-   through `pkg/metrics`, resolved once per protocol and operation at table build so the request
-   path does an atomic add; the replay, translation, status-mapped and record series arrive with
-   their producers. Spans through `Deps.Tracer`, logs through `Deps.Logger`.
-4. **Leaks and allocations.** Every test that runs the pipeline ends with E2's leak checks. Hot
-   paths carry allocation assertions (`testing.AllocsPerRun`): the header codecs of both
-   protocols and `testproto`'s at 0, `BufPool.Get` and `Release` at 0, and the pipeline's
-   allocations per request at or under a checked-in number that may only fall. Each gate is
-   registered in the per-change `unit/adapter-allocs` cell by the subtask that writes it.
-5. **v2 ignores v1.** v1 is deleted in epic 1; nothing is copied from it but what RFC 20
-   Appendix B marks **keep**, lifted from `develop`'s history into its new place: the accept
-   backoff and the sidecar group's reconcile here, the rest with RFC 21 and 22. The import test
-   fails any import of a path v1 used that v2 does not.
-6. **Nothing deferred is lost.** A subtask that leaves out part of an RFC 20 obligation, or
-   anything develop serves, adds or keeps its row in the deferral ledger, naming the owner that
-   brings it back.
-7. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes the
-   code's behaviour and references nothing outside it: no issue or pull request numbers, no CI,
-   runner or OS names, no ids from planning documents (epics, subtasks, synchronisation points,
-   decisions). A `ponytail:` marker records a knowingly simple implementation, naming its
-   ceiling and the upgrade path. A `decision:` marker records deliberate behaviour, naming the
-   rule, why it holds and the evidence that would overturn it. RFC 20's notes go at their code
-   sites: no attribute cache, parked requests off the hold floor, `Addrs` live, `Pends` asked
-   only for an error the service returned, a call in the service pending past the ceiling and the floor, context
-   and attribute reads served while draining, a `ponytail:` for the uncharged replay copies, a drain's refusal answered by an interim with no final, the expired
-   credential running only releases, a `ponytail:` for the cancel record's 5 s, `unwrap` on the reader, the cap of 64, one goroutine per request,
-   `sync.Pool` per class, no self-probe. `pkg/resources`'s missing turns, `Reclaim`, `ShareCap`
-   and `Split` each carry a `ponytail:` naming RFC 24.
-8. **A test must be able to fail.** Keep a test only if a plausible change would make it fail and
-   nothing else would catch that change. The import test proves it can by reporting its seeded
-   violation; the budget leak check by failing a test that keeps a `Buf`.
-9. **A symbol is exported only if RFC 20's interface uses it.** `pkg/adapter`,
-   `pkg/adapter/config`, `pkg/resources` and the two `New` are the public surface. `core`'s
-   exported symbols are those RFC 20 §4.7 names, frozen at S1; everything else in `core` is
-   unexported. A symbol §4.7 does not name is added to §4.7 first, by a pull request to the RFC.
-10. **Each subtask creates only what it declares.** No empty package and no stub without a
-    caller: no empty `ops/`, `callbacks.go`, `gss/`, `translate/` or `dcerpc/`. A package, a stage
-    or a test helper lands with its first consumer.
-
-### 2.1 How the rules apply
+Each of the programme's ten general rules for an epic, and how it applies here or why it does not.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| 1 Unit tests | all | every R-number has a test that can fail (§6 names the change each catches). `testproto` is not a double (D1); its service call reaches the `Deps.VFS` a test supplies, and no test here builds a service. No `core` server accepts a socket before S3; the client's test writes to one end of a loopback pair on `127.0.0.1:0` and reads the other |
-| 2 Fuzz | T2.1 | `FuzzFrame` over `Framer.BodyLen` and `HeaderCodec.Decode`, seeded with T2.1's hand-written vectors, crashers committed under `testdata/fuzz/FuzzFrame/`; the property is CLAUDE.md's: no panic, every length read inside the buffer, nothing allocated for a length past the 1 MiB cap, and a decoded header re-encodes to bytes that decode to the same fields |
-| 3 Observability | T2.1, T2.2b | `testproto` is protocol code: it records no metric, span or log key, and takes no `Deps.Metrics`, `Tracer` or `Logger` |
-| 4 Leaks and allocations | T2.1, T2.4 | T2.4 writes the leak check; T2.1 writes `testproto`'s 0-allocation header gate and registers it in `unit/adapter-allocs`, which it creates (D12). No pipeline runs here, so no test of this epic ends with the leak check but its own |
-| 5 v2 ignores v1 | T2.3 | the import test fails a package at any path v1 used that v2 does not (D9) |
-| 6 Nothing deferred is lost | T2.3, T2.2b | §7.1's entry-method and file-size checks are existing ledger rows; §9 adds the `translate` clause and `vfstest.Memory` for `testproto`'s service call |
-| 7 Comment conventions | T2.1, T2.2a, T2.2b, T2.3, T2.4 | the markers §4 lists: the `decision:` markers of D1, D4, D5, D6, D7, D8 and D13 at their code sites, the `ponytail:` markers of D10 and D16, each with an upgrade local to its file |
-| 8 A test must be able to fail | all | the import test reports one seeded violation per rule (D9); the leak check's goroutine predicate is tested on a goroutine left blocked; its budget predicate's failing test is E3's (D11) |
-| 9 Exported only if RFC 20 uses it | T2.1, T2.2b | nothing is added to `core` or the public packages; `testproto` and `adaptertest` are test-only packages, whose exports are §5's, each named with its consumer |
-| 10 Only what is declared | all | each stage, operation and helper names its consumer in §6; a consumer may be a later epic's subtask that names it (as E1 settled for its stubs) |
+| rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, Writing tests](https://github.com/cubbit/dittofs/blob/develop/CLAUDE.md#writing-tests); [Verifying a change](../../../CLAUDE.md#verifying-a-change)) | all | every R-number has a test that can fail (§6 names the change each catches). `testproto` is not a double (D1); its service call reaches the `Deps.VFS` a test supplies, and no test here builds a service. No `core` server accepts a socket before S3; the client's test writes to one end of a loopback pair on `127.0.0.1:0` and reads the other |
+| rule 2, fuzz tests where relevant | T2.1 | `FuzzFrame` over `Framer.BodyLen` and `HeaderCodec.Decode`, seeded with T2.1's hand-written vectors, crashers committed under `testdata/fuzz/FuzzFrame/`; the property is CLAUDE.md's: no panic, every length read inside the buffer, nothing allocated for a length past the 1 MiB cap, and a decoded header re-encodes to bytes that decode to the same fields |
+| rule 3, observability follows RFC 25 and RFC 20 §10 | T2.1, T2.2b | `testproto` is protocol code: it records no metric, span or log key, and takes no `Deps.Metrics`, `Tracer` or `Logger` |
+| rule 4, leaks and allocations | T2.1, T2.4 | T2.4 writes the leak check; T2.1 writes `testproto`'s 0-allocation header gate and registers it in `unit/adapter-allocs`, which it creates (D12). No pipeline runs here, so no test of this epic ends with the leak check but its own |
+| rule 5, v2 ignores v1 | T2.3 | the import test fails a package at any path v1 used that v2 does not (D9) |
+| rule 6, nothing deferred is lost | T2.3, T2.2b | §7.1's entry-method and file-size checks are existing ledger rows; §9 adds the `translate` clause and `vfstest.Memory` for `testproto`'s service call |
+| rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments): `ponytail:` and `decision:` markers) | T2.1, T2.2a, T2.2b, T2.3, T2.4 | the markers §4 lists: the `decision:` markers of D1, D4, D5, D6, D7, D8 and D13 at their code sites, the `ponytail:` markers of D10 and D16, each with an upgrade local to its file |
+| rule 8, a test must be able to fail ([`CLAUDE.md`, Writing tests](https://github.com/cubbit/dittofs/blob/develop/CLAUDE.md#writing-tests); [Verifying a change](../../../CLAUDE.md#verifying-a-change)) | all | the import test reports one seeded violation per rule (D9); the leak check's goroutine predicate is tested on a goroutine left blocked; its budget predicate's failing test is E3's (D11) |
+| rule 9, a symbol is exported only if RFC 20's interface uses it | T2.1, T2.2b | nothing is added to `core` or the public packages; `testproto` and `adaptertest` are test-only packages, whose exports are §5's, each named with its consumer |
+| rule 10, each subtask creates only what it declares | all | each stage, operation and helper names its consumer in §6; a consumer may be a later epic's subtask that names it (as E1 settled for its stubs) |
 
 ## 3. Requirements and invariants
 
