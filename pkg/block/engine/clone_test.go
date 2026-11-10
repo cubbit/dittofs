@@ -51,23 +51,18 @@ func (u *unit) bindShare(t *testing.T, name string, ns entity.NamespaceID) entit
 // bounds: an admitted clone reaches the steps not built yet.
 //
 // The journal is left as it was and the store is never reached, admitted or
-// not: the journal's Stats are compared and every store call panics.
+// not: the journal's Stats are compared and the store reads and writes
+// nothing.
 func TestCloneAdmission(t *testing.T) {
-	ns := &noStore{}
-	u := cloneUnitWith(t, unitConfig{
-		deps: []func(*engine.Deps){func(d *engine.Deps) {
-			ns.Existence, ns.Content = d.Existence, d.Content
-			d.Existence, d.Content = ns, ns
-		}},
-		unbound: true,
-	})
+	u, counts := countedUnit(t, unitConfig{unbound: true}, cloneUnitWith)
 	if err := u.e.Bind(t.Context(), u.share); err != nil {
 		t.Fatal(err)
 	}
 	f, g := entity.NewFileID(), entity.NewFileID()
 	same := u.bindShare(t, "same", entity.NamespaceID{})
 	other := u.bindShare(t, "other", entity.NewNamespaceID())
-	ns.arm()
+	counts.Take()
+	counts.TakeUpdates()
 	before := u.j.Stats()
 	s := u.share.ID
 	for _, c := range []struct {
@@ -99,6 +94,7 @@ func TestCloneAdmission(t *testing.T) {
 	if after := u.j.Stats(); !reflect.DeepEqual(after, before) {
 		t.Errorf("the journal after admission: %+v, want it as before, %+v", after, before)
 	}
+	untouched(t, counts, "admission")
 }
 
 func isInvalid(err error) bool { return errors.Is(err, vfserr.ErrInvalid) }

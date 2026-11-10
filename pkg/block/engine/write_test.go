@@ -12,40 +12,42 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// noStore is a store view that forwards to the real views until armed, and
-// then panics on any call, its views nil: a call that reaches the store once
-// armed fails the test.
-type noStore struct {
-	engine.Existence
-	engine.Content
+// countedUnit is the unit c asks for, its store's kv.KV under kv.Counting,
+// which it answers.
+func countedUnit(t *testing.T, c unitConfig, open func(*testing.T, unitConfig) *unit) (*unit, *kv.Counting) {
+	t.Helper()
+	var counts *kv.Counting
+	c.kv = func(k kv.KV) kv.KV {
+		counts = &kv.Counting{KV: k}
+		return counts
+	}
+	return open(t, c), counts
 }
 
-// arm makes every later call panic.
-func (s *noStore) arm() {
-	s.Existence = nil
-	s.Content = nil
+// untouched fails the test when the store read or wrote anything since the
+// counts were last taken.
+func untouched(t *testing.T, counts *kv.Counting, what string) {
+	t.Helper()
+	if n, u := counts.Take(), counts.TakeUpdates(); n != (kv.Counts{}) || u.Updates != 0 {
+		t.Errorf("%s: the store read and wrote %+v in %d updates, want nothing", what, n, u.Updates)
+	}
 }
 
-// A write waits for no store: with every existence and content call
-// panicking once the share is bound, it still answers. The panic is the
-// assertion: it fails the test at the very call that reached the store.
+// A write waits for no store: once the share is bound, it answers having
+// read and written nothing in the store.
 func TestAWriteMakesNoStoreCall(t *testing.T) {
-	ns := &noStore{}
-	u := newUnit(t, func(d *engine.Deps) {
-		ns.Existence = d.Existence
-		ns.Content = d.Content
-		d.Existence = ns
-		d.Content = ns
-	})
+	u, counts := countedUnit(t, unitConfig{}, newUnitWith)
 
 	if err := u.e.BindingOf(u.share.ID); err != nil {
-		t.Fatalf("the share is not bound before the store is armed: %v", err)
+		t.Fatalf("the share is not bound: %v", err)
 	}
 
-	ns.arm()
+	counts.Take()
+	counts.TakeUpdates()
 
 	_, err := u.e.Write(
 		t.Context(),
@@ -58,6 +60,8 @@ func TestAWriteMakesNoStoreCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	untouched(t, counts, "a write")
 }
 
 // The journal records the clock's time with a write, in nanoseconds since
@@ -244,18 +248,13 @@ func TestDrawIsTheJournalsNextVersion(t *testing.T) {
 	}
 }
 
-// Overlay reads the file's entry alone: with every store call failing, it
+// Overlay reads the file's entry alone, reading nothing in the store: it
 // reflects an unstable write, its time and its size, and a file with nothing
 // pending answers pending false and the zero overlay without allocating.
 func TestOverlayReadsTheEntryAlone(t *testing.T) {
-	ns := &noStore{}
-	u := newUnit(t, func(d *engine.Deps) {
-		ns.Existence = d.Existence
-		ns.Content = d.Content
-		d.Existence = ns
-		d.Content = ns
-	})
-	ns.arm()
+	u, counts := countedUnit(t, unitConfig{}, newUnitWith)
+	counts.Take()
+	counts.TakeUpdates()
 	f := entity.NewFileID()
 	at := u.clock.Now()
 	if _, err := u.e.Write(t.Context(), u.share.ID, f, 10, []byte("abcd"), engine.WriteOpts{Done: func() {}}); err != nil {
@@ -276,4 +275,5 @@ func TestOverlayReadsTheEntryAlone(t *testing.T) {
 	if o, pending, err := u.e.Overlay(t.Context(), u.share.ID, g); err != nil || pending || o != (engine.Overlay{}) || u.e.HasEntry(g) {
 		t.Errorf("a file with nothing pending: %+v, %v, %v, entry %v; want the zero overlay, not pending, no entry", o, pending, err, u.e.HasEntry(g))
 	}
+	untouched(t, counts, "writes and overlays")
 }
