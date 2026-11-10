@@ -698,3 +698,151 @@ func countSegments(names []string) int {
 	}
 	return n
 }
+
+// TestOpen_SparesReady_WaitsForThePool fails an Open that hands over no
+// spare-pool wait, or one that answers before the pool it belongs to has
+// filled: the callback receives the wait, the wait blocks while the pool's
+// first make is held at the seam, and a write right after it needs no
+// spare-retry — the pool the open sized is what filled.
+func TestOpen_SparesReady_WaitsForThePool(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := newSeam(t)
+	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	var wait core.SparesWait
+	open := append(openOpts(s.seam, kit.NewStopwatchClock()), WithSparesReady(func(w core.SparesWait) {
+		if w == nil {
+			t.Error("the open handed over a nil spare-pool wait")
+			return
+		}
+		wait = w
+	}))
+
+	// The pool's very first make is parked at the seam before the open
+	// begins, so the wait the callback received cannot answer until it is
+	// let go: an answer before that names a wait over a pool it did not
+	// watch.
+	held := s.seam.HoldFirst(t, kit.OpCreate, "*")
+	j, err := Open(context.Background(), s.dir, Version{}, id, open...)
+	if err != nil {
+		held.Release()
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		if err := j.Close(); err != nil {
+			t.Errorf("close the opened journal: %v", err)
+		}
+	}()
+	if wait == nil {
+		held.Release()
+		t.Fatal("the callback Open took was never called")
+	}
+
+	answered := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		answered <- wait.WaitSpares(ctx)
+	}()
+	select {
+	case err := <-answered:
+		held.Release()
+		t.Fatalf("WaitSpares answered %v while the pool's first make was still held", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	held.Release()
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatalf("WaitSpares over a filled pool: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("WaitSpares never answered once the fill it watched settled")
+	}
+
+	// The pool the wait watched is the journal's own: a write through a
+	// share, made right after the wait, needs no spare-retry — a journal
+	// whose first write rolls finds a spare the pool made. The write
+	// carries its own retry, exactly as the fixture's checks do, so a pool
+	// the wait never filled still writes and the round trip stands.
+	if err := j.SetVersionLimit(openLimit); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+	h, err := j.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+	defer func() { _ = h.Close() }()
+	v := writeReady(t, h, fileOf(1), "spares ready")
+	if v == (Version{}) {
+		t.Fatal("the write after the wait drew no version")
+	}
+}
+
+// TestOpen_SparesReady_CloseDuringTheWait fails a journal whose Close leaves
+// the spare-pool wait blocked: the pool's Stop answers it with the journal's
+// own closed refusal, and the journal's Close — which stops the pool —
+// leaves nothing the wait still parks on.
+func TestOpen_SparesReady_CloseDuringTheWait(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := newSeam(t)
+	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	var wait core.SparesWait
+	open := append(openOpts(s.seam, kit.NewStopwatchClock()), WithSparesReady(func(w core.SparesWait) {
+		wait = w
+	}))
+	held := s.seam.HoldFirst(t, kit.OpCreate, "*")
+	j, err := Open(context.Background(), s.dir, Version{}, id, open...)
+	if err != nil {
+		held.Release()
+		t.Fatalf("Open: %v", err)
+	}
+	if wait == nil {
+		held.Release()
+		t.Fatal("the callback Open took was never called")
+	}
+
+	answered := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		answered <- wait.WaitSpares(ctx)
+	}()
+
+	// Close stops the pool with the first make still held at the seam, so
+	// its join of the worker cannot pass until the hold below lets the make
+	// land: Close runs on a goroutine of its own, the wait is answered by
+	// the stop — whatever the pool's last pass left — and the release then
+	// lets the join return, so nothing of the close leaks past the test.
+	closed := make(chan error, 1)
+	go func() { closed <- j.Close() }()
+	select {
+	case err := <-answered:
+		if !errors.Is(err, core.ErrClosed) {
+			t.Fatalf("WaitSpares over a journal its Close stopped returned %v, want core.ErrClosed", err)
+		}
+	case <-time.After(10 * time.Second):
+		held.Release()
+		t.Fatal("WaitSpares never answered the Close that stopped its pool")
+	}
+
+	held.Release()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close never joined the make its stop was held on")
+	}
+}
