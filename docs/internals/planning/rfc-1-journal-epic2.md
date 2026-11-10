@@ -80,7 +80,8 @@ is named with the reason.
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
-   to fake (rule 12).
+   to fake (rule 12). Every double is one of
+   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference
@@ -275,7 +276,7 @@ type FaultAction struct { // a Schedule rule's action: the three results of At
 ```
 
 - *Why declared here:* `Fault` is the node's, not the journal's (RFC 8 §2.1): every fault
-  seam consults one, the fake store, the fault transport and the fault-injecting metadata
+  seam consults one, the in-memory store, the fault transport and the fault-injecting metadata
   store included. Its results are standard-library values, so a seam that may import only
   the standard library declares it in its own package and a `Schedule` satisfies it as is.
   `FaultAction` is only a `Schedule` rule's data, and `pkg/sim` is its home.
@@ -604,6 +605,12 @@ Every conformance subtask also:
   - **Registration** (D1, D2): the `journal_conformance` tag, the `journal-conformance`
     suite and `journal` group in `test/suites.yaml`, the tag on `lint-go`'s vet line, and
     `test/journal/known.yaml`.
+  - **Reuse by another implementation:** the in-memory journal's rows, named in
+    [the plan's epic 3](rfc-1-journal-plan.md), are also exported as
+    `conformance.Run(t, open)`, so the engine's in-memory journal is held to them (RFC 29 §4.11). `open` returns the narrow
+    interfaces the engine consumes (RFC 8 §2), declared in the suite's package, so the
+    fixture splits: these rows run on a constructor with no directory, seam or `Crash`. The
+    storage, RFC 28 and damage rows stay the real journal's.
 - **Done when:**
   - `dt run journal-conformance` is green, with every test graded `known`;
   - removing any one entry from `known.yaml` makes the run fail with that test as new;
@@ -674,7 +681,9 @@ Every conformance subtask also:
   the row names. Corruption is introduced through the seam's durable image.
 - **Rules:**
   - 5: the checks observe the disk only through the seam's call counts and images, never
-    through internal packages.
+    through internal packages. The counts are the record
+    [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles) allows: the seam
+    records what reached storage and passes it through, and that record is the output.
   - 8: every "crash and reopen" is the seam's.
 
 ### 2.8 RFC 1 Group A, part 2: repack, sync windows and losses; counted sync checks
@@ -938,8 +947,8 @@ the journal team or the filesystem service's owner, is agreed at S4a.
 
 ### 7.1 At the filesystem service's integration tier
 
-`vfs.Filesystem` over the real engine on a temporary journal, the in-memory store, a fake
-remote tier and the fake clock, with no node and no kernel client (RFC 17 §8, the
+`vfs.Filesystem` over the real engine on a temporary journal, the in-memory store, the in-memory
+remote tier held to the remote tier's conformance suite and the fake clock, with no node and no kernel client (RFC 17 §8, the
 integration tier). **Depends on:** epic 11 and #3119 stage 2's `vfs.New` with its
 integration harness (RFC 17 §9, slice 1).
 
@@ -986,10 +995,11 @@ and the verifier) as well. Epic 10's rows need only a `dfs` that starts.
 
 ### 7.3 The `Content` conformance check
 
-One check that both a fake `Content` and the engine pass, so the filesystem service's unit
-tier (RFC 17 §8, a fake engine) tests against the same contract the engine meets. It is
-not this epic's, which tests the journal alone; it is a named deliverable of epic 11,
-agreed with its shape at S4a.
+One check that both the in-memory `Content` and the engine pass, so the filesystem service's
+unit tier (RFC 17 §8) tests against the same contract the engine meets. The in-memory
+`Content` is a double only while this check holds it (RFC 29 §4.11), so the check is written
+first, with it. It is not this epic's, which tests the journal alone; its shape is agreed at
+S4a, and the engine passing it is a named deliverable of epic 11.
 
 ---
 
@@ -1043,7 +1053,7 @@ or eleven to twenty checks, **L** more than twenty checks or a systematic sweep.
 | 2.2 fault, schedule, clock | M | three components, holds |
 | 2.3 profiler | S | one component |
 | 2.4 reference model | M | every operation, crash states, a fuzz target |
-| 2.5a fixture, registration | S | the fixture, the suite, CI wiring |
+| 2.5a fixture, registration | M | the fixture, split so a constructor with no directory, seam or `Crash` runs the in-memory journal's rows; the suite, CI wiring |
 | 2.5b Group D, clock | M | twelve checks |
 | 2.6 model-based test | M | one test, shrinking and the corpus |
 | 2.7 Group A part 1 | M | seventeen checks |

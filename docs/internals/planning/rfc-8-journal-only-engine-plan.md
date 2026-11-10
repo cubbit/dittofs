@@ -104,7 +104,7 @@ capacity is its journal limit.
 
 Epics 1 and 2 are the team's and run first: the frozen surface and the red suite. Six middle
 epics implement the part along RFC 8's seams, two per track. Each is built and unit-tested
-against epic 2's fake journal, then turns its conformance rows green over the real journal
+against epic 2's in-memory journal, then turns its conformance rows green over the real journal
 once the journal call it needs exists. Epic 9 composes the engine with the filesystem
 service at RFC 17's integration tier. Epic 10 burns the known-failure list down, which waits
 on the journal (§3.3).
@@ -117,7 +117,8 @@ with stage 2:
 - `Engine`, `New(Deps)`, `Apply(Settings)`, `Start`, `Close`, `Bind`, `Unbind`, `Drop`,
   `Stats` and the twelve content methods, with RFC 8 §12.1's signatures and stub bodies.
 - `Deps` (§2.6) narrowed to this part: `Devices`, `Open`, `Existence`, `Content`, `Lifecycle`,
-  `Holds`, `Clock`, `Logger` and `Tracer`. RFC 8 §2.6 has no `Tracer` yet; RFC 25 §8.1 puts one in
+  `Holds`, `Clock`, `Logger` and `Tracer`, and `sample`, the verifier's sampling function, an
+  input frozen here like the rest. RFC 8 §2.6 has no `Tracer` yet; RFC 25 §8.1 puts one in
   the engine's `Deps`, and #3547 adds it (§6 point 2). RFC 8 §2.6's `Watchdog`
   and `Metrics` are left out: RFC 25's `health` and `metrics` types exist on neither
   `develop` nor `feat/storage-v2`, so the engine uses what exists (rule 3). `Holds` is a
@@ -136,7 +137,7 @@ with stage 2:
   `Truncate`, `Deallocate`, `Delete`, `CloneTarget`, `Reserve`, `Close`, `Since`, `Settle`,
   `Files`. `Existence` declares `Clone`, where `kvstore` has it, not on `Content` as RFC 6
   §10.1 does; the RFC follows the code (§6 point 2). `Journal` and `Handle` are
-  two-consumer interfaces before any implementation: the real journal and epic 2's fake.
+  two-consumer interfaces before any implementation: the real journal and epic 2's in-memory journal.
 - `Settings` with every key this part reads, three: `existence_age`,
   `group_commit.max_files` and `clone_max_len`. The removal loop's backoff is fixed (epic
   5's `ponytail:`), and repack runs only at a refusal (epic 7), so no retry bound or repack
@@ -256,14 +257,16 @@ scheduler, snapshots, a cluster or RFC 26 are not catalogued here (§7). RFC 17'
 composes, so they are epic 9's. The `Content` check is what one `Content` call promises the
 next: bytes written read back, `Draw` above every version drawn or staged before it,
 `Overlay` reflecting a write at once, a `Commit` answered after its writes' sync, a removed
-extent read as zeros or end of file. It runs over stage 2's fake and the engine alike.
+extent read as zeros or end of file. It runs over piece 12's in-memory `Content` and the engine alike.
 
 **The test components.** The fixture composing the engine over the real `journal` on a
 temporary directory, `kvstore` on an in-memory `kv.KV` and `sim.TestClock`; a
 fault-injecting `kv.KV` consulting `sim.Fault` (stalls, errors, and a chosen file failing,
 which reaches the engine as that file's entry in `Existence.Commit`'s
-`map[FileID]error`), counting transactions with `kv.Counts`; a fake journal and handle
-implementing epic 1's interfaces, for pure-logic unit tests; and the journal's profiling
+`map[FileID]error`), around the in-memory `kv.KV`, whose own record (`Counts`) gives the
+transaction counts; an in-memory journal and handle
+implementing epic 1's interfaces and held to the journal's conformance suite (§1.5 rule 8),
+for pure-logic unit tests; and the journal's profiling
 harness (`journaltest/prof`) wired to the fixture.
 
 ### 1.5 General rules for each epic
@@ -308,10 +311,11 @@ harness (`journaltest/prof`) wired to the fixture.
 
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation, the implementation of an epic it depends on once
-   that has landed, and E2's test components: above all the fake journal, which stands in
+   that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12).
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -350,8 +354,10 @@ harness (`journaltest/prof`) wired to the fixture.
 8. **Real dependencies for properties of those dependencies.** No fake stands in for a
    check about what the real thing does: the real journal on a real directory, with its crash
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
-   commits and conflicts on. The fake journal is for the engine's pure logic only, and no
-   conformance row runs over it.
+   commits and conflicts on. The in-memory journal is for the engine's pure logic only, and no
+   engine conformance row runs over it. It is held to the real journal by the journal's own
+   conformance suite, on the in-memory journal's rows that the
+   [journal plan's epic 3](rfc-1-journal-plan.md) names.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -376,18 +382,18 @@ harness (`journaltest/prof`) wired to the fixture.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | **Interfaces** ⛔ | `pkg/block/engine`'s surface, `Deps` narrowed to this part, the engine over `pkg/vfs/vfserr`; the `Content` contract agreed with stage 2 | 5 | 8 | team | **everything** |
-| 2 | **Red e2e suite and test foundations** ⛔ | `engine-conformance` registered red, 45 rows, the fixture, a fault-injecting `kv.KV`, the fake journal | 9 | 28.5 | team | **all testing** in 3 to 10 |
+| 2 | **Red e2e suite and test foundations** ⛔ | `engine-conformance` registered red, 45 rows, the fixture, a fault-injecting `kv.KV`, the in-memory journal | 9 | 29.5 | team | **all testing** in 3 to 10 |
 | 3 | **Write, read and overlay** ⛔ | per-file state, `Write`, `Draw`, `Overlay`, `Read`'s resolution, `Allocation` | 6 | 13 | A | 4, 8 |
 | 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 23 | B | 5, 6, 7, 8 |
 | 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 15.5 | B | 6, 8 |
 | 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 12 | 40.25 | C | 7, 8 |
 | 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 5 | 18 | C | 9 |
 | 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.75 | A | 5, 9 |
-| 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
+| 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over the in-memory `Content` and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
-| | **Total** | | **65** | **190** | | |
+| | **Total** | | **65** | **191** | | |
 
-**Plan estimate: 65 subtasks, 190 man-days.**
+**Plan estimate: 65 subtasks, 191 man-days.**
 
 RFC 8 is 3,627 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
@@ -423,7 +429,7 @@ flowchart TD
   E5 -. "guard and removal marker" .-> E8
   E8 -. "T8.1a's registrations, for T5.1's check" .-> E5
   E6 -. "clone markers at start" .-> E8
-  E7 & E8 --> S3(["S3 engine complete over the fake journal"]):::sync
+  E7 & E8 --> S3(["S3 engine complete over the in-memory journal"]):::sync
   S3 --> E9["E9 Integration"]
   X(["stage 2 piece 8, Data"]):::sync -.-> E9
   S3 -. "after S3" .-> P11(["stage 2 piece 11, Copy and clone"]):::sync -. "V22, V26" .-> E9
@@ -444,11 +450,11 @@ flowchart TD
   starts before it.
 - **S2 🔀 Red suite in CI** (end of epic 2). `engine-conformance` compiles, runs on every pull
   request and is listed whole in `known.yaml`. The fixture, the fault-injecting store, the
-  fake journal and the profiler build and run, and every row over the fixture is red at the
+  in-memory journal and the profiler build and run, and every row over the fixture is red at the
   journal's `Init` until the journal team builds `Init` and `Open`. Epics 3, 4 and 6 start
   here.
-- **S3 🔀 Engine complete over the fake journal** (epics 3 to 8 done). Every method of §1.3
-  has its behaviour, unit-tested over the fake journal, and every conformance row whose
+- **S3 🔀 Engine complete over the in-memory journal** (epics 3 to 8 done). Every method of §1.3
+  has its behaviour, unit-tested over the in-memory journal, and every conformance row whose
   journal call exists is green. Epic 9 starts here.
 - **S4 🔀 The journal's calls built** (external: the journal plan's S4, its epics 3 to 9, and its
   epic 7's `Open`). The rows still red wait only on it; epic 10 cannot finish before it.
@@ -474,7 +480,7 @@ flowchart TD
   tests and one of T8.3's: a release is marked through it, and T8.3's source unlinked during
   `Resume` keeps its content only because `Releasing` refuses that release with
   `ErrFileOpen`. T5.4's outcomes and the abort routine T6.5 reuses are built and unit-tested
-  over the fake journal without it, so epic 6 waits on none of it, and a late `Releasing`
+  over the in-memory journal without it, so epic 6 waits on none of it, and a late `Releasing`
   delays only the finish of epics 5 and 8.
 - **The journal (external, the journal v2 team)** blocks every conformance row over the real
   journal, and so epic 10. What this part calls, by journal epic: E4's index, E3's codecs and
@@ -513,14 +519,15 @@ flowchart TD
   `Write` needs no edge from epic 4: T3.2 answers a stand-in verifier, a fixed zero, which
   T4.1 replaces. T7.1, the
   refusal mapping on `Write`'s path, fills most of it: it needs epic 3, T4.6's per-file
-  report and the fake journal, its version-limit row wired to epic 6's raise once that
+  report and the in-memory journal, its version-limit row wired to epic 6's raise once that
   lands, and its last step built against §6 point 8's sealing `Repack` and per-segment
   figure once RFC 1 names them, so
   track A builds it then and track C keeps the rest of epic 7. T8.1a's admission checks,
   which need no removal, fill the rest.
-- **The fake journal grows with the epics:** T2.4's fake covers the data path's calls only,
-  and each middle epic extends `enginetest`'s fake with the journal calls it owns, so no
-  track waits on another for a fake.
+- **The in-memory journal grows with the epics:** T2.4's covers the data path's calls only,
+  and each middle epic extends `enginetest`'s with the journal calls it owns, held to the
+  journal conformance suite's rows for those calls (rule 8), so no track waits on another for
+  it.
 
 ## 4. Directory layout proposed for epic 1
 
@@ -538,7 +545,7 @@ pkg/block/engine/                      E1: the package (pkg/block/enginev2 until
   clone.go                             E8: Clone, Copy
   imports_test.go                      E1: the import walk (rule 7)
   arch_test.go                         E2: declared interfaces, no assertions
-  enginetest/                          E2: the fixture and the fake journal
+  enginetest/                          E2: the fixture and the in-memory journal
   conformance/                         E2: the rows, build tag engine_conformance
 pkg/vfs/vfserr/                        stage 2 (#3533): the errors, DelayCause, CrossKind, Extent
 pkg/metadata/kv/kvtest/fault.go        E2: the fault-injecting kv.KV
@@ -574,7 +581,7 @@ never `nil`. Sections owned: RFC 8 §2.1 (the declaration rule), §2.6, §12.1's
 
 ### Epic 2 — Red e2e suite and test foundations ⛔
 
-**Epic 2 estimate: 9 subtasks, 28.5 man-days.**
+**Epic 2 estimate: 9 subtasks, 29.5 man-days.**
 
 §1.4 whole. Every row is written red against the real composition and listed in
 `known.yaml`; every row over the fixture is red at the journal's `Init` until the journal
@@ -593,12 +600,14 @@ owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition r
   it sits behind `engine_conformance`, listed in `known.yaml` until the journal calls it needs
   land (rule 6).
 - T2.3 The fault-injecting `kv.KV`: stalls, errors, and a chosen file's failure surfacing as
-  its entry in `Existence.Commit`'s `map[FileID]error`, from a `sim.Fault` schedule;
-  transaction counts from `kv.Counts`.
-- T2.4 The fake journal and handle: versions, held and missing extents, `asOf`, markers,
+  its entry in `Existence.Commit`'s `map[FileID]error`, from a `sim.Fault` schedule,
+  around the in-memory `kv.KV`; transaction counts come from that `kv.KV`'s own record (`Counts`).
+- T2.4 The in-memory journal and handle: versions, held and missing extents, `asOf`, markers,
   `Since`, the loss ring and generation, named refusals; for unit tests only (rule 8). It
-  covers the data path's calls; each middle epic extends it with the journal calls it owns
-  (rule 12).
+  covers the data path's calls and passes the journal conformance suite's rows for them
+  (rule 8); each middle epic extends it with the journal calls it owns, and their rows
+  (rule 12). Running the suite's rows over it adds a day to epic 2; a middle epic's
+  extension runs rows that already exist, which the subtask extending it absorbs.
 - T2.5 Group A rows of the data path and the stability point (12): §4.1, §5.1, §7.1, §8.2.
 - T2.6 Group A rows of the lifecycle and clone (14): §2.5, §2.7, §9.1.
 - T2.7 Group B rows (14).
@@ -771,7 +780,7 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   inside `Sink.Closed`, and finishes the release with its outcome, or stops waiting at the
   server's stop with no `done(...)` (C11). That branch reads T8.1a's registration, so it is built and
   tested in T8.2. The routine that settles and reports an abort
-  is built here, once; start step 3 reuses it (T6.5). Unit-tested over the fake journal;
+  is built here, once; start step 3 reuses it (T6.5). Unit-tested over the in-memory journal;
   tested over the real open-state table once `Releasing` exists (§3.3): an open by handle
   racing the last close loses no bytes; an aborted phase 1 leaves the file openable, the
   loss reported and T4.7's reservation counter at zero; a stall at the deadline keeps the
@@ -790,9 +799,9 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   `vfs.Errors()`, which RFC 20 §7.3 checks each adapter's table against, omits it. RFC 17
   §4.3 says `Errors()` returns every sentinel and so gains the sentence that it omits a value
   only the service and the engine exchange, in the RFC pull request after #3608 (§6 point 15).
-- T5.5 Removals interleaved with writes and commits, over the fake journal; the same with a
-  crash over T2.2's fixture and the journal's crash seam (rule 8). A hook in the fake
-  journal between its `Truncate` or `Deallocate` and the call's return starts a `ReadAt` of
+- T5.5 Removals interleaved with writes and commits, over the in-memory journal; the same with a
+  crash over T2.2's fixture and the journal's crash seam (rule 8). A fault wrapper around the
+  in-memory journal, between its `Truncate` or `Deallocate` and the call's return, starts a `ReadAt` of
   the removed extent on another goroutine, and waits until that read has either returned or
   is blocked on the file's entry lock (a lock-wait hook) before letting the removal go on:
   the read then finds the pending removal, never **Lost** (a build that releases the lock
@@ -1029,8 +1038,8 @@ owned: RFC 17 §8's integration tier for the engine's side; RFC 8 §12.1's singl
 
 - T9.1 `internal/vfs` aliases the engine's `WriteOpts` and `Overlay` (C4); `*engine.Engine`
   satisfies `vfs.Content`.
-- T9.2 The `Content` check: its cases, run over stage 2's fake, moved to an importable
-  package (§6 point 10), and over the engine.
+- T9.2 The `Content` check: RFC 17 plan piece 12's `contenttest.Run` over the engine (§6
+  point 10).
 - T9.3 `suite.Run` over `vfs.New` composed with the engine, `kvstore`, the real open-state
   table and a temporary journal directory, with fault injection below.
 - T9.4 RFC 17's V19, V20 (adapted: `DelayCapacity` while superseded records remain, served
@@ -1129,8 +1138,10 @@ follows the journal's, not this part's (§6 point 7).
    RFC 17 plan (#3530) builds piece 11 "after the engine's S3 (#3546), not all of stage 3",
    with no open among its Needs, since stage 2's clone path calls `Clone` and takes no open
    (point 13).
-10. **The fake `Content`** moves from `internal/vfs/content_test.go` to an importable package
-    so the `Content` check runs over it (T9.2).
+10. **The `Content` check** is RFC 17 plan piece 12's `contenttest.Run`, over that piece's
+    in-memory `Content`; T9.2 runs it over the engine too, and nothing moves.
+    Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
+    three kinds.
 11. **Open state's `Releasing`**, the stage 1 follow-up, gates T5.4's tests and T8.3's
     unlink during `Resume`. The same
     follow-up could lift T8.6's ceiling: `CloneClose` reporting an orphan for a source whose
@@ -1187,9 +1198,11 @@ follows the journal's, not this part's (§6 point 7).
 
 **Risks**
 - The journal sets the pace (§3.3): until its S3, no row is green over the real journal, and
-  the fake journal is the only check of the engine's logic.
-- The fake journal can drift from the real one. Rule 8 bounds that: no conformance row runs
-  over it, so a drift shows as a row that is green on unit tests and red in the suite.
+  the in-memory journal is the only check of the engine's logic.
+- The in-memory journal can drift from the real one where the journal's conformance suite has no
+  row. Rule 8 bounds that: the in-memory journal passes the in-memory journal's rows the journal plan names, and no engine
+  conformance row runs over it, so a drift the suite misses shows as a row that is green on
+  unit tests and red in the suite.
 
 ## 7. RFC coverage
 

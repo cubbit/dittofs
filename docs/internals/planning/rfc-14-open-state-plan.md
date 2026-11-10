@@ -305,8 +305,11 @@ stage 2 (§13.1), and L9 is the engine's, in stage 3.
 ## 4. The conformance suite
 
 `pkg/openstate`'s own tests, in the layers §13.1 lists: the table suite runs `*Table` over the
-in-memory store, with a virtual clock the cases advance and a recording sink (D5) that can answer,
-refuse or stay silent, to drive recalls to their deadlines. Pieces 1–7 build the table with
+in-memory store, with a virtual clock the cases advance and a sink (D5) that keeps what it was
+delivered and answers, under a fault wrapper that refuses or stays silent, to drive recalls to
+their deadlines
+([RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)). A case asserts on what was
+delivered and on the table's state, never on which calls were made. Pieces 1–7 build the table with
 `rand.Reader`; piece 8 adds the rest of the fixture:
 - a seeded `Deps.Rand`;
 - `Check`, run after every case: no state held against a file with no table, no lock under a
@@ -318,8 +321,8 @@ loops, as L3b runs as a direct case: L56's 10⁴ races and L57's watchdog land w
 
 §13.1's other two layers:
 - **Fault injection.** A fault store under `kvstore` fails chosen reads and write transactions:
-  piece 7's `failing`, which every durable-open case that writes runs over. The recording sink can
-  refuse or stay silent, which is what a failing `Sink` amounts to, since a `Sink` returns nothing
+  piece 7's `failing`, which every durable-open case that writes runs over. The sink's fault
+  wrapper refuses or stays silent, which is what a failing `Sink` amounts to, since a `Sink` returns nothing
   and a lost delivery counts as the client not answering (D5). Piece 8 adds L60's case: a dropped
   shard-list commit is refused, and never answered as granted.
 - **Fuzz.** A `testing.F` target for each client-chosen input that reaches arithmetic, with piece 8:
@@ -344,7 +347,7 @@ service can drive them.
    restart (§8.1), and piece 7 (#3400) already builds them, with `SetLocks` and the
    persistent-open install.
 2. **Seven views, one implementation each:** kept as interfaces because §11.3 declares them.
-   Since stage 2 runs the real table (#3264's D6) and no area fakes a view, concrete types would
+   Since stage 2 runs the real table (#3264's D6) and no area stands in for a view, concrete types would
    do; that is an RFC 14 edit, made with stage 2's first area if agreed.
 3. **Behaviours today's code has and RFC 14 does not state:** courtesy clients (RFC 7530
    §9.6.3.1), an NFSv4.1 client taking new state before its RECLAIM_COMPLETE outside grace

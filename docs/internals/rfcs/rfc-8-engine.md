@@ -363,7 +363,7 @@ Every capability **MUST** be a method on an interface held by declaration, and a
 absent one **MUST** fail the build or construction with an error naming it
 ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). A production constructor that accepts `nil` for a capability "so
 tests can omit it" has made a silent fallback a production path; fixtures supply
-stubs of the whole interface.
+the component itself or a verified in-memory one, whole ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)).
 
 **What the engine consumes, it declares.** The engine declares, beside its own
 code, one interface per component it calls, holding exactly the methods it calls,
@@ -396,7 +396,7 @@ views and `Refs`.
 signatures of the two interfaces every component takes at construction
 ([the index's test harness](rfc-index.md#Test%20harness), item 1): the journal, the syncer, the engine, GC,
 the snapshot cut and leases read time only through `Clock`, and every fault
-seam — the journal's storage seam, the fake store, the fault transport, the
+seam — the journal's storage seam, the fault wrapper around the syncer's in-memory store, the fault transport, the
 fault-injecting metadata store — consults a `Fault` before each operation. A component with a private
 clock cannot take part in a check that skews time across components.
 
@@ -1350,7 +1350,8 @@ suffix was in Go package and import paths only, and metric, span and log names
 say `engine` and `journal` from the start.
 
 `offload/` is the one subpackage. It is the largest state machine, and its tests
-import only fakes of the offer, the carver, a flow and block metadata's views, so the import
+import only in-memory implementations of the offer, the carver, a flow and block metadata's views, each held to its
+component's conformance suite, so the import
 rule enforces its boundary.
 
 ## 3. Policy
@@ -1405,7 +1406,7 @@ inputs, outputs, invariants and checks:
 
 A module **MAY** hold memory state and call mechanisms. It **MUST NOT** persist
 anything, and **MUST** be testable with each component it calls replaced by a
-stub of that component's whole interface.
+verified in-memory implementation of that component's whole interface ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)).
 
 ### 3.2 Policy never makes an action safe
 
@@ -2374,7 +2375,7 @@ share's condition covers the outage ([§11.1](#11.1%20Health%20is%20derived%20fr
 probes observe the recovery that unpauses it at the next tick.
 
 **Checks.** The pipeline is tested with every component it drives replaced by a
-fault-injecting stub, and again as production composes it.
+fault wrapper around its in-memory implementation, and again as production composes it.
 
 | Requirement | Check |
 | --- | --- |

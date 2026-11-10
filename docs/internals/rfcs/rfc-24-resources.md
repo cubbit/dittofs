@@ -1268,7 +1268,7 @@ The tests are evidence for the requirements that fail silently. They run at the
 tiers [RFC 29 §4.3](rfc-29-test-harness.md#4.3%20Tiers) names, `pr` unless a
 row says otherwise; a timing claim runs on the reference box only. Every
 system-level one runs on the composed node, against a real journal and a remote
-that can be slowed and stopped, because a fake store that always answers at
+that can be slowed and stopped, because an in-memory store that always answers at
 once cannot fill a pool.
 
 | # | Invariant | Test |

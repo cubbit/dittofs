@@ -145,7 +145,8 @@ sync and to end a segment, and epic 4's index to drop and re-hold extents.
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
-   to fake (rule 12).
+   to fake (rule 12). Every double is one of
+   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference
@@ -581,8 +582,10 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 - **D15, tests drive the streams and the index directly until `Open` exists.** E7 and E8 wire
   `Open`, `WriteAt` and `ReadAt`, so the conformance rows of this area stay red until they land.
   Each subtask of §6 states its tests at the layer that consumes the data (the stream's
-  tracker, the index's held set, the seam's call log), and the rows that become green when `Open`
-  exists are named so the epic that wires it removes them from the known-failure list.
+  tracker, the index's held set, the seam's log), and the rows that become green when `Open`
+  exists are named so the epic that wires it removes them from the known-failure list. The
+  seam's log is its record of what reached storage, passed through to it, an output, as its
+  call counts are (epic 2, rule 5).
 
 ## 5. Target tree
 
@@ -702,7 +705,7 @@ pkg/block/journal/
   (catches a seal sync this epic never sees, R85); a
   slot held open at the seam while a later one completes and syncs, asserting the earlier
   record's `Sync` waits for the next sync (catches "whatever sync is running", D3); the seam's
-  call log across a stream of writes, asserting no directory sync inside a `Sync`; a `Sync`
+  log across a stream of writes, asserting no directory sync inside a `Sync`; a `Sync`
   cancelled while the sync is held, then the sync released, asserting the other waiters
   succeed and the cancelled caller's error is the context's (catches a cancel that abandons the
   sync); the device-flushing call is the one the seam sees on each supported platform's fake
@@ -1062,7 +1065,7 @@ pkg/block/journal/
     closed.
   - `Stop` leaves no goroutine.
 - **Tests:** every call kind failing with `EROFS` at the seam, one at a time (catches a call site
-  that does not feed the choke point); the seam's call log after entry with the pool below its
+  that does not feed the choke point); the seam's log after entry with the pool below its
   target, an idle segment past its seal time and a retired segment pending (catches a worker that
   still makes a spare or writes, R89, RFC 1 §9.4 B's "no spare file is created"); a corrupt loss
   in a read-only journal (R83); the two-refusals sequence and the one-refusal sequence
@@ -1071,7 +1074,7 @@ pkg/block/journal/
   truncate (catches a header-only record kept in memory, which hides content the metadata still
   names); the list across two journals on one directory in one process (D7); `Stats` after each
   step; and for the probe, the test clock advanced in steps of 29 s and 1 s (catches an interval
-  off by one tick); the seam's call log across a failed probe (catches a spare created on a mount
+  off by one tick); the seam's log across a failed probe (catches a spare created on a mount
   that may still be read-only); the checks failing as on a mount without cache flushes, then
   passing (catches a probe that tries a spare without them); two probes with the first spare
   still there; the profiler on `Stop`. Conformance rows that stay red until `Open`: read-only
@@ -1206,7 +1209,7 @@ pkg/block/journal/
   synced, v10 corrupt, v5 still on disk: the extent reads `missing`, never v5 (R70); a registered
   copy that verifies while the indexed copy is corrupt, and the reverse (catches a loss reported
   for a record another copy could serve, R58), repeated in a read-only journal (catches a copy
-  turned into a loss there, RFC 28 §3.3), with the seam's call log showing no append on the read
+  turned into a loss there, RFC 28 §3.3), with the seam's log showing no append on the read
   (catches a read that appends, RFC 1 §8.1); a sync released on the worker between the read's
   check and `Corrupt`'s decision (catches a stale synced flag, which re-holds content the sync
   lifted and records an unsynced loss for a synced record);

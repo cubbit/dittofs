@@ -544,7 +544,8 @@ internal/gc/
   auditor.go     audit scheduling, trip (§6)
   recheck.go     settings, claim nonce, keys read-back, drift (§7.5)
   metrics.go     §10
-  gctest/        in-memory Blocks, Remote, Syncer, Flow and Keys fakes
+  gctest/        Blocks, Remote and Syncer over their owners' verified in-memory implementations;
+                 Flow and Keys the real ones, over RFC 3's in-memory Store and the in-memory stores
   arch_test.go   imports (§11.0)
 ```
 
@@ -2297,7 +2298,8 @@ remote backend that can fail a delete after performing it ([RFC 4 §7.1](rfc-4-r
 GC's safety is in block metadata's transactions, so Group A's rows on `MarkDue`,
 adoption, `Relocate`, `Abandon` and the gates are `Blocks` conformance cases in
 RFC 6's store suite (`pkg/metadata/storetest`), run against every backend. GC's
-own package tests its sources over `gctest`'s in-memory fakes ([§2.6](#2.6%20Package%20layout)).
+own package tests its sources over `gctest`'s verified in-memory implementations ([§2.6](#2.6%20Package%20layout),
+[RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)).
 `arch_test.go` asserts that GC imports no component of the set ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
 
 ### 11.1 Group A — adversarial interleavings
