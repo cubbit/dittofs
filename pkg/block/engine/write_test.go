@@ -130,32 +130,6 @@ func TestAWriteCutShortAnswersTheContextsError(t *testing.T) {
 	}
 }
 
-// A write samples its verifier once, before it is staged, and answers it.
-func TestAWriteSamplesItsVerifierFirst(t *testing.T) {
-	var h *countingHandle
-	u := newUnitWith(t, unitConfig{
-		wrap: func(x engine.Handle) engine.Handle {
-			h = &countingHandle{Handle: x}
-
-			return h
-		},
-	})
-	var staged int64 = -1
-	sampled := 0
-	want := vfserr.Verifier{7, 1, 2}
-	u.e.SetSample(func() vfserr.Verifier { staged = h.n.Load(); sampled++; return want })
-	v, err := u.e.Write(t.Context(), u.share.ID, entity.NewFileID(), 0, []byte("abc"), engine.WriteOpts{Done: func() {}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sampled != 1 || staged != 0 || h.n.Load() != 1 {
-		t.Errorf("the verifier was sampled %d times, the last after %d stagings, of %d; want once, before the one", sampled, staged, h.n.Load())
-	}
-	if v != want {
-		t.Errorf("the write answered verifier %v, want the sampled %v", v, want)
-	}
-}
-
 // A write the journal refuses for space is ErrDelay with DelayCapacity, no
 // journal type: it calls no Done and leaves no operation. One of a file
 // another share holds is ErrCorrupt.

@@ -12,7 +12,6 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // ErrNotStarted is the answer of a Bind while no journal is open.
@@ -219,11 +218,6 @@ func (e *Engine) FileStateWaiting() int64 { return e.files.waits.waiting.Load() 
 
 // PendingOpType is the pending operation's type, for a check of its fields.
 type PendingOpType = pendingOp
-
-// SetSample replaces how a write samples its verifier.
-func (e *Engine) SetSample(f func() vfserr.Verifier) {
-	e.sample = func(*binding) vfserr.Verifier { return f() }
-}
 
 // SetPrimary sets share s's verifier inputs from its shard's primary, as
 // Bind will from the start transaction, copying the share table as a

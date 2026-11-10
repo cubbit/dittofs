@@ -32,7 +32,7 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	if err := e.fenceGate(b); err != nil {
 		return vfserr.Verifier{}, err
 	}
-	v := e.sample(b)
+	v := e.verifier(b)
 	if len(p) == 0 {
 		if o.Done != nil {
 			o.Done()

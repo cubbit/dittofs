@@ -33,10 +33,9 @@ var errUnbuilt = fmt.Errorf("engine: not built: %w", vfserr.ErrUnavailable)
 type Engine struct {
 	d        Deps
 	settings atomic.Pointer[Settings]
-	shares   atomic.Pointer[bindings]       // the share table; swapped whole, read without a lock
-	files    *files                         // per-file state
-	instance [16]byte                       // the process instance, a verifier input
-	sample   func(*binding) vfserr.Verifier // samples a write's verifier, before it is staged
+	shares   atomic.Pointer[bindings] // the share table; swapped whole, read without a lock
+	files    *files                   // per-file state
+	instance [16]byte                 // the process instance, a verifier input
 	reads    readSeries
 	fence    *fence // the self-fence, which the store views record into
 	lost     lostLog
@@ -122,7 +121,6 @@ func New(d Deps) (*Engine, error) {
 		raised:   map[entity.ShardID]struct{}{},
 		block:    versionBlock,
 	}
-	e.sample = e.verifier
 	e.conflictBound.Store(int64(time.Second))
 	e.raising.ctx, e.raising.cancel = context.WithCancel(context.Background())
 

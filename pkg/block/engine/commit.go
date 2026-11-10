@@ -74,7 +74,7 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 	if err := e.marksWait(ctx, b, s, f, off, n, marks, over); err != nil {
 		return vfserr.Verifier{}, 0, err
 	}
-	return e.sample(b), e.LossSeq(s, f), nil
+	return e.verifier(b), e.LossSeq(s, f), nil
 }
 
 // overwrites reports whether xs, extents of file f of share s, cover
