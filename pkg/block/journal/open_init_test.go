@@ -655,10 +655,10 @@ func TestInit_NegativeSetting(t *testing.T) {
 }
 
 // TestInit_MissingDir_ReturnsTheStorageError fails an Init that answers a
-// directory I/O fault with a refusal, or creates the directory: a directory
-// that does not exist fails the first step that reads it — the platform
-// check on Linux, the listing elsewhere — and that step's error is
-// returned as itself, matching neither ErrNotEmpty nor
+// directory I/O fault with a refusal, or creates the directory: initOS feeds
+// a suitable mount through the injected probe on every OS, so the first step
+// to fail on a directory that does not exist is the listing, and it returns
+// its not-exist error as itself, matching neither ErrNotEmpty nor
 // ErrUnsuitableStorage, and the directory is never made, so the caller can
 // tell a missing directory from a refused one.
 func TestInit_MissingDir_ReturnsTheStorageError(t *testing.T) {
