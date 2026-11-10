@@ -129,8 +129,8 @@ two `New`); `pkg/resources`' signatures; `core`'s §4.7 surface with stub bodies
    `sync.Pool` per class, no self-probe. `pkg/resources`'s missing turns, `Reclaim`, `ShareCap`
    and `Split` each carry a `ponytail:` naming RFC 24.
 8. **A test must be able to fail.** Keep a test only if a plausible change would make it fail and
-   nothing else would catch that change. The import test proves it can by reporting its seeded
-   violation; the budget leak check by failing a test that keeps a `Buf`.
+   nothing else would catch that change. The import test proves it can by reporting each of its seeded
+   violations, one per rule; the budget leak check by its red specifications, a reservation kept on each budget and one held under `CheckLeaks`, which E3 turns green.
 9. **A symbol is exported only if RFC 20's interface uses it.** `pkg/adapter`,
    `pkg/adapter/config`, `pkg/resources` and the two `New` are the public surface. `core`'s
    exported symbols are those RFC 20 §4.7 names, frozen at S1; everything else in `core` is

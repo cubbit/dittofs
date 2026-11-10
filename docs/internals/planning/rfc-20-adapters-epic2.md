@@ -162,7 +162,7 @@ names the epic that owns the rest.
 | --- | --- | --- | --- | --- |
 | R29 | One call fails a test that leaves behind a goroutine or a descriptor it opened, naming each goroutine with its stack; it polls the goroutines themselves, never a fixed sleep, with one backstop timeout; no new dependency | MUST | rule 4; `CLAUDE.md` "Writing tests" | T2.4 |
 | R30 | The same call fails when any of `Deps.Budgets`' four budgets reads above zero, naming it | MUST | rule 4, rule 8; §6.8; §9 A18 | T2.4 (green with E3) |
-| R31 | A test that can pass only once a later epic fills a stub lands red in the `adapter-conformance` suite, behind its own build tag, with one `known.yaml` entry giving its failure message and the issue of the epic that turns it green; that epic removes the entry once CI shows the test passing; until then it fails on an assertion or a returned error, never a panic; the suite is named in RFC 20's suites paragraphand its tag in `lint-go`'s vet line | MUST | RFC 20 §8.5; RFC 29 §4.6, §4.7, §4.9; owner decision | T2.4 |
+| R31 | A test that can pass only once a later epic fills a stub lands red in the `adapter-conformance` suite, behind its own build tag, with one `known.yaml` entry giving its failure message and the issue of the epic that turns it green; that epic removes the entry once CI shows the test passing; until then it fails on an assertion or a returned error, never a panic; the suite is named in RFC 20's suites paragraph and its tag in `lint-go`'s vet line | MUST | RFC 20 §8.5; RFC 29 §4.6, §4.7, §4.9; owner decision | T2.4 |
 
 **The surface amendment**
 
