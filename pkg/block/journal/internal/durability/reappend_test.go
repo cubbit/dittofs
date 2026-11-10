@@ -1449,7 +1449,7 @@ func TestACopyServedRecordInTheWindowIsRepointedFromTheCopy(t *testing.T) {
 	t.Cleanup(release)
 	f := file(1)
 	r := cr.reappend(t, f, 0, "aaaa")
-	cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
+	cr.d.registerCopy(r.c.Seq, r.orig, r.kept)
 	window.Store(uint32(r.again.Segment))
 	cr.failSyncOf(t, r.again.Segment, errors.New("sync boom"))
 	ch := cr.syncAsync(context.Background(), f)
@@ -1873,7 +1873,7 @@ func TestACorruptReadOfAMovedPlaceIsNotCountedDamagedThroughUseCopy(t *testing.T
 	cr := newCorruptRig(t, nil)
 	f := file(1)
 	r := cr.reappend(t, f, 0, "aaaa")
-	cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
+	cr.d.registerCopy(r.c.Seq, r.orig, r.kept)
 	// The second copy is synced and complete, so only the move says it was
 	// ever re-appended.
 	if err := cr.d.Sync(context.Background(), f); err != nil {

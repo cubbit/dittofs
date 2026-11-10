@@ -17,6 +17,19 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
+// registerCopy puts a copy of the record numbered seq at loc, written with the
+// payload checksum checksum, in the copy table directly, as registerOriginal
+// would once a re-append's new place completed, without asking the set
+// whether loc's segment is still there.
+func (d *Durability) registerCopy(seq core.Seq, loc segment.Location, checksum uint32) {
+	d.copyMu.Lock()
+	defer d.copyMu.Unlock()
+	if d.copies == nil {
+		d.copies = map[core.Seq]copyEntry{}
+	}
+	d.copies[seq] = copyEntry{seq: seq, loc: loc, checksum: checksum}
+}
+
 // reappended is a write whose record was appended a second time with the same
 // sequence number and version, the index moved to the second copy as a
 // re-append moves it: orig is the copy the table can name, again the one the
@@ -176,7 +189,7 @@ func TestCorruptUsesVerifyingCopy(t *testing.T) {
 			cr := newCorruptRig(t, func(cr *corruptRig) { h.watch(cr.d) })
 			f := file(1)
 			r := cr.reappend(t, f, 0, "aaaa")
-			cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
+			cr.d.registerCopy(r.c.Seq, r.orig, r.kept)
 			if synced {
 				if err := cr.d.Sync(context.Background(), f); err != nil {
 					t.Fatalf("Sync: %v", err)
@@ -235,7 +248,7 @@ func TestCorruptCopyVerifyingInReadOnly(t *testing.T) {
 	cr := newCorruptRig(t, func(cr *corruptRig) { cr.d.onHoldCopy = h.record })
 	f := file(1)
 	r := cr.reappend(t, f, 0, "aaaa")
-	cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
+	cr.d.registerCopy(r.c.Seq, r.orig, r.kept)
 	// Registering the copy is in memory only; what matters is that the record
 	// it serves for is synced before the journal enters read-only, because
 	// the read-only pass fails every unsynced record and leaves a synced one.
@@ -277,7 +290,7 @@ func TestCorruptCopyChecksumKeptNotReadBack(t *testing.T) {
 	cr := newCorruptRig(t, nil)
 	f := file(1)
 	r := cr.reappend(t, f, 0, "aaaa")
-	cr.d.RegisterCopy(r.c.Seq, r.orig, ^r.kept)
+	cr.d.registerCopy(r.c.Seq, r.orig, ^r.kept)
 
 	cr.corrupt(t, r.c)
 	if p, ok := cr.ix.Lookup(f, 0); ok {
@@ -308,7 +321,7 @@ func TestCorruptCopyGoneIsLoss(t *testing.T) {
 			cr := newCorruptRig(t, nil)
 			f := file(1)
 			r := cr.reappend(t, f, 0, "aaaa")
-			cr.d.RegisterCopy(r.c.Seq, at(cr, r), r.kept)
+			cr.d.registerCopy(r.c.Seq, at(cr, r), r.kept)
 
 			cr.corrupt(t, r.c)
 			if p, ok := cr.ix.Lookup(f, 0); ok {
@@ -358,7 +371,7 @@ func TestCorruptCopyIOErrorDropsNothing(t *testing.T) {
 			cr := newCorruptRig(t, nil)
 			f := file(1)
 			r := cr.reappend(t, f, 0, "aaaa")
-			cr.d.RegisterCopy(r.c.Seq, c.arrange(cr, r), r.kept)
+			cr.d.registerCopy(r.c.Seq, c.arrange(cr, r), r.kept)
 
 			out, err := cr.d.Corrupt(context.Background(), r.c)
 			if !errors.Is(err, c.want) || out != (CorruptOutcome{}) {
@@ -392,9 +405,9 @@ func TestRetiredDropsTableEntries(t *testing.T) {
 	cr := newCorruptRig(t, nil)
 	f := file(1)
 	r := cr.reappend(t, f, 0, "aaaa")
-	cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
+	cr.d.registerCopy(r.c.Seq, r.orig, r.kept)
 	other := segment.Location{Segment: r.orig.Segment + 100, Off: r.orig.Off, Len: r.orig.Len}
-	cr.d.RegisterCopy(r.c.Seq+1000, other, r.kept)
+	cr.d.registerCopy(r.c.Seq+1000, other, r.kept)
 
 	cr.d.Retired(r.orig.Segment)
 	if n := cr.tableLen(); n != 1 {
@@ -422,7 +435,7 @@ func TestCorruptCopyOverwrittenBeforeRepointReleasesHold(t *testing.T) {
 	cr := newCorruptRig(t, func(cr *corruptRig) { h.watch(cr.d) })
 	f := file(1)
 	r := cr.reappend(t, f, 0, "aaaa")
-	cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
+	cr.d.registerCopy(r.c.Seq, r.orig, r.kept)
 	// The copy is read with no domain held, so a writer overwrites the
 	// record right after the read and before Corrupt takes the domain, and
 	// the overwrite syncs, so the index keeps no retained piece of it either.
@@ -476,7 +489,7 @@ func TestCorruptUsedCopyThenWindowFailsPinsKnownCeiling(t *testing.T) {
 	t.Cleanup(release)
 	f := file(1)
 	r := cr.reappend(t, f, 0, "aaaa")
-	cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
+	cr.d.registerCopy(r.c.Seq, r.orig, r.kept)
 	rereadFails.Store(uint32(r.again.Segment))
 	cr.failByTimer(t, r.again.Segment)
 	<-reached

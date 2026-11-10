@@ -250,7 +250,7 @@ func (d *Durability) complete(st *stream) {
 			// durable at any point: Sync and WaitDurable return on it only
 			// after this pass. Its loss record excludes the original as
 			// well at recovery, by sequence number (RFC 1 §3.8), and
-			// RegisterCopy's contract asks for this order, so the table
+			// registerOriginal's contract asks for this order, so the table
 			// names a copy only of a record synced at its new place.
 			// Overturned by a ruling that the drop of a never-acknowledged
 			// record is a loss under RFC 28 §3.3. The cheap upgrade then is

@@ -71,7 +71,7 @@ func (d *Durability) arm(st *stream) <-chan struct{} {
 	seen, ok := st.oldestLocked()
 	// A window that is still pending holds a record the pass could not
 	// re-append, which the next tick tries again.
-	retry := st.holdsDueLocked(d.reappend != nil) || len(st.windows) != 0
+	retry := st.holdsDueLocked() || len(st.windows) != 0
 	st.mu.Unlock()
 	if !ok && retry && !d.isReadOnly() {
 		return d.clock.After(core.SyncBound)

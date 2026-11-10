@@ -48,26 +48,19 @@ type ownedCopy struct {
 	Synced  bool
 }
 
-// RegisterCopy records that the record numbered seq has another copy at loc,
-// written with the payload checksum checksum, as the original a re-append
-// left in a failed segment. A later copy of the same number replaces the
-// earlier one. The entry stays until Retired reports loc's segment retired.
+// registerOriginal registers c, the original of a re-appended record whose
+// new place has completed, as another copy of the record, unless c's segment
+// has already left st's set. A later copy of the same number replaces the
+// earlier one, and the entry stays until Retired reports its segment retired.
 //
-// decision: nothing in production calls it. The re-append registers its copy
-// through registerOriginal, which also refuses a copy whose segment has left
-// the set; RegisterCopy skips that check and exists so a test can place a
-// copy directly. The tests that call it keep its signature honest; delete it
-// with them if they stop needing it.
-//
-// The re-append registers a copy only once the new segment's sync has
-// completed and the index is repointed to the new copy, so the record whose
-// re-append registers a copy is synced at its new place, and no failed sync
-// can take it back while the table names its copy. A re-append whose own sync
-// fails registers nothing: the new copy is a record of a failed window of the
-// new segment, under the same rules as any other. A hold's re-append
-// registers nothing either, so after one the table can still name the
-// earlier copy while the record's newest place is unsynced (useCopy names
-// that ceiling).
+// It is called only once the new segment's sync has completed and the index
+// is repointed to the new copy, so the record whose re-append registers a
+// copy is synced at its new place, and no failed sync can take it back while
+// the table names its copy. A re-append whose own sync fails registers
+// nothing: the new copy is a record of a failed window of the new segment,
+// under the same rules as any other. A hold's re-append registers nothing
+// either, so after one the table can still name the earlier copy while the
+// record's newest place is unsynced (useCopy names that ceiling).
 //
 // ponytail: the table knows only the copies registered here, the originals of
 // re-appends in failed segments. Copies a repack carried are not registered,
@@ -75,20 +68,11 @@ type ownedCopy struct {
 // Upgrade to registering the source of a carry once a loss is seen that a
 // surviving copy would have spared. Retired scans the whole table, which is
 // bounded by the records re-appended out of failed segments still on disk.
-func (d *Durability) RegisterCopy(seq core.Seq, loc segment.Location, checksum uint32) {
-	d.copyMu.Lock()
-	defer d.copyMu.Unlock()
-	if d.copies == nil {
-		d.copies = map[core.Seq]copyEntry{}
-	}
-	d.copies[seq] = copyEntry{seq: seq, loc: loc, checksum: checksum}
-}
-
-// registerOriginal registers c, the original of a re-appended record whose
-// new place has completed, unless c's segment has already left st's set: a
-// failed segment is announced resolved when its window empties, which is
-// before the new place syncs, so it can be retired in between, and Retired
-// runs once per segment and would never remove the entry. The set is asked
+//
+// A segment that has left the set is refused because a failed segment is
+// announced resolved when its window empties, which is before the new place
+// syncs, so it can be retired in between, and Retired runs once per segment
+// and would never remove the entry. The set is asked
 // under copyMu: a segment the set still holds is removed from it before
 // Retired is called, so that Retired's drop takes copyMu after this call and
 // removes the entry. copyMu is held only across the set's mutex, a leaf

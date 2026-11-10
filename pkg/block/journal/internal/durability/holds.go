@@ -252,12 +252,11 @@ func segmentGone(set *segment.Set, seg core.SegmentID) bool {
 }
 
 // holdsDueLocked reports whether a hold waits on a retry the worker's tick
-// makes: an owed claim, or, when a re-append is installed (always, outside a
-// test that removes it), a claimed record not yet re-appended or whose new
+// makes: an owed claim, or a claimed record not yet re-appended or whose new
 // place has not yet completed. The caller holds mu.
-func (st *stream) holdsDueLocked(reappend bool) bool {
+func (st *stream) holdsDueLocked() bool {
 	for _, h := range st.holds {
-		if h.owed || (reappend && len(h.records) != 0) {
+		if h.owed || len(h.records) != 0 {
 			return true
 		}
 	}
@@ -403,8 +402,7 @@ func (d *Durability) moveHeld(st *stream, seg core.SegmentID, h *segHold, c owne
 		unlock()
 		d.letGo(st, seg, h, c, false)
 		return
-	// A nil re-append is only a test's: New installs reappendHeld.
-	case !claimed || d.reappend == nil:
+	case !claimed:
 		unlock()
 		return
 	case atRecord:
