@@ -106,8 +106,10 @@ func (f *fence) end(ctx context.Context, err error) {
 // release ends o's failing, if it is, so an owner that commits, fails on
 // its own, or stops leaves no failing behind. A retrying owner's loop calls
 // it as it returns, after its last store call, so an owner that stops while
-// failing does not keep an idle node fenced. f is nil only in a test that
-// builds its engine without New.
+// failing does not keep an idle node fenced. The removal loop's mark is also
+// carried by runClone and unstage off the loop's goroutine; a late store
+// error from one of them sets it failing again after this release. f is nil
+// only in a test that builds its engine without New.
 func (f *fence) release(o *ownerState) {
 	if f != nil && o != nil && o.failing.Swap(false) {
 		f.failing.Add(-1)
