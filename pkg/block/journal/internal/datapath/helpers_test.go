@@ -92,7 +92,7 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 			t.Errorf("Close: %v", err)
 		}
 	})
-	awaitSpares(t, c)
+	awaitSpares(t, c, o.maxBytes)
 	return c, seam
 }
 
@@ -100,9 +100,18 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 // target. The pool makes spares one at a time and stops once the target is
 // met, so after it returns no spare is being made, and none lands later
 // unless something takes one.
-func awaitSpares(t *testing.T, c *Core) {
+//
+// A core whose journal maximum caps the footprint below the pool's target
+// (maxBytes, from Deps or the options, zero meaning unbounded) can never
+// ready the usual two spares a stream: the wait then asks for the spares the
+// maximum leaves it.
+func awaitSpares(t *testing.T, c *Core, maxBytes int64) {
 	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); c.pool.Counters().Spares < 2*testStreams; time.Sleep(time.Millisecond) {
+	want := int64(2 * testStreams)
+	if maxBytes > 0 && maxBytes < want*testSegmentCap {
+		want = max(maxBytes/testSegmentCap, 1)
+	}
+	for deadline := time.Now().Add(5 * time.Second); c.pool.Counters().Spares < want; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the pool never readied its spares: %+v", c.pool.Counters())
 		}

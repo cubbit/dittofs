@@ -36,3 +36,7 @@ type SpanOp string
 // SpanSync covers one sync the journal issues, whether a caller asked for it
 // or the sync bound did. It ends with the sync's own error.
 const SpanSync SpanOp = "sync"
+
+// SpanReserveRefused covers one reservation the journal refused by a named
+// limit before any byte was written. It ends with the refusal's own error.
+const SpanReserveRefused SpanOp = "reserve_refused"

@@ -122,6 +122,26 @@ func (d *Durability) copyOf(seq core.Seq) (copyEntry, bool) {
 	return e, ok
 }
 
+// CopyCount returns how many entries the copy table holds whose copy sits in
+// seg: a retirement that called Retired leaves none, so the table stays
+// bounded by the records re-appended out of failed segments still on disk.
+//
+// decision: nothing but tests call this; its signature is held up only by the
+// retirement wiring's tests, which read the table's bound through it.
+// Overturned by the later reclamation work that selects segments, which reads
+// the table the same way.
+func (d *Durability) CopyCount(seg core.SegmentID) int {
+	d.copyMu.Lock()
+	defer d.copyMu.Unlock()
+	n := 0
+	for _, e := range d.copies {
+		if e.loc.Segment == seg {
+			n++
+		}
+	}
+	return n
+}
+
 // dropCopies removes every table entry whose copy sits in seg.
 func (d *Durability) dropCopies(seg core.SegmentID) {
 	d.copyMu.Lock()

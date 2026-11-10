@@ -520,18 +520,38 @@ func TestWriteAt_CountsWrittenBytes(t *testing.T) {
 	}
 }
 
-// A publish the index refuses after the record was appended — reachable
-// through the entry bound, which no earlier check holds, since the tag check
-// now refuses a rivalled file before its version is drawn — returns the zero
-// version with the error; the record stays in its segment.
+// A publish the index refuses after the record was appended returns the zero
+// version with the error; the record stays in its segment. The capacity
+// admission now checks the entry bound before a version is drawn, so the
+// refusal is reachable only through the window it leaves: a write whose own
+// admission passed the bound while room was left, and whose publish finds the
+// room taken. The window is staged through the afterAppend seam — a publish,
+// running between the write's admission and its own publish, takes the last
+// entry the admission saw — which is the same interleaving two concurrent
+// writes would reach, drawn deterministically.
 func TestWriteAt_PublishRefusalReturnsNoVersion(t *testing.T) {
-	c, seam := newTestCore(t, func(o *coreOptions) { o.state = State{Index: index.New(1)} })
+	// inside holds the publish the hook runs; nil until the write's record
+	// has landed, so only the write's own append arms it.
+	var inside func()
+	c, seam := newTestCore(t, func(o *coreOptions) {
+		o.state = State{Index: index.New(2)}
+		o.afterAppend = func() {
+			if inside == nil {
+				return
+			}
+			fn := inside
+			inside = nil
+			fn()
+		}
+	})
 	s := mustShare(t, c, 1)
 	f := testFile(13)
-	// One entry fills the bound, so the next write's publish is refused by
-	// the index at its admission: the record was appended and the write
-	// returns no version, the shape a mid-window fault would reach.
+	// One entry of the bound of two is filled, so the write's admission
+	// below predicts one more and passes.
 	publish(t, c, f, 0, "aaaa")
+	// The write's admission sees one entry of the bound of two free; between
+	// its admission and its publish, another write takes the free entry.
+	inside = func() { publish(t, c, testFile(14), 0, "zzzz") }
 	v, err := c.WriteAt(context.Background(), s, f, 8, []byte("bbbb"), 1)
 	if !errors.Is(err, core.ErrNoSpace) {
 		t.Fatalf("WriteAt at the entry bound = %v, want ErrNoSpace", err)

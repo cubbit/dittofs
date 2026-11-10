@@ -317,6 +317,15 @@ func TestWriteAt_DurablePieceLiftsOnlyItsOwnExtent(t *testing.T) {
 	}
 	h.failSeg = last.Record.Segment
 
+	// The second write of the same size holds the three spares its pieces
+	// roll into, taken from the pool before any byte moves; the refill
+	// needs to have returned what the first write spent of them.
+	for deadline := time.Now().Add(5 * time.Second); c.pool.ReadyContent() < 3; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the pool never readied the three the next write holds: %+v / ready %d", c.pool.Counters(), c.pool.ReadyContent())
+		}
+	}
+
 	h.arm()
 	b := mustWrite(t, c, s, f, 0, make([]byte, size))
 	// The sync of the second piece completed before it published; the first

@@ -699,7 +699,7 @@ func TestReadCorruptWithHeadroomExhausted(t *testing.T) {
 	// background: one whose make began before the fault below would still
 	// land after the drain and take the loss record. The pool is let reach
 	// its target, so no make is in flight when the fault is armed.
-	awaitSpares(t, c)
+	awaitSpares(t, c, 0)
 	// Every spare the pool would make fails as on a full device.
 	if err := seam.Schedule(kit.Failing(kit.OpCreate, "*", 0, syscall.ENOSPC)); err != nil {
 		t.Fatal(err)

@@ -40,6 +40,23 @@ func (ix *Index) WriteRetain(tag core.ShareTag, id core.FileID, p Placed, seq co
 	})
 }
 
+// CheckWrite predicts a content write of e on id against the index's bound
+// without reserving: it returns the refusal the write's admission would —
+// a NoSpaceError naming the index, the shortfall in entries, counted by the
+// index's refusals counter — or nil when the bound would admit the write. It
+// reserves nothing and changes no entry, so a caller that checked and then
+// admits finds the index where the check left it. It creates no entry and
+// takes the named file's lock shared, exactly as the admission's own pre-check
+// does.
+func (ix *Index) CheckWrite(id core.FileID, e core.Extent) error {
+	return ix.fs.checkWrite(id, e, false)
+}
+
+// Refused returns the index's refusals counter: how many refusals naming
+// the index the bound has made — through an admission and a pre-check
+// alike — since the index was built.
+func (ix *Index) Refused() uint64 { return ix.fs.indexRefusals() }
+
 // Lose applies a synced loss of e at v to id under the file's lock, with no
 // admission, and returns the change to the file's held state. A zero-length e
 // is refused with core.ErrZeroLength and changes nothing.

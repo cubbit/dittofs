@@ -132,6 +132,13 @@ type Set struct {
 	segs   map[core.SegmentID]*entry
 	spares map[core.SegmentID]struct{}
 	tags   map[core.ShareTag]int64
+	// retired is each share tag's cumulative record bytes released by
+	// retirements and recycles — the monotone figure of what left, never
+	// lowered, read beside tags by the journal's admission seed. The two
+	// figures move in one lock only through removeLocked, so a reader of
+	// the pair sees each retirement exactly once: either still in tags,
+	// or already moved into retired, never both and never neither.
+	retired map[core.ShareTag]int64
 
 	// c holds the counters of Counters above, maintained at each event that
 	// moves one and never rebuilt: every read is one lock and a copy.
@@ -177,11 +184,12 @@ func NewSet(segCap int64, log *slog.Logger) *Set {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Set{
-		cap:    segCap,
-		log:    log,
-		segs:   make(map[core.SegmentID]*entry),
-		spares: make(map[core.SegmentID]struct{}),
-		tags:   make(map[core.ShareTag]int64),
+		cap:     segCap,
+		log:     log,
+		segs:    make(map[core.SegmentID]*entry),
+		spares:  make(map[core.SegmentID]struct{}),
+		tags:    make(map[core.ShareTag]int64),
+		retired: make(map[core.ShareTag]int64),
 	}
 }
 
@@ -493,6 +501,20 @@ func (s *Set) ShareBytes(tag core.ShareTag) int64 {
 	return s.tags[tag]
 }
 
+// ShareBytesAndRetired reads, under the set's one lock, the tag's settled
+// record bytes — the bytes its records still hold in the set's segments —
+// beside its cumulative retired record bytes: what retirements and recycles
+// have released of the tag, monotone, never lowered. The pair is one read so
+// a seed of the tag's capacity figure sees every retirement exactly once: a
+// retirement that has run lowers tags and raises retired in the same lock,
+// one that has not leaves both where they were — whichever side of the read
+// a retirement lands on, it shows in exactly one of the two figures.
+func (s *Set) ShareBytesAndRetired(tag core.ShareTag) (settled, retired int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tags[tag], s.retired[tag]
+}
+
 // Claim takes a retirement's claim on a segment of the set that no stream
 // can still append to. It is held until Release clears it, or until the
 // segment is retired, in which case the claim is gone: a release or a new
@@ -722,6 +744,7 @@ func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 	s.c.Segments--
 	s.c.UsedBytes -= e.size
 	for tag, n := range e.tags {
+		s.retired[tag] += n
 		left := s.tags[tag] - n
 		if left == 0 {
 			delete(s.tags, tag)

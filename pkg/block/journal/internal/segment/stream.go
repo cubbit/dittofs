@@ -1261,6 +1261,56 @@ func (s *Stream) leaveDrain() {
 // or every later append of the process parks with it.
 var appendParkHook func()
 
+// Room returns the payload bytes the active segment can still take, the same
+// figure the stream's own fit test draws for one more record: the cap less the
+// bytes the records took and the header before them, less the seal's reserve
+// over all the records the segment holds — this one included, were it appended
+// — rounded down to the 8-byte record grid, less a record's own header and body
+// bytes. Zero when the stream holds no active segment or nothing more fits;
+// never negative.
+//
+// The read takes appendMu briefly and makes no I/O, so it costs only the
+// lock — the segment-append domain, which ranks below the capacity domain
+// in the lock order, so the journal's admission may call this while its
+// own section is held. It is the room an append measured from this
+// snapshot either fills or rolls past, never exceeds: what it reports is a
+// ceiling the appends keep under the same lock.
+func (s *Stream) Room() int64 {
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
+	if s.id == 0 || s.sealState != sealOpen {
+		return 0
+	}
+	// The charge for one more write record, drawn exactly as the append's
+	// own fit test draws it: the seal's reserve counts the record's footer
+	// entry, the remainder is floored to the record's 8-byte grid, and the
+	// record costs its header and the write kind's own body bytes.
+	return WriteRoom(s.set.cap, s.next, s.count)
+}
+
+// WriteRoom is the payload bytes one more write record takes in a segment of
+// cap bytes whose next record starts at next with count records already in
+// it: the seal's reserve counts the record's footer entry, the remainder is
+// floored to the record's 8-byte grid, and the record costs its header and
+// the write kind's own body bytes. Stream.Room and the capacity admission
+// both draw their figures from it, so they cannot disagree.
+func WriteRoom(cap, next, count int64) int64 {
+	room := ((cap - next - sealRoom(count+1)) &^ 7) -
+		(int64(format.RecordHeaderSize) + format.RecordHeader{Kind: format.KindWrite}.BodySize())
+	return max(room, 0)
+}
+
+// EmptyRoom is WriteRoom of an empty segment of cap bytes: the most payload
+// one write record takes anywhere.
+func EmptyRoom(cap int64) int64 { return WriteRoom(cap, format.SegmentHeaderSize, 0) }
+
+// RecordBytes is what one write record of n payload bytes costs: the
+// header, the write kind's fixed body bytes, the payload and the padding to
+// the record's 8-byte grid.
+func RecordBytes(n int64) int64 {
+	return format.RecordHeader{Kind: format.KindWrite, Extent: core.Extent{Len: n}}.Size()
+}
+
 // rollSettle settles the roll whose gate the caller armed: the gate is
 // lifted and the parked appends woken. The caller holds appendMu; the
 // waiters hold no lock while they park, so the channel's close under it is
