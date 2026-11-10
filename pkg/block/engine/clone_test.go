@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"iter"
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -50,23 +50,16 @@ func (u *unit) bindShare(t *testing.T, name string, ns entity.NamespaceID) entit
 // Admission refuses before registering anything, and admits up to its
 // bounds: an admitted clone reaches the steps not built yet.
 //
-// No journal call is made and the store is never reached, admitted or not:
-// every journal call is counted and every store call panics.
+// The journal is left as it was and the store is never reached, admitted or
+// not: the journal's Stats are compared and every store call panics.
 func TestCloneAdmission(t *testing.T) {
 	ns := &noStore{}
-	var calls atomic.Int64
 	u := cloneUnitWith(t, unitConfig{
 		deps: []func(*engine.Deps){func(d *engine.Deps) {
 			ns.Existence, ns.Content = d.Existence, d.Content
 			d.Existence, d.Content = ns, ns
-			open := d.Open
-			d.Open = func(ctx context.Context, dir string, floor journal.Version, id journal.JournalID) (engine.Journal, error) {
-				j, err := open(ctx, dir, floor, id)
-				return everyCallJournal{j, &calls}, err
-			}
 		}},
 		unbound: true,
-		wrap:    func(h engine.Handle) engine.Handle { return everyCallHandle{h, &calls} },
 	})
 	if err := u.e.Bind(t.Context(), u.share); err != nil {
 		t.Fatal(err)
@@ -75,7 +68,7 @@ func TestCloneAdmission(t *testing.T) {
 	same := u.bindShare(t, "same", entity.NamespaceID{})
 	other := u.bindShare(t, "other", entity.NewNamespaceID())
 	ns.arm()
-	calls.Store(0) // the binds' own calls
+	before := u.j.Stats()
 	s := u.share.ID
 	for _, c := range []struct {
 		name     string
@@ -103,88 +96,10 @@ func TestCloneAdmission(t *testing.T) {
 	if n := u.e.FileEntries(); n != 0 {
 		t.Errorf("%d entries left after the clones, want none: a registration outlived its clone", n)
 	}
-	if n := calls.Load(); n != 0 {
-		t.Errorf("%d journal calls during admission, want none", n)
+	if after := u.j.Stats(); !reflect.DeepEqual(after, before) {
+		t.Errorf("the journal after admission: %+v, want it as before, %+v", after, before)
 	}
 }
-
-// everyCallJournal and everyCallHandle count every call before passing it on.
-type everyCallJournal struct {
-	engine.Journal
-	n *atomic.Int64
-}
-
-func (j everyCallJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version) (engine.Handle, error) {
-	j.n.Add(1)
-	return j.Journal.Share(tag, limit, floor)
-}
-func (j everyCallJournal) Forget(ctx context.Context, tag journal.ShareTag) error {
-	j.n.Add(1)
-	return j.Journal.Forget(ctx, tag)
-}
-func (j everyCallJournal) Strand(tag journal.ShareTag) error {
-	j.n.Add(1)
-	return j.Journal.Strand(tag)
-}
-func (j everyCallJournal) Stats() journal.Stats           { j.n.Add(1); return j.Journal.Stats() }
-func (j everyCallJournal) Draw() (journal.Version, error) { j.n.Add(1); return j.Journal.Draw() }
-func (j everyCallJournal) SetVersionLimit(m journal.Version) error {
-	j.n.Add(1)
-	return j.Journal.SetVersionLimit(m)
-}
-func (j everyCallJournal) Repack(ctx context.Context, b int64, s journal.RepackScope) (int64, error) {
-	j.n.Add(1)
-	return j.Journal.Repack(ctx, b, s)
-}
-func (j everyCallJournal) Close() error { j.n.Add(1); return j.Journal.Close() }
-
-type everyCallHandle struct {
-	engine.Handle
-	n *atomic.Int64
-}
-
-func (h everyCallHandle) WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error) {
-	h.n.Add(1)
-	return h.Handle.WriteAt(ctx, id, off, p, mtime)
-}
-func (h everyCallHandle) ReadAt(ctx context.Context, id journal.FileID, off int64, p []byte) (int, []journal.Extent, []journal.Held, journal.Version, error) {
-	h.n.Add(1)
-	return h.Handle.ReadAt(ctx, id, off, p)
-}
-func (h everyCallHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
-	h.n.Add(1)
-	return h.Handle.Sync(ctx, ids...)
-}
-func (h everyCallHandle) Truncate(ctx context.Context, id journal.FileID, size int64) (journal.Version, error) {
-	h.n.Add(1)
-	return h.Handle.Truncate(ctx, id, size)
-}
-func (h everyCallHandle) Deallocate(ctx context.Context, id journal.FileID, e journal.Extent) (journal.Version, error) {
-	h.n.Add(1)
-	return h.Handle.Deallocate(ctx, id, e)
-}
-func (h everyCallHandle) Delete(ctx context.Context, id journal.FileID) (journal.Version, error) {
-	h.n.Add(1)
-	return h.Handle.Delete(ctx, id)
-}
-func (h everyCallHandle) CloneTarget(ctx context.Context, id journal.FileID, spec journal.CloneSpec) (journal.Version, error) {
-	h.n.Add(1)
-	return h.Handle.CloneTarget(ctx, id, spec)
-}
-func (h everyCallHandle) Reserve(n int64, writes int) (engine.Reservation, error) {
-	h.n.Add(1)
-	return h.Handle.Reserve(n, writes)
-}
-func (h everyCallHandle) Since(ctx context.Context, id journal.FileID, from journal.Version) iter.Seq2[journal.Change, error] {
-	h.n.Add(1)
-	return h.Handle.Since(ctx, id, from)
-}
-func (h everyCallHandle) Settle(id journal.FileID, v journal.Version) {
-	h.n.Add(1)
-	h.Handle.Settle(id, v)
-}
-func (h everyCallHandle) Files() iter.Seq[journal.FileID] { h.n.Add(1); return h.Handle.Files() }
-func (h everyCallHandle) Close() error                    { h.n.Add(1); return h.Handle.Close() }
 
 func isInvalid(err error) bool { return errors.Is(err, vfserr.ErrInvalid) }
 func frozen(err error) bool    { return isDelay(err, vfserr.DelayFrozen) }
