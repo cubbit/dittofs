@@ -126,7 +126,10 @@ part can pass, and §15.2's §11.1 rows for `journal_full` and `journal_sync_fai
    that has landed, and E2's test components: above all the fake journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12).
+   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
+   three kinds: the test clock, an in-memory implementation held to its interface's
+   conformance suite, or a fault wrapper. A test asserts on the engine's answers, on resulting
+   state and on what a double records of its own outputs, never on which calls the engine made.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -166,7 +169,9 @@ part can pass, and §15.2's §11.1 rows for `journal_full` and `journal_sync_fai
    check about what the real thing does: the real journal on a real directory, with its crash
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
    commits and conflicts on. The fake journal is for the engine's pure logic only, and no
-   conformance row runs over it.
+   engine conformance row runs over it. It is held to the real journal by the journal's own
+   conformance suite (RFC 1 §9.4): it passes the suite's rows that need no crash, fault or
+   platform, the rows the real journal passes on `platform.OS`.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -537,7 +542,7 @@ would split one condition's cause from its raise.
   `DelayCapacity`, and 100 such refusals within a second of the test clock log one `Error`
   line (catches a line per refused write, RFC 25 §5.2), and with none: `ErrNoSpace`
   (catches a repack's error handed to the client, R1); a refusal whose deadline has already
-  passed answers `ErrDelay` with no `Repack` call (R8); the fake's `Repack` held past the
+  passed answers `ErrDelay` with nothing repacked in the fake (R8); the fake's `Repack` held past the
   caller's deadline: `ErrDelay` with `DelayCapacity`, never `ErrNoSpace`, and the write not
   staged (catches a deadline turned into no space, R8, R9); RFC 8 §15.2's "`journal_full`
   at the maximum", its write half: a journal of two streams at its maximum with no spare
