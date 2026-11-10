@@ -2,6 +2,7 @@ package index
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
@@ -26,6 +27,8 @@ type Placed struct {
 	Record  RecordAt
 	Skip    uint32
 	Version core.Version
+	// Seq is the sequence number of the record holding the bytes.
+	Seq core.Seq
 }
 
 // Piece is one held extent as the index keeps it: its placement and its
@@ -35,6 +38,7 @@ type Piece struct {
 	Record    RecordAt
 	Skip      uint32
 	Version   core.Version
+	Seq       core.Seq
 	Offloaded bool
 }
 
@@ -44,7 +48,10 @@ type Piece struct {
 const _ = uint32(core.SegmentCap)
 
 // held is the tree value of one piece; the piece's start offset is its key.
-// It is 40 bytes.
+// It is 40 bytes. It keeps the version's counter half only: the epoch half is
+// zero on every record of this format, and its eight bytes hold the record's
+// sequence number instead, so the entry names its record exactly at no cost
+// over an entry that carried the whole version.
 //
 // ponytail: one entry per contiguous held piece of one record, which with the
 // tree around it costs about 53 bytes for extents written front to back and
@@ -53,8 +60,15 @@ const _ = uint32(core.SegmentCap)
 // repacked. Upgrade to entries that span consecutive records of one file with
 // a version range, splitting on demand, when the extent bound is reached in
 // production on a workload of small sequential writes.
+//
+// ponytail: the epoch half is not stored, which holds while the format fixes
+// it at zero: the record codec refuses any other on encode and decode, and
+// toHeld panics on one. A format version that raises the epoch widens the
+// entry by eight bytes, past the index memory bound, so it brings that bound
+// with it, or packs the epoch beside the counter if epochs stay small.
 type held struct {
-	version   core.Version
+	counter   uint64
+	seq       core.Seq
 	segment   core.SegmentID
 	recordOff uint32
 	skip      uint32
@@ -62,9 +76,16 @@ type held struct {
 	offloaded bool
 }
 
+// toHeld packs p. It panics on a version with a non-zero epoch half, which
+// no record of this format carries: a caller bug, refused rather than stored
+// without it.
 func toHeld(p Piece) held {
+	if p.Version.Epoch != 0 {
+		panic(fmt.Sprintf("index: a held piece's version carries epoch %d, which this format never writes", p.Version.Epoch))
+	}
 	return held{
-		version:   p.Version,
+		counter:   p.Version.Counter,
+		seq:       p.Seq,
 		segment:   p.Record.Segment,
 		recordOff: p.Record.Offset,
 		skip:      p.Skip,
@@ -78,7 +99,8 @@ func (h held) piece(k uint64) Piece {
 		Extent:    core.Extent{Off: int64(k), Len: int64(h.len)},
 		Record:    RecordAt{Segment: h.segment, Offset: h.recordOff},
 		Skip:      h.skip,
-		Version:   h.version,
+		Version:   core.Version{Counter: h.counter},
+		Seq:       h.seq,
 		Offloaded: h.offloaded,
 	}
 }
@@ -86,8 +108,8 @@ func (h held) piece(k uint64) Piece {
 // joins reports whether r continues h as one piece of one record: the same
 // record, the next payload byte, the same version and the same bit. Two such
 // entries side by side are merged, so a piece is never kept as several. A
-// record has one version, so the version test only guards against a caller
-// that names one record with two.
+// record has one version and one sequence number, so those tests only guard
+// against a caller that names one record with two.
 //
 // decision: a piece is split where its offloaded bit changes, so one record
 // piece can be held as several entries, against the rule that a piece is one
@@ -98,7 +120,7 @@ func (h held) piece(k uint64) Piece {
 // mark can split entries. Revisit if marks are found splitting files toward
 // that bound, by keeping the bit as ranges inside an entry instead.
 func (h held) joins(r held) bool {
-	return h.segment == r.segment && h.recordOff == r.recordOff && h.version == r.version &&
+	return h.segment == r.segment && h.recordOff == r.recordOff && h.counter == r.counter && h.seq == r.seq &&
 		h.offloaded == r.offloaded && uint64(h.skip)+uint64(h.len) == uint64(r.skip)
 }
 
@@ -123,10 +145,10 @@ func clip(p Piece, e core.Extent) Piece {
 // so that a write in steady state allocates nothing beyond the nodes the tree
 // splits.
 //
-// The set decides overlaps by arrival: what is put last wins where it lands,
-// and entries carry no sequence number. Rebuilding from records in any order
-// must therefore decide precedence before records reach the set, or keep the
-// numbers beside it.
+// The set decides overlaps by arrival: what is put last wins where it lands.
+// An entry carries its record's sequence number but no precedence is decided
+// on it here, so rebuilding from records in any order must decide precedence
+// before records reach the set.
 //
 // Offsets and lengths are trusted: an extent's offset is not negative, its end
 // does not overflow, and a piece is no longer than a segment. Refusing others
@@ -176,7 +198,7 @@ func (s *heldSet) lookup(off int64) (Placed, bool) {
 		return Placed{}, false
 	}
 	p := v.piece(k)
-	return Placed{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version}, true
+	return Placed{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version, Seq: p.Seq}, true
 }
 
 // span appends to placed the pieces held inside e, clipped to it, and to
@@ -198,13 +220,13 @@ func (s *heldSet) span(e core.Extent, placed []Placed, missing []core.Extent) ([
 		// names one record with two versions.
 		if n := len(placed); n > first {
 			if last := &placed[n-1]; last.Extent.Off+last.Extent.Len == q.Extent.Off &&
-				last.Record == q.Record && last.Version == q.Version &&
+				last.Record == q.Record && last.Version == q.Version && last.Seq == q.Seq &&
 				uint64(last.Skip)+uint64(last.Extent.Len) == uint64(q.Skip) {
 				last.Extent.Len += q.Extent.Len
 				return true
 			}
 		}
-		placed = append(placed, Placed{Extent: q.Extent, Record: q.Record, Skip: q.Skip, Version: q.Version})
+		placed = append(placed, Placed{Extent: q.Extent, Record: q.Record, Skip: q.Skip, Version: q.Version, Seq: q.Seq})
 		return true
 	})
 	if end := e.Off + e.Len; end > cursor {
@@ -256,7 +278,7 @@ func (s *heldSet) insert(p Placed) {
 	if p.Extent.Len <= 0 {
 		return
 	}
-	s.put(Piece{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version})
+	s.put(Piece{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version, Seq: p.Seq})
 }
 
 // fill holds p, marked offloaded, only where nothing is held: a held piece
@@ -277,6 +299,7 @@ func (s *heldSet) fill(p Placed) {
 			Record:    p.Record,
 			Skip:      p.Skip + uint32(lo-p.Extent.Off),
 			Version:   p.Version,
+			Seq:       p.Seq,
 			Offloaded: true,
 		})
 	}
@@ -379,13 +402,15 @@ func (s *heldSet) unmark(e core.Extent, newest core.Version) int {
 }
 
 // repoint moves the pieces inside e held from record from to record to, whose
-// payload holds e's bytes from skip on, keeping their extents, versions and
-// bits. A record re-appended after a failed sync is the same record in a new
-// place, so its skips do not change; a repack copy holds only the extents it
-// copies, so they do, and pieces of several records copied into one join as
-// one entry. Only pieces of from move, so carrying forward a header-only
-// record, which no piece is held from, changes nothing. It returns the number
-// of pieces moved.
+// payload holds e's bytes from skip on, keeping their extents, versions, bits
+// and sequence numbers. A record re-appended after a failed sync is the same
+// record in a new place, so its skips do not change; a repack copy holds only
+// the extents it copies, so they do. Pieces of one record moved into one record
+// join as one entry; pieces of records with other sequence numbers stay apart.
+// Only pieces of from move, so carrying forward a header-only record, which no
+// piece is held from, changes nothing. It returns the number of pieces moved.
+//
+// A repoint keeps each piece's seq because a copy is the same record.
 func (s *heldSet) repoint(e core.Extent, from, to RecordAt, skip uint32) int {
 	s.work = s.work[:0]
 	s.visit(e, func(p Piece) bool {

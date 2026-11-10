@@ -58,7 +58,7 @@ func checkCanonical(t *testing.T, ps []Piece) {
 
 func mergeable(q, p Piece) bool {
 	return q.Extent.Off+q.Extent.Len == p.Extent.Off && q.Record == p.Record &&
-		q.Version == p.Version && q.Offloaded == p.Offloaded &&
+		q.Version == p.Version && q.Seq == p.Seq && q.Offloaded == p.Offloaded &&
 		int64(q.Skip)+q.Extent.Len == int64(p.Skip)
 }
 
@@ -504,25 +504,43 @@ func TestRecordFillingASegment(t *testing.T) {
 	assertPieces(t, &s, Piece{Extent: ext(0, core.SegmentCap), Record: a, Version: ver(1), Offloaded: true})
 }
 
-// TestRepackCopyCoalesces is a repack copy: adjacent held extents of one file
-// that share a version and a bit, from two records, are copied into one new
-// record at consecutive payload offsets, and become one entry. A repoint that
-// kept the old skips would point the second extent at the wrong bytes of the
-// copy, and the two would never merge.
+// seqd is p carrying seq as its record's sequence number.
+func seqd(p Placed, seq core.Seq) Placed {
+	p.Seq = seq
+	return p
+}
+
+// TestRepackCopyCoalesces is a repack copy: adjacent held extents of one
+// record that share a version and a bit are copied into one new record at
+// consecutive payload offsets, and become one entry once the repoint names the
+// copy's skips. A repoint that kept the old skips would point the second
+// extent at the wrong bytes of the copy and leave the two apart.
 func TestRepackCopyCoalesces(t *testing.T) {
 	var s heldSet
-	a, b, c, copied := rec(1, 0), rec(1, 4096), rec(1, 8192), rec(9, 0)
-	s.insert(write(0, 8, a, 3))
-	s.insert(write(8, 8, b, 3))
-	s.insert(write(4, 2, c, 5)) // splits a; stays where it is
+	a, copied := rec(1, 0), rec(9, 0)
+	s.insert(seqd(write(0, 8, a, 3), 3))
+	s.insert(seqd(write(8, 8, a, 3), 3))
 	s.markOffloaded(ext(0, 16), ver(3), ver(3))
-	// The copy holds a's [6, 8) at 0 and b's [8, 16) at 2.
-	s.repoint(ext(6, 2), a, copied, 0)
-	s.repoint(ext(8, 8), b, copied, 2)
+	s.repoint(ext(0, 8), a, copied, 0)
+	s.repoint(ext(8, 8), a, copied, 8)
 	assertPieces(t, &s,
-		Piece{Extent: ext(0, 4), Record: a, Version: ver(3), Offloaded: true},
-		Piece{Extent: ext(4, 2), Record: c, Version: ver(5)},
-		Piece{Extent: ext(6, 10), Record: copied, Version: ver(3), Offloaded: true},
+		Piece{Extent: ext(0, 16), Record: copied, Version: ver(3), Seq: 3, Offloaded: true},
+	)
+}
+
+// TestRepointKeepsRecordsApart: pieces of two different records moved into
+// one place keep their own sequence numbers and stay two entries, since an
+// entry names one record's sequence number.
+func TestRepointKeepsRecordsApart(t *testing.T) {
+	var s heldSet
+	a, b, copied := rec(1, 0), rec(1, 4096), rec(9, 0)
+	s.insert(seqd(write(0, 8, a, 3), 3))
+	s.insert(seqd(write(8, 8, b, 3), 4))
+	s.repoint(ext(0, 8), a, copied, 0)
+	s.repoint(ext(8, 8), b, copied, 8)
+	assertPieces(t, &s,
+		Piece{Extent: ext(0, 8), Record: copied, Version: ver(3), Seq: 3},
+		Piece{Extent: ext(8, 8), Record: copied, Skip: 8, Version: ver(3), Seq: 4},
 	)
 }
 

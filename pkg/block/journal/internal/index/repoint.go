@@ -3,8 +3,9 @@ package index
 import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 
 // RepointRecord moves every held and retained piece of id that sits at record
-// from to record to, keeping each piece's extent, skip, version, offloaded bit
-// and superseder: the record is the same one, read from another place. It
+// from to record to, keeping each piece's extent, skip, version, sequence
+// number, offloaded bit and superseder: the record is the same one, read from
+// another place, and a copy carries its original's sequence number. It
 // returns the number of pieces moved. It takes the file's lock exclusively. A
 // file with no entry, or none of whose pieces sit at from, changes nothing and
 // creates no entry.

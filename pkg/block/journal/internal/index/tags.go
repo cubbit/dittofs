@@ -78,6 +78,13 @@ func (ix *Index) CheckTag(tag core.ShareTag, id core.FileID) error {
 	return err
 }
 
+// Owner returns the tag that owns id, and false when none does or the file has
+// no entry. It takes the file's lock shared and creates no entry.
+func (ix *Index) Owner(id core.FileID) (tag core.ShareTag, ok bool) {
+	ix.fs.view(id, func(f *file) { tag, ok = f.owner() })
+	return tag, ok
+}
+
 // TagConflicts returns the rivalled files, one Conflict per file ordered by
 // FileID bytes, in time proportional to their number. It takes no file's
 // lock. A rivalled file stays a member until one of its two tags is cleared

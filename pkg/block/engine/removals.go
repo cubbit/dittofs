@@ -79,6 +79,7 @@ type removalLoop struct {
 	// once built. Delete the field and its branches if Drop ends a share's
 	// items some other way.
 	dropped map[entity.ShareID]bool  // shares dropped: an item of one, running or enqueued, is ended
+	waits   map[*loopItem]bool       // items waiting outside the loop, removal_stalled: see waiting
 	steps   atomic.Int64             // items run, for a test to wait on a run
 	runs    [runResults]atomic.Int64 // engine_removal_runs_total by result
 	wake    chan struct{}
@@ -246,7 +247,34 @@ func (l *removalLoop) stalledOn(f entity.FileID) bool {
 			return true
 		}
 	}
+	for it := range l.waits {
+		if it.f == f {
+			return true
+		}
+	}
 	return false
+}
+
+// waiting raises removal_stalled for it, an item still waiting outside the
+// loop before it is posted, or clears it, logging each change.
+func (l *removalLoop) waiting(it *loopItem, stalled bool) {
+	l.mu.Lock()
+	was := l.waits[it]
+	if stalled {
+		if l.waits == nil {
+			l.waits = map[*loopItem]bool{}
+		}
+		l.waits[it] = true
+	} else {
+		delete(l.waits, it)
+	}
+	l.mu.Unlock()
+	switch {
+	case stalled && !was:
+		l.e.d.Logger.Warn("removal_stalled", "file", it.f, "kind", it.kind)
+	case !stalled && was:
+		l.e.d.Logger.Warn("removal_stalled cleared", "file", it.f, "kind", it.kind)
+	}
 }
 
 // phase2 is the item that drops r's masked records and prunes its removal

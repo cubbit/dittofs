@@ -112,15 +112,18 @@ func (e *Engine) collectFile(o *opened, b *binding, entries []kvstore.Unfinished
 	}
 
 	if cloning {
-		// The file is not served as it was before the clone (RFC 8 §2.5 step
-		// 4), so with no hook to rebuild it Start fails, as for a clone marker.
-		if e.cloneRemoval == nil {
-			return fmt.Errorf("engine: start: rebuild the clone of file %v: %w", f, errUnbuilt)
-		}
-
 		for _, u := range entries {
-			if u.Removal.Kind == entity.RemoveClone && !u.Removal.Done {
+			if u.Removal.Kind != entity.RemoveClone || u.Removal.Done {
+				continue
+			}
+
+			if e.cloneRemoval != nil {
 				e.cloneRemoval(b.share.ID, f, u.Removal)
+				continue
+			}
+
+			if err := e.rebuildRemoval(o, b, f, u); err != nil {
+				return err
 			}
 		}
 

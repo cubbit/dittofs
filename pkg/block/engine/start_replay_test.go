@@ -413,13 +413,21 @@ func (r *rig) begin(t *testing.T) {
 }
 
 // restart stops the running engine's background work, reopens the journal as
-// a new process finds it, and builds a new engine over the same store.
+// a new process finds it, and builds a new engine over the same store, with a
+// new open-state table when the rig runs one.
 func (r *rig) restart(t *testing.T) {
 	t.Helper()
 
 	r.run()
 	r.e.CloseGroupCommits()
 	r.j.Reopen()
+
+	if r.tb != nil {
+		// Open state is a new process's too: a new table over the same
+		// store, its shard served only once the test serves it.
+		r.tb.Stop()
+		r.deps.Holds = r.openState(t)
+	}
 
 	e, err := engine.New(r.deps)
 	if err != nil {
@@ -1211,9 +1219,10 @@ func TestStartCommitsALossAsLost(t *testing.T) {
 	}
 }
 
-// With no hook to rebuild a clone, a clone marker fails Start: the
-// destination is not served as it was before the clone (RFC 8 §2.5 step 4).
-func TestStartFailsOnACloneMarkerWithNoHook(t *testing.T) {
+// A clone marker whose source share this start does not serve fails Start:
+// the destination is not served as it was before the clone (RFC 8 §2.5 step
+// 4).
+func TestStartFailsOnACloneMarkerOfAnUnservedSource(t *testing.T) {
 	r := newRig(t)
 	_, f := r.newFile(t, "a")
 	id := journal.NewFileID(f)
@@ -1226,8 +1235,8 @@ func TestStartFailsOnACloneMarkerWithNoHook(t *testing.T) {
 
 	r.atRestart()
 
-	if err := r.start(t); !errors.Is(err, engine.ErrUnbuilt) {
-		t.Errorf("Start = %v, want ErrUnbuilt", err)
+	if err := r.start(t); !errors.Is(err, engine.ErrSourceNotServed) {
+		t.Errorf("Start = %v, want ErrSourceNotServed", err)
 	}
 }
 
