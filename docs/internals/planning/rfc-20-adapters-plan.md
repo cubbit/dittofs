@@ -155,8 +155,12 @@ on `feat/storage-v2`, so the gates get a per-change cell of their own, `unit/ada
 the journal's run in `unit/journal-index`. Like that cell, it runs from a fixed step in the unit
 job: the branch's cell filter drops a cell with no job, so the cell alone would never run. Cell
 and step land with their first gate, `BufPool`'s in T3.3, since at S1 they would run nothing. `unit` keeps no `known.yaml`, so it cannot hold a red test: **epic 2
-registers no red suite**. Each test lands green with the epic that makes it pass. Epic 2 builds
-what those tests stand on:
+registers a red suite of its own, `adapter-conformance`**, behind the `adapter_conformance` build
+tag with `known: test/adapter/known.yaml` and `tier: pr`, as `engine-conformance` is (RFC 29
+§4.7). A test that is the specification a later epic builds to, and can pass only once that
+epic fills a stub, lands there red, one entry each naming the issue of the epic that turns it
+green, which removes the entry; every other test lands green with the epic that makes it pass.
+Epic 2 builds what those tests stand on:
 
 - **`adaptertest/testproto`**: a protocol of length-prefixed frames with operations that echo,
   wait a given time, panic, hold (answer `ErrDelay` of a holding class), take a `Role` an
@@ -499,8 +503,8 @@ deleted).
 
 **Epic 2 estimate: 4 subtasks, 8 man-days.**
 
-What every later test stands on (§1.4). No red suite is registered: RFC 20's suites paragraph
-puts these layers in `unit`, which holds no known failures.
+What every later test stands on (§1.4). Its green tests run in `unit`; the specifications only
+a later epic can turn green run red in `adapter-conformance`, which it registers.
 
 RFC sections: §7 (the layers; the `core` layer on a test-only protocol), §7.1's import checks.
 
