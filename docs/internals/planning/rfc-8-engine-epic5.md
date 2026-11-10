@@ -95,7 +95,10 @@ retry channel with `vfserr.ErrFileOpen`, landed from `feat/enginev2-delete-retry
    that has landed, and E2's test components: above all the fake journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12).
+   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
+   three kinds: the test clock, an in-memory implementation held to its interface's
+   conformance suite, or a fault wrapper. A test asserts on the engine's answers, on resulting
+   state and on what a double records of its own outputs, never on which calls the engine made.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -135,7 +138,9 @@ retry channel with `vfserr.ErrFileOpen`, landed from `feat/enginev2-delete-retry
    check about what the real thing does: the real journal on a real directory, with its crash
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
    commits and conflicts on. The fake journal is for the engine's pure logic only, and no
-   conformance row runs over it.
+   engine conformance row runs over it. It is held to the real journal by the journal's own
+   conformance suite (RFC 1 §9.4): it passes the suite's rows that need no crash, fault or
+   platform, the rows the real journal passes on `platform.OS`.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -413,8 +418,8 @@ listed test fails on the regression it names (after "catches").
   exists.
 - **Tests:** over the real `kvstore`, the merged hole present after phase 1 with phase 2 held
   by the loop's hook (catches a hole left to phase 2); a write into the extent between the
-  phases reads back, not zeros (the same bug through its consumer); over the fake, no
-  `WriteAt` during a deallocate (catches zeros staged); over the fake, with the test block
+  phases reads back, not zeros (the same bug through its consumer); over the fake, a
+  deallocate stages nothing, the fake's held extents unchanged by it (catches zeros staged); over the fake, with the test block
   of 16, a `Deallocate` whose version is past the trigger and no other call issuing a
   version: the raise runs and the journal gets the new limit (catches a deallocate that does
   not call `issued`).
@@ -474,8 +479,8 @@ listed test fails on the regression it names (after "catches").
   epic 6. The version the journal step returns is passed to epic 6's `issued`, as `Write`
   and `Draw` do (RFC 8 §2.7).
 - **Rows:** none of its own.
-- **Tests,** over the fake: `Delete` never calls the journal's `Release` (catches the
-  eviction call); a store stalled past the deadline, then cleared: the channel yields nil
+- **Tests,** over the fake: after `Delete` the fake still holds the file's extents, none
+  evicted (catches the eviction call); a store stalled past the deadline, then cleared: the channel yields nil
   once and the marker is settled (catches a pending release answered as failed); a stall
   ended by an abort yields `ErrFileOpen` (catches the catch-all mapping it to
   `ErrUnavailable`); five failed retries raise `removal_stalled` and the abort clears it;
