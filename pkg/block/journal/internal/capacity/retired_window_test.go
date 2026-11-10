@@ -34,9 +34,13 @@ import (
 // exactly beside the settled 1000, and the second ask misses by 8 — while
 // a tally lowered below the truth by the late call carried it whole.
 func TestTake_RetiredRacingTheFirstSeed(t *testing.T) {
-	r := newRig(t, nil)
-	r.f.setShare(tag1, 3000)
-	ask := recordSplit(2896, roomBig, testCap)
+	r := newRig(t, std())
+	// The layer holds 3000 record bytes of the tag in two segments: 2000 in
+	// the first, which the stream seals and leaves, and 1000 in the next.
+	first := r.seed(t, 2000-segment.RecordBytes(0))
+	r.seal(t)
+	r.seed(t, 1000-segment.RecordBytes(0))
+	ask := recordSplit(2896, r.room(), testCap)
 	if ask != 3000 {
 		t.Fatalf("the 2896-payload ask = %d, want 3000; the test's figures depend on it", ask)
 	}
@@ -45,13 +49,13 @@ func TestTake_RetiredRacingTheFirstSeed(t *testing.T) {
 	r.c.cfg.ShareFigures = func(tag core.ShareTag) (settled, retired int64) {
 		if seeded.CompareAndSwap(false, true) {
 			// The retirement's own move of the layer's figures lands
-			// inside the read: the settled bytes fall to 1000 and the
-			// cumulative retired bytes rise to 2000, while the
+			// inside the read, in front of the set's own: the first
+			// segment leaves the set, so the settled bytes fall to 1000
+			// and the cumulative retired bytes rise to 2000, while the
 			// retirement's own Retired call is still to come.
-			r.f.setShare(tag, 1000)
-			r.f.setRetired(tag, 2000)
+			r.retire(t, first)
 		}
-		return r.f.shareFigures(tag)
+		return r.set.ShareBytesAndRetired(tag)
 	}
 
 	// The first take seeds the tag on the post-retirement figures: one
