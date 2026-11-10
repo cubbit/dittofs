@@ -1,0 +1,198 @@
+package datapath
+
+import (
+	"context"
+	"errors"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
+)
+
+// Header-only appenders do not exist yet, so these drive the admission a
+// removal path will call (Core.headroom) over a journal really at its
+// limit; the content-write side goes through WriteAt.
+
+// acceptanceRecords is the headroom of the cores below: forty records, so
+// the open reserve is twenty, the drawing side twenty and half falls at ten
+// drawn.
+const acceptanceRecords = 40
+
+// atTheLimit returns a core whose journal holds its limit with its pool
+// settled, a share on it, and the file the warm write went to. opts adjust
+// the core before it is built.
+func atTheLimit(t *testing.T, opts ...func(*coreOptions)) (*Core, *kit.Seam, *Share, core.FileID) {
+	t.Helper()
+	c, seam := newTestCore(t, append([]func(*coreOptions){
+		capacityCoreOption(5 * testSegmentCap),
+		func(o *coreOptions) { o.headroomRecords = acceptanceRecords },
+	}, opts...)...)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	if _, err := c.WriteAt(context.Background(), s, f, 0, make([]byte, roomAfter(0)+1), 1); err != nil {
+		t.Fatalf("the warm write: %v", err)
+	}
+	waitIn(t, 5*time.Second, "the pool to settle at its last two spares", func() bool {
+		pc := c.pool.Counters()
+		return pc.Spares == 2 && pc.Held == 0
+	})
+	return c, seam, s, f
+}
+
+// admit admits one record of class k, counting it as appended when it is.
+func admit(t *testing.T, c *Core, k capacity.RecordClass) (capacity.Draw, error) {
+	t.Helper()
+	d, err := c.headroom.Admit(context.Background(), k)
+	if err == nil && d.Append {
+		c.headroom.Drawn(d)
+	}
+	return d, err
+}
+
+// mustAdmit fails the test unless k is admitted for appending.
+func mustAdmit(t *testing.T, c *Core, k capacity.RecordClass) {
+	t.Helper()
+	d, err := admit(t, c, k)
+	if err != nil || !d.Append {
+		t.Fatalf("%s admission = %+v, %v; want it admitted", k, d, err)
+	}
+}
+
+// TestRFC1B_RecordsWithoutBytesAtTheLimit_Admission checks every class of
+// record without bytes, bar content, is admitted at the journal's limit
+// with no refusal naming the share, the journal or the spares, and that
+// headroom_draws counts each.
+func TestRFC1B_RecordsWithoutBytesAtTheLimit_Admission(t *testing.T) {
+	c, _, _, _ := atTheLimit(t)
+	// The classes that free nothing go first: they are refused below half.
+	classes := []capacity.RecordClass{
+		capacity.CloneTarget, capacity.Hold, capacity.Stamp,
+		capacity.Release, capacity.Truncate, capacity.Deallocate, capacity.Delete,
+		capacity.Offloaded, capacity.Unmark, capacity.Loss, capacity.Unhold,
+		capacity.Forget, capacity.Reconciled,
+	}
+	for _, k := range classes {
+		_, err := admit(t, c, k)
+		var ns *core.NoSpaceError
+		if errors.As(err, &ns) {
+			t.Fatalf("%s at the limit was refused naming %s", k, ns.Limit)
+		}
+		if err != nil {
+			t.Fatalf("%s at the limit: %v", k, err)
+		}
+	}
+	if got := c.headroom.Draws(); got != uint64(len(classes)) {
+		t.Fatalf("headroom_draws = %d, want %d", got, len(classes))
+	}
+}
+
+// TestEdge_RecordsWithoutBytesAtMaximum checks that at the journal's
+// maximum a content write whose roll the filesystem refuses reports the
+// device's ENOSPC and not ErrNoSpace, and a record without bytes is still
+// admitted beside it.
+func TestEdge_RecordsWithoutBytesAtMaximum(t *testing.T) {
+	c, seam, s, f := atTheLimit(t)
+	if err := seam.Schedule(kit.Failing(kit.OpWrite, "*", 0, syscall.ENOSPC)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	_, err := c.WriteAt(context.Background(), s, f, 1<<20, make([]byte, roomAfter(recordBytes(1))+1), 1)
+	if !errors.Is(err, syscall.ENOSPC) || errors.Is(err, core.ErrNoSpace) {
+		t.Fatalf("the write = %v, want the device's ENOSPC and not ErrNoSpace", err)
+	}
+	mustAdmit(t, c, capacity.Release)
+}
+
+// TestRFC1B_OffloadedRecordsBelowHalfTheHeadroom_Admission checks that below
+// half an Offloaded admission says not to append and moves no counter, a
+// hold, stamp and clone target are refused naming the headroom, and the
+// records that return space are still admitted — over and over.
+func TestRFC1B_OffloadedRecordsBelowHalfTheHeadroom_Admission(t *testing.T) {
+	c, _, _, _ := atTheLimit(t)
+	for i := 0; i < 11; i++ {
+		mustAdmit(t, c, capacity.Release)
+	}
+	if !c.headroom.BelowHalf() {
+		t.Fatal("eleven records drawn left the headroom above half")
+	}
+	for round := 0; round < 5; round++ {
+		draws := c.headroom.Draws()
+		for i := 0; i < 20; i++ {
+			d, err := c.headroom.Admit(context.Background(), capacity.Offloaded)
+			if err != nil || d.Append {
+				t.Fatalf("Offloaded below half = %+v, %v; want admitted without an append", d, err)
+			}
+			c.headroom.Drawn(d)
+		}
+		for _, k := range []capacity.RecordClass{capacity.Hold, capacity.Stamp, capacity.CloneTarget} {
+			_, err := admit(t, c, k)
+			_ = refused(t, err, core.LimitHeadroom)
+		}
+		if got := c.headroom.Draws(); got != draws {
+			t.Fatalf("round %d: the dropped and refused admissions moved headroom_draws %d -> %d", round, draws, got)
+		}
+		mustAdmit(t, c, capacity.Release) // one record that frees space, per round
+	}
+}
+
+// TestRFC1B_RecordsWithoutBytesAtTheLimit_ReserveEdge checks the open
+// reserve where it is half the headroom: a delete is admitted with one
+// record over the reserve left, refused naming the headroom with exactly the
+// reserve left, and an open's record is still admitted.
+func TestRFC1B_RecordsWithoutBytesAtTheLimit_ReserveEdge(t *testing.T) {
+	c, _, _, _ := atTheLimit(t)
+	reserve := capacity.OpenReserveRecords(acceptanceRecords)
+	for i := 0; i < acceptanceRecords-reserve-1; i++ {
+		mustAdmit(t, c, capacity.Delete)
+	}
+	mustAdmit(t, c, capacity.Delete) // reserve+1 left: the last one it may take
+	draws := c.headroom.Draws()
+	_, err := admit(t, c, capacity.Delete)
+	_ = refused(t, err, core.LimitHeadroom)
+	if got := c.headroom.Draws(); got != draws {
+		t.Fatalf("the refusal moved headroom_draws %d -> %d", draws, got)
+	}
+	mustAdmit(t, c, capacity.Open)
+}
+
+// TestRFC1B_RecordsWithoutBytesAtTheLimit_ShareAtItsLimit checks a share at
+// its limit refuses its content yet the headroom admits a record without
+// bytes, since no share's limit is consulted for it.
+//
+// ponytail: no header-only appender exists to count the record into the
+// share's UsedBytes, so only the half that exists is tested; add the
+// UsedBytes assertion once a removal path appends one.
+func TestRFC1B_RecordsWithoutBytesAtTheLimit_ShareAtItsLimit(t *testing.T) {
+	c, _, _, _ := atTheLimit(t)
+	lim := mustLimitShare(t, c, 2, 1)
+	_ = refused(t, func() error {
+		_, err := c.WriteAt(context.Background(), lim, testFile(2), 1<<20, []byte("w"), 1)
+		return err
+	}(), core.LimitShare)
+	mustAdmit(t, c, capacity.Release)
+}
+
+// TestRFC1B_RepackBesideShareAtLimit_Admission checks a repack copy beside a
+// share at its limit is admitted and draws nothing from the headroom: the
+// reserve's edge, drawn to just over, is where it was after.
+func TestRFC1B_RepackBesideShareAtLimit_Admission(t *testing.T) {
+	c, _, _, _ := atTheLimit(t)
+	lim := mustLimitShare(t, c, 2, 1)
+	_ = refused(t, func() error {
+		_, err := c.WriteAt(context.Background(), lim, testFile(2), 1<<20, []byte("w"), 1)
+		return err
+	}(), core.LimitShare)
+	reserve := capacity.OpenReserveRecords(acceptanceRecords)
+	for i := 0; i < acceptanceRecords-reserve-1; i++ {
+		mustAdmit(t, c, capacity.Delete)
+	}
+	for i := 0; i < 5; i++ {
+		mustAdmit(t, c, capacity.RepackCopy)
+	}
+	if got := c.headroom.Draws(); got != uint64(acceptanceRecords-reserve-1) {
+		t.Fatalf("headroom_draws = %d: a repack copy drew", got)
+	}
+	mustAdmit(t, c, capacity.Delete) // still reserve+1 left
+}
