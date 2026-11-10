@@ -1,7 +1,19 @@
-# Sums a plan's epic estimate lines and reports every malformed, missing or misplaced one,
-# and a plan line or §2 total row that disagrees; only a TOTAL line means the estimate is sound.
-# Usage: awk -f plan-check.awk <plan>
-# An epic id is a number with an optional letter (7, 7a), for the parts of a split epic.
+# Checks a plan's estimate. Only a TOTAL line means it is sound; every other line is a
+# defect to fix. Usage: awk -f plan-check.awk <plan>
+#
+# Every `### Epic <k> — <title>` heading in §5 holds one `**Epic <k> estimate: <n> subtasks,
+# <d> man-days.**` or `**Epic <k> estimate: planned after S<m>.**`, with <d> a multiple of
+# 0.25. §2's table has `#`, `Subtasks` and `Man-days` columns, one row per epic and one
+# `**Total**` row, and is followed by one `**Plan estimate: <n> subtasks, <d> man-days.**`,
+# ending `, not counting epic <k>, …` when some epic is planned after. Reported: a malformed
+# estimate line (`21,5`, `~20`, indented, bulleted, a missing word); a heading with no
+# estimate line or two; an estimate line with no heading or under another epic's; a
+# duplicate heading; a §2 table with no such columns, no total row or two, a total that is
+# not plain numbers or differs from the sum; an epic with no §2 row, a second row, a row
+# with no §5 heading, or a row whose figures differ from its §5 line or that holds a figure
+# for an epic planned after; a missing or second plan line, one that differs from the sum,
+# or whose "not counting" clause does not name exactly the epics planned after. An epic id
+# is a number with an optional letter (7, 7a), for the parts of a split epic.
 /^## /                                   { in2 = ($0 ~ /^## 2\./); in5 = ($0 ~ /^## 5\./); cur = "" }
 in2 && /^\|/ {
   nc2 = split($0, cell, "|")

@@ -18,12 +18,15 @@ No other word names them: not task, ticket, story, step, phase, stage, milestone
 package or work item. That holds in headings, table columns, ids and prose. (A GitHub
 milestone names a release and a roadmap epic is a GitHub issue grouping epics by release;
 neither is a unit of the plan, and the plan names neither.) A subtask's id
-is `<epic>.<n>`, never `E4-3`, `4-3` or `T3`. The `T` prefix is optional and only
+is `<e>.<n>`, never `E4-3`, `4-3` or `T3`. The `T` prefix is optional and only
 disambiguates, beside `E` for epics, `S` for synchronisation points and `R` for
 requirements: `subtask 4.3` and `subtask T4.3` are both clear, and `T4.3` is the short
 form. A bare `4.3` on its own can read as RFC 4's epic 3 or a §4.3, so give it the word or
 the prefix. The prefix does not make "task" a word for the unit. Progress is tracked by
-mapping pull requests to these ids, whichever form they cite.
+mapping pull requests to these ids, whichever form they cite. **Subtask ids are assigned
+by the epic document, never by the plan:** the plan says what each epic is expected to
+contain, and the number, order and split of its subtasks are decided when the epic is broken
+down.
 
 **A split epic takes a letter, never a renumbering.** An epic split in a revision of the plan
 becomes epic `7a`, `7b`, …: the headings read `### Epic 7a — …`, the estimate lines
@@ -39,9 +42,12 @@ written, letter included (`7a`)**, and names headings, estimate lines, labels, f
 issue titles. **`<e>` is its number without the letter (`7`)**, and is the only form inside a
 subtask id: `T<e>.<n>`. For an epic with no letter the two are the same.
 
-**When an id is cited.** An epic or subtask id is *cited* once it appears in a pull request,
-an issue, or any document under `docs/internals/planning/` other than the one being written
-(`rg -n 'T<e>\.<n>\b' docs/internals/planning`): epic documents name each other's subtasks.
+**When an id is cited.** A subtask id is *cited* once it appears in a pull request, an
+issue, or a document under `docs/internals/planning/` other than the epic document being
+written and the plan it details (`rg -n 'T<e>\.<n>\b' docs/internals/planning -g
+'!<plan>' -g '!<this-doc>'`): epic documents name each other's subtasks. An older plan
+that numbers its expected content does not make those ids cited, since they are an
+outline the breakdown is free to renumber.
 A cited id keeps its number for the same work.
 
 Two other words keep their own meaning because they are not units of work. A **track** (A, B or C) is
@@ -56,13 +62,13 @@ The RFC is the specification; the plan is how the team builds it. Every sentence
 copied into the plan is a second copy of the business logic, and the two drift at the
 RFC's first revision. So a plan holds **only what the RFC does not have**:
 
-- **who does what, in which order, and the dependencies:** the epics, their candidate
-  subtasks, the synchronisation points, the blockers and the tracks;
+- **who does what, in which order, and the dependencies:** the epics, the synchronisation
+  points, the blockers and the tracks;
 - **the implementation's own decisions:** the package layout, the choices `D1…Dn` the RFC
   leaves open, and the knowingly simple shortcuts that will carry a `ponytail:` marker;
 - **the criteria of "done", as ids of the RFC's rows** (`RFC 1 V12`, `RFC 1 §9.4 group C`),
   never with the rows' content rewritten;
-- **the candidate subtasks and the open points.**
+- **what each epic is expected to contain**, as an unnumbered outline, and the open points.
 
 Behaviour, formats, invariants, algorithms, error sets, signatures and test scenarios the
 RFC states are **cited by section or row id, never restated** — not even summarised in a
@@ -179,26 +185,25 @@ leaves a track with too little, say so in §3.4 and name what fills it.
 tests, ideally up to 5 man-days. Cut subtasks by what makes sense: one logical change,
 readable on its own, following the dependencies, delivering a piece of functionality that
 can be named. There is no target number of subtasks per epic; the count follows from the
-work. Give it as a number; the detailed breakdown is written when the epic starts, with the
-`epic-breakdown` skill. How subtasks become pull requests is under "Subtasks and pull
+work. The plan gives only the expected count, as a size; the subtasks themselves are carved,
+numbered and ordered when the epic starts, with the `epic-breakdown` skill. How subtasks become pull requests is under "Subtasks and pull
 requests" below.
 
-**Subtask order.** Number an epic's candidate subtasks in order of work, so the list reads
-as a path: `T<e>.1 → T<e>.2 → …`, each one depending only on lower numbers. The order
-follows the four rules under "Order" in `epic-breakdown` Step 3 (`.claude/skills/epic-breakdown/SKILL.md`),
-the one copy of them: no dependency on a later subtask, then blockers as early as their
-dependencies allow, then one path at a time, then the riskier subtask first, each rule only
-breaking the ties the ones before it leave. `epic-breakdown` keeps that order when it
-details the epic.
+**Expected content, not subtasks.** Under each epic the plan writes what the epic is
+expected to deliver, as a short unnumbered list, one line per piece, in the RFC's terms and
+citing its sections. It is a summary for sizing and for the reader, not the epic's subtask
+list: the breakdown may cut, merge, reorder or add to it, and is expected to change it
+only slightly. It carries no ids (`T4.3`, `4.3`), so nothing outside the epic document can
+cite a subtask before the epic document exists.
 
-**Man-days.** The plan estimates **epics, not subtasks**. Its subtasks are candidates, and
-the per-subtask estimate belongs to the epic's breakdown, so the plan's figure is a first,
+**Man-days.** The plan estimates **epics, not subtasks**. Its expected content is an
+outline, and the per-subtask estimate belongs to the epic's breakdown, so the plan's figure is a first,
 higher-level one. An epic that is "planned after Sx" gets no figure. Reach it like this,
 with the scale under "Estimating in man-days" below:
 
-1. Place the epic's candidate subtasks roughly on the scale; most land at 1–3 man-days. Do
-   not write per-subtask figures into the plan.
-2. Add the work the candidate list does not name but the epic owns (see the scale's last
+1. Place each piece of the epic's expected content roughly on the scale; most land at 1–3
+   man-days. Do not write per-piece figures into the plan.
+2. Add the work the outline does not name but the epic owns (see the scale's last
    paragraph).
 3. Weight the sum as the scale says.
 
@@ -309,13 +314,13 @@ Header: scope (the RFC + related RFCs with their in-scope level), tracks (A, B,
                                    the user as "What the plan holds" says
 ### 4.3 Knowingly simple implementations — each that will carry a `ponytail:` marker: its
                                    ceiling and upgrade path, and the epic that takes it
-## 5. The epics in detail       — per epic, under `### Epic <n> — <title>`: the epic
+## 5. The epics in detail       — per epic, under `### Epic <k> — <title>`: the epic
                                    estimate line (below); one or two sentences on what the
                                    epic delivers; **Owns:** the RFC sections; **Done when:**
                                    the RFC's row ids it turns green, each with its RFC
                                    (`RFC 8 E12`), or sections where the RFC numbers no rows;
-                                   the candidate subtasks, `T<e>.<n>` id and title, one line
-                                   each, numbered in order of work (Step 2)
+                                   **Expected content:** an unnumbered outline, one line
+                                   per piece, with no subtask ids (Step 2)
 ## 6. Risks and open points
 ## 7. RFC coverage              — table: RFC section → epic(s); related-RFC sections too
 ```
@@ -354,16 +359,9 @@ number. Compute the total with the check beside this file, never by hand:
 awk -f .claude/skills/rfc-to-epic-plan/plan-check.awk <plan>
 ```
 
-Only the `TOTAL` line may print. Anything else is a defect to fix: a malformed line (`21,5`,
-`~20`, an indented or bulleted line, a missing word) is reported rather than summed; an
-epic heading in §5 without exactly one estimate line, or an estimate line without a
-heading or under another epic's heading, is reported, so a deleted or misplaced line cannot
-go unnoticed; a `**Plan estimate:**` line that differs from the sum, a second one, and a
-"not counting epic …" clause that does not name exactly the "planned after" epics are
-reported; and so are a §2 table with no total row or with two, a total cell that is not a
-plain number, a total row whose figures differ from the sum, an epic with no §2 row or a
-§2 row with no §5 heading, and an epic's §2 row whose `Subtasks` or `Man-days` differ from
-its §5 line (or that holds a figure for an epic "planned after").
+Only the `TOTAL` line may print. Anything else is a defect to fix. The comment at the top
+of `plan-check.awk` is the one list of what it reports; fixtures for each case live in
+`testdata/`, beside it, and `testdata/run.sh` runs them.
 
 `grep -E '^\*\*(Epic [0-9]+[a-z]?|Plan) estimate:' <plan>` then lists the whole estimate.
 
@@ -440,7 +438,8 @@ use `epic-breakdown` in the document they are reading:
 >   MUST NOT into numbered requirements, estimates each subtask in man-days and suggests
 >   the pull requests. A human doing it by hand follows the same skill.
 > - **Epic and subtask, nothing else.** The units of work are the epic and its subtasks,
->   with subtask ids `<epic>.<n>` (`subtask 4.3`, or `T4.3` for short). No other word names
+>   with subtask ids `<e>.<n>` (`subtask 4.3`, or `T4.3` for short), assigned by the epic
+>   document. No other word names
 >   them: not task, ticket, story, step or phase, in headings, tables, ids or prose.
 > - **The epic stands alone.** Copy the numbered rules below into the epic document word
 >   for word, under their own heading — the rules only, not this instruction, which speaks
@@ -528,8 +527,9 @@ use `epic-breakdown` in the document they are reading:
   that rewrites the RFC becomes a citation; each that departs from it becomes a proposed
   RFC amendment (an open point until the user agrees), or a `D<n>` in §4.2 if the RFC
   leaves the point open.
-- Every epic's candidate subtasks are numbered in order of work: none depends on a higher
-  number, and what blocks other subtasks or other epics comes first.
+- No subtask id appears in the plan: each epic's expected content is an unnumbered outline.
+  `rg -n '\bT?[0-9]+\.[0-9]+[a-z]?\b' <plan>` shows where to look; most hits are RFC
+  sections.
 - Every in-scope RFC section appears in §7, and every middle epic cites sections no other
   epic owns.
 - Every ⛔ and 🔀 in §2 also appears in §3, and the Mermaid graph has the same edges as
@@ -561,7 +561,7 @@ use `epic-breakdown` in the document they are reading:
   or in §6.
 - No graph is in ASCII art.
 - Units of work are called epics and subtasks everywhere, and subtask ids are
-  `<epic>.<n>`, with or without the `T`. Read the plan for it; a word search only suggests
+  `<e>.<n>`, with or without the `T`, and only in epic documents. Read the plan for it; a word search only suggests
   where to look, since phase, stage and milestone are also ordinary words.
 - `plan-check.awk` prints only its `TOTAL` line, which matches the `**Plan estimate: …**`
   line, the §2 total row and every epic's §2 row; every epic without a figure is "planned after Sx" and named

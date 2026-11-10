@@ -42,10 +42,9 @@ numbered once across the parts.
 Two things decide the numbers: the order of work, and whether an id has been cited.
 
 - **Number in order of work.** The ids read as a path, `T4.1 → T4.2 → T4.3 → …`, in the
-  order of §6, which follows the rules under "Order" in Step 3. The plan's candidate list
-  is already in that order; take its ids where the work is the same, and where the
-  breakdown adds, drops or reorders subtasks that nobody has cited, renumber so the path
-  still reads in order.
+  order of §6, which follows the rules under "Order" in Step 3. The plan's expected content
+  for the epic is an outline with no ids; an older plan that numbers it gives ids nobody
+  has cited, so number from the order of work, not from the plan.
 - **A cited id is fixed.** Progress is tracked by mapping pull requests to subtask ids, and
   other epic documents name this epic's subtasks, so a cited id keeps its number for the
   same work. When the order of work changes, **move the subtask in §6 and §7 and keep its
@@ -55,8 +54,9 @@ Two things decide the numbers: the order of work, and whether an id has been cit
   return nothing, with no error): `gh pr list -R "$R" --state all --search '"T<e>.<n>"
   in:title,body'` and `'"<e>.<n>" in:title,body'`, since pull requests cite ids in their
   descriptions too, discarding the hits that only cite an RFC's §<e>.<n>; the sub-issues of
-  every part's epic issue (Step 6.4); and the other planning documents,
-  `rg -n 'T<e>\.<n>\b' docs/internals/planning`.
+  every part's epic issue (Step 6.4); and the other planning documents, leaving out this
+  document and the plan, `rg -n 'T<e>\.<n>\b' docs/internals/planning -g '!<plan>' -g
+  '!<this-doc>'`.
 - **Split with a letter suffix, never by renumbering.** A subtask split after its id was
   cited becomes `T4.3a`, `T4.3b`; work mapped to `T4.3` then covers both parts.
 - **Never reuse or drop a cited id.** A subtask added once ids are cited takes the next free
@@ -218,11 +218,12 @@ things.
 **Order.** Settle the order before the numbers, and number from it ("Number in order of
 work" above). Draw the dependencies, then order the subtasks by these rules, **applied in
 turn: each later rule only breaks the ties the earlier ones leave.** This is the one copy of
-them; `rfc-to-epic-plan` points here for its candidate lists.
+them.
 
 1. No subtask depends on one below it in §6. The check enforces this.
-2. What blocks the most comes first: a subtask several others build on, or one another epic
-   waits for, moves as early as its own dependencies allow.
+2. A blocker moves as early as its own dependencies allow. A blocker is a subtask two or
+   more others build on, or one another epic waits for; this is a class, not a ranking,
+   so the blockers' own order is left to the next rules.
 3. One path at a time: the next subtask builds on the one just above where it can, and a
    branch is finished before another starts rather than alternating. With A1→A2, B1→B2 and
    B1 blocking another epic, rule 2 puts B1 first and rule 3 then gives B1, B2, A1, A2.
@@ -257,22 +258,11 @@ number. Compute the total with the check beside this file, never by hand:
 awk -f .claude/skills/epic-breakdown/epic-check.awk <epic-doc>
 ```
 
-Only the `TOTAL` line may print; write it into the header. Anything else is a defect to fix:
-a malformed line (`2,5`, `~2`, `0.3`, an indented or bulleted line, a missing word) is
-reported rather than summed; a `### T<e>.<n>` subtask heading in §6 without exactly one
-estimate line, an estimate line without a heading or under another subtask's heading, a
-subtask id of another epic, a `### T…` heading that is not an id (`### T7a.1`), a
-duplicate heading and a second epic line are reported, so a deleted or misplaced line
-cannot go unnoticed; a header line that no longer matches the sum, or names another epic
-than the `# Epic <k>:` title, is reported; and so is a subtask whose `**Depends on:**`
-names itself or a subtask of this document listed after it in §6. The epic may carry a
-letter (`Epic 7a`); its subtask ids are then the epic number's (`T7.<n>`).
-
-The check reads `**Depends on:**` up to the next bullet, blank line or heading, so the field
-may wrap. Write each dependency as an id (`T7.2, T7.3`) or as a range within one epic
-(`T7.2–T7.4`); a dependency on `T4.3` where only `T4.3a` and `T4.3b` exist stands for both.
-An id with no heading in the document (another epic's, or the other part's of a split
-epic) is not checked.
+Only the `TOTAL` line may print; write it into the header. Anything else is a defect to
+fix. The comment at the top of `epic-check.awk` is the one list of what it reports and of
+the format it reads: the estimate lines, the subtask headings and the `**Depends on:**`
+field, which names ids one by one (`T7.2, T7.3`), never as a range. Fixtures for each case
+live in `testdata/`, beside it; `testdata/run.sh` runs them.
 
 `grep -E '^\*\*(Epic [0-9]+[a-z]?|Subtask T[0-9]+\.[0-9]+[a-z]?) estimate:' <epic-doc>` lists the whole estimate.
 
@@ -530,8 +520,9 @@ store's lifecycle view (T6.1)`):
 The boundary matters: a bare `epic 4.1` also matches 4.10 to 4.19. **If the epic has
 sub-issues but none matches any subtask, stop and report the titles**: a fourth title form is
 more likely than an epic whose every issue is missing. Create issues only for the subtasks
-with no match. A subtask issue whose id the document no longer has (a withdrawn subtask, or
-a split subtask's old issue) is obsolete and closed, as 6.6 says. Sub-issues that did not
+with no match. A match under another part's epic issue is moved under this part's, never
+duplicated. A subtask issue is obsolete only when no part's document has its id (a
+withdrawn subtask, or a split subtask's old issue), and then it is closed, as 6.6 says. Sub-issues that did not
 come from the epic document (bugs, follow-ups) are not its subject: they are the team's.
 A matched older issue keeps its title form;
 if its body copies the specification (`Covers:`, `Done when`, a checklist), it is rewritten
