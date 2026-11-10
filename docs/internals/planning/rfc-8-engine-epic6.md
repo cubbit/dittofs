@@ -454,7 +454,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 
 ```text
 pkg/metadata/kv/
-  counting.go        T6.1  the in-memory KV's own record (`Counts`): Updates and the most keys one Update wrote
+  badgerkv/          T6.1  the in-memory KV keeps `Counts`: Updates and the most keys one Update wrote
 pkg/metadata/entity/
   control.go         T6.1  Tags' record, its three removal states (D2) and its shards'
                            journal identities (D10)
