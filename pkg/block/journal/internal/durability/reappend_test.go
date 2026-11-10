@@ -341,20 +341,23 @@ func TestReappendOfARecordThatCannotBeAppendedIsRetriedByTheNextPass(t *testing.
 	}
 }
 
-// TestAWindowFailedAcrossTwoPassesRaisesTheGenerationOnEach covers a window
+// TestAWindowFailedAcrossTwoPassesRaisesTheGenerationOnce covers a window
 // whose records are failed in two passes: the first fails A, whose re-read
 // does not verify, and stops at a record the stream refuses, which strands B
-// behind it; the second, once that record lands, fails B. Each pass raises
-// the loss generation before it fails its records, so a client that read the
-// generation after the first pass still sees it move before B's failure is
-// answered.
-func TestAWindowFailedAcrossTwoPassesRaisesTheGenerationOnEach(t *testing.T) {
+// behind it; the second, once that record lands, fails B. The window raises
+// the loss generation once, before the first pass fails A, and the second
+// pass raises nothing more, while B is still failed as A was: its file is
+// marked, so its Sync answers the failure, and a loss record and an event
+// name it.
+func TestAWindowFailedAcrossTwoPassesRaisesTheGenerationOnce(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	// No worker runs, so the test takes the window and resolves it itself.
+	// The streams are bound so the failures' loss records are appended.
 	r := newRigUnstarted(t, 1)
 	st := r.d.made[0]
 	st.s = r.streams.Stream(0)
 	r.streams.OnEnd(r.d.onEnd)
+	r.d.BindStreams(r.streams)
 	f, g, h := file(1), file(2), file(3)
 	a, _ := r.publish(t, f, 0, "aaaa")
 	r.appendKind(t, g, format.KindDelete, format.RecordBody{})
@@ -398,6 +401,12 @@ func TestAWindowFailedAcrossTwoPassesRaisesTheGenerationOnEach(t *testing.T) {
 	if ws := r.windowsOf(0); len(ws) != 1 || len(ws[0].locs) != 2 {
 		t.Fatalf("windows = %+v after the first pass, want the refused record and B pending", ws)
 	}
+	st.mu.Lock()
+	markedB := len(st.marks[h])
+	st.mu.Unlock()
+	if markedB != 0 {
+		t.Fatalf("B's file has %d marks after the first pass, want none", markedB)
+	}
 
 	st.mu.Lock()
 	st.windows[0].entries[0].w.Bytes = good
@@ -408,8 +417,31 @@ func TestAWindowFailedAcrossTwoPassesRaisesTheGenerationOnEach(t *testing.T) {
 	if ws := r.windowsOf(0); len(ws) != 0 {
 		t.Fatalf("windows = %+v after the second pass, want none", ws)
 	}
-	if atFail != afterFirst+1 {
-		t.Errorf("generation = %d when B's failure was settled, want %d: the second pass raised nothing", atFail, afterFirst+1)
+	if atFail != afterFirst {
+		t.Errorf("generation = %d when B's failure was settled, want %d: the window raises once", atFail, afterFirst)
+	}
+	if got := r.d.Generation(); got != gen+1 {
+		t.Errorf("generation = %d after both passes, want %d: one raise for the window", got, gen+1)
+	}
+	st.mu.Lock()
+	owed := st.takeMarksLocked([]core.FileID{h})
+	st.mu.Unlock()
+	if owed == nil || owed.err.Segment != a.Segment || !slices.Contains(owed.err.Files, h) {
+		t.Errorf("owed = %+v after the second pass, want B's file marked with segment %d's failure, which its Sync answers", owed, a.Segment)
+	}
+	var events, records int
+	for _, ev := range r.events() {
+		if ev.File == h {
+			events++
+		}
+	}
+	for _, l := range r.lossesOnDisk(t) {
+		if l.header.File == h {
+			records++
+		}
+	}
+	if events != 1 || records != 1 {
+		t.Errorf("B's file is named by %d events and %d durable loss records, want one of each", events, records)
 	}
 }
 

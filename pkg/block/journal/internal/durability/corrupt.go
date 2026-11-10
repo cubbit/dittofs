@@ -99,9 +99,9 @@ type CorruptOutcome struct {
 // whatever the pieces, when it answers a failed window's report for the record
 // (a mark, or a report owed to a window not yet taken), since a failed window
 // raises before any Sync it fails returns. A record in a pending window
-// shares the raise of a batch of the worker's failures that is running, or of
-// an earlier Corrupt that answered the window's failure (window.raised), and
-// raises on its own otherwise. In a
+// shares the window's one raise (window.raised) with the worker's failures of
+// the window and with every other Corrupt of a record in it: whichever comes
+// first raises, and nothing after it raises for the window again. In a
 // read-only journal that window raise and the read-only entry's raiseOnce can
 // both land for the same window, as a spare raise: an extra raise, never a
 // missing one, since a raise only makes a client resend and the generation
@@ -346,8 +346,8 @@ func (st *stream) takeCorrupt(c Corruption, dirty bool) (synced, lost bool) {
 			}
 			file, loc := w.entries[i].w.File, w.entries[i].w.Loc
 			// The window's failure is answered from here on, through the
-			// mark below, so the raise is made now, before it, unless a
-			// batch of failEntries running for the window made it.
+			// mark below, so the window's one raise is made now, before it,
+			// unless the worker or an earlier Corrupt made it already.
 			if !w.raised {
 				st.d.dir.raise()
 				w.raised = true

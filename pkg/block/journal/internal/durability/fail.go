@@ -19,12 +19,13 @@ func recordAt(w segment.Written) index.RecordAt {
 func isLoss(w segment.Written) bool { return w.Kind == format.KindLoss }
 
 // failEntries drops the records es of the window from the index, which holds
-// again what they superseded, raises the loss generation once for the batch,
+// again what they superseded, raises the loss generation once for the window,
 // and names every dropped record in a loss record and an event. The window's
 // other records are left as they are, so a window passing only its unverified
-// part raises the generation for that part alone. It runs on the stream's
-// worker while the journal takes writes; a read-only journal fails its
-// windows in failReadOnly instead.
+// part raises the generation for that part alone, and a window whose
+// unverified records are failed over several batches raises it for the first
+// batch only. It runs on the stream's worker while the journal takes writes;
+// a read-only journal fails its windows in failReadOnly instead.
 //
 // The index is changed under the file's append domain, one file at a time, so
 // a writer that appended into the failed segment and has not yet published
@@ -45,25 +46,24 @@ func (d *Durability) failEntries(st *stream, w *window, content []entry) {
 
 	// Raised before anything is published or answered, so a reader that sees a
 	// loss event, or a Sync that returns its failure, finds the generation up.
-	// Each batch that still has a record in the window raises, so a window
-	// whose records fail over several passes, a refusal having stranded the
-	// later ones, moves the generation before each pass's failures are
-	// answered, never only before the first. A batch whose every record a
-	// Corrupt took out since the snapshot, each answered after a raise of its
-	// own, fails nothing and raises nothing. While the batch runs, raised
-	// tells a Corrupt of one of its records that the raise is made; it is
-	// cleared once the batch is settled.
+	// A Corrupt that took a record out of the window since the snapshot made
+	// the window's raise already, before it answered the failure for that
+	// record, so the window is raised once, by whichever came first.
+	//
+	// decision: a later batch of a window already raised, a refusal having
+	// stranded its records behind an earlier batch, raises nothing, as RFC 1
+	// section 3.8 asks for one raise per failed window. Every record of the
+	// window was acknowledged before the window's first raise, so that raise
+	// already changed the verifier its writes carry, and a client that
+	// compares it resends them; a second raise would only cost another round
+	// of resends. Overturned by a client contract that compares a verifier
+	// fetched after the first raise to a write's verifier.
 	st.mu.Lock()
-	if slices.ContainsFunc(content, func(e entry) bool { return st.inWindowLocked(e.w.Loc) }) {
+	if !w.raised {
 		d.RaiseWindow()
 		w.raised = true
 	}
 	st.mu.Unlock()
-	defer func() {
-		st.mu.Lock()
-		w.raised = false
-		st.mu.Unlock()
-	}()
 
 	files, byFile := byFileOf(content)
 	for _, f := range files {

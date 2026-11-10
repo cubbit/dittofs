@@ -50,8 +50,9 @@ func (d *Durability) resolveWindows(st *stream) {
 
 // reappendWindow re-appends the window's records in the order they were
 // tracked, stops at the first the stream refuses, and fails the content
-// records whose re-read did not verify, once, with the generation raised once
-// for them. It reports whether the stream refused a record.
+// records whose re-read did not verify, once, with the generation raised for
+// the window unless an earlier pass or a Corrupt already raised it. It
+// reports whether the stream refused a record.
 func (d *Durability) reappendWindow(st *stream, w *window) (refused bool) {
 	st.mu.Lock()
 	rest := slices.Clone(w.entries)
