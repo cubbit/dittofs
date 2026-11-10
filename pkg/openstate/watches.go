@@ -77,6 +77,7 @@ type watch struct {
 	pending   []Change // matched and not yet handed to the Sink
 	size      int      // the bytes pending holds
 	handed    bool     // changes went to the Sink since the timer last looked
+	raising   bool     // the last hand-off's Notify has not returned yet
 }
 
 // noteOut is one Notify.
@@ -163,6 +164,7 @@ func (v watches) Changed(ctx context.Context, dir FileKey, ch Change) {
 	}
 	ch.Name, ch.To, ch.Dirs = slices.Clone(ch.Name), slices.Clone(ch.To), slices.Clone(ch.Dirs)
 	var out outbox
+	var handed []*watch
 	_ = t.step(dir.ID, func(e *entry) error {
 		for _, w := range e.watches {
 			if w.filter&ch.What == 0 || ch.Nested && !w.recursive {
@@ -171,6 +173,7 @@ func (v watches) Changed(ctx context.Context, dir FileKey, ch Change) {
 			w.hold(ch)
 			if !w.handed {
 				w.hand(&out)
+				handed = append(handed, w)
 			}
 			t.idx.Lock()
 			t.watched[e.file] = struct{}{}
@@ -179,6 +182,7 @@ func (v watches) Changed(ctx context.Context, dir FileKey, ch Change) {
 		return nil
 	})
 	out.raise(t, sink)
+	t.raised(dir.ID, handed)
 }
 
 // hold adds ch to w's pending changes; past their bound they collapse to one
@@ -201,23 +205,48 @@ func (w *watch) hold(ch Change) {
 	}
 }
 
-// hand moves w's pending changes to out.
+// hand moves w's pending changes to out. w hands nothing more until raised
+// says out was raised.
 func (w *watch) hand(out *outbox) {
 	out.notes = append(out.notes, noteOut{w.client, w.id, w.pending})
-	w.pending, w.size, w.handed = nil, 0, true
+	w.pending, w.size, w.handed, w.raising = nil, 0, true, true
+}
+
+// raised lets ws, on directory d, hand off again, now the outbox their last
+// hand-off went to has been raised. So a watch's Notify calls never overlap,
+// and reach the Sink in the order its changes were held: the timer cannot
+// raise a later change while an earlier one is between its step and its
+// Notify.
+func (t *Table) raised(d entity.FileID, ws []*watch) {
+	if len(ws) == 0 {
+		return
+	}
+	_ = t.step(d, func(*entry) error {
+		for _, w := range ws {
+			w.raising = false
+		}
+		return nil
+	})
 }
 
 // handWatched hands each watch on dirs what it holds, for the timer, and
 // lets one that held nothing hand its next change at once; a directory
-// leaves the timer's set once none of its watches handed anything.
+// leaves the timer's set once none of its watches handed anything. A watch
+// whose last hand-off is still being raised is left for a later pass.
 func (t *Table) handWatched(sink Sink, dirs []entity.FileID) {
 	for _, d := range dirs {
 		var out outbox
+		var handed []*watch
 		_ = t.step(d, func(e *entry) error {
 			busy := false
 			for _, w := range e.watches {
+				if w.raising {
+					busy = true
+					continue
+				}
 				if w.handed = len(w.pending) > 0; w.handed {
 					w.hand(&out)
+					handed = append(handed, w)
 				}
 				busy = busy || w.handed
 			}
@@ -229,5 +258,6 @@ func (t *Table) handWatched(sink Sink, dirs []entity.FileID) {
 			return nil
 		})
 		out.raise(t, sink)
+		t.raised(d, handed)
 	}
 }

@@ -83,7 +83,8 @@ type recallCall struct {
 }
 
 // recordingSink records what the table raises; onEnded, onWait and onRecall,
-// if set, run inside ClientEnded, LockWaitOver and RecallGrant.
+// if set, run inside ClientEnded, LockWaitOver and RecallGrant, and onNotify
+// inside Notify.
 type recordingSink struct {
 	mu       sync.Mutex
 	ended    []ended
@@ -98,6 +99,7 @@ type recordingSink struct {
 	onWait   func(w LockWaiter)
 	onRecall func(g CachingGrant, to GrantKind)
 	onRevoke func(r Revocation)
+	onNotify func(ch []Change) // runs before the Notify is recorded
 }
 
 func (s *recordingSink) RecallGrant(g CachingGrant) {
@@ -135,6 +137,12 @@ func (s *recordingSink) GraceEnded(share entity.ShareID, sh ShardID) {
 }
 
 func (s *recordingSink) Notify(c entity.ClientID, w WatchID, ch []Change) {
+	s.mu.Lock()
+	fn := s.onNotify
+	s.mu.Unlock()
+	if fn != nil {
+		fn(ch)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.notes = append(s.notes, noteOut{c, w, ch})

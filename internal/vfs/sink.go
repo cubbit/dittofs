@@ -251,6 +251,13 @@ type inOrder struct {
 // raised before it for c has returned: one goroutine at a time drains c's
 // queue, started when it goes from empty to not, ending when it is empty
 // again or the filesystem stops.
+//
+// decision: order costs a slow client its later notifications: each waits
+// for the one before it, and that one may take up to callbackDeadline. So a
+// client that stalls on one Notify hears nothing more of any of its watches
+// for as long. Bound a client's queue, or collapse what waits behind a stall
+// into a ChangeEnumerate, if a stalled client is seen holding its watches'
+// changes back that long.
 func (fs *Filesystem) deliverInOrder(c entity.ClientID, path func(context.Context) vfs.Callbacks, send func(ctx context.Context, cb vfs.Callbacks)) {
 	run := func(stop context.Context) {
 		ctx, cancel := context.WithTimeout(stop, callbackDeadline)
