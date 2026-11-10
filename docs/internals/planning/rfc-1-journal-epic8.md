@@ -339,7 +339,7 @@ sections found every one of them below, in §1.2, or in the closing note of this
 | R74 | A write blocked on capacity fails rather than waiting indefinitely and does not hold the file index while it is refused | MUST, MUST NOT | RFC 1 §8.6 | T8.5, T8.11 |
 | R75 | A `WriteAt` or `Fill` that would raise `ExtentCount` above `ExtentLimit` is refused at once, before any I/O, naming the index, and `index_refusals` counts it. A removal that splits a held extent is refused the same way once the count is at or above the limit plus an eighth. (E4-8 holds the predicate; this epic applies it at each call and names the refusal) | MUST | RFC 1 §4.2, §6 | T8.5, T8.8 |
 | R76 | `ReservedBytes` is what in-flight reservations hold and their records have not yet filled. It is released only after the record it covered is written and counted in its share's `UsedBytes` | invariant | RFC 1 §3.7, §6 | T8.5, T8.13 |
-| R77 | Records without bytes (release, truncate, deallocate, delete, clone target, offloaded, unmark, loss, hold, unhold, stamp, forget) are never refused with `ErrNoSpace` naming a share's limit, the journal's maximum or the spare pool. What can refuse them is the headroom, the version limit for a record that draws a version, and the index's cap for one that splits a held extent | MUST | RFC 1 §6, §3.6 | T8.6, T8.8 |
+| R77 | Records without bytes (release, truncate, deallocate, delete, clone target, offloaded, unmark, loss, hold, unhold, stamp, forget, reconciled) are never refused with `ErrNoSpace` naming a share's limit, the journal's maximum or the spare pool. What can refuse them is the headroom, the version limit for a record that draws a version, and the index's cap for one that splits a held extent | MUST | RFC 1 §6, §3.6 | T8.6, T8.8 |
 | R78 | A record without bytes draws on the reserved headroom, outside every share's limit, charged at 224 bytes: a 96-byte header, a payload of at most 56 bytes and a 72-byte footer entry | invariant | RFC 1 §6 | T8.6 |
 | R79 | Once the headroom falls below half its size, a content write and a hold, stamp or clone target record are refused with `ErrNoSpace` naming the headroom; an offloaded record is not appended (the bit is set in memory only, which is epic 9's `report`); every other record without bytes draws on what remains. Both count the headroom without the open reserve of R111 | MUST | RFC 1 §6, §3.6 | T8.6 |
 | R80 | A record of the last class that finds the headroom exhausted fails with `ErrNoSpace` naming the headroom rather than overrunning it. To every record but an open's own, the headroom is exhausted once only the open reserve is left | MUST | RFC 1 §6 | T8.6 |
@@ -459,21 +459,26 @@ the rule that a persisted index is not authoritative (E3, E5, epic 7).
   `spare`. A `decision:` marker at the table gives the reason, which is that the first two clear
   only by an action of the engine's (reclaiming headroom, raising the limit), the next three by
   reclamation, and `spare` by itself. Open point in §9.
-- **D7, what a refusal says is missing.** The share's limit and the headroom: bytes. The
+- **D7, what a refusal says is missing.** The share's limit: bytes. The headroom: entries, one
+  record (the unit its limit is counted in; RFC 1 §6 allows bytes or entries). The
   journal's maximum: the whole segments the write needs that no ready spare covers, k times the
   cap, `UsedBytes` plus that less `MaxBytes` (a ready spare is already in `UsedBytes`), not the
   record's bytes, where k is the number of spares its pieces need less the ready ones (RFC 1
   §9.4's named-refusal row). The index: entries. The version limit: versions. `spare`: the ready spares short of what its pieces need.
-- **D8, the headroom is measured by epic 5's pool.** The RFC states the headroom's size and a
-  half rule but not what is measured. This epic reads the headroom as E5's `HeadroomBytes`, the
-  bytes of headroom-class spares allocated now, against the size the settings give: below half
-  means below half of that size, and exhausted means no headroom spare is left and the record
-  does not fit the active segment. A record without bytes counts in `headroom_draws` when the
-  journal is at its limit, that is when `UsedBytes` plus a segment cap would pass `MaxBytes`.
-  The open reserve (R111) is taken out of that size for every record but an open's own: the
-  admission table has an `Open` class that only the open path may name, and every other class
-  reads the headroom as exhausted once only the reserve is left, with the half rule computed
-  without it. A `decision:` marker at the admission table says so. Open point in §9.
+- **D8, the headroom is measured by a ledger of drawn records, not by epic 5's pool.** The RFC
+  gives the headroom's size, `journal.headroom_records` × 224 bytes, and a half rule, but not what
+  is measured. This epic counts the records drawn against that size: remaining is the size less
+  the records an admission drew while the journal was at its limit, that is when `UsedBytes` plus a
+  segment cap would pass `MaxBytes`, and a record that drew is counted in `headroom_draws`. The
+  pool's `HeadroomBytes` is not read: it counts only the headroom spares that are ready, so it
+  falls to zero as soon as a header-only roll takes the spare and would refuse every class,
+  `Open` included. Below half means below half of the size without the open reserve, and exhausted
+  means no record is left past the reserve. The open reserve (R111) is taken out of the size for
+  every record but an open's own: the admission table has an `Open` class that only the open path
+  may name, and every other class reads the headroom as exhausted once only the reserve is left,
+  with the half rule computed without it. A journal with no headroom records has nothing to
+  measure and no gate. Below its limit a record without bytes lands in a content spare, so it draws
+  nothing. A `decision:` marker at the admission table says so. Open points in §9.
 - **D9, the capacity counters sit under one mutex.** Share counters, `ReservedBytes` and the
   headroom check are updated in one short critical section, with no I/O under it (R68). A
   `ponytail:` marker names the ceiling, every write on the journal crosses one mutex for a few
@@ -872,7 +877,7 @@ its counter (R75); `ReservedBytes` read at the
 - **Covers:** R67, R77–R82, R107, R111.
 - **Deliverables:** `headroom.go`: the admission classes for records without bytes. A record
   without bytes (release, truncate, deallocate, delete, clone target, offloaded, unmark, loss,
-  hold, unhold, stamp, forget) is charged at 224 bytes against the headroom and never reserves
+  hold, unhold, stamp, forget, reconciled) is charged at 224 bytes against the headroom and never reserves
   against a share's limit, the journal's maximum or the spare pool (R77, R78). It is counted in
   its share's `UsedBytes` when written (R67). Below half the headroom (D8) a content write and a
   hold, stamp or clone target record are refused naming the headroom, an offloaded record is
@@ -1415,9 +1420,13 @@ A suggestion only: one pull request per subtask works as well.
   proposal) for an open's own records. This epic admits by class; epic 7 names the class when its
   open appends, and epic 6's `Lose` carries it. Confirm the figure with the RFC's author once it is
   measured.
-- **What "the headroom" measures (D8) is this epic's reading.** RFC 1 §6 states its size, the
-  half rule and the charge per record, not the counter. Confirm that the pool's headroom bytes
-  against the configured size is the intended measure, and say so in the RFC.
+- **What "the headroom" measures (D8) follows the RFC's size; two points are still open.** RFC 1 §6
+  states the size, the half rule and the charge per record, not the counter. Say in the RFC that a
+  record without bytes draws only while the journal is at its limit. Nothing returns drawn
+  headroom until epic 9's repack: with the default 65,536 records about 30,720 draws put the
+  journal below half and about 61,440 exhaust it, so a credit from the retirement path
+  should land before or with T8.8, the first appender of removals. The ledger is in memory, so a
+  restart resets it.
 - **Leaf mutexes and the six domains (D11, D12, D15).** RFC 1 §8.2 asks every piece of state to name
   a domain among six, and the dirty list, the file append table and the share registry are none
   of them. Epic 5 raised the same point for the descriptor cache. Confirm that leaf mutexes
