@@ -231,13 +231,19 @@ func (fs *Filesystem) Revoked(r openstate.Revocation) {
 // under a context ending at callbackDeadline or at Stop. With none found, or
 // once the filesystem is stopped, it sends nothing.
 func (fs *Filesystem) deliver(path func(context.Context) vfs.Callbacks, send func(ctx context.Context, cb vfs.Callbacks)) {
-	fs.background(func(stop context.Context) {
+	fs.background(boundedSend(path, send))
+}
+
+// boundedSend is send with the Callbacks path finds, under a context ending at
+// callbackDeadline or at stop.
+func boundedSend(path func(context.Context) vfs.Callbacks, send func(ctx context.Context, cb vfs.Callbacks)) func(stop context.Context) {
+	return func(stop context.Context) {
 		ctx, cancel := context.WithTimeout(stop, callbackDeadline)
 		defer cancel()
 		if cb := path(ctx); cb != nil {
 			send(ctx, cb)
 		}
-	})
+	}
 }
 
 // inOrder is, for each client, the Notify deliveries not yet done, the first
@@ -253,19 +259,15 @@ type inOrder struct {
 // again or the filesystem stops.
 //
 // decision: order costs a slow client its later notifications: each waits
-// for the one before it, and that one may take up to callbackDeadline. So a
-// client that stalls on one Notify hears nothing more of any of its watches
-// for as long. Bound a client's queue, or collapse what waits behind a stall
-// into a ChangeEnumerate, if a stalled client is seen holding its watches'
-// changes back that long.
+// for the one before it, and each may take up to callbackDeadline once it
+// starts. A client whose every Notify hangs drains one per callbackDeadline
+// while the table hands it up to one per watch each sweep, so its queue
+// grows without bound until the client ends; one goroutine per Notify freed
+// each within callbackDeadline. Bound a client's queue, or collapse what
+// waits behind a stall into a ChangeEnumerate, if a stalled client is seen
+// holding its watches' changes back that long.
 func (fs *Filesystem) deliverInOrder(c entity.ClientID, path func(context.Context) vfs.Callbacks, send func(ctx context.Context, cb vfs.Callbacks)) {
-	run := func(stop context.Context) {
-		ctx, cancel := context.WithTimeout(stop, callbackDeadline)
-		defer cancel()
-		if cb := path(ctx); cb != nil {
-			send(ctx, cb)
-		}
-	}
+	run := boundedSend(path, send)
 	q := &fs.notifying
 	q.mu.Lock()
 	if q.q == nil {
