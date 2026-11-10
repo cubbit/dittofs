@@ -1917,8 +1917,10 @@ copied. On the wire:
   RFC 7862 §15.2 allows, and leaves the chunk it was in to complete past that
   count; the client continues from there, rewriting that chunk. A range that
   ends past the source's size is `NFS4ERR_INVAL` before anything is copied, as
-  RFC 7862 §15.2.3 requires; a count of 0, copy to end of file, is turned into
-  that length first.
+  RFC 7862 §15.2.3 requires; a count of 0, copy to end of file, is turned first
+  into the source's size less `ca_src_offset`, so at the end of the file it is
+  an empty copy (`NFS4_OK`, `wr_count` 0), as the RFC refuses only an offset
+  greater than the size.
   Its `wr_committed` is `UNSTABLE4` with the write verifier of §9.1, since the
   copied ranges are journal writes like any other, and a `COMMIT` of the
   destination makes them stable.
