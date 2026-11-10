@@ -268,7 +268,10 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// that names a setting, rather than only a wiring that names none.
 	targets := deps.Targets
 	if headroomRecords > 0 {
-		targets.Headroom = int((int64(headroomRecords)*capacity.RecordCharge + state.Set.Cap() - 1) / state.Set.Cap())
+		// Each open stream also needs its seal marker, one footer entry and the
+		// trailer, which a segment cannot seal without.
+		sealReserve := int64(deps.Streams) * (format.SealMarkerSize + format.CatalogEntrySize + format.TrailerSize)
+		targets.Headroom = int((int64(headroomRecords)*capacity.RecordCharge + sealReserve + state.Set.Cap() - 1) / state.Set.Cap())
 	}
 	c.pool = segment.NewPool(maker, targets, d.Admit, deps.Log)
 	c.cache = segment.NewDescriptors(fs, format.SegmentName, budget)
