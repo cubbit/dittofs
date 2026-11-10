@@ -180,8 +180,12 @@ func TestReadHeaderOfAnotherFilesRecordIsRefusedNotRepointed(t *testing.T) {
 	syncFiles(t, c, f)
 	before := recordOf(t, c, f, 0)
 
-	// f's record now carries g's header, valid at f's place.
-	forgeHeader(t, seam, before.Record, headerAt(t, seam, gp.Record), format.RecordBody{Payload: gdata, MTime: 1})
+	// f's record now carries g's header, valid at f's place, with f's version
+	// in it: only the file it names tells it is not f's record, so only the
+	// file checks stand between this read and g's copy.
+	gh := headerAt(t, seam, gp.Record)
+	gh.Version = before.Version
+	forgeHeader(t, seam, before.Record, gh, format.RecordBody{Payload: gdata, MTime: 1})
 
 	p := sentinels(4 << 10)
 	n, missing, held, _, err := c.ReadAt(context.Background(), s, f, 0, p)
@@ -193,6 +197,63 @@ func TestReadHeaderOfAnotherFilesRecordIsRefusedNotRepointed(t *testing.T) {
 	}
 	if after := recordOf(t, c, f, 0); after != before || !c.Index().Names(f, before.Record) {
 		t.Fatalf("f's entry changed: %+v, was %+v", after, before)
+	}
+}
+
+// TestReadHeaderNamingAnotherFileOnly forges a header whose only change is
+// the file it names: same extent, version and sequence number, checksums
+// valid. Synced, the ledger no longer holds the record, so nothing trusted
+// names its number and the read is refused. Unsynced, the ledger names the
+// writer's own number and the record is dropped through Corrupt.
+func TestReadHeaderNamingAnotherFileOnly(t *testing.T) {
+	for _, synced := range []bool{true, false} {
+		name := "unsynced"
+		if synced {
+			name = "synced"
+		}
+		t.Run(name, func(t *testing.T) {
+			c, seam := newTestCore(t)
+			s := mustShare(t, c, 1)
+			f := testFile(1)
+			if !synced {
+				seam.Hold(t, kit.OpSync, "*")
+			}
+			data := pattern(4<<10, 17)
+			if _, err := c.WriteAt(context.Background(), s, f, 0, data, 1); err != nil {
+				t.Fatal(err)
+			}
+			if synced {
+				syncFiles(t, c, f)
+			}
+			before := recordOf(t, c, f, 0)
+			h := headerAt(t, seam, before.Record)
+			h.File = testFile(2)
+			forgeHeader(t, seam, before.Record, h, format.RecordBody{Payload: data, MTime: 1})
+
+			p := sentinels(4 << 10)
+			n, missing, held, _, err := c.ReadAt(context.Background(), s, f, 0, p)
+			if n != 0 || len(held) != 0 || !bytes.Equal(p, sentinels(4<<10)) {
+				t.Fatalf("the read served %d bytes, held %v, of a header naming another file", n, held)
+			}
+			if synced {
+				if !errors.Is(err, core.ErrCorrupt) || len(missing) != 0 {
+					t.Fatalf("err = %v, missing %v: want the refusal of a header naming another file", err, missing)
+				}
+				if after := recordOf(t, c, f, 0); after != before {
+					t.Fatalf("the index changed: %+v, was %+v", after, before)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReadAt: %v", err)
+			}
+			if want := []core.Extent{{Off: 0, Len: 4 << 10}}; !slices.Equal(missing, want) {
+				t.Fatalf("missing = %v, want %v", missing, want)
+			}
+			if _, ok := c.Index().Lookup(f, 0); ok {
+				t.Fatal("the record whose header names another file is still held")
+			}
+		})
 	}
 }
 
