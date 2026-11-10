@@ -124,9 +124,12 @@ func TestStatsReportsRemovalStalled(t *testing.T) {
 	x.failing[f] = false
 	x.mu.Unlock()
 	u.until(t, "f's removal is pruned once the fault clears", func() bool { return u.unpruned(t, f) == 0 })
-	if _, ok := shareCondition(u.e.Stats(), u.share.ID, "removal_stalled", f); ok {
-		t.Error("removal_stalled still reported after the removal finished")
-	}
+	// The loop prunes before it clears the condition, so the clear is waited
+	// for rather than read once.
+	u.until(t, "removal_stalled clears once the removal finishes", func() bool {
+		_, ok := shareCondition(u.e.Stats(), u.share.ID, "removal_stalled", f)
+		return !ok
+	})
 }
 
 // A failed window's loss event raises journal_sync_failed with the journal
