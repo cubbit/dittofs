@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"sync"
@@ -840,5 +841,45 @@ func TestReadShortRecordIsAnIOErrorThatDropsNothing(t *testing.T) {
 		if ev.File == f {
 			t.Fatalf("a short read queued a loss: %+v", ev)
 		}
+	}
+}
+
+// TestReadDamagedHeaderConcurrentReadersDropOnce has several readers race on
+// one synced record whose header does not decode: every one reports the
+// extent missing with p untouched and no error, and the record is dropped and
+// its loss reported once.
+func TestReadDamagedHeaderConcurrentReadersDropOnce(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	if _, err := c.WriteAt(context.Background(), s, f, 0, pattern(4<<10, 25), 1); err != nil {
+		t.Fatal(err)
+	}
+	syncFiles(t, c, f)
+	r := recordOf(t, c, f, 0).Record
+	flip(t, seam, r.Segment, int64(r.Offset)+50)
+	gen := c.Durability().Generation()
+
+	const readers = 8
+	var wg sync.WaitGroup
+	errs := make(chan string, readers)
+	for range readers {
+		wg.Go(func() {
+			p := sentinels(4 << 10)
+			n, missing, held, _, err := c.ReadAt(context.Background(), s, f, 0, p)
+			if err != nil || n != 0 || len(held) != 0 || !bytes.Equal(p, sentinels(4<<10)) ||
+				!slices.Equal(missing, []core.Extent{{Off: 0, Len: 4 << 10}}) {
+				errs <- fmt.Sprintf("n = %d missing %v held %v err %v, p untouched %v", n, missing, held, err, bytes.Equal(p, sentinels(4<<10)))
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Error(e)
+	}
+	lossOf(t, c, f)
+	if got := c.Durability().Generation(); got != gen+1 {
+		t.Fatalf("generation %d, want %d: one raise for one dropped record", got, gen+1)
 	}
 }
