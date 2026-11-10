@@ -224,6 +224,12 @@ Only three kinds of test double are allowed:
 
 Deterministic simulation is built only from these three, so it is allowed.
 
+**Outputs are not interactions.** A sink that only keeps what the code under test delivered
+needs no conformance suite. A count that *is* the requirement, such as one batched read per
+batch, comes from a metric or from the in-memory implementation's own record, never from a
+separate counting wrapper. A per-OS table is data, so test its contents. A tunable such as a
+sampling rate is an input, passed in through the constructor.
+
 Banned:
 
 - a canned stub written for one test;
