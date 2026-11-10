@@ -125,16 +125,6 @@ func TestAllocationEndsAtTheEndOfFile(t *testing.T) {
 	u.allocations(t, k, run{0, 4 * kib, false}, run{4 * kib, 8 * kib, true}, run{12 * kib, 0, false})
 }
 
-// failingExistence is block metadata whose Allocation answers err.
-type failingExistence struct {
-	engine.Existence
-	err error
-}
-
-func (f failingExistence) Allocation(ctx context.Context, share entity.ShareID, file entity.FileID, off int64) (entity.Extent, bool, error) {
-	return entity.Extent{}, false, f.err
-}
-
 // A store refusal crosses the content boundary as the filesystem's own: its
 // ErrStale as ErrStale, its ErrDelay as ErrDelay with DelayClone, the
 // context's error as itself, and anything else as ErrUnavailable.
@@ -152,7 +142,9 @@ func TestAllocationMapsTheStoresRefusals(t *testing.T) {
 		{errors.New("disk on fire"), func(err error) bool { return errors.Is(err, vfserr.ErrUnavailable) }},
 	} {
 		t.Run(c.err.Error(), func(t *testing.T) {
-			u := newUnit(t, func(d *engine.Deps) { d.Existence = failingExistence{err: c.err} })
+			u := newUnit(t, onAllocation(func(context.Context, engine.Existence, entity.ShareID, entity.FileID, int64) (entity.Extent, bool, error) {
+				return entity.Extent{}, false, c.err
+			}))
 			if _, err := u.e.Allocation(t.Context(), u.share.ID, entity.NewFileID(), 0); !c.want(err) {
 				t.Errorf("the store's %v answered %v", c.err, err)
 			}
@@ -160,21 +152,19 @@ func TestAllocationMapsTheStoresRefusals(t *testing.T) {
 	}
 }
 
-// committingExistence is block metadata whose first Allocation call first
-// runs between: a commit landing between a caller's entry read and its store
-// read.
-type committingExistence struct {
-	engine.Existence
+// committing is block metadata whose first Allocation call first runs
+// between: a commit landing between a caller's entry read and its store read.
+type committing struct {
 	between func() // runs once, before the store is read
 	after   func() // runs once, after the store answers
 }
 
-func (c *committingExistence) Allocation(ctx context.Context, share entity.ShareID, file entity.FileID, off int64) (entity.Extent, bool, error) {
+func (c *committing) allocation(ctx context.Context, next engine.Existence, share entity.ShareID, file entity.FileID, off int64) (entity.Extent, bool, error) {
 	if b := c.between; b != nil {
 		c.between = nil
 		b()
 	}
-	run, hole, err := c.Existence.Allocation(ctx, share, file, off)
+	run, hole, err := next.Allocation(ctx, share, file, off)
 	if a := c.after; a != nil {
 		c.after = nil
 		a()
@@ -188,8 +178,8 @@ func (c *committingExistence) Allocation(ctx context.Context, share entity.Share
 // truncate before the store is read, so the file is data to 10k, a state the
 // stale truncate replayed over it would cut to 8k.
 func TestAllocationReadsTheEntryAfterTheStore(t *testing.T) {
-	ce := &committingExistence{}
-	u := newUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	ce := &committing{}
+	u := newUnit(t, onAllocation(ce.allocation))
 	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
 	f, v := made.ID, made.Version.Counter()
 	if failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: []kvstore.PendingOp{
@@ -217,8 +207,8 @@ func TestAllocationReadsTheEntryAfterTheStore(t *testing.T) {
 // leaves the entry, and a write [16k, 18k) is staged. Read as one pass,
 // Allocation(4k) would answer hole [4k, 16k), a state the file never had.
 func TestAllocationReadsAgainAfterACommitBetweenItsReads(t *testing.T) {
-	ce := &committingExistence{}
-	u := newUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	ce := &committing{}
+	u := newUnit(t, onAllocation(ce.allocation))
 	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
 	f, v := made.ID, made.Version.Counter()
 	if failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: []kvstore.PendingOp{
@@ -243,8 +233,8 @@ func TestAllocationReadsAgainAfterACommitBetweenItsReads(t *testing.T) {
 // [4k, 12k) committed and dropped between the two reads. Read as one pass,
 // Allocation(4k) would answer the end of file at 4k.
 func TestAllocationReadsAgainAfterAPendingDrop(t *testing.T) {
-	ce := &committingExistence{}
-	u := newUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	ce := &committing{}
+	u := newUnit(t, onAllocation(ce.allocation))
 	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "f", kvstore.Regular(0o644))
 	f, v := made.ID, made.Version.Counter()
 	if failed, err := u.fs.Store.Existence().Commit(t.Context(), []kvstore.PendingExistence{{Share: u.share.ID, File: f, Ops: []kvstore.PendingOp{
@@ -269,8 +259,8 @@ func TestAllocationReadsAgainAfterAPendingDrop(t *testing.T) {
 // [16k, 18k) staged after. Read as one pass, Allocation(4k) would answer
 // hole [4k, 16k).
 func TestAllocationReadsAgainAfterAGroupCommitBetweenItsReads(t *testing.T) {
-	ce := &committingExistence{}
-	u := newUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	ce := &committing{}
+	u := newUnit(t, onAllocation(ce.allocation))
 	f := u.create(t, "f")
 	u.write(t, f, 0, make([]byte, 4*kib))
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
@@ -292,8 +282,8 @@ func TestAllocationReadsAgainAfterAGroupCommitBetweenItsReads(t *testing.T) {
 // the two reads, and a write [16k, 18k) is staged after. Read as one pass,
 // Allocation(4k) would answer hole [4k, 16k).
 func TestAllocationReadsAgainAfterAPhase1BetweenItsReads(t *testing.T) {
-	ce := &committingExistence{}
-	u := newUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	ce := &committing{}
+	u := newUnit(t, onAllocation(ce.allocation))
 	f := u.create(t, "f")
 	u.write(t, f, 0, make([]byte, 4*kib))
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
@@ -334,26 +324,18 @@ func TestAllocationDeallocatesToTheEndOfFile(t *testing.T) {
 	u.allocations(t, f, run{0, 2 * kib, false}, run{2 * kib, 6 * kib, true}, run{8 * kib, 0, false})
 }
 
-// countingExistence is block metadata that counts its Allocation calls and
-// ignores the context.
-type countingExistence struct {
-	engine.Existence
-	calls int
-}
-
-func (c *countingExistence) Allocation(ctx context.Context, share entity.ShareID, file entity.FileID, off int64) (entity.Extent, bool, error) {
-	c.calls++
-	return c.Existence.Allocation(context.Background(), share, file, off)
-}
-
 // A cancelled call asks the store nothing and answers the context's error.
 func TestAllocationStopsOnItsContext(t *testing.T) {
-	ce := &countingExistence{}
-	u := newUnit(t, func(d *engine.Deps) { ce.Existence = d.Existence; d.Existence = ce })
+	// The store counts its Allocation calls and ignores the context.
+	calls := 0
+	u := newUnit(t, onAllocation(func(_ context.Context, next engine.Existence, share entity.ShareID, file entity.FileID, off int64) (entity.Extent, bool, error) {
+		calls++
+		return next.Allocation(context.Background(), share, file, off)
+	}))
 	f := u.committed(t, "f", 4*kib, 4*kib)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := u.e.Allocation(ctx, u.share.ID, f, 0); !errors.Is(err, context.Canceled) || ce.calls != 0 {
-		t.Errorf("a cancelled Allocation answered %v after %d store calls; want context.Canceled and none", err, ce.calls)
+	if _, err := u.e.Allocation(ctx, u.share.ID, f, 0); !errors.Is(err, context.Canceled) || calls != 0 {
+		t.Errorf("a cancelled Allocation answered %v after %d store calls; want context.Canceled and none", err, calls)
 	}
 }

@@ -218,6 +218,29 @@ func TestFakeVersionsAboveFloorAndLimit(t *testing.T) {
 	}
 }
 
+// RFC 1 §9.4, Share twice: a Share of a tag whose handle is open returns that
+// handle, its limit replaced and the counter raised above the new floor, and
+// one Close closes it for both callers.
+func TestFakeShareTwiceReturnsTheOpenHandle(t *testing.T) {
+	j, h := fake(t, 4)
+	again, err := j.Share(1, 8, ver(1000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != h {
+		t.Fatal("a second Share of an open tag returned a new handle")
+	}
+	if v := write(t, h, fileA, 0, "sixsix"); v.Counter <= 1000 {
+		t.Errorf("a write after the second Share is at %d, want above its floor 1000", v.Counter)
+	}
+	if err := again.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.WriteAt(t.Context(), fileA, 0, []byte("x"), 7); !errors.Is(err, journal.ErrClosed) {
+		t.Errorf("a write through the first caller's handle after the second's Close: %v, want ErrClosed", err)
+	}
+}
+
 // Strand records the tag, once however often it is named, refuses tag 0 as
 // Share does, answers ErrClosed once the journal is closed, and is forgotten
 // at a reopen: RFC 1 §3 keeps it in memory, so the caller names its tags

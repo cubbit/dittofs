@@ -307,26 +307,21 @@ func (l *lockedBuffer) String() string {
 	return l.b.String()
 }
 
-// endingStore is the store's existence view refusing every removal as
-// invalid, so a removal ends on a terminal failure, and failing the next
-// fail existence commits with a conflict, recording the operations of each
-// commit it passed.
+// endingStore is the store's existence view failing the next fail existence
+// commits with a conflict, and recording the operations of each commit it
+// passed. Its tests pair it with refused, so a removal ends on a terminal
+// failure.
 type endingStore struct {
-	engine.Existence
 	fail      atomic.Int32
 	mu        sync.Mutex
 	committed [][]kvstore.PendingOp
 }
 
-func (x *endingStore) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
-	return refused(ctx, x.Existence, share, file, epoch, op, pending)
-}
-
-func (x *endingStore) Commit(ctx context.Context, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+func (x *endingStore) commit(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	if x.fail.Add(-1) >= 0 {
 		return nil, kvstore.ErrConflict
 	}
-	m, err := x.Existence.Commit(ctx, p, marks)
+	m, err := next.Commit(ctx, p, marks)
 	if err == nil {
 		x.mu.Lock()
 		for _, pe := range p {
@@ -388,7 +383,7 @@ func (u *unit) endedTruncate(t *testing.T, h *hookedHandle, lose bool) (f entity
 // without that commit leaves the store at the size before the append.
 func TestATerminalRemovalCommitsTheExistenceBelowItBeforeItsSettle(t *testing.T) {
 	x := &endingStore{}
-	u, h := newHookedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u, h := newHookedUnit(t, onRemove(refused), onCommit(x.commit))
 	f, appended, sizes := u.endedTruncate(t, h, false)
 	if s := sizes(); len(s) != 2 || s[1] != 32 {
 		t.Errorf("the store's size at each settle: %v, want 32 at the truncate's", s)
@@ -407,7 +402,7 @@ func TestATerminalRemovalCommitsTheExistenceBelowItBeforeItsSettle(t *testing.T)
 // committed lost, from the loss record, before the settle drops the record.
 func TestATerminalRemovalCommitsALossBelowItBeforeItsSettle(t *testing.T) {
 	x := &endingStore{}
-	u, h := newHookedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u, h := newHookedUnit(t, onRemove(refused), onCommit(x.commit))
 	f, appended, sizes := u.endedTruncate(t, h, true)
 	if s := sizes(); len(s) != 2 || s[1] != 32 {
 		t.Fatalf("the store's size at each settle: %v, want 32 at the truncate's", s)
@@ -433,7 +428,7 @@ func TestATerminalRemovalCommitsALossBelowItBeforeItsSettle(t *testing.T) {
 // loop with the guard held, and the marker stays unsettled until it commits.
 func TestATerminalRemovalsFailedCommitIsRetried(t *testing.T) {
 	x := &endingStore{}
-	u, h := newHookedUnit(t, func(d *engine.Deps) { x.Existence = d.Existence; d.Existence = x })
+	u, h := newHookedUnit(t, onRemove(refused), onCommit(x.commit))
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
 	const failing = 1 << 20
