@@ -90,7 +90,10 @@ modify and change times, a whole loss's `Lost` extent, the marks write) and the 
    that has landed, and E2's test components: above all the fake journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12).
+   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
+   three kinds: the test clock, an in-memory implementation held to its interface's
+   conformance suite, or a fault wrapper. A test asserts on the engine's answers, on resulting
+   state and on what a double records of its own outputs, never on which calls the engine made.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -130,7 +133,9 @@ modify and change times, a whole loss's `Lost` extent, the marks write) and the 
    check about what the real thing does: the real journal on a real directory, with its crash
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
    commits and conflicts on. The fake journal is for the engine's pure logic only, and no
-   conformance row runs over it.
+   engine conformance row runs over it. It is held to the real journal by the journal's own
+   conformance suite (RFC 1 §9.4): it passes the suite's rows that need no crash, fault or
+   platform, the rows the real journal passes on `platform.OS`.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -458,9 +463,10 @@ listed test fails on the regression it names (after "catches").
   stream's latest merged by `Stream` (RFC 1 §3.7), `MarksRecorded` logs them.
 - **Rows:** §5.1 sync before existence, the write and `Commit` half; red until the journal's
   crash seam and `Sync` exist.
-- **Tests,** over the fake with a call log: `Sync` before `Existence.Commit` in every batch
-  (catches a commit before the sync); 64 due files and `G = 16` give four calls (catches an
-  unbounded batch); the test clock advanced to `existence_age` commits a lone write (catches
+- **Tests,** over the fake's sync marks and the transactions the in-memory `kv.KV` committed:
+  every batch's transaction holds only files the fake had already synced (catches a commit
+  before the sync); 64 due files and `G = 16` give four transactions (catches an unbounded
+  batch); the test clock advanced to `existence_age` commits a lone write (catches
   no timer); every committed file's `Settle` at the highest version committed for it, none
   for a file the store failed (catches no settle, or one past what committed). Over the real
   `kvstore`: a suspended write committed over an earlier one keeps the earlier `Mtime` and
@@ -469,8 +475,8 @@ listed test fails on the regression it names (after "catches").
   (catches operations moved out of the entry); a `waitBatch` returns only once the batch
   returns (catches a commit that overtakes it); a `commitNow` for a write staged after the
   capture returns only after the next batch (catches D10's "covers" taken as "any batch"). Over the fake: 64 due files and `G = 16`
-  carry the marks on exactly one call, a group commit with no batch due makes one call with
-  the marks alone, and `MarksRecorded` gets what each committed call recorded (catches marks
+  carry the marks in exactly one committed transaction, a group commit with no batch due
+  commits one transaction with the marks alone, and `MarksRecorded` gets what each committed call recorded (catches marks
   on every transaction, or on none).
   Under `-race`, a hook between `lockFor`'s lookup and its lock in which the commit drops the
   entry: the write lands in a live entry, `Overlay` reflects it, the next batch commits it
@@ -504,11 +510,12 @@ listed test fails on the regression it names (after "catches").
 - **Rows:** §5.2 group commit (adapted), over the real journal and `kvstore`, red until the
   journal's `Sync` exists; §5.2 sync marks ride in one batch and §5.2 sync marks are keyed by stream, over the
   same, red until it returns marks.
-- **Tests:** the split's table over a stub `Existence`, each failure shape (a file in the
-  map, a whole-call error, two failing files, every file failing, each on a batch carrying
-  the marks; the marks pulled out on a whole-call error and sent alone once; the marks alone
-  failing with a store error, retried alone with backoff) against the expected calls
-  (catches a committed file resubmitted, or a failing one resubmitted with the rest). Over
+- **Tests:** the split's table over the real `kvstore` through `newUnitOver`'s fault
+  wrapper, each failure shape (a file in the map, a whole-call error, two failing files,
+  every file failing, each on a batch carrying the marks; the marks pulled out on a whole-call
+  error and sent alone once; the marks alone failing with a store error, retried alone with
+  backoff) against the transactions the in-memory `kv.KV` committed (catches a committed file
+  resubmitted, or a failing one resubmitted with the rest). Over
   the real `kvstore` through `newUnitOver`: one file's File record undecodable, the other
   files' overwrite `Commit`s succeed, that file's answers `ErrDelay` and the condition names
   it (catches a whole-batch failure); a conflict held past a `Commit`'s deadline answers
@@ -519,9 +526,10 @@ listed test fails on the regression it names (after "catches").
   retrying until the caller's deadline); the "sync marks ride in one batch" row's case of a
   store naming the marks keys, through `newUnitOver`'s wrapper, since the real `kvstore` names
   none; the condition cleared on `dropShare` and on
-  `lostWhole` (catches a condition naming a file nothing will commit); a `kv.KV` wrapper
-  recording the mark sees it on every group-commit call and on no `Existence.Overwrites` call
-  of a `Commit` (catches a retried call left unmarked, which the self-fence never counts).
+  `lostWhole` (catches a condition naming a file nothing will commit); a `kv.KV` fault
+  wrapper failing every call that carries the mark fails every group commit, while each
+  `Commit`'s `Existence.Overwrites` call still succeeds (catches a retried call left unmarked, which the
+  self-fence never counts).
 
 ### T4.5 The loss sequence
 
