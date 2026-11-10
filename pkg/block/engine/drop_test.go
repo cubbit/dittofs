@@ -280,15 +280,22 @@ func TestDropJoinsTheRunningItemOfTheShareAndEndsIt(t *testing.T) {
 	}
 }
 
-// A Drop settles the file of the item the loop is running for the share: the
-// file's pending write gets its Done once and its entry is left nowhere.
-func TestDropSettlesTheFileOfTheRunningItem(t *testing.T) {
+// A Drop frees the guard of the file of the item the loop is running for the
+// share. The file is not on the group commit's due set: a clone's copies are
+// put in the entry without being noted, and the loop's end of a clone leaves
+// the destination's guard held, so only the running item's file reaches
+// discard.
+func TestDropFreesTheGuardOfTheFileOfTheRunningItem(t *testing.T) {
 	u := newUnit(t)
-	res := enginetest.NewReservations(t)
 	f := u.create(t, "f")
 
-	u.writesOver(t, res, []entity.FileID{f}, 1)
+	u.e.AddWriteOp(f, 1, 0, 1)
+	u.e.HoldGuard(f)
 	u.unbind(t)
+
+	if u.e.Due(u.rec, f) {
+		t.Fatal("the file is on the due set: the test would not reach the running item's file")
+	}
 
 	held := u.postItemOn(u.share.ID, f, entity.RemoveClone, true, true)
 
@@ -316,8 +323,8 @@ func TestDropSettlesTheFileOfTheRunningItem(t *testing.T) {
 		t.Fatalf("Drop = %v, want nil", err)
 	}
 
-	if got := res.Outstanding(); got != 0 {
-		t.Errorf("writes without their Done after Drop = %d, want 0", got)
+	if u.e.GuardHeld(f) {
+		t.Error("the guard of the running item's file is still held after Drop")
 	}
 
 	if got := u.e.FileEntries(); got != 0 {
@@ -768,7 +775,6 @@ func TestADropWhoseHandleCloseFailsWithoutClosingKeepsTheBindingAndSkipsForget(t
 		}
 
 		u.wantEvents(t, handleClose(u.share), handleClose(u.share))
-
 	})
 
 	t.Run("a close with no retry", func(t *testing.T) {

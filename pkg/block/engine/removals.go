@@ -69,11 +69,11 @@ type loopItem struct {
 // the scheduler's removal source when offload adds the first work that needs
 // fairness between shares.
 type removalLoop struct {
-	e      *Engine
-	mu     sync.Mutex
-	items  []*loopItem
-	closed bool
-	ending []*loopItem // the items the stop took, ended once the loop's goroutine has
+	e       *Engine
+	mu      sync.Mutex
+	items   []*loopItem
+	closed  bool
+	ending  []*loopItem              // the items the stop took, ended once the loop's goroutine has
 	dropped map[entity.ShareID]bool  // shares dropped: an item of one, running or enqueued, is ended
 	waits   map[*loopItem]bool       // items waiting outside the loop, removal_stalled: see waiting
 	running *loopItem                // the item the loop is running, nil between two
@@ -351,6 +351,10 @@ func (l *removalLoop) dropShare(s entity.ShareID) (files []entity.FileID) {
 		return false
 	})
 
+	// The running item is a clone's (an unbound share's gate refuses the rest).
+	// A clone's copies are not noted for a commit and its end leaves the
+	// destination's guard held, so this file is on no due set: only discard,
+	// through this file, frees its guard.
 	if l.running != nil && l.running.b.share.ID == s {
 		files = append(files, l.running.f)
 	}

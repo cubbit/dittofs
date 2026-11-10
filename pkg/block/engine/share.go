@@ -36,7 +36,7 @@ type binding struct {
 	removed     bool
 	gate        gate
 	files       []entity.FileID // the files Drop took off the loops and has not settled
-	seq         uint64 // the order bindings were made in, which Close undoes in reverse
+	seq         uint64          // the order bindings were made in, which Close undoes in reverse
 }
 
 // bindings is the share table, read on every content call without a lock. A
