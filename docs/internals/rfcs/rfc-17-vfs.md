@@ -2719,10 +2719,13 @@ driven by `Call` values of different `Protocol` with no adapter, and
 service is tested end to end before any adapter calls it. Its doubles are the three kinds
 [RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) allows. A test that needs a
 `Service` uses an in-memory filesystem, `vfstest.Memory`: `vfs.New` over the in-memory store,
-open state and `Content`, each held to its conformance suite, and itself held to this one. It
-keeps its own record of the mutating calls it served, an output of the verified implementation:
+open state and `Content`, each held to its conformance suite, and itself held to this one. Its
+record of the mutating calls it served lives in a recording wrapper in `vfstest` around the
+`*vfs.Filesystem`, never in `*vfs.Filesystem` itself: the wrapper records each call and passes it
+through, and never answers in its place. It is the record RFC 29 §4.11 allows when the call
+reaching a dependency is itself the requirement:
 [RFC 20 §7.2](rfc-20-adapters.md#7.2%20Handlers%20against%20a%20verified%20service)'s one-call
-rule reads it. No test asserts on calls a wrapper saw. `pkg/vfs/vfstest` also holds
+rule reads it. `pkg/vfs/vfstest` also holds
 two hand-written helpers: `Faults`, a wrapper around
 any `Service` that fails or delays a call on cue, implementing every method explicitly and
 embedding nothing, so a method added to `Service` fails to compile until it wraps it; and

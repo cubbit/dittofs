@@ -3187,9 +3187,12 @@ observable effect is checked by the codec round trips and golden vectors
 a size past 2^32, a time before 1970, every service error on every operation —
 are one line of the fault wrapper.
 
-The one-call rule of §4.3 is read from `vfstest.Memory`'s own record of the
-mutating calls it served, an output of the verified implementation
-([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)): a handler test
+The one-call rule of §4.3 is read from `vfstest.Memory`'s record of the
+mutating calls it served. The record lives in a recording wrapper in `vfstest`
+around the `*vfs.Filesystem`, never in `*vfs.Filesystem` itself; it records each
+call and passes it through, never answering in its place, the kind
+[RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) allows when the call
+reaching a dependency is itself the requirement. A handler test
 fails when a request leaves more than one, so the operation table needs no
 column for it. A handler that answers from adapter state where it should have
 called the service is caught by the same record: the missing call shows as a
