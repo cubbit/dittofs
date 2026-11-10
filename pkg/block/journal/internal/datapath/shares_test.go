@@ -106,6 +106,12 @@ func TestShare_SameTagReturnsTheSameHandle(t *testing.T) {
 	if first != second {
 		t.Fatalf("a second Share on an open tag returned another handle")
 	}
+	// The open tag's Share raises the floor buckets as well (RFC 1 §3, §3.4):
+	// a file with no entry reports the second floor, so a Fill whose asOf was
+	// read before it is refused.
+	if got := c.Index().AsOf(testFile(9)); got.Counter < 9e8 {
+		t.Fatalf("AsOf of a file with no entry = %v, want at least the second floor %d", got, uint64(9e8))
+	}
 	if got := first.Limit(); got != 2<<30 {
 		t.Fatalf("Limit = %d, want %d", got, int64(2<<30))
 	}
