@@ -471,6 +471,15 @@ func (r *rig) calls(mark int, kinds ...string) []string {
 	return out
 }
 
+// wantSettled checks the journal holds f settled through v since it opened.
+func (r *rig) wantSettled(t *testing.T, f entity.FileID, v journal.Version) {
+	t.Helper()
+
+	if got := r.j.Settled(journal.NewFileID(f)); got != v {
+		t.Errorf("f settled through %v, want %v", vname(got), vname(v))
+	}
+}
+
 func (r *rig) settles(mark int) []string {
 	return r.calls(mark, "settle")
 }
@@ -590,9 +599,7 @@ func TestStartReplaysAWriteWithItsMtime(t *testing.T) {
 		t.Errorf("applied = %v, want %v", a, jver(v1))
 	}
 
-	if s := r.settles(0); !slices.Equal(s, []string{settleCall(f, v1)}) {
-		t.Errorf("settles %v, want exactly %q", s, settleCall(f, v1))
-	}
+	r.wantSettled(t, f, v1)
 }
 
 // A write, a truncate to the size the write left and a write past it replay
@@ -727,9 +734,7 @@ func TestStartAppliesADeallocateTheCrashCut(t *testing.T) {
 
 	r.wantRemovals(t, got, []kvstore.UnfinishedRemoval{{File: f, Version: jver(v2)}})
 
-	if s := r.settles(0); !slices.Equal(s, []string{settleCall(f, v2)}) {
-		t.Errorf("settles %v, want exactly %q", s, settleCall(f, v2))
-	}
+	r.wantSettled(t, f, v2)
 }
 
 // A write overwritten in its middle comes back from the journal as pieces of
@@ -1389,9 +1394,7 @@ func TestStartSettlesAReleaseAHolderAborts(t *testing.T) {
 		t.Errorf("file %+v, want size %d applied %v as before", got, before.Size, before.Applied)
 	}
 
-	if s := r.settles(0); !slices.Equal(s, []string{settleCall(f, v2)}) {
-		t.Errorf("settles %v, want exactly %q", s, settleCall(f, v2))
-	}
+	r.wantSettled(t, f, v2)
 
 	loud := r.logged()
 
@@ -1418,9 +1421,7 @@ func TestStartDoesNotRaiseTheLossSequenceOfAnAbortedRelease(t *testing.T) {
 
 	r.begin(t)
 
-	if s := r.settles(0); !slices.Equal(s, []string{settleCall(f, v2)}) {
-		t.Fatalf("settles %v, want exactly %q: the abort did not run", s, settleCall(f, v2))
-	}
+	r.wantSettled(t, f, v2)
 
 	if got := r.e.LossSeq(r.one.ID, f); got != 0 {
 		t.Errorf("loss sequence of the aborted release's file = %d, want 0", got)
@@ -1762,9 +1763,7 @@ func TestStartReplaysATruncateUpWithTheRestartsTime(t *testing.T) {
 		t.Errorf("applied = %v, want %v", a, jver(v2))
 	}
 
-	if s := r.settles(0); !slices.Equal(s, []string{settleCall(f, v2)}) {
-		t.Errorf("settles %v, want exactly %q", s, settleCall(f, v2))
-	}
+	r.wantSettled(t, f, v2)
 }
 
 // A synced loss the journal put back in its ring at open is a loss nobody
