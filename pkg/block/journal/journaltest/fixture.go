@@ -586,9 +586,11 @@ func (f *Fixture) Allocated() int64 {
 //
 // decision: only a fresh open runs this — an open of a journal that has run
 // is refused with ErrNotImplemented, so the wait sits once at the fixture's
-// start and never under a fault the check armed, which always arrives later.
-// Withdrawn together with the callback that carries it, by a Stats that
-// reports the ready spares or a write that waits: either end takes the wait.
+// start, never under a fault a check armed later. The one construction-time
+// fault the fixture takes fails at Init, before any open, so no fault is
+// under the wait at all. Withdrawn together with the callback that carries
+// it, by a Stats that reports the ready spares or a write that waits: either
+// end takes the wait.
 func (f *Fixture) awaitSpares() {
 	f.tb.Helper()
 
