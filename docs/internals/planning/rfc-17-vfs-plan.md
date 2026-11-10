@@ -46,7 +46,7 @@ moving the adapters onto `vfs.Service` (stage 5) and RFC 20's shared pipeline, p
 **D3. The engine through `Content`.** `internal/vfs` declares `Content`: exactly the RFC 8 methods
 §3.5's table and §5.3 call, no more. Its conformance suite is written first, then the smallest
 in-memory `Content` that passes it, which stands in until stage 3; the real `*engine.Engine` then
-satisfies the interface unchanged and passes the same suite
+satisfies the interface unchanged and passes the same suite, and the in-memory `Content` is deleted
 ([RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)). The method list (plan §4)
 is the contract to agree with the journal v2 team before either side builds against it.
 
@@ -69,9 +69,10 @@ is the contract to agree with the journal v2 team before either side builds agai
 - `Deps.Auth` and `Deps.Names` wait for RFC 18 with the `Principals` area (piece 3).
 
 **D5. Packages as §2.4 lays them out.** `pkg/vfs` is the contract (types, errors, ID codecs,
-`Service`, `Callbacks`, `Events`) plus `vfstest` (`Faults`, `Callbacks`) and its
+`Service`, `Callbacks`, `Events`) plus `vfstest` (`Memory`, `Faults`, `Callbacks`, `Null`) and its
 `suite`. `internal/vfs` is the filesystem, one file per operation, with `admit`, `pseudofs`,
-`lockorder`, `quota` and `authz` as subpackages.
+`lockorder`, `quota` and `authz` as subpackages, and `contenttest`, the `Content` suite and the
+in-memory `Content` (D3).
 
 **D6. Tests in §8's tiers, cheapest first.** Every piece lands with its unit-tier cases over the
 in-memory store, the in-memory `Content` (D3) and the real open-state table on `sim.TestClock`
@@ -163,7 +164,7 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
    `vfs.Mutates`; `Call`, which every method but `Principals.SignIn` and `Spell` takes (D8); the codecs of
    every client-held ID, at RFC 14 §2.11's settled widths (a 24-bit
    shard, 5 grace-instance bits, a 40-bit `OpenID`, §10.3); `Service` as its seven areas;
-   `vfstest`'s `Faults`, `Callbacks` and `suite.Run`; §8's fuzz targets for
+   `vfstest`'s `Faults`, `Callbacks`, `Null` and `suite.Run`; §8's fuzz targets for
    every ID decoder.
    Done when: every codec matches bytes written out by hand from §3.4's layout and RFC 14 §2.11's
    widths (no RFC carries vectors yet, plan §5 Q4), and `vfs.Errors()` holds every sentinel and
@@ -178,7 +179,9 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
    `Table.Start` refuses a nil one; the `lockorder` sorter that takes open-state steps, then
    [fold admission](../rfcs/rfc-7-namespace-metadata.md#9.2%20Timestamps), then accept locks
    ([§5.0](../rfcs/rfc-17-vfs.md#5.0%20One%20lock%20order)), in one order; `Content`,
-   its conformance suite and the in-memory `Content` that passes it (D3); the architecture test (imports and call sites).
+   its conformance suite and the in-memory `Content` that passes it (D3); `vfstest.Memory`, the
+   filesystem over the in-memory store, open state and that `Content`, which RFC 20's E4 needs
+   before its first test; the architecture test (imports and call sites).
    Done when: V29 (→11), V32, V33 (→7), V34 (→10) pass.
 3. **Shares, admission and principals:** `Root`, `SecInfo`, `ListShares`, `StatFS` and `Quota`;
    admission on every call, uncached, with `MinProof` and `MinProtection` read from the export
@@ -316,7 +319,7 @@ Stage 2 writes the in-memory `Content`, since neither today's `engine.Store` nor
 `journaltest/model` can stand in for it, and writes its conformance suite first: verified bytes
 back, a version above the last drawn, nothing returned before its stage. Until stage 3 the suite
 holds only the in-memory `Content`; the engine runs it as it lands, which is what keeps the two
-from drifting.
+from drifting, and once the engine passes it at stage 3 the in-memory `Content` is deleted.
 
 Not the filesystem's to call: `Apply`, `Start`, `Close`, the storage-binding calls `Bind`, `Unbind`
 and `Drop`, and the controls `PrepareCut`, `CommitCut`, `PreWarm`, `WaitOffloaded` and `Stats`,
