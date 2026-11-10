@@ -248,27 +248,48 @@ func TestACloneReservesItsCopiesAndWritesThemAboveItsVersion(t *testing.T) {
 	}
 }
 
-// While the clone is held between its copies and its phase 1, the
-// destination's guard keeps its operations out of every batch: a group
-// commit asked for then commits none of them, and the clone then commits.
+// While the clone is held in its phase 1's store call, the destination's
+// guard keeps its operations out of every batch: a batch that commits
+// another file, the destination due beside it, commits none of the
+// destination's, the write below the clone included, and settles nothing of
+// it; the clone then commits. The hold is outside the journal, so a batch
+// that took the file would find nothing to wait on.
 func TestTheGuardKeepsACloneOutOfEveryBatch(t *testing.T) {
-	u, h := clonedHookedUnit(t)
+	entered, hold := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	u := clonedUnit(t, onClone(func(ctx context.Context, next engine.Existence, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
+		once.Do(func() { close(entered); <-hold })
+		return next.Clone(ctx, op, pending)
+	}))
+	var released sync.Once
+	release := func() { released.Do(func() { close(hold) }) }
+	t.Cleanup(release)
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	u.write(t, dst, 4*mib, fill(10, 'w')) // below the clone, outside its extent
-	release, answer := u.heldBeforePhase1(t, h, src, dst, vfserr.Extent{Len: mib})
-	v := u.j.CloneTargets()[0].Version
-	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-	_ = u.e.CommitAll(ctx, u.rec)
-	cancel()
-	applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst)
-	if !applied.IsZero() {
+	other := u.create(t, "other")
+	u.write(t, other, 0, fill(10, 'o'))
+	answer := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
+	select {
+	case <-entered:
+	case err := <-answer:
+		t.Fatalf("the clone answered %v before its phase 1", err)
+	}
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Nanosecond, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	u.clock.Advance(time.Second) // the destination is due
+	if err := u.e.CommitNow(t.Context(), u.share.ID, other); err != nil {
+		t.Fatalf("another file's commit while the clone holds the destination: %v", err)
+	}
+	if applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, other); applied.IsZero() {
+		t.Fatal("the other file's batch committed nothing")
+	}
+	if applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst); !applied.IsZero() {
 		t.Errorf("a batch committed the destination's write at %v while the clone held its guard", applied)
 	}
-	for _, s := range h.settleLog() {
-		if s.v.Compare(v) >= 0 {
-			t.Errorf("settled at %v while the clone at %v is held before its phase 1", s.v, v)
-		}
+	if s := u.j.Settled(journal.NewFileID(dst)); s != (journal.Version{}) {
+		t.Errorf("the destination settled at %v while the clone is held in its phase 1", s)
 	}
 	release()
 	if err := <-answer; err != nil {

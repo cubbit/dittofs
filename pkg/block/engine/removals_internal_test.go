@@ -90,6 +90,49 @@ func scripted(t *testing.T, answers ...answer) (l *removalLoop, f entity.FileID,
 	return l, f, step, log
 }
 
+// A failed item runs again once exactly its backoff has passed on the
+// loop's clock: not a nanosecond before, and with no further advance after.
+func TestAFailedItemRunsAgainAtItsBackoff(t *testing.T) {
+	clock := sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	e := &Engine{d: Deps{Clock: clock, Logger: slog.New(slog.NewTextHandler(&syncBuffer{}, nil)),
+		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
+			return ctx, func(error) {}
+		}}}
+	l := newRemovalLoop(e)
+	var runs atomic.Int32
+	answers := []answer{itemRetry, itemDone}
+	l.enqueue(&loopItem{b: &binding{}, f: entity.NewFileID(), kind: entity.RemoveTruncate, run: func(context.Context) answer {
+		return answers[runs.Add(1)-1]
+	}})
+	// The loop finds the item on its first look, so the enqueue's wake would
+	// only arm a second timer: taken here, the loop arms exactly one.
+	<-l.wake
+	go l.run()
+	t.Cleanup(l.close)
+	until := func(what string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !cond() {
+			if time.Now().After(deadline) {
+				t.Fatalf("never: %s", what)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	until("the failed run's item waits on the clock", func() bool {
+		n, _ := l.pending()
+		return runs.Load() == 1 && n == 1 && clock.Pending() == 1
+	})
+	clock.Advance(loopBackoff - time.Nanosecond)
+	// A timer that fired leaves the clock at once, and the run that finishes
+	// the item arms no other.
+	if n := clock.Pending(); n != 1 {
+		t.Fatalf("a nanosecond before the backoff the loop's timer fired: %d waits left, want 1", n)
+	}
+	clock.Advance(time.Nanosecond)
+	until("the item runs again at its backoff", func() bool { return runs.Load() == 2 })
+}
+
 // An item is removal_stalled after its fifth failure in a row, not its
 // fourth, and the run that finishes it clears the condition.
 func TestAnItemStallsAfterFiveFailures(t *testing.T) {

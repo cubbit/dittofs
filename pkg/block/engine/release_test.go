@@ -9,6 +9,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
@@ -180,14 +181,16 @@ func TestAnAbortKeepsTheWritesAboveIt(t *testing.T) {
 }
 
 // A truncate whose retried phase 1 Close's stop of the work queue cuts short
-// stays out of the last group commit: the write staged above it is not
-// committed, nor the write below, no Settle reaches the truncate's version,
-// and the entry keeps every operation, the truncate's included, for the next
-// start's recovery. Dropping the truncate's operation at the loop's end lets
-// the last group commit commit the write above it, and settle past it.
+// keeps its guard, so it stays out of the last group commit: the write
+// staged above it is not committed, nor the write below, the journal's file
+// is not settled up to the truncate's version, and the entry keeps every
+// operation, the truncate's included, for the next start's recovery.
+// Dropping the truncate's operation at the loop's end loses it from the
+// entry; releasing its guard there too lets the last group commit commit the
+// writes and settle past it.
 func TestALoopEndingLeavesARetriedPhase1ForRecovery(t *testing.T) {
 	x := &conflictingRemove{}
-	u, h := newHookedUnit(t, onRemove(x.remove))
+	u := newUnit(t, onRemove(x.remove))
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a')) // due, and below the truncate
 	tv := u.retriedTruncate(t, x, f, 3, 8, 4)
@@ -198,10 +201,11 @@ func TestALoopEndingLeavesARetriedPhase1ForRecovery(t *testing.T) {
 	if applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, f); !applied.IsZero() {
 		t.Errorf("the last group commit committed the file at %v", applied)
 	}
-	for _, s := range h.settleLog() {
-		if s.v.Compare(tv) >= 0 {
-			t.Errorf("settled at %v, at or above the cut-short truncate's %v", s.v, tv)
-		}
+	if s := u.j.Settled(journal.NewFileID(f)); s.Compare(tv) >= 0 {
+		t.Errorf("the journal's file settled at %v, at or above the cut-short truncate's %v", s, tv)
+	}
+	if !u.e.GuardHeld(f) {
+		t.Error("the cut-short truncate's guard was released at the loop's end")
 	}
 	if p := u.e.Pending(f); len(p) != 3 || p[1].Version != tv {
 		t.Errorf("after the loop ended the entry holds %+v, want both writes and the truncate", p)
