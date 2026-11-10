@@ -1254,7 +1254,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `Create`, `Link` | `Namespace.Create` / `Link`, `Checks.CheckChange` on the parent | `Draw` (parent, new file) | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `Checks.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename`; `Opens.Renamed` after a rename, and after an unlink or a rename over a file to clear its opens' entry | `Draw`; `Delete` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `GetAttr` | `Files.Get` | `Overlay` | primary |
-| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `Checks.CheckChange` through the target's open, `ChangeSetID` for a mode setting setuid or setgid; `Opens.Update` for delete on close and suspended times; `Capacity.Usage` for quota on an owner or group change; `Opens.Entry` and `Watches.Changed` for the change (below) | `Draw`; `Truncate` for a size | primary |
+| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `Checks.CheckChange` through the target's open, `ChangeSetID` for a mode setting setuid or setgid; `Opens.Update` for delete on close and suspended times; `Capacity.Usage` for quota on an owner or group change; `Opens.Entry` and `Watches.Changed` for the change (below) | `Draw`; `Truncate` for a size; `CommitExistence` first for an owner or group change (§5.5) | primary |
 | `GetACL`, `Xattrs`, `Streams` | `Files.ACL`, `Xattrs`, `Streams`, authorised inside ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — | primary |
 | `Access` | `Files.Granted`, through `authz` (§4.6) | — | primary |
 | `SetACL`, `SetXattr`, `RemoveXattr` | `Files.SetACL`, `SetXattr`, `RemoveXattr`; `Opens.Entry` and `Watches.Changed` for the change (below) | `Draw` | primary |
@@ -2399,8 +2399,13 @@ carved refs adopted, all resolved at one point in the source's history.
   (`OtherShard`), changing nothing, so the client copies the bytes itself.
 - **`Copy` is not atomic.** The engine's `Copy` runs bounded chunks, each a
   small atomic clone, and returns the bytes copied; at the caller's deadline it
-  stops after its current chunk and answers a short count, from which the
-  client continues. A copychunk's chunks are one call's `Extents`, run in
+  answers the chunks done, a short count, starts no other, and leaves the chunk
+  it was in to complete past that count, since a chunk past its journal step can be neither
+  undone nor waited for; the client continues from the count, rewriting that
+  chunk. The rewrite cannot race it: the continuing copy is a clone into the
+  running chunk's destination, which is held until that chunk ends (below), so
+  it runs after the late chunk lands and its bytes are the ones left. A source truncated between chunks ends the copy the same way, at the
+  last whole chunk. A copychunk's chunks are one call's `Extents`, run in
   order, and the count is the bytes copied across them, so the adapter derives
   chunks and bytes written from it. A chunk refused after others are done
   answers the same short count; only a refusal of the first chunk returns its error. **(cluster)** Between
@@ -2414,7 +2419,9 @@ carved refs adopted, all resolved at one point in the source's history.
 1. admit both handles, and authorise read on the source and write on
    the destination, as §5.1 steps 1–3 do for each;
 2. refuse with `ErrInvalid` a clone of other than one extent, and a copy or
-   clone any of whose extents, with source and destination one file, overlap, as Linux and RFC 7862 refuse it; with
+   clone any of whose extents, with source and destination one file, overlap, as Linux and RFC 7862 refuse it, and a
+   copy or clone any of whose extents ends past the source's size, as RFC 7862 §15.2.3 refuses it
+   (a source truncated once the copy has begun ends it with a short count instead); with
    `ErrCross` (`CrossNamespace`) one RFC 8 §9.1's admission rule refuses, since
    no chunk can be adopted across namespaces; with `ErrIncomplete` one whose
    source is `Incomplete`, before anything changes;
@@ -2633,7 +2640,7 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 | V23 | A blocked lock holds no worker and has no deadline; nothing answers one other than as granted before `CancelLock` returns. | NLM and SMB locks that wait are answered `ErrBlocked` and later granted through `LockWaitOver`, with no goroutine held between; an NFSv4 one is `ErrLocked` and its next poll after the unlock is granted; a lock list with one range refused leaves none of the call's ranges held. |
 | V24 | I/O under a delegation is served only to the client holding it and authorised for the caller's own principal. | An NFSv4.1 client with a write delegation writes as a second principal that may write the file, then a third that may not: the first accepted, the second `ErrAccess`; another client presenting the stateid gets `NotYours`. |
 | V25 | `Write` samples the verifier before staging and `Commit` after its sync; an SMB flush across a loss fails once with `ErrLost`. | A `Commit` that waits on a failed sync window returns a verifier other than its writes', and a stable write whose `Commit` does so answers `ErrDelay` (`DelayCommit`), and its `Write`'s verifier when the two agree; the verifier changes after an unstable write is dropped as lost in the same process and epoch, and when a shard is handed away and back, and not across a shard-epoch raise that moves nothing; an SMB flush through each of two opens of such a file fails once, then succeeds. |
-| V26 | Copy and clone refuse overlap, a clone over `clone_max_len`, a namespace or (cluster) shard crossing and an `Incomplete` source, each changing nothing; a copy across shards is the service's; a Lost source run is copied as Lost; a clone is atomic, a copy may be short. | Each refusal returns its error and leaves the destination unchanged and readable; a `COPY` whose deadline passes partway answers a short count and the destination holds exactly that many bytes; a clone of a source with a Lost run reads Lost there at the destination. |
+| V26 | Copy and clone refuse overlap, a range past the source's size, a clone over `clone_max_len`, a namespace or (cluster) shard crossing and an `Incomplete` source, each changing nothing; a copy across shards is the service's; a Lost source run is copied as Lost; a clone is atomic, a copy may be short. | Each refusal returns its error and leaves the destination unchanged and readable, a copy whose range ends one byte past the source's size among them; a `COPY` whose deadline passes partway answers a short count; the destination holds those bytes, and the chunk the deadline met completes past it, which a continuing copy rewrites, and nothing past that chunk changes; a clone of a source with a Lost run reads Lost there at the destination. |
 | V28 | A create — an `Open` that creates included —, link or rename into a directory marked delete on close is refused, over every protocol. | With a directory marked over SMB, a create, a creating `Open`, a link and a rename into it, over SMB and over NFS, are each refused. |
 | V29 | Every call takes open-state steps, then fold admission, then accept locks, each in file-ID order; a held call holds none of them and re-runs §5.1's steps 3–6. | An open of an existing child and an unlink of it race 10⁴ times, with the child's ID below its parent's and above it, and so do a creating open of a new name and an unlink of that name: neither waits for its deadline; a write and an unlink of the file's last name race 10⁴ times with a deny-delete open: neither waits for its deadline and no deny-delete is granted between the unlink's check and its commit; a 1 GiB clone of a VM disk under writes, with a lease break pending: each held write gives up its open-state step and accept lock, the break's acknowledgement and a new open proceed during the clone, and each held write completes after re-running its checks. |
 | V30 | The service waits inside a call only behind a running clone or copy chunk, and at most the call's `WithHold`. | An NFSv3 write into a cloning extent with `WithHold(10s)` is held and completes when the clone ends; with `WithHold(0)` it returns `DelayClone` at once. |

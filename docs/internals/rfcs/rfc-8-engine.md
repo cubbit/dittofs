@@ -3722,6 +3722,7 @@ removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)
 | `Write(share, file, off, p)` | [§4](#4.%20Write) |
 | `Draw(share, file)` | the version of a change stored outside the journal, [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more) |
 | `Commit(share, file, off, n)` | the stability point, [§5](#5.%20Commit%3A%20the%20stability%20point) |
+| `CommitExistence(share, file)` | the file's pending existence committed now, its size, times and charge included, each committed write's `Done` called: what an owner or group change runs first ([RFC 17 §5.5](rfc-17-vfs.md#5.5%20Size%20changes)), [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) |
 | `LossSeq(share, file)` | the file's loss sequence, read without a sync, [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) |
 | `Read(share, file, off, dst)` | [§7](#7.%20Read) |
 | `Truncate(share, file, size)`, `Deallocate(share, file, off, n)`, `Delete(share, file)` | [§8](#8.%20Truncate%2C%20deallocate%20and%20release) |
@@ -3796,6 +3797,7 @@ func (e *Engine) Drop(ctx context.Context, id ShareID) error                   /
 func (e *Engine) Write(ctx context.Context, s ShareID, f FileID, off int64, p []byte, o WriteOpts) (Verifier, error)
 func (e *Engine) Draw(ctx context.Context, s ShareID, f FileID) (Version, error)                                     // under the file's accept lock (§4.1)
 func (e *Engine) Commit(ctx context.Context, s ShareID, f FileID, off, n int64) (v Verifier, lossSeq uint64, err error) // n 0: the whole file
+func (e *Engine) CommitExistence(ctx context.Context, s ShareID, f FileID) error // the pending existence, now: before an owner or group change
 func (e *Engine) LossSeq(s ShareID, f FileID) uint64                                                                  // the file's loss sequence now, with no sync: what an SMB open starts from (§5.1); 0 for a share with no binding, the value every file's sequence starts from, so an open recorded at it learns of every later loss
 func (e *Engine) Read(ctx context.Context, s ShareID, f FileID, off int64, dst []byte) (int, error)                    // n verified bytes, then the error
 func (e *Engine) Truncate(ctx context.Context, s ShareID, f FileID, size int64) error
