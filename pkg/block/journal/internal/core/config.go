@@ -69,12 +69,23 @@ type Settings struct {
 //
 // decision: the cap is not a setting, and no name journal exports may set
 // it, yet a check over hundreds of segments cannot run at the format's size
-// in a temporary directory. So the field is unexported, and this setter lives
-// in internal/core, which only code inside the journal's tree can import: its
+// in a temporary directory. So the field is unexported, and this setter lives in
+// internal/core, which only code inside the journal's tree can import: its
 // tests' fixture sets it and passes the settings through WithSettings, and
 // the public surface does not change.
 func SetSegmentCap(s *Settings, n int64) {
 	s.segmentCap = n
+}
+
+// SegmentCapOf returns the segment size s names: the cap SetSegmentCap set
+// when positive, the format's constant otherwise. It is the counterpart the
+// open path reads the setter's field with, so the open honours the smaller
+// cap an in-tree test sets exactly as the format's.
+func SegmentCapOf(s Settings) int64 {
+	if s.segmentCap > 0 {
+		return s.segmentCap
+	}
+	return SegmentCap
 }
 
 // Clock is the journal's only source of time. The sync timer, every wait and

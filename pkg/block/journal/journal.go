@@ -56,5 +56,17 @@ func Restamp(ctx context.Context, dir string, expect JournalID, install Installa
 // Close returns once all of that has happened. Calling it again returns
 // ErrClosed.
 func (j *Journal) Close() error {
-	return ErrNotImplemented
+	// decision: this closes the core and nothing else. The full close the
+	// contract above names — new calls failing with ErrClosed the moment one
+	// begins, the in-flight calls waited for before it, and a second Close
+	// answering ErrClosed — is the cancellation piece of a broader step of the
+	// journal's own; until it lands, Close joins the core's background work
+	// and releases its descriptors, and the calls in flight are joined by the
+	// core's own shutdown. Withdraw the narrow behaviour when that step lands.
+	if j.core == nil {
+		// The zero Journal, which a test helper builds and a cleanup of its own
+		// closes, owns nothing to shut down.
+		return ErrClosed
+	}
+	return j.core.Close()
 }
