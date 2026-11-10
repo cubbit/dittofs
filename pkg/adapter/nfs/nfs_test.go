@@ -84,7 +84,7 @@ func write(t *testing.T, path string, b []byte) {
 }
 
 // New loads the TLS files: a valid pair and client CA get as far as the
-// unbuilt adapter, and a missing or garbage file is refused naming its field.
+// unbuilt adapter, and a missing or garbage file is refused naming the file.
 func TestNewLoadsTheTLSFiles(t *testing.T) {
 	dir := t.TempDir()
 	cert, key := selfSigned(t, dir)
@@ -99,19 +99,19 @@ func TestNewLoadsTheTLSFiles(t *testing.T) {
 		t.Fatalf("a self-signed pair and CA: %v, want past loading to errors.ErrUnsupported", err)
 	}
 	for _, c := range []struct {
-		name, field string
-		s           config.NFS
+		name, file string
+		s          config.NFS
 	}{
-		{"missing cert", "TLS.CertFile", tlsOn(missing, key, "")},
-		{"garbage cert", "TLS.CertFile", tlsOn(garbage, key, "")},
-		{"missing key", "TLS.KeyFile", tlsOn(cert, missing, "")},
-		{"garbage key", "TLS.KeyFile", tlsOn(cert, garbage, "")},
-		{"missing CA", "TLS.ClientCA", tlsOn(cert, key, missing)},
-		{"garbage CA", "TLS.ClientCA", tlsOn(cert, key, garbage)},
+		{"missing cert", missing, tlsOn(missing, key, "")},
+		{"garbage cert", garbage, tlsOn(garbage, key, "")},
+		{"missing key", missing, tlsOn(cert, missing, "")},
+		{"garbage key", garbage, tlsOn(cert, garbage, "")},
+		{"missing CA", missing, tlsOn(cert, key, missing)},
+		{"garbage CA", garbage, tlsOn(cert, key, garbage)},
 	} {
 		_, err := nfs.New(adapter.Deps{}, c.s)
-		if err == nil || errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), c.field+":") {
-			t.Errorf("%s: %v, want refused naming %s", c.name, err, c.field)
+		if err == nil || errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), c.file) {
+			t.Errorf("%s: %v, want refused naming %s", c.name, err, c.file)
 		}
 	}
 }
