@@ -20,9 +20,10 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, group commit, window resolution, the loss counters a public call can reach - corrupt, stale and failed windows; superseded and acknowledged have no public call yet - the corrupt outcomes and the read-only state counted.'
+  reason: 'The journal opens; every leg of the check fails on a stub call. Needs the data path, group commit, window resolution, the loss counters a public call can reach - corrupt, stale and failed windows; superseded and acknowledged have no public call yet - the corrupt outcomes and the read-only state counted.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub:'
+
 - test: TestModel
   status: fail
   fix: planned
