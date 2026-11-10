@@ -3203,7 +3203,8 @@ allowlist: today's adapters are deleted rather than moved, so nothing is
 grandfathered in. The walk reads each package's own imports; its `_test.go`
 files may also import `pkg/vfs/vfstest` and `adaptertest`, whose in-memory
 service builds the real filesystem, and `internal/prof`, a profiler importing
-only the standard library; `adaptertest`'s own files may import the same two.
+only the standard library; `adaptertest`'s own files may import
+`pkg/vfs/vfstest` and `internal/prof`.
 Nothing else the list forbids is allowed, so no forbidden package reaches an
 adapter's build. The other direction, that the service imports no adapter,
 stays with the service's own architecture check
