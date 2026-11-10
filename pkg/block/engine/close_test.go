@@ -1006,6 +1006,7 @@ func closeOverAHeldBatch(t *testing.T, readOnly bool) {
 func TestACleanCloseNeverForgetsAndLeavesNothingToReapply(t *testing.T) {
 	r := newRig(t)
 	r.begin(t)
+	r.run() // the rig holds the removal loop until run, and Close joins it
 
 	ctx := t.Context()
 	_, f := r.newFile(t, "a")
@@ -1064,6 +1065,7 @@ func TestACleanCloseNeverForgetsAndLeavesNothingToReapply(t *testing.T) {
 func TestACloseCutsAReleasesRetryWithUnavailableAndLeavesTheMarker(t *testing.T) {
 	r := newRig(t)
 	r.begin(t)
+	r.run() // the rig holds the removal loop until run, and Close joins it
 
 	ctx := t.Context()
 	res := enginetest.NewReservations(t)
@@ -1626,6 +1628,7 @@ func TestCloseDoesNotWaitBehindAFailingReleaseOfACloneSource(t *testing.T) {
 func TestCloseOfAReadOnlyJournalLeavesItsPendingExistenceToTheNextStart(t *testing.T) {
 	r := newRig(t)
 	r.begin(t)
+	r.run() // the rig holds the removal loop until run, and Close joins it
 
 	ctx := t.Context()
 	opts := engine.WriteOpts{Done: func() {}}
