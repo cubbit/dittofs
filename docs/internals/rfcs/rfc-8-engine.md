@@ -1386,7 +1386,8 @@ passes it in.
 | What to read ahead, pre-warm | the speculator ([§7.4](#7.4%20The%20speculator)) | syncer fetcher ([RFC 3 §4.5](rfc-3-syncer.md#4.5%20Speculation%20is%20executed%20here%20and%20decided%20elsewhere)) |
 | What to evict, and when | `evict` ([§10.1](#10.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)) | journal `Release` ([RFC 1 §3.5](rfc-1-journal.md#3.5%20Release)) |
 | When to repack | `repackDue` ([§10.3](#10.3%20Repack%20is%20triggered%20here)) | journal repack ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)) |
-| Whether to keep accepting writes | `admit` ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) | journal capacity ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)) |
+| Whether to keep accepting writes | `admit`, before the journal call ([§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)) | journal capacity ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)) |
+| How to answer a refusal the journal returned | the refusal table, in `capacity.go` ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) | journal `Repack`, `Release` and `Sync` ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)) |
 | What follows from ill health | `health` ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)) | — |
 
 A threshold that lives in a component's configuration is engine policy absorbed
@@ -1957,7 +1958,7 @@ per device journal**: events in, runs handed to the journal's workers out.
 | --- | --- | --- |
 | `Dirty(file)` | the write path, after staging ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) | posts the file's offload key once `offloadDue` finds it due by its bytes; a file below the block target waits for the age tick |
 | `AgeTick(now)` | a timer per journal, every quarter of `offload.max_age` | calls `offloadDue` with fresh journal statistics and posts the offload key of every file due, oldest first within each shard |
-| `Pressure(on)`, `Pressure(off)` | `admit` ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)): on once *M* rises past the soft threshold *S* ([§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)), off once it falls below 0.9 *S* | sets the journal's pressure; see below |
+| `Pressure(on)`, `Pressure(off)` | `admit` ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)): on once *M* rises past the soft threshold *S* ([§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)), off once it falls below 0.9 *S*; the refusal path's step 3 ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)): on, when what is held is dirty and the remote is put-healthy | sets the journal's pressure; see below |
 | `RemovalPending(file)` | a removal's first transaction ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), the removal rescan, the rebuild | posts the file's removal key |
 
 **Pressure is a state, not an event per refusal.** Setting it to the state it
@@ -3362,7 +3363,7 @@ reported pass returns what it did not report to Dirty.
 
 **Eviction and repack are not work-queue work.** Each journal runs one eviction
 loop, started at start step 7 ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), which calls `evict` and `repackDue`
-and runs the journal's `Release` and `Repack` itself; `admit`'s refusal path runs
+and runs the journal's `Release` and `Repack` itself; the refusal path in `capacity.go` runs
 them inline under the caller's deadline ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)). Neither needs the queue's keys:
 `Release` refuses an unset bit, and two repacks never select the same segment
 ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), so a refusal racing the loop costs copy work, never
@@ -3404,7 +3405,9 @@ resolves to **Remote**. Eviction therefore writes nothing to metadata.
 ### 10.2 A capacity refusal comes back here
 
 The journal refuses a write it cannot reserve for, and does not evict for itself
-([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). `admit` decides, and the engine answers:
+([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). The refusal table below, in `capacity.go`
+([§2.8](#2.8%20Package%20layout)), decides, and the engine answers; `admit`
+([§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below)) acts only before the journal call and is never given a refusal:
 
 1. repack the refused share's segments — `Repack` with the share as its scope
    ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)) — or, for the journal's own capacity, the segments with the most
