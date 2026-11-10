@@ -100,6 +100,39 @@ func TestWatchReportsWhatItFilters(t *testing.T) {
 	}
 }
 
+// A watch's changes reach the Sink in the order it held them: while the
+// Notify of its first is still on its way, the timer leaves the second
+// held, and hands it over on a pass after that Notify returned.
+func TestWatchReportsInOrderWhileAHandOffIsRaised(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, nfs("a", 1, entity.NewUser()))
+	dir := in(1)
+	f.watch(t, a, dir, false, names)
+	raising, release := make(chan struct{}), make(chan struct{})
+	f.sink.mu.Lock()
+	f.sink.onNotify = func(ch []Change) {
+		if string(ch[0].Name) == "x" {
+			close(raising)
+			<-release
+		}
+	}
+	f.sink.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.changed(dir, ChangeAddEntry, "x", false)
+	}()
+	<-raising
+	f.changed(dir, ChangeAddEntry, "y", false)
+	f.handWatched()
+	close(release)
+	<-done
+	f.handWatched()
+	if got := f.reported(); !slices.Equal(got, []string{"x", "y"}) {
+		t.Errorf("reported %q, want x then y", got)
+	}
+}
+
 // A watch is never reclaimed: it goes with its shard's lost state, and in
 // grace a new one is refused as other new state is.
 func TestWatchInGrace(t *testing.T) {

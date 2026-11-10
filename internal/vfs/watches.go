@@ -161,7 +161,8 @@ func (fs *Filesystem) Unwatch(ctx context.Context, c vfs.Call, w vfs.WatchID) er
 }
 
 // Notify delivers the changes client c's watch w matched, those its holder
-// may traverse to, decided at delivery. A watch no longer held here
+// may traverse to, decided at delivery, after every Notify called for c
+// before it. A watch no longer held here
 // delivers nothing: one raised beside its end arrives after it.
 //
 // decision: the holder is decided as admitted when it set the watch, not
@@ -177,7 +178,7 @@ func (fs *Filesystem) Unwatch(ctx context.Context, c vfs.Call, w vfs.WatchID) er
 // one that set the watch; then a Notify names the session that set it, as a
 // break names one.
 func (fs *Filesystem) Notify(c entity.ClientID, w openstate.WatchID, ch []openstate.Change) {
-	fs.deliver(fs.latest("Notify", c), func(ctx context.Context, cb vfs.Callbacks) {
+	fs.deliverInOrder(c, fs.latest("Notify", c), func(ctx context.Context, cb vfs.Callbacks) {
 		h, ok := fs.watchers.held(c, w)
 		if !ok {
 			return

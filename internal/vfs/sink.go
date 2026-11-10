@@ -43,9 +43,14 @@ import (
 // completion is seen held up this way: then a lock wait's end names its
 // waiter's session as a break does.
 //
-// ponytail: one goroutine per callback, so two raised for one client may
-// reach it out of order. Queue each client's callbacks in order if an
-// adapter is found acting on a revocation before the recall it ends.
+// A client's Notify calls reach it in the order open state raised them, one
+// at a time, as SMB reports a directory's changes in the order they occurred
+// (MS-FSA 2.1.5.10): a create and a delete must not arrive reversed.
+//
+// ponytail: every other callback runs on a goroutine of its own, so two
+// raised for one client, or one of them and a Notify, may reach it out of
+// order. Queue them through inOrder too if an adapter is found acting on a
+// revocation before the recall it ends.
 
 // callbackDeadline bounds each callback: the lease or oplock break deadline,
 // past which a client's answer changes nothing.
@@ -226,13 +231,73 @@ func (fs *Filesystem) Revoked(r openstate.Revocation) {
 // under a context ending at callbackDeadline or at Stop. With none found, or
 // once the filesystem is stopped, it sends nothing.
 func (fs *Filesystem) deliver(path func(context.Context) vfs.Callbacks, send func(ctx context.Context, cb vfs.Callbacks)) {
-	fs.background(func(stop context.Context) {
+	fs.background(boundedSend(path, send))
+}
+
+// boundedSend is send with the Callbacks path finds, under a context ending at
+// callbackDeadline or at stop.
+func boundedSend(path func(context.Context) vfs.Callbacks, send func(ctx context.Context, cb vfs.Callbacks)) func(stop context.Context) {
+	return func(stop context.Context) {
 		ctx, cancel := context.WithTimeout(stop, callbackDeadline)
 		defer cancel()
 		if cb := path(ctx); cb != nil {
 			send(ctx, cb)
 		}
-	})
+	}
+}
+
+// inOrder is, for each client, the Notify deliveries not yet done, the first
+// of them being delivered.
+type inOrder struct {
+	mu sync.Mutex
+	q  map[entity.ClientID][]func(stop context.Context)
+}
+
+// deliverInOrder is deliver for client c, but sends each once every one
+// raised before it for c has returned: one goroutine at a time drains c's
+// queue, started when it goes from empty to not, ending when it is empty
+// again or the filesystem stops.
+//
+// decision: order costs a slow client its later notifications: each waits
+// for the one before it, and each may take up to callbackDeadline once it
+// starts. A client whose every Notify hangs drains one per callbackDeadline
+// while the table hands it up to one per watch each sweep, so its queue
+// grows without bound until the client ends; one goroutine per Notify freed
+// each within callbackDeadline. Bound a client's queue, or collapse what
+// waits behind a stall into a ChangeEnumerate, if a stalled client is seen
+// holding its watches' changes back that long.
+func (fs *Filesystem) deliverInOrder(c entity.ClientID, path func(context.Context) vfs.Callbacks, send func(ctx context.Context, cb vfs.Callbacks)) {
+	run := boundedSend(path, send)
+	q := &fs.notifying
+	q.mu.Lock()
+	if q.q == nil {
+		q.q = map[entity.ClientID][]func(context.Context){}
+	}
+	q.q[c] = append(q.q[c], run)
+	first := len(q.q[c]) == 1
+	q.mu.Unlock()
+	if !first {
+		return
+	}
+	drain := func(stop context.Context) {
+		for run := run; ; {
+			run(stop)
+			q.mu.Lock()
+			rest := q.q[c][1:]
+			if len(rest) == 0 || stop.Err() != nil {
+				delete(q.q, c)
+				q.mu.Unlock()
+				return
+			}
+			q.q[c], run = rest, rest[0]
+			q.mu.Unlock()
+		}
+	}
+	if !fs.background(drain) {
+		q.mu.Lock()
+		delete(q.q, c)
+		q.mu.Unlock()
+	}
 }
 
 // background runs run on a goroutine of its own, which Stop ends and waits
