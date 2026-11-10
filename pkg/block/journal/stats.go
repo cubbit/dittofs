@@ -211,6 +211,10 @@ type Counters struct {
 	// content.
 	StaleExtents uint64
 
+	// SupersededExtents is the number of extents dropped as older than
+	// metadata.
+	SupersededExtents uint64
+
 	// TornTails is the number of torn tails truncated at open.
 	TornTails uint64
 

@@ -160,6 +160,8 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 		d.corruptRepairable++
 	case l.Reason == core.LossStale:
 		d.stale++
+	case l.Reason == core.LossSuperseded:
+		d.superseded++
 	}
 	ev := d.pushLocked(core.LossEvent{
 		Share:     l.Share,
