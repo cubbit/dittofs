@@ -3,88 +3,88 @@
 # its entry in the change that turned it green, a journal change included. Each entry's
 # message is the failure it is known by: a test failing for any other reason is unexpected.
 - test: TestRFC8A_Deallocate
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 5: a deallocate larger than the journal''s free capacity reads as zeros; also the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt, ReadAt and Deallocate.'
+  reason: 'Epic 5: a deallocate larger than the journal''s free capacity reads as zeros; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at Deallocate until the journal has it.'
   issue: '#3588'
 - test: TestRFC8A_FailedWindow
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 4: a failed sync window reaches the next Commit as a new verifier and a raised loss sequence; also the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt, Sync and fails windows.'
+  reason: 'Epic 4: a failed sync window reaches the next Commit as a new verifier and a raised loss sequence; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at Sync and the failed window until the journal has them.'
   issue: '#3587'
 - test: TestRFC8A_GroupCommit
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 4: a group commit conflict delays only the conflicting files; also the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt and Sync.'
+  reason: 'Epic 4: a group commit conflict delays only the conflicting files; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt and Sync until the journal has them.'
   issue: '#3587'
 - test: TestRFC8A_JournalAuthority
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: recovery re-applies existence at start; also Write, Read, Overlay and Allocation (epic 3). Fails at the fixture until the journal has Init, Open, WriteAt, ReadAt, Sync and Since.'
+  reason: 'Epic 6: recovery re-applies existence at start; also Write, Read, Overlay and Allocation (epic 3). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, ReadAt, Sync and Since until the journal has them.'
   issue: '#3589'
 - test: TestRFC8A_OverwriteWaitsForExistence
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 4: Commit waits for an overwrite''s existence; also the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt and Sync.'
+  reason: 'Epic 4: Commit waits for an overwrite''s existence; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt and Sync until the journal has them.'
   issue: '#3587'
 - test: TestRFC8A_StableWriteLazyExistence
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: recovery serves size and mtime at start; also Commit and the group commit (epic 4). Fails at the fixture until the journal has Init, Open, WriteAt, Sync and Since.'
+  reason: 'Epic 6: recovery serves size and mtime at start; also Commit and the group commit (epic 4). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, Sync and Since until the journal has them.'
   issue: '#3589'
 - test: TestRFC8A_StalledStore
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 4: Commit under a store that commits nothing; also the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt and Sync.'
+  reason: 'Epic 4: Commit under a store that commits nothing; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt and Sync until the journal has them.'
   issue: '#3587'
 - test: TestRFC8A_SyncBeforeExistence
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 4: the group commit syncs before it commits existence; also the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt, Sync and its crash seam.'
+  reason: 'Epic 4: the group commit syncs before it commits existence; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, Sync and the crash seam until the journal has them.'
   issue: '#3587'
 - test: TestRFC8A_TruncateSyncBeforeExistence
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 5: a truncate''s phase 1 size is backed by synced records across a crash; also the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt, Truncate, Sync and its crash seam.'
+  reason: 'Epic 5: a truncate''s phase 1 size is backed by synced records across a crash; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, Truncate, Sync and the crash seam until the journal has them.'
   issue: '#3588'
 - test: TestRFC8A_TruncateUpSurvivesACrash
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 5: a truncate up crashed before its group commit is served after the restart; also recovery (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt, Truncate, Since and its crash seam.'
+  reason: 'Epic 5: a truncate up crashed before its group commit is served after the restart; also recovery (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, Truncate, Since and the crash seam until the journal has them.'
   issue: '#3588'
 - test: TestRFC8A_Verifier
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: start and stop; also the verifier (epic 4). Fails at the fixture until the journal has Init, Open and WriteAt.'
+  reason: 'Epic 6: start and stop; also the verifier (epic 4). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt until the journal has it.'
   issue: '#3589'
 - test: TestRFC8A_IncarnationAtStart
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a restart raises the incarnation of every served shard and opens a new grace instance on it. Fails at the fixture until the journal has Init and Open, and the engine has Close (T6.8).'
+  reason: 'Epic 6: a restart raises the incarnation of every served shard and opens a new grace instance on it. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at Close (T6.8).'
   issue: '#3589'
 - test: TestRFC8C_DeclaredInterfaces
   message: 'the engine never calls'
@@ -94,67 +94,67 @@
   reason: 'Epic 8: the engine calls every declared method once epics 3 to 8 are built, the clone calls last.'
   issue: '#3591'
 - test: TestRFC8_WriteStagesTheClocksTime
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: the engine opens its journals at start. Fails at the fixture until the journal has Init, Open, WriteAt and Since.'
+  reason: 'Epic 6: the engine opens its journals at start. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt and Since until the journal has them.'
   issue: '#3589'
 - test: TestRFC8_FixtureRecordsItsJournal
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: the fixture records its journal through the store before the engine starts. Fails at the fixture until the journal has Init, Open and the engine has Start.'
+  reason: 'Epic 6: the fixture records its journal through the store before the engine starts. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag.'
   issue: '#3589'
 - test: TestRFC8A_AttachAboveTheFloor
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: Bind attaches a share above its floor. Fails at the fixture until the journal has Init, Open, Share, WriteAt and Since, and the engine has Start and the version limit raise at attach.'
+  reason: 'Epic 6: Bind attaches a share above its floor. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, Since and the version limit raise at attach until the journal and the engine have them.'
   issue: '#3589'
 - test: TestRFC8B_SharedJournal
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a share at its journal limit refuses no other share. Fails at the fixture until the journal has Init, Open, Share and WriteAt, and the engine has Start.'
+  reason: 'Epic 6: a share at its journal limit refuses no other share. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt until the journal has it.'
   issue: '#3589'
 - test: TestRFC8B_NoCrossShareSlowdown
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a saturated share slows no other share, latency only: the engine_lock_wait_seconds half the epic asks for is not written yet, and the bound (2x the base p99, or base p99 + 1 ms, over 200 samples) may be unstable on CI runners with few cores. Fails at the fixture until the journal has Init, Open, Share and WriteAt, and the engine has Start.'
+  reason: 'Epic 6: a saturated share slows no other share, latency only: the engine_lock_wait_seconds half the epic asks for is not written yet, and the bound (2x the base p99, or base p99 + 1 ms, over 200 samples) may be unstable on CI runners with few cores. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt until the journal has it.'
   issue: '#3589'
 - test: TestRFC8A_JournalGone
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: start refuses a lost journal by name, raises journal_lost and creates nothing. Fails at the fixture until the journal has Init and Open (#3765).'
+  reason: 'Epic 6: start refuses a lost journal by name, raises journal_lost and creates nothing. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag.'
   issue: '#3589'
 - test: TestRFC8A_AttachAfterDeviceLoss
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Fails at the fixture until the journal has Init, Open and WriteAt (#3765).'
+  reason: 'Epic 6: a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt until the journal has it.'
   issue: '#3589'
 - test: TestRFC8A_Clone
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 8: a clone keeps the writes outside its extent, never waits, and a refused reservation leaves the destination (§9.1). Fails at the fixture until the journal has Init, Open, WriteAt, ReadAt, Sync, Reserve and CloneTarget, then at Clone (ErrUnbuilt) until a clone answers once the joins of a running clone are built.'
+  reason: 'Epic 8: a clone keeps the writes outside its extent, never waits, and a refused reservation leaves the destination (§9.1). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, ReadAt, Sync, Reserve and CloneTarget, then at Clone (ErrUnbuilt) until a clone answers once the joins of a running clone are built.'
   issue: '#3591'
 - test: TestRFC8A_RemovalsOfACloningDestination
-  message: 'fixture: journal init: journal: not implemented'
+  message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 8: the source''s clone-kind open is gone once the clone is answered (§9.1); the removals held behind the clone are the rest of the row. Fails at the fixture until the journal has Init, Open, WriteAt, ReadAt, Sync, Reserve and CloneTarget, then at Clone (ErrUnbuilt) until a clone answers once the joins of a running clone are built.'
+  reason: 'Epic 8: the source''s clone-kind open is gone once the clone is answered (§9.1); the removals held behind the clone are the rest of the row. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, ReadAt, Sync, Reserve and CloneTarget, then at Clone (ErrUnbuilt) until a clone answers once the joins of a running clone are built.'
   issue: '#3591'
 - test: TestRFC8A_RecoveryThroughSince
   message: 'fixture: journal init: journal: not implemented'
