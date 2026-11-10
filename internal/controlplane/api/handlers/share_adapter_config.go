@@ -205,7 +205,7 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 
 	// Squash / anonymous-UID changes alter how client UIDs map to identities but
 	// do not flow through ReconcileShareRootACL. Push them into the running share,
-	// then drop cached per-identity authorization.
+	// then raise an auth-cache invalidation.
 	if h.runtime != nil {
 		if req.Squash != nil || req.AnonymousUID != nil || req.AnonymousGID != nil {
 			if err := h.runtime.SetShareSquash(share.Name, opts.GetSquashMode(), opts.AnonymousUID, opts.AnonymousGID); err != nil {

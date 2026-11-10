@@ -443,11 +443,9 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	if err := r.ReconcileShareRootACL(ctx, config.Name); err != nil {
 		logger.Warn("failed to reconcile share root ACL", "share", config.Name, "error", err)
 	}
-	// A share created under a name that was just removed can find trees left
-	// over from the old one: the sweep a removal fires cannot re-resolve a tree
-	// whose share is gone, so it leaves it carrying the removed share's
-	// permission. Re-resolve them now that the name resolves again. Independent
-	// of the reconcile above, which is a projection and can fail.
+	// A share created under a name that was just removed is a permission change
+	// for that name, so the auth-cache event is raised. Independent of the
+	// reconcile above, which is a projection and can fail.
 	r.InvalidateAuthCache()
 	return nil
 }
@@ -661,19 +659,30 @@ func (r *Runtime) ShareExists(name string) bool {
 	return r.sharesSvc.ShareExists(name)
 }
 
+// OnShareChange registers a callback fired with the share list whenever it
+// changes. Returns an unsubscribe function.
+//
+// decision: nothing on this server subscribes but runtimetest's cleanup,
+// because no protocol is served. The event stays for the v2 components that
+// will subscribe; delete it if none does by the cutover.
 func (r *Runtime) OnShareChange(callback func(shares []string)) func() {
 	return r.sharesSvc.OnShareChange(callback)
 }
 
 // OnAuthCacheInvalidate registers a callback fired when a share's permission
-// state changes (grant/revoke, default-permission, squash), so protocol adapters
-// can drop cached per-identity authorization. Returns an unsubscribe function.
+// state changes (grant/revoke, default-permission, squash). Returns an
+// unsubscribe function.
+//
+// decision: nothing on this server subscribes, because no protocol is served
+// and nothing caches a per-identity permission, so every raise fires into an
+// empty list. The event stays for the v2 components that may subscribe;
+// delete it, with its raise sites, if none does by the cutover.
 func (r *Runtime) OnAuthCacheInvalidate(callback func()) func() {
 	return r.sharesSvc.OnAuthCacheInvalidate(callback)
 }
 
-// InvalidateAuthCache notifies registered adapters to drop cached authorization
-// and re-decide what they resolved once. Raised by whatever changed who may
+// InvalidateAuthCache fires the callbacks registered with
+// OnAuthCacheInvalidate. Raised by whatever changed who may
 // access a share — a grant write, a share-level policy change, an identity
 // mapping — never by the root-ACL projection, which can fail without the
 // authority behind it having failed.
@@ -1046,16 +1055,13 @@ func (r *Runtime) NetlogonController() *netlogon.Controller {
 }
 
 // NotifyIdentityMappingChange raises an auth-cache invalidation when identity
-// mappings are created or deleted via the API, so whatever resolved a share
-// permission from the old mapping re-decides it.
+// mappings are created or deleted via the API.
 func (r *Runtime) NotifyIdentityMappingChange() {
 	r.InvalidateAuthCache()
 }
 
 // NotifyIdentityProviderConfigChange raises an auth-cache invalidation when an
-// identity provider's configuration is changed via the API: a directory config
-// change rewrites how group membership and foreign SIDs resolve, which is what
-// share grants are evaluated against.
+// identity provider's configuration is changed via the API.
 func (r *Runtime) NotifyIdentityProviderConfigChange() {
 	r.InvalidateAuthCache()
 }
