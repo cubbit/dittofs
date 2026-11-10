@@ -235,18 +235,15 @@ func TestOpen_ExpectZero_EmptyDir_ErrNoJournal(t *testing.T) {
 // it fails as on a directory that holds no journal, before the platform
 // checks run, and nothing is made. The directory's absence is read through
 // the operating system's files, so the open runs with the open path's own
-// default storage rather than one injected; a probe that fails the test when
-// its answer is read proves the check never ran.
+// default storage rather than one injected. No mount probe is given: the
+// platform check never runs on a directory that does not exist, and where it
+// ran first it would answer with the real probe's not-exist error, which the
+// ErrNoJournal assertion would refuse.
 func TestOpen_MissingDir_ErrNoJournal_CreatesNothing(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "absent")
 
-	probe := func(string) (storage.Probe, error) {
-		t.Error("the platform check ran on a directory that does not exist")
-		return storage.Probe{}, nil
-	}
-
 	if _, err := Open(context.Background(), dir, Version{}, JournalID{0x01},
-		WithClock(kit.NewStopwatchClock()), WithMountProbe(probe)); !errors.Is(err, ErrNoJournal) {
+		WithClock(kit.NewStopwatchClock())); !errors.Is(err, ErrNoJournal) {
 		t.Fatalf("Open of a missing directory returned %v, want ErrNoJournal", err)
 	}
 	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
