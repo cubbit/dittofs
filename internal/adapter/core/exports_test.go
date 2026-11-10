@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/pmezard/go-difflib/difflib"
 )
 
 var update = flag.Bool("update", false, "rewrite testdata/surface from the source")
@@ -29,7 +31,7 @@ var frozen = map[string]string{
 	"smb":       "../../../pkg/adapter/smb",
 }
 
-// surface prints each exported declaration of dir's non-test files without
+// surface prints, sorted, each exported declaration of dir's non-test files without
 // its comments or bodies: types with their exported fields and every
 // interface method, functions and methods with their signatures, constants
 // and variables with their values.
@@ -39,14 +41,15 @@ func surface(t *testing.T, dir string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
+	var decls []string
 	fset := token.NewFileSet()
 	emit := func(node any) {
+		var b strings.Builder
 		cfg := printer.Config{Mode: printer.UseSpaces | printer.TabIndent, Tabwidth: 8}
-		if err := cfg.Fprint(&out, fset, node); err != nil {
+		if err := cfg.Fprint(&b, fset, node); err != nil {
 			t.Fatal(err)
 		}
-		out.WriteString("\n\n")
+		decls = append(decls, b.String()+"\n\n")
 	}
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
@@ -88,7 +91,10 @@ func surface(t *testing.T, dir string) []byte {
 			}
 		}
 	}
-	return out.Bytes()
+	// Sorted, so the golden does not depend on the order of files or of
+	// declarations within one.
+	slices.Sort(decls)
+	return []byte(strings.Join(decls, ""))
 }
 
 func receiverExported(recv *ast.FieldList) bool {
@@ -146,24 +152,22 @@ func TestSurfaceIsFrozen(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !bytes.Equal(got, want) {
-			t.Errorf("%s's exported surface differs from %s; change it with RFC 20 first, then rerun with -update.\ngot:\n%s", name, golden, diff(want, got))
+			t.Errorf("%s's exported surface differs from %s; change it with RFC 20 first, then rerun with -update.\n%s", name, golden, diff(want, got))
 		}
 	}
 }
 
-// diff lists the lines of got that want lacks, and the reverse.
+// diff is a unified diff of want against got, line by line.
 func diff(want, got []byte) string {
-	w, g := strings.Split(string(want), "\n"), strings.Split(string(got), "\n")
-	var b strings.Builder
-	for _, l := range g {
-		if !slices.Contains(w, l) {
-			b.WriteString("+ " + l + "\n")
-		}
+	d, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+		A:        difflib.SplitLines(string(want)),
+		B:        difflib.SplitLines(string(got)),
+		FromFile: "want",
+		ToFile:   "got",
+		Context:  2,
+	})
+	if err != nil {
+		return err.Error()
 	}
-	for _, l := range w {
-		if !slices.Contains(g, l) {
-			b.WriteString("- " + l + "\n")
-		}
-	}
-	return b.String()
+	return d
 }

@@ -1,25 +1,27 @@
-type Budget struct {
-}
-
-func NewBudget(name string, ceiling int64) *Budget
-
 func (b *Budget) Reserve(n int64) (Reservation, error)
 
 func (b *Budget) Reserved() int64
 
-type WaitBudget struct {
-}
+func (b *Buf) Release()
 
-func NewWaitBudget(name string, ceiling int64) *WaitBudget
+func (b *Buf) Retain() *Buf
 
 func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Reservation, error)
 
 func (b *WaitBudget) Reserved() int64
 
-type Reservation struct {
-}
+func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error)
 
 func (r *Reservation) Release()
+
+func NewBudget(name string, ceiling int64) *Budget
+
+func NewBufPool(b *WaitBudget) *BufPool
+
+func NewWaitBudget(name string, ceiling int64) *WaitBudget
+
+type Budget struct {
+}
 
 type Budgets struct {
 	Receive, Reply   *WaitBudget
@@ -33,11 +35,9 @@ type Buf struct {
 type BufPool struct {
 }
 
-func NewBufPool(b *WaitBudget) *BufPool
+type Reservation struct {
+}
 
-func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error)
-
-func (b *Buf) Retain() *Buf
-
-func (b *Buf) Release()
+type WaitBudget struct {
+}
 

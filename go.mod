@@ -184,6 +184,7 @@ require (
 
 require (
 	github.com/apple/foundationdb/bindings/go v0.0.0-20260416192139-3ea44ce1d900
+	github.com/pmezard/go-difflib v1.0.0
 	github.com/stretchr/testify v1.12.1
 	gopkg.in/yaml.v3 v3.0.1
 )
