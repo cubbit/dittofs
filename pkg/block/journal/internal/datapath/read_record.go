@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
+	"sync"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -34,24 +34,44 @@ const (
 	recordBodyBad
 )
 
-// readRecord reads the record at at of file id whole through st and verifies
-// it against pieces, the index entries of id that name it. It reads the
+// recordBufs holds the buffers records are read into, each a *[]byte grown to
+// the largest record it has held, so a warm read allocates no buffer.
+//
+// ponytail: a buffer as large as a segment's largest record can sit in the
+// pool until a GC clears it, one per concurrent reader at most. Upgrade to
+// size classes, or to dropping a buffer above a bound instead of pooling it,
+// when a heap profile shows pooled read buffers.
+var recordBufs = sync.Pool{New: func() any { return new([]byte) }}
+
+// recordBuf returns *bp resliced to n bytes, regrown when it holds fewer.
+// Bytes of an earlier record past n are never part of what it returns.
+func recordBuf(bp *[]byte, n int64) []byte {
+	if int64(cap(*bp)) < n {
+		*bp = make([]byte, n)
+	}
+	*bp = (*bp)[:n]
+	return *bp
+}
+
+// readRecord reads the record at at of file id whole through st into *bp and
+// verifies it against pieces, the index entries of id that name it. It reads the
 // header first, decodes it at its own place and checks it against every
 // piece, then reads the body and verifies it against the header's payload
 // checksum. It returns the record's payload only when every check passed;
 // otherwise payload is nil and verdict says which check failed. h is the
-// decoded header, and zero when the header did not decode.
+// decoded header, and zero when the header did not decode. payload aliases
+// *bp: the caller copies it out before it hands *bp back to recordBufs.
 //
 // err is an I/O error, a short read, a closed stream or a cancelled ctx: it
 // shows nothing about the record, so the verdict is zero and the caller
 // changes nothing. A segment that is gone comes back as an error matching
-// segment.ErrSegmentGone or fs.ErrNotExist, which segmentGone tells apart.
+// segment.ErrSegmentGone, which segmentGone tells apart.
 //
 // Each call takes one segment reference, makes its one or two reads through
 // it and releases it, so nothing is held when it returns: a retirement of the
 // segment that begins while the record is read waits for the reference, and
 // one that began before finds the read refused with segment.ErrSegmentGone.
-func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileID, at index.RecordAt, pieces []index.Placed) (payload []byte, h format.RecordHeader, verdict recordVerdict, err error) {
+func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileID, at index.RecordAt, pieces []index.Placed, bp *[]byte) (payload []byte, h format.RecordHeader, verdict recordVerdict, err error) {
 	if err = ctx.Err(); err != nil {
 		return nil, format.RecordHeader{}, 0, err
 	}
@@ -63,7 +83,7 @@ func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileI
 	// caller hands a record that fails a check to Corrupt, whose append domain
 	// ranks above the storage guard.
 	defer ref.Release()
-	hb := make([]byte, format.RecordHeaderSize)
+	hb := recordBuf(bp, format.RecordHeaderSize)
 	if err = readFull(ref, at.Segment, hb, int64(at.Offset)); err != nil {
 		return nil, format.RecordHeader{}, 0, err
 	}
@@ -88,7 +108,13 @@ func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileI
 	if !headerMatches(h, id, pieces) {
 		return nil, h, recordMismatch, nil
 	}
-	body := make([]byte, h.BodySize())
+	// ponytail: the whole body is read and checked however few of its bytes
+	// the read asks for, because the one payload checksum covers the whole
+	// payload and no byte of it may be handed out unchecked: a 4 KiB read of
+	// a 1 MiB record reads and verifies the megabyte. Upgrade to a payload
+	// checksum per 64 KiB of payload, a format change, when warm small-read
+	// rates over large records miss their target.
+	body := recordBuf(bp, h.BodySize())
 	if err = readFull(ref, at.Segment, body, int64(at.Offset)+format.RecordHeaderSize); err != nil {
 		return nil, format.RecordHeader{}, 0, err
 	}
@@ -103,6 +129,13 @@ func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileI
 // a record with a payload, of file id, of the piece's version, whose extent
 // places the piece's first byte at the piece's Skip into its payload and
 // holds the whole piece.
+//
+// decision: the header is checked against the index entry that sent the read
+// there, not against a catalog: the running journal keeps no catalog in
+// memory, and an index entry carries no sequence number, so none is compared.
+// A journal rebuilt from a catalog compares against the entries its recovery
+// placed in the index, which are the catalog's. Overturned by a sequence
+// number kept per index entry, which this check would then compare too.
 func headerMatches(h format.RecordHeader, id core.FileID, pieces []index.Placed) bool {
 	if h.Kind != format.KindWrite && h.Kind != format.KindFill {
 		return false
@@ -138,8 +171,10 @@ func readFull(ref segment.Ref, seg core.SegmentID, b []byte, off int64) error {
 }
 
 // segmentGone reports whether err is a read of a segment that no longer
-// exists: one the descriptor cache knows retired, or one the storage no
-// longer finds.
+// exists. The descriptor cache answers a segment whose file it no longer finds
+// with segment.ErrSegmentGone when it opens it, and a read through a
+// descriptor it already holds keeps reading an unlinked file, so no read
+// reaches here with the storage's own fs.ErrNotExist.
 func segmentGone(err error) bool {
-	return errors.Is(err, segment.ErrSegmentGone) || errors.Is(err, fs.ErrNotExist)
+	return errors.Is(err, segment.ErrSegmentGone)
 }

@@ -131,9 +131,13 @@ func (r *reading) serve(placed []index.Placed, again bool) error {
 }
 
 // serveRecord reads g's record, verifies it and copies its pieces into p, or
-// hands it to Corrupt and serves what Corrupt answers.
+// hands it to Corrupt and serves what Corrupt answers. The record is read into
+// a pooled buffer, handed back once on return, after every payload read into
+// it was copied into p.
 func (r *reading) serveRecord(g recordPieces, again bool) error {
-	payload, h, verdict, err := r.c.readRecord(r.ctx, r.st, r.id, g.at, g.pieces)
+	bp := recordBufs.Get().(*[]byte)
+	defer recordBufs.Put(bp)
+	payload, h, verdict, err := r.c.readRecord(r.ctx, r.st, r.id, g.at, g.pieces, bp)
 	switch {
 	case segmentGone(err):
 		return r.resolveAgain(g, again)
@@ -186,7 +190,7 @@ func (r *reading) serveRecord(g recordPieces, again bool) error {
 	// copy that fails after its repoint must be dropped by the read that found
 	// it.
 	at := index.RecordAt{Segment: out.Copy.Segment, Offset: uint32(out.Copy.Off)}
-	payload, _, verdict, err = r.c.readRecord(r.ctx, r.st, r.id, at, g.pieces)
+	payload, _, verdict, err = r.c.readRecord(r.ctx, r.st, r.id, at, g.pieces, bp)
 	switch {
 	case segmentGone(err):
 		r.miss(g.pieces)
