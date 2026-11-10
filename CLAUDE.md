@@ -266,7 +266,10 @@ isn't.
 up with `t.Cleanup`, so tests run in parallel and on any host.
 
 **Fix a flake, never retry it.** A flaky test is either a race in the code or a race in the
-test, and both are bugs. Don't add retries, raise timeouts or skip it to get green.
+test, and both are bugs. Don't add retries, raise timeouts or skip it to get green. The
+harness's own policy (RFC 29 §4.7): no retries on pull requests; the retry on develop and
+nightly only labels a failure flaky. A flake you can't fix now is quarantined in
+`test/harness/quarantine.yaml` with an issue and an expiry date, and the issue fixes it.
 
 **Assertions name what they check.** A failure message says which value was wrong and what was
 expected (`got %v, want %v`, naming the field or the operation). Prefer table-driven cases when
@@ -275,7 +278,8 @@ several inputs exercise one rule.
 ### By kind
 
 `test/suites.yaml` defines how CI runs each suite, and `test/harness/bin/dt` runs one locally.
-Never run two suites at once: they collide on ports and mounts.
+Don't start two suites by hand at once: they collide on ports and mounts. `dt` runs cells in
+parallel only where the registry says each one is isolated (`parallel: true`).
 
 **Integration** (`-tags=integration`, `-p 1`) runs against real backends: Badger on disk and
 a real S3 endpoint. Durability, ordering and fault-in changes need a test at this
@@ -298,7 +302,8 @@ bytes; any length the decoder reads stays inside the buffer. A target that only 
 encode and decode agree passes when both share a bug. Commit every crasher to
 `testdata/fuzz/<FuzzName>/`, where it becomes a regression seed that plain `go test` runs.
 
-**Benchmarks** measure only the operation. Do setup before `b.ResetTimer()`, or between
+**Benchmarks** run in the `manual` tier, with only `bench-smoke` on pull requests, non-blocking
+(RFC 29 §4.3). They measure only the operation. Do setup before `b.ResetTimer()`, or between
 `b.StopTimer()` and `b.StartTimer()`, but remember that Go sizes `b.N` from the timed region
 alone, so an expensive untimed setup inside the loop multiplies the run's wall time. Call
 `b.ReportAllocs()` on hot paths. Compare with `benchstat` over `-count=10` runs on the same
