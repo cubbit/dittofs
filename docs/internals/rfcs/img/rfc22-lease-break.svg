@@ -70,7 +70,7 @@
   <text x="150" y="328" class="s" text-anchor="middle">0 s</text>
   <text x="390" y="328" class="s" text-anchor="middle">ack, say 20 s</text>
   <text x="570" y="328" class="amt" text-anchor="middle">35 s: break deadline</text>
-  <text x="880" y="328" class="amt" text-anchor="end">60 s: smb_pending_deadline</text>
+  <text x="880" y="328" class="amt" text-anchor="end">60 s: recall_timeout</text>
 
   <text x="16" y="362" class="l">The held CREATE's own deadline, 60 s by default, exceeds the 35 s break deadline, so it always sees the break end</text>
   <text x="16" y="382" class="l">and is re-run — rather than failing at RFC 17's 30 s default while the holder still has 5 s to answer.</text>

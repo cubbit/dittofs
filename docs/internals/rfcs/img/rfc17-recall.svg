@@ -62,7 +62,7 @@
   <text x="468" y="386" class="h">If the conflicting caller speaks SMB</text>
   <text x="468" y="404" class="s">SMB has no retry signal, so the SMB adapter sends the interim</text>
   <text x="468" y="419" class="s">(pending) response and re-drives the call itself, in its</text>
-  <text x="468" y="434" class="s">request pipeline. The hold may run to smb_pending_deadline,</text>
+  <text x="468" y="434" class="s">request pipeline. The hold may run to recall_timeout,</text>
   <text x="468" y="449" class="s">which must exceed the 35 s break deadline, so the request</text>
   <text x="468" y="464" class="s">completes when the break resolves rather than just before.</text>
 
