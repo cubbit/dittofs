@@ -18,23 +18,20 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// resuming is the store's content view recording each file's phase 2 and
-// prune, and failing the phase 2 of the files in failing.
+// resuming is the store's content view failing the phase 2 of the files in
+// failing, and forwarding every other call.
 type resuming struct {
 	engine.Content
 	mu      sync.Mutex
 	failing map[entity.FileID]bool
-	resumes map[entity.FileID]int
-	pruned  map[entity.FileID]entity.JournalVersion
 }
 
 func newResuming() *resuming {
-	return &resuming{failing: map[entity.FileID]bool{}, resumes: map[entity.FileID]int{}, pruned: map[entity.FileID]entity.JournalVersion{}}
+	return &resuming{failing: map[entity.FileID]bool{}}
 }
 
 func (x *resuming) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) (bool, error) {
 	x.mu.Lock()
-	x.resumes[file]++
 	fail := x.failing[file]
 	x.mu.Unlock()
 	if fail {
@@ -43,27 +40,20 @@ func (x *resuming) Resume(ctx context.Context, share entity.ShareID, file entity
 	return x.Content.Resume(ctx, share, file)
 }
 
-func (x *resuming) PruneRemovals(ctx context.Context, share entity.ShareID, file entity.FileID, atOrBelow entity.JournalVersion) error {
-	err := x.Content.PruneRemovals(ctx, share, file, atOrBelow)
-	if err == nil {
-		x.mu.Lock()
-		x.pruned[file] = atOrBelow
-		x.mu.Unlock()
+// unpruned is the number of the file's removal records the store still
+// holds: a removal's prune deletes its record, so none once all are pruned.
+func (u *unit) unpruned(t *testing.T, f entity.FileID) int {
+	t.Helper()
+	n := 0
+	for r, err := range u.fs.Store.Content().UnfinishedRemovals(t.Context(), u.share.ID, uint64(u.share.Shard)) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.File == f {
+			n++
+		}
 	}
-	return err
-}
-
-func (x *resuming) prunedAt(f entity.FileID) (entity.JournalVersion, bool) {
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	v, ok := x.pruned[f]
-	return v, ok
-}
-
-func (x *resuming) resumed(f entity.FileID) int {
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	return x.resumes[f]
+	return n
 }
 
 // until advances the unit's clock past the loop's backoff until cond holds.
@@ -92,18 +82,7 @@ func TestARemovalRunsItsPhase2AndIsPruned(t *testing.T) {
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
 		t.Fatal(err)
 	}
-	u.until(t, "the removal is pruned", func() bool { _, ok := x.prunedAt(f); return ok })
-	if v, _ := x.prunedAt(f); v.IsZero() {
-		t.Error("pruned at the zero version, not the removal's")
-	}
-	for r, err := range u.fs.Store.Content().UnfinishedRemovals(t.Context(), u.share.ID, 0) {
-		if err != nil {
-			t.Fatal(err)
-		}
-		if r.File == f {
-			t.Errorf("after the loop, an unfinished removal of the file: %+v", r)
-		}
-	}
+	u.until(t, "the removal is pruned", func() bool { return u.unpruned(t, f) == 0 })
 	if n := u.e.RemovalsPending(); n != 0 {
 		t.Errorf("%d removals still pending on the loop", n)
 	}
@@ -128,16 +107,18 @@ func TestAFailingRemovalWedgesNoOther(t *testing.T) {
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
 		t.Fatal(err)
 	}
-	u.until(t, "f's phase 2 fails five times", func() bool { return x.resumed(f) >= 5 })
+	u.until(t, "f is removal_stalled", func() bool { return u.e.RemovalStalled(f) })
 	if err := u.e.Truncate(t.Context(), u.share.ID, g, 4); err != nil {
 		t.Fatal(err)
 	}
-	u.until(t, "g's removal is pruned while f's fails", func() bool { _, ok := x.prunedAt(g); return ok })
-	u.until(t, "f is removal_stalled", func() bool { return u.e.RemovalStalled(f) })
+	u.until(t, "g's removal is pruned while f's fails", func() bool { return u.unpruned(t, g) == 0 })
+	if n := u.unpruned(t, f); n != 1 {
+		t.Errorf("f's failing removal: %d records in the store, want 1 not pruned", n)
+	}
 	x.mu.Lock()
 	x.failing[f] = false
 	x.mu.Unlock()
-	u.until(t, "f's removal is pruned once the fault clears", func() bool { _, ok := x.prunedAt(f); return ok })
+	u.until(t, "f's removal is pruned once the fault clears", func() bool { return u.unpruned(t, f) == 0 })
 	if u.e.RemovalStalled(f) {
 		t.Error("f still removal_stalled after its removal finished")
 	}
@@ -171,7 +152,7 @@ func TestAStalledPhase2HoldsNoOther(t *testing.T) {
 	if err := u.e.Truncate(t.Context(), u.share.ID, g, 4); err != nil {
 		t.Fatal(err)
 	}
-	u.until(t, "g's removal is pruned while f's phase 2 stalls", func() bool { _, ok := x.prunedAt(g); return ok })
+	u.until(t, "g's removal is pruned while f's phase 2 stalls", func() bool { return u.unpruned(t, g) == 0 })
 }
 
 // cutResume is the store's content view whose first cut phase 2 runs of
@@ -206,7 +187,7 @@ func TestAnAdvancingPhase2IsNotStalled(t *testing.T) {
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
 		t.Fatal(err)
 	}
-	u.until(t, "f's removal is pruned", func() bool { _, ok := x.prunedAt(f); return ok })
+	u.until(t, "f's removal is pruned", func() bool { return u.unpruned(t, f) == 0 })
 	for _, r := range logs.records() {
 		if strings.HasPrefix(r.Message, "removal_stalled") {
 			t.Errorf("logged %q for a phase 2 that advanced on every run", r.Message)
@@ -258,16 +239,11 @@ func TestARefusedPhase1EndsAndReleasesTheGuard(t *testing.T) {
 // of a file that still exists (RFC 8 §8.1).
 func TestARefusedPhase1SettlesItsMarker(t *testing.T) {
 	var logged lockedBuffer
-	var log *settlesLog
 	u := newUnitWith(t, unitConfig{
 		deps: []func(*engine.Deps){func(d *engine.Deps) {
 			d.Existence = removeHook{d.Existence, refused}
 			d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
 		}},
-		wrap: func(h engine.Handle) engine.Handle {
-			log = &settlesLog{Handle: h, settled: map[journal.FileID]journal.Version{}}
-			return log
-		},
 	})
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
@@ -278,10 +254,7 @@ func TestARefusedPhase1SettlesItsMarker(t *testing.T) {
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err == nil {
 		t.Fatal("a refused phase 1 answered nil")
 	}
-	log.mu.Lock()
-	got := log.settled[journal.NewFileID(f)]
-	log.mu.Unlock()
-	if got.Compare(written) <= 0 {
+	if got := u.j.Settled(journal.NewFileID(f)); got.Compare(written) <= 0 {
 		t.Errorf("settled through %v after the refusal, want the truncate's version, above the write's %v", got, written)
 	}
 	if s := logged.String(); !strings.Contains(s, "level=ERROR") || !strings.Contains(s, "marker settled") {
@@ -428,22 +401,24 @@ func TestATerminalRemovalCommitsALossBelowItBeforeItsSettle(t *testing.T) {
 // loop with the guard held, and the marker stays unsettled until it commits.
 func TestATerminalRemovalsFailedCommitIsRetried(t *testing.T) {
 	x := &endingStore{}
-	u, h := newHookedUnit(t, onRemove(refused), onCommit(x.commit))
+	u := newUnit(t, onRemove(refused), onCommit(x.commit))
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
+	written := u.e.Pending(f)[0].Version
+	id := journal.NewFileID(f)
 	const failing = 1 << 20
 	x.fail.Store(failing)
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 8); err == nil {
 		t.Fatal("a refused phase 1 answered nil")
 	}
 	u.until(t, "the loop retrying the commit", func() bool { return x.fail.Load() <= failing-3 })
-	if !u.e.GuardHeld(f) || len(h.settleLog()) != 0 {
-		t.Fatalf("while the commit fails: guard %v, settles %+v; want the guard held and none", u.e.GuardHeld(f), h.settleLog())
+	if got := u.j.Settled(id); !u.e.GuardHeld(f) || got != (journal.Version{}) {
+		t.Fatalf("while the commit fails: guard %v, settled through %v; want the guard held and nothing settled", u.e.GuardHeld(f), got)
 	}
 	x.fail.Store(0)
 	u.until(t, "the retried commit", func() bool { return !u.e.GuardHeld(f) })
-	if s := h.settleLog(); len(s) != 1 {
-		t.Errorf("settles %+v, want one once the commit was retried", s)
+	if got := u.j.Settled(id); got.Compare(written) <= 0 {
+		t.Errorf("settled through %v once the commit was retried, want the truncate's version, above the write's %v", got, written)
 	}
 	if n := u.size(t, f); n != 16 {
 		t.Errorf("the store's size %d, want the write's 16", n)

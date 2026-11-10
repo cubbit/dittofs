@@ -7,6 +7,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // The peak is the highest count of any one second of the last 60: a second
@@ -98,21 +99,6 @@ func (l *limitStore) RaiseVersionLimits(
 	return nil
 }
 
-// stillClock is a clock that never moves.
-type stillClock struct{}
-
-func (stillClock) Now() time.Time {
-	return time.Time{}
-}
-
-func (stillClock) Elapsed() time.Duration {
-	return 0
-}
-
-func (stillClock) After(time.Duration) <-chan struct{} {
-	return make(chan struct{})
-}
-
 // The trigger with no version drawn is half a block, 8 here: with the limit
 // last passed at 1000, a journal whose next version is 992 has 8 versions
 // left and is not due, 993 leaves 7 and is due, and 991 leaves 9. stillDue,
@@ -136,7 +122,7 @@ func TestStillDueBoundary(t *testing.T) {
 		e := &Engine{
 			d: Deps{
 				Lifecycle: store,
-				Clock:     stillClock{},
+				Clock:     sim.NewTestClock(time.Time{}),
 			},
 			block: 16,
 		}

@@ -26,14 +26,18 @@ var errInjected = errors.New("injected store failure")
 // errClose is the failure a recorded handle's Close answers.
 var errClose = errors.New("injected close failure")
 
-// faultContent fails VersionFloor with err.
+// faultContent fails VersionFloor with err, once err is set.
 type faultContent struct {
 	engine.Content
 	err error
 }
 
-func (c faultContent) VersionFloor(context.Context, []entity.ShareID) (entity.JournalVersion, error) {
-	return entity.JournalVersion{}, c.err
+func (c faultContent) VersionFloor(ctx context.Context, shares []entity.ShareID) (entity.JournalVersion, error) {
+	if c.err != nil {
+		return entity.JournalVersion{}, c.err
+	}
+
+	return c.Content.VersionFloor(ctx, shares)
 }
 
 // gate holds a call: it closes entered once the call arrives, then waits for
@@ -272,17 +276,31 @@ func TestBindPassesTheLargerOfFloorAndLimit(t *testing.T) {
 	}
 }
 
-// Bind writes the share's version limit at the journal's.
+// Bind writes the share's version limit at the journal's: the first share's
+// Bind, which raises the limit Start set, and a second's, which raises
+// nothing.
 func TestBindWritesTheShareLimitAtTheJournals(t *testing.T) {
 	u := newUnit(t)
+	b := enginetest.AddShare(t, u.fs.Store, "b", 0)
 
-	got, err := u.fs.Store.Lifecycle().VersionLimits(t.Context(), []entity.ShareID{u.share.ID})
+	if err := u.e.Bind(t.Context(), b); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := u.fs.Store.Lifecycle().VersionLimits(t.Context(), []entity.ShareID{u.share.ID, b.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if got[u.share.ID] != entity.VersionOf(unitLimit) {
-		t.Errorf("the share's limit is %d, want the journal's %d", got[u.share.ID].Counter(), uint64(unitLimit))
+	want := u.j.Stats().VersionLimit.Counter
+	if want != u.limit {
+		t.Fatalf("the second Bind moved the journal's limit from %d to %d", u.limit, want)
+	}
+
+	for _, id := range []entity.ShareID{u.share.ID, b.ID} {
+		if got[id] != entity.VersionOf(want) {
+			t.Errorf("share %v's limit is %d, want the journal's %d", id, got[id].Counter(), want)
+		}
 	}
 }
 
@@ -312,25 +330,20 @@ func TestAFailedBindLeavesNothing(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			fl := &faultLifecycle{
-				limitsErr: c.limits,
-				raiseErr:  c.raise,
-			}
+			fl := &faultLifecycle{}
+			fc := &faultContent{}
 			faults := func(d *engine.Deps) {
 				fl.Lifecycle = d.Lifecycle
 				d.Lifecycle = fl
-
-				if c.content != nil {
-					d.Content = faultContent{
-						Content: d.Content,
-						err:     c.content,
-					}
-				}
+				fc.Content = d.Content
+				d.Content = fc
 			}
 			u := newUnitWith(t, unitConfig{
 				deps:    []func(*engine.Deps){faults},
 				unbound: true,
 			})
+			// Armed once Start has read the store through them.
+			fl.limitsErr, fl.raiseErr, fc.err = c.limits, c.raise, c.content
 
 			s := u.share
 			u.rec.closeErr = c.closeErr
@@ -667,8 +680,7 @@ func TestABindOfARaisedShardKeepsItsGrace(t *testing.T) {
 // sees a Share.
 func TestBindNeedsExactlyOneJournal(t *testing.T) {
 	t.Run("none", func(t *testing.T) {
-		u := newUnitWith(t, unitConfig{unbound: true})
-		u.e.SetJournalsForTest()
+		u := newUnitWith(t, unitConfig{unstarted: true})
 		u.fs.Counts.Take()
 
 		err := u.e.Bind(t.Context(), u.share)

@@ -12,7 +12,6 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // ErrNotStarted is the answer of a Bind while no journal is open.
@@ -29,9 +28,10 @@ var (
 	ErrNotRaised       = errNotRaised
 )
 
-// SetJournalsForTest sets the journals the engine has open, as Start will,
-// each with the limit last passed read from the journal itself, so the engine
-// and the journal agree on it.
+// SetJournalsForTest sets the journals the engine has open, each with the
+// limit last passed read from the journal itself. Start opens one journal
+// only, so this is the one way to give the engine two, for Bind's refusal of
+// them.
 func (e *Engine) SetJournalsForTest(js ...Journal) {
 	vls := make([]*versionLimit, 0, len(js))
 
@@ -53,18 +53,11 @@ func (e *Engine) SetBlockForTest(n uint64) {
 }
 
 // TrackRaisesForTest counts the version limit raise goroutines alive and
-// keeps the clock channels they wait on to retry, for WaitRaises, and counts
-// every one started, for RaisesStarted. Call it before Start or Bind.
+// keeps the clock channels they wait on to retry, for WaitRaises. Call it
+// before Start or Bind.
 func (e *Engine) TrackRaisesForTest() {
 	e.raising.count = &atomic.Int32{}
-	e.raising.started = &atomic.Int64{}
 	e.raising.timers = &sync.Map{}
-}
-
-// RaisesStarted is how many raise goroutines started since
-// TrackRaisesForTest.
-func (e *Engine) RaisesStarted() int64 {
-	return e.raising.started.Load()
 }
 
 // WaitRaises returns once every version limit raise has ended or waits on
@@ -225,11 +218,6 @@ func (e *Engine) FileStateWaiting() int64 { return e.files.waits.waiting.Load() 
 
 // PendingOpType is the pending operation's type, for a check of its fields.
 type PendingOpType = pendingOp
-
-// SetSample replaces how a write samples its verifier.
-func (e *Engine) SetSample(f func() vfserr.Verifier) {
-	e.sample = func(*binding) vfserr.Verifier { return f() }
-}
 
 // SetPrimary sets share s's verifier inputs from its shard's primary, as
 // Bind will from the start transaction, copying the share table as a

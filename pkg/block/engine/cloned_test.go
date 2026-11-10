@@ -21,19 +21,25 @@ import (
 )
 
 // clonedUnit is a cloneUnit whose clones run to their done signal, past
-// the gate a served engine keeps, over a recording CloneHold unless opts
-// sets another.
+// the gate a served engine keeps, holding their sources in the real
+// open-state table, behind a faultHolds that opts may set.
 func clonedUnit(t *testing.T, opts ...func(*engine.Deps)) *unit {
 	t.Helper()
 	return clonedUnitWith(t, unitConfig{deps: opts})
 }
 
-// clonedUnitWith is clonedUnit as c asks.
+// clonedUnitWith is clonedUnit as c asks. An unbound unit composes open
+// state itself, with withOpenState, once its share is bound.
 func clonedUnitWith(t *testing.T, c unitConfig) *unit {
 	t.Helper()
-	c.deps = append([]func(*engine.Deps){func(d *engine.Deps) { d.Holds = &recHolds{} }}, c.deps...)
+	var h *faultHolds
+	c.deps = append([]func(*engine.Deps){func(d *engine.Deps) { d.Holds = &faultHolds{} }}, c.deps...)
+	c.deps = append(c.deps, func(d *engine.Deps) { h, _ = d.Holds.(*faultHolds) })
 	u := cloneUnitWith(t, c)
 	u.e.FakeCloneDone()
+	if h != nil && !c.unbound {
+		u.withOpenState(t, h)
+	}
 	return u
 }
 
@@ -116,6 +122,31 @@ func clonedHookedUnit(t *testing.T, deps ...func(*engine.Deps)) (*unit, *hookedH
 	return u, h
 }
 
+// cloneMarkers is every clone target marker the journal holds for f,
+// settled or not.
+func (u *unit) cloneMarkers(f entity.FileID) []journal.Change {
+	return slices.DeleteFunc(u.j.Markers(journal.NewFileID(f)), func(c journal.Change) bool {
+		return c.Kind != journal.ChangeCloneTarget
+	})
+}
+
+// heldIn is the versions of the pieces handle h holds of file f inside
+// [off, off+n), in version order: a clone's copies, when [off, off+n) is its
+// destination extent.
+func heldIn(t *testing.T, h engine.Handle, f entity.FileID, off, n int64) []journal.Version {
+	t.Helper()
+	var vs []journal.Version
+	for c, err := range h.Since(t.Context(), journal.NewFileID(f), journal.Version{}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Kind == journal.ChangeWrite && c.Extent.Off >= off && c.Extent.Off+c.Extent.Len <= off+n {
+			vs = append(vs, c.Version)
+		}
+	}
+	return vs
+}
+
 // heldBeforePhase1 starts a clone of x and returns once it is held between
 // its copies' sync and its phase 1, h the share's handle, with the function
 // that lets it go on and the channel of its answer.
@@ -149,8 +180,8 @@ func TestARefusedReservationChangesNothing(t *testing.T) {
 	if !isDelay(err, vfserr.DelayCapacity) {
 		t.Fatalf("a refused reservation: %v, want DelayCapacity", err)
 	}
-	if n := len(u.j.CloneTargets()); n != 0 {
-		t.Errorf("%d CloneTarget calls after a refused reservation, want none", n)
+	if m := u.cloneMarkers(dst); len(m) != 0 {
+		t.Errorf("the journal holds clone markers %+v after a refused reservation, want none", m)
 	}
 	for _, f := range []entity.FileID{src, dst} {
 		if s, d := u.e.Registrations(f); s+d != 0 {
@@ -177,8 +208,8 @@ func TestACloneOfASourcePastItsEndIsRefused(t *testing.T) {
 	if !errors.Is(err, vfserr.ErrInvalid) {
 		t.Fatalf("a clone past the source's end: %v, want ErrInvalid", err)
 	}
-	if n := len(u.j.CloneTargets()); n != 0 {
-		t.Errorf("%d CloneTarget calls, want none", n)
+	if m := u.cloneMarkers(dst); len(m) != 0 {
+		t.Errorf("the journal holds clone markers %+v, want none", m)
 	}
 	if got := u.read(t, dst, 0, 2*mib); !bytes.Equal(got, fill(2*mib, 'd')) {
 		t.Error("the destination lost its prior content to a refused clone")
@@ -202,13 +233,13 @@ func TestACloneReservesItsCopiesAndWritesThemAboveItsVersion(t *testing.T) {
 	if r := u.j.Reserves(); len(r) != 1 || r[0].N != 2*mib+mib/2 || r[0].Writes != 3 {
 		t.Errorf("reserved %+v, want one of %d bytes and 3 writes", r, 2*mib+mib/2)
 	}
-	ct := u.j.CloneTargets()
+	ct := u.cloneMarkers(dst)
 	if len(ct) != 1 {
-		t.Fatalf("%d CloneTarget calls, want one", len(ct))
+		t.Fatalf("the journal holds clone markers %+v, want one", ct)
 	}
-	copies := u.j.ReservedWrites()
+	copies := heldIn(t, u.h, dst, 0, 4*mib+mib/2)
 	if len(copies) != 3 {
-		t.Fatalf("%d copies through the reservation, want 3", len(copies))
+		t.Fatalf("the destination holds %d copies, want 3", len(copies))
 	}
 	newest := copies[0]
 	for _, v := range copies {
@@ -242,27 +273,48 @@ func TestACloneReservesItsCopiesAndWritesThemAboveItsVersion(t *testing.T) {
 	}
 }
 
-// While the clone is held between its copies and its phase 1, the
-// destination's guard keeps its operations out of every batch: a group
-// commit asked for then commits none of them, and the clone then commits.
+// While the clone is held in its phase 1's store call, the destination's
+// guard keeps its operations out of every batch: a batch that commits
+// another file, the destination due beside it, commits none of the
+// destination's, the write below the clone included, and settles nothing of
+// it; the clone then commits. The hold is outside the journal, so a batch
+// that took the file would find nothing to wait on.
 func TestTheGuardKeepsACloneOutOfEveryBatch(t *testing.T) {
-	u, h := clonedHookedUnit(t)
+	entered, hold := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	u := clonedUnit(t, onClone(func(ctx context.Context, next engine.Existence, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
+		once.Do(func() { close(entered); <-hold })
+		return next.Clone(ctx, op, pending)
+	}))
+	var released sync.Once
+	release := func() { released.Do(func() { close(hold) }) }
+	t.Cleanup(release)
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	u.write(t, dst, 4*mib, fill(10, 'w')) // below the clone, outside its extent
-	release, answer := u.heldBeforePhase1(t, h, src, dst, vfserr.Extent{Len: mib})
-	v := u.j.CloneTargets()[0].Version
-	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-	_ = u.e.CommitAll(ctx, u.rec)
-	cancel()
-	applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst)
-	if !applied.IsZero() {
+	other := u.create(t, "other")
+	u.write(t, other, 0, fill(10, 'o'))
+	answer := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
+	select {
+	case <-entered:
+	case err := <-answer:
+		t.Fatalf("the clone answered %v before its phase 1", err)
+	}
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Nanosecond, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	u.clock.Advance(time.Second) // the destination is due
+	if err := u.e.CommitNow(t.Context(), u.share.ID, other); err != nil {
+		t.Fatalf("another file's commit while the clone holds the destination: %v", err)
+	}
+	if applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, other); applied.IsZero() {
+		t.Fatal("the other file's batch committed nothing")
+	}
+	if applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst); !applied.IsZero() {
 		t.Errorf("a batch committed the destination's write at %v while the clone held its guard", applied)
 	}
-	for _, s := range h.settleLog() {
-		if s.v.Compare(v) >= 0 {
-			t.Errorf("settled at %v while the clone at %v is held before its phase 1", s.v, v)
-		}
+	if s := u.j.Settled(journal.NewFileID(dst)); s != (journal.Version{}) {
+		t.Errorf("the destination settled at %v while the clone is held in its phase 1", s)
 	}
 	release()
 	if err := <-answer; err != nil {
@@ -341,7 +393,7 @@ func TestAWriteOutsideTheExtentDuringACloneSurvives(t *testing.T) {
 // the clone's version, and the destination's covering lookup over the
 // extent waits for the clone to be done; once done, the record is gone.
 func TestPhase1HoldsTheSourceAndHoldsTheDestinationExtent(t *testing.T) {
-	h := &recHolds{}
+	h := &faultHolds{}
 	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h })
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
@@ -371,7 +423,7 @@ func TestPhase1HoldsTheSourceAndHoldsTheDestinationExtent(t *testing.T) {
 		return nil
 	}
 	u.clone(t, src, dst, vfserr.Extent{Len: mib})
-	v := entity.JournalVersion(u.j.CloneTargets()[0].Version.Bytes())
+	v := entity.JournalVersion(u.cloneMarkers(dst)[0].Version.Bytes())
 	if atHold != 1 || heldAt != v {
 		t.Errorf("the source's clone-kind opens at the hold: %d at %v; want one naming the destination at %v", atHold, heldAt, v)
 	}
@@ -442,8 +494,18 @@ func TestAReleaseOfARegisteredSourceIsPending(t *testing.T) {
 	if !isDelay(got, vfserr.DelayClone) {
 		t.Errorf("the pending release's outcome: %v, want DelayClone", got)
 	}
-	if n := h.deletes.Load(); n != 0 {
-		t.Errorf("the journal saw %d Delete calls for a release behind a clone, want none", n)
+	held := false
+	for c, err := range u.h.Since(t.Context(), journal.NewFileID(src), journal.Version{}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Kind == journal.ChangeDelete {
+			t.Errorf("the journal holds a Delete of the source at %v for a release behind a clone", c.Version)
+		}
+		held = held || c.Kind == journal.ChangeWrite
+	}
+	if !held {
+		t.Error("the journal no longer holds the source's bytes after a release behind a clone")
 	}
 	u.clock.Advance(10 * time.Second)
 	time.Sleep(10 * time.Millisecond)
@@ -635,7 +697,7 @@ func (u *unit) retriedClone(t *testing.T, x *refusingClone, src, dst entity.File
 // write above it, and settle past it.
 func TestALoopEndingLeavesARetriedCloneForRecovery(t *testing.T) {
 	x := &refusingClone{}
-	u, h := clonedHookedUnit(t, onClone(x.clone))
+	u := clonedUnit(t, onClone(x.clone))
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	u.write(t, dst, 4*mib, fill(10, 'w'))
@@ -652,10 +714,8 @@ func TestALoopEndingLeavesARetriedCloneForRecovery(t *testing.T) {
 	if applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst); !applied.IsZero() {
 		t.Errorf("the last group commit committed the destination at %v", applied)
 	}
-	for _, s := range h.settleLog() {
-		if s.v.Compare(cv) >= 0 {
-			t.Errorf("settled at %v, at or above the cut-short clone's %v", s.v, cv)
-		}
+	if got := u.j.Settled(journal.NewFileID(dst)); got.Compare(cv) >= 0 {
+		t.Errorf("settled at %v, at or above the cut-short clone's %v", got, cv)
 	}
 	if p := u.e.Pending(dst); len(p) != before || p[1].Version != cv {
 		t.Errorf("after the loop ended the entry holds %+v, want its %d operations, the clone's among them", p, before)
@@ -880,8 +940,8 @@ func TestACloneWithoutItsDoneSignalIsUnbuilt(t *testing.T) {
 	if err := u.e.Clone(t.Context(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: mib}); !errors.Is(err, engine.ErrUnbuilt) {
 		t.Errorf("a clone with no done signal: %v, want ErrUnbuilt", err)
 	}
-	if n := len(u.j.CloneTargets()); n != 0 || u.e.HasEntry(src) || u.e.HasEntry(dst) {
-		t.Errorf("an unbuilt clone left %d CloneTargets, entries %v %v", n, u.e.HasEntry(src), u.e.HasEntry(dst))
+	if n := len(u.cloneMarkers(dst)); n != 0 || u.e.HasEntry(src) || u.e.HasEntry(dst) {
+		t.Errorf("an unbuilt clone left %d clone markers, entries %v %v", n, u.e.HasEntry(src), u.e.HasEntry(dst))
 	}
 }
 
@@ -901,7 +961,7 @@ func TestACloneHandsTheStoreNoCopy(t *testing.T) {
 	u.write(t, dst, 4*mib, fill(10, 'w'))
 	u.clone(t, src, dst, vfserr.Extent{Len: mib})
 	copies := map[entity.JournalVersion]bool{}
-	for _, v := range u.j.ReservedWrites() {
+	for _, v := range heldIn(t, u.h, dst, 0, mib) {
 		copies[entity.JournalVersion(v.Bytes())] = true
 	}
 	mu.Lock()
@@ -969,8 +1029,8 @@ func TestACloneIntoADestinationStillCloningIsDelayedBeforeItsJournalStep(t *test
 	if !isDelay(err, vfserr.DelayClone) {
 		t.Fatalf("a second clone into the destination: %v, want DelayClone", err)
 	}
-	if n := len(u.j.CloneTargets()); n != 1 {
-		t.Errorf("the journal saw %d CloneTargets, want the first clone's alone", n)
+	if n := len(u.cloneMarkers(dst)); n != 1 {
+		t.Errorf("the journal holds %d clone markers, want the first clone's alone", n)
 	}
 	if err := u.e.Truncate(ctx, u.share.ID, dst, 4*mib); err != nil {
 		t.Errorf("a grow of the destination: %v, want its guard free", err)

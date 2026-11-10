@@ -154,13 +154,9 @@ func left(s *starter) uint64 {
 	return st.VersionLimit.Counter - st.NextVersion.Counter
 }
 
-// marks is every limit the engine passed to the journal, the start's first.
-func marks(s *starter) []journal.Version {
-	s.j.mu.Lock()
-
-	defer s.j.mu.Unlock()
-
-	return slices.Clone(s.j.marks)
+// limit is the version limit the fake journal holds.
+func limit(s *starter) uint64 {
+	return s.j.Stats().VersionLimit.Counter
 }
 
 // limitOf is share id's version limit in the store.
@@ -293,7 +289,7 @@ func waiting(g string) bool {
 // the store has committed it, and every served share holds it after.
 func TestRaiseCommitsBeforeTheJournalGetsTheLimit(t *testing.T) {
 	s := newRaiser(t, time.Second)
-	l0 := marks(s)[0].Counter
+	l0 := limit(s)
 	g := newGate(t)
 	s.lc.hold.Store(&heldRaise{
 		g: g,
@@ -302,11 +298,8 @@ func TestRaiseCommitsBeforeTheJournalGetsTheLimit(t *testing.T) {
 	drawWhileHeld(t, s, 125, g)
 	waitForRaise(t, g)
 
-	if n := len(marks(s)); n != 1 {
-		t.Errorf(
-			"the journal was given %d limits while the raise waits on the store, want one",
-			n,
-		)
+	if got := limit(s); got != l0 {
+		t.Errorf("the journal's limit is %d while the raise waits on the store, want the start's %d", got, l0)
 	}
 
 	if got := limitOf(t, s, s.one.ID); got != l0 {
@@ -316,15 +309,15 @@ func TestRaiseCommitsBeforeTheJournalGetsTheLimit(t *testing.T) {
 	g.open()
 	s.e.WaitRaises(t)
 
-	m := marks(s)
+	raised := limit(s)
 
-	if len(m) != 2 {
-		t.Fatalf("the journal was given %d limits, want 2", len(m))
+	if raised != l0+testBlock {
+		t.Fatalf("the journal's limit is %d, want one raise above %d, %d", raised, l0, l0+testBlock)
 	}
 
 	for _, id := range []entity.ShareID{s.one.ID, s.two.ID} {
-		if got := limitOf(t, s, id); got < m[1].Counter {
-			t.Errorf("share %v holds %d below the limit the journal got, %d", id, got, m[1].Counter)
+		if got := limitOf(t, s, id); got < raised {
+			t.Errorf("share %v holds %d below the limit the journal got, %d", id, got, raised)
 		}
 	}
 }
@@ -393,7 +386,7 @@ func TestBindWaitsForARaiseInFlight(t *testing.T) {
 // share's draw is served again, and no share waits for a later Bind.
 func TestFailedBindHandsTheRaiseToTheJournal(t *testing.T) {
 	s := newRaiser(t, time.Second, withSpare())
-	l0 := marks(s)[0].Counter
+	l0 := limit(s)
 	setLimit(t, s, s.spare.ID, l0+3*testBlock)
 	s.lc.failRaises(errors.New("store down"))
 
@@ -426,9 +419,13 @@ func TestBindWaitEndsAtItsContext(t *testing.T) {
 	done := make(chan error, 1)
 	finished := make(chan struct{})
 
+	// The raise released here must end while the store is still open: one
+	// that met the closed store would wait on the test clock to retry and
+	// outlive the test.
 	t.Cleanup(func() {
 		g.open()
 		<-finished
+		s.e.WaitRaises(t)
 	})
 
 	go func() {
@@ -466,6 +463,7 @@ func TestRaiseWaitsForBindToPublish(t *testing.T) {
 		share: third.ID,
 	})
 
+	l0 := limit(s)
 	done := bindInBackground(t, s, third)
 	// Registered after the Bind's wait, so it runs first and frees the Bind
 	// should the test end early.
@@ -475,7 +473,7 @@ func TestRaiseWaitsForBindToPublish(t *testing.T) {
 	drawWhileHeld(t, s, 125, g)
 
 	moved := func() bool {
-		return len(marks(s)) > 1
+		return limit(s) != l0
 	}
 
 	// The raise woken by the draws reaches the lock at once; the deadline
@@ -513,7 +511,7 @@ func TestRaiseWaitsForBindToPublish(t *testing.T) {
 // after it.
 func TestRaiseCountsFromTheCounter(t *testing.T) {
 	s := newRaiser(t, time.Second, withSpare())
-	l0 := marks(s)[0].Counter
+	l0 := limit(s)
 	third := s.spare
 	setLimit(t, s, third.ID, l0+3*testBlock)
 
@@ -521,14 +519,8 @@ func TestRaiseCountsFromTheCounter(t *testing.T) {
 		t.Fatalf("Bind: %v", err)
 	}
 
-	m := marks(s)
-
-	if len(m) != 2 {
-		t.Fatalf("the journal was given %d limits, want the start's and the Bind's", len(m))
-	}
-
-	if next := s.j.Stats().NextVersion.Counter; m[1].Counter <= next {
-		t.Errorf("the Bind's raise passed %d, not above the counter %d", m[1].Counter, next)
+	if st := s.j.Stats(); st.VersionLimit.Counter <= st.NextVersion.Counter {
+		t.Errorf("the Bind's raise left the journal's limit at %d, not above the counter %d", st.VersionLimit.Counter, st.NextVersion.Counter)
 	}
 
 	if _, err := s.e.Draw(t.Context(), s.one.ID, drawFile); err != nil {
@@ -543,7 +535,7 @@ func TestRaiseCountsFromTheCounter(t *testing.T) {
 func TestLateShareBindRaisesItself(t *testing.T) {
 	s := newRaiser(t, time.Second)
 	ctx := t.Context()
-	l0 := marks(s)[0].Counter
+	l0 := limit(s)
 	late := enginetest.AddShare(t, s.fs.Store, "late", 1<<30)
 
 	grant := entity.ShareGrant{
@@ -588,15 +580,15 @@ func TestLateShareBindRaisesItself(t *testing.T) {
 		t.Fatalf("Bind: %v", err)
 	}
 
-	m := marks(s)
+	raised := limit(s)
 
-	if len(m) != 2 || m[1].Counter <= high.Counter() {
-		t.Fatalf("limits %v, want a second one above the floor %d", m, high.Counter())
+	if raised <= high.Counter() {
+		t.Fatalf("the journal's limit is %d, want one raised above the floor %d", raised, high.Counter())
 	}
 
 	for _, id := range []entity.ShareID{s.one.ID, s.two.ID, late.ID} {
-		if got := limitOf(t, s, id); got < m[1].Counter {
-			t.Errorf("share %v holds %d below the raised limit %d", id, got, m[1].Counter)
+		if got := limitOf(t, s, id); got < raised {
+			t.Errorf("share %v holds %d below the raised limit %d", id, got, raised)
 		}
 	}
 
@@ -621,14 +613,14 @@ func TestLateShareBindRaisesItself(t *testing.T) {
 // timer.
 func TestRaiseDueOnNextDraw(t *testing.T) {
 	s := newRaiser(t, time.Second)
-	l0 := marks(s)[0].Counter
+	l0 := limit(s)
 
 	drawAtRate(t, s, 10, 50)
 	drawN(t, s, 122)
 	s.e.WaitRaises(t)
 
-	if n := len(marks(s)); n != 1 {
-		t.Fatalf("raised with %d versions left at a peak of 122 a second: %d limits", left(s), n)
+	if got := limit(s); got != l0 {
+		t.Fatalf("raised to %d with %d versions left at a peak of 122 a second", got, left(s))
 	}
 
 	if err := s.write(t, s.one.ID); err != nil {
@@ -652,19 +644,20 @@ func TestRaiseDueOnNextDraw(t *testing.T) {
 // and only once.
 func TestMarginCountsExistenceAge(t *testing.T) {
 	s := newRaiser(t, 10*time.Second)
+	l0 := limit(s)
 
 	drawAtRate(t, s, 60, 1636)
 	s.e.WaitRaises(t)
 
-	if n := len(marks(s)); n != 1 {
-		t.Fatalf("raised with %d versions left: %d limits", left(s), n)
+	if got := limit(s); got != l0 {
+		t.Fatalf("raised to %d with %d versions left", got, left(s))
 	}
 
 	drawN(t, s, 1)
 	s.e.WaitRaises(t)
 
-	if n := len(marks(s)); n != 2 {
-		t.Errorf("%d limits given on the version that left 2459 at 60 a second, want 2", n)
+	if got := limit(s); got != l0+testBlock {
+		t.Errorf("the journal's limit is %d after the version that left 2459 at 60 a second, want one raise to %d", got, l0+testBlock)
 	}
 }
 
@@ -672,26 +665,16 @@ func TestMarginCountsExistenceAge(t *testing.T) {
 // from the limit last passed, never from the counter alone.
 func TestRaiseFromLimitWhenRateTermAboveBlock(t *testing.T) {
 	s := newRaiser(t, time.Second)
-	l0 := marks(s)[0].Counter
+	l0 := limit(s)
 
 	drawN(t, s, 125)
 	s.e.WaitRaises(t)
+	first := limit(s)
 	drawN(t, s, 124)
 	s.e.WaitRaises(t)
 
-	m := marks(s)
-
-	if len(m) != 3 {
-		t.Fatalf("the journal was given %d limits, want the start's and two raises", len(m))
-	}
-
-	if m[1].Counter != l0+testBlock || m[2].Counter != m[1].Counter+testBlock {
-		t.Errorf(
-			"raised to %d then %d from %d, want one block each",
-			m[1].Counter,
-			m[2].Counter,
-			l0,
-		)
+	if second := limit(s); first != l0+testBlock || second != first+testBlock {
+		t.Errorf("raised to %d then %d from %d, want one block each", first, second, l0)
 	}
 }
 
@@ -700,7 +683,7 @@ func TestRaiseFromLimitWhenRateTermAboveBlock(t *testing.T) {
 // and before it publishes.
 func TestBindRaisesEveryShareWithinTrigger(t *testing.T) {
 	s := newRaiser(t, time.Second, withSpare())
-	l0 := marks(s)[0].Counter
+	l0 := limit(s)
 	third := s.spare
 	setLimit(t, s, third.ID, l0-100)
 	g := newGate(t)
@@ -721,18 +704,28 @@ func TestBindRaisesEveryShareWithinTrigger(t *testing.T) {
 		t.Errorf("the share is published before the journal has its limit: %v", err)
 	}
 
-	mark := s.j.mark().Counter
+	held := map[entity.ShareID]uint64{}
 
 	for _, id := range []entity.ShareID{s.one.ID, s.two.ID, third.ID} {
-		if got := limitOf(t, s, id); got < mark {
-			t.Errorf("share %v holds %d below the limit the journal is given, %d", id, got, mark)
-		}
+		held[id] = limitOf(t, s, id)
 	}
 
 	g.open()
 
 	if err := <-done; err != nil {
 		t.Fatalf("Bind = %v", err)
+	}
+
+	mark := limit(s)
+
+	if mark <= l0 {
+		t.Fatalf("the journal's limit is %d after the Bind, want one raised above %d", mark, l0)
+	}
+
+	for id, got := range held {
+		if got < mark {
+			t.Errorf("share %v held %d before the journal was given its limit, below that limit %d", id, got, mark)
+		}
 	}
 }
 
@@ -754,13 +747,15 @@ func TestRaiseSkipsRemovedBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	l0 := limit(s)
+
 	drawN(t, s, 125)
 	s.e.WaitRaises(t)
 
-	m := marks(s)
+	raised := limit(s)
 
-	if len(m) != 2 {
-		t.Fatalf("the journal was given %d limits, want 2", len(m))
+	if raised != l0+testBlock {
+		t.Fatalf("the journal's limit is %d, want one raise above %d, %d", raised, l0, l0+testBlock)
 	}
 
 	if calls := s.lc.raiseCalls(); slices.Contains(calls[len(calls)-1].shares, removed) {
@@ -768,8 +763,8 @@ func TestRaiseSkipsRemovedBinding(t *testing.T) {
 	}
 
 	for _, id := range []entity.ShareID{s.one.ID, s.two.ID} {
-		if got := limitOf(t, s, id); got < m[1].Counter {
-			t.Errorf("share %v holds %d below the raised limit %d", id, got, m[1].Counter)
+		if got := limitOf(t, s, id); got < raised {
+			t.Errorf("share %v holds %d below the raised limit %d", id, got, raised)
 		}
 	}
 }
@@ -778,6 +773,7 @@ func TestRaiseSkipsRemovedBinding(t *testing.T) {
 // from 10 ms again once one commits; each failure is logged at Warn.
 func TestRaiseRetriesWithBackoff(t *testing.T) {
 	s := newRaiser(t, time.Second)
+	l0 := limit(s)
 	fail := errors.New("store down")
 	plan := make([]error, 0, 12)
 
@@ -858,8 +854,8 @@ func TestRaiseRetriesWithBackoff(t *testing.T) {
 		t.Errorf("%d attempts, want 12: the wait did not start again from 10 ms", calls())
 	}
 
-	if n := len(marks(s)); n != 3 {
-		t.Errorf("the journal was given %d limits, want the start's and two raises", n)
+	if got := limit(s); got != l0+2*testBlock {
+		t.Errorf("the journal's limit is %d, want two raises above %d, %d", got, l0, l0+2*testBlock)
 	}
 
 	if n := len(logsAt(s, slog.LevelWarn)); n != 10 {
@@ -886,8 +882,6 @@ func TestRefusedLimitIsNotRetried(t *testing.T) {
 		t.Errorf("a refused limit waits to be retried: %d waits", s.clock.Pending())
 	}
 
-	started := s.e.RaisesStarted()
-
 	var err error
 
 	for err == nil {
@@ -895,10 +889,6 @@ func TestRefusedLimitIsNotRetried(t *testing.T) {
 	}
 
 	s.e.WaitRaises(t)
-
-	if n := s.e.RaisesStarted() - started; n != 0 {
-		t.Errorf("%d raises started for versions issued after the refusal, want none", n)
-	}
 
 	if n := len(s.lc.raiseCalls()) - base; n != 1 {
 		t.Errorf("%d raises reached the store after the refusal and the draws after it, want 1", n)
@@ -916,14 +906,10 @@ func TestRefusedLimitIsNotRetried(t *testing.T) {
 }
 
 // Once the journal has refused a limit, a Bind that attaches a share to it
-// fails with the journal's error, with no store call and no second
-// SetVersionLimit, whether the counter is within the trigger or, after the
+// fails with the journal's error, writing no limit for the share and passing
+// the journal none, whether the counter is within the trigger or, after the
 // peak rate has aged out, outside it (RFC 8 §2.7). The share is not bound.
 func TestBindToARefusedJournalFails(t *testing.T) {
-	limitCalls := func(s *starter) int {
-		return strings.Count(strings.Join(s.j.log(), " "), "limit")
-	}
-
 	for _, c := range []struct {
 		name string
 		wait time.Duration
@@ -943,8 +929,13 @@ func TestBindToARefusedJournalFails(t *testing.T) {
 			s.e.WaitRaises(t)
 			s.clock.Advance(c.wait)
 
-			base := len(s.lc.raiseCalls())
-			limits := limitCalls(s)
+			// The journal takes limits again, so one the Bind passed would
+			// show in its limit.
+			s.j.mu.Lock()
+			s.j.fail = nil
+			s.j.mu.Unlock()
+
+			spare, l0 := limitOf(t, s, s.spare.ID), limit(s)
 
 			err := s.e.Bind(t.Context(), s.spare)
 			if !errors.Is(err, vfserr.ErrUnavailable) {
@@ -953,12 +944,12 @@ func TestBindToARefusedJournalFails(t *testing.T) {
 
 			s.e.WaitRaises(t)
 
-			if n := len(s.lc.raiseCalls()) - base; n != 0 {
-				t.Errorf("the refused Bind made %d store calls to raise a limit, want none", n)
+			if got := limitOf(t, s, s.spare.ID); got != spare {
+				t.Errorf("the refused Bind moved its share's stored limit from %d to %d", spare, got)
 			}
 
-			if n := limitCalls(s) - limits; n != 0 {
-				t.Errorf("the refused Bind passed the journal %d limits, want none", n)
+			if got := limit(s); got != l0 {
+				t.Errorf("the refused Bind moved the journal's limit from %d to %d", l0, got)
 			}
 
 			if err := s.e.BindingOf(s.spare.ID); err == nil {
@@ -972,7 +963,7 @@ func TestBindToARefusedJournalFails(t *testing.T) {
 // limit ends without another store call or log: the refusal persists.
 func TestRefusalEndsARaiseWaitingToRetry(t *testing.T) {
 	s := newRaiser(t, time.Second, withSpare())
-	l0 := marks(s)[0].Counter
+	l0 := limit(s)
 	s.lc.failRaises(errors.New("store down"))
 
 	// The raise fails and waits on the clock to retry; a draw must not wait
@@ -1019,6 +1010,7 @@ func TestRefusalEndsARaiseWaitingToRetry(t *testing.T) {
 // trigger after it.
 func TestWakeDuringRaiseRunsOnceMore(t *testing.T) {
 	s := newRaiser(t, time.Second)
+	l0 := limit(s)
 	g := newGate(t)
 	s.lc.hold.Store(&heldRaise{
 		g: g,
@@ -1030,14 +1022,8 @@ func TestWakeDuringRaiseRunsOnceMore(t *testing.T) {
 	g.open()
 	s.e.WaitRaises(t)
 
-	m := marks(s)
-
-	if len(m) != 3 {
-		t.Fatalf("the journal was given %d limits, want the start's and two raises", len(m))
-	}
-
-	if m[2].Counter != m[1].Counter+testBlock {
-		t.Errorf("the second raise passed %d, want %d", m[2].Counter, m[1].Counter+testBlock)
+	if got := limit(s); got != l0+2*testBlock {
+		t.Errorf("the journal's limit is %d, want two raises above %d, %d", got, l0, l0+2*testBlock)
 	}
 }
 
@@ -1045,6 +1031,7 @@ func TestWakeDuringRaiseRunsOnceMore(t *testing.T) {
 // journal above the trigger.
 func TestWakeDuringRaiseNoSecondWhenCovered(t *testing.T) {
 	s := newRaiser(t, time.Second)
+	l0 := limit(s)
 	g := newGate(t)
 	s.lc.hold.Store(&heldRaise{
 		g: g,
@@ -1056,8 +1043,8 @@ func TestWakeDuringRaiseNoSecondWhenCovered(t *testing.T) {
 	g.open()
 	s.e.WaitRaises(t)
 
-	if n := len(marks(s)); n != 2 {
-		t.Errorf("the journal was given %d limits, want the start's and one raise", n)
+	if got := limit(s); got != l0+testBlock {
+		t.Errorf("the journal's limit is %d, want one raise above %d, %d", got, l0, l0+testBlock)
 	}
 }
 
@@ -1065,11 +1052,12 @@ func TestWakeDuringRaiseNoSecondWhenCovered(t *testing.T) {
 // applied while serving makes the raise due on the next draw.
 func TestMarginReadOnEveryCheck(t *testing.T) {
 	s := newRaiser(t, time.Second)
+	l0 := limit(s)
 
 	drawAtRate(t, s, 60, 1896)
 	s.e.WaitRaises(t)
 
-	if n := len(marks(s)); n != 1 {
+	if limit(s) != l0 {
 		t.Fatalf("raised with %d versions left at 60 a second and a 1 s existence age", left(s))
 	}
 
@@ -1077,8 +1065,8 @@ func TestMarginReadOnEveryCheck(t *testing.T) {
 	drawN(t, s, 1)
 	s.e.WaitRaises(t)
 
-	if n := len(marks(s)); n != 2 {
-		t.Errorf("the 20 s existence age applied did not make the raise due: %d limits", n)
+	if got := limit(s); got != l0+testBlock {
+		t.Errorf("the 20 s existence age applied did not make the raise due: limit %d, want %d", got, l0+testBlock)
 	}
 }
 
@@ -1087,19 +1075,20 @@ func TestMarginReadOnEveryCheck(t *testing.T) {
 // the 1857th version, and only once.
 func TestMarginDefaultWithoutSettings(t *testing.T) {
 	s := newRaiser(t, 0)
+	l0 := limit(s)
 
 	drawAtRate(t, s, 70, 1856)
 	s.e.WaitRaises(t)
 
-	if n := len(marks(s)); n != 1 {
-		t.Fatalf("raised with %d versions left: %d limits", left(s), n)
+	if got := limit(s); got != l0 {
+		t.Fatalf("raised to %d with %d versions left", got, left(s))
 	}
 
 	drawN(t, s, 1)
 	s.e.WaitRaises(t)
 
-	if n := len(marks(s)); n != 2 {
-		t.Errorf("%d limits given on the version that left 2239 at 70 a second, want 2", n)
+	if got := limit(s); got != l0+testBlock {
+		t.Errorf("the journal's limit is %d after the version that left 2239 at 70 a second, want one raise to %d", got, l0+testBlock)
 	}
 }
 
@@ -1222,37 +1211,20 @@ func TestStartUsesBlockField(t *testing.T) {
 	}
 }
 
-// The journals handed to the engine by hand carry the limit the journal
-// holds, so a write far below it wakes no raise.
-func TestSetJournalsForTestSeedsTheLimit(t *testing.T) {
-	u := newUnitWith(t, unitConfig{
-		unbound: true,
-	})
+// The limit Start and Bind set at the journal is the limit the engine last
+// passed, so a write far below it wakes no raise.
+func TestAWriteFarBelowTheLimitWakesNoRaise(t *testing.T) {
+	u := newUnit(t)
 	u.e.TrackRaisesForTest()
 
-	if err := u.e.Bind(t.Context(), u.share); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := u.e.Write(
-		t.Context(),
-		u.share.ID,
-		entity.FileID{0xd9},
-		0,
-		[]byte("x"),
-		engine.WriteOpts{
-			Done: func() {
-			},
-		},
-	)
-	if err != nil {
+	if _, err := u.e.Write(t.Context(), u.share.ID, entity.FileID{0xd9}, 0, []byte("x"), engine.WriteOpts{Done: func() {}}); err != nil {
 		t.Fatal(err)
 	}
 
 	u.e.WaitRaises(t)
 
-	if got := u.j.Stats().VersionLimit.Counter; got != unitLimit {
-		t.Errorf("the fake's limit is %d after one write, want %d", got, uint64(unitLimit))
+	if got := u.j.Stats().VersionLimit.Counter; got != u.limit {
+		t.Errorf("the fake's limit is %d after one write, want %d", got, u.limit)
 	}
 }
 
@@ -1286,7 +1258,7 @@ func TestOneRaiseCarriesEveryShare(t *testing.T) {
 		}
 	}
 
-	mark := marks(s)[len(marks(s))-1].Counter
+	mark := limit(s)
 
 	for _, sh := range all {
 		if sh.ID == removing {

@@ -179,7 +179,12 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 			case remade > 0 && (len(res) != 1 || res[0].N != int64(remade)*runLen || res[0].Writes != remade):
 				t.Errorf("reserved %+v, want one of %d bytes and %d writes", res, remade*runLen, remade)
 			}
-			copies := m.j.ReservedWrites()
+			// The copies kept are the first c.copies runs: the others the
+			// destination holds were made again.
+			var copies []journal.Version
+			for _, off := range []int64{0, 2 * runLen}[c.copies:] {
+				copies = append(copies, heldIn(t, m.jh, m.dst, off, runLen)...)
+			}
 			if len(copies) != remade {
 				t.Fatalf("%d copies made again, want %d", len(copies), remade)
 			}

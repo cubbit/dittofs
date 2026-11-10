@@ -123,7 +123,7 @@ func TestStatsReportsRemovalStalled(t *testing.T) {
 	x.mu.Lock()
 	x.failing[f] = false
 	x.mu.Unlock()
-	u.until(t, "f's removal is pruned once the fault clears", func() bool { _, ok := x.prunedAt(f); return ok })
+	u.until(t, "f's removal is pruned once the fault clears", func() bool { return u.unpruned(t, f) == 0 })
 	if _, ok := shareCondition(u.e.Stats(), u.share.ID, "removal_stalled", f); ok {
 		t.Error("removal_stalled still reported after the removal finished")
 	}

@@ -20,8 +20,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// hookedHandle is the unit's handle with seams inside its removals and a
-// log of its Settles, each with whether the file's guard was held then.
+// hookedHandle is the unit's handle with seams inside its removals.
 type hookedHandle struct {
 	engine.Handle
 	e           *engine.Engine
@@ -31,16 +30,6 @@ type hookedHandle struct {
 	sync        filesHook // run inside Sync, before the journal's, once set
 	synced      filesHook // run inside Sync, after the journal's, once set
 	written     armed     // run inside WriteAt, after the journal's, once set
-	writes      atomic.Int32
-	deletes     atomic.Int32
-	mu          sync.Mutex
-	settles     []settled
-}
-
-type settled struct {
-	v       journal.Version
-	guarded bool
-	pending int // the file's pending operations then
 }
 
 func (h *hookedHandle) Truncate(ctx context.Context, id journal.FileID, size int64) (journal.Version, error) {
@@ -64,33 +53,17 @@ func (h *hookedHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]entit
 	return marks, err
 }
 
-func (h *hookedHandle) Delete(ctx context.Context, id journal.FileID) (journal.Version, error) {
-	h.deletes.Add(1)
-	return h.Handle.Delete(ctx, id)
-}
-
 func (h *hookedHandle) WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error) {
-	h.writes.Add(1)
 	v, err := h.Handle.WriteAt(ctx, id, off, p, mtime)
 	h.written.run()
 	return v, err
 }
 
 func (h *hookedHandle) Settle(id journal.FileID, v journal.Version) {
-	h.mu.Lock()
-	f := entity.FileID(id.Bytes())
-	h.settles = append(h.settles, settled{v, h.e.GuardHeld(f), len(h.e.Pending(f))})
-	h.mu.Unlock()
 	if h.settle != nil {
 		h.settle()
 	}
 	h.Handle.Settle(id, v)
-}
-
-func (h *hookedHandle) settleLog() []settled {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return append([]settled(nil), h.settles...)
 }
 
 // filesHook is a hook handed the files of the call it runs in, once set.
@@ -189,6 +162,13 @@ func TestATruncateCommitsItsPhase1(t *testing.T) {
 	o, answered := res.Opts()
 	_, err := u.e.Write(t.Context(), u.share.ID, f, 0, fill(16, 'a'), o)
 	answered(err)
+	written := u.e.Pending(f)[0].Version
+	var guarded atomic.Bool
+	var pending atomic.Int32
+	h.settle = func() {
+		guarded.Store(u.e.GuardHeld(f))
+		pending.Store(int32(len(u.e.Pending(f))))
+	}
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 3); err != nil {
 		t.Fatal(err)
 	}
@@ -198,9 +178,11 @@ func TestATruncateCommitsItsPhase1(t *testing.T) {
 	if n := res.Outstanding(); n != 0 {
 		t.Errorf("%d writes without their Done", n)
 	}
-	s := h.settleLog()
-	if len(s) != 1 || s[0].guarded || s[0].pending != 0 {
-		t.Errorf("settles %+v, want one, after the guard's release, the entry emptied before it", s)
+	if got := u.j.Settled(journal.NewFileID(f)); got.Compare(written) <= 0 {
+		t.Errorf("settled through %v, want the truncate's version, above the write's %v", got, written)
+	}
+	if guarded.Load() || pending.Load() != 0 {
+		t.Errorf("at the settle: guard %v, %d pending; want it after the guard's release, the entry emptied before it", guarded.Load(), pending.Load())
 	}
 	if p := u.e.Pending(f); len(p) != 0 {
 		t.Errorf("after phase 1 the entry holds %+v, want nothing", p)
@@ -454,21 +436,21 @@ func TestACommitWaitsOutATruncateInFlight(t *testing.T) {
 }
 
 // A deallocate's phase 1 records the extent as one hole at once, stages no
-// zeros through the journal's write, and a write into the extent after it
-// reads back.
+// zeros through the journal's write, drawing the journal's one version for
+// its marker alone, and a write into the extent after it reads back.
 func TestADeallocateRecordsItsHoleAtOnce(t *testing.T) {
-	u, h := newHookedUnit(t)
+	u := newUnit(t)
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
-	h.writes.Store(0)
+	next := u.j.Stats().NextVersion.Counter
 	if err := u.e.Deallocate(t.Context(), u.share.ID, f, 4, 8); err != nil {
 		t.Fatal(err)
 	}
-	if n := h.writes.Load(); n != 0 {
-		t.Errorf("a deallocate made %d journal writes", n)
+	if n := u.j.Stats().NextVersion.Counter - next; n != 1 {
+		t.Errorf("a deallocate drew %d versions from the journal, want its marker's alone", n)
 	}
 	run, hole, err := u.fs.Store.Existence().Allocation(t.Context(), u.share.ID, f, 4)
 	if err != nil || !hole || run != (entity.Extent{Offset: 4, Length: 8}) {
