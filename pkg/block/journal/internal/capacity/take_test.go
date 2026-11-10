@@ -1400,6 +1400,33 @@ func TestTake_TwoWritesInTheRoomAreBothGrantedFromIt(t *testing.T) {
 	g2.Release()
 }
 
+// TestGrant_WroteGivesBackTheEntryRoom pins that a landing releases the
+// room it consumed — the record's bytes and its footer entry — so a take
+// for another file, made after the landing and before Release, sees the
+// room the stream really has and is granted from it, not sent to a spare.
+func TestGrant_WroteGivesBackTheEntryRoom(t *testing.T) {
+	const first, second = 1000, 2000
+	r := newRig(t, func(c *Config) {
+		c.Hold = func(n int) (*segment.Hold, error) {
+			return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: int64(n), Unit: core.UnitSegments}
+		}
+	})
+	r.f.room.Store(segment.RecordBytes(first) + format.CatalogEntrySize + second)
+	q := req()
+	q.Payload = first
+	g1 := r.grant(t, q)
+	// The landing lowers the stream's room by the record and its entry.
+	r.f.room.Store(second)
+	g1.Wrote(segment.RecordBytes(first))
+	q.Payload = second
+	g2 := r.grant(t, q)
+	if g2.Hold() != nil {
+		t.Fatal("a write that fits the room held spares while the landed grant was unreleased")
+	}
+	g1.Release()
+	g2.Release()
+}
+
 // TestTake_OneReadySpareRefusesNeedOfTwo pins the shape the datapath's
 // own spare-refusal test left out: a write needing two spares of a pool
 // holding one ready is refused naming the spare, with the pool's holds

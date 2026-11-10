@@ -695,10 +695,14 @@ func (g *Grant) Wrote(n int64) {
 	g.c.reserved -= n
 	g.c.reservedTagged[g.tag] -= n
 	g.c.shareTally[g.tag] += n
-	// The room the written bytes consumed leaves the stream's grant: what
-	// Release returns of it is only what the write never appended.
+	// The room the landing consumed — the record's bytes and the footer
+	// entry it also takes from Room, the two the claim covers — leaves the
+	// stream's grant, so a take beside this landing sees the room the stream
+	// has; what Release returns of it is only what the write never appended.
+	// The room part bounds it, so a grant never gives back more than it
+	// claimed.
 	if g.roomPart > 0 {
-		eat := min64(n, g.roomPart)
+		eat := min64(n+format.CatalogEntrySize, g.roomPart)
 		g.c.grantedRoom[g.stream] -= eat
 		g.roomPart -= eat
 	}
