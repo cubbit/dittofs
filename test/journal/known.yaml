@@ -52,9 +52,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs capacity refusals, the headroom, stamps, offers of unstamped versions, release and repack.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs stamps, offers of unstamped versions, release and repack.'
   issue: '#3379'
-  message: '134217728 bytes written into a journal of 67108864 were never refused'
+  message: 'stub: Sync'
 
 - test: TestRFC1A_NeighboursAreFrozen
   status: fail
@@ -348,9 +348,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs capacity refusals, MarkOffloaded, release and repack.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs MarkOffloaded, release and repack.'
   issue: '#3379'
-  message: '134217728 bytes written into a journal of 67108864 were never refused'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1B_RepackBesideShareAtLimit
   status: fail
@@ -364,9 +364,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs reservations atomic against the journal maximum, and the data path.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs Stats to report the maximum and the use of each share.'
   issue: '#3378'
-  message: '0 of 8 writers were refused, each writing the journal''s maximum: want all of them'
+  message: 'shares use 0, the journal 0: want each at most MaxBytes 0'
 
 - test: TestRFC1B_ReserveAhead
   status: fail
@@ -626,17 +626,17 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs capacity refusals and Stats per share.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs Stats per share.'
   issue: '#3378'
-  message: '134217728 bytes written into a journal of 67108864 were never refused'
+  message: 'DirtyBytes = 0, HeldBytes = 0 with nothing offloaded'
 
 - test: TestRFC1D_WedgeIsVisibleUnreclaimed
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs capacity refusals, MarkOffloaded and release.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs MarkOffloaded and release.'
   issue: '#3379'
-  message: '134217728 bytes written into a journal of 67108864 were never refused'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28A_CorruptDirty
   status: fail
