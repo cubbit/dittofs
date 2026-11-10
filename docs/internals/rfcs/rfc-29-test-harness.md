@@ -1947,8 +1947,8 @@ mutating call per request, one query per key — a wrapper around the real imple
 around a kind 2, may record what reached it. It records and passes the call through; it never
 answers in the dependency's place. Its record is the output a test asserts on.
 
-Three things are not doubles at all. A sink that only keeps what the code under test delivered
-is an output and needs no conformance suite, and a count that is itself the requirement (one
+These are not doubles at all. A sink that only keeps what the code under test delivered is
+an output and needs no conformance suite, and a count that is itself the requirement (one
 query per key, at most one call per second) is an output too, read from a metric, from the
 kind 2's own record or from the record above. A per-OS table is data, tested by its contents,
 and a tunable such as a sampling rate is an input passed through the constructor. A `Null`
@@ -1958,7 +1958,7 @@ A hook in the code under test that pauses it at a point, or delivers what it rea
 not a double either: it is set per instance from `export_test.go`, never through a package
 variable, and never answers in place of the code.
 
-A deterministic simulation is built from these three, so it is allowed. Not allowed: a canned
+A deterministic simulation is built from the three kinds, so it is allowed. Not allowed: a canned
 stub written for one test; a recording or counting fake used to check which calls were made; a
 double that no conformance suite holds to the real one; swapping a package-level variable.
 
