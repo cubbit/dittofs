@@ -53,7 +53,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs capacity refusals, the headroom, stamps, offers of unstamped versions, release and repack.'
   issue: '#3379'
-  message: 'rfc1_a_test.go:467: 134217728 bytes written into a journal of 67108864 were never refused'
+  message: '134217728 bytes written into a journal of 67108864 were never refused'
 
 - test: TestRFC1A_NeighboursAreFrozen
   status: fail
@@ -181,7 +181,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs segments, the descriptor budget, reopens counted in Stats and the data path.'
   issue: '#3378'
-  message: 'rfc1_b2_test.go:1885: DescriptorLimit = 0 under a budget of 16, want the budget'
+  message: 'DescriptorLimit = 0 under a budget of 16, want the budget'
 
 - test: TestRFC1B_FailedWindowDoesNotWedge
   status: fail
@@ -229,7 +229,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs the index entry bound refusing writes and splitting removals, MarkOffloaded, release and repack.'
   issue: '#3379'
-  message: 'rfc1_b2_test.go:448: ExtentLimit = 0, want the 10000 it was set to'
+  message: 'ExtentLimit = 0, want the 10000 it was set to'
 
 - test: TestRFC1B_NamedRefusal
   status: fail
@@ -237,7 +237,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs capacity refusals naming their limit and shortfall, release and repack.'
   issue: '#3379'
-  message: 'rfc1_b_test.go:854: 134217728 bytes written into a share were never refused by its limit'
+  message: '134217728 bytes written into a share were never refused by its limit'
 
 - test: TestRFC1B_NoDeadlock
   status: fail
@@ -261,7 +261,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs the headroom half rule, offload, holds, stamps and recovery of offloaded bits.'
   issue: '#3379'
-  message: 'rfc1_b_test.go:1148: HeadroomBytes = 0, want the headroom allocated'
+  message: 'HeadroomBytes = 0, want the headroom allocated'
 
 - test: TestRFC1B_PinnedSegmentsBounded
   status: fail
@@ -341,7 +341,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs share limits, MarkOffloaded, release, idle sealing and repack scoped to a share or to segments.'
   issue: '#3379'
-  message: 'rfc1_b2_test.go:1750: 65 writes into a share limited to 2 MiB were never refused'
+  message: '65 writes into a share limited to 2 MiB were never refused'
 
 - test: TestRFC1B_RepackAtCapacity
   status: fail
@@ -349,7 +349,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs capacity refusals, MarkOffloaded, release and repack.'
   issue: '#3379'
-  message: 'rfc1_b_test.go:937: 134217728 bytes written into a journal of 67108864 were never refused'
+  message: '134217728 bytes written into a journal of 67108864 were never refused'
 
 - test: TestRFC1B_RepackBesideShareAtLimit
   status: fail
@@ -365,7 +365,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs reservations atomic against the journal maximum, and the data path.'
   issue: '#3378'
-  message: 'rfc1_b_test.go:526: 0 of 8 writers were refused, each writing the journal''s maximum: want all of them'
+  message: '0 of 8 writers were refused, each writing the journal''s maximum: want all of them'
 
 - test: TestRFC1B_ReserveAhead
   status: fail
@@ -380,7 +380,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs segments, their accounting, per-share record accounting and idle sealing.'
   issue: '#3378'
-  message: 'rfc1_b_test.go:1530: share 0 write 1: the share''s UsedBytes rose by 0 for a 4096-byte write, want its record''s 4200 bytes'
+  message: 'share 0 write 1: the share''s UsedBytes rose by 0 for a 4096-byte write, want its record''s 4200 bytes'
 
 - test: TestRFC1B_ShareLimit
   status: fail
@@ -388,7 +388,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs share limits and per-share accounting rebuilt at open.'
   issue: '#3378'
-  message: 'rfc1_b_test.go:908: 134217728 bytes written into a share were never refused by its limit'
+  message: '134217728 bytes written into a share were never refused by its limit'
 
 - test: TestRFC1B_StorageReturned
   status: fail
@@ -555,7 +555,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs the data path and MarkOffloaded.'
   issue: '#3379'
-  message: 'rfc1_d_test.go:299: OldestDirty = 0001-01-01 00:00:00 +0000 UTC with the first write still dirty, want its write time 2026-01-01 00:00:00 +0000 UTC'
+  message: 'OldestDirty = 0001-01-01 00:00:00 +0000 UTC with the first write still dirty, want its write time 2026-01-01 00:00:00 +0000 UTC'
 
 - test: TestRFC1D_CleanBytesCountAsOccupancy
   status: fail
@@ -627,7 +627,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs capacity refusals and Stats per share.'
   issue: '#3378'
-  message: 'rfc1_d_test.go:67: 134217728 bytes written into a journal of 67108864 were never refused'
+  message: '134217728 bytes written into a journal of 67108864 were never refused'
 
 - test: TestRFC1D_WedgeIsVisibleUnreclaimed
   status: fail
@@ -635,7 +635,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs capacity refusals, MarkOffloaded and release.'
   issue: '#3379'
-  message: 'rfc1_d_test.go:91: 134217728 bytes written into a journal of 67108864 were never refused'
+  message: '134217728 bytes written into a journal of 67108864 were never refused'
 
 - test: TestRFC28A_CorruptDirty
   status: fail
@@ -921,7 +921,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs the identity error of an open with no recorded identity, and the data path.'
+  reason: 'The check has two legs and two needs. Its first leg, an open with no recorded identity over a directory holding only the format file that Init wrote, needs an Init-only fixture to run it — this check opens its journal first, and the open leaves finished spares behind, so the leg sees a directory that has run; that is a test change this subtask does not make. Its second leg, the reopen with the identity recorded once the journal has served, waits on recovery. The current failure is the first leg naming the spares an open leaves.'
   issue: '#3378'
   message: 'segments true, want '
 
