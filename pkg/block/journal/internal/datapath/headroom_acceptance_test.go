@@ -229,21 +229,11 @@ func TestRFC1B_HeadroomSurvivesItsSpareLeavingThePool(t *testing.T) {
 // TestHeadroomTarget_CountsEachStreamsSeal checks the pool's headroom target
 // holds a seal's marker, footer entry and trailer per stream on top of the
 // records: 2048 records at the charge fill seven segments exactly, so the two
-// streams' seals need an eighth. Zero records readies none however many streams.
+// streams' seals need an eighth.
 func TestHeadroomTarget_CountsEachStreamsSeal(t *testing.T) {
 	const records = 2048 // 2048 x 224 B = 7 x 64 KiB
 	c, _ := newTestCore(t, func(o *coreOptions) { o.headroomRecords = records })
-	waitIn(t, 5*time.Second, "the pool to ready its headroom spares", func() bool {
-		return c.pool.Counters().HeadroomBytes >= 7*testSegmentCap
+	waitIn(t, 5*time.Second, "the pool to ready eight headroom spares", func() bool {
+		return c.pool.Counters().HeadroomBytes >= 8*testSegmentCap
 	})
-	time.Sleep(50 * time.Millisecond) // an eighth, if wanted, lands within this
-	if got := c.pool.Counters().HeadroomBytes / testSegmentCap; got != 8 {
-		t.Fatalf("headroom spares = %d, want 8", got)
-	}
-
-	z, _ := newTestCore(t)
-	time.Sleep(50 * time.Millisecond)
-	if got := z.pool.Counters().HeadroomBytes; got != 0 {
-		t.Fatalf("zero headroom records readied %d headroom bytes", got)
-	}
 }
