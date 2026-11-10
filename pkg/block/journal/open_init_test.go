@@ -124,6 +124,13 @@ func readFormatOS(t *testing.T, dir string) format.FormatFile {
 	if err != nil {
 		t.Fatalf("read the format file: %v", err)
 	}
+	return decodeFormat(t, b)
+}
+
+// decodeFormat decodes the bytes of a format file, failing the test on any
+// damage a correct Init never writes.
+func decodeFormat(t *testing.T, b []byte) format.FormatFile {
+	t.Helper()
 	f, err := format.DecodeFormatFile(b)
 	if err != nil {
 		t.Fatalf("decode the format file: %v", err)
@@ -330,31 +337,47 @@ func TestInit_CrashBeforeTheWriteIsSynced(t *testing.T) {
 	}
 }
 
-// TestInit_CrashBetweenTmpAndRename fails an Init that leaves a directory
-// no later Init can recover. The directory starts from a durable format.tmp
-// — a predecessor whose process died before its rename — and the second
-// Init is crashed at its rename, a crash that undoes its own removal and
-// creation and leaves the predecessor's durable tmp standing again: the
-// exact leftover the RFC says a crashed Init leaves. The next Init must
-// take that directory, must not be refused by its own predecessor's
-// leftover, and must replace the leftover, whole, with the new journal's
-// file.
-func TestInit_CrashBetweenTmpAndRename(t *testing.T) {
-	s := newSeam(t)
+// makePredecessorTmp leaves in the seam's directory a durable format.tmp
+// holding a predecessor's whole format file — the state an Init whose
+// process died after the write and sync, before the rename, leaves — with
+// an identity the test names, so a check can tell a leftover from a partial
+// write of the new journal's own.
+func (s seamDir) makePredecessorTmp(t *testing.T) format.FormatFile {
+	t.Helper()
 	s.create(t, format.FormatTmpName)
 	f, err := s.seam.Open(format.FormatTmpName)
 	if err != nil {
-		t.Fatalf("open the stale format.tmp: %v", err)
+		t.Fatalf("open the predecessor's format.tmp: %v", err)
 	}
-	if _, err := f.WriteAt([]byte("a stale format.tmp's bytes"), 0); err != nil {
-		t.Fatalf("write the stale format.tmp: %v", err)
+	predecessor := format.FormatFile{
+		Identity:     core.JournalID{0x0d, 0x0a, 0x07, 0x0a},
+		Installation: installID,
+	}
+	if _, err := f.WriteAt(format.AppendFormatFile(nil, predecessor), 0); err != nil {
+		t.Fatalf("write the predecessor's format.tmp: %v", err)
 	}
 	if err := f.Sync(); err != nil {
-		t.Fatalf("sync the stale format.tmp: %v", err)
+		t.Fatalf("sync the predecessor's format.tmp: %v", err)
 	}
 	if err := f.Close(); err != nil {
-		t.Fatalf("close the stale format.tmp: %v", err)
+		t.Fatalf("close the predecessor's format.tmp: %v", err)
 	}
+	return predecessor
+}
+
+// TestInit_CrashBetweenTmpAndRename fails an Init that leaves a directory
+// no later Init can recover. The directory starts from a durable format.tmp
+// holding a predecessor's whole format file — a predecessor whose process
+// died after its write and sync, before its rename — and the new Init is
+// crashed at its own rename, a crash that undoes its removal and creation
+// and leaves the predecessor's whole synced tmp standing again: the exact
+// leftover the RFC says a crashed Init leaves. The next Init must take that
+// directory, must not be refused by its own predecessor's leftover, and
+// must replace the leftover, whole, with the new journal's file — a power
+// cut never leaves the predecessor's bytes under the new identity.
+func TestInit_CrashBetweenTmpAndRename(t *testing.T) {
+	s := newSeam(t)
+	predecessor := s.makePredecessorTmp(t)
 
 	rename := s.seam.Hold(t, kit.OpRename, format.FormatTmpName)
 	idc := make(chan JournalID, 1)
@@ -379,8 +402,15 @@ func TestInit_CrashBetweenTmpAndRename(t *testing.T) {
 		t.Errorf("the crashed Init returned %v, want the crash's fs.ErrClosed", err)
 	}
 
-	if want := []string{format.FormatTmpName}; !slices.Equal(s.listSeam(t), want) {
-		t.Fatalf("after the crash the directory holds %v, want the predecessor's durable format.tmp alone", s.listSeam(t))
+	// The crash undid the new Init's whole directory log, so the
+	// predecessor's synced tmp is back, whole, under its old name.
+	b, err := s.seam.Durable(format.FormatTmpName)
+	if err != nil {
+		t.Fatalf("the predecessor's durable format.tmp: %v", err)
+	}
+	if got := decodeFormat(t, b); got != predecessor {
+		t.Errorf("after the crash format.tmp holds %v, want the predecessor's whole format file %v",
+			got, predecessor)
 	}
 
 	second, err := s.init(t)
@@ -388,6 +418,98 @@ func TestInit_CrashBetweenTmpAndRename(t *testing.T) {
 		t.Fatalf("Init after the crash: %v", err)
 	}
 	assertFormatWritten(t, s.dir, second)
+}
+
+// TestInit_CrashWhileTheDirectorySyncWaits fails an Init that could leave a
+// torn format file behind a rename whose directory entry no sync made
+// durable: the rename stands, but a power loss before the SyncDir erases
+// it, so the directory comes back without the format file — and without the
+// tmp, whose removal and creation the crash undo the same way. Either way
+// nothing partial stands: the journal is whole or absent, never a mix, and
+// the next Init takes the empty directory.
+func TestInit_CrashWhileTheDirectorySyncWaits(t *testing.T) {
+	s := newSeam(t)
+
+	syncDir := s.seam.Hold(t, kit.OpSyncDir, "*")
+	idc := make(chan JournalID, 1)
+	errc := make(chan error, 1)
+	go func() {
+		id, err := s.init(t)
+		idc <- id
+		errc <- err
+	}()
+	awaitHoldOrDone(t, syncDir.Reached(), errc)
+
+	if err := s.seam.Crash(); err != nil {
+		t.Fatalf("Crash while the directory sync waited: %v", err)
+	}
+	syncDir.Release()
+
+	id := <-idc
+	if id != (JournalID{}) {
+		t.Errorf("the crashed Init returned the identity %v, want the zero one", [16]byte(id))
+	}
+	if err := <-errc; !errors.Is(err, fs.ErrClosed) {
+		t.Errorf("the crashed Init returned %v, want the crash's fs.ErrClosed", err)
+	}
+
+	// The rename reached no SyncDir, so the crash undoes the rename — and
+	// the create and the removal before it: the directory holds nothing.
+	if names, err := s.seam.List(); err != nil || len(names) != 0 {
+		t.Fatalf("the crash left the directory holding %v, %v, want it empty: the rename was never made durable", names, err)
+	}
+
+	second, err := s.init(t)
+	if err != nil {
+		t.Fatalf("Init after the crash: %v", err)
+	}
+	assertFormatWritten(t, s.dir, second)
+}
+
+// TestInit_CrashAfterInitReturns fails an Init whose finished format file a
+// power loss could erase or tear: the SyncDir Init ends with made the
+// rename durable, so a crash after the call returns leaves the format file
+// standing, whole, and the durable image the seam keeps — what a power loss
+// would leave — verifies to the identity Init returned, with the
+// installation ID it was given. This is the check that fails if Init drops
+// its directory sync: the seam's durable image then holds no format file at
+// all.
+func TestInit_CrashAfterInitReturns(t *testing.T) {
+	s := newSeam(t)
+
+	id, err := s.init(t)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if err := s.seam.Crash(); err != nil {
+		t.Fatalf("Crash after Init returned: %v", err)
+	}
+
+	b, err := s.seam.Durable(format.FormatFileName)
+	if err != nil {
+		t.Fatalf("the durable format file after the crash: %v", err)
+	}
+	f := decodeFormat(t, b)
+	if f.Identity != id {
+		t.Errorf("the durable format file names the identity %v, want the one Init returned %v",
+			[16]byte(f.Identity), [16]byte(id))
+	}
+	if f.Installation != installID {
+		t.Errorf("the durable format file names the installation %v, want %v",
+			[16]byte(f.Installation), [16]byte(installID))
+	}
+
+	// The durable image is exactly what a power cut leaves, not the
+	// in-memory directory List still reports: prove the seam honours the
+	// directory sync by deleting the SyncDir from Init and watching this
+	// assertion fail (Durable then answers ErrNotExist).
+	second, err := s.init(t)
+	if err == nil {
+		t.Fatalf("Init over the journal it already made returned %v, want ErrNotEmpty", second)
+	} else if !errors.Is(err, ErrNotEmpty) {
+		t.Fatalf("Init over the journal it already made returned %v, want ErrNotEmpty", err)
+	}
 }
 
 // awaitHoldOrDone waits until the hold stops a call, and fails the test on
@@ -408,8 +530,7 @@ func awaitHoldOrDone(t *testing.T, reached <-chan struct{}, done <-chan error) {
 // non-empty, and nothing is created. The check is swapped for a refusal the
 // test controls, so no answer depends on the host's platform.
 func TestInit_UnsuitableChecksBeforeAnyFile(t *testing.T) {
-	restore := swapCheckDir(t, func(string) error { return ErrUnsuitableStorage })
-	defer restore()
+	swapCheckDir(t, func(string) error { return ErrUnsuitableStorage })
 
 	t.Run("an empty directory", func(t *testing.T) {
 		dir := t.TempDir()
@@ -443,8 +564,7 @@ func TestInit_UnsuitableChecksBeforeAnyFile(t *testing.T) {
 // from a refusal, and nothing is created.
 func TestInit_CheckError_ReturnedAsItself(t *testing.T) {
 	probe := errors.New("the mount table does not parse")
-	restore := swapCheckDir(t, func(string) error { return probe })
-	defer restore()
+	swapCheckDir(t, func(string) error { return probe })
 
 	dir := t.TempDir()
 	makeLostAndFound(t, dir)
@@ -624,12 +744,14 @@ func TestInit_RenameFailureCleansUp(t *testing.T) {
 }
 
 // TestInit_SyncDirFailureCleansUp fails an Init that reports success on a
-// failed directory sync: the rename is not durable, and the crash whole
-// guarantee ends at the SyncDir, so the failure is returned as itself. The
-// journal the failure leaves is one the caller was told was never made, so
-// the write is taken away and a retry finds an empty directory rather than
-// one whose format file a power cut may still erase — a trace of a journal
-// no caller can open, with an identity no caller received.
+// failed directory sync: without the SyncDir the rename was never made
+// durable, so the whole-file crash guarantee does not hold and the failure
+// is returned as itself. The journal the failure leaves is one the caller
+// was told was never made, so the write is taken away; the removals make no
+// directory sync of their own, so a power cut can resurrect the file, and
+// this check asserts the in-memory cleanup alone — the recovery path when
+// that happens is the refusal the journal left behind forces on the next
+// call.
 func TestInit_SyncDirFailureCleansUp(t *testing.T) {
 	s := newSeam(t)
 	boom := errors.New("the directory sync failed")
@@ -651,10 +773,10 @@ func TestInit_SyncDirFailureCleansUp(t *testing.T) {
 }
 
 // swapCheckDir replaces the platform check the tests inject through, and
-// returns a func that puts the real one back.
-func swapCheckDir(t *testing.T, check func(string) error) (restore func()) {
+// restores the real one when the test ends.
+func swapCheckDir(t *testing.T, check func(string) error) {
 	t.Helper()
 	saved := checkDir
 	checkDir = check
-	return func() { checkDir = saved }
+	t.Cleanup(func() { checkDir = saved })
 }
