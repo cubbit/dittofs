@@ -254,6 +254,76 @@ implementation, the test stays green while guarding nothing.
 External systems (a KDC, a domain controller, an LDAP directory, S3) are tested for real at the
 integration tier. Their parsing and logic are pure functions with unit tests.
 
+**A test must be able to fail.** Break the code it guards and watch it fail **on its
+assertion**. See "Verifying a change" below. A test that has never failed is unverified.
+
+**Synchronise on events, never on time.** Don't use `time.Sleep` to wait for a goroutine,
+callback or state change. Wait on a channel, a `sync.WaitGroup` or the condition itself, with
+one generous timeout as a backstop. Polling the real condition with a short pause between polls
+counts as waiting on it; sleeping a fixed time and then checking does not. A duration the code
+under test waits on is advanced on the injected clock, not slept; to show something does not
+happen, advance the clock past its deadline and assert. Where no clock can be injected, a bounded
+wait is the assertion, and a comment says so. On a loaded CI box, a sleep is long enough until
+the day it isn't.
+
+**No fixed ports, paths or global state.** Bind to `127.0.0.1:0`, write under `t.TempDir()`, and clean
+up with `t.Cleanup`, so tests run in parallel and on any host.
+
+**Fix a flake, never retry it.** A flaky test is either a race in the code or a race in the
+test, and both are bugs. Don't add retries, raise timeouts or skip it to get green. The
+harness's own policy (RFC 29 §4.7): no retries on pull requests; on develop and nightly a failure
+that passes on retry lets the cell through as flaky, recorded in `dt history` but not alerted.
+A flake you can't fix now is quarantined in
+`test/harness/quarantine.yaml` with an issue and an expiry date, and the issue fixes it.
+
+**Assertions name what they check.** A failure message says which value was wrong and what was
+expected (`got %v, want %v`, naming the field or the operation). Prefer table-driven cases when
+several inputs exercise one rule.
+
+### By kind
+
+`test/suites.yaml` defines how CI runs each suite (tags, tiers, flags), and RFC 29 §4.3 says
+why; `test/harness/bin/dt` runs one locally. What follows is only what those don't say.
+Don't start two suites by hand at once: they collide on ports and mounts. `dt` runs cells in
+parallel only where the registry says each one is isolated (`parallel: true`).
+
+**Integration** (`-tags=integration`, `-p 1`) is for a backend the host must provide: a KMIP
+server for the key provider, and a real S3-compatible endpoint. Postgres is gone: the stores are
+Badger, and FoundationDB for a cluster, so don't add a Postgres test. CI starts no S3 endpoint
+yet, so a test that needs one skips in every run and guards nothing until one is wired in; don't
+count it as coverage. Badger under `t.TempDir()` and in-memory SQLite are real implementations, and their
+tests run untagged. Durability and ordering changes need a test on a real filesystem with
+the crash simulated beneath the code under test (RFC 1 §1.3), because a memory backend proves
+nothing about fsync or a crash. A backend the host lacks is a skip that names the environment
+variable to set; it is reported, never counted as a pass. Each test builds its own state and
+leaves nothing behind.
+
+**E2E** (`-tags=e2e`, sudo, a kernel client) is for what only a real mount shows: client
+caching, the mount handshake, interop. A rule that a unit or integration test can check belongs
+there instead. E2E has no `known` file yet (RFC 29 §4.7), so until it has one a failing e2e test
+is fixed, not listed; once it does, a known failure goes there only after CI shows it, with the
+fields §4.7 requires.
+
+**Build tags hide a whole file from `go build`, `go vet` and the linter.** A tagged test must
+compile under `go vet -tags=…`: a new tag goes into lint-go's list in `test/suites.yaml` in the
+same change. Never tag a file only to keep a test out of `go test ./...` when `testing.Short()`
+would do.
+
+**Fuzz** every decoder that reads bytes off the wire or the disk: XDR, SMB2 PDUs, on-disk
+records. The target asserts an **invariant**: no panic; any length the decoder reads stays inside
+the buffer; and what it decodes either matches an independent decoder or re-encodes to bytes
+that decode to the same value (padding and reserved fields may differ). A target that only checks that
+encode and decode agree passes when both share a bug. Commit every crasher to
+`testdata/fuzz/<FuzzName>/`, where it becomes a regression seed that plain `go test` runs.
+
+**Benchmarks** run in the `manual` tier, with only `bench-smoke` on pull requests, non-blocking
+(RFC 29 §4.3). They measure only the operation. Do setup before `b.ResetTimer()`, or between
+`b.StopTimer()` and `b.StartTimer()`, but remember that Go sizes `b.N` from the timed region
+alone, so an expensive untimed setup inside the loop multiplies the run's wall time. Call
+`b.ReportAllocs()` on hot paths. Compare with `benchstat` over `-count=10` runs on the same
+machine, never against a number from another host or from Docker Desktop, which inflates
+database round trips.
+
 ## Verifying a change
 
 Two failure modes this codebase has actually hit. Both are invisible to a passing test suite,
