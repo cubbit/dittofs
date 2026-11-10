@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"net/netip"
 
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/config"
@@ -18,8 +19,9 @@ var _ adapter.Adapter = (*Server)(nil)
 
 // Listener is one protocol on one port, bound on each of the settings' Addrs.
 type Listener struct {
+	Service  string // the name Addrs and a sidecar know it by: "nfs", "mount", "nlm"
 	Network  string // "tcp" or "udp"
-	Port     uint16
+	Port     uint16 // 0: one the system picks, which Addrs reports
 	Protocol Protocol
 }
 
@@ -46,6 +48,13 @@ func (s *Server) Reconfigure(ctx context.Context, next config.Settings) error {
 // Stop drains and stops; it is idempotent.
 func (s *Server) Stop(ctx context.Context) error {
 	return fmt.Errorf("core: stop: %w", errors.ErrUnsupported)
+}
+
+// Addrs is every address each listener is bound on now, by service and
+// network: a port of 0 resolved, an address Reconfigure added included. It is
+// empty before Start and after Stop.
+func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort {
+	panic("not implemented")
 }
 
 // Health is the server's state and readiness.

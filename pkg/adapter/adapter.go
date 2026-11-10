@@ -115,6 +115,13 @@ type Sidecar interface {
 
 // Serving is one adapter as a sidecar sees it: what to advertise or answer.
 type Serving struct {
-	Adapter   string                    // "nfs"
-	Listeners map[string]netip.AddrPort // by service: "nfs", "mount", "nlm", "nsm"
+	Adapter   string                      // "nfs"
+	Listeners map[Socket][]netip.AddrPort // every address each service is bound on, per network
+}
+
+// Socket is one service on one network: the key its bound addresses share. A
+// service served over TCP and UDP, as NLM and NSM are, is two Sockets.
+type Socket struct {
+	Service string // "nfs", "mount", "nlm", "nsm", "smb"
+	Network string // "tcp" or "udp"
 }

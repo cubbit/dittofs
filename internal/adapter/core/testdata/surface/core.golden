@@ -25,6 +25,8 @@ func (c *Conn) Settings() config.Settings
 
 func (r *Request) Park(cancel func()) (done func(err error), err error)
 
+func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort
+
 func (s *Server) Connections() iter.Seq[adapter.ConnInfo]
 
 func (s *Server) Health() adapter.Health
@@ -128,6 +130,7 @@ type Invocation struct {
 }
 
 type Listener struct {
+	Service  string
 	Network  string
 	Port     uint16
 	Protocol Protocol

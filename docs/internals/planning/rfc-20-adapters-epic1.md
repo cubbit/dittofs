@@ -207,7 +207,7 @@ which epic owns the rest.
 | R26 | A `Deps` field is an interface where it has two implementations and a concrete type where it has one; `Deps` carries no registry or service locator, and `Deps.VFS` is the adapter's only path to the service (A16's behaviour: E5) | invariant | §3.4, §2.5 ("not used"), §9 A16 | T1.4 |
 | R27 | A nil `Watch` watches nothing, as in a test; RFC 25's `health.Loop` satisfies `Loop` as it is (accept loop's calls: E4) | MUST | §3.4, §3.7; RFC 25 §8.1 | T1.4 (the field); E4 T4.7 (the test, D9) |
 | R28 | An adapter takes only the budgets it charges: `Deps` carries `Budgets`, never the open-state budget or the share cap | MUST | RFC 24 §2.7 | T1.4 |
-| R29 | `Sidecar` has `Name() string`, `Adapters() []string`, `Sync(ctx, serving []Serving) error` (idempotent: E4); `Serving` is `{Adapter string; Listeners map[string]netip.AddrPort}`; no sidecar method takes the service | MUST | §3.5 | T1.4 |
+| R29 | `Sidecar` has `Name() string`, `Adapters() []string`, `Sync(ctx, serving []Serving) error` (idempotent: E4); `Serving` is `{Adapter string; Listeners map[Socket][]netip.AddrPort}`, `Socket` `{Service, Network string}` (amended after S1: one key per service lost a service's other addresses and its UDP listener); no sidecar method takes the service | MUST | §3.5 | T1.4 |
 | R30 | Only `Sidecar` is a type: an auxiliary service is no type, only more operation tables on its adapter's `core.Server` | invariant | §3.5 (decision) | T1.4, T1.7 |
 | R31 | No base adapter type to embed and override, no capability discovered by type assertion, no service locator | invariant | §2.5 ("not used") | T1.4, T1.7 |
 

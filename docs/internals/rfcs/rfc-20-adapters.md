@@ -1021,10 +1021,26 @@ type Sidecar interface {
 
 // Serving is one adapter as a sidecar sees it: what to advertise or answer.
 type Serving struct {
-	Adapter   string                    // "nfs"
-	Listeners map[string]netip.AddrPort // by service: "nfs", "mount", "nlm", "nsm"
+	Adapter   string                      // "nfs"
+	Listeners map[Socket][]netip.AddrPort // every address each service is bound on, per network
+}
+
+// Socket is one service on one network: the key its bound addresses share. A
+// service served over TCP and UDP, as NLM and NSM are, is two Sockets.
+type Socket struct {
+	Service string // "nfs", "mount", "nlm", "nsm", "smb"
+	Network string // "tcp" or "udp"
 }
 ```
+
+> decision: `Listeners` holds every bound address of each service and network,
+> because one key per service loses two things a sidecar must answer: a service
+> bound on several of `Addrs` (a taken-over address included), and NLM and NSM,
+> served over both TCP and UDP, which the port mapper answers per protocol. It is
+> what `core.Server.Addrs` reports, so the node copies it rather than rebuilding
+> it from the order of the listeners. rpcbind registers per program and netid,
+> and DNS-SD advertises every address of a host; withdraw the slice if a sidecar
+> is found that can advertise only one address per service.
 
 - **Order.** The node calls `Sync` after an adapter is serving and before it
   starts draining, so nothing is advertised that cannot be reached, and an
@@ -2362,10 +2378,18 @@ func Errors() []error
 func NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)
 
 type Listener struct {
+	Service  string // the name Addrs and a sidecar know it by: "nfs", "mount", "nlm"
 	Network  string // "tcp" or "udp"
-	Port     uint16
-	Protocol      Protocol
+	Port     uint16 // 0: one the system picks, which Addrs reports
+	Protocol Protocol
 }
+
+// Addrs is every address each listener is bound on now, by service and
+// network: a port of 0 resolved, an address Reconfigure added included. It is
+// empty before Start and after Stop. A test binds port 0 and dials what Addrs
+// reports, as net.Listener.Addr and httptest.Server.URL let it; the node builds
+// each Serving from it (§3.5).
+func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort
 ```
 
 These, with the types above, are `core`'s exported surface; a protocol
