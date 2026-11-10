@@ -64,7 +64,8 @@ is named with the reason.
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
-   to fake (rule 12).
+   to fake (rule 12). Every test double is one of the three kinds of
+   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles).
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference

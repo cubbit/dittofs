@@ -141,7 +141,8 @@ format, no recovery and no reclamation.
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
-   to fake (rule 12).
+   to fake (rule 12). Every test double is one of the three kinds of
+   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles).
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference
@@ -1149,7 +1150,7 @@ its counter (R75); `ReservedBytes` read at the
   - A write waiting on its file's append domain is not abandoned by a cancelled context.
   - A `WriteAt` and a `ReadAt` held at the seam when `Close` is called finish, and calls made
     after the flag fail with `ErrClosed`.
-  - With a repack-like worker in flight (a registered stub), `Close` stops it before any segment
+  - With a repack-like worker in flight (one the test registers), `Close` stops it before any segment
     is closed and nothing runs afterwards.
   - A removal parked in `WaitDurable` when `Close` is called is a call in flight: `Close` waits for it and returns once the held sync is released, with no hang and no `ErrClosed` for the removal.
   - No goroutine outlives `Close`.

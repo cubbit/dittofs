@@ -195,7 +195,8 @@ run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
-   to fake (rule 12).
+   to fake (rule 12). Every test double is one of the three kinds of
+   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles).
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference
@@ -333,7 +334,8 @@ everything before it.
   cannot start before it. S4a is independent of S1–S4 and can be reached at any time
   before E11. It also settles who writes the system scenarios that run at the
   filesystem service's integration tier, and the shape of the `Content` conformance
-  check that both a fake `Content` and the engine pass, which is E11's deliverable (epic
+  check that both the in-memory `Content` and the engine pass. The check is written first,
+  with the in-memory `Content` it holds, and the engine passing it is E11's deliverable (epic
   2, §7).
 - **S5. Wired** (end of E11). The engine runs on v2 and the RFC 16 store, and the system
   e2e suite, written in E10 and E11, runs against it. **S5 has an external dependency:**
@@ -1150,9 +1152,10 @@ broken down into subtasks and estimated only once that interface is agreed with 
   start-check refusals of E10, lists them as known failures, and turns green those its
   own wiring satisfies. The integration-tier rows need #3119 stage 2's `vfs.New`, and
   the protocol rows the adapters moved onto it (S5).
-- **The `Content` conformance check:** one check that both a fake `Content` and the engine
-  pass, so the filesystem service's unit tier tests against the contract the engine
-  meets. Its shape is agreed at S4a.
+- **The `Content` conformance check:** one check that both the in-memory `Content` and the
+  engine pass, so the filesystem service's unit tier tests against the contract the engine
+  meets. Its shape is agreed at S4a; it is written before the in-memory `Content` is used,
+  and E11 runs it against the engine.
 
 ### Epic 12 — E2E green 🔀 (≈8 subtasks, team)
 
