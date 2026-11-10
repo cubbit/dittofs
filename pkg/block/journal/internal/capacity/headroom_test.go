@@ -112,7 +112,11 @@ func TestAdmitBelowHalf(t *testing.T) {
 	if h.BelowHalf() {
 		t.Fatalf("at exactly half the headroom already reads below half")
 	}
-	drawWith(t, h, Release, 1) // one record past the edge
+	// Exactly half is not below half, so what frees nothing is still admitted
+	// there; its own draw is the one record past the edge.
+	if _, err := h.Admit(Hold); err != nil {
+		t.Fatalf("a hold at exactly half was refused: %v", err)
+	}
 	if !h.BelowHalf() {
 		t.Fatalf("one record past half the headroom does not read below half")
 	}
@@ -480,6 +484,18 @@ func TestRefundAfterNoDrawIsNoop(t *testing.T) {
 	if _, err := h2.Admit(Release); err != nil {
 		t.Fatalf("a refund of a refused admission corrupted the drawing side: %v", err)
 	}
+}
+
+func TestOpenRefusedOnceTheReserveIsUsedUp(t *testing.T) {
+	h, f := newFull(t, 100) // a 50-record reserve behind a 50-record drawing side
+	f.parkAtLimit()
+	drawWith(t, h, Delete, 50)
+	drawWith(t, h, Open, 50) // the whole reserve
+	_, err := h.Admit(Open)
+	if !errors.Is(err, core.ErrNoSpace) {
+		t.Fatalf("an Open past the whole headroom answered %v, want ErrNoSpace", err)
+	}
+	noSpaceOrFatal(t, err)
 }
 
 func TestRefundAtTheOpenReserveEdge(t *testing.T) {
