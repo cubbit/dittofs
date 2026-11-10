@@ -57,8 +57,6 @@ type runtimeCollector struct {
 	quotaLimitBytes  *prometheus.Desc
 	quotaUsedInodes  *prometheus.Desc
 	quotaLimitInodes *prometheus.Desc
-
-	// Clients.
 }
 
 func newRuntimeCollector(p Provider) *runtimeCollector {
