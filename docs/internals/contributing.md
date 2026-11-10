@@ -168,6 +168,10 @@ standard-library issues usually means an older toolchain is active.
 
 ## Testing
 
+Before you write or change a test, read "Writing tests" in [CLAUDE.md](../../CLAUDE.md):
+the test doubles it allows, waiting on events rather than time, and fixing a flake rather than
+retrying it.
+
 ### Unit Tests
 
 ```bash
@@ -186,9 +190,19 @@ go test ./pkg/metadata/store/badger/
 
 ### Integration Tests
 
+Integration tests carry the `integration` build tag and need the services `test/suites.yaml`
+lists for them: Postgres for the control-plane store and a KMIP server. `dt` starts them and runs
+the suite as CI does:
+
 ```bash
-# Run integration tests (S3, BadgerDB, etc.)
-go test -v ./test/integration/...
+test/harness/bin/dt services up postgres kmip
+test/harness/bin/dt run integration
+```
+
+Run by hand, both the tag and `-p 1` are required; without the tag the tests compile out:
+
+```bash
+go test -tags=integration -p 1 ./...
 ```
 
 ### E2E Testing Framework
@@ -248,44 +262,13 @@ sudo umount /mnt/test
 
 ## Benchmarking
 
-DittoFS includes a comprehensive benchmark suite for performance testing:
+`bench-smoke` runs on pull requests, non-blocking; every other benchmark suite is in the
+`manual` tier of `test/suites.yaml` (RFC 29 §4.3). [`docs/BENCHMARKS.md`](../BENCHMARKS.md) covers
+how to run them (`dfsbench`, `go test -bench`), the reports and the local perf gates.
 
-```bash
-# Run comprehensive benchmark suite (separate from tests)
-./scripts/benchmark.sh
-
-# Run with profiling (CPU and memory)
-./scripts/benchmark.sh --profile
-
-# Compare with previous results
-./scripts/benchmark.sh --compare
-
-# Custom configuration
-BENCH_TIME=30s BENCH_COUNT=5 ./scripts/benchmark.sh
-
-# Run specific benchmarks manually
-go test -bench='BenchmarkE2E/memory/ReadThroughput' -benchtime=20s ./test/e2e/
-go test -bench='BenchmarkE2E/filesystem' -benchmem ./test/e2e/
-
-# Generate CPU profile for specific benchmark
-go test -bench=BenchmarkE2E/memory/WriteThroughput/100MB \
-    -cpuprofile=cpu.prof -benchtime=30s ./test/e2e/
-
-# Analyze profile
-go tool pprof cpu.prof
-go tool pprof -http=:8080 cpu.prof
-```
-
-**Important**: Benchmarks are stress tests designed to push DittoFS to its limits. They:
-- Test with files from 4KB to 100MB
-- Create thousands of files/directories
-- Run mixed concurrent workloads
-- Profile CPU and memory usage
-- Compare different storage backends
-
-Results are saved to `benchmark_results/<timestamp>/` and should NOT be committed to the repository.
-
-See `test/e2e/BENCHMARKS.md` for detailed documentation and `test/e2e/COMPARISON_GUIDE.md` for comparing with other NFS implementations.
+To compare a change, run the same benchmark with `-count=10` before and after it on one machine
+and compare the two with `benchstat`; never against a number from another host. Call
+`b.ReportAllocs()` on hot paths.
 
 ## Common Development Tasks
 
