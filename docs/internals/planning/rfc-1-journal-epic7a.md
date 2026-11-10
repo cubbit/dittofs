@@ -350,7 +350,7 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
 | R65 | `torn_tails` counts the torn tails truncated at open | MUST | RFC 1 §3.9 | T7.12 |
 | R66 | `scan_resyncs` counts the scans that found a record by resynchronising past a bad one | MUST | RFC 1 §3.9 | T7.2, T7.14 |
 | R67 | Every field this epic sets is served by `Stats` from a maintained value, never a walk of the index or the segment set | MUST NOT | RFC 1 §3.7 | T7.14 |
-| R68 | `Inspect().File` and `All` return the index the open assembled, entry by entry as E4-12's read-out gives it (held, retained or marker, extent, version, location, offloaded bit), so a test reads what a reopen rebuilt without going through `ReadAt`; `Verify` stays unimplemented | MUST | RFC 1 §4.4 | T7.6 |
+| R68 | `Inspect().File` and `All` return the index the open assembled, entry by entry as E4-12's read-out gives it (held, retained or marker, extent, version, location, offloaded bit), so a test reads what a reopen rebuilt without going through `ReadAt` | MUST | RFC 1 §4.4 | T7.6 |
 
 **Test rows**
 
@@ -466,7 +466,8 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
   §3.3's I1 case), and the reconcile that would gate it is E7b's. T7.4 finds every such range
   with RFC 28 §3.3's bounds (R44), and T7.2 meets the two record kinds; either fails the open
   with `ErrNotImplemented` naming the segment and the range, or the kind, before anything is
-  written. A `decision:` marker at each site names the ceiling — a rotted header in a segment
+  written. Tests of D13, D14 and D15 assert the open fails naming the range or mark, serves nothing and writes
+  nothing, not the error value. A `decision:` marker at each site names the ceiling — a rotted header in a segment
   with no verifying catalog, a truncated named predecessor, or a rotted record below a mark's
   `Through` keeps the journal closed until E7b — and is withdrawn with E7b. No RFC 28 §4.4 bit
   flip is tested here: every flip site first marks records offloaded, which is E9b's
@@ -753,7 +754,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   unmark records under the tracker's always-live switch (R32); hands the result to `datapath.New`
   (D1). Offloaded and unmark records reach the builder as fed (D5). An index over its bound is
   accepted (R23). `Journal.Inspect()` is wired to the assembled index: `File` and `All` return
-  E4-12's read-out of it, and `Verify` still returns `ErrNotImplemented` (R68).
+  E4-12's read-out of it, (R68).
 - **Acceptance criteria:**
   - After a crash, the next sequence number and the next content version exceed every one on
     disk; opened with a floor above them, the next version exceeds the floor.
@@ -1173,3 +1174,15 @@ A suggestion only: one pull request per subtask works as well.
   stands meanwhile.
 - **Runners for macOS and Windows** (E3's P22). T7.8's per-OS bodies compile everywhere and are
   exercised only on Linux in CI until a runner exists. **Decides:** CI owner. **Blocks:** nothing.
+- **Pending the RFC author's answer: refuse the open (D6, D13, D14, D15), or open where RFC 28 §3.3
+  says?** This epic refuses an open that RFC 28 §3.3 opens or reconciles: a hold record (D6), a
+  lost synced tail (D13), a range that names no record or a `reconcile` or `reconciled` record
+  (D14), and a read that keeps failing (D15). Each refusal names what it found, serves nothing and
+  writes nothing, and tests assert that, not the error value. Following the RFC instead adds, to
+  an epic that has no part of it today: the reconcile spare as a pool class, `Reconciled`,
+  reconcile-retained pieces, the `DropOlder` loss reason, `HeadroomSparesShort`, the reconcile
+  fields of `Stats.Recovery`, and unread files with `ErrUnreadable` on `Sync` and `Since`. That is
+  roughly 25–40 man-days, 5–6 subtasks, and changes to epics 5, 6 and 8. **Recommendation:**
+  refuse until E7b, as written; prior art for the refusal is "from memory": a store that refuses to
+  open on unrecoverable damage rather than serve stale data, as database engines do. **Decides:**
+  the RFC's author. **Blocks:** nothing here; until answered the epic stays as written.
