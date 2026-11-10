@@ -259,10 +259,12 @@ assertion**. See "Verifying a change" below. A test that has never failed is unv
 
 **Synchronise on events, never on time.** Don't use `time.Sleep` to wait for a goroutine,
 callback or state change. Wait on a channel, a `sync.WaitGroup` or the condition itself, with
-one generous timeout as a backstop. On a loaded CI box, a sleep is long enough until the day it
-isn't.
+one generous timeout as a backstop. Polling the real condition with a short pause between polls
+counts as waiting on it; sleeping a fixed time and then checking does not. A duration the code
+under test waits on is advanced on the injected clock, not slept. On a loaded CI box, a sleep is
+long enough until the day it isn't.
 
-**No fixed ports, paths or global state.** Bind to `:0`, write under `t.TempDir()`, and clean
+**No fixed ports, paths or global state.** Bind to `127.0.0.1:0`, write under `t.TempDir()`, and clean
 up with `t.Cleanup`, so tests run in parallel and on any host.
 
 **Fix a flake, never retry it.** A flaky test is either a race in the code or a race in the
@@ -277,28 +279,35 @@ several inputs exercise one rule.
 
 ### By kind
 
-`test/suites.yaml` defines how CI runs each suite, and `test/harness/bin/dt` runs one locally.
+`test/suites.yaml` defines how CI runs each suite (tags, tiers, flags), and RFC 29 §4.3 says
+why; `test/harness/bin/dt` runs one locally. What follows is only what those don't say.
 Don't start two suites by hand at once: they collide on ports and mounts. `dt` runs cells in
 parallel only where the registry says each one is isolated (`parallel: true`).
 
-**Integration** (`-tags=integration`, `-p 1`) runs against real backends: Badger on disk and
-a real S3 endpoint. Durability, ordering and fault-in changes need a test at this
-tier or above, because a memory backend proves nothing about fsync or a crash. A backend the
-host lacks is a skip that names the environment variable to set, never a
-pass. Each test builds its own state and leaves nothing behind.
+**Integration** (`-tags=integration`, `-p 1`) is for a backend the host must provide: a real
+S3-compatible endpoint, beside Badger on disk. CI starts no such endpoint yet, so a test that
+needs it skips in every run and guards nothing until one is wired in; don't count it as
+coverage. Badger under `t.TempDir()` and in-memory SQLite are real implementations, and their
+tests run untagged. Durability and ordering changes need a test on a real filesystem with
+the crash simulated beneath the code under test (RFC 1 §1.3), because a memory backend proves
+nothing about fsync or a crash. A backend the host lacks is a skip that names the environment
+variable to set; it is reported, never counted as a pass. Each test builds its own state and
+leaves nothing behind.
 
 **E2E** (`-tags=e2e`, sudo, a kernel client) is for what only a real mount shows: client
 caching, the mount handshake, interop. A rule that a unit or integration test can check belongs
-there instead. A known failure is listed only after CI shows it, in that suite's `known` file,
-with the reason.
+there instead. E2E has no `known` file yet (RFC 29 §4.7), so a failing e2e test is fixed, not
+listed.
 
 **Build tags hide a whole file from `go build`, `go vet` and the linter.** A tagged test must
-compile under `go vet -tags=…` (lint-go runs it). Never tag a file only to keep a test out of
-`go test ./...` when `testing.Short()` would do.
+compile under `go vet -tags=…`: a new tag goes into lint-go's list in `test/suites.yaml` in the
+same change. Never tag a file only to keep a test out of `go test ./...` when `testing.Short()`
+would do.
 
 **Fuzz** every decoder that reads bytes off the wire or the disk: XDR, SMB2 PDUs, on-disk
-records. The target asserts an **invariant**: no panic; whatever decodes re-encodes to the same
-bytes; any length the decoder reads stays inside the buffer. A target that only checks that
+records. The target asserts an **invariant**: no panic; any length the decoder reads stays inside
+the buffer; and what it decodes either matches an independent decoder or re-encodes to bytes
+that decode to the same value (padding and reserved fields may differ). A target that only checks that
 encode and decode agree passes when both share a bug. Commit every crasher to
 `testdata/fuzz/<FuzzName>/`, where it becomes a regression seed that plain `go test` runs.
 
