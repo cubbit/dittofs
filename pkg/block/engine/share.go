@@ -39,6 +39,14 @@ type binding struct {
 	seq         uint64          // the order bindings were made in, which Close undoes in reverse
 }
 
+// holdsNoJournal reports whether b, which may be nil, is no share the engine
+// serves: a share with no binding, or a removed one that holds only its tag,
+// which the journal waiting for a retried open still has to forget (RFC 8
+// §2.5).
+func (b *binding) holdsNoJournal() bool {
+	return b == nil || b.j == nil
+}
+
 // bindings is the share table, read on every content call without a lock. A
 // removed binding holds no journal or handle: a loop over the table skips it.
 //
@@ -98,8 +106,9 @@ func (e *Engine) table() bindings {
 // share is refused before any I/O, and the binding it had is kept. A second
 // lifecycle call on a share while one runs answers ErrDelay, which its caller
 // retries, and so does a Bind while Start runs, the share not attached yet; a
-// share being removed answers ErrStale. The lifecycle mutex is held only to
-// read and swap the table, never across I/O.
+// share being removed answers ErrStale. A share whose journal waits for a
+// retried open (RFC 8 §2.5) answers ErrDelay too. The lifecycle mutex is held
+// only to read and swap the table, never across I/O.
 func (e *Engine) Bind(ctx context.Context, s Share) error {
 	if err := validShare(s); err != nil {
 		return err
@@ -115,6 +124,10 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 
 		return errClosed
 	case e.starting:
+		e.mu.Unlock()
+
+		return &vfserr.Delay{Cause: vfserr.DelayFrozen}
+	case e.unsuitable && b.holdsNoJournal():
 		e.mu.Unlock()
 
 		return &vfserr.Delay{Cause: vfserr.DelayFrozen}

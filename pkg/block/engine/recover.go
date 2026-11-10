@@ -47,6 +47,10 @@ type opened struct {
 	stats   Stats
 	raised  []entity.ShardID
 
+	// unsuitable is set when the device's Open refused the directory as
+	// unsuitable: the shares stay unattached and the open is to be retried.
+	unsuitable bool
+
 	// tags is what the store records for each share's tag, read at step 1.
 	tags map[entity.ShareID]entity.TagRecord
 
@@ -206,8 +210,9 @@ func (e *Engine) raiseAtStart(ctx context.Context, o *opened) error {
 
 // refuseDevice answers an Open that failed. A refusal it makes leaves every
 // share on the device unattached and named, with the device and the cause,
-// and Start goes on; a lost journal raises journal_lost. Any other error
-// fails Start.
+// and Start goes on; a lost journal raises journal_lost, and a directory the
+// platform profile refuses raises journal_unsuitable and is to be retried
+// (RFC 8 §2.5, RFC 1 §3). Any other error fails Start.
 //
 // decision: an error a check meets, rather than a refusal it makes, fails
 // Start as any other failing step does, and stops every share of the node.
@@ -239,6 +244,13 @@ func (e *Engine) refuseDevice(
 	tags map[entity.ShareID]entity.TagRecord,
 	err error,
 ) (opened, error) {
+	if errors.Is(err, journal.ErrUnsuitableStorage) {
+		o := e.refuse(dir, shares, tags, err, unsuitableCondition(dir, expect, err))
+		o.unsuitable = true
+
+		return o, nil
+	}
+
 	cause, lost := openRefusal(expect, err)
 	if cause == nil {
 		if expect == (journal.JournalID{}) && errors.Is(err, journal.ErrNoJournal) {
@@ -248,6 +260,51 @@ func (e *Engine) refuseDevice(
 		return opened{}, fmt.Errorf("engine: start: open the journal of %s: %w", dir, err)
 	}
 
+	if !lost {
+		return e.refuse(dir, shares, tags, cause, nil), nil
+	}
+
+	c := Condition{
+		Name: conditionJournalLost,
+		Subject: Subject{
+			Scope: ScopeJournal,
+			ID:    hex.EncodeToString(expect[:]),
+			Name:  dir,
+		},
+		Cause: err,
+		Detail: "the journal recorded for the device is missing or foreign; " +
+			"its shares wait for an operator to acknowledge the loss",
+	}
+
+	return e.refuse(dir, shares, tags, cause, &c), nil
+}
+
+// unsuitableCondition is journal_unsuitable for the device dir, whose open
+// failed with cause: the platform profile's refusal, or, at a retry, the
+// error that kept the shares unattached.
+func unsuitableCondition(dir string, id journal.JournalID, cause error) *Condition {
+	return &Condition{
+		Name: conditionJournalUnsuitable,
+		Subject: Subject{
+			Scope: ScopeJournal,
+			ID:    hex.EncodeToString(id[:]),
+			Name:  dir,
+		},
+		Cause:  cause,
+		Detail: "the device's shares are not attached; the open is retried every 30 s",
+	}
+}
+
+// refuse is what Start publishes for a device whose shares stay unattached,
+// each named with the device and cause, and the condition c the refusal
+// raises for the device, if any.
+func (e *Engine) refuse(
+	dir string,
+	shares []Share,
+	tags map[entity.ShareID]entity.TagRecord,
+	cause error,
+	c *Condition,
+) opened {
 	o := opened{
 		table: removedBindings(tags),
 		stats: newStats(),
@@ -258,26 +315,15 @@ func (e *Engine) refuseDevice(
 			Device:  dir,
 			Refused: cause,
 		}
-		e.d.Logger.Warn("share refused at start", "share", id, "device", dir, "err", cause)
 	}
 
-	if lost {
-		c := Condition{
-			Name: conditionJournalLost,
-			Subject: Subject{
-				Scope: ScopeJournal,
-				ID:    hex.EncodeToString(expect[:]),
-				Name:  dir,
-			},
-			Cause:  err,
-			Detail: "the journal recorded for the device is missing or foreign; its shares wait for an operator to acknowledge the loss",
-		}
+	if c != nil {
 		o.stats.Journals[dir] = JournalStats{
-			Conditions: []Condition{c},
+			Conditions: []Condition{*c},
 		}
 	}
 
-	return o, nil
+	return o
 }
 
 // openRefusal is the cause the device's shares are refused with when Open

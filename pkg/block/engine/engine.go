@@ -89,6 +89,11 @@ type Engine struct {
 		draining atomic.Pointer[func()]            // Close's wait for the lifecycle calls
 	}
 
+	// unsuitable is set while the journal's shares wait for a retried open
+	// (RFC 8 §2.5): a Bind, Unbind or Drop that names a share the journal
+	// would serve answers retry-later. mu guards it.
+	unsuitable bool
+
 	block   uint64 // the versions one raise of the version limit covers
 	raising raises // the version limit raises running
 
@@ -191,6 +196,13 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 
 	o, err := e.start(ctx, shares)
 	if err == nil {
+		for id, sh := range o.stats.Shares {
+			e.d.Logger.Warn(
+				"share refused at start",
+				"share", id, "device", sh.Device, "err", sh.Refused,
+			)
+		}
+
 		// Each served share's binding takes its journal's group commit once
 		// every start step succeeded, so a failed Start leaves none running.
 		for _, b := range o.table {
@@ -225,6 +237,7 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 	}
 
 	e.health = o.stats
+	e.unsuitable = o.unsuitable
 	e.started = true
 
 	// The removals are posted once the table is published, and the loop runs

@@ -18,6 +18,11 @@ import (
 // missing or foreign: unhealthy, until an operator acknowledges the loss.
 const conditionJournalLost = "journal_lost"
 
+// conditionJournalUnsuitable is RFC 25 §3.9's condition for a journal whose
+// open the platform profile refuses, or whose retried open failed: its shares
+// stay unattached until an open succeeds (RFC 8 §2.5).
+const conditionJournalUnsuitable = "journal_unsuitable"
+
 // conditionJournalReadOnly is RFC 8 §11.1's condition for a journal turned
 // read-only: it refuses writes and serves reads.
 const conditionJournalReadOnly = "journal_read_only"
