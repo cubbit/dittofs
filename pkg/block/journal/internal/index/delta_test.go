@@ -341,8 +341,9 @@ func TestMutatorDeltas(t *testing.T) {
 
 // TestFillClaimsTheFile: a fill on a file no tag owns yet claims it in its own
 // update, so its delta carries the tag and a release through that share takes
-// the bytes back out of the same tag's sum. A fill refused for either reason
-// leaves no entry behind and does not claim.
+// the bytes back out of the same tag's sum. A fill refused by the tag check
+// leaves no entry behind and does not claim; one refused as stale claims the
+// file and keeps an entry noting its record.
 func TestFillClaimsTheFile(t *testing.T) {
 	const owner, rival core.ShareTag = 7, 8
 	id := fid(1)

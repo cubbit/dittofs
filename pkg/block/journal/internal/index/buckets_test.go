@@ -548,10 +548,10 @@ func TestOpenStartsEveryBucket(t *testing.T) {
 	}
 }
 
-// TestStaleFillKeepsTheEntryNotingItsRecord: a refused fill on a file with no entry must
-// not leave one behind, since the fill wrote nothing. An entry left holding
-// nothing would pin the fill's version against a later check that should use
-// the bucket.
+// TestStaleFillKeepsTheEntryNotingItsRecord: a fill refused as stale on a file
+// with no entry leaves the entry noting its record, since the record is in a
+// segment, and holds nothing. The entry has no change version, so a later
+// check still uses the bucket.
 func TestStaleFillKeepsTheEntryNotingItsRecord(t *testing.T) {
 	var fs files
 	id := fid(1)
