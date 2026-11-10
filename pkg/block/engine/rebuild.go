@@ -98,10 +98,7 @@ func (e *Engine) rebuildMarker(ctx context.Context, o *opened, b *binding, f ent
 		// The replay commits through the store and leaves nothing on an
 		// entry, so every operation here is the rebuild's.
 		fe.ops = nil
-		fe.removing = nil
-		fe.guarded.Store(false)
-		close(fe.guardDone)
-		fe.guardDone = nil
+		fe.unguard()
 		e.files.unlock(f, fe)
 	})
 

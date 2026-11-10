@@ -67,6 +67,14 @@ func (e *Engine) guard(ctx context.Context, b *binding, f entity.FileID, kind en
 	return &removal{b: b, f: f, x: x, kind: kind, at: e.d.Clock.Now()}, nil
 }
 
+// unguard releases fe's guard and wakes its waiters. The caller holds its lock.
+func (fe *fileEntry) unguard() {
+	fe.removing = nil
+	fe.guarded.Store(false)
+	close(fe.guardDone)
+	fe.guardDone = nil
+}
+
 // refuseRemoval is a removal of kind over x refused by the clones
 // registered on the file: errRegistered for a release of a file any holds,
 // delayClone() for a truncate or deallocate overlapping a source extent or
@@ -134,10 +142,7 @@ func (e *Engine) guardOf(f entity.FileID) <-chan struct{} {
 // commit settles only when unstage asks it to, for a terminal failure.
 func (e *Engine) release(r *removal, settle bool) {
 	fe := e.files.lockFor(r.f)
-	fe.removing = nil
-	fe.guarded.Store(false)
-	close(fe.guardDone)
-	fe.guardDone = nil
+	fe.unguard()
 	var oldest time.Time
 	if len(fe.ops) > 0 {
 		oldest = fe.ops[0].at
