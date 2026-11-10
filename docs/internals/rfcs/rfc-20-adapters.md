@@ -942,10 +942,10 @@ package adapter // pkg/adapter
 
 // Deps is what an adapter is handed by node.New. It builds no other component (RFC 23 §2.1).
 // A field is an interface where it has two implementations, a concrete type
-// where it has one. Only Service and Budgets are required, and New refuses a
+// where it has one. Only VFS and Budgets are required, and New refuses a
 // missing one by name; every other field has a working zero value.
 type Deps struct {
-	Service vfs.Service         // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
+	VFS     vfs.Service         // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
 	Budgets *resources.Budgets  // RFC 24 §2.5 (pkg/resources): the four budgets on the request path, receive, reply, connection state and hold
 	Metrics *metrics.Registry   // RFC 25 §8.2; nil registers nothing
 	Tracer  trace.Tracer        // RFC 25 §8.1: spans; nil is the no-op tracer
@@ -1784,7 +1784,7 @@ it holds — the service counts nothing about holds:
 **Who builds what.** `node.New` builds the service, the
 authenticator and the pools, then each adapter with `New(Deps, Settings)`
 (§3.4). `New` builds the protocol's stages, its handler sets — one per program
-and version for NFS, one for SMB — each holding `Deps.Service`, and their
+and version for NFS, one for SMB — each holding `Deps.VFS`, and their
 tables, and returns a `*core.Server` that runs them. Nothing is looked up
 later: no registry, no global, no service in a context value. §2.5's drawing
 shows the whole.
@@ -3333,7 +3333,7 @@ end-to-end benchmark.
 | A13 | Every wire divergence from the reference server that survives normalisation is a red run or a recorded entry citing a protocol RFC rule. |
 | A14 | Nagle's algorithm is off on every connection, and the socket buffers are left to the kernel. |
 | A15 | No handler checks a precondition its operation-table row carries. |
-| A16 | An adapter reaches the service only through the `Deps.Service` it was built with; nothing looks the service up while serving. |
+| A16 | An adapter reaches the service only through the `Deps.VFS` it was built with; nothing looks the service up while serving. |
 | A17 | A version or dialect selects a table; no handler branches on the version to decide which service call to make. |
 | A18 | A pooled buffer returns to its pool, with its reservation, only at its last borrower's release; an idle node's pools hold zero reserved bytes. |
 | A19 | A sidecar reaches no service and holds no client state, runs only while one of its adapters serves, and its failure fails neither an adapter nor readiness. |

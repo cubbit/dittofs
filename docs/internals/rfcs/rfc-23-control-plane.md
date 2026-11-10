@@ -382,7 +382,7 @@ store configuration, and the last storage binding to close one releases it.
 | 7 | identity ([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)), built once and shared by row 8 and the management API | RFC 18 §2.6's `Deps` | the metadata store, the directory | 5 / 7 |
 | 8 | `*vfs.Filesystem`, by `vfs.New` ([RFC 17](rfc-17-vfs.md)) | `Meta` (the metadata store), `Open` (open state), `Engine` (the engine); from identity, `Identity` (its `Resolver`), `Auth` (its `Authenticator`) and `Names` (its `Identities`) | identity, open state, the metadata views, the engine | 6 / 6 |
 | 9 | **(cluster)** `vfs.Serve`, then the gateway by `vfs.NewGateway` ([RFC 17](rfc-17-vfs.md)) | `Serve`: the filesystem, the `Transport`, the `Router`; the gateway: `Local` (the checked `Service` that `Serve` returns), `Router`, `Transport` | `Serve`: the fence, the dedup, then the filesystem; the gateway: `Service`, `Router`, `Transport` | 6 / 4 |
-| 10 | adapters ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) | `Service`, the `vfs.Service` — the gateway in a cluster, the filesystem on one node — and nothing of identity | `vfs.Service`, sign-in and principal spellings included | 9 / 2 |
+| 10 | adapters ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) | `VFS`, the `vfs.Service` — the gateway in a cluster, the filesystem on one node — and nothing of identity | `vfs.Service`, sign-in and principal spellings included | 9 / 2 |
 
 **What `New` looks like.** The sketch is illustrative and elides errors and
 the values beside the rows. Where a component's RFC declares a constructor or a
@@ -411,7 +411,7 @@ func New(cfg Config) (*Node, error) {
 		checked := vfs.Serve(n.fs, cfg.Transport, n.router, ...)        // the fence and the dedup around the filesystem
 		svc = vfs.NewGateway(vfs.GatewayDeps{Local: checked, Router: n.router, Transport: cfg.Transport})
 	}
-	n.adapters = adapter.Deps{Service: svc, ...}                        // handed to each adapter's factory as reconcile enables it; no identity
+	n.adapters = adapter.Deps{VFS: svc, ...}                        // handed to each adapter's factory as reconcile enables it; no identity
 	n.api      = api.New(api.Deps{SignIn: n.ident, ...})                // the same identity, called directly, never through vfs (RFC 18 §8.1)
 	return n, nil                                                       // only the metadata store opened; nothing started
 }

@@ -456,7 +456,7 @@ names through `Peers.ClientState`
 > `Serve` then takes that and a `Service`. The adapters are not this RFC's to build: `node.New` builds
 each one last, as [RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface) and
 [§4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)
-say, and hands it the filesystem or the gateway as `adapter.Deps.Service` (§2), and
+say, and hands it the filesystem or the gateway as `adapter.Deps.VFS` (§2), and
 nothing else of the service.
 
 ### 2.4 Package layout

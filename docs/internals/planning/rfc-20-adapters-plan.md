@@ -109,7 +109,7 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
 - **`pkg/adapter`** (RFC 20 §3.4, §3.5): `Adapter` (`Reconfigure` taking `config.Settings`),
   `State` (with `String`), `Health` (`State`, `Conditions`, and `Ready()` derived), `ConnInfo`
   (`Protocol`, `Remote`, `Session`, `Since`), `Sidecar`, `Serving`, `Loop`, `Deps` (`Budgets`;
-  `Watch` returning a `Loop`, RFC 20 §3.7; only `Service` and `Budgets` required).
+  `Watch` returning a `Loop`, RFC 20 §3.7; only `VFS` and `Budgets` required).
 - **A test with every new package.** `lint-repo` runs `test/new-package-tests.sh`, which fails a
   directory new to the base branch that has no `_test.go`. Each package epic 1 creates lands with
   a test that can fail (rule 8): `pkg/adapter`'s imports checked against RFC 20 §2.3's list (a
