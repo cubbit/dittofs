@@ -273,7 +273,7 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 	}
 	if s.nfsPort > 0 {
 		s.vals["nfs-port"] = strconv.Itoa(s.nfsPort)
-		_, _ = fmt.Fprintf(w, "[dt] fixture: NFS exports %s at %s:%d\n", Share, server, s.nfsPort)
+		_, _ = fmt.Fprintf(w, "[dt] fixture: NFS configured for %s at %s:%d; this dfs serves no file protocol\n", Share, server, s.nfsPort)
 	}
 	if s.smbPort > 0 {
 		s.vals["smb-port"] = strconv.Itoa(s.smbPort)
@@ -281,7 +281,7 @@ func Start(ctx context.Context, f registry.Fixture, services []string, bin, out 
 		for i, share := range shares {
 			names[i] = share.Name
 		}
-		_, _ = fmt.Fprintf(w, "[dt] fixture: SMB serves %s at %s:%d\n", strings.Join(names, " "), server, s.smbPort)
+		_, _ = fmt.Fprintf(w, "[dt] fixture: SMB configured for %s at %s:%d; this dfs serves no file protocol\n", strings.Join(names, " "), server, s.smbPort)
 	}
 	switch {
 	case f.NFS.Mounts():
