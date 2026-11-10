@@ -43,7 +43,7 @@ and tests can cite them.
 | R12 | Each `FileID` keeps its owning tag while any segment holds a record of the file, even after its change-version entry (R35) is dropped | §3, §4 | 3, 10 |
 | R47 | A release stops holding its extents, splitting or narrowing them, and leaves **no** marker. It raises no change version (R33). It is refused, with no partial progress, when any part is not offloaded: the index offers the all-offloaded predicate and the all-or-nothing removal, and E9 owns the hold and successor rules | §3.5 | 2 |
 | R49 | The index side of `Since` reads a consistent view of the file and holds the file index lock no longer than a read does. The version-order sort is O(n log n) per call over the file's yielded items | §3.10 | 3, 5 |
-| R50 | A held write extent keeps its `Over`: each run where it superseded another write of the file, with that write's version, recorded when the superseding insert splits, narrows or removes it, so it outlives the superseded write's entry. The index side of `Since(from)` yields the runs whose superseded version is above `from`; `Settle` past the extent's version drops them; the rebuild derives them from the records it is fed | §3.10 | 5, 11 |
+| R50 | A held write extent keeps its `Over`: each run where it superseded another write of the file, with that write's version, recorded when the superseding insert splits, narrows or removes it, so it outlives the superseded write's entry. The index side of `Since(from)` yields the runs whose superseded version is above `from`; a `Settle` at or above the extent's version drops them; the rebuild derives them from the records it is fed | §3.10 | 5, 11 |
 
 **Queries, cost and concurrency**
 

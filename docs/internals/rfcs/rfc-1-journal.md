@@ -1613,8 +1613,11 @@ at or below `applied` and is not yielded. A write's `Over` names the runs where
 it superseded another write of the file whose version is above `from`: by the
 existence commit the superseded write has left the index, so only the journal
 can tell metadata, which writes an overwrite record there
-([RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)). The journal keeps it per held extent until `Settle` passes it,
-and recovery rebuilds it from the records on disk. `Since` of an unread file
+([RFC 6 §3.3](rfc-6-block-metadata.md#3.3%20Holes%2C%20not%20written%20extents)). The journal keeps it per held extent until a `Settle` at or above the write's
+version, which the caller issues only once that write's existence, with its `Over`, has
+committed ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)). Recovery rebuilds it from the records on disk, which is
+enough: `Over` matters only while a record of the superseded write is on disk, and once
+repack has dropped that record nothing of it is left to be held again. `Since` of an unread file
 yields `ErrUnreadable` and nothing else. `Since` reads a consistent view of the file
 and **MUST NOT** block writes to it for longer than a read does.
 

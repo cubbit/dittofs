@@ -685,7 +685,7 @@ code.
   - an outer hash map from `FileID` to a per-file B-tree keyed on start offset;
   - held extents (disjoint), retained extents (may overlap) and removal markers;
   - each held write's `Over`, the runs it superseded with their versions, kept after the
-    superseded write leaves the index until `Settle` passes it (RFC 1 §3.10; epic 4's R50);
+    superseded write leaves the index until a `Settle` at or above the write's version (RFC 1 §3.10; epic 4's R50);
   - split, narrow and remove in `O(log n)`;
   - span queries returning held extents and exact gaps in `O(log n + k)`.
 - **Ordering:**

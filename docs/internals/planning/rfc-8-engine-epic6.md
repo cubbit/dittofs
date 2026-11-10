@@ -1033,14 +1033,13 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   `kvstore.PendingOp.Over`, which `Existence.Commit` already writes overwrite records over
   (epic 4's D6), in place of the runs it computes from its own batch; that computation and its
   `decision:` waiting for `Change.Over` removed. E2's fake journal yields `Over` as RFC 1
-  §3.10 states it.
+  §3.10 states it, and `PendingOp.Over`'s comment names the replay's runs from `Since`.
 - **Acceptance criteria:**
   - A replayed write whose `Since` entry names an `Over` run commits an overwrite record there,
     though no write of the batch covers it.
 - **Tests:** over the fake and the real `kvstore`: `Since` yields a write at v5 with `Over`
-  `[0, 4)` KiB and no v3 write (it left the index before the crash); after the replay, a loss
-  of v5 reads **Lost** over `[0, 4)` KiB, not as the file was before v3 (catches runs taken
-  from the batch alone, R50).
+  `[0, 4)` KiB and no v3 write (it left the index before the crash); after the replay,
+  an overwrite record at v5 covers `[0, 4)` KiB (catches runs taken from the batch alone, R50).
 
 ## 7. Order of work
 
