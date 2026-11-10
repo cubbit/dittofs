@@ -760,3 +760,30 @@ func (e *Engine) OnJoining(f func(what string)) {
 func (e *Engine) Served(s entity.ShareID) bool {
 	return e.table()[s] != nil
 }
+
+// EnterForTest registers one unit of work on share s's gate, as a content
+// call does, and answers the function that withdraws it.
+func (e *Engine) EnterForTest(s entity.ShareID) (leave func(), err error) {
+	b, err := e.enter(s)
+	if err != nil {
+		return nil, err
+	}
+
+	return b.gate.leave, nil
+}
+
+// InFlightForTest is the count of units entered on share s's gate and not
+// withdrawn.
+func (e *Engine) InFlightForTest(s entity.ShareID) int64 {
+	return e.table()[s].gate.st.Load() &^ shutBit
+}
+
+// ShutForTest shuts share s's gate, as Unbind does.
+func (e *Engine) ShutForTest(s entity.ShareID) {
+	e.table()[s].gate.shut()
+}
+
+// WaitForTest waits, as Unbind does, until share s's gate is idle.
+func (e *Engine) WaitForTest(ctx context.Context, s entity.ShareID) error {
+	return e.joinWork(ctx, &e.table()[s].gate)
+}

@@ -169,10 +169,12 @@ func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID
 	if size < 0 {
 		return vfserr.ErrInvalid
 	}
-	b, err := e.bindingOf(s)
+
+	b, err := e.enter(s)
 	if err != nil {
 		return err
 	}
+	defer b.gate.leave()
 	r, err := e.begin(ctx, b, f, entity.RemoveTruncate, entity.ExtentOf(size, entity.EndOfFile))
 	if err != nil {
 		return err
@@ -201,9 +203,15 @@ func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 	if off < 0 || n < 0 || n > entity.EndOfFile-off {
 		return vfserr.ErrInvalid
 	}
-	b, err := e.bindingOf(s)
-	if err != nil || n == 0 {
+
+	b, err := e.enter(s)
+	if err != nil {
 		return err // a share not bound refuses even an empty extent
+	}
+	defer b.gate.leave()
+
+	if n == 0 {
+		return nil
 	}
 	r, err := e.begin(ctx, b, f, entity.RemoveDeallocate, entity.Extent{Offset: off, Length: n})
 	if err != nil {
@@ -245,10 +253,11 @@ func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 // vfserr.ErrUnavailable, within the call or from the loop, and stays for the
 // next start (RFC 8 §8.1, §12.1).
 func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) (retry <-chan error, err error) {
-	b, err := e.bindingOf(s)
+	b, err := e.enter(s)
 	if err != nil {
 		return nil, err
 	}
+	defer b.gate.leave()
 	r, err := e.begin(ctx, b, f, entity.RemoveRelease, entity.ExtentOf(0, entity.EndOfFile))
 	if errors.Is(err, errRegistered) {
 		return e.behindClone(b, f), nil

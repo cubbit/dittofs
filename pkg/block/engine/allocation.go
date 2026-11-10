@@ -26,9 +26,12 @@ func (e *Engine) Allocation(ctx context.Context, s entity.ShareID, f entity.File
 	if off < 0 {
 		return entity.Span{}, vfserr.ErrInvalid
 	}
-	if _, err := e.bindingOf(s); err != nil {
+
+	b, err := e.enter(s)
+	if err != nil {
 		return entity.Span{}, err
 	}
+	defer b.gate.leave()
 	limit := int64(math.MaxInt64) // the start of the first destination extent a clone holds past off
 	if fe := e.files.lockOf(f); fe != nil {
 		err := fe.refuseRead(entity.Extent{Offset: off, Length: 1})

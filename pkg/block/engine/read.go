@@ -26,10 +26,12 @@ func (e *Engine) Read(ctx context.Context, s entity.ShareID, f entity.FileID, of
 	if off < 0 || int64(len(dst)) > math.MaxInt64-off {
 		return 0, vfserr.ErrInvalid
 	}
-	b, err := e.bindingOf(s)
+
+	b, err := e.enter(s)
 	if err != nil {
 		return 0, err
 	}
+	defer b.gate.leave()
 	if fe := e.files.lockOf(f); fe != nil {
 		err := fe.refuseRead(entity.Extent{Offset: off, Length: int64(len(dst))})
 		e.files.unlock(f, fe)
