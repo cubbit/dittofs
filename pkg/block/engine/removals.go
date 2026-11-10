@@ -391,7 +391,8 @@ func (e *Engine) finish(r *removal) {
 
 // retryLater hands r's phase 1, which its call could not commit, to its
 // journal's loop, which retries it keeping the guard and the in-flight mark
-// until it commits, or until the file is found gone. outcome, when not nil,
+// until it commits, until the file is found gone, or until a read-only
+// journal is found to have undone it. outcome, when not nil,
 // is told once how it ended: nil once it commits.
 //
 // decision: a phase 1 its loop's end cuts short, as Close's stop of the work
@@ -419,6 +420,9 @@ func (e *Engine) retryLater(r *removal, op kvstore.RemoveOp, outcome func(error)
 				return itemDone
 			case errors.Is(err, kvstore.ErrHeld):
 				tell(e.abort(r))
+				return itemDone
+			case undid(err):
+				tell(e.undone(r, err))
 				return itemDone
 			case terminal(err):
 				e.unstage(r, err)

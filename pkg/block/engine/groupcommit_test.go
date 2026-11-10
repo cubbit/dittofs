@@ -847,8 +847,10 @@ func TestMarksNotWrittenAreRetriedAlone(t *testing.T) {
 		t.Fatalf("%d calls carried marks within their backoff, want 1", n)
 	}
 	x.on.Store(false)
-	u.clock.Advance(time.Second) // past the backoff
-	eventually(t, "the marks are recorded alone", func() bool { return len(u.j.Recorded()) == 1 })
+	// The clock moves until the marks show: a poke left in the wake channel
+	// can have the loop read the backoff before a move and arm its timer
+	// after it, and that timer waits for the next move.
+	u.until(t, "the marks are recorded alone", func() bool { return len(u.j.Recorded()) == 1 })
 }
 
 // syncFailing is a handle whose syncs, once on, fail, logging how many files

@@ -6,6 +6,7 @@ package enginetest
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"iter"
 	"slices"
 	"sync"
@@ -41,6 +42,8 @@ type FakeJournal struct {
 	limit     uint64 // no version is issued at or above it; zero until set
 	files     map[journal.FileID]*fakeFile
 	held      map[journal.ShareTag]int64 // held bytes per tag
+	offloaded map[journal.ShareTag]int64 // SetOffloaded's bytes per tag, held and not dirty
+	stranded  []journal.ShareTag         // Strand's tags, in order; forgotten at a reopen
 	losses    []journal.LossEvent
 	gen       uint64
 	closed    bool
@@ -52,6 +55,10 @@ type FakeJournal struct {
 	seq       uint64                  // the stream's last record's sequence number
 	synced    entity.SyncMark         // the mark of the stream's last sync; zero before one
 	recorded  [][]entity.SyncMark     // what MarksRecorded was handed, in order
+
+	readOnly journal.ReadOnlyState   // ReadOnly's state, reported by Stats
+	refusal  error                   // what a write answers once read-only
+	undone   map[journal.FileID]bool // ReadOnly's files: every Sync naming one answers the refusal
 
 	refuseReserve error           // RefuseReserve's error: the next Reserve answers it
 	reserved      []Reserved      // every Reserve, in order
@@ -79,8 +86,25 @@ type fakeFile struct {
 	tag     journal.ShareTag
 	pieces  []piece
 	changes []journal.Change // markers and losses
+	settled journal.Version  // Settle's newest version: changes at or below it are hidden until a reopen
 	asOf    journal.Version
 	rec     record // its newest record
+}
+
+// unsettled is the file's markers and losses that Settle has not covered.
+func (f *fakeFile) unsettled() []journal.Change {
+	return slices.DeleteFunc(slices.Clone(f.changes), func(c journal.Change) bool {
+		return c.Version.Compare(f.settled) <= 0
+	})
+}
+
+// newest is the newer of two versions.
+func newest(a, b journal.Version) journal.Version {
+	if a.Compare(b) < 0 {
+		return b
+	}
+
+	return a
 }
 
 // record is where a record lies on the stream: its segment, its end there,
@@ -106,7 +130,12 @@ func (p piece) end() int64 { return p.off + int64(len(p.b)) }
 // NewFakeJournal returns an empty fake journal. It issues no version until
 // SetVersionLimit, as the journal does not.
 func NewFakeJournal() *FakeJournal {
-	return &FakeJournal{files: map[journal.FileID]*fakeFile{}, held: map[journal.ShareTag]int64{}, seg: 1}
+	return &FakeJournal{
+		files:     map[journal.FileID]*fakeFile{},
+		held:      map[journal.ShareTag]int64{},
+		offloaded: map[journal.ShareTag]int64{},
+		seg:       1,
+	}
 }
 
 var _ engine.Journal = (*FakeJournal)(nil)
@@ -187,10 +216,14 @@ func (j *FakeJournal) Stats() journal.Stats {
 		Shares:         map[journal.ShareTag]journal.ShareStats{},
 		VersionLimit:   journal.Version{Counter: j.limit},
 		NextVersion:    journal.Version{Counter: j.last + 1},
+		ReadOnly:       j.readOnly,
 	}
 
 	for tag, n := range j.held {
-		s.Shares[tag] = journal.ShareStats{HeldBytes: n}
+		s.Shares[tag] = journal.ShareStats{
+			HeldBytes:  n,
+			DirtyBytes: max(0, n-j.offloaded[tag]),
+		}
 		s.HeldBytes += n
 	}
 	return s
@@ -208,6 +241,28 @@ func (j *FakeJournal) Close() error {
 		h.closed = true
 	}
 	return nil
+}
+
+// Reopen models the journal after a restart. It first closes what the
+// process ending closes, every handle, as Close does, so a late call of the
+// old process fails with ErrClosed; then it opens again with the held pieces
+// kept, and with every marker and synced loss unsettled again, as RFC 1 §3.10
+// has recovery rebuild them: Settle is not persisted.
+func (j *FakeJournal) Reopen() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	for _, h := range j.handles {
+		h.closed = true
+	}
+
+	j.handles = nil
+	j.closed = false
+	j.stranded = nil
+
+	for _, f := range j.files {
+		f.settled = journal.Version{}
+	}
 }
 
 // Lose drops what file id holds in e as the journal does on a loss: the bytes
@@ -301,7 +356,51 @@ func (j *FakeJournal) Forget(_ context.Context, tag journal.ShareTag) error {
 	return nil
 }
 
-func (j *FakeJournal) Strand(journal.ShareTag) error { return journal.ErrNotImplemented }
+// Strand marks tag as claimed by no share. Like the journal's it refuses tag
+// 0, and keeps the mark in memory only: a reopen forgets it (RFC 1 §3). The
+// fake does not change what a read of the tag's extents answers.
+func (j *FakeJournal) Strand(tag journal.ShareTag) error {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	switch {
+	case j.closed:
+		return journal.ErrClosed
+	case tag == 0:
+		return journal.ErrInvalidSetting
+	}
+
+	if !slices.Contains(j.stranded, tag) {
+		j.stranded = append(j.stranded, tag)
+	}
+
+	return nil
+}
+
+// Stranded is the tags Strand named since the last open, in order.
+func (j *FakeJournal) Stranded() []journal.ShareTag {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	return slices.Clone(j.stranded)
+}
+
+// SetOffloaded makes n of tag's held bytes offloaded, so Stats reports them
+// held but not dirty.
+//
+// ponytail: the fake offloads no extent by itself, so only a test marks bytes
+// offloaded, by count and not by extent. Track the offloaded bit per piece
+// when a test needs which bytes are dirty.
+func (j *FakeJournal) SetOffloaded(tag journal.ShareTag, n int64) {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	j.offloaded[tag] = n
+}
+
 func (j *FakeJournal) Repack(context.Context, int64, journal.RepackScope) (int64, error) {
 	return 0, journal.ErrNotImplemented
 }
@@ -353,17 +452,18 @@ func (h *FakeHandle) file(id journal.FileID, claim bool) (*fakeFile, error) {
 }
 
 // WriteAt holds p at off under a new version, refused by the share's limit
-// on held bytes or the version limit.
+// on held bytes or the version limit. A zero-length p holds nothing and
+// answers the zero version, as the journal does.
 func (h *FakeHandle) WriteAt(_ context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error) {
 	j := h.j
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	f, err := h.file(id, true)
-	if err != nil {
-		return journal.Version{}, err
+	if j.refusal != nil {
+		return journal.Version{}, j.refusal
 	}
-	if len(p) == 0 {
-		return journal.Version{}, journal.ErrZeroLength
+	f, err := h.file(id, len(p) > 0)
+	if err != nil || len(p) == 0 {
+		return journal.Version{}, err
 	}
 	// ponytail: the share's limit counts held bytes, not record bytes, so an
 	// overwrite counts its new bytes only once the old are cut. A unit test of
@@ -424,12 +524,20 @@ func (j *FakeJournal) appendRecord(f *fakeFile, n int64) {
 // Sync answers at once: every operation of the fake is durable on return,
 // with the stream's mark over the newest record of the files named, none
 // when none holds a record. The first Sync naming a file FailSync armed
-// answers a SyncError naming those of its files.
+// answers a SyncError naming those of its files. Every Sync naming a file
+// ReadOnly undid answers the refusal bare, never a SyncError, ahead of any
+// FailSync's, as the journal does; one naming no such file answers as above,
+// read-only or not.
 func (h *FakeHandle) Sync(_ context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
 	h.j.mu.Lock()
 	defer h.j.mu.Unlock()
 	if h.closed {
 		return nil, journal.ErrClosed
+	}
+	for _, id := range ids {
+		if h.j.undone[id] {
+			return nil, h.j.refusal
+		}
 	}
 	var failed []journal.FileID
 	for _, id := range ids {
@@ -531,12 +639,42 @@ func (j *FakeJournal) FailSync(id journal.FileID, e journal.Extent, also ...jour
 	}
 }
 
+// ReadOnly turns the journal read-only for cause: every write and removal
+// from then on is refused with journal.ErrJournalReadOnly wrapping cause,
+// and Stats reports the state. Each of undone is a file with a removal the
+// entry undid, so every Sync naming it answers the refusal bare. The fake
+// neither undoes that removal nor restores what it cut: a test reads the
+// engine's answer and the metadata, not the journal's index.
+func (j *FakeJournal) ReadOnly(cause error, undone ...journal.FileID) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.readOnly = journal.ReadOnlyState{ReadOnly: true, Err: cause}
+	j.refusal = fmt.Errorf("%w: %w", journal.ErrJournalReadOnly, cause)
+	if j.undone == nil {
+		j.undone = map[journal.FileID]bool{}
+	}
+	for _, id := range undone {
+		j.undone[id] = true
+	}
+}
+
+// FailCheck has Stats report err as the check the read-only journal's probe
+// found failing, which keeps it read-only.
+func (j *FakeJournal) FailCheck(err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.readOnly.Check = err
+}
+
 // remove runs a removal of kind k over [from, to) under a new version and
 // leaves its marker.
 func (h *FakeHandle) remove(id journal.FileID, k journal.ChangeKind, from, to int64) (journal.Version, error) {
 	j := h.j
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.refusal != nil {
+		return journal.Version{}, j.refusal
+	}
 	f, err := h.file(id, true)
 	if err != nil {
 		return journal.Version{}, err
@@ -584,7 +722,7 @@ func (h *FakeHandle) Since(_ context.Context, id journal.FileID, from journal.Ve
 		for _, p := range f.pieces {
 			out = append(out, journal.Change{Kind: journal.ChangeWrite, Extent: journal.Extent{Off: p.off, Len: int64(len(p.b))}, Version: p.v, Mtime: p.mtime})
 		}
-		out = append(out, f.changes...)
+		out = append(out, f.unsettled()...)
 	}
 	j.mu.Unlock()
 	out = slices.DeleteFunc(out, func(c journal.Change) bool { return c.Version.Compare(from) <= 0 })
@@ -602,12 +740,13 @@ func (h *FakeHandle) Since(_ context.Context, id journal.FileID, from journal.Ve
 	}
 }
 
-// Settle drops the file's markers and losses at or below v.
+// Settle covers the file's markers and losses at or below v: Since and Files
+// stop yielding them, until the journal is reopened.
 func (h *FakeHandle) Settle(id journal.FileID, v journal.Version) {
 	h.j.mu.Lock()
 	defer h.j.mu.Unlock()
 	if f := h.j.files[id]; f != nil && f.tag == h.tag {
-		f.changes = slices.DeleteFunc(f.changes, func(c journal.Change) bool { return c.Version.Compare(v) <= 0 })
+		f.settled = newest(f.settled, v)
 	}
 }
 
@@ -616,7 +755,7 @@ func (h *FakeHandle) Files() iter.Seq[journal.FileID] {
 	h.j.mu.Lock()
 	var ids []journal.FileID
 	for id, f := range h.j.files {
-		if f.tag == h.tag && len(f.pieces)+len(f.changes) > 0 {
+		if f.tag == h.tag && len(f.pieces)+len(f.unsettled()) > 0 {
 			ids = append(ids, id)
 		}
 	}

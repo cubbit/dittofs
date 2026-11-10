@@ -65,13 +65,19 @@ func (d *Durability) failWindow(st *stream, w *window) {
 		}
 	}
 	if len(failing) == 0 {
+		empty := len(w.entries) == 0
 		// Nothing to drop and no generation to raise, but the window is
-		// processed: a header-only record may now answer its Sync.
+		// processed: a header-only record may now answer its Sync. A window
+		// Corrupt took the last record out of holds nothing more and is
+		// resolved here; one still holding another kind stays pending.
 		if !w.failed {
 			w.failed = true
 			st.d.notifyAll()
 		}
 		st.mu.Unlock()
+		if empty {
+			d.resolve(st, w)
+		}
 		return
 	}
 	st.mu.Unlock()
@@ -81,7 +87,15 @@ func (d *Durability) failWindow(st *stream, w *window) {
 
 	// Raised before anything is published or answered, so a reader that sees a
 	// loss event, or a Sync that returns its failure, finds the generation up.
-	d.RaiseWindow()
+	// A Corrupt that took a record out of the window since the snapshot made
+	// the window's raise already, before it answered the failure for that
+	// record, so the window is raised once, by whichever came first.
+	st.mu.Lock()
+	if !w.raised {
+		d.RaiseWindow()
+		w.raised = true
+	}
+	st.mu.Unlock()
 
 	files, byFile := byFileOf(failing)
 	for _, f := range files {
@@ -111,7 +125,9 @@ func byFileOf(entries []entry) ([]core.FileID, map[core.FileID][]entry) {
 func (d *Durability) settle(st *stream, w *window, fails func(entry) bool, err error, ro bool) {
 	// The records leave the window and every file's mark is set in one step,
 	// so a waiter never sees a record gone with no report owed, and a Sync
-	// naming several files of the window hears of all of them at once. A file
+	// naming several files of the window hears of all of them at once. A record
+	// Corrupt took out of the window meanwhile is no longer in it: Corrupt
+	// marked its file. A file
 	// whose only failed records are loss records is not marked: a loss
 	// record's drop stands, so its file is owed nothing. A file with an undone
 	// header-only record is not marked for it: the file joins st.undone, so
@@ -155,7 +171,10 @@ func (d *Durability) settle(st *stream, w *window, fails func(entry) bool, err e
 
 // failFile fails the records of one file, given in the order they were
 // appended: the index first, under the file's domain, then a loss record for
-// each piece the failure dropped. win names the failed window in the log, 0
+// each piece the failure dropped. Only the records still in a pending window
+// once the domain is held are failed: a record Corrupt took out of its window,
+// which it does under the same domain, is Corrupt's to drop and report, so it
+// is skipped here. win names the failed window in the log, 0
 // for a read-only pass, which fails several windows at once and is logged as
 // that pass instead. Outside a
 // read-only journal every entry is content and is dropped in one step. In a
@@ -185,6 +204,9 @@ func (d *Durability) failFile(st *stream, win uint64, f core.FileID, entries []e
 	// once the code that appends them names it; until then the undo of one
 	// can be lost if it races its own publish.
 	unlock := d.domains.Lock(f)
+	st.mu.Lock()
+	entries = slices.DeleteFunc(slices.Clone(entries), func(e entry) bool { return !st.inWindowLocked(e.w.Loc) })
+	st.mu.Unlock()
 	for i := len(entries) - 1; i >= 0; i-- {
 		e := entries[i]
 		switch {

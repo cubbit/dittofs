@@ -202,6 +202,27 @@ func TestLoseReturnsTheEventItPublished(t *testing.T) {
 	}
 }
 
+// TestLosePublishesTheSyncedBitItWasGiven catches an event that drops the
+// caller's Synced, in the returned event and in the ring.
+func TestLosePublishesTheSyncedBitItWasGiven(t *testing.T) {
+	e := newEnv(t)
+	for i, synced := range []bool{true, false} {
+		l := loss(core.Seq(i + 1))
+		l.Synced = synced
+		ev, err := e.d.Lose(context.Background(), l)
+		if err != nil {
+			t.Fatalf("Lose synced=%v: %v", synced, err)
+		}
+		if ev.Synced != synced {
+			t.Errorf("returned event Synced = %v, want %v", ev.Synced, synced)
+		}
+	}
+	got := e.d.Stats().Losses
+	if len(got) != 2 || !got[0].Synced || got[1].Synced {
+		t.Errorf("ring = %+v, want Synced true then false", got)
+	}
+}
+
 // TestLoseKeepsTheNewestEventsWhenTheRingOverflows catches an unbounded ring
 // and a gap a poller could not see.
 func TestLoseKeepsTheNewestEventsWhenTheRingOverflows(t *testing.T) {
@@ -314,6 +335,20 @@ func TestPlacePublishesAtOpenAndRaisesNothing(t *testing.T) {
 	}
 	if lh, _ := e.lossRecords(); len(lh) != 0 {
 		t.Errorf("Place appended %d loss records", len(lh))
+	}
+}
+
+// TestPlaceKeepsTheSyncedBitItsCallerGave catches a placed event whose Synced
+// is reset.
+func TestPlaceKeepsTheSyncedBitItsCallerGave(t *testing.T) {
+	e := newEnv(t)
+
+	e.d.Place(core.LossEvent{File: file(2), Reason: core.LossCorrupt, Synced: true}, 3)
+	e.d.Place(core.LossEvent{File: file(2), Reason: core.LossCorrupt, Extent: core.Extent{Off: 8, Len: 4}}, 4)
+
+	got := e.d.Stats().Losses
+	if len(got) != 2 || !got[0].Synced || got[1].Synced {
+		t.Errorf("ring = %+v, want Synced true then false", got)
 	}
 }
 

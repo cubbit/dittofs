@@ -37,10 +37,13 @@ type failStamp struct {
 // decision: a window lives under the stream's leaf mutex, st.mu, like the
 // ledger its entries came out of: it is read and listed in st.windows only
 // with that mutex held, and only the stream's worker creates one (takeWindow,
-// or failReadOnly once the journal is read-only) or drops one (resolve), so no
-// other goroutine mutates it, and only the same worker removes an entry when
-// failWindow fails it. cause is kept for the code that fails a window's
-// records, which reads why the segment ended.
+// or failReadOnly once the journal is read-only) or drops one (resolve). Its
+// entries are changed only under st.mu, by two writers: the worker, when
+// failWindow or failReadOnly fails them, and Corrupt on a reader's goroutine,
+// which takes one entry out holding that entry's file domain. failFile
+// therefore re-checks, under the same domain, which of its entries are still
+// in a window before it fails them. cause is kept for the code that fails a
+// window's records, which reads why the segment ended.
 type window struct {
 	id      uint64
 	seg     core.SegmentID
@@ -57,6 +60,16 @@ type window struct {
 	// so resolving the window announces nothing and keeps the segment's
 	// failure state as it is.
 	readOnly bool
+	// raised is set, under st.mu and in the step that raises it, once the
+	// generation was raised for the window: by failWindow before it fails a
+	// record, or by Corrupt before it answers the window's failure for a
+	// record it took out. Either raise is the window's one. A read-only
+	// journal raises once for its entry instead (raiseOnce), whatever the
+	// window says, so both can land for one window there: a spare raise,
+	// an extra one and never a missing one, which only makes a client
+	// resend. Overturned if that costs something; takeCorrupt would then
+	// call the entry's raiseOnce when Admit() != nil to share one raise.
+	raised bool
 }
 
 // onEnd is the consumer of every stream's end events (D13). It runs on the
@@ -77,13 +90,22 @@ func (d *Durability) onEnd(ev segment.EndEvent) {
 
 // takeWindows takes the window of every end event queued for the stream. It
 // runs on the worker, before the completion pass, so a record a sync covered
-// is completed there and only the uncovered ones are the window.
+// is completed there and only the uncovered ones are the window. It takes the
+// events queued when it starts; one queued meanwhile waits for the next pass.
+// Each event stays queued until takeWindow makes its window in the critical
+// section that pops it, so Corrupt sees the segment failed throughout.
 func (d *Durability) takeWindows(st *stream) {
 	st.mu.Lock()
-	evs := st.ends
-	st.ends = nil
+	n := len(st.ends)
 	st.mu.Unlock()
-	for _, ev := range evs {
+	for range n {
+		// Only the worker pops, so the head is the event peeked here.
+		st.mu.Lock()
+		ev := st.ends[0]
+		st.mu.Unlock()
+		if d.beforeTakeWindow != nil {
+			d.beforeTakeWindow()
+		}
 		d.takeWindow(st, ev)
 	}
 }
@@ -144,6 +166,8 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	}
 
 	st.mu.Lock()
+	// The event leaves the queue in the step that makes its window.
+	st.ends = slices.Delete(st.ends, 0, 1)
 	// decision: the window is the entries no sync has covered when the worker
 	// takes the event, and no Synced report for the failed segment is refused
 	// in the gap between the failure and this point, because none can arrive:
@@ -176,6 +200,12 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 	delete(st.counted, ev.Segment)
 	delete(st.ending, ev.Segment)
 	st.windows = append(st.windows, w)
+	// A file whose record of the segment Corrupt took out of the ledger before
+	// this window was taken is told of the window as if it had failed it.
+	for _, f := range st.owed[ev.Segment] {
+		st.markLocked(w, f)
+	}
+	delete(st.owed, ev.Segment)
 	if ev.Cause == segment.EndSeal && !dup && !wasCounted {
 		st.failures.Add(1)
 		st.lastFail.Store(&failStamp{SyncFailure: SyncFailure{Err: ev.Err, At: failedAt}, mono: failedMono})
@@ -202,18 +232,21 @@ func (d *Durability) takeWindow(st *stream, ev segment.EndEvent) {
 
 // resolve marks the window's records no longer pending: it drops the window
 // and the failure kept for its segment once nothing else names it, then
-// announces the segment through Config.Resolved (R19). It runs on the worker.
+// announces the segment through Config.Resolved (R19), unless copies in the
+// segment are held, whose hold then announces it when it ends. It runs on the
+// worker.
 //
 // decision: a window is resolved when it holds no record: at once when it is
-// taken with none, or when failWindow has failed its last record. While the
-// journal takes writes, a window holding a record that failWindow leaves, a
-// header-only one, stays pending and is not announced, and every Sync naming a
-// file with such a record answers a *core.SyncError, until the code that
-// re-appends it lands, or until the journal turns read-only, which fails every
-// record of every window and so resolves them all. A pending window never
-// reads durable, so nothing is lost by waiting; what is withdrawn is only the
-// window's memory. A window failReadOnly made is resolved without an
-// announcement: its segment did not fail.
+// taken with none, when failWindow has failed its last record, or when
+// failWindow or failReadOnly finds a Corrupt took the last record out before
+// it ran. While the journal takes writes, a window holding a record that
+// failWindow leaves, a header-only one, stays pending and is not announced,
+// and every Sync naming a file with such a record answers a *core.SyncError,
+// until the code that re-appends it lands, or until the journal turns
+// read-only, which fails every record of every window and so resolves them
+// all. A pending window never reads durable, so nothing is lost by waiting;
+// what is withdrawn is only the window's memory. A window failReadOnly made is
+// resolved without an announcement: its segment did not fail.
 //
 // A record failWindow dropped has left the window and the ledger, which would
 // read it durable: st.lost keeps it out of that answer, and failWindow adds it
@@ -237,9 +270,12 @@ func (d *Durability) resolve(st *stream, w *window) {
 	if !held {
 		delete(st.failed, w.seg)
 	}
+	// A segment copies are in use from stays unresolved: the hold's end
+	// announces it.
+	withheld := st.withholdLocked(w.seg)
 	st.d.notifyAll()
 	st.mu.Unlock()
-	if d.resolved != nil {
+	if !withheld && d.resolved != nil {
 		d.resolved(st.no, w.seg)
 	}
 }

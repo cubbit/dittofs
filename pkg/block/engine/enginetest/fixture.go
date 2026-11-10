@@ -1,9 +1,11 @@
 package enginetest
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"slices"
@@ -83,6 +85,17 @@ type Fixture struct {
 	// cloneGate, once set by HoldNextClone, holds the next clone's phase 1.
 	cloneGate atomic.Pointer[gate]
 	handles   sync.Map // journal.ShareTag → the handle the running engine opened on it
+
+	kv      *failingKV                // the store's kv.KV, failing Updates when a test asks
+	batches atomic.Pointer[batchHold] // holds every removal batch at its span while set
+	ended   chan struct{}             // one value per removal batch span that ended
+}
+
+// batchHold holds the removal batches of the engine running now at their span
+// until released, or until that engine stops.
+type batchHold struct {
+	release chan struct{}
+	once    sync.Once
 }
 
 // Stall makes the store commit no existence from now on: each commit waits
@@ -114,10 +127,152 @@ func (f *Fixture) FailNextSync() {
 	}
 }
 
+// HoldBatches holds every removal batch the engine running now, and the
+// engines started after it, starts at its span, until ReleaseBatches. Call it
+// before the Crash or Restart whose start posts the removals.
+func (f *Fixture) HoldBatches() {
+	f.batches.Store(&batchHold{release: make(chan struct{})})
+}
+
+// ReleaseBatches lets the held removal batches run, and every later one.
+func (f *Fixture) ReleaseBatches() {
+	if h := f.batches.Load(); h != nil {
+		h.once.Do(func() {
+			close(h.release)
+		})
+	}
+}
+
+// WaitBatches returns once n removal batch spans have ended since the last
+// call.
+func (f *Fixture) WaitBatches(n int) {
+	f.t.Helper()
+
+	for range n {
+		select {
+		case <-f.ended:
+		case <-f.t.Context().Done():
+			f.t.Fatal("fixture: the removal loop ran fewer batches than the test waited for")
+		}
+	}
+}
+
+// KeysOf is every key in the store, in hex, that holds file id's ID, whatever
+// it is under: a released file leaves its removal, the removal's index entry,
+// its fences and its version-floor entry until its prune deletes them.
+func (f *Fixture) KeysOf(id entity.FileID) []string {
+	f.t.Helper()
+
+	var out []string
+
+	err := f.kv.View(f.t.Context(), func(r kv.Reader) error {
+		for row, err := range r.Scan(nil, nil) {
+			if err != nil {
+				return err
+			}
+
+			if bytes.Contains(row.Key, id[:]) {
+				out = append(out, fmt.Sprintf("%x", row.Key))
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		f.t.Fatalf("fixture: scan the store: %v", err)
+	}
+
+	return out
+}
+
+// FailUpdatesAfter lets the store's next n Updates through and fails every
+// one after them, as a store that stopped between two batches of a removal
+// does. The next Crash clears it.
+func (f *Fixture) FailUpdatesAfter(n int) {
+	f.t.Helper()
+
+	f.kv.left.Store(int64(n))
+}
+
+// trace is the engine's Tracer: it holds a removal batch while a hold is set
+// and counts the spans that end.
+func (f *Fixture) trace(
+	ctx context.Context,
+	name string,
+	_ ...slog.Attr,
+) (context.Context, func(error)) {
+	if name != "engine.removal_batch" {
+		return ctx, func(error) {}
+	}
+
+	if h := f.batches.Load(); h != nil {
+		select {
+		case <-h.release:
+		case <-ctx.Done():
+		}
+	}
+
+	return ctx, func(error) {
+		select {
+		case f.ended <- struct{}{}:
+		default:
+		}
+	}
+}
+
 // New creates the journal and the store, then starts a process over them: the
 // open-state table and the engine, the engine started with the share bound.
 // Everything is closed when the test ends.
 func New(t *testing.T) *Fixture {
+	t.Helper()
+
+	return newFixture(t, nil)
+}
+
+// NewWithSmallBatches is New over a store whose transactions hold at most
+// entries keys, so a removal of several holes takes several batches.
+func NewWithSmallBatches(t *testing.T, entries int) *Fixture {
+	t.Helper()
+
+	return newFixture(t, func(db kv.KV) kv.KV {
+		return limitedKV{
+			KV:      db,
+			entries: entries,
+		}
+	})
+}
+
+// failingKV is a kv.KV that lets left Updates through and then fails each
+// one; a negative left fails none.
+type failingKV struct {
+	kv.KV
+	left atomic.Int64
+}
+
+func (k *failingKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	if k.left.Load() >= 0 && k.left.Add(-1) < 0 {
+		k.left.Store(0)
+
+		return errors.New("fixture: an injected store failure")
+	}
+
+	return k.KV.Update(ctx, fn)
+}
+
+// limitedKV is a kv.KV whose transactions hold at most entries keys.
+type limitedKV struct {
+	kv.KV
+	entries int
+}
+
+func (l limitedKV) Limits() kv.TxnLimits {
+	lim := l.KV.Limits()
+	lim.TxnEntries = l.entries
+
+	return lim
+}
+
+func newFixture(t *testing.T, wrap func(kv.KV) kv.KV) *Fixture {
 	t.Helper()
 
 	// Registered first, so its checks run after every other cleanup has
@@ -137,13 +292,25 @@ func New(t *testing.T) *Fixture {
 		Dir:    dir,
 		t:      t,
 		logger: slog.New(slog.NewTextHandler(t.Output(), nil)),
+		ended:  make(chan struct{}, 64),
 	}
 
 	if f.Journal, err = journal.Init(t.Context(), dir, fixtureInstall, journal.WithClock(clock), journal.WithStorage(seam.FS())); err != nil {
 		t.Fatalf("fixture: journal init: %v", err)
 	}
 
-	f.FS = kvstoretest.NewFS(t, memKV)
+	f.FS = kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
+		db := memKV(tb)
+
+		if wrap != nil {
+			db = wrap(db)
+		}
+
+		f.kv = &failingKV{KV: db}
+		f.kv.left.Store(-1)
+
+		return f.kv
+	})
 
 	err = f.FS.Store.RecordJournal(
 		t.Context(),
@@ -223,6 +390,7 @@ func (f *Fixture) Reinit() journal.JournalID {
 func (f *Fixture) Crash(opts ...kit.CrashOption) {
 	f.t.Helper()
 	f.crashed.Store(true) // before the crash, so nothing the old engine runs meanwhile reaches the store
+	f.kv.left.Store(-1)
 	if err := f.Seam.Crash(opts...); err != nil {
 		f.t.Fatalf("fixture: crash: %v", err)
 	}
@@ -328,9 +496,7 @@ func (f *Fixture) start() {
 		Holds:     Holds(f.Opens, f.FS.Store.Opens()),
 		Clock:     f.Clock,
 		Logger:    f.logger,
-		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
-			return ctx, func(error) {}
-		},
+		Tracer:    f.trace,
 	})
 	if err != nil {
 		t.Fatalf("fixture: engine: %v", err)

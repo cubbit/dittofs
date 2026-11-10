@@ -3,7 +3,11 @@ package engine
 import (
 	"context"
 	"maps"
+	"runtime"
 	"slices"
+	"sync"
+	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -24,11 +28,77 @@ var (
 	ErrNotRaised    = errNotRaised
 )
 
-// SetJournalsForTest sets the journals the engine has open, as Start will.
+// SetJournalsForTest sets the journals the engine has open, as Start will,
+// each with the limit last passed read from the journal itself, so the engine
+// and the journal agree on it.
 func (e *Engine) SetJournalsForTest(js ...Journal) {
+	vls := make([]*versionLimit, 0, len(js))
+
+	for _, j := range js {
+		vl := newVersionLimit(j)
+		vl.last.Store(j.Stats().VersionLimit.Counter)
+		vls = append(vls, vl)
+	}
+
 	e.mu.Lock()
-	e.journals = js
+	e.journals = vls
 	e.mu.Unlock()
+}
+
+// SetBlockForTest sets the versions one raise of the version limit covers,
+// before Start or Bind.
+func (e *Engine) SetBlockForTest(n uint64) {
+	e.block = n
+}
+
+// TrackRaisesForTest counts the version limit raise goroutines alive and
+// keeps the clock channels they wait on to retry, for WaitRaises, and counts
+// every one started, for RaisesStarted. Call it before Start or Bind.
+func (e *Engine) TrackRaisesForTest() {
+	e.raising.count = &atomic.Int32{}
+	e.raising.started = &atomic.Int64{}
+	e.raising.timers = &sync.Map{}
+}
+
+// RaisesStarted is how many raise goroutines started since
+// TrackRaisesForTest.
+func (e *Engine) RaisesStarted() int64 {
+	return e.raising.started.Load()
+}
+
+// WaitRaises returns once every version limit raise has ended or waits on
+// the test clock to retry, so a test reads what the raises did. It fails the
+// test when a raise does neither within 5 s, which only wrong code reaches.
+// A raise counts as waiting while the clock channel it waits on is still
+// open: one the clock has closed but whose raise has not run yet is not, so a
+// test that advances the clock then waits for the retry. Other waits on the
+// clock, as the group commit's, are not counted.
+func (e *Engine) WaitRaises(t testing.TB) {
+	t.Helper()
+
+	count, timers := e.raising.count, e.raising.timers
+
+	if count == nil {
+		t.Fatal("WaitRaises: TrackRaisesForTest was not called")
+	}
+
+	// Correct raises settle at once; the deadline is met only by a raise
+	// stuck on something other than the clock.
+	deadline := time.Now().Add(5 * time.Second)
+
+	for {
+		n := count.Load()
+
+		if n == 0 || int(n) <= openTimers(timers) {
+			return
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("WaitRaises: a raise neither ended nor waits to retry")
+		}
+
+		runtime.Gosched()
+	}
 }
 
 // MarkRaisedForTest records shard as raised by this process, as Start does.
@@ -177,6 +247,7 @@ func (e *Engine) SetPrimary(s entity.ShareID, node entity.NodeID, nodeEpoch, inc
 	b := &binding{
 		share:       old.share,
 		j:           old.j,
+		vl:          old.vl,
 		h:           old.h,
 		incarnation: incarnation,
 		primary:     primary{node, nodeEpoch},
@@ -327,6 +398,18 @@ func RetryingOwner(ctx context.Context) bool { return isRetryingOwner(ctx) }
 // ErrUnbuilt: a test of admission alone.
 func (e *Engine) SetAfterRegister(h func()) { e.afterRegister = h }
 
+// SetCloneMarkerHook makes h run for each clone marker start step 3 finds,
+// standing in for the clone's rebuild.
+func (e *Engine) SetCloneMarkerHook(h cloneMarkerFunc) {
+	e.cloneMarker = h
+}
+
+// SetCloneRemovalHook makes h run for each clone removal start step 4 finds,
+// standing in for the clone's rebuild.
+func (e *Engine) SetCloneRemovalHook(h cloneRemovalFunc) {
+	e.cloneRemoval = h
+}
+
 // FakeCloneDone lets a clone run past its registrations to its done signal,
 // standing in for the joins a served engine does not have yet.
 func (e *Engine) FakeCloneDone() { e.fakeCloneDone.Store(true) }
@@ -348,6 +431,28 @@ func (e *Engine) RemovalRunsDone(s entity.ShareID) int64 {
 		return 0
 	}
 	return b.gc.removals.runs[runDone].Load()
+}
+
+// RemovalRunsError is engine_removal_runs_total{result="error"} on the
+// share's journal's loop.
+func (e *Engine) RemovalRunsError(s entity.ShareID) int64 {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return 0
+	}
+
+	return b.gc.removals.runs[runError].Load()
+}
+
+// RemovalRunsConflict is engine_removal_runs_total{result="conflict"} on the
+// share's journal's loop.
+func (e *Engine) RemovalRunsConflict(s entity.ShareID) int64 {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return 0
+	}
+
+	return b.gc.removals.runs[runConflict].Load()
 }
 
 // Registrations is the count of f's source and destination registrations.
@@ -455,6 +560,47 @@ func (e *Engine) StageGrow(s entity.ShareID, f entity.FileID, size int64) error 
 
 // The calls below are what Close and Drop will run once built; until then
 // only tests call them, so they live here rather than in the engine.
+
+// HoldRemovalLoop builds j's group commit and removal loop as the first Start
+// would, and runs the group commit but not the loop, so what Start posts to
+// the loop stays on it, counted by RemovalsPending. The function returned
+// starts the loop, once.
+//
+// It copies how groupCommitFor assembles a group commit, so the two must
+// change together: a field groupCommitFor sets that this does not leaves the
+// held one different from the one Start builds.
+func (e *Engine) HoldRemovalLoop(j Journal) (run func()) {
+	e.gcMu.Lock()
+	defer e.gcMu.Unlock()
+
+	g := &groupCommit{
+		e:        e,
+		j:        j,
+		due:      map[entity.FileID]*dueFile{},
+		returned: make(chan struct{}),
+		wake:     make(chan struct{}, 1),
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+	g.ctx, g.cancel = context.WithCancel(withRetryingOwner(context.Background()))
+	g.removals = newRemovalLoop(e)
+
+	if e.gcs == nil {
+		e.gcs = map[Journal]*groupCommit{}
+	}
+
+	e.gcs[j] = g
+
+	go g.run()
+
+	var once sync.Once
+
+	return func() {
+		once.Do(func() {
+			go g.removals.run()
+		})
+	}
+}
 
 // CloseGroupCommits stops every journal's group commit and joins its
 // goroutine, as Close will: a batch in flight has its context cancelled, and
@@ -589,4 +735,22 @@ func (e *Engine) EntryLocked(f entity.FileID) bool {
 	}
 	fe.mu.Unlock()
 	return false
+}
+
+// openTimers is how many of the raises' clock channels the clock has not
+// closed yet.
+func openTimers(timers *sync.Map) int {
+	n := 0
+
+	timers.Range(func(_, v any) bool {
+		select {
+		case <-v.(<-chan struct{}):
+		default:
+			n++
+		}
+
+		return true
+	})
+
+	return n
 }

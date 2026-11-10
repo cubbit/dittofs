@@ -567,14 +567,14 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, corrupt reads, the loss ring and the loss generation.'
+  reason: 'Needs Open: the corrupt drop with its loss generation is built (Durability.Corrupt), the fixture cannot open a journal.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestRFC28A_CorruptOffloaded
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded, corrupt reads and the loss ring.'
+  reason: 'Needs Open: the offloaded corrupt drop is built (Durability.Corrupt), the fixture cannot open a journal.'
   issue: '#3379'
   message: 'fixture:'
 - test: TestRFC28B_SegmentReclaimable
@@ -595,7 +595,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery by catalog, corrupt reads and the loss ring.'
+  reason: 'Needs Open: a corrupt record leaving its neighbours is built (Durability.Corrupt), the fixture cannot open a journal.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestRFC28C_SyncedDamageIsNotATornTail
@@ -1813,7 +1813,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs loss accounting and failures raising the generation before the Sync returns.'
+  reason: 'Needs Open: the loss generation rising before the Sync returns is built (Durability), the fixture cannot open a journal.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestRFC1A_ReappendKeepsItsNumbers
@@ -1890,6 +1890,6 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a synced corrupt record that no superseded record answers for.'
+  reason: 'Needs Open: the synced corrupt loss masking what it superseded is built (Durability.Corrupt), the fixture cannot open a journal.'
   issue: '#3378'
   message: 'fixture:'

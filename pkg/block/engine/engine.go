@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -41,13 +42,14 @@ type Engine struct {
 	// mu is the lifecycle mutex: Bind takes it only to read and swap the
 	// share table and the fields below, never across I/O, and no content call
 	// takes it.
-	mu       sync.Mutex
-	journals []Journal                   // the journals open, one per device; Start opens them
-	busy     map[entity.ShareID]struct{} // the shares with a lifecycle call in progress
-	raised   map[entity.ShardID]struct{} // the shards whose incarnation this process raised
-	starting bool                        // a Start runs: a lifecycle call answers ErrDelay
-	started  bool                        // a Start succeeded
-	health   Stats                       // the shares refused at start and the conditions raised
+	mu        sync.Mutex
+	journals  []*versionLimit             // the journals open, one per device; Start opens them
+	journalID journal.JournalID           // the identity of journals[0], as the store records it
+	busy      map[entity.ShareID]struct{} // the shares with a lifecycle call in progress
+	raised    map[entity.ShardID]struct{} // the shards whose incarnation this process raised
+	starting  bool                        // a Start runs: a lifecycle call answers ErrDelay
+	started   bool                        // a Start succeeded
+	health    Stats                       // the shares refused at start and the conditions raised
 
 	gcMu            sync.Mutex
 	gcs             map[Journal]*groupCommit                                                   // each journal's group commit
@@ -56,10 +58,28 @@ type Engine struct {
 	splits          atomic.Int64                                                               // engine_group_commit_splits_total
 	stabilityPoints atomic.Int64                                                               // engine_stability_points_total
 	pendingApplied  atomic.Int64                                                               // engine_pending_existence_ops: operations committed
+	readOnlyLogged  atomic.Bool                                                                // the journal's turn read-only was logged: see noteReadOnly
 	hooks           struct{ taken, captured, drained, written, staged atomic.Pointer[func()] } // a test's seams: after a batch's take, its capture, a drain's read of the ring, a write's WriteAt, and a removal's journal step
 	afterRegister   func()                                                                     // a test's hook: run once a clone's registrations are installed, the clone then stopping
 	fakeCloneDone   atomic.Bool                                                                // a test's stand-in for the joins of a running clone: set, a clone runs past its registrations
 	noGuardSkip     atomic.Bool                                                                // a test's seam: capture takes a guarded file, so a test proves the stop at a removal alone
+
+	// cloneMarker is called by start step 3 for each clone marker the journal
+	// yields above a file's applied version, with the share, the file, the
+	// marker's spec and its version. Nothing above the marker is applied. It
+	// is the seam where a clone is rebuilt from its marker, and nil does
+	// nothing.
+	cloneMarker cloneMarkerFunc
+
+	block   uint64 // the versions one raise of the version limit covers
+	raising raises // the version limit raises running
+
+	// cloneRemoval is called by start step 4 for each clone removal not done
+	// the shard's unfinished-removal index lists, with the share, the file and
+	// the record. Nothing is posted for the file. It is the seam where a
+	// clone is rebuilt from its record, and nil makes Start fail, as it does
+	// for a clone marker.
+	cloneRemoval cloneRemovalFunc
 }
 
 // New checks d and builds the engine. It takes no settings, opens nothing and
@@ -93,9 +113,11 @@ func New(d Deps) (*Engine, error) {
 		instance: instanceID(),
 		busy:     map[entity.ShareID]struct{}{},
 		raised:   map[entity.ShardID]struct{}{},
+		block:    versionBlock,
 	}
 	e.sample = e.verifier
 	e.conflictBound.Store(int64(time.Second))
+	e.raising.ctx, e.raising.cancel = context.WithCancel(context.Background())
 
 	return e, nil
 }
@@ -165,7 +187,8 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 	e.shares.Store(&t)
 
 	if o.journal != nil {
-		e.journals = []Journal{o.journal}
+		e.journals = []*versionLimit{o.journal}
+		e.journalID = o.id
 	}
 
 	for _, id := range o.raised {
@@ -174,6 +197,12 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 
 	e.health = o.stats
 	e.started = true
+
+	// The removals are posted once the table is published, and the loop runs
+	// them on its own goroutine, so Start never waits for a batch.
+	for _, q := range o.removals {
+		q.b.gc.removals.enqueue(q.it)
+	}
 
 	return nil
 }
@@ -200,6 +229,18 @@ func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
 	}
 
 	if err := e.raiseAtStart(ctx, &o); err != nil {
+		return opened{}, u.unwind(err)
+	}
+
+	if err := e.replay(ctx, &o); err != nil {
+		return opened{}, u.unwind(err)
+	}
+
+	if err := e.collectRemovals(ctx, &o); err != nil {
+		return opened{}, u.unwind(err)
+	}
+
+	if err := e.strandUnclaimed(&o); err != nil {
 		return opened{}, u.unwind(err)
 	}
 
@@ -244,10 +285,22 @@ func (e *Engine) whileStarting() error {
 }
 
 // Stats reports the engine's counters and conditions: before Start, none.
+// A read-only journal's condition is read from the journal on each call, so
+// it clears once the journal takes writes again.
 func (e *Engine) Stats() Stats {
 	e.mu.Lock()
+	s := e.health.clone()
+	js, id := e.journals, e.journalID
+	e.mu.Unlock()
 
-	defer e.mu.Unlock()
+	for _, j := range js { // Start serves one device: journals[0] is Devices[0]'s
+		dir := e.d.Devices[0]
+		if c, ok := readOnlyCondition(j.j.Stats().ReadOnly, dir, id); ok {
+			js := s.Journals[dir]
+			js.Conditions = append(js.Conditions, c)
+			s.Journals[dir] = js
+		}
+	}
 
-	return e.health.clone()
+	return s
 }

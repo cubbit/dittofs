@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"syscall"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -100,6 +101,8 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 		done:      o.Done,
 	})
 	e.files.unlock(f, fe)
+	e.issued(b.vl, ver)
+
 	return v, nil
 }
 
@@ -143,6 +146,9 @@ func (e *Engine) Draw(ctx context.Context, s entity.ShareID, f entity.FileID) (e
 	if err != nil {
 		return entity.JournalVersion{}, e.journalErr(err)
 	}
+
+	e.issued(b.vl, v)
+
 	return entity.JournalVersion(v.Bytes()), nil
 }
 
@@ -184,6 +190,18 @@ func (e *Engine) journalErr(err error) error {
 		return &vfserr.Delay{Cause: vfserr.DelayCapacity}
 	case errors.As(err, &other):
 		return fmt.Errorf("engine: %v: %w", err, vfserr.ErrCorrupt)
+	case errors.Is(err, journal.ErrJournalReadOnly):
+		// A read-only journal refuses every write until it is reopened, so
+		// a refusal is expected and logged at Debug: noteReadOnly logs the
+		// state once. EROFS, a remount only an operator
+		// clears, is ErrReadOnly; any other cause may pass, so it is
+		// retry-later, DelayJournal (RFC 8 §11.2; the cause per RFC 17 §4.3).
+		e.noteReadOnly(true, err)
+		e.d.Logger.Debug("journal read-only", "err", err)
+		if errors.Is(err, syscall.EROFS) {
+			return fmt.Errorf("engine: %v: %w", err, vfserr.ErrReadOnly)
+		}
+		return &vfserr.Delay{Cause: vfserr.DelayJournal}
 	case errors.Is(err, journal.ErrClosed):
 		return fmt.Errorf("engine: journal closed: %w", vfserr.ErrUnavailable)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -191,4 +209,36 @@ func (e *Engine) journalErr(err error) error {
 	}
 	e.d.Logger.Error("journal call failed", "err", err)
 	return fmt.Errorf("engine: %v: %w", err, vfserr.ErrUnavailable)
+}
+
+// noteReadOnly logs at Error, once per transition, the journal turning
+// read-only, cause what entered the state, as journal_read_only is an
+// unhealthy condition (RFC 25 §3.4); ro false clears the mark, so a journal
+// turned read-only again is logged again. A write's refusal and every sync's
+// drain report the state.
+//
+// ponytail: one mark for the engine, as Start serves one journal. Key it by
+// journal once Start serves several.
+func (e *Engine) noteReadOnly(ro bool, cause error) {
+	if e.readOnlyLogged.Swap(ro) || !ro {
+		return
+	}
+	e.d.Logger.Error("journal turned read-only: it refuses writes until it is reopened", "err", cause)
+}
+
+// journalReadErr is journalErr for the journal's answer to a read: the
+// device's EIO is ErrIO, answered at once and never retried here, the bytes
+// kept (RFC 17 §4.3). A write's EIO stays journalErr's ErrUnavailable.
+//
+// decision: any EIO a read returns is ErrIO. The RFC names the journal's
+// ErrUnreadable, a read its bounded retry could not complete (RFC 8 §12.1,
+// RFC 17 §4.3); the journal exports no such error yet, and a read it fails on
+// the device ends in EIO. Match ErrUnreadable here once the journal exports
+// it.
+func (e *Engine) journalReadErr(err error) error {
+	if errors.Is(err, syscall.EIO) {
+		e.d.Logger.Error("journal device read failed", "err", err)
+		return fmt.Errorf("engine: %v: %w", err, vfserr.ErrIO)
+	}
+	return e.journalErr(err)
 }
