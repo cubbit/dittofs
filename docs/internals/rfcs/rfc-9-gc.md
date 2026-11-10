@@ -544,7 +544,8 @@ internal/gc/
   auditor.go     audit scheduling, trip (§6)
   recheck.go     settings, claim nonce, keys read-back, drift (§7.5)
   metrics.go     §10
-  gctest/        Blocks, Remote, Syncer, Flow and Keys over their owners' verified in-memory implementations
+  gctest/        Blocks, Remote and Syncer over their owners' verified in-memory implementations;
+                 Flow and Keys the real ones, over RFC 3's in-memory Store and the in-memory stores
   arch_test.go   imports (§11.0)
 ```
 
