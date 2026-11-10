@@ -17,6 +17,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -318,7 +319,8 @@ func newFixture(t *testing.T, wrap func(kv.KV) kv.KV) *Fixture {
 		ended:  make(chan struct{}, 64),
 	}
 
-	if f.Journal, err = journal.Init(t.Context(), dir, fixtureInstall, journal.WithClock(clock), journal.WithStorage(seam.FS())); err != nil {
+	if f.Journal, err = journal.Init(t.Context(), dir, fixtureInstall,
+		journal.WithClock(clock), journaltest.SuitableMount(), journal.WithStorage(seam.FS())); err != nil {
 		t.Fatalf("fixture: journal init: %v", err)
 	}
 
@@ -394,6 +396,7 @@ func (f *Fixture) Reinit() journal.JournalID {
 		f.Dir,
 		fixtureInstall,
 		journal.WithClock(f.Clock),
+		journaltest.SuitableMount(),
 		journal.WithStorage(f.Seam.FS()),
 	)
 	if err != nil {
@@ -505,7 +508,8 @@ func (f *Fixture) start() {
 		Node:    f.Node,
 		Devices: []string{f.Dir},
 		Open: func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
-			j, err := journal.Open(ctx, dir, floor, expect, journal.WithClock(f.Clock), journal.WithStorage(f.Seam.FS()))
+			j, err := journal.Open(ctx, dir, floor, expect,
+				journal.WithClock(f.Clock), journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS()))
 			if err != nil {
 				return nil, err
 			}
