@@ -36,17 +36,17 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Fill, its absence check atomic with WriteAt, and the data path.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Inspect.File and the data path.'
   issue: '#3378'
-  message: 'stub: Fill'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1A_FillSetsTheBit
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Fill, its offloaded bit and Release.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Release.'
   issue: '#3379'
-  message: 'stub: Fill'
+  message: 'stub: Release'
 
 - test: TestRFC1A_LostStampIsOffered
   status: fail
@@ -172,9 +172,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Fill, MarkOffloaded, release, and repack coalescing adjacent extents into one record.'
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, release, and repack coalescing adjacent extents into one record.'
   issue: '#3379'
-  message: 'stub: Fill'
+  message: 'stub: Release'
 
 - test: TestRFC1B_Descriptors
   status: fail
@@ -196,7 +196,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Fill, its floor buckets, Delete and Settle.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Delete and Settle.'
   issue: '#3378'
   message: 'stub: Delete'
 
@@ -324,9 +324,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Fill, MarkOffloaded, release, removals, Settle and repack dropping removal records per extent.'
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, release, removals, Settle and repack dropping removal records per extent.'
   issue: '#3379'
-  message: 'stub: Fill'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1B_RemovalsDoNotWaitOnOffload
   status: fail
@@ -522,7 +522,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; every failing leg of the check fails on a stub call. Needs Fill refusing an asOf older than the content the journal already holds, writing nothing.'
+  reason: 'The journal opens; every failing leg of the check fails on a stub call, Sync or Truncate. Needs Sync and Truncate.'
   issue: '#3378'
   message: 'stub:'
 
@@ -562,9 +562,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Fill, capacity refusals and MarkOffloaded.'
+  reason: 'The journal opens and its fills are refused at the maximum; the check fails because Stats reports every figure as zero. Needs Stats.'
   issue: '#3379'
-  message: 'stub: Fill'
+  message: 'HeldBytes is zero with the journal full of filled content'
 
 - test: TestRFC1D_GenerationNeverRepeats
   status: fail
@@ -1938,7 +1938,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Fill over held, dirty and absent ranges.'
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded.'
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
