@@ -1036,11 +1036,11 @@ func TestAPruneThatFailsAtStartLeavesTheRemovalAndIsRetried(t *testing.T) {
 		t.Errorf("%d prune attempts, want 1", n)
 	}
 
-	if got := r.e.RemovalRunsError(r.one.ID); got != 1 {
+	if got := r.e.Stats().RemovalRuns["error"]; got != 1 {
 		t.Errorf("removal runs ended in error = %d, want 1", got)
 	}
 
-	if got := r.e.RemovalRunsDone(r.one.ID); got != 0 {
+	if got := r.e.Stats().RemovalRuns["done"]; got != 0 {
 		t.Errorf("removal runs done = %d, want 0", got)
 	}
 
@@ -1064,7 +1064,7 @@ func TestAPruneThatFailsAtStartLeavesTheRemovalAndIsRetried(t *testing.T) {
 		t.Errorf("pruned at %v, want exactly %v", p, jver(v))
 	}
 
-	if got := r.e.RemovalRunsDone(r.one.ID); got != 1 {
+	if got := r.e.Stats().RemovalRuns["done"]; got != 1 {
 		t.Errorf("removal runs done = %d after the retry, want 1", got)
 	}
 
@@ -1158,15 +1158,15 @@ func TestAPruneConflictIsCountedAsAConflict(t *testing.T) {
 	r.run()
 	r.gate.waitBatches(t, 1)
 
-	if got := r.e.RemovalRunsConflict(r.one.ID); got != 1 {
+	if got := r.e.Stats().RemovalRuns["conflict"]; got != 1 {
 		t.Errorf("removal runs ended in conflict = %d, want 1", got)
 	}
 
-	if got := r.e.RemovalRunsError(r.one.ID); got != 0 {
+	if got := r.e.Stats().RemovalRuns["error"]; got != 0 {
 		t.Errorf("removal runs ended in error = %d, want 0", got)
 	}
 
-	if got := r.e.RemovalRunsDone(r.one.ID); got != 0 {
+	if got := r.e.Stats().RemovalRuns["done"]; got != 0 {
 		t.Errorf("removal runs done = %d, want 0", got)
 	}
 }

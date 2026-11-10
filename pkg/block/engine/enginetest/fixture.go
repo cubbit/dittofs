@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -127,6 +128,25 @@ func (f *Fixture) FailNextSync() {
 	f.t.Helper()
 	if err := f.Seam.Schedule(kit.Failing(kit.OpSync, "*", 1, errors.New("fixture: an injected sync failure"))); err != nil {
 		f.t.Fatalf("fixture: schedule a sync failure: %v", err)
+	}
+}
+
+// FailNextWindow makes the journal's next fsync fail and every segment in the
+// journal's directory serve its durable image to a read, so the window's
+// read-back does not verify and the window fails with loss records instead
+// of being re-appended. The stale reads last for the fixture's life; segments
+// created after the call read as written.
+func (f *Fixture) FailNextWindow() {
+	f.t.Helper()
+	f.FailNextSync()
+	names, err := f.Seam.List()
+	if err != nil {
+		f.t.Fatalf("fixture: list the journal's directory: %v", err)
+	}
+	for _, name := range names {
+		if strings.HasSuffix(name, ".seg") {
+			f.Seam.StaleReads(name)
+		}
 	}
 }
 

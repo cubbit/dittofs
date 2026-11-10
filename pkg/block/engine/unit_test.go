@@ -348,7 +348,7 @@ func TestAHeldEntryHoldsUpNoOtherFile(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Error("a second file in the held file's shard waited on it")
 	}
-	if n, _ := u.e.FileStateWaits(); n != 0 {
+	if n := u.e.Stats().FileStateLockWaits.Count; n != 0 {
 		t.Errorf("the second file's operations recorded %d lock waits", n)
 	}
 	release()
@@ -387,7 +387,7 @@ func TestALockWaitIsRecorded(t *testing.T) {
 	u := newUnit(t)
 	f := entity.NewFileID()
 	u.e.HoldEntry(f)() // uncontended
-	if n, _ := u.e.FileStateWaits(); n != 0 {
+	if n := u.e.Stats().FileStateLockWaits.Count; n != 0 {
 		t.Fatalf("an uncontended lock recorded %d waits", n)
 	}
 	release := u.e.HoldEntry(f)
@@ -403,8 +403,8 @@ func TestALockWaitIsRecorded(t *testing.T) {
 	u.clock.Advance(3 * time.Second)
 	release()
 	<-done
-	if n, total := u.e.FileStateWaits(); n != 1 || total < 3*time.Second {
-		t.Errorf("file_state waits: %d totalling %v; want one of at least 3s", n, total)
+	if w := u.e.Stats().FileStateLockWaits; w.Count != 1 || w.Total < 3*time.Second {
+		t.Errorf("file_state waits: %d totalling %v; want one of at least 3s", w.Count, w.Total)
 	}
 }
 
