@@ -133,7 +133,7 @@ func TestRetirement_ThroughExecutorLowersTheShareFigure(t *testing.T) {
 	// and every further ask of the same size is refused by the share's limit
 	// until the retirement of the first segment gives its bytes back.
 	const payload = 4096
-	s := mustLimitShare(t, c, 1, 2*(recordBytes(payload)+askOverhead()))
+	s := mustLimitShare(t, c, 1, 2*(recordBytes(payload)))
 	f := testFile(1)
 	ctx := context.Background()
 	if _, err := c.WriteAt(ctx, s, f, 0, make([]byte, payload), 1); err != nil {
@@ -156,7 +156,7 @@ func TestRetirement_ThroughExecutorLowersTheShareFigure(t *testing.T) {
 
 	// Before the retirement the share's figure still holds both records'
 	// bytes: a third write of the same size is refused naming the limit, its
-	// ask more than the slack the limit has left.
+	// ask more than the room the limit has left.
 	h3 := testFile(3)
 	_, err := c.WriteAt(ctx, s, h3, 0, make([]byte, payload), 1)
 	if ns := refused(t, err, core.LimitShare); ns.Missing == 0 {
@@ -227,7 +227,7 @@ func TestRetirement_WhileUnregisteredLowersTheSeedToo(t *testing.T) {
 	const payload = 4096
 	// The limit holds exactly two of the write's asks, as the executor
 	// test's does: the first two land, every later ask is refused.
-	s := mustLimitShare(t, c, 1, 2*(recordBytes(payload)+askOverhead()))
+	s := mustLimitShare(t, c, 1, 2*(recordBytes(payload)))
 	f := testFile(1)
 	ctx := context.Background()
 	if _, err := c.WriteAt(ctx, s, f, 0, make([]byte, payload), 1); err != nil {
@@ -260,7 +260,7 @@ func TestRetirement_WhileUnregisteredLowersTheSeedToo(t *testing.T) {
 	// A fresh handle on the same tag must find the room the retirement
 	// freed: the seed already ran for this tag, so what the reattached
 	// share sees is the figure the hook lowers, not the set's pair.
-	s2 := mustLimitShare(t, c, 1, 2*(recordBytes(payload)+askOverhead()))
+	s2 := mustLimitShare(t, c, 1, 2*(recordBytes(payload)))
 	h3 := testFile(3)
 	if _, err := c.WriteAt(ctx, s2, h3, 0, make([]byte, payload), 1); err != nil {
 		t.Fatalf("the write after the reattach: %v", err)

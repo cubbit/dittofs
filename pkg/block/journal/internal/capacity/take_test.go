@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
@@ -412,22 +413,18 @@ func TestTake_OrderOfRefusals(t *testing.T) {
 // and the journal name bytes; the index entries; the version versions; the
 // spare pool segments. The journal case holds MaxBytes half a cap above the
 // footprint and a write needing two spares with one ready, so the missing
-// bytes are one cap.
+// bytes are half a cap.
 func TestTake_NamedRefusalFields(t *testing.T) {
-	// Share: the shortfall in bytes, taken against the ask the admission
-	// draws for the payload — the record's own bytes and the one extra
-	// record's charge — so the refused figure names the whole ask over
-	// the limit.
+	// Share: the shortfall in bytes, taken against the record bytes the
+	// admission draws for the payload, so the refused figure names the
+	// record over the limit.
 	r := newRig(t, nil)
 	r.f.setShare(tag1, 100)
 	q := req() // payload 4096 at the rig's generous room: one record
 	q.ShareLimit = 4100
 	ns := r.refused(t, q, core.LimitShare)
-	// The figure the share's limit sees carries the whole ask — the
-	// record and the one extra record's charge — so the refusal names the
-	// whole charge over the limit.
-	if ns.Missing != 100+recordBytes(4096)+slackOverhead()-4100 || ns.Unit != core.UnitBytes {
-		t.Fatalf("the share refusal = %d %s, want %d bytes", ns.Missing, ns.Unit, 100+recordBytes(4096)+slackOverhead()-4100)
+	if ns.Missing != 100+segment.RecordBytes(4096)-4100 || ns.Unit != core.UnitBytes {
+		t.Fatalf("the share refusal = %d %s, want %d bytes", ns.Missing, ns.Unit, 100+segment.RecordBytes(4096)-4100)
 	}
 
 	// Journal: a write two caps and a byte beyond its room needs two
@@ -587,7 +584,7 @@ func TestTake_RefusedHoldGivesBytesBack(t *testing.T) {
 // figure a split the stream never draws, and the write it admitted would
 // meet the pool's refusal on its third roll, after its first piece landed.
 func TestTake_MultiSegmentAskHoldsEveryPiece(t *testing.T) {
-	e := emptyRoom(testCap)
+	e := segment.EmptyRoom(testCap)
 	q := req()
 	q.Payload = 2*e + 50
 	q.Extent.Len = q.Payload
@@ -611,16 +608,16 @@ func TestTake_ExactFit(t *testing.T) {
 	r := newRig(t, nil)
 	r.f.setShare(tag1, 1000)
 	q := req()
-	// The whole ask: the record a 2792-byte payload costs plus the one
-	// extra record's charge — 2896 + 104 = 3000 — against the limit that
-	// holds it and the 1000-byte seed exactly.
-	q.Payload = 2792
-	q.ShareLimit = 1000 + 3000 + 7
+	// The record a 2896-byte payload costs is 3000 bytes, against a limit
+	// that holds it and the 1000-byte seed exactly: the limit bounds the
+	// record bytes, so the exact remainder is granted.
+	q.Payload = 2896
+	q.ShareLimit = 1000 + 3000
 	r.grant(t, q).Release()
-	q.Payload = 2793 // one payload byte more: the whole ask crosses to 3008
+	q.Payload = 2897 // one payload byte more: the record crosses the grid to 3008
 	ns := r.refused(t, q, core.LimitShare)
-	if ns.Missing != 1 {
-		t.Fatalf("the share's refusal over the exact ask = %d missing, want 1", ns.Missing)
+	if ns.Missing != 8 {
+		t.Fatalf("the share's refusal over the exact ask = %d missing, want 8", ns.Missing)
 	}
 
 	// Journal: the maximum bounds whole segments, so the one-byte-over edge
@@ -635,7 +632,7 @@ func TestTake_ExactFit(t *testing.T) {
 	r.f.footprint.Store(0)
 	r.f.ready.Store(1)
 	q = req()
-	q.Payload = emptyRoom(testCap) + 1
+	q.Payload = segment.EmptyRoom(testCap) + 1
 	r.f.room.Store(testCap - 300) // nearly full: the tail rolls to one spare
 	r.grant(t, q).Release()
 
@@ -643,7 +640,7 @@ func TestTake_ExactFit(t *testing.T) {
 	r2.f.footprint.Store(0)
 	r2.f.ready.Store(0)
 	q = req()
-	q.Payload = emptyRoom(testCap) + 1
+	q.Payload = segment.EmptyRoom(testCap) + 1
 	r2.f.room.Store(testCap - 300)
 	ns = r2.refused(t, q, core.LimitJournal)
 	if ns.Missing != 1 {
@@ -659,15 +656,14 @@ func TestTake_ExactFit(t *testing.T) {
 // Take this test fails on its assertion — verified by removing the
 // section and watching it.
 func TestTake_AtomicNoReadThenDecide(t *testing.T) {
-	// Sixteen goroutines, four slots: the limit is four whole asks — an
-	// ask being the record a one-byte payload costs plus the extra
-	// record's charge — and the grants are held until all sixteen have
+	// Sixteen goroutines, four slots: the limit is four asks — an
+	// ask being the record a one-byte payload costs — and the grants are held until all sixteen have
 	// answered: the decision section decides each take whole, so exactly
 	// four pass and twelve are refused, never five.
 	r := newRig(t, nil)
 	q := req()
 	q.Payload = 1
-	q.ShareLimit = 4 * (recordBytes(1) + slackOverhead())
+	q.ShareLimit = 4 * (segment.RecordBytes(1))
 	var wg sync.WaitGroup
 	var granted atomic.Int64
 	holds := make(chan *Grant, 16)
@@ -716,7 +712,7 @@ func TestTake_AtomicNoReadThenDecide(t *testing.T) {
 	}
 	q = req()
 	q.Payload = 1
-	q.ShareLimit = recordBytes(1) + slackOverhead() // room for exactly one ask
+	q.ShareLimit = segment.RecordBytes(1) // room for exactly one ask
 	var wg2 sync.WaitGroup
 	var granted2 atomic.Int64
 	kept := make(chan *Grant, 2)
@@ -1096,14 +1092,14 @@ func TestTake_BytesOverflowSafe(t *testing.T) {
 // racing takes at a one-slot limit with landings interleaved, exactly one
 // is granted, never one more than the limit holds, and never one less.
 func TestTake_ShareFigureIsExactUnderLandings(t *testing.T) {
-	// The limits: each take asks the record bytes a 2792-byte payload
-	// costs beside the extra record's charge — 3000 whole — against a
-	// limit holding exactly one ask over the 1000-byte seed, so one take
+	// The limits: each take asks the 3000 record bytes a 2896-byte payload
+	// costs, against a limit holding exactly one ask over the 1000-byte
+	// seed, so one take
 	// fits and the second finds none.
 	r := newRig(t, nil)
 	const seed = 1000
 	r.f.setShare(tag1, seed)
-	ask := recordSplit(2792, roomBig, testCap) + slackOverhead()
+	ask := recordSplit(2896, roomBig, testCap)
 	if ask != 3000 {
 		t.Fatalf("the whole ask the admission charges for the payload = %d, want 3000; the test's figures depend on it", ask)
 	}
@@ -1142,7 +1138,7 @@ func TestTake_ShareFigureIsExactUnderLandings(t *testing.T) {
 			defer wg.Done()
 			<-start
 			q := req()
-			q.Payload = 2792
+			q.Payload = 2896
 			q.ShareLimit = seed + ask
 			g, err := r.c.Take(context.Background(), q)
 			if err != nil {
@@ -1156,8 +1152,8 @@ func TestTake_ShareFigureIsExactUnderLandings(t *testing.T) {
 			granted.Add(1)
 			// The record lands right where the other takes may be
 			// deciding: the sequence that escapes a read-then-decide.
-			r.f.incrShare(tag1, recordBytes(2792))
-			g.Wrote(recordBytes(2792))
+			r.f.incrShare(tag1, segment.RecordBytes(2896))
+			g.Wrote(segment.RecordBytes(2896))
 			g.Release()
 		}(i == 0)
 	}
@@ -1185,100 +1181,58 @@ func TestTake_ShareFigureIsExactUnderLandings(t *testing.T) {
 	}
 }
 
-// TestTake_InterleavedDrawnPieceNeverOversetsTheShare stages the
+// TestTake_InterleavedDrawnPieceOversetsTheShareByOneHeader stages the
 // same-stream interleaving that draws an extra piece: two takes read the
-// same stream room — the second reads it before the first's pieces land,
-// for the pair's sections run one after another and neither has appended
-// in between — and the first writer's landing between the second take's
-// section and its appends moves the cut, so the second writer's write
-// appends one piece more than the split its take sized. Against a limit
-// holding the two writes' record bytes exactly — the figure the old
-// admission charged, the split without the extra record's overhead — both
-// takes were admitted and the settled bytes overran the limit by the drawn
-// piece's overhead. Charging each ask whole — the split plus the one extra
-// record's charge — the admission refuses the second take and the settled
-// figure never passes the limit.
-//
-// The figures, drawn in the record arithmetic the rig's own functions
-// spell (rb(n) the record bytes of a payload of n): rb(4096) = 4200 and
-// rb(61049) = 61160. Both takes read the room R = 65248 payload bytes the
-// segment names, and each write fits it whole, so each take sizes its
-// split at one record. Their whole asks under the whole-charge admission
-// are 4200+104 = 4304 and 61160+104 = 61264; their record bytes without
-// the extra charge — the old figure — are 4200 and 61160, whose sum
-// 65360 is the limit. The old figure admitted both. The larger writer's
-// landing then draws one piece more than its take sized — the smaller
-// writer's 4200 landed in between — charging the share the split plus one
-// record's overhead: 61264. Settled, the pair stood at 4200+61264 =
-// 65464, 104 past the limit the old figure had promised to hold.
-func TestTake_InterleavedDrawnPieceNeverOversetsTheShare(t *testing.T) {
+// same stream room, and the first writer's landing between the second
+// take's section and its appends moves the cut, so the larger writer's
+// write appends one piece more than the split its take sized. The share's
+// limit charges the split's record bytes alone, so both takes are
+// admitted against a limit holding exactly the two splits, and the
+// settled bytes pass the limit by the drawn piece's header and by no more:
+// at most one record header per displaced write, the bound the admission's
+// decision states.
+func TestTake_InterleavedDrawnPieceOversetsTheShareByOneHeader(t *testing.T) {
 	// The figures the staging depends on, checked the arithmetic stands:
 	const (
 		small = int64(4096)
 		large = int64(61049)
 	)
-	room := emptyRoom(testCap) // 65248 payload bytes the segment names
-	if room != 65248 || recordBytes(small) != 4200 || recordBytes(large) != 61160 {
+	room := segment.EmptyRoom(testCap) // 65248 payload bytes the segment names
+	if room != 65248 || segment.RecordBytes(small) != 4200 || segment.RecordBytes(large) != 61160 {
 		t.Fatalf("the fixture's figures moved: room %d, rb(%d) %d, rb(%d) %d; the test's arithmetic depends on them",
-			room, small, recordBytes(small), large, recordBytes(large))
+			room, small, segment.RecordBytes(small), large, segment.RecordBytes(large))
 	}
 	r := newRig(t, nil)
 	r.f.room.Store(room)
 
-	// The limit holds the two writes' record bytes exactly — the bound the
-	// old figure, charging each split without the extra record's overhead,
-	// promised: rb(4096) + rb(61049) = 65360.
-	limit := recordBytes(small) + recordBytes(large)
-
-	// The larger writer takes first: its section reads the fresh room and
-	// its whole ask — the split plus the extra record's charge — fits.
-	qBig := req()
-	qBig.Payload = large
-	qBig.ShareLimit = limit
+	// The limit holds the two writes' record bytes exactly.
+	limit := segment.RecordBytes(small) + segment.RecordBytes(large)
+	qBig, qSmall := req(), req()
+	qBig.Payload, qSmall.Payload = large, small
+	qBig.ShareLimit, qSmall.ShareLimit = limit, limit
 	gBig, err := r.c.Take(context.Background(), qBig)
 	if err != nil {
 		t.Fatalf("the first writer's take: %v", err)
 	}
-
-	// The smaller writer's take reads the same room — the larger writer
-	// has reserved but not appended, so the room its section reads still
-	// holds the whole segment. Under the whole-charge ask its figure
-	// overruns the limit the first writer's charge filled: the take is
-	// refused naming the share. The old figure charged the split alone,
-	// admitted this take, and its landing below overran the limit.
-	qSmall := req()
-	qSmall.Payload = small
-	qSmall.ShareLimit = limit
-	gSmall, terr := r.c.Take(context.Background(), qSmall)
-	if terr != nil {
-		// A refusal moves nothing, so the neighbours' landings below owe it
-		// nothing either; the settled figure stands alone.
-		var ns *core.NoSpaceError
-		if !errors.As(terr, &ns) || ns.Limit != core.LimitShare {
-			t.Fatalf("the interleaved second take = %v, want the share's refusal", terr)
-		}
+	// The same room read, the first writer not yet appended: the smaller
+	// split fits the limit's remainder exactly and is granted.
+	gSmall, err := r.c.Take(context.Background(), qSmall)
+	if err != nil {
+		t.Fatalf("the second take at the limit's exact remainder: %v", err)
 	}
-	// If the admission granted the second take — the old design's figure,
-	// charging each split without the extra record's overhead, admitted it
-	// here — its landing settles beside the first writer's drawn piece,
-	// and the settled-bytes assert below convicts the overrun.
-	if terr == nil {
-		r.f.incrShare(tag1, recordBytes(small))
-		gSmall.Wrote(recordBytes(small))
-		gSmall.Release()
-	}
+	r.f.incrShare(tag1, segment.RecordBytes(small))
+	gSmall.Wrote(segment.RecordBytes(small))
+	gSmall.Release()
 
-	// The first writer lands: the same-stream neighbour's landing moved its
-	// cut, so its appends drew one piece more than its take sized — the
-	// drawn piece's own overhead beside the split — and the settled figure
-	// never passes the limit, for the charge its reservation held covered
-	// the piece it drew.
-	r.f.incrShare(tag1, recordBytes(large)+slackOverhead())
-	gBig.Wrote(recordBytes(large) + slackOverhead())
+	// The larger writer lands with its cut moved: one piece more than its
+	// split, whose header is what the share passes the limit by.
+	hdr := segment.RecordBytes(0)
+	r.f.incrShare(tag1, segment.RecordBytes(large)+hdr)
+	gBig.Wrote(segment.RecordBytes(large) + hdr)
 	gBig.Release()
 
-	if got := r.f.shareBytes(tag1); got > limit {
-		t.Fatalf("the share's settled bytes %d passed the limit %d under same-stream interleaving that drew an extra piece", got, limit)
+	if got := r.f.shareBytes(tag1); got != limit+hdr {
+		t.Fatalf("the share settled %d, want the limit %d and the one drawn piece's header %d", got, limit, hdr)
 	}
 	if got := r.c.ReservedBytes(); got != 0 {
 		t.Fatalf("after both writers settled, ReservedBytes = %d, want 0", got)
@@ -1298,7 +1252,7 @@ func TestTake_ShareTallyNeverUndercountsTheLanded(t *testing.T) {
 	q := req()
 	q.Payload = 1500
 	q.ShareLimit = 4000
-	first := recordBytes(1500)
+	first := segment.RecordBytes(1500)
 	g := r.grant(t, q)
 	g.Wrote(first)
 	g.Release()
@@ -1307,12 +1261,10 @@ func TestTake_ShareTallyNeverUndercountsTheLanded(t *testing.T) {
 	q2 := req()
 	q2.Payload = 2000
 	q2.ShareLimit = 0
-	second := recordBytes(2000)
+	second := segment.RecordBytes(2000)
 	g2 := r.grant(t, q2)
 	r.f.incrShare(tag1, second)
 	g2.Wrote(second)
-	// The extra record's charge of the second ask returns to the
-	// reservation when the record needed no spare piece.
 	g2.Release()
 
 	// The next bounded take sees the whole settled figure: it refuses past
@@ -1320,7 +1272,7 @@ func TestTake_ShareTallyNeverUndercountsTheLanded(t *testing.T) {
 	q3 := req()
 	q3.Payload = 1
 	q3.ShareLimit = 4000
-	third := recordBytes(1) + slackOverhead()
+	third := segment.RecordBytes(1)
 	ns := r.refused(t, q3, core.LimitShare)
 	if want := 1000 + first + second + third - 4000; ns.Missing != want {
 		t.Fatalf("Missing = %d, want %d: the settled figure plus the whole ask over the limit", ns.Missing, want)
@@ -1336,19 +1288,19 @@ func TestTake_RetiredLowersTheTally(t *testing.T) {
 	r.f.setShare(tag1, 1000)
 	q := req()
 	// One ask beside the seed: a payload whose record costs 2896 bytes
-	// over the slack charges 3000 exactly against the 4000 limit.
-	q.Payload = 2792
+	// costs 3000 exactly against the 4000 limit.
+	q.Payload = 2896
 	q.ShareLimit = 4000
 	g := r.grant(t, q)
-	r.f.incrShare(tag1, recordBytes(2792))
-	g.Wrote(recordBytes(2792))
+	r.f.incrShare(tag1, segment.RecordBytes(2896))
+	g.Wrote(segment.RecordBytes(2896))
 	g.Release()
 
 	// A retirement of the segment holding the record frees its bytes: the
 	// set's own figure falls, its cumulative retired figure rises, the
 	// caller tells the capacity, and the retry fits in the room it freed.
 	r.f.setShare(tag1, 1000)
-	r.f.setRetired(tag1, recordBytes(2792))
+	r.f.setRetired(tag1, segment.RecordBytes(2896))
 	r.c.Retired(tag1)
 	g2 := r.grant(t, q)
 	g2.Release()
@@ -1372,15 +1324,14 @@ func TestTake_RoomIsNotGrantedTwice(t *testing.T) {
 		c.MaxBytes = 0
 	})
 	q := req()
-	// The payload whose whole ask sits exactly in the room the stream
-	// names: its record on the record grid plus the extra record's
-	// charge. The grid arithmetic is drawn from the same functions the
+	// The payload whose record sits exactly in the room the stream
+	// names: its record on the record grid. The grid arithmetic is drawn from the same functions the
 	// admission charges, so the ask equals the room to the byte.
-	q.Payload = room.Load() - slackOverhead()
-	for recordSplit(q.Payload, room.Load(), testCap)+slackOverhead() != room.Load() {
+	q.Payload = room.Load() - segment.RecordBytes(0)
+	for recordSplit(q.Payload, room.Load(), testCap) != room.Load() {
 		q.Payload -= 1
 	}
-	ask := recordSplit(q.Payload, room.Load(), testCap) + slackOverhead()
+	ask := recordSplit(q.Payload, room.Load(), testCap)
 	if ask != room.Load() {
 		t.Fatalf("the fixture asks %d against a room of %d; the figure depends on it", ask, room.Load())
 	}
@@ -1419,6 +1370,34 @@ func TestTake_RoomIsNotGrantedTwice(t *testing.T) {
 	for _, g := range kept {
 		g.Release()
 	}
+}
+
+// TestTake_TwoWritesInTheRoomAreBothGrantedFromIt pins that a take claims
+// from the stream's room only what its landing takes from it: the record's
+// bytes and its footer entry. Two writes that together fit the active
+// segment, taken one after the other before either lands, are both granted
+// from the room with no spare held; a spare hold here is refused, so a
+// claim wider than the landing fails the test.
+func TestTake_TwoWritesInTheRoomAreBothGrantedFromIt(t *testing.T) {
+	const first, second = 1000, 2000
+	r := newRig(t, func(c *Config) {
+		c.Hold = func(n int) (*segment.Hold, error) {
+			return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: int64(n), Unit: core.UnitSegments}
+		}
+	})
+	// The room names the second write's payload exactly beyond the first
+	// record and its footer entry.
+	r.f.room.Store(segment.RecordBytes(first) + format.CatalogEntrySize + second)
+	q := req()
+	q.Payload = first
+	g1 := r.grant(t, q)
+	q.Payload = second
+	g2 := r.grant(t, q)
+	if g1.Hold() != nil || g2.Hold() != nil {
+		t.Fatal("a write that fits the room held spares")
+	}
+	g1.Release()
+	g2.Release()
 }
 
 // TestTake_OneReadySpareRefusesNeedOfTwo pins the shape the datapath's

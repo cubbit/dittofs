@@ -12,27 +12,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
-// recordBytes is what one record of n payload bytes costs the journal: the
-// size function the stream, the format and the capacity wiring all spell
-// together.
-func recordBytes(n int64) int64 {
-	return format.RecordHeader{Kind: format.KindWrite, Extent: core.Extent{Len: n}}.Size()
-}
-
-// emptyRoomOf returns the payload bytes one write record takes in an empty
-// segment of cap bytes — the same closed form the stream's fit and Room draw.
-func emptyRoomOf(cap int64) int64 {
-	room := ((cap - format.SegmentHeaderSize - sealOver(1)) &^ 7) -
-		(int64(format.RecordHeaderSize) + format.RecordHeader{Kind: format.KindWrite}.BodySize())
-	return max(room, 0)
-}
-
-// sealOver returns the seal's reserve over n records: the marker, one
-// footer entry per record and the trailer, as the format sizes them.
-func sealOver(n int64) int64 {
-	return format.SealMarkerSize + n*format.CatalogEntrySize + format.TrailerSize
-}
-
 // WriteAt appends p at off of file id as a write record under s's tag, then
 // publishes it to the placement index, and returns the version it carries.
 // mtime is the modification time the record carries.
@@ -56,9 +35,8 @@ func sealOver(n int64) int64 {
 // covers the pieces the split it sized drew: they take their spares from
 // the grant's hold, and the unused part returns when the write does. One
 // piece more than the split can still be drawn — the room another appender
-// spent between the take and this write's rolls, the window the take's own
-// slack charges for and its hold does not cover — and that one rolls
-// unreserved; see the decision at the loop below for its ceiling and what
+// spent between the take and this write's rolls, a window neither its
+// charge nor its hold covers — and that one rolls unreserved; see the decision at the loop below for its ceiling and what
 // closes it.
 //
 // The version is drawn, and the record appended and published, with the

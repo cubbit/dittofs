@@ -322,10 +322,10 @@ func (c *Core) ReservationRefused() uint64 { return c.cap.RefusedCount() }
 // Retired lowers the share's figure by the retirements its segments have
 // freed since the figure last took them into account, and is what a write
 // through the retired segment's share waits on: a retry after the
-// retirement finds the room it freed. The retirement executor calls it once
-// per retirement, after the set's own counters have moved, with the tag
-// whose segment was freed; the admission reads the tag's figures off the
-// set itself. It is safe from any goroutine.
+// retirement finds the room it freed. It is a test seam: the retirement
+// executor reaches the same reconciliation through retiredSegment, which
+// runs it for every seeded tag once the set's own counters have moved. It
+// is safe from any goroutine.
 func (c *Core) Retired(tag core.ShareTag) { c.cap.Retired(tag) }
 
 // Retirer returns the retirement executor the core runs. Nothing above the

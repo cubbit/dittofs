@@ -1285,9 +1285,30 @@ func (s *Stream) Room() int64 {
 	// own fit test draws it: the seal's reserve counts the record's footer
 	// entry, the remainder is floored to the record's 8-byte grid, and the
 	// record costs its header and the write kind's own body bytes.
-	room := ((s.set.cap - s.next - sealRoom(s.count+1)) &^ 7) -
+	return WriteRoom(s.set.cap, s.next, s.count)
+}
+
+// WriteRoom is the payload bytes one more write record takes in a segment of
+// cap bytes whose next record starts at next with count records already in
+// it: the seal's reserve counts the record's footer entry, the remainder is
+// floored to the record's 8-byte grid, and the record costs its header and
+// the write kind's own body bytes. Stream.Room and the capacity admission
+// both draw their figures from it, so they cannot disagree.
+func WriteRoom(cap, next, count int64) int64 {
+	room := ((cap - next - sealRoom(count+1)) &^ 7) -
 		(int64(format.RecordHeaderSize) + format.RecordHeader{Kind: format.KindWrite}.BodySize())
 	return max(room, 0)
+}
+
+// EmptyRoom is WriteRoom of an empty segment of cap bytes: the most payload
+// one write record takes anywhere.
+func EmptyRoom(cap int64) int64 { return WriteRoom(cap, format.SegmentHeaderSize, 0) }
+
+// RecordBytes is what one write record of n payload bytes costs: the
+// header, the write kind's fixed body bytes, the payload and the padding to
+// the record's 8-byte grid.
+func RecordBytes(n int64) int64 {
+	return format.RecordHeader{Kind: format.KindWrite, Extent: core.Extent{Len: n}}.Size()
 }
 
 // rollSettle settles the roll whose gate the caller armed: the gate is

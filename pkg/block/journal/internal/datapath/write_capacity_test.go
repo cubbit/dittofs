@@ -37,14 +37,6 @@ var errMakeSpares = errors.New("spare making gated by the test")
 // one more record — marker, footer entries, trailer — floored to the 8-byte
 // record grid, less one more record's own header and fixed body bytes.
 
-// askOverhead is the one extra record's own bytes the admission charges
-// over the record a payload costs — the same figure capacity's slack
-// carries — so a test can size a share's limit in the asks the journal
-// really makes.
-func askOverhead() int64 {
-	return format.RecordHeader{Kind: format.KindWrite, Extent: core.Extent{}}.Size()
-}
-
 // roomAfter returns the payload Room() of a stream whose active segment
 // already holds recordsBytes of record bytes, at the test's segment cap. It
 // is the same closed form Stream.Room draws over its own state, reduced to
@@ -155,15 +147,12 @@ func TestRFC1B_Reservation(t *testing.T) {
 		return c.pool.Counters().Spares == 2*testStreams
 	})
 	baseline := int64(len(files)) * warmedBytes()
-	// The limit holds exactly eight of the writers' whole asks — the
-	// record a 4096-byte write costs plus the extra record's charge the
-	// reservation holds — beside the warm-ups' own records, so of the
-	// sixteen concurrent writers exactly eight pass and eight are
-	// refused naming the share. (Arithmetic in the asks the admission
-	// draws: rb(4096)=4200, the extra record's charge=104, so one ask is
-	// 4304 and eight are 34432; each warm-up's one-byte record costs
-	// rb(1)=112, sixteen of them 1792 beside.)
-	limit := 8*(recordBytes(each)+askOverhead()) + baseline
+	// The limit holds exactly eight of the writers' records beside the
+	// warm-ups' own, so of the sixteen concurrent writers exactly eight
+	// pass and eight are refused naming the share. (rb(4096)=4200, so
+	// eight are 33600; each warm-up's one-byte record costs rb(1)=112,
+	// sixteen of them 1792 beside.)
+	limit := 8*(recordBytes(each)) + baseline
 	s, err := c.Share(1, limit, core.Version{})
 	if err != nil {
 		t.Fatalf("Share(1, %d): %v", limit, err)
@@ -233,7 +222,7 @@ func TestRFC1B_Reservation(t *testing.T) {
 func TestRFC1B_NamedRefusal(t *testing.T) {
 	c, seam := newTestCore(t)
 	const each = 4096
-	ask := recordBytes(each) + askOverhead()
+	ask := recordBytes(each)
 	s := mustLimitShare(t, c, 1, ask)
 	ctx := context.Background()
 	if _, err := c.WriteAt(ctx, s, testFile(1), 0, make([]byte, each), 1); err != nil {
@@ -249,9 +238,8 @@ func TestRFC1B_NamedRefusal(t *testing.T) {
 		return err
 	}(), core.LimitShare)
 	// The share's settled bytes sit at the limit, so what the refused
-	// write misses is its whole ask less the settled bytes already over
-	// the limit: the refusal names the shortfall of its charge.
-	want := c.set.ShareBytes(1) + recordBytes(2*each) + askOverhead() - (recordBytes(each) + askOverhead())
+	// write misses is its record less the room the limit has left.
+	want := c.set.ShareBytes(1) + recordBytes(2*each) - (recordBytes(each))
 	if ns.Missing != want {
 		t.Fatalf("Missing = %d, want %d", ns.Missing, want)
 	}
@@ -342,12 +330,12 @@ func TestRFC1B_ShareLimit(t *testing.T) {
 func TestEdge_ReservationExactFitShare(t *testing.T) {
 	c, _ := newTestCore(t)
 	const first, second = 4096, 64
-	// The limit holds the first write's whole ask exactly plus one more
-	// whole ask: a write of exactly the remaining ask passes, and one
-	// payload byte more is refused by the whole ask that extra byte
-	// crosses to.
-	ask := recordBytes(second) + askOverhead()
-	s := mustLimitShare(t, c, 1, recordBytes(first)+askOverhead()+ask)
+	// The limit holds the first write's record exactly plus one more
+	// record: a write of exactly the remaining bytes passes, and one
+	// payload byte more is refused by the record that extra byte crosses
+	// to.
+	ask := recordBytes(second)
+	s := mustLimitShare(t, c, 1, recordBytes(first)+ask)
 	ctx := context.Background()
 	if _, err := c.WriteAt(ctx, s, testFile(1), 0, make([]byte, first), 1); err != nil {
 		t.Fatalf("the first write: %v", err)
@@ -360,10 +348,9 @@ func TestEdge_ReservationExactFitShare(t *testing.T) {
 		return err
 	}(), core.LimitShare)
 	// No byte of the write fits: the one payload byte over crossed its
-	// whole ask — the record the 65 bytes cost, and the extra record's
-	// charge — past the limit the settled bytes already fill, so the
-	// refusal names the shortfall of that charge.
-	want := c.set.ShareBytes(1) + recordBytes(second+1) + askOverhead() - (recordBytes(first) + askOverhead() + recordBytes(second) + askOverhead())
+	// record — the 65 bytes cost — past the limit the settled bytes
+	// already fill, so the refusal names that record.
+	want := c.set.ShareBytes(1) + recordBytes(second+1) - (recordBytes(first) + recordBytes(second))
 	if ns.Missing != want {
 		t.Fatalf("Missing = %d, want %d: the whole ask's shortfall over the limit", ns.Missing, want)
 	}
@@ -877,7 +864,7 @@ func TestEdge_FilesystemENOSPCIsNotErrNoSpace(t *testing.T) {
 func TestWriteAt_RefusalHoldsNoLock(t *testing.T) {
 	c, _ := newTestCore(t)
 	const each = 4096
-	s := mustLimitShare(t, c, 1, recordBytes(each)+askOverhead())
+	s := mustLimitShare(t, c, 1, recordBytes(each))
 	f := testFile(1)
 	ctx := context.Background()
 	if _, err := c.WriteAt(ctx, s, f, 0, make([]byte, each), 1); err != nil {
@@ -953,7 +940,7 @@ func TestWriteAt_ReservedBytesFallsAfterRecordWritten(t *testing.T) {
 			// Between the append and the publish, with the record
 			// already counted in its share's bytes: the reservation
 			// has handed the record over — ReservedBytes holds the
-			// write's whole ask less it — and the two gauges together
+			// write's record less it — and the two gauges together
 			// cover the record exactly once.
 			mu.Lock()
 			stages = append(stages, stageSnapshot{c.ReservedBytes(), c.set.ShareBytes(1)})
@@ -969,12 +956,11 @@ func TestWriteAt_ReservedBytesFallsAfterRecordWritten(t *testing.T) {
 		t.Fatal("the hook read no stage between the append and the publish")
 	}
 	// The one-piece write's record is the share's when the hook runs: the
-	// reservation holds none of its real bytes — only the one extra
-	// record's charge the ask carries for the interleaving risk, which
-	// returns at Release — and the share counts the record once.
+	// reservation holds none of it any more, and the share counts the
+	// record once.
 	for i, st := range stages {
-		if st.reserved != askOverhead() {
-			t.Fatalf("stage %d holds %d reserved beside %d settled, want only the extra record's %d", i, st.reserved, st.share, askOverhead())
+		if st.reserved != 0 {
+			t.Fatalf("stage %d holds %d reserved beside %d settled, want none", i, st.reserved, st.share)
 		}
 		if st.share != recordBytes(each)*int64(i+1) {
 			t.Fatalf("stage %d counts %d settled, want the record counted once (%d)", i, st.share, recordBytes(each)*int64(i+1))
@@ -1052,7 +1038,7 @@ func TestWriteAt_IndexBoundRefusesBeforeIO(t *testing.T) {
 func TestWriteAt_RefusalEvictsNothing(t *testing.T) {
 	c, _ := newTestCore(t)
 	const each = 4096
-	s := mustLimitShare(t, c, 1, recordBytes(each)+askOverhead())
+	s := mustLimitShare(t, c, 1, recordBytes(each))
 	ctx := context.Background()
 	f := testFile(1)
 	if _, err := c.WriteAt(ctx, s, f, 0, make([]byte, each), 1); err != nil {
@@ -1107,7 +1093,7 @@ func TestWriteAt_SameStreamWritersNeverMeetMidWriteRefusal(t *testing.T) {
 	// appends, so a grant's sized pieces meet whatever the earlier
 	// grant's landings leave them.
 	each := 2*emptyRoomOf(testSegmentCap) + 50
-	if int64(len(files))*(recordBytes(each)+askOverhead()) <= 8*testSegmentCap {
+	if int64(len(files))*(recordBytes(each)) <= 8*testSegmentCap {
 		t.Fatal("the fixture's combined asks do not cross enough segments")
 	}
 	// Gate the maker at the seam: the refill makes nothing while the
@@ -1200,29 +1186,24 @@ func errChain(err error) map[*core.NoSpaceError]struct{} {
 	return out
 }
 
-// TestWriteAt_InterleavedDrawnPieceStaysInsideTheLimit drives the share's
+// TestWriteAt_StaggeredWritersFillTheLimitExactly drives the share's
 // boundary over the WriteAt path with two same-stream writers staggered
 // around a landing — writer two's take reads the room writer one's landed
-// record left — and a third writer arriving after the pair settled: with
-// every ask charged whole — the record a payload costs plus the one extra
-// record's charge its interleaved pieces can draw — exactly two of the
-// three are admitted, the refusal names the shortfall over the settled
-// figure, and the share's settled bytes never pass the limit. The two
-// admitted writers are serialized end to end — writer two waits on writer
-// one's full WriteAt answer, so no piece of theirs interleaves mid-flight —
-// and the concurrent interleaving that draws the extra piece is covered at
-// the admission's own seam only, in capacity's
-// TestTake_InterleavedDrawnPieceNeverOversetsTheShare.
+// record left — against a limit of exactly their two records, and a third
+// writer arriving after the pair settled. The limit bounds record bytes
+// (RFC 1 section 6): both writers are admitted, the settled bytes sit at
+// the limit and not past it, and the third is refused naming its whole
+// record as missing. The two writers are serialized end to end, so no
+// piece of theirs is displaced; a displaced write draws a piece beyond its
+// split and can pass the limit by at most one record header, which the
+// admission's decision states and capacity's
+// TestTake_InterleavedDrawnPieceOversetsTheShareByOneHeader pins at the
+// admission's own seam.
 //
-// The arithmetic the fixture is drawn in (record bytes of a payload of n:
-// header, fixed body bytes, payload, padding): rb(4096) = 4200, the extra
-// record's charge 104, so one whole ask is 4304 and the limit of two asks
-// is 8608. Writer one lands its record through the bare room and its
-// slack's 104 returns at Release; writer two, admitted after the landing,
-// the same. Once both have answered the settled bytes sit at 8400 — the
-// settled figure plus the returned 208 of slack is what the third writer's
-// whole ask overruns: its refusal names 4304-208 = 4096 missing.
-func TestWriteAt_InterleavedDrawnPieceStaysInsideTheLimit(t *testing.T) {
+// The arithmetic: rb(4096) = 4200, so the limit is 8400 and the settled
+// bytes after the pair are 8400; the third writer's 4200-byte record is all
+// missing.
+func TestWriteAt_StaggeredWritersFillTheLimitExactly(t *testing.T) {
 	c, _ := newTestCore(t)
 	files := []core.FileID{testFile(1), testFile(3), testFile(5)}
 	for _, f := range files {
@@ -1231,7 +1212,7 @@ func TestWriteAt_InterleavedDrawnPieceStaysInsideTheLimit(t *testing.T) {
 		}
 	}
 	const each = 4096
-	s := mustLimitShare(t, c, 1, 2*(recordBytes(each)+askOverhead()))
+	s := mustLimitShare(t, c, 1, 2*(recordBytes(each)))
 	ctx := context.Background()
 
 	// The two writers the limit admits: writer two is held at its arrival
@@ -1262,23 +1243,20 @@ func TestWriteAt_InterleavedDrawnPieceStaysInsideTheLimit(t *testing.T) {
 	close(twoGo)
 	wg.Wait()
 
-	// The stream now holds the two landed records and no reservation: with
-	// each admit's undrawn slack returned, the charge the third writer's
-	// ask adds to the settled 8400 overruns the 8608 limit by exactly its
-	// own ask less the 208 of returned slack — 4304-208 = 4096 missing.
+	// The stream now holds the two landed records and no reservation: the
+	// third writer's record adds to the settled 8400 and overruns the
+	// limit by exactly its own bytes.
 	third := files[2]
 	ns := refused(t, func() error {
 		_, err := c.WriteAt(ctx, s, third, 0, make([]byte, each), 1)
 		return err
 	}(), core.LimitShare)
-	if want := recordBytes(each) + askOverhead() - 2*askOverhead(); ns.Missing != want {
-		t.Fatalf("the third writer's refusal names %d missing, want %d: its whole ask over the settled bytes and the returned slack", ns.Missing, want)
+	if want := recordBytes(each); ns.Missing != want {
+		t.Fatalf("the third writer's refusal names %d missing, want %d: its record over the settled bytes", ns.Missing, want)
 	}
-	// The settled record bytes never pass the limit: every byte the stream
-	// appended was the charge of an admit the limit passed, drawn pieces
-	// included, and every reservation returned whole.
-	if got := c.set.ShareBytes(1); got > s.Limit() {
-		t.Fatalf("the share's settled bytes %d passed the limit %d under a take whose pieces the stream drew wide", got, s.Limit())
+	// Both admitted records landed exactly at the limit, none past it.
+	if got := c.set.ShareBytes(1); got != s.Limit() {
+		t.Fatalf("the share's settled bytes %d, want exactly the limit %d", got, s.Limit())
 	}
 	if got := c.ReservedBytes(); got != 0 {
 		t.Fatalf("ReservedBytes = %d after the writers, want 0", got)

@@ -238,8 +238,7 @@ type Grant struct {
 	tag    core.ShareTag
 	stream int
 
-	// bytes is the record bytes the grant reserved, the real split plus
-	// the interleaving slack.
+	// bytes is the record bytes the grant reserved: the split's.
 	bytes int64
 	// left is what Release still has to return: it falls by each Wrote.
 	left int64
@@ -438,54 +437,26 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// room, every later one at most an empty segment's — each piece
 	// carrying its own header, fixed body bytes and padding.
 	//
-	// decision: the sum carries one extra record's own overhead beyond
-	// the split the room names, because the room between this take and
-	// this write's appends can be spent by more than another admitted
-	// writer: the idle sealer seals the active segment while it idles and
-	// leaves the stream none; the durability layer appends re-appended
-	// records and its loss records to the stream under their tags with no
-	// reservation of their own, once a failed window or a dropped record
-	// asks it to; and a same-stream writer whose own grant holds spares
-	// reserves for its first piece whatever room it finds — more than its
-	// claim, when nothing landed before it — spending a window another
-	// grant had. Whatever spent the room, a first cut moved below the
-	// room the split named draws one piece more than the split: only the
-	// first cut moves, for every later cut falls at an empty segment's
-	// edge wherever the first one took, so at most one extra record heads
-	// the sum. The extra's own overhead is charged to the share's limit
-	// and the reservation here — its payload is charged already, by the
-	// split — and Release returns it when the write never drew the piece.
-	// A share limit sitting exactly at the split's bytes can then refuse a
-	// write that would have landed inside it: the refusal falls on the
-	// write a spent room displaced, never admits a byte past the limit,
-	// and the piece a displaced write draws beyond its own split is what
-	// the charge of this slack covers. The piece itself the grant covers
-	// only when its take held a spare for it: the spares below are sized
-	// by the pieces past the claimable room, and the one an unspent room
-	// still might make this write draw is not among them — its roll runs
-	// unreserved, the one window the admission knowingly leaves open,
-	// closed by the reserved-roll replacement of RFC 1 §6's interleaved
-	// reservation, which the reserve-ahead work builds.
-	//
-	// decision: the bound this charge gives the share's limit rests on
-	// the premise that a write never draws more than one piece beyond
-	// the split its take sized — that one extra record's overhead is
-	// then the whole of what its reservation did not name. What holds the
-	// premise is the stream's own split: every cut after the first falls
-	// only at an empty segment's edge, a boundary no interleaving can
-	// move, so a room spent under this write's first cut can shift that
-	// cut alone and add at most one record to the sum. It would be
-	// overturned by a stream that cuts a payload anywhere else — a
-	// fill that must break around an interleaving append mid-segment —
-	// for then a moved first cut could re-cut the pieces after it and
-	// the landed bytes could exceed the charge by more than one record's
-	// overhead.
+	// decision: the sum is the split's record bytes alone, with no slack
+	// for a piece the split does not know of. The room between this take
+	// and this write's appends can be spent by more than another admitted
+	// writer: the idle sealer seals the active segment and leaves the
+	// stream none; the durability layer appends re-appended records and
+	// its loss records under their tags with no reservation of their own;
+	// and a same-stream writer whose grant holds spares reserves for its
+	// first piece whatever room it finds. Whatever spent the room, only
+	// the write's first cut moves (every later cut falls at an empty
+	// segment's edge), so such a write draws at most one piece beyond the
+	// split. That piece's header is outside the charge: its share-limit
+	// overshoot is at most one record header per write whose room was
+	// spent by something outside the admission, in the fail-open
+	// direction, bounded, and closes with the reserved-roll replacement
+	// (#3950) that also closes the unreserved roll such a piece makes.
+	// The premise holding the bound is the stream's own split: a stream
+	// that cut a payload anywhere but an empty segment's edge could draw
+	// more than one extra piece, and the overshoot would exceed one
+	// header.
 	bytes := recordSplit(r.Payload, roomNow, c.cfg.SegmentCap)
-	if slack := slackOverhead(); bytes > math.MaxInt64-slack {
-		bytes = math.MaxInt64
-	} else {
-		bytes += slack
-	}
 	// The room this grant can claim is what the stream names less what
 	// the grants still open on it already hold. The split a write's
 	// appends can draw is bounded by that claim twice over: the bytes the
@@ -503,12 +474,16 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	switch {
 	case r.Payload <= roomLeft:
 		// The whole write sits in the room this grant can claim: one
-		// record, no spare, whatever the record's own bytes add over its
-		// payload — the claim below is the record bytes with the slack,
-		// so it over-covers the record's cost and two takes can never
-		// grant one window; clamped at the room left, the ledger claims
-		// no window an earlier grant already holds.
-		roomPart = min64(bytes, max(roomLeft, 0))
+		// record, no spare. decision: the claim is the record's bytes
+		// plus the footer entry its landing also takes from Room — exactly
+		// what the landing lowers the stream's room by, no slack — so two
+		// writes that together fit the segment are both granted from the
+		// room, and two takes can never grant one window; clamped at the
+		// room left, the ledger claims no window an earlier grant holds.
+		// The spare count and the journal-maximum seats below keep no
+		// slack either: the piece a displaced write draws beyond them is
+		// the unreserved roll of the window above (#3950).
+		roomPart = min64(bytes+format.CatalogEntrySize, max(roomLeft, 0))
 	case roomLeft > 0:
 		roomPart = roomLeft
 		sparesN = sparesBeyondRoom(r.Payload, roomLeft, c.cfg.SegmentCap)
@@ -523,19 +498,14 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// byte resolve in the order their sections take the mutex, never both
 	// granted and never both refused.
 	//
-	// decision: the ask the share's limit sees carries the full charge
-	// the admission draws — the split the room names and the one extra
-	// record's charge with it — so whatever pieces the stream actually
-	// draws, the settled record bytes can never overrun a limit the
-	// admission passed: a write's real landings are covered by the charge
-	// its reservation held, and the undrawn part of the charge returns at
-	// Release, exactly once, never driving a counter negative. The cost
-	// is a neighbour's slack — a live reservation holds against the limit
-	// bytes the stream may never append — which can fail-closed refuse a
-	// boundary write that would have fitted on the settled figure alone;
-	// that direction fails rather than exceeds, which the RFC allows.
-	// Overturned by a stream that can promise the room it measured, which
-	// no interleaving caller can.
+	// decision: the ask the share's limit sees is the split's record
+	// bytes and no more, so a reservation of exactly the remaining space
+	// is granted (RFC 1 §6, §9.2). The limit can be passed by at most one
+	// record header per write whose room was spent by something outside
+	// the admission and which therefore drew a piece beyond its split:
+	// fail-open, bounded, and closed with the reserved-roll replacement
+	// (#3950). Overturned by a stream that can promise the room it
+	// measured, which no interleaving caller can.
 	if r.ShareLimit > 0 {
 		if held := c.shareTally[r.Tag] + c.reservedTagged[r.Tag] + bytes; held > r.ShareLimit {
 			missing := held - r.ShareLimit
@@ -718,8 +688,8 @@ func (g *Grant) Wrote(n int64) {
 	}
 	// Wrote hands the landed record bytes to the share's figure and
 	// takes them from the reservation: the tally owns them now, and the
-	// share's ledger holds only what the pieces have not landed yet —
-	// the undrawn slack among it, which Release returns whole.
+	// share's ledger holds only what the pieces have not landed yet,
+	// which Release returns whole.
 	g.c.mu.Lock()
 	g.left -= n
 	g.c.reserved -= n
@@ -834,7 +804,7 @@ func (c *Capacity) refuse(ctx context.Context, ns core.NoSpaceError) *core.NoSpa
 // split draws beyond the first — full empty-segment records and the tail's —
 // each landing in a segment no roll of the write already holds. A write the
 // room covers whole needs none. The pieces, not the bytes over the cap, are
-// the figure: an empty segment takes emptyRoom(cap) payload bytes — the cap
+// the figure: an empty segment takes segment.EmptyRoom(cap) payload bytes — the cap
 // less the segment header, the seal's reserve and the record's own overhead —
 // so a payload of two full segments and a tail sits in three pieces where its
 // bytes over the cap name two, and a hold sized by bytes admits a write whose
@@ -843,7 +813,7 @@ func sparesBeyondRoom(payload, room, cap int64) int {
 	if payload <= 0 || payload <= room {
 		return 0
 	}
-	empty := emptyRoom(cap)
+	empty := segment.EmptyRoom(cap)
 	if empty <= 0 {
 		// A segment that cannot hold the first record at all leaves the
 		// pieces undefined — the stream will refuse the append itself —
@@ -881,15 +851,15 @@ func recordSplit(payload, room, cap int64) int64 {
 	rest := payload
 	if room >= payload {
 		// The whole write sits in the active segment: one record.
-		return recordBytes(payload)
+		return segment.RecordBytes(payload)
 	}
-	empty := emptyRoom(cap)
+	empty := segment.EmptyRoom(cap)
 	if empty <= 0 {
 		// A segment that cannot hold the first record at all leaves the
 		// sum undefined; the caller's appends cannot place even the
 		// first byte, so the ask is the payload alone and the very next
 		// limit in the order answers the write.
-		return recordBytes(payload)
+		return segment.RecordBytes(payload)
 	}
 	if room > 0 {
 		rest -= room
@@ -901,13 +871,13 @@ func recordSplit(payload, room, cap int64) int64 {
 	pieces := (rest-1)/empty + 1
 	full := pieces - 1
 	tail := rest - full*empty
-	each := recordBytes(empty)
+	each := segment.RecordBytes(empty)
 	// The sum is taken only when the product cannot wrap: a piece count
 	// near MaxInt64 over its record size names a write no limit could hold,
 	// so the figure returns the largest an int64 names and the take's own
 	// overflow-safe refusals answer with it, never a wrapped negative an
 	// admission could mistake for a fit.
-	if full > 0 && full > (math.MaxInt64-2*each-2*recordBytes(payload))/each {
+	if full > 0 && full > (math.MaxInt64-2*each-2*segment.RecordBytes(payload))/each {
 		return math.MaxInt64
 	}
 	var total int64
@@ -915,45 +885,19 @@ func recordSplit(payload, room, cap int64) int64 {
 		// The first record takes the room the segment still has; the
 		// pieces past it are empty segments' whole records but the
 		// tail's.
-		total = recordBytes(min64(payload, room)) + full*each
+		total = segment.RecordBytes(min64(payload, room)) + full*each
 		if tail > 0 {
-			total += recordBytes(tail)
+			total += segment.RecordBytes(tail)
 		}
 	} else {
 		// No room at all: every piece is an empty segment's whole
 		// record but the tail's.
 		total = full * each
 		if tail > 0 {
-			total += recordBytes(tail)
+			total += segment.RecordBytes(tail)
 		}
 	}
 	return total
-}
-
-// recordBytes is what one write record of n payload bytes costs: the
-// header, the write kind's fixed body bytes, the payload and the padding
-// to the record's 8-byte grid — the size function the format spells and
-// the stream's own fit charges.
-func recordBytes(n int64) int64 {
-	return format.RecordHeader{Kind: format.KindWrite, Extent: core.Extent{Len: n}}.Size()
-}
-
-// emptyRoom is the payload bytes one write record takes in an empty
-// segment of cap bytes: the cap less the segment header, floored to the
-// record grid, less the seal's reserve for the one record and the
-// record's own overhead.
-func emptyRoom(cap int64) int64 {
-	room := ((cap - format.SegmentHeaderSize -
-		(format.SealMarkerSize + format.CatalogEntrySize + format.TrailerSize)) &^ 7) -
-		(int64(format.RecordHeaderSize) + format.RecordHeader{Kind: format.KindWrite}.BodySize())
-	return max(room, 0)
-}
-
-// slackOverhead is the one extra record's own bytes the admission charges
-// over the split the room names: the piece the write draws when another
-// write on its stream spends the room between the take and its appends.
-func slackOverhead() int64 {
-	return recordBytes(0)
 }
 
 // readySpares caps what ready spares can cover at the need: a pool readier
