@@ -213,58 +213,9 @@ each refusal.
 
 ## 2. General rules for each epic
 
-1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
-   epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
-   an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
-   to fake (rule 12).
-2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
-   bytes the journal did not just write: records, segment headers, seal markers, catalogs,
-   trailers, the `format` file. Also fuzz-drive operation sequences against the reference
-   model. The property is that any input is either accepted as valid or rejected: never a
-   panic, and never an extent the bytes do not contain.
-3. **Metrics, and tracing where relevant.** Every counter and gauge RFC 1 §3.7 and §3.9
-   assigns to the epic's area is maintained, and exposed through `Stats` (served from
-   maintained counters, never a walk). Spans go through epic 1's standard-library
-   `Tracer` and logs through the injected `*slog.Logger`, never a metrics or tracing
-   library. Operations worth a span:
-   open and recovery, sync, offload pass, repack pass, fill, and a refused reservation.
-4. **Profiling.** Tests and benchmarks run under epic 2's profiling harness and fail on
-   goroutine, descriptor or memory leaks and on anomalous resource growth. Hot paths
-   (`WriteAt`, `ReadAt`, `Stats`, `report`, index lookup and insert) carry
-   allocations-per-op assertions and the counted checks of RFC 1 §9.7. Allocation and
-   heap assertions run outside `-race` only, because `-race` changes both.
-5. **Public interface and internals.** Tests cover the epic's internal package API and the
-   public v2 interface behaviour it enables, including concurrency under `-race`. Per the
-   project rules, test at the layer that **consumes** a value, not the one that produces
-   it. A regression test is validated by reverting the fix and watching it fail **on its
-   assertion**.
-6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
-   known-failure list in the same change. The runner fails if a listed test passes.
-7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
-   bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
-   checks only whether v1 state exists, to refuse it at start (E10), and never reads
-   v1's format.
-8. **Real storage for storage properties.** No in-memory filesystem stands in for a check
-   about durability, torn tails, unlink durability or corruption (RFC 1 §9.5). In-memory
-   stand-ins are allowed only for pure logic (index, codecs).
-9. **Code comment conventions** (`CLAUDE.md`). No epic, issue or plan IDs in source
-   comments. Use `ponytail:` for knowingly-simple implementations and `decision:` for
-   deliberate behaviour. Where the RFC already carries a ponytail or decision note, its
-   marker goes at the code site that implements it.
-10. **A test must be able to fail.** Every test is code maintained for the life of the
-    project. Keep a test only if a plausible change would make it fail and nothing else
-    would catch that change: not the compiler, not the PR diff, not a later epic's tests.
-    A test that checks two `errors.New` values differ, that the standard library's
-    `errors.As` works, or that a stub returns zero does not qualify. A test that a
-    little-endian `Version.Bytes` would fail does. Review rules that no test can check
-    (for example, stubs never panic) stay review rules.
-11. **A symbol is exported only if RFC 1 §3 uses it.** Everything exported is frozen at
-    S1, so a helper exported for convenience becomes a contract. Helpers the internal
-    packages need (`Less`, `IsZero`, `End`, `Overlaps`, `Seq`, the proposed constants)
-    stay in `internal/core`.
-12. **Each subtask creates only what it declares.** No empty package and no stub without
-    a caller. A package, an option or a test helper lands with its first consumer.
+The twelve rules of [the plan's §1.5](rfc-1-journal-plan.md) apply to every epic, and are cited
+below by number and title, not copied. Code comments follow `CLAUDE.md`'s "Code comments"
+(`ponytail:` and `decision:` markers), and tests follow its "Verifying a change".
 
 ### 2.1 How the rules apply
 
@@ -275,12 +226,12 @@ each refusal.
 | 3 Metrics and tracing | T7.4, T7.10, T7.12, T7.14 | `Recovery` (segments read by catalog and by scan, and how long), `RejectedSegments`, `torn_tails` and `scan_resyncs` are set as the open finds each, `SyncMarks` once the re-appends have run (T7.14), and `DamagedSegments` is raised through the segment set's damage mark; `corrupt_extents` is E6's, raised by `Lose`. The `open` span wraps `Open`, with one child span per phase (attach, rebuild, marks (raise and withhold), tail proof, marks (lost-tail check), spares, re-append, assembly, cut and seal, emptying) |
 | 4 Profiling | T7.2, T7.3, T7.15 | every test runs under E2's profiler: an open that fails or is cancelled leaks no descriptor or goroutine; a rebuild's peak heap is recorded at 10⁶ records outside `-race` (the builder's own `ponytail:` names its ceiling). The hot paths of rule 4 are other epics'; the open has no counted check of RFC 1 §9.7 |
 | 5 Public and internals, `-race` | all | the internal `recovery` package is tested directly, and the public `Open` once the checkpoint after T7.12 enables it. The concurrent rebuild runs under `-race` (T7.2). A value this epic rebuilds is checked where it is consumed: `ReadAt`, `Since`, `Files`, `DirtyFiles`, `Stats` and the refusals of E8, not the builder's state |
-| 6 Known failures | T7.12, T7.13, T7.15 | the conformance tests that reopen a journal leave `known.yaml` as the subtask that turns them green lands; T7.15 removes the rest and re-points the entries this epic does not turn green to the epic that will |
+| 6 Known failures | T7.12, T7.13, T7.15 | each conformance test leaves `known.yaml` in the change that turns it green. Before T7.12 the public `Open` answers `ErrNotImplemented`, so the rows of R69–R75 are run through `recovery.Run` in their subtask and leave the list in T7.12, or in T7.13 where an ended segment is emptied; T7.15 only re-points the entries this epic does not turn green to the epic that will |
 | 7 v2 ignores v1 | all | the import test forbade v1's journal until it was deleted. Nothing of v1's journal is read; the open never looks for v1 state (that is E10's start check) |
 | 8 Real storage | T7.4, T7.7, T7.9, T7.10, T7.11, T7.12, T7.13, T7.15 | every torn, crash, unlink and damage check runs on E3's `platform.OS` through E2's crash-simulating seam, never an in-memory filesystem. Direct reads (T7.8) are checked on a real file whose page cache holds bytes the device does not |
 | 9 Comment markers | T7.1, T7.2, T7.3, T7.4, T7.5, T7.7, T7.8, T7.10, T7.11, T7.12, T7.13 | the RFC's markers at their code sites: RFC 28 §3.3's two `ponytail:` notes on the failed slot and the forward search (T7.4), its `decision:` on emptying an ended segment whole (T7.13), its `ponytail:` on a segment's absence taken as its retirement (T7.10), and its two `decision:` notes on a failed read (T7.1); RFC 1 §6's `decision:` on the open reserve (T7.12) and its `ponytail:` on a loss record's bytes in a copy (T7.13). This epic's D2 (T7.1), D3 (T7.3), D4 (T7.11), D6 (T7.5), D8 (T7.2), D11 (T7.8), D12 (T7.7), D13 (T7.10), D14 (T7.2, T7.4) and D15 (T7.1, T7.2) at theirs |
 | 10 A test must be able to fail | all | §6 names, per test, the change that would make it fail |
-| 11 Exported only if RFC 1 §3 uses it | T7.1, T7.2, T7.10, T7.14 | the S1 surface lacks five names RFC 1 §3 declares for the open: `Open`'s `marks` argument and `SyncMark` (T7.10), `SegmentRange`, `*UnreadableRangesError` and `ErrUnreadable` (T7.1, T7.2), and `Stats.SyncMarks` (T7.14). This epic adds them as RFC 1 §3 writes them (§9). `Stats.Recovery`, `RejectedSegments`, `DamagedSegments`, `TagConflicts`, `TornTails` and `ScanResyncs` exist since S1. The `recovery` package is internal |
+| 11 Exported only if RFC 1 §3 uses it | T7.1, T7.2, T7.10, T7.14 | the S1 surface lacks five names RFC 1 §3 declares for the open: `Open`'s `marks` argument and `SyncMark` (T7.1), `SegmentRange`, `*UnreadableRangesError` and `ErrUnreadable` (T7.1, T7.2), and `Stats.SyncMarks` (T7.14). This epic adds them as RFC 1 §3 writes them (§9). `Stats.Recovery`, `RejectedSegments`, `DamagedSegments`, `TagConflicts`, `TornTails` and `ScanResyncs` exist since S1. The `recovery` package is internal |
 | 12 Created with its consumer | all | `internal/recovery` and `internal/readretry` land with T7.1, called by `Open`; each file lands with the subtask that uses it. `ReadAtDirect` exists since E3, reading through the page cache; T7.8 replaces its per-OS bodies, and T7.9 is the first caller that needs them |
 
 ## 3. Requirements and invariants
@@ -426,7 +377,7 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
   stay where they are, and run before the attach pass; the `ErrNotImplemented` T8.15 returns for
   a directory holding a segment is removed at the checkpoint after T7.12 for a directory whose
   open ends no segment and at T7.13 for the rest (§7), and the `decision:` marker T8.15 put on it
-  is removed with it. `Open` gains its `marks` argument at T7.10, before the checkpoint.
+  is removed with it. `Open` takes its `marks` argument from T7.1, so its signature changes once and every later subtask calls the final one.
 - **D2, no orphan is unlinked.** RFC 28 §3.4 lets an implementation unlink an orphan it is
   certain it wrote, after an age gate. In this format version every `.seg` file this journal
   wrote either verifies as its own and is attached, passes as a spare and is re-adopted (R55), or
@@ -542,7 +493,7 @@ The journal's code lives at `pkg/block/journal` on the programme branch.
 
 ```text
 pkg/block/journal/
-  journal.go             T7.1, T7.12, T7.10   Open runs recovery.Run, then datapath.New (D1); the marks argument
+  journal.go             T7.1, T7.12   Open runs recovery.Run, then datapath.New (D1); takes the marks argument
   errors.go              T7.1    SegmentRange, *UnreadableRangesError wrapping ErrUnreadable (D15)
   stats.go               T7.14   Stats.SyncMarks
   internal/
@@ -584,7 +535,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
 - **Track:** A. **Depends on:** S3; T8.15; E3's name classifier (3.2), `format` and segment
   header codecs, platform checks.
 - **Covers:** R1–R6, R8–R11, R46 (the retry, the `format` file and the headers), R64, R69.
-- **Deliverables:** `internal/recovery/run.go`: `Run(ctx, dir, floor, expect) (State, error)`,
+- **Deliverables:** `internal/recovery/run.go`: `Run(ctx, dir, floor, expect, marks) (State, error)`,
   which runs T8.15's identity and platform checks, then the phases in order, checking `ctx`
   before each (R11, D10), under the `open` span with one child span per phase. `attach.go`: lists
   the directory once; classifies every name through E3's classifier; ignores `format.tmp`;
@@ -595,7 +546,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   header slot* (both decided by T7.4 and T7.7), and fails the open on a segment version the binary
   does not know or newer than the `format` file's (R9). Files the classifier does not recognise
   are left alone and logged once at `Debug`; orphans are reported and never unlinked (D2, with its
-  `decision:` marker). `internal/readretry/retry.go`: the bound on a failed read, started again only while
+  `decision:` marker). `internal/readretry/retry.go`: `Do(ctx context.Context, clk Clock, attempts int, read func() error) (tried int, err error)`, which runs `read` until it returns nil, `attempts` have been made (`Attempts = 3` for a record not yet unread, 1 for one that is), 15 s have passed on `clk` since the first started, or `ctx` is done, and returns the number tried and the last error, the context's when it ended the retries. It is the bound on a failed read, started again only while
   fewer than 3 attempts have been made, less than 15 s has passed since the first, and `ctx`
   allows, which E9a's unread set (its T9.3) reuses so the open and a running journal cannot
   drift. `internal/recovery/read.go`: every read the open makes goes through it, with RFC 28
@@ -931,9 +882,8 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
 - **Track:** A. **Depends on:** T7.4, T7.6, T7.7, T7.9.
 - **Covers:** R6 (above the marks), R30 (the marks), R35 and R36 (below `Through`), R44 (a lost
   tail, a range below `Through`), R45 (with marks), R55 (a mark's segment), R60–R62, R80.
-- **Deliverables:** `Open(ctx, dir, floor, expect, marks []SyncMark)` and `SyncMark` as RFC 1 §3
-  writes them, each mark keyed by its `Stream` (a stream with no mark has nothing proven by one),
-  passed to `recovery.Run`. `internal/recovery/marks.go`, in two steps. Before the tail's proof
+- **Deliverables:** `Open` already carries the `marks []SyncMark` T7.1 declared, each mark keyed by
+  its `Stream` (a stream with no mark has nothing proven by one), and `recovery.Run` receives them. `internal/recovery/marks.go`, in two steps. Before the tail's proof
   and T7.7's spares: the marks' `Through` added to T7.4's proof, so a bad record or zeros below it
   in its segment are corruption, never a torn slot, and a refused range there in a segment whose
   catalog does not verify is a range that names no record (R35, R36, R44, D14); the next
@@ -1125,8 +1075,9 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   `TestDamage_BitFlip` is no part of it: every flip site marks records offloaded before it flips,
   which needs E9b's `MarkOffloaded`, and the header flips that leave a range naming no record need
   E7b's reconcile, so its rows stay in `known.yaml`, each pointed at whichever of 7b and 9b
-  closes last. Every conformance test this epic turns green leaves `known.yaml`; every other
-  entry that waits only on E7b, E9a or E9b is re-pointed to that epic's issue (§9).
+  closes last. Its subtask removes each conformance test this epic turns green from `known.yaml` (rule 6);
+  this one re-points every other entry that waits only on E7b, E9a or E9b to that epic's issue,
+  which stays `status: fail` (§9).
 - **Acceptance criteria:**
   - Every case of the matrix ends with the reopened journal agreeing with the model, a fault
     excusing only what RFC 28 §4.4 lets it excuse.
@@ -1199,9 +1150,10 @@ A suggestion only: one pull request per subtask works as well.
 - **The surface S1 froze lacks the open's names.** `Open` on the programme branch takes
   `(ctx, dir, floor, expect, opts...)`, and `SyncMark`, `SegmentRange`, `*UnreadableRangesError`,
   `ErrUnreadable` and `Stats.SyncMarks` are not declared. RFC 1 §3 declares all of them, so this
-  epic adds them as written (rule 11): T7.1 the error types, T7.10 the `marks` argument and
-  `SyncMark`, T7.14 `Stats.SyncMarks`, which changes T8.15's `Open` and E2's fixture. **Decides:** E1's and E8's owners,
-  whether to add them ahead of this epic. **Blocks:** T7.10's signature change, nothing else.
+  epic adds them as written (rule 11): T7.1 the error types, `SyncMark` and the `marks` argument of `Open`, T7.14
+  `Stats.SyncMarks`. The `marks` argument changes T8.15's `Open` and E2's fixture, so it comes in
+  at T7.1, once. **Decides:** E1's and E8's owners, whether to add the names ahead of this epic.
+  **Blocks:** T7.1's signature change, nothing else.
 - **Conformance rows with no test yet.** RFC 28 §4.2 lists "a seal marker only the cache holds",
   "a mark proves only up to `Through`", "an open at an exhausted headroom", "unreadable is not
   empty" and "an ended segment is emptied once", and `pkg/block/journal/conformance` has no test

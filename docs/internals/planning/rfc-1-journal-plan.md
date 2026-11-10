@@ -70,8 +70,8 @@ Epic 1 is **interfaces only**. Its output is code that compiles and does nothing
   with E3. The index, segments, durability, recovery and reclaim land as concrete types
   with E4–E9, each with its first caller (§1.5, rule 12).
 - **How dependencies are injected**: clock, storage seam, tracer, logger, limits and
-  settings. RFC 1 fixes `Open(dir, floor, expect)`, so epic 1 appends variadic options
-  that keep that signature. `Open` refuses to run without a clock (`ErrNoClock`), because
+  settings. RFC 1 now takes `Open(ctx, dir, floor, expect, marks)`, and epic 1 appends variadic options
+  after it (epic 7a's T7.1 adds `marks` to the programme branch's `Open`). `Open` refuses to run without a clock (`ErrNoClock`), because
   RFC 8 §2.1 rules out a silent fallback to the system clock (epic 1, D5).
 - **The observability contract**: the `Stats` struct with every field of RFC 1 §3.7 and
   §3.9, a `Tracer` function type for spans built from standard-library types only, and a
