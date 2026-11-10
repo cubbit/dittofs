@@ -69,6 +69,7 @@ func TestLoadRules(t *testing.T) {
 		{"select names matrix values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [y] } } }\n", `has no value "y"`},
 		{"{tools} names a tool", ok + "suites:\n  a: { cmd: 'run {tools}' }\n", "{tools}/: no such tool; write {tools}/NAME, NAME one of cthon04, nfstest, pjdfstest, pynfs"},
 		{"{tools} names a tool dt has", ok + "suites:\n  a: { cmd: 'run {tools}/pjdfstests/x' }\n", "{tools}/pjdfstests: no such tool"},
+		{"{bin} names a program dt builds", ok + "suites:\n  a: { cmd: 'run {bin}/smbfuz' }\n", "{bin}/smbfuz: no such program"},
 		{"an image's own command runs no tests", ok + "suites:\n  a: { image: x, tests: [one, two] }\n", "tests needs a cmd: the image's own command is the same for every test"},
 		{"{test} is only in cmd and volumes", ok + "suites:\n  a: { cmd: 'run {test}', tests: [t], dir: '{test}', env: { T: '{test}' }, fixture: { profile: memory, lease: '{test}' } }\n",
 			"a: dir holds {test}, which has a value only in cmd and volumes: the rest is filled in before the first test\n" +

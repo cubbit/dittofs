@@ -385,6 +385,29 @@ suites:
     needs_by_test:
       "9?-*.sh": ["disk:110"]
     timeout: { test: size, cell: 90m }
+  smb-fuzz:
+    # smbfuzz (test/smbfuzz/DESIGN.md): random plans of system calls as several domain users, run on a Samba member share
+    # and on DittoFS joined to the same domain, compared errno by errno. The fixture is the
+    # tool's own (a DC, a Samba member, DittoFS and two kernel cifs mounts on this host).
+    # decision: manual until its cost per round is measured; test/smbfuzz/DESIGN.md §12.3 leaves the tiers open.
+    tier: manual
+    format: junit   # one test per round, from --junit; the exit status says only what didn't run (75)
+    # dt builds smbfuzz and dfs into {bin} as the user, since every command here runs as root and
+    # root never runs go build. The workers run the fuzzer under the domain users' uids, which
+    # may not reach {bin} inside the user's results, so root copies it out, world-executable, outside
+    # the fixture's state directory; dfs runs as root and stays in {bin}. `fixture down` runs after
+    # a failed command too, and removes the containers, the network, the mounts and dfs that
+    # `fixture up` left.
+    # decision: no minimisation and 200 rounds until known.yaml is triaged: nearly every round
+    # diverges, and each divergence is replayed twice for stability (about 15 s), so 300 rounds
+    # would pass the test timeout even unminimised. Raise both once the known set is in.
+    cmd:
+      - install -m 0755 {bin}/smbfuzz /var/tmp/smbfuzz-bin
+      - /var/tmp/smbfuzz-bin fixture up --dfs {bin}/dfs
+      - /var/tmp/smbfuzz-bin run --from 1 --count 200 --minimise=false --reports {out}/smb-fuzz --junit {out}/smb-fuzz.xml
+      - /var/tmp/smbfuzz-bin fixture down
+    needs: [linux, root, docker, smb-client]
+    timeout: { test: 60m, cell: 120m }
   fio-verify:
     # The job files are templates, as dfsbench's are: fio doesn't expand their ${VAR:-default}s, so
     # perl fills them from the environment into a copy below {out}, which fio runs.

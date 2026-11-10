@@ -20,6 +20,7 @@ import (
 	"unicode"
 
 	"github.com/cubbit/dittofs/test/harness/needs"
+	"github.com/cubbit/dittofs/test/harness/registry"
 	"github.com/cubbit/dittofs/test/harness/report"
 )
 
@@ -45,8 +46,8 @@ func (t tester) goJSON(names []string, retries int) (string, string, []report.Te
 	t.env = append(t.env, needs.ServiceEnv(t.root, t.cell.Needs)...)
 	root := asRoot(t.cell)
 	if root {
-		if err := buildBin(t.ctx, t.root, t.vals["bin"], t.env, t.out); err != nil {
-			return report.NotRun, fmt.Sprintf("dfs and dfsctl didn't build: %v", err), nil
+		if err := buildBin(t.ctx, t.root, t.vals["bin"], t.cell.Unit.Bins(), t.env, t.out); err != nil {
+			return report.NotRun, fmt.Sprintf("{bin} didn't build: %v", err), nil
 		}
 	}
 	limit, _ := t.ctx.Deadline()
@@ -159,20 +160,24 @@ func (t tester) goTest(argv []string, asRoot bool, events string, res *results) 
 	return followed(cmd, events, res, t.out)
 }
 
-// buildBin builds dfs and dfsctl from the checkout at root, as the user, into
-// {bin}, the run's bin directory, once per run: for a cell with a fixture, and
-// for a suite whose tests run as root, which take the binaries from
-// DITTOFS_E2E_BIN, so root never runs go build. A cell without {bin}, as a
-// knfsd fixture's, builds nothing.
-func buildBin(ctx context.Context, root, bin string, env []string, w io.Writer) error {
+// buildBin builds dfs, dfsctl and the programs in progs from the checkout at
+// root, as the user, into {bin}, the run's bin directory, once per run: for a
+// cell with a fixture, for a suite whose tests run as root, which take the
+// binaries from DITTOFS_E2E_BIN, and for a suite that names a program as
+// {bin}/NAME, as a root suite's commands do, so root never runs go build. A
+// cell without {bin}, as a knfsd fixture's, builds nothing.
+func buildBin(ctx context.Context, root, bin string, progs []string, env []string, w io.Writer) error {
 	if bin == "" {
 		return nil
 	}
-	names := []string{"dfs", "dfsctl"}
+	names := slices.Compact(slices.Sorted(slices.Values(append([]string{"dfs", "dfsctl"}, progs...))))
 	if !slices.ContainsFunc(names, func(n string) bool { _, err := os.Stat(filepath.Join(bin, n)); return err != nil }) {
 		return nil // an earlier cell of this run built them
 	}
-	build := []string{"go", "build", "-o", bin + string(filepath.Separator), "./cmd/dfs", "./cmd/dfsctl"}
+	build := []string{"go", "build", "-o", bin + string(filepath.Separator)}
+	for _, n := range names {
+		build = append(build, registry.BinPackages[n])
+	}
 	_, _ = fmt.Fprintf(w, "[dt] $ %s\n", strings.Join(build, " "))
 	code, err := execute(ctx, build, root, env, w, false)
 	if err == nil && code != 0 {

@@ -1,0 +1,7 @@
+# Accepted divergences between the Samba reference and DittoFS (DESIGN.md §12.2).
+# One entry per signature (signature, reason), each with an issue (a number or
+# a URL) or, when DittoFS differs by design, a spec citing the rule it follows:
+#   - signature: getacl:owner:alice/local:user-1000
+#     reason: ...
+#     spec: RFC 22 §12.2
+divergences: []
