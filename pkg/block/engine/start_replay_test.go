@@ -413,13 +413,21 @@ func (r *rig) begin(t *testing.T) {
 }
 
 // restart stops the running engine's background work, reopens the journal as
-// a new process finds it, and builds a new engine over the same store.
+// a new process finds it, and builds a new engine over the same store, with a
+// new open-state table when the rig runs one.
 func (r *rig) restart(t *testing.T) {
 	t.Helper()
 
 	r.run()
 	r.e.CloseGroupCommits()
 	r.j.Reopen()
+
+	if r.tb != nil {
+		// Open state is a new process's too: a new table over the same
+		// store, its shard served only once the test serves it.
+		r.tb.Stop()
+		r.deps.Holds = r.openState(t)
+	}
 
 	e, err := engine.New(r.deps)
 	if err != nil {

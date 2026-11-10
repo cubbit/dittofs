@@ -3,15 +3,20 @@ package engine_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
+	"io"
+	"log/slog"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -25,20 +30,19 @@ const runLen = 64 << 10
 // them, as many as the crash let the clone make.
 type markerCrash struct {
 	*rig
-	holds    *recHolds
 	src, dst entity.FileID
 	want     []byte // the source extent at the clone's asOf
 }
 
 func newMarkerCrash(t *testing.T, copies int) *markerCrash {
 	t.Helper()
-	holds := &recHolds{}
-	r := newRig(t, withStartDeps(func(d *engine.Deps) { d.Holds = holds }))
+	r := newRig(t, withOpenState())
+	r.serve(t)
 	_, src := r.newFile(t, "src")
 	_, dst := r.newFile(t, "dst")
 	ctx := t.Context()
 
-	m := &markerCrash{rig: r, holds: holds, src: src, dst: dst,
+	m := &markerCrash{rig: r, src: src, dst: dst,
 		want: slices.Concat(fill(runLen, 's'), make([]byte, runLen), fill(runLen, 't'))}
 	var asOf journal.Version
 	for _, off := range []int64{0, 2 * runLen} {
@@ -58,6 +62,38 @@ func newMarkerCrash(t *testing.T, copies int) *markerCrash {
 		}
 	}
 	return m
+}
+
+// withOpenState has the engine hold clones in the real open-state table over
+// the starter's store, a new one at each restart, as a new process runs.
+func withOpenState() starterOption {
+	return func(c *starterConfig) { c.open = true }
+}
+
+// openState starts a new open-state table over the store, serving no shard,
+// and answers it as a CloneHold, counting its calls.
+func (s *starter) openState(t *testing.T) engine.CloneHold {
+	t.Helper()
+	tb, err := openstate.New(openstate.Deps{Records: s.fs.Store, Clock: s.clock, Rand: rand.Reader,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tb.Start(t.Context(), &enginetest.Sink{}, func(entity.FileID) func() { return func() {} }); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tb.Stop)
+	s.tb = tb
+	s.holds = &recHolds{next: enginetest.Holds(tb, s.fs.Store.Opens())}
+	return s.holds
+}
+
+// serve has open state's recovery serve share one's shard.
+func (s *starter) serve(t *testing.T) {
+	t.Helper()
+	if err := s.tb.Recovery().ServeShard(t.Context(), s.one.ID, s.one.Shard, 1); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // writeErr is a one-byte write at off of f in share s.
@@ -206,44 +242,26 @@ func TestARebuiltCloneHoldingEveryCopyReservesNothing(t *testing.T) {
 }
 
 // removalCrash is a rig whose clone's phase 1 committed before a crash cut
-// its phase 2 short, restarted with the engine of the next process built and
-// not started.
+// its phase 2 short, restarted with the engine and open state of the next
+// process built and not started; open state serves the source's shard at
+// once when served is set, else only once the test serves it.
 //
 // Both files are in one share: the store gives every share a namespace of
 // its own, so its phase 1 refuses a clone between two of the rig's shares.
 type removalCrash struct {
 	*rig
-	holds    *servedGate
 	src, dst entity.FileID
 	want     []byte
 }
 
-// servedGate is recHolds whose Served returns only once open is closed.
-type servedGate struct {
-	*recHolds
-	open chan struct{}
-}
-
-func (h *servedGate) Served(ctx context.Context, s entity.ShardID) error {
-	select {
-	case <-h.open:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
 func newRemovalCrash(t *testing.T, served bool) *removalCrash {
 	t.Helper()
-	holds := &servedGate{recHolds: &recHolds{}, open: make(chan struct{})}
-	if served {
-		close(holds.open)
-	}
-	r := newRig(t, withStartDeps(func(d *engine.Deps) { d.Holds = holds }))
+	r := newRig(t, withOpenState())
+	r.serve(t)
 	r.begin(t)
 	r.run()
 	r.e.FakeCloneDone()
-	m := &removalCrash{rig: r, holds: holds, src: r.newFile2(t, "src"), dst: r.newFile2(t, "dst"),
+	m := &removalCrash{rig: r, src: r.newFile2(t, "src"), dst: r.newFile2(t, "dst"),
 		want: fill(runLen, 's')}
 	ctx := t.Context()
 	if _, err := r.e.Write(ctx, r.one.ID, m.src, 0, m.want, engine.WriteOpts{Done: func() {}}); err != nil {
@@ -253,15 +271,18 @@ func newRemovalCrash(t *testing.T, served bool) *removalCrash {
 	cctx, cancel := context.WithCancel(ctx)
 	errc := make(chan error, 1)
 	go func() { errc <- r.e.Clone(cctx, r.one.ID, m.src, r.one.ID, m.dst, vfserr.Extent{Len: runLen}) }()
-	// The hold on the source is taken once phase 1 committed, before phase 2.
+	// Phase 1 writes the source's clone-kind open record with its commit.
 	r.until(t, "the clone's phase 1 committed", func() bool {
 		select {
 		case err := <-errc:
 			t.Fatalf("the clone answered %v before its phase 2", err)
 		default:
 		}
-		n, _ := holds.counts()
-		return n > 0
+		recs, err := r.fs.Store.Opens().Of(ctx, r.one.ID, m.src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return slices.ContainsFunc(recs, func(o entity.OpenRecord) bool { return o.Kind == entity.OpenCloneSource })
 	})
 	cancel()
 	if err := <-errc; !isDelay(err, vfserr.DelayClone) {
@@ -269,6 +290,9 @@ func newRemovalCrash(t *testing.T, served bool) *removalCrash {
 	}
 	r.restart(t)
 	r.content.freeze(false)
+	if served {
+		r.serve(t)
+	}
 	return m
 }
 
@@ -279,10 +303,13 @@ func (r *rig) newFile2(t *testing.T, name string) entity.FileID {
 	return f
 }
 
-// A clone a crash cut short between its phases is rebuilt from its removal record: a write into the source
-// extent answers ErrDelay as the first call after Start, Start takes no hold
-// on the source, and once open state serves the source's shard the clone's
-// phase 2 runs, taking the hold, and the destination reads the source.
+// A clone a crash cut short between its phases is rebuilt from its removal
+// record: a write into the source extent answers ErrDelay as the first call
+// after Start, Start takes no hold on the source, and once open state serves
+// the source's shard the clone's phase 2 runs, taking the hold, and the
+// destination reads the source. Open state's hold is idempotent, the one its
+// recovery installed being kept, so the holds are counted, by a wrapper that
+// changes no answer of the real table.
 func TestACloneIsRebuiltFromItsRemoval(t *testing.T) {
 	m := newRemovalCrash(t, true)
 	holds, _ := m.holds.counts()
@@ -325,7 +352,7 @@ func TestARebuiltCloneWaitsForItsSourcesShard(t *testing.T) {
 	if err := m.writeErr(t, m.one.ID, m.src, 0); !isDelay(err, vfserr.DelayClone) {
 		t.Errorf("a write into the source extent while the clone waits: %v, want DelayClone", err)
 	}
-	close(m.holds.open)
+	m.serve(t)
 	m.cloneDone(t, m.src, m.dst)
 	if m.e.RemovalStalled(m.dst) || !logged(m.logs, "removal_stalled cleared", m.dst) {
 		t.Error("removal_stalled not cleared once the source's shard was served")
