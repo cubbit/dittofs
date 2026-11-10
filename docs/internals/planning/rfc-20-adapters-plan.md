@@ -661,10 +661,13 @@ and SMB rows, §5.1, §5.2, §5.4 for the headers, §6.10's codec gate for the h
 - T6.2 `nfs/wire`: record-mark framer with the cap, RPC call and reply header, AUTH_SYS, the XDR
   they need written by hand; golden vectors from RFC 5531's encodings; fuzz targets; 0-allocation
   gate.
-- T6.3 `smb/protocol` and `New` (internal and public): `Router` by dialect over the empty tables;
+- T6.3 `smb/protocol` and `New` (internal and public), `New` composing the tables as RFC 20
+  §4.8's example does, building every one and naming no operation: `Router` by dialect over the
+  empty tables;
   `NEGOTIATE` picking the highest dialect offered inside `Dialects`, read from the connection's
   settings snapshot; every command not supported over loopback, leak checks clean.
-- T6.4 `nfs/protocol` and `New` (internal and public): `Router` by (program, version) over empty
+- T6.4 `nfs/protocol` and `New` (internal and public), `New` building every table (`protocol.Tables`)
+  as RFC 20 §4.8's example does, no `init()` registration: `Router` by (program, version) over empty
   tables; unknown program, version and procedure each refused as RFC 5531 says over loopback,
   a version outside `Versions` answered `PROG_MISMATCH` naming the range's ends and a minor
   version outside it `NFS4ERR_MINOR_VERS_MISMATCH`, the range read from the connection's

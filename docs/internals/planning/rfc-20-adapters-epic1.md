@@ -425,7 +425,8 @@ which epic owns the rest.
   rather than stored; TLS 1.3 fixed. Each removes a way to get the surface wrong (R35–R48).
 - **D29, an adapter serves a range of versions.** `config.VersionRange{Min, Max}` is NFS's
   `Versions` (`3` to `4.2`) and SMB's `Dialects` (`2.1` to `3.1.1`), live; `New` builds every
-  table and the router serves what the connection's snapshot of the range selects (RFC 20 §4.8).
+  table, always, and only the router filters, reading the connection's snapshot of the range,
+  so a `Reconfigure` of it rebuilds nothing; no operation registers itself (RFC 20 §4.8).
   E1 builds the type, fields, defaults and checks; E6 the routers, RFC 21 and 22 the tables.
 
 ## 5. Target tree

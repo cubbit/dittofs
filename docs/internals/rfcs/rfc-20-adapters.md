@@ -2425,18 +2425,48 @@ decoded:
 | NFSv4 minor versions | one table for program 100003 version 4; `COMPOUND`'s minor version selects each row's `Versions` column | minor version not served: `NFS4ERR_MINOR_VERS_MISMATCH`, nothing run ([RFC 21 §2.1](rfc-21-nfs.md#2.1%20Versions%20served)); an operation outside its minor versions: the status RFC 21 names |
 | SMB dialects | one table; the dialect `NEGOTIATE` fixed for the connection selects each row's `Versions` column | a command outside the dialect: `STATUS_NOT_SUPPORTED`; dialects not served are never negotiated ([RFC 22 §3.1](rfc-22-smb.md#3.1%20Dialects)) |
 
-**The settings select what is served.** `New` builds every table its protocol
-has, and the adapter serves what the settings' range selects: NFS's
-`Versions`, SMB's `Dialects` (§3.6). The range is live, so the router reads
-it from the connection's settings snapshot (`Conn.Settings`), never from
-`New`'s copy, and a connection keeps what it negotiated. Outside the range a
-request is answered as the table above answers a version not served: an RPC
-program version `PROG_MISMATCH`, naming the range's lowest and highest
-served; an NFSv4 minor version `NFS4ERR_MINOR_VERS_MISMATCH`, nothing run;
-an SMB dialect never negotiated, `NEGOTIATE` picking the highest the client
-offers inside the range. NFSv3's tables are served only when `"3"` is in
-range, MOUNT, NLM and NSM with them, so a range of only 4.x serves none of
-the three.
+**`New` builds every table; only the Router filters.** `New` builds every
+table its protocol has, always, whatever the settings say. The Router alone
+selects what is served, reading the range — NFS's `Versions`, SMB's
+`Dialects` (§3.6) — from the connection's settings snapshot
+(`Conn.Settings`), never from `New`'s copy; so a `Reconfigure` that widens or
+narrows the range rebuilds nothing, and a connection keeps what it
+negotiated.
+
+- **NFS.** The Router maps (program, version) to a table, and answers a
+  version outside the connection's range `PROG_MISMATCH`, naming the range's
+  lowest and highest served; an NFSv4 minor version outside it gets
+  `NFS4ERR_MINOR_VERS_MISMATCH`, nothing run. NFSv3's table is served only
+  when `"3"` is in range, MOUNT, NLM and NSM with it, so a range of only 4.x
+  serves none of the three.
+- **SMB.** One table; `NEGOTIATE` picks the highest dialect the client offers
+  inside `Conn.Settings()`'s `Dialects`, and a dialect outside it is never
+  negotiated.
+- **No operation registers itself.** No `init()` appends to a global table:
+  each table's row list is its table of contents, one line per operation,
+  each row built in its operation's own file (§2.5's layout).
+
+```go
+// nfs.go: New composes; it names no operation
+func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) {
+	if err := s.Validate(); err != nil {
+		return nil, err
+	}
+	t := protocol.Tables{
+		V3:    v3.Table(&v3.Handlers{VFS: d.VFS}),
+		V4:    v4.Table(&v4.Handlers{VFS: d.VFS}), // minor versions are its rows' Versions column
+		Mount: mount.Table(&mount.Handlers{VFS: d.VFS}),
+		NLM:   nlm.Table(&nlm.Handlers{VFS: d.VFS}),
+		NSM:   nsm.Table(&nsm.Handlers{VFS: d.VFS}),
+	}
+	return core.NewServer(d, s, core.Listener{Network: "tcp", Port: 2049, Protocol: protocol.New(t)})
+}
+
+// ops/v3/table.go: the row list, one line per operation; each row is built in its operation's own file
+func Table(h *Handlers) *core.OpTable {
+	return core.NewOpTable(errorTable, false, h.nullOp(), h.getattrOp(), h.lookupOp(), h.readOp(), h.writeOp() /* … */)
+}
+```
 
 Where versions share a handler and where they do not:
 
