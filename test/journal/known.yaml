@@ -1,540 +1,611 @@
 # The journal's conformance tests that fail or skip today, one entry per test, never a pattern, each
 # naming the epic expected to turn it green. A test that starts to pass fails the run: remove
 # its entry in the change that turned it green. Each entry's message is text the test's output
-# must contain for its failure or skip to count as the one listed: until Open works, every failing
-# test fails in the fixture, whose failures start with "fixture:", and any other failure is graded new.
+# must contain for its failure or skip to count as the one listed; an entry with no message
+# stands for any output of the test it names. Open now works for a directory holding no
+# segment, so the failing tests fail past the fixture: on a journal call not yet written, which
+# the checks fail with "stub:", on a reopen of a journal that has run, which the fixture refuses
+# with "fixture:", or on a journal that does not yet refuse what the RFC refuses -- and any
+# other failure is graded new.
+
 - test: TestClock_WallJumpMovesNoTimer
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the bounded sync timer and the data path.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the bounded sync timer and the data path.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestMetrics_ConditionsMoveTheirMetric
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, group commit, window resolution, the loss counters a public call can reach - corrupt, stale and failed windows; superseded and acknowledged have no public call yet - the corrupt outcomes and the read-only state counted.'
+  reason: 'The journal opens; every leg of the check fails on a stub call. Needs the data path, group commit, window resolution, the loss counters a public call can reach - corrupt, stale and failed windows; superseded and acknowledged have no public call yet - the corrupt outcomes and the read-only state counted.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub:'
+
 - test: TestModel
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, offload, release, repack and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, offload, release, repack and recovery.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Extents'
+
 - test: TestRFC1A_FillSafety
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Fill, its absence check atomic with WriteAt, and the data path.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Fill, its absence check atomic with WriteAt, and the data path.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Fill'
+
 - test: TestRFC1A_FillSetsTheBit
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Fill, its offloaded bit and Release.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Fill, its offloaded bit and Release.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Fill'
+
 - test: TestRFC1A_LostStampIsOffered
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals, the headroom, stamps, offers of unstamped versions, release and repack.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs stamps, offers of unstamped versions, release and repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1A_NeighboursAreFrozen
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs offers widened to offloaded neighbours, frozen while the callback runs, and release.'
+  reason: 'The journal opens; the check fails on a stub call. Needs offers widened to offloaded neighbours, frozen while the callback runs, and release.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC1A_NoPinOnSegmentUnderRepack
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs offers that skip segments under repack, and repack.'
+  reason: 'The journal opens; the check fails on a stub call. Needs offers that skip segments under repack, and repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC1A_NoResurrection
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Fill, Deallocate and its removal marker.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Fill, Deallocate and its removal marker.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Deallocate'
+
 - test: TestRFC1A_NoZeroFill
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, MarkOffloaded and Release.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, MarkOffloaded and Release.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC1A_OfferStopsAtThrough
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs stamps and offers bounded by through, carrying per-extent stamps.'
+  reason: 'The journal opens; the check fails on its first write. A write that needs more than one spare above the pool''s content target is refused naming the spare limit for ever: the pool''s demand level is lowered by each landed spare while the ready count rises, so the goal is met one spare short. Needs the pool''s demand accounting fixed.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'refused for want of a spare; the journal never made one'
+
 - test: TestRFC1A_OfferedBytesVerified
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs offers whose reader verifies whole records, and corrupt drops.'
+  reason: 'The journal opens; the check fails on a stub call. Needs offers whose reader verifies whole records, and corrupt drops.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1A_PartialReleaseKeepsRecordWhole
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs offload, release, sealing with catalogs and recovery by catalog and by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs offload, release, sealing with catalogs and recovery by catalog and by scan.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC1A_Refusal
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded and Release refusing dirty extents.'
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded and Release refusing dirty extents.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC1A_ReleaseFreesNothingInsideSegment
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded, release and per-segment accounting.'
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, release and per-segment accounting.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC1A_RemovalDuringOffload
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs offers frozen across Truncate and Delete.'
+  reason: 'The journal opens; the check fails on a stub call. Needs offers frozen across Truncate and Delete.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Offload'
+
 - test: TestRFC1A_RemovalsSurviveToSince
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Truncate, Deallocate, Delete, Since, Settle and recovery of removal markers.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Truncate, Deallocate, Delete, Since, Settle and recovery of removal markers.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1A_UnlinkUnderRead
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs release, retirement of segments left holding nothing and the reader guard.'
+  reason: 'The journal opens; the check fails on its first write. A write that needs more than one spare above the pool''s content target is refused naming the spare limit for ever: the pool''s demand level is lowered by each landed spare while the ready count rises, so the goal is met one spare short. Needs the pool''s demand accounting fixed.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'refused for want of a spare; the journal never made one'
+
 - test: TestRFC1A_WriteDuringOffload
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs offload and its report, and Release refusing dirty extents.'
+  reason: 'The journal opens; the check fails on a stub call. Needs offload and its report, and Release refusing dirty extents.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Offload'
+
 - test: TestRFC1B_BackgroundJoined
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs repack, Close joining background work before closing segments, and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs repack, Close joining background work before closing segments, and recovery.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1B_Coalescing
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Fill, MarkOffloaded, release, and repack coalescing adjacent extents into one record.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Fill, MarkOffloaded, release, and repack coalescing adjacent extents into one record.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Fill'
+
 - test: TestRFC1B_Descriptors
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs segments, the descriptor budget, reopens counted in Stats and the data path.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs segments, the descriptor budget, reopens counted in Stats and the data path.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'DescriptorLimit = 0 under a budget of 16, want the budget'
+
 - test: TestRFC1B_FailedWindowDoesNotWedge
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs failed sync windows resolved, loss events and offload.'
+  reason: 'The journal opens; the check fails on a stub call. Needs failed sync windows resolved, loss events and offload.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC1B_FloorBuckets
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Fill, its floor buckets, Delete and Settle.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Fill, its floor buckets, Delete and Settle.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Delete'
+
 - test: TestRFC1B_FreedMeansFreed
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs release, retirement of segments left holding nothing and repack.'
+  reason: 'The journal opens; the check fails on a stub call. Needs release, retirement of segments left holding nothing and repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1B_HandleClose
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs handles whose Close waits for calls in flight, and the data path.'
+  reason: 'The journal opens; the check fails on a stub call. Needs handles whose Close waits for calls in flight, and the data path.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Extents'
+
 - test: TestRFC1B_HeadroomIsAllocated
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs headroom allocated ahead, MarkOffloaded, release, removals and repack.'
+  reason: 'The journal opens; the check fails on a stub call. Needs headroom allocated ahead, MarkOffloaded, release, removals and repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1B_IndexBoundRefuses
   status: fail
   fix: planned
   category: feature
-  reason: 'Needs Open: the index bound refusing writes before any I/O is built (capacity.Take checks CheckWrite first), the fixture cannot open a journal.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs the index entry bound refusing writes and splitting removals, MarkOffloaded, release and repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'ExtentLimit = 0, want the 10000 it was set to'
+
 - test: TestRFC1B_NamedRefusal
   status: fail
   fix: planned
   category: feature
-  reason: 'Needs Open: refusals naming their limit and shortfall are built (capacity.Take through WriteAt), the fixture cannot open a journal.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs capacity refusals naming their limit and shortfall, release and repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1B_NoDeadlock
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, Fill, MarkOffloaded, release, repack and Verify.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, Fill, MarkOffloaded, release, repack and Verify.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1B_NoVersionRepeats
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the version limit, Draw, the open floor and recovery of the version counter.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs the version limit, Draw, the open floor and recovery of the version counter.'
   issue: '#3378'
   message: 'fixture:'
+
 - test: TestRFC1B_OffloadedRecordsBelowHalfTheHeadroom
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the headroom half rule, offload, holds, stamps and recovery of offloaded bits.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs the headroom half rule, offload, holds, stamps and recovery of offloaded bits.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'HeadroomBytes = 0, want the headroom allocated'
+
 - test: TestRFC1B_PinnedSegmentsBounded
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs idle sealing, offload pinning a bounded number of segments, release and repack.'
+  reason: 'The journal opens; the check fails on a stub call. Needs idle sealing, offload pinning a bounded number of segments, release and repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC1B_PinsBoundedAcrossOffers
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs idle sealing and offload pins bounded across running offers.'
+  reason: 'The journal opens; the check fails on a stub call. Needs idle sealing and offload pins bounded across running offers.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC1B_ReadOnlyOpenRefusedStaysClosed
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the read-only state, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the read-only state, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
   issue: '#3748'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1B_ReadOnlyProbe
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the read-only state, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the read-only state, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
   issue: '#3748'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1B_ReadOnlyStopsTheDrain
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the read-only state, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the read-only state, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
   issue: '#3748'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1B_ReclaimNotStarved
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded, release and repack taking a segment under sustained reads.'
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, release and repack taking a segment under sustained reads.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1B_RecordsWithoutBytesAtTheLimit
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals, records drawn on the headroom, idle sealing, MarkOffloaded and release.'
+  reason: 'The journal opens; the check fails on a stub call. Needs capacity refusals, records drawn on the headroom, idle sealing, MarkOffloaded and release.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1B_RemovalRecordsDroppedPerExtent
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Fill, MarkOffloaded, release, removals, Settle and repack dropping removal records per extent.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Fill, MarkOffloaded, release, removals, Settle and repack dropping removal records per extent.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Fill'
+
 - test: TestRFC1B_RemovalsDoNotWaitOnOffload
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs offload, removals that never wait on its callback, and repack.'
+  reason: 'The journal opens; the check fails on a stub call. Needs offload, removals that never wait on its callback, and repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1B_RepackAimedAtShare
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs share limits, MarkOffloaded, release, idle sealing and repack scoped to a share or to segments.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs share limits, MarkOffloaded, release, idle sealing and repack scoped to a share or to segments.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC1B_RepackAtCapacity
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals, MarkOffloaded, release and repack.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs MarkOffloaded, release and repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC1B_RepackBesideShareAtLimit
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs share limits, release and repack copies outside every share limit.'
+  reason: 'The journal opens; the check fails on a stub call. Needs share limits, release and repack copies outside every share limit.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC1B_Reservation
   status: fail
   fix: planned
   category: feature
-  reason: 'Needs Open: the atomic reservation is built (capacity.Take through WriteAt), the fixture cannot open a journal.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs Stats to report the maximum and the use of each share.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'shares use 0, the journal 0: want each at most MaxBytes 0'
+
 - test: TestRFC1B_ReserveAhead
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Reserve, its writes and Close, share limits, the index bound and the headroom half rule.'
+  reason: 'The journal opens; the check''s legs fail each on the call or refusal still missing. Needs Reserve, its writes and Close, share limits, the index bound and the headroom half rule.'
   issue: '#3378'
-  message: 'fixture:'
+
 - test: TestRFC1B_SegmentAndRecordAccounting
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs segments, their accounting, per-share record accounting and idle sealing.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs segments, their accounting, per-share record accounting and idle sealing.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'share 0 write 1: the share''s UsedBytes rose by 0 for a 4096-byte write, want its record''s 4200 bytes'
+
 - test: TestRFC1B_ShareLimit
   status: fail
   fix: planned
   category: feature
-  reason: 'Needs Open: the share limit gate is built (capacity.Take through WriteAt), the fixture cannot open a journal.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs share limits and per-share accounting rebuilt at open.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1B_StorageReturned
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs release, retirement of segments left holding nothing and repack.'
+  reason: 'The journal opens; the check fails on a stub call. Needs release, retirement of segments left holding nothing and repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1B_SyncFailure
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs failed syncs reported and counted, the sync timer and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs failed syncs reported and counted, the sync timer and recovery.'
   issue: '#3378'
-  message: 'fixture:'
-- test: TestRFC1C_AttachedShareRaisesCounter
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the version counter and a share attachment raising it above the share floor.'
-  issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC1C_CancelledCallChangesNothingOrCompletes
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path checking the context before appending, a call held at the seam completing after its record is written, and failed syncs still reported after a cancelled one.'
+  reason: 'The journal opens; the check''s legs fail each on the call or refusal still missing. Needs the data path checking the context before appending, a call held at the seam completing after its record is written, and failed syncs still reported after a cancelled one.'
   issue: '#3378'
-  message: 'fixture:'
+
 - test: TestRFC1C_CloneTargetSurvivesCrash
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs clone targets, their markers carried by Since with their spec, and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs clone targets, their markers carried by Since with their spec, and recovery.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1C_EpochHalfIsZero
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the open refusing a planted record whose version has a non-zero epoch half, as it refuses one of an unknown kind.'
+  reason: 'The journal opens; every failing leg of the check fails on a stub call. Needs the open refusing a planted record whose version has a non-zero epoch half, as it refuses one of an unknown kind.'
   issue: '#3596'
-  message: 'fixture:'
+  message: 'stub:'
+
 - test: TestRFC1C_FileIsItsSharesShare
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs files owned by the share whose records built them, the cross-share refusals, tag-conflict recovery and forget.'
+  reason: 'The journal opens; every failing leg of the check fails on a stub call. Needs files owned by the share whose records built them, the cross-share refusals, tag-conflict recovery and forget.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub:'
+
 - test: TestRFC1C_FillBeatsOlderWrite
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path keeping a filled extent over the released offloaded content it covers, across recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path keeping a filled extent over the released offloaded content it covers, across recovery.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1C_ForgetLeavesNothingToSettle
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs forget settling the removal markers of a tag and dropping every one of its index entries.'
+  reason: 'The journal opens; the check fails on a stub call. Needs forget settling the removal markers of a tag and dropping every one of its index entries.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1C_HeaderOnlyRecordsReappended
   status: fail
   fix: planned
   category: feature
-  reason: 'Needs Open: the re-append of the header-only records of a failed window is built (Durability) outside a read-only journal; the fixture cannot open a journal.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the failed-sync re-append of records without payload bytes, and the failed segment never sealed.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1C_IncrementalReport
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the offload report marking the extents it is given while the callback still runs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the offload report marking the extents it is given while the callback still runs.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1C_LossSurvivesRestart
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs loss records read back at open, the dropped record staying dropped, and the loss generation.'
+  reason: 'The journal opens; the check fails on a stub call. Needs loss records read back at open, the dropped record staying dropped, and the loss generation.'
   issue: '#3596'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1C_Monotonicity
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs version and sequence watermarks rebuilt above every one on disk, and recovery run in a shuffled listing order.'
+  reason: 'The journal opens; the check fails on a stub call. Needs version and sequence watermarks rebuilt above every one on disk, and recovery run in a shuffled listing order.'
   issue: '#3596'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1C_ReleaseRecordLost
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs release records holding a segment from being unlinked until they sync, and the released extent staying held after the crash.'
+  reason: 'The journal opens; the check fails on a stub call. Needs release records holding a segment from being unlinked until they sync, and the released extent staying held after the crash.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Offload'
+
 - test: TestRFC1C_ReleaseSurvivesRestart
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the placement index rebuilt without a released extent, with no resurrection of the older offloaded content.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the placement index rebuilt without a released extent, with no resurrection of the older offloaded content.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Offload'
+
 - test: TestRFC1C_ReseedAfterRepack
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the offloaded bits and release permissions reseeded from the index after a repack moved the record.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the offloaded bits and release permissions reseeded from the index after a repack moved the record.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Offload'
+
 - test: TestRFC1C_RestampAfterLostStore
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the restamp of the format file, durable across a reopen, and its identity refusal.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the restamp of the format file, durable across a reopen, and its identity refusal.'
   issue: '#3596'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1C_StaleFill
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Fill refusing an asOf older than the content the journal already holds, writing nothing.'
+  reason: 'The journal opens; every failing leg of the check fails on a stub call. Needs Fill refusing an asOf older than the content the journal already holds, writing nothing.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub:'
+
 - test: TestRFC1C_UnclaimedTagReported
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the per-share statistics rebuilt at open for a tag no share attached.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the per-share statistics rebuilt at open for a tag no share attached.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1C_UnclaimedTagsAreTheCallersToName
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs unattached tags kept and reported, served once their share attaches, and forgotten only when the caller names them.'
+  reason: 'The journal opens; the check fails on a stub call. Needs unattached tags kept and reported, served once their share attaches, and forgotten only when the caller names them.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Offload'
+
 - test: TestRFC1D_AccountingFollowsCap
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs segments, their accounting and the data path.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs segments, their accounting and the data path.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'more than UsedBytes 0'
+
 - test: TestRFC1D_BacklogAge
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path and MarkOffloaded.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs the data path and MarkOffloaded.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'OldestDirty = 0001-01-01 00:00:00 +0000 UTC with the first write still dirty, want its write time 2026-01-01 00:00:00 +0000 UTC'
+
 - test: TestRFC1D_CleanBytesCountAsOccupancy
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Fill, capacity refusals and MarkOffloaded.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Fill, capacity refusals and MarkOffloaded.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Fill'
+
 - test: TestRFC1D_GenerationNeverRepeats
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the loss generation and corrupt reads.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the loss generation and corrupt reads.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1D_LossEvents
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the loss ring, corrupt reads and the stale rule of MarkOffloaded.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the loss ring, corrupt reads and the stale rule of MarkOffloaded.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1D_MetricsAreReachable
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs reservations, failed syncs, corrupt reads, torn tails and foreign segments counted.'
+  reason: 'The journal opens; the check fails on a stub call. Needs reservations, failed syncs, corrupt reads, torn tails and foreign segments counted.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Reserve'
+
 - test: TestRFC1D_NamedInequalitiesHold
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, release, truncate and repack.'
+  reason: 'The journal opens; the check fails on a stub call. The workers run concurrently, so the first stub call to report varies between runs. Needs MarkOffloaded, the data path, release, truncate and repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: '
+
 - test: TestRFC1D_SegmentHeldBytes
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs per-segment accounting, release and repack.'
+  reason: 'The journal opens; the check fails on a stub call. Needs per-segment accounting, release and repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC1D_StatsCostIsFlat
   status: skip
   fix: planned
@@ -542,1361 +613,1539 @@
   reason: 'Counts allocations, which the race detector changes, so it skips in the race leg. Runs once a leg without the race detector does.'
   issue: '#3395'
   message: 'the race detector changes allocation counts'
-- test: TestRFC1D_StatsTakeNoWriteLock
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Stats served from counters.'
-  issue: '#3378'
-  message: 'fixture:'
+
 - test: TestRFC1D_VerificationReports
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Verify and the data path.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Verify and the data path.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1D_WedgeIsVisibleDirty
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals and Stats per share.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs Stats per share.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'DirtyBytes = 0, HeldBytes = 0 with nothing offloaded'
+
 - test: TestRFC1D_WedgeIsVisibleUnreclaimed
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals, MarkOffloaded and release.'
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs MarkOffloaded and release.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC28A_CorruptDirty
   status: fail
   fix: planned
   category: feature
-  reason: 'Needs Open: the corrupt drop with its loss generation is built (Durability.Corrupt), the fixture cannot open a journal.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Open: the corrupt drop with its loss generation is built (Durability.Corrupt), the fixture cannot open a journal.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28A_CorruptOffloaded
   status: fail
   fix: planned
   category: feature
-  reason: 'Needs Open: the offloaded corrupt drop is built (Durability.Corrupt), the fixture cannot open a journal.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Open: the offloaded corrupt drop is built (Durability.Corrupt), the fixture cannot open a journal.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28B_SegmentReclaimable
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, idle seals, repack and the spare pool.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, idle seals, repack and the spare pool.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_BadCopyDoesNotMaskAGoodOne
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs failed sync windows, the re-append, recovery and the loss ring.'
+  reason: 'The journal opens; the check fails on a stub call. Needs failed sync windows, the re-append, recovery and the loss ring.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_NeighboursSurvive
   status: fail
   fix: planned
   category: feature
-  reason: 'Needs Open: a corrupt record leaving its neighbours is built (Durability.Corrupt), the fixture cannot open a journal.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Open: a corrupt record leaving its neighbours is built (Durability.Corrupt), the fixture cannot open a journal.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC28C_SyncedDamageIsNotATornTail
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery by scan with the synced-through rule, and corrupt reads.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery by scan with the synced-through rule, and corrupt reads.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_Rebuild
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, Sync, and recovery that cuts and seals a torn tail.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, Sync, and recovery that cuts and seals a torn tail.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28A_DirectoryEntrySurvives
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs segments taken from spares, Sync and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs segments taken from spares, Sync and recovery.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC28A_AZeroSlotIsNotTheEnd
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs reservations, failed writes and a recovery scan that steps over a zero slot.'
+  reason: 'The journal opens; the check fails on a stub call. Needs reservations, failed writes and a recovery scan that steps over a zero slot.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_TornTailCutOff
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that cuts a torn tail, seals the segment and counts it.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that cuts a torn tail, seals the segment and counts it.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_TruncatedSealedSegment
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs segment headers with a predecessor, recovery by scan and the loss ring.'
+  reason: 'The journal opens; the check fails on a stub call. Needs segment headers with a predecessor, recovery by scan and the loss ring.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC28C_BitsSurviveRestart
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded, release and the rebuild of offloaded bits.'
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, release and the rebuild of offloaded bits.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28A_UnmarkClears
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded, Unmark, release and the rebuild of offloaded bits.'
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, Unmark, release and the rebuild of offloaded bits.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_ReseedByVersion
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded by version, release and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded by version, release and recovery.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28A_UnprovenTailVerifiedAtOpen
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that verifies the unproven tail on the device and re-appends from the reserve.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that verifies the unproven tail on the device and re-appends from the reserve.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_SourcesAgree
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs, recovery by scan and the index built the same way from both.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs, recovery by scan and the index built the same way from both.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC28C_TrailerTorn
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs, recovery by scan and Verify.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs, recovery by scan and Verify.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC28A_FooterIsNotAuthoritative
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs, recovery by scan, and reads that check the record header against the catalog entry.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs, recovery by scan, and reads that check the record header against the catalog entry.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC28C_UnknownVersion
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC28C_ScanResynchronises
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery by scan that resynchronises past a bad record, corrupt reads and the loss ring.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery by scan that resynchronises past a bad record, corrupt reads and the loss ring.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC28A_WriteCarriesItsMtime
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, Since with the modification time, recovery and corrupt reads.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, Since with the modification time, recovery and corrupt reads.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_SealMarkerCopiedIntoAPayload
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, Sync and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, Sync and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_SparesAreReAdopted
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs spares made ahead, recovery that re-adopts them and the reserves accounted.'
+  reason: 'The journal opens; the check fails on a stub call. Needs spares made ahead, recovery that re-adopts them and the reserves accounted.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_SpareIsWholeOrAbsent/create
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_SpareIsWholeOrAbsent/allocate
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_SpareIsWholeOrAbsent/write
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_SpareIsWholeOrAbsent/sync
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_SpareIsWholeOrAbsent/rename
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_SpareIsWholeOrAbsent/durable_temporary_entry
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC28C_RetiredSegmentsAreRecycled
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the spare pool, repack, recycling by rename and zeroing, idle seals, failed syncs and the refusal of a roll naming the pool.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the spare pool, repack, recycling by rename and zeroing, idle seals, failed syncs and the refusal of a roll naming the pool.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recycling, recovery by scan with the torn-tail rule on a recycled segment, failed appends, reservations and repack.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recycling, recovery by scan with the torn-tail rule on a recycled segment, failed appends, reservations and repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC28C_StaleExtent
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded with the stale rule, release, repack and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded with the stale rule, release, repack and recovery.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_VersionFloor
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the version floor at open and MarkOffloaded.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the version floor at open and MarkOffloaded.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_JournalGone
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Open refusing a missing, emptied or replaced journal, and the identity error.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Open refusing a missing, emptied or replaced journal, and the identity error.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_UnidentifiedDirectory
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Open refusing a directory it cannot identify, Init refusing a directory that is not empty, and the format file.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Open refusing a directory it cannot identify, Init refusing a directory that is not empty, and the format file.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_InterruptedInit
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the identity error of an open with no recorded identity, and the data path.'
+  reason: 'The check has two legs and two needs. Its first leg, an open with no recorded identity over a directory holding only the format file that Init wrote, needs an Init-only fixture to run it — this check opens its journal first, and the open leaves finished spares behind, so the leg sees a directory that has run; that is a test change this subtask does not make. Its second leg, the reopen with the identity recorded once the journal has served, waits on recovery. The current failure is the first leg naming the spares an open leaves.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'segments true, want '
+
 - test: TestRFC28C_ForeignSegment
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that rejects a segment naming another journal and counts it.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that rejects a segment naming another journal and counts it.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC28C_ForeignHeaderIsForeignNotDamaged
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that checks the identity a header names before anything else.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that checks the identity a header names before anything else.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_KindValuesRefused
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery by scan that fails the open on a kind the format does not define.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery by scan that fails the open on a kind the format does not define.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC28C_FormatFile
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open, Restamp by a whole-file replace, and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the format file checked at open, Restamp by a whole-file replace, and recovery.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_LostWrites/write_at
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_LostWrites/seal
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_LostWrites/footer
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_LostWrites/repack_copy
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_LostWrites/repack_unlink
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_LostWrites/spare_entry
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_LostWrites/open_unproven_tail
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_LostWrites/open_torn_tail_truncation
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_LostWrites/open_seal_after_truncation
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_LostWrites/open_reappend
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_LostWrites/open_spare_zeroing
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_LostWrites/recycle_rename
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_LostWrites/open_tmp_unlink
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_LostWrites/failed_unlink
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_TornWrites/final_record
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, seals, recovery of a torn tail and the reference model agreeing after each cut.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, seals, recovery of a torn tail and the reference model agreeing after each cut.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_TornWrites/trailer
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, seals, recovery of a torn tail and the reference model agreeing after each cut.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, seals, recovery of a torn tail and the reference model agreeing after each cut.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_ReorderedWrites
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, writes split at the cap, recovery and the reference model agreeing after each subset.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, writes split at the cap, recovery and the reference model agreeing after each subset.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_BitFlip/record_header/magic
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/kind
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/reserved_5
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/segment_id
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/file_id
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/file_offset
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/length
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/sequence_number
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/version_epoch
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/version_counter
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/share_tag
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/synced_through
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/payload_checksum
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/own_offset
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header/header_checksum
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/write_body/modification_time
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/write_body/payload
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/write_body/payload_of_offloaded_record
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/write_body/header_checksum_of_offloaded_record
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/magic
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/kind
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/reserved_5
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/segment_id
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/file_id
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/file_offset
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/length
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/sequence_number
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/version_epoch
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/version_counter
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/share_tag
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/synced_through
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/payload_checksum
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/own_offset
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/record_header_scanned/header_checksum
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/write_body_scanned/modification_time
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/write_body_scanned/payload
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/write_body_scanned/payload_of_offloaded_record
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/write_body_scanned/header_checksum_of_offloaded_record
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/catalog_entry/file_id
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/catalog_entry/file_offset
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/catalog_entry/record_offset
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/catalog_entry/length
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/catalog_entry/sequence_number
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/catalog_entry/version_epoch
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/catalog_entry/version_counter
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/catalog_entry/kind
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/catalog_entry/reserved_61
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/catalog_entry/share_tag
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/catalog_entry/reserved_68
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/trailer/magic
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/trailer/layout_version
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/trailer/flags
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/trailer/footer_offset
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/trailer/entry_count
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/trailer/footer_checksum
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/trailer/reserved_24
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/trailer/crc
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs catalogs and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs and recovery by scan.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/segment_header/magic
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/segment_header/format_version
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/segment_header/reserved_6
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/segment_header/journal_identity
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/segment_header/segment_id
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/segment_header/predecessor
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/segment_header/stream
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/segment_header/crc
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a damaged header and attaches its records.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a damaged header and attaches its records.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/seal_marker/magic
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a bad seal marker as corruption.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a bad seal marker as corruption.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/seal_marker/reserved_4
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a bad seal marker as corruption.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a bad seal marker as corruption.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/seal_marker/segment_id
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a bad seal marker as corruption.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a bad seal marker as corruption.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/seal_marker/offset
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a bad seal marker as corruption.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a bad seal marker as corruption.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/seal_marker/reserved_24
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a bad seal marker as corruption.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a bad seal marker as corruption.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/seal_marker/crc
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that reports a bad seal marker as corruption.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that reports a bad seal marker as corruption.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/format/magic
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the format file checked at open.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/format/format_version
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the format file checked at open.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/format/reserved_6
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the format file checked at open.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/format/journal_identity
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the format file checked at open.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/format/installation_id
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the format file checked at open.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/format/generation
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the format file checked at open.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/format/reserved_48
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the format file checked at open.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_BitFlip/format/crc
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the format file checked at open.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the format file checked at open.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_SegmentDeleted
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that opens without a segment a successor names, and the data path.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that opens without a segment a successor names, and the data path.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestDamage_UnnamedFileLeftAlone
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recovery that leaves a file it did not name alone, and the data path.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that leaves a file it did not name alone, and the data path.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestDamage_DirectoryRestored
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs MarkOffloaded with the stale rule, the version floor and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded with the stale rule, the version floor and recovery.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestEdge_ZeroLengthWrite
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs WriteAt for an empty payload.'
+  reason: 'The journal opens; the check fails on a stub call. Needs WriteAt for an empty payload.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestEdge_WriteNearLargestOffset
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs writes near the largest offset and the largest file offset.'
+  reason: 'The journal opens; the check fails on a stub call. Needs writes near the largest offset and the largest file offset.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestEdge_ThreeWaySplit
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs overwrites splitting a held extent.'
+  reason: 'The journal opens; the check fails on a stub call. Needs overwrites splitting a held extent.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestEdge_OverwriteSpansManyExtents
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs overwrites spanning many extents.'
+  reason: 'The journal opens; the check fails on a stub call. Needs overwrites spanning many extents.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestEdge_ManyOverwritesFlatHeldBytes
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs repeated overwrites and the stats.'
+  reason: 'The journal opens; the check fails on a stub call. Needs repeated overwrites and the stats.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestEdge_WriteCrossesSegment
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a write crossing a segment boundary.'
+  reason: 'The journal opens; the check fails on a stub call. Needs a write crossing a segment boundary.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestEdge_RecordExactlyFillsSegment
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a record sized to its segment.'
+  reason: 'The journal opens; every failing leg of the check fails on a stub call. Needs a record sized to its segment.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub:'
+
 - test: TestEdge_RecordExactlyFillsSegment/Exact
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a record sized to its segment.'
+  reason: 'The journal opens; the check fails on a stub call. Needs a record sized to its segment.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestEdge_RecordExactlyFillsSegment/DoesNotFit
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a record that does not fit its segment.'
+  reason: 'The journal opens; the check fails on a stub call. Needs a record that does not fit its segment.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestEdge_FirstHeldByteFarFromZero
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a first held byte far from zero.'
+  reason: 'The journal opens; the check fails on a stub call. Needs a first held byte far from zero.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestEdge_TruncateInsideExtent
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Truncate inside a held extent.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Truncate inside a held extent.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Truncate'
+
 - test: TestEdge_TruncateToZeroAndWriteAgain
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Truncate to zero and the writes after it.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Truncate to zero and the writes after it.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Truncate'
+
 - test: TestEdge_TruncateDownAndBackUp
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Truncate down and back up.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Truncate down and back up.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Truncate'
+
 - test: TestEdge_DeallocateInsideAndAcross
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Deallocate inside and across records.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Deallocate inside and across records.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Deallocate'
+
 - test: TestEdge_ReservationExactFitShare
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Reservations against a share''s limit.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Reservations against a share''s limit.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestEdge_ReservationExactFitJournal
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Reservations against the journal''s maximum.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Reservations against the journal''s maximum.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: a reservation of the journal''s whole maximum'
+
 - test: TestEdge_FilesystemENOSPCIsNotErrNoSpace
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path over a full device.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path over a full device.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestEdge_SyncFailsThenSucceeds
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Sync failure reports and the sync recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Sync failure reports and the sync recovery.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestEdge_RecordsWithoutBytesAtMaximum
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs records without bytes at the journal''s maximum.'
+  reason: 'The journal opens; the check fails on a stub call. Needs records without bytes at the journal''s maximum.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestEdge_WriteLargerThanSegmentRest
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a write larger than its segment''s tail.'
+  reason: 'The journal opens; the check fails on a stub call. Needs a write larger than its segment''s tail.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestEdge_WriteLargerThanSegment
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a write larger than a segment cut into pieces.'
+  reason: 'The journal opens; the check fails on a stub call. Needs a write larger than a segment cut into pieces.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestEdge_OpenEmptyDirectory
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Open and Init over an empty directory.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Open and Init over an empty directory.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestEdge_OpenFormatOnly
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Open and Init over a lone format file.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Open and Init over a lone format file.'
   issue: '#3378'
-  message: 'fixture:'
-- test: TestEdge_OpenUnrecognisedFormatVersion
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the open to refuse an unrecognised format version.'
-  issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestEdge_FillOverHeldDirtyAndAbsent
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Fill over held, dirty and absent ranges.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Fill over held, dirty and absent ranges.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestEdge_OffloadReportsUnofferedOrNone
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Offload reports against the offer.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Offload reports against the offer.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Offload'
+
 - test: TestEdge_ReleasePartlyOffloaded
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Release of a partly offloaded range.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Release of a partly offloaded range.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestEdge_ReleaseMiddleEndsAndAll
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs Release at every place in a record.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Release at every place in a record.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestEdge_FullyReleasedSegmentReclaimedWithoutRead
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the retirement of a fully released segment.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the retirement of a fully released segment.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestEdge_SegmentRetiredByEvictionAndRepack
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs retirement by eviction and by repack.'
+  reason: 'The journal opens; the check fails on a stub call. Needs retirement by eviction and by repack.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestCounted_MixedDurability
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path and group commit that waits no more than the sync interval.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path and group commit that waits no more than the sync interval.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestCounted_SyncsPerWrite
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path and group commit of a round of writers.'
+  reason: 'The journal opens; the check fails on its first write. Its concurrent writers each hold a spare out of the pool''s few content spares and its WriteAt does not retry a spare refusal, so a writer is refused naming the spare limit. Needs the check to retry that refusal as the fixture''s other writers do.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'refused by the spare limit'
+
 - test: TestRFC1A_CarriedReleaseKeepsItsSequence
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs repack that keeps a carried release record''s sequence, and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs repack that keeps a carried release record''s sequence, and recovery.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC1A_CopyLosesToNewerWrite
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs repack that drops a record superseded mid-copy, and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs repack that drops a record superseded mid-copy, and recovery.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1A_CrashMidRepack
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs repack atomic against a crash between its copy and its unlink, and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs repack atomic against a crash between its copy and its unlink, and recovery.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1A_DropsDecidedAfterCopies
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs repack ordering its drops after its copies, holds, Settle and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs repack ordering its drops after its copies, holds, Settle and recovery.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1A_FailedSyncWindow
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a Sync that fails or re-appends its lost window, and recovery agreeing with it.'
+  reason: 'The journal opens; the check fails on a stub call. Needs a Sync that fails or re-appends its lost window, and recovery agreeing with it.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC1A_FailedWindowReportedOnce
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a failed sync window reported to one Sync only, and the rest unaffected.'
+  reason: 'The journal opens; the check fails on a stub call. Needs a failed sync window reported to one Sync only, and the rest unaffected.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1A_LossByExactRecord
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs a lost window reported by the exact record it lost, not the extent it overlaps.'
+  reason: 'The journal opens; the check fails on a stub call. Needs a lost window reported by the exact record it lost, not the extent it overlaps.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1A_LossRaisesLossGeneration
   status: fail
   fix: planned
   category: feature
-  reason: 'Needs Open: the loss generation rising before the Sync returns is built (Durability), the fixture cannot open a journal.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Open: the loss generation rising before the Sync returns is built (Durability), the fixture cannot open a journal.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'
+
 - test: TestRFC1A_ReappendKeepsItsNumbers
   status: fail
   fix: planned
   category: feature
-  reason: 'Needs Open: a re-append keeping its sequence number and version is built (Durability), the fixture cannot open a journal or recover one.'
+  reason: 'The journal opens; the check fails on a stub call. Needs a re-appended window outranked by a later removal, and recovery.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC1A_ReappendTrustsNoPageCache
   status: fail
   fix: planned
   category: feature
-  reason: 'Needs Open: the re-append verifying against the kept checksum, with its failed-window loss, is built (Durability), the fixture cannot open a journal.'
+  reason: 'The journal opens; the check fails on a stub call. Needs a re-appended window that reads through no page cache, and its failed-window loss.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC1A_RecycledSegmentKeepsNewRecords
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs recycled segments serving only new records, a failed append retiring one, and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs recycled segments serving only new records, a failed append retiring one, and recovery.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC1A_RemovalDroppedByVersion
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs holds, repack ordering its drops after removals, Settle and recovery.'
+  reason: 'The journal opens; every failing leg of the check fails on a stub call. Needs holds, repack ordering its drops after removals, Settle and recovery.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub:'
+
 - test: TestRFC1A_RemovalOutlivesItsSegment
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs removal markers carried by a repack out of their segment, Settle and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs removal markers carried by a repack out of their segment, Settle and recovery.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC1A_RemovalRecordsCarriedForward
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs removal markers carried forward by repack and still reached by Since.'
+  reason: 'The journal opens; the check fails on a stub call. Needs removal markers carried forward by repack and still reached by Since.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC1A_RepackCopiesLivePart
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs repack copying the live part and serving both locations, and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs repack copying the live part and serving both locations, and recovery.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC1A_RepackUnderRead
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs repack beside a reader and the reader guard across the swap.'
+  reason: 'The journal opens; the check fails on its first write. A write that needs more than one spare above the pool''s content target is refused naming the spare limit for ever: the pool''s demand level is lowered by each landed spare while the ready count rises, so the goal is met one spare short. Needs the pool''s demand accounting fixed.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'refused for want of a spare; the journal never made one'
+
 - test: TestRFC1A_RepackVerifiesWholeSource
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs repack that verifies a whole source record, takes nothing from a bad one and reports the loss.'
+  reason: 'The journal opens; the check fails on a stub call. Needs repack that verifies a whole source record, takes nothing from a bad one and reports the loss.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: MarkOffloaded'
+
 - test: TestRFC1A_RetainedExtentsSurviveRepack
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs retained extents kept by repack and released once their hold goes.'
+  reason: 'The journal opens; the check fails on a stub call. Needs retained extents kept by repack and released once their hold goes.'
   issue: '#3379'
-  message: 'fixture:'
+  message: 'stub: Inspect.File'
+
 - test: TestRFC1A_SyncedLossMasksSuperseded
   status: fail
   fix: planned
   category: feature
-  reason: 'Needs Open: the synced corrupt loss masking what it superseded is built (Durability.Corrupt), the fixture cannot open a journal.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Open: the synced corrupt loss masking what it superseded is built (Durability.Corrupt), the fixture cannot open a journal.'
   issue: '#3378'
-  message: 'fixture:'
+  message: 'stub: Sync'

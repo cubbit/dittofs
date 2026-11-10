@@ -1933,6 +1933,281 @@ func TestPoolReadOnlyMakesNoSpare(t *testing.T) {
 	p.Stop()
 }
 
+// waitSpares runs WaitSpares until it answers, bounded only by the test's own
+// context: it is the helper of waits expected to settle, whose success must not
+// depend on real time. A wait that never answers fails at the panicking
+// deadline the go test runner gives the suite, not here.
+func waitSpares(t *testing.T, p *segment.Pool) error {
+	t.Helper()
+
+	type answered struct {
+		err error
+	}
+	done := make(chan answered, 1)
+	go func() {
+		done <- answered{p.WaitSpares(t.Context())}
+	}()
+	select {
+	case a := <-done:
+		return a.err
+	case <-t.Context().Done():
+		t.Fatalf("WaitSpares was still blocked when the test ended: %v", t.Context().Err())
+		return nil
+	}
+}
+
+// waitStillParked asserts the wait does not answer on its own: the wait is
+// started, confirmed parked on the pool's settle condition, and only then
+// cancelled — no timer takes part, so a wait that never parks fails on the
+// parked count and a wait that wrongly wakes fails on its wrong answer. It
+// returns what the wait answered when the cancel reached it, which waits
+// expected to stay parked read as their context's cancellation.
+func waitStillParked(t *testing.T, p *segment.Pool) error {
+	t.Helper()
+
+	type answered struct {
+		err error
+	}
+	done := make(chan answered, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		done <- answered{p.WaitSpares(ctx)}
+	}()
+	awaitParked(t, p, 1)
+	cancel()
+	select {
+	case a := <-done:
+		return a.err
+	case <-t.Context().Done():
+		t.Fatalf("WaitSpares was still blocked when the test ended: %v", t.Context().Err())
+		return nil
+	}
+}
+
+// TestPoolWaitSparesReturnsOnlyOnceSettled: the wait blocks while the refill
+// pass runs — a make held at the seam holds it — and returns nil only once
+// every class holds its target; a second wait over a settled pool returns at
+// once, with no further settle to wake it.
+func TestPoolWaitSparesReturnsOnlyOnceSettled(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 2, Headroom: 1, Reserve: 1}, noMax, 0, nil)
+
+	// Both holds registered before Start, the first parking the headroom's
+	// single make: the refill fills headroom first, so the wait cannot reach
+	// its answer until that make is let go. The wait is confirmed parked
+	// before the block below reads its answer, so the check does not race
+	// the wait's arrival against the held make.
+	h1 := seam.HoldFirst(t, kit.OpCreate, "*")
+	p.Start()
+	err := waitStillParked(t, p)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitSpares while the fill's first make was held returned %v, want the context's cancellation", err)
+	}
+	var ns *core.NoSpaceError
+	if errors.As(err, &ns) {
+		t.Fatalf("WaitSpares while the fill was held answered the spare refusal naming %s over a pass still promised", ns.Limit)
+	}
+
+	// The settle itself: released, the pass fills every class and the wait
+	// reads the pool at its targets.
+	h1.Release()
+	if err := waitSpares(t, p); err != nil {
+		t.Fatalf("WaitSpares over the settled pool: %v", err)
+	}
+	c := p.Counters()
+	if c.Spares != 2 || c.HeadroomBytes != segCap || c.RepackReserveBytes != segCap {
+		t.Fatalf("WaitSpares returned with the pool at %+v, want content 2, headroom and reserve at a segment each", c)
+	}
+
+	// A pool already settled answers a fresh wait at once, with no kick to
+	// wake it: that the wait below returns is the whole check.
+	if err := waitSpares(t, p); err != nil {
+		t.Fatalf("a second WaitSpares over the settled pool: %v", err)
+	}
+
+	p.Stop()
+}
+
+// awaitParked waits for the pool to report n waits parked on its settle
+// condition, within a bounded count of yields.
+func awaitParked(t *testing.T, p *segment.Pool, n int) {
+	t.Helper()
+
+	for range poolAttempts {
+		if p.ParkedWaitersForTest() == n {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("the pool never showed %d waits parked: %d are", n, p.ParkedWaitersForTest())
+}
+
+// awaitKickQueued waits for the pool's kick channel to report want, within a
+// bounded count of yields.
+func awaitKickQueued(t *testing.T, p *segment.Pool, want bool) {
+	t.Helper()
+
+	for range poolAttempts {
+		if p.KickQueuedForTest() == want {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("the pool's kick channel never reported %v", want)
+}
+
+// TestPoolWaitSparesQueuedKickIsNotAShortage: the kick a take enqueues while
+// the pool's worker is inside a pass stands as a promised pass — a wait
+// arriving in the gap between the pass's settle and the pass the queued kick
+// will run parks for that pass, and is not answered as a shortage, because
+// the settle sees the kick still queued.
+func TestPoolWaitSparesQueuedKickIsNotAShortage(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, set, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+
+	// The worker is held inside the first pass, parked at the make the
+	// first hold takes, before any spare exists: a take now cannot be
+	// served from the pool — it refuses, naming spare — and the kick it
+	// enqueues cannot be consumed, because the worker is busy in the pass
+	// the hold has not released. The take's refusal is what places the ask
+	// without consuming anything.
+	h1 := seam.HoldFirst(t, kit.OpCreate, "*")
+	p.Start()
+	awaitCounters(t, "the worker parked at the first held make", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 0 })
+	<-h1.Reached()
+	if _, err := p.Take(segment.Content); !errors.Is(err, core.ErrNoSpace) {
+		h1.Release()
+		t.Fatalf("the take over an empty pool returned %v, want the spare refusal", err)
+	}
+	awaitKickQueued(t, p, true)
+
+	// The waiter now arrives in the gap the review's case names: the pass
+	// is still inside its held make, the kick for the take's replacement
+	// sits queued. An unmarked settle — the make failing, or the pass
+	// ending below target — answers a wait arriving here as a shortage the
+	// queued pass will lift; with the kick the settle leaves the pool
+	// filling, and the wait parks for the pass the queue holds. The wait
+	// is joined, confirmed parked, and only then is the hold let go, so
+	// the pass completes, the queued pass runs, and the wait reads the
+	// refill.
+	// A single create failure is armed while the held make still sits in
+	// the seam: the fault is consulted when the call resumes, so the held
+	// make itself fails on release, the pass ends at its make-failure
+	// settle — and the take's kick still sits queued. That settle is the
+	// review's case in miniature: the queue holds a pass that will retry,
+	// and the parked waiter must read it as promised, never as a pool
+	// standing short.
+	if err := seam.Schedule(kit.Failing(kit.OpCreate, "*", 1, syscall.ENOSPC)); err != nil {
+		h1.Release()
+		t.Fatal(err)
+	}
+	answered := make(chan error, 1)
+	go func() { answered <- p.WaitSpares(t.Context()) }()
+	awaitParked(t, p, 1)
+	h1.Release()
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatalf("WaitSpares over a take's queued kick answered %v, want the refill it promised", err)
+		}
+	case <-time.After(10 * time.Second):
+		h1.Release()
+		t.Fatal("WaitSpares never answered the fill its queued pass owed")
+	}
+
+	// The queued pass ran after the failed one: the fault spent its single
+	// failure, and the pool holds the content spare its target names.
+	awaitCounters(t, "the content spare the queued pass owed", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 })
+	if err := set.Check(); err != nil {
+		t.Fatalf("the ledger after the fill: %v", err)
+	}
+	p.Stop()
+}
+
+// TestPoolWaitSparesRefusedWhenNeverStarted: a pool that has never started
+// never settles, so its wait refuses at once, naming the spare limit as a
+// take does.
+func TestPoolWaitSparesRefusedWhenNeverStarted(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	err := waitSpares(t, p)
+	assertSpareRefusal(t, "the wait before Start", err, 1)
+	if seam.Calls(kit.OpCreate) != 0 {
+		t.Fatalf("the wait before Start made %d spares, want none: the wait never fills", seam.Calls(kit.OpCreate))
+	}
+}
+
+// TestPoolWaitSparesShortWhenAMakeFails: a wait over a pool whose makes fail
+// returns the spare refusal once the pass has ended in shortage — the pool
+// reporting it cannot reach its targets — rather than blocking for a spare
+// the device will not give.
+func TestPoolWaitSparesShortWhenAMakeFails(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	if err := seam.Schedule(kit.Failing(kit.OpCreate, "*", 0, syscall.ENOSPC)); err != nil {
+		t.Fatal(err)
+	}
+	p.Start()
+
+	err := waitSpares(t, p)
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) {
+		t.Fatalf("the wait over a pool whose every make failed returned %v, want the spare refusal naming the shortage", err)
+	}
+	if ns.Limit != core.LimitSpare {
+		t.Fatalf("the wait named the %s limit, want %s", ns.Limit, core.LimitSpare)
+	}
+	p.Stop()
+}
+
+// TestPoolWaitSparesStoppedDuringTheWait: a wait blocked on a fill the seam
+// holds returns core.ErrClosed once the pool stops, and the Stop joins the
+// worker with the waiter gone, leaking nothing. The wait is confirmed parked
+// before the stop, so the check exercises the wake a stop sends a parked
+// waiter, not the entry refusal a late arrival takes.
+func TestPoolWaitSparesStoppedDuringTheWait(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	h1 := seam.HoldFirst(t, kit.OpCreate, "*")
+	p.Start()
+
+	answered := make(chan error, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { answered <- p.WaitSpares(ctx) }()
+	awaitParked(t, p, 1)
+
+	// The wait is confirmed parked on the held make, and Stop joins the
+	// worker — which cannot leave the held create until the hold below is
+	// let go — so Stop runs on a goroutine of its own: its settle answers
+	// the parked wait, the release then lets the join return, and the
+	// stopped pool must refuse a fresh wait at once rather than park it.
+	stopped := make(chan struct{})
+	go func() { p.Stop(); close(stopped) }()
+	select {
+	case err := <-answered:
+		if !errors.Is(err, core.ErrClosed) {
+			t.Fatalf("the parked wait the pool stopped returned %v, want core.ErrClosed", err)
+		}
+	case <-time.After(10 * time.Second):
+		h1.Release()
+		t.Fatal("the parked wait blocked in a fill the pool left behind: Stop did not answer it")
+	}
+	h1.Release()
+	<-stopped
+	if err := waitSpares(t, p); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("a wait over the stopped pool returned %v, want core.ErrClosed", err)
+	}
+}
+
 // TestPoolAnAbandonedAskIsClearedByTheSpareThatCoversIt: a Hold refused once
 // and never retried leaves no standing demand once the refill has made up
 // its ask, so the pool does not refill above its target after every take.

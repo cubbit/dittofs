@@ -34,3 +34,14 @@ func TestReadOnlySurface(t *testing.T) {
 		t.Errorf("ProbeInterval = %v, want 30s", core.ProbeInterval)
 	}
 }
+
+// TestErrUnsuitableStorageIsExported pins the public name of the refusal a
+// platform rule returns: it is the sentinel internal/core declares, so Init
+// and Open can be refused with it while the internal packages stay the only
+// ones that declare it.
+func TestErrUnsuitableStorageIsExported(t *testing.T) {
+	if ErrUnsuitableStorage != core.ErrUnsuitableStorage {
+		t.Errorf("ErrUnsuitableStorage %v is not core.ErrUnsuitableStorage %v",
+			ErrUnsuitableStorage, core.ErrUnsuitableStorage)
+	}
+}

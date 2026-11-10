@@ -1,6 +1,7 @@
 package datapath
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -32,6 +33,12 @@ type Deps struct {
 	// unbounded and admits by every other limit alone, which is the
 	// behaviour of a core opened before the maximum was wired.
 	MaxBytes int64
+	// HeadroomRecords is the headroom reserved for records without bytes, in
+	// records: the spares the pool readies for their rolls and the figure the
+	// admission table draws on. Zero reserves no headroom spare and leaves no
+	// headroom figure refusing a write — the behaviour of a core whose
+	// wiring named none.
+	HeadroomRecords int
 	// Descriptors bounds the open segment descriptors; nil means a budget of
 	// 64.
 	Descriptors *core.DescriptorBudget
@@ -84,6 +91,10 @@ type coreOptions struct {
 	// maxBytes is the journal's maximum the core's admission consults, zero
 	// meaning unbounded — the same reading Deps.MaxBytes itself carries.
 	maxBytes int64
+	// headroomRecords overrides the headroom the core's admission table
+	// builds, keeping Deps at the figure it carries — zero meaning none, the
+	// same reading Deps.HeadroomRecords itself carries.
+	headroomRecords int
 	// segmentCap replaces the test helper's segment size, so a test can write
 	// a record larger than the default segment holds.
 	segmentCap int64
@@ -110,6 +121,7 @@ type Core struct {
 	dur      *durability.Durability
 	domains  durability.Domains
 	cap      *capacity.Capacity
+	headroom *capacity.Headroom
 	segCap   int64               // the set's segment cap, what the streams roll at and the admission sizes by
 	retirer  *segment.Retirer    // the retirement executor
 	sealer   *segment.IdleSealer // the idle sealer; nil when Deps.IdleSealBytes is zero
@@ -233,14 +245,32 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	if maxBytes == 0 {
 		maxBytes = o.maxBytes
 	}
+	headroomRecords := deps.HeadroomRecords
+	if o.headroomRecords != 0 {
+		headroomRecords = o.headroomRecords
+	}
 	makerBytes := unboundedBytes
 	if maxBytes > 0 {
 		makerBytes = maxBytes
 	}
 	maker := segment.NewMaker(fs, state.Set, makerBytes, 0, deps.Log)
 	// The pool asks the read-only check before each spare it makes, so a
-	// read-only journal makes none (RFC 1 §5.4).
-	c.pool = segment.NewPool(maker, deps.Targets, d.Admit, deps.Log)
+	// read-only journal makes none (RFC 1 §5.4). The headroom's spare class
+	// is sized by the records it holds, whole spares at the charge the
+	// admission table draws by.
+	//
+	// decision: zero headroom records readies no headroom spare and so
+	// throttles no content write — the journal fails open, holding no
+	// headroom to measure — because zero is the wire value only while the
+	// open path that resolves every setting's default does not exist; the
+	// journals it wires resolve the default and pass the figure here.
+	// Withdraw once a zero HeadroomRecords can reach this from a caller
+	// that names a setting, rather than only a wiring that names none.
+	targets := deps.Targets
+	if headroomRecords > 0 {
+		targets.Headroom = int((int64(headroomRecords)*capacity.RecordCharge + state.Set.Cap() - 1) / state.Set.Cap())
+	}
+	c.pool = segment.NewPool(maker, targets, d.Admit, deps.Log)
 	c.cache = segment.NewDescriptors(fs, format.SegmentName, budget)
 
 	// The admission every appending call asks once: its injected facts are
@@ -253,6 +283,17 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// read-only check is the durability layer's own Admit, so the journal the
 	// seam turned read-only refuses at once, before any limit is read.
 	//
+	// The headroom's admission table runs over the same facts the content
+	// admission reads — the set's footprint and the shared maximum — and
+	// measures itself by its own ledger, not the pool, and lends Take its half rule below, so both derive
+	// from one wiring of each fact.
+	c.headroom = capacity.NewHeadroom(capacity.HeadroomConfig{
+		Records:    headroomRecords,
+		Footprint:  func() int64 { return state.Set.Counters().UsedBytes },
+		MaxBytes:   maxBytes,
+		SegmentCap: state.Set.Cap(),
+		Admit:      d.Admit,
+	})
 	// The segment cap the admission sizes its pieces and spares by is the
 	// set's own, not Deps': the streams roll and the reader bounds a record
 	// by the set the State carries, so a State that rebuilds a set of
@@ -266,6 +307,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		Room:         func(stream int) int64 { return c.streams.Stream(stream).Room() },
 		ReadySpares:  c.pool.ReadyContent,
 		Hold:         c.pool.Hold,
+		BelowHalf:    c.headroom.BelowHalf,
 		Tracer:       deps.Tracer,
 		MaxBytes:     maxBytes,
 		SegmentCap:   state.Set.Cap(),
@@ -364,6 +406,13 @@ func (c *Core) retiredSegment(id core.SegmentID) {
 	c.dur.Retired(id)
 	c.cap.RetiredEverySeeded()
 }
+
+// WaitSpares blocks until the pool has readied every spare the open's own
+// targets name, or reports the pool's word for why it stopped filling. It is
+// the core half of the hook Open hands its caller's SparesReady callback: the
+// wait the fixture blocks on is the pool's own settle event, woken by the
+// refill and never by time.
+func (c *Core) WaitSpares(ctx context.Context) error { return c.pool.WaitSpares(ctx) }
 
 // Close stops the durability layer, then closes the streams, then stops the
 // idle sealer, the pool and the retirer — every background worker joined
