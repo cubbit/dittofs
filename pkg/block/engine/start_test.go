@@ -316,6 +316,7 @@ type startLifecycle struct {
 	engine.Lifecycle
 	fail      map[string]error
 	removed   map[entity.ShareID]entity.TagRecord
+	hidden    map[entity.ShareID]bool // shares Tags leaves out, as a store with no record of them
 	raiseGate atomic.Pointer[gate]
 	counts    *kv.Counting            // the store's counts, when the test reads the raise's
 	raises    []kv.UpdateCounts       // the Updates of each RaiseAtStart, when counts is set
@@ -383,6 +384,10 @@ func (l *startLifecycle) Tags(ctx context.Context) (map[entity.ShareID]entity.Ta
 
 	for id, r := range l.removed {
 		tags[id] = r
+	}
+
+	for id := range l.hidden {
+		delete(tags, id)
 	}
 
 	return tags, nil
@@ -503,6 +508,7 @@ type logJournal struct {
 	*enginetest.FakeJournal
 	fail      map[string]error
 	limitGate atomic.Pointer[gate]
+	onStrand  func(journal.ShareTag) // a test's hook: run at each Strand call
 
 	mu     sync.Mutex
 	calls  []string
@@ -575,6 +581,18 @@ func (j *logJournal) Forget(ctx context.Context, tag journal.ShareTag) error {
 	}
 
 	return j.FakeJournal.Forget(ctx, tag)
+}
+
+func (j *logJournal) Strand(tag journal.ShareTag) error {
+	if err := j.add(fmt.Sprintf("strand %d", tag)); err != nil {
+		return err
+	}
+
+	if f := j.onStrand; f != nil {
+		f(tag)
+	}
+
+	return j.FakeJournal.Strand(tag)
 }
 
 func (j *logJournal) SetVersionLimit(mark journal.Version) error {

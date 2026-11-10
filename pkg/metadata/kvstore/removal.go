@@ -70,27 +70,57 @@ func removalKeys(share entity.ShareID, file entity.FileID, m entity.Removal) [][
 	return [][]byte{removalKey(share, file, m.Version), removalIndexKey(share, m.Shard, file, m.Version)}
 }
 
-// UnfinishedRemoval names a removal record not yet pruned.
+// UnfinishedRemoval names a removal record not yet pruned, and carries the
+// record, so a recovery can tell a clone from a plain removal and one done
+// from one not done.
 type UnfinishedRemoval struct {
 	File    entity.FileID
 	Version entity.JournalVersion
+	Removal entity.Removal
 }
 
 // UnfinishedRemovals lists the removals in one shard of a share that are not
 // yet pruned, for a primary's recovery after a crash, from that shard's range
 // of the unfinished-removal index: one key per removal, whatever the share's
-// size, in pages. Recovery resumes phase 2 of each not done and the prune of
-// each done.
-func (c Content) UnfinishedRemovals(ctx context.Context, share entity.ShareID, shard uint64) iter.Seq2[UnfinishedRemoval, error] {
+// size, in pages, each with its record read in the page's own snapshot.
+// Recovery resumes phase 2 of each not done and the prune of each done. An
+// entry whose record is missing or unreadable ends the listing with an error:
+// the prune deletes both in one transaction, so none is expected.
+func (c Content) UnfinishedRemovals(
+	ctx context.Context,
+	share entity.ShareID,
+	shard uint64,
+) iter.Seq2[UnfinishedRemoval, error] {
 	prefix := keys.Uint64(shareKey(share, keys.SRr), shard)
-	return pages(ctx, c.s.kv, prefix, nil, func(_ kv.Reader, row kv.KeyValue) (UnfinishedRemoval, error) {
-		id, rest, err := keys.ReadID(row.Key[len(prefix):], keys.IDLen)
-		if err != nil {
-			return UnfinishedRemoval{}, err
-		}
-		v, _, err := keys.ReadVersion(rest)
-		return UnfinishedRemoval{File: entity.FileID(id), Version: v}, err
-	})
+
+	return pages(
+		ctx,
+		c.s.kv,
+		prefix,
+		nil,
+		func(r kv.Reader, row kv.KeyValue) (UnfinishedRemoval, error) {
+			id, rest, err := keys.ReadID(row.Key[len(prefix):], keys.IDLen)
+			if err != nil {
+				return UnfinishedRemoval{}, err
+			}
+
+			v, _, err := keys.ReadVersion(rest)
+			if err != nil {
+				return UnfinishedRemoval{}, err
+			}
+
+			file := entity.FileID(id)
+
+			b, err := r.Get(removalKey(share, file, v))
+			if err != nil {
+				return UnfinishedRemoval{}, err
+			}
+
+			m, err := decodeRemoval(v, b)
+
+			return UnfinishedRemoval{File: file, Version: v, Removal: m}, err
+		},
+	)
 }
 
 // masks is a set of a file's removals, each hiding the refs, holes and
