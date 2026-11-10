@@ -883,3 +883,65 @@ func TestReadDamagedHeaderConcurrentReadersDropOnce(t *testing.T) {
 		t.Fatalf("generation %d, want %d: one raise for one dropped record", got, gen+1)
 	}
 }
+
+// TestReadEntryWithNoSeqIsAnInternalError makes an index entry with sequence
+// number 0, which the journal never issues, over a record that verifies: the
+// read returns an error that is not a corruption, serves nothing, leaves p as
+// it was, drops nothing and hands nothing to Corrupt, so a missing number is
+// never recorded as a loss.
+func TestReadEntryWithNoSeqIsAnInternalError(t *testing.T) {
+	var seen seenCorruption
+	c, _ := newSeeingCore(t, &seen)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	func() {
+		unlock := c.domains.Lock(f)
+		defer unlock()
+		v, err := c.counters.Draw()
+		if err != nil {
+			t.Fatalf("Draw: %v", err)
+		}
+		seq, err := c.counters.NextSeq()
+		if err != nil {
+			t.Fatalf("NextSeq: %v", err)
+		}
+		x := core.Extent{Off: 0, Len: 4 << 10}
+		p, err := c.Streams().For(f).Append(format.RecordHeader{
+			Kind: format.KindWrite, File: f, Extent: x, Seq: seq, Version: v, Tag: 1,
+		}, format.RecordBody{Payload: pattern(4<<10, 7), MTime: 1})
+		if err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+		placed := index.Placed{Extent: x, Record: index.RecordAt{Segment: p.Loc.Segment, Offset: uint32(p.Loc.Off)}, Version: v}
+		hd, err := c.Index().WriteRetain(1, f, placed, 0)
+		if err != nil {
+			t.Fatalf("WriteRetain: %v", err)
+		}
+		c.Account(hd)
+	}()
+	if got := recordOf(t, c, f, 0); got.Seq != 0 {
+		t.Fatalf("the entry carries seq %d, want 0", got.Seq)
+	}
+
+	gen := c.Durability().Generation()
+	p := sentinels(4 << 10)
+	n, missing, held, _, err := c.ReadAt(context.Background(), s, f, 0, p)
+	if err == nil || errors.Is(err, core.ErrCorrupt) {
+		t.Fatalf("ReadAt err = %v, want an internal error that is not a corruption", err)
+	}
+	if n != 0 || len(held) != 0 || len(missing) != 0 || !bytes.Equal(p, sentinels(4<<10)) {
+		t.Fatalf("the read served %d bytes, held %v, missing %v, or touched p", n, held, missing)
+	}
+	if _, ok := c.Index().Lookup(f, 0); !ok {
+		t.Fatal("the entry was dropped")
+	}
+	if crs := seen.all(); len(crs) != 0 {
+		t.Fatalf("Corruptions handed over %+v, want none", crs)
+	}
+	if got := c.Durability().Generation(); got != gen {
+		t.Fatalf("generation %d, want %d", got, gen)
+	}
+	if st := c.Durability().Stats(); st.DamagedSegments != 0 || len(st.Losses) != 0 {
+		t.Fatalf("stats = %+v, want no damaged segment and no loss", st)
+	}
+}

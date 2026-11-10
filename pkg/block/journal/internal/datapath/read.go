@@ -3,6 +3,7 @@ package datapath
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"math"
 	"slices"
 
@@ -155,6 +156,15 @@ func (r *reading) serveRecord(g recordPieces, again bool) error {
 		return nil
 	}
 
+	// decision: an index entry with sequence number 0 is an index bug, not
+	// damage: the journal never issues 0, so no header can match it and every
+	// read of the entry would fail the header check. The read returns an
+	// error, serves nothing, drops nothing and hands nothing to Corrupt, so a
+	// missing number is never recorded as a synced loss. Overturned if seq 0
+	// ever becomes a valid issued number.
+	if g.pieces[0].Seq == 0 {
+		return fmt.Errorf("journal: index entry of file %v at %+v carries no sequence number", r.id, g.at)
+	}
 	cr := r.corruption(g, h, verdict)
 	// readRecord released its segment reference before it returned,
 	// and the read holds no domain: Corrupt takes the file's append domain
