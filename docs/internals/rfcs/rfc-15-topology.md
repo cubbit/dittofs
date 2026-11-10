@@ -947,12 +947,12 @@ embedded single-node store gives none.
   the same extent again, then heal the partition. Assert the late write is
   refused by node epoch and the second write's bytes survive (T7). A takeover
   that does not fence first fails this.
-- **The gateway decides nothing (cluster):** drive every `vfs.Service` method
-  through a `vfs.Gateway` whose router reads an in-memory control-plane store,
-  over the in-memory `vfs.Transport` to a second in-memory filesystem, with an
-  in-memory filesystem as its local `vfs.Service`. Assert each call's effect
-  lands at the primary the router names, under the caller's `Identity`, and its
-  answer is the one a direct call there gives (T12). A gateway that admits or
+- **The gateway decides nothing (cluster):** on the multi-node rig below, each
+  node's filesystem a `vfstest.Memory`, drive every `vfs.Service` method through
+  one node's `vfs.Gateway`. Assert each call's effect lands at the primary the
+  router names, under the caller's `Identity`, its answer is the one a direct
+  call there gives, and the target filesystem's record of mutating calls holds
+  no other (T12). A gateway that admits or
   squashes fails this.
 - **Node channels:** send a replication message and a forwarded call from a peer
   without an issued credential, and from an authenticated peer naming another
@@ -991,22 +991,23 @@ embedded single-node store gives none.
   (15 s at the 10 s default) under two nodes; assert neither marks the other lapsed, both resume, and no address
   moves (T7). A takeover with no claim hold fails this.
 
-**Multi-node tests** run two nodes, each built by `node.New`, over an in-memory
-control-plane store and a loopback `vfs.Transport`, and drive changes by writing
-to the store. The loopback transport is held to the transport conformance suite
-the network transport passes, and its faults are a wrapper around it
+**Multi-node tests** run two nodes, each built by `node.New`, over a
+control-plane store on the in-memory `KV`, which
+[RFC 16](rfc-16-metadata-store.md)'s KV conformance suite holds, and the
+network `vfs.Transport` on 127.0.0.1, and drive changes by writing to the store. Faults are a wrapper
+around the transport
 ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)):
 
 - **Routing:** the filesystem service's conformance suite **MUST** pass
   unchanged through a gateway whose every call is forwarded, and with a stale
   route injected before every call.
-- **Faults:** the loopback transport loses replies, sends twice and delivers
+- **Faults:** the transport's fault wrapper loses replies, sends twice and delivers
   under a stale epoch; assert each is answered once or refused (T3), and that a
   call a stale cache routes to the local path is refused as a forwarded one is. A nightly
   harness runs a cluster under partitions, pauses and node kills, and checks
   the history of client operations for linearizability per file.
 - **Deterministic simulation:** the two-node rig on a fake clock, with the
-  in-memory transport injecting faults at chosen steps, runs each scenario
+  transport's fault wrapper injecting faults at chosen steps, runs each scenario
   below to the same history on every seed, and checks that the neutral history
   is linearizable per file:
   - the primary is lost mid-step, after its store transaction and before its
