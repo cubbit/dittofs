@@ -9,8 +9,8 @@ and its closing sentence: the test-only protocol drives every symbol), §7 (the 
 **Epic 2 estimate: 4 subtasks, 10.5 man-days.**
 **Depends on:** **S1, surface frozen**: E1's `internal/adapter/core` surface (RFC 20 §4.7, with
 stub bodies and a working `Bind`), `pkg/adapter`'s `Deps`, `pkg/resources`' `Budgets`, `Buf` and
-`BufPool`, and `pkg/vfs`' `Service` and error set; **the Serving/Addrs surface change** on the
-branch: RFC 20 §3.5 and §4.7 amended, `adapter.Bind`, `Serving.Listeners map[Bind][]netip.AddrPort`,
+`BufPool`, and `pkg/vfs`' `Service` and error set; **the Serving/Addrs surface change**, which lands in
+this document's own pull request, in a commit ahead of it: RFC 20 §3.5 and §4.7 amended, `adapter.Socket`, `Serving.Listeners map[Socket][]netip.AddrPort`,
 `core.Listener.Service` and the `(*Server).Addrs()` stub, with both golden files (D19). T2.3 also
 needs `vfstest.Memory` (§9).
 **Blocks:** E3, which turns the budget and replay specifications green and registers `BufPool`'s
@@ -168,7 +168,7 @@ names the epic that owns the rest.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R32 | A test reaches a `core` server listening on `127.0.0.1:0` through `Addrs()`, keyed by its listener's `adapter.Bind` (`Service`, `Network`), each key holding every bound address with port 0 resolved | MUST | RFC 20 §4.7 as the Serving/Addrs surface change amends it; owner decision (the user's) | T2.1 (body: E4's T4.1) |
+| R32 | A test reaches a `core` server listening on `127.0.0.1:0` through `Addrs()`, keyed by its listener's `adapter.Socket` (`Service`, `Network`), each key holding every bound address with port 0 resolved | MUST | RFC 20 §4.7 as the Serving/Addrs surface change amends it; owner decision (the user's) | T2.1 (body: E4's T4.1) |
 
 ## 4. Decisions this epic takes
 
@@ -333,14 +333,14 @@ names the epic that owns the rest.
   binds every entry of `config.Adapter.Addrs`, NLM and NSM listen on both TCP and UDP under one
   service name, and since `Addrs` is live, rebuilding the map from listener order would race a
   `Reconfigure`. So the surface keys by service and network and holds every address:
-  `adapter.Bind{Service, Network}`, `Serving.Listeners map[Bind][]netip.AddrPort`,
-  `core.Listener` gaining `Service`, and `(*Server).Addrs() map[adapter.Bind][]netip.AddrPort`,
+  `adapter.Socket{Service, Network}`, `Serving.Listeners map[Socket][]netip.AddrPort`,
+  `core.Listener` gaining `Service`, and `(*Server).Addrs() map[adapter.Socket][]netip.AddrPort`,
   from which the node builds each `Serving` as it stands, with no ordering to rebuild. The
   prior art: `net.Listener.Addr` reports per socket what was bound; rpcbind registers each
-  program, version and netid separately (RFC 1833), which `Bind`'s network mirrors; DNS-SD
+  program, version and netid separately (RFC 1833), which `Socket`'s network mirrors; DNS-SD
   responders such as Avahi advertise every address a host has, which the slice keeps. The change
-  lands before this epic, in its own pull request (the Serving/Addrs surface change), which
-  amends RFC 20 §3.5 and §4.7 and adds the types, the stub and both golden files; this epic
+  (the Serving/Addrs surface change) lands in this document's pull request, in a commit ahead of
+  the document, and amends RFC 20 §3.5 and §4.7 and adds the types, the stub and both golden files; this epic
   only reads it. E4 writes the bodies: `Addrs` in T4.1, the `Serving` report in T4.9.
 
 ## 5. Target tree
@@ -386,8 +386,8 @@ The exported surface this epic adds or changes:
 ```go
 // prof moves from pkg/block/journal/journaltest/prof to internal/prof, its exports unchanged.
 // core.Dispatcher is deleted (D18).
-// Read, not added, here: adapter.Bind, Serving.Listeners map[Bind][]netip.AddrPort,
-// core.Listener.Service and (*core.Server).Addrs() map[adapter.Bind][]netip.AddrPort,
+// Read, not added, here: adapter.Socket, Serving.Listeners map[Socket][]netip.AddrPort,
+// core.Listener.Service and (*core.Server).Addrs() map[adapter.Socket][]netip.AddrPort,
 // from the Serving/Addrs surface change (D19).
 
 package adaptertest
@@ -549,7 +549,7 @@ func (c *Client) Balance() int
   - `unit/adapter-allocs` in `test/suites.yaml`, its command `go test` over
     `./internal/adapter/adaptertest/testproto/`, and its fixed `dt run` step in the unit job (D12).
   - `conformance_test.go`: `TestConformanceEchoEndToEnd`, `testproto`'s tables built first (D11),
-    then a `core.NewServer` on `testproto` over `127.0.0.1:0`, started, dialled at `Addrs()[adapter.Bind{Service: "testproto", Network: "tcp"}][0]`,
+    then a `core.NewServer` on `testproto` over `127.0.0.1:0`, started, dialled at `Addrs()[adapter.Socket{Service: "testproto", Network: "tcp"}][0]`,
     one `Echo` sent by the client and its reply read, `CheckLeaks` clean after `Stop`; its
     `known.yaml` entry (`message: 'testproto: tables: not implemented'`, `issue: "#3966"`, its
     reason naming E5's tables and pipeline and E4's server).
@@ -739,7 +739,7 @@ A suggestion only: one pull request per subtask works as well.
   - no operation that waits a given time or answers `ErrDelay` itself, and no test hook that
     completes a request: delays, holds and parks wait on `vfstest.Faults` (D5, D6);
   - `core.Dispatcher` is deleted here, not by E4 (D18); the Serving/Addrs surface change lands
-    before this epic, in its own pull request (D19);
+    in this document's pull request, ahead of it (D19);
   - the journal's profiler moves to `internal/prof` and is the leak check's goroutine half (D13);
   - a red suite is registered, `adapter-conformance`, against "registers no red suite";
   - the total is 10.5 man-days against the first figure of 8: the client, D3's second table,

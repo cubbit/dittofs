@@ -557,7 +557,7 @@ RFC sections: §3.1 (states, drain, abandon at the deadline, auxiliary listeners
 rows, A10, A11, A14, A19, A20.
 
 - T4.1 `Server`: configured, serving, draining, stopped; `Start` binds every listener or none;
-  `Addrs()`'s body, every bound address keyed by `adapter.Bind`, port 0 resolved (stub from the
+  `Addrs()`'s body, every bound address keyed by `adapter.Socket`, port 0 resolved (stub from the
   Serving/Addrs surface change). If it moves the first
   failure of `adapter-conformance`'s end-to-end test, it updates that entry's `message`.
 - T4.2 Accept: connection limit per node and a quarter per address, closed at accept; the
