@@ -36,6 +36,11 @@ var (
 	errNotRaised = errors.New("engine: the start raise answered no incarnation for a served shard")
 )
 
+// unsuitableRetry is the interval of the retried open of a journal refused as
+// unsuitable: the probe constant of RFC 1 §5.4, which RFC 8 §2.5 names for
+// unsuitable storage.
+const unsuitableRetry = 30 * time.Second
+
 // opened is what start steps 1 and 2 leave for Start to publish: the
 // journal with its version limit, nil when its device was refused; the share
 // table; the shares refused and the conditions raised; and the shards step 2
@@ -157,6 +162,77 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 	vl.last.Store(limit.Counter)
 
 	return o, nil
+}
+
+// retryUnsuitable is the retried open of a journal Start refused as
+// unsuitable, one goroutine for the journal: every unsuitableRetry it runs
+// the start steps again over shares, until the journal attaches or Close
+// cancels it (RFC 8 §2.5). It runs only once Start has published, so a Start
+// that fails leaves none.
+func (e *Engine) retryUnsuitable(shares []Share) {
+	defer e.retrying.wg.Done()
+
+	for {
+		select {
+		case <-e.d.Clock.After(unsuitableRetry):
+		case <-e.retrying.ctx.Done():
+			return
+		}
+
+		if e.attachLate(e.retrying.ctx, shares) {
+			return
+		}
+	}
+}
+
+// attachLate is one retried open and, when it succeeds, the late attach: the
+// start steps for the journal, whose shares are then published as Start's
+// are. It reports whether the retry is over, because the shares attached or
+// the engine is closing.
+//
+// The closed state Close sets is checked before the open, and again under the
+// lifecycle mutex before anything is published, so a retry inside Open when
+// Close begins starts no group commit and no removal loop after Close stopped
+// them (RFC 8 §2.5 stop steps 2 and 3: no background work outlives a
+// component it uses). The mutex covers only that check and the publish;
+// what the retry opened is closed after it is released, never across I/O
+// (RFC 8 §2.3), and Close joins the retry before it closes anything.
+func (e *Engine) attachLate(ctx context.Context, shares []Share) bool {
+	if e.closed.Load() {
+		return true
+	}
+
+	var u undo
+
+	o, err := e.startOver(ctx, shares, &u)
+	if err != nil || o.journal == nil {
+		return false
+	}
+
+	e.mu.Lock()
+
+	closed := e.closed.Load()
+	if !closed {
+		for _, b := range o.table {
+			if !b.removed {
+				b.gc = e.groupCommitFor(b.j)
+			}
+		}
+
+		e.publishOpened(&o)
+	}
+
+	e.mu.Unlock()
+
+	if closed {
+		for i := len(o.undoRebuilds) - 1; i >= 0; i-- {
+			o.undoRebuilds[i]()
+		}
+
+		_ = u.unwind(errClosed)
+	}
+
+	return true
 }
 
 // raiseAtStart is start step 2 (RFC 8 §2.5): it raises the incarnation of

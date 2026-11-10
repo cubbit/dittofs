@@ -31,11 +31,29 @@ type bubble struct {
 	rec   *recJournal
 	ev    *events
 	clock *sim.TestClock
+
+	// openFn, when set, answers Deps.Open in place of the fake journal, as
+	// a test's wrapper around it.
+	openFn func(context.Context) (engine.Journal, error)
 }
 
 // newBubble builds the engine over store. Every handle the fake journal opens
 // goes through wrap when it is set.
 func newBubble(
+	t *testing.T,
+	store *engine.StubStore,
+	wrap func(engine.Handle) engine.Handle,
+) *bubble {
+	t.Helper()
+
+	b := buildBubble(t, store, wrap)
+	b.e.SetJournalsForTest(b.rec)
+
+	return b
+}
+
+// buildBubble is the engine of a bubble before Start, with no journal open.
+func buildBubble(
 	t *testing.T,
 	store *engine.StubStore,
 	wrap func(engine.Handle) engine.Handle,
@@ -79,7 +97,6 @@ func newBubble(
 		t.Fatal(err)
 	}
 
-	e.SetJournalsForTest(b.rec)
 	b.e = e
 
 	return b
@@ -87,11 +104,15 @@ func newBubble(
 
 // open is Deps.Open: the one fake journal.
 func (b *bubble) open(
-	context.Context,
-	string,
-	journal.Version,
-	journal.JournalID,
+	ctx context.Context,
+	_ string,
+	_ journal.Version,
+	_ journal.JournalID,
 ) (engine.Journal, error) {
+	if b.openFn != nil {
+		return b.openFn(ctx)
+	}
+
 	return b.rec, nil
 }
 

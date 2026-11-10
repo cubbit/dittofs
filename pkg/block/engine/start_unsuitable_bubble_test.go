@@ -1,0 +1,303 @@
+package engine_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"sync"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
+)
+
+// refusedBubble is a bubble whose engine was started over a journal that
+// refused its directory as unsuitable, with one share it names.
+func refusedBubble(t *testing.T, store *engine.StubStore) (*bubble, engine.Share) {
+	t.Helper()
+
+	return refusedBubbleWrapping(t, store, nil)
+}
+
+// refusedBubbleWrapping is refusedBubble with every handle the fake journal
+// opens passed through wrap, when it is set.
+func refusedBubbleWrapping(
+	t *testing.T,
+	store *engine.StubStore,
+	wrap func(engine.Handle) engine.Handle,
+) (*bubble, engine.Share) {
+	t.Helper()
+
+	b := buildBubble(t, store, wrap)
+	b.openFn = func(context.Context) (engine.Journal, error) {
+		return nil, unsuitable()
+	}
+
+	s := bubbleShare(7)
+	s.Shard = entity.ShardID(1)
+
+	if err := b.e.Start(context.Background(), []engine.Share{s}); err != nil {
+		t.Fatalf("Start = %v, want nil", err)
+	}
+
+	// The retry arms its timer once it runs: wait for it to block.
+	synctest.Wait()
+
+	return b, s
+}
+
+// A retry that Close overtook opens nothing: the 30 s that follow leave the
+// share unattached and the journal unopened.
+func TestCloseStopsTheRetryOfAnUnsuitableJournal(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b, s := refusedBubble(t, engine.NewStubStore())
+		b.openFn = nil
+		closed := closing(b.e, context.Background())
+
+		synctest.Wait()
+
+		select {
+		case err := <-closed:
+			if err != nil {
+				t.Fatalf("Close = %v", err)
+			}
+		default:
+			// A retry left waiting for its timer would hold Close: let it go.
+			b.clock.Advance(retryEvery)
+			<-closed
+			t.Fatal("Close waits for the retry's timer: it did not cancel the retry")
+		}
+
+		b.clock.Advance(retryEvery)
+		synctest.Wait()
+
+		if got := b.e.Stats().Shares[s.ID].Refused; got == nil {
+			t.Error("the share is attached after Close: the retry opened the journal")
+		}
+	})
+}
+
+// A Start that fails after the open was refused leaves no retry behind: no
+// timer is armed and the 30 s that follow open nothing.
+func TestAFailedStartLeavesNoRetryOfAnUnsuitableJournal(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := engine.NewStubStore()
+		store.RaiseErr = errInjected
+		b := buildBubble(t, store, nil)
+		b.openFn = func(context.Context) (engine.Journal, error) {
+			return nil, unsuitable()
+		}
+		s := bubbleShare(7)
+		s.Shard = entity.ShardID(1)
+
+		if err := b.e.Start(context.Background(), []engine.Share{s}); !errors.Is(err, errInjected) {
+			t.Fatalf("Start = %v, want the raise's error", err)
+		}
+
+		synctest.Wait()
+
+		if got := b.clock.Pending(); got != 0 {
+			t.Errorf("%d timers pending after a failed Start, want none", got)
+		}
+
+		b.openFn = nil
+		b.clock.Advance(retryEvery)
+		synctest.Wait()
+
+		if err := b.e.BindingOf(s.ID); !isDelay(err, vfserr.DelayFrozen) {
+			t.Errorf("the share answers %v after a failed Start, want it unattached", err)
+		}
+	})
+}
+
+// heldOpen makes the next Open of b wait at the returned gate, then answer
+// the fake journal.
+func heldOpen(b *bubble) (entered <-chan struct{}, release chan<- struct{}) {
+	in := make(chan struct{})
+	out := make(chan struct{})
+
+	var once sync.Once
+
+	b.openFn = func(context.Context) (engine.Journal, error) {
+		once.Do(func() { close(in) })
+		<-out
+
+		return b.rec, nil
+	}
+
+	return in, out
+}
+
+// A retried open that is inside Open when Close begins starts no loop: once
+// Open returns, the retry sees the closed state, closes what it opened and
+// publishes nothing, and Close, which joined it, returns.
+func TestCloseOvertakesALateAttach(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b, s := refusedBubble(t, engine.NewStubStore())
+		entered, release := heldOpen(b)
+
+		b.clock.Advance(retryEvery)
+		synctest.Wait()
+
+		select {
+		case <-entered:
+		default:
+			t.Fatal("the retried open never reached Open")
+		}
+
+		closed := closing(b.e, context.Background())
+
+		synctest.Wait()
+
+		select {
+		case err := <-closed:
+			t.Fatalf("Close = %v while the retried open is inside Open, want it to wait", err)
+		default:
+		}
+
+		close(release)
+
+		if err := <-closed; err != nil {
+			t.Errorf("Close = %v, want nil", err)
+		}
+
+		// The order of the closes is the requirement, so the check reads what
+		// the recording journal noted of its own calls and forwarded to the
+		// fake journal, which RFC 29 §4.11 allows for a call that is itself
+		// the requirement.
+		if got := b.ev.list(); !slices.Equal(got, []string{handleClose(s), "journal close"}) {
+			t.Errorf("events %v, want the retry's handle and journal closed, in that order", got)
+		}
+
+		if got := b.e.Stats().Shares[s.ID].Refused; got == nil {
+			t.Error("the share is attached: the retry published a binding after Close began")
+		}
+	})
+}
+
+// A retried open that never returns does not hold Close past the stop bound:
+// Close reports it, and leaves the journal the retry may yet open to it.
+func TestCloseGivesUpOnARetriedOpenThatNeverReturns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b, _ := refusedBubble(t, engine.NewStubStore())
+		entered, release := heldOpen(b)
+
+		b.clock.Advance(retryEvery)
+		synctest.Wait()
+
+		select {
+		case <-entered:
+		default:
+			t.Fatal("the retried open never reached Open")
+		}
+
+		closed := closing(b.e, context.Background())
+
+		synctest.Wait()
+		b.clock.Advance(engine.StopBoundDefault - time.Nanosecond)
+		synctest.Wait()
+
+		select {
+		case err := <-closed:
+			t.Fatalf("Close = %v before the stop bound", err)
+		default:
+		}
+
+		b.clock.Advance(time.Nanosecond)
+		synctest.Wait()
+
+		select {
+		case err := <-closed:
+			if !unavailable(err) {
+				t.Errorf("Close = %v at the stop bound, want ErrUnavailable", err)
+			}
+		default:
+			close(release)
+			<-closed
+			t.Fatal("Close did not give up on the retried open at the stop bound")
+		}
+
+		close(release)
+	})
+}
+
+// A retry that Close overtook closes what it opened without holding the
+// lifecycle mutex: while the handle's close is held, the mutex is free (RFC 8
+// §2.3: never held across I/O).
+func TestALateAttachThatCloseOvertookClosesWithoutTheLifecycleMutex(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		hc := &heldClose{entered: make(chan struct{}), release: make(chan struct{})}
+		wrap := func(h engine.Handle) engine.Handle {
+			hc.Handle = h
+
+			return hc
+		}
+		b, _ := refusedBubbleWrapping(t, engine.NewStubStore(), wrap)
+		entered, release := heldOpen(b)
+
+		b.clock.Advance(retryEvery)
+		synctest.Wait()
+
+		select {
+		case <-entered:
+		default:
+			t.Fatal("the retried open never reached Open")
+		}
+
+		closed := closing(b.e, context.Background())
+
+		synctest.Wait()
+		close(release)
+		synctest.Wait()
+
+		select {
+		case <-hc.entered:
+		default:
+			t.Fatal("the retry did not close the handle it opened")
+		}
+
+		if !b.e.LifecycleMutexFree() {
+			t.Error("the lifecycle mutex is held while the retry closes its handle")
+		}
+
+		hc.open()
+
+		if err := <-closed; err != nil {
+			t.Errorf("Close = %v, want nil", err)
+		}
+	})
+}
+
+// A Close that meets the retry's timer already fired opens nothing: the retry
+// sees the closed state before it opens the directory, whichever of the timer
+// and the cancelled context it wakes on. The bubble makes the order the same
+// each time, so a few runs are enough; a retry that opened would leave the journal
+// it opened, and closed, in the events.
+func TestACloseThatMeetsTheFiredRetryTimerOpensNothing(t *testing.T) {
+	for i := range 3 {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				b, s := refusedBubble(t, engine.NewStubStore())
+				b.openFn = nil
+
+				b.clock.Advance(retryEvery)
+
+				if err := b.e.Close(context.Background()); err != nil {
+					t.Fatalf("Close = %v", err)
+				}
+
+				if got := b.ev.list(); len(got) != 0 {
+					t.Errorf("events %v after Close, want none: the retry opened the journal", got)
+				}
+
+				if got := b.e.Stats().Shares[s.ID].Refused; got == nil {
+					t.Error("the share is attached after Close")
+				}
+			})
+		})
+	}
+}

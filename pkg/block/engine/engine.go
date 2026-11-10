@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -97,6 +98,14 @@ type Engine struct {
 	block   uint64 // the versions one raise of the version limit covers
 	raising raises // the version limit raises running
 
+	// retrying is the retried open of a journal refused as unsuitable
+	// (RFC 8 §2.5): the context Close cancels, and the group that joins it.
+	retrying struct {
+		ctx    context.Context
+		cancel context.CancelFunc
+		wg     sync.WaitGroup
+	}
+
 	// cloneRemoval, a test's stand-in for the clone's rebuild, is called by
 	// start step 4 for each clone removal not done the shard's
 	// unfinished-removal index lists, with the share, the file and the
@@ -145,6 +154,7 @@ func New(d Deps) (*Engine, error) {
 	}
 	e.conflictBound.Store(int64(time.Second))
 	e.raising.ctx, e.raising.cancel = context.WithCancel(context.Background())
+	e.retrying.ctx, e.retrying.cancel = context.WithCancel(context.Background())
 
 	return e, nil
 }
@@ -222,6 +232,23 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 		return err
 	}
 
+	e.publishOpened(&o)
+	e.started = true
+
+	if o.unsuitable {
+		e.retrying.wg.Add(1)
+
+		go e.retryUnsuitable(slices.Clone(shares))
+	}
+
+	return nil
+}
+
+// publishOpened makes what start steps 1 to 5 left the engine's: the shares
+// served join the table, the journal its journals, and the removals found are
+// posted to their loops, as is the rebuild of each clone. It is Start's last
+// step and a late attach's, and the caller holds mu.
+func (e *Engine) publishOpened(o *opened) {
 	t := make(bindings, len(e.table())+len(o.table))
 	maps.Copy(t, e.table())
 	maps.Copy(t, o.table)
@@ -238,7 +265,6 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 
 	e.health = o.stats
 	e.unsuitable = o.unsuitable
-	e.started = true
 
 	// The removals are posted once the table is published, and the loop runs
 	// them on its own goroutine, so Start never waits for a batch.
@@ -249,13 +275,19 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 	for _, run := range o.rebuilt {
 		run()
 	}
-
-	return nil
 }
 
 // start runs the start steps, closing in reverse what they opened when one
 // fails, and returns what Start publishes.
 func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
+	var u undo
+
+	return e.startOver(ctx, shares, &u)
+}
+
+// startOver is start over the undo u, which holds what the steps opened once
+// they succeed, for a caller that must close it after all.
+func (e *Engine) startOver(ctx context.Context, shares []Share, u *undo) (opened, error) {
 	// ponytail: Start serves one journal device only, as nothing the engine
 	// reads names the journal a share lives on, so it cannot tell which
 	// device's journal gives a share its handle, counts in its floor or
@@ -267,9 +299,7 @@ func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
 		return opened{}, errDevices
 	}
 
-	var u undo
-
-	o, err := e.openJournal(ctx, shares, &u)
+	o, err := e.openJournal(ctx, shares, u)
 	if err != nil {
 		return opened{}, u.unwind(err)
 	}
