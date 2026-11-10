@@ -486,8 +486,10 @@ func (d *Durability) unplace(st *stream, seg core.SegmentID, h *segHold, c owned
 // A read-only journal never reaches here, as its step returns early and the
 // mode is never left: there the new place stays held and claimed, and
 // failReadOnly still drops its extents and publishes an event although the
-// held copy may verify. No loss record is written, so a restart replays the
-// copy and recovery brings the record back. Overturned by a ruling that such
+// held copy may verify. No loss record is written, so a restart in a new
+// process replays the copy and brings the record back, while a reopen in this
+// process drops every copy of its sequence number with the other records the
+// pass failed (RFC 1 §5.4). Overturned by a ruling that such
 // a record must survive, which needs the failure path to repoint the index
 // back to the held copy instead of dropping it.
 func (d *Durability) settlePlaced(st *stream, seg core.SegmentID, h *segHold, c ownedCopy, placed segment.Location) {
