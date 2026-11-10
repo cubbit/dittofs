@@ -257,21 +257,21 @@ run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
 | 4 | **Placement index and versions** ⛔ | Per-file B-tree, held, retained and marker sets, precedence, sequence and version counters, version limit, floor buckets, extent bound, drop ranges, per-segment bytes | 11 | B | 7a, 8, 9a |
 | 5 | **Segments, streams and accounting** ⛔ | Segment lifecycle, spare pool, append streams, seal, catalog and free tail, recycle and unlink, descriptor cache, storage guard, footprint accounting | 11 | A | 6, 7a, 8 |
 | 6 | **Durability and loss** | `Sync`, group commit, the sync-bound timer, failed-sync windows (re-append or fail), loss records, the loss ring and generation, the read-time corruption rule | 8 | A | 7a (loss records), 8 (Sync, corruption on read), 9a (corruption on repack), 9b (corruption on offer), 11 |
-| 7a | **Recovery and identity: reopening a journal** | `Open` with recovery after a clean exit or a crash (E8 delivers a minimal `Init` and `Open` of a directory with no segment), sync marks, rebuild by catalog and by scan, torn vs corrupt, the unproven tail and its re-append, emptying the segments the open ends, counters, spare re-adoption, offloaded bits, losses and forgets at open, tag conflicts | 15 | A | 9a, 10, 11 |
-| 7b | **Recovery and identity: the rest** | `Restamp`, `RebuildFormat`, `AcknowledgeUnreadable` and `Acknowledge`, unread records held at open, the journal half of the reconcile, inspection's read-out and `Verify`, recovery benchmarks, retained extents from hold records | not broken down | A | 9b (holds) |
+| 7a | **Recovery and identity: reopening a journal** | `Open` with recovery after a clean exit or a crash (E8 delivers a minimal `Init` and `Open` of a directory with no segment), sync marks, rebuild by catalog and by scan, torn vs corrupt, the unproven tail and its re-append, emptying the segments the open ends, counters, spare re-adoption, offloaded bits, losses and forgets at open, tag conflicts, `Inspector.File` and `All` over the assembled index | 15 | A | 9a, 10, 11 |
+| 7b | **Recovery and identity: the rest** | `Restamp`, `RebuildFormat`, `AcknowledgeUnreadable` and `Acknowledge`, unread records held at open, the journal half of the reconcile, `Verify`, recovery benchmarks, retained extents from hold records | not broken down | A | 9b (holds) |
 | 8 | **Data path and capacity** ⛔ | a minimal `Init` and `Open` for S3, `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 15 | B | 9a, 9b, 11 |
-| 9a | **Reclamation and tags** | Liveness of records and segments, auto-retire, `Repack` (also scoped to a share), `Inspector.Segments`, `Forget`, `Strand` | 11 | B | 7a (T9.1), 11 |
+| 9a | **Reclamation and tags** | Liveness of records and segments, auto-retire, the journal's unread set, `Repack` (also scoped to a share), `Inspector.Segments`, `Forget`, `Strand` | 11 | B | 7a (T9.1), 11 |
 | 9b | **Offload, release and holds** | `Offload`, `OffloadMany`, pins, `report`, `MarkOffloaded`, `Unmark` and the stale rule, `Release`, snapshot holds | not broken down | B | 11 |
 | 10 | **Start and initialisation** | Start check and its two refusals, `journal.Init` in the initialisation step and the `J‖journal` writes, wipe of devices left by an interrupted step, device config keys | 5 | A | 11 |
 | 11 | **Engine on the RFC 16 store** 🔀 | Stage 3 of #3119, planned after S4a: engine wiring (`Fill`, `report`, `Release`), per-device registry, version floor and limit, store contracts, error mapping, salvage, exporters and alert rules, API and CLI, system e2e tests | planned after S4a | team | 12 |
 | 12 | **E2E green** 🔀 | Burn down the known-failure list, soak, benchmarks J1–J5 and J8, CI tier registration, profiling baselines | 8 | team | release |
-| | | | **~121 + E11** | | |
+| | | | **~122 + E7b + E9b + E11** | | |
 
 Epics 7 and 9 are each split in two. Epics 7a and 9a are what a share needs to restart, after a
 clean exit or a crash, and to get space back without a remote tier; they are what the
 journal-only engine of [the RFC 8 part 1 plan](rfc-8-journal-only-engine-plan.md) calls.
 Their documents are [epic 7a](rfc-1-journal-epic7a.md) and [epic 9a](rfc-1-journal-epic9a.md).
-Epics 7b and 9b are the rest: offload, release, snapshot holds, `Restamp`, inspection and the
+Epics 7b and 9b are the rest: offload, release, snapshot holds, `Restamp`, `Verify` and the
 reconcile. §5 keeps each epic's whole scope; each document's §1.2 names what it leaves to its
 "b" half.
 
@@ -300,7 +300,7 @@ everything before it.
         ▼                   │
    A: E6 durability ───────►│ (Sync; E6's corruption rule also ──► E8 ReadAt)
         │                   ▼
-   A: E7a reopen ◄────►B: E9a repack / retire / tags     (T9.1 → T7.6; after T7.11 → E9a crash tests)
+   A: E7a reopen ◄────►B: E9a repack / retire / tags     (T9.1 → T7.6, T7.1 → T9.3; after T7.13 → E9a crash tests)
         │                   │
         ▼                   │
    A: E10 start + init      │        S4: core complete (E3–E6, E7a, E8, E9a)
@@ -377,9 +377,17 @@ everything before it.
   recovery. It lives in E6, not E7a, so that E8 needs nothing from a later milestone.
 - **E8** blocks E9a and E9b: offload needs written content, and `report`, `Release` and
   `Repack` need the data path's locking and capacity.
-- **E7a and E9a** cross once, with no cycle: E7a's T7.6 fills E9a's liveness tracker (T9.1),
-  and E9a's crash tests reopen through E7a's `Open` once it empties what it ends (after
-  T7.11). Track B builds T9.1 first after S3.
+- **E7a and E9a** cross twice, with no cycle: E7a's T7.6 fills E9a's liveness tracker (T9.1),
+  and E7a's T7.1 builds the bound on a failed read that E9a's unread set (T9.3) reuses. E9a's
+  crash tests also reopen through E7a's `Open` once it empties what it ends (after T7.13).
+  Track B builds T9.1 first after S3.
+- **The unread set** (RFC 28 §3.3) is E9a's T9.3, built beside repack, its first caller. The
+  other callers (`ReadAt`'s `ErrUnreadable`, `Offered`, `Sync` and `Since` of an unread file,
+  the open's held unread records) adopt it in their own epics: E8, E9b and E7b.
+- **The re-append of an ended segment's records** (RFC 1 §3.1: `MarksRecorded` and the seal that
+  bounds the hold) is in no epic's document yet. E6, which owns failed windows, is the natural
+  owner; E9a builds only the hold on the ended segment (its D20). To be decided before E6's
+  breakdown is next revised.
 - **E9a** blocks E9b: offers, marks and `Release` run on its liveness tracker.
 - **E7b** blocks E9b's snapshot holds: an E7a open refuses a journal holding a hold record.
 - **E10** blocks E11's start order.
@@ -416,8 +424,8 @@ owner (for example, epic 1's 1.4 is on track B).
 | 5 | E11 | E11 | → **S5** |
 | 6 | E12 burn-down of recovery, format and durability failures | E12 burn-down of data-path and reclamation failures | release |
 
-If track B finishes E9a early, it takes E7b's inspection and verify (RFC 1 §4.4),
-which read only the index and the segments.
+If track B finishes E9a early, it takes E7b's `Verify` (RFC 1 §4.4),
+which reads only the index and the segments.
 
 ---
 

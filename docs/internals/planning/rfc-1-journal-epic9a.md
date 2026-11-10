@@ -15,7 +15,7 @@ kinds a copy keeps), §3.2 (which records decide an offloaded bit after recovery
 segment holding unreadable records, copies with equal numbers, and "A read that fails is not a
 record that does not verify": an unread record is neither dropped nor carried).
 **Track:** B.
-**Epic 9a estimate: 11 subtasks, 41 man-days.**
+**Epic 9a estimate: 12 subtasks, 43.5 man-days.**
 **Depends on:** sync point **S3, the walking skeleton**; epic 4's per-segment held and retained bytes
 (E4-9), its drop ranges and the "any segment holds a record of this file" answer (E4-10), the
 retained-extent set (E4-6), removal markers and `Settle` (E4-5) and the rebuild builder (E4-11),
@@ -25,16 +25,15 @@ the seal (T5.7) and the retirement executor, its queue and its durable-unlink re
 6's `Durability` (`WaitDurable`, `Durable`, T6.1), loss records and the deferred losses an open
 leaves owed (T6.2, its R92), the announcement that a failed segment's window is resolved (T6.3,
 T6.4), the retained-extent lifting (T6.4), the read-only check `Admit` (T6.6) and the corruption
-handler `Corrupt` (T6.7); the read path's unread state (a failed read retried as RFC 28 §3.3
-bounds it, its record unread and its segment suspect), which E5's positioned read (T5.4b) and
-E6's D11 leave to #3511's answer (§9); epic 8's share
+handler `Corrupt` (T6.7); epic 7a's T7.1, whose bound on a failed read (RFC 28 §3.3) the unread set
+of T9.3 reuses; epic 8's share
 registry (T8.3), the tag check and claim (T8.4), the admission classes for header-only records
 and repack copies (T8.6), the removals and `Settle` (T8.8, T8.9), the lock-order recorder
 (T8.11), `Journal.Close` and its stop registry (T8.12) and `Stats` with `UnreclaimedBytes`
-(T8.13); epic 7a's `Open` with emptying, checkpoint **C2 of E7a** (after its T7.11), which
+(T8.13); epic 7a's `Open` with emptying, checkpoint **C2 of E7a** (after its T7.13), which
 applies forget records and selects copies by precedence, for every test that reopens after a
 crash.
-**Blocks:** epic 7a's T7.6, whose rebuild fills T9.1's liveness tracker at open, and its T7.11,
+**Blocks:** epic 7a's T7.6, whose rebuild fills T9.1's liveness tracker at open, and its T7.13,
 whose emptying asks T9.1's `Held` and `Droppable`; epic 9b (offers, `report`, marks, `Release`
 and holds run on this epic's liveness rule, selection and pass, and consult its stranded set);
 the engine's capacity loop and share removal, which call `Repack`, `Forget` and `Strand` (E11);
@@ -65,8 +64,10 @@ epic leaves.
   loss as its loss record, decides its drops after its own copies, makes the copies durable,
   repoints the index and only then retires the sources, and returns `freed` once the retirements
   are durable;
-- a source read that fails with an I/O error drops nothing and copies nothing: the record is
-  unread, its segment suspect, and the segment is not selected while the record is live;
+- a read that fails with an I/O error, after the bounded retries of RFC 28 §3.3, marks its record
+  in the journal's one unread set and makes its segment suspect until the record reads; a source
+  read of repack that fails drops nothing and copies nothing, and the segment is not selected
+  while the record is live;
 - a crash at any step of a pass leaves every held and retained extent reachable after reopen;
 - a pass runs at the journal's maximum and beside a share at its limit, drawing only on the
   repack reserve, and never selects a segment another pass holds, an active one, a failed one
@@ -86,12 +87,14 @@ epic leaves.
   removal-drop test per extent by version (T9.1).
 - Retirement of segments that are not held, without `Repack`, once the records that left them
   so are durable (T9.2).
-- `Repack`: selection, scope and claims (T9.3), content copies (T9.4), carried header-only
-  records and drops after copies (T9.5), ordering, repoint, `freed` and progress (T9.6), the
-  repack reserve and the copy's accounting (T9.7), sealing a share's active segments and the
-  per-segment accounting with its unreclaimed bytes (T9.8).
-- `Forget` (T9.9) and `Strand` (T9.10).
-- The counted rows, the known-failure bookkeeping and the model run of this area (T9.11).
+- The journal's unread set: a record whose read failed, the bounded retries, the suspect segment
+  with its unread ranges, and `Stats.SuspectSegments` (T9.3).
+- `Repack`: selection, scope and claims (T9.4), content copies (T9.5), carried header-only
+  records and drops after copies (T9.6), ordering, repoint, `freed` and progress (T9.7), the
+  repack reserve and the copy's accounting (T9.8), sealing a share's active segments and the
+  per-segment accounting with its unreclaimed bytes (T9.9).
+- `Forget` (T9.10) and `Strand` (T9.11).
+- The counted rows, the known-failure bookkeeping and the model run of this area (T9.12).
 
 ### 1.2 Out of scope
 
@@ -99,7 +102,7 @@ epic leaves.
   marking, partial success, unoffered reports, a removal during an offer: epic 9b.
 - Pins: 64 per offer, 256 journal-wide, `PinnedSegments`, and the offer's refusal to pin a segment
   under repack. This epic gives the predicate an offer asks ("is this segment selected by a
-  pass?", T9.3) and treats a pin as an exclusion selection reads (R21); epic 9b sets and clears
+  pass?", T9.4) and treats a pin as an exclusion selection reads (R21); epic 9b sets and clears
   pins.
 - `MarkOffloaded`, `Unmark`, the below-half rule for offloaded records, `Release`, release
   records and their all-or-nothing rule, and `released_bytes`: epic 9b. The liveness rule for a
@@ -108,27 +111,30 @@ epic leaves.
   `Superseded`: epic 9b. Their records are carried forward by this epic as always live (D4), and
   epic 9b narrows that to the RFC's rule.
 - `Forget`'s drop of hold marks: there are none until epic 9b; epic 9b's holds hook into the drop
-  this epic writes (T9.9).
+  this epic writes (T9.10).
 - Stranded extents kept from eviction, offers and release: epic 9b's calls consult the stranded
-  set this epic keeps (T9.10).
+  set this epic keeps (T9.11).
 - Salvage of a stranded tag, choosing which tags to strand and to forget, and the start order:
   the engine (E11), never the journal (RFC 1 §3).
 - Applying forget records, rebuilding drop ranges and the per-segment counters at open, and
-  emptying a segment recovery ended: epic 7a. Inspection's index read-out (`File`, `All`) and
-  `Verify` with its footprint check: epic 7b. This epic implements only `Inspector.Segments`
-  (T9.8).
+  emptying a segment recovery ended: epic 7a, which also wires `Inspector.File` and `All` to the
+  index (its T7.6). `Verify` with its footprint check: epic 7b. This epic implements only
+  `Inspector.Segments`
+  (T9.9).
 - The `reconcile` and `reconciled` records (RFC 28 §3.3): their liveness, and the re-append of a
   live `reconcile` record that fails to verify when a pass reads it, are epic 7b's with the
   reconcile itself. Until then an open that finds one refuses (epic 7a), so none is on disk;
   this epic carries one as live should it meet one (D4).
 - `AcknowledgeUnreadable`, `Acknowledge` and the turning of an acknowledged unread record into a
-  loss: epic 7b. This epic leaves an unread record held and its segment unselected (T9.3, T9.4).
+  loss: epic 7b. This epic leaves an unread record held and its segment unselected (T9.4, T9.5).
 - The re-append of a failed append's or failed sync's still-held records into the stream's next
   segment, `MarksRecorded`, and the seal that bounds the hold (RFC 1 §3.1): the write and sync
   path's, owned by no epic document yet (§9). This epic holds the ended segment until that path
   reports its copies proven (T9.1).
-- Reading a segment, and retrying a failed read: the read path's (E5's positioned read, with the
-  unread state of §9). This epic keeps no unread set of its own.
+- Reading a segment: the read path's (E5's positioned read). The calls into the unread set that
+  `ReadAt` (its `ErrUnreadable`), `Offered`, `Sync` and `Since` of an unread file and the open
+  make belong to those calls' epics and to E7b (§9); this epic builds the set (T9.3) and
+  repack uses it.
 - The retirement executor itself (close, unlink or recycle, the directory sync, the double-retire
   count), the descriptor drain, the seal and the reserve-class roll: epic 5. This epic decides
   *when* a segment is retired and hands it over.
@@ -154,11 +160,11 @@ epic leaves.
 - **E7a**, epic 7a, the part of epic 7 (recovery and identity) that lets a journal reopen after a
   restart or a crash: rebuild by catalog and by scan, torn tails, the unproven tail and its
   re-append, counters, spare re-adoption, the offloaded bits rebuilt from offloaded and unmark
-  records, forget records applied at open, tag conflicts, and the emptying of the segments the
-  open ends.
-- **C2 of E7a**, E7a's checkpoint after its T7.11: `Open` recovers and empties what it ended, so
+  records, forget records applied at open, tag conflicts, the emptying of the segments the open
+  ends, and `Inspector.File` and `All` wired to the index.
+- **C2 of E7a**, E7a's checkpoint after its T7.13: `Open` recovers and empties what it ended, so
   a crash test can reopen through it.
-- **E7b**, epic 7b, the rest of epic 7: `Restamp`, inspection's `File`, `All` and `Verify`,
+- **E7b**, epic 7b, the rest of epic 7: `Restamp`, report-only `Verify`,
   `RebuildFormat`, `AcknowledgeUnreadable` and `Acknowledge`, unread records held at open, the
   journal half of the metadata reconcile and its records, the recovery benchmarks, and retained
   extents rebuilt from hold records.
@@ -180,8 +186,8 @@ epic leaves.
   T6.7 and T6.9, and E8's `WriteAt`, `ReadAt` and a minimal `Init` and `Open` of a directory with
   no segment, with `Share` for their handles (its T8.1, T8.2, T8.3 and T8.15), on top of E4's
   index.
-- **S4**, core complete (E3–E9 done): all component conformance tests are green; only system e2e
-  tests remain on the known-failure list.
+- **S4**, core complete (E3–E6, E7a, E8 and E9a done): all component conformance tests are green
+  except the rows epics 7b and 9b own; only system e2e tests remain on the known-failure list.
 
 ## 2. General rules for each epic
 
@@ -243,17 +249,17 @@ epic leaves.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | 1 Unit tests | all | every R-number has a test that can fail. Subtasks build on E4's index and builder, E5's set and executor, E6's `Durability` and E8's journal core as landed, and plant states (a settled marker, a retained extent, a record of a tag below a forget) through E4-11's builder rather than a fake |
-| 2 Fuzz | T9.1, T9.6 | no parser of foreign bytes here: a source record is read through E3's codec and verified by its checksum, which E3 fuzzes. T9.1 fuzz-drives sequences of writes, overwrites, removals, settles and retirements against an oracle of liveness; T9.6 fuzz-drives operation sequences with repack passes against the reference model |
-| 3 Metrics and tracing | T9.2, T9.6, T9.8, T9.9 | `repacked_bytes` (T9.6) and the per-segment unreclaimed bytes (T9.8) are maintained at the event; `freed_bytes` is E5's, raised by its executor, and `Repack`'s `freed` is summed from the same reports (T9.6); `UnreclaimedBytes` is E8's counter, which T9.2, T9.6 and T9.9 feed through E8's account function; `DropRanges` is E4's. One span, `repack_pass`, per pass (T9.6). No span for `Forget` or for a retirement, which rule 3 does not name |
-| 4 Profiling | all | every test runs under E2's profiler. T9.2's worker and T9.6's pass are where goroutines could leak; T9.1 asserts zero allocations per liveness update outside `-race`, since it runs on every index change. No hot path of rule 4 is this epic's |
+| 2 Fuzz | T9.1, T9.7 | no parser of foreign bytes here: a source record is read through E3's codec and verified by its checksum, which E3 fuzzes. T9.1 fuzz-drives sequences of writes, overwrites, removals, settles and retirements against an oracle of liveness; T9.7 fuzz-drives operation sequences with repack passes against the reference model |
+| 3 Metrics and tracing | T9.2, T9.3, T9.7, T9.9, T9.10 | `repacked_bytes` (T9.7), the suspect-segment gauge (T9.3) and the per-segment unreclaimed bytes (T9.9) are maintained at the event; `freed_bytes` is E5's, raised by its executor, and `Repack`'s `freed` is summed from the same reports (T9.7); `UnreclaimedBytes` is E8's counter, which T9.2, T9.7 and T9.10 feed through E8's account function; `DropRanges` is E4's. One span, `repack_pass`, per pass (T9.7). No span for `Forget` or for a retirement, which rule 3 does not name |
+| 4 Profiling | all | every test runs under E2's profiler. T9.2's worker and T9.7's pass are where goroutines could leak; T9.1 asserts zero allocations per liveness update outside `-race`, since it runs on every index change. No hot path of rule 4 is this epic's |
 | 5 Interface and internals | all | tests go through `Repack`, `Forget`, `Strand`, `Inspector.Segments` and `Stats`, and through `ReadAt` after a pass or a reopen: the read is the consumer of a repoint, a drop and a forget. `-race` on every concurrent case. Reverting a fix fails on its assertion |
-| 6 Known failures | T9.11 | the rows of §6's T9.11 leave `test/journal/known.yaml` in the change that turns them green; the rows that need epic 9b's calls are re-pointed to it there |
+| 6 Known failures | T9.12 | the rows of §6's T9.12 leave `test/journal/known.yaml` in the change that turns them green; the rows that need epic 9b's calls are re-pointed to it there |
 | 7 v2 ignores v1 | none | nothing here reads anything outside v2 |
-| 8 Real storage | T9.2, T9.6, T9.9, T9.11 | crash cases (mid-pass, an unlink not yet durable, a forget not yet synced) run on real storage through E2's crash-simulating seam, never an in-memory filesystem. T9.1, T9.3 and T9.5's drop test are pure logic and may run in memory |
-| 9 Markers | T9.1, T9.2, T9.3, T9.4, T9.5, T9.6, T9.8, T9.9 | T9.1 places D2's and D4's `ponytail:` and D3's and D20's `decision:`; T9.2 the RFC's `ponytail:` on whole-segment freeing at the hand-over (D5); T9.3 RFC 28 §3.3's `decision:` that a dead unread content record pins nothing; T9.4 D7's and D18's `decision:`; T9.5 RFC 1 §6's `ponytail:` on a carried loss record's size; T9.6 D8's `decision:`; T9.8 D16's `ponytail:` and the share seal's `decision:`; T9.9 D10's `decision:`. T9.7 and T9.10 place none. §4 lists every marker with its ceiling |
+| 8 Real storage | T9.2, T9.7, T9.10, T9.12 | crash cases (mid-pass, an unlink not yet durable, a forget not yet synced) run on real storage through E2's crash-simulating seam, never an in-memory filesystem. T9.1, T9.4 and T9.6's drop test are pure logic and may run in memory |
+| 9 Markers | T9.1, T9.2, T9.3, T9.4, T9.5, T9.6, T9.7, T9.9, T9.10 | T9.1 places D2's and D4's `ponytail:` and D3's and D20's `decision:`; T9.2 the RFC's `ponytail:` on whole-segment freeing at the hand-over (D5); T9.3 D21's `ponytail:`; T9.4 RFC 28 §3.3's `decision:` that a dead unread content record pins nothing; T9.5 D7's and D18's `decision:`; T9.6 RFC 1 §6's `ponytail:` on a carried loss record's size; T9.7 D8's `decision:`; T9.9 D16's `ponytail:` and the share seal's `decision:`; T9.10 D10's `decision:`. T9.8 and T9.11 place none. §4 lists every marker with its ceiling |
 | 10 A test can fail | all | each test names the bug it catches in §6 |
-| 11 Exports | T9.8 | nothing new is exported: `Repack`, `RepackScope`, `Forget`, `Strand` and `Inspector.Segments` are E1's. The per-segment unreclaimed figure stays internal until RFC 1 §4.4 names it (D16) |
-| 12 Creates only what it declares | all | `internal/reclaim` lands with T9.1, its first consumer being T9.2 in the same pull request; each later file lands with its subtask |
+| 11 Exports | T9.3, T9.9 | one name is added: `Stats.SuspectSegments`, which RFC 1 §3.7 declares and S1 lacks (T9.3), as written there. `Repack`, `RepackScope`, `Forget`, `Strand` and `Inspector.Segments` are E1's. The per-segment unreclaimed figure stays internal until RFC 1 §4.4 names it (D16) |
+| 12 Creates only what it declares | all | `internal/reclaim` lands with T9.1, its first consumer being T9.2 in the same pull request; `internal/unread` lands with T9.3, its first consumer being T9.5; each later file lands with its subtask |
 
 ## 3. Requirements and invariants
 
@@ -262,14 +268,14 @@ epic leaves.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | A segment is held while it backs a held or retained extent, holds a live header-only record, holds a dropped record whose loss an open deferred, or was ended by a failure whose copies nothing on disk proves yet. A segment that is not held is retired, unlinked or recycled, by the journal on its own, without waiting for a repack to select it | MUST | RFC 1 §7.1, §7.2, §3.1, §6 | T9.1, T9.2 |
-| R2 | Storage is freed in whole segments only: neither retirement nor repack frees, zeroes or deallocates any byte range inside a segment while it remains | MUST NOT | RFC 1 §7.1 | T9.2, T9.4 |
-| R3 | A segment is handed to retirement only once the records that left it not held are durable, and a segment's own records are durable before reclamation unlinks or recycles it | MUST | RFC 1 §7.1, §5.1 | T9.2, T9.6 |
+| R2 | Storage is freed in whole segments only: neither retirement nor repack frees, zeroes or deallocates any byte range inside a segment while it remains | MUST NOT | RFC 1 §7.1 | T9.2, T9.5 |
+| R3 | A segment is handed to retirement only once the records that left it not held are durable, and a segment's own records are durable before reclamation unlinks or recycles it | MUST | RFC 1 §7.1, §5.1 | T9.2, T9.7 |
 | R4 | A release record is durable before the segment holding the record it released is unlinked or recycled. (Epic 9b writes release records; the rule is applied by this epic's hand-over, R3) | MUST | RFC 1 §5.1 | T9.2 |
-| R5 | A segment left by a failed sync, or ended by a failed append, is a repack candidate once its window, if any, is resolved, never before; it is unlinked, never recycled, only after repack carried forward the records synced into it before the failure. Whether it is resolved is re-read under the file index before its records are carried or it is handed over | MUST | RFC 1 §7.2, §5.3; RFC 28 §2.2 | T9.3, T9.6 |
+| R5 | A segment left by a failed sync, or ended by a failed append, is a repack candidate once its window, if any, is resolved, never before; it is unlinked, never recycled, only after repack carried forward the records synced into it before the failure. Whether it is resolved is re-read under the file index before its records are carried or it is handed over | MUST | RFC 1 §7.2, §5.3; RFC 28 §2.2 | T9.4, T9.7 |
 | R6 | A segment in which every record has stopped holding anything becomes reclaimable without a read | test row | RFC 1 §9.2 | T9.1, T9.2 |
-| R7 | One segment selected by two reclamation paths at once is retired by one of them; the accounted footprint falls by its size exactly once and never below zero | test row | RFC 1 §9.2, §7.3 | T9.2, T9.3 |
+| R7 | One segment selected by two reclamation paths at once is retired by one of them; the accounted footprint falls by its size exactly once and never below zero | test row | RFC 1 §9.2, §7.3 | T9.2, T9.4 |
 | R8 | An ended segment whose still-held records were re-appended into the stream's next segment stays held, and is never retired, until the caller reports through `MarksRecorded` a recorded mark of the copies' segment whose `Through` is past the last copy, or that segment is sealed | invariant | RFC 1 §3.1 | T9.1, T9.2 |
-| R9 | A segment holding a dropped record whose loss is deferred is a repack candidate like any other, and is never retired without the copy that writes that loss record, even with nothing else live in it | invariant | RFC 1 §6, §7.2 | T9.1, T9.3, T9.5 |
+| R9 | A segment holding a dropped record whose loss is deferred is a repack candidate like any other, and is never retired without the copy that writes that loss record, even with nothing else live in it | invariant | RFC 1 §6, §7.2 | T9.1, T9.4, T9.6 |
 
 **Which header-only records are live**
 
@@ -278,104 +284,112 @@ epic leaves.
 | R10 | A release record, or a synced loss record, is live while it may still outrank a record of its file in another segment; a synced loss record, a `superseded` one excepted, also while `Settle` has not covered it | invariant | RFC 1 §7.2 | T9.1 |
 | R11 | An unsynced loss record is live while any segment holds a copy of the record it names | invariant | RFC 1 §7.2, §3.8 | T9.1 |
 | R12 | A truncate, deallocate, delete or clone target record is live while it may still outrank a record in another segment or its removal marker is unsettled | invariant | RFC 1 §7.2, §3.6 | T9.1 |
-| R13 | A forget record is live while any other segment holds a record of its tag below its sequence number | invariant | RFC 1 §7.2, §3 | T9.1, T9.9 |
+| R13 | A forget record is live while any other segment holds a record of its tag below its sequence number | invariant | RFC 1 §7.2, §3 | T9.1, T9.10 |
 | R14 | An offloaded or unmark record is live while it decides the bit of a held or retained extent; a hold, unhold or stamp record while the hold or stamp it records is. This epic carries every one of them forward as live (D4); epic 9b, which writes them, applies the narrower rule | invariant | RFC 1 §7.2; RFC 28 §3.2 | T9.1 |
-| R15 | A removal, release or synced loss record whose marker, if it has one, is settled, and below whose (content version, sequence number) pair no other segment holds a record of the same file overlapping its extent, can outrank nothing and is dropped. The test is per extent and by that pair: never by sequence number alone, never against every record of the file whatever its extent, never against the lowest pair journal-wide | MUST | RFC 1 §7.2, §4.3 | T9.1, T9.5 |
-| R16 | Such a record is dropped only once every unlink or recycle it counted on is durable by a directory sync | MUST NOT | RFC 1 §7.2, §5.1; RFC 28 §2.2 | T9.5, T9.6 |
+| R15 | A removal, release or synced loss record whose marker, if it has one, is settled, and below whose (content version, sequence number) pair no other segment holds a record of the same file overlapping its extent, can outrank nothing and is dropped. The test is per extent and by that pair: never by sequence number alone, never against every record of the file whatever its extent, never against the lowest pair journal-wide | MUST | RFC 1 §7.2, §4.3 | T9.1, T9.6 |
+| R16 | Such a record is dropped only once every unlink or recycle it counted on is durable by a directory sync | MUST NOT | RFC 1 §7.2, §5.1; RFC 28 §2.2 | T9.6, T9.7 |
 | R17 | The test reads the at most eight ranges per (file, segment) the index keeps, each with the lowest pair inside it: it may keep a removal longer than it must, never drop one it needs | bound | RFC 1 §7.2 | T9.1 |
 
 **Selection**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R18 | Candidacy is decided from held and retained bytes per segment against the storage the segment still allocates; a pass never reads a segment to decide whether to repack it | MUST NOT | RFC 1 §7.2 | T9.3 |
-| R19 | A pass takes the segments with the least live payload first | SHOULD | RFC 1 §7.2, §7.1 | T9.3 |
-| R20 | Only segments inside the scope are candidates: a share's scope selects the segments holding that share's records, a segment-set scope only the named segments, and a zero scope any segment | MUST | RFC 1 §7.2 | T9.3 |
-| R21 | A segment pinned by a running offer is not a candidate, and a segment a pass has selected takes no new pin until the pass ends with it. (Pins are epic 9b's; this epic reads the pin and answers the "selected" predicate) | MUST | RFC 1 §7.2 | T9.3 |
-| R22 | A pass never runs on a segment while it backs a held or retained extent from a record that cannot be read. Once those extents are dropped or read, or the failed window resolved, it carries the readable live records forward and retires the segment | MUST NOT | RFC 1 §7.2; RFC 28 §3.3 | T9.3, T9.6 |
-| R23 | Two passes never select the same segment, and a segment is never its own target | MUST NOT | RFC 1 §7.2, §8 | T9.3 |
-| R24 | A segment recovery ended is never a candidate: open empties and unlinks it (epic 7a) | invariant | RFC 1 §7.2; RFC 28 §3.3 | T9.3 |
-| R25 | Repack neither carries forward a live unread record nor selects the segment holding it, and no pass unlinks that segment while the record is live. A dead unread content record, one that backs no held or retained extent, pins nothing; an unread header-only record is never dead | MUST NOT | RFC 28 §3.3 | T9.3, T9.4 |
+| R18 | Candidacy is decided from held and retained bytes per segment against the storage the segment still allocates; a pass never reads a segment to decide whether to repack it | MUST NOT | RFC 1 §7.2 | T9.4 |
+| R19 | A pass takes the segments with the least live payload first | SHOULD | RFC 1 §7.2, §7.1 | T9.4 |
+| R20 | Only segments inside the scope are candidates: a share's scope selects the segments holding that share's records, a segment-set scope only the named segments, and a zero scope any segment | MUST | RFC 1 §7.2 | T9.4 |
+| R21 | A segment pinned by a running offer is not a candidate, and a segment a pass has selected takes no new pin until the pass ends with it. (Pins are epic 9b's; this epic reads the pin and answers the "selected" predicate) | MUST | RFC 1 §7.2 | T9.4 |
+| R22 | A pass never runs on a segment while it backs a held or retained extent from a record that cannot be read. Once those extents are dropped or read, or the failed window resolved, it carries the readable live records forward and retires the segment | MUST NOT | RFC 1 §7.2; RFC 28 §3.3 | T9.4, T9.7 |
+| R23 | Two passes never select the same segment, and a segment is never its own target | MUST NOT | RFC 1 §7.2, §8 | T9.4 |
+| R24 | A segment recovery ended is never a candidate: open empties and unlinks it (epic 7a) | invariant | RFC 1 §7.2; RFC 28 §3.3 | T9.4 |
+| R25 | Repack neither carries forward a live unread record nor selects the segment holding it, and no pass unlinks that segment while the record is live. A dead unread content record, one that backs no held or retained extent, pins nothing; an unread header-only record is never dead | MUST NOT | RFC 28 §3.3 | T9.4, T9.5 |
 
 **Copies of content**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R26 | Repack preserves the set of held extents and of retained extents, the bytes they produce, and their offloaded bits: it neither resets nor sets a bit | MUST | RFC 1 §7.2; RFC 28 §3.2 | T9.4, T9.6 |
-| R27 | A copy of content gets a new sequence number and keeps its content version | invariant | RFC 1 §7.2, §4.3 | T9.4 |
-| R28 | Before copying any part of a source record, repack reads its whole payload and verifies its payload checksum. A record that does not verify is dropped as corrupt and nothing of it is copied | MUST | RFC 1 §7.2; RFC 28 §2.3, §3.3 | T9.4 |
-| R29 | Repack copies only the held and retained extents of a record, each as a new record with its own payload checksum, never the released part; the original stays whole on disk until its segment is unlinked | invariant | RFC 1 §7.2, §7.1 | T9.4 |
-| R30 | Adjacent held extents of one file that share a content version and an offloaded bit are copied as one record | invariant | RFC 1 §7.2, §4.2 | T9.4 |
-| R31 | A copy is appended under its file's serialised append, and only if its source is still held or retained at that moment. A source a later write or removal turned retained is still copied, as retained; one neither held nor retained is skipped. The check and the append are one step against `WriteAt`, the removals and `Release` on that file | MUST | RFC 1 §7.2, §8.4 | T9.4 |
-| R32 | A source read that fails with an I/O error is not a record that does not verify: repack drops none of its extents, appends no loss record for it and reports no corruption. The record is unread and its segment suspect; a read is started again only while fewer than 3 attempts have been made and less than 15 s has passed, and an access to a record already unread makes one attempt. A read that later returns bytes is checked as any record's | MUST NOT | RFC 28 §3.3 | T9.4 |
+| R26 | Repack preserves the set of held extents and of retained extents, the bytes they produce, and their offloaded bits: it neither resets nor sets a bit | MUST | RFC 1 §7.2; RFC 28 §3.2 | T9.5, T9.7 |
+| R27 | A copy of content gets a new sequence number and keeps its content version | invariant | RFC 1 §7.2, §4.3 | T9.5 |
+| R28 | Before copying any part of a source record, repack reads its whole payload and verifies its payload checksum. A record that does not verify is dropped as corrupt and nothing of it is copied | MUST | RFC 1 §7.2; RFC 28 §2.3, §3.3 | T9.5 |
+| R29 | Repack copies only the held and retained extents of a record, each as a new record with its own payload checksum, never the released part; the original stays whole on disk until its segment is unlinked | invariant | RFC 1 §7.2, §7.1 | T9.5 |
+| R30 | Adjacent held extents of one file that share a content version and an offloaded bit are copied as one record | invariant | RFC 1 §7.2, §4.2 | T9.5 |
+| R31 | A copy is appended under its file's serialised append, and only if its source is still held or retained at that moment. A source a later write or removal turned retained is still copied, as retained; one neither held nor retained is skipped. The check and the append are one step against `WriteAt`, the removals and `Release` on that file | MUST | RFC 1 §7.2, §8.4 | T9.5 |
+| R32 | A source read that fails with an I/O error is not a record that does not verify: repack drops none of its extents, appends no loss record for it and reports no corruption. The record is unread and its segment suspect (R61–R63); a read that later returns bytes is checked as any record's | MUST NOT | RFC 28 §3.3 | T9.5 |
 
 **Carried header-only records**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R33 | A carried header-only record keeps both its sequence number and its content version | invariant | RFC 1 §7.2; RFC 28 §3.3 | T9.5 |
-| R34 | A pass decides its drops once its own copies are appended, and counts them, its target segments included | invariant | RFC 1 §7.2 | T9.5 |
-| R35 | A pass whose source holds a dropped record whose loss is deferred writes that loss record into its target with the records it copies, under the repack reserve and never on the headroom. The deferral ends only once the target is synced, and the source is unlinked only after that sync | MUST | RFC 1 §6, §7.2 | T9.5, T9.6 |
+| R33 | A carried header-only record keeps both its sequence number and its content version | invariant | RFC 1 §7.2; RFC 28 §3.3 | T9.6 |
+| R34 | A pass decides its drops once its own copies are appended, and counts them, its target segments included | invariant | RFC 1 §7.2 | T9.6 |
+| R35 | A pass whose source holds a dropped record whose loss is deferred writes that loss record into its target with the records it copies, under the repack reserve and never on the headroom. The deferral ends only once the target is synced, and the source is unlinked only after that sync | MUST | RFC 1 §6, §7.2 | T9.6, T9.7 |
 
 **Ordering, `freed` and readers**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R36 | Copy the records, make the copies durable, repoint the placement index, and only then retire the source. A crash before the retirement leaves both, and precedence selects the copy; a crash after it is a completed repack. At no point is an extent unreachable | MUST | RFC 1 §7.2 | T9.6 |
-| R37 | Repack's repoint is atomic for readers of the affected files: a read sees the old location or the new one, never neither | MUST | RFC 1 §8.4 | T9.6 |
-| R38 | `Repack` returns `freed`, the storage its retirements returned to the filesystem or to the spare pool, only once they are durable; the storage in use, `UsedBytes` − `Spares` × the segment cap, falls at that moment, never earlier | MUST | RFC 1 §7.2, §6 | T9.6 |
-| R39 | `repacked_bytes` counts the bytes repack moved, and `freed_bytes` the storage retirements returned, both served from counters | MUST | RFC 1 §3.9 | T9.6 |
-| R40 | A read either observes the location it resolved, intact, or learns to retry or to report the extent missing; it never returns bytes from storage freed or reused. Repack frees storage only through epic 5's executor, after its repoint | MUST | RFC 1 §8.5 | T9.6 |
+| R36 | Copy the records, make the copies durable, repoint the placement index, and only then retire the source. A crash before the retirement leaves both, and precedence selects the copy; a crash after it is a completed repack. At no point is an extent unreachable | MUST | RFC 1 §7.2 | T9.7 |
+| R37 | Repack's repoint is atomic for readers of the affected files: a read sees the old location or the new one, never neither | MUST | RFC 1 §8.4 | T9.7 |
+| R38 | `Repack` returns `freed`, the storage its retirements returned to the filesystem or to the spare pool, only once they are durable; the storage in use, `UsedBytes` − `Spares` × the segment cap, falls at that moment, never earlier | MUST | RFC 1 §7.2, §6 | T9.7 |
+| R39 | `repacked_bytes` counts the bytes repack moved, and `freed_bytes` the storage retirements returned, both served from counters | MUST | RFC 1 §3.9 | T9.7 |
+| R40 | A read either observes the location it resolved, intact, or learns to retry or to report the extent missing; it never returns bytes from storage freed or reused. Repack frees storage only through epic 5's executor, after its repoint | MUST | RFC 1 §8.5 | T9.7 |
 
 **Capacity**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R41 | Copies reserve against the repack reserve, never a share's limit, and a pass copies at most what the reserve holds before the segments it emptied are retired and the reserve is whole again | MUST | RFC 1 §7.2, §6 | T9.7 |
-| R42 | A journal at its maximum, and a share at its limit, can still run a repack | MUST | RFC 1 §7.2 | T9.7 |
-| R43 | A copy is accounted to its record's share once the source segment is unlinked; until then the share's usage may stand above its limit by that copy | invariant | RFC 1 §6 | T9.7 |
-| R44 | A pass scoped to a share seals each active segment that holds the scope's unreclaimed bytes, at most one per stream until repack retires it, so repack can reach those bytes; the seal marker draws on the reserved headroom, so a journal at its limit still takes it | MUST | RFC 1 §10 question 5 | T9.8 |
-| R45 | The per-segment accounting gives, for each segment, its id, seal state, allocated storage, held bytes, whether it is damaged, whether it is suspect and, for a suspect one, each unread range as an offset and a length, and its unreclaimed bytes; a damaged segment retired keeps its row, marked retired, until close; `Stats` is the total | MUST | RFC 1 §4.4, §10 question 6 | T9.8 |
+| R41 | Copies reserve against the repack reserve, never a share's limit, and a pass copies at most what the reserve holds before the segments it emptied are retired and the reserve is whole again | MUST | RFC 1 §7.2, §6 | T9.8 |
+| R42 | A journal at its maximum, and a share at its limit, can still run a repack | MUST | RFC 1 §7.2 | T9.8 |
+| R43 | A copy is accounted to its record's share once the source segment is unlinked; until then the share's usage may stand above its limit by that copy | invariant | RFC 1 §6 | T9.8 |
+| R44 | A pass scoped to a share seals each active segment that holds the scope's unreclaimed bytes, at most one per stream until repack retires it, so repack can reach those bytes; the seal marker draws on the reserved headroom, so a journal at its limit still takes it | MUST | RFC 1 §10 question 5 | T9.9 |
+| R45 | The per-segment accounting gives, for each segment, its id, seal state, allocated storage, held bytes, whether it is damaged, whether it is suspect and, for a suspect one, each unread range as an offset and a length, and its unreclaimed bytes; a damaged segment retired keeps its row, marked retired, until close; `Stats` is the total | MUST | RFC 1 §4.4, §10 question 6 | T9.9 |
 
 **Locks and progress**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R46 | A pass takes each file's append lock in turn and never holds two; it repoints under the file index alone, and takes the storage guard only to unlink, holding no other lock | MUST | RFC 1 §8.3 | T9.4, T9.6 |
-| R47 | No I/O is done while the file index is held: a source is read with the index released | MUST NOT | RFC 1 §8.3 | T9.4 |
-| R48 | A continuous stream of readers never keeps reclamation from a segment; reclamation holds a segment exclusively for no longer than one unit of work, so a large repack is divisible | MUST | RFC 1 §8.6 | T9.6 |
-| R49 | A read of one file never waits on reclamation of a segment it does not read | invariant | RFC 1 §8.1 | T9.6 |
-| R50 | On close, passes and this epic's retirement worker are stopped and joined before the segments they touch are closed | MUST | RFC 1 §8.7 | T9.2, T9.6 |
-| R51 | `Repack` takes a context and checks it before any refusal and before changing state, returning its error having changed nothing; a unit whose copy has been appended completes | MUST | RFC 1 §3 | T9.6 |
+| R46 | A pass takes each file's append lock in turn and never holds two; it repoints under the file index alone, and takes the storage guard only to unlink, holding no other lock | MUST | RFC 1 §8.3 | T9.5, T9.7 |
+| R47 | No I/O is done while the file index is held: a source is read with the index released | MUST NOT | RFC 1 §8.3 | T9.5 |
+| R48 | A continuous stream of readers never keeps reclamation from a segment; reclamation holds a segment exclusively for no longer than one unit of work, so a large repack is divisible | MUST | RFC 1 §8.6 | T9.7 |
+| R49 | A read of one file never waits on reclamation of a segment it does not read | invariant | RFC 1 §8.1 | T9.7 |
+| R50 | On close, passes and this epic's retirement worker are stopped and joined before the segments they touch are closed | MUST | RFC 1 §8.7 | T9.2, T9.7 |
+| R51 | `Repack` takes a context and checks it before any refusal and before changing state, returning its error having changed nothing; a unit whose copy has been appended completes | MUST | RFC 1 §3 | T9.7 |
 
 **Tags**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R52 | `Forget` appends one header-only forget record naming the tag, durable before it returns and drawing on the reserved headroom, and drops from the index every held and retained extent, removal marker and hold mark of the tag's files | MUST | RFC 1 §3, §6 | T9.9 |
-| R53 | After `Forget`, `Since` yields nothing of the tag's files and nothing is left to settle: `RemovalMarkers` no longer counts them | invariant | RFC 1 §3, §9.4 | T9.9 |
-| R54 | `Forget` is refused while a handle of the tag is open | MUST | RFC 1 §3 | T9.9 |
-| R55 | `Forget` is durable and idempotent: run again after a crash, or on a tag that holds nothing, it succeeds | invariant | RFC 1 §3 | T9.9 |
-| R56 | A forget record and its drop are atomic against repack copies and fills of the tag: a copy whose held check ran before the forget is abandoned, never appended after the forget record | MUST | RFC 1 §8.4, §3 | T9.4, T9.9 |
-| R57 | Once a tag is forgotten, the files it claimed are claimed by no tag, so a write through another handle claims them; a tag conflict naming it is cleared from `TagConflicts`; and `Stats().Shares` no longer lists it | MUST | RFC 1 §3, §3.7, §9.4 | T9.9 |
-| R58 | The journal never forgets a tag on its own: a tag not attached is kept, served once its share attaches, and forgotten only when the caller names it | invariant | RFC 1 §3, §9.4 | T9.9 |
-| R59 | `Forget` takes a context; with a context already done it returns the context's error and appends no record | MUST | RFC 1 §3, §9.4 | T9.9 |
-| R60 | `Strand` is kept in memory and appends nothing. From the call on, no read through another tag's handle is served from the tag's extents, and none of them is evicted, offered or released (epic 9b's calls consult the set); a handle of the tag itself still reads them. It takes no context | MUST | RFC 1 §3 | T9.10 |
+| R52 | `Forget` appends one header-only forget record naming the tag, durable before it returns and drawing on the reserved headroom, and drops from the index every held and retained extent, removal marker and hold mark of the tag's files | MUST | RFC 1 §3, §6 | T9.10 |
+| R53 | After `Forget`, `Since` yields nothing of the tag's files and nothing is left to settle: `RemovalMarkers` no longer counts them | invariant | RFC 1 §3, §9.4 | T9.10 |
+| R54 | `Forget` is refused while a handle of the tag is open | MUST | RFC 1 §3 | T9.10 |
+| R55 | `Forget` is durable and idempotent: run again after a crash, or on a tag that holds nothing, it succeeds | invariant | RFC 1 §3 | T9.10 |
+| R56 | A forget record and its drop are atomic against repack copies and fills of the tag: a copy whose held check ran before the forget is abandoned, never appended after the forget record | MUST | RFC 1 §8.4, §3 | T9.5, T9.10 |
+| R57 | Once a tag is forgotten, the files it claimed are claimed by no tag, so a write through another handle claims them; a tag conflict naming it is cleared from `TagConflicts`; and `Stats().Shares` no longer lists it | MUST | RFC 1 §3, §3.7, §9.4 | T9.10 |
+| R58 | The journal never forgets a tag on its own: a tag not attached is kept, served once its share attaches, and forgotten only when the caller names it | invariant | RFC 1 §3, §9.4 | T9.10 |
+| R59 | `Forget` takes a context; with a context already done it returns the context's error and appends no record | MUST | RFC 1 §3, §9.4 | T9.10 |
+| R60 | `Strand` is kept in memory and appends nothing. From the call on, no read through another tag's handle is served from the tag's extents, and none of them is evicted, offered or released (epic 9b's calls consult the set); a handle of the tag itself still reads them. It takes no context | MUST | RFC 1 §3 | T9.11 |
+
+**The unread set**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R61 | The journal keeps one set of unread records, those whose read no attempt completed, keyed by segment and offset with the record's length and whether it is content or header-only; every reader of the journal marks and clears through it, and a mark names the I/O error as `ErrUnreadable` wraps it | invariant | RFC 28 §3.3, RFC 1 §3 | T9.3 |
+| R62 | A read that fails is started again only while fewer than 3 attempts have been made, less than 15 s has passed since the first, and the request's deadline has not passed; an access to a record already in the set makes one attempt. A read that returns bytes removes the record from the set, and the bytes are checked as any record's | MUST | RFC 28 §3.3 | T9.3 |
+| R63 | A segment holding a record of the set is suspect until every such record has read or its segment is retired: `Stats.SuspectSegments` counts it from a maintained value, never a walk, and its unread ranges are listed as an offset and a length | invariant | RFC 28 §3.3, RFC 1 §3.7, §4.4 | T9.3 |
 
 **Conformance rows this epic turns green**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R61 | Removal outlives its segment: a delete's segment, alone selected, and a settled delete whose counted unlinks are not yet durable, both leave the file absent after a crash | test row | RFC 1 §9.4 A | T9.5, T9.6, T9.11 |
-| R62 | Crash mid-repack: between copy and unlink, recovery selects the copies, every held extent reads, and no extent is duplicated | test row | RFC 1 §9.4 A | T9.6, T9.11 |
-| R63 | Copy loses to a newer write: synced, no copy is appended; unsynced, the copy is appended as retained and a failed window serves the old bytes, before and after reopen | test row | RFC 1 §9.4 A | T9.4, T9.11 |
-| R64 | Repack under read: a read during a repack copy and unlink sees the old or the new location, never neither | test row | RFC 1 §9.4 A | T9.6, T9.11 |
-| R65 | A recycled segment keeps its new records, and a failed append in a recycled segment makes it a candidate only once resolved, unlinked after its synced records are carried | test row | RFC 1 §9.4 A | T9.3, T9.6, T9.11 |
-| R66 | Background joined: a store closed with a repack in flight stops it before any segment is closed | test row | RFC 1 §9.4 B | T9.6, T9.11 |
-| R67 | Forget leaves nothing to settle, and a later attach of the tag holds new writes | test row | RFC 1 §9.4 C | T9.9, T9.11 |
-| R68 | An unclaimed tag is reported in `Stats().Shares` with its held and dirty bytes, and no longer after `Forget` | test row | RFC 1 §9.4 C | T9.9, T9.11 |
-| R69 | Segment reclaimable: once a corrupt record's extents are dropped, repack can select the segment and its storage is recovered | test row | RFC 28 §4.2 B | T9.3, T9.11 |
-| R70 | An ended segment outlives its copies' proof: before any `MarksRecorded` naming the copies' segment, repack does not retire the ended segment; a `MarksRecorded` past the copy, and separately a seal of that segment, each let repack retire it | test row | RFC 1 §9.4 A | T9.2, T9.11 |
+| R64 | Removal outlives its segment: a delete's segment, alone selected, and a settled delete whose counted unlinks are not yet durable, both leave the file absent after a crash | test row | RFC 1 §9.4 A | T9.6, T9.7, T9.12 |
+| R65 | Crash mid-repack: between copy and unlink, recovery selects the copies, every held extent reads, and no extent is duplicated | test row | RFC 1 §9.4 A | T9.7, T9.12 |
+| R66 | Copy loses to a newer write: synced, no copy is appended; unsynced, the copy is appended as retained and a failed window serves the old bytes, before and after reopen | test row | RFC 1 §9.4 A | T9.5, T9.12 |
+| R67 | Repack under read: a read during a repack copy and unlink sees the old or the new location, never neither | test row | RFC 1 §9.4 A | T9.7, T9.12 |
+| R68 | A recycled segment keeps its new records, and a failed append in a recycled segment makes it a candidate only once resolved, unlinked after its synced records are carried | test row | RFC 1 §9.4 A | T9.4, T9.7, T9.12 |
+| R69 | Background joined: a store closed with a repack in flight stops it before any segment is closed | test row | RFC 1 §9.4 B | T9.7, T9.12 |
+| R70 | Forget leaves nothing to settle, and a later attach of the tag holds new writes | test row | RFC 1 §9.4 C | T9.10, T9.12 |
+| R71 | An unclaimed tag is reported in `Stats().Shares` with its held and dirty bytes, and no longer after `Forget` | test row | RFC 1 §9.4 C | T9.10, T9.12 |
+| R72 | Segment reclaimable: once a corrupt record's extents are dropped, repack can select the segment and its storage is recovered | test row | RFC 28 §4.2 B | T9.4, T9.12 |
+| R73 | An ended segment outlives its copies' proof: before any `MarksRecorded` naming the copies' segment, repack does not retire the ended segment; a `MarksRecorded` past the copy, and separately a seal of that segment, each let repack retire it | test row | RFC 1 §9.4 A | T9.2, T9.12 |
 
 ## 4. Decisions this epic takes
 
@@ -398,7 +412,7 @@ epic leaves.
 - **D3, a forget record's liveness is a snapshot of segments.** At `Forget`, the segments whose
   record bytes for the tag are not zero (E5's per-tag bytes per segment) are the only ones that
   can hold a record of the tag below the forget's sequence number: every later record of the tag
-  is above it. The snapshot is taken after D10's barrier, and T9.5 carries no record of a tag
+  is above it. The snapshot is taken after D10's barrier, and T9.6 carries no record of a tag
   marked forgetting, so a record of the tag carried under its old sequence number has already
   landed, and E5's per-tag bytes count it in its new segment. The record stays live while any of
   them remains in the set. A `decision:` marker says why no per-record scan is needed, and its
@@ -428,7 +442,7 @@ epic leaves.
   on the stream E5 chose for it (E5's D7), under the file append domain, and rolls onto a
   repack-reserve spare when the active segment has no room (E5's T5.6). Only sealed or ended
   segments are candidates, so the segment a copy lands in is never one the pass selected (R23);
-  the one exception, T9.8's share seal, seals the active segment before selecting it.
+  the one exception, T9.9's share seal, seals the active segment before selecting it.
 - **D7, a copy keeps its source's kind and modification time.** A piece of a `write` record is
   copied as a `write` carrying the source's modification time; a piece of a `fill` as a `fill`,
   so recovery sets its offloaded bit as for any fill (RFC 28 §3.2). Coalescing (R30) merges
@@ -482,7 +496,7 @@ epic leaves.
   set is read by epic 9b's `Release`, `Offload` and `OffloadMany` and by `ReadAt`'s tag check;
   `Forget` removes the tag from it.
 - **D16, the per-segment unreclaimed figure is kept now and exported when the RFC names it.**
-  Selection and the share seal need it internally from T9.3. RFC 1 §4.4 does not yet list it
+  Selection and the share seal need it internally from T9.4. RFC 1 §4.4 does not yet list it
   (§10 question 6 owes it), so `SegmentInfo` gains the field only when the RFC does (rule 11);
   until then the engine reads the scope's figure through `Stats().Shares`. A `ponytail:` at the
   internal figure names the ceiling: the engine's capacity step sees a share's total, not which of
@@ -491,16 +505,16 @@ epic leaves.
 - **D17, this epic implements `Inspector.Segments`, and only it.** Selection by segment-set scope
   and the engine's capacity step need the per-segment rows while the journal runs; `File`, `All`
   and `Verify` stay epic 7b's.
-- **D18, a source read that fails holds the unit; it never reaches `Corrupt`.** T9.4 reads a
-  source through E5's positioned read with RFC 28 §3.3's retry bound. A read that fails with an
-  I/O error after it marks the record unread and its segment suspect in the read path's unread
-  state, drops nothing, appends nothing, and abandons the unit before any copy of that segment is
+- **D18, a source read that fails holds the unit; it never reaches `Corrupt`.** T9.5 reads a
+  source through E5's positioned read inside T9.3's `Try`, which holds RFC 28 §3.3's retry bound.
+  A read that fails with an I/O error after it marks the record unread and its segment suspect in
+  the unread set, drops nothing, appends nothing, and abandons the unit before any copy of that segment is
   appended; the segment is not selected again while the record is live (R25). A later pass's
   access tries the read once, which is the only retry repack makes: RFC 28 §3.3's `decision:`
-  that no timer retries an unread record goes at the selection check (T9.3), with its ceiling
+  that no timer retries an unread record goes at the selection check (T9.4), with its ceiling
   (suspect segments seen outliving their fault because nothing read them). A dead unread content
   record is skipped without a read, as the RFC's second `decision:` there says. A `decision:`
-  marker at T9.4's read says an I/O error never reaches `Corrupt`, with its ceiling: overturned
+  marker at T9.5's read says an I/O error never reaches `Corrupt`, with its ceiling: overturned
   only if the RFC comes to drop an extent on an I/O error, as E6's D11 also records.
 - **D19, a deferred loss is carried from E6's registry, and ended only after the target syncs.**
   E6's T6.2 keeps each deferred loss in memory with the segment holding its dropped record. T9.1
@@ -523,32 +537,47 @@ epic leaves.
   §3.1's seal within 30 s of the copies syncing, which bounds the hold, is that path's to add.
   Overturned by the path's arrival, which must call `HoldEnded` before its copies sync.
 
+- **D21, the unread set is in memory, keyed by record, and the retry bound is E7a's.** RFC 28
+  §3.3 wants one unread set per journal for `ReadAt`, `Offered`, repack and the open. No epic
+  builds it: E5's positioned read leaves it to #3511's answer, E6's D11 returns the error and
+  drops nothing, and E8's `ReadAt` has no call into one. This epic builds it, with repack its
+  first consumer, so its shape is settled before `ReadAt`, `Offered` and the open adopt it, and
+  `Try` is the one way to read through it. The bound itself (3 attempts, 15 s, the request's
+  deadline) is E7a's T7.1 `readretry`, shared so the open and a running journal cannot drift. A
+  `ponytail:` at the set names the ceiling: it lives in memory only, so a restart forgets what
+  was unread and the open meets it again by reading (E7a refuses an open whose read keeps
+  failing), and it is a map under one mutex, O(1) per access. Upgrade to a sharded map if a
+  profile shows the mutex once `ReadAt` calls it, and to state held across a restart with E7b's
+  unread records held at open.
+
 ## 5. Target tree
 
 ```text
 pkg/block/journal/
-  repack.go             T9.6   Repack delegates to internal/reclaim
-  share.go              T9.9, T9.10   Forget and Strand delegate to internal/datapath
-  inspect.go            T9.8   Inspector.Segments
+  repack.go             T9.7   Repack delegates to internal/reclaim
+  share.go              T9.10, T9.11   Forget and Strand delegate to internal/datapath
+  inspect.go            T9.9   Inspector.Segments
   internal/
+    unread/
+      set.go            T9.3   the journal's unread set, Try, suspect segments and ranges (D21)
     reclaim/
       live.go           T9.1   the liveness tracker per segment, deferred-loss flag, ended holds (D2–D4, D19, D20)
       droptest.go       T9.1   the removal-drop test over E4's ranges
       retire.go         T9.2   candidacy, the durability point, the hand-over to E5 (D5)
-      select.go         T9.3   candidates, scope, order, the claim, the selected predicate
-      copy.go           T9.4   verify whole, copy held and retained pieces, coalesce, unread sources (D6, D7, D18)
-      carry.go          T9.5   carried header-only records and deferred losses, drops after copies (D19)
-      pass.go           T9.6   the pass: units, durability, repoint, freed, stop (D8, D9)
-      reserve.go        T9.7   the reserve bound and the copy's accounting transfer
-      seal.go           T9.8   the share scope's seal
+      select.go         T9.4   candidates, scope, order, the claim, the selected predicate
+      copy.go           T9.5   verify whole, copy held and retained pieces, coalesce, unread sources (D6, D7, D18)
+      carry.go          T9.6   carried header-only records and deferred losses, drops after copies (D19)
+      pass.go           T9.7   the pass: units, durability, repoint, freed, stop (D8, D9)
+      reserve.go        T9.8   the reserve bound and the copy's accounting transfer
+      seal.go           T9.9   the share scope's seal
       *_test.go
     datapath/
-      forget.go         T9.9   Forget (D10, D11, D12)
-      strand.go         T9.10  Strand (D15)
-      shares.go         T9.9   the registry's forgetting mark
+      forget.go         T9.10   Forget (D10, D11, D12)
+      strand.go         T9.11  Strand (D15)
+      shares.go         T9.10   the registry's forgetting mark
     segment/
-      inspect.go        T9.8   per-segment rows from the set and E4-9's counters
-test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b re-pointed
+      inspect.go        T9.9   per-segment rows from the set and E4-9's counters
+test/journal/known.yaml T9.12  rows turned green removed; rows needing epic 9b re-pointed
 ```
 
 ## 6. Subtasks
@@ -562,7 +591,7 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
 - **Covers:** R1, R6, R8–R15, R17.
 - **Deliverables:** `internal/reclaim/live.go`: per segment, a count of live header-only records
   beside E4-9's held and retained bytes, and `Held(seg) bool`. `Append` and publish hooks that
-  register each header-only record a path appends (E8's removals, E6's loss records, T9.9's
+  register each header-only record a path appends (E8's removals, E6's loss records, T9.10's
   forget record), and the events of D2 that re-test them. `internal/reclaim/droptest.go`:
   `Droppable(rec) bool` for a removal, release or synced loss record, built on E4-10's ranges of
   the record's file in every other segment, comparing the (version, sequence) pair over the
@@ -611,7 +640,7 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
 - **Track:** B. **Depends on:** T9.1; E5's executor and queue (T5.9); E6's `Durable` (T6.1),
   the resolved announcement (T6.3, T6.4) and `Admit` (T6.6); E8's account function and
   `UnreclaimedBytes` (T8.13), and its stop registry (T8.12).
-- **Covers:** R1–R4, R6–R8, R50, R70.
+- **Covers:** R1–R4, R6–R8, R50, R73.
 - **Deliverables:** `internal/reclaim/retire.go`: the candidacy D5 describes, a worker that hands
   a candidate to E5's queue with the reason `Sealed` or `Ended` once every durability point is
   covered and, for an ended segment, once its resolved state, re-read under the file index, still
@@ -640,15 +669,52 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
   (R7); `TestEdge_FullyReleasedSegmentReclaimedWithoutRead`'s shape with truncates in place of
   releases, at the journal level (R6); a close during a queued hand-over (R50); the retirement
   half of RFC 1 §9.4's row "an ended segment outlives its copies' proof", with the re-append
-  planted through `HoldEnded` (R8, R70; the write path's half stays with its owner, §9).
+  planted through `HoldEnded` (R8, R73; the write path's half stays with its owner, §9).
 
-### T9.3 Selection, scope and claims
+### T9.3 The journal's unread set
 
-**Subtask T9.3 estimate: 3.5 man-days.**
+**Subtask T9.3 estimate: 2.5 man-days.**
 
-- **Track:** B. **Depends on:** T9.1; E5's claims (T5.1); E6's damage report (T6.7) and resolved
-  announcement (T6.4); the read path's unread state (§9).
-- **Covers:** R5, R7, R9, R18–R25, R65, R69.
+- **Track:** B. **Depends on:** S3; T7.1 of E7a (the bound on a failed read); E2's fault schedule.
+- **Covers:** R61–R63.
+- **Deliverables:** `internal/unread/set.go`: the journal's one set of unread records (D21).
+  `Try(ctx, ref, read)` runs a read with the bound of T7.1's `readretry` (R62): up to 3 attempts for
+  a record not in the set, one for a record in it. A read that returns bytes removes the record and
+  hands the bytes back for the caller to check as any record's; one that fails every attempt puts
+  the record in the set, with its segment, offset, length and kind, and returns an error wrapping
+  `ErrUnreadable` and the I/O error (R61). `Unread(ref)`, `Suspect(seg)` and `Ranges(seg)`, which
+  give the offset and length of each unread record of a segment (R63). The set drops a segment's
+  entries when E5 reports the segment retired. A gauge of suspect segments kept at each mark,
+  clear and drop, and `Stats.SuspectSegments`, the field RFC 1 §3.7 declares and S1 lacks, served
+  from it (R63). A `ponytail:` at the set names D21's ceiling. No caller outside this epic is
+  wired here (§9).
+- **Acceptance criteria:**
+  - A read that fails with `EIO` twice and then succeeds returns its bytes, and the set stays
+    empty.
+  - A read that fails every attempt stops after at most 3 attempts and 15 s on the test clock,
+    leaves the record in the set and its segment suspect, `SuspectSegments` at one, and returns an
+    error wrapping both `ErrUnreadable` and the I/O error.
+  - A second access to that record makes one attempt; if it returns bytes, the record leaves the
+    set and, being the segment's last, the segment is no longer suspect.
+  - Two unread records in one segment keep it suspect until both have read, and `Ranges` lists
+    both.
+  - A context done between attempts stops the retries and returns the context's error without
+    marking the record.
+  - A retired segment's entries and the gauge are dropped with it.
+- **Tests:** E2's fault schedule on a read, with the attempt counts and the test clock for each
+  bullet (catches a fourth attempt, a retry past 15 s, or three attempts for a record already
+  unread); marks and clears from concurrent readers under `-race`, the gauge compared with a
+  count of distinct segments (catches a gauge that drifts); a retirement with entries in the set
+  (catches a segment suspect after its unlink); `Stats` served with the set at 10⁵ records
+  allocating nothing outside `-race` (catches a walk, R63).
+
+### T9.4 Selection, scope and claims
+
+**Subtask T9.4 estimate: 3.5 man-days.**
+
+- **Track:** B. **Depends on:** T9.1, T9.3; E5's claims (T5.1); E6's damage report (T6.7) and resolved
+  announcement (T6.4); T9.3's unread set.
+- **Covers:** R5, R7, R9, R18–R25, R68, R72.
 - **Deliverables:** `internal/reclaim/select.go`: candidates from the set's sealed and ended
   segments, never active ones or spares; live payload per segment from E4-9's bytes and T9.1's
   live records; per-segment unreclaimed bytes (allocated less live payload) kept with them
@@ -677,35 +743,35 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
   B's sparse segments, asserting the share scope's choice and a segment-set scope (R20,
   `TestRFC1B_RepackAimedAtShare`'s selection half, whose conformance form needs `Release`); two
   passes racing under `-race` (R23); a failed append's segment before and after resolution (R5,
-  R65); a planted corrupt record, then its drop, then selection (R22, R69); a planted pin flag
-  (R21); the three unread cases above, planted in the read path's unread state (R25, catches an
+  R68); a planted corrupt record, then its drop, then selection (R22, R72); a planted pin flag
+  (R21); the three unread cases above, planted in T9.3's set (R25, catches an
   unread record treated as empty or a header-only one treated as dead); a planted deferred loss
   (R9).
 
-### T9.4 Copying content
+### T9.5 Copying content
 
-**Subtask T9.4 estimate: 5.5 man-days.**
+**Subtask T9.5 estimate: 5.5 man-days.**
 
-- **Track:** B. **Depends on:** T9.3; E8's file append domain and claim (T8.1, T8.4), the
+- **Track:** B. **Depends on:** T9.3, T9.4; E8's file append domain and claim (T8.1, T8.4), the
   repack-copy admission class (T8.6); E5's reserve-class roll (T5.6) and positioned read (T5.4b);
-  E6's `Corrupt` (T6.7); the read path's unread state (§9).
-- **Covers:** R2, R25–R32, R46, R47, R56, R63.
+  E6's `Corrupt` (T6.7); T9.3's unread set.
+- **Covers:** R2, R25–R32, R46, R47, R56, R66.
 - **Deliverables:** `internal/reclaim/copy.go`: for each record of the selected segment that
   backs a held or retained piece, read its whole payload with no lock held, with RFC 28 §3.3's
   retry bound (one attempt for a record already unread), and verify it against its checksum. A
   read that returns bytes that do not verify is passed to `Corrupt` with `DomainHeld` once the
   file's append domain is taken (D13), and nothing of it is copied. A read that fails with an I/O
-  error is never passed to `Corrupt`: the record is marked unread and its segment suspect in the
-  read path's unread state, nothing is dropped, appended or reported as corruption, and the unit
+  error is never passed to `Corrupt`: the record is marked unread and its segment suspect in
+  T9.3's unread set, nothing is dropped, appended or reported as corruption, and the unit
   is abandoned before any copy of the segment is appended (D18). A record unread before that
-  reads now is checked as any record's, and the unread state cleared. Then, under the file's append domain
+  reads now is checked as any record's, and the set clears it. Then, under the file's append domain
   (one file at a time): read the index for the pieces of that record still held or retained, and
   the forgetting mark of the file's tag (D10); skip what is neither, abandon the file if its tag
   is being forgotten; otherwise append each run of adjacent pieces with one version, one bit,
   one kind and, for writes, one modification time as one record (D7), with a new sequence number
   and the source's version, admitted from the repack reserve. The copies' locations are kept for
-  T9.6's repoint; nothing is published yet (D8). A segment's pieces whose source failed to verify
-  are reported as dropped, which lets T9.3 treat the segment as producing everything it backs.
+  T9.7's repoint; nothing is published yet (D8). A segment's pieces whose source failed to verify
+  are reported as dropped, which lets T9.4 treat the segment as producing everything it backs.
 - **Acceptance criteria:**
   - A record whose middle was superseded is copied as its two live ends, each with its own
     checksum, and its superseded middle is never written.
@@ -727,20 +793,20 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
   the whole record); a corrupt byte in a superseded part (R28, `TestRFC1A_RepackVerifiesWholeSource`'s
   journal-level form); coalescing across a segment-boundary split and a fill beside a write (R30,
   D7); a reopen after a pass over filled content asserting the bit (R26); the hold between read
-  and append of `TestRFC1A_CopyLosesToNewerWrite`, both halves, under the seam (R31, R63); a
+  and append of `TestRFC1A_CopyLosesToNewerWrite`, both halves, under the seam (R31, R66); a
   forget racing a pass, with the forget record's sequence number compared against every copy's
   (R56); the recorder over a pass with concurrent writers (R46, R47); E2's fault schedule failing
   the source read with `EIO`, then restored, asserting the extents still read after the failed
   pass and the counts of attempts (R25, R32, catches an I/O error handed to `Corrupt`, which
   would drop a dirty extent for good).
 
-### T9.5 Carrying header-only records and deciding drops
+### T9.6 Carrying header-only records and deciding drops
 
-**Subtask T9.5 estimate: 4.25 man-days.**
+**Subtask T9.6 estimate: 4.25 man-days.**
 
-- **Track:** B. **Depends on:** T9.4; T9.1's test; E6's deferred losses and the call that ends a
+- **Track:** B. **Depends on:** T9.5; T9.1's test; E6's deferred losses and the call that ends a
   deferral (T6.2).
-- **Covers:** R9, R15, R16, R33–R35, R61.
+- **Covers:** R9, R15, R16, R33–R35, R64.
 - **Deliverables:** `internal/reclaim/carry.go`: for each header-only record of the selected
   segment, once the pass's content copies for the segment are appended: re-test its liveness with
   the copies counted (R34); carry each live one forward with its sequence number and version
@@ -750,7 +816,7 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
   retirement whose unlink is not yet durable, which is carried (R16). Carried records are
   registered with T9.1 at their new location. For each deferred loss E6 holds against the
   segment, the loss record built from E6's entry is appended into the target, admitted from the
-  repack reserve, and registered with T9.6 so the deferral is ended once the target is durable
+  repack reserve, and registered with T9.7 so the deferral is ended once the target is durable
   (D19); RFC 1 §6's `ponytail:` on its size goes there.
 - **Acceptance criteria:**
   - A settled truncate over content a pass in the same segment carries forward as retained is
@@ -766,25 +832,25 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
 - **Tests:** the planted case of a settled truncate and a retained version in one segment
   (R34, `TestRFC1A_DropsDecidedAfterCopies`' journal-level form, whose conformance form needs a
   hold); the held directory sync of `TestRFC1A_RemovalOutlivesItsSegment`, both halves (R16,
-  R61); a carried removal's numbers read back through E3's codec (R33); an unsettled truncate
+  R64); a carried removal's numbers read back through E3's codec (R33); an unsettled truncate
   carried and reopened (`TestRFC1A_RemovalRecordsCarriedForward`'s second half); a deferred
   loss planted through E6's registry with the headroom drawn to zero, the target's sync held at
   the seam, then a crash (R9, R35, catches a loss record written on the headroom or a source
   unlinked before its target is durable).
 
-### T9.6 The pass: durability, repoint, `freed` and progress
+### T9.7 The pass: durability, repoint, `freed` and progress
 
-**Subtask T9.6 estimate: 4.5 man-days.**
+**Subtask T9.7 estimate: 4.5 man-days.**
 
-- **Track:** B. **Depends on:** T9.5, T9.2; E6's `WaitDurable` (T6.1); E5's executor and its
-  durable-unlink report (T5.9); E8's `Close` (T8.12); C2 of E7a (after its T7.11), whose `Open`
+- **Track:** B. **Depends on:** T9.6, T9.2; E6's `WaitDurable` (T6.1); E5's executor and its
+  durable-unlink report (T5.9); E8's `Close` (T8.12); C2 of E7a (after its T7.13), whose `Open`
   the crash tests reopen through.
-- **Covers:** R3, R5, R16, R22, R26, R35–R40, R46, R48–R51, R61, R62, R64–R66.
+- **Covers:** R3, R5, R16, R22, R26, R35–R40, R46, R48–R51, R64, R65, R67–R69.
 - **Deliverables:** `internal/reclaim/pass.go` and `pkg/block/journal/repack.go`:
   `Repack(ctx, budget, scope)` checks the context first, then runs units (D9): select one
   segment, copy and carry, wait for the copies to be durable, repoint under each file's index
   (held and retained entries that still name the source piece now name the copy, as one step per
-  file), end each deferral T9.5 registered for the unit through E6 (D19), re-read an ended
+  file), end each deferral T9.6 registered for the unit through E6 (D19), re-read an ended
   segment's resolved state, and hand the segment to E5's executor; on a
   failed copy window the unit is abandoned (D8). The pass returns `freed`, the sum of the
   retirements E5 reports durable, once they are, and stops at the budget or when no candidate
@@ -803,23 +869,23 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
     unit in flight.
   - Close with a pass in flight stops it before any segment closes.
 - **Tests:** the seam's sync held across a unit (R36); `TestRFC1A_RepackUnderRead` and a
-  reader looping over the repointed extents under `-race` (R37, R40, R64); the held directory
+  reader looping over the repointed extents under `-race` (R37, R40, R67); the held directory
   sync of `TestRFC1B_FreedMeansFreed`'s repack half (R38); E2's crash-simulating seam at each
   sync point of a unit, `TestRFC1A_CrashMidRepack` and `TestDamage_LostWrites/repack_copy` and
-  `/repack_unlink` (R36, R62); a reader loop against a pass with a bounded deadline (R48,
+  `/repack_unlink` (R36, R65); a reader loop against a pass with a bounded deadline (R48,
   `TestRFC1B_ReclaimNotStarved`'s shape with overwrites); a read of another file never waiting
   on a held unlink (R49); a done and a cancelled context (R51); `TestRFC1B_BackgroundJoined`
-  (R50, R66); `repacked_bytes` and the span through `Stats` and a recording tracer (R39); a
+  (R50, R69); `repacked_bytes` and the span through `Stats` and a recording tracer (R39); a
   recycled segment's failed append carried and retired (`TestRFC1A_RecycledSegmentKeepsNewRecords`,
-  R65); a `testing.F` target interleaving passes with writes and removals against the reference
+  R68); a `testing.F` target interleaving passes with writes and removals against the reference
   model.
 - **Rules:** a `decision:` at the abandon on a failed copy window (D8).
 
-### T9.7 The repack reserve and the copy's accounting
+### T9.8 The repack reserve and the copy's accounting
 
-**Subtask T9.7 estimate: 2.5 man-days.**
+**Subtask T9.8 estimate: 2.5 man-days.**
 
-- **Track:** B. **Depends on:** T9.6; E8's admission classes (T8.6) and per-share counters (T8.5,
+- **Track:** B. **Depends on:** T9.7; E8's admission classes (T8.6) and per-share counters (T8.5,
   T8.13); E5's reserve spares (T5.5).
 - **Covers:** R41–R43.
 - **Deliverables:** `internal/reclaim/reserve.go`: the pass's copy budget is the smaller of
@@ -838,12 +904,12 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
   `TestRFC1B_RepackBesideShareAtLimit`'s journal-level form); the reserve shrunk to one segment and
   a budget of three, asserting the units run one per reserve (R41).
 
-### T9.8 Sealing a share's active segments, and the per-segment accounting
+### T9.9 Sealing a share's active segments, and the per-segment accounting
 
-**Subtask T9.8 estimate: 3.5 man-days.**
+**Subtask T9.9 estimate: 3.5 man-days.**
 
-- **Track:** B. **Depends on:** T9.3, T9.7; E5's seal (T5.7) and per-tag bytes (T5.1); E8's
-  headroom class (T8.6); the read path's unread state (§9).
+- **Track:** B. **Depends on:** T9.3, T9.4, T9.8; E5's seal (T5.7) and per-tag bytes (T5.1); E8's
+  headroom class (T8.6).
 - **Covers:** R44, R45.
 - **Deliverables:** `internal/reclaim/seal.go`: before a pass scoped to a share selects, each
   stream's active segment that holds unreclaimed bytes of the share is sealed through E5's seal,
@@ -851,7 +917,7 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
   it; the segment then becomes an ordinary candidate. `internal/segment/inspect.go` and
   `Inspector.Segments()`: one `SegmentInfo` per segment from E5's set and E4-9's counters, with
   `Damaged` from E6, whether it is suspect and each unread range as an offset and a length from
-  the read path's unread state (`SegmentInfo` gains the two where E1's type predates RFC 1 §4.4's
+  T9.3's unread set (`SegmentInfo` gains the two where E1's type predates RFC 1 §4.4's
   wording), and a retired damaged segment's row kept, marked retired, until close; the
   unreclaimed figure per segment kept internally, under D16's `ponytail:`. A `decision:` at the
   seal names the rule as RFC 1 §10 question 5 words it, and its ceiling: it stands on an open
@@ -872,15 +938,15 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
   shape with overwrites); a read failed at the fault schedule, then restored (R45's suspect
   half, catches a row that never clears).
 
-### T9.9 `Forget`
+### T9.10 `Forget`
 
-**Subtask T9.9 estimate: 4.5 man-days.**
+**Subtask T9.10 estimate: 4.5 man-days.**
 
-- **Track:** B. **Depends on:** T9.1, T9.4; E8's registry, tag check and conflict flag (T8.3,
+- **Track:** B. **Depends on:** T9.1, T9.5; E8's registry, tag check and conflict flag (T8.3,
   T8.4), removals and markers (T8.8, T8.9) and headroom class (T8.6); E6's `WaitDurable` (T6.1)
-  and `Admit` (T6.6); C2 of E7a (after its T7.11), whose `Open` applies forget records, for the
+  and `Admit` (T6.6); C2 of E7a (after its T7.13), whose `Open` applies forget records, for the
   crash tests.
-- **Covers:** R13, R52–R59, R67, R68.
+- **Covers:** R13, R52–R59, R70, R71.
 - **Deliverables:** `internal/datapath/forget.go`: `Forget(ctx, tag)` as D10 to D12: the context
   check; the forgetting mark under the registry's mutex, refused with `ErrHandleOpen` while a
   handle of the tag is open; the barrier over the tag's files; the forget record, admitted from
@@ -904,8 +970,8 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
   - With the forget record's sync failed, `Forget` returns the error and T is whole.
   - With a done context, nothing is appended.
   - A tag not attached at reopen is kept and served once attached.
-- **Tests:** `TestRFC1C_ForgetLeavesNothingToSettle` (R52, R53, R54, R67);
-  `TestRFC1C_UnclaimedTagReported` (R68); `TestRFC1C_FileIsItsSharesShare`'s forget steps (R57,
+- **Tests:** `TestRFC1C_ForgetLeavesNothingToSettle` (R52, R53, R54, R70);
+  `TestRFC1C_UnclaimedTagReported` (R71); `TestRFC1C_FileIsItsSharesShare`'s forget steps (R57,
   owned with epic 8); the cancelled-call row's `Forget` part (R59); a second forget and an empty
   tag with the seam's write log (R55); a sync failure at the seam on the forget record (D11); a
   forget racing a pass and a `Fill` of the tag's files, comparing sequence numbers (R56); a tag
@@ -913,9 +979,9 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
   below the forget retired once the record is durable, and the forget record itself dropped by
   a pass once none remains (R13).
 
-### T9.10 `Strand`
+### T9.11 `Strand`
 
-**Subtask T9.10 estimate: 0.75 man-days.**
+**Subtask T9.11 estimate: 0.75 man-days.**
 
 - **Track:** B. **Depends on:** T8.3, T8.4.
 - **Covers:** R60.
@@ -929,12 +995,12 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
 - **Tests:** the three criteria, with the seam's write log for the second (catches a durable
   strand).
 
-### T9.11 Conformance rows, known failures and the model
+### T9.12 Conformance rows, known failures and the model
 
-**Subtask T9.11 estimate: 3 man-days.**
+**Subtask T9.12 estimate: 3 man-days.**
 
-- **Track:** B. **Depends on:** T9.1 to T9.10; C2 of E7a (after its T7.11).
-- **Covers:** R61–R70, and the rows below.
+- **Track:** B. **Depends on:** T9.1, T9.2, T9.3, T9.4, T9.5, T9.6, T9.7, T9.8, T9.9, T9.10, T9.11; C2 of E7a (after its T7.13).
+- **Covers:** R64–R73, and the rows below.
 - **Deliverables:** the conformance tests this epic turns green, each leaving
   `test/journal/known.yaml` in its change: `TestRFC1A_CopyLosesToNewerWrite`,
   `TestRFC1A_CrashMidRepack`, `TestRFC1A_RemovalOutlivesItsSegment`, `TestRFC1A_RepackUnderRead`,
@@ -962,48 +1028,53 @@ test/journal/known.yaml T9.11  rows turned green removed; rows needing epic 9b r
 flowchart TD
   S3(["S3 walking skeleton"]):::sync --> T1["T9.1 liveness and drop test"]
   T1 --> T2["T9.2 retire what is not held"]
-  T1 --> T3["T9.3 selection and scope"]
-  T3 --> T4["T9.4 content copies"]
-  T4 --> T5["T9.5 carried records, deferred losses, drops"]
-  T5 --> T6["T9.6 the pass"]
-  T2 --> T6
-  T6 --> T7["T9.7 reserve and accounting"]
-  T3 & T7 --> T8["T9.8 share seal, per-segment rows"]
-  T1 & T4 --> T9["T9.9 Forget"]
-  T10["T9.10 Strand"]
+  E7AT1(["E7a T7.1 read-retry bound"]):::ext -.-> T3["T9.3 the unread set"]
+  T1 --> T4["T9.4 selection and scope"]
+  T3 --> T4
+  T4 --> T5["T9.5 content copies"]
+  T3 --> T5
+  T5 --> T6["T9.6 carried records, deferred losses, drops"]
+  T6 --> T7["T9.7 the pass"]
+  T2 --> T7
+  T7 --> T8["T9.8 reserve and accounting"]
+  T3 & T4 & T8 --> T9["T9.9 share seal, per-segment rows"]
+  T1 & T5 --> T10["T9.10 Forget"]
+  T11["T9.11 Strand"]
   C1(["after T9.2: space returns without Repack"]):::sync
-  C2(["after T9.6: Repack usable by the engine"]):::sync
-  C3(["after T9.9: a share can be removed"]):::sync
+  C2(["after T9.7: Repack usable by the engine"]):::sync
+  C3(["after T9.10: a share can be removed"]):::sync
   T2 --> C1
-  T6 --> C2
-  T9 --> C3
-  T6 & T7 & T8 & T9 & T10 --> T11["T9.11 rows, known failures, model"]
-  T1 -. "fills the tracker, Held, Droppable" .-> E7A6["E7a T7.6, T7.11"]:::ext
-  E7AC2(["C2 of E7a: after T7.11"]):::sync -. "crash tests" .-> T6 & T9 & T11
+  T7 --> C2
+  T10 --> C3
+  T7 & T8 & T9 & T10 & T11 --> T12["T9.12 rows, known failures, model"]
+  T1 -. "fills the tracker, Held, Droppable" .-> E7A6["E7a T7.6, T7.13"]:::ext
+  E7AC2(["C2 of E7a: after T7.13"]):::sync -. "crash tests" .-> T7 & T10 & T12
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
   classDef ext stroke:#888,stroke-width:2px,stroke-dasharray:2 2
 ```
 
-- **T9.1 first.** E7a's T7.6 fills T9.1's tracker at open, and its T7.11 asks `Held` and
+- **T9.1 first.** E7a's T7.6 fills T9.1's tracker at open, and its T7.13 asks `Held` and
   `Droppable`, so T9.1 lands early after S3, ahead of the rest of this epic, or E7a waits on it.
+- **T9.3 after E7a's T7.1**, which builds the read-retry bound it shares. It needs nothing else of
+  this epic and lands before T9.4, T9.5 and T9.9, which read the set.
 - **After T9.2:** a journal that is only written, overwritten and truncated returns its space in
   whole segments, with no `Repack` call.
-- **After T9.6:** `Repack` is complete for a journal-only engine; T9.7 and T9.8 make it safe at
+- **After T9.7:** `Repack` is complete for a journal-only engine; T9.8 and T9.9 make it safe at
   the limit and aimable at a share.
-- **After T9.9:** a share's removal can drop its tag. T9.9 and T9.10 can run beside T9.5 to
-  T9.8 once T9.4 has landed.
-- **Crash tests** in T9.6, T9.9 and T9.11 reopen through E7a's `Open` and wait for its C2: a copy
+- **After T9.10:** a share's removal can drop its tag. T9.10 and T9.11 can run beside T9.6 to
+  T9.9 once T9.5 has landed.
+- **Crash tests** in T9.7, T9.10 and T9.12 reopen through E7a's `Open` and wait for its C2: a copy
   lost before a later record is a torn slot, which an `Open` without the emptying refuses.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T9.1, T9.2 | 9 | — | the liveness rule and its first consumer: space returns without `Repack`. E7a's T7.6 and T7.11 wait for it |
-| 2 | T9.3, T9.4, T9.5 | 13.25 | PR 1 | what a pass selects, copies and carries, tested before it is wired |
-| 3 | T9.6, T9.7, T9.8 | 10.5 | PR 2; E7a's T7.11 (C2) | `Repack` end to end, at the limit and aimed at a share; its crash tests reopen through E7a |
-| 4 | T9.9, T9.10 | 5.25 | PR 2; E7a's T7.11 (C2) | the tag calls; can be open beside PR 3; the forget's crash tests reopen through E7a |
-| 5 | T9.11 | 3 | PR 3, PR 4; E7a's T7.11 (C2) | the rows turned green and the known-failure list re-pointed |
+| 1 | T9.1, T9.2 | 9 | — | the liveness rule and its first consumer: space returns without `Repack`. E7a's T7.6 and T7.13 wait for it |
+| 2 | T9.3, T9.4, T9.5, T9.6 | 15.75 | PR 1; E7a's T7.1 | the unread set, then what a pass selects, copies and carries, tested before it is wired |
+| 3 | T9.7, T9.8, T9.9 | 10.5 | PR 2; E7a's T7.13 (C2) | `Repack` end to end, at the limit and aimed at a share; its crash tests reopen through E7a |
+| 4 | T9.10, T9.11 | 5.25 | PR 2; E7a's T7.13 (C2) | the tag calls; can be open beside PR 3; the forget's crash tests reopen through E7a |
+| 5 | T9.12 | 3 | PR 3, PR 4; E7a's T7.13 (C2) | the rows turned green and the known-failure list re-pointed |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -1011,7 +1082,7 @@ A suggestion only: one pull request per subtask works as well.
 
 - **The two rules `Repack` owes a capacity refusal.** RFC 1 §10 questions 5 and 6 say the RFC owes
   a rule in `Repack`'s contract (a pass scoped to a share seals the scope's active segments, its
-  marker drawing on the headroom) and unreclaimed bytes in §4.4's per-segment breakdown. T9.8
+  marker drawing on the headroom) and unreclaimed bytes in §4.4's per-segment breakdown. T9.9
   builds both as §10 words them, with a `decision:` marker; RFC 1 §7.2 and §4.4 should state them,
   and `SegmentInfo` gains its exported field only then (D16). Until the RFC changes, R44 and R45
   rest on an open question rather than on a section's text.
@@ -1025,7 +1096,7 @@ A suggestion only: one pull request per subtask works as well.
   RFC's author, or add the case to RFC 1 §3.
 - **A file's tag after a forget.** RFC 1 says a file keeps its tag while any segment holds a record
   of it; after `Forget`, the records below the forget are still on disk until repack, and recovery
-  ignores them. T9.9 clears the file's ranges for them so the running journal answers as recovery
+  ignores them. T9.10 clears the file's ranges for them so the running journal answers as recovery
   does. RFC 1 §3 could say so in one sentence.
 - **Conformance rows written against `Release`.** Most of RFC 1 §9.4's reclamation rows make
   unreclaimed bytes by offloading and releasing (repack aimed at a share, at capacity, beside a
@@ -1033,11 +1104,11 @@ A suggestion only: one pull request per subtask works as well.
   reclaim not starved, coalescing, repack copies the live part, repack verifies the whole source).
   This epic tests the same properties at the journal level with overwrites and truncates, and the
   rows stay listed for epic 9b. If the team prefers conformance-level coverage before epic 9b,
-  each row gains an overwrite variant; T9.11's estimate would grow by about a day per five rows.
+  each row gains an overwrite variant; T9.12's estimate would grow by about a day per five rows.
 - **The rebuild's hand-off to T9.1.** E7a's T7.6 registers, at open, each header-only record
   with its location, each forget record with the set of segments holding records of its tag
   below it (D3), and each unsynced loss record with the segments holding the record it names.
-  The hook's exact signature is T9.1's; E7a's T7.11 then asks `Held` and `Droppable` for its
+  The hook's exact signature is T9.1's; E7a's T7.13 then asks `Held` and `Droppable` for its
   emptying. **Decides:** E9a's and E7a's owners, before T9.1 merges. **Blocks:** E7a's T7.6.
 - **Who re-appends an ended segment's records (D20).** RFC 1 §3.1 now re-appends at once every
   synced, still-held record of a segment a failed append or a failed sync ended, holds the ended
@@ -1046,14 +1117,15 @@ A suggestion only: one pull request per subtask works as well.
   (#3518) and no epic document builds it. This epic builds the hold (T9.1, T9.2) and the repack
   half of its conformance row, behind `HoldEnded`. **Decides:** the owners of epics 6 and 8,
   which of them takes the re-append, `MarksRecorded` and the bounded seal. **Blocks:** the write
-  path's half of the row, and T9.11's repack half of it.
-- **Who keeps the unread state (D18).** RFC 28 §3.3's "A read that fails is not a record that
-  does not verify" (#3511) applies to `ReadAt`, `Offered`, repack and the open alike, so one
-  unread set per journal, with the retry bound and the suspect count, serves all four. Epic 5's
-  §9 leaves its positioned read's answer to #3511, and epic 6's D11 returns the error and drops
-  nothing. This epic reads and writes that state and keeps none of its own. **Decides:** the
-  owners of epics 5, 6 and 8, which of them builds it before T9.3. **Blocks:** T9.3, T9.4, T9.8.
+  path's half of the row, and T9.12's repack half of it.
+- **Who calls the unread set (D21).** RFC 28 §3.3's "A read that fails is not a record that does
+  not verify" (#3511) applies to `ReadAt`, `Offered`, `Sync` and `Since` of an unread file, repack
+  and the open alike. This epic builds the set (T9.3) and uses it in repack and in the
+  per-segment rows; until the other callers adopt `Try`, `ReadAt` returns its read error as E6's
+  D11 says and marks nothing, so the set holds only what repack's reads mark. **Decides:** the
+  owners of epics 5, 6 and 8 and of 9b, when each adopts it, and E7b's owner, for the open's
+  held unread records. **Blocks:** nothing in this epic.
 - **What this epic needs from E6's deferred losses (D19).** E6's T6.2 keeps a deferred loss in
   memory (its R92) and says repack writes its record. This epic needs, per segment, the deferred
   losses whose dropped record it holds, and a call that ends a deferral once the copy's target is
-  durable. **Decides:** epic 6's owner, the two calls' shape. **Blocks:** T9.1's flag and T9.5.
+  durable. **Decides:** epic 6's owner, the two calls' shape. **Blocks:** T9.1's flag and T9.6.
