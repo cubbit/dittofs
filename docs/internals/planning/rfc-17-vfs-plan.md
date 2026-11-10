@@ -150,6 +150,7 @@ The questions piece 1's build left open, which may add more, are plan §5 Q4.
 | 9 | Quota | §5.6 | piece 8; the store's read views (plan §5 Q3) |
 | 10 | Locks, grants, watches | §5.11, §3.2 | pieces 4, 7, 8; stage 1 pieces 4, 5, 8 |
 | 11 | Copy and clone | §5.9 | piece 8; the engine's S3 (#3546), not all of stage 3 |
+| 12 | Test doubles (open) | §8 | pieces 1 and 2; before RFC 20's E4 |
 
 "Done when" means every listed row passes and each of its cases is revert-checked. A row may be
 split: its first piece lands the cases it can reach, and the piece that completes it is named
@@ -165,7 +166,7 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
    `vfs.Mutates`; `Call`, which every method but `Principals.SignIn` and `Spell` takes (D8); the codecs of
    every client-held ID, at RFC 14 §2.11's settled widths (a 24-bit
    shard, 5 grace-instance bits, a 40-bit `OpenID`, §10.3); `Service` as its seven areas;
-   `vfstest`'s `Faults`, `Callbacks`, `Null` and `suite.Run`; §8's fuzz targets for
+   `vfstest`'s `Null` and `suite.Run` (its `Faults` and `Callbacks` are piece 12's); §8's fuzz targets for
    every ID decoder.
    Done when: every codec matches bytes written out by hand from §3.4's layout and RFC 14 §2.11's
    widths (no RFC carries vectors yet, plan §5 Q4), and `vfs.Errors()` holds every sentinel and
@@ -179,10 +180,8 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
    method stubbed, which the node hands to `Table.Start` with the filesystem's admission lock, since
    `Table.Start` refuses a nil one; the `lockorder` sorter that takes open-state steps, then
    [fold admission](../rfcs/rfc-7-namespace-metadata.md#9.2%20Timestamps), then accept locks
-   ([§5.0](../rfcs/rfc-17-vfs.md#5.0%20One%20lock%20order)), in one order; `Content`,
-   its conformance suite and the in-memory `Content` that passes it (D3); `vfstest.Memory`, the
-   filesystem over the in-memory store, open state and that `Content`, which RFC 20's E4 needs
-   before its first test; the architecture test (imports and call sites).
+   ([§5.0](../rfcs/rfc-17-vfs.md#5.0%20One%20lock%20order)), in one order; `Content` (D3, its
+   suite and in-memory `Content` piece 12's); the architecture test (imports and call sites).
    Done when: V29 (→11), V32, V33 (→7), V34 (→10) pass.
 3. **Shares, admission and principals:** `Root`, `SecInfo`, `ListShares`, `StatFS` and `Quota`;
    admission on every call, uncached, with `MinProof` and `MinProtection` read from the export
@@ -296,6 +295,20 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
     tests can only pass. Stage 2's clone path calls `Clone` and takes no open: the engine takes the clone-kind
     open through `Deps.Holds`, a `CloneHold` the root adapts from open state (#3546 §6 point 13).
     Done when: V22, V26, V29, V30, V31 pass.
+12. **Test doubles (open, a stage-2 follow-up):** pieces 1 and 2 merged with `vfstest.Record`,
+    `vfstest.RecordingCallbacks` and `internal/vfs/content_test.go`'s `fakeContent`, whose
+    `truncErr` is a canned answer [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)
+    does not allow. This piece builds what §8 names instead: `internal/vfs/contenttest`, the
+    `Content` suite written first and the in-memory `Content` that passes it (D3); `vfstest.Faults`,
+    every `Service` method wrapped explicitly; `vfstest.Callbacks` in place of
+    `RecordingCallbacks`; and `vfstest.Memory`, the filesystem over the in-memory store, open
+    state and that `Content`, with its recording wrapper of mutating calls. It then moves the
+    seven `internal/vfs` test files off the old helpers and deletes `Record`, `RecordingCallbacks`
+    and `fakeContent`. Owner: this plan; it lands before RFC 20's E4, whose first test needs
+    `Memory`. Estimate: 8 man-days (the `Content` suite and in-memory `Content` 2.5, `Faults` 1.5,
+    `Memory` and its wrapper 1.5, `Callbacks` 0.5, the test migration and deletions 2).
+    Done when: the `Content` suite passes over the in-memory `Content`, `suite.Run` passes over
+    `Memory`, and no Go file names `Record`, `RecordingCallbacks` or `fakeContent`.
 
 ## 4. The engine contract
 

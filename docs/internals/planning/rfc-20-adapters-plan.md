@@ -736,7 +736,10 @@ RFC sections: §6.10's codec and pipeline rows.
    once that pull request merges.
 9. **The critical path is long.** E1 → E2 → E3 → E4 and E5 → S3 → E6's second half → E8 holds
    most of the estimate; track C's share of E5 is what keeps the tracks parallel, and E4's and
-   E5's tests that need the other's half wait for it.
+   E5's tests that need the other's half wait for it. Those tests add no man-days: they are the
+   tests E4's and E5's subtasks already carry, run on the real `Conn` and pipeline rather than on
+   a stand-in, and the sidecar runner's trivial real sidecar is part of T4.9. `vfstest.Memory`
+   and `Faults` are RFC 17 plan piece 12's, estimated there.
 10. **The first milestone needs two pieces no plan builds yet.** An SMB mount with AD sign-in
    needs `gss` (risk 5) and the authenticator behind `SignIn` (keytab, PAC, NTLMv2, NETLOGON,
    LDAP), which goes to an RFC 18 plan that does not exist. Either the RFC 22 plan takes the

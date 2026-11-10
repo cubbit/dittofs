@@ -799,9 +799,9 @@ cannot build apart.
   15's topology exists it answers none.
 - `vfstest.Memory`, the in-memory service passing RFC 17 §8's conformance suite, and
   `vfstest.Faults`, its fault wrapper, which every handler and `core` test runs on; `Null` serves
-  the allocation gate and the benchmarks only (RFC 20 §7.2). Owner: RFC 17's plan, whose stage 2
-  delivers `Memory` with its in-memory `Content`; it must land before E4's first test, which
-  calls it, so E4's tests wait on that stage.
+  the allocation gate and the benchmarks only (RFC 20 §7.2). Owner: RFC 17's plan, piece 12, a
+  stage-2 follow-up estimated there, which delivers `Memory` with its in-memory `Content`; it
+  must land before E4's first test, which calls it, so E4's tests wait on that piece.
 - The open-unlinked hold's feed (D22): whatever tracks open files in v2 (RFC 17's opens,
   through the adapters) sets it before any protocol is served. Owner: the cutover.
 - The share-policy gates (D23): flavor and Kerberos-level policy, the netgroup allowlist and
