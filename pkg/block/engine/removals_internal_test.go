@@ -111,7 +111,7 @@ func TestAFailedItemRunsAgainAtItsBackoff(t *testing.T) {
 	// only arm a second timer: taken here, the loop arms exactly one.
 	<-l.wake
 	go l.run()
-	t.Cleanup(l.close)
+	t.Cleanup(func() { l.halt(nil) })
 	until := func(what string, cond func() bool) {
 		t.Helper()
 		deadline := time.Now().Add(5 * time.Second)

@@ -369,7 +369,7 @@ func (h *heldClose) Close() error {
 // progress while that handle closes: Close waits for it, so the journal is
 // never closed under the handle's Close.
 func TestAFailedBindsHandleCloseIsJoinedByClose(t *testing.T) {
-	fl := &faultLifecycle{raiseErr: errInjected}
+	fl := &faultLifecycle{}
 	hc := &heldClose{entered: make(chan struct{}), release: make(chan struct{})}
 	u := newUnitWith(t, unitConfig{
 		unbound: true,
@@ -380,6 +380,8 @@ func TestAFailedBindsHandleCloseIsJoinedByClose(t *testing.T) {
 			return hc
 		},
 	})
+	// Armed once Start has raised through it.
+	fl.raiseErr = errInjected
 	b := enginetest.AddShare(t, u.fs.Store, "b", 1<<30)
 	bound := make(chan error, 1)
 	finished := make(chan struct{})
@@ -863,10 +865,10 @@ func TestACloseWithNoDeadlineGivesUpAtThirtySecondsOverTheRealStore(t *testing.T
 // at the stop bound leaving the journal and the handle open.
 func TestCloseJoinsACloneGoroutineThatIgnoresItsContext(t *testing.T) {
 	t.Run("past the bound", func(t *testing.T) {
-		u := clonedUnit(t)
+		u, h := clonedHookedUnit(t)
 		src := u.committedFile(t, "src", fill(mib, 's'))
 		dst := u.create(t, "dst")
-		release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{Len: mib})
+		release, answer := u.heldBeforePhase1(t, h, src, dst, vfserr.Extent{Len: mib})
 		waiting := joinOf(u.e, "a clone goroutine")
 		closed := closing(u.e, context.Background())
 
@@ -888,10 +890,10 @@ func TestCloseJoinsACloneGoroutineThatIgnoresItsContext(t *testing.T) {
 	})
 
 	t.Run("released", func(t *testing.T) {
-		u := clonedUnit(t)
+		u, h := clonedHookedUnit(t)
 		src := u.committedFile(t, "src", fill(mib, 's'))
 		dst := u.create(t, "dst")
-		release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{Len: mib})
+		release, answer := u.heldBeforePhase1(t, h, src, dst, vfserr.Extent{Len: mib})
 		waiting := joinOf(u.e, "a clone goroutine")
 		closed := closing(u.e, context.Background())
 
@@ -1270,7 +1272,7 @@ func TestTheRaiseWokenByLoopWorkDuringTheStopRunsAndIsJoinedAfterIt(t *testing.T
 
 	dueOnVersion(t, u, 2)
 
-	block := 2 * (unitLimit - next - 1)
+	block := 2 * (u.limit - next - 1)
 	calls0 := len(sl.raiseCalls())
 	started0 = u.e.RaisesStarted()
 	sl.onRaise = func(int) {
@@ -1306,7 +1308,7 @@ func TestTheRaiseWokenByLoopWorkDuringTheStopRunsAndIsJoinedAfterIt(t *testing.T
 		t.Errorf("the raise's store call began on a context that ended: %v", calls[0].ctxErr)
 	}
 
-	want := entity.JournalVersion(journal.Version{Counter: unitLimit + block}.Bytes())
+	want := entity.JournalVersion(journal.Version{Counter: u.limit + block}.Bytes())
 	if got := calls[0].to[u.share.ID]; got != want {
 		t.Errorf("the raise asked for the limit %v, want %v", got, want)
 	}
@@ -1412,7 +1414,7 @@ func TestAFailedBindDuringCloseWakesARaiseThatCloseJoins(t *testing.T) {
 		})
 	})
 
-	l0 := marks(s)[0].Counter
+	l0 := limit(s)
 
 	setLimit(t, s, s.spare.ID, l0+3*testBlock)
 
@@ -1547,7 +1549,8 @@ func TestCloseLeavesNoGoroutineAfterEveryKindOfBackgroundWork(t *testing.T) {
 // recovers after 50 attempts only so that a retry that never ends cannot hang
 // the test.
 func TestCloseDoesNotWaitBehindAFailingReleaseOfACloneSource(t *testing.T) {
-	h := &recHolds{}
+	h := &faultHolds{}
+	var tries, freed atomic.Int64
 	first := make(chan struct{})
 	gate := make(chan struct{})
 
@@ -1560,7 +1563,7 @@ func TestCloseDoesNotWaitBehindAFailingReleaseOfACloneSource(t *testing.T) {
 	}
 
 	h.onRel = func(context.Context) error {
-		_, n := h.counts()
+		n := tries.Add(1)
 		if n == 1 {
 			firstOnce.Do(func() {
 				close(first)
@@ -1570,6 +1573,7 @@ func TestCloseDoesNotWaitBehindAFailingReleaseOfACloneSource(t *testing.T) {
 		}
 
 		if n > 50 {
+			freed.Add(1)
 			return nil
 		}
 
@@ -1604,7 +1608,7 @@ func TestCloseDoesNotWaitBehindAFailingReleaseOfACloneSource(t *testing.T) {
 
 	// The first attempt, which the loop was in when Close began, and the one
 	// the loop's end makes.
-	if _, n := h.counts(); n != 2 {
+	if n := tries.Load(); n != 2 {
 		t.Errorf("%d Release attempts when Close returned, want 2", n)
 	}
 
@@ -1612,10 +1616,10 @@ func TestCloseDoesNotWaitBehindAFailingReleaseOfACloneSource(t *testing.T) {
 		t.Errorf("the clone goroutine still runs after Close: %v", left)
 	}
 
-	if h.released() != 0 {
+	if n := freed.Load(); n != 0 {
 		t.Errorf(
 			"%d Releases answered nil, want none: the source stays held for the next start",
-			h.released(),
+			n,
 		)
 	}
 }
