@@ -17,30 +17,44 @@ import (
 
 // §9.1 clone, the rows a clone's reservation, journal step, copies and phase
 // 1 answer for. A clone keeps the destination's write outside its extent,
-// staged before it, and one staged while it runs lands without a stall; it
-// never waits, no remote being composed, answering within a bound no clock
-// moves, with the destination reading the source's journal-held bytes; and a
-// clone whose reservation the destination's journal refuses fails before its
-// journal step, the destination reading its prior content and both extents
-// writable again, their registrations undone.
+// staged before it, and one staged while it runs, held at its phase 1, lands
+// without a stall; it never waits, no remote being composed, answering within
+// a bound no clock moves, with the destination reading the source's
+// journal-held bytes where the source is dirty and zeros where it is a hole,
+// over the destination's prior content; and a clone whose reservation the
+// destination's journal refuses fails before its journal step, the
+// destination reading its prior content and both extents writable again,
+// their registrations undone.
 func TestRFC8A_Clone(t *testing.T) {
 	f := enginetest.New(t)
 	ctx := t.Context()
 	const n = 64 << 10
 	_, src := f.File("src")
 	_, dst := f.File("dst")
-	s := bytes.Repeat([]byte{'s'}, n)
-	write(t, f, src, 0, s)
+	// The source is dirty in its first and last quarters, a hole between.
+	s := make([]byte, n)
+	copy(s, bytes.Repeat([]byte{'s'}, n/4))
+	copy(s[3*n/4:], bytes.Repeat([]byte{'t'}, n/4))
+	write(t, f, src, 0, s[:n/4])
+	write(t, f, src, 3*n/4, s[3*n/4:])
+	write(t, f, dst, 0, bytes.Repeat([]byte{'d'}, n))
 	write(t, f, dst, 1<<20, []byte("outside"))
 	// The test clock never moves, so a clone that waited on it, or on
 	// anything else, would answer the bound's deadline.
 	bctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	entered, release := f.HoldNextClone()
 	cloned := make(chan error, 1)
 	go func() { cloned <- f.E.Clone(bctx, f.Share.ID, src, f.Share.ID, dst, vfserr.Extent{Len: n}) }()
+	select {
+	case <-entered:
+	case err := <-cloned:
+		t.Fatalf("Clone answered %v before its phase 1", err)
+	}
 	if _, err := f.E.Write(bctx, f.Share.ID, dst, 2<<20, []byte("during"), engine.WriteOpts{Done: func() {}}); err != nil {
 		t.Errorf("a write outside the extent while the clone runs: %v, want it to land without a stall", err)
 	}
+	release()
 	if err := <-cloned; err != nil {
 		t.Fatalf("Clone: %v, want an answer without a wait", err)
 	}
@@ -48,7 +62,7 @@ func TestRFC8A_Clone(t *testing.T) {
 		t.Errorf("the write outside the extent staged during the clone reads %q", got)
 	}
 	if got := read(t, f, dst, 0, n); !bytes.Equal(got, s) {
-		t.Error("the destination extent does not read the source")
+		t.Error("the destination extent does not read the source, its data and its hole")
 	}
 	if got := read(t, f, dst, 1<<20, 7); string(got) != "outside" {
 		t.Errorf("the write outside the extent reads %q after the clone", got)

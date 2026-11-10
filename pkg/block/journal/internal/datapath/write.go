@@ -16,14 +16,21 @@ import (
 //
 // A cancelled ctx is refused first and changes nothing; a handle whose close
 // began is refused next, with core.ErrClosed, and a call that runs holds its
-// handle's Close back until it returns. A zero-length p
-// returns the zero version and does nothing: no version is drawn and nothing
-// is appended or counted. A negative off, or an off whose end overflows, is
-// refused with core.ErrInvalidExtent before anything is drawn or appended.
+// handle's Close back until it returns. The file's tag is checked next — a
+// file that belongs to another share is refused with core.ErrOtherShare,
+// whatever the call's own shape, before the payload's length or the extent's
+// are even looked at. A zero-length p then returns the zero version and does
+// nothing: no version is drawn and nothing is appended or counted. A
+// negative off, or an off whose end overflows, is refused with
+// core.ErrInvalidExtent before anything is drawn or appended. The tag check
+// claims nothing, so a shape refused after it leaves the file as it was.
 //
 // The version is drawn, and the record appended and published, with the
 // file's append domain held, so the versions of one file are appended in the
-// order they were assigned. The domain is the only one held across the record
+// order they were assigned. The tag is checked again under that domain,
+// immediately before the draw, so checking a file's tag and claiming it are
+// one step: two first writes of one new FileID through two handles cannot
+// both pass the check. The domain is the only one held across the record
 // write, and publishing follows the write: the index never names a record
 // that is not yet in its segment. Publishing never waits on a sync.
 //
@@ -39,6 +46,15 @@ func (c *Core) WriteAt(ctx context.Context, s *Share, id core.FileID, off int64,
 		return core.Version{}, err
 	}
 	defer exit()
+	// The check takes no share of the append domain: it claims nothing, so
+	// the call stands down before the domain is taken. It refuses a call
+	// naming a file another share owns before the call's own shape is looked
+	// at — a zero-length write or an invalid extent names a file all the
+	// same, and the wrong handle never reaches those refusals. The check
+	// runs again under the domain, where the claim it precedes is made.
+	if err := c.checkTag(s, id); err != nil {
+		return core.Version{}, err
+	}
 	if len(p) == 0 {
 		return core.Version{}, nil
 	}
@@ -56,6 +72,15 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 	unlock := c.domains.Lock(id)
 	defer unlock()
 
+	// The tag check runs here again, under the domain the claim publishes
+	// under, so the two are one step: a first write through another handle
+	// waits on the domain and meets the claim, not an unclaimed entry. A
+	// refused write draws no version, appends nothing and counts no written
+	// byte. A later capacity admission slots in after this check, before the
+	// draw.
+	if err := c.checkTag(s, id); err != nil {
+		return core.Version{}, 0, err
+	}
 	v, err := c.counters.Draw()
 	if err != nil {
 		return core.Version{}, 0, err
@@ -96,13 +121,28 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 		if c.afterAppend != nil {
 			c.afterAppend()
 		}
-		// decision: the index may refuse a publish after its record is in the
-		// segment, by a tag that owns the file elsewhere or by the entry bound.
-		// The caller gets the error and the record stays on disk, never
-		// published by this run. That is accepted because only one share exists
-		// and no bound is set low, so the refusal is unreachable until checks
-		// that refuse before a version is drawn land; they close the window and
-		// this marker goes then.
+		// decision: the index may refuse a publish after its record is in
+		// the segment. The tag check above refuses a file another share owns
+		// before a version is drawn, and the file's tag cannot change while
+		// this call holds the file's append domain — only the claim that
+		// publishes under this same domain writes a tag, and it holds the
+		// domain from its check to its publish — so a tag refusal here needs
+		// another tag to claim the file inside WriteRetain itself, without the
+		// domain: no path does that today, and a path that did would be the
+		// fault shape the rival mark exists for, reached only by a bug. The
+		// live case is the entry bound, which no earlier check holds.
+		//
+		// The tag has the same hole: a refusal at WriteRetain's admission
+		// returns before its update applies, so the claim that names the
+		// record is never made — the record sits in its segment under this
+		// handle's tag while the file stays untagged and un-noted, so another
+		// share's next write can claim the file and leave its records, on
+		// disk, under two tags a later rebuild reads as a conflict. Both
+		// holes close the same way, a capacity admission that refuses before
+		// the version is drawn. Until then the caller gets the error and the
+		// record stays on disk, never published by this run. Overturned by a
+		// check of the entry bound before the draw, which would leave this
+		// refusal with no reachable case at all.
 		hd, err := c.index.WriteRetain(s.Tag, id, index.Placed{
 			Extent:  core.Extent{Off: off + done, Len: pl.N},
 			Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
