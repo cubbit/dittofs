@@ -7,84 +7,84 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 5: a deallocate larger than the journal''s free capacity reads as zeros; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at Deallocate until the journal has it.'
+  reason: 'Epic 5: a deallocate larger than the journal''s free capacity reads as zeros; also the start (epic 6). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at Deallocate until the journal has it.'
   issue: '#3588'
 - test: TestRFC8A_FailedWindow
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 4: a failed sync window reaches the next Commit as a new verifier and a raised loss sequence; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at Sync and the failed window until the journal has them.'
+  reason: 'Epic 4: a failed sync window reaches the next Commit as a new verifier and a raised loss sequence; also the start (epic 6). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at Sync and the failed window until the journal has them.'
   issue: '#3587'
 - test: TestRFC8A_GroupCommit
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 4: a group commit conflict delays only the conflicting files; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt and Sync until the journal has them.'
+  reason: 'Epic 4: a group commit conflict delays only the conflicting files; also the start (epic 6). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt and Sync until the journal has them.'
   issue: '#3587'
 - test: TestRFC8A_JournalAuthority
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: recovery re-applies existence at start; also Write, Read, Overlay and Allocation (epic 3). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, ReadAt, Sync and Since until the journal has them.'
+  reason: 'Epic 6: recovery re-applies existence at start; also Write, Read, Overlay and Allocation (epic 3). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt, ReadAt, Sync and Since until the journal has them.'
   issue: '#3589'
 - test: TestRFC8A_OverwriteWaitsForExistence
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 4: Commit waits for an overwrite''s existence; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt and Sync until the journal has them.'
+  reason: 'Epic 4: Commit waits for an overwrite''s existence; also the start (epic 6). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt and Sync until the journal has them.'
   issue: '#3587'
 - test: TestRFC8A_StableWriteLazyExistence
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: recovery serves size and mtime at start; also Commit and the group commit (epic 4). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, Sync and Since until the journal has them.'
+  reason: 'Epic 6: recovery serves size and mtime at start; also Commit and the group commit (epic 4). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt, Sync and Since until the journal has them.'
   issue: '#3589'
 - test: TestRFC8A_StalledStore
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 4: Commit under a store that commits nothing; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt and Sync until the journal has them.'
+  reason: 'Epic 4: Commit under a store that commits nothing; also the start (epic 6). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt and Sync until the journal has them.'
   issue: '#3587'
 - test: TestRFC8A_SyncBeforeExistence
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 4: the group commit syncs before it commits existence; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, Sync and the crash seam until the journal has them.'
+  reason: 'Epic 4: the group commit syncs before it commits existence; also the start (epic 6). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt, Sync and the crash seam until the journal has them.'
   issue: '#3587'
 - test: TestRFC8A_TruncateSyncBeforeExistence
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 5: a truncate''s phase 1 size is backed by synced records across a crash; also the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, Truncate, Sync and the crash seam until the journal has them.'
+  reason: 'Epic 5: a truncate''s phase 1 size is backed by synced records across a crash; also the start (epic 6). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt, Truncate, Sync and the crash seam until the journal has them.'
   issue: '#3588'
 - test: TestRFC8A_TruncateUpSurvivesACrash
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 5: a truncate up crashed before its group commit is served after the restart; also recovery (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, Truncate, Since and the crash seam until the journal has them.'
+  reason: 'Epic 5: a truncate up crashed before its group commit is served after the restart; also recovery (epic 6). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt, Truncate, Since and the crash seam until the journal has them.'
   issue: '#3588'
 - test: TestRFC8A_Verifier
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: start and stop; also the verifier (epic 4). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt until the journal has it.'
+  reason: 'Epic 6: start and stop; also the verifier (epic 4). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt until the journal has it.'
   issue: '#3589'
 - test: TestRFC8A_IncarnationAtStart
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a restart raises the incarnation of every served shard and opens a new grace instance on it. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at Close (T6.8).'
+  reason: 'Epic 6: a restart raises the incarnation of every served shard and opens a new grace instance on it. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at Close (T6.8).'
   issue: '#3589'
 - test: TestRFC8C_DeclaredInterfaces
   message: 'the engine never calls'
@@ -98,208 +98,208 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: the engine opens its journals at start. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt and Since until the journal has them.'
+  reason: 'Epic 6: the engine opens its journals at start. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt and Since until the journal has them.'
   issue: '#3589'
 - test: TestRFC8_FixtureRecordsItsJournal
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: the fixture records its journal through the store before the engine starts. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag.'
+  reason: 'Epic 6: the fixture records its journal through the store before the engine starts. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion).'
   issue: '#3589'
 - test: TestRFC8A_AttachAboveTheFloor
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: Bind attaches a share above its floor. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, Since and the version limit raise at attach until the journal and the engine have them.'
+  reason: 'Epic 6: Bind attaches a share above its floor. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt, Since and the version limit raise at attach until the journal and the engine have them.'
   issue: '#3589'
 - test: TestRFC8B_SharedJournal
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a share at its journal limit refuses no other share. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt until the journal has it.'
+  reason: 'Epic 6: a share at its journal limit refuses no other share. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt until the journal has it.'
   issue: '#3589'
 - test: TestRFC8B_NoCrossShareSlowdown
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a saturated share slows no other share, latency only: the engine_lock_wait_seconds half the epic asks for is not written yet, and the bound (2x the base p99, or base p99 + 1 ms, over 200 samples) may be unstable on CI runners with few cores. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt until the journal has it.'
+  reason: 'Epic 6: a saturated share slows no other share, latency only: the engine_lock_wait_seconds half the epic asks for is not written yet, and the bound (2x the base p99, or base p99 + 1 ms, over 200 samples) may be unstable on CI runners with few cores. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt until the journal has it.'
   issue: '#3589'
 - test: TestRFC8A_JournalGone
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: start refuses a lost journal by name, raises journal_lost and creates nothing. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag.'
+  reason: 'Epic 6: start refuses a lost journal by name, raises journal_lost and creates nothing. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion).'
   issue: '#3589'
 - test: TestRFC8A_AttachAfterDeviceLoss
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt until the journal has it.'
+  reason: 'Epic 6: a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt until the journal has it.'
   issue: '#3589'
 - test: TestRFC8A_Clone
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 8: a clone keeps the writes outside its extent, never waits, and a refused reservation leaves the destination (§9.1). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, ReadAt, Sync, Reserve and CloneTarget, then at Clone (ErrUnbuilt) until a clone answers once the joins of a running clone are built.'
+  reason: 'Epic 8: a clone keeps the writes outside its extent, never waits, and a refused reservation leaves the destination (§9.1). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt, ReadAt, Sync, Reserve and CloneTarget, then at Clone (ErrUnbuilt) until a clone answers once the joins of a running clone are built.'
   issue: '#3591'
 - test: TestRFC8A_RemovalsOfACloningDestination
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 8: the source''s clone-kind open is gone once the clone is answered (§9.1); the removals held behind the clone are the rest of the row. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then at WriteAt, ReadAt, Sync, Reserve and CloneTarget, then at Clone (ErrUnbuilt) until a clone answers once the joins of a running clone are built.'
+  reason: 'Epic 8: the source''s clone-kind open is gone once the clone is answered (§9.1); the removals held behind the clone are the rest of the row. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: at WriteAt, ReadAt, Sync, Reserve and CloneTarget, then at Clone (ErrUnbuilt) until a clone answers once the joins of a running clone are built.'
   issue: '#3591'
 - test: TestRFC8A_RecoveryThroughSince
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a truncate cut off before its removal record is applied at start, before the file is served, and settled. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt, Sync, Truncate, Since and Settle.'
+  reason: 'Epic 6: a truncate cut off before its removal record is applied at start, before the file is served, and settled. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt, Sync, Truncate, Since and Settle.'
   issue: '#3589'
 - test: TestRFC8A_RecoveryReappliesInVersionOrder
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a write, a truncate and a write replay in version order at start. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt, Truncate, Since and Settle.'
+  reason: 'Epic 6: a write, a truncate and a write replay in version order at start. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt, Truncate, Since and Settle.'
   issue: '#3589'
 - test: TestRFC8A_SyncedLossReadsLost
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a synced loss is committed as lost at start and reads as lost. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt, Sync, ReadAt and its loss records.'
+  reason: 'Epic 6: a synced loss is committed as lost at start and reads as lost. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt, Sync, ReadAt and its loss records.'
   issue: '#3589'
 - test: TestRFC8A_AbortedReleaseAtStart
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a release a holder refuses, found as a marker at start, is settled without its removal and reported as lost. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt, Delete, Since and Settle.'
+  reason: 'Epic 6: a release a holder refuses, found as a marker at start, is settled without its removal and reported as lost. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt, Delete, Since and Settle.'
   issue: '#3589'
 - test: TestRFC8A_AbortedReleaseNextRestartQuiet
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: the restart after an aborted release is quiet. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt, Delete, Since and Settle, and then until RFC 8 says what keeps a discarded marker settled across a restart, since the journal''s Settle is not persisted (RFC 1 section 3.10).'
+  reason: 'Epic 6: the restart after an aborted release is quiet. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt, Delete, Since and Settle, and then until RFC 8 says what keeps a discarded marker settled across a restart, since the journal''s Settle is not persisted (RFC 1 section 3.10).'
   issue: '#3589'
 - test: TestRFC8A_ReleaseLeftMidRetryFinishedByRestart
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a release whose journal step is done and whose first transaction stalled is finished by the restart. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt, Delete, Since and Settle.'
+  reason: 'Epic 6: a release whose journal step is done and whose first transaction stalled is finished by the restart. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt, Delete, Since and Settle.'
   issue: '#3589'
 - test: TestRFC8A_RecoveryUsage
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: the usage after recovery is the bytes re-applied, and a second restart leaves it unchanged. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt, Since and Settle.'
+  reason: 'Epic 6: the usage after recovery is the bytes re-applied, and a second restart leaves it unchanged. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt, Since and Settle.'
   issue: '#3589'
 - test: TestRFC8A_VersionLimit
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: the version limit, its start and crash halves. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has Share, Draw and SetVersionLimit. The raise halves of the row need the test block of 16, which the conformance package cannot set yet.'
+  reason: 'Epic 6: the version limit, its start and crash halves. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has Share, Draw and SetVersionLimit. The raise halves of the row need the test block of 16, which the conformance package cannot set yet.'
   issue: '#3589'
 - test: TestRFC8A_VersionLimitRaise
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: the raise halves of the version limit row, at a block of 16 the conformance package cannot set. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has Share, Draw and SetVersionLimit, then at the missing knob until an issue gives the package one.'
+  reason: 'Epic 6: the raise halves of the version limit row, at a block of 16 the conformance package cannot set. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has Share, Draw and SetVersionLimit, then at the missing knob until an issue gives the package one.'
   issue: '#3589'
 - test: TestRFC8A_VersionLimitCountsFromCounter
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a share bound above the journal limit raises from the counter. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has Share, Draw and SetVersionLimit.'
+  reason: 'Epic 6: a share bound above the journal limit raises from the counter. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has Share, Draw and SetVersionLimit.'
   issue: '#3589'
 - test: TestRFC8B_SelfFenceThreshold
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: the store stalled 31s fences writes and stability points, serves reads, raises node_fenced, and the next commit clears it under the same verifier; also the group commit (epic 4). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt and Sync.'
+  reason: 'Epic 7: the store stalled 31s fences writes and stability points, serves reads, raises node_fenced, and the next commit clears it under the same verifier; also the group commit (epic 4). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt and Sync.'
   issue: '#3590'
 - test: TestRFC8B_SelfFenceFailing
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: every write transaction failing at once fences after 30s and clears once one commits; also the group commit (epic 4). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt and Sync.'
+  reason: 'Epic 7: every write transaction failing at once fences after 30s and clears once one commits; also the group commit (epic 4). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt and Sync.'
   issue: '#3590'
 - test: TestRFC8B_SelfFenceIdle
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: a node idle for a minute does not fence. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt and Sync.'
+  reason: 'Epic 7: a node idle for a minute does not fence. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt and Sync.'
   issue: '#3590'
 - test: TestRFC8B_SelfFenceOneShotFailed
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: a failed one-shot (Bind''s raise), then an idle minute, does not fence; also Bind (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt and Sync.'
+  reason: 'Epic 7: a failed one-shot (Bind''s raise), then an idle minute, does not fence; also Bind (epic 6). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt and Sync.'
   issue: '#3590'
 - test: TestRFC8B_SelfFenceOneShotStalled
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: a one-shot stalled past 30s fences, and the fence lifts once it fails; also Bind (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt and Sync.'
+  reason: 'Epic 7: a one-shot stalled past 30s fences, and the fence lifts once it fails; also Bind (epic 6). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt and Sync.'
   issue: '#3590'
 - test: TestRFC8B_SelfFencePerFileErrors
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: a file failing alone in every commit for 31s does not fence; also the group commit (epic 4). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt and Sync.'
+  reason: 'Epic 7: a file failing alone in every commit for 31s does not fence; also the group commit (epic 4). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt and Sync.'
   issue: '#3590'
 - test: TestRFC8B_SelfFenceHeldAfterIdle
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: after an idle minute, an existence commit held 1s starts a fresh 30s; also the group commit (epic 4). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt and Sync.'
+  reason: 'Epic 7: after an idle minute, an existence commit held 1s starts a fresh 30s; also the group commit (epic 4). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt and Sync.'
   issue: '#3590'
 - test: TestRFC8_SelfFenceVersionLimitRaise
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: the version limit''s raise failing for 31s fences the node and its commit clears it; waits for epic 6''s retried raise (T6.7), which nothing issues yet, so the row then fails on never fencing. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has Draw.'
+  reason: 'Epic 7: the version limit''s raise failing for 31s fences the node and its commit clears it; waits for epic 6''s retried raise (T6.7), which nothing issues yet, so the row then fails on never fencing. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has Draw.'
   issue: '#3701'
 - test: TestRFC8A_RemovalCrashedBetweenBatchesResumes
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a removal crashed between two batches resumes at the restart, the extent reads removed before the loop runs and after, and the record is pruned. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt, Sync, Truncate, Since and Settle.'
+  reason: 'Epic 6: a removal crashed between two batches resumes at the restart, the extent reads removed before the loop runs and after, and the record is pruned. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt, Sync, Truncate, Since and Settle.'
   issue: '#3700'
 - test: TestRFC8A_RemovalDoneNotPrunedIsPrunedAtRestart
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a release whose last batch committed and whose prune did not is pruned at the restart, and its index entry goes. Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt, Delete, Since and Settle.'
+  reason: 'Epic 6: a release whose last batch committed and whose prune did not is pruned at the restart, and its index entry goes. Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt, Delete, Since and Settle.'
   issue: '#3700'
 - test: TestRFC8B_JournalSyncFailed
   message: 'fixture: engine start: engine: start: open share'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: a failed window with loss records raises journal_sync_failed, which clears an hour later on the test clock, while a failed sync whose window is re-appended raises none, and neither does a restart over the loss record; also the failed window (epic 4) and the start (epic 6). Init and Open work, so the journal starts; it stops at the fixture''s first share attach — the engine''s start hands the journal a zero tag, which the attach refuses with an invalid setting — until the fixture''s share carries its minted tag, then until the journal has WriteAt, Sync and fails windows.'
+  reason: 'Epic 7: a failed window with loss records raises journal_sync_failed, which clears an hour later on the test clock, while a failed sync whose window is re-appended raises none, and neither does a restart over the loss record; also the failed window (epic 4) and the start (epic 6). Init and Open work; the rows stop at the share attach because the engine fixture reads the share''s tag from a value PutShare never fills (zero tag, refused as an invalid setting); behind that are two more fixture fixes (the journal wrapper must be comparable; the share''s minted tag) and then the journal''s Stats (the engine''s start limit reads a zero NextVersion), then back to the row''s own need: until the journal has WriteAt, Sync and fails windows.'
   issue: '#3590'
