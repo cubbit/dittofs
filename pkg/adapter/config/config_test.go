@@ -93,41 +93,41 @@ func TestValidateRefusesNamingTheField(t *testing.T) {
 	nfs := func(f func(*NFS)) Settings { s := validNFS(); f(&s); return s }
 	smb := func(f func(*SMB)) Settings { s := validSMB(); f(&s); return s }
 	for _, c := range []struct {
-		field string
-		s     Settings
+		name, field string
+		s           Settings
 	}{
-		{"Addrs[0]", nfs(func(s *NFS) { s.Addrs = []netip.Addr{{}} })},
-		{"Addrs[1]", nfs(func(s *NFS) { s.Addrs = append(s.Addrs, s.Addrs[0]) })},
-		{"Addrs[1]", nfs(func(s *NFS) { s.Addrs = append(s.Addrs, netip.MustParseAddr("::ffff:127.0.0.1")) })},
-		{"Addrs[1]", smb(func(s *SMB) { s.Addrs = append(s.Addrs, netip.IPv4Unspecified()) })},
-		{"Addrs[1]", smb(func(s *SMB) {
+		{"nfs zero address", "Addrs[0]", nfs(func(s *NFS) { s.Addrs = []netip.Addr{{}} })},
+		{"nfs duplicate address", "Addrs[1]", nfs(func(s *NFS) { s.Addrs = append(s.Addrs, s.Addrs[0]) })},
+		{"nfs IPv4-mapped duplicate", "Addrs[1]", nfs(func(s *NFS) { s.Addrs = append(s.Addrs, netip.MustParseAddr("::ffff:127.0.0.1")) })},
+		{"smb unspecified IPv4 beside a specific address", "Addrs[1]", smb(func(s *SMB) { s.Addrs = append(s.Addrs, netip.IPv4Unspecified()) })},
+		{"smb specific address beside unspecified IPv6", "Addrs[1]", smb(func(s *SMB) {
 			s.Addrs = []netip.Addr{netip.IPv6Unspecified(), netip.MustParseAddr("fd00::1")}
 		})},
-		{"DrainTimeout", nfs(func(s *NFS) { s.DrainTimeout = 0 })},
-		{"IdleTimeout", nfs(func(s *NFS) { s.IdleTimeout = -time.Second })},
-		{"WriteTimeout", smb(func(s *SMB) { s.WriteTimeout = 0 })},
-		{"HandshakeTimeout", smb(func(s *SMB) { s.HandshakeTimeout = 0 })},
-		{"ReadTimeout", nfs(func(s *NFS) { s.ReadTimeout = 0 })},
-		{"DisabledOperations[0]", nfs(func(s *NFS) { s.DisabledOperations = []string{""} })},
-		{"DisabledOperations[1]", smb(func(s *SMB) { s.DisabledOperations = []string{"READ", "READ"} })},
-		{"TLS.Mode", nfs(func(s *NFS) { s.TLS.Mode = "" })},
-		{"TLS.CertFile", nfs(func(s *NFS) { s.TLS.CertFile = "tls.crt" })},
-		{"TLS.KeyFile", nfs(func(s *NFS) { s.TLS.KeyFile = "tls.key" })},
-		{"TLS.ClientCA", nfs(func(s *NFS) { s.TLS.ClientCA = "ca.crt" })},
-		{"TLS.CertFile", nfs(func(s *NFS) { s.TLS.Mode = "require" })},
-		{"TLS.KeyFile", nfs(func(s *NFS) { s.TLS.Mode, s.TLS.CertFile = "opportunistic", "tls.crt" })},
-		{"PendingTimeout", smb(func(s *SMB) { s.PendingTimeout = 0 })},
-		{"RecallTimeout", smb(func(s *SMB) { s.RecallTimeout = 35 * time.Second })},
-		{"Versions.Min", nfs(func(s *NFS) { s.Versions.Min = "2" })},
-		{"Versions.Max", nfs(func(s *NFS) { s.Versions.Max = "4.3" })},
-		{"Versions.Max", nfs(func(s *NFS) { s.Versions = VersionRange{Min: "4.1", Max: "4.0"} })},
-		{"Dialects.Min", smb(func(s *SMB) { s.Dialects.Min = "2.0.2" })},
-		{"Dialects.Max", smb(func(s *SMB) { s.Dialects.Max = "3.2" })},
-		{"Dialects.Max", smb(func(s *SMB) { s.Dialects.Min, s.Dialects.Max = "3.1.1", "3.0" })},
+		{"nfs zero drain", "DrainTimeout", nfs(func(s *NFS) { s.DrainTimeout = 0 })},
+		{"nfs negative idle", "IdleTimeout", nfs(func(s *NFS) { s.IdleTimeout = -time.Second })},
+		{"smb zero write", "WriteTimeout", smb(func(s *SMB) { s.WriteTimeout = 0 })},
+		{"smb zero handshake", "HandshakeTimeout", smb(func(s *SMB) { s.HandshakeTimeout = 0 })},
+		{"nfs zero read", "ReadTimeout", nfs(func(s *NFS) { s.ReadTimeout = 0 })},
+		{"nfs empty disabled op", "DisabledOperations[0]", nfs(func(s *NFS) { s.DisabledOperations = []string{""} })},
+		{"smb repeated disabled op", "DisabledOperations[1]", smb(func(s *SMB) { s.DisabledOperations = []string{"READ", "READ"} })},
+		{"nfs empty TLS mode", "TLS.Mode", nfs(func(s *NFS) { s.TLS.Mode = "" })},
+		{"nfs cert with TLS off", "TLS.CertFile", nfs(func(s *NFS) { s.TLS.CertFile = "tls.crt" })},
+		{"nfs key with TLS off", "TLS.KeyFile", nfs(func(s *NFS) { s.TLS.KeyFile = "tls.key" })},
+		{"nfs CA with TLS off", "TLS.ClientCA", nfs(func(s *NFS) { s.TLS.ClientCA = "ca.crt" })},
+		{"nfs require without cert", "TLS.CertFile", nfs(func(s *NFS) { s.TLS.Mode = "require" })},
+		{"nfs opportunistic without key", "TLS.KeyFile", nfs(func(s *NFS) { s.TLS.Mode, s.TLS.CertFile = "opportunistic", "tls.crt" })},
+		{"smb zero pending", "PendingTimeout", smb(func(s *SMB) { s.PendingTimeout = 0 })},
+		{"smb recall too long", "RecallTimeout", smb(func(s *SMB) { s.RecallTimeout = 35 * time.Second })},
+		{"nfs version 2", "Versions.Min", nfs(func(s *NFS) { s.Versions.Min = "2" })},
+		{"nfs version 4.3", "Versions.Max", nfs(func(s *NFS) { s.Versions.Max = "4.3" })},
+		{"nfs versions inverted", "Versions.Max", nfs(func(s *NFS) { s.Versions = VersionRange{Min: "4.1", Max: "4.0"} })},
+		{"smb dialect 2.0.2", "Dialects.Min", smb(func(s *SMB) { s.Dialects.Min = "2.0.2" })},
+		{"smb dialect 3.2", "Dialects.Max", smb(func(s *SMB) { s.Dialects.Max = "3.2" })},
+		{"smb dialects inverted", "Dialects.Max", smb(func(s *SMB) { s.Dialects.Min, s.Dialects.Max = "3.1.1", "3.0" })},
 	} {
 		err := c.s.Validate()
 		if err == nil || !strings.Contains(err.Error(), "config: "+c.field+": ") {
-			t.Errorf("Validate with a bad %s: %v, want an error naming %s", c.field, err, c.field)
+			t.Errorf("%s: Validate: %v, want an error naming %s", c.name, err, c.field)
 		}
 	}
 }
