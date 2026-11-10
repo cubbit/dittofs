@@ -151,6 +151,66 @@ composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shar
    `IsDurable`. So a method reachable only from tests has nothing holding its signature up: say
    so with a `decision:` marker at the method rather than reintroducing an interface to pin it.
 
+## Writing tests
+
+These rules apply to every new or changed test. Older tests that break them are brought in line
+when you touch them, not in a sweep.
+
+**No mocks, no stubs.** Needing one is a design smell: the code under test is coupled to
+something it should take as an argument. Restructure the code so the test runs against real
+collaborators:
+
+- Put the logic in a function of its inputs, and test that function. Keep the I/O at the edge,
+  in a thin layer.
+- Take a dependency as a small interface the consumer declares, and test against a **real**
+  implementation of it: the memory metadata or block store, `t.TempDir()`, a listener on
+  `127.0.0.1:0`, an in-memory SQLite control-plane store.
+
+Only three kinds of test double are allowed:
+
+1. **An injected clock or seeded random source.** These are inputs to the code, not
+   collaborators.
+2. **A verified in-memory implementation.** It lives with the package that owns the interface,
+   and it passes the **same conformance suite** as the production implementation. It may record
+   its own outputs, and tests assert on those outputs or on resulting state. A dependency that
+   isn't built yet gets its conformance suite first, then the smallest in-memory implementation
+   that passes it. The real implementation must pass the same suite when it lands.
+3. **Fault injection:** a wrapper around a real implementation, or around kind 2, that fails,
+   delays, tears or crashes on cue. A scripted error answer is a fault, so it comes from such a
+   wrapper. It may count calls to decide when to fire.
+
+Deterministic simulation is built only from these three, so it is allowed.
+
+**Outputs are not interactions.** A sink that only keeps what the code under test delivered
+needs no conformance suite: a `Sink` that stores the events it was given is fine, and asserting
+that `Close` was called twice is not. A count that *is* the requirement, such as one batched
+read per batch, comes from a metric or from a counter the in-memory implementation exports and
+its conformance suite covers, never from a counting fake that answers in the dependency's place;
+the recording fake banned below is one that no suite holds to the real implementation. A per-OS
+table is data, so test its contents. A tunable such as a sampling rate is an input, passed in
+through the constructor.
+
+When the call reaching a dependency is itself the requirement (a sync reaching storage, one
+mutating call per request), a wrapper that records each call and passes it through, never
+answering in its place, keeps a record a test may assert on. A hook in the code under test
+that pauses it, or delivers what it reached, is set per instance from `export_test.go`. A null
+implementation that answers every call at once, to measure the caller's own cost, is a load,
+not a double: nothing asserts on its answers. RFC 29 §4.11 has the whole rule.
+
+Banned:
+
+- a canned stub written for one test;
+- a recording or counting fake used to check which calls were made;
+- a double that no conformance suite holds to the real implementation;
+- swapping a package-level `var` that replaces behaviour (`serveRuntime = func…`); to capture
+  output, inject an `io.Writer` or use `cmd.SetOut` rather than reassigning `os.Stdout`.
+
+These test a program that production never runs. When the double drifts from the real
+implementation, the test stays green while guarding nothing.
+
+External systems (a KDC, a domain controller, an LDAP directory, S3) are tested for real at the
+integration tier. Their parsing and logic are pure functions with unit tests.
+
 ## Verifying a change
 
 Two failure modes this codebase has actually hit. Both are invisible to a passing test suite,
