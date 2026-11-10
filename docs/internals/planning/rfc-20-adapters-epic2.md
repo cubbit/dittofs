@@ -158,7 +158,7 @@ names the epic that owns the rest.
 | --- | --- | --- | --- | --- |
 | R29 | One call fails a test that leaves behind a goroutine it started, naming each with its stack; it polls the goroutines themselves, never a fixed sleep, with one backstop timeout; no new dependency | MUST | rule 4; `CLAUDE.md` "Writing tests" | T2.4 |
 | R30 | The same call fails when any of `Deps.Budgets`' four budgets reads above zero, naming it | MUST | rule 4, rule 8; §6.8; §9 A18 | T2.4 (green with E3) |
-| R31 | A test that can pass only once a later epic fills a stub lands red in the `adapter-conformance` suite, behind its own build tag, with one `known.yaml` entry giving its failure message and the issue of the epic that turns it green; that epic removes the entry; the suite is named in RFC 20's suites paragraph and its tag in `lint-go`'s vet line | MUST | RFC 29 §4.7, §4.9; owner decision | T2.4 |
+| R31 | A test that can pass only once a later epic fills a stub lands red in the `adapter-conformance` suite, behind its own build tag, with one `known.yaml` entry giving its failure message and the issue of the epic that turns it green; that epic removes the entry once CI shows the test passing; the suite is named in RFC 20's suites paragraph and its tag in `lint-go`'s vet line | MUST | RFC 29 §4.7, §4.9; owner decision | T2.4 |
 
 ## 4. Decisions this epic takes
 
@@ -240,7 +240,10 @@ names the epic that owns the rest.
   check (E3), `ReplayCache`'s copy (E3) and one `testproto` request end to end (E4 and E5). Each
   sits behind the `adapter_conformance` build tag, is named `TestConformance…`, and has a
   `test/adapter/known.yaml` entry with `status: fail`, `fix: planned`, `category: feature`, a
-  `reason`, the `message` its stub fails with, and `issue:` quoted. A stub that panics
+  `reason`, the `message` its stub fails with, and `issue:` quoted. The epic that turns a test green
+  removes its entry once CI shows the test passing, and that epic's document lists the removal:
+  E3's for the budget and replay entries, E5's for the end-to-end one, which E4's server and E5's
+  pipeline turn green together at S3. A stub that panics
   (`Reserved`) is turned into a failure by a deferred `recover` in the test, so one panic does not
   stop the cell's other tests. The suite is `engine-conformance`'s shape, `tier: pr`.
 - **D12, the allocation cell lands here; the user chose this.** `testproto`'s header gate is the
@@ -252,7 +255,9 @@ names the epic that owns the rest.
   from `runtime.Stack`, polled to a backstop), descriptors or live heap behind, and says to move
   it out of the journal's tree once a package outside it needs one. T2.4 moves it to
   `internal/prof` (import path `github.com/cubbit/dittofs/internal/prof`), unchanged, with its
-  tests, updating its importers and the engine's import test's allowlist entry; `CheckLeaks`
+  tests, updating its importers (the journal's and engine's tests, `pkg/metadata/kv/kvtest/fault_test.go`),
+  `unit/journal-index`'s command in `test/suites.yaml`, and `pkg/block/engine/imports_test.go`'s
+  allowlist entry; `CheckLeaks`
   calls `prof.Watch` and adds only the budget check, and `testproto`'s gate reads
   `prof.RaceEnabled`. Its ceiling, which goleak shares, is its own `decision:`: a watched test
   does not run in parallel.
@@ -276,7 +281,7 @@ names the epic that owns the rest.
 - **D17, what is settled here for good, what is deferred, and what either costs.** E4, E5 and E6
   write their tests against these, so each is designed now as final:
   - `adaptertest.CheckLeaks(t, b)` and `internal/prof`'s path: every pipeline test of E4, E5 and
-    E6 calls the first and the journal's and engine's tests import the second, so a change means
+    E6 calls the first and the journal's, engine's and `kvtest`'s tests import the second, so a change means
     editing each of them;
   - `testproto.New(d adapter.Deps)`, `Bare`, the operation codes and statuses (typed as `core`'s
     `uint32` code and `core.Version`, so no test converts), `Msg`, `Reply`, `Append` and `Client`:
@@ -321,13 +326,15 @@ internal/adapter/adaptertest/
     conformance_test.go            T2.1, T2.2  red: one request end to end; ReplayCache's copy
 internal/adapter/core/conn.go      T2.2  Dispatcher deleted (D18)
 internal/adapter/core/testdata/surface/core.golden  T2.2  Dispatcher's entry deleted (D18)
-pkg/block/journal/journaltest/prof/  T2.4  moved out; its importers and pkg/block/engine/imports_test.go updated
+pkg/block/journal/journaltest/prof/  T2.4  moved out; its importers updated
+pkg/block/engine/imports_test.go   T2.4  allowlist entry for internal/prof
+pkg/metadata/kv/kvtest/fault_test.go  T2.4  imports internal/prof
 pkg/adapter/adapter_test.go        T2.3  import-shape test removed (D14)
 pkg/adapter/config/config_test.go  T2.3  import-shape test removed (D14)
 pkg/adapter/nfs/nfs_test.go        T2.3  vfstest.Memory for internal/vfs (D15)
 pkg/adapter/smb/smb_test.go        T2.3  vfstest.Memory for internal/vfs (D15)
 test/adapter/known.yaml            T2.4  the red specifications (D11)
-test/suites.yaml                   T2.1  unit/adapter-allocs cell; T2.4  adapter-conformance suite, its tag in lint-go's vet line
+test/suites.yaml                   T2.1  unit/adapter-allocs cell; T2.4  adapter-conformance suite, its tag in lint-go's vet line, unit/journal-index's prof path
 .github/workflows/tests.yml        T2.1  unit/adapter-allocs' fixed step; T2.4  adapter-conformance in the branch's cell filter
 docs/internals/rfcs/rfc-20-adapters.md  T2.4  the suites paragraph names adapter-conformance
 docs/internals/testing.md          T2.4  regenerated by dt docs
@@ -443,7 +450,9 @@ func (c *Client) Balance() int
 - **Covers:** R29, R30, R31.
 - **Deliverables:**
   - `pkg/block/journal/journaltest/prof` moved to `internal/prof` with its tests (D13); every
-    importer's import line and `pkg/block/engine/imports_test.go`'s entry updated;
+    importer's import line (the journal's and engine's tests and fixtures,
+    `pkg/metadata/kv/kvtest/fault_test.go`), `pkg/block/engine/imports_test.go`'s allowlist entry
+    (its line 37), and `unit/journal-index`'s command in `test/suites.yaml` updated;
   - `leak.go`: `budgetsHeld(b *resources.Budgets) error`, naming each of `Receive`, `Reply`,
     `Connection` and `Hold` whose `Reserved` is above zero; `CheckLeaks(t, b)`, which calls
     `prof.Watch(t, prof.Options{})` and registers a `t.Cleanup` reporting `budgetsHeld`;
@@ -454,15 +463,17 @@ func (c *Client) Balance() int
     `engine-conformance`; RFC 20's suites paragraph naming it; `docs/internals/testing.md`
     regenerated with `test/harness/bin/dt docs`;
   - `leak_conformance_test.go`: `TestConformanceBudgetsHeldNamesACharged` and its
-    `known.yaml` entry (`message: 'not implemented'`, `issue: "#3964"`).
+    `known.yaml` entry (`message: 'resources: get'`, the stub `BufPool.Get`'s error, which the test
+    meets before `Reserved` panics; `issue: "#3964"`).
 - **Consumers:** every E4, E5 and E6 test that runs the pipeline (rule 4); E3, which turns the
   budget specification green and removes its entry; the end-to-end and replay specifications of
   T2.1 and T2.2.
 - **Acceptance criteria:**
-  - The moved profiler's tests pass at its new path, and no file names the old one.
+  - The moved profiler's tests pass at its new path, and no `.go` file and nothing in
+    `test/suites.yaml` names the old one.
   - `test/harness/bin/dt run adapter-conformance` grades the budget specification as its known
     failure, and fails the run if the test passes while its entry remains.
-  - `dt docs --check` passes with the new suite.
+  - `test/harness/bin/dt docs --check` passes with the new suite.
 - **Tests:** `prof`'s own tests, moved (they catch a goroutine, descriptor or heap check that
   never fails); the budget specification, a `Buf` reserved and kept past the check, asserting
   `budgetsHeld` names `Reply` (red until E3: catches a check that reads one budget, or none). Run
@@ -684,5 +695,5 @@ A suggestion only: one pull request per subtask works as well.
     the cell, the profiler's move, the red suite and its three specifications, and D18.
 - **The least certain estimates:** T2.2 (the most pieces, and the compound row's `Decode` is the
   one written directly rather than through `Bind`) and T2.4 (the profiler's importers are spread
-  over the journal's and engine's tests, and the suite touches the registry, the workflow, the
+  over the journal's, engine's and `kvtest`'s tests, and the suite touches the registry, the workflow, the
   RFC's paragraph and the generated testing doc).
