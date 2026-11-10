@@ -194,6 +194,26 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    now has nothing holding its signature up: say so with a `decision:` marker at the method
    rather than reintroducing an interface to pin it.
 
+## Writing tests
+
+These rules apply to every new or changed test. Older tests that break them are brought in line
+when you touch them, not in a sweep.
+
+**No mocks, no stubs.** Needing one is a design smell: the code under test is coupled to
+something it should take as an argument. Restructure the code instead of faking the dependency:
+
+- Put the logic in a function of its inputs, and test that function. Keep the I/O at the edge,
+  in a thin layer.
+- Take a dependency as a small interface the consumer declares, and test it against a **real**
+  implementation of that interface: the memory metadata or block store, `t.TempDir()`, a
+  listener on `127.0.0.1:0`, an in-memory SQLite control-plane store.
+- Don't swap a package-level `var` in a test (`serveRuntime = func…`). That is a stub with
+  global scope: it leaks across parallel tests, and it tests a program that production never
+  runs. Pass the dependency in instead.
+- Hand-written fakes that return canned answers or record calls count as stubs. A test built on
+  one proves only that the code agrees with the fake. When the fake drifts from the real
+  implementation, or the real one is deleted, the test stays green while guarding nothing.
+
 ## Verifying a change
 
 Two failure modes this codebase has actually hit. Both are invisible to a passing test suite,
