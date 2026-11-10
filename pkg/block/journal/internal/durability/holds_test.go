@@ -904,11 +904,35 @@ type heldMove struct {
 	// resolved, and heldAt whether the original's segment was held then.
 	counted map[core.SegmentID]index.SegmentBytes
 	heldAt  map[core.SegmentID]holdView
+	// unsynced is whether a place of the record was still pending when each
+	// segment was announced resolved.
+	unsynced map[core.SegmentID]bool
+}
+
+// seqPending reports whether any ledger or window entry of the record is still
+// pending.
+func (m *heldMove) seqPending() bool {
+	st := m.fr.d.made[0]
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, e := range st.ledger {
+		if e.w.Seq == m.seq && st.pending(e.w.Loc) {
+			return true
+		}
+	}
+	for _, w := range st.windows {
+		for _, e := range w.entries {
+			if e.w.Seq == m.seq {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func newHeldMove(t *testing.T) *heldMove {
 	t.Helper()
-	m := &heldMove{counted: map[core.SegmentID]index.SegmentBytes{}, heldAt: map[core.SegmentID]holdView{}}
+	m := &heldMove{counted: map[core.SegmentID]index.SegmentBytes{}, heldAt: map[core.SegmentID]holdView{}, unsynced: map[core.SegmentID]bool{}}
 	hook, reached, release := gate(t)
 	var appends atomic.Int32
 	var holdAppended atomic.Bool
@@ -930,6 +954,7 @@ func newHeldMove(t *testing.T) *heldMove {
 			m.mu.Lock()
 			m.counted[seg] = fr.ix.SegmentBytes(seg)
 			m.heldAt[seg] = fr.holdOf(m.orig.Segment)
+			m.unsynced[seg] = m.seqPending()
 			m.mu.Unlock()
 			fr.resolved <- seg
 		}
@@ -1042,6 +1067,37 @@ func TestAHeldRecordStaysHeldUntilItsNewPlaceCompletes(t *testing.T) {
 	fr.d.made[0].wake()
 	fr.awaitPassEnd(t, mark)
 	fr.wantNotResolved(t, "twice")
+}
+
+// TestAHeldRecordFollowsItsNewPlaceThroughAFailedSync covers a held record
+// whose new place's sync fails while its window's re-read verifies: the window
+// moves the record on, so the new place stops being pending while the record's
+// next place is still unsynced, and the hold must not end before that place
+// completes.
+func TestAHeldRecordFollowsItsNewPlaceThroughAFailedSync(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	m := newHeldMove(t)
+	fr := m.fr
+	fr.failSyncKeepingPages(t, m.placed.Segment, errors.New("sync boom"))
+	m.release()
+
+	// The new place's window resolves first, then the hold's end announces the
+	// original's segment.
+	if got := fr.awaitResolved(t); got != m.placed.Segment {
+		t.Fatalf("resolved segment %d, want %d", got, m.placed.Segment)
+	}
+	if got := fr.awaitResolved(t); got != m.orig.Segment {
+		t.Fatalf("resolved segment %d, want %d", got, m.orig.Segment)
+	}
+	m.mu.Lock()
+	unsynced := m.unsynced[m.orig.Segment]
+	m.mu.Unlock()
+	if unsynced {
+		t.Errorf("segment %d was announced resolved while a place of seq %d was still pending", m.orig.Segment, m.seq)
+	}
+	if got := fr.placedAt(t, m.f, 0); got == placeAt(m.placed) {
+		t.Errorf("the extent is still served from %+v, want the record moved on", got)
+	}
 }
 
 // TestAHeldRecordStaysClaimedWhenTheJournalTurnsReadOnlyBeforeItsNewPlaceSyncs
