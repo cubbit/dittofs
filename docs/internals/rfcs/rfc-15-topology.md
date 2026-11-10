@@ -948,11 +948,10 @@ embedded single-node store gives none.
   refused by node epoch and the second write's bytes survive (T7). A takeover
   that does not fence first fails this.
 - **The gateway decides nothing (cluster):** on the multi-node rig below, each
-  node's filesystem a `vfstest.Memory`, drive every `vfs.Service` method through
+  node configured over memory backends, drive every `vfs.Service` method through
   one node's `vfs.Gateway`. Assert each call's effect lands at the primary the
   router names, under the caller's `Identity`, its answer is the one a direct
-  call there gives, and the target filesystem's record of mutating calls holds
-  no other (T12). A gateway that admits or
+  call there gives, and no other node's state changed (T12). A gateway that admits or
   squashes fails this.
 - **Node channels:** send a replication message and a forwarded call from a peer
   without an issued credential, and from an authenticated peer naming another
@@ -996,7 +995,18 @@ control-plane store on the in-memory `KV`, which
 [RFC 16](rfc-16-metadata-store.md)'s KV conformance suite holds, and the
 network `vfs.Transport` on 127.0.0.1, and drive changes by writing to the store. Faults are a wrapper
 around the transport
-([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)):
+([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)).
+
+**Transport conformance.** One suite holds every `vfs.Transport` to the same rows; it runs
+against the network transport on 127.0.0.1 and the in-memory transport, so the in-memory
+transport is a verified stand-in and the deterministic simulation may run on it:
+
+| Row | Asserts |
+| --- | --- |
+| delivery | a sent call reaches the named node once and its reply reaches the sender |
+| ordering | calls on one connection arrive in the order sent |
+| close and errors | a closed connection or a peer's error reaches the caller as an error, never a hang |
+| partition and faults | under the fault wrapper, a partition, a lost reply and a duplicate send behave the same on both |
 
 - **Routing:** the filesystem service's conformance suite **MUST** pass
   unchanged through a gateway whose every call is forwarded, and with a stale
@@ -1006,8 +1016,9 @@ around the transport
   call a stale cache routes to the local path is refused as a forwarded one is. A nightly
   harness runs a cluster under partitions, pauses and node kills, and checks
   the history of client operations for linearizability per file.
-- **Deterministic simulation:** the two-node rig on a fake clock, with the
-  transport's fault wrapper injecting faults at chosen steps, runs each scenario
+- **Deterministic simulation:** the two-node rig on the in-memory transport, a
+  fake clock and a seeded random source, with the transport's fault wrapper
+  injecting faults at chosen steps, runs each scenario
   below to the same history on every seed, and checks that the neutral history
   is linearizable per file:
   - the primary is lost mid-step, after its store transaction and before its
