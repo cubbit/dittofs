@@ -150,7 +150,7 @@ The questions piece 1's build left open, which may add more, are plan §5 Q4.
 | 9 | Quota | §5.6 | piece 8; the store's read views (plan §5 Q3) |
 | 10 | Locks, grants, watches | §5.11, §3.2 | pieces 4, 7, 8; stage 1 pieces 4, 5, 8 |
 | 11 | Copy and clone | §5.9 | piece 8; the engine's S3 (#3546), not all of stage 3 |
-| 12 | Test doubles (open) | §8 | pieces 1 and 2; before RFC 20's E4 |
+| 12 | Test doubles (open) | §8 | pieces 1 and 2; before RFC 20's epic 2 import test |
 
 "Done when" means every listed row passes and each of its cases is revert-checked. A row may be
 split: its first piece lands the cases it can reach, and the piece that completes it is named
@@ -300,11 +300,12 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
     `truncErr` is a canned answer [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)
     does not allow. This piece builds what §8 names instead: `internal/vfs/contenttest`, the
     `Content` suite written first and the in-memory `Content` that passes it (D3); `vfstest.Faults`,
-    every `Service` method wrapped explicitly; `vfstest.Callbacks` in place of
+    every `Service` method wrapped explicitly, with a fault that holds a call until the test
+    releases it (an event, never a timed wait); `vfstest.Callbacks` in place of
     `RecordingCallbacks`; and `vfstest.Memory`, the filesystem over the in-memory store, open
     state and that `Content`, with its recording wrapper of mutating calls. It then moves the
     seven `internal/vfs` test files off the old helpers and deletes `Record`, `RecordingCallbacks`
-    and `fakeContent`. Owner: this plan; it lands before RFC 20's E4, whose first test needs
+    and `fakeContent`. Owner: this plan; it lands before RFC 20's T2.3, whose import test needs
     `Memory`. Estimate: 8 man-days (the `Content` suite and in-memory `Content` 2.5, `Faults` 1.5,
     `Memory` and its wrapper 1.5, `Callbacks` 0.5, the test migration and deletions 2).
     Done when: the `Content` suite passes over the in-memory `Content`, `suite.Run` passes over

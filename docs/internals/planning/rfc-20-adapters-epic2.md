@@ -3,8 +3,8 @@
 **Sources:** [RFC 20](../rfcs/rfc-20-adapters.md) §2.3 (imports), §2.5's `internal/` and `pkg/`
 rules, its layout of `adaptertest` and its `wire` purity, §4.7 (the stages a protocol supplies,
 and its closing sentence: the test-only protocol drives every symbol), §7 (the `core` layer),
-§7.1 (imports), §9 A1 and A8, the suites paragraph; [RFC 29](../rfcs/rfc-29-test-harness.md)
-§4.7 (known failures) and §4.11 (test doubles); `CLAUDE.md`, "Writing tests", as `develop` has it.
+§7.1 (imports), §9 A1 and A8, §8.5's suites paragraph; [RFC 29](../rfcs/rfc-29-test-harness.md)
+§4.6 (a crash is never a known failure), §4.7 (known failures) and §4.11 (test doubles); `CLAUDE.md`, "Writing tests", as `develop` has it.
 **Track:** the team.
 **Epic 2 estimate: 4 subtasks, 10.5 man-days.**
 **Depends on:** **S1, surface frozen**: E1's `internal/adapter/core` surface (RFC 20 §4.7, with
@@ -32,7 +32,7 @@ their own, the specifications that only a later epic's bodies can turn green.
   compile against §4.7, its codec matches byte vectors written by hand from its own format, its
   frame decoder is fuzzed, and its header decode and encode allocate nothing;
 - every §4.7 symbol a protocol implements or calls is referenced from `testproto`'s non-test
-  code, and every other one is named with the epic whose test calls it;
+  code, and every other one is on the coverage check's exemption list;
 - a client writes `testproto` records over any `net.Conn` and keeps the credit balance its
   replies grant;
 - the import test runs in `unit`, reports each of its seeded violations and none of its seeded
@@ -127,8 +127,8 @@ names the epic that owns the rest.
 | R8 | A `wire` package imports nothing but the standard library and `pkg/resources` | MUST | §2.5, §7.1 | T2.3 |
 | R9 | The test starts with no allowlist: nothing is grandfathered in | invariant | §7.1 | T2.3 |
 | R10 | `core`'s non-test files import no protocol, and its tests no protocol but `testproto`: never NFS's or SMB's | invariant | §2.5 (layout), §7; rule 1 | T2.3 |
-| R11 | An adapter package's `_test.go` files may also import `pkg/vfs/vfstest`, `adaptertest` and its `testproto`, and the profiler `internal/prof`, and nothing else the list forbids; `adaptertest`'s own non-test files may import `internal/prof` | invariant | §7.1; D13 | T2.3 |
-| R12 | `adaptertest` and `testproto` are imported by no non-test file outside themselves, and `pkg/vfs/vfstest` by no adapter non-test file | invariant | §7.1 ("no forbidden package reaches an adapter's build"), §2.5 (layout) | T2.3 |
+| R11 | An adapter package's `_test.go` files may also import `pkg/vfs/vfstest`, `adaptertest` and its `testproto`, and the profiler `internal/prof`, and nothing else the list forbids; `adaptertest`'s own non-test files may import `pkg/vfs/vfstest` and `internal/prof` | invariant | §7.1; D13 | T2.3 |
+| R12 | `adaptertest` and `testproto` are imported by no non-test file outside themselves, `pkg/vfs/vfstest` and `internal/prof` by no adapter non-test file but `adaptertest`'s | invariant | §7.1 ("no forbidden package reaches an adapter's build"), §2.5 (layout) | T2.3 |
 | R13 | No package exists at a path v1 used that v2 does not: `pkg/controlplane/runtime/adapters`, `internal/adapter/{common,pool,testruntime,auth}`, `internal/adapter/nfs/rpc`, `internal/adapter/smb/{session,handlers}` | MUST | rule 5; owner decision | T2.3 |
 
 **The test-only protocol**
@@ -136,11 +136,11 @@ names the epic that owns the rest.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R14 | `core` is proven on a test-only protocol in `adaptertest/testproto`, of length-prefixed frames, with an echo, a delay, an operation that panics and one that holds; the delay and the hold are a service call that `vfstest.Faults` delays or answers `ErrDelay`, never an operation of the protocol (D5) | MUST | RFC 20 §7, §2.5 (layout) | T2.1 |
-| R15 | It has a handshake, session levels, kept state, held and parked requests, a cancel and chained messages, so every type of §4.7 is exercised: every §4.7 symbol a protocol implements or calls is referenced from its non-test code, and every other one is named with the epic whose test calls it | MUST | §7, §4.7 (closing sentence); E1's R75 | T2.2 |
+| R15 | It has a handshake, session levels, kept state, held and parked requests, a cancel and chained messages, so every type of §4.7 is exercised: every §4.7 symbol a protocol implements or calls is referenced from its non-test code, and every other one is on the coverage check's exemption list (D16) | MUST | §7, §4.7 (closing sentence); E1's R75 | T2.2 |
 | R16 | It is driven over a plain connection: a client writes its records to any `net.Conn` and keeps the credit balance the replies grant | MUST | §7; owner decision | T2.1 |
 | R17 | `NewConn` runs at accept and returns the connection's stages, `Header` and `Router` always set; the `Hold` stage is set where a table `Holds` and nil elsewhere | MUST | §4.7 | T2.1, T2.2 |
 | R18 | `HoldCodec.Key` never returns 0 | MUST | §4.7 | T2.2 |
-| R19 | `HoldCodec.Interim` grants the request's credits when told to, else only what keeps the balance at one; for a `NoReply` row it also grants the credits of the `after` headers, summed and saturating at the connection's credit target rather than wrapping | MUST | §4.7 | T2.2 |
+| R19 | `HoldCodec.Interim` grants credits as RFC 20 §4.6 and §4.7 state, the credits of the chain members answered before it and of a `NoReply` row's `after` headers included | MUST | §4.6, §4.7 | T2.2 |
 | R20 | `Security.Unwrap` resolves the IDs a related member inherits from `prev` before it checks the member, so the check never runs against an unresolved ID; `Wrap` transforms the reply in place | MUST | §4.7 | T2.2 |
 | R21 | `ReplayCache`'s `Lookup` returns a fresh copy of a cached reply, charged to a reply reservation of its size under `ctx`; `Store` keeps its own clear copy | MUST | §4.7 | T2.2 (green with E3) |
 | R22 | The protocol owns its sessions: one registry per `Protocol`, handed to each connection's stages at `NewConn`; a connection's `OnClose` drops its references to the sessions it carried | MUST | §4.7 ("Sessions span connections") | T2.2 |
@@ -162,7 +162,7 @@ names the epic that owns the rest.
 | --- | --- | --- | --- | --- |
 | R29 | One call fails a test that leaves behind a goroutine or a descriptor it opened, naming each goroutine with its stack; it polls the goroutines themselves, never a fixed sleep, with one backstop timeout; no new dependency | MUST | rule 4; `CLAUDE.md` "Writing tests" | T2.4 |
 | R30 | The same call fails when any of `Deps.Budgets`' four budgets reads above zero, naming it | MUST | rule 4, rule 8; §6.8; §9 A18 | T2.4 (green with E3) |
-| R31 | A test that can pass only once a later epic fills a stub lands red in the `adapter-conformance` suite, behind its own build tag, with one `known.yaml` entry giving its failure message and the issue of the epic that turns it green; that epic removes the entry once CI shows the test passing; the suite is named in RFC 20's suites paragraph and its tag in `lint-go`'s vet line | MUST | RFC 29 §4.7, §4.9; owner decision | T2.4 |
+| R31 | A test that can pass only once a later epic fills a stub lands red in the `adapter-conformance` suite, behind its own build tag, with one `known.yaml` entry giving its failure message and the issue of the epic that turns it green; that epic removes the entry once CI shows the test passing; until then it fails on an assertion or a returned error, never a panic; the suite is named in RFC 20's suites paragraphand its tag in `lint-go`'s vet line | MUST | RFC 20 §8.5; RFC 29 §4.6, §4.7, §4.9; owner decision | T2.4 |
 
 **The surface amendment**
 
@@ -172,11 +172,9 @@ names the epic that owns the rest.
 
 ## 4. Decisions this epic takes
 
-- **D1, `testproto` is not a test double.** RFC 29 §4.11's three kinds are stand-ins for a
-  collaborator of the code under test. `testproto` stands in for none: it is a third
-  implementation of `core.Protocol`, an interface with two production implementations, and a
-  `core` test's subject is `core`, with `testproto` its input, as an operation table is data.
-  So none of the three kinds applies, and it needs no conformance suite. It is held honest
+- **D1, `testproto` is not a test double.** It is a third implementation of `core.Protocol`,
+  and a `core` test's subject is `core`, with `testproto` its input, which RFC 29 §4.11's "These
+  are not doubles at all" paragraph allows, so it needs no conformance suite. It is held honest
   three ways: its handlers are thin (decode, at most one service call, encode) and answer
   nothing in the service's place; every error, delay and hold a `core` test needs comes from
   the service the test supplies, `vfstest.Faults` around `vfstest.Memory`, kinds 3 and 2; and its
@@ -227,17 +225,20 @@ names the epic that owns the rest.
   test protocol can afford.
 - **D8, the error tables are not total.** They map `core`'s refusals, `vfs.ErrDelay` (with a
   bounded `Hold` in version 2), `context.Canceled` (`StatusCancelled`, what a parked or held
-  request its client cancelled is answered) and `core.ErrDraining` (`NoReply`), each status named with the
-  later test that reads it, and nothing else, so an unmapped service error, answered server
-  fault and counted (E5's T5.7), is reachable. `ErrMoved` has no row: `MoveTarget` answers none
-  until RFC 15's topology exists, so no test can reach it, and its row comes with the first that
-  can. Totality is a protocol table's property (§7.3), RFC 21's and 22's. A `decision:` marker on
+  request its client cancelled is answered), `core.ErrDraining` and `core.ErrMoved` (`NoReply`, as
+  RFC 20 §4.7 maps `ErrMoved` where no move signal fits), each status named with the later test
+  that reads it, and nothing else, so an unmapped service error, answered server fault and
+  counted (E5's T5.7), is reachable. `ErrMoved`'s row is read by no drain test until
+  `MoveTarget` names a target (RFC 15's topology); E5's T5.7 reads it through `ErrorTable.Map`.
+  Totality is a protocol table's property (§7.3), RFC 21's and 22's. A `decision:` marker on
   the tables says so.
 - **D9, one seed per rule, and seeded allowed imports.** §7.1 seeds one violation; a walk with
   several rules can lose one silently, so each rule gets its own seed, as
   `internal/vfs/arch_test.go` does, and each allowance (a `core` test importing `testproto`, an
-  adapter test importing `vfstest`, `adaptertest` importing `internal/prof`) gets a seed the test
-  must not report, so a rule written too wide fails too. A v1 path is checked by whether a
+  adapter test importing `vfstest`, `adaptertest` importing `vfstest` and `internal/prof`) gets a seed the test
+  must not report, so a rule written too wide fails too. A rule a prefix match could widen also
+  gets a seed just past it: an adapter's non-test file importing `pkg/vfs/vfstest`, which a walk
+  allowing `pkg/vfs/...` would pass, and one importing `internal/prof`. A v1 path is checked by whether a
   package exists there, which also covers any import of it.
 - **D10, the walk reads files, not packages.** The import test reuses
   `internal/vfs/arch_test.go`'s approach, `go/parser` with `ImportsOnly` over every `.go` file
@@ -265,9 +266,15 @@ names the epic that owns the rest.
   new server` until E4), then the reply. Whichever of E4 and E5 moves the first failure updates
   the entry's `message` in that change; E4's and E5's descriptions say so. A panicking stub is
   never reached from a server goroutine, where it would stop the binary, because the tables are
-  built before the server starts. The budget specifications reserve through `WaitBudget.Reserve`
-  (`resources: reserve`), not `BufPool.Get`. The suite is `engine-conformance`'s shape,
-  `tier: pr`.
+  built before the server starts. No red specification registers a cleanup or `defer` that
+  reaches a panicking stub (`Reserved`, `Reservation.Release`, `Buf.Release`) before the step
+  that fails first: a crash is graded new whatever the known list says (RFC 29 §4.6). So the
+  budget specifications reserve through `WaitBudget.Reserve` and `Budget.Reserve` (`resources:
+  reserve`), not `BufPool.Get`, before calling `CheckLeaks`; the end-to-end specification calls
+  `CheckLeaks` after its tables are built, which E5 does after E3; and the replay specification,
+  which starts nothing, calls none. A
+  specification with subtests has one entry per subtest, which excuses its parent (RFC 29 §4.6).
+  The suite is `engine-conformance`'s shape, `tier: pr`.
 - **D12, the allocation cell lands here; the epic's owner chose this.** `testproto`'s header gate is the
   first allocation gate written, so `unit/adapter-allocs` and its fixed `dt run` step in the unit
   job, as `unit/journal-index` has, land with it in T2.1 rather than with `BufPool`'s in E3. E3's
@@ -284,7 +291,9 @@ names the epic that owns the rest.
   only the standard library and its own packages and so must allow `internal/prof` in
   `journaltest` and in test files, with a seed in its own table; `CheckLeaks` calls `prof.Watch`
   and adds only the budget check, and `testproto`'s gate reads `prof.RaceEnabled`. `prof`'s
-  `decision:` on parallel tests moves with it. Its heap check is skipped under `-race`, and
+  `decision:` on parallel tests moves with it and binds `CheckLeaks` too (§5), and
+  `journal-platforms.yml`, the only macOS and Windows run of its per-OS code, follows it (T2.4).
+  Its heap check is skipped under `-race`, and
   every adapter cell but `unit/adapter-allocs` runs with it, so `CheckLeaks` promises no heap
   coverage.
 - **D14, E1's two import-shape tests fold into the import test.** `pkg/adapter`'s
@@ -300,8 +309,9 @@ names the epic that owns the rest.
   `Memory`.
 - **D16, the coverage check reads names.** T2.2's test that every §4.7 symbol is referenced
   matches `core.<Name>` selectors and, for `Conn`'s and `Request`'s methods, the method names,
-  with `go/parser` alone, against an exemption list in the test naming, for each symbol a
-  protocol neither implements nor calls, the epic whose test calls it. A `ponytail:` names the
+  with `go/parser` alone, against an exemption list in the test naming each symbol a protocol
+  neither implements nor calls, with why; the epic whose test calls each is named in T2.2's
+  acceptance criteria. A `ponytail:` names the
   ceiling: a method of another type with the same name counts; move to `go/types`, inside the
   test, if that ever hides a gap.
 - **D17, what is settled here for good, what is deferred, and what either costs.** E4, E5 and E6
@@ -309,7 +319,7 @@ names the epic that owns the rest.
   - `adaptertest.CheckLeaks(t, b)` and `internal/prof`'s path: every pipeline test of E4, E5 and
     E6 calls the first and the journal's, engine's and `kvtest`'s tests import the second, so a change means
     editing each of them;
-  - `testproto.New(d adapter.Deps)`, `Bare`, the operation codes and statuses (typed as `core`'s
+  - `testproto.New(d adapter.Deps)`, `Bare`, `Settings`, the operation codes and statuses (typed as `core`'s
     `uint32` code and `core.Version`, so no test converts), `Msg`, `Reply`, `Append` and `Client`:
     every `core` test builds its requests and reads its replies through them;
   - `adapter.Adapter.Addrs()`, `core.Listener.Services` and `adapter.Serving` (D19): E4's tests, the end-to-end specification,
@@ -357,13 +367,12 @@ names the epic that owns the rest.
 internal/prof/                     T2.4  moved from pkg/block/journal/journaltest/prof, unchanged (D13)
 internal/adapter/adaptertest/
   leak.go                          T2.4  CheckLeaks, budgetsHeld
-  leak_conformance_test.go         T2.4  red: budgetsHeld names a charged budget
-  leakspec/leak_conformance_test.go  T2.4  red: CheckLeaks on released budgets, alone in its package
+  leak_conformance_test.go         T2.4  red: budgetsHeld names each charged budget; CheckLeaks fails on a held one and passes on released ones
   imports_test.go                  T2.3  the import test
   testdata/imports/                T2.3  one seed per rule and per allowance
   testproto/
     wire.go                        T2.1  the format (package doc), Framer, header, HeaderCodec, Append
-    proto.go                       T2.1  Protocol, New, Bare, NewConn, Router, the tables, Negotiate, Echo, PutFH, Create, Panic
+    proto.go                       T2.1  Protocol, New, Bare, Settings, NewConn, Router, the tables, Negotiate, Echo, PutFH, Create, Panic
     client.go                      T2.1  Msg, Reply, Client
     stages.go                      T2.2  Security, FlowControl, ReplayCache, HoldCodec
     state.go                       T2.2  sessions, Session, Logoff, Tree, Park, Notify, Violate, the compound row
@@ -384,7 +393,8 @@ pkg/adapter/smb/smb_test.go        T2.3  vfstest.Memory for internal/vfs (D15)
 test/adapter/known.yaml            T2.4  the red specifications (D11)
 test/suites.yaml                   T2.1  unit/adapter-allocs cell; T2.4  adapter-conformance suite, its tag in lint-go's vet line, unit/journal-index's prof path
 .github/workflows/tests.yml        T2.1  unit/adapter-allocs' fixed step; T2.4  adapter-conformance in the branch's cell filter
-docs/internals/rfcs/rfc-20-adapters.md  T2.4  the suites paragraph names adapter-conformance
+.github/workflows/journal-platforms.yml  T2.4  internal/prof in its path filter and its go test
+docs/internals/rfcs/rfc-20-adapters.md  T2.4  §8.5's sentence on red tests names adapter-conformance
 pkg/block/journal/imports_test.go  T2.4  internal/prof allowed in journaltest and tests
 docs/internals/testing.md          T2.4  regenerated by dt docs
 ```
@@ -400,10 +410,11 @@ The exported surface this epic adds or changes:
 
 package adaptertest
 
-// CheckLeaks, called first in a test, fails it at its end when a goroutine or
+// CheckLeaks, called before the test starts anything, fails it at its end when a goroutine or
 // descriptor opened since is still open, the live heap grew past prof's default
 // slack (16 MiB; checked only without -race), or a budget of b (nil: none)
-// still holds bytes.
+// still holds bytes. Its checks are process-wide, as prof.Watch's are: a test
+// that calls it runs beside no parallel test, and its subtests do not call it.
 func CheckLeaks(t testing.TB, b *resources.Budgets)
 
 package testproto
@@ -413,6 +424,15 @@ type Protocol struct{ /* unexported */ }
 func (p *Protocol) Framer() core.Framer
 func (p *Protocol) NewConn(c *core.Conn) core.Stages
 func (p *Protocol) Bare() core.Protocol // the same frames, Header and Router only, version 1
+
+// Settings is testproto's shape; its Router reads it from Conn.Settings() at a Negotiate.
+type Settings struct {
+	config.Adapter
+	MaxVersion core.Version // the highest version Negotiate picks; 0: both
+}
+// Validate refuses a MaxVersion past 2 and checks nothing else: config's checks of
+// the common part are unexported, which a decision: marker states.
+func (s Settings) Validate() error
 
 // The operation codes, typed as core.Op.Code and core.Header.Op are.
 const (
@@ -499,8 +519,9 @@ func (c *Client) Balance() int
     importer's import line (the journal's and engine's tests and fixtures,
     `pkg/metadata/kv/kvtest/fault_test.go`), `pkg/block/engine/imports_test.go`'s allowlist entry
     (its line 37), `pkg/block/journal/imports_test.go`'s `forbidden` allowing `internal/prof` in
-    `journaltest` and test files with a seed, `prof`'s own stdlib-only import test, and
-    `unit/journal-index`'s command in `test/suites.yaml` updated;
+    `journaltest` and test files with a seed, `prof`'s own stdlib-only import test,
+    `unit/journal-index`'s command in `test/suites.yaml`, and `journal-platforms.yml`'s path
+    filter and `go test` updated;
   - `leak.go`: `budgetsHeld(b *resources.Budgets) error`, naming each of `Receive`, `Reply`,
     `Connection` and `Hold` whose `Reserved` is above zero; `CheckLeaks(t, b)`, which calls
     `prof.Watch(t, prof.Options{})` and registers a `t.Cleanup` reporting `budgetsHeld`;
@@ -508,32 +529,36 @@ func (c *Client) Balance() int
     -tags=adapter_conformance -run ^TestConformance ./internal/adapter/...`, `known:
     test/adapter/known.yaml`, `tier: pr`), in a component group named `adapters`; the tag on
     `lint-go`'s `go vet -tags=` line; the suite in `tests.yml`'s branch cell filter beside
-    `engine-conformance`; RFC 20's suites paragraph naming it; `docs/internals/testing.md`
+    `engine-conformance`; the suite's name added to RFC 20 §8.5's sentence on red tests, which
+    `dt docs --check` accepts only once the suite is registered; `docs/internals/testing.md`
     regenerated with `test/harness/bin/dt docs`;
-  - `leak_conformance_test.go`: `TestConformanceBudgetsHeldNamesACharged`, a reservation taken
-    with `WaitBudget.Reserve` and kept, `budgetsHeld` naming `Reply` (`message: 'resources:
-    reserve'`: the stub's error comes before any `Reserved` call, so it never panics);
-  - `leakspec/leak_conformance_test.go`, package `leakspec_test`, holding only
-    `TestConformanceCheckLeaksPassesOnZeroBudgets`, the consumer: `CheckLeaks(t, b)` on budgets
-    reserved and released before the test ends (`message: 'resources: reserve'`). Until E3 its
-    cleanup calls the stub `Reserved`, which panics; the panic still reports a fail event for
-    this test, which `dt` grades against its entry, and the only loss, later tests of the package
-    not running, costs nothing in a package of one test. Both entries `issue: "#3964"`.
+  - `leak_conformance_test.go`, two specifications ordered as D11 says; one `known.yaml` entry
+    per subtest, `message: 'resources: reserve'`, `issue: "#3964"`:
+    - `TestConformanceBudgetsHeldNamesEachCharged`, the predicate, table-driven over the four
+      budgets, one subtest each: `Receive` and `Reply` charged through `WaitBudget.Reserve`,
+      `Connection` and `Hold` through `Budget.Reserve`, the reservation kept, and `budgetsHeld`'s
+      error naming that budget and no other;
+    - `TestConformanceCheckLeaksReadsBudgets`, the consumer, through a `testing.TB` that keeps
+      its failures and cleanups, as `prof`'s own tests' `recorder` does: subtest `Held` reserves
+      from `Hold` and keeps it, then calls `CheckLeaks` on the recorder, runs its cleanups and
+      asserts it failed naming `Hold`; subtest `Released` reserves, calls `CheckLeaks` on the
+      recorder, releases, then runs its cleanups and asserts it did not fail.
 - **Consumers:** every E4, E5 and E6 test that runs the pipeline (rule 4); E3, which turns the
-  budget specification green and removes its entry; the end-to-end and replay specifications of
-  T2.1 and T2.2.
+  budget specifications green and removes their entries; the end-to-end specification of T2.1.
 - **Acceptance criteria:**
   - The moved profiler's tests pass at its new path, and no `.go` file and nothing in
     `test/suites.yaml` names the old one.
-  - `test/harness/bin/dt run adapter-conformance` grades the budget specification as its known
-    failure, and fails the run if the test passes while its entry remains.
+  - `test/harness/bin/dt run adapter-conformance` grades each budget subtest as its known
+    failure, with no panic, and fails the run if one passes while its entry remains.
   - `test/harness/bin/dt docs --check` passes with the new suite.
 - **Tests:** `prof`'s own tests, moved (they catch a goroutine or descriptor check that never
   fails), and its new import test (catches the moved package taking a dependency the journal's
   rule used to forbid); the journal's import test with its new seed (catches `internal/prof`
-  allowed in the journal's production code); the predicate specification (red until E3: catches
-  a check that reads one budget, or none) and the consumer specification (red until E3: catches a
-  `CheckLeaks` that never reads `b`, or reports a budget its test released). Run
+  allowed in the journal's production code); the predicate specification (red until E3: its
+  four subtests catch a check that skips any budget, reads none, or names one not charged) and
+  the consumer specification (red until E3: `Held` catches a `CheckLeaks` that never reads `b` or
+  checks at the call rather than in its cleanup, `Released` both that and one that reports a
+  budget its test released). Run
   with `test/harness/bin/dt run unit` and `test/harness/bin/dt run adapter-conformance`.
 - **Rules:** rule 8: D11; rule 10: D13.
 
@@ -548,8 +573,11 @@ func (c *Client) Balance() int
     refusing a length past 1 MiB); the header type of D4 and its `Op`, `Version`, `Next` and
     `Related`; the `HeaderCodec` (`Decode(rec, off)`, `Encode(h, s, out)`, `Chain(out, prev)`
     writing the reply at `prev`'s `next`); `Append`.
-  - `proto.go`: `New`, `Protocol`, `Framer`, `NewConn`, `Bare` (D3); the `Router` choosing the
-    table by the header's version; the two tables (D3, D7) and their error tables (D8); rows built
+  - `proto.go`: `New`, `Protocol`, `Framer`, `NewConn`, `Bare` (D3); `Settings` (§5); the
+    `Router` choosing the table by the header's version, and capping the version `Negotiate` picks
+    at `MaxVersion`, read from `c.Settings()` when it routes a `Negotiate`, the one path that
+    reads it, so `Conn.Settings` has its caller and no test here reaches its stub; the two tables
+    (D3, D7) and their error tables (D8); rows built
     with `core.Bind`: `Negotiate`, `Echo`, `PutFH`, `Create`, `Panic`, as §5's codes say;
     `decision:` markers for D1, D5, D7 and D8.
   - `client.go`: `Msg`, `Reply`, `Client`, `NewClient`, `Send`, `Recv`, `Balance` as §5 states
@@ -557,12 +585,14 @@ func (c *Client) Balance() int
   - `unit/adapter-allocs` in `test/suites.yaml`, its command `go test` over
     `./internal/adapter/adaptertest/testproto/`, and its fixed `dt run` step in the unit job (D12).
   - `conformance_test.go`: `TestConformanceEchoEndToEnd`, `testproto`'s tables built first (D11),
-    then a `core.NewServer` on `testproto` over `127.0.0.1:0`, its listener's `Services` `{"testproto"}`, started, dialled at `Addrs()[adapter.Socket{Service: "testproto", Network: "tcp"}][0]`,
+    then a `core.NewServer` on `testproto` and a `Settings` of `config.DefaultNFS().Adapter`'s
+    timeouts over `127.0.0.1:0`, its listener's `Services` `{"testproto"}`, started, dialled at `Addrs()[adapter.Socket{Service: "testproto", Network: "tcp"}][0]`,
     one `Echo` sent by the client and its reply read, `CheckLeaks` clean after `Stop`; its
     `known.yaml` entry (`message: 'testproto: tables: not implemented'`, `issue: "#3966"`, its
     reason naming E5's tables and pipeline and E4's server).
 - **Consumers:** E4's accept, reader, writer and sidecar-runner tests (T4.1–T4.4, T4.9: `Echo`,
-  `Client`, `Bare` as the second listener, `Addrs` for the bound port and the `Serving` report); E5's T5.1 (nil stages over `Bare`, `Echo`'s role),
+  `Client`, `Bare` as the second listener, `Addrs` for the bound port and the `Serving` report),
+  and its `Reconfigure` test (T4.6: `MaxVersion` read from each connection's snapshot); E5's T5.1 (nil stages over `Bare`, `Echo`'s role),
   T5.2 (`Versions`, `Needs`), T5.3 (the cap of 64 over `Bare`), T5.5 (`Create` held), T5.6
   (`Panic`), T5.10 (the benchmark over `Echo`).
 - **Acceptance criteria:**
@@ -578,6 +608,7 @@ func (c *Client) Balance() int
   - The client writes exactly the bytes `Append` gives, and `Balance` follows §5's contract.
   - `NewConn` sets every stage on the full protocol, `Hold` included, and only `Header` and
     `Router` on `Bare`.
+  - `Settings.Validate` refuses a `MaxVersion` past 2.
 - **Tests:** the vectors, both directions (catches a field at the wrong offset or of the wrong
   width, which a round trip of `Append` and `Decode` would pass); `FuzzFrame` (catches a panic or
   a read past the buffer on a hostile length); the over-cap vector (catches a `BodyLen` that
@@ -589,7 +620,8 @@ func (c *Client) Balance() int
   pair, the read end compared with the vector, and the balance after a scripted reply sequence
   (catches an interim counted twice); `NewConn`'s stages (catches a `Bare` carrying `Flow`, under
   which E5's cap-of-64 test would not test the default, or a `Hold` missing on the full protocol,
-  R17); the end-to-end specification (red until E4 and E5: it is
+  R17); `Settings.Validate` on 2 and 3 (catches a cap that accepts a version with no table); the
+  end-to-end specification (red until E4 and E5: it is
   S3's definition and reads `Addrs`, R24, R32). Run with
   `test/harness/bin/dt run unit`, `test/harness/bin/dt run unit/adapter-allocs` and
   `test/harness/bin/dt run adapter-conformance`.
@@ -610,9 +642,8 @@ func (c *Client) Balance() int
       refuses a message that would overdraw;
     - `ReplayCache`: a map from (session, sequence) to the clear reply `Store` copied; `Lookup`
       returns a fresh copy from a `BufPool` over `Deps.Budgets.Reply`, under `ctx`;
-    - `HoldCodec`: `Key` the message ID with its top bit set, never 0; `Interim` granting the
-      request's credits, or only what keeps the balance at one, and for `after` their sum capped
-      at a credit target of 64; `Final`; `Cancels` for `OpCancel`, keyed by `Msg.Target`; `Pends`
+    - `HoldCodec`: `Key` the message ID with its top bit set, never 0; `Interim` as RFC 20 §4.6
+      and §4.7 state it (R19), with a credit target of 64; `Final`; `Cancels` for `OpCancel`, keyed by `Msg.Target`; `Pends`
       returning the message's `pend` flag.
   - `state.go`: the session registry, one per `Protocol`, `OnClose` dropping the connection's
     references; `Session`, `Logoff` and `Tree` setting `Request.Level` and `Request.State` through
@@ -642,10 +673,9 @@ func (c *Client) Balance() int
 - **Acceptance criteria:**
   - Every exported identifier of `core` is referenced as `core.<Name>` in `testproto`'s non-test
     files, and every exported method of `Conn` and `Request` by name, but for those on the
-    test's exemption list, each with the epic whose test calls it: `NewServer`, `Server` and its
-    methods, `Listener` (E4's T4.1, T4.7), `Errors` and `ErrorTable.Map` (E5's T5.7), `Call` and
-    `Middleware` (E5's T5.6), `Conn.Settings` (E6's T6.3 and T6.4, whose `NewConn` reads the
-    snapshot's range).
+    test's exemption list, each with why (D16); the epic whose test calls each: `NewServer`,
+    `Server` and its methods, `Listener` (E4's T4.1, T4.7), `Errors` and `ErrorTable.Map` (E5's
+    T5.7), `Call` and `Middleware` (E5's T5.6).
   - A message with one byte changed is refused by `Unwrap`; a related member with an all-ones
     session is checked under `prev`'s session, and without `prev` is refused.
   - `Key` is never 0, also for message ID 0; `Interim` grants the request's credits with `grant`,
@@ -689,9 +719,11 @@ func (c *Client) Balance() int
     `internal/adapter/smb` (R5), an implementation importing `pkg/adapter/nfs` (R6),
     `pkg/adapter` importing `internal/adapter/core` and `pkg/adapter/config` importing
     `pkg/vfs` (R7), an adapter test importing `internal/vfs` (R11), a non-test file importing
-    `testproto` (R12), and a directory at `internal/adapter/common` (R13); and one seed per
+    `testproto`, an adapter non-test file importing `pkg/vfs/vfstest` and one importing
+    `internal/prof` (R12), and a directory at `internal/adapter/common` (R13); and one seed per
     allowance, which must not be reported: a `core` test importing `testproto` (R10), an adapter
-    test importing `pkg/vfs/vfstest`, and an `adaptertest` file importing `internal/prof` (R11);
+    test importing `pkg/vfs/vfstest`, and an `adaptertest` file importing `pkg/vfs/vfstest` and
+    `internal/prof` (R11);
   - D14's two tests deleted; D15's two test files changed.
 - **Consumers:** every later epic, whose packages it holds from their first commit; E6's `wire`
   packages (R8); E4's and E5's `core` tests, which import `testproto` (R10).
@@ -736,8 +768,9 @@ A suggestion only: one pull request per subtask works as well.
 - **`vfstest.Memory` and `vfstest.Faults` do not exist on the branch.** T2.3 needs `Memory` for
   D15; `testproto`'s service calls first run on both in E4. Deferral-ledger row: `Memory`,
   `Faults`, and `Faults`' fault that holds a call until the test releases it (an event, since a
-  timed wait is forbidden), on which D5 and D6 rest; owner RFC 17's plan, before T2.3 and E4's
-  first test.
+  timed wait is forbidden), on which D5 and D6 rest; owner RFC 17's plan, piece 12, before T2.3,
+  which names that fault. T2.3 stays in S2, since the
+  import test must hold E3's first package (the plan's §3.3), so a late piece 12 holds E3 too.
 - **Deferral-ledger row this breakdown adds:** the import test's clause that `translate` imports
   only neutral types (RFC 20 §2.3), with `translate`'s first package, owner RFC 21's and 22's
   plans.

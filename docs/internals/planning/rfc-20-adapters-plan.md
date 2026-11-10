@@ -149,8 +149,8 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
 
 ### 1.4 What epic 2 must deliver
 
-RFC 20's suites paragraph puts every layer this plan builds in `unit`, and the allocation gates
-in a non-race cell. `unit/nonrace` is nightly, and the nightly runs on develop's schedule, never
+RFC 20's suites paragraph puts every layer this plan builds in `unit`, the allocation gates
+in a non-race cell, and a test only a later change can turn green in a red suite of its own. `unit/nonrace` is nightly, and the nightly runs on develop's schedule, never
 on `feat/storage-v2`, so the gates get a per-change cell of their own, `unit/adapter-allocs`, as
 the journal's run in `unit/journal-index`. Like that cell, it runs from a fixed step in the unit
 job: the branch's cell filter drops a cell with no job, so the cell alone would never run. Cell
@@ -291,7 +291,7 @@ and 5.
    and `Split` each carry a `ponytail:` naming RFC 24.
 8. **A test must be able to fail.** Keep a test only if a plausible change would make it fail and
    nothing else would catch that change. The import test proves it can by reporting each of its seeded
-   violations, one per rule; the budget leak check by its red specification, a reservation kept, which E3 turns green.
+   violations, one per rule; the budget leak check by its red specifications, a reservation kept on each budget and one held under `CheckLeaks`, which E3 turns green.
 9. **A symbol is exported only if RFC 20's interface uses it.** `pkg/adapter`,
    `pkg/adapter/config`, `pkg/resources` and the two `New` are the public surface. `core`'s
    exported symbols are those RFC 20 §4.7 names, frozen at S1; everything else in `core` is
@@ -355,6 +355,7 @@ flowchart TD
   S3 -. "New on the real runner" .-> E6
   S4(["S4 internal/node exists, RFC 23"]):::sync --> E7["E7 Integration with the node 🔀"]:::sync
   E5 -. "WithHold, read by the clone wait" .-> P11(["RFC 17 plan piece 11"]):::sync
+  P12(["RFC 17 plan piece 12"]):::sync -. "vfstest.Memory, Faults" .-> E2
   E6 --> E8["E8 E2E green"]
   E7 -. "node-level ledger rows" .-> E8
   classDef blocker stroke:#c0392b,stroke-width:3px
@@ -385,6 +386,7 @@ flowchart TD
 | --- | --- | --- |
 | ⛔ E1 | everything | `pkg/adapter` is recreated at v1's path, and every epic builds on its types |
 | ⛔ E2 | E3–E6 | `core` is proven only on `testproto`; the import test must run from the first package |
+| RFC 17 plan piece 12 | E2, so E3–E6 | E2's import test needs `vfstest.Memory`, and `testproto`'s holds `Faults`' releasable hold |
 | E3 | E4, E5, partly | the reader reserves receive bytes before a body; the pipeline reserves the reply. Both start on E1's stubs and finish on E3 |
 | E4 | E5, partly | the pipeline's tests that send a reply run on the real `Conn` over loopback |
 | E4, E5 | E6's `New`, via S3 | a scaffold is done only when "not supported" goes through the real pipeline; `protocol/` is built before, against the frozen surface |
@@ -513,8 +515,8 @@ RFC sections: §7 (the layers; the `core` layer on a test-only protocol), §7.1'
 
 - T2.1 `testproto`: frames, operations (echo, panic, a settable `Role`, one service call), versions;
   driven over a plain `net.Conn`; the unit/adapter-allocs cell with its header gate.
-- T2.2 `testproto`'s stateful half, as §1.4 describes, so every symbol of RFC 20 §4.7 has a
-  caller in `testproto`.
+- T2.2 `testproto`'s stateful half, as §1.4 describes, so every symbol of RFC 20 §4.7 a protocol
+  implements or calls has a caller in `testproto`, and every other one is on an exemption list.
 - T2.3 The import test, on `arch_test.go`'s walker, with one seeded violation per rule and a seed per allowance; `arch_test.go`
   keeps checking that the service imports no adapter.
 - T2.4 The leak checks on the moved profiler, and the `adapter-conformance` suite.
@@ -759,7 +761,7 @@ RFC sections: §6.10's codec and pipeline rows.
    live on `docs/skills-epic-plan-breakdown`. §1.5's instruction names a path that exists only
    once that pull request merges.
 9. **The critical path is long.** E1 → E2 → E3 → E4 and E5 → S3 → E6's second half → E8 holds
-   most of the estimate; track C's share of E5 is what keeps the tracks parallel, and E4's and
+   most of the estimate, and RFC 17's piece 12 must land before E2 ends; track C's share of E5 is what keeps the tracks parallel, and E4's and
    E5's tests that need the other's half wait for it. Those tests add no man-days: they are the
    tests E4's and E5's subtasks already carry, run on the real `Conn` and pipeline rather than on
    a stand-in, and the sidecar runner's trivial real sidecar is part of T4.9. `vfstest.Memory`
@@ -778,7 +780,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | Deferred | Why not here | Owner | Comes back when |
 | --- | --- | --- | --- |
 | NFSv3 procedures; NFSv4.0, 4.1 and 4.2 operations; the `ops/` tables | handlers are RFC 21's | RFC 21 plan | its handler epics |
-| MOUNT, NLM, NSM, `SM_NOTIFY`; MOUNT, NLM and NSM over UDP (RFC 20 §11 q3) | auxiliary programs are RFC 21's | RFC 21 plan | its auxiliary-services epic |
+| MOUNT, NLM, NSM, `SM_NOTIFY`; NLM and NSM over UDP (RFC 20 §11 q3) | auxiliary programs are RFC 21's | RFC 21 plan | its auxiliary-services epic |
 | RPCSEC_GSS context table and window; NFSv4.1 slots and reply cache; the v3 and v4.0 duplicate-request cache (RFC 20 §11 q2) | stage state machines, no driver here | RFC 21 plan | with `EXCHANGE_ID`/`CREATE_SESSION` and GSS `INIT` |
 | NFS-over-TLS (`Conn.StartTLS`, `tlsconfig` reload, `require` mode); a certificate that does not load refused when `New` loads it (at configured) and when `Reconfigure` does, before the snapshot swap, never by `Validate`, which reads no file (RFC 20 §3.6); the loading lands with E4's `Reconfigure` and RFC 21's `New` (E6 has no TLS) | starts at the `NULL` handler; `StartTLS` is a method added to `Conn`, no frozen signature changed | RFC 21 plan | with `NULL` |
 | NFS callbacks (`CB_RECALL`, `CB_NOTIFY`, `CB_RECALL_ANY`, NLM `GRANTED` via `Deps.DialClient`) | need sessions and handlers | RFC 21 plan | with delegations and NLM |
@@ -789,6 +791,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, RFC 4121 tokens, `gsstest` | no handshake to drive it | the RFC 22 plan, until its own RFC (risk 5) | first `SESSION_SETUP` or GSS `INIT` |
 | `translate` (ACLs, access masks, times, attributes, `Fit`) | no handler calls it | RFC 21/22 plans | their first handler epic |
 | each protocol's error-table rows and its totality test (RFC 20 §7.3) | rows are protocol choices | RFC 21/22 plans | with their handlers |
+| `vfstest.Memory`, `vfstest.Faults`, and `Faults`' fault that holds a call until the test releases it, on which epic 2's held and parked requests rest | the service's test doubles are RFC 17's | RFC 17 plan, piece 12 | before epic 2's T2.3, whose import test needs `Memory` |
 | handler tests on `vfstest.Memory` and `vfstest.Faults` (§7.2), the one-call rule read per handler from `vfstest.Memory`'s record of mutating calls | no handlers | RFC 21/22 plans | every handler epic |
 | operation codecs, their golden vectors from reference captures, 0-allocation gates for `READ`, `WRITE`, `GETATTR`, `QUERY_INFO` | no handlers | RFC 21/22 plans | with those operations |
 | import test: entry-method call sites (§4.10, §7.1) and the 800-line allowlist (§2.5) | vacuous with no handlers | RFC 21/22 plans | first handler epic |

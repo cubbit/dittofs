@@ -3202,8 +3202,10 @@ implementation package that imports a constructor. It starts with no
 allowlist: today's adapters are deleted rather than moved, so nothing is
 grandfathered in. The walk reads each package's own imports; its `_test.go`
 files may also import `pkg/vfs/vfstest` and `adaptertest`, whose in-memory
-service builds the real filesystem, and nothing else the list forbids, so no
-forbidden package reaches an adapter's build. The other direction, that the service imports no adapter,
+service builds the real filesystem, and `internal/prof`, a profiler importing
+only the standard library; `adaptertest`'s own files may import the same two.
+Nothing else the list forbids is allowed, so no forbidden package reaches an
+adapter's build. The other direction, that the service imports no adapter,
 stays with the service's own architecture check
 ([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)).
 
@@ -3414,7 +3416,12 @@ tests, per change, without waiting for the nightly run.
 
 **Suites.** §7's codec, stage, core, handler, boundary and in-process layers,
 the translation tables and their fuzz seeds run in `unit`, and §6.10's codec and
-pipeline allocation gates per change in a non-race cell of their own. The conformance layer is
+pipeline allocation gates per change in a non-race cell of their own. A test of
+those layers that waits on a stub runs red in a suite of its own, under its own
+build tag, as a known failure
+([RFC 29 §4.7](rfc-29-test-harness.md#4.7%20Grading%3A%20known%20failures%2C%20expected%20skips%2C%20quarantine%2C%20retries)),
+until the change that fills the stub removes its entry; it fails on an
+assertion or an error, never a crash ([RFC 29 §4.6](rfc-29-test-harness.md#4.6%20Results)). The conformance layer is
 `pynfs`, `cthon04`, `nfstest`, `smbtorture`, `wpts` and `pjdfstest` on the
 production profile. §7.4 runs in-process in `unit`, on the composed node, as
 RFC 8's and RFC 18's rows on it do; §7.5 runs in `e2e`, its Kerberos mounts in
