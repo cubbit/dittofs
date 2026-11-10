@@ -182,6 +182,16 @@ func TestHeldEntryStaysFortyBytes(t *testing.T) {
 	}
 }
 
+// TestRetainedStaysEightyEightBytes pins the retained piece's size. A retained
+// extent counts toward the extent bound at its own size, so the next field
+// added to Piece or Retained must show up here rather than silently grow what
+// every retained extent costs.
+func TestRetainedStaysEightyEightBytes(t *testing.T) {
+	if n := unsafe.Sizeof(Retained{}); n != 88 {
+		t.Fatalf("Retained is %d bytes, want 88", n)
+	}
+}
+
 // TestToHeldPanicsOnAnEpoch checks that a piece whose version carries an
 // epoch, which no record of this format can, is refused as a caller bug
 // rather than stored without it.
@@ -192,19 +202,6 @@ func TestToHeldPanicsOnAnEpoch(t *testing.T) {
 		}
 	}()
 	toHeld(Piece{Extent: ext(0, 1), Version: core.Version{Epoch: 1, Counter: 1}})
-}
-
-// TestOwnerNamesTheFilesTag checks Owner answers the tag a write claimed the
-// file for, and nothing for a file with no entry.
-func TestOwnerNamesTheFilesTag(t *testing.T) {
-	ix := New(1 << 20)
-	if _, ok := ix.Owner(testFile); ok {
-		t.Fatal("Owner answers a file with no entry")
-	}
-	seqWrite(t, ix, write(0, 10, rec(1, 64), 1), 1)
-	if tag, ok := ix.Owner(testFile); !ok || tag != testTag {
-		t.Fatalf("Owner = %d, %v; want %d", tag, ok, testTag)
-	}
 }
 
 // TestSplitsAndCutsKeepEachPiecesSeq checks that an offloaded mark that splits

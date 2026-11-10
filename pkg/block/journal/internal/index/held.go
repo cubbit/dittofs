@@ -402,26 +402,21 @@ func (s *heldSet) unmark(e core.Extent, newest core.Version) int {
 }
 
 // repoint moves the pieces inside e held from record from to record to, whose
-// payload holds e's bytes from skip on, keeping their extents, versions and
-// bits, and holding them under seq, the sequence number of the record they
-// now name. A record re-appended after a failed sync is the same record in a
-// new place, so its skips do not change; a repack copy holds only the extents
-// it copies, so they do. Pieces moved into one record under one seq join as
-// one entry; pieces moved under different seqs stay apart. Only pieces of from
-// move, so carrying forward a header-only record, which no piece is held from,
-// changes nothing. It returns the number of pieces moved.
+// payload holds e's bytes from skip on, keeping their extents, versions, bits
+// and sequence numbers. A record re-appended after a failed sync is the same
+// record in a new place, so its skips do not change; a repack copy holds only
+// the extents it copies, so they do. Pieces of one record moved into one record
+// join as one entry; pieces of records with other sequence numbers stay apart.
+// Only pieces of from move, so carrying forward a header-only record, which no
+// piece is held from, changes nothing. It returns the number of pieces moved.
 //
-// decision: the caller states the seq, because a piece's seq must be that of
-// the record it names or the read's header check finds the piece corrupt.
-// RepointRecord moves a record to another copy of it, which carries its
-// original's number, so it passes each piece's own; a repack copy takes a new
-// sequence number, so a repack that repoints through here passes the copy's.
-func (s *heldSet) repoint(e core.Extent, from, to RecordAt, skip uint32, seq core.Seq) int {
+// A repoint keeps each piece's seq because a copy is the same record.
+func (s *heldSet) repoint(e core.Extent, from, to RecordAt, skip uint32) int {
 	s.work = s.work[:0]
 	s.visit(e, func(p Piece) bool {
 		if p.Record == from {
 			q := clip(p, e)
-			q.Record, q.Skip, q.Seq = to, skip+uint32(q.Extent.Off-e.Off), seq
+			q.Record, q.Skip = to, skip+uint32(q.Extent.Off-e.Off)
 			s.work = append(s.work, q)
 		}
 		return true
