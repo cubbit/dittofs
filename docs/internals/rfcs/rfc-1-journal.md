@@ -1754,16 +1754,16 @@ of disjoint held extents, each
 mapped to a record location and carrying its record's sequence number, its content version and its offloaded bit,
 together with the file's removal markers ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)), which carry a version and no
 location, and its **retained extents** ([§3.11](#3.11%20Snapshot%20holds)): superseded content still kept for
-offload, each with its extent, version, record location and offloaded bit. Retained
+offload, each with its extent, version, record location, sequence number and offloaded bit. Retained
 extents are a separate set, never consulted to serve a read, and may overlap held
 extents and each other.
 
 Extents **MUST** be disjoint: a write superseding part of an existing extent
 **MUST** split or narrow it, never leave two extents covering one offset. A
 lookup **MUST** be unambiguous without consulting sequence numbers — they order
-records during recovery, not during a read. The entry's sequence number is never
-consulted to resolve a lookup: it is kept so a read can compare it with the header
-it finds and so a record that does not verify can be named.
+records during recovery, not during a read. The entry carries its record's
+sequence number only so a read can compare it with the header it finds and so a
+record that does not verify can be named.
 
 ### 4.1 What it must answer
 
@@ -1814,12 +1814,15 @@ An entry costs about 53 bytes in order and 69 in random order, so the index's
 footprint tracks how many extents exist and is independent of how much content
 they describe.
 
-An entry is 40 bytes: it keeps the version's 64-bit counter half, the epoch half
-being zero in this format version ([§4.3](#4.3%20Versions)), and the record's 64-bit
-sequence number, which a read compares with the header it finds
+An entry is 48 bytes: the 8-byte start offset that keys it and a 40-byte value. The
+value keeps the version's 64-bit counter half, the epoch half being zero in this format
+version ([§4.3](#4.3%20Versions)), and the record's 64-bit sequence number, which a read
+compares with the header it finds
 ([RFC 28 §2.4](rfc-28-journal-format.md#2.4%20The%20segment%20catalog)). With the tree
 around it, it measures about 53 bytes, in one file of 10^6 extents. A format version
-that raises the epoch widens the entry by eight bytes and has to restate these figures.
+that raises the epoch widens the entry by eight bytes, to about 61 with the tree, above
+[§9.7](#9.7%20What%20CI%20checks%20instead%20of%20timing)'s 56-byte bound, so it has to
+restate both.
 That is for extents written in order. Written in random order, a B-tree's nodes
 are less full. One whose full node first hands its last key to a right sibling
 with room, splitting only when the sibling is full too, measures about 69 bytes
