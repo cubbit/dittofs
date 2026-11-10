@@ -86,6 +86,12 @@ type Fixture struct {
 	limit   journal.Version // the version limit set at the last open
 	opts    []journal.Option
 	handles map[int]*journal.Handle
+
+	// spares is the spare-pool wait the opened journal handed over, the
+	// settle event the fixture blocks on before it hands its caller a
+	// journal whose pool is still filling in the background. Open's own
+	// callback sets it; nil until the first open.
+	spares core.SparesWait
 }
 
 // New initialises a journal in a new temporary directory and opens it, with
@@ -154,6 +160,7 @@ func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64, set fu
 	}
 
 	f.open(true)
+	f.awaitSpares()
 	return f
 }
 
@@ -189,12 +196,23 @@ func bareFixture(tb testing.TB, fault sim.Fault, segCap int64, set func(*journal
 		Dir:     dir,
 		tb:      tb,
 		clock:   clock,
-		opts:    append(opts[:len(opts):len(opts)], journal.WithClock(clock), journal.WithSettings(settings)),
 		handles: map[int]*journal.Handle{},
 	}
+	// The suitable mount comes first, so a caller's own probe option, passed
+	// through NewWithOptions, replaces it; the fixture's clock, settings and
+	// storage stay the last word on theirs.
+	f.opts = append([]journal.Option{SuitableMount()}, append(opts[:len(opts):len(opts)],
+		journal.WithClock(clock), journal.WithSettings(settings),
+		journal.WithSparesReady(f.takeSparesWait))...)
 	tb.Cleanup(f.close)
 	return f
 }
+
+// takeSparesWait is the callback Open hands the spare-pool wait of the journal
+// it built. The fixture keeps the last one, so its wait is the pool of the
+// journal it opened last — always its own, whose targets its own settings
+// sized, with no second copy of the sizing anywhere.
+func (f *Fixture) takeSparesWait(w core.SparesWait) { f.spares = w }
 
 // options returns the journal's options with a view of the seam the next
 // journal opened is the only one to use.
@@ -559,4 +577,32 @@ func (f *Fixture) Allocated() int64 {
 		f.tb.Fatalf("fixture: allocated storage: %v", err)
 	}
 	return n
+}
+
+// awaitSpares blocks until the journal the fixture just opened has made every
+// spare its open targeted, or reports why it stopped filling. Open returns
+// before the pool's first spares are made — a write that rolls is refused,
+// naming the spare limit, until one is ready — so the journal the fixture
+// hands its checks would otherwise race a background fill. The wait is the
+// pool's own settle event, handed over by the open, so the fixture parks on
+// no clock, polls nothing, and a pool that cannot fill answers its refusal
+// here, in the fixture whose settings built it, rather than in the check.
+//
+// decision: only a fresh open runs this — an open of a journal that has run
+// is refused with ErrNotImplemented, so the wait sits once at the fixture's
+// start, never under a fault a check armed later. The one construction-time
+// fault the fixture takes fails at Init, before any open, so no fault is
+// under the wait at all. Withdrawn together with the callback that carries
+// it, by a Stats that reports the ready spares or a write that waits: either
+// end takes the wait.
+func (f *Fixture) awaitSpares() {
+	f.tb.Helper()
+
+	if f.spares == nil {
+		f.tb.Fatalf("fixture: the open handed over no spare-pool wait")
+		return
+	}
+	if err := f.spares.WaitSpares(f.tb.Context()); err != nil {
+		f.tb.Fatalf("fixture: the journal's pool did not reach its spares: %v", err)
+	}
 }

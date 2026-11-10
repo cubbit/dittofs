@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"log/slog"
 	"math"
 	"slices"
@@ -19,6 +20,34 @@ type Config struct {
 	Tracer  Tracer
 	Logger  *slog.Logger
 	Storage storage.FS
+
+	// MountProbe, when not nil, gathers the platform check's inputs for the
+	// directory instead of the platform's own probe. It is the hook the
+	// journal's tree passes through WithMountProbe; production callers set
+	// nothing, and a call without it checks the directory the platform's own
+	// way.
+	MountProbe storage.Gather
+
+	// SparesReady, when not nil, is called by Open with the opened journal's
+	// spare-pool wait, before Open returns: the callback a test uses to take
+	// the wait its fixture blocks on. It is a hook the test components pass
+	// through WithSparesReady, off the journal's public surface; production
+	// callers set nothing, and an Open with no callback runs the same either
+	// way.
+	SparesReady func(SparesWait)
+}
+
+// SparesWait waits for the spare pool of the journal Open built. WaitSpares
+// blocks until every class of spare the journal's own targets name holds its
+// target, and reports the pool's own word — settled, settled short, or
+// stopped — as its error. It is declared here, and not at the pool, so the
+// option that passes it stays a type of this package, in reach of code
+// inside the journal's tree alone.
+type SparesWait interface {
+	// WaitSpares blocks until the pool settles at its targets, and returns
+	// nil there, the context's error once it is done, the core.ErrClosed of
+	// a stopped pool, and the spare refusal of a pool that settled short.
+	WaitSpares(ctx context.Context) error
 }
 
 // Settings are the journal's settings. A zero field takes its default; a
@@ -69,12 +98,23 @@ type Settings struct {
 //
 // decision: the cap is not a setting, and no name journal exports may set
 // it, yet a check over hundreds of segments cannot run at the format's size
-// in a temporary directory. So the field is unexported, and this setter lives
-// in internal/core, which only code inside the journal's tree can import: its
+// in a temporary directory. So the field is unexported, and this setter lives in
+// internal/core, which only code inside the journal's tree can import: its
 // tests' fixture sets it and passes the settings through WithSettings, and
 // the public surface does not change.
 func SetSegmentCap(s *Settings, n int64) {
 	s.segmentCap = n
+}
+
+// SegmentCapOf returns the segment size s names: the cap SetSegmentCap set
+// when positive, the format's constant otherwise. It is the counterpart the
+// open path reads the setter's field with, so the open honours the smaller
+// cap an in-tree test sets exactly as the format's.
+func SegmentCapOf(s Settings) int64 {
+	if s.segmentCap > 0 {
+		return s.segmentCap
+	}
+	return SegmentCap
 }
 
 // Clock is the journal's only source of time. The sync timer, every wait and

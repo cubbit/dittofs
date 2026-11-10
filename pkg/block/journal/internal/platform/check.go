@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
 // The statfs filesystem types the probe tells apart. Each is pinned to its
@@ -27,50 +30,6 @@ const fsNoCOW uint32 = 0x00800000
 // btrfsSubvolumeRootIno is the inode number of every Btrfs subvolume's root
 // directory (BTRFS_FIRST_FREE_OBJECTID in the kernel's linux/btrfs_tree.h).
 const btrfsSubvolumeRootIno uint64 = 256
-
-// linuxProbe is what the Linux probe gathers about a journal directory: the
-// inputs of the verdict, recorded so the verdict itself makes no system call.
-type linuxProbe struct {
-	// dir is the directory, absolute, cleaned and with its symbolic links
-	// resolved.
-	dir string
-	// mountinfo is the text of /proc/self/mountinfo.
-	mountinfo string
-	// fsType is statfs's filesystem type for dir, read as 32 bits. The
-	// kernel's f_type is a __statfs_word, 32 bits on a 32-bit kernel
-	// (include/uapi/asm-generic/statfs.h), and golang.org/x/sys declares
-	// Statfs_t.Type as an int32 on 386, arm and mips, where Btrfs's magic
-	// arrives negative. Every magic fits in 32 bits, so the probe converts
-	// with uint32(st.Type) and the verdict sees the same value on every
-	// architecture.
-	fsType uint32
-	// dirFlags is FS_IOC_GETFLAGS's answer for dir. The verdict reads it and
-	// files only on Btrfs, once dirIno is a subvolume root's, so the probe
-	// asks for them only there: the ioctl fails on the empty directory a
-	// snapshot leaves for a nested subvolume, and on some filesystems outside
-	// the list, which the verdict passes.
-	dirFlags uint32
-	// dirIno is dir's inode number.
-	dirIno uint64
-	// mountID is the ID of the mount holding dir, as statx reports it, or 0
-	// where the kernel does not report it. The probe must ask for
-	// STATX_MNT_ID, never STATX_MNT_ID_UNIQUE: statx fills the same field
-	// with mnt_id for the first and mnt_id_unique for the second
-	// (vfs_statx_path in fs/stat.c), mountinfo's first field is mnt_id
-	// (show_mountinfo in fs/proc_namespace.c), and unique IDs start above
-	// MNT_UNIQUE_ID_OFFSET, 1 << 31 (fs/namespace.c). With the second flag
-	// no ID would match the table, and every directory would be refused.
-	mountID uint64
-	// files is every file already in dir, with FS_IOC_GETFLAGS's answer for
-	// each.
-	files []probedFile
-}
-
-// probedFile is one file already in the journal directory.
-type probedFile struct {
-	name  string
-	flags uint32
-}
 
 // refusalRule names the rule of RFC 28 Appendix A that refused a directory.
 type refusalRule uint8
@@ -102,6 +61,14 @@ type refusal struct {
 	// directory or the file without the attribute for ruleCopyOnWrite, the
 	// volume GUID path for ruleCachePolicy.
 	path string
+}
+
+// Is reports whether target is core.ErrUnsuitableStorage: a refusal is the
+// directory the caller may fix, and every rule's refusal answers the one
+// sentinel. An error met while checking matches nothing here, so a caller
+// can tell a fault from a refusal.
+func (r *refusal) Is(target error) bool {
+	return target == core.ErrUnsuitableStorage
 }
 
 func (r *refusal) Error() string {
@@ -159,6 +126,30 @@ var (
 	errMountTypeMismatch = errors.New("journal: mount table and statfs name different filesystems")
 )
 
+// CheckDir decides whether dir is suitable for a journal. It returns an
+// error matching core.ErrUnsuitableStorage for the first rule of the
+// platform profile a directory refuses — a mount without cache flushes, a
+// Btrfs directory that is not a subvolume root or keeps copy-on-write —
+// with its message naming the rule, the directory and what to change; any
+// other error as itself, which says nothing about whether the directory is
+// suitable; and nil for a suitable one.
+//
+// The verdict runs on gathered inputs, so it builds on every platform.
+// gather, when not nil, is what reads those inputs for the check; nil takes
+// the platform's own check, the real probe on Linux and none where the
+// profile names no rule the platform can read, whose answer accepts every
+// directory. A gather's error is returned as itself, never as a refusal.
+func CheckDir(dir string, gather storage.Gather) error {
+	if gather == nil {
+		return checkDirOS(dir)
+	}
+	p, err := gather(dir)
+	if err != nil {
+		return err
+	}
+	return CheckProbe(p)
+}
+
 // listedFS is a filesystem RFC 28 Appendix A lists as suitable on Linux:
 // its statfs magic and the mount table types that report it.
 type listedFS struct {
@@ -197,30 +188,35 @@ var barrierRows = [...]struct {
 	{magicBtrfs, "nobarrier"},
 }
 
-// checkLinuxProbe decides whether the directory p describes is suitable for a
+// CheckProbe decides whether the directory p describes is suitable for a
 // journal under RFC 28 Appendix A. It returns a *refusal for the first rule
 // that fails, in the order mount options, subvolume root, directory
 // attribute, files; errDirectoryNotClean or one of the errMount errors when
 // the inputs do not describe the directory; and nil otherwise. A filesystem
 // outside the listed ones, on a mount line of a type outside them too, is not
 // refused.
-func checkLinuxProbe(p linuxProbe) error {
-	mounts, err := parseMountinfo(p.mountinfo)
+//
+// It runs on the gathered inputs alone, so it builds and is tested on every
+// platform: the Linux probe is the one Gather that reads them, but the
+// verdict answers any Probe, checked under another platform's rules the day
+// it names ones.
+func CheckProbe(p storage.Probe) error {
+	mounts, err := parseMountinfo(p.Mountinfo)
 	if err != nil {
 		return err
 	}
 
-	m, err := visibleMount(mounts, p.dir)
+	m, err := visibleMount(mounts, p.Dir)
 	if err != nil {
 		return err
 	}
 
-	if p.mountID != 0 {
-		if !hasMount(mounts, p.mountID) {
-			return fmt.Errorf("%w: mount ID %d", errMountUnresolved, p.mountID)
+	if p.MountID != 0 {
+		if !hasMount(mounts, p.MountID) {
+			return fmt.Errorf("%w: mount ID %d", errMountUnresolved, p.MountID)
 		}
-		if p.mountID != m.id {
-			return fmt.Errorf("%w: mount ID %d, visible mount %d at %s", errMountIDDisagrees, p.mountID, m.id, m.point)
+		if p.MountID != m.id {
+			return fmt.Errorf("%w: mount ID %d, visible mount %d at %s", errMountIDDisagrees, p.MountID, m.id, m.point)
 		}
 	}
 
@@ -231,10 +227,10 @@ func checkLinuxProbe(p linuxProbe) error {
 	// directory's mount, so a disagreement either way fails: a listed magic
 	// on a line of another type, and a magic outside the list on a line of a
 	// listed type, whose options would then be read for the wrong mount.
-	fs, listed := listedByMagic(p.fsType)
+	fs, listed := listedByMagic(p.FSType)
 	if !listed {
 		if listedType(m.fsType) {
-			return fmt.Errorf("%w: statfs type %#x, mount %s has type %s", errMountTypeMismatch, p.fsType, m.point, m.fsType)
+			return fmt.Errorf("%w: statfs type %#x, mount %s has type %s", errMountTypeMismatch, p.FSType, m.point, m.fsType)
 		}
 
 		// decision: a filesystem outside the list passes: the RFC names the
@@ -245,25 +241,25 @@ func checkLinuxProbe(p linuxProbe) error {
 		return nil
 	}
 	if !fs.reports(m.fsType) {
-		return fmt.Errorf("%w: statfs type %#x, mount %s has type %s", errMountTypeMismatch, p.fsType, m.point, m.fsType)
+		return fmt.Errorf("%w: statfs type %#x, mount %s has type %s", errMountTypeMismatch, p.FSType, m.point, m.fsType)
 	}
 
-	if option, ok := refusedOption(p.fsType, m.superOptions); ok {
-		return &refusal{rule: ruleBarrier, dir: p.dir, mount: m.point, option: option}
+	if option, ok := refusedOption(p.FSType, m.superOptions); ok {
+		return &refusal{rule: ruleBarrier, dir: p.Dir, mount: m.point, option: option}
 	}
 
-	if p.fsType != magicBtrfs {
+	if p.FSType != magicBtrfs {
 		return nil
 	}
-	if p.dirIno != btrfsSubvolumeRootIno {
-		return &refusal{rule: ruleSubvolume, dir: p.dir, path: p.dir}
+	if p.DirIno != btrfsSubvolumeRootIno {
+		return &refusal{rule: ruleSubvolume, dir: p.Dir, path: p.Dir}
 	}
-	if p.dirFlags&fsNoCOW == 0 {
-		return &refusal{rule: ruleCopyOnWrite, dir: p.dir, path: p.dir}
+	if p.DirFlags&fsNoCOW == 0 {
+		return &refusal{rule: ruleCopyOnWrite, dir: p.Dir, path: p.Dir}
 	}
-	for _, f := range p.files {
-		if f.flags&fsNoCOW == 0 {
-			return &refusal{rule: ruleCopyOnWrite, dir: p.dir, path: joinPath(p.dir, f.name)}
+	for _, f := range p.Files {
+		if f.Flags&fsNoCOW == 0 {
+			return &refusal{rule: ruleCopyOnWrite, dir: p.Dir, path: joinPath(p.Dir, f.Name)}
 		}
 	}
 	return nil
