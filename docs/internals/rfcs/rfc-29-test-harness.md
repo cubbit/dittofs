@@ -385,7 +385,7 @@ sudo.
 `sudo` resets the environment by default (`env_reset`), so nothing reaches a command run under it
 by inheritance. `dt` passes what the command needs explicitly, as `sudo -n env NAME=value ...`:
 the suite's `env` (e2e's `DITTOFS_E2E_REQUIRE_*` and `DITTOFS_E2E_NIGHTLY`), the variables of
-the services the suite needs (the S3 service's endpoint, for one, so e2e uses the S3 service its
+the services the suite needs (`LOCALSTACK_ENDPOINT`, for one, so e2e uses the Localstack its
 `service:` need found rather than starting its own), `DITTOFS_E2E_BIN` and `PATH`. The commands of a
 suite that isn't `go-json` get its `env` and `PATH` only, as they get neither of the others when
 they run as the user. The e2e job did the same by hand, with `sudo -E env "PATH=$PATH" ...`, until
@@ -526,7 +526,7 @@ suites:
       DITTOFS_E2E_REQUIRE_NLM: "1"      # a missing prerequisite fails instead of skipping
       DITTOFS_E2E_REQUIRE_KERBEROS: "1" # the same for Kerberos mounts
       # nightly: { DITTOFS_E2E_NIGHTLY: "1" }, once the dedup tests have known-failure entries (§9)
-    needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:s3"]
+    needs: [linux, root, nfs-client, smb-client, nfs4-acl-tools, "service:localstack"]
     blocking: { pr: false }             # on PRs, until a week with no failure on develop (§8)
     options:
       stress: { cmd: "go test -tags=e2e,stress -run ^TestStress -timeout=30m ./test/e2e/", tier: nightly }   # quoted: a comma ends a flow value
@@ -935,7 +935,7 @@ use `squash: none`, RFC 16's none, which the server treats as it treats `root_to
 root keeps its privileges, as both suites need.
 
 **Needs a fixture implies.** A fixture adds to its cell's `needs` what its fields require, so the
-cell doesn't start without them and `dt plan` places it where they're met: `service:s3` for
+cell doesn't start without them and `dt plan` places it where they're met: `service:localstack` for
 an S3 profile, `root` and `nfs-client` for an NFS mount or a namespaced `client`, `rpcbind` for
 `rpcbind: host`, `smb-client` for an SMB mount, and `root` with it on Linux, whose client mounts as
 root, while macOS's and Windows's mount as the user `dt` runs as, `root` and `port:445` for
@@ -1022,8 +1022,7 @@ production uses: the team decided on 2026-10-19 to drop `memory` and `badger` fr
 matrix. Since the bucket fix (#3013, for #2986) they reach S3; before it they tested nothing more
 than `badger`. smbtorture gains a `badger-s3` profile for this, and cthon04, nfstest and the
 Kerberos option, which ran on `memory`, move to it. The `clients` suite runs `badger-s3` on Linux;
-its macOS and Windows options stay on `memory`, since their hosted runners can't run the S3
-service container.
+its macOS and Windows options stay on `memory`, since their hosted runners can't run Localstack.
 
 **Blocking and non-blocking.** Within a tier, a suite or option with `blocking: false` runs and is
 reported, with its new failures annotated on the PR, but never fails the gate, and the gate doesn't
@@ -1222,9 +1221,7 @@ alert in §4.8 treats them differently, which is the main defence against anothe
 - **hosts:** `host:dedicated`, met only by the dedicated test host, which says it is one by running
   `dt run --place dedicated`;
 - **infrastructure:** `cloud:<provider>` (credentials and provisioned infrastructure), and
-  `service:<name>` for the services `dt services` starts (`s3`, the S3-compatible
-  service container of §4.11, `postgres`, `kmip`). The rename from `localstack` is code work
-  still to do: `test/suites.yaml` and `dt services` still name `localstack`.
+  `service:<name>` for the services `dt services` starts (`localstack`, `postgres`, `kmip`).
 
 `dt doctor` reports which are met. For an unmet need, `dt run` either moves the whole run to the
 `dtc` container (when it provides it and `--in` allows, §4.4), or reports the suite as not run, with the reason. It is
@@ -1958,8 +1955,7 @@ double that no conformance suite holds to the real one; swapping a package-level
 **External systems** (a KDC, a domain controller, an LDAP directory, S3) are tested for real in
 `integration`, and their parsing and logic are pure functions with unit tests. A stand-in runs
 in `unit` only as a kind 2, whose conformance suite also runs against the real system in
-`integration`. The S3 the suites use is an S3-compatible service in a container, which product
-is still open (§9).
+`integration`.
 
 ## 5. What this doesn't change
 
@@ -2228,12 +2224,9 @@ Settled before revision 4:
 - WPTS's setup: it fits the fixture's fields.
 - The NFS `sec=krb5` job: it goes.
 - Real Windows and macOS mounts: the `clients` suite, on hosted runners, on the `memory` profile,
-  since those runners can't run the S3 service container, which `badger-s3` needs.
+  since those runners can't run Localstack, which `badger-s3` needs.
 - Where the test tools come from: `flake.lock`, built with Nix on Linux as today (§4.5).
 - The scenario lock: `setup.sh` owns it and exits 75, since #3018 (§4.6).
-
-Still open:
-- Which S3-compatible service the `s3` container runs (§4.11): RustFS, MinIO or SeaweedFS.
 
 ## Appendix A. What was checked
 
