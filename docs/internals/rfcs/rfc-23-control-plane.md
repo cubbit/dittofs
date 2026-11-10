@@ -465,8 +465,8 @@ func (n *Node) Stop(ctx context.Context) error  // §2.2's stop: the components 
 // Config is what the host supplies and the node cannot build.
 type Config struct {
 	Bootstrap config.Bootstrap // RFC 13 §2.2
-	KV        kv.KV            // what the metadata store opens on; an in-memory one in a multi-node test
-	Transport vfs.Transport    // (cluster): nil on one node; a loopback one in a multi-node test
+	KV        kv.KV            // what the metadata store opens on; the in-memory one, held to RFC 16's KV suite, in a multi-node test
+	Transport vfs.Transport    // (cluster): nil on one node; the network one on 127.0.0.1 in a multi-node test
 	Clock     Clock            // RFC 8 §2.1: the node's one clock, which every component's subset accepts
 	Fault     Fault            // RFC 8 §2.1
 	Metrics   *metrics.Registry
@@ -1673,10 +1673,9 @@ Conventions are the index's ([Test tiers](rfc-index.md#Test%20tiers)). The tiers
 
 | Tier | What runs |
 | --- | --- |
-| unit | `*vfs.Filesystem` through `vfs.New`, with an in-memory `Content` that passes RFC 8's `Content` conformance suite and in-memory metadata, and no node |
-| unit | the gateway through `vfs.NewGateway`, with the router over an in-memory control-plane store and RFC 15's in-memory `Transport` |
+| unit | `*vfs.Filesystem` through `vfs.New`, with an in-memory `Content` that passes [RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)'s `Content` conformance suite and in-memory metadata, and no node |
 | integration | `*vfs.Filesystem` with the real engine and in-memory stores, without the node |
-| multi-node | two `node.New` over one in-memory control-plane store and a loopback `Transport`, driven by writes to the store, with fault injection: a lost reply, a duplicate send, a stale epoch |
+| multi-node | two `node.New` over one control-plane store on the in-memory `KV`, held to RFC 16's KV conformance suite, and the network `Transport` on 127.0.0.1, driven by writes to the store, with fault injection: a lost reply, a duplicate send, a stale epoch |
 | e2e | the adapters |
 
 Each check below runs, through the API, against the node `node.New`
