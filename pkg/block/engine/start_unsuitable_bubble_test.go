@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -225,6 +226,115 @@ func TestCloseGivesUpOnARetriedOpenThatNeverReturns(t *testing.T) {
 	})
 }
 
+// A retried open that finds the journal missing or foreign is a lost device,
+// not an unsuitable one: journal_lost replaces journal_unsuitable, the shares
+// stay unattached, no timer is left armed and a later 30 s changes nothing.
+// The calls on the shares then answer what a journal lost at Start answers.
+func TestARetriedOpenThatFindsTheJournalLostEndsTheRetry(t *testing.T) {
+	for name, cause := range map[string]error{
+		"missing": journal.ErrNoJournal,
+		"foreign": journal.ErrIdentityMismatch,
+	} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				b, s := refusedBubble(t, engine.NewStubStore())
+				spare := bubbleShare(8)
+				b.openFn = func(context.Context) (engine.Journal, error) {
+					return nil, cause
+				}
+
+				b.clock.Advance(retryEvery)
+				synctest.Wait()
+
+				for range 2 {
+					st := b.e.Stats()
+
+					if _, ok := bubbleCondition(st, "journal_lost"); !ok {
+						t.Error("journal_lost is not raised")
+					}
+
+					if _, ok := bubbleCondition(st, "journal_unsuitable"); ok {
+						t.Error("journal_unsuitable is still raised beside journal_lost")
+					}
+
+					if got := st.Shares[s.ID].Refused; !errors.Is(got, cause) {
+						t.Errorf("share refused with %v, want the lost journal's %v", got, cause)
+					}
+
+					if got := b.clock.Pending(); got != 0 {
+						t.Errorf("%d timers pending after a lost journal, want none", got)
+					}
+
+					b.clock.Advance(retryEvery)
+					synctest.Wait()
+				}
+
+				err := b.e.Bind(context.Background(), spare)
+				if !errors.Is(err, engine.ErrNotStarted) {
+					t.Errorf("Bind = %v, want what a journal lost at Start answers", err)
+				}
+
+				if err := b.e.Unbind(context.Background(), s.ID, false); err != nil {
+					t.Errorf("Unbind = %v, want nil as for a journal lost at Start", err)
+				}
+
+				if err := b.e.Drop(context.Background(), s.ID); err != nil {
+					t.Errorf("Drop = %v, want nil as for a journal lost at Start", err)
+				}
+			})
+		})
+	}
+}
+
+// A retried open that finds no journal recorded for the device ends the
+// retry: the content is intact and a later start records it, so the shares
+// stay refused and no condition is raised (RFC 8 §2.5).
+func TestARetriedOpenThatFindsNoJournalRecordedEndsTheRetry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := engine.NewStubStore()
+		b, s := refusedBubble(t, store)
+		store.Unrecorded = true
+		b.openFn = func(context.Context) (engine.Journal, error) {
+			return nil, journal.ErrIdentityMismatch
+		}
+
+		b.clock.Advance(retryEvery)
+		synctest.Wait()
+
+		for range 2 {
+			st := b.e.Stats()
+
+			got := st.Shares[s.ID].Refused
+			if got == nil || errors.Is(got, journal.ErrUnsuitableStorage) {
+				t.Errorf("share refused with %v, want it refused as not recorded", got)
+			}
+
+			if got := st.Journals[bubbleDevice].Conditions; len(got) != 0 {
+				t.Errorf("conditions %+v, want none: no journal is recorded, so none is lost", got)
+			}
+
+			if got := b.clock.Pending(); got != 0 {
+				t.Errorf("%d timers pending after the retry ended, want none", got)
+			}
+
+			b.clock.Advance(retryEvery)
+			synctest.Wait()
+		}
+	})
+}
+
+// bubbleCondition is the condition named name that st raises for the bubble's
+// device, and whether there is one.
+func bubbleCondition(st engine.Stats, name string) (engine.Condition, bool) {
+	for _, c := range st.Journals[bubbleDevice].Conditions {
+		if c.Name == name {
+			return c, true
+		}
+	}
+
+	return engine.Condition{}, false
+}
+
 // A retry that Close overtook closes what it opened without holding the
 // lifecycle mutex: while the handle's close is held, the mutex is free (RFC 8
 // §2.3: never held across I/O).
@@ -268,6 +378,51 @@ func TestALateAttachThatCloseOvertookClosesWithoutTheLifecycleMutex(t *testing.T
 
 		if err := <-closed; err != nil {
 			t.Errorf("Close = %v, want nil", err)
+		}
+	})
+}
+
+// A retried open that fails after Close began leaves the cause as it was: an
+// error that comes after the stop is the Close's, not the journal's, so Stats
+// and journal_unsuitable still name the unsuitable storage, and Close returns.
+func TestAnOpenThatFailsAfterCloseBeganLeavesTheCauseAsItWas(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b, s := refusedBubble(t, engine.NewStubStore())
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		b.openFn = func(context.Context) (engine.Journal, error) {
+			close(entered)
+			<-release
+
+			return nil, errors.New("io error after the stop")
+		}
+
+		b.clock.Advance(retryEvery)
+		synctest.Wait()
+
+		select {
+		case <-entered:
+		default:
+			t.Fatal("the retried open never reached Open")
+		}
+
+		closed := closing(b.e, context.Background())
+
+		synctest.Wait()
+		close(release)
+
+		if err := <-closed; err != nil {
+			t.Errorf("Close = %v, want nil", err)
+		}
+
+		st := b.e.Stats()
+		if got := st.Shares[s.ID].Refused; !errors.Is(got, journal.ErrUnsuitableStorage) {
+			t.Errorf("share refused with %v after Close, want ErrUnsuitableStorage", got)
+		}
+
+		c, ok := bubbleCondition(st, "journal_unsuitable")
+		if !ok || !errors.Is(c.Cause, journal.ErrUnsuitableStorage) {
+			t.Errorf("journal_unsuitable = %+v (raised %v), want its cause unchanged", c, ok)
 		}
 	})
 }

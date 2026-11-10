@@ -24,6 +24,9 @@ var (
 // Deps declares: a call outside what a test uses answers an error, never a
 // panic.
 type StubStore struct {
+	// Unrecorded makes JournalID answer that no journal is recorded.
+	Unrecorded bool
+
 	// RaiseErr is what the raise at start and at attach answer, when set.
 	RaiseErr error
 
@@ -88,6 +91,10 @@ func (s *StubStore) RaiseAtAttach(context.Context, entity.ShardID) (uint64, erro
 var stubJournalID = [16]byte{'S'}
 
 func (s *StubStore) JournalID(context.Context, entity.NodeID, entity.JournalDir) ([16]byte, error) {
+	if s.Unrecorded {
+		return [16]byte{}, nil
+	}
+
 	return stubJournalID, nil
 }
 

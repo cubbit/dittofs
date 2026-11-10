@@ -24,6 +24,9 @@ import (
 // real time passes. They cover the joins that, left unbounded, can only be
 // seen as a Close that never returns.
 
+// bubbleDevice is the one journal device of a bubble.
+const bubbleDevice = "bubble"
+
 // bubble is the engine composed inside a bubble: the fake journal and a stub
 // store, with no real store and so no goroutine outside the bubble.
 type bubble struct {
@@ -72,7 +75,7 @@ func buildBubble(
 
 	e, err := engine.New(engine.Deps{
 		Node:      entity.NodeID{1},
-		Devices:   []string{"bubble"},
+		Devices:   []string{bubbleDevice},
 		Open:      b.open,
 		Existence: store,
 		Content:   store,

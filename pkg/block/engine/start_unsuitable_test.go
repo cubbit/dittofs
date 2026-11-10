@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -60,6 +61,60 @@ func withOpens(answers ...error) starterOption {
 
 			return inner(ctx, dir, floor, expect)
 		}
+	})
+}
+
+// raiseScript is a fault wrapper around Deps.Lifecycle: its n-th RaiseAtStart
+// answers the n-th error of the script, and one past it, or a nil error,
+// goes through to the store. With after set, the call goes through first and
+// answers the error as well: the raise committed and its answer was lost.
+type raiseScript struct {
+	engine.Lifecycle
+
+	after   bool
+	mu      sync.Mutex
+	answers []error
+}
+
+func (r *raiseScript) RaiseAtStart(
+	ctx context.Context,
+	shards []entity.ShardID,
+) (map[entity.ShardID]uint64, error) {
+	r.mu.Lock()
+
+	var err error
+
+	if len(r.answers) > 0 {
+		err, r.answers = r.answers[0], r.answers[1:]
+	}
+
+	r.mu.Unlock()
+
+	if err != nil && !r.after {
+		return nil, err
+	}
+
+	incs, rerr := r.Lifecycle.RaiseAtStart(ctx, shards)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return incs, rerr
+}
+
+// withRaises scripts the answers of the first RaiseAtStart calls.
+func withRaises(answers ...error) starterOption {
+	return withStartDeps(func(d *engine.Deps) {
+		d.Lifecycle = &raiseScript{Lifecycle: d.Lifecycle, answers: answers}
+	})
+}
+
+// withLostRaises is withRaises for raises that commit and then answer the
+// error.
+func withLostRaises(answers ...error) starterOption {
+	return withStartDeps(func(d *engine.Deps) {
+		d.Lifecycle = &raiseScript{Lifecycle: d.Lifecycle, answers: answers, after: true}
 	})
 }
 
@@ -356,8 +411,6 @@ func TestLifecycleCallsSucceedOnceTheRetriedOpenAttaches(t *testing.T) {
 	s.retry(t, retryEvery)
 	s.attached(t)
 
-	if err := s.e.Unbind(t.Context(), s.one.ID, false); err != nil {
-		t.Errorf("Unbind once attached = %v, want nil", err)
 	if err := s.write(t, s.one.ID); err != nil {
 		t.Fatalf("a write on the attached share = %v", err)
 	}
@@ -366,6 +419,8 @@ func TestLifecycleCallsSucceedOnceTheRetriedOpenAttaches(t *testing.T) {
 		t.Fatal("the journal holds nothing for the share's tag before the Drop")
 	}
 
+	if err := s.e.Unbind(t.Context(), s.one.ID, false); err != nil {
+		t.Errorf("Unbind once attached = %v, want nil", err)
 	}
 
 	if err := s.e.Drop(t.Context(), s.one.ID); err != nil {
@@ -418,5 +473,110 @@ func TestNoFileIsServedBeforeALateAttachsRecoveryRuns(t *testing.T) {
 
 	if _, _, err := r.e.Overlay(t.Context(), r.one.ID, f); err != nil {
 		t.Errorf("Overlay once attached = %v, want nil", err)
+	}
+}
+
+// A retried open that fails for another cause leaves the shares unattached,
+// journal_unsuitable names that cause, and the next retry attaches them.
+func TestARetriedOpenThatFailsForAnotherCauseIsRetried(t *testing.T) {
+	cause := errors.New("read the segment: input/output error")
+	s := newStarter(t, withOpens(unsuitable(), cause))
+
+	if err := s.start(t); err != nil {
+		t.Fatal(err)
+	}
+
+	s.retry(t, retryEvery)
+
+	eventually(t, "journal_unsuitable names the new cause", func() bool {
+		c, ok := conditionOf(s.e.Stats(), "journal_unsuitable")
+
+		return ok && errors.Is(c.Cause, cause)
+	})
+
+	if got := s.refused(s.one.ID); !errors.Is(got, cause) {
+		t.Errorf("share refused with %v, want the latest cause %v", got, cause)
+	}
+
+	s.retry(t, retryEvery)
+	s.attached(t)
+}
+
+// A late attach that fails after the journal opened closes what it opened,
+// the handles before the journal, leaves the shares unattached and is retried
+// (RFC 8 §2.5).
+func TestAFailedLateAttachClosesWhatItOpenedInReverse(t *testing.T) {
+	cause := errors.New("raise the incarnations: store unavailable")
+	s := newStarter(t, freshJournals(), withOpens(unsuitable()), withRaises(nil, cause))
+
+	if err := s.start(t); err != nil {
+		t.Fatal(err)
+	}
+
+	first := s.j
+
+	s.retry(t, retryEvery)
+
+	eventually(t, "journal_unsuitable names the raise's error", func() bool {
+		c, ok := conditionOf(s.e.Stats(), "journal_unsuitable")
+
+		return ok && errors.Is(c.Cause, cause)
+	})
+
+	// The order of the closes is the requirement, so the check reads what the
+	// logging journal recorded of its own calls and forwarded to the fake
+	// journal, which RFC 29 §4.11 allows for a call that is itself the
+	// requirement.
+	log := first.log()
+	closeJournal := slices.Index(log, "close journal")
+
+	for _, tag := range []journal.ShareTag{s.one.Tag, s.two.Tag} {
+		h := slices.Index(log, fmt.Sprintf("close handle %d", tag))
+		if h < 0 || closeJournal < 0 || h > closeJournal {
+			t.Errorf("journal log %v: handle %d must close before the journal", log, tag)
+		}
+	}
+
+	s.retry(t, retryEvery)
+	s.attached(t)
+}
+
+// A raise that committed and whose answer was lost leaves the shard raised
+// once more than its attach knows: the next retry raises it again in the start
+// form, and a shard is not recorded as raised before it is served.
+func TestAFailedLateAttachRaisesAgainInTheStartForm(t *testing.T) {
+	s := newStarter(t, freshJournals(), withOpens(unsuitable()), withLostRaises(nil, errInjected))
+
+	if err := s.start(t); err != nil {
+		t.Fatal(err)
+	}
+
+	before := s.shardOf(t, s.one.Shard)
+
+	s.retry(t, retryEvery)
+
+	eventually(t, "the raise's error is named", func() bool {
+		c, ok := conditionOf(s.e.Stats(), "journal_unsuitable")
+
+		return ok && errors.Is(c.Cause, errInjected)
+	})
+
+	got := s.shardOf(t, s.one.Shard)
+	if got.Incarnation != before.Incarnation+1 || got.GraceInstance != got.Incarnation {
+		t.Fatalf(
+			"shard after the lost raise: %d and %d, want %d and %d",
+			got.Incarnation, got.GraceInstance, before.Incarnation+1, before.Incarnation+1,
+		)
+	}
+
+	s.retry(t, retryEvery)
+	s.attached(t)
+
+	got = s.shardOf(t, s.one.Shard)
+	if want := before.Incarnation + 2; got.Incarnation != want || got.GraceInstance != want {
+		t.Errorf(
+			"shard after the attach: %d and %d, want %d and %d: the start form again",
+			got.Incarnation, got.GraceInstance, want, want,
+		)
 	}
 }

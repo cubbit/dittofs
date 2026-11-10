@@ -205,8 +205,14 @@ func (e *Engine) attachLate(ctx context.Context, shares []Share) bool {
 	var u undo
 
 	o, err := e.startOver(ctx, shares, &u)
-	if err != nil || o.journal == nil {
+	if err != nil {
+		e.retryFailed(ctx, err)
+
 		return false
+	}
+
+	if o.journal == nil {
+		return e.retryRefused(&o)
 	}
 
 	e.mu.Lock()
@@ -233,6 +239,57 @@ func (e *Engine) attachLate(ctx context.Context, shares []Share) bool {
 	}
 
 	return true
+}
+
+// retryRefused is the end of a retried open that opened no journal and failed
+// no step: Open refused the shares again, or found the journal lost or not
+// recorded. A refusal as unsuitable goes on, with what Stats names for it
+// now; any other outcome is final, as it is at Start: a journal missing or
+// foreign raises journal_lost and waits for an operator, and one not recorded
+// raises nothing, as its content is intact (RFC 8 §2.5). It reports whether
+// the retry is over.
+func (e *Engine) retryRefused(o *opened) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.health = o.stats
+	e.unsuitable = o.unsuitable
+
+	return !o.unsuitable
+}
+
+// retryFailed records err, which stopped a retried open or its late attach,
+// as the cause Stats names for the unattached shares and journal_unsuitable
+// carries, and logs it. An error of a context Close cancelled is no cause.
+func (e *Engine) retryFailed(ctx context.Context, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+
+	dir := e.d.Devices[0]
+
+	e.d.Logger.Warn("retried open of the journal failed", "device", dir, "err", err)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	h := e.health.clone()
+
+	for id, sh := range h.Shares {
+		sh.Refused = err
+		h.Shares[id] = sh
+	}
+
+	js := h.Journals[dir]
+
+	for i, c := range js.Conditions {
+		if c.Name == conditionJournalUnsuitable {
+			js.Conditions[i].Cause = err
+		}
+	}
+
+	h.Journals[dir] = js
+	e.health = h
 }
 
 // raiseAtStart is start step 2 (RFC 8 §2.5): it raises the incarnation of
