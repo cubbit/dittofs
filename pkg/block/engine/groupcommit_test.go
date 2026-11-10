@@ -464,11 +464,7 @@ func (h *settlesLog) Settle(id journal.FileID, v journal.Version) {
 // A committed file is settled in the journal through the newest version its
 // batch committed, and one staged after the capture is not.
 func TestACommitSettlesTheJournal(t *testing.T) {
-	var log *settlesLog
-	u, jh := newHookedUnitWith(t, unitConfig{wrap: func(h engine.Handle) engine.Handle {
-		log = &settlesLog{Handle: h, settled: map[journal.FileID]journal.Version{}}
-		return log
-	}})
+	u, jh := newHookedUnit(t)
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("one"))
 	u.write(t, f, 3, []byte("two"))
@@ -478,10 +474,11 @@ func TestACommitSettlesTheJournal(t *testing.T) {
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
-	log.mu.Lock()
-	defer log.mu.Unlock()
-	if got, ok := log.settled[journal.NewFileID(f)]; !ok || got != newest {
-		t.Errorf("settled through %v (%v), want the batch's newest %v", got, ok, newest)
+	if p := u.e.Pending(f); len(p) != 1 {
+		t.Fatalf("pending %+v after the commit, want the late write alone", p)
+	}
+	if got := u.j.Settled(journal.NewFileID(f)); got != newest {
+		t.Errorf("settled through %v, want the batch's newest %v", got, newest)
 	}
 }
 
@@ -606,6 +603,11 @@ func TestAFailedFileIsRetriedAlone(t *testing.T) {
 		log.mu.Lock()
 		defer log.mu.Unlock()
 		return len(log.commits) >= 2
+	})
+	u.until(t, "c's commit", func() bool {
+		log.mu.Lock()
+		defer log.mu.Unlock()
+		return slices.ContainsFunc(log.commits, func(b []entity.FileID) bool { return slices.Contains(b, c) })
 	})
 	log.mu.Lock()
 	defer log.mu.Unlock()

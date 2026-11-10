@@ -617,7 +617,7 @@ func (e *Engine) failCause(b *binding, f entity.FileID) vfserr.DelayCause {
 // entry's lock, which a truncate holds across its journal call, and is taken
 // in a later batch: no file's commit waits on another's removal, and the
 // removal's phase 1 commits the writes below it itself. Correctness never
-// rests on the skip, which only spares a retried phase 1 a batch claiming
+// rests on the skip (the check under the lock below is what does), which only spares a retried phase 1 a batch claiming
 // beside it: the stop at the removal is what keeps applied and every Settle
 // below it.
 func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool) {
@@ -629,6 +629,12 @@ func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool
 		return captured{}, false, false
 	}
 	defer e.files.unlock(f, fe)
+	// decision: this check, not the lock-free one above, keeps every batch
+	// out of a removal's phase 1: guard sets guarded under this lock before
+	// begin waits out a batch in flight, and clears it only after phase 1, so
+	// no batch claim coexists with phase 1's hold. holdBelow keeps its hold
+	// apart from a claim anyway, but nothing reaches that split while this
+	// check stands and no test pins it: pin it before removing this check.
 	if fe.guarded.Load() {
 		return captured{}, false, true
 	}
