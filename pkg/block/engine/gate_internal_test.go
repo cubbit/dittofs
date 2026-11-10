@@ -282,3 +282,22 @@ func TestASecondCallOfAReleaseLeavesAnotherUnitCounted(t *testing.T) {
 		t.Errorf("wait with the other unit still inside = %v, want context.Canceled", err)
 	}
 }
+
+// A release naming the same gate twice withdraws two units from it, one per
+// argument, as a clone within one share entered it twice, and still only once
+// however often the release is called.
+func TestLeaveOnceLeavesARepeatedGateOncePerArgument(t *testing.T) {
+	var g gate
+
+	g.enter()
+	g.enter()
+
+	release := leaveOnce(&g, &g)
+
+	release()
+	release()
+
+	if got := idle(&g); got != 0 {
+		t.Errorf("units after a release naming the gate twice = %d, want 0", got)
+	}
+}

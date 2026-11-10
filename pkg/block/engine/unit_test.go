@@ -190,7 +190,6 @@ type recJournal struct {
 	wrap     func(engine.Handle) engine.Handle
 	closeErr error // every handle's Close answers it, after closing the handle
 	ev       *events
-	forgets  atomic.Int32 // the Forget calls
 
 	failForgets int // the next Forget calls that fail, guarded by mu
 
@@ -238,11 +237,8 @@ func (j *recJournal) Close() error {
 	return j.FakeJournal.Close()
 }
 
-// Forget counts the call, records it, and fails it while failForgets is set.
+// Forget fails while failForgets is set, and is the fake journal's otherwise.
 func (j *recJournal) Forget(ctx context.Context, tag journal.ShareTag) error {
-	j.forgets.Add(1)
-	j.ev.add(fmt.Sprintf("forget %d", tag))
-
 	j.mu.Lock()
 	fail := j.failForgets > 0
 

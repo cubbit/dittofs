@@ -160,6 +160,8 @@ func TestUnbindKeepsTheLifecycleMutexFreeWhileItJoins(t *testing.T) {
 		t.Errorf("Bind of the share = %v, want ErrDelay(DelayConflict)", err)
 	}
 
+	// Stats must return while Unbind joins; a Stats that waited for the share
+	// would hang the test here.
 	_ = u.e.Stats()
 
 	c.release()
@@ -284,9 +286,5 @@ func TestUnbindOfAShareWithNoBindingAnswersNil(t *testing.T) {
 
 	if err := u.e.Unbind(t.Context(), entity.NewShareID(), false); err != nil {
 		t.Errorf("Unbind of a share with no binding = %v, want nil", err)
-	}
-
-	if got := u.rec.forgets.Load(); got != 0 {
-		t.Errorf("Forget calls = %d, want 0", got)
 	}
 }

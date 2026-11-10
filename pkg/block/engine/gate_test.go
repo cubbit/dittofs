@@ -1,11 +1,13 @@
 package engine_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -157,21 +159,20 @@ func TestACheckOnlyCallRegistersNothing(t *testing.T) {
 	}
 }
 
-// Every content call that answers an error answers exactly ErrStale once the
-// share's gate is shut, registers nothing, and leaves no clone registration.
-func TestAShutShareMakesEveryContentCallAnswerStale(t *testing.T) {
-	u := newUnit(t)
-	other := u.bindShare(t, "other", entity.NamespaceID{})
+// contentCall is one content call on the unit's share, named, made on file f
+// and, for a clone, g.
+type contentCall struct {
+	name string
+	call func(f, g entity.FileID) error
+}
+
+// contentCalls are the calls that enter the unit's share's gate, each made on
+// the share and, for the clone, on other.
+func (u *unit) contentCalls(ctx context.Context, other entity.ShareID) []contentCall {
 	id := u.share.ID
 	x := vfserr.Extent{Len: 1}
-	ctx := t.Context()
 
-	u.unbind(t)
-
-	calls := []struct {
-		name string
-		call func(f, g entity.FileID) error
-	}{
+	return []contentCall{
 		{"Write", func(f, g entity.FileID) error {
 			_, err := u.e.Write(ctx, id, f, 0, []byte("x"), engine.WriteOpts{})
 
@@ -220,6 +221,19 @@ func TestAShutShareMakesEveryContentCallAnswerStale(t *testing.T) {
 			return u.e.Clone(ctx, other, f, id, g, x)
 		}},
 	}
+}
+
+// Every content call that answers an error answers exactly ErrStale once the
+// share's gate is shut, registers nothing, and leaves no clone registration.
+func TestAShutShareMakesEveryContentCallAnswerStale(t *testing.T) {
+	u := newUnit(t)
+	other := u.bindShare(t, "other", entity.NamespaceID{})
+	id := u.share.ID
+	ctx := t.Context()
+
+	u.unbind(t)
+
+	calls := u.contentCalls(ctx, other)
 
 	for _, c := range calls {
 		t.Run(c.name, func(t *testing.T) {
@@ -298,5 +312,42 @@ func TestEveryEnterRefusedByARacingUnbindAnswersStale(t *testing.T) {
 		if err := wrong.Load(); err != nil {
 			t.Fatalf("round %d: a refused enter answered %v, want exactly ErrStale", round, err)
 		}
+	}
+}
+
+// Every content call that enters an open share's gate leaves it again, whether
+// it succeeds or is refused for another reason: nothing is left counted, so a
+// later Unbind has nothing to wait for.
+func TestAContentCallOnAnOpenShareLeavesItsGate(t *testing.T) {
+	u := newUnit(t)
+	other := u.bindShare(t, "other", entity.NamespaceID{})
+	id := u.share.ID
+
+	if err := u.e.Apply(engine.Settings{
+		ExistenceAge:        time.Minute,
+		GroupCommitMaxFiles: 1,
+		CloneMaxLen:         1 << 30,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range u.contentCalls(t.Context(), other) {
+		t.Run(c.name, func(t *testing.T) {
+			f, g := u.create(t, c.name), entity.NewFileID()
+
+			u.write(t, f, 0, []byte("x"))
+
+			if err := c.call(f, g); isStale(err) {
+				t.Errorf("%s on an open share = %v, want anything but ErrStale", c.name, err)
+			}
+
+			if got := u.e.InFlightForTest(id); got != 0 {
+				t.Errorf("units entered after %s = %d, want 0", c.name, got)
+			}
+
+			if got := u.e.InFlightForTest(other); got != 0 {
+				t.Errorf("units entered on the other share after %s = %d, want 0", c.name, got)
+			}
+		})
 	}
 }

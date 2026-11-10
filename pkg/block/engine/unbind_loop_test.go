@@ -25,9 +25,19 @@ func (u *unit) post(s entity.ShareID, kind entity.RemovalKind, held bool) *loopI
 
 // postItem is post, the item asking to run again after its run when retry.
 func (u *unit) postItem(s entity.ShareID, kind entity.RemovalKind, held, retry bool) *loopItem {
+	return u.postItemOn(s, entity.NewFileID(), kind, held, retry)
+}
+
+// postItemOn is postItem for file f.
+func (u *unit) postItemOn(
+	s entity.ShareID,
+	f entity.FileID,
+	kind entity.RemovalKind,
+	held, retry bool,
+) *loopItem {
 	it := &loopItem{entered: make(chan struct{}), release: make(chan struct{})}
 
-	u.e.EnqueueKind(s, kind, retry, func(context.Context) {
+	u.e.EnqueueKind(s, f, kind, retry, func(context.Context) {
 		it.ran.Add(1)
 		close(it.entered)
 

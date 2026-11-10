@@ -749,11 +749,13 @@ func (e *Engine) LifecycleLockFree() bool {
 	return true
 }
 
-// EnqueueKind posts an item of kind on share s's removal loop, even when the
-// share refuses calls, that calls run and then finishes, or, with retry, asks
-// to run again; end is called if the item is ended before it finished.
+// EnqueueKind posts an item of kind for file f on share s's removal loop, even
+// when the share refuses calls, that calls run and then finishes, or, with
+// retry, asks to run again; end is called if the item is ended before it
+// finished.
 func (e *Engine) EnqueueKind(
 	s entity.ShareID,
+	f entity.FileID,
 	kind entity.RemovalKind,
 	retry bool,
 	run func(ctx context.Context),
@@ -763,7 +765,7 @@ func (e *Engine) EnqueueKind(
 
 	b.gc.removals.enqueue(&loopItem{
 		b:    b,
-		f:    entity.NewFileID(),
+		f:    f,
 		kind: kind,
 		run: func(ctx context.Context) answer {
 			run(ctx)

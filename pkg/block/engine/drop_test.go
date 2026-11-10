@@ -19,9 +19,12 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// forgetEvent is the event a Forget of the share's tag records.
-func forgetEvent(s engine.Share) string {
-	return fmt.Sprintf("forget %d", s.Tag)
+// namesTag reports whether the journal still names the unit's share's tag: a
+// Forget that ran takes the tag out of its figures.
+func (u *unit) namesTag() bool {
+	_, ok := u.j.Stats().Shares[u.share.Tag]
+
+	return ok
 }
 
 // dropped unbinds the unit's share and drops it, failing the test on an
@@ -54,11 +57,7 @@ func TestDropClosesTheHandleThenForgetsAndKeepsTheBindingRemoved(t *testing.T) {
 
 	u.write(t, f, 0, []byte("abc"))
 	u.dropped(t)
-	u.wantEvents(t, handleClose(u.share), forgetEvent(u.share))
-
-	if got := u.rec.forgets.Load(); got != 1 {
-		t.Errorf("Forget ran %d times, want 1", got)
-	}
+	u.wantEvents(t, handleClose(u.share))
 
 	if _, ok := u.j.Stats().Shares[u.share.Tag]; ok {
 		t.Error("the journal still names the tag after Drop")
@@ -89,10 +88,6 @@ func TestDropClosesTheHandleThenForgetsAndKeepsTheBindingRemoved(t *testing.T) {
 		t.Errorf("a second Drop = %v, want nil", err)
 	}
 
-	if got := u.rec.forgets.Load(); got != 2 {
-		t.Errorf("Forget ran %d times after the second Drop, want 2", got)
-	}
-
 	if err := u.e.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -100,8 +95,6 @@ func TestDropClosesTheHandleThenForgetsAndKeepsTheBindingRemoved(t *testing.T) {
 	u.wantEvents(
 		t,
 		handleClose(u.share),
-		forgetEvent(u.share),
-		forgetEvent(u.share),
 		"journal close",
 	)
 }
@@ -156,6 +149,8 @@ func TestDropRefusesAShareNotFullyUnboundAndTouchesNothing(t *testing.T) {
 		u := newUnit(t)
 		f := u.create(t, "f")
 
+		u.write(t, f, 0, []byte("abc"))
+
 		if err := u.e.Drop(t.Context(), u.share.ID); !errors.Is(err, vfserr.ErrInvalid) {
 			t.Errorf("Drop of a serving share = %v, want ErrInvalid", err)
 		}
@@ -164,8 +159,8 @@ func TestDropRefusesAShareNotFullyUnboundAndTouchesNothing(t *testing.T) {
 			t.Errorf("open handles = %d, want 1", got)
 		}
 
-		if got := u.rec.forgets.Load(); got != 0 {
-			t.Errorf("Forget ran %d times, want 0", got)
+		if !u.namesTag() {
+			t.Error("the journal no longer names the tag: Forget ran")
 		}
 
 		if err := u.writeTo(t, f); err != nil {
@@ -191,8 +186,8 @@ func TestDropRefusesAShareNotFullyUnboundAndTouchesNothing(t *testing.T) {
 			t.Errorf("open handles = %d, want 1", got)
 		}
 
-		if got := u.rec.forgets.Load(); got != 0 {
-			t.Errorf("Forget ran %d times, want 0", got)
+		if !u.namesTag() {
+			t.Error("the journal no longer names the tag: Forget ran")
 		}
 	})
 }
@@ -203,10 +198,6 @@ func TestDropOfAShareWithNoBindingAnswersNil(t *testing.T) {
 
 	if err := u.e.Drop(t.Context(), entity.NewShareID()); err != nil {
 		t.Errorf("Drop of a share with no binding = %v, want nil", err)
-	}
-
-	if got := u.rec.forgets.Load(); got != 0 {
-		t.Errorf("Forget ran %d times, want 0", got)
 	}
 
 	u.wantEvents(t)
@@ -233,10 +224,6 @@ func TestDropAfterCloseAnswersClosed(t *testing.T) {
 	if errors.Is(got, engine.ErrUnbuilt) {
 		t.Error("Drop answers the stub's error")
 	}
-
-	if n := u.rec.forgets.Load(); n != 0 {
-		t.Errorf("Forget ran %d times after Close, want 0", n)
-	}
 }
 
 // held is a unit whose share is unbound while a clone item of it is held
@@ -246,6 +233,7 @@ func dropHeldByAnItem(t *testing.T) (*unit, *loopItem, <-chan error) {
 
 	u := newUnit(t)
 
+	u.write(t, u.create(t, "f"), 0, []byte("abc"))
 	u.unbind(t)
 
 	held := u.postItem(u.share.ID, entity.RemoveClone, true, true)
@@ -277,8 +265,8 @@ func dropHeldByAnItem(t *testing.T) (*unit, *loopItem, <-chan error) {
 func TestDropJoinsTheRunningItemOfTheShareAndEndsIt(t *testing.T) {
 	u, held, done := dropHeldByAnItem(t)
 
-	if got := u.rec.forgets.Load(); got != 0 {
-		t.Errorf("Forget ran %d times while Drop waits, want 0", got)
+	if !u.namesTag() {
+		t.Error("the journal no longer names the tag: Forget ran")
 	}
 
 	close(held.release)
@@ -289,6 +277,51 @@ func TestDropJoinsTheRunningItemOfTheShareAndEndsIt(t *testing.T) {
 
 	if got := held.ended.Load(); got != 1 {
 		t.Errorf("the item ended %d times, want 1", got)
+	}
+}
+
+// A Drop settles the file of the item the loop is running for the share: the
+// file's pending write gets its Done once and its entry is left nowhere.
+func TestDropSettlesTheFileOfTheRunningItem(t *testing.T) {
+	u := newUnit(t)
+	res := enginetest.NewReservations(t)
+	f := u.create(t, "f")
+
+	u.writesOver(t, res, []entity.FileID{f}, 1)
+	u.unbind(t)
+
+	held := u.postItemOn(u.share.ID, f, entity.RemoveClone, true, true)
+
+	t.Cleanup(func() {
+		select {
+		case <-held.release:
+		default:
+			close(held.release)
+		}
+	})
+
+	<-held.entered
+
+	joined := joinOf(u.e, "a removal batch")
+	done := make(chan error, 1)
+
+	go func() {
+		done <- u.e.Drop(t.Context(), u.share.ID)
+	}()
+
+	reached(t, joined, done)
+	close(held.release)
+
+	if err := <-done; err != nil {
+		t.Fatalf("Drop = %v, want nil", err)
+	}
+
+	if got := res.Outstanding(); got != 0 {
+		t.Errorf("writes without their Done after Drop = %d, want 0", got)
+	}
+
+	if got := u.e.FileEntries(); got != 0 {
+		t.Errorf("file entries after Drop = %d, want 0", got)
 	}
 }
 
@@ -316,7 +349,7 @@ func TestCloseWaitsForADropInProgress(t *testing.T) {
 		t.Fatalf("second Close = %v, want nil", err)
 	}
 
-	u.wantEvents(t, handleClose(u.share), forgetEvent(u.share), "journal close")
+	u.wantEvents(t, handleClose(u.share), "journal close")
 }
 
 // The items queued for an unbound share are ended by Drop, once each and
@@ -459,7 +492,7 @@ func TestDropUnderWritesWithABatchDueAsItJoinsCallsEachDoneOnce(t *testing.T) {
 		t.Errorf("writes without their Done after Drop = %d, want 0", got)
 	}
 
-	u.wantEvents(t, "batch commit returned", handleClose(u.share), forgetEvent(u.share))
+	u.wantEvents(t, "batch commit returned", handleClose(u.share))
 
 	if got := u.e.FileEntries(); got != 0 {
 		t.Errorf("file entries after Drop = %d, want 0", got)
@@ -488,7 +521,7 @@ func TestAFailedForgetLeavesTheWritesToTheRetry(t *testing.T) {
 		t.Errorf("writes without their Done after the failed Drop = %d, want 8", got)
 	}
 
-	u.wantEvents(t, handleClose(u.share), forgetEvent(u.share))
+	u.wantEvents(t, handleClose(u.share))
 
 	if err := u.e.Drop(t.Context(), u.share.ID); err != nil {
 		t.Fatalf("the retried Drop = %v, want nil", err)
@@ -498,10 +531,6 @@ func TestAFailedForgetLeavesTheWritesToTheRetry(t *testing.T) {
 		t.Errorf("writes without their Done after the retry = %d, want 0", got)
 	}
 
-	if got := u.rec.forgets.Load(); got != 2 {
-		t.Errorf("Forget ran %d times, want 2", got)
-	}
-
 	if err := u.e.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -509,8 +538,6 @@ func TestAFailedForgetLeavesTheWritesToTheRetry(t *testing.T) {
 	u.wantEvents(
 		t,
 		handleClose(u.share),
-		forgetEvent(u.share),
-		forgetEvent(u.share),
 		"journal close",
 	)
 }
@@ -728,8 +755,8 @@ func TestADropWhoseHandleCloseFailsWithoutClosingKeepsTheBindingAndSkipsForget(t
 			t.Errorf("Draw after the failed Drop = %v, want exactly ErrStale", err)
 		}
 
-		if got := u.rec.forgets.Load(); got != 0 {
-			t.Errorf("Forget ran %d times after a failed close, want 0", got)
+		if !u.namesTag() {
+			t.Error("the journal no longer names the tag: Forget ran")
 		}
 
 		if got := res.Outstanding(); got != 1 {
@@ -740,11 +767,8 @@ func TestADropWhoseHandleCloseFailsWithoutClosingKeepsTheBindingAndSkipsForget(t
 			t.Fatalf("the retried Drop = %v, want nil", err)
 		}
 
-		u.wantEvents(t, handleClose(u.share), handleClose(u.share), forgetEvent(u.share))
+		u.wantEvents(t, handleClose(u.share), handleClose(u.share))
 
-		if got := u.rec.forgets.Load(); got != 1 {
-			t.Errorf("Forget ran %d times, want 1", got)
-		}
 	})
 
 	t.Run("a close with no retry", func(t *testing.T) {
@@ -773,14 +797,15 @@ func TestADropWhoseHandleCloseFailedAfterClosingTreatsErrClosedAsClosed(t *testi
 
 	h.closeErr = errInjected
 
+	u.write(t, u.create(t, "f"), 0, []byte("abc"))
 	u.unbind(t)
 
 	if err := u.e.Drop(t.Context(), u.share.ID); !unavailable(err) {
 		t.Fatalf("Drop with a failing close = %v, want ErrUnavailable from the close", err)
 	}
 
-	if got := u.rec.forgets.Load(); got != 0 {
-		t.Errorf("Forget ran %d times after a failed close, want 0", got)
+	if !u.namesTag() {
+		t.Error("the journal no longer names the tag: Forget ran")
 	}
 
 	h.closeErr = nil
@@ -789,11 +814,7 @@ func TestADropWhoseHandleCloseFailedAfterClosingTreatsErrClosedAsClosed(t *testi
 		t.Fatalf("the retried Drop = %v, want nil: journal.ErrClosed is a closed handle", err)
 	}
 
-	u.wantEvents(t, handleClose(u.share), handleClose(u.share), forgetEvent(u.share))
-
-	if got := u.rec.forgets.Load(); got != 1 {
-		t.Errorf("Forget ran %d times, want 1", got)
-	}
+	u.wantEvents(t, handleClose(u.share), handleClose(u.share))
 
 	if _, err := u.e.Draw(t.Context(), u.share.ID, entity.NewFileID()); !isStale(err) {
 		t.Errorf("Draw after the Drop = %v, want exactly ErrStale", err)

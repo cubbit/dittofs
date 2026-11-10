@@ -9,6 +9,10 @@ import (
 // gate is one binding's frame: it admits units of work, counts them until
 // they are withdrawn, and, once shut, admits none and lets one caller wait
 // until the count is zero. The zero value is an open gate.
+//
+// ponytail: every content call on a share does a compare and swap on the one
+// state word, so a busy share on many cores contends on a single cache line.
+// Use a sharded count when that shows in a profile.
 type gate struct {
 	st   atomic.Int64
 	mu   sync.Mutex
