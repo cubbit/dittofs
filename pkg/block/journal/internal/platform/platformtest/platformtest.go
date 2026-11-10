@@ -7,6 +7,9 @@ package platformtest
 
 import (
 	"fmt"
+	"os"
+	"path"
+	"strings"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
@@ -56,9 +59,32 @@ func gatherOf(p storage.Probe) storage.Gather {
 // parent is itself as a namespace's root writes it, in the layout of
 // show_mountinfo (fs/proc_namespace.c).
 func mountTable(dir, options string) storage.Probe {
+	return mountTableOn(dir, options, os.PathSeparator)
+}
+
+// mountTableOn is mountTable for a host whose path separator is sep.
+func mountTableOn(dir, options string, sep rune) storage.Probe {
 	return storage.Probe{
-		Dir:       dir,
+		Dir:       probeDir(dir, sep),
 		Mountinfo: fmt.Sprintf("33 33 259:3 / / rw,noatime - ext4 /dev/nvme1n1p1 %s\n", options),
 		FSType:    extMagic,
 	}
+}
+
+// ProbeDir is dir in the text form the verdict reads a probe's directory in:
+// absolute, clean and slash-separated. A host path with another separator or
+// a drive letter is spelled as the mount table's root would cover it
+// (C:\x becomes /C:/x); a clean absolute POSIX path is returned unchanged.
+func ProbeDir(dir string) string {
+	return probeDir(dir, os.PathSeparator)
+}
+
+func probeDir(dir string, sep rune) string {
+	if sep != '/' {
+		dir = strings.ReplaceAll(dir, string(sep), "/")
+	}
+	if !strings.HasPrefix(dir, "/") {
+		dir = "/" + dir
+	}
+	return path.Clean(dir)
 }

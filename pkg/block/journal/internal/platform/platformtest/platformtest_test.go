@@ -27,3 +27,29 @@ func TestSuitableMountHoldsSuitable(t *testing.T) {
 		t.Errorf("the refusal %q names neither the directory nor what to change", err)
 	}
 }
+
+// TestProbeDirWindowsSpelling feeds the real verdict the probe a Windows
+// host's directory yields: a drive path must arrive as absolute, clean text.
+func TestProbeDirWindowsSpelling(t *testing.T) {
+	const win = `C:\Users\RUNNER~1\AppData\Local\Temp\TestX\001`
+	const want = "/C:/Users/RUNNER~1/AppData/Local/Temp/TestX/001"
+	got := probeDir(win, '\\')
+	if got != want {
+		t.Fatalf("probeDir(%q) = %q, want %q", win, got, want)
+	}
+	if err := platform.CheckProbe(mountTableOn(win, "rw,relatime", '\\')); err != nil {
+		t.Fatalf("the suitable mount for the Windows spelling: got %v, want accepted", err)
+	}
+	err := platform.CheckProbe(mountTableOn(win, "rw,nobarrier,relatime", '\\'))
+	if !errors.Is(err, core.ErrUnsuitableStorage) {
+		t.Fatalf("the no-barrier mount for the Windows spelling: got %v, want core.ErrUnsuitableStorage", err)
+	}
+}
+
+// TestSuitableMountOfHostDir holds on every host that a real temporary
+// directory's probe passes the verdict.
+func TestSuitableMountOfHostDir(t *testing.T) {
+	if err := platform.CheckProbe(SuitableMount(t.TempDir())); err != nil {
+		t.Fatalf("got %v, want the host temporary directory accepted", err)
+	}
+}
