@@ -380,7 +380,7 @@ func TestOpen_UnsuitableChecksBeforeWrite(t *testing.T) {
 	if !errors.Is(err, ErrUnsuitableStorage) {
 		t.Fatalf("an unsuitable directory: Open returned %v, want ErrUnsuitableStorage", err)
 	}
-	if !strings.Contains(err.Error(), s.dir) || !strings.Contains(err.Error(), "remount with barriers") {
+	if !strings.Contains(err.Error(), platformtest.ProbeDir(s.dir)) || !strings.Contains(err.Error(), "remount with barriers") {
 		t.Errorf("the refusal %q names neither the directory nor the rule", err)
 	}
 	for _, target := range []error{ErrNoJournal, ErrNotImplemented, ErrIdentityMismatch} {

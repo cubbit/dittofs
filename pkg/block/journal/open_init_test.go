@@ -565,7 +565,7 @@ func TestInit_UnsuitableChecksBeforeAnyFile(t *testing.T) {
 		if !errors.Is(err, ErrUnsuitableStorage) {
 			t.Fatalf("an unsuitable directory: Init returned %v, want ErrUnsuitableStorage", err)
 		}
-		if !strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), "remount with barriers") {
+		if !strings.Contains(err.Error(), platformtest.ProbeDir(dir)) || !strings.Contains(err.Error(), "remount with barriers") {
 			t.Errorf("the refusal %q names neither the directory nor the rule", err)
 		}
 		if names := listOS(t, dir); len(names) != 0 {
