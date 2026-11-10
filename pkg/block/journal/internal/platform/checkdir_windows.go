@@ -5,7 +5,7 @@ package platform
 // checkDirOS decides whether dir is suitable for a journal. It always
 // answers nil here.
 //
-// decision nil as a placeholder, not as a verdict: on Windows a rule of
+// decision: nil as a placeholder, not as a verdict: on Windows a rule of
 // the platform profile does apply — Open MUST refuse a volume whose
 // write-cache buffer flushing is turned off by policy — and the package
 // already holds its verdict, checkCacheProbe, which returns the same

@@ -211,7 +211,7 @@ func probeOpenDir(c calls, fd int, p *storage.Probe) error {
 }
 
 // statxMountID returns the ID of the mount holding the directory open on fd,
-// asking statx for STATX_MNT_ID alone (Probe's mountID says why never
+// asking statx for STATX_MNT_ID alone (storage.Probe's MountID says why never
 // STATX_MNT_ID_UNIQUE). It returns 0, which the verdict reads as unknown,
 // where the kernel does not report the ID: a kernel before Linux 5.8 has no
 // STATX_MNT_ID (include/uapi/linux/stat.h) and leaves the bit out of
