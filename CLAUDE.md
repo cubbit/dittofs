@@ -272,6 +272,39 @@ test, and both are bugs. Don't add retries, raise timeouts or skip it to get gre
 expected (`got %v, want %v`, naming the field or the operation). Prefer table-driven cases when
 several inputs exercise one rule.
 
+### By kind
+
+`test/suites.yaml` defines how CI runs each suite, and `test/harness/bin/dt` runs one locally.
+Never run two suites at once: they collide on ports and mounts.
+
+**Integration** (`-tags=integration`, `-p 1`) runs against real backends: Badger on disk,
+Postgres, S3 through Localstack. Durability, ordering and fault-in changes need a test at this
+tier or above, because a memory backend proves nothing about fsync or a crash. A backend the
+host lacks is a skip that says what to set (`t.Skip("set DITTOFS_TEST_POSTGRES_DSN")`), never a
+pass. Each test builds its own state and leaves nothing behind.
+
+**E2E** (`-tags=e2e`, sudo, a kernel client) is for what only a real mount shows: client
+caching, the mount handshake, interop. A rule that a unit or integration test can check belongs
+there instead. A known failure is listed only after CI shows it, in that suite's `known` file,
+with the reason.
+
+**Build tags hide a whole file from `go build`, `go vet` and the linter.** A tagged test must
+compile under `go vet -tags=…` (lint-go runs it). Never tag a file only to keep a test out of
+`go test ./...` when `testing.Short()` would do.
+
+**Fuzz** every decoder that reads bytes off the wire or the disk: XDR, SMB2 PDUs, on-disk
+records. The target asserts an **invariant**: no panic; whatever decodes re-encodes to the same
+bytes; any length the decoder reads stays inside the buffer. A target that only checks that
+encode and decode agree passes when both share a bug. Commit every crasher to
+`testdata/fuzz/<FuzzName>/`, where it becomes a regression seed that plain `go test` runs.
+
+**Benchmarks** measure only the operation. Do setup before `b.ResetTimer()`, or between
+`b.StopTimer()` and `b.StartTimer()`, but remember that Go sizes `b.N` from the timed region
+alone, so an expensive untimed setup inside the loop multiplies the run's wall time. Call
+`b.ReportAllocs()` on hot paths. Compare with `benchstat` over `-count=10` runs on the same
+machine, never against a number from another host or from Docker Desktop, which inflates
+database round trips.
+
 ## Verifying a change
 
 Two failure modes this codebase has actually hit. Both are invisible to a passing test suite,
