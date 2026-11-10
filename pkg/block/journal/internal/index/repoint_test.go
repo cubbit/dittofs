@@ -23,7 +23,7 @@ func TestRepointRecordMovesHeldAndRetained(t *testing.T) {
 
 	// A skip other than zero must survive the move.
 	if _, err := ix.fs.update(testFile, func(f *file) error {
-		f.held.repoint(ext(0, 2048), rec(2, 0), rec(2, 0), 64)
+		f.held.repoint(ext(0, 2048), rec(2, 0), rec(2, 0), 64, 0)
 		return nil
 	}); err != nil {
 		t.Fatal(err)

@@ -185,7 +185,7 @@ func heldOps(t *testing.T, data []byte) {
 					o[i].record, o[i].at = to, skip+uint32(i-e.Off)
 				}
 			}
-			if got := s.repoint(e, from, to, skip); got != want {
+			if got := s.repoint(e, from, to, skip, 0); got != want {
 				t.Fatalf("step %d: repoint moved %d pieces, oracle %d", step, got, want)
 			}
 		case 5: // read

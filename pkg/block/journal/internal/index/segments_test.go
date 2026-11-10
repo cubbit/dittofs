@@ -243,7 +243,7 @@ func TestSegmentBytesMatchWalk(t *testing.T) {
 							}
 						}
 						for _, from := range froms {
-							f.held.repoint(whole, from, rec(to, 0), 0)
+							f.held.repoint(whole, from, rec(to, 0), 0, 0)
 							f.retained.repoint(whole, from, rec(to, 0), 0)
 						}
 						return nil

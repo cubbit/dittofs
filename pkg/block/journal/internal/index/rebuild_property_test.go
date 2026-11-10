@@ -435,7 +435,7 @@ func (h *history) step() {
 		r := h.note(RecWrite, id, v, ext(h.pending.Off, h.pending.Len))
 		best := *h.pending
 		change(h.t, &h.fs, id, func(f *file) error {
-			f.held.repoint(ext(best.Off, best.Len), from, RecordAt{Segment: r.Segment, Offset: r.At}, 0)
+			f.held.repoint(ext(best.Off, best.Len), from, RecordAt{Segment: r.Segment, Offset: r.At}, 0, 0)
 			return nil
 		})
 		h.pending = nil

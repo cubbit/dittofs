@@ -69,22 +69,23 @@ func (f *file) repointRecord(from, to RecordAt) int {
 	type at struct {
 		e    core.Extent
 		skip uint32
+		seq  core.Seq
 	}
 	var held, kept []at
 	f.held.visit(whole, func(p Piece) bool {
 		if p.Record == from {
-			held = append(held, at{p.Extent, p.Skip})
+			held = append(held, at{p.Extent, p.Skip, p.Seq})
 		}
 		return true
 	})
 	for _, r := range f.retained.list(nil) {
 		if r.Record == from {
-			kept = append(kept, at{r.Extent, r.Skip})
+			kept = append(kept, at{r.Extent, r.Skip, r.Seq})
 		}
 	}
 	n := 0
 	for _, a := range held {
-		n += f.held.repoint(a.e, from, to, a.skip)
+		n += f.held.repoint(a.e, from, to, a.skip, a.seq)
 	}
 	for _, a := range kept {
 		n += f.retained.repoint(a.e, from, to, a.skip)
