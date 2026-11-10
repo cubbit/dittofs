@@ -51,8 +51,7 @@ type starter struct {
 	spare engine.Share   // a share withSpare adds before Start, which Start does not bind
 	clock *sim.TestClock // the engine's clock
 
-	tb    *openstate.Table // the open-state table withOpenState runs, new at each restart
-	holds *recHolds        // tb as the engine's CloneHold, counting its calls
+	tb *openstate.Table // the open-state table withOpenState runs, new at each restart
 
 	mu      sync.Mutex
 	opens   []openCall

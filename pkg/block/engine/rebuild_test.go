@@ -71,7 +71,7 @@ func withOpenState() starterOption {
 }
 
 // openState starts a new open-state table over the store, serving no shard,
-// and answers it as a CloneHold, counting its calls.
+// and answers it as a CloneHold.
 func (s *starter) openState(t *testing.T) engine.CloneHold {
 	t.Helper()
 	tb, err := openstate.New(openstate.Deps{Records: s.fs.Store, Clock: s.clock, Rand: rand.Reader,
@@ -84,8 +84,7 @@ func (s *starter) openState(t *testing.T) engine.CloneHold {
 	}
 	t.Cleanup(tb.Stop)
 	s.tb = tb
-	s.holds = &recHolds{next: enginetest.Holds(tb, s.fs.Store.Opens())}
-	return s.holds
+	return enginetest.Holds(tb, s.fs.Store.Opens())
 }
 
 // serve has open state's recovery serve share one's shard.
@@ -305,25 +304,38 @@ func (r *rig) newFile2(t *testing.T, name string) entity.FileID {
 
 // A clone a crash cut short between its phases is rebuilt from its removal
 // record: a write into the source extent answers ErrDelay as the first call
-// after Start, Start takes no hold on the source, and once open state serves
-// the source's shard the clone's phase 2 runs, taking the hold, and the
-// destination reads the source. Open state's hold is idempotent, the one its
-// recovery installed being kept, so the holds are counted, by a wrapper that
-// changes no answer of the real table.
+// after Start, and once open state serves the source's shard the clone's
+// phase 2 runs and the destination reads the source. Open state's hold is
+// idempotent, the one its recovery installed being kept, so whether Start
+// held the source shows nowhere; the hold is shown by phase 2 finishing,
+// which it runs under, and by its release afterwards: the clone-kind record
+// gone from the store and the table holding the open no longer.
 func TestACloneIsRebuiltFromItsRemoval(t *testing.T) {
 	m := newRemovalCrash(t, true)
-	holds, _ := m.holds.counts()
+	ctx := t.Context()
+	recs, err := m.fs.Store.Opens().Of(ctx, m.one.ID, m.src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(recs, func(o entity.OpenRecord) bool { return o.Kind == entity.OpenCloneSource })
+	if i < 0 {
+		t.Fatal("the source holds no clone-kind open record after the crash")
+	}
+	hold := recs[i].ID
 	m.begin(t)
 	if err := m.writeErr(t, m.one.ID, m.src, 0); !isDelay(err, vfserr.DelayClone) {
 		t.Errorf("a write into the source extent as the first call after Start: %v, want DelayClone", err)
 	}
-	if n, _ := m.holds.counts(); n != holds {
-		t.Errorf("Start took %d holds on the source, want none", n-holds)
-	}
 	m.run()
 	m.cloneDone(t, m.src, m.dst)
-	if n, _ := m.holds.counts(); n != holds+1 {
-		t.Errorf("the rebuilt clone took %d holds on the source, want one", n-holds)
+	m.until(t, "the clone's removal item done", func() bool { return m.e.RemovalsPending() == 0 })
+	if recs, err := m.fs.Store.Opens().Of(ctx, m.one.ID, m.src); err != nil {
+		t.Fatal(err)
+	} else if slices.ContainsFunc(recs, func(o entity.OpenRecord) bool { return o.Kind == entity.OpenCloneSource }) {
+		t.Error("the source still holds the clone-kind open record once the clone is done")
+	}
+	if err := m.tb.Opens().CloneClose(ctx, hold); !errors.Is(err, openstate.ErrBadState) {
+		t.Errorf("closing the clone's hold once the clone is done: %v, want ErrBadState, the hold released", err)
 	}
 	if got := m.readIn(t, m.one.ID, m.dst, 0, runLen); !bytes.Equal(got, m.want) {
 		t.Error("the rebuilt clone's destination does not read the source")
