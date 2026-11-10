@@ -382,7 +382,7 @@ harness (`journaltest/prof`) wired to the fixture.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | **Interfaces** ⛔ | `pkg/block/engine`'s surface, `Deps` narrowed to this part, the engine over `pkg/vfs/vfserr`; the `Content` contract agreed with stage 2 | 5 | 8 | team | **everything** |
-| 2 | **Red e2e suite and test foundations** ⛔ | `engine-conformance` registered red, 45 rows, the fixture, a fault-injecting `kv.KV`, the in-memory journal | 9 | 28.5 | team | **all testing** in 3 to 10 |
+| 2 | **Red e2e suite and test foundations** ⛔ | `engine-conformance` registered red, 45 rows, the fixture, a fault-injecting `kv.KV`, the in-memory journal | 9 | 29.5 | team | **all testing** in 3 to 10 |
 | 3 | **Write, read and overlay** ⛔ | per-file state, `Write`, `Draw`, `Overlay`, `Read`'s resolution, `Allocation` | 6 | 13 | A | 4, 8 |
 | 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 23 | B | 5, 6, 7, 8 |
 | 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 15.5 | B | 6, 8 |
@@ -391,9 +391,9 @@ harness (`journaltest/prof`) wired to the fixture.
 | 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.75 | A | 5, 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
-| | **Total** | | **65** | **190** | | |
+| | **Total** | | **65** | **191** | | |
 
-**Plan estimate: 65 subtasks, 190 man-days.**
+**Plan estimate: 65 subtasks, 191 man-days.**
 
 RFC 8 is 3,627 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
@@ -581,7 +581,7 @@ never `nil`. Sections owned: RFC 8 §2.1 (the declaration rule), §2.6, §12.1's
 
 ### Epic 2 — Red e2e suite and test foundations ⛔
 
-**Epic 2 estimate: 9 subtasks, 28.5 man-days.**
+**Epic 2 estimate: 9 subtasks, 29.5 man-days.**
 
 §1.4 whole. Every row is written red against the real composition and listed in
 `known.yaml`; every row over the fixture is red at the journal's `Init` until the journal
@@ -606,7 +606,8 @@ owned: RFC 8 §15.1 to §15.3 for the rows §1.4 lists, and §15's composition r
   `Since`, the loss ring and generation, named refusals; for unit tests only (rule 8). It
   covers the data path's calls and passes the journal conformance suite's rows for them
   (rule 8); each middle epic extends it with the journal calls it owns, and their rows
-  (rule 12).
+  (rule 12). Running the suite's rows over it adds a day to epic 2; a middle epic's
+  extension runs rows that already exist, which the subtask extending it absorbs.
 - T2.5 Group A rows of the data path and the stability point (12): §4.1, §5.1, §7.1, §8.2.
 - T2.6 Group A rows of the lifecycle and clone (14): §2.5, §2.7, §9.1.
 - T2.7 Group B rows (14).

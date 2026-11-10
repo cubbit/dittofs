@@ -1053,7 +1053,7 @@ or eleven to twenty checks, **L** more than twenty checks or a systematic sweep.
 | 2.2 fault, schedule, clock | M | three components, holds |
 | 2.3 profiler | S | one component |
 | 2.4 reference model | M | every operation, crash states, a fuzz target |
-| 2.5a fixture, registration | S | the fixture, the suite, CI wiring |
+| 2.5a fixture, registration | M | the fixture, split so a constructor with no directory, seam or `Crash` runs the in-memory journal's rows; the suite, CI wiring |
 | 2.5b Group D, clock | M | twelve checks |
 | 2.6 model-based test | M | one test, shrinking and the corpus |
 | 2.7 Group A part 1 | M | seventeen checks |
