@@ -233,9 +233,10 @@ scripted client with sessions (epic 5), the epics that create the packages they 
    passes. Those suites stay off on `feat/storage-v2` until the cutover turns them on; `unit` and
    `e2e` keep no `known.yaml`, so a test there lands green with the subtask that makes it pass.
 6. **v2 ignores v1.** v1 is today's `internal/adapter/smb` and `pkg/adapter/smb`, which RFC 20's
-   first epic deletes. Nothing is copied from it but what RFC 20 Appendix B marks **keep**, SPNEGO and
-   NTLM message handling, lifted from `develop`'s history into `gss`. Behaviour comes from RFC 22 and
-   MS-SMB2, never from what v1 did, and RFC 20's import test fails any import of a path v1 used.
+   first epic deletes. Nothing is copied from it but what RFC 20 Appendix B keeps: the Kerberos,
+   SPNEGO and NTLM mechanism code, lifted from `develop`'s history into `gss`. Behaviour comes from
+   RFC 22 and MS-SMB2, never from what v1 did, and RFC 20's import test fails any import of a path
+   v1 used.
 7. **Real dependencies for properties of those dependencies.** No fake stands in for what the real
    thing does: MS-SMB2's, MS-FSCC's and MS-DTYP's published examples and Samba captures for bytes,
    never vectors made by the codec under test (RFC 20 §5.4); real TCP over loopback for sockets; the
@@ -290,11 +291,11 @@ rows of RFC 20's deferral ledger.
 | E1 ⛔ | SMB surface | `config.SMB`'s RFC 22 fields; `smb/protocol`'s request state; `smb/ops`' handler set, table and `ioctl/` table; the callbacks value | 4 | 4 | team | all |
 | E2 ⛔ | Test foundations | the SMB handler harness on `vfstest.Record`; golden files cut from Samba captures; the import test's call-site and file-size rules | 3 | 6 | team | E3 to E14 |
 | E3 | Negotiation and the connection's stages | `NEGOTIATE`, `Caps`, signing, encryption, preauthentication, credits, the message-ID window, `HoldCodec`, the error table and its totality test, `ECHO`, `CANCEL` | 9 | 24 | A | E5 |
-| E4 | Authentication mechanisms | `gss`: `Exchanges`, NTLM, Kerberos, SPNEGO, `Identity`, `gsstest` | 6 | 15.5 | B | E5 (partly) |
+| E4 | Authentication mechanisms | `gss`: `Exchanges`, NTLM, Kerberos, SPNEGO, `Identity`, `gsstest` | 6 | 15.5 | B | E5 |
 | E5 🔀 | Sessions | `SESSION_SETUP`, `LOGOFF`, the session registry, the client record, re-authentication, expiry, multichannel, `PreviousSessionId`, the scripted client | 8 | 20 | A | E9, E14 (partly) |
-| E6 | Trees, IPC$ and the RPC services | `TREE_CONNECT`, share flags, keyless confinement, DCE/RPC, named pipes, srvsvc, wkssvc, lsarpc, Witness | 6 | 16 | B | E16 |
-| E7 | Opens and the data path | `CREATE`, `CLOSE`, `READ`, `WRITE`, `FLUSH`, `FileId`s, path resolution, access translation, `Adapter` bytes | 8 | 21 | C | E8; E9, E11 to E13 (partly) |
-| E8 | File information, directories and names | information classes, `QUERY_INFO`, `SET_INFO`, `QUERY_DIRECTORY`, rename and link, the name mapping, streams, reparse points | 8 | 22 | C | E11 (partly), E16 |
+| E6 | Trees, IPC$ and the RPC services | `TREE_CONNECT`, share flags, keyless confinement, DCE/RPC, named pipes, srvsvc, wkssvc, lsarpc, Witness | 6 | 16 | B | E9, E11 (partly); E16 |
+| E7 | Opens and the data path | `CREATE`, `CLOSE`, `READ`, `WRITE`, `FLUSH`, `FileId`s, path resolution, access translation, `Adapter` bytes | 8 | 21 | C | E8; E6, E9, E11 to E13 (partly) |
+| E8 | File information, directories and names | information classes, `QUERY_INFO`, `SET_INFO`, `QUERY_DIRECTORY`, rename and link, the name mapping, streams, reparse points | 8 | 22 | C | E11 to E13 (partly), E16 |
 | E9 | Leases, breaks and held requests | caching requests, break callbacks and acknowledgements, `Revoked`, holds by cause | 6 | 18 | A | E10; E11 (partly) |
 | E10 | Durable and persistent handles, and replay | durability on `CREATE`, reconnect, replay, app instance takeover | 5 | 13 | A | E16 |
 | E11 | Byte-range locks and change notification | `LOCK`, waiting locks, `CHANGE_NOTIFY` | 5 | 12.5 | C | E16 |
@@ -341,11 +342,16 @@ flowchart TD
     E13["E13 Control codes, snapshots"]
   end
   S2 --> E3 & E4 & E6 & E7 & E12 & E13 & E14
-  E4 -. "Exchanges, initiators" .-> E5
+  E4 --> E5
+  E7 -. "access masks; CREATE, READ, WRITE rows" .-> E6
+  E6 -. "TREE_CONNECT" .-> E9
+  E6 -. "TREE_CONNECT" .-> E11
   E7 -. "CREATE" .-> E9
   E7 -. "FileIds" .-> E11
   E7 -. "SecD on CREATE" .-> E12
+  E8 -. "QUERY_INFO, SET_INFO rows" .-> E12
   E7 -. "opens" .-> E13
+  E8 -. "volume serial" .-> E13
   E8 -. "name mapping" .-> E11
   E9 -. "callbacks, park" .-> E11
   E5 -. "scripted client" .-> E14
@@ -356,7 +362,8 @@ flowchart TD
   S4 -. "loopback rows" .-> E11
   S5(["S5 composed in-process node"]):::sync -. "DittoFS side" .-> E14
   S5 -. "in-process rows" .-> E16["E16 E2E green 🔀"]:::sync
-  S6(["S6 authenticator behind SignIn, RFC 18"]):::sync -. "authenticated sessions" .-> E16
+  S6a(["S6a local sign-in, RFC 18"]):::sync -. "authenticated sessions" .-> E16
+  S6b(["S6b directory sign-in, RFC 18"]):::sync -. "AD rows" .-> E16
   S7(["S7 the node serves SMB: RFC 20 S4, E7, stage 7"]):::sync --> E15["E15 Integration with the node 🔀"]:::sync
   E15 -. "suites on" .-> E16
   E6 & E8 & E10 & E11 & E12 & E13 & E14 --> E16
@@ -385,11 +392,15 @@ holds its S4 and its epic 7.
   track A.
 - **🔀 S5 composed in-process node** (outside, owner open, §6.2). The real service, open state,
   engine and store, in memory, without `internal/node`, with SMB on a loopback port. Unblocks E14's
-  DittoFS side and E16's in-process rows.
-- **🔀 S6 the authenticator behind `SignIn`** (outside: RFC 18's identity server, no plan, §6.2).
-  Until it lands, `SignIn`, `Spell` and `Find` answer `ErrAccess` on `feat/storage-v2`. Unblocks
-  authenticated sessions on the real service: E16's AD, lsarpc and descriptor rows over the composed
-  node, and the workload with its lease and handle.
+  DittoFS side and E16's in-process rows. If no owner is found by S4, a subtask in E2 builds the
+  composed single-node harness.
+- **🔀 S6a local sign-in** (outside: an RFC 18 plan, none yet, §6.2 point 1). NTLMv2 against a local
+  NT hash and Kerberos against a keytab (RFC 18 §3.3, §3.5's local source), with `Spell` and `Find`
+  from RFC 18 §11's slice 4. Until it lands, `SignIn`, `Spell` and `Find` answer `ErrAccess` on
+  `feat/storage-v2`. Unblocks T16.1, T16.2, and the lsarpc and descriptor rows on the composed node.
+- **🔀 S6b directory sign-in** (outside: the same plan). NETLOGON pass-through, the PAC, LDAP
+  (RFC 18 §3.4, §3.5's pass-through source, §5), with the directory's `Spell` and `Find` from
+  RFC 18 §11's slice 6. Unblocks T16.4's Kerberos and AD row and T16.5.
 - **🔀 S7 the node serves SMB** (outside: RFC 20's S4, its epic 7, and programme stage 7's start
   path). `node.New` builds, starts and reconfigures the SMB adapter and `dfs` serves it. Unblocks
   E15.
@@ -403,15 +414,17 @@ holds its S4 and its epic 7.
 | 🔀 RFC 20 S2 and T6.1 | E2 | the import test E2 extends, and `smb/wire`'s header the harness decodes |
 | ⛔ E2 | E3, E4, E6, E7, E12, E13 and E14, through S2 | the harness every handler test runs on, and the import test from the first SMB package |
 | E3 | E5; S4 | a session needs a negotiated connection, its signing keys and credits |
-| E4 | E5, partly; S4 | `SESSION_SETUP` drives `gss.Exchanges`; the rest of E5 starts before it |
+| E4 | E5; S4 | T5.3 drives every mechanism and `Identity`, and T5.8 signs in through `gsstest`; E4 starts at S2, so it ends inside E3 |
 | 🔀 E5 | E9; E14, partly; S4 | breaks go to sessions; the wire scripts drive the scripted client |
-| E7 | E8; E9, E11, E12 and E13, partly | queries, locks, descriptors and control codes resolve E7's `FileId`s; leases and `SecD` ride on `CREATE` |
-| E8 | E11, partly | a notification spells names as a listing does (RFC 22 §8) |
+| E6 | E9 and E11, partly | their loopback rows need a tree (T6.1) |
+| E7 | E8; E6, E9, E11, E12 and E13, partly | queries, locks, descriptors and control codes resolve E7's `FileId`s; leases and `SecD` ride on `CREATE`; T6.1's `MaximalAccess` needs T7.4's access translation, and pipes on `IPC$` are reached through E7's `CREATE`, `READ` and `WRITE` rows (T7.5) |
+| E8 | E11, E12 and E13, partly | a notification spells names as a listing does (RFC 22 §8); the security and quota classes go through `QUERY_INFO` and `SET_INFO`'s rows; a snapshot's volume serial is T8.3's |
 | E9 | E10; E11, partly | a durable handle needs a lease with handle caching or a batch oplock; locks and notify use the callbacks value and park as E9 leaves them |
 | 🔀 S3 | E3, partly; S4 | E3's loopback rows and the first session need SMB on `core` |
 | 🔀 S4 | E6 and E11, partly | their loopback rows need a session |
 | 🔀 S5 | E14 and E16, partly | the DittoFS side of a wire test and every in-process row need the composed node |
-| 🔀 S6 | E16, partly | an authenticated session on the real service needs the authenticator |
+| 🔀 S6a | E16, partly | an authenticated session on the real service needs the authenticator |
+| 🔀 S6b | E16, partly | a domain user's session needs pass-through, the PAC and the directory |
 | 🔀 S7 | E15 | no node to wire into, no `dfs` serving SMB |
 | 🔀 E15 | E16, partly | the SMB suites run only once `dfs` serves SMB and the V2 filter lets them |
 | E6, E8, E10, E11, E12, E13, 🔀 E14 | E16 | the suites, end-to-end rows and benchmarks run every area |
@@ -421,17 +434,19 @@ holds its S4 and its epic 7.
 - **Track A: E3, E5, E9, E10.** The connection and its security, then sessions, then RFC 14's wire
   side: leases, breaks, holds, durable handles and replay. It starts at S2 with `NEGOTIATE` and the
   stages on specification vectors, runs its first loopback rows at S3, and its session setup waits
-  only for E4's `Exchanges`, the first subtask on track B. E9 needs E7's `CREATE`, which track C
-  finishes well before. At 75 man-days this is the longest track and the workload's critical path.
+  for E4, which track B starts at S2 and finishes inside E3. E9 needs E7's `CREATE` and E6's
+  `TREE_CONNECT`, which tracks C and B finish well before. At 75 man-days this is the longest track
+  and the workload's critical path.
 - **Track B: E4, E6, E12, E14.** Authentication, then trees and the RPC services, then security
   descriptors, then the wire tests. E4 comes first because E5 needs it; in E6, `TREE_CONNECT` comes
   first because every file request needs a tree. E14's runner and scripts are built against Samba
   alone and its DittoFS side waits for S5. At 57 man-days the track ends about 18 man-days before
   track A; it then takes E16's in-process rows (T16.1, T16.2) as S5 and their epics allow.
-- **Track C: E7, E8, E11, E13.** The data path, then file information and names, then locks and
-  notification, then control codes and Previous Versions, all on the open E7 resolves. Within E8,
-  `QUERY_INFO` and `SET_INFO`, the end of file included, come before directories, reparse points
-  and streams. At 67 man-days.
+- **Track C: E7, E8, E13, E11.** The data path, then file information and names, then control codes
+  and Previous Versions, then locks and notification, all on the open E7 resolves. E13 goes before
+  E11 because E11 waits partly on E9 (track A, about man-day 62) and E13 on nothing outside the
+  track: E11 then starts about man-day 54 instead of 43. Within E8, `QUERY_INFO` and `SET_INFO`, the
+  end of file included, come before directories, reparse points and streams. At 67 man-days.
 - **The team.** E1 and E2 before the tracks; E15 at S7; E16 after the tracks.
 - **The FSLogix workload.** One VHDX of 10 to 30 GB per user, held open through one handle all
   session, overwritten at random in 64 KiB pieces, and truncated at sign-out. It can first run at
@@ -441,10 +456,10 @@ holds its S4 and its epic 7.
      across a 30 GB file, `FLUSH` and the sign-out truncate, over a guest session to a share with
      its guest flag set. A guest gets no lease and so no durable handle (RFC 22 §4.4); this proves
      the data path, not the handle.
-  2. **With its lease and a durable or persistent handle**, once E9 and E10 have landed and S6
+  2. **With its lease and a durable or persistent handle**, once E9 and E10 have landed and S6a
      holds, so the session is authenticated and joins a client: the same run with an RWH lease, a
      persistent handle on a continuously available share, and a 10 s blip reconnected (T16.2).
-  3. **With Windows, FSLogix and AD sign-in**, once S6 and S7 hold and E15 has turned the suites
+  3. **With Windows, FSLogix and AD sign-in**, once S6b and S7 hold and E15 has turned the suites
      on: RFC 22 §18's profile-container row in `system`, at 30 GB per file (T16.5).
 
 ## 4. Directory layout proposed for epic 1
@@ -579,10 +594,12 @@ RFC sections: §3.1, §3.2, §3.3's credits and pending ceiling, §4.1's signing
 **Epic 4 estimate: 6 subtasks, 15.5 man-days.**
 
 `gss` as SMB drives it (RFC 20 §4.4): the message side of NTLM, Kerberos and SPNEGO, the exchange
-machine, and the `Identity` a context yields, with every secret behind `SignIn`. SPNEGO and NTLM
-message handling are lifted from `develop`'s history (RFC 20 Appendix B, keep). RFC 4121's
-per-message tokens and the RPCSEC_GSS context table are NFS's (§6.2). Tested in process, with no
-KDC, no domain controller and no network.
+machine, and the `Identity` a context yields, with every secret behind `SignIn`. The Kerberos,
+SPNEGO and NTLM mechanism code is lifted from `develop`'s history (RFC 20 Appendix B: replace with
+`gss`, keeping the mechanism code). RFC 4121's per-message tokens are not here: RFC 20's plan's
+ledger gives them to RFC 21's plan or `gss`'s own RFC (§6.2, point 2). Nothing in E4 imports an
+SMB package, so the epic can move whole. Tested in process, with no KDC, no domain controller and
+no network.
 
 RFC sections: RFC 20 §4.4 (the package, its pieces table for SMB, its tests); RFC 18 §3.3's,
 §3.5's and §3.6's wire halves (an AP-REQ passed to `SignIn` with the client's address, the NTLM
@@ -601,8 +618,9 @@ messages' bytes kept for the MIC, anonymous and guest set up as anonymous).
 - T4.5 `Identity`: from a context, `Secret` or `Ticket` with the protection the protocol sets per
   request, expiry from the evidence; every `SignIn` error the logon failure, never a guest session;
   the anonymous and guest path with proof `None` and no key.
-- T4.6 `gsstest`: initiators for each mechanism, and every exchange of RFC 20 §4.4's test list that
-  SMB drives, in process.
+- T4.6 `gsstest`: initiators for each mechanism, and RFC 20 §4.4's mechanism tests (Kerberos
+  without a KDC, NTLM against a fake `SignIn`, SPNEGO with fallback and the MIC), in process; the
+  SMB handshake over loopback is T5.8's.
 
 ### Epic 5 - Sessions 🔀
 
@@ -634,8 +652,9 @@ client rows; Appendix G's `SESSION_SETUP` and `LOGOFF`; RFC 20 §3.2's cleanup p
 - T5.7 `PreviousSessionId`: the previous session torn down only after `SignIn` bound the same
   principal, its volatile opens closed and its durable ones disconnected; ignored otherwise.
 - T5.8 The scripted client (RFC 20 §8.2): sends what a test gives it, signs and seals through the
-  stages' functions, signs in through `gsstest`, holds a fixed number of requests in flight; §18's
-  §4.1, §4.3 and §4.4 session rows over loopback.
+  stages' functions, signs in through `gsstest`, holds a fixed number of requests in flight; RFC 20
+  §4.4's SMB handshake end to end over loopback; §18's §4.1, §4.3 and §4.4 session rows over
+  loopback.
 
 ### Epic 6 - Trees, IPC$ and the RPC services
 
@@ -650,14 +669,16 @@ rows; RFC 20 §3.1's `IPC$` seams, §4.10's SMB entries; RFC 18 §4.4's and §4.
 lsarpc.
 
 - T6.1 `TREE_CONNECT` and `TREE_DISCONNECT`: `Root` with the share's name, from this file alone; the
-  share's flags and Appendix C's; `MaximalAccess` from `Access` on the root; null and guest
+  share's flags and Appendix C's; `MaximalAccess` from `Access` on the root, through T7.4's
+  translation; null and guest
   confinement; a client that cannot encrypt refused at an encrypting share; `IPC$` marked as the
   pipe endpoint with no call; tree IDs never reissued while a held request names one.
 - T6.2 DCE/RPC: NDR codecs, bind and alter-context, request, response and fault PDUs, fragments;
   each interface a table keyed by opnum; an unknown opnum `DCERPC_FAULT_OP_RNG_ERROR`.
-- T6.3 Named pipes on `IPC$`: `CREATE`, `WRITE`, `READ`, `PIPE_TRANSCEIVE`, `PIPE_WAIT` and
-  `PIPE_PEEK`; a `READ` of an empty pipe parked with a small-class reply and answered short with
-  `STATUS_SUCCESS`; §18's parked pipe and pending ceiling rows over loopback.
+- T6.3 Named pipes on `IPC$`: the pipe endpoints E7's `CREATE`, `WRITE` and `READ` rows dispatch to
+  (T7.5), and `PIPE_TRANSCEIVE`, `PIPE_WAIT` and `PIPE_PEEK`; a `READ` of an empty pipe parked with
+  a small-class reply and answered short with `STATUS_SUCCESS`; §18's parked pipe and pending
+  ceiling rows over loopback.
 - T6.4 srvsvc and wkssvc: `NetShareEnumAll`, `NetShareGetInfo` at its five levels, `NetSrvGetInfo`,
   `NetWkstaGetInfo`; `ListShares` from these files alone; hidden shares omitted.
 - T6.5 lsarpc: `OpenPolicy2`, `LookupSids2/3`, `LookupNames3/4` and `Close` through `Spell` and
@@ -692,7 +713,8 @@ Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4
 - T7.5 `CREATE`: one `Open` with disposition, access, deny mode, directory, name and the options of
   Appendix D; open by file ID and shared virtual disks refused; a stream's delete refused before the
   call; the reply's `MaximalAccess` and `QFid`; §18's generic-rights and delete-through-the-parent
-  rows on `vfstest.Record`.
+  rows on `vfstest.Record`. E7 owns the dispatch from the `CREATE`, `READ` and `WRITE` rows to a
+  pipe on `IPC$` or a file; E6 supplies the pipe endpoints (T6.3).
 - T7.6 `READ` and `WRITE`: payloads as slices of pooled buffers, replies gathered; stability by
   flag, open, persistent open or continuously available share; a read below its `MinimumCount` held
   on `ErrUnavailable`; a write's buffer kept across re-drives; the 0-allocation gates.
@@ -902,7 +924,8 @@ settings; RFC 23 §4.2; RFC 22 §18's suites paragraph.
 
 The SMB suites burned down to the failures RFC 22 names, and every row no lower layer can show: on
 the composed node at S5, through Windows and Linux clients once E15 has turned the suites on, and
-the benchmarks and soak. T16.1 and T16.2 need only S5 and their epics; the rest needs E15.
+the benchmarks and soak. T16.1 and T16.2 need S5 and their epics, and S6a for their authenticated
+rows; the rest needs E15, and T16.4's Kerberos and AD row and T16.5 need S6b.
 
 RFC sections: §2 (the profile-container row), §16.6's cross-protocol and end-to-end rows, §18's
 suites; RFC 20 §6.10's end-to-end benchmark, §7.4, §7.5; RFC 18 §10's and RFC 19 §9's SMB rows.
@@ -912,7 +935,7 @@ suites; RFC 20 §6.10's end-to-end benchmark, §7.4, §7.5; RFC 18 §10's and RF
   multi-session host through a freeze, the share cap on a profile share.
 - T16.2 In-process rows, durability: stability, a loss reaching `FLUSH`, a durable and a persistent
   open across a restart, a session after a restart, and the workload's I/O at 30 GB with its
-  sign-out truncate read back cold, guest first and with a lease and a persistent handle once S6
+  sign-out truncate read back cold, guest first and with a lease and a persistent handle once S6a
   holds.
 - T16.3 `smbtorture`, `smbtorture/kerberos` and `wpts` burned down to the failures RFC 22 §18 names
   (`smb2.streams.io`, `.names`, `.rename`, `.rename2`, `.basefile-rename-with-open-stream`).
@@ -994,23 +1017,27 @@ for a pull request to the RFC named; none is settled here.
 Pending a decision on [#3119](https://github.com/cubbit/dittofs/issues/3119) unless another
 thread is named.
 
-1. **The authenticator behind `SignIn`** (S6; RFC 18 §2.6, §3; RFC 20's plan, risk 10). No plan
-   builds RFC 18's identity server, and on `feat/storage-v2` `SignIn`, `Spell` and `Find` answer
-   `ErrAccess` until it lands (`internal/vfs/shares.go`). It gates every authenticated session on
-   the real service: the workload with its lease and handle, AD sign-in, lsarpc and descriptors over
-   the composed node. Options: an RFC 18 plan whose slices 1 to 5 land before E5 ends; this plan
-   takes the authenticator's SMB half (NTLMv2 verification, NETLOGON, Kerberos acceptance, the
-   PAC); or an interim `SignIn` over `develop`'s Kerberos and NETLOGON code, as RFC 17's plan took a
-   minimal resolver (its D4).
-2. **`gss`'s owner** (RFC 20 §4.4; RFC 20's plan's ledger and risk 5). The ledger gives `gss` to
-   this plan until it has an RFC of its own. E4 builds the half SMB drives, an epic of its own so it
-   can move whole; RFC 4121's per-message tokens and the RPCSEC_GSS context table, which the ledger
-   row also lists, are NFS's and go to RFC 21's plan. Options: keep it here, its own RFC, or shared
-   with RFC 21's plan.
+1. **The authenticator behind `SignIn`** (S6a, S6b; RFC 18 §2.6, §3, §11; RFC 20's plan, risk 10).
+   No plan builds RFC 18's identity server, and on `feat/storage-v2` `SignIn`, `Spell` and `Find`
+   answer `ErrAccess` until it lands (`internal/vfs/shares.go`). It gates every authenticated
+   session on the real service: the workload with its lease and handle, AD sign-in, lsarpc and
+   descriptors over the composed node. It belongs to an RFC 18 plan: RFC 18 §2.6 puts the
+   authenticator in the identity server, and §11's slice 5 builds it on slices 1 to 4; `Spell` and
+   `Find` come from slices 4 and 6. S6a, the local half, is the smaller first ask of that plan.
+   Neither this plan nor an interim builds it: its code is `internal/identity`, which no adapter
+   package may import (RFC 20 §2.3), and an interim over `develop`'s code would bring back the
+   five-domain NTLM retry slice 5 deletes.
+2. **`gss`'s owner** (RFC 20 §4.4; RFC 20's plan's ledger and risk 5). The ledger gives `gss`'s
+   mechanisms, `Exchanges`, `Identity` and `gsstest` to this plan (E4) until it has an RFC of its
+   own, and RFC 4121's per-message tokens, which no SMB code calls, to RFC 21's plan or that RFC;
+   the RPCSEC_GSS context table has its own row, RFC 21's plan's. E4 is an epic of its own, tested
+   behind a fake `SignIn` and importing no SMB package, so it can move whole. Options: keep it here,
+   its own RFC, or shared with RFC 21's plan.
 3. **The composed in-process node** (S5; RFC 20 §7's in-process layer; RFC 18 §10's Tier 2; RFC 22
    §18's suites paragraph). Nothing on `feat/storage-v2` composes the real service, open state, the
    engine and the store in memory without `internal/node`, and no plan builds it; E14 and E16 need
-   it. Options: the node's owner, the harness, or a subtask added to E2 here.
+   it, and RFC 22 §18's suites paragraph runs its fault rows in `unit` through it. Options: the
+   node's owner or the harness; if neither takes it by S4, a subtask in E2 here builds it.
 4. **The node and the cutover** (S7; RFC 20's plan, risk 3). E15 waits for RFC 20's S4 and epic 7
    and for stage 7; until then no real client reaches SMB through `dfs`.
 5. **`translate` shared with RFC 21** (RFC 19 §5.1, RFC 20 §4.9). This plan creates `translate`
@@ -1039,16 +1066,16 @@ thread is named.
 ### 6.3 Risks
 
 1. **Track A is the critical path.** E3, E5, E9 and E10 run in sequence, and the workload's handle
-   needs all four plus S5 and S6 outside this plan; its run with Windows needs S7 too.
+   needs all four plus S5 and S6a outside this plan; its run with Windows needs S6b and S7 too.
 2. **S1 freezes RFC 20 §4.7 before SMB exercises it.** `testproto` proves the surface's mechanisms,
    not SMB's holds by cause or a break's order; gaps 1 and 4 are §4.7 changes, cheapest before
    RFC 20's S1.
-3. **Points outside the plan with no owner.** S5 and S6 have none yet; if they come late, E14's
-   DittoFS side and E16's in-process rows wait, and track B, which ends first, has nothing to fill
-   with but E16's rows.
-4. **Lifted code.** SPNEGO and NTLM message handling come from `develop`'s history (RFC 20
-   Appendix B); they are re-tested against the specifications' vectors, since v1's tests ran on
-   real stores.
+3. **Points outside the plan with no owner.** S5, S6a and S6b have none yet; if they come late,
+   E14's DittoFS side and E16's in-process rows wait, and track B, which ends first, has nothing to
+   fill with but E16's rows.
+4. **Lifted code.** The Kerberos, SPNEGO and NTLM mechanism code comes from `develop`'s history
+   (RFC 20 Appendix B); it is re-tested against the specifications' vectors, since v1's tests ran
+   on real stores.
 
 ### 6.4 RFC 20's ledger rows for SMB
 
@@ -1058,7 +1085,8 @@ thread is named.
 | transform header, signing, encryption, credits, message-ID window, multichannel session registry, `Caps` | E3; the registry and binding in E5 |
 | SMB callbacks: lease break, change notify, lock wait, revoked | E9 (lease break, revoked), E11 (notify, lock wait) |
 | `IPC$`, `dcerpc`, srvsvc share listing, lsarpc lookups | E6 |
-| `gss` | E4, but RFC 4121's tokens (§6.2, point 2) |
+| `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, `gsstest` | E4 |
+| `gss`: RFC 4121 per-message tokens | not here: RFC 21's plan, or `gss`'s own RFC (§6.2, point 2) |
 | `translate` | E7 (access masks), E8 (attributes, times, `Fit`), E12 (descriptors) |
 | the error-table rows and the totality test | E3 |
 | handler tests on `vfstest.Record`, the one-call rule per handler | E2 (harness), every handler epic |
