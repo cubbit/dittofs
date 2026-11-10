@@ -386,7 +386,7 @@ pkg/block/engine/
   share.go          T8.4  Unbind's join of clones
   engine.go         T8.4  Close's cancel and join of clones
   start.go          T8.6  a clone rebuilt from its marker or its Removal record (D10), its Served wait (D11)
-  export_test.go    T8.1a hooks: the registrations, the admitted count; T8.2 the faked done signal, until T8.3's replaces it; T8.4 the done memory
+  export_test.go    T8.1a hooks: the registrations, the admitted count; T8.4 the done memory
   enginetest/
     fake.go         T8.2  CloneTarget, Reserve, Reservation, Since's clone marker
 pkg/metadata/kvstore/
@@ -491,9 +491,10 @@ listed test fails on the regression it names (after "catches").
   (RFC 8 §2.7).
 - **Rows:** §9.1 failure leaves the destination (the refused reservation), §9.1 clone keeps
   writes outside its extent (the stall before phase 1), §9.1 clone never waits.
-- **Tests:** the done signal is T8.3's, so an `export_test.go` hook fakes it, dropping the
-  registrations once phase 1 returns, with a `ponytail:` marker: T8.3 replaces the hook with
-  its real signal and deletes it; the stall between two batches is T8.4's, the power cut
+- **Tests:** the done signal is T8.3's, and no hook answers in its place: a test that needs
+  the registrations dropped waits for T8.3's real signal and lands with it. Hooks here are
+  [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s: set per instance
+  from `export_test.go`, never through a package variable. The stall between two batches is T8.4's, the power cut
   after the answer T8.6's. A reservation refused by the fake: the clone fails with the mapped
   error, both registrations are gone, the destination reads its prior content, and the
   journal saw no `CloneTarget` (catches a refusal after the journal step); a source extent
