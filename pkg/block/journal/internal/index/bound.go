@@ -55,6 +55,34 @@ func (f *file) writeAdds(e core.Extent, retain bool) int64 {
 	return n
 }
 
+// checkWrite predicts a write's admission without reserving: it reports the
+// same refusal the admission itself would return — a NoSpaceError naming the
+// index, the shortfall in entries, counted by the index's refusals counter —
+// or nil when the bound would admit the write. It touches no count: the
+// caller's later admission finds the index exactly where the check left it.
+//
+// It costs what the admission's own pre-check costs — the file's read lock for
+// writeAdds and one load of the count and the limit — so it holds no entries
+// back and grants none. Between the check and its caller's admission the file's
+// content can change by a release or an offload report, exactly as it can
+// between an admission's reserve and its commit; the admission applies the
+// delta the content truly made, so the count never drifts.
+func (fs *files) checkWrite(id core.FileID, e core.Extent, retain bool) error {
+	// A file with no entry holds nothing: a write of bytes adds one entry
+	// and a zero-length one none.
+	n := int64(1)
+	if e.Len <= 0 {
+		n = 0
+	}
+	fs.view(id, func(f *file) { n = f.writeAdds(e, retain) })
+	c, limit := fs.count.Load(), fs.limit.Load()
+	if c+max(n, 0) > limit {
+		fs.refusals.Add(1)
+		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(n, 1) - limit, Unit: core.UnitEntries}
+	}
+	return nil
+}
+
 // fillAdds is the number of entries a fill of p would add: the gaps of the
 // parts no marker above p's version masks. It reads only, so it runs under
 // the file's read lock. Like gaps, the result is exact unless a put joins a

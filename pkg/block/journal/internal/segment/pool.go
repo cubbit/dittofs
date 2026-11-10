@@ -522,6 +522,17 @@ func (p *Pool) Kick() {
 	}
 }
 
+// ReadyContent returns the content spares an unreserved take can still reach:
+// the ready ones less the spares owed to open holds, zero when the difference
+// is empty. It takes the pool's lock briefly and makes no I/O, so it costs
+// only the read — the same domain Take and Hold decide in, whose outcome a
+// snapshot of this value approaches but cannot stand in for.
+func (p *Pool) ReadyContent() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return max(len(p.ready[Content])-p.held, 0)
+}
+
 // DeviceFull reports whether a make has failed with ENOSPC and no spare has
 // been made since — "making a spare failed with ENOSPC" being the state a
 // roll that finds no full-size retired segment to hand answers ENOSPC with,

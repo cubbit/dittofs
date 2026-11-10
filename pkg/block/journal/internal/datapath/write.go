@@ -5,10 +5,51 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
+
+// recordBytes is what one record of n payload bytes costs the journal: the
+// size function the stream, the format and the capacity wiring all spell
+// together.
+func recordBytes(n int64) int64 {
+	return format.RecordHeader{Kind: format.KindWrite, Extent: core.Extent{Len: n}}.Size()
+}
+
+// emptyRoomOf returns the payload bytes one write record takes in an empty
+// segment of cap bytes — the same closed form the stream's fit and Room draw.
+func emptyRoomOf(cap int64) int64 {
+	room := ((cap - format.SegmentHeaderSize - sealOver(1)) &^ 7) -
+		(int64(format.RecordHeaderSize) + format.RecordHeader{Kind: format.KindWrite}.BodySize())
+	return max(room, 0)
+}
+
+// sealOver returns the seal's reserve over n records: the marker, one
+// footer entry per record and the trailer, as the format sizes them.
+func sealOver(n int64) int64 {
+	return format.SealMarkerSize + n*format.CatalogEntrySize + format.TrailerSize
+}
+
+// streamOfID returns the stream the file's appends route to: the FNV-1a
+// hash of its FileID over the stream count, the same choice Streams.For
+// draws, so the admission's per-stream room grant keys on the stream its
+// own appends land on.
+func streamOfID(id core.FileID, n int) int {
+	const (
+		offset = 14695981039346656037
+		prime  = 1099511628211
+	)
+	b := id.Bytes()
+	h := uint64(offset)
+	for _, x := range b {
+		h ^= uint64(x)
+		h *= prime
+	}
+	return int(h % uint64(n))
+}
 
 // WriteAt appends p at off of file id as a write record under s's tag, then
 // publishes it to the placement index, and returns the version it carries.
@@ -25,18 +66,26 @@ import (
 // core.ErrInvalidExtent before anything is drawn or appended. The tag check
 // claims nothing, so a shape refused after it leaves the file as it was.
 //
+// The write's record bytes are reserved against the journal's limits before
+// its version is drawn or a byte written: the one admission, capacity.Take,
+// refuses naming the limit that would not take them — the share's, the
+// journal's, the index's, the version limit's or the spare pool's — with the
+// shortfall, at once, with no I/O and holding nothing behind. Its grant
+// covers every piece the write splits into; the pieces take their spares
+// from the grant's hold, and the unused part returns when the write does.
+//
 // The version is drawn, and the record appended and published, with the
 // file's append domain held, so the versions of one file are appended in the
 // order they were assigned. The tag is checked again under that domain,
-// immediately before the draw, so checking a file's tag and claiming it are
-// one step: two first writes of one new FileID through two handles cannot
-// both pass the check. The domain is the only one held across the record
-// write, and publishing follows the write: the index never names a record
-// that is not yet in its segment. Publishing never waits on a sync.
+// ahead of the capacity admission and the draw, so checking a file's tag and
+// claiming it are one step: two first writes of one new FileID through two
+// handles cannot both pass the check. The domain is the only one held across
+// the record write, and publishing follows the write: the index never names
+// a record that is not yet in its segment. Publishing never waits on a sync.
 //
 // Any error returns the zero version. A write that fails part-way leaves the
 // pieces it already published held; the error says the write as a whole did
-// not complete.
+// not complete, and the grant's unused bytes and spares return with it.
 func (c *Core) WriteAt(ctx context.Context, s *Share, id core.FileID, off int64, p []byte, mtime int64) (core.Version, error) {
 	if err := ctx.Err(); err != nil {
 		return core.Version{}, err
@@ -61,14 +110,14 @@ func (c *Core) WriteAt(ctx context.Context, s *Share, id core.FileID, off int64,
 	if off < 0 || off > math.MaxInt64-int64(len(p)) {
 		return core.Version{}, core.ErrInvalidExtent
 	}
-	v, n, err := c.appendAndPublish(s, id, off, p, mtime)
+	v, n, err := c.appendAndPublish(ctx, s, id, off, p, mtime)
 	c.writtenBytes.Add(uint64(n))
 	return v, err
 }
 
 // appendAndPublish does WriteAt's work under the file's append domain and
 // returns the version drawn and the payload bytes published.
-func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, mtime int64) (core.Version, int64, error) {
+func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, off int64, p []byte, mtime int64) (core.Version, int64, error) {
 	unlock := c.domains.Lock(id)
 	defer unlock()
 
@@ -76,16 +125,39 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 	// under, so the two are one step: a first write through another handle
 	// waits on the domain and meets the claim, not an unclaimed entry. A
 	// refused write draws no version, appends nothing and counts no written
-	// byte. A later capacity admission slots in after this check, before the
-	// draw.
+	// byte. The capacity admission below slots in right after this check,
+	// before the draw; the check takes the file index shared and releases
+	// it before the admission runs, so the admission names no lock of the
+	// file's.
 	if err := c.checkTag(s, id); err != nil {
 		return core.Version{}, 0, err
 	}
+	stream := c.streams.For(id)
+	// The reservation first: the write's payload, its record bytes drawn
+	// by the take from the room the stream names — against the share's
+	// limit, the journal's maximum, the index's bound, the version limit
+	// and the spares its pieces need, in one decision.
+	grant, err := c.cap.Take(ctx, capacity.Request{
+		Tag:        s.Tag,
+		File:       id,
+		Stream:     streamOfID(id, c.streams.Len()),
+		Extent:     core.Extent{Off: off, Len: int64(len(p))},
+		Payload:    int64(len(p)),
+		ShareLimit: s.Limit(),
+	})
+	if err != nil {
+		return core.Version{}, 0, err
+	}
+	defer grant.Release()
+
 	v, err := c.counters.Draw()
 	if err != nil {
 		return core.Version{}, 0, err
 	}
-	stream := c.streams.For(id)
+	var roll segment.Roll
+	if hold := grant.Hold(); hold != nil {
+		roll = segment.Roll{Hold: hold}
+	}
 	var done int64
 	for done < int64(len(p)) {
 		seq, err := c.counters.NextSeq()
@@ -93,24 +165,26 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 			return core.Version{}, done, err
 		}
 		rest := p[done:]
-		pl, err := stream.Append(format.RecordHeader{
+		pl, err := stream.AppendRoll(format.RecordHeader{
 			Kind:    format.KindWrite,
 			File:    id,
 			Extent:  core.Extent{Off: off + done, Len: int64(len(rest))},
 			Seq:     seq,
 			Version: v,
 			Tag:     s.Tag,
-		}, format.RecordBody{Payload: rest, MTime: mtime})
+		}, format.RecordBody{Payload: rest, MTime: mtime}, roll)
 		if err != nil {
-			// decision: a write that fails on a later piece returns no version,
-			// yet the pieces it already published stay held under the version it
-			// drew, so reads serve bytes the caller has no version to record. The
-			// window is reachable when a write crosses a segment's cap and no
-			// spare is ready for the next piece. It is accepted for now because
-			// the capacity admission that refuses such a write before it draws a
-			// version is not yet on this path; once it is, the window narrows to
-			// a device that fails mid-write. Overturned by returning the version
-			// with the error, if the caller can then record the partial write.
+			// decision: a write that fails on a later piece, a device
+			// failing mid-write beyond what the streams' own refusal of a
+			// spoiled segment covers, returns no version, yet the pieces it
+			// already published stay held under the version it drew, so
+			// reads serve bytes the caller has no version to record. The
+			// capacity admission keeps its own refusals — a write past the
+			// limits or short of a spare — off this path: they answer
+			// before the version is drawn. What remains is a failure of the
+			// medium itself, which no reservation can predict. Overturned
+			// by returning the version with the error, if the caller can
+			// then record the partial write.
 			return core.Version{}, done, err
 		}
 		if pl.N <= 0 {
@@ -118,31 +192,36 @@ func (c *Core) appendAndPublish(s *Share, id core.FileID, off int64, p []byte, m
 			// this loop append the same rest forever.
 			return core.Version{}, done, fmt.Errorf("datapath: the stream placed no byte of a %d-byte piece of file %v at offset %d", len(rest), id, off+done)
 		}
+		// The record is in its segment and counted as the share's: its
+		// own record size — the header, body and padding it occupies —
+		// is what the reservation held for it, and this hands it over,
+		// so ReservedBytes never covers a record the share already
+		// counts and never misses one still landing.
+		grant.Wrote(pl.Loc.Len)
 		if c.afterAppend != nil {
 			c.afterAppend()
 		}
-		// decision: the index may refuse a publish after its record is in
-		// the segment. The tag check above refuses a file another share owns
-		// before a version is drawn, and the file's tag cannot change while
-		// this call holds the file's append domain — only the claim that
-		// publishes under this same domain writes a tag, and it holds the
-		// domain from its check to its publish — so a tag refusal here needs
-		// another tag to claim the file inside WriteRetain itself, without the
-		// domain: no path does that today, and a path that did would be the
-		// fault shape the rival mark exists for, reached only by a bug. The
-		// live case is the entry bound, which no earlier check holds.
-		//
-		// The tag has the same hole: a refusal at WriteRetain's admission
-		// returns before its update applies, so the claim that names the
-		// record is never made — the record sits in its segment under this
-		// handle's tag while the file stays untagged and un-noted, so another
-		// share's next write can claim the file and leave its records, on
-		// disk, under two tags a later rebuild reads as a conflict. Both
-		// holes close the same way, a capacity admission that refuses before
-		// the version is drawn. Until then the caller gets the error and the
-		// record stays on disk, never published by this run. Overturned by a
-		// check of the entry bound before the draw, which would leave this
-		// refusal with no reachable case at all.
+		// decision: the index may still refuse a publish after its record
+		// is in the segment. The tag check above refuses a file another
+		// share owns before a version is drawn, and the file's tag cannot
+		// change while this call holds the file's append domain — only the
+		// claim that publishes under this same domain writes a tag, and it
+		// holds the domain from its check to its publish — so a tag refusal
+		// here needs another tag to claim the file inside WriteRetain
+		// itself, without the domain: no path does that today, and a path
+		// that did would be the fault shape the rival mark exists for,
+		// reached only by a bug. The entry bound, likewise, is checked
+		// before the draw — the admission's CheckWrite above — so a
+		// refusal here needs the window between that check and this
+		// publish, which a concurrent write's own admission can pass in:
+		// the admission of each runs before its version is drawn, and
+		// neither reserves the bound its record heads for until its
+		// publish. The caller gets the error and the record stays on
+		// disk, never published by this run. The refusals arrived over
+		// the admission are checked there, before any version is drawn;
+		// what is left here is the window no pre-check closes, and a
+		// refusal in it is overturn evidence for a bound the admission
+		// reserves as its own.
 		hd, err := c.index.WriteRetain(s.Tag, id, index.Placed{
 			Extent:  core.Extent{Off: off + done, Len: pl.N},
 			Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},

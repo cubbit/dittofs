@@ -196,14 +196,14 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the index entry bound refusing writes and splitting removals, MarkOffloaded, release and repack.'
+  reason: 'Needs Open: the index bound refusing writes before any I/O is built (capacity.Take checks CheckWrite first), the fixture cannot open a journal.'
   issue: '#3379'
   message: 'fixture:'
 - test: TestRFC1B_NamedRefusal
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs capacity refusals naming their limit and shortfall, release and repack.'
+  reason: 'Needs Open: refusals naming their limit and shortfall are built (capacity.Take through WriteAt), the fixture cannot open a journal.'
   issue: '#3379'
   message: 'fixture:'
 - test: TestRFC1B_NoDeadlock
@@ -315,7 +315,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs reservations atomic against the journal maximum, and the data path.'
+  reason: 'Needs Open: the atomic reservation is built (capacity.Take through WriteAt), the fixture cannot open a journal.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestRFC1B_ReserveAhead
@@ -336,7 +336,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs share limits and per-share accounting rebuilt at open.'
+  reason: 'Needs Open: the share limit gate is built (capacity.Take through WriteAt), the fixture cannot open a journal.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestRFC1B_StorageReturned

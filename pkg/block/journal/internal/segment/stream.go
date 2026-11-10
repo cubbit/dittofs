@@ -1261,6 +1261,35 @@ func (s *Stream) leaveDrain() {
 // or every later append of the process parks with it.
 var appendParkHook func()
 
+// Room returns the payload bytes the active segment can still take, the same
+// figure the stream's own fit test draws for one more record: the cap less the
+// bytes the records took and the header before them, less the seal's reserve
+// over all the records the segment holds — this one included, were it appended
+// — rounded down to the 8-byte record grid, less a record's own header and body
+// bytes. Zero when the stream holds no active segment or nothing more fits;
+// never negative.
+//
+// The read takes appendMu briefly and makes no I/O, so it costs only the
+// lock — the segment-append domain, which ranks below the capacity domain
+// in the lock order, so the journal's admission may call this while its
+// own section is held. It is the room an append measured from this
+// snapshot either fills or rolls past, never exceeds: what it reports is a
+// ceiling the appends keep under the same lock.
+func (s *Stream) Room() int64 {
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
+	if s.id == 0 || s.sealState != sealOpen {
+		return 0
+	}
+	// The charge for one more write record, drawn exactly as the append's
+	// own fit test draws it: the seal's reserve counts the record's footer
+	// entry, the remainder is floored to the record's 8-byte grid, and the
+	// record costs its header and the write kind's own body bytes.
+	room := ((s.set.cap - s.next - sealRoom(s.count+1)) &^ 7) -
+		(int64(format.RecordHeaderSize) + format.RecordHeader{Kind: format.KindWrite}.BodySize())
+	return max(room, 0)
+}
+
 // rollSettle settles the roll whose gate the caller armed: the gate is
 // lifted and the parked appends woken. The caller holds appendMu; the
 // waiters hold no lock while they park, so the channel's close under it is
