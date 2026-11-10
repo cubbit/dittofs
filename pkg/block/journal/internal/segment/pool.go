@@ -110,7 +110,7 @@ type Pool struct {
 	mu         sync.Mutex
 	ready      [Reserve + 1][]core.SegmentID // the ready spares per class, FIFO; guarded by mu
 	held       int                           // spares owed to open holds; guarded by mu
-	pending    int                           // the largest shortfall a refused Hold still asks, a level not a sum; guarded by mu
+	pending    int                           // the largest ask of a refused Hold the refill has not yet made up, a level not a sum; guarded by mu
 	incoming   [Reserve + 1]int              // recycles in flight, reserved per class; guarded by mu
 	started    bool                          // guarded by mu
 	stopped    bool                          // guarded by mu
@@ -325,20 +325,23 @@ func (p *Pool) Hold(n int) (*Hold, error) {
 		return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: int64(n), Unit: core.UnitSegments}
 	}
 	// The spare refusal is the one that clears on its own: a Hold that falls
-	// short records its shortfall as the demand the refill makes up, so the
+	// short records its ask as the demand the refill makes up, so the
 	// retry finds it served. Held spares ride above the content target
 	// rather than inside it — the target exists so every stream can roll
 	// once without waiting for a spare — so the refill is what keeps an open
 	// reservation from consuming the spares the unreserved rolls need.
 	//
-	// The demand is a level, the largest shortfall one refused ask still
-	// wants, never a running sum: the same hold refused ten times before a
-	// make lands is one shortfall of one spare, and summing the refusals
-	// would make ten spares that then sit above the target for good. A
-	// second, smaller ask rides inside a larger outstanding one, so the
-	// level is the max. A served Hold clears the level: the ask that made
-	// it found its spares, and whatever demand another hold still holds is
-	// re-recorded by its own next refused retry, which is the loop the
+	// The demand is a level, the largest ask a refused Hold made, never a
+	// running sum: the same hold refused ten times before a make lands is
+	// one ask, and summing the refusals would make spares that then sit
+	// above the target for good. A second, smaller ask rides inside a larger
+	// outstanding one, so the level is the max. The level records the ask,
+	// not the shortfall: the ask is what a retry needs free beside the open
+	// holds, whatever lands or is taken meanwhile, so the refill's goal reads
+	// it against the live ready and held counts and each landed spare closes
+	// the gap by exactly one. A served Hold clears the level: the ask that
+	// made it found its spares, and whatever demand another hold still holds
+	// is re-recorded by its own next refused retry, which is the loop the
 	// level exists to serve.
 	ready := int64(len(p.ready[Content]))
 	if ready-int64(p.held) < int64(n) {
@@ -348,8 +351,8 @@ func (p *Pool) Hold(n int) (*Hold, error) {
 			// blames a shortage past the hold it refuses: capped at n.
 			missing = int64(n)
 		}
-		if int(missing) > p.pending {
-			p.pending = int(missing)
+		if n > p.pending {
+			p.pending = n
 		}
 		p.mu.Unlock()
 		return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: missing, Unit: core.UnitSegments}
@@ -496,10 +499,10 @@ func (p *Pool) wantRecycle() (Class, bool) {
 	case len(p.ready[Reserve])+p.incoming[Reserve] < p.t.Reserve:
 		p.incoming[Reserve]++
 		return Reserve, true
-	case len(p.ready[Content])+p.incoming[Content] < p.t.Content+p.held+p.pending:
-		// Content counts what holds demand and what a refused Hold asked
-		// above the target, exactly as the refill does: a recycle filling a
-		// slot is worth what a made spare in it is.
+	case len(p.ready[Content])+p.incoming[Content] < p.contentGoalLocked():
+		// Content counts what holds demand and what a refused Hold asked,
+		// exactly as the refill does: a recycle filling a slot is worth what
+		// a made spare in it is.
 		p.incoming[Content]++
 		return Content, true
 	}
@@ -508,20 +511,17 @@ func (p *Pool) wantRecycle() (Class, bool) {
 
 // recycled puts a recycled spare — already in the ledger as a spare under its
 // fresh id — into class c, spending the reservation wantRecycle took, worth
-// what a made spare in the class is: the content class pays the demand level
-// down by the same clamped one a made content spare pays, so a refusal the
-// recycle served is not served a second time. After Stop it is still
+// what a made spare in the class is: a content spare that makes up the
+// demand level clears it, as a made one does, so a refusal the recycle
+// served is not served a second time. After Stop it is still
 // appended, accounted and on disk, as refill's own made spare is: the next
 // open re-adopts it.
 func (p *Pool) recycled(id core.SegmentID, c Class) {
 	p.mu.Lock()
 	p.incoming[c]--
 	p.ready[c] = append(p.ready[c], id)
-	// The clamp and the ceiling are refill's own: a landed content spare
-	// above the target and the open holds pays one unit of demand, and only
-	// while a level stands.
-	if c == Content && p.pending > 0 && len(p.ready[Content]) > p.t.Content+p.held {
-		p.pending--
+	if c == Content {
+		p.settleDemandLocked()
 	}
 	p.mu.Unlock()
 }
@@ -836,7 +836,7 @@ func (p *Pool) refill() bool {
 			c = Headroom
 		case len(p.ready[Reserve])+p.incoming[Reserve] < p.t.Reserve:
 			c = Reserve
-		case len(p.ready[Content])+p.incoming[Content] < p.t.Content+p.held+p.pending:
+		case len(p.ready[Content])+p.incoming[Content] < p.contentGoalLocked():
 			// Content fills above its target by what holds demand and what a
 			// refused Hold asked: held spares are beside the target, not
 			// inside it. The recycles in flight count too: the worker makes
@@ -935,18 +935,33 @@ func (p *Pool) refill() bool {
 			return true
 		}
 		p.ready[c] = append(p.ready[c], id)
-		// The level is clamped at zero: a spare above the target and every
-		// open hold's demand pays the level down by one, but only while a
-		// level stands. A make the level drew lands after the hold that
-		// raised it closed — Close lowering held under it — and that spare
-		// is the target's own need, not spent demand; paying the level for
-		// it would run the level negative and leave the pool filling one
-		// spare below its target until something else touched the level.
-		if c == Content && p.pending > 0 && len(p.ready[Content]) > p.t.Content+p.held {
-			p.pending--
+		if c == Content {
+			p.settleDemandLocked()
 		}
 		p.deviceFull = false
 		p.mu.Unlock()
+	}
+}
+
+// contentGoalLocked is the ready and incoming content spares the refill
+// keeps: every open hold's spares beside the target, and, while a refused
+// Hold's ask stands above the target, that ask in its place, so the retry
+// finds the ask free beside the holds. The goal reads the live ready and held
+// counts against a level that does not move as spares land, so each landed
+// spare closes the gap by exactly one. The caller holds mu.
+func (p *Pool) contentGoalLocked() int {
+	return p.held + max(p.t.Content, p.pending)
+}
+
+// settleDemandLocked clears the demand level once the ready content spares
+// hold the refused ask free beside the open holds: the refill has made it up,
+// and the retry that finds it served clears it too. The level is cleared only
+// then, never paid down per spare, so the goal does not fall while the ready
+// count rises. A retry that a take beat to those spares is refused again and
+// records its ask anew. The caller holds mu.
+func (p *Pool) settleDemandLocked() {
+	if p.pending > 0 && len(p.ready[Content]) >= p.held+p.pending {
+		p.pending = 0
 	}
 }
 

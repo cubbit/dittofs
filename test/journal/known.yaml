@@ -92,9 +92,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on its first write. A write that needs more than one spare above the pool''s content target is refused naming the spare limit for ever: the pool''s demand level is lowered by each landed spare while the ready count rises, so the goal is met one spare short. Needs the pool''s demand accounting fixed.'
+  reason: 'The journal opens; the check fails on a stub call. Needs sync, offload and release.'
   issue: '#3379'
-  message: 'refused for want of a spare; the journal never made one'
+  message: 'stub: Sync'
 
 - test: TestRFC1A_OfferedBytesVerified
   status: fail
@@ -148,9 +148,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on its first write. A write that needs more than one spare above the pool''s content target is refused naming the spare limit for ever: the pool''s demand level is lowered by each landed spare while the ready count rises, so the goal is met one spare short. Needs the pool''s demand accounting fixed.'
+  reason: 'The journal opens; the check fails on a stub call. Needs offload marks, offload and release.'
   issue: '#3379'
-  message: 'refused for want of a spare; the journal never made one'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1A_WriteDuringOffload
   status: fail
@@ -1994,9 +1994,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on its first write. Its concurrent writers each hold a spare out of the pool''s few content spares and its WriteAt does not retry a spare refusal, so a writer is refused naming the spare limit. Needs the check to retry that refusal as the fixture''s other writers do.'
+  reason: 'The journal opens; the check fails on a stub call. Needs WriteAt and Sync counted.'
   issue: '#3378'
-  message: 'refused by the spare limit'
+  message: 'stub: WriteAt/Sync'
 
 - test: TestRFC1A_CarriedReleaseKeepsItsSequence
   status: fail
@@ -2122,9 +2122,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on its first write. A write that needs more than one spare above the pool''s content target is refused naming the spare limit for ever: the pool''s demand level is lowered by each landed spare while the ready count rises, so the goal is met one spare short. Needs the pool''s demand accounting fixed.'
+  reason: 'The journal opens; the check fails on a stub call. Needs offload marks, offload and release.'
   issue: '#3379'
-  message: 'refused for want of a spare; the journal never made one'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1A_RepackVerifiesWholeSource
   status: fail
