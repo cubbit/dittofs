@@ -89,11 +89,33 @@ func readUntouched(t *testing.T, c *Core, s *Share, f core.FileID, off int64, si
 	}
 }
 
+// lossOf waits for the one loss event naming f that the durability layer's
+// worker publishes after a read's drop, and returns it.
+func lossOf(t *testing.T, c *Core, f core.FileID) core.LossEvent {
+	t.Helper()
+	var evs []core.LossEvent
+	eventually(t, "the loss event of the read's drop", func() bool {
+		evs = evs[:0]
+		for _, ev := range c.Durability().Stats().Losses {
+			if ev.File == f {
+				evs = append(evs, ev)
+			}
+		}
+		return len(evs) > 0
+	})
+	if len(evs) != 1 {
+		t.Fatalf("loss events naming %v: %+v, want one", f, evs)
+	}
+	return evs[0]
+}
+
 func TestReadByteFlippedAtRecordEndServesNothing(t *testing.T) {
 	c, seam := newTestCore(t, func(o *coreOptions) { o.segmentCap = 4 << 20 })
-	s := mustShare(t, c, 1)
+	// A tag of its own, so a loss that names no share shows.
+	s := mustShare(t, c, 3)
 	f := testFile(1)
-	if _, err := c.WriteAt(context.Background(), s, f, 0, pattern(1<<20, 5), 1); err != nil {
+	v, err := c.WriteAt(context.Background(), s, f, 0, pattern(1<<20, 5), 1)
+	if err != nil {
 		t.Fatal(err)
 	}
 	syncFiles(t, c, f)
@@ -108,6 +130,61 @@ func TestReadByteFlippedAtRecordEndServesNothing(t *testing.T) {
 	readUntouched(t, c, s, f, 0, 4<<10, []core.Extent{{Off: 0, Len: 4 << 10}})
 	if _, ok := c.Index().Lookup(f, 0); ok {
 		t.Fatal("the record that does not verify is still held: Corrupt did not drop it")
+	}
+	// The ledger no longer holds the synced record, so the loss is named from
+	// its header: the share, the version, the whole extent the record held.
+	want := core.LossEvent{Share: 3, File: f, Extent: core.Extent{Off: 0, Len: 1 << 20}, Version: v, Reason: core.LossCorrupt, Synced: true}
+	if ev := lossOf(t, c, f); ev.Share != want.Share || ev.Extent != want.Extent || ev.Version != want.Version || ev.Reason != want.Reason || !ev.Synced {
+		t.Fatalf("loss = %+v, want %+v", ev, want)
+	}
+}
+
+// TestReadDropOfUnsyncedRecordServesWhatItSuperseded drops a record the
+// ledger still holds, so the Corruption is named from the ledger. The read
+// that found it reports its extent missing; the older write it superseded is
+// held again over the dropped record's extent, so the next read serves it;
+// and the loss names the share, the extent and an unsynced record.
+func TestReadDropOfUnsyncedRecordServesWhatItSuperseded(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 3)
+	f := testFile(1)
+	older, newer := pattern(4<<10, 18), pattern(4<<10, 19)
+	v1, err := c.WriteAt(context.Background(), s, f, 0, older, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncFiles(t, c, f)
+	hold := seam.Hold(t, kit.OpSync, "*")
+	v2, err := c.WriteAt(context.Background(), s, f, 0, newer, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupted := recordOf(t, c, f, 0)
+	if corrupted.Version != v2 {
+		t.Fatalf("the index names %+v, want the newer write", corrupted)
+	}
+	if _, ok := c.Durability().Tracked(f, corrupted.Record); !ok {
+		t.Fatal("the ledger does not hold the unsynced record")
+	}
+	flip(t, seam, corrupted.Record.Segment, payloadStart(corrupted.Record)+10)
+
+	readUntouched(t, c, s, f, 0, 4<<10, []core.Extent{{Off: 0, Len: 4 << 10}})
+
+	p := sentinels(4 << 10)
+	n, missing, held, _, err := c.ReadAt(context.Background(), s, f, 0, p)
+	if err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	want := []core.Held{{Extent: core.Extent{Off: 0, Len: 4 << 10}, Version: v1}}
+	if n != 4<<10 || len(missing) != 0 || !slices.Equal(held, want) || !bytes.Equal(p, older) {
+		t.Fatalf("n = %d missing %v held %v, older bytes %v: want the superseded write served", n, missing, held, bytes.Equal(p, older))
+	}
+	// The loss record is appended and synced on the worker, so the sync is let
+	// go before its event is awaited.
+	hold.Release()
+	ev := lossOf(t, c, f)
+	if ev.Share != 3 || ev.Extent != (core.Extent{Off: 0, Len: 4 << 10}) || ev.Version != v2 || ev.Reason != core.LossCorrupt || ev.Synced {
+		t.Fatalf("loss = %+v, want share 3, extent [0,4096), version %v, corrupt, unsynced", ev, v2)
 	}
 }
 
