@@ -11,8 +11,8 @@
 **Depends on:** nothing in this programme: `pkg/vfs`, `vfstest.Null` and `vfstest.Record`
 exist on `feat/storage-v2`. The surface is written against RFC 20 as the review follow-ups
 leave it (#3892 and #3903: a drain's refusal answered over SMB by an interim with no final,
-a single-reply compound judged whole while draining), so their backport to
-`feat/storage-v2` (#3905) lands first.
+a single-reply compound judged whole while draining), as RFC 20 now stands on
+`feat/storage-v2`.
 **Blocks:** every later epic. E2 builds `testproto` against the surface frozen here; E3, E4,
 E5 and E6 fill its bodies; E7 wires it into the node.
 
@@ -122,8 +122,8 @@ two `New`); `pkg/resources`' signatures; `core`'s §4.7 surface with stub bodies
    ceiling and the upgrade path. A `decision:` marker records deliberate behaviour, naming the
    rule, why it holds and the evidence that would overturn it. RFC 20's notes go at their code
    sites: no attribute cache, parked requests off the hold floor, `Addrs` live, `Pends` asked
-   only for a returned `ErrDelay`, a call in the service pending past the ceiling and the floor, context
-   and attribute reads served while draining, a `ponytail:` for the uncharged replay copies, a drain's refusal left unanswered, the expired
+   only for an error the service returned, a call in the service pending past the ceiling and the floor, context
+   and attribute reads served while draining, a `ponytail:` for the uncharged replay copies, a drain's refusal answered by an interim with no final, the expired
    credential running only releases, a `ponytail:` for the cancel record's 5 s, `unwrap` on the reader, the cap of 64, one goroutine per request,
    `sync.Pool` per class, no self-probe. `pkg/resources`'s missing turns, `Reclaim`, `ShareCap`
    and `Split` each carry a `ponytail:` naming RFC 24.
@@ -225,7 +225,7 @@ which epic owns the rest.
 | R35 | Three shapes: `config.Adapter`, and `config.NFS` and `config.SMB` embedding it; `config.Settings`, whose `NFS` and `SMB` values alone `Validate` and `RestartRequired` accept (anything else refused with an error), `AdapterOf` reading the embedded `Adapter`, and `Validate` (D15) | MUST | §3.4, §3.6 | T1.5 |
 | R36 | Every field is marked live or restart-only, as RFC 13's table classes it: a restart-only field carries the tag `restart:"true"`, a live one none (D6) | MUST | §2.5, §3.6; RFC 13 §5, Appendix B | T1.5 |
 | R37 | `config.Adapter.Addrs` holds the listen addresses the node supplies from the host's bootstrap and the addresses it took over, never from the settings record; it is live, with §3.6's `decision:` marker at the field | MUST | §3.6 (and decision); RFC 13 §2.2; rule 7 | T1.5 |
-| R38 | The adapter settings RFC 13 lists are fields with their stated defaults and marks: `adapter.drain_deadline` 90 s, `adapter.idle_timeout` 15 min, `adapter.write_deadline` 60 s, `adapter.handshake_deadline` 30 s, `adapter.frame_deadline` 30 s, operations switched off by name, all live; `adapters.nfs.tls` (`cert_file`, `key_file`, `client_ca`, `min_version` 1.3, `mode` `opportunistic` or `require`; off), live; `adapters.smb.dialects` (2.1 to 3.1.1), live. Not fields: `connection_limit` is node-wide, and the node hands each adapter its share (E4 enforces it, E7 hands it); `smb_pending_cap` and `smb_pending_deadline` are RFC 17's | MUST | RFC 13 Appendix B; RFC 20 §3.6, §4.2, §6.4 | T1.5 |
+| R38 | The adapter settings RFC 13 lists are fields with their stated defaults and marks: `adapter.drain_deadline` 90 s, `adapter.idle_timeout` 15 min, `adapter.write_deadline` 60 s, `adapter.handshake_deadline` 30 s, `adapter.frame_deadline` 30 s, operations switched off by name, all live; `adapters.nfs.tls` (`cert_file`, `key_file`, `client_ca`, `min_version` 1.3, `mode` `opportunistic` or `require`; off), live; `adapters.smb.dialects` (2.1 to 3.1.1), live; `smb_pending_cap` (10 min) and `smb_pending_deadline` (60 s), `config.SMB` fields, live, read by SMB's `Hold` closures from the live settings rather than the connection's snapshot (D27). Not a field: `connection_limit` is node-wide, and the node hands each adapter its share (E4 enforces it, E7 hands it) | MUST | RFC 13 Appendix B; RFC 20 §3.6, §4.2, §6.4 | T1.5 |
 | R39 | Every setting has a default stated in its RFC or is required; the code fills in no unreviewed default | MUST | RFC 13 §4.2 | T1.5 |
 | R40 | A value out of range or of the wrong type is refused with an error naming the field and the rule; never clamped, rounded or replaced by a default | MUST, MUST NOT | RFC 13 §6 | T1.5 |
 | R41 | The validator is the component's own, `Validate(s Settings) error`, run by `New`, by `Reconfigure` (E4) and by the control plane (E7, cutover), which has none of its own | MUST | RFC 13 §6; RFC 20 §3.6 | T1.5 |
@@ -268,7 +268,7 @@ which epic owns the rest.
 | R68 | `Request` exports `Call vfs.Call`, `Version`, `Level Needs`, `Conn *Conn`, `State any`, the rest unexported; `(*Request).Park(cancel func()) (done func(err error), err error)` (semantics: E5) | MUST | §4.7 | T1.7 |
 | R69 | `Conn` is opaque; a protocol reaches it only through `Send(h Header, msg *Buf, before uint64) error`, `Established()`, `Keep() (release func())`, `Settings() config.Settings` (D15), `Close(err error)` (bodies: E4, E5) | MUST | §4.7 | T1.7 |
 | R70 | `HoldCodec` is `{Key(h) uint64; Interim(h, grant bool, after []Header, out *Buf) error; Final(h, grant bool) Header; Cancels(h) (key uint64, ok bool); Pends(h, err error) bool}` | MUST | §4.7 | T1.7 |
-| R71 | `ErrParked` and core's refusals `ErrNotSupported`, `ErrVersion`, `ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree`, `ErrNoFH`, `ErrTooLong`, `ErrExpired`, `ErrNotLast`, `ErrTooManyPending`, `ErrMoved`, `ErrDraining` are distinct sentinels; `Errors() []error` (body: E5) | MUST | §4.7 | T1.7 |
+| R71 | `ErrParked` and core's refusals `ErrNotSupported`, `ErrVersion`, `ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree`, `ErrNoFH`, `ErrTooLong`, `ErrExpired`, `ErrNotLast`, `ErrTooManyPending`, `ErrMoved`, `ErrDraining` are distinct sentinels; `Errors() []error` (body: T1.7) | MUST | §4.7 | T1.7 |
 | R72 | `Dispatcher` is `{Dispatch(ctx, c *Conn, rec *Buf); Drain()}`, `ErrMoved` or `ErrDraining` decided per request (D16), the seam a connection's own tests stub | MUST | §4.7 | T1.7 |
 | R73 | `NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)`; `Listener{Network string; Port uint16; Protocol Protocol}`; `*Server` implements `adapter.Adapter` (bodies: E4) | MUST | §4.7, §3.4, §2.5 | T1.7 |
 | R74 | Nothing in `core`'s surface names a dialect; nothing is looked up later: no registry, no global, no service in a context value | invariant | §4.7 | T1.7 |
@@ -416,7 +416,11 @@ which epic owns the rest.
 - **D26, hold policy is a column of the error row.** `ErrorRow.Hold` returns a hold's deadline
   from each attempt's error and the hold's start, and `HoldCodec.Pends` takes the error, so a
   grace or unavailable error before the last chain member is covered too (R65, R70; RFC 20
-  §4.6). RFC 17's `vfs.Grace{Until}` gives a grace hold its bound (§9).
+  §4.6). RFC 17's `vfs.Grace{Until}` gives a grace hold its bound (§9). A deadline at or
+  before the attempt answers at once; `HoldCodec.Key` never returns 0.
+- **D27, a hold follows the live settings.** SMB's `Hold` closures read the adapter's live
+  `smb_pending_cap` and `smb_pending_deadline`, now `config.SMB` fields, not the connection's
+  snapshot; at arrival the clone-wait row's deadline is passed as `vfs.WithHold` (RFC 20 §4.6).
 
 ## 5. Target tree
 
@@ -424,7 +428,7 @@ which epic owns the rest.
 .github/workflows/tests.yml          T1.3  V2 filter + integration/kerberos; fixed kerberos step gone; GOOS vet cell (T1.7)
 test/required-tests.json             T1.3  two internal/vfs/admit gates
 test/suites.yaml                     T1.3  lint-go vet tags without kerberos
-docs/internals/rfcs/rfc-20-adapters.md  T1.9  S1 amendments (on feat/storage-v2, after #3905)
+docs/internals/rfcs/rfc-20-adapters.md  T1.9  S1 amendments (on feat/storage-v2)
 docs/internals/rfcs/rfc-24-resources.md T1.9
 docs/internals/rfcs/rfc-13-configuration.md T1.9  adapters.smb.dialects row
 docs/internals/rfcs/rfc-23-control-plane.md T1.9  re-enabled adapter built anew
@@ -465,11 +469,11 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
 
 **Subtask T1.9 estimate: 2.5 man-days.**
 
-- **Track:** the team. **Depends on:** the backports of #3892 and #3903 to `feat/storage-v2`
-  (#3905); runs beside T1.1–T1.3.
+- **Track:** the team. **Depends on:** RFC 20 as it stands on `feat/storage-v2`, with #3892 and
+  #3903's follow-ups; runs beside T1.1–T1.3.
 - **Covers:** R54 (no export §4.7 does not name), R25, R43, R53, R76; it makes R22–R24 and
   R35–R37 checkable.
-- **Deliverables:** one pull request to `feat/storage-v2`, stacked on #3905, amending RFC 20
+- **Deliverables:** one pull request to `feat/storage-v2` amending RFC 20
   (and RFC 24, RFC 13 and RFC 23 where named), settling each point the frozen surface cannot
   be written without:
   - D6's `restart:"true"` tags, `RestartRequired` and `ErrRestartRequired` in
@@ -638,7 +642,8 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
 - **Deliverables:** `config.go`: `Adapter`, `NFS`, `SMB` in the shape T1.9 settles; the
   RFC 13 adapter rows as fields with their defaults (`drain_deadline` 90 s, `idle_timeout`
   15 min, `write_deadline` 60 s, `handshake_deadline` 30 s, `frame_deadline` 30 s,
-  operations switched off by name, NFS's TLS block, SMB's dialect range; not the node's
+  operations switched off by name, NFS's TLS block, SMB's dialect range, `smb_pending_cap`
+  and `smb_pending_deadline`; not the node's
   connection limit, R38); `Addrs` with §3.6's `decision:` marker; the sealed `Settings`,
   `AdapterOf` and `Validate` (D15), run by `New`; `ErrRestartRequired` and `RestartRequired` with its `decision:`
   marker (D6). As RFC 20 §3.6 states: defaults are `default:"…"` tags read by the record
@@ -749,7 +754,7 @@ amended RFC, and `pkg/adapter` is recreated at the path the deletion frees.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T1.9 | 2.5 | — | the RFC amendment, this document and the revision of `rfc-20-adapters-plan.md`, on `feat/storage-v2` stacked on #3905; open beside PR 2 |
+| 1 | T1.9 | 2.5 | — | the RFC amendment, this document and the revision of `rfc-20-adapters-plan.md`, on `feat/storage-v2`; open beside PR 2 |
 | 2 | T1.1, T1.2, T1.3 | 6 | — | the deletion builds only as a whole, and CI must stop running what it deleted in the same change |
 | 3 | T1.6, T1.5, T1.4, T1.8, T1.7 | 7 | PR 1, PR 2 | the frozen surface, each package with its test; S1 when it merges |
 

@@ -1122,7 +1122,8 @@ type Adapter struct {
 }
 
 // NFS and SMB are each protocol's whole shape: the common part, and what
-// only that protocol reads (NFS's TLS, SMB's dialect range).
+// only that protocol reads (NFS's TLS; SMB's dialect range, smb_pending_cap
+// and smb_pending_deadline).
 type NFS struct {
 	Adapter
 	// …
@@ -1701,8 +1702,16 @@ it holds — the service counts nothing about holds:
   bounds are the protocol's ([RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)). It
   is a function because the settings behind it are live and a freeze's bound
   comes from the error itself (`Delay.Until`, a grace's end); it is on the row
-  so that policy and final status stay together and the totality test (§7.3)
-  covers both;
+  so that policy and final status stay together, and the totality test (§7.3)
+  covers both: it checks every error maps, and the table holds a `Hold` on
+  every row its protocol RFC holds. SMB's `New` builds each `Hold` as a closure
+  over the adapter's live settings, so a held request follows the latest
+  `smb_pending_cap` and `smb_pending_deadline`, not its connection's snapshot:
+  the one exception to a connection reading its settings once (§3.6);
+- at arrival, in a table that Holds, `core` evaluates the row that maps the
+  clone wait (`ErrDelay` of `DelayClone`) with the hold's start at now, and
+  passes that deadline as `vfs.WithHold`; a table with no such row passes no
+  `WithHold`;
 - a client `CANCEL` or a closed connection ends the hold, and for a waiting lock
   calls `CancelLock` before answering ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks));
 - every request pending on a connection, held past its interim or parked,
@@ -1716,6 +1725,11 @@ it holds — the service counts nothing about holds:
   on that interim and are granted in full. A drain's refusal, answered by an
   interim that no final follows (§4.7), holds nothing and counts toward
   neither the ceiling nor the floor.
+
+> decision: a held request's bound follows the adapter's live settings, not
+> its connection's snapshot. A hold outlives the settings change it straddles,
+> and the operator's new bound is the one that should apply. Overturn it if a
+> client is found that breaks when a held request's bound moves.
 
 > decision: a call the interim timer finds in the service goes pending past the
 > ceiling, and past the floor with the hold pool full, because answering it at
@@ -1985,7 +1999,8 @@ type ErrorRow struct {
 	// Hold, only in a table that Holds (NewOpTable refuses it elsewhere): a
 	// request whose latest attempt maps here is held and re-driven until the
 	// deadline Hold returns, counted from the hold's start, and is then
-	// answered Status. nil: answered Status at once.
+	// answered Status. A deadline at or before the attempt's time answers
+	// Status now, with no further attempt. nil: answered Status at once.
 	Hold     func(err error, start time.Time) time.Time
 	Status   Status
 }
@@ -2061,7 +2076,7 @@ encrypts the record once.
 A member before the last that the service answered an error whose row holds
 (an `ErrDelay`, a grace, an unavailable share), so applied nothing, is
 answered in one of two ways, as `HoldCodec.Pends` says for that error: at once, the runner replacing the
-`ErrDelay` with `ErrNotLast` before its table maps it, since a hold row's
+error with `ErrNotLast` before its table maps it, since a hold row's
 status speaks for a hold that will not happen, and the chain goes on; or pending, as the last member is, the
 replies before it and its interim going out as one chain and the members after
 it running once it has answered, their replies chained after its final one.
@@ -2219,7 +2234,7 @@ func (c *Conn) Close(err error)
 // connection's message-ID window passes the key if a client is found that
 // cancels that early.
 type HoldCodec interface {
-	Key(h Header) uint64
+	Key(h Header) uint64 // never 0, which Conn.Send's before uses for none: SMB maps MessageId 0 (NEGOTIATE) to a non-zero key
 	// Interim encodes STATUS_PENDING. It grants the request's credits if grant;
 	// if not (a call in the service past MaxPending, or past the hold floor
 	// with the hold pool full, §4.6), only what keeps the client's balance at

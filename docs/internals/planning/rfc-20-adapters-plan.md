@@ -273,7 +273,7 @@ and 5.
    ceiling and the upgrade path. A `decision:` marker records deliberate behaviour, naming the
    rule, why it holds and the evidence that would overturn it. RFC 20's notes go at their code
    sites: no attribute cache, parked requests off the hold floor, `Addrs` live, `Pends` asked
-   only for a returned `ErrDelay`, a call in the service pending past the ceiling and the floor, context
+   only for an error the service returned, a call in the service pending past the ceiling and the floor, context
    and attribute reads served while draining, a `ponytail:` for the uncharged replay copies, a drain's refusal answered by an interim with no final, the expired
    credential running only releases, a `ponytail:` for the cancel record's 5 s, `unwrap` on the reader, the cap of 64, one goroutine per request,
    `sync.Pool` per class, no self-probe. `pkg/resources`'s missing turns, `Reclaim`, `ShareCap`
@@ -474,7 +474,7 @@ deleted).
 - T1.7 `internal/adapter/core`'s surface, RFC 20 §4.7, with stub bodies; `Bind`'s body, with
   the test that its `Invocation` hands each closure the request it decoded; `ErrorRow.Hold`,
   `HoldCodec.Pends(h Header, err error) bool` and `Bind`'s decoder returning its length as
-  RFC 20 §4.7 states them; the `GOOS=windows`
+  RFC 20 §4.7 states them; `core.Errors()` with its real body; the `GOOS=windows`
   and `GOOS=darwin` vet cell for the adapter packages. 2.5 man-days.
 - T1.8 `pkg/adapter/nfs.New` and `pkg/adapter/smb.New` stubs, validating before they refuse.
   0.5 man-days.
@@ -615,7 +615,10 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   `HoldCodec` name (past the ceiling; past the floor with the hold pool full; cancelled; a chain
   member after members already answered), a cancel (`HoldCodec.Cancels`) and close ending a hold with no reply
   to the cancel, and a cancel that arrives first remembered; the write data's `Buf` kept across
-  re-drives; chain members held: RFC 20 §4.7. How long a request is held is its row's
+  re-drives; chain members held: RFC 20 §4.7. At arrival, in a table that holds, the
+  clone-wait row's `Hold` evaluated with the hold's start at now is passed as `vfs.WithHold`
+  (none where no row maps the clone wait); `Hold` closures read the live settings. How long a
+  request is held is its row's
   `ErrorRow.Hold`, evaluated on each attempt's error from the hold's start, and answered the
   row's status once it passes; `testproto`'s hold operation is given a row with a bound, and a
   row without `Hold` is answered at once; `Pends` asked with the error, a grace or unavailable
@@ -625,7 +628,7 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   other requests unharmed), trace span, metrics, deadline; order pinned by a test.
 - T5.7 `ErrorTable`: mapping by error, operations and version, `NewOpTable` refusing an
   `ErrorRow.Hold` in a table that does not hold, and `NoReply` (`Map`'s reply flag,
-  the reply reservation freed with no final reply, and on a table that holds an interim granting the request's credits); `core.Errors()`; `ReplayCache`'s own copy; a kind named by a typed value under `errors.Is` (RFC 17 §4.3; `vfserr` matches by kind from #3869), most specific row first in §4.7's total order; an unmapped
+  the reply reservation freed with no final reply, and on a table that holds an interim granting the request's credits); `ReplayCache`'s own copy; a kind named by a typed value under `errors.Is` (RFC 17 §4.3; `vfserr` matches by kind from #3869), most specific row first in §4.7's total order; an unmapped
   error answered server fault and counted; the totality check against `vfs.Errors()` as a
   helper each protocol's table will call.
 - T5.8 Request context: the 30 s deadline; cancellation on close and drain.

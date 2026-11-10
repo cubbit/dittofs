@@ -1415,7 +1415,12 @@ const (
 	DelayCommit                          // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6); or a stable write's sync may have lost it (§5.8)
 	DelayResources                       // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
 )
-```
+
+
+// Grace is ErrGrace's typed value.
+type Grace struct {
+	Until time.Time // when the shard's grace ends; a bound, not a kind, so not compared
+}```
 
 Each typed error matches, under `errors.Is`, its sentinel and any value of its
 own type with the same kind, so an adapter's error table
@@ -1423,7 +1428,8 @@ own type with the same kind, so an adapter's error table
 rather than only its sentinel. The kind of an `AccessError`, `QuotaError`,
 `StateError` or `CrossError` is every field it has, so a field added later
 joins it; a `Delay`'s is its `Cause` and `Moved`, since `Until` is a bound,
-not a kind, and is not compared. A zero kind matches only another zero one.
+not a kind, and is not compared. A `Grace` has no kind: `Until` is its only
+field, so every `Grace` matches `ErrGrace` and any other `Grace`. A zero kind matches only another zero one.
 
 `Cause` labels metrics and selects how long an adapter holds the request and
 its final status (§3.2). **A transient refusal never becomes `ErrNoSpace` because a
