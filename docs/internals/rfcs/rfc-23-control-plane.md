@@ -351,7 +351,7 @@ took the request.
 > path.
 
 > ponytail: the node both builds and drives its components. Split the builder
-> out when it gains dependencies a multi-node test cannot fake cheaply.
+> out when it gains dependencies a multi-node test cannot replace cheaply.
 
 **The node is never on the request path.** `New` hands each adapter a
 `vfs.Service` once, and an adapter's call goes to that service, never to the
@@ -1673,8 +1673,8 @@ Conventions are the index's ([Test tiers](rfc-index.md#Test%20tiers)). The tiers
 
 | Tier | What runs |
 | --- | --- |
-| unit | `*vfs.Filesystem` through `vfs.New`, with a fake engine and in-memory metadata, and no node |
-| unit | the gateway through `vfs.NewGateway`, with a fake `Router` and `Transport` |
+| unit | `*vfs.Filesystem` through `vfs.New`, with an in-memory `Content` that passes RFC 8's `Content` conformance suite and in-memory metadata, and no node |
+| unit | the gateway through `vfs.NewGateway`, with the router over an in-memory control-plane store and RFC 15's in-memory `Transport` |
 | integration | `*vfs.Filesystem` with the real engine and in-memory stores, without the node |
 | multi-node | two `node.New` over one in-memory control-plane store and a loopback `Transport`, driven by writes to the store, with fault injection: a lost reply, a duplicate send, a stale epoch |
 | e2e | the adapters |
