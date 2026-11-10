@@ -358,6 +358,7 @@ func (j *FakeJournal) Forget(_ context.Context, tag journal.ShareTag) error {
 	}
 
 	delete(j.held, tag)
+	delete(j.used, tag)
 
 	return nil
 }

@@ -192,6 +192,8 @@ type recJournal struct {
 	ev       *events
 	forgets  atomic.Int32 // the Forget calls
 
+	failForgets int // the next Forget calls that fail, guarded by mu
+
 	mu      sync.Mutex
 	floors  []journal.Version
 	handles []*recHandle
@@ -236,9 +238,23 @@ func (j *recJournal) Close() error {
 	return j.FakeJournal.Close()
 }
 
-// Forget counts the call.
+// Forget counts the call, records it, and fails it while failForgets is set.
 func (j *recJournal) Forget(ctx context.Context, tag journal.ShareTag) error {
 	j.forgets.Add(1)
+	j.ev.add(fmt.Sprintf("forget %d", tag))
+
+	j.mu.Lock()
+	fail := j.failForgets > 0
+
+	if fail {
+		j.failForgets--
+	}
+
+	j.mu.Unlock()
+
+	if fail {
+		return errInjected
+	}
 
 	return j.FakeJournal.Forget(ctx, tag)
 }
@@ -287,18 +303,34 @@ func (j *recJournal) raw(i int) engine.Handle {
 	return j.handles[i].Handle
 }
 
+// handle is the engine's view of the i-th handle the journal opened.
+func (j *recJournal) handle(i int) *recHandle {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	return j.handles[i]
+}
+
 // recHandle records its Close.
 type recHandle struct {
 	engine.Handle
 	closed   atomic.Bool
 	closeErr error
+	failNext atomic.Bool // the next Close fails without closing, as the journal's does
 	tag      journal.ShareTag
 	ev       *events
 }
 
 func (h *recHandle) Close() error {
-	h.closed.Store(true)
 	h.ev.add(fmt.Sprintf("handle close %d", h.tag))
+
+	if h.failNext.CompareAndSwap(true, false) {
+		return errInjected
+	}
+
+	h.closed.Store(true)
+
 	err := h.Handle.Close()
 
 	if h.closeErr != nil {

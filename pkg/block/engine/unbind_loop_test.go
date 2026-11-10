@@ -20,9 +20,14 @@ type loopItem struct {
 // post puts an item of kind on share s's loop. A held item stays in its run
 // until release is closed.
 func (u *unit) post(s entity.ShareID, kind entity.RemovalKind, held bool) *loopItem {
+	return u.postItem(s, kind, held, false)
+}
+
+// postItem is post, the item asking to run again after its run when retry.
+func (u *unit) postItem(s entity.ShareID, kind entity.RemovalKind, held, retry bool) *loopItem {
 	it := &loopItem{entered: make(chan struct{}), release: make(chan struct{})}
 
-	u.e.EnqueueKind(s, kind, func(context.Context) {
+	u.e.EnqueueKind(s, kind, retry, func(context.Context) {
 		it.ran.Add(1)
 		close(it.entered)
 

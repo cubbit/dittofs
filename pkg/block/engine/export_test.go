@@ -619,57 +619,17 @@ func (e *Engine) CommitAll(ctx context.Context, j Journal) error {
 }
 
 // DropShare takes share s's files off the due set of journal j and its
-// items off the journal's removal loop, ending each, as Drop will, and
+// items off the journal's removal loop, ending each, as Drop does, and
 // returns once no batch is in flight there, so none of them is committed
 // after.
 func (e *Engine) DropShare(ctx context.Context, j Journal, s entity.ShareID) error {
 	g := e.groupCommitFor(j)
-	g.removals.dropShare(s)
-	for {
-		g.mu.Lock()
-		for f, d := range g.due {
-			if d.b.share.ID == s {
-				delete(g.due, f)
-				g.clearFailingLocked(f)
-			}
-		}
-		inFlight, returned := g.inFlight && !g.closed, g.returned
-		g.mu.Unlock()
-		if !inFlight {
-			return nil
-		}
-		select {
-		case <-returned:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
 
-// dropShare takes share s's items off the loop, ending each; one running
-// now is ended when its run returns, and none of the share's is enqueued
-// after.
-func (l *removalLoop) dropShare(s entity.ShareID) {
-	l.mu.Lock()
-	if l.dropped == nil {
-		l.dropped = map[entity.ShareID]bool{}
-	}
-	l.dropped[s] = true
-	var dropped []*loopItem
-	l.items = slices.DeleteFunc(l.items, func(it *loopItem) bool {
-		if it.b.share.ID == s {
-			dropped = append(dropped, it)
-			return true
-		}
-		return false
-	})
-	l.mu.Unlock()
-	for _, it := range dropped {
-		l.unstall(it)
-		if it.end != nil {
-			it.end()
-		}
-	}
+	g.removals.dropShare(s)
+
+	_, err := g.takeDue(ctx, s)
+
+	return err
 }
 
 // EntryLocked reports whether f's entry lock is held: a probe that takes and
@@ -790,11 +750,12 @@ func (e *Engine) LifecycleLockFree() bool {
 }
 
 // EnqueueKind posts an item of kind on share s's removal loop, even when the
-// share refuses calls, that calls run and then ends; end is called if the
-// item is ended without running.
+// share refuses calls, that calls run and then finishes, or, with retry, asks
+// to run again; end is called if the item is ended before it finished.
 func (e *Engine) EnqueueKind(
 	s entity.ShareID,
 	kind entity.RemovalKind,
+	retry bool,
 	run func(ctx context.Context),
 	end func(),
 ) {
@@ -806,6 +767,10 @@ func (e *Engine) EnqueueKind(
 		kind: kind,
 		run: func(ctx context.Context) answer {
 			run(ctx)
+
+			if retry {
+				return itemRetry
+			}
 
 			return itemDone
 		},

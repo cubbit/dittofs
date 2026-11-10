@@ -35,6 +35,7 @@ type binding struct {
 	gc          *groupCommit  // the group commit of j
 	removed     bool
 	gate        gate
+	files       []entity.FileID // the files Drop took off the loops and has not settled
 	seq         uint64 // the order bindings were made in, which Close undoes in reverse
 }
 

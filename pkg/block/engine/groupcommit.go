@@ -263,6 +263,45 @@ func (g *groupCommit) halt(b *stopBound) bool {
 	return true
 }
 
+// takeDue takes every file of share s off the due set, clearing the failure
+// that backed it off, and waits until no batch is in flight, so no later batch
+// captures one of them. It answers the files it took, and ctx's error if ctx
+// ends first. A batch that gave a file back as due is waited for again.
+func (g *groupCommit) takeDue(ctx context.Context, s entity.ShareID) ([]entity.FileID, error) {
+	var files []entity.FileID
+
+	for {
+		g.mu.Lock()
+
+		for f, d := range g.due {
+			if d.b.share.ID == s {
+				delete(g.due, f)
+				g.clearFailingLocked(f)
+
+				files = append(files, f)
+			}
+		}
+
+		inFlight, returned := g.inFlight && !g.closed, g.returned
+
+		g.mu.Unlock()
+
+		if !inFlight {
+			return files, nil
+		}
+
+		if f := g.e.seams.joining.Load(); f != nil {
+			(*f)(whatGroupBatch)
+		}
+
+		select {
+		case <-returned:
+		case <-ctx.Done():
+			return files, ctx.Err()
+		}
+	}
+}
+
 // commitAll commits the pending existence of every file of the journal that
 // no removal guards, in as many batches as it takes, and reports false when
 // the bound ended first. A file whose guard is held is left out: with the

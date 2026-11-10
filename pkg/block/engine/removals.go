@@ -74,11 +74,6 @@ type removalLoop struct {
 	items  []*loopItem
 	closed bool
 	ending []*loopItem // the items the stop took, ended once the loop's goroutine has
-	// decision: only a test helper sets dropped, until Drop is built, so the
-	// branches that read it end a dropped share's items for tests alone.
-	// They are the shape Drop needs: Drop sets it, and the helper goes,
-	// once built. Delete the field and its branches if Drop ends a share's
-	// items some other way.
 	dropped map[entity.ShareID]bool  // shares dropped: an item of one, running or enqueued, is ended
 	waits   map[*loopItem]bool       // items waiting outside the loop, removal_stalled: see waiting
 	running *loopItem                // the item the loop is running, nil between two
@@ -328,6 +323,51 @@ func (l *removalLoop) halt(b *stopBound) bool {
 			it.end()
 		}
 	}
+}
+
+// dropShare ends everything the loop holds for share s, and answers the files
+// of the items it ended. An item of the share the loop runs now is ended when
+// its run returns, and none of the share's is enqueued after: a share that
+// was dropped runs nothing again. It clears the removal_stalled each ended
+// item raised.
+func (l *removalLoop) dropShare(s entity.ShareID) (files []entity.FileID) {
+	l.mu.Lock()
+
+	if l.dropped == nil {
+		l.dropped = map[entity.ShareID]bool{}
+	}
+
+	l.dropped[s] = true
+
+	var ended []*loopItem
+
+	l.items = slices.DeleteFunc(l.items, func(it *loopItem) bool {
+		if it.b.share.ID == s {
+			ended = append(ended, it)
+
+			return true
+		}
+
+		return false
+	})
+
+	if l.running != nil && l.running.b.share.ID == s {
+		files = append(files, l.running.f)
+	}
+
+	l.mu.Unlock()
+
+	for _, it := range ended {
+		files = append(files, it.f)
+
+		l.unstall(it)
+
+		if it.end != nil {
+			it.end()
+		}
+	}
+
+	return files
 }
 
 // isDropped reports whether share s was dropped: nothing of it is noted for

@@ -23,6 +23,7 @@ const shutBit = 1 << 62
 const (
 	whatWorkInFlight = "work in flight"
 	whatRemovalBatch = "a removal batch"
+	whatGroupBatch   = "a group commit batch"
 )
 
 // enter admits one unit, and reports false once the gate is shut. A single
@@ -67,6 +68,11 @@ func (g *gate) shut() {
 
 	g.mu.Unlock()
 	g.st.Or(shutBit)
+}
+
+// drained reports whether the gate is shut and holds no unit.
+func (g *gate) drained() bool {
+	return g.st.Load() == shutBit
 }
 
 // isShut reports whether the gate is shut, without a lock.
