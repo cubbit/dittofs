@@ -1102,6 +1102,15 @@ and the change, evaluated through the chokepoint ([§4.6](#4.6%20One%20chokepoin
 at delivery. A recursive watch never reports names below a directory its holder
 cannot enter.
 
+**A watch's changes arrive in the order they committed.** `Notify` hands a
+client the changes of one watch in the order their operations committed in the
+watched directory, one delivery after another, never two at once: SMB's
+CHANGE_NOTIFY reports changes in the order they occurred
+([MS-FSA 2.1.5.10](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/)), and a
+create followed by a delete reported the other way round leaves a client
+believing the name exists. A slow client holds back its own later changes, not
+another client's.
+
 ### 3.3 Event hooks
 
 ```go
