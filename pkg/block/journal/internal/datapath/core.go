@@ -299,18 +299,19 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// by the set the State carries, so a State that rebuilds a set of
 	// another size must have its admission agree with what its streams do.
 	c.cap = capacity.New(capacity.Config{
-		Admit:        d.Admit,
-		CheckIndex:   state.Index.CheckWrite,
-		VersionsLeft: state.Counters.VersionsLeft,
-		Footprint:    func() (used int64) { return state.Set.Counters().UsedBytes },
-		ShareFigures: state.Set.ShareBytesAndRetired,
-		Room:         func(stream int) int64 { return c.streams.Stream(stream).Room() },
-		ReadySpares:  c.pool.ReadyContent,
-		Hold:         c.pool.Hold,
-		BelowHalf:    c.headroom.BelowHalf,
-		Tracer:       deps.Tracer,
-		MaxBytes:     maxBytes,
-		SegmentCap:   state.Set.Cap(),
+		Admit:          d.Admit,
+		CheckIndex:     state.Index.CheckWrite,
+		CheckFillIndex: state.Index.CheckFillIndexBound,
+		VersionsLeft:   state.Counters.VersionsLeft,
+		Footprint:      func() (used int64) { return state.Set.Counters().UsedBytes },
+		ShareFigures:   state.Set.ShareBytesAndRetired,
+		Room:           func(stream int) int64 { return c.streams.Stream(stream).Room() },
+		ReadySpares:    c.pool.ReadyContent,
+		Hold:           c.pool.Hold,
+		BelowHalf:      c.headroom.BelowHalf,
+		Tracer:         deps.Tracer,
+		MaxBytes:       maxBytes,
+		SegmentCap:     state.Set.Cap(),
 	})
 	c.streams = segment.NewStreams(deps.Streams, deps.Identity, state.Set, c.pool, c.cache, d.Sink)
 

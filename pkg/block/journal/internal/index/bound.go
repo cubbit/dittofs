@@ -187,6 +187,32 @@ func (fs *files) checkFill(tag core.ShareTag, id core.FileID, asOf core.Version,
 	return nil
 }
 
+// checkFillIndexBound predicts a fill of e against the index's bound alone,
+// the one piece CheckFill needs beside the tag and staleness checks the
+// caller owns: it asks the same entry figure fillAdds draws — the gaps as a
+// fill at no version would hold, every marker above it — so the bound it
+// predicts can never name fewer entries than the fill a checked caller goes
+// on to admit, and a passing fill is never refused the wiring's own check
+// did not foresee. It takes the file's read lock, claims nothing and creates
+// no entry, exactly as FillGaps and checkFill do.
+//
+// decision: the wiring that predicts a fill before it has resolved its
+// version — the admission the capacity gate runs — runs this tag-free bound
+// alone, so a file another share owns or a fill a later change stays is
+// caught by the fill's own checks where the tag and the asOf live, not here.
+// Overturned by a wiring that supplies both the tag and the version at
+// admission time, which should call CheckFill instead.
+func (ix *Index) CheckFillIndexBound(id core.FileID, e core.Extent) error {
+	var n int64
+	ix.fs.view(id, func(f *file) { n = f.fillAdds(Placed{Extent: e}) })
+	c, limit := ix.fs.count.Load(), ix.fs.limit.Load()
+	if c+max(n, 0) > limit {
+		ix.fs.refusals.Add(1)
+		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(n, 1) - limit, Unit: core.UnitEntries}
+	}
+	return nil
+}
+
 // fillGapExtents rebuilds the caller's gaps as they stand against the file's
 // current content, in a fresh slice: the parts of them nothing held covers.
 // The caller holds the file's lock. A caller that passed the gaps of an older

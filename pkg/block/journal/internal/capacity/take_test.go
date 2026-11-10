@@ -169,9 +169,10 @@ func newRig(t *testing.T, o rigOpts) *rig {
 			r.checks.Add(1)
 			return r.idx.CheckWrite(f, e)
 		},
-		VersionsLeft: r.ctr.VersionsLeft,
-		Footprint:    func() int64 { return r.set.Counters().UsedBytes },
-		ShareFigures: r.set.ShareBytesAndRetired,
+		CheckFillIndex: r.idx.CheckFillIndexBound,
+		VersionsLeft:   r.ctr.VersionsLeft,
+		Footprint:      func() int64 { return r.set.Counters().UsedBytes },
+		ShareFigures:   r.set.ShareBytesAndRetired,
 		Room: func(stream int) int64 {
 			// Take must hold its own section when this runs: a caller
 			// snapshotting the room before the section could take the
@@ -400,6 +401,61 @@ func (r *rig) refused(t *testing.T, rq Request, want core.Limit) *core.NoSpaceEr
 		t.Fatalf("after the refusal by %s, ReservedBytes = %d, want 0", ns.Limit, got)
 	}
 	return ns
+}
+
+// TestTakeFillIgnoresVersionLimit: with no version left to draw, a write is
+// refused naming the version limit and a fill of the same ask is granted, for
+// a fill draws no version. The fill's reservation is real, so every other
+// limit still sees it.
+func TestTakeFillIgnoresVersionLimit(t *testing.T) {
+	o := std()
+	o.noVersions = true
+	r := newRig(t, o)
+	r.seed(t, 0)
+
+	_ = r.refused(t, req(), core.LimitVersion)
+
+	q := req()
+	q.Fill = true
+	g := r.grant(t, q)
+	if got := r.c.ReservedBytes(); got <= 0 {
+		t.Fatalf("after the granted fill, ReservedBytes = %d, want the fill's ask held", got)
+	}
+	g.Release()
+	if got := r.c.ReservedBytes(); got != 0 {
+		t.Fatalf("after Release, ReservedBytes = %d, want 0", got)
+	}
+}
+
+// TestTakeFillRefusedByOtherLimits: a fill passes the version limit's skip
+// alone. The share's limit, the journal's maximum and the spare pool each
+// still refuse it, naming themselves, with no version left.
+func TestTakeFillRefusedByOtherLimits(t *testing.T) {
+	// Share.
+	o := std()
+	o.noVersions, o.maxBytes = true, 1
+	r := newRig(t, o)
+	r.seed(t, 0)
+	q := req()
+	q.Fill, q.ShareLimit = true, 1
+	_ = r.refused(t, q, core.LimitShare)
+
+	// Journal: a write beyond its room, the journal at its maximum, and no
+	// spare ready.
+	o = std()
+	o.noVersions, o.unprimed, o.spares, o.maxBytes = true, true, 0, 1
+	r = newRig(t, o)
+	big := req()
+	big.Fill, big.Payload = true, 2*testCap
+	_ = r.refused(t, big, core.LimitJournal)
+
+	// Spare pool: three spares needed with two ready.
+	o = std()
+	o.noVersions, o.unprimed, o.spares = true, true, 2
+	r = newRig(t, o)
+	big = req()
+	big.Fill, big.Payload = true, 2*segment.EmptyRoom(testCap)+50
+	_ = r.refused(t, big, core.LimitSpare)
 }
 
 // TestTake_OrderOfRefusals drives one request every limit refuses at once
