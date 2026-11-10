@@ -1,7 +1,6 @@
 package capacity
 
 import (
-	"context"
 	"fmt"
 	"sync"
 
@@ -187,7 +186,7 @@ type Draw struct {
 // headroom_draws counts by — because below it a record without bytes lands
 // in a content spare, and burning the headroom on records the content pool
 // already covered would drain the reserve of a healthy journal.
-func (h *Headroom) Admit(ctx context.Context, c RecordClass) (Draw, error) {
+func (h *Headroom) Admit(c RecordClass) (Draw, error) {
 	if err := h.cfg.Admit(); err != nil {
 		return Draw{}, err
 	}
@@ -243,22 +242,12 @@ func (h *Headroom) Admit(ctx context.Context, c RecordClass) (Draw, error) {
 }
 
 // Drawn counts one admitted record once it has appended: the headroom_draws
-// counter, raised only for a draw the journal's limit gated and only while
-// it still holds the limit — records appended below the limit drew nothing
-// and count nothing.
+// counter, raised for every draw that moved the ledger, so the two agree
+// whichever way the footprint moved after the admission. A record that drew
+// nothing — below the limit, a repack copy, an Offloaded never appended —
+// counts nothing.
 func (h *Headroom) Drawn(d Draw) {
-	// A draw that never happened counts nothing: records appended while
-	// at the limit are the counter's figure, and an admission that drew
-	// nothing — below the limit, a repack copy, or an Offloaded record
-	// never appended — has none to count.
 	if !d.drew {
-		return
-	}
-	// The at-limit read runs before the section: the set's lock is of this
-	// same capacity domain, and no two locks of one domain are held at
-	// once.
-	atLimit := h.atLimit()
-	if !atLimit {
 		return
 	}
 	h.mu.Lock()

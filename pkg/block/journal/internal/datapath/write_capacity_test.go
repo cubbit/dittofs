@@ -124,7 +124,7 @@ const headroomFixture = 8
 func drawHeadroom(t *testing.T, c *Core, n int) {
 	t.Helper()
 	for i := 0; i < n; i++ {
-		d, err := c.headroom.Admit(context.Background(), capacity.Release)
+		d, err := c.headroom.Admit(capacity.Release)
 		if err != nil {
 			t.Fatalf("headroom admission %d: %v", i+1, err)
 		}

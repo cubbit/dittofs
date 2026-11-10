@@ -46,7 +46,7 @@ func atTheLimit(t *testing.T, opts ...func(*coreOptions)) (*Core, *kit.Seam, *Sh
 // admit admits one record of class k, counting it as appended when it is.
 func admit(t *testing.T, c *Core, k capacity.RecordClass) (capacity.Draw, error) {
 	t.Helper()
-	d, err := c.headroom.Admit(context.Background(), k)
+	d, err := c.headroom.Admit(k)
 	if err == nil && d.Append {
 		c.headroom.Drawn(d)
 	}
@@ -118,7 +118,7 @@ func TestRFC1B_OffloadedRecordsBelowHalfTheHeadroom_Admission(t *testing.T) {
 		t.Fatal("eleven records drawn left the headroom above half")
 	}
 	draws := c.headroom.Draws()
-	d, err := c.headroom.Admit(context.Background(), capacity.Offloaded)
+	d, err := c.headroom.Admit(capacity.Offloaded)
 	if err != nil || d.Append {
 		t.Fatalf("Offloaded below half = %+v, %v; want admitted without an append", d, err)
 	}

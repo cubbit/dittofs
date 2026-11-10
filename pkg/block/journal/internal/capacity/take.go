@@ -334,8 +334,8 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// set's own lock — is what the ordering forbids.
 	readySnap := c.cfg.ReadySpares()
 	footSnap := c.cfg.Footprint()
-	// The headroom's gate reads the pool's and the set's counters under
-	// their own locks, so it joins the snapshots: never under the section.
+	// The headroom's gate reads the set's footprint under its lock, so it
+	// joins the snapshots: never under the section.
 	belowHalf := c.cfg.BelowHalf()
 	// The headroom threshold: a content write is refused while the journal
 	// holds its limit and the headroom's drawing side has fallen below
