@@ -471,10 +471,11 @@ pkg/vfs/                     the contract adapters build against
                              *CrossError, all of DelayCause and CrossKind, and Extent; standard library only
   callbacks.go               Callbacks, Revocation (§3.2)
   events.go                  Events, AccessEvent and QuotaEvent (§3.3)
-  vfstest/                   Memory, Faults and Callbacks; Null for benchmarks (§8)
+  vfstest/                   Memory, Faults and Callbacks; Null for the allocation gate and benchmarks (§8)
     suite/                   suite.Run: the conformance suite, one file per area (§8)
 internal/vfs/                the filesystem, one file per operation; the gateway and its receive side
   filesystem.go              Filesystem, New(Deps), Start, Drain, Stop, JoinShare (§2.5); Content
+  contenttest/               the Content conformance suite, and the in-memory Content that passes it (§8)
   gateway.go                 Gateway, NewGateway: §2.1's routing table and the one generic call path
   serve.go                   Serve: the fence and the dedup table, and the checked Service it returns
   envelope.go                Envelope, Request, Reply, Router, Transport, Peers
@@ -2618,7 +2619,7 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 | V8 | Every open-state call names its `ClientID`, and an ID the client does not hold is refused. | An `OpenID`, `GrantID` or `WatchID` presented by another client returns `NotYours`. |
 | V9 | The share grant is evaluated on every call. | A client removed from a share grant is refused on its next call with a handle it already holds; an SMB `MAXIMUM_ALLOWED` open whose parent grants delete-child includes `DELETE`, and after the parent's group changes so it no longer does, a cached delete-child decision is not reused. |
 | V10 | Quota is enforced only by the service, and overshoot stays within §5.6's bound. | Writers on one primary never pass a hard limit by more than what commits concurrently add; **(cluster)** writers through `k` primaries overshoot by no more than the bound, counted per run, on a 1 GiB project quota as on a 1 TiB one; a write refused by a share-wide, project, user and group quota in turn returns a `*QuotaError` naming each scope, and with two exceeded the first in §4.3's order; `StatFS` inside a project tighter than its share reports the project's, and the share's once the project's quota is deleted. |
-| V11 | (cluster, [single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) A forwarded mutation retried after a lost reply returns its original result and applies once. | Multi-node tier: a forwarded write whose reply the loopback transport drops, retried after another write lands on the same extent, applies once. |
+| V11 | (cluster, [single-node profile](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) A forwarded mutation retried after a lost reply returns its original result and applies once. | Multi-node tier: a forwarded write whose reply the transport's fault wrapper drops, retried after another write lands on the same extent, applies once. |
 | V12 | Every call that names a handle or an open is admitted — state, flavour, client rules, resolution — whatever path the handle arrived by. | For each of lock, unlock, test-lock and watch, reached by a handle presented directly, by `Root` with a path, by `Root` with a name, and by the zero `ShareRef` then a walk from the pseudo-root: a quiesced share returns `ErrDelay`, a share refusing the flavour `ErrWrongSecurity`, a client outside its rules `ErrAccess` for a lock, a test-lock and a watch, while its unlock of a lock, its cancel of a waiting lock and its close of an open taken before the rules changed succeed, as they only release state; a compound crossing from a share squashing root into one that does not acts as root only in the second; a caller admitted and cached, then disabled, is refused on its next call. |
 | V13 | No mount, tree connect or session is stored; a reconnecting client is admitted afresh. | A renamed share keeps serving held handles and established tree connects, and a new `Root` needs the new name. |
 | V14 | Every node builds the same pseudo-filesystem from the same share list. | Pure unit: two filesystems built from one share list return byte-identical pseudo handles, numeric ids and change attributes, and a share added on one is seen on the other with a raised change attribute. |
@@ -2646,7 +2647,7 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 | V38 | Delete on close takes the parent's step only after releasing the file's. | A last close running a delete on close races 10⁴ times an unlink of another name of the same file, with the parent's ID below the file's: neither waits for its deadline, and exactly one name is left. |
 | V39 | Admission runs before the handle is resolved. | A client outside a share's netgroup presents a live handle and the handle of a removed file: `ErrAccess` for both. |
 | V40 | A share's removal joins every call admitted before its mark. | A create is held between admission and its commit while the share is removed: step 3 waits for it; a call counted after the mark is refused `ErrStale`, its record never committed. |
-| V41 | The gateway forwards and decides nothing; `Serve` fences and dedups before the filesystem runs anything. | Gateway unit, with an in-memory filesystem as the local `Service`, a second one behind RFC 15's in-memory `Transport`, and the router over an in-memory control-plane store: each method's effect lands in the local filesystem when the router says local and in the remote one otherwise, under the caller's `Identity`, and its answer is the one a direct call there gives; a handle the router cannot place lands in the local one. Multi-node tier: a call carrying a stale shard epoch, a fenced node epoch or a hop of one is refused by `Serve` and reaches no filesystem, sent over the transport or routed to the local path by a stale cache; a duplicate send applies once. |
+| V41 | The gateway forwards and decides nothing; `Serve` fences and dedups before the filesystem runs anything. | Multi-node tier, over the network `Transport` on 127.0.0.1, each node's filesystem a `vfstest.Memory`: each method's effect lands in the local filesystem when the router says local and in the remote one otherwise, under the caller's `Identity`, and its answer is the one a direct call there gives, with no other mutating call in the target's record; a handle the router cannot place lands in the local one. A call carrying a stale shard epoch, a fenced node epoch or a hop of one is refused by `Serve` and reaches no filesystem, sent over the transport or routed to the local path by a stale cache; a duplicate send applies once. |
 | V42 | A `Seek` from at or past the size is `ErrPastEnd`, for data and for a hole; from below it, data with none after answers the size. | Into a file of data, a hole and data, and into one ending in a hole, `Seek` for data and for a hole from inside each run: the next run's offset, or the size when none is before the end; from the size and from past it, `ErrPastEnd` for both. |
 | §3.2 | A callback path moves; notifications honour traverse; a break that times out leaves its opens usable. | A recursive watch reports nothing below a directory its holder cannot traverse; an SMB lease whose break times out leaves its open usable for the holder's next write. |
 | §3.2 | A removed or moved share ends its state with `RevokedShare`. | With a waiting lock and an outstanding watch on a share, remove it, then repeat with a move naming an address: `vfstest.Callbacks` keeps `RevokedShare` naming it, with `Addr` set for the move; the share's opens and deny modes are gone; the removal's step 3 waits for a create admitted before the mark. |
@@ -2700,14 +2701,13 @@ something the ones above it cannot.
 | Tier | What runs | Proves | Runs |
 | --- | --- | --- | --- |
 | unit | `admit`, `pseudofs`, `quota`, `lockorder` and `pkg/vfs`, each over the in-memory store behind the few reads it declares | admission over (share, identity) and its cache key; pseudo-filesystem determinism (V14); quota arithmetic; the lock-order sorter; the ID codecs decode RFC 21's and RFC 22's golden bytes and refuse malformed ones; `vfs.Errors()` lists every declared error an adapter can receive | per change |
-| unit | `*vfs.Filesystem` from `vfs.New`, with an in-memory `Content` that passes RFC 8's `Content` conformance suite, and in-memory metadata | §5's orders by what each refusal leaves unchanged (V3) | per change |
-| unit | `*vfs.Gateway` from `vfs.NewGateway`, with the router over an in-memory control-plane store, RFC 15's in-memory `Transport` and an in-memory filesystem as the local `Service` | routing, re-routing and resending; that the gateway decides nothing (V41) | per change |
-| integration | `suite.Run` over `vfs.New` with the real engine on a temporary journal, the in-memory store, real open state and a fake clock, and no node | §5's orders, admission on every entry path, the cross-protocol rules and the V-rows of §6; with fault injection below the real components (a key-value store under the metadata store, RFC 16's `KV`; a remote tier and a small journal under the engine, RFC 8; `Callbacks` that stall or fail; the fake clock); a model of lock, write, open and unlink interleaved under `-race`; the fuzz targets below | per change; 10⁴ interleavings and each fuzz target for 10 minutes nightly |
-| multi-node | two `node.New` over an in-memory control-plane store and a loopback `Transport`, with changes driven by writing to the store, and fault injection in the transport: a lost reply, a duplicate send, a stale epoch | `suite.Run` through one node's gateway; the route envelope, the fence and dedup (V4, V11, V41), cursor safety | per change, once the cluster ships |
+| unit | `*vfs.Filesystem` from `vfs.New`, with an in-memory `Content` that passes the `Content` conformance suite (below), and in-memory metadata | §5's orders by what each refusal leaves unchanged (V3) | per change |
+| integration | `suite.Run` over `vfs.New` with the real engine on a temporary journal, the in-memory store, real open state and a fake clock, and no node | §5's orders, admission on every entry path, the cross-protocol rules and the V-rows of §6; with fault injection below the real components (a key-value store under the metadata store, RFC 16's `KV`; a remote tier and a small journal under the engine, RFC 8; `Callbacks` under a fault wrapper; the fake clock); a model of lock, write, open and unlink interleaved under `-race`; the fuzz targets below | per change; 10⁴ interleavings and each fuzz target for 10 minutes nightly |
+| multi-node | two `node.New` over a control-plane store on the in-memory `KV` ([RFC 16](rfc-16-metadata-store.md)'s KV conformance suite holds it) and the network `Transport` on 127.0.0.1, with changes driven by writing to the store, and a fault wrapper around the transport: a lost reply, a duplicate send, a stale epoch | `suite.Run` through one node's gateway; the route envelope, the fence and dedup (V4, V11, V41), cursor safety | per change, once the cluster ships |
 | e2e | the adapters over an in-memory filesystem ([RFC 20 §7](rfc-20-adapters.md#7.%20Tests)), then the protocol suites | translation only | per change |
 
-The unit tiers make a failure point somewhere: an admission, pseudo-filesystem,
-quota or routing bug fails its own package before the suite runs. Running the
+The unit tiers make a failure point somewhere: an admission, pseudo-filesystem
+or quota bug fails its own package before the suite runs. Running the
 same suite through a gateway is what makes "the caller cannot tell a remote
 primary from a local one" a checked claim rather than a design intention.
 
@@ -2717,16 +2717,24 @@ data, locking, shares — plus `crossproto.go`, the cross-protocol scenarios,
 driven by `Call` values of different `Protocol` with no adapter, and
 `faults.go`, as `pkg/metadata/storetest` does for stores. It is how the
 service is tested end to end before any adapter calls it. Its doubles are the three kinds
-[RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) allows, and no test asserts which
-calls a `Service` received. A test that needs a `Service` uses an in-memory
-filesystem, `vfstest.Memory`: `vfs.New` over the in-memory store, open state and `Content`,
-each held to its conformance suite, and itself held to this one. `pkg/vfs/vfstest` also holds
+[RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) allows. A test that needs a
+`Service` uses an in-memory filesystem, `vfstest.Memory`: `vfs.New` over the in-memory store,
+open state and `Content`, each held to its conformance suite, and itself held to this one. It
+keeps its own record of the mutating calls it served, an output of the verified implementation:
+[RFC 20 §7.2](rfc-20-adapters.md#7.2%20Handlers%20against%20a%20verified%20service)'s one-call
+rule and [RFC 15](rfc-15-topology.md)'s T12 read it. No test asserts on calls a wrapper saw. `pkg/vfs/vfstest` also holds
 two hand-written helpers: `Faults`, a wrapper around
 any `Service` that fails or delays a call on cue, implementing every method explicitly and
 embedding nothing, so a method added to `Service` fails to compile until it wraps it; and
 `Callbacks`, which keeps what the service delivered, its output, for a test to assert on.
-`Null`, a `Service` answering every call at once, is for benchmarks only: it passes no suite, so
-no test asserts on what it answers.
+`Null`, a `Service` answering every call at once, is for the allocation gate
+(`unit/adapter-allocs`) and the benchmarks only: it passes no suite, so nothing asserts on what it
+answers.
+
+**`Content` conformance.** `internal/vfs/contenttest.Run(t, newContent)` holds every `Content`
+to the calls §3.5 and §5.3 make: verified bytes back, a version above the last drawn, nothing
+returned before its stage. It is written before the in-memory `Content` that passes it, which
+stands in for the engine until the engine passes the same suite and is then deleted.
 
 **Fuzzing.** Every input a client chooses has a `testing.F` target, seeded
 with the golden vectors and the suite's own values:
@@ -2774,8 +2782,8 @@ service benchmark is the adapter's own cost:
 - per operation, ns and allocations: `GetAttr`, `Lookup`, `Read` and `Write` of
   4 KiB and 1 MiB, `Open`, a `ReadDir` page; **0 allocations** on the data path;
 - service overhead against the direct store or engine call, and
-  **(cluster)** the same call through the gateway, local and over the loopback
-  transport;
+  **(cluster)** the same call through the gateway, local and over the network
+  transport on 127.0.0.1;
 - contention: N writers on one file, N openers on one file, N creates in one
   directory (the lock order and fold admission), and **(cluster)** quota
   reservation under `k` primaries;
@@ -2871,7 +2879,7 @@ tree working:
    > measured; an adapter cache of service answers, which
    > [RFC 20 §2.2](rfc-20-adapters.md#2.2%20What%20an%20adapter%20may%20hold)
    > forbids. Overturned by §8's benchmark through the gateway over the
-   > loopback transport showing compound round trips limiting a cluster.
+   > network transport on 127.0.0.1 showing compound round trips limiting a cluster.
 2. **pNFS layouts.** Not a parity requirement, and not in the service: a
    single node advertises none, so every NFSv4.1 layout operation is answered
    `NFS4ERR_NOTSUPP` from the adapter's table with no service call
