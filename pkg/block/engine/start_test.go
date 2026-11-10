@@ -25,6 +25,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
+	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -50,6 +51,8 @@ type starter struct {
 	spare engine.Share   // a share withSpare adds before Start, which Start does not bind
 	clock *sim.TestClock // the engine's clock
 
+	tb *openstate.Table // the open-state table withOpenState runs, new at each restart
+
 	mu      sync.Mutex
 	opens   []openCall
 	openErr error // what Open answers in place of the journal
@@ -74,6 +77,7 @@ type starterConfig struct {
 	deps     func(*engine.Deps)
 	store    kvstoretest.Opener
 	fresh    bool
+	open     bool // holds clones in a real open-state table, as withOpenState asks
 }
 
 // starterOption is one thing a test asks of newStarter.
@@ -122,10 +126,17 @@ func withSpare() starterOption {
 	}
 }
 
-// withStartDeps changes the engine's Deps before New.
+// withStartDeps changes the engine's Deps before New, after any change an
+// earlier option asked.
 func withStartDeps(f func(*engine.Deps)) starterOption {
 	return func(c *starterConfig) {
-		c.deps = f
+		prev := c.deps
+		c.deps = func(d *engine.Deps) {
+			if prev != nil {
+				prev(d)
+			}
+			f(d)
+		}
 	}
 }
 
@@ -193,6 +204,10 @@ func newStarter(t *testing.T, opts ...starterOption) *starter {
 			return ctx, func(error) {
 			}
 		},
+	}
+
+	if c.open {
+		d.Holds = s.openState(t)
 	}
 
 	if c.deps != nil {

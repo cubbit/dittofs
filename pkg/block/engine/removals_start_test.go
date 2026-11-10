@@ -561,9 +561,10 @@ func TestADoneCloneIsPrunedAndNotHanded(t *testing.T) {
 	}
 }
 
-// With no hook to rebuild a clone removal, Start fails as it does for a clone
-// marker, and posts nothing.
-func TestACloneRemovalWithNoHookFailsStart(t *testing.T) {
+// A clone removal whose source share this start does not serve fails Start,
+// as the destination may not be served before the clone is done, and posts
+// nothing.
+func TestACloneRemovalOfAnUnservedSourceFailsStart(t *testing.T) {
 	r := newRig(t)
 	f := entity.NewFileID()
 	v := entity.VersionOf(7)
@@ -581,8 +582,8 @@ func TestACloneRemovalWithNoHookFailsStart(t *testing.T) {
 
 	r.atRestart()
 
-	if err := r.start(t); !errors.Is(err, engine.ErrUnbuilt) {
-		t.Errorf("Start = %v, want ErrUnbuilt", err)
+	if err := r.start(t); !errors.Is(err, engine.ErrSourceNotServed) {
+		t.Errorf("Start = %v, want ErrSourceNotServed", err)
 	}
 
 	r.wantPosted(t, 0)
@@ -1094,8 +1095,8 @@ func TestAListingErrorFailsStartAndClosesTheJournal(t *testing.T) {
 	r.wantPosted(t, 0)
 }
 
-// A clone removal with no hook fails Start whether its file is the last one
-// listed or not: a file listed after it must not let Start go on.
+// A clone removal that cannot be rebuilt fails Start whether its file is the
+// last one listed or not: a file listed after it must not let Start go on.
 func TestACloneRemovalFollowedByAnotherFileFailsStart(t *testing.T) {
 	r := newRig(t)
 	clone, plain := entity.NewFileID(), entity.NewFileID()
@@ -1124,8 +1125,8 @@ func TestACloneRemovalFollowedByAnotherFileFailsStart(t *testing.T) {
 
 	r.atRestart()
 
-	if err := r.start(t); !errors.Is(err, engine.ErrUnbuilt) {
-		t.Errorf("Start = %v, want ErrUnbuilt", err)
+	if err := r.start(t); !errors.Is(err, engine.ErrSourceNotServed) {
+		t.Errorf("Start = %v, want ErrSourceNotServed", err)
 	}
 
 	r.wantPosted(t, 0)

@@ -20,12 +20,13 @@ var ErrNotStarted = errNotStarted
 
 // The errors start answers and refuses shares with, for a test to match.
 var (
-	ErrUnbuilt      = errUnbuilt
-	ErrStarted      = errStarted
-	ErrJournalLost  = errJournalLost
-	ErrNotRecorded  = errNotRecorded
-	ErrUnidentified = errUnidentified
-	ErrNotRaised    = errNotRaised
+	ErrUnbuilt         = errUnbuilt
+	ErrSourceNotServed = errSourceNotServed
+	ErrStarted         = errStarted
+	ErrJournalLost     = errJournalLost
+	ErrNotRecorded     = errNotRecorded
+	ErrUnidentified    = errUnidentified
+	ErrNotRaised       = errNotRaised
 )
 
 // SetJournalsForTest sets the journals the engine has open, as Start will,
@@ -490,6 +491,10 @@ func (e *Engine) PendingWrites(f entity.FileID, off, end int64) int {
 
 // OnStaged runs f in each removal between its journal step and its phase 1.
 func (e *Engine) OnStaged(f func()) { e.hooks.staged.Store(&f) }
+
+// OnIssued runs f with each version the engine counts as issued toward its
+// version limit.
+func (e *Engine) OnIssued(f func(journal.Version)) { e.onIssued.Store(&f) }
 
 // GuardHeld reports whether a removal holds f's guard.
 func (e *Engine) GuardHeld(f entity.FileID) bool {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -13,10 +14,21 @@ import (
 )
 
 // reg is one running clone's registration on a file: the extent it holds,
-// and whether the file is the clone's destination or its source.
+// whether the file is the clone's destination or its source, and whether
+// the clone waits for journal space.
 type reg struct {
 	entity.Extent
-	dst bool
+	dst   bool
+	space atomic.Bool // the clone waits for journal space to copy: a call behind it carries DelayCapacity
+}
+
+// delay is the answer to a call behind r: DelayCapacity while its clone
+// waits for journal space, DelayClone otherwise.
+func (r *reg) delay() error {
+	if r.space.Load() {
+		return &vfserr.Delay{Cause: vfserr.DelayCapacity}
+	}
+	return delayClone()
 }
 
 // delayClone is the answer to a call behind a running clone.
@@ -34,7 +46,7 @@ func delayClone() error { return &vfserr.Delay{Cause: vfserr.DelayClone} }
 func (fe *fileEntry) refuseWrite(x entity.Extent) error {
 	for _, r := range fe.regs {
 		if r.Overlaps(x) {
-			return delayClone()
+			return r.delay()
 		}
 	}
 	return nil
@@ -46,7 +58,7 @@ func (fe *fileEntry) refuseWrite(x entity.Extent) error {
 func (fe *fileEntry) refuseRead(x entity.Extent) error {
 	for _, r := range fe.regs {
 		if r.dst && r.Overlaps(x) {
-			return delayClone()
+			return r.delay()
 		}
 	}
 	return nil
@@ -60,7 +72,7 @@ func (fe *fileEntry) refuseRead(x entity.Extent) error {
 func (fe *fileEntry) refuseChange(x entity.Extent) error {
 	for _, r := range fe.regs {
 		if r.dst || r.Overlaps(x) {
-			return delayClone()
+			return r.delay()
 		}
 	}
 	return nil
@@ -244,7 +256,8 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 
 // cloneRun is one clone past its admission: its two files and bindings,
 // their registrations, its spec, the source's held runs it copies, one copy
-// write each, the reservation taken for them, and once its copies are
+// write each, the source extents a rebuilt clone's destination already
+// holds copies of, the reservation taken for them, and once its copies are
 // synced, the newest copy's version.
 type cloneRun struct {
 	sb, db   *binding
@@ -252,8 +265,9 @@ type cloneRun struct {
 	rs, rd   *reg
 	spec     journal.CloneSpec
 	runs     []journal.Held
-	res      Reservation // nil when none is held
-	copied   bool        // the copies are written and synced
+	kept     []journal.Extent // source offsets: copies are not made again for them
+	res      Reservation      // nil when none is held
+	copied   bool             // the copies are written and synced
 	newest   journal.Version
 	done     chan struct{}
 	err      error
@@ -298,9 +312,10 @@ func (e *Engine) prepare(ctx context.Context, c *cloneRun, x vfserr.Extent) erro
 }
 
 // size resolves the source extent in windows of copyBuf, keeping its held
-// runs, and reserves on the destination's handle every byte and write the
-// copies need, so no copy is refused part-way. It answers the newest
-// version the source was read at.
+// runs but where the destination already holds their copies (kept), and
+// reserves on the destination's handle every byte and write the copies
+// need, so no copy is refused part-way. It answers the newest version the
+// source was read at.
 //
 // ponytail: a clone reads its source's held bytes twice, here to size them
 // and in its copies. Give the handle RFC 1 §3.7's Extents to size without
@@ -317,11 +332,12 @@ func (e *Engine) size(ctx context.Context, c *cloneRun) (journal.Version, error)
 		if err != nil {
 			return journal.Version{}, err
 		}
-		for _, h := range held {
-			n += h.Extent.Len
-		}
 		c.runs = append(c.runs, held...)
 		asOf = newer(asOf, at)
+	}
+	c.runs = uncovered(c.runs, c.kept)
+	for _, h := range c.runs {
+		n += h.Extent.Len
 	}
 	if len(c.runs) > 0 {
 		res, err := c.db.h.Reserve(n, len(c.runs))
@@ -362,7 +378,7 @@ func (e *Engine) runClone(c *cloneRun) {
 		e.endClone(c, err)
 		return
 	}
-	if e.attempt(ctx, c, r) == itemRetry {
+	if e.attempt(ctx, c, r) != itemDone {
 		e.retryClone(c, r)
 	}
 }
@@ -371,7 +387,7 @@ func (e *Engine) runClone(c *cloneRun) {
 // and the destination's sync, unless done, then its phase 1, bounded by the
 // conflict bound. It answers itemDone once its phase 1 committed, its phase
 // 2 posted to the loop, or once the clone ended; itemRetry for the loop to
-// run it again.
+// run it again, itemRetryUncounted while it waits for journal space.
 //
 // decision: once the journal step dropped the destination extent no undo
 // exists, so a copy, a sync or a phase 1 that fails is retried by the loop
@@ -392,6 +408,15 @@ func (e *Engine) attempt(ctx context.Context, c *cloneRun, r *removal) answer {
 				// the state once, not once per retry.
 				e.noteReadOnly(true, err)
 				e.d.Logger.Debug("a clone's copies refused by the read-only journal: retried", "src", c.src, "dst", c.dst, "err", err)
+			case c.rd.space.Load():
+				// decision: a clone waiting for journal space waits as any
+				// capacity refusal does, uncounted toward removal_stalled,
+				// as space is freed by offload and eviction, not by this
+				// clone; the calls behind it answer DelayCapacity meanwhile.
+				// Count it if a clone is seen waiting with nothing of the
+				// journal's own reporting the shortage.
+				e.d.Logger.Debug("a clone's copies wait for journal space: retried", "src", c.src, "dst", c.dst, "err", err)
+				return itemRetryUncounted
 			default:
 				e.d.Logger.Error("a clone's copies failed after its journal step: retried", "src", c.src, "dst", c.dst, "err", err)
 			}
@@ -433,7 +458,12 @@ func (e *Engine) attempt(ctx context.Context, c *cloneRun, r *removal) answer {
 // reservation.
 func (e *Engine) copyAll(ctx context.Context, c *cloneRun) error {
 	if c.res == nil {
-		if _, err := e.size(ctx, c); err != nil {
+		_, err := e.size(ctx, c)
+		var noSpace *journal.NoSpaceError
+		space := errors.As(err, &noSpace) && noSpace.Limit != journal.LimitVersion
+		c.rs.space.Store(space)
+		c.rd.space.Store(space)
+		if err != nil {
 			return err
 		}
 	}
@@ -566,10 +596,16 @@ func (e *Engine) holdAll(ctx context.Context, r *removal) error {
 // pins the destination's guard, which a group commit's capture skips.
 // Withdraw it once phase 1 runs no check admission does not run first.
 func (e *Engine) retryClone(c *cloneRun, r *removal) {
-	c.db.gc.removals.enqueue(&loopItem{b: c.db, f: c.dst, kind: entity.RemoveClone,
+	c.db.gc.removals.enqueue(e.cloneItem(c, r))
+}
+
+// cloneItem is the loop item running what clone c has left past its
+// journal step, r its removal of the destination extent.
+func (e *Engine) cloneItem(c *cloneRun, r *removal) *loopItem {
+	return &loopItem{b: c.db, f: c.dst, kind: entity.RemoveClone,
 		run: func(ctx context.Context) answer { return e.attempt(ctx, c, r) },
 		end: func() { e.endClone(c, errLoopEnded) },
-	})
+	}
 }
 
 // cloneEnded ends a clone whose phase 1 will not commit as its destination
