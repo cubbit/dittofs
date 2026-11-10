@@ -88,8 +88,11 @@ two `New`); `pkg/resources`' signatures; `core`'s §4.7 surface with stub bodies
 ## 2. General rules for each epic
 
 1. **Independent unit tests, under `-race`.** Each epic carries its own unit tests. It may use
-   another epic's implementation once that has landed, `vfstest.Null` and `vfstest.Record`, and
-   E2's `testproto` and leak checks. `core` is tested from `package core_test` on `testproto` and
+   another epic's implementation once that has landed, `vfstest.Memory` and `vfstest.Faults`, and
+   E2's `testproto` and leak checks. Its doubles are RFC 29 §4.11's three kinds only: an
+   interface whose implementation has not landed is stood in for by the smallest in-memory one
+   that passes that interface's conformance suite, written first, which the real one passes
+   when it lands; no test asserts which calls were made. `core` is tested from `package core_test` on `testproto` and
    never through NFS or SMB; no `core` test imports a protocol package. Connections are real TCP
    over loopback, with real deadlines and socket options read back from the socket. Test at the
    layer that consumes a value (`CLAUDE.md`, "Verifying a change"): a setting is asserted on a
@@ -269,7 +272,7 @@ which epic owns the rest.
 | R69 | `Conn` is opaque; a protocol reaches it only through `Send(h Header, msg *Buf, before uint64) error`, `Established()`, `Keep() (release func())`, `Settings() config.Settings` (D15), `Close(err error)` (bodies: E4, E5) | MUST | §4.7 | T1.7 |
 | R70 | `HoldCodec` is `{Key(h) uint64; Interim(h, grant bool, after []Header, out *Buf) error; Final(h, grant bool) Header; Cancels(h) (key uint64, ok bool); Pends(h, err error) bool}` | MUST | §4.7 | T1.7 |
 | R71 | `ErrParked` and core's refusals `ErrNotSupported`, `ErrVersion`, `ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree`, `ErrNoFH`, `ErrTooLong`, `ErrExpired`, `ErrNotLast`, `ErrTooManyPending`, `ErrMoved`, `ErrDraining` are distinct sentinels; `Errors() []error` (body: T1.7) | MUST | §4.7 | T1.7 |
-| R72 | `Dispatcher` is `{Dispatch(ctx, c *Conn, rec *Buf); Drain()}`, `ErrMoved` or `ErrDraining` decided per request (D16), the seam a connection's own tests stub | MUST | §4.7 | T1.7 |
+| R72 | `Dispatcher` is `{Dispatch(ctx, c *Conn, rec *Buf); Drain()}`, `ErrMoved` or `ErrDraining` decided per request (D16), the seam behind which a connection's own tests run an in-memory dispatcher held to the `Dispatcher` conformance suite (E4) | MUST | §4.7 | T1.7 |
 | R73 | `NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)`; `Listener{Network string; Port uint16; Protocol Protocol}`; `*Server` implements `adapter.Adapter` (bodies: E4) | MUST | §4.7, §3.4, §2.5 | T1.7 |
 | R74 | Nothing in `core`'s surface names a dialect; nothing is looked up later: no registry, no global, no service in a context value | invariant | §4.7 | T1.7 |
 | R75 | What SMB needs from `core` is in the frozen surface: a handshake and kept state, a session level and per-message protocol state, held and parked replies, a cancel, chained members each with its own header and offset, a per-request drain decision (proved by E2 T2.2) | MUST | §4.7; owner decision | T1.7 |
@@ -796,6 +799,9 @@ cannot build apart.
 - `vfs.Shares.MoveTarget` (D16), named in RFC 17 by T1.9, in `pkg/vfs`, `*vfs.Filesystem`,
   `vfstest.Null` and `vfstest.Record`. Owner: RFC 17's plan, before E4 calls it; until RFC
   15's topology exists it answers none.
+- `vfstest.Memory`, the in-memory service passing RFC 17 §8's conformance suite, and
+  `vfstest.Faults`, its fault wrapper, which every handler and `core` test runs on in place of
+  `Record` and `Null` (RFC 20 §7.2). Owner: RFC 17's plan, before E4's first test calls them.
 - The open-unlinked hold's feed (D22): whatever tracks open files in v2 (RFC 17's opens,
   through the adapters) sets it before any protocol is served. Owner: the cutover.
 - The share-policy gates (D23): flavor and Kerberos-level policy, the netgroup allowlist and
