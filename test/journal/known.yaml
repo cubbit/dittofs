@@ -92,9 +92,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs stamps and offers bounded by through, carrying per-extent stamps.'
+  reason: 'The journal opens; the check fails on its first write. A write that needs more than one spare above the pool''s content target is refused naming the spare limit for ever: the pool''s demand level is lowered by each landed spare while the ready count rises, so the goal is met one spare short. Needs the pool''s demand accounting fixed.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'refused for want of a spare; the journal never made one'
 
 - test: TestRFC1A_OfferedBytesVerified
   status: fail
@@ -148,9 +148,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs release, retirement of segments left holding nothing and the reader guard.'
+  reason: 'The journal opens; the check fails on its first write. A write that needs more than one spare above the pool''s content target is refused naming the spare limit for ever: the pool''s demand level is lowered by each landed spare while the ready count rises, so the goal is met one spare short. Needs the pool''s demand accounting fixed.'
   issue: '#3379'
-  message: 'stub: MarkOffloaded'
+  message: 'refused for want of a spare; the journal never made one'
 
 - test: TestRFC1A_WriteDuringOffload
   status: fail
@@ -238,7 +238,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs capacity refusals naming their limit and shortfall, release and repack.'
   issue: '#3379'
-  message: '134217728 bytes written into a share were never refused by its limit'
+  message: 'stub: Sync'
 
 - test: TestRFC1B_NoDeadlock
   status: fail
@@ -342,7 +342,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs share limits, MarkOffloaded, release, idle sealing and repack scoped to a share or to segments.'
   issue: '#3379'
-  message: '65 writes into a share limited to 2 MiB were never refused'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1B_RepackAtCapacity
   status: fail
@@ -389,7 +389,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs share limits and per-share accounting rebuilt at open.'
   issue: '#3378'
-  message: '134217728 bytes written into a share were never refused by its limit'
+  message: 'stub: Sync'
 
 - test: TestRFC1B_StorageReturned
   status: fail
@@ -1994,9 +1994,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path and group commit of a round of writers.'
+  reason: 'The journal opens; the check fails on its first write. Its concurrent writers each hold a spare out of the pool''s few content spares and its WriteAt does not retry a spare refusal, so a writer is refused naming the spare limit. Needs the check to retry that refusal as the fixture''s other writers do.'
   issue: '#3378'
-  message: 'stub: WriteAt/Sync'
+  message: 'refused by the spare limit'
 
 - test: TestRFC1A_CarriedReleaseKeepsItsSequence
   status: fail
@@ -2122,9 +2122,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs repack beside a reader and the reader guard across the swap.'
+  reason: 'The journal opens; the check fails on its first write. A write that needs more than one spare above the pool''s content target is refused naming the spare limit for ever: the pool''s demand level is lowered by each landed spare while the ready count rises, so the goal is met one spare short. Needs the pool''s demand accounting fixed.'
   issue: '#3379'
-  message: 'stub: MarkOffloaded'
+  message: 'refused for want of a spare; the journal never made one'
 
 - test: TestRFC1A_RepackVerifiesWholeSource
   status: fail
