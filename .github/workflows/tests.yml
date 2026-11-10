@@ -127,8 +127,9 @@ jobs:
         run: |
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json > "$RUNNER_TEMP/plan.json"
-          # The skip names the suites it drops, so a new suite runs there by
-          # default.
+          # The skip names the suites it drops on feat/storage-v2. The select
+          # after it keeps only the suites that have moved in (the header), so a
+          # new suite runs only once it is named there.
           jq -c --arg suite "$SUITE" --arg v2 "$V2" '[(.cells // [])[] | select($suite == "" or .suite == $suite)
               | select($v2 != "true" or ((IN(.suite; "e2e", "pjdfstest", "pynfs", "wpts", "smbtorture", "cthon04",
                   "nfstest", "clients", "fio-verify", "bench-smoke", "system") or IN(.name; "unit/windows", "integration/ad-dc", "integration/kerberos")) | not))
