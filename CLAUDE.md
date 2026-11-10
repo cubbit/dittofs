@@ -220,15 +220,18 @@ Only three kinds of test double are allowed:
    that passes it. The real implementation must pass the same suite when it lands.
 3. **Fault injection:** a wrapper around a real implementation, or around kind 2, that fails,
    delays, tears or crashes on cue. A scripted error answer is a fault, so it comes from such a
-   wrapper.
+   wrapper. It may count calls to decide when to fire, but tests assert on the code's outputs or
+   on the wrapped implementation's state, never on the wrapper's own count.
 
 Deterministic simulation is built only from these three, so it is allowed.
 
 **Outputs are not interactions.** A sink that only keeps what the code under test delivered
 needs no conformance suite: a `Sink` that stores the events it was given is fine, and asserting
 that `Close` was called twice is not. A count that *is* the requirement, such as one batched read per
-batch, comes from a metric or from the in-memory implementation's own record, never from a
-separate counting wrapper. A per-OS table is data, so test its contents. A tunable such as a
+batch, comes from a metric or from a counter the in-memory implementation exports and its
+conformance suite covers, never from a separate counting wrapper; the recording fake banned below
+is one that no suite holds to the real implementation. A per-OS table is data, so test its
+contents. A tunable such as a
 sampling rate is an input, passed in through the constructor.
 
 Banned:
@@ -236,7 +239,8 @@ Banned:
 - a canned stub written for one test;
 - a recording or counting fake used to check which calls were made;
 - a double that no conformance suite holds to the real implementation;
-- swapping a package-level `var` (`serveRuntime = func…`).
+- swapping a package-level `var` that replaces behaviour (`serveRuntime = func…`); to capture
+  output, inject an `io.Writer` or use `cmd.SetOut` rather than reassigning `os.Stdout`.
 
 These test a program that production never runs. When the double drifts from the real
 implementation, the test stays green while guarding nothing.
