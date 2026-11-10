@@ -96,3 +96,28 @@ func TestShutdownSnapshots_JoinsTheScheduler(t *testing.T) {
 		t.Fatal("shutdownSnapshots returned before the tick's store call completed")
 	}
 }
+
+// TestDrainStartupWorkers_JoinsTheScheduler pins the failed-start drain's join
+// of the snapshot scheduler: drainStartupWorkers must not return while a
+// scheduler tick is still in the control-plane store the caller closes next.
+func TestDrainStartupWorkers_JoinsTheScheduler(t *testing.T) {
+	deps := &blockingSchedDeps{entered: make(chan struct{}), release: make(chan struct{}), returned: make(chan struct{})}
+	rt := New(nil)
+	svc := snapshotsched.New(deps, time.Millisecond)
+	rt.mu.Lock()
+	rt.snapSchedSvc = svc
+	rt.mu.Unlock()
+	svc.Start(context.Background())
+	select {
+	case <-deps.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("scheduler never entered a tick")
+	}
+	time.AfterFunc(100*time.Millisecond, func() { close(deps.release) })
+	rt.drainStartupWorkers(context.Background())
+	select {
+	case <-deps.returned:
+	default:
+		t.Fatal("the startup drain returned with a scheduler tick still in the control-plane store")
+	}
+}
