@@ -106,6 +106,28 @@ func TestEdge_RecordsWithoutBytesAtMaximum(t *testing.T) {
 	mustAdmit(t, c, capacity.Release)
 }
 
+// TestEdge_SealAtMaximum checks that at the journal's maximum a stream's
+// seal writes its marker and footer, refused neither with ErrNoSpace nor
+// with an error of its own, and moves neither the footprint nor the headroom.
+func TestEdge_SealAtMaximum(t *testing.T) {
+	c, _, _, f := atTheLimit(t)
+	used := c.set.Counters().UsedBytes
+	res, err := c.Streams().For(f).Seal(false)
+	if errors.Is(err, core.ErrNoSpace) {
+		t.Fatalf("the seal at the maximum was refused: %v", err)
+	}
+	if err != nil || res.TailErr != nil {
+		t.Fatalf("Seal = %+v, %v; want a clean seal", res, err)
+	}
+	if got := c.set.Counters().UsedBytes; got != used {
+		t.Fatalf("the seal moved the footprint %d -> %d", used, got)
+	}
+	if got := c.headroom.Draws(); got != 0 {
+		t.Fatalf("the seal drew on the headroom: headroom_draws = %d", got)
+	}
+	mustAdmit(t, c, capacity.Release)
+}
+
 // TestRFC1B_OffloadedRecordsBelowHalfTheHeadroom_Admission checks that below
 // half an Offloaded admission says not to append and moves no counter, and a
 // hold, stamp and clone target are refused naming the headroom.
