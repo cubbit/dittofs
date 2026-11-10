@@ -17,8 +17,8 @@ import (
 // no other component. A field is an interface where it has two
 // implementations, a concrete type where it has one. It carries the budgets
 // an adapter charges and no other: never the open-state budget or a share's
-// cap. Only VFS and Budgets are required; New refuses a missing one by
-// name, and every other field may be nil.
+// cap. Only VFS and Budgets are required; New refuses Deps missing
+// either, naming every one missing, and every other field may be nil.
 type Deps struct {
 	// VFS is the adapter's only path to the filesystem: files, clients,
 	// sign-in and principal spellings. It is the filesystem or the gateway,

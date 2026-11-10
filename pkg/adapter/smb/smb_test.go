@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/config"
 	"github.com/cubbit/dittofs/pkg/adapter/smb"
 	"github.com/cubbit/dittofs/pkg/resources"
-	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 )
 
 func valid() config.SMB {
@@ -19,20 +19,38 @@ func valid() config.SMB {
 	return s
 }
 
-// deps is the Deps New requires, VFS and Budgets, and nothing else.
+// deps is the Deps New requires, VFS and Budgets, and nothing else. New only
+// checks VFS is set, so a typed nil of the real filesystem serves.
 func deps() adapter.Deps {
-	return adapter.Deps{VFS: vfstest.Null{}, Budgets: &resources.Budgets{}}
+	return adapter.Deps{VFS: (*vfs.Filesystem)(nil), Budgets: &resources.Budgets{}}
 }
 
-// New refuses Deps missing VFS or Budgets, naming the field, and accepts
-// every other field nil.
+// New refuses Deps missing VFS or Budgets, naming every field missing and
+// no other, and accepts every other field nil.
 func TestNewRequiresServiceAndBudgets(t *testing.T) {
-	for field, d := range map[string]adapter.Deps{
-		"Deps.VFS":     {Budgets: &resources.Budgets{}},
-		"Deps.Budgets": {VFS: vfstest.Null{}},
+	for _, c := range []struct {
+		name         string
+		d            adapter.Deps
+		missing, set []string
+	}{
+		{"empty", adapter.Deps{}, []string{"Deps.VFS", "Deps.Budgets"}, nil},
+		{"no VFS", adapter.Deps{Budgets: &resources.Budgets{}}, []string{"Deps.VFS"}, []string{"Deps.Budgets"}},
+		{"no Budgets", adapter.Deps{VFS: deps().VFS}, []string{"Deps.Budgets"}, []string{"Deps.VFS"}},
 	} {
-		if _, err := smb.New(d, valid()); err == nil || errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), field) {
-			t.Errorf("New without %s: %v, want refused naming %s", field, err, field)
+		_, err := smb.New(c.d, valid())
+		if err == nil || errors.Is(err, errors.ErrUnsupported) {
+			t.Errorf("%s: New: %v, want refused", c.name, err)
+			continue
+		}
+		for _, f := range c.missing {
+			if !strings.Contains(err.Error(), f) {
+				t.Errorf("%s: New: %q, want it to name %s", c.name, err, f)
+			}
+		}
+		for _, f := range c.set {
+			if strings.Contains(err.Error(), f) {
+				t.Errorf("%s: New: %q, want it not to name %s, which is set", c.name, err, f)
+			}
 		}
 	}
 	if _, err := smb.New(deps(), valid()); !errors.Is(err, errors.ErrUnsupported) {
