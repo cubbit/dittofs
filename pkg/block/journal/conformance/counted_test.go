@@ -202,7 +202,7 @@ func TestCounted_SyncsPerWrite(t *testing.T) {
 			defer wg.Done()
 			id := journaltest.File(w)
 			for range countedRounds {
-				_, err := h.WriteAt(t.Context(), id, 0, make([]byte, countedWrite), 0)
+				_, err := tryWrite(t, h, id, 0, make([]byte, countedWrite))
 				if err != nil {
 					errs <- err
 					gate.finished()
