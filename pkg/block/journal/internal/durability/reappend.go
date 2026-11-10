@@ -161,9 +161,10 @@ func (d *Durability) appendAgain(st *stream, h format.RecordHeader, body format.
 }
 
 // reappendHeld appends again the record the held copy c names, from that copy
-// to the stream's current segment, and repoints the index from the copy to the
-// new place. It is the re-append the worker calls for a held record, with the
-// copy's segment claimed and the index already naming the copy. The copy is
+// to the stream's current segment, repoints the index from the copy to the
+// new place, and returns that place. It is the re-append the worker calls for
+// a held record, with the copy's segment claimed and the index already naming
+// the copy. The copy is
 // read at c.Copy and verified against the checksum the copy table kept for the
 // record's sequence number, never the one read back with it, so bytes that
 // agree only with themselves are refused; the record then keeps its sequence
@@ -184,11 +185,11 @@ func (d *Durability) appendAgain(st *stream, h format.RecordHeader, body format.
 // The record's file domain is taken only for the repoint, and only if the
 // index still names the copy: a write over the record since it was held has
 // the extent itself, the repoint then moves only what is still the record's,
-// and the hold ends all the same.
-func (d *Durability) reappendHeld(st *stream, c ownedCopy) error {
+// and the record leaves the hold all the same once the new place completes.
+func (d *Durability) reappendHeld(st *stream, c ownedCopy) (segment.Location, error) {
 	cp, ok := d.copyOf(c.Seq)
 	if !ok {
-		return fmt.Errorf("durability: no kept checksum for the held copy of seq %d at %+v", c.Seq, c.Copy)
+		return segment.Location{}, fmt.Errorf("durability: no kept checksum for the held copy of seq %d at %+v", c.Seq, c.Copy)
 	}
 	e := entry{w: segment.Written{
 		Loc:        c.Copy,
@@ -200,11 +201,11 @@ func (d *Durability) reappendHeld(st *stream, c ownedCopy) error {
 	}}
 	h, body, err := d.rereadRecord(st, e)
 	if err != nil {
-		return err
+		return segment.Location{}, err
 	}
 	p, err := d.appendAgain(st, h, body)
 	if err != nil {
-		return err
+		return segment.Location{}, err
 	}
 
 	from := index.RecordAt{Segment: c.Copy.Segment, Offset: uint32(c.Copy.Off)}
@@ -221,7 +222,7 @@ func (d *Durability) reappendHeld(st *stream, c ownedCopy) error {
 		d.accountDelta(hd)
 		if err != nil {
 			unlock()
-			return fmt.Errorf("durability: repointing the held record of seq %d: %w", c.Seq, err)
+			return segment.Location{}, fmt.Errorf("durability: repointing the held record of seq %d: %w", c.Seq, err)
 		}
 	}
 	unlock()
@@ -229,7 +230,7 @@ func (d *Durability) reappendHeld(st *stream, c ownedCopy) error {
 	st.want = true
 	st.mu.Unlock()
 	st.wake()
-	return nil
+	return p.Loc, nil
 }
 
 // repointReappended finishes the re-append of the content record e, whose

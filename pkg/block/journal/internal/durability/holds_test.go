@@ -104,8 +104,8 @@ type holdView struct {
 }
 
 // holdOf returns the hold on seg; held is false when there is none.
-func (cr *corruptRig) holdOf(seg core.SegmentID) holdView {
-	st := cr.d.made[0]
+func (r *rig) holdOf(seg core.SegmentID) holdView {
+	st := r.d.made[0]
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	h, ok := st.holds[seg]
@@ -176,7 +176,10 @@ type landed struct {
 	domainHeld bool
 }
 
-// landing is a re-append double. Without block, every call lands at once.
+// landing is a re-append double. A landing moves the index from the copy to
+// an untracked place, as the layer's re-append moves it to the new place, and
+// reports that place, which the hold reads complete. Without block, every
+// call lands at once.
 // With block, every call is reported on calls and returns what land hands it,
 // so a test sees the worker between two landings.
 type landing struct {
@@ -186,6 +189,8 @@ type landing struct {
 
 	mu  sync.Mutex
 	got []landed
+	// to is where each landing moved the index, by sequence number.
+	to map[core.Seq]index.RecordAt
 
 	calls   chan ownedCopy
 	proceed chan error
@@ -203,24 +208,63 @@ func (l *landing) install(cr *corruptRig) {
 	cr.d.reappend = l.reappend
 }
 
-func (l *landing) reappend(_ *stream, c ownedCopy) error {
+// untrackedSeg is the segment of the places the re-append double reports:
+// none that a ledger, window or lost set names, so the hold reads each
+// complete as soon as it is returned.
+const untrackedSeg = core.SegmentID(1 << 40)
+
+// moveOff moves the index from c's copy to an untracked place of its own,
+// under the file's domain, and returns that place.
+func (l *landing) moveOff(c ownedCopy) (segment.Location, error) {
+	l.mu.Lock()
+	n := len(l.got)
+	l.mu.Unlock()
+	to := segment.Location{Segment: untrackedSeg, Off: int64(n) * 4096, Len: c.Copy.Len}
+	from := index.RecordAt{Segment: c.Copy.Segment, Offset: uint32(c.Copy.Off)}
+	unlock := l.domains.Lock(c.File)
+	defer unlock()
+	if l.ix.Names(c.File, from) {
+		if _, _, err := l.ix.RepointRecord(c.File, from, placeAt(to)); err != nil {
+			return segment.Location{}, err
+		}
+	}
+	l.mu.Lock()
+	if l.to == nil {
+		l.to = map[core.Seq]index.RecordAt{}
+	}
+	l.to[c.Seq] = placeAt(to)
+	l.mu.Unlock()
+	return to, nil
+}
+
+// movedTo returns where the last landing of seq moved the index.
+func (l *landing) movedTo(seq core.Seq) index.RecordAt {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.to[seq]
+}
+
+func (l *landing) reappend(_ *stream, c ownedCopy) (segment.Location, error) {
 	at := index.RecordAt{Segment: c.Copy.Segment, Offset: uint32(c.Copy.Off)}
 	l.mu.Lock()
 	l.got = append(l.got, landed{c: c, atRecord: l.ix.Names(c.File, c.Record), atCopy: l.ix.Names(c.File, at), domainHeld: l.domains.heldBy(c.File)})
 	l.mu.Unlock()
 	if !l.block {
-		return nil
+		return l.moveOff(c)
 	}
 	select {
 	case l.calls <- c:
 	case <-l.stop:
-		return errors.New("the test ended")
+		return segment.Location{}, errors.New("the test ended")
 	}
 	select {
 	case err := <-l.proceed:
-		return err
+		if err != nil {
+			return segment.Location{}, err
+		}
+		return l.moveOff(c)
 	case <-l.stop:
-		return errors.New("the test ended")
+		return segment.Location{}, errors.New("the test ended")
 	}
 }
 
@@ -273,12 +317,12 @@ func copyAt(r reappended) index.RecordAt {
 
 // wantRetirable fails unless a retirement can claim seg, and lets the claim
 // go again.
-func (cr *corruptRig) wantRetirable(t *testing.T, seg core.SegmentID) {
+func (r *rig) wantRetirable(t *testing.T, seg core.SegmentID) {
 	t.Helper()
-	if _, _, err := cr.set.ClaimRetirement(seg); err != nil {
+	if _, _, err := r.set.ClaimRetirement(seg); err != nil {
 		t.Fatalf("ClaimRetirement(%d) = %v, want the claim released", seg, err)
 	}
-	cr.set.Release(seg)
+	r.set.Release(seg)
 }
 
 // TestTwoCopiesOneSegmentResolvesWhenBothLanded covers two records served from
@@ -504,9 +548,11 @@ func TestRepackLetsGoWorkerRetriesAndReappends(t *testing.T) {
 			t.Fatalf("seq %d was re-appended with the index naming the record %v and the copy %v, want only the copy", c.c.Seq, c.atRecord, c.atCopy)
 		}
 	}
+	// Each record was repointed to its copy before its re-append, which then
+	// moved it on.
 	for _, r := range rs {
-		if got := cr.placedAt(t, r.c.File, 0); got != copyAt(r) {
-			t.Fatalf("seq %d is served from %+v, want its copy %+v", r.c.Seq, got, copyAt(r))
+		if got := cr.placedAt(t, r.c.File, 0); got == copyAt(r) || got != l.movedTo(r.c.Seq) {
+			t.Fatalf("seq %d is served from %+v, want the place its re-append moved it to %+v, off its copy %+v", r.c.Seq, got, l.movedTo(r.c.Seq), copyAt(r))
 		}
 	}
 	cr.wantRetirable(t, seg)
@@ -837,4 +883,231 @@ func TestHeldRecordIsReappendedAndHoldsEnd(t *testing.T) {
 		t.Errorf("loss events = %+v, want none", ev)
 	}
 	cr.noResolved(t)
+}
+
+// heldMove is a failRig with one record re-appended out of a failed segment,
+// its new place read corrupt and served from the original, and the worker
+// parked after the step over the holds that made the hold's re-append: that
+// re-append's Append has returned, and no sync has run since.
+type heldMove struct {
+	fr      *failRig
+	f       core.FileID
+	orig    segment.Location // the original, the copy the hold serves from
+	bad     index.RecordAt   // the window's re-append, read corrupt
+	seq     core.Seq
+	v       core.Version
+	placed  segment.Location // the hold's re-append
+	release func()
+
+	mu sync.Mutex
+	// counted is what the index backed in each segment when it was announced
+	// resolved, and heldAt whether the original's segment was held then.
+	counted map[core.SegmentID]index.SegmentBytes
+	heldAt  map[core.SegmentID]holdView
+}
+
+func newHeldMove(t *testing.T) *heldMove {
+	t.Helper()
+	m := &heldMove{counted: map[core.SegmentID]index.SegmentBytes{}, heldAt: map[core.SegmentID]holdView{}}
+	hook, reached, release := gate(t)
+	var appends atomic.Int32
+	var holdAppended atomic.Bool
+	m.fr = newFailRig(t, func(fr *failRig) {
+		fr.d.reappend = fr.d.reappendHeld
+		// The first append is the failed window's re-append, the second the
+		// hold's.
+		fr.d.afterAppend = func() {
+			if appends.Add(1) == 2 {
+				holdAppended.Store(true)
+			}
+		}
+		fr.d.afterHolds = func() {
+			if holdAppended.Load() {
+				hook()
+			}
+		}
+		fr.d.resolved = func(_ uint32, seg core.SegmentID) {
+			m.mu.Lock()
+			m.counted[seg] = fr.ix.SegmentBytes(seg)
+			m.heldAt[seg] = fr.holdOf(m.orig.Segment)
+			m.mu.Unlock()
+			fr.resolved <- seg
+		}
+	})
+	m.release = release
+	t.Cleanup(release)
+	fr := m.fr
+	m.f = file(1)
+	var a segment.Location
+	a, m.v = fr.publish(t, m.f, 0, "aaaa")
+	m.mu.Lock()
+	m.orig = a
+	m.mu.Unlock()
+	m.seq = core.Seq(fr.lastSeq.Load())
+	fr.failSyncKeepingPages(t, a.Segment, errors.New("sync boom"))
+	if err := mustReturn(t, "Sync", fr.syncAsync(context.Background(), m.f)); err != nil {
+		t.Fatalf("Sync = %v, want nil", err)
+	}
+	if got := fr.awaitResolved(t); got != a.Segment {
+		t.Fatalf("resolved segment %d, want %d", got, a.Segment)
+	}
+	h, ok := fr.writesOutside(t, a.Segment)[m.seq]
+	if !ok {
+		t.Fatalf("seq %d was not re-appended", m.seq)
+	}
+	m.bad = placeOf(h)
+	out, err := fr.d.Corrupt(context.Background(), Corruption{
+		Share: 1, File: m.f, Record: m.bad, Seq: m.seq, Version: m.v, Extent: core.Extent{Off: 0, Len: 4},
+	})
+	if err != nil || out.Kind != CorruptUseCopy || out.Copy != a {
+		t.Fatalf("Corrupt = %+v, %v, want UseCopy of the original %+v", out, err, a)
+	}
+	awaitGate(t, "the step over the holds that re-appended the held record", reached)
+	st := fr.d.made[0]
+	st.mu.Lock()
+	for _, e := range st.ledger {
+		if e.w.Seq == m.seq {
+			m.placed = e.w.Loc
+		}
+	}
+	st.mu.Unlock()
+	if m.placed == (segment.Location{}) {
+		t.Fatalf("no ledger entry for the hold's re-append of seq %d", m.seq)
+	}
+	if got := fr.placedAt(t, m.f, 0); got != placeAt(m.placed) {
+		t.Fatalf("the extent is served from %+v, want the hold's re-append %+v", got, placeAt(m.placed))
+	}
+	return m
+}
+
+// wantStillHeld fails unless the original's segment is held for the record,
+// under the hold's claim, so no retirement can take it.
+func (m *heldMove) wantStillHeld(t *testing.T, when string) {
+	t.Helper()
+	seg := m.orig.Segment
+	if v := m.fr.holdOf(seg); !v.held || !v.claimed || !slices.Equal(v.seqs, []core.Seq{m.seq}) {
+		t.Fatalf("hold %s = %+v, want seq %d held under the claim", when, v, m.seq)
+	}
+	if _, _, err := m.fr.set.ClaimRetirement(seg); !errors.Is(err, segment.ErrClaimed) {
+		t.Fatalf("ClaimRetirement %s = %v, want ErrClaimed", when, err)
+	}
+}
+
+// announced returns what the index backed in seg when it was announced
+// resolved, and the original's hold then.
+func (m *heldMove) announced(seg core.SegmentID) (index.SegmentBytes, holdView) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.counted[seg], m.heldAt[seg]
+}
+
+// TestAHeldRecordStaysHeldUntilItsNewPlaceCompletes covers the hold's end: a
+// held record whose re-append's Append has returned stays held, its copy's
+// segment claimed and unannounced, until the new place's sync completes; the
+// hold then ends, the claim is released and the segment is announced resolved
+// once, with the record durable at its new place and nothing in the segment
+// backed by the index.
+func TestAHeldRecordStaysHeldUntilItsNewPlaceCompletes(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	m := newHeldMove(t)
+	fr := m.fr
+	if fr.d.Durable(m.placed) {
+		t.Fatalf("the hold's re-append at %+v is durable before any sync of it", m.placed)
+	}
+	m.wantStillHeld(t, "after the re-append's Append returned")
+	fr.wantNotResolved(t, "before the held record's new place synced")
+	m.release()
+
+	if got := fr.awaitResolved(t); got != m.orig.Segment {
+		t.Fatalf("resolved segment %d, want %d", got, m.orig.Segment)
+	}
+	if !fr.d.Durable(m.placed) {
+		t.Fatalf("the segment was announced with the new place %+v not durable", m.placed)
+	}
+	counted, held := m.announced(m.orig.Segment)
+	if counted != (index.SegmentBytes{}) {
+		t.Errorf("segment %d backed %+v when it was announced resolved, want nothing", m.orig.Segment, counted)
+	}
+	if held.held {
+		t.Errorf("hold at the announcement = %+v, want it ended", held)
+	}
+	fr.wantRetirable(t, m.orig.Segment)
+	if got := fr.placedAt(t, m.f, 0); got != placeAt(m.placed) {
+		t.Errorf("the extent is served from %+v, want the hold's re-append %+v", got, placeAt(m.placed))
+	}
+	if ev := fr.events(); len(ev) != 0 {
+		t.Errorf("loss events = %+v, want none", ev)
+	}
+	mark := fr.passes.Load()
+	fr.d.made[0].wake()
+	fr.awaitPassEnd(t, mark)
+	fr.wantNotResolved(t, "twice")
+}
+
+// TestAHeldRecordStaysClaimedWhenTheJournalTurnsReadOnlyBeforeItsNewPlaceSyncs
+// covers a journal that turns read-only after a held record's re-append and
+// before the new place syncs: the read-only pass fails the new place, and the
+// copy's segment stays claimed and unannounced, as nothing is re-appended or
+// released in a read-only journal.
+func TestAHeldRecordStaysClaimedWhenTheJournalTurnsReadOnlyBeforeItsNewPlaceSyncs(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	m := newHeldMove(t)
+	fr := m.fr
+	fr.d.Enter(errors.New("the journal is read-only"))
+	m.release()
+
+	st := fr.d.made[0]
+	eventually(t, "the read-only pass to fail the new place", func() bool {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		_, lost := st.lost[m.placed]
+		return lost
+	})
+	for range 3 {
+		mark := fr.passes.Load()
+		st.wake()
+		fr.awaitPassEnd(t, mark)
+	}
+	m.wantStillHeld(t, "in the read-only journal")
+	fr.wantNotResolved(t, "in the read-only journal")
+}
+
+// TestACorruptNewPlaceOfAHeldRecordIsReappendedAgainUnderTheHold covers a read
+// that finds the hold's re-append corrupt before it syncs: the read is served
+// from the copy again, the hold does not end when that place completes, the
+// record is re-appended once more, and the copy's segment is announced
+// resolved only once the index names the last place and nothing in the
+// segment.
+func TestACorruptNewPlaceOfAHeldRecordIsReappendedAgainUnderTheHold(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	m := newHeldMove(t)
+	fr := m.fr
+	out, err := fr.d.Corrupt(context.Background(), Corruption{
+		Share: 1, File: m.f, Record: placeAt(m.placed), Seq: m.seq, Version: m.v, Extent: core.Extent{Off: 0, Len: 4},
+	})
+	if err != nil || out.Kind != CorruptUseCopy || out.Copy != m.orig {
+		t.Fatalf("Corrupt of the new place = %+v, %v, want UseCopy of the original %+v", out, err, m.orig)
+	}
+	m.release()
+
+	if got := fr.awaitResolved(t); got != m.orig.Segment {
+		t.Fatalf("resolved segment %d, want %d", got, m.orig.Segment)
+	}
+	counted, _ := m.announced(m.orig.Segment)
+	if counted != (index.SegmentBytes{}) {
+		t.Errorf("segment %d backed %+v when it was announced resolved, want nothing", m.orig.Segment, counted)
+	}
+	p, ok := fr.ix.Lookup(m.f, 0)
+	if !ok || p.Version != m.v || p.Record == placeAt(m.orig) || p.Record == m.bad || p.Record == placeAt(m.placed) {
+		t.Fatalf("Lookup = %+v, %v, want version %+v at a place after the corrupt ones", p, ok, m.v)
+	}
+	// The window's re-append, the hold's and the hold's second each placed
+	// the record once.
+	if got, want := fr.d.Stats().ReappendedBytes, 3*uint64(m.orig.Len); got != want {
+		t.Errorf("ReappendedBytes = %d, want %d", got, want)
+	}
+	fr.wantRetirable(t, m.orig.Segment)
+	if ev := fr.events(); len(ev) != 0 {
+		t.Errorf("loss events = %+v, want none", ev)
+	}
 }

@@ -1896,15 +1896,20 @@ func TestACorruptReadOfAMovedPlaceIsNotCountedDamagedThroughUseCopy(t *testing.T
 
 // TestAHeldReappendWhoseSyncFailsIsReappendedAgain covers a held record's
 // re-append whose own segment then fails to sync, after an earlier sync of it
-// passed: the hold has ended at the append, the new copy is a record of a new
-// window, and it is re-appended again under the same sequence number and
-// version. A wait on the held re-append's place reaches the final place and
-// returns only once that syncs, and no loss is reported and no generation is
+// passed: the new copy is a record of a new window, and it is re-appended
+// again under the same sequence number and version, while the hold keeps the
+// original's segment claimed and unannounced throughout. A wait on the held
+// re-append's place reaches the final place and returns only once that syncs,
+// the hold ends only after that, and no loss is reported and no generation is
 // raised.
 func TestAHeldReappendWhoseSyncFailsIsReappendedAgain(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	hook, reached, release := gate(t)
 	var appends atomic.Int32
+	var mu sync.Mutex
+	var orig core.SegmentID
+	var atB holdView
+	var claimedAtB bool
 	fr := newFailRig(t, func(fr *failRig) {
 		fr.d.reappend = fr.d.reappendHeld
 		// The first append is the failed window's re-append, the second the
@@ -1914,10 +1919,28 @@ func TestAHeldReappendWhoseSyncFailsIsReappendedAgain(t *testing.T) {
 				hook()
 			}
 		}
+		// When the new copy's window resolves, the original's hold is read:
+		// the record is then in its last place, which has not synced.
+		fr.d.resolved = func(_ uint32, seg core.SegmentID) {
+			mu.Lock()
+			if seg == orig+1 {
+				atB = fr.holdOf(orig)
+				_, _, err := fr.set.ClaimRetirement(orig)
+				claimedAtB = errors.Is(err, segment.ErrClaimed)
+				if err == nil {
+					fr.set.Release(orig)
+				}
+			}
+			mu.Unlock()
+			fr.resolved <- seg
+		}
 	})
 	t.Cleanup(release)
 	f := file(1)
 	a, v := fr.publish(t, f, 0, "aaaa")
+	mu.Lock()
+	orig = a.Segment
+	mu.Unlock()
 	seq := core.Seq(fr.lastSeq.Load())
 	b, c := a.Segment+1, a.Segment+2
 	// The first sync of b, which covers the window's copy, passes, so that the
@@ -1980,10 +2003,18 @@ func TestAHeldReappendWhoseSyncFailsIsReappendedAgain(t *testing.T) {
 	if !ok || p.Version != v || p.Record.Segment != c {
 		t.Fatalf("Lookup = %+v, %v, want version %+v in segment %d", p, ok, v, c)
 	}
-	// The hold's end announces the original's segment again, then b's window.
-	if got := []core.SegmentID{fr.awaitResolved(t), fr.awaitResolved(t)}; got[0] != a.Segment || got[1] != b {
-		t.Fatalf("resolved segments %v, want %d then %d", got, a.Segment, b)
+	// b's window resolves once the record leaves it, while the record's last
+	// place is unsynced, and the hold's end announces the original's segment
+	// again only after that place completes.
+	if got := []core.SegmentID{fr.awaitResolved(t), fr.awaitResolved(t)}; got[0] != b || got[1] != a.Segment {
+		t.Fatalf("resolved segments %v, want %d then %d", got, b, a.Segment)
 	}
+	mu.Lock()
+	if !atB.held || !atB.claimed || !slices.Equal(atB.seqs, []core.Seq{seq}) || !claimedAtB {
+		t.Errorf("hold on segment %d when b's window resolved = %+v, claimed in the set %v, want seq %d held under the claim", a.Segment, atB, claimedAtB, seq)
+	}
+	mu.Unlock()
+	fr.wantRetirable(t, a.Segment)
 	// The window's re-append, the hold's and the re-append of the hold's own
 	// failed window each placed the record once.
 	if got, want := fr.d.Stats().ReappendedBytes, 3*uint64(a.Len); got != want {

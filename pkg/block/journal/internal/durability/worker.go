@@ -280,6 +280,12 @@ func (d *Durability) complete(st *stream) {
 	st.removeLocked(func(e *entry) bool { return e.done }, func(e entry) { st.forgetMovedLocked(e.w.Loc) })
 	// A Sync waits for its records to be completed, not only covered.
 	d.notifyAll()
+	// A held record leaves its hold on the pass after its new place completes,
+	// which the step over the holds, run before this one, decides: that pass is
+	// asked for now rather than left to the next tick of the sync bound.
+	if st.placingLocked() {
+		st.wake()
+	}
 	live := st.live
 	clear(live)
 	// A segment with a pending window keeps its failure and its synced value.

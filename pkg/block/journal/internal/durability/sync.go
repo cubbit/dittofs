@@ -284,10 +284,10 @@ type Durability struct {
 	// It runs on the stream's worker, so it must not wait on anything that
 	// worker does, such as a Sync or a WaitDurable of this layer: it may block
 	// on the stream's append, which may roll and seal, and on the record's file
-	// append domain. A nil error says the re-append landed and
-	// the record leaves the hold. New installs reappendHeld; a test replaces it
-	// before the layer starts.
-	reappend func(st *stream, c ownedCopy) error
+	// append domain. A nil error returns the place the record was appended at,
+	// and the record leaves the hold once that place has completed. New
+	// installs reappendHeld; a test replaces it before the layer starts.
+	reappend func(st *stream, c ownedCopy) (segment.Location, error)
 
 	// afterHolds is a test hook, nil in production: the worker runs it with
 	// no lock held after each pass's step over the held segments.

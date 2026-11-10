@@ -204,7 +204,7 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	// the layer starts. With any non-nil seam the worker repoints the index
 	// to the copy of a held record and, while the seam fails, logs an Error on
 	// every tick.
-	d.reappend = func(*stream, ownedCopy) error { return errPinnedHold }
+	d.reappend = func(*stream, ownedCopy) (segment.Location, error) { return segment.Location{}, errPinnedHold }
 	// This seam is the read of both readCopy and the re-read of a failed
 	// window, so production's st.s.ReadAt branch runs only in a test that sets
 	// d.readCopyAt to nil before Start, as
