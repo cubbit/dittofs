@@ -316,9 +316,10 @@ Only what the RFC leaves to the code. Ids are stable; a missing number became a 
 - **D8, the drain's cases** (RFC 8 §5.1, RFC 1 §3.8). The drain reads `Stats().Losses` when
   the generation moved past the last one applied; a gap in `SeqNum` raises the floor.
   `Offloaded` and `LossStale` events raise nothing. `LossFailedWindow` raises the file's
-  sequence (the write's drop is T4.6's). `LossCorrupt` of a pending write marks the run
-  it names lost (D6), the rest of the write committed as written. A `decision:` marker names the cases, since `LossEvent` carries no synced flag
-  (§9, point 2).
+  sequence (the write's drop is T4.6's). `LossCorrupt` of a synced record, or of an
+  unsynced one covering less than the write, marks the run it names lost (D6), the rest of
+  the write committed as written; an unsynced one covering the whole write drops it, as a
+  failed window does (RFC 8 §5.1).
 - **D9, the one sync function.** Every engine `Sync` goes through one function: the group
   commit's, `Commit`'s, epic 5's phase 1, epic 6's recovery, epic 7's capacity sync and epic
   8's clone. It runs the drain after the sync and before the caller commits. On a
@@ -561,12 +562,14 @@ listed test fails on the regression it names (after "catches").
   drain). A hook between `Write`'s `WriteAt` and its insert reports a corrupt loss of that
   write and runs `LossSeq`: the next batch commits its run as lost, a `Read` of it answers `ErrLost`
   and its `Done` runs once (catches an event the drain advances past unmarked, committed as
-  data). Over the real `kvstore`: the loss event's commit leaves the extent uncarved, a
-  `Read` answers `ErrLost`, and `Charged` and the usage counters are unchanged (catches a
-  hole committed instead, or an `OpWrite` that charges). `lostWhole` under `-race` with
-  writers: every uncommitted write's `Done` once, every file's sequence raised, a racing
-  write refused rather than left with no `Done`; after it, a `Commit` on the halted journal
-  answers `ErrUnavailable`, never a verifier (catches a verifier answered past the loss).
+  data). Over the real `kvstore`: the loss event's commit leaves the lost run uncarved and a
+  `Read` of it answers `ErrLost`; a write lost whole leaves `Charged` and the usage counters
+  unchanged, and one lost in part charges only its kept bytes, which read as written
+  (catches a hole committed instead, or an `OpWrite` that charges its lost run). `lostWhole`
+  under `-race` with writers: every uncommitted write's `Done` once, every file's sequence
+  raised, a racing write refused rather than left with no `Done`; after it, a `Commit` on
+  the halted journal answers `ErrUnavailable`, never a verifier (catches a verifier answered
+  past the loss).
 
 ### T4.6 The failed window, per file
 
@@ -664,8 +667,7 @@ RFC gaps go to the RFC, not here; each is listed until its RFC change merges.
    and RFC 7 §9.5's explicit time set commit pending existence first, but RFC 8 §12.1 offers
    only `Commit`. `commitNow` (D10) is the join; RFC 8 §12.1 should name the call. No RFC
    change yet.
-2. **Journal blocker: `LossEvent` has no synced flag**, which RFC 1 §3.8's loss record names.
-   D8 decides by the reason until `journal` carries it.
+2. **Closed: `LossEvent` carries `Synced`** (journal epic 6's T6.7), which D8 reads.
 3. **Journal blocker: a device lost whole under the running process has no signal**, and RFC
    1 §5.4's read-only state is not built. T4.5 builds the engine's half behind a hook (D11).
 4. **RFC gap: a missed ring and the pending writes it covered.** A ring gap raises the floor,
