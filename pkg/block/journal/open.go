@@ -131,20 +131,20 @@ func Init(ctx context.Context, dir string, install InstallationID, opts ...Optio
 	// sees the failure that caused the cleanup, not one that follows it.
 	if _, err := f.WriteAt(b, 0); err != nil {
 		_ = f.Close()
-		removePartialFormat(cfg.Storage)
+		removePartialFormat(cfg.Storage, id)
 		return JournalID{}, err
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		removePartialFormat(cfg.Storage)
+		removePartialFormat(cfg.Storage, id)
 		return JournalID{}, err
 	}
 	if err := f.Close(); err != nil {
-		removePartialFormat(cfg.Storage)
+		removePartialFormat(cfg.Storage, id)
 		return JournalID{}, err
 	}
 	if err := cfg.Storage.Rename(format.FormatTmpName, format.FormatFileName); err != nil {
-		removePartialFormat(cfg.Storage)
+		removePartialFormat(cfg.Storage, id)
 		return JournalID{}, err
 	}
 	if err := cfg.Storage.SyncDir(); err != nil {
@@ -160,39 +160,48 @@ func Init(ctx context.Context, dir string, install InstallationID, opts ...Optio
 		// naming what it found. Withdraw the erase if a caller ever needs
 		// a failed directory sync to leave the half-registered journal
 		// for an operator instead.
-		removePartialFormat(cfg.Storage)
+		removePartialFormat(cfg.Storage, id)
 		return JournalID{}, err
 	}
 	return id, nil
 }
 
-// removePartialFormat takes away the files a failed Init may have left, both
-// by name: a rename the storage reported failed may still have moved the file,
-// and either the temporary name or the finished one standing in a directory
-// the caller believes holds no journal is the split state the rename exists
-// to rule out.
+// removePartialFormat takes away the files a failed Init may have left: the
+// temporary name, and the finished one when it names id, the identity this
+// Init drew. A rename the storage reported failed may still have moved the
+// file, and either name standing in a directory the caller believes holds no
+// journal is the split state the rename exists to rule out; a format file
+// that names another identity is another Init's finished journal, put in
+// place while this one ran, and is never this call's to erase.
 //
-// decision: the format file's name is removed as well as the temporary one,
-// erasing unconditionally the journal a half-done rename may have put under
-// it. That is safe because two Inits never race on one directory: only an
-// explicit initialisation step makes a journal, one caller runs it, and the
-// identity it would erase is one no call ever returned. Withdraw the
-// unconditional erase — keep a format file that verifies, and only remove
-// the temporary name — if a caller ever needs a failed Init to leave a
-// half-registered journal for an operator instead of cleaning up after
-// itself.
-//
-// The removals make no directory sync, so a power cut can resurrect a
-// removed name; what the next call then finds whole it must refuse — Init
-// the directory holding a format file, Open one whose identity no caller
+// The removals make no directory sync, so a power cut can resurrect a removed
+// name; what the next call then finds whole it must refuse — Init the
+// directory holding a format file, Open one whose identity no caller
 // recorded, with an IdentityError naming what it found — and that is the
-// recovery path. The removal is best effort for the same reason: the
-// failure that already reported is the answer the caller needs, so an
-// error here is dropped rather than displacing it, and whatever it cannot
-// take is left for the next call to refuse the directory for.
-func removePartialFormat(fs storage.FS) {
+// recovery path. The removals are best effort for the same reason: the
+// failure that already reported is the answer the caller needs, so an error
+// here is dropped rather than displacing it.
+func removePartialFormat(fs storage.FS, id JournalID) {
 	_ = fs.Remove(format.FormatTmpName)
-	_ = fs.Remove(format.FormatFileName)
+	if namesIdentity(fs, id) {
+		_ = fs.Remove(format.FormatFileName)
+	}
+}
+
+// namesIdentity reports whether the directory holds a format file that
+// verifies and names id. A file that cannot be opened, read whole or verified
+// is not one this Init wrote, since it writes and syncs the whole file before
+// the rename, so it is left where it stands.
+func namesIdentity(fs storage.FS, id JournalID) bool {
+	f, err := fs.Open(format.FormatFileName)
+	if err != nil {
+		return false
+	}
+	b := make([]byte, format.FormatFileSize+1)
+	n, _ := f.ReadAt(b, 0)
+	_ = f.Close()
+	ff, err := format.DecodeFormatFile(b[:n])
+	return err == nil && ff.Identity == id
 }
 
 // Open opens the journal in dir, rebuilding its state from the segments on
