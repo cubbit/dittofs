@@ -143,12 +143,11 @@ const (
 	// pass covers only what was pending as the pass began, so every
 	// interval the stream lands during the wait deserves a park of its
 	// own, and a park that asks is fed — the growth with the other
-	// writer's appends the row's bound exists to fail. Under the gated
-	// feeder every fed interval's record is flushed by a pass of the
-	// measured sync itself, waited-for bytes the bound has no room for at
-	// any file size; the wrong case runs it at the check's own interval
-	// counts, the two files of one and four, so the failure the bound
-	// carries is caught at the pair the check streams.
+	// writer's appends the row's bound exists to fail. The design fails
+	// in the first leg: the run's first measured window already holds its
+	// own record and three fed intervals against the bound's one, so no
+	// window of another and larger file is ever reached; the bound is per
+	// window, not per file, and one fed interval is all the room it has.
 	designBacklogWait mixedDesign = "waits the stream's backlog"
 )
 
@@ -515,6 +514,9 @@ func (f *fakeMixed) SyncSmall() error {
 		if coveredSmalls > 0 {
 			f.smallPend = 0
 		}
+		// The loop ends because the feeder stops feeding after mixedFeeds
+		// intervals: past that cap no interval lands during a park, so a
+		// pass clears exactly what it began with and pending reaches zero.
 		for f.pending > 0 {
 			covered = f.pending
 			f.fsync(f.active)
@@ -700,11 +702,12 @@ func TestCounted_MixedChoreography(t *testing.T) {
 		{"never syncs", fakeCase{design: designNeverSyncs}, "less durable than written"},
 		{"failing write", fakeCase{design: designFailsWrite}, "opening write"},
 		{"failing sync", fakeCase{design: designFailsSync}, "measured Sync"},
-		// The chasing design, at the check's own interval counts — the two
-		// files of 64 and 256 one-MiB intervals, one four times the other:
-		// every fed interval is flushed by a pass of the measured sync
-		// itself, so the window's measure fails the bound, the growth with
-		// the other writer's appends the row forbids.
+		// The chasing design: the run's first measured window fails the
+		// bound — its own record and three fed intervals against the
+		// bound's one — so the design is caught inside the first leg's
+		// rounds, and no window of any later file is reached. The bound is
+		// what forbids the growth: it is per window, and a window may
+		// carry one fed interval only.
 		{"waits the stream's backlog", fakeCase{design: designBacklogWait, files: fakeCheckFiles, segCap: fakeCheckSegCap}, "durable in one window"},
 		// Names change on every append, so every window is skipped and the
 		// run measures nothing: the vacuity guard is the only thing that
