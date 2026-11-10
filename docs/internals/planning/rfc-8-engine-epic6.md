@@ -130,7 +130,10 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
    that has landed, and E2's test components: above all the fake journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12).
+   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
+   three kinds: the test clock, an in-memory implementation held to its interface's
+   conformance suite, or a fault wrapper. A test asserts on the engine's answers, on resulting
+   state and on what a double records of its own outputs, never on which calls the engine made.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -170,7 +173,9 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
    check about what the real thing does: the real journal on a real directory, with its crash
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
    commits and conflicts on. The fake journal is for the engine's pure logic only, and no
-   conformance row runs over it.
+   engine conformance row runs over it. It is held to the real journal by the journal's own
+   conformance suite (RFC 1 §9.4): it passes the suite's rows that need no crash, fault or
+   platform, the rows the real journal passes on `platform.OS`.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -737,8 +742,8 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   mid-retry finished by the restart; the share's usage counters read back after recovery
   equal the bytes re-applied, and a second restart leaves them unchanged (catches usage not
   recorded, or counted twice, R23). Over the fake: a clone marker reaches the rebuild hook
-  and no `Remove` (R26); the fake records the file's sync, the existence commit and `Settle`
-  in that order, and an existence commit made to fail leaves `Settle` uncalled and the
+  and no `Remove` (R26); the fake's own output log shows the file synced before, and settled
+  after, the existence commit the in-memory `kv.KV` records, and an existence commit made to fail leaves `Settle` uncalled and the
   marker yielded again at the next start (catches a `Settle` before the commit, or a commit
   before the sync, R24).
 
@@ -839,7 +844,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   limit passed, the next write served (catches a raise run only when woken); a `Draw` past
   the trigger, or a failed `Bind`'s check, while a raise runs: one more pass after it,
   which raises only if the versions left are still within the trigger (catches a wake lost while a raise runs); a
-  `SetVersionLimit` the fake journal refuses: no second call, one `Error` log, a later
+  `SetVersionLimit` the fake journal refuses once: its limit stays unchanged, one `Error` log, a later
   version past the trigger wakes no raise, and a write at the limit answers `ErrDelay`, not
   `ErrNoSpace`, and a `Bind` that attaches a share to that journal answers the journal's error (catches a refused
   limit retried in a loop, and a `Bind` that joins a journal no raise will lift); a `Bind`
@@ -892,7 +897,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   write reading back (catches a `Close` that calls `Forget`, R40, R46); T5.4's
   `ErrUnavailable` outcome: a `Close` while the loop retries a release's phase 1 yields
   `ErrUnavailable` on its channel with no `done(...)`, leaves the marker, and a restart then
-  settles it (R48); a `Served` stub that never returns: `Close` returns within its deadline,
+  settles it (R48); a fault wrapper around the open-state table holding `Served` forever: `Close` returns within its deadline,
   the wait's goroutine is gone and the clone `Removal` is still listed at the next start
   (catches a `Close` hung on a shard never served, R49), written with T6.8 or T8.6,
   whichever lands last; a `Bind` that took over a handle, failed, its handle's `Close`
@@ -943,8 +948,8 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   answering `ErrDelay` (catches the lifecycle mutex held across a join, D1); T5.4's stall
   ended by `Drop` yielding `ErrUnavailable` with no `done(...)` and, once `Drop` returns, no
   marker of the tag in the journal (R48); `Unbind` of a share whose rebuilt clone waits on a
-  `Served` stub: `Unbind` has not returned while the stub blocks, and returns only once the
-  stub is released and the clone is done (catches a cancel in place of the join, R44, R49),
+  `Served` a fault wrapper holds: `Unbind` has not returned while it is held, and returns only
+  once the wrapper releases it and the clone is done (catches a cancel in place of the join, R44, R49),
   written with T6.9 or T8.6, whichever lands last.
 
 ### T6.10 A journal refused as unsuitable at start
