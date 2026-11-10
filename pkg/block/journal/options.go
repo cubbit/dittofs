@@ -61,6 +61,21 @@ func WithSettings(s Settings) Option {
 	return Option{func(cfg *core.Config) { cfg.Settings = s }}
 }
 
+// WithMountProbe makes Init and Open run the platform check over the inputs g
+// gathers for the directory, rather than over what the platform's own probe
+// reads. Without it the check runs the platform's own probe.
+//
+// decision: the parameter is an internal type, as WithStorage's is, so only
+// code inside the journal's tree can build one and no public method joins
+// Journal or its value types. It exists for the journal's own tests, which
+// cannot produce a refusal the platform of the host running them can name —
+// a host whose mounts the check refuses shapes the answer rather than the
+// rules. Withdrawn when a caller outside the tree ever needs to name the
+// platform check's inputs, by giving them a type that tree can export.
+func WithMountProbe(g storage.Gather) Option {
+	return Option{func(cfg *core.Config) { cfg.MountProbe = g }}
+}
+
 // WithDescriptorBudget makes the journal hold its segment descriptors under b,
 // a budget shared with the other journals of the process. Without it the
 // journal gets a budget of its own, at the default limit.

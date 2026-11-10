@@ -21,6 +21,13 @@ type Config struct {
 	Logger  *slog.Logger
 	Storage storage.FS
 
+	// MountProbe, when not nil, gathers the platform check's inputs for the
+	// directory instead of the platform's own probe. It is the hook the
+	// journal's tree passes through WithMountProbe; production callers set
+	// nothing, and a call without it checks the directory the platform's own
+	// way.
+	MountProbe storage.Gather
+
 	// SparesReady, when not nil, is called by Open with the opened journal's
 	// spare-pool wait, before Open returns: the callback a test uses to take
 	// the wait its fixture blocks on. It is a hook the test components pass

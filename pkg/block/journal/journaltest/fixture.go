@@ -198,8 +198,12 @@ func bareFixture(tb testing.TB, fault sim.Fault, segCap int64, set func(*journal
 		clock:   clock,
 		handles: map[int]*journal.Handle{},
 	}
-	f.opts = append(opts[:len(opts):len(opts)], journal.WithClock(clock), journal.WithSettings(settings),
-		journal.WithSparesReady(f.takeSparesWait))
+	// The suitable mount comes first, so a caller's own probe option, passed
+	// through NewWithOptions, replaces it; the fixture's clock, settings and
+	// storage stay the last word on theirs.
+	f.opts = append([]journal.Option{SuitableMount()}, append(opts[:len(opts):len(opts)],
+		journal.WithClock(clock), journal.WithSettings(settings),
+		journal.WithSparesReady(f.takeSparesWait))...)
 	tb.Cleanup(f.close)
 	return f
 }

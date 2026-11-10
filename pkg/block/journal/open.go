@@ -18,13 +18,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
-// checkDir answers whether dir suits a journal: an error matching
-// ErrUnsuitableStorage for a directory a rule of the platform profile
-// refuses, the error met while checking as itself, nil for a suitable one.
-// It is a variable so a test can inject an answer the platform of the host
-// running it cannot name; production code never writes it.
-var checkDir = platform.CheckDir
-
 // resolveConfig resolves the options Init or Open was called with, over
 // dir, the directory the call names. A negative setting, or a negative
 // descriptor limit in a budget the caller passed, is refused with
@@ -85,7 +78,7 @@ func Init(ctx context.Context, dir string, install InstallationID, opts ...Optio
 	if err := ctx.Err(); err != nil {
 		return JournalID{}, err
 	}
-	if err := checkDir(dir); err != nil {
+	if err := platform.CheckDir(dir, cfg.MountProbe); err != nil {
 		return JournalID{}, err
 	}
 
@@ -264,7 +257,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, opts
 		}
 		return nil, err
 	}
-	if err := checkDir(dir); err != nil {
+	if err := platform.CheckDir(dir, cfg.MountProbe); err != nil {
 		return nil, err
 	}
 
@@ -319,7 +312,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, opts
 		// files, so no journal that has served can be opened again here.
 		// The refusal keeps the directory as it found it, so the recovery
 		// that exists later takes it whole.
-		return nil, fmt.Errorf("%w: %s holds a segment; opening it", ErrNotImplemented, dir)
+		return nil, fmt.Errorf("%w: %s holds segments; recovering them is not built", ErrNotImplemented, dir)
 	}
 
 	// The counter is raised before the core is built: a refused floor must

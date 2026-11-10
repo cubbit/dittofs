@@ -36,7 +36,7 @@ func TestCheckDir_RefusalMatchesErrUnsuitableStorage(t *testing.T) {
 		mountinfoPath = path
 	})
 
-	err := CheckDir(dir)
+	err := CheckDir(dir, nil)
 	wantBarrier(t, err, dir, dir, "nobarrier")
 
 	if !errors.Is(err, core.ErrUnsuitableStorage) {
@@ -71,7 +71,7 @@ func TestCheckDir_ProbeErrorIsNotUnsuitable(t *testing.T) {
 		mountinfoPath = path
 	})
 
-	err := CheckDir(dir)
+	err := CheckDir(dir, nil)
 	wantIOError(t, err, "open", mountinfoPath, fs.ErrNotExist)
 
 	if errors.Is(err, core.ErrUnsuitableStorage) {

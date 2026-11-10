@@ -16,6 +16,8 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/platform/platformtest"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
@@ -37,16 +39,31 @@ func openSettings() Settings {
 	return s
 }
 
-// openOpts returns the options an open takes: the test clock, the settings and
-// the view of the seam. The clock is shared with what the caller built before
-// only through the seam's directory; every journal gets a fresh one, since the
-// options of an open name a process that has not started yet.
+// openOpts returns the options an open takes: the test clock, the settings, a
+// suitable mount for the platform check — a host's own mount table says
+// nothing about a test's temporary directory, so the real verdict is fed one
+// as an input — and the view of the seam. The clock is shared with what the
+// caller built before only through the seam's directory; every journal gets a
+// fresh one, since the options of an open name a process that has not started
+// yet.
 func openOpts(seam *kit.Seam, clock core.Clock) []Option {
 	return []Option{
 		WithClock(clock),
 		WithSettings(openSettings()),
 		WithStorage(seam.FS()),
 	}
+}
+
+// openOptsDir is openOpts over s's directory, feeding the check the suitable
+// mount for it.
+func openOptsDir(s seamDir, clock core.Clock) []Option {
+	return openOptsDirAt(s.seam, s.dir, clock)
+}
+
+// openOptsDirAt is openOpts over the directory dir the seam serves, feeding
+// the check the suitable mount for it.
+func openOptsDirAt(seam *kit.Seam, dir string, clock core.Clock) []Option {
+	return append(openOpts(seam, clock), WithMountProbe(platformtest.SuitableGather(dir)))
 }
 
 // initAndOpen inits a journal through the seam and opens it with the identity
@@ -57,11 +74,11 @@ func initAndOpen(t *testing.T) (*Journal, seamDir, JournalID) {
 	t.Helper()
 
 	s := newSeam(t)
-	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	j, err := Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...)
+	j, err := Open(context.Background(), s.dir, Version{}, id, openOptsDir(s, kit.NewStopwatchClock())...)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -141,14 +158,14 @@ func TestOpen_FreshRoundTrip(t *testing.T) {
 // found, the installation it was made under and that no segment is held.
 func TestOpen_WrongIdentity_IdentityErrorNamesFound(t *testing.T) {
 	s := newSeam(t)
-	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
 	var wrong JournalID
 	wrong[0] = id[0] ^ 0xff
-	_, err = Open(context.Background(), s.dir, Version{}, wrong, openOpts(s.seam, kit.NewStopwatchClock())...)
+	_, err = Open(context.Background(), s.dir, Version{}, wrong, openOptsDir(s, kit.NewStopwatchClock())...)
 	var ie *IdentityError
 	if !errors.As(err, &ie) {
 		t.Fatalf("Open with the wrong identity returned %v, want an IdentityError", err)
@@ -175,12 +192,12 @@ func TestOpen_WrongIdentity_IdentityErrorNamesFound(t *testing.T) {
 // from a lost device.
 func TestOpen_ExpectZero_IdentityErrorNames(t *testing.T) {
 	s := newSeam(t)
-	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
-	_, err = Open(context.Background(), s.dir, Version{}, JournalID{}, openOpts(s.seam, kit.NewStopwatchClock())...)
+	_, err = Open(context.Background(), s.dir, Version{}, JournalID{}, openOptsDir(s, kit.NewStopwatchClock())...)
 	var ie *IdentityError
 	if !errors.As(err, &ie) {
 		t.Fatalf("Open with expect zero returned %v, want an IdentityError", err)
@@ -204,7 +221,7 @@ func TestOpen_ExpectZero_IdentityErrorNames(t *testing.T) {
 func TestOpen_ExpectZero_EmptyDir_ErrNoJournal(t *testing.T) {
 	s := newSeam(t)
 
-	_, err := Open(context.Background(), s.dir, Version{}, JournalID{}, openOpts(s.seam, kit.NewStopwatchClock())...)
+	_, err := Open(context.Background(), s.dir, Version{}, JournalID{}, openOptsDir(s, kit.NewStopwatchClock())...)
 	if !errors.Is(err, ErrNoJournal) {
 		t.Fatalf("Open with expect zero on an empty directory returned %v, want ErrNoJournal", err)
 	}
@@ -218,19 +235,18 @@ func TestOpen_ExpectZero_EmptyDir_ErrNoJournal(t *testing.T) {
 // it fails as on a directory that holds no journal, before the platform
 // checks run, and nothing is made. The directory's absence is read through
 // the operating system's files, so the open runs with the open path's own
-// default storage rather than one injected.
+// default storage rather than one injected; a probe that fails the test when
+// its answer is read proves the check never ran.
 func TestOpen_MissingDir_ErrNoJournal_CreatesNothing(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "absent")
 
-	// The check is swapped for one that fails the test when reached: a missing
-	// directory is not checked.
-	swapCheckDir(t, func(string) error {
+	probe := func(string) (storage.Probe, error) {
 		t.Error("the platform check ran on a directory that does not exist")
-		return nil
-	})
+		return storage.Probe{}, nil
+	}
 
 	if _, err := Open(context.Background(), dir, Version{}, JournalID{0x01},
-		WithClock(kit.NewStopwatchClock())); !errors.Is(err, ErrNoJournal) {
+		WithClock(kit.NewStopwatchClock()), WithMountProbe(probe)); !errors.Is(err, ErrNoJournal) {
 		t.Fatalf("Open of a missing directory returned %v, want ErrNoJournal", err)
 	}
 	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
@@ -245,7 +261,7 @@ func TestOpen_EmptyDir_ErrNoJournal_CreatesNothing(t *testing.T) {
 	s := newSeam(t)
 
 	expected := JournalID{0x01}
-	if _, err := Open(context.Background(), s.dir, Version{}, expected, openOpts(s.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrNoJournal) {
+	if _, err := Open(context.Background(), s.dir, Version{}, expected, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrNoJournal) {
 		t.Fatalf("Open of an empty directory returned %v, want ErrNoJournal", err)
 	}
 	if names := s.listSeam(t); len(names) != 0 {
@@ -262,7 +278,7 @@ func TestOpen_NeitherFormatNorSegment_ErrNoJournal(t *testing.T) {
 	s.create(t, "a foreign entry")
 
 	expected := JournalID{0x01}
-	if _, err := Open(context.Background(), s.dir, Version{}, expected, openOpts(s.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrNoJournal) {
+	if _, err := Open(context.Background(), s.dir, Version{}, expected, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrNoJournal) {
 		t.Fatalf("Open of a directory holding only a foreign entry returned %v, want ErrNoJournal", err)
 	}
 	if names := s.listSeam(t); !slices.Equal(names, []string{"a foreign entry"}) {
@@ -288,7 +304,7 @@ func TestOpen_SegmentNoFormat_ErrUnidentified_Untouched(t *testing.T) {
 			s.create(t, seg)
 
 			expected := JournalID{0x01}
-			_, err := Open(context.Background(), s.dir, Version{}, expected, openOpts(s.seam, kit.NewStopwatchClock())...)
+			_, err := Open(context.Background(), s.dir, Version{}, expected, openOptsDir(s, kit.NewStopwatchClock())...)
 			if !errors.Is(err, ErrUnidentified) {
 				t.Fatalf("a directory holding %s and no format: Open returned %v, want ErrUnidentified", seg, err)
 			}
@@ -337,7 +353,7 @@ func TestOpen_SecondOpenAfterClose_ErrNotImplemented(t *testing.T) {
 		t.Fatalf("the run left no segment: %v", names)
 	}
 
-	_, err = Open(context.Background(), dirOfSeam(seam), Version{}, id, openOpts(seam.seam, kit.NewStopwatchClock())...)
+	_, err = Open(context.Background(), dirOfSeam(seam), Version{}, id, openOptsDir(seam, kit.NewStopwatchClock())...)
 	if !errors.Is(err, ErrNotImplemented) {
 		t.Fatalf("a second Open of a journal that has run returned %v, want ErrNotImplemented", err)
 	}
@@ -350,18 +366,22 @@ func TestOpen_SecondOpenAfterClose_ErrNotImplemented(t *testing.T) {
 // before the platform checks run, or not at all: the check runs before
 // anything is written, and an unsuitable directory is refused with
 // ErrUnsuitableStorage, matching no other refusal, with the directory left as
-// it is.
+// it is. The mount the verdict reads is fed to the real one through the
+// option as an input, so no answer depends on the host's platform.
 func TestOpen_UnsuitableChecksBeforeWrite(t *testing.T) {
 	s := newSeam(t)
-	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
-	swapCheckDir(t, func(string) error { return ErrUnsuitableStorage })
-
-	if _, err := Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnsuitableStorage) {
+	open := append(openOptsDir(s, kit.NewStopwatchClock()), WithMountProbe(mountGather(platformtest.NoBarrierMount(s.dir))))
+	_, err = Open(context.Background(), s.dir, Version{}, id, open...)
+	if !errors.Is(err, ErrUnsuitableStorage) {
 		t.Fatalf("an unsuitable directory: Open returned %v, want ErrUnsuitableStorage", err)
+	}
+	if !strings.Contains(err.Error(), s.dir) || !strings.Contains(err.Error(), "remount with barriers") {
+		t.Errorf("the refusal %q names neither the directory nor the rule", err)
 	}
 	for _, target := range []error{ErrNoJournal, ErrNotImplemented, ErrIdentityMismatch} {
 		if errors.Is(err, target) {
@@ -374,20 +394,23 @@ func TestOpen_UnsuitableChecksBeforeWrite(t *testing.T) {
 }
 
 // TestOpen_CheckError_ReturnedAsItself fails an Open that turns an error met
-// while checking into a refusal: an I/O error or a mount table that does not
-// describe the directory is returned as itself, matching no refusal, so a
-// caller can tell a fault to fix from a directory to refuse.
+// while checking into a refusal: an I/O error or a mount table that cannot
+// be read is returned as itself, matching no refusal, so a caller can tell a
+// fault to fix from a directory to refuse. The error is the gather's, so the
+// real verdict is what answers it.
 func TestOpen_CheckError_ReturnedAsItself(t *testing.T) {
 	s := newSeam(t)
-	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
-	probe := errors.New("the mount table does not parse")
-	swapCheckDir(t, func(string) error { return probe })
+	probe := &fs.PathError{Op: "open", Path: "/proc/self/mountinfo", Err: errors.New("an I/O error met while reading the mount table")}
+	open := append(openOptsDir(s, kit.NewStopwatchClock()), WithMountProbe(func(string) (storage.Probe, error) {
+		return storage.Probe{}, probe
+	}))
 
-	_, err = Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...)
+	_, err = Open(context.Background(), s.dir, Version{}, id, open...)
 	if !errors.Is(err, probe) {
 		t.Fatalf("Open returned %v, want the probe's error as itself", err)
 	}
@@ -400,37 +423,47 @@ func TestOpen_CheckError_ReturnedAsItself(t *testing.T) {
 
 // TestOpen_NoClock fails an Open that reaches its directory with no clock: a
 // journal has no default clock to fall back on, so a call without one fails
-// with ErrNoClock before any directory access — proven by a storage whose every
-// call fails, which would name itself in the answer if it were reached — and
-// the check is no respecter of the missing directory, so the directory's own
-// absence cannot mask it.
+// with ErrNoClock before any directory access — proven by the seam's own
+// counters, which stay at zero — so the directory is left as it was.
 func TestOpen_NoClock(t *testing.T) {
-	dir := t.TempDir()
+	s := newSeam(t)
 
-	if _, err := Open(context.Background(), dir, Version{}, JournalID{0x01}, WithStorage(failFS{})); !errors.Is(err, ErrNoClock) {
+	if _, err := Open(context.Background(), s.dir, Version{}, JournalID{0x01}, WithStorage(s.seam.FS())); !errors.Is(err, ErrNoClock) {
 		t.Fatalf("Open with no clock returned %v, want ErrNoClock", err)
 	}
-	if names := listOS(t, dir); len(names) != 0 {
+	s.assertNoCalls(t)
+	if names := listOS(t, s.dir); len(names) != 0 {
 		t.Errorf("after the refusal the directory holds %v, want nothing created", names)
 	}
 }
 
 // TestOpen_CtxCheckedFirst fails an Open that reads its directory with a
 // cancelled context: the context is checked after the settings and the clock
-// and before any directory access, and its error is returned having changed
-// nothing.
+// and before any directory access — proven by the seam's own counters, which
+// the cancelled open leaves where Init put them — and its error is returned
+// having changed nothing.
 func TestOpen_CtxCheckedFirst(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	s := newSeam(t)
-	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
-	if _, err := Open(ctx, s.dir, Version{}, id, append(openOpts(s.seam, kit.NewStopwatchClock()), WithStorage(failFS{}))...); !errors.Is(err, context.Canceled) {
+	ops := []string{kit.OpCreate, kit.OpOpen, kit.OpRename, kit.OpRemove, kit.OpList, kit.OpSyncDir}
+	before := make([]int, len(ops))
+	for i, op := range ops {
+		before[i] = s.seam.Calls(op)
+	}
+	if _, err := Open(ctx, s.dir, Version{}, id, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cancelled context: Open returned %v, want context.Canceled", err)
+	}
+	for i, op := range ops {
+		if after := s.seam.Calls(op); after != before[i] {
+			t.Errorf("the cancelled call reached the seam: %d more %s calls were made, want none", after-before[i], op)
+		}
 	}
 	if names := s.listSeam(t); !slices.Equal(names, []string{format.FormatFileName}) {
 		t.Errorf("after the cancelled call the directory holds %v, want the format file alone", names)
@@ -442,13 +475,13 @@ func TestOpen_CtxCheckedFirst(t *testing.T) {
 // and writes nothing.
 func TestOpen_CorruptFormat_ErrCorrupt(t *testing.T) {
 	s := newSeam(t)
-	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	damageFormat(t, s.dir)
 
-	if _, err := Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrCorrupt) {
+	if _, err := Open(context.Background(), s.dir, Version{}, id, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Open of a corrupt format returned %v, want ErrCorrupt", err)
 	}
 	for _, target := range []error{ErrUnknownFormat, ErrNoJournal, ErrIdentityMismatch} {
@@ -467,13 +500,13 @@ func TestOpen_CorruptFormat_ErrCorrupt(t *testing.T) {
 // so both wrong lengths are held by one place.
 func TestOpen_WrongFormatFileLength_ErrCorrupt(t *testing.T) {
 	s := newSeam(t)
-	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
 	appendFormatByte(t, s)
-	_, err = Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...)
+	_, err = Open(context.Background(), s.dir, Version{}, id, openOptsDir(s, kit.NewStopwatchClock())...)
 	if !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Open of a format file one byte long returned %v, want ErrCorrupt", err)
 	}
@@ -487,7 +520,7 @@ func TestOpen_WrongFormatFileLength_ErrCorrupt(t *testing.T) {
 	// taking a file of the format's own length again; then one byte below
 	// it, the damaged file on the other side.
 	resetFormat(t, s)
-	j, err := Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...)
+	j, err := Open(context.Background(), s.dir, Version{}, id, openOptsDir(s, kit.NewStopwatchClock())...)
 	if err != nil {
 		t.Fatalf("Open of a format file of the exact size: %v", err)
 	}
@@ -496,7 +529,7 @@ func TestOpen_WrongFormatFileLength_ErrCorrupt(t *testing.T) {
 	}
 
 	shortenFormat(t, s)
-	if _, err := Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrCorrupt) {
+	if _, err := Open(context.Background(), s.dir, Version{}, id, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Open of a format file one byte short returned %v, want ErrCorrupt", err)
 	}
 }
@@ -575,7 +608,7 @@ func TestOpen_UnknownFormatVersion(t *testing.T) {
 	}
 
 	if _, err := Open(context.Background(), dir, Version{}, JournalID{0x01},
-		openOpts(seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
+		openOptsDirAt(seam, dir, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
 		t.Fatalf("Open of an unknown format version returned %v, want ErrUnknownFormat", err)
 	}
 	for _, target := range []error{ErrCorrupt, ErrNoJournal, ErrIdentityMismatch} {
@@ -592,13 +625,13 @@ func TestOpen_UnknownFormatVersion(t *testing.T) {
 // until its first limit, so the check sets one before it draws.
 func TestOpen_FloorRaisesCounter(t *testing.T) {
 	s := newSeam(t)
-	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
 	floor := Version{Counter: 1 << 30}
-	j, err := Open(context.Background(), s.dir, floor, id, openOpts(s.seam, kit.NewStopwatchClock())...)
+	j, err := Open(context.Background(), s.dir, floor, id, openOptsDir(s, kit.NewStopwatchClock())...)
 	if err != nil {
 		t.Fatalf("Open with a floor: %v", err)
 	}
@@ -618,11 +651,11 @@ func TestOpen_FloorRaisesCounter(t *testing.T) {
 
 	// A floor with a non-zero epoch is refused and opens nothing.
 	s2 := newSeam(t)
-	id2, err := Init(context.Background(), s2.dir, installID, WithStorage(s2.seam.FS()))
+	id2, err := Init(context.Background(), s2.dir, installID, WithMountProbe(platformtest.SuitableGather(s2.dir)), WithStorage(s2.seam.FS()))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if _, err := Open(context.Background(), s2.dir, Version{Epoch: 1, Counter: 5}, id2, openOpts(s2.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
+	if _, err := Open(context.Background(), s2.dir, Version{Epoch: 1, Counter: 5}, id2, openOptsDir(s2, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
 		t.Fatalf("Open with an epochal floor returned %v, want ErrUnknownFormat", err)
 	}
 	if got := countSegments(listOS(t, s2.dir)); got != 0 {
@@ -643,12 +676,12 @@ func TestOpen_RefusedFloor_LeaksNothing_CreatesNothing(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	s := newSeam(t)
-	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
-	if _, err := Open(context.Background(), s.dir, Version{Epoch: 1, Counter: 5}, id, openOpts(s.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
+	if _, err := Open(context.Background(), s.dir, Version{Epoch: 1, Counter: 5}, id, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
 		t.Fatalf("Open with an epochal floor returned %v, want ErrUnknownFormat", err)
 	}
 
@@ -682,7 +715,7 @@ func TestOpen_ConcurrentCalls_IndependentJournalEach(t *testing.T) {
 	dirs := make([]string, n)
 	for i := range seams {
 		s := newSeam(t)
-		id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+		id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
 		if err != nil {
 			t.Fatalf("Init: %v", err)
 		}
@@ -695,7 +728,7 @@ func TestOpen_ConcurrentCalls_IndependentJournalEach(t *testing.T) {
 	errs := make([]error, n)
 	for i := range errs {
 		wg.Go(func() {
-			j, err := Open(context.Background(), dirs[i], Version{}, ids[i], openOpts(seams[i], kit.NewStopwatchClock())...)
+			j, err := Open(context.Background(), dirs[i], Version{}, ids[i], openOptsDirAt(seams[i], dirs[i], kit.NewStopwatchClock())...)
 			if err != nil {
 				errs[i] = err
 				return
@@ -811,13 +844,13 @@ func TestOpen_SparesReady_WaitsForThePool(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	s := newSeam(t)
-	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
 	var wait core.SparesWait
-	open := append(openOpts(s.seam, kit.NewStopwatchClock()), WithSparesReady(func(w core.SparesWait) {
+	open := append(openOptsDir(s, kit.NewStopwatchClock()), WithSparesReady(func(w core.SparesWait) {
 		if w == nil {
 			t.Error("the open handed over a nil spare-pool wait")
 			return
@@ -895,13 +928,13 @@ func TestOpen_SparesReady_CloseDuringTheWait(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	s := newSeam(t)
-	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
 	var wait core.SparesWait
-	open := append(openOpts(s.seam, kit.NewStopwatchClock()), WithSparesReady(func(w core.SparesWait) {
+	open := append(openOptsDir(s, kit.NewStopwatchClock()), WithSparesReady(func(w core.SparesWait) {
 		wait = w
 	}))
 	held := s.seam.HoldFirst(t, kit.OpCreate, "*")

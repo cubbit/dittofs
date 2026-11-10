@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"unsafe"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"golang.org/x/sys/unix"
 )
 
@@ -72,7 +73,7 @@ func check(c calls, mountinfo, dir string) error {
 		return err
 	}
 
-	return checkLinuxProbe(p)
+	return CheckProbe(p)
 }
 
 // probeDir gathers the verdict's inputs for dir through c, reading the mount
@@ -83,15 +84,15 @@ func check(c calls, mountinfo, dir string) error {
 // the directory is opened through it, so every answer is about one
 // directory. A failed call is returned as an error naming it, never as a
 // refusal, and the descriptor is closed whatever happened.
-func probeDir(c calls, mountinfo, dir string) (linuxProbe, error) {
+func probeDir(c calls, mountinfo, dir string) (storage.Probe, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return linuxProbe{}, err
+		return storage.Probe{}, err
 	}
 
 	resolved, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return linuxProbe{}, err
+		return storage.Probe{}, err
 	}
 
 	// decision: the barrier options are read from the mount table alone.
@@ -102,29 +103,29 @@ func probeDir(c calls, mountinfo, dir string) (linuxProbe, error) {
 	// says a default set in the superblock is one the mount options say.
 	table, err := os.ReadFile(mountinfo)
 	if err != nil {
-		return linuxProbe{}, err
+		return storage.Probe{}, err
 	}
 
 	fd, err := openRetrying(func() (int, error) {
 		return c.open(resolved, checkDirFlags, 0)
 	})
 	if err != nil {
-		return linuxProbe{}, &fs.PathError{
+		return storage.Probe{}, &fs.PathError{
 			Op:   "open",
 			Path: resolved,
 			Err:  err,
 		}
 	}
 
-	p := linuxProbe{
-		dir:       resolved,
-		mountinfo: string(table),
+	p := storage.Probe{
+		Dir:       resolved,
+		Mountinfo: string(table),
 	}
 
 	// The close is never repeated, as in SyncDir: Linux releases the
 	// descriptor even when close reports EINTR.
 	if err := joinClose(probeOpenDir(c, fd, &p), c.close(fd), resolved); err != nil {
-		return linuxProbe{}, err
+		return storage.Probe{}, err
 	}
 
 	return p, nil
@@ -138,43 +139,43 @@ func probeDir(c calls, mountinfo, dir string) (linuxProbe, error) {
 // make it. Every other call is made once: an interrupted fstatfs, fstat,
 // statx, ioctl or getdents fails the probe as an error the caller may retry,
 // and no answer is read from it.
-func probeOpenDir(c calls, fd int, p *linuxProbe) error {
+func probeOpenDir(c calls, fd int, p *storage.Probe) error {
 	var sfs unix.Statfs_t
 
 	if err := c.fstatfs(fd, &sfs); err != nil {
 		return &fs.PathError{
 			Op:   "fstatfs",
-			Path: p.dir,
+			Path: p.Dir,
 			Err:  err,
 		}
 	}
 
-	p.fsType = uint32(sfs.Type)
+	p.FSType = uint32(sfs.Type)
 
 	var st unix.Stat_t
 
 	if err := c.fstat(fd, &st); err != nil {
 		return &fs.PathError{
 			Op:   "fstat",
-			Path: p.dir,
+			Path: p.Dir,
 			Err:  err,
 		}
 	}
 
-	p.dirIno = st.Ino
+	p.DirIno = st.Ino
 
 	mountID, err := statxMountID(c, fd)
 	if err != nil {
 		return &fs.PathError{
 			Op:   "statx",
-			Path: p.dir,
+			Path: p.Dir,
 			Err:  err,
 		}
 	}
 
-	p.mountID = mountID
+	p.MountID = mountID
 
-	if p.fsType != magicBtrfs || p.dirIno != btrfsSubvolumeRootIno {
+	if p.FSType != magicBtrfs || p.DirIno != btrfsSubvolumeRootIno {
 		return nil
 	}
 
@@ -182,27 +183,27 @@ func probeOpenDir(c calls, fd int, p *linuxProbe) error {
 	if err != nil {
 		return &fs.PathError{
 			Op:   "ioctl",
-			Path: p.dir,
+			Path: p.Dir,
 			Err:  err,
 		}
 	}
 
-	p.dirFlags = flags
+	p.DirFlags = flags
 
-	names, err := listRegular(c, fd, p.dir)
+	names, err := listRegular(c, fd, p.Dir)
 	if err != nil {
 		return err
 	}
 
 	for _, name := range names {
-		flags, err := fileFlags(c, fd, joinPath(p.dir, name), name)
+		flags, err := fileFlags(c, fd, joinPath(p.Dir, name), name)
 		if err != nil {
 			return err
 		}
 
-		p.files = append(p.files, probedFile{
-			name:  name,
-			flags: flags,
+		p.Files = append(p.Files, storage.ProbedFile{
+			Name:  name,
+			Flags: flags,
 		})
 	}
 
@@ -210,7 +211,7 @@ func probeOpenDir(c calls, fd int, p *linuxProbe) error {
 }
 
 // statxMountID returns the ID of the mount holding the directory open on fd,
-// asking statx for STATX_MNT_ID alone (linuxProbe's mountID says why never
+// asking statx for STATX_MNT_ID alone (Probe's mountID says why never
 // STATX_MNT_ID_UNIQUE). It returns 0, which the verdict reads as unknown,
 // where the kernel does not report the ID: a kernel before Linux 5.8 has no
 // STATX_MNT_ID (include/uapi/linux/stat.h) and leaves the bit out of

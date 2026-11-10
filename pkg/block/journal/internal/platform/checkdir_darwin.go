@@ -2,7 +2,7 @@
 
 package platform
 
-// CheckDir decides whether dir is suitable for a journal. It always
+// checkDirOS decides whether dir is suitable for a journal. It always
 // answers nil on macOS.
 //
 // decision: nil because no rule of the platform profile refuses a
@@ -13,6 +13,6 @@ package platform
 // profile as health conditions the deployment owns, not errors an open can
 // detect. Withdraw the no-op when a rule of the profile names something
 // the check must read on the platform.
-func CheckDir(dir string) error {
+func checkDirOS(dir string) error {
 	return nil
 }
