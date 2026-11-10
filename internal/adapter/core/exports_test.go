@@ -97,12 +97,21 @@ func surface(t *testing.T, dir string) []byte {
 	return []byte(strings.Join(decls, ""))
 }
 
+// receiverExported reports whether a method's receiver type is exported,
+// through a pointer and a generic type's parameters, as in *T[K, V].
 func receiverExported(recv *ast.FieldList) bool {
 	typ := recv.List[0].Type
 	if star, ok := typ.(*ast.StarExpr); ok {
 		typ = star.X
 	}
-	return typ.(*ast.Ident).IsExported()
+	switch g := typ.(type) {
+	case *ast.IndexExpr:
+		typ = g.X
+	case *ast.IndexListExpr:
+		typ = g.X
+	}
+	id, ok := typ.(*ast.Ident)
+	return ok && id.IsExported()
 }
 
 func exportedName(names []*ast.Ident) bool {
