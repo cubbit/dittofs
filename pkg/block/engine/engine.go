@@ -66,7 +66,6 @@ type Engine struct {
 	hooks           struct{ taken, drained atomic.Pointer[func()] } // a test's seams: after a batch's take and a drain's read of the ring
 	afterRegister   func()                                          // a test's hook: run once a clone's registrations are installed, the clone then stopping
 	fakeCloneDone   atomic.Bool                                     // a test's stand-in for the joins of a running clone: set, a clone runs past its registrations
-	noGuardSkip     atomic.Bool                                     // a test's seam: capture takes a guarded file, so a test proves the stop at a removal alone
 	onIssued        atomic.Pointer[func(journal.Version)]           // a test's seam: handed each version issued counts toward the version limit
 
 	// cloneMarker, a test's stand-in for the clone's rebuild, is called by

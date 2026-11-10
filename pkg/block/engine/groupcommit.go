@@ -610,11 +610,8 @@ func (e *Engine) failCause(b *binding, f entity.FileID) vfserr.DelayCause {
 
 // capture claims f's leading writes in place under its entry's lock and marks
 // the entry in-batch: the operations stay in the entry, so Overlay and Read
-// keep answering them until the batch returns. The claim runs in version
-// order and stops at the first operation that is not a write or a grow: a
-// removal, whose phase 1 commits it, so no batch raises applied or settles
-// the journal at or above a removal whose phase 1 has not committed, and a
-// file with no write at the front of its entry is not captured.
+// keep answering them until the batch returns. It claims the claimable ones,
+// and a file with none is not captured.
 //
 // decision: a file whose guard a removal holds is skipped without its
 // entry's lock, which a truncate holds across its journal call, and is taken
@@ -624,8 +621,7 @@ func (e *Engine) failCause(b *binding, f entity.FileID) vfserr.DelayCause {
 // beside it: the stop at the removal is what keeps applied and every Settle
 // below it.
 func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool) {
-	skip := !e.noGuardSkip.Load()
-	if fe := e.files.entryOf(f); skip && fe != nil && fe.guarded.Load() {
+	if fe := e.files.entryOf(f); fe != nil && fe.guarded.Load() {
 		return captured{}, false, true
 	}
 	fe := e.files.lockOf(f)
@@ -633,22 +629,32 @@ func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool
 		return captured{}, false, false
 	}
 	defer e.files.unlock(f, fe)
-	if skip && fe.guarded.Load() {
+	if fe.guarded.Load() {
 		return captured{}, false, true
 	}
-	n := 0
-	for ; n < len(fe.ops); n++ {
-		if fe.ops[n].kind != opWrite && !fe.ops[n].grow {
-			break // a removal: nothing at or above it commits before its phase 1
-		}
-		fe.ops[n].claimed = true
-	}
+	n := claimable(fe.ops)
 	if n == 0 {
 		return captured{}, false, true
+	}
+	for i := range n {
+		fe.ops[i].claimed = true
 	}
 	fe.inBatch = true
 	fe.batchDone = make(chan struct{})
 	return captured{b: b, f: f, fe: fe}, true, true
+}
+
+// claimable is how many of a file's operations, in version order, a batch
+// claims: those before the first that is not a write or a grow. That one is a
+// removal, whose phase 1 commits it, so no batch raises applied or settles
+// the journal at or above a removal whose phase 1 has not committed.
+func claimable(ops []pendingOp) int {
+	for n, op := range ops {
+		if op.kind != opWrite && !op.grow {
+			return n
+		}
+	}
+	return len(ops)
 }
 
 // syncAndCommit syncs the batch's files in the journal, one Sync per share,

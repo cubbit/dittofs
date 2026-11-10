@@ -460,10 +460,6 @@ func (e *Engine) RemovalsPending() int {
 	return n
 }
 
-// NoGuardSkip has every capture take a file whose guard a removal holds,
-// as one would with the guard's skip removed.
-func (e *Engine) NoGuardSkip() { e.noGuardSkip.Store(true) }
-
 // StopRemovalLoops ends every journal's removal loop, as Close's stop of
 // the work queue does before its last group commit, and leaves the group
 // commits running.
@@ -585,12 +581,11 @@ func (e *Engine) CommitAll(ctx context.Context, j Journal) error {
 		}
 		// A file a removal's guard holds is committed by that removal's own
 		// phase 1, and a batch would only skip it: wait for the guard rather
-		// than ask for batch after batch. Under the test seam a batch takes
-		// it, so it is asked for like any other.
+		// than ask for batch after batch.
 		var guard <-chan struct{}
 		asked := false
 		for _, f := range files {
-			if ch := e.guardOf(f); ch != nil && !e.noGuardSkip.Load() {
+			if ch := e.guardOf(f); ch != nil {
 				guard = ch
 				continue
 			}
