@@ -138,6 +138,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 			j:     j,
 			vl:    vl,
 			h:     h,
+			seq:   e.opened.Add(1),
 		}
 		b.state.Store(uint32(s.State))
 		o.table[s.ID] = b
@@ -558,15 +559,18 @@ func (vl *versionLimit) acquire(ctx context.Context) error {
 func (vl *versionLimit) release() { <-vl.lock }
 
 // raises is the version limit raises running: the context they run under,
-// which stopping cancels, and the group that joins them. count, nil in
-// production, counts the raise goroutines alive, and timers holds the clock
-// channel each raise waiting to retry waits on, once a test sets them.
+// which stopping cancels, and the group that joins them. count and started,
+// nil in production, count the raise goroutines alive and every one started,
+// and timers holds the clock channel each raise waiting to retry waits on,
+// once a test sets them.
 type raises struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	count  *atomic.Int32
-	timers *sync.Map
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	exited  func()
+	count   *atomic.Int32
+	started *atomic.Int64
+	timers  *sync.Map
 }
 
 // rateBuckets counts the versions drawn in each of the last rateWindow
@@ -720,6 +724,10 @@ func (e *Engine) wake(vl *versionLimit) {
 				c.Add(1)
 			}
 
+			if c := e.raising.started; c != nil {
+				c.Add(1)
+			}
+
 			e.raising.wg.Add(1)
 
 			go e.raiseLoop(vl)
@@ -761,6 +769,10 @@ func (vl *versionLimit) again() bool {
 // the owners that retry their write transactions.
 func (e *Engine) raiseLoop(vl *versionLimit) {
 	defer e.raising.wg.Done()
+
+	if f := e.raising.exited; f != nil {
+		defer f()
+	}
 
 	if c := e.raising.count; c != nil {
 		defer c.Add(-1)

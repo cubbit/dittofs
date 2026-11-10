@@ -73,6 +73,7 @@ type removalLoop struct {
 	mu     sync.Mutex
 	items  []*loopItem
 	closed bool
+	ending []*loopItem // the items the stop took, ended once the loop's goroutine has
 	// decision: only a test helper sets dropped, until Drop is built, so the
 	// branches that read it end a dropped share's items for tests alone.
 	// They are the shape Drop needs: Drop sets it, and the helper goes,
@@ -212,22 +213,58 @@ func (l *removalLoop) unstall(it *loopItem) {
 	l.e.conds.clear(condKey{conditionRemovalStalled, it})
 }
 
-// close stops the loop, joins its goroutine and ends every item left. A
-// second close does nothing.
-func (l *removalLoop) close() {
+// halt stops the loop, joins its goroutine within the bound b and ends every
+// item left. It reports false when the join did not end in b, or when b ended
+// between two items' ends, leaving the loop stopped and the items not yet
+// ended to a later halt: the stop is signalled once, and each item ended
+// once, by whichever call takes it from the list.
+//
+// decision: the ends run one at a time and the bound is checked before each,
+// since an end can wait on the store: a clone's end releases its hold on the
+// source, bounded by the conflict bound but outside the stop bound, so a
+// Close with many clones would otherwise run past it by that bound for each.
+// One end can still run past the bound by the conflict bound.
+func (l *removalLoop) halt(b *stopBound) bool {
 	l.mu.Lock()
-	if l.closed {
-		l.mu.Unlock()
-		return
+	first := !l.closed
+
+	if first {
+		l.closed = true
+		l.ending = l.items
+		l.items = nil
 	}
-	l.closed = true
-	items := l.items
-	l.items = nil
+
 	l.mu.Unlock()
-	l.cancel()
-	close(l.stop)
-	<-l.done
-	for _, it := range items {
+
+	if first {
+		l.cancel()
+		close(l.stop)
+	}
+
+	if !b.join(l.done, "a removal loop") {
+		return false
+	}
+
+	for {
+		l.mu.Lock()
+
+		if len(l.ending) == 0 {
+			l.ending = nil
+			l.mu.Unlock()
+
+			return true
+		}
+
+		if b.over() {
+			l.mu.Unlock()
+
+			return false
+		}
+
+		it := l.ending[0]
+		l.ending = l.ending[1:]
+		l.mu.Unlock()
+
 		l.unstall(it)
 		if it.end != nil {
 			it.end()

@@ -73,7 +73,10 @@ type WriteOpts struct {
 	// Done is called exactly once for every write Write accepted: by the
 	// existence commit that records its usage or the commit recording its
 	// loss, or by the engine, charging nothing, when it drops the write
-	// uncommitted. It is never called if Write fails.
+	// uncommitted. It is never called if Write fails. Close does not call
+	// it for a write it leaves to the next start's recovery: the quota
+	// reservation it releases went with the filesystem service, which stops
+	// before Close.
 	Done func()
 }
 

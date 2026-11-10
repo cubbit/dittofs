@@ -53,11 +53,18 @@ func (e *Engine) SetBlockForTest(n uint64) {
 }
 
 // TrackRaisesForTest counts the version limit raise goroutines alive and
-// keeps the clock channels they wait on to retry, for WaitRaises. Call it
-// before Start or Bind.
+// keeps the clock channels they wait on to retry, for WaitRaises, and counts
+// every one started, for RaisesStarted. Call it before Start or Bind.
 func (e *Engine) TrackRaisesForTest() {
 	e.raising.count = &atomic.Int32{}
+	e.raising.started = &atomic.Int64{}
 	e.raising.timers = &sync.Map{}
+}
+
+// RaisesStarted is how many raise goroutines started since
+// TrackRaisesForTest.
+func (e *Engine) RaisesStarted() int64 {
+	return e.raising.started.Load()
 }
 
 // WaitRaises returns once every version limit raise has ended or waits on
@@ -452,13 +459,11 @@ func (e *Engine) RemovalsPending() int {
 // commits running.
 func (e *Engine) StopRemovalLoops() {
 	e.gcMu.Lock()
-	gs := make([]*groupCommit, 0, len(e.gcs))
-	for _, g := range e.gcs {
-		gs = append(gs, g)
-	}
+	gs := slices.Collect(maps.Values(e.gcs))
 	e.gcMu.Unlock()
+
 	for _, g := range gs {
-		g.removals.close()
+		g.removals.halt(nil)
 	}
 }
 
@@ -524,27 +529,39 @@ func (e *Engine) HoldRemovalLoop(j Journal) (run func()) {
 	}
 }
 
-// CloseGroupCommits stops every journal's group commit and joins its
-// goroutine, as Close will: a batch in flight has its context cancelled, and
-// no batch starts after it.
+// CloseGroupCommits stops every journal's group commit and its removal loop
+// and joins their goroutines, without the rest of Close: a batch in flight
+// has its context cancelled, and no batch starts after it.
 func (e *Engine) CloseGroupCommits() {
 	e.gcMu.Lock()
-	gs := e.gcs
-	e.gcs = nil
 	e.gcsClosed = true
+	gs := slices.Collect(maps.Values(e.gcs))
 	e.gcMu.Unlock()
+
 	for _, g := range gs {
-		g.mu.Lock()
-		g.closed = true
-		g.mu.Unlock()
-		g.cancel()
-		close(g.stop)
-		<-g.done
-		g.mu.Lock()
-		g.broadcastLocked() // every waiter then finds the group commit closed
-		g.mu.Unlock()
-		g.removals.close()
+		g.halt(nil)
+		g.removals.halt(nil)
 	}
+}
+
+// HoldGuard marks file f's entry guarded for good, as a removal whose phase 1
+// the stop cut short leaves it. The file must hold a pending operation.
+func (e *Engine) HoldGuard(f entity.FileID) {
+	fe := e.files.lockFor(f)
+	fe.guardDone = make(chan struct{})
+	fe.guarded.Store(true)
+	e.files.unlock(f, fe)
+}
+
+// OnRaiseExit sets a function called as each version limit raise goroutine
+// ends, before Close sees the raise joined. Call it before Start or Bind.
+func (e *Engine) OnRaiseExit(f func()) {
+	e.raising.exited = f
+}
+
+// RaisesAlive is how many raise goroutines are alive since TrackRaisesForTest.
+func (e *Engine) RaisesAlive() int32 {
+	return e.raising.count.Load()
 }
 
 // CommitAll commits the pending existence of every file of journal j, as
@@ -691,4 +708,48 @@ func (e *Engine) StoreViews() (Existence, Content, Lifecycle) {
 // whether a retrying owner's latest attempt failed.
 func (e *Engine) FenceBusy() (outstanding int64, failing bool) {
 	return e.fence.outstanding.Load(), e.fence.failing.Load() > 0
+}
+
+// EnqueueHeld posts an item on share s's removal loop that calls run, which
+// the test holds, and then ends; end is called if the loop ends first.
+func (e *Engine) EnqueueHeld(s entity.ShareID, run func(ctx context.Context), end func()) error {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return err
+	}
+
+	b.gc.removals.enqueue(&loopItem{
+		b:    b,
+		f:    entity.NewFileID(),
+		kind: entity.RemoveTruncate,
+		run: func(ctx context.Context) answer {
+			run(ctx)
+
+			return itemDone
+		},
+		end: end,
+	})
+
+	return nil
+}
+
+// StopBoundDefault is the stop bound of a Close whose context has no
+// deadline.
+const StopBoundDefault = stopDefault
+
+// OnDraining sets the seam Close fires when its wait for the lifecycle calls
+// in progress has to wait.
+func (e *Engine) OnDraining(f func()) {
+	e.seams.draining.Store(&f)
+}
+
+// OnJoining sets the seam Close fires each time a join has to wait, with
+// what the join waits for.
+func (e *Engine) OnJoining(f func(what string)) {
+	e.seams.joining.Store(&f)
+}
+
+// Served reports whether share s has a binding in the share table.
+func (e *Engine) Served(s entity.ShareID) bool {
+	return e.table()[s] != nil
 }

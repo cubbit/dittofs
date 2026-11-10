@@ -111,6 +111,40 @@ func TestRFC8A_RecoveryThroughSince(t *testing.T) {
 	}
 }
 
+// A clean stop commits every pending existence in a last group commit and
+// forgets no tag: the restart finds nothing above the applied version for the
+// journal to yield, the committed size is the write's, and the write reads
+// back.
+func TestRFC8A_CleanCloseThenRestartReappliesNothing(t *testing.T) {
+	f := enginetest.New(t)
+	h, id := f.File("a")
+	p := []byte("a clean stop")
+
+	write(t, f, id, 0, p)
+
+	if _, _, err := f.E.Commit(t.Context(), f.Share.ID, id, 0, 0); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Checked while the process is stopped: the restart's recovery commits an
+	// append's existence itself, so a check after it passes with the last group
+	// commit skipped.
+	f.RestartAfter(func() {
+		if got := f.Committed(h).Size; got != int64(len(p)) {
+			t.Errorf("committed size after a clean stop %d, want %d", got, len(p))
+		}
+	})
+
+	applied := journal.VersionFromBytes(f.Committed(h).Applied)
+	if cs := changesOf(t, f, id, applied); len(cs) != 0 {
+		t.Errorf("the journal yields %v above the applied version, want nothing", cs)
+	}
+
+	if got := read(t, f, id, 0, len(p)); !bytes.Equal(got, p) {
+		t.Errorf("read %q after the restart, want %q", got, p)
+	}
+}
+
 // A write, a truncate to the size the write left and a write past it replay
 // in the journal's order: the file ends 12 KiB long, with a hole between.
 func TestRFC8A_RecoveryReappliesInVersionOrder(t *testing.T) {

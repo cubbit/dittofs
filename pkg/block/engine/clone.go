@@ -159,8 +159,9 @@ func (fe *fileEntry) drop(r *reg) {
 // overlapping extents of one file and a length over clone_max_len
 // (ErrInvalid), two write namespaces (ErrCross with CrossNamespace), and an
 // extent a running clone holds (DelayClone). It then registers the source
-// extent and the destination extent. Nothing joins a running clone at
-// Unbind or Close yet, so it then undoes both and answers errUnbuilt; with a
+// extent and the destination extent. Close joins a running clone's goroutine
+// and cancels its context, but nothing joins a running clone at Unbind or
+// across a retry yet, so it then undoes both and answers errUnbuilt; with a
 // test's stand-in it runs on: step 1 on the call (prepare), whose refusal
 // undoes both registrations and changes nothing, then from the journal step
 // on its own goroutine (runClone) and the removal loop (clonePhase2), where
@@ -227,11 +228,11 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		// decision: everything past this gate, step 1, the journal step, the
 		// copies, phase 1, the hold on the source, phase 2, the release and
 		// the done signal, runs only under the test's stand-in, never in a
-		// served engine: the clone's goroutine and its loop items are joined
-		// by nothing, so Close and Unbind would leave one running, and a
-		// retry with the same spec starts a second clone rather than
-		// joining the first. Withdraw it when the running clones are kept
-		// where a retry, Unbind and Close join them.
+		// served engine: Close joins the clone's goroutine (e.cloning) but
+		// Unbind joins nothing, so it would leave one running, and a retry
+		// with the same spec starts a second clone rather than joining the
+		// first. Withdraw it when the running clones are kept where a retry
+		// and Unbind join them.
 		if h := e.afterRegister; h != nil {
 			h()
 		}
@@ -244,7 +245,15 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		e.endClone(c, err)
 		return err
 	}
-	go e.runClone(c)
+
+	e.cloning.Add(1)
+
+	go func() {
+		defer e.cloning.Done()
+
+		e.runClone(c)
+	}()
+
 	select {
 	case <-c.done:
 		return c.err

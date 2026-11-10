@@ -3,9 +3,11 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -32,6 +34,7 @@ type unit struct {
 	e     *engine.Engine
 	j     *enginetest.FakeJournal
 	rec   *recJournal // the engine's view of j, which records each Share and Close
+	ev    *events     // the order the journal and its handles were closed in
 	fs    *kvstoretest.FS
 	clock *sim.TestClock
 	limit uint64 // the fake journal's version limit once the unit was built
@@ -82,6 +85,8 @@ func newUnitWith(t *testing.T, c unitConfig) *unit {
 		FakeJournal: u.j,
 		wrap:        c.wrap,
 	}
+	u.ev = &events{}
+	u.rec.ev = u.ev
 	u.fs = kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
 		db := memKV(tb)
 		if c.kv != nil {
@@ -177,6 +182,8 @@ type recJournal struct {
 	*enginetest.FakeJournal
 	wrap     func(engine.Handle) engine.Handle
 	closeErr error // every handle's Close answers it, after closing the handle
+	ev       *events
+	forgets  atomic.Int32 // the Forget calls
 
 	mu      sync.Mutex
 	floors  []journal.Version
@@ -200,6 +207,8 @@ func (j *recJournal) Share(
 	rh := &recHandle{
 		Handle:   h,
 		closeErr: j.closeErr,
+		tag:      tag,
+		ev:       j.ev,
 	}
 
 	j.mu.Lock()
@@ -211,6 +220,20 @@ func (j *recJournal) Share(
 	}
 
 	return rh, nil
+}
+
+// Close records the journal's close in the event log.
+func (j *recJournal) Close() error {
+	j.ev.add("journal close")
+
+	return j.FakeJournal.Close()
+}
+
+// Forget counts the call.
+func (j *recJournal) Forget(ctx context.Context, tag journal.ShareTag) error {
+	j.forgets.Add(1)
+
+	return j.FakeJournal.Forget(ctx, tag)
 }
 
 // shares is the count of Share calls, refused ones included.
@@ -262,10 +285,13 @@ type recHandle struct {
 	engine.Handle
 	closed   atomic.Bool
 	closeErr error
+	tag      journal.ShareTag
+	ev       *events
 }
 
 func (h *recHandle) Close() error {
 	h.closed.Store(true)
+	h.ev.add(fmt.Sprintf("handle close %d", h.tag))
 	err := h.Handle.Close()
 
 	if h.closeErr != nil {
@@ -537,4 +563,39 @@ func (x overwritesHook) Overwrites(ctx context.Context, s entity.ShareID, file e
 // onOverwrites has f answer the unit's Overwrites reads.
 func onOverwrites(f overwritesFn) func(*engine.Deps) {
 	return func(d *engine.Deps) { d.Existence = overwritesHook{d.Existence, f} }
+}
+
+// events is the order things happened in, appended by the parts of a test.
+// A nil log records nothing.
+type events struct {
+	mu  sync.Mutex
+	log []string
+
+	// onAdd, when set before the first event, is called with each event
+	// after it is recorded.
+	onAdd func(what string)
+}
+
+// add appends one event.
+func (l *events) add(what string) {
+	if l == nil {
+		return
+	}
+
+	l.mu.Lock()
+	l.log = append(l.log, what)
+	l.mu.Unlock()
+
+	if l.onAdd != nil {
+		l.onAdd(what)
+	}
+}
+
+// list is the events so far.
+func (l *events) list() []string {
+	l.mu.Lock()
+
+	defer l.mu.Unlock()
+
+	return slices.Clone(l.log)
 }

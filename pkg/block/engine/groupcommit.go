@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -50,6 +51,7 @@ type groupCommit struct {
 	cancel context.CancelFunc
 
 	removals *removalLoop // the journal's removal work
+	stopOnce sync.Once    // the stop is signalled once, however often Close joins it
 }
 
 // marks is what a group commit knows of its journal's sync marks.
@@ -212,16 +214,17 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 	}
 	g.ctx, g.cancel = context.WithCancel(withRetryingOwner(context.Background()))
 	g.removals = newRemovalLoop(e)
-	// decision: only a test helper sets gcsClosed, until Close is built, so
-	// this branch serves tests alone. It is the shape Close needs: Close
-	// sets it, and the helper goes, once built. Delete the field and the
-	// branch if Close keeps a journal's group commit from starting some
-	// other way.
+	// decision: Close sets gcsClosed once the lifecycle calls it waits for
+	// have ended, and so does the test helper that stops group commits, so a
+	// journal's group commit asked for after the stop began is a closed one:
+	// it runs no goroutine and notes no file. Delete the field and the branch
+	// if Close keeps a journal's group commit from starting some other way.
 	if e.gcsClosed {
 		g.closed = true
 		g.cancel()
 		close(g.done)
 		g.removals.closed = true // never started: nothing to join
+		close(g.removals.done)
 		return g
 	}
 	if e.gcs == nil {
@@ -231,6 +234,98 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 	go g.run()
 	go g.removals.run()
 	return g
+}
+
+// halt stops the group commit's goroutine and joins it within the bound b,
+// reporting false when the join did not end in b. Its context is cancelled,
+// so a batch in flight is cut short, and no batch starts again; the waiters
+// then find the group commit closed. The stop is signalled once, so a halt
+// that follows one whose join timed out joins again.
+func (g *groupCommit) halt(b *stopBound) bool {
+	g.mu.Lock()
+	g.closed = true
+	g.mu.Unlock()
+
+	g.stopOnce.Do(func() {
+		g.cancel()
+		close(g.stop)
+	})
+
+	if !b.join(g.done, "a group commit") {
+		return false
+	}
+
+	g.mu.Lock()
+	g.broadcastLocked() // every waiter then finds the group commit closed
+	g.mu.Unlock()
+
+	return true
+}
+
+// commitAll commits the pending existence of every file of the journal that
+// no removal guards, in as many batches as it takes, and reports false when
+// the bound ended first. A file whose guard is held is left out: with the
+// removal loops stopped nothing releases it, a phase 1 cut short is left for
+// the next start (RFC 8 §2.5 step 2), and committing the file would commit
+// the writes above the cut operation.
+//
+// A journal found read-only, before the first batch or while one runs, is
+// left alone and commitAll reports true: the engine refuses every sync of it,
+// so its files would be asked again until the bound ended (RFC 8 §2.5). The
+// pending existence stays in the journal for the next start's recovery.
+//
+// decision: the batch in flight is read after the files are marked, not
+// before. The loop's own timer can take a file between the two, which the
+// marking then finds gone and asks for nothing; a batch that took one and
+// already returned shows as a new returned channel. Read before the marking,
+// the flag is stale and commitAll reports true over a batch that halt then
+// cuts.
+func (g *groupCommit) commitAll(b *stopBound) bool {
+	for {
+		if ro := g.j.Stats().ReadOnly; ro.ReadOnly {
+			g.e.d.Logger.Warn("close left a read-only journal's pending existence to the next start",
+				"err", ro.Err)
+
+			return true
+		}
+
+		g.mu.Lock()
+		files := slices.Collect(maps.Keys(g.due))
+		returned := g.returned
+		g.mu.Unlock()
+
+		asked := false
+
+		for _, f := range files {
+			if g.e.guardOf(f) != nil {
+				continue
+			}
+
+			g.mu.Lock()
+
+			if d := g.due[f]; d != nil {
+				d.now, asked = true, true
+			}
+
+			g.mu.Unlock()
+		}
+
+		g.mu.Lock()
+		again := g.inFlight || g.returned != returned
+		g.mu.Unlock()
+
+		if !asked && !again {
+			return true
+		}
+
+		if asked {
+			g.poke()
+		}
+
+		if !b.join(returned, "the last group commit") {
+			return false
+		}
+	}
 }
 
 // note puts f on the due set, its oldest uncommitted operation staged at
