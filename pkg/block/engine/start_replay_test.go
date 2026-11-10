@@ -162,8 +162,12 @@ func (x *logExistence) committedOps() [][]kvstore.PendingOp {
 }
 
 // Sync, Since and Settle log the calls of a start's replay, and fail those a
-// test arms in the journal's fail map.
+// test arms in the journal's fail map; Sync first runs the journal's onSync.
 func (h *logHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
+	if f := h.j.onSync.Load(); f != nil {
+		(*f)(ids)
+	}
+
 	for _, id := range ids {
 		if err := h.j.add("sync " + fname(entity.FileID(id.Bytes()))); err != nil {
 			return nil, err
@@ -1667,8 +1671,8 @@ func TestReplayLeavesNoEntryAndCallsNoDone(t *testing.T) {
 		t.Errorf("%d operations went through the group commit, want 0", n)
 	}
 
-	if rs := r.j.Reserves(); len(rs) != 0 {
-		t.Errorf("reservations %v, want none", rs)
+	if n := r.j.Stats().ReservedBytes; n != 0 {
+		t.Errorf("%d bytes reserved after the replay, want none", n)
 	}
 
 	if got := r.file(t, h); got.Size != 5 {

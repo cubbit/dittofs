@@ -8,7 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"slices"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -139,10 +139,10 @@ func (r *rig) readIn(t *testing.T, s entity.ShareID, f entity.FileID, off int64,
 // marker: both extents are registered before Start serves a file, so a write
 // into the source extent and a read of the destination's answer ErrDelay;
 // the copies the journal holds are kept, only the others made again through
-// a reservation of their size, each counted toward the version limit as a
-// live copy is; and the clone finishes with the destination reading the
-// source at its asOf, never zeros where it held bytes, as a marker applied
-// as a plain removal would leave it.
+// a reservation of their size, the first of them waking the version limit's
+// raise as a live copy does; and the clone finishes with the destination
+// reading the source at its asOf, never zeros where it held bytes, as a
+// marker applied as a plain removal would leave it.
 func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -154,10 +154,21 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m := newMarkerCrash(t, c.copies)
-			var mu sync.Mutex
-			var issued []journal.Version
-			m.e.OnIssued(func(v journal.Version) { mu.Lock(); issued = append(issued, v); mu.Unlock() })
+			m.e.TrackRaisesForTest()
+			var reserved atomic.Int64 // the journal's reserved bytes at a sync of the destination that saw any
+			m.j.onSync.Store(new(func(ids []journal.FileID) {
+				if slices.Contains(ids, journal.NewFileID(m.dst)) {
+					if n := m.j.Stats().ReservedBytes; n > 0 {
+						reserved.Store(n)
+					}
+				}
+			}))
 			m.begin(t)
+			// The version limit's raise falls due on the next version issued,
+			// and on none before: the first copy made again wakes it.
+			m.e.WaitRaises(t)
+			limit := m.j.Stats().VersionLimit.Counter
+			m.e.SetBlockForTest(2 * (limit - m.j.Stats().NextVersion.Counter))
 
 			if err := m.writeErr(t, m.one.ID, m.src, runLen/2); !isDelay(err, vfserr.DelayClone) {
 				t.Errorf("a write into the source extent before the clone is done: %v, want DelayClone", err)
@@ -172,12 +183,8 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 				t.Error("the rebuilt clone's destination does not read the source at its asOf")
 			}
 			remade := 2 - c.copies
-			res := m.j.Reserves()
-			switch {
-			case remade == 0 && len(res) != 0:
-				t.Errorf("reserved %+v with every copy kept, want nothing", res)
-			case remade > 0 && (len(res) != 1 || res[0].N != int64(remade)*runLen || res[0].Writes != remade):
-				t.Errorf("reserved %+v, want one of %d bytes and %d writes", res, remade*runLen, remade)
+			if n := reserved.Load(); n != int64(remade)*runLen {
+				t.Errorf("reserved %d bytes while the copies were made, want %d", n, remade*runLen)
 			}
 			// The copies kept are the first c.copies runs: the others the
 			// destination holds were made again.
@@ -188,11 +195,9 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 			if len(copies) != remade {
 				t.Fatalf("%d copies made again, want %d", len(copies), remade)
 			}
-			mu.Lock()
-			counted := slices.Clone(issued)
-			mu.Unlock()
-			if !slices.Equal(counted, copies) {
-				t.Errorf("versions counted toward the version limit %v, want the copies made again %v", counted, copies)
+			m.e.WaitRaises(t)
+			if raised := m.j.Stats().VersionLimit.Counter > limit; raised != (remade > 0) {
+				t.Errorf("the version limit raised: %v, want %v, with %d copies made again and the first crossing the trigger", raised, remade > 0, remade)
 			}
 			if err := m.writeErr(t, m.one.ID, m.src, runLen/2); err != nil {
 				t.Errorf("a write into the source extent once the clone is done: %v", err)
@@ -237,8 +242,10 @@ func TestARebuiltCloneHoldingEveryCopyReservesNothing(t *testing.T) {
 	m.begin(t)
 	m.run()
 	m.cloneDone(t, m.src, m.dst)
-	if r := m.j.Reserves(); len(r) != 0 {
-		t.Errorf("reserved %+v at a full limit, every copy held, want nothing", r)
+	// The refusal answers the first Reserve only: still armed, no clone asked one.
+	if res, err := m.jh.Reserve(1, 1); err == nil {
+		_ = res.Close()
+		t.Error("the clone asked a reservation at a full limit, every copy held, want none")
 	}
 	if got := m.readIn(t, m.one.ID, m.dst, 0, 3*runLen); !bytes.Equal(got, m.want) {
 		t.Error("the destination does not read the source")

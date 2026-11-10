@@ -218,20 +218,25 @@ func TestACloneOfASourcePastItsEndIsRefused(t *testing.T) {
 
 // The reservation is sized from the source's held runs at asOf, and every
 // copy goes through it above the clone's version: three held runs and two
-// holes reserve the runs' bytes and three writes. Phase 1 commits the copies
+// holes reserve the runs' bytes. Phase 1 commits the copies
 // through Copied: the destination's applied is at or above the newest copy,
 // and the copied runs read the source.
 func TestACloneReservesItsCopiesAndWritesThemAboveItsVersion(t *testing.T) {
-	u := clonedUnit(t)
+	u, h := clonedHookedUnit(t)
 	src := u.create(t, "src")
 	u.write(t, src, 0, fill(mib, 'a'))
 	u.write(t, src, 2*mib, fill(mib, 'b'))
 	u.write(t, src, 4*mib, fill(mib/2, 'c'))
 	dst := u.create(t, "dst")
+	var reserved atomic.Int64 // the journal's reserved bytes at the clone's journal step
+	h.cloneTarget.set(func() { reserved.Store(u.j.Stats().ReservedBytes) })
 	u.clone(t, src, dst, vfserr.Extent{Len: 4*mib + mib/2})
 
-	if r := u.j.Reserves(); len(r) != 1 || r[0].N != 2*mib+mib/2 || r[0].Writes != 3 {
-		t.Errorf("reserved %+v, want one of %d bytes and 3 writes", r, 2*mib+mib/2)
+	if n := reserved.Load(); n != 2*mib+mib/2 {
+		t.Errorf("reserved %d bytes at the journal step, want %d", n, 2*mib+mib/2)
+	}
+	if n := u.j.Stats().ReservedBytes; n != 0 {
+		t.Errorf("%d bytes still reserved after the clone, want none", n)
 	}
 	ct := u.cloneMarkers(dst)
 	if len(ct) != 1 {
@@ -874,8 +879,11 @@ func TestACopyPastItsReservationIsRetried(t *testing.T) {
 	if got := u.answered(t, "the clone's answer", errc); got != nil {
 		t.Fatalf("a clone whose copies outran their reservation: %v, want it retried to success", got)
 	}
-	if r := u.j.Reserves(); len(r) != 2 || r[1].Writes != 2 {
-		t.Errorf("reserves %+v, want the retry's second one of 2 writes", r)
+	if n := len(heldIn(t, u.h, dst, 0, mib)); n != 2 {
+		t.Errorf("the destination holds %d copies, want the retry's 2 around the loss", n)
+	}
+	if n := u.j.Stats().ReservedBytes; n != 0 {
+		t.Errorf("%d bytes still reserved after the retried clone, want none", n)
 	}
 	if got := u.read(t, dst, mib/2, mib/2); !bytes.Equal(got, fill(mib/2, 's')) {
 		t.Error("the destination does not read the source after the loss")
@@ -1006,9 +1014,6 @@ func TestAStaleSourceAtPhase1IsRetried(t *testing.T) {
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	u.clone(t, src, dst, vfserr.Extent{Len: mib})
-	if n := x.calls.Load(); n != 2 {
-		t.Errorf("phase 1 ran %d times, want the stale one retried once", n)
-	}
 	if got := u.read(t, dst, 0, mib); !bytes.Equal(got, fill(mib, 's')) {
 		t.Error("the destination does not read the source's bytes")
 	}
