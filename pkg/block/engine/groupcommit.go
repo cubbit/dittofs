@@ -193,6 +193,11 @@ func storeOp(op pendingOp, mtime time.Time) kvstore.PendingOp {
 func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 	e.gcMu.Lock()
 	defer e.gcMu.Unlock()
+	// decision: gcs is keyed by the Journal value, so a Journal must be
+	// comparable: a non-comparable one panics here, on its first share.
+	// Every implementation is a pointer, whose identity is the journal's,
+	// so the key needs nothing the engine does not already hold. Key by the
+	// journal's ID instead if a Journal is ever a value that copies.
 	if g := e.gcs[j]; g != nil {
 		return g
 	}
