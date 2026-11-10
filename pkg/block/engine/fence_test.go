@@ -3,9 +3,11 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -371,6 +373,58 @@ func TestSelfFenceOnAFailingPrune(t *testing.T) {
 	u.clock.Advance(31 * time.Second)
 	if _, err := u.tryWrite(a); !fenced(err) {
 		t.Fatalf("a write 31s into the prune failing: %v, want ErrDelay(DelayCommit)", err)
+	}
+}
+
+// fence fences the node: the version limit's raise, a retrying owner's,
+// failing for 31 s.
+func (u *fenceUnit) fence(t *testing.T) {
+	t.Helper()
+	_, _, lc := u.e.StoreViews()
+	ctx := engine.WithRetryingOwner(t.Context())
+	to, err := lc.VersionLimits(ctx, []entity.ShareID{u.share.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+	if err := lc.RaiseVersionLimits(ctx, to); !errors.Is(err, errInjected) {
+		t.Fatalf("the raise over a failing store: %v", err)
+	}
+	u.clock.Advance(31 * time.Second)
+}
+
+// On a fenced node, a write and a stable Commit over a read-only journal
+// answer as the journal does, ErrReadOnly for EROFS and retry-later on the
+// journal for any other cause, ahead of the fence's own answer; a share not
+// attached answers its own refusal ahead of both.
+func TestSelfFenceAnswersAfterAReadOnlyJournal(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		cause error // nil leaves the journal writable
+		want  func(error) bool
+	}{
+		{"EROFS", fmt.Errorf("write segment: %w", syscall.EROFS), func(err error) bool { return errors.Is(err, vfserr.ErrReadOnly) }},
+		{"EIO", syscall.EIO, func(err error) bool { return errors.Is(err, &vfserr.Delay{Cause: vfserr.DelayJournal}) }},
+		{"writable", nil, fenced},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			u := newFenceUnit(t)
+			a := u.create(t, "a")
+			u.fence(t)
+			if c.cause != nil {
+				u.j.ReadOnly(c.cause)
+			}
+			if _, err := u.tryWrite(a); !c.want(err) {
+				t.Errorf("Write: %v", err)
+			}
+			if _, _, err := u.e.Commit(t.Context(), u.share.ID, a, 0, 1); !c.want(err) {
+				t.Errorf("Commit: %v", err)
+			}
+			frozen := &vfserr.Delay{Cause: vfserr.DelayFrozen}
+			if _, err := u.e.Write(t.Context(), entity.ShareID{0xff}, a, 0, []byte("x"), engine.WriteOpts{Done: func() {}}); !errors.Is(err, frozen) {
+				t.Errorf("Write to a share not attached: %v, want ErrDelay(DelayFrozen)", err)
+			}
+		})
 	}
 }
 

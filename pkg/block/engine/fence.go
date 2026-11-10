@@ -202,6 +202,24 @@ func (f *fence) gate() error {
 	return nil
 }
 
+// fenceGate is Write's and Commit's answer on b while the fence holds. The
+// self-fence answers after every refusal of a write that never reaches the
+// store: b's journal turned read-only answers as journalErr does (RFC 8
+// §11.2), and so would any capacity refusal of the journal the RFC places
+// before it. Those are read only once the gate refuses, so a call on an
+// unfenced node pays nothing for them; checks for them go here, not ahead of
+// the gate. A share's own refusal, from bindingOf, comes before this.
+func (e *Engine) fenceGate(b *binding) error {
+	err := e.fence.gate()
+	if err == nil {
+		return nil
+	}
+	if ro := b.j.Stats().ReadOnly; ro.ReadOnly {
+		return e.journalErr(readOnly(ro))
+	}
+	return err
+}
+
 // cause is the store's error a retrying owner's latest attempt failed with,
 // while one is failing, or errNoCommit. An error a commit since followed is
 // not the cause of a later stall.
