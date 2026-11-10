@@ -1,12 +1,14 @@
 ---
 name: epic-breakdown
-description: Expand one epic of a DittoFS implementation plan (docs/internals/planning/rfc-*-plan.md) into its standalone epic document — every MUST and MUST NOT the RFC places on the epic numbered as R-requirements, ordered subtasks with acceptance criteria, tests and a man-day estimate each, a grep-able total, and a suggested, optional grouping into pull requests — written to docs/internals/planning/. Also says how to create the epic and its subtasks as GitHub issues that point at the document, in the "DittoFS" project with their estimates and under the RFC's roadmap epic, done only when explicitly asked and once the document has merged. Use whenever an epic is to be broken down, detailed, expanded into subtasks or made ready to start ("break down epic 5 of the journal plan", "expand rfc-1 epic 7", "/epic-breakdown 1 8"). Not for planning a whole RFC (rfc-to-epic-plan).
+description: Expand one epic of a DittoFS implementation plan (docs/internals/planning/rfc-*-plan.md) into its standalone epic document — every MUST and MUST NOT the RFC places on the epic numbered as R-requirements, ordered subtasks with acceptance criteria, tests and a man-day estimate each, a grep-able total, and a suggested, optional grouping into pull requests — written to docs/internals/planning/. Also says how to create the epic and its subtasks as GitHub issues that point at the document, in the repo's project board with their estimates and under the RFC's roadmap epic, done only when explicitly asked and once the document has merged. Use whenever an epic is to be broken down, detailed, expanded into subtasks or made ready to start ("break down epic 5 of the journal plan", "expand rfc-1 epic 7", "/epic-breakdown 1 8"). Not for planning a whole RFC (rfc-to-epic-plan).
 ---
 
 # Epic breakdown
 
 Adapted from Addy Osmani's `planning-and-task-breakdown` skill (agent-skills, MIT licence)
-for DittoFS's RFCs, plans and epics.
+for DittoFS's RFCs, plans and epics. It applies "Design principles" in
+[`.claude/skills/rfc-to-epic-plan/SKILL.md`](../rfc-to-epic-plan/SKILL.md#design-principles),
+the only copy, including how tests run through the repo's test runner and land red.
 
 ## Overview
 
@@ -49,14 +51,7 @@ Two things decide the numbers: the order of work, and whether an id has been cit
   other epic documents name this epic's subtasks, so a cited id keeps its number for the
   same work. When the order of work changes, **move the subtask in §6 and §7 and keep its
   number**, even where that leaves the numbers out of order. Before renumbering anything,
-  look for citations of both forms, with the repository named as Step 6.1 says
-  (`R=$(gh repo view --json nameWithOwner -q .nameWithOwner)`; without `-R` the search can
-  return nothing, with no error): `gh pr list -R "$R" --state all --search '"T<e>.<n>"
-  in:title,body'` and `'"<e>.<n>" in:title,body'`, since pull requests cite ids in their
-  descriptions too, discarding the hits that only cite an RFC's §<e>.<n>; the sub-issues of
-  every part's epic issue (Step 6.4); and the other planning documents, leaving out this
-  document and the plan, `rg -n 'T<e>\.<n>\b' docs/internals/planning -g '!<plan>' -g
-  '!<this-doc>'`.
+  look for citations as `issues.md` 6.8 says.
 - **Split with a letter suffix, never by renumbering.** A subtask split after its id was
   cited becomes `T4.3a`, `T4.3b`; work mapped to `T4.3` then covers both parts.
 - **Never reuse or drop a cited id.** A subtask added once ids are cited takes the next free
@@ -79,7 +74,7 @@ epic's document already exists and the user did not ask to replace it.
 | 1 | Plan path and epic number | **required**, from the request |
 | 2 | Output path | default `docs/internals/planning/rfc-<n>-<slug>-epic<k>.md`. **If the file exists, stop and ask** whether to replace it, revise it in place, or write elsewhere. Never overwrite it on your own: someone may be working from it |
 | 3 | Track | A, B, C or the team, from the plan's §2 (Step 1 has the fallback for an older plan); never ask for names |
-| 4 | Existing epic issue | `gh issue list -R "$R" --state all --label epic --label rfc-<n>-epic-<k>`, with `-R` as Step 6.1 says (both labels must match; a text search for "epic <k>" also returns other epics). `<k>` keeps its letter: for epic 7a the label is `rfc-<n>-epic-7a`, and the unsplit epic 7's issue is not this part's. If one exists, note its number; when issues are created (Step 6), there must not be a second one |
+| 4 | Existing epic issue | `gh issue list -R "$R" --state all --label epic --label rfc-<n>-epic-<k>`, with `-R` as `issues.md` 6.1 says (both labels must match; a text search for "epic <k>" also returns other epics). `<k>` keeps its letter: for epic 7a the label is `rfc-<n>-epic-7a`, and the unsplit epic 7's issue is not this part's. If one exists, note its number; when issues are created (Step 6), there must not be a second one |
 
 Ask for whatever is missing with `AskUserQuestion`, in one batch, before reading further.
 If you cannot ask (for example when running as a subagent), stop and report the missing
@@ -110,12 +105,16 @@ inputs rather than guess.
   - no **Owns:** / **Done when:** lines, or no §4.2–§4.3 → the epic's §5 paragraph and §7
     rows give the owned sections, and its decisions are whatever the plan's text settles
     for the epic. The plan is not converted as part of the breakdown.
+  - a §1.5 that says to copy the rules word for word, or rules with no number or title →
+    §2 cites them anyway, by number, or by a short title the document gives each.
 - The RFC: the owned sections in full, and the sections they cite. Large RFCs exceed one
   `Read`; list headings with `rg -n '^#' <rfc>` and read by line range.
 - The epics this one depends on: their documents if they exist, for the interfaces this epic
   builds on. And the epics it blocks, for what they expect from it.
 - Code only as far as the plan's rules allow. If the plan says v2 ignores v1, do not read v1
   to design v2.
+- For each choice §4 will record, how one or two comparable projects or the state of the art
+  do it, named, with a link or marked "from memory"; §4 cites it.
 
 ## Step 2 — Extract the requirements
 
@@ -158,10 +157,16 @@ Note each candidate with its RFC line number in a scratch file, not in the docum
 - A SHOULD becomes a requirement only if the epic adopts it. Otherwise record why not in §4
   (decisions).
 - An obligation the RFC leaves open (it states the rule but not one case of it) stays a
-  requirement, and names the subtask that decides it and records a `decision:` marker.
+  requirement, and names the subtask that decides it and records a `decision:` marker. When
+  a later subtask of this epic or a later epic pins the case, §4 decides it, with its marker,
+  rather than the code.
+
 - An obligation in an owned section that another epic carries out: write the part that is
   this epic's, and name the epic that owns the rest ("the index offers the predicate; epic 9
   owns the hold rule"). Do not list obligations that belong wholly to another epic.
+
+Not adopting a SHOULD, or deciding an open case, that a later subtask or epic pins is a
+question for the user (Design principles).
 
 **2.3 Number and tabulate.** In a new document, number them R1…Rn in table order, grouped
 under short bold headings by theme (structure, queries and cost, concurrency, limits, recovery, …). One table
@@ -187,10 +192,13 @@ A number is never reused or renumbered, and a dropped requirement keeps its row,
 - Every candidate noted in 2.1 maps to an R-number, to another epic, or to "not an
   obligation" (background, an example, a negation). Go through the scratch list one by one;
   an unmapped candidate is a gap.
-- Every R-number has at least one subtask and at least one test that can fail if the
-  requirement is broken.
-- Every subtask covers at least one R-number, or says why it covers none (scaffolding that
-  a later subtask's requirement needs).
+- Every R-number has a subtask, and either a test that fails on its assertion when the
+  requirement is broken, or what already enforces it when this epic lands, named: the
+  compiler, a check, E2's red test, or a test of an epic this one depends on, by id. A
+  requirement nothing in this epic can break goes to the epic that can.
+- Every subtask covers at least one R-number, or names, by id, the subtask in this epic that
+  consumes it. A contract a later epic pins is allowed only with a §4 decision saying why it
+  cannot wait. No test asserts a stub's answer.
 
 ## Step 3 — Carve the subtasks
 
@@ -207,10 +215,10 @@ Good: T4.1 B-tree container with its property test
 Each subtask leaves the tree building and its tests green, lands its own tests, and creates
 only what it or an earlier subtask consumes.
 
-**Size.** One engineer, ideally up to 5 man-days. That is a ceiling to aim under, not a
-target, and there is no target number of subtasks. Cut by what makes sense: one logical
-change, readable on its own, following the dependencies, delivering something that can be
-named. A subtask over 5 man-days says why it cannot be split without leaving a half-built
+**Size.** One engineer, under the subtask ceiling (rfc-to-epic-plan, "Subtasks are not pull
+requests" in §1.5's instruction), and there is no target number of subtasks. Cut by what makes sense: one logical change, readable on its
+own, following the dependencies, delivering something that can be named. A subtask over the
+ceiling says why it cannot be split without leaving a half-built
 state. Signs that a subtask should be split: its acceptance criteria take many bullets, it
 touches two independent subsystems, or its title needs an "and" between two unrelated
 things.
@@ -251,8 +259,8 @@ The epic total goes in the document header, in the same form the plan uses:
 **Epic 4 estimate: 12 subtasks, 21.5 man-days.**
 ```
 
-Numbers are plain multiples of 0.25: no `~`, no ranges, no comma, no unit inside the
-number. Compute the total with the check beside this file, never by hand:
+Numbers follow "Estimating in man-days" in `rfc-to-epic-plan/SKILL.md`. Compute the total
+with the check beside this file, never by hand:
 
 ```bash
 awk -f .claude/skills/epic-breakdown/epic-check.awk <epic-doc>
@@ -266,18 +274,21 @@ live in `testdata/`, beside it; `testdata/run.sh` runs them.
 
 `grep -E '^\*\*(Epic [0-9]+[a-z]?|Subtask T[0-9]+\.[0-9]+[a-z]?) estimate:' <epic-doc>` lists the whole estimate.
 
-**Updating the plan is not required.** Its estimate line for this epic was the figure when
-the plan was written, and the epic document's line supersedes it for this epic. The plan
-records decisions, not progress: it is never edited to track how the epic is going, but it
-may be revised, through a pull request, when the breakdown adjusts it (a new estimate, a
-subtask moving to another epic, a changed dependency). Do that only when the user asks.
+The plan is edited only when the user asks, through a pull request.
 
 ## Step 5 — Write the document
 
-The document follows the instruction that opens the plan's §1.5: **it stands alone** (it
-never refers to the plan, links to it or says "see the plan"), and **it records decisions,
-not progress** (no status, no checkboxes, no "TBD", nothing to keep up to date as the work
-goes on; it is revised through a pull request when a decision changes). Acceptance criteria
+The document follows the instruction that opens the plan's §1.5: **it stands alone for what
+to build** (requirements, subtasks, decisions: it never refers to the plan for them or says
+"see the plan"), and §2 cites the plan's general rules without copying them: each row
+names its rule by number and bold title, and §2 links the plan's §1.5 with a full link (the
+plan's path and the section's anchor, as
+`rfc-<n>-<slug>-plan.md#15-general-rules-for-each-epic`, beside the epic document, or
+its GitHub URL) and the `CLAUDE.md` sections that hold a rule, so
+the document reads alone and each rule's text is one click away; and **it records
+decisions, not progress** (no status, no checkboxes, no bare "TBD": an answer still pending
+is an open point linked as "Ask, don't guess" in the Design principles says; nothing to
+keep up to date as the work goes on; it is revised through a pull request when a decision changes). Acceptance criteria
 are plain bullets, not checkboxes.
 
 Use this structure. Section numbers are fixed so epic documents can be compared.
@@ -295,14 +306,16 @@ Header, one field per line: **Sources:** the RFC sections owned, with links.
 ### 1.1 In scope
 ### 1.2 Out of scope           — and which epic owns each item
 ### 1.3 Names used here        — a legend, one line each, of the plan's names the document
-                                 and its copied rules use: every `E<n>` and `S<n>`, and
+                                 and its §2 table use: every `E<n>` and `S<n>`, and
                                  role names such as "the integration epic", with what each
                                  is (from the plan's §2 and §3.2)
-## 2. General rules for each epic — the plan's numbered §1.5 rules, copied word for word;
-                                    not the instruction that opens §1.5, which speaks
-                                    of "this plan"
-### 2.1 How the rules apply    — table: rule | subtasks | how; a rule that does not apply
-                                 is named, with the reason
+## 2. How the general rules apply — table: rule | subtasks | how, one row per numbered
+                                    §1.5 rule of the plan, cited as "rule N, <title>" and
+                                    never copied, with a full link to the plan's §1.5
+                                    (Step 5's opening); where CLAUDE.md holds the rule (code
+                                    comments and markers, writing tests, verifying a
+                                    change), the row links that section. A rule that does
+                                    not apply is named, with the reason
 ## 3. Requirements and invariants — the R-tables from Step 2
 ## 4. Decisions this epic takes   — what the RFC leaves open, the choice and why; each one
                                     names the `decision:` or `ponytail:` marker it leaves
@@ -325,9 +338,10 @@ Each subtask in §6:
 - **Deliverables:** the types, functions and files it adds, with signatures where they are
   a contract.
 - **Acceptance criteria:** specific, checkable conditions, in terms of the requirements.
-- **Tests:** each test, and the bug it catches (a test that nothing plausible would make
-  fail is not listed).
-- **Rules:** how it meets each general rule that applies, unless §2.1 already says it.
+- **Tests:** each test, the bug it catches, the layer it runs at (the consumer's, CLAUDE.md
+  "Verifying a change"), and each test double by its kind in CLAUDE.md "Writing tests". A
+  test that nothing plausible would make fail is not listed.
+- **Rules:** how it meets each general rule that applies, unless §2 already says it.
 ```
 
 Graphs are Mermaid, never ASCII art, styled with stroke only and quoted labels, as the
@@ -340,9 +354,8 @@ requests" in `.claude/skills/rfc-to-epic-plan/SKILL.md`. It is a suggestion, not
 obligation: the owner may follow it, regroup, or open one pull request per subtask, and the
 subtasks stay the unit that is estimated and tracked. Say so in one line under the table.
 
-- **Size:** a suggested pull request is ideally up to 15 man-days, a ceiling to aim under
-  rather than a target. The number of pull requests follows from that and from the
-  groupings below.
+- **Size:** under the pull-request ceiling in the same instruction. The number of pull
+  requests follows from that and from the groupings below.
 - **What goes together:** group by logic, readability and dependencies, so that each pull
   request delivers a piece of functionality that can be named. Take consecutive subtasks in
   the order of work. Each pull request builds, passes its tests and leaves nothing
@@ -369,219 +382,9 @@ RFC and every subtask it delivers, one id per mention (`RFC 1, T4.1, T4.2`),
 and says when it finishes a subtask only in part, so that it can be mapped to the subtasks
 it delivers.
 
-## Step 6 — GitHub issues: only when asked, as pointers to the documents
+## Step 6 — GitHub issues: only when asked
 
-**Do not create issues unasked.** The user asks for this step when the team is ready to
-assign work. The breakdown's report only reminds the user of it (see the end of
-Verification).
-
-This step is the **one description** of the RFC's issues: roadmap epics, epic issues and
-subtask issues. `rfc-to-epic-plan` sends its issue requests here. Issues never copy the
-specification: a body is a pointer to a section of the plan or of the epic document, with
-a line or two of context, so revising a document never leaves an issue saying something
-else.
-
-Three requests reach this step:
-
-- **a roadmap epic** for an RFC and a release (6.2);
-- **epic issues for a merged plan**, before the epic documents exist (6.3). E2 needs them:
-  each red test's `known.yaml` entry names the issue of the epic that turns it green, so
-  every epic of the plan has its issue before E2's pull request lands;
-- **an epic's issues once its document has merged**: the epic issue (6.3) and one issue per
-  subtask (6.4).
-
-### 6.1 Before creating anything
-
-Do all of these first. Each one stops the step rather than letting it create half the issues.
-
-1. **Name the repository on every call.** `gh issue list`, `gh pr list --search` and
-   `gh label list` build their query from the local remote, and a clone whose `origin` still
-   names an old repository gets `[]` back with no error. Resolve it once and pass it
-   everywhere:
-   ```bash
-   R=$(gh repo view --json nameWithOwner -q .nameWithOwner)
-   gh issue list -R "$R" --state all --label roadmap --json number,title,milestone
-   ```
-   `gh api` calls use `repos/$R/…`. **An empty lookup is not evidence**: that last command
-   must list the roadmap epics the programme already has. If it prints `[]`, stop and report
-   it rather than conclude that nothing exists.
-2. **Check the token's `project` scope** with `gh auth status`. If `project` is missing, stop
-   and ask the user to run `gh auth refresh -s project`, before any issue exists.
-3. **Find what exists, before deciding what to create:** the RFC's roadmap epics (6.2), the
-   epic issue (`gh issue list -R "$R" --state all --label epic --label rfc-<n>-epic-<k>`;
-   both labels must match, since a text search for "epic <k>" returns other epics), and its
-   sub-issues (6.4).
-4. **Labels.** The epic issue carries `epic`, the RFC's label (`rfc-<n>-<slug>`, the slug
-   being the RFC file's, `rfc-17-vfs` for `rfc-17-vfs.md`) and the epic's label
-   (`rfc-<n>-epic-<k>`, with `<k>` keeping its letter: `rfc-1-epic-7a`, never the
-   unsplit epic's `rfc-1-epic-7`). Subtask issues carry the last two, **not** `epic`. A roadmap epic
-   carries `roadmap` and the RFC's label, never `epic` or an epic's label. Check with
-   `gh label list -R "$R" --search rfc-<n>` and create what is missing:
-   ```bash
-   gh label create -R "$R" rfc-<n>-<slug> --color 5319E7 --description "RFC <n> <title>"
-   gh label create -R "$R" rfc-<n>-epic-<k> --color C5DEF5 --description "RFC <n> <component> v2, epic <k>: <title>"
-   ```
-5. **Every link resolves.** Link a document on a branch that holds it, which is not always
-   `develop` (a programme branch such as `feat/storage-v2` holds documents `develop` does not
-   have yet). Check each file before writing its link:
-   `gh api "repos/$R/contents/<path>?ref=<branch>" --silent`. A 404 means linking another
-   branch, never writing a dead link. Issues pointing at an epic document are created only
-   **once its pull request has merged**, never during the breakdown.
-
-### 6.2 The roadmap epic: the only place a release is chosen
-
-A **roadmap epic** says what of one RFC ships in one milestone. It collects the RFC's epic
-issues for that release as sub-issues, and it is the milestone's default for the RFC: a unit
-of the RFC with no epic issue of its own ships with it, and the burnup reads it that way. An
-RFC normally has one; an RFC split across releases has one per release. **It exists before
-any epic issue of the RFC**, because epic issues are created under it. Epic issues never
-choose a milestone: they copy their roadmap epic's, and their subtask issues copy the same
-one. No document names a release.
-
-**Finding it**, for an epic issue: `gh issue list -R "$R" --state all --label roadmap --label
-rfc-<n>-<slug> --json number,title,state,milestone`. One open → use it, without asking.
-Several (an RFC split across releases) → **ask the user** which, since that is the decision
-of when the epic ships. None → **stop** and ask the user for one first; do not pick a
-milestone instead.
-
-**Creating it**, only when the user asks for a roadmap epic. Look first with the same
-command: if one exists for that milestone, use it and create nothing, and if it is closed,
-ask before reopening it. A second one for one RFC and milestone would make the RFC read as
-split across releases.
-
-- Title `roadmap <milestone>: RFC <n> — <RFC title>`, the title as the RFC's `#` heading
-  writes it (`roadmap v1.0: RFC 17 — the filesystem service (VFS)`). One RFC per roadmap
-  epic.
-- The milestone: ask the user, never guess.
-- Body, and nothing more:
-  ```markdown
-  Roadmap epic: what of RFC <n> — <title> ships in <milestone>.
-
-  **In this release:** the whole RFC. | the whole RFC except epics <k>, …, which ship in <later milestone> (#<roadmap>). | epics <k> (<title>), …; the rest of the RFC ships in <milestone> (#<roadmap>).
-  **RFC:** [`rfc-<n>-<slug>.md`](https://github.com/<R>/blob/<branch>/docs/internals/rfcs/rfc-<n>-<slug>.md)
-  **Plan:** [`<plan>.md`](https://github.com/<R>/blob/<branch>/docs/internals/planning/<plan>.md) | none yet.
-
-  The RFC's epic issues for this release are sub-issues of this one, and each carries this milestone. A unit of the RFC with no epic issue of its own ships with this roadmap epic. The plan and the epic documents say what to build; the milestone is the only place that says when.
-  ```
-- Add it to the project (6.5) with no `Estimate`.
-
-### 6.3 The epic issue
-
-One per epic, never two: if 6.1 found one, update it rather than create. Title
-`<component> v2, epic <k>: <title>` (as in `journal v2, epic 4: placement index and
-versions`). Body, and nothing more, in one of two forms.
-
-**Before the epic document exists** (a merged plan, 6.3 for every epic that has no issue):
-```markdown
-Epic <k> of <component> v2 (RFC <n>): <the epic's goal, in one sentence>.
-
-**Spec:** [Epic <k> — <title>](<plan link>#<heading anchor>). No epic document yet.
-**Depends on:** epics <j> and <k> (from the plan's §3.3). **Blocks:** epics <m>, ….
-```
-
-**Once the epic document has merged:**
-```markdown
-Epic <k> of <component> v2 (RFC <n>): <§1's goal, in one sentence>.
-
-**Specification:** [Epic <k>: <title>](https://github.com/<R>/blob/<branch>/docs/internals/planning/<file>.md)
-**Sources:** RFC <n> §…; **Track:** <A|B|C>.
-**Depends on:** epics <j> and <k> (or a sync point, as `S2`, or "every earlier epic").
-
-The document is the specification: requirements, subtasks, acceptance criteria and
-tests live there, not here. Each subtask is a sub-issue.
-```
-
-An existing epic issue whose body is still the first form, or holds no more than a line or
-two of context, is rewritten to the second form when its document lands. Lines that place
-it in the programme (`Part of #3119, stage 3.`, `Plan: #3546.`) are kept. A body someone
-has written into is left as it is, and reported.
-
-```bash
-gh issue create -R "$R" --title "<component> v2, epic <k>: <title>" \
-  --label epic,rfc-<n>-<slug>,rfc-<n>-epic-<k> --milestone <roadmap's milestone> --body-file <body.md>
-```
-
-Then attach it under its roadmap epic as a sub-issue (6.5).
-
-### 6.4 One issue per subtask
-
-**Match the existing sub-issues first**, of this epic's issue and, for a split epic, of
-every other part's, since a subtask can move between parts (`--paginate`, since the endpoint returns 30 per page):
-```bash
-gh api --paginate "repos/$R/issues/<epic-number>/sub_issues" --jq '.[] | "\(.number) \(.state) \(.title)"'
-```
-A sub-issue matches a subtask by its id, in any of the three title forms in use, each with
-its boundary: `subtask T6.1:` (this skill's), `epic 6.1:` (issues from before subtask ids
-carried the `T`, as `journal v2, epic 4.1: …`) and `(T6.1)` (as `engine v2, epic 6: the
-store's lifecycle view (T6.1)`):
-```text
-(subtask T6\.1:|epic 6\.1:|\(T6\.1\))
-```
-The boundary matters: a bare `epic 4.1` also matches 4.10 to 4.19. **If the epic has
-sub-issues but none matches any subtask, stop and report the titles**: a fourth title form is
-more likely than an epic whose every issue is missing. Create issues only for the subtasks
-with no match. A match under another part's epic issue is moved under this part's, never
-duplicated. A subtask issue is obsolete only when no part's document has its id (a
-withdrawn subtask, or a split subtask's old issue), and then it is closed, as 6.6 says. Sub-issues that did not
-come from the epic document (bugs, follow-ups) are not its subject: they are the team's.
-A matched older issue keeps its title form;
-if its body copies the specification (`Covers:`, `Done when`, a checklist), it is rewritten
-to the pointer form below.
-
-Title `<component> v2, subtask T<e>.<n>: <title>`. Body:
-```markdown
-Subtask T<e>.<n> of epic <k> (#<epic-number>): <the subtask's purpose, in one sentence>.
-
-**Specification:** [T<e>.<n> <title>](<document link>#<heading anchor>)
-**Depends on:** #<subtask-number>, … (or the sync point, as `S2`).
-```
-The anchor is GitHub's for the `### T<e>.<n> <title>` heading: lower case, dots and
-punctuation other than hyphens dropped, spaces as hyphens (`### T3.1 Usage table` →
-`#t31-usage-table`). Open one link to check it. Requirements, acceptance criteria, tests and
-the estimate are not copied: the document holds the first three, the project's field the
-last. Create it with the milestone of the roadmap epic the epic sits under, also when the
-subtasks come long after the epic issue.
-
-### 6.5 Sub-issues and the project
-
-- **Sub-issue links**, not checklists in a body: a subtask under its epic, an epic under its
-  roadmap epic. The API wants the child's numeric `id`, not its number:
-  ```bash
-  id=$(gh api "repos/$R/issues/<child-number>" --jq .id)
-  gh api -X POST "repos/$R/issues/<parent-number>/sub_issues" -F sub_issue_id="$id"
-  ```
-  Moving an issue that already has a parent (6.4's match under another part's epic issue)
-  needs `-F replace_parent=true` on the same call; without it the API refuses the child.
-- **Every issue joins the "DittoFS" project** (`marmos91`, project 3). Only subtask issues
-  get `Estimate`, their man-days from §6: a figure on the epic or the roadmap epic too would
-  count it twice in the project's sums. Look the ids up rather than hard-coding them:
-  ```bash
-  project=$(gh project view 3 --owner marmos91 --format json --jq .id)
-  field=$(gh project field-list 3 --owner marmos91 --format json \
-    --jq '.fields[] | select(.name == "Estimate") | .id')
-  item=$(gh project item-add 3 --owner marmos91 --url <issue-url> --format json --jq .id)
-  gh project item-edit --project-id "$project" --id "$item" --field-id "$field" --number <man-days>
-  ```
-
-### 6.6 When a document is revised, or an epic changes release
-
-- The issues follow a revision **after its pull request has merged**, on request, never in
-  the same pass: until then the links still show the old document. The sync covers a renamed
-  subtask's title, a changed estimate's field, a new subtask's issue, a withdrawn subtask's
-  issue closed as not planned, a split subtask (T4.3 into T4.3a and T4.3b: new issues, the
-  old one closed), and a `**Depends on:**` line the revision changed. That line is the one
-  part of a body that copies the documents, kept because release tracking reads it: an epic
-  whose milestone is due before that of an epic it depends on is a conflict to report.
-  Otherwise bodies need no change, because they say nothing the document can contradict.
-- An epic changes release only by moving under the other release's roadmap epic (the user
-  creates it if the RFC has none there yet); then update the milestone copy on the epic
-  issue and its open sub-issues. Closed ones keep the release they shipped in.
-
-### 6.7 Report
-
-The issue links, each epic's roadmap epic, the subtask numbers, any body left as it was,
-and any epic placed in an earlier release than an epic it depends on. Check the result with
-`gh api --paginate "repos/$R/issues/<epic-number>/sub_issues" --jq '.[].title'`.
+In [`issues.md`](issues.md), beside this file.
 
 ## Common rationalizations
 
@@ -589,11 +392,8 @@ and any epic placed in an earlier release than an epic it depends on. Check the 
 | --- | --- |
 | "The plan already lists the subtasks" | It lists candidates sized for a plan. Without the requirements next to them, nobody can tell which RFC obligation fell through. |
 | "I'll pick out the important MUSTs" | The unimportant-looking ones are the ones nobody tests. Read every owned section in full, note every candidate, and map each one. |
-| "This MUST is obvious, it needs no test" | Then the test is cheap. A requirement without a test is a claim. |
+| "This MUST is obvious, it needs no test" | Then the test is cheap. A requirement without a test is a claim, and an enforcer named in its place must exist when this epic lands: read the code. |
 | "The estimate is close enough to the plan's" | Then the script will say so. Compute it; don't copy the plan's figure. |
-| "Let's create the issues now, it saves a step" | They are created by hand when the team is ready to assign the subtasks, and only on request; their links point at the merged document, which does not exist until its pull request merges. |
-| "The issue body could carry the acceptance criteria, it saves a click" | A copy goes stale at the first revision. The body points at the section; the document is the specification. |
-| "The old epic document is out of date, I'll replace it" | Someone may be working from it. Stop and ask. |
 
 ## Verification
 
@@ -601,14 +401,21 @@ Before handing over, check:
 
 - Every candidate of 2.1 (key words, bold lead sentences, invariants, bounds) is mapped,
   and the R-tables carry `Kind`, `Source` and `Subtasks` on every row.
-- Every R-number has a subtask and a test; every subtask covers an R-number or says why not.
+- Every R-number has a subtask and a test that fails on its assertion, or names what already
+  enforces it when this epic lands (2.4); every subtask covers an R-number or names the
+  subtask that consumes it.
+- Design principles: every deliverable names its consumer; each §4 decision cites prior art
+  or says none was found. They were applied: the architect proposal was reconciled, the
+  three review passes ran and their findings are fixed (or, without agents, ran in sequence
+  and are listed as to-dos), the surface was put to the user for approval, and the design questions were
+  asked, deferred to the open points of the epic they belong to, or returned as pending.
 - Every identifier in an R row is read back in the sections its `Source` cites: list the
   row's backticked names, and `rg -n -w '<name>'` each one in the cited documents, keeping
   only the hits inside the cited sections' line ranges. A name with no hit there is a
   defect to fix before handing over, not to report: add the place it really comes from to
   `Source`, or rewrite the row in the RFC's words. This holds for rows this run did not
   write, too, when revising an existing document.
-- No subtask is over 5 man-days without a reason, and none was cut to reach a count.
+- No subtask is over the ceiling without a reason, and none was cut to reach a count.
 - §6 lists the subtasks in order of work, blockers first, and their numbers ascend in that
   order except for ids already cited, which keep theirs; the order-of-work graph in §7
   matches §6's `**Depends on:**` lines.
@@ -620,13 +427,12 @@ Before handing over, check:
 - The epic's units are called epics and subtasks: no other word (task, story, phase,
   stage, …) names them. Read the document for it; a word search only suggests where to look,
   since phase, stage and plan are also ordinary words and terms of some RFCs.
-- The document never refers to the plan, has no checkboxes or status, and its graphs are
-  Mermaid. `rg -n -i "\b(this|the) plan\b|\bplan's\b" <epic-doc>` shows where to look; read
-  each hit, since some RFCs use "plan" as a term of their own. A copied rule that refers to
-  the plan is a defect of the plan: copy it word for word, and report it so the plan is
-  fixed.
-- §2 holds the plan's general rules word for word, and §2.1 accounts for every rule.
-- §1.3 explains every `E<n>` and `S<n>` the document uses, the copied rules included. This
+- The document never refers to the plan for what to build, has no checkboxes or status, and
+  its graphs are Mermaid. Its one link to the plan is §2's, to §1.5. `rg -n -i "\b(this|the) plan\b|\bplan's\b" <epic-doc>` shows where to look; read
+  each hit, since some RFCs use "plan" as a term of their own.
+- §2 has one row per numbered rule of the plan's §1.5, cited by number and title, none
+  copied, and its full link to the plan's §1.5 resolves.
+- §1.3 explains every `E<n>` and `S<n>` the document uses, §2 included. This
   prints the ones missing from it, and must print nothing. A token that names something
   else, such as the S3 storage service, gets its own line in §1.3 saying so:
 
@@ -635,23 +441,18 @@ Before handing over, check:
     comm -23 - <(awk '/^### 1\.3 /{f=1; next} /^#/{f=0} f' <epic-doc> |
                  rg -N -o -w 'E[0-9]+[a-z]?|S[0-9]+[a-z]?' | sort -u)
   ```
-- No GitHub issue was created or synced unless the user asked, and none pointing at the
-  epic document before it merged. Every lookup named the repository with `-R`, the roadmap
-  lookup returned the known roadmap epics, and the `project` scope was checked, all before
-  the first issue was created. An existing epic issue whose body was still the plan's
-  pointer now points at the epic document and keeps its `Part of`/`Plan:` lines; its
-  sub-issues were matched by id in all three title forms before any was created, and a
-  subtask issue whose id the document no longer has was closed. Issues that were created carry
-  the labels, a pointer body with no copied specification, the sub-issue links (subtask under
-  epic, epic under its RFC's roadmap epic), the project, the roadmap epic's milestone and, on
-  subtasks only, the `Estimate` field.
+- No GitHub issue was created or synced unless the user asked (`issues.md` 6.7 checks the
+  rest when they did).
 
 Then report the output path, the requirement count, the subtask count and the man-day total
 (and the plan's figure for comparison, or "no plan figure"), any Step 1 fallback used,
 the suggested pull requests, the subtasks whose
-estimate is least certain, and the open points, in a few lines. End with one line
-reminding the user to create the GitHub issues with Step 6 once the epic document is
-approved and its pull request has merged; for a revision of an epic that already has
+estimate is least certain, and the open points, in a few lines; then, at whatever length
+they take, the target tree and every exported symbol signature (Design principles), the
+review passes still to run independently, if any, and the questions pending the user's
+answer. End with one line
+reminding the user to create the GitHub issues with Step 6 (`issues.md`) once the epic
+document is approved and its pull request has merged; for a revision of an epic that already has
 issues, the line reminds them instead that the issues need syncing once the revision
 merges. The line names Step 6 as the next step for the user to ask for; it does not offer
 to run it now.

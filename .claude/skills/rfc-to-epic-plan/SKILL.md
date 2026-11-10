@@ -5,8 +5,6 @@ description: Turn a DittoFS RFC (docs/internals/rfcs/rfc-*.md) into an implement
 
 # From an RFC to an epic plan
 
-The output is one Markdown plan that a small team can pick up and work in parallel.
-
 Naming used below: **v1** is the component that exists today, and **v2** is the one the
 RFC describes. When the RFC builds something new, there is no v1 and every v1 clause
 below is dropped.
@@ -142,8 +140,8 @@ revision takes a letter (under "Terminology"), so the numbers above never move.
 
 | Role | Content |
 | --- | --- |
-| **E1 Interfaces** | The public surface only: the exported symbols with their exact signatures, the error set, and the injection points: options and the `Deps` fields RFC 25 §8 names (logger, metrics registry, tracer), or the RFC's own observability surface where rule 3's exception applies. Stub bodies. No behaviour, except where a type's encoding *is* the contract. An internal interface belongs here only if it has two consumers before any implementation exists (for example a storage seam that both an option and E2's crash-simulating fake consume). Every other internal package — codecs, index, state machines — is created by the middle epic that implements it, as concrete types, with its first caller (rule 12). |
-| **E2 Red e2e suite and test foundations** | E2E tests for every use case and scenario that can be named: from the RFC, from the in-scope related RFCs, and from other sources (protocol specs, past issues, v1's own bug history). Every test in a suite that keeps a `known.yaml` starts red and is listed there as a known failure; one the suites paragraph puts in `unit` or `e2e` lands green with the epic that makes it pass (below). **E2 registers the suite with the harness**, not E2E green, so CI runs it from the first pull request and a test pinned green stays green; registered at the end, a test an epic turned green could go red again unseen. Concretely, E2 registers the red tests where the RFC's suites paragraph (RFC 29 R11) puts them: a suite of its own only when the paragraph calls for one, as an entry in `test/suites.yaml` with `tier: pr` (the default, `merge`, keeps it off pull requests), `format: go-json` and `known:` naming its `known.yaml`, behind its own build tag so `unit` does not turn red on it, in a component group named for the component (RFC 29 §4.9); the tag joins `lint-go`'s `go vet -tags=` line, which is the only check that compiles tagged tests on a pull request; otherwise the existing suites the paragraph names. **An RFC with no suites paragraph** already fails `lint-repo`, since `dt docs --check` wants exactly one in every RFC: E2 gets a suite of its own, in that same form, and the pull request that registers it adds a minimal paragraph naming that suite, which §6 lists as an open point for the RFC's author to review. Each red test is one entry in its suite's `known.yaml`, which `dt` grades, so a listed test that passes fails the run and the epic that turns it green removes its entry. The entry is `status: fail`, `fix: planned`, `category: feature`, a `reason`, and `issue:` the issue of the epic that turns the test green (its subtask's issue where that epic already has subtask issues), written quoted as `issue: "#1234"` (unquoted, the `#` starts a YAML comment and the entry has no issue): a planned entry with no issue is refused, and one bad entry stops every `dt` command from loading the registry (`fix: wontfix` would load, and say the opposite of the truth). So **the plan's epic issues exist before E2's pull request lands**: E2 asks for them (`epic-breakdown` Step 6.3, for a merged plan) if they are missing, and they in turn need the RFC's roadmap epic; with no roadmap epic, stop and ask for one rather than cite some other issue. Where the red tests fail in a shared fixture until a later epic lands, each entry also sets `message:` to the text that fixture's failures start with (`message: 'fixture:'` in the journal's suite), so a test that fails for another reason is graded new rather than excused. A suite that keeps no `known.yaml` (`unit`, `e2e`) cannot hold a red test: a test the paragraph puts there lands green, with the epic that makes it pass. A new suite and group join the paragraph in the pull request that registers them, and that pull request runs `test/harness/bin/dt docs` so `docs/internals/testing.md` matches the registry; `lint-repo`'s `dt docs --check` compares that file with the registry and checks every RFC's paragraph: exactly one per RFC, and every code span in it naming a suite, group or option of the registry. The small test components that everything else needs (fakes for clocks and faults, a reference model, a profiling harness) also go here. **A test lands with the epic that creates the packages it imports:** at S2 only E1's packages exist, so a test that needs a middle epic's package (an encoder, a platform layer) belongs to that epic and is listed there. Format checks in E2 write their bytes by hand from the RFC, which also makes them an oracle independent of the encoder. **The catalogue holds only what can run:** a scenario that needs a host nobody provisions is parked in §6, and a system-level scenario that a component-level fake already covers is dropped. |
+| **E1 Interfaces** | The public surface only: the exported symbols with their exact signatures, the error set, and the injection points: options and the `Deps` fields RFC 25 §8 names (logger, metrics registry, tracer), or the RFC's own observability surface where rule 3's exception applies. Stub bodies. No behaviour, except where a type's encoding *is* the contract. An internal interface belongs here only if it has two consumers before any implementation exists (for example a storage seam that both an option and the smallest in-memory implementation passing the seam's conformance suite (kind 2 of `CLAUDE.md`'s "Writing tests") consume). Every other internal package — codecs, index, state machines — is created by the middle epic that implements it, as concrete types, with its first caller (rule 12). |
+| **E2 Red e2e suite and test foundations** | E2E tests for every use case and scenario that can be named: from the RFC, from the in-scope related RFCs, and from other sources (protocol specs, past issues, v1's own bug history). Every test in a suite that keeps a `known.yaml` starts red and is listed there as a known failure; one the suites paragraph puts in `unit` or `e2e` lands green with the epic that makes it pass (below). **E2 registers the suite with the harness**, not E2E green, so CI runs it from the first pull request and a test pinned green stays green; registered at the end, a test an epic turned green could go red again unseen. Concretely, E2 registers the red tests where the RFC's suites paragraph (RFC 29 R11) puts them: a suite of its own only when the paragraph calls for one, as an entry in the suite registry (`test/suites.yaml`) with `tier: pr` (the default, `merge`, keeps it off pull requests), `format: go-json` and `known:` naming its `known.yaml`, behind its own build tag so `unit` does not turn red on it, in a component group named for the component (RFC 29 §4.9); the tag joins `lint-go`'s `go vet -tags=` line, which is the only check that compiles tagged tests on a pull request; otherwise the existing suites the paragraph names. **An RFC with no suites paragraph** already fails `lint-repo`, since `dt docs --check` wants exactly one in every RFC: E2 gets a suite of its own, in that same form, and the pull request that registers it adds a minimal paragraph naming that suite, which §6 lists as an open point for the RFC's author to review. Each red test is one entry in its suite's `known.yaml`, never a pattern, which the test runner (`dt`) grades, so a listed test that passes fails the run and the epic that turns it green removes its entry. The entry is `status: fail`, `fix: planned`, `category: feature`, a `reason`, `message:` the failure it is known by, and `issue:` the issue of the epic that turns the test green (its subtask's issue where that epic already has subtask issues), written quoted as `issue: "#1234"` (unquoted, the `#` starts a YAML comment and the entry has no issue): a planned entry with no issue is refused, and one bad entry stops every runner command from loading the registry (`fix: wontfix` would load, and say the opposite of the truth). So **the plan's epic issues exist before E2's pull request lands**: E2 asks for them (`epic-breakdown` Step 6.3, for a merged plan) if they are missing, and they in turn need the RFC's roadmap epic; with no roadmap epic, stop and ask for one rather than cite some other issue. Where the red tests fail in a shared fixture until a later epic lands, that message is the text the fixture's failures start with (`message: 'fixture:'` in the journal's suite), so a test that fails for another reason is graded new rather than excused. A suite that keeps no `known.yaml` (`unit`, `e2e`) cannot hold a red test: a test the paragraph puts there lands green, with the epic that makes it pass. A new suite and group join the paragraph in the pull request that registers them, and that pull request runs `test/harness/bin/dt docs` so `docs/internals/testing.md` matches the registry; `lint-repo`'s `dt docs --check` compares that file with the registry and checks every RFC's paragraph: exactly one per RFC, and every code span in it naming a suite, group or option of the registry. The small test components that everything else needs (an injected clock, a reference model, a profiling harness, and a fault-injection wrapper only around an implementation that already exists; otherwise the wrapper lands with its first consumer) also go here. **A test lands with the epic that creates the packages it imports:** at S2 only E1's packages exist, so a test that needs a middle epic's package (an encoder, a platform layer) belongs to that epic and is listed there. Format checks in E2 write their bytes by hand from the RFC, which also makes them an oracle independent of the encoder. **The catalogue holds only what can run:** a scenario that needs a host nobody provisions is parked in §6, and a system-level scenario that a component-level test against a verified in-memory implementation already covers is dropped. |
 | **Integration** | Wire v2 into the system as the programme (Step 0 #8) stages it, not into code a later stage replaces. Typical shape changes: one instance per share becomes one per disk; a value read once at start becomes reloadable; an owner-local decision becomes cluster-wide. Also: the transition policy from Step 0 #3, config keys, observability wiring (the component's `Deps` from the root's logger, registry and tracer; its `health.Source` added to the evaluator; its conditions in RFC 25 §3.9's registry and its alert rules per RFC 25 §7 — or, under rule 3's exception, the bridge to them), error mapping, API and CLI. **If it depends on an interface not yet agreed** (owned by another team or stage), add a synchronisation point for that agreement, keep in this epic only what is already decided, and put the rest in a following epic that is **planned after** that point and not estimated (Step 3). |
 | **E2E green** | Burn down the suite's `known.yaml` to empty. Also soak tests, the benchmarks the RFC names, and the suite's tiers past `pr`; the suite itself was registered in E2. |
 | **Dashboards** (optional) | Only if Step 0 #9 said yes: a small number of dashboards, each with an automated test and a consumer before release. |
@@ -153,7 +151,7 @@ revision takes a letter (under "Terminology"), so the numbers above never move.
 The middle epics implement the RFC. Cut them **along the RFC's own seams**: on-disk format,
 index, data path, recovery, protocol state machine, API, controller loop, and so on. Each
 one must be buildable and unit-testable on its own, under rule 1: against E1's public
-surface, E2's test components, another epic's pure in-memory implementation, or the
+surface, E2's test components, a test double `CLAUDE.md`'s "Writing tests" allows, or the
 implementation of an epic it depends on once that has landed.
 
 **How many.** Start from the estimate `N = round(wc -l RFC / 400)`, clamped to 3..8, so
@@ -182,12 +180,12 @@ existing seam is not an artificial one, and an area with no such seam stays whol
 leaves a track with too little, say so in §3.4 and name what fills it.
 
 **Subtask size.** A subtask is one coherent piece of work for one engineer, landing with its
-tests, ideally up to 5 man-days. Cut subtasks by what makes sense: one logical change,
-readable on its own, following the dependencies, delivering a piece of functionality that
-can be named. There is no target number of subtasks per epic; the count follows from the
-work. The plan gives only the expected count, as a size; the subtasks themselves are carved,
-numbered and ordered when the epic starts, with the `epic-breakdown` skill. How subtasks become pull requests is under "Subtasks and pull
-requests" below.
+tests, sized as §1.5's opening instruction (Step 3) says. Cut subtasks by what makes sense:
+one logical change, readable on its own, following the dependencies, delivering a piece of
+functionality that can be named. There is no target number of subtasks per epic; the count
+follows from the work. The plan gives only the expected count, as a size; the subtasks
+themselves are carved, numbered and ordered when the epic starts, with the `epic-breakdown`
+skill. How subtasks become pull requests is under "Subtasks and pull requests" below.
 
 **Expected content, not subtasks.** Under each epic the plan writes what the epic is
 expected to deliver, as a short unnumbered list, one line per piece, in the RFC's terms and
@@ -217,7 +215,7 @@ scale.
 no parallelism, no waiting on reviews, other epics or external dependencies. An estimate
 includes the work's tests, doc comments, review fixes and whatever the plan's general rules
 require of it (fuzzing, metrics, profiling, known-failure bookkeeping). Numbers are plain:
-no `~`, no ranges, no comma, no unit inside the number.
+no `~`, no ranges, no comma, no `+ E11`, no unit inside the number.
 
 | Man-days | Typical work |
 | --- | --- |
@@ -226,7 +224,7 @@ no `~`, no ranges, no comma, no unit inside the number.
 | 1 | a small codec, or one well-specified function with edge-case tests |
 | 2 | a component with a few interacting rules, or about five conformance checks |
 | 3 | concurrency, crash safety or on-disk ordering in one component |
-| 5 | a subsystem's core algorithm under race or crash testing; the ceiling for one subtask |
+| 5 | a subsystem's core algorithm under race or crash testing |
 
 Weight upward for crash or durability semantics, lock ordering, per-OS code, anything
 verified only with fault injection, and burn-down work whose size cannot be known in advance
@@ -239,11 +237,80 @@ checks the RFC names, not by the number of bullet families.
 ### Subtasks and pull requests
 
 A subtask is not a pull request, and the plan does not decide how subtasks ship. Some
-engineers open one pull request per subtask, others group several; both are fine, and
-neither is the default. The epic breakdown **suggests** a grouping, to keep pull requests
-readable: a suggested pull request is ideally up to 15 man-days, a ceiling to aim under
-rather than a target, grouped by logic, readability, dependencies and a deliverable that can
-be named. The owner may follow it, regroup, or open one pull request per subtask.
+engineers open one pull request per subtask, others group several; both are fine, and neither
+is the default. The epic breakdown **suggests** a grouping, to keep pull requests readable,
+sized as §1.5's opening instruction (Step 3) says. The owner may follow it, regroup, or open
+one pull request per subtask.
+
+## Design principles
+
+These hold for every plan and every epic document. This section is their only copy:
+`epic-breakdown` applies them through a link, and a plan or epic document that invokes one
+names this section by its full path, `.claude/skills/rfc-to-epic-plan/SKILL.md`, "Design
+principles", since neither document holds a copy.
+
+- **Build only what something uses.** §1.5's rules 10–12 (Step 3) say it for tests,
+  exports and packages. Before adding anything, check that the repository does not already
+  have it and that the standard library cannot do it.
+- **Settle now what later code will pin.** A contract later epics, or later subtasks of the
+  same epic, build on is designed as final in the epic that introduces it: a wire or frame format, a persisted shape, an
+  exported signature every later test calls, an allow-list, a frozen symbol (rule 11). A
+  deferral says in the decisions why adding it later costs no migration and no rewrite; a
+  contract settled now says what changing it would cost once later epics depend on it.
+- **What is built is final, not a placeholder.** Simple code is fine; a temporary contract
+  is not. A `ponytail:` whose upgrade path is a migration or a rewrite of something later
+  code pins is the user's choice: ask, and name that cost in the marker. The one exception is
+  E1's stub bodies behind final signatures; nothing tests their answers.
+- **Tests follow `CLAUDE.md`'s "Writing tests"**, not a restatement of it. A deliverable
+  that is itself a test double says which of the allowed kinds it is and how it is verified.
+- **Tests run as CI runs them**, through the repo's test runner and suite registry (here
+  `test/harness/bin/dt run <suite>` and `test/suites.yaml`), not a bare `go test` that misses
+  their tags and known failures. A test lands red before the code that turns it green only in
+  a cell whose registry entry names a known-failure file (here a `known:` file, RFC 29 §4.7;
+  `engine-conformance` with `test/engine/known.yaml` on `feat/storage-v2` is the pattern):
+  one entry per test, never a pattern, with the failure `message:` it is known by and the
+  `issue:` of the epic that turns it green, written with the test and confirmed by CI on the
+  pull request that adds it. That epic removes the entry in the change that makes it pass,
+  once CI shows it passing: a known failure that passes fails the run. A suite with no
+  known-failure file holds no red test: E2 registers the cell its red tests need (Step 2's E2
+  row), and a later red test no registered cell holds registers its own with it.
+- **Without agents.** A run that cannot launch agents (a subagent, or a session with no
+  agent tool) does each agent pass below itself, one after another, says in its report that
+  they were not independent, and lists them as to-dos to run independently before the pull
+  request opens.
+- **Design the surface twice.** An independent architect agent, if one is available (for
+  example `feature-dev:code-architect`), otherwise the fallback above, proposes the target
+  tree and the exported surface independently of the agent writing the document; reconcile
+  the two, keeping the smaller design that still meets the requirements.
+- **Ask, don't guess, on a design choice that is the user's**: a contract later epics pin,
+  a cut in scope, a departure from the RFC. A missing required input is Step 0's, which
+  stops instead. Ask in one batch of at most four questions, the ones that most constrain
+  later epics. A small, isolated choice that nothing pins before its epic starts is deferred
+  to that epic, named in its open points; anything else past four goes in a second batch
+  after the answers. Each question has two or three options, a concrete example per option
+  (a signature, a layout, a file tree) and a recommendation backed by best practice, the
+  state of the art and what comparable projects do, marking what was checked and what is
+  from memory. A subagent, which cannot ask, writes the recommended option in place, marks
+  it "pending the user's answer" in the open points, and returns the questions in its
+  report. A pending mark is an open point as Step 3 allows, never a bare TBD: the pull
+  request lists the question under "Decision needed" and does not auto-merge until the user
+  answers, and the mark goes when the answer is folded in.
+- **Show the surface before it is settled.** The report lists the target tree (a plan's §4.1
+  directory layout, an epic document's §5) and, for an epic document, the exported
+  signatures in its Deliverables, for the user to approve before any code is written.
+- **Review before the pull request.** Three passes, each by its own agent (or as "Without
+  agents" says), on the finished document: an **adversarial** one that states the
+  document's claim in one sentence (for an epic document every obligation numbered, each
+  with a subtask and either a test that can fail or the existing enforcement it names, as
+  `epic-breakdown` Step 2.4 allows; for a plan every in-scope RFC section mapped in §7; in
+  both, nothing without a consumer) and tries to break it; a **correctness** one that reads
+  every requirement or citation back against the lines it cites and runs the skill's own
+  checks (`plan-check.awk` and Step 4 for a plan; `epic-breakdown/epic-check.awk` and that
+  skill's Verification list for an epic document); and a **simplification** one that hunts
+  for what can be cut, merged, or replaced by what the repository or the standard library
+  already has. Fix what they find and wait for the user to approve the surface, then open
+  the pull request. A subagent, which cannot wait for that approval, lists the surface under
+  "Decision needed" in its place.
 
 ## Step 3 — Write the plan
 
@@ -259,7 +326,10 @@ epics. So it has none of the following:
 - decisions deferred with no pointer: settle them, or list them in §6 with the options and
   the issue or pull request where they are being decided (`pending #NNN`). A link to the
   open thread is what an open point needs; an issue number in a plan is fine (the rule
-  against them is about source comments).
+  against them is about source comments). A design question a subagent could not ask is
+  the one other form: the recommended option written in place and marked "pending the
+  user's answer", with the question listed in the pull request's "Decision needed"
+  (Design principles, "Ask, don't guess").
 
 The one exception is an epic that cannot be broken down yet because it waits on an
 interface someone else owns: give it "planned after Sx" in place of an estimate (subtasks
@@ -308,7 +378,9 @@ Header: scope (the RFC + related RFCs with their in-scope level), tracks (A, B,
                                    stale at the first change
 ## 4. Implementation decisions
 ### 4.1 Directory layout        — a tree, each entry tagged with its epic
-### 4.2 Decisions               — D1…Dn: what the RFC leaves open, the choice and why, and
+### 4.2 Decisions               — D1…Dn: what the RFC leaves open, the choice and why, how
+                                   one or two comparable projects or the state of the art
+                                   do it (linked, or "from memory", or "none found"), and
                                    the epic that applies it. A choice that changes what the
                                    RFC says is not a D: it is an RFC amendment, proposed to
                                    the user as "What the plan holds" says
@@ -352,8 +424,8 @@ the `Subtasks` and `Man-days` columns; an epic "planned after" counts in neither
 ```
 
 Use the second form when some epic is "planned after", and list every such epic. Numbers
-are plain multiples of 0.25: no `~`, no ranges, no `+ E11`, no comma, no unit inside the
-number. Compute the total with the check beside this file, never by hand:
+follow "Estimating in man-days". Compute the total with the check beside this file, never by
+hand:
 
 ```bash
 awk -f .claude/skills/rfc-to-epic-plan/plan-check.awk <plan>
@@ -376,8 +448,7 @@ label, because it would always read `v2`.
 ### Graphs are Mermaid, never ASCII art
 
 Every graph (dependencies, the per-track path, any state machine you need to explain)
-is a fenced `mermaid` block. GitHub and Obsidian render these natively. In VS Code's
-preview, use the *Markdown Preview Mermaid Support* extension. Conventions:
+is a fenced `mermaid` block. GitHub and Obsidian render these natively. Conventions:
 
 ````markdown
 ```mermaid
@@ -418,11 +489,9 @@ flowchart TD
 
 Put these rules in §1.5. Make each one concrete for this RFC: name its parsers, its hot
 paths, its counters, its v1 package. Drop a rule only by writing that it does not apply,
-and why. Write each rule so that it stands alone once copied into an epic: no references
-to sections of the plan ("§3.1", "§1.4"), only to the RFC, to `CLAUDE.md` or to other
-rules by number, and never "this plan", "the plan" or "see the plan", which become false
-once the rule sits in an epic document. Name the thing itself instead: not "this plan's
-simplifications carry theirs" but "each simplification carries its own marker: …".
+and why. Epic documents cite each rule by its number and bold title, so a cited rule keeps
+its number, its title names what it requires, and a rule `CLAUDE.md` holds names that
+section rather than restating it.
 
 Open §1.5 with this instruction, verbatim. It is written **into the plan itself**, so that
 whoever later asks for an epic to be created from the plan, in any session, finds the rule to
@@ -441,13 +510,15 @@ use `epic-breakdown` in the document they are reading:
 >   with subtask ids `<e>.<n>` (`subtask 4.3`, or `T4.3` for short), assigned by the epic
 >   document. No other word names
 >   them: not task, ticket, story, step or phase, in headings, tables, ids or prose.
-> - **The epic stands alone.** Copy the numbered rules below into the epic document word
->   for word, under their own heading — the rules only, not this instruction, which speaks
->   of "this plan". The epic document must not refer to this plan, link to it,
->   or say "see the plan". Everything a reader needs to do the epic is in the epic
->   document itself: the RFC sections it implements, the interfaces it builds on, the
->   rules, the subtasks, and a short legend of the names the rules borrow from this plan
->   (E1, E2, S1, the integration epic, …).
+> - **The epic stands alone for what to build.** Its requirements, subtasks and decisions
+>   are in the epic document itself, which never refers to this plan for them or says "see
+>   the plan": the RFC sections it implements, the interfaces it builds on, the
+>   subtasks, and a short legend of the names it borrows from this plan (E1, E2, S1, the
+>   integration epic, …). It cites the numbered rules below, without copying them, in a
+>   table of how each applies: each row names its rule by number and bold title, which
+>   says what the rule requires, and the table links this §1.5 with a full link (the
+>   plan's path and the section's anchor) and the `CLAUDE.md` sections that hold a rule,
+>   so the epic reads alone and its reader can still open each rule's text in one click.
 > - **The epic document records decisions, not progress, like this plan.** It has no
 >   status fields, no checkboxes to tick and no sections to keep up to date as the work
 >   goes on. It is revised through a pull request only when a decision changes.
@@ -467,10 +538,10 @@ use `epic-breakdown` in the document they are reading:
 >   issue and its subtask issues copy that roadmap epic's milestone, and an epic changes
 >   release only by moving under the roadmap epic of the other release.
 
-1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
-   epic's pure in-memory implementation, the implementation of an epic it depends on once
-   that has landed, and E2's test components. E1 declares no internal interface for it to
-   fake (rule 12).
+1. **Independent unit tests.** Each epic carries its own unit tests. They build on E2's
+   test components, the implementation of an epic it depends on once that has landed, and
+   only the test doubles `CLAUDE.md`'s "Writing tests" allows. E1 declares no internal
+   interface for them to stand in for (rule 12).
 2. **Fuzz tests where relevant.** Use Go native fuzzing on every parser of input the
    component did not just write itself: on-disk records, wire messages, config, API
    payloads. Where E2 has a reference model, also fuzz operation sequences against it.
@@ -486,28 +557,23 @@ use `epic-breakdown` in the document they are reading:
 5. **Public interface and internals.** Tests cover both the internal package API and the
    public behaviour the epic enables, including concurrency under `-race`. Test at the
    layer that **consumes** a value (see `CLAUDE.md`, "Verifying a change").
-6. **Known failures shrink.** An e2e test that turns green leaves the suite's `known.yaml`
-   in the same change: `dt` fails the run if a listed test passes.
+6. **Known failures shrink.** A red test that turns green leaves its suite's `known.yaml` in
+   the same change, as "Design principles" in `.claude/skills/rfc-to-epic-plan/SKILL.md`
+   says.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
    an import test. The test checks every package on its own, so its allowlist names each
    package an exception applies to, test packages included. v1 is touched only as the
    transition policy says: at its callers in the integration epic, or not at all when v1
    is deleted at a cutover.
-8. **Real dependencies for properties of those dependencies.** No fake stands in for a
-   check about what the real thing does: a real disk for durability, a real object store or
-   Localstack for remote semantics, a real kernel client for protocol behaviour. Fakes are
-   for pure logic only.
-9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
-   the code's behaviour and references nothing outside it: no issue or pull request
-   numbers, no CI, runner or OS names, no ids from planning documents (epics, subtasks,
-   synchronisation points, decisions). A
-   `ponytail:` marker records a knowingly simple implementation, naming its ceiling and the
-   upgrade path. A `decision:` marker records deliberate behaviour, naming the rule, why it
-   holds and the evidence that would overturn it. Where the RFC carries such a note, its
-   marker goes at the code site that implements it.
-10. **A test must be able to fail.** Keep a test only if a plausible change would make it
-    fail and nothing else would catch that change: not the compiler, not the diff, not a
-    later epic's tests. A review rule that no test can check, such as "stubs never panic",
+8. **Real dependencies for properties of those dependencies**, as `CLAUDE.md`'s "Writing
+   tests" says; this rule does not restate it. Name, for this RFC, the checks that need the
+   real thing (a real disk for durability, a real object store or Localstack for remote
+   semantics, a real kernel client for protocol behaviour).
+9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). Where the RFC carries a
+   `ponytail:` or `decision:` note, its marker goes at the code site that implements it.
+10. **A test must be able to fail** (`CLAUDE.md`, "Writing tests"), and nothing else
+    would catch the change it guards: not the compiler, not the diff, not a later epic's
+    tests. A review rule that no test can check, such as "stubs never panic",
     stays a review rule.
 11. **A symbol is exported only if the RFC's interface uses it.** Everything exported is
     frozen at S1. Helpers the internal packages need stay internal, for example in an
@@ -542,21 +608,17 @@ use `epic-breakdown` in the document they are reading:
   and no package that a middle epic creates.
 - No E2 test imports a package that does not exist at S2; each such test is listed in the
   epic that creates the package.
-- E2 registers the red tests in the suites the RFC's suites paragraph names, each in its
-  suite's `known.yaml` as `fail`, `planned`, `feature` with a reason and an `issue:`; a suite
-  of its own (`test/suites.yaml` entry with `tier: pr`, `format: go-json` and `known:`, a
-  build tag on `lint-go`'s vet line, a component group, `docs/internals/testing.md`
-  regenerated with `dt docs`) only when the paragraph calls for one, or when the RFC has no
-  suites paragraph, in which case the registering pull request adds a minimal one and §6
-  lists it for the RFC's author. Each `issue:` is quoted (`"#1234"`). E2E green adds only the tiers
-  past `pr`, soak and benchmarks.
+- E2 matches its row in Step 2's table.
 - The integration epic follows the programme's stages, and an epic waiting on someone
   else's interface says "planned after Sx" and names the point.
 - There is a dashboards epic only if the RFC or the user asked for one.
-- The §1.5 rules cite no section of the plan and never refer to it, so they stand alone
-  once copied into an epic. This shows where to look, skipping the opening instruction;
-  read each hit, since some RFCs use "plan" as a term of their own:
-  `awk '/^### 1\.5 /{f=1; next} /^##/{f=0} f && !/^>/' <plan> | rg -n -i "\b(this|the) plan\b|\bplan's\b"`
+- Each §1.5 rule has a bold title naming what it requires, and names the `CLAUDE.md`
+  section where `CLAUDE.md` holds the rule, so an epic document can cite it by number.
+- Every §4.2 decision cites prior art or says none was found.
+- The Design principles were applied: the architect proposal was reconciled, the three
+  review passes ran and their findings are fixed (or, without agents, ran in sequence and
+  are listed as to-dos), the surface was put to the user for approval, and the design questions were
+  asked, deferred to an epic's open points, or returned as pending.
 - Every Step 0 default and every divergence from an existing plan is listed in the header
   or in §6.
 - No graph is in ASCII art.
@@ -567,17 +629,12 @@ use `epic-breakdown` in the document they are reading:
   line, the §2 total row and every epic's §2 row; every epic without a figure is "planned after Sx" and named
   in the plan estimate line.
 - Nothing in the plan tracks progress: no status, no checkboxes, no placeholders.
-- §1.5 opens with the verbatim instruction: epics are expanded with `epic-breakdown`, the
-  rules are copied into each epic, the epic
-  stands alone and records decisions rather than progress, subtasks are not pull requests,
-  and issues, only when asked for, follow `epic-breakdown` Step 6, with the epic issues
-  before E2 and a release that the RFC's roadmap epic sets and its epic and subtask issues
-  copy.
+- §1.5 opens with its instruction, verbatim.
 
 ## GitHub issues, on request
 
 Roadmap epics, epic issues and subtask issues are described in one place, `epic-breakdown`
-Step 6 (`.claude/skills/epic-breakdown/SKILL.md`): its lookups, labels, bodies, milestones
+Step 6 (`.claude/skills/epic-breakdown/issues.md`): its lookups, labels, bodies, milestones
 and project fields apply as written. Two requests come to this skill and are carried out
 there: a **roadmap epic** for the RFC and a release (Step 6.2), and **epic issues for a
 merged plan**, one per epic that has none, before its epic document exists (Step 6.3), so
@@ -586,5 +643,7 @@ The roadmap epic comes first: without one, stop and ask for it.
 
 Then report the output path, the epic count against the estimate, the plan estimate line
 (subtasks and man-days), the epics whose man-days are least certain, and the open points,
-in a few lines. End by saying that each epic is expanded with `epic-breakdown` when it
+in a few lines; then, at whatever length they take, the target tree (Design principles),
+the review passes still to run independently, if any, and the questions pending the
+user's answer. End by saying that each epic is expanded with `epic-breakdown` when it
 starts.
