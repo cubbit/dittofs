@@ -204,6 +204,9 @@ prefix is what makes the set harvestable as a group. Keep the marker when editin
 code; drop it only when the shortcut is actually replaced, not when the comment is merely
 reworded.
 
+The word is `ponytail:`, even where a tool or plugin asks for another (the ponytail plugin's
+5.x releases write `shortcut:`): one word keeps the ledger harvestable with one search.
+
 ### `decision:` markers
 
 The same ledger, one axis over. A `ponytail:` marker says the *implementation* is simpler
