@@ -20,6 +20,10 @@ type Metrics struct {
 	in       *instruments
 }
 
+// ponytail: an alias, which cannot resolve a counter once at table build; grow
+// Metrics with those methods and rename it Registry, turning the alias around.
+type Registry = Metrics
+
 // New creates a Metrics with an owned registry pre-populated with the Go
 // runtime collector, the process collector, and a dittofs_build_info gauge
 // carrying version/commit as labels.

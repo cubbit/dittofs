@@ -1,0 +1,43 @@
+func (b *Budget) Reserve(n int64) (Reservation, error)
+
+func (b *Budget) Reserved() int64
+
+func (b *Buf) Release()
+
+func (b *Buf) Retain() *Buf
+
+func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Reservation, error)
+
+func (b *WaitBudget) Reserved() int64
+
+func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error)
+
+func (r *Reservation) Release()
+
+func NewBudget(name string, ceiling int64) *Budget
+
+func NewBufPool(b *WaitBudget) *BufPool
+
+func NewWaitBudget(name string, ceiling int64) *WaitBudget
+
+type Budget struct {
+}
+
+type Budgets struct {
+	Receive, Reply   *WaitBudget
+	Connection, Hold *Budget
+}
+
+type Buf struct {
+	B []byte
+}
+
+type BufPool struct {
+}
+
+type Reservation struct {
+}
+
+type WaitBudget struct {
+}
+
