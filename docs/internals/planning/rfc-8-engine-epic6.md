@@ -130,10 +130,8 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
    that has landed, and E2's test components: above all the fake journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
-   three kinds: the test clock, an in-memory implementation held to its interface's
-   conformance suite, or a fault wrapper. A test asserts on the engine's answers, on resulting
-   state and on what a double records of its own outputs, never on which calls the engine made.
+   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -174,8 +172,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
    commits and conflicts on. The fake journal is for the engine's pure logic only, and no
    engine conformance row runs over it. It is held to the real journal by the journal's own
-   conformance suite (RFC 1 §9.4): it passes the suite's rows that need no crash, fault or
-   platform, the rows the real journal passes on `platform.OS`.
+   conformance suite (RFC 1 §9.4): it passes the RFC 1 §3 rows that need no real storage.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -210,7 +207,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
 | 9 Comments | all | epic 3's copy-on-write share table `decision:`, kept at the `bindings` type (T6.2); `kvstore`'s `decision:` at `RaiseIncarnations`, rewritten for `RaiseAtStart` (T6.1); the `ponytail:` markers at `RaiseAtStart`, `Tags` and `VersionLimits` removed (T6.11); the version-limit headroom `decision:`, burst `ponytail:` and the raise's retry wait `decision:` (T6.7), RFC 8 §2.5's `decision:` on an error a check meets (T6.3), and the markers of §4 |
 | 10 Tests can fail | all | each test below names the change it catches |
 | 11 Exports | T6.1, T6.3 | `Lifecycle` changes shape (D4) and gains `Tags` (D2), as RFC 16 §3 declares them (§9 points 1 and 2); `Tags`' record type is declared in `entity`, beside the store's other records, so `kvstore` imports no engine, and `entity.Shard` gains the primary's journal identity (D10, §9 point 14); `kvstore` gains `RecordJournal` on the opened store (D3, §9 point 5), the `JD` key kind and `Lifecycle()`; `Stats` gains the refused shares and the journal conditions (T6.3). Test hooks live in `export_test.go` |
-| 12 Creates only what it declares | all | each fake journal call lands with the subtask that first calls it; `RecordJournal` with T6.1, whose fixture is its first caller; `kv.Counting`'s count of Updates and of the most keys one Update wrote with T6.1; the fixture's second share with T6.2 and its second device with T6.10 |
+| 12 Creates only what it declares | all | each fake journal call lands with the subtask that first calls it; `RecordJournal` with T6.1, whose fixture is its first caller; the in-memory `kv.KV`'s own record of Updates and of the most keys one Update wrote (`Counts`) with T6.1; the fixture's second share with T6.2 and its second device with T6.10 |
 
 ## 3. Requirements and invariants
 
@@ -457,7 +454,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 
 ```text
 pkg/metadata/kv/
-  counting.go        T6.1  a count of Updates and the most keys one Update wrote
+  counting.go        T6.1  the in-memory KV's own record (`Counts`): Updates and the most keys one Update wrote
 pkg/metadata/entity/
   control.go         T6.1  Tags' record, its three removal states (D2) and its shards'
                            journal identities (D10)
@@ -531,9 +528,10 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   overwritten key named and the older index key of a journal recorded again (D3), and
   rewriting, in the same transaction, the primary journal identity of every shard that names
   the deleted one (D10), with its `ponytail:`; the engine's `Lifecycle` declaring the seven
-  calls. `kv.Counting` gains a count of Updates and the most keys one Update wrote, its
-  first consumer here. In E2's fixture, the real view replaces the stub `Lifecycle` that
-  refuses every call (`unbuiltLifecycle`), and the fixture records `Fixture.Journal`, the
+  calls. The in-memory `kv.KV`'s own record (`Counts`) gains a count of Updates and the most
+  keys one Update wrote, its first consumer here. In E2's fixture, the real view replaces
+  `unbuiltLifecycle`, a fault answer refusing every call until this epic replaces it, and the
+  fixture records `Fixture.Journal`, the
   `JournalID` it kept from `Init`, through `RecordJournal`, so the view's `JournalID`
   answers it for the fixture's directory.
 - **Acceptance criteria:**
@@ -1024,7 +1022,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   first call (catches a raise that skips the shards that look done); 3 × `K` shares, one
   removed and one retired: `Tags` answers each once with its own state (catches a share
   lost or repeated at a batch edge); `VersionLimits` over 3 × `K` shares: one `GetMany` per
-  batch by a counting `kv.KV` (catches one read per share, the round trips #3741 counts).
+  batch by the in-memory `kv.KV`'s own record (catches one read per share, the round trips #3741 counts).
   FoundationDB's five seconds are not tested here: no unit test runs `fdbkv`.
 
 ### T6.12 The replay takes a write's `Over` from `Since`
