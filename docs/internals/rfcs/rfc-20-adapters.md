@@ -208,7 +208,8 @@ Windows user hits it.
   injected, the boundary checks,
   third-party suites, kernel clients end to end, and wire tests that compare
   with a reference server field by field, every accepted difference recorded.
-  Benchmarks against the null service give the adapter's own cost.
+  Benchmarks and the allocation gate against the null service give the
+  adapter's own cost.
 
 ---
 
@@ -1420,8 +1421,8 @@ over the in-memory service with no connection at all (§7.2).
 
 It looks up no share, checks no permission, tests no lock and calls no engine.
 A version that did any of them fails the import and call-site test (§7.1), or
-a handler test that finds the service's state, not the adapter's, deciding
-(§7.2).
+a handler test that finds the service's state, not the adapter's, deciding, or
+more than one mutating call in the in-memory service's record (§7.2).
 
 **A compound is a sequence of handlers.** NFSv4 `COMPOUND` and SMB compounded
 requests are run by the adapter's compound runner, one handler per operation,
@@ -1611,7 +1612,8 @@ mechanism, used only by tests, so every exchange runs in-process:
   replay detection run against real Kerberos messages, deterministically.
 - **NTLM** from a test user's password, against the in-memory service, whose
   local store holds its NT hash. Pass-through needs a domain controller, so it
-  is tested against a real one in `integration` (§7.5), as
+  is tested against a real one in `integration`'s `ad-dc` option
+  ([RFC 18 §10](rfc-18-identity.md#10.%20Conformance)), as
   [RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) has external
   systems tested.
 - **SPNEGO** over both, including the mechanism-list MIC and a client that
@@ -2346,13 +2348,11 @@ var (
 
 func Errors() []error
 
-// Dispatcher is what a connection hands each framed record to. The pipeline
-// is the one implementation; a connection's own tests run the real pipeline on
-// the test-only protocol (§7).
-type Dispatcher interface {
-	Dispatch(ctx context.Context, c *Conn, rec *Buf)
-	Drain() // from now on only requests §3.1 serves run; the rest get ErrMoved or ErrDraining, decided per request (§3.1)
-}
+// A connection hands each framed record to the pipeline, a concrete type
+// with one implementation, so no interface stands between them (§2.5's rule 4).
+// From the pipeline's drain on, only requests §3.1 serves run; the rest get
+// ErrMoved or ErrDraining, decided per request (§3.1). A connection's own
+// tests run the real pipeline on the test-only protocol (§7).
 
 // NewServer returns the adapter New hands back: each listener bound on each
 // of the settings' Addrs, all or none at Start (§3.1); Reconfigure binds them
@@ -3106,8 +3106,8 @@ the ones above it cannot, and none stands in for another:
 | codec | bytes ↔ fields, as the specification and the reference server have them | golden vectors, round trips, fuzzing (§5.4) | per change |
 | stages | each protocol stage alone (§4.7): header codecs and security on golden and specification vectors; flow control and replay caches as state machines; routers on a table of versions | unit tests, no socket | per change |
 | `core` | lifecycle, drain, reconfigure, connection limit, flow control, writer order, slow-client isolation, panic recovery, cancellation, no buffer leaked | `adaptertest`'s test-only protocol over loopback against the **in-memory service** (§7.2), its delays given by the fault wrapper, driven over a plain connection; it has a handshake, session levels, kept state, held and parked requests, a cancel and chained messages, so every type of §4.7 is exercised | per change |
-| handler | translation: the request reaches the service with the right arguments, and the right reply for each answer | the in-memory service, with faults injected (§7.2) | per change |
-| boundary | imports, error-table totality, one mutating call | §7.1, §7.3 | per change |
+| handler | translation: the request reaches the service with the right arguments, and the right reply for each answer; one mutating call | the in-memory service, with faults injected (§7.2) | per change |
+| boundary | imports, error-table totality | §7.1, §7.3 | per change |
 | in-process | an adapter on the real service and in-memory stores, driven by §8.2's scripted client over loopback; no root, no kernel client | Go tests | per change |
 | conformance | the protocol as third-party clients see it: pynfs, cthon04, nfstest, smbtorture, WPTS, pjdfstest | [RFC 21 §13](rfc-21-nfs.md#13.%20Conformance), [RFC 22 §18](rfc-22-smb.md#18.%20Conformance), run by [RFC 29](rfc-29-test-harness.md#4.3%20Tiers) | per change on the production profile, after merge on every profile |
 | end to end | the scenarios of this RFC with kernel clients on a composed node (§7.5) | `test/e2e` | after merge and nightly |
@@ -3119,29 +3119,8 @@ there is a `core` bug, and both adapters share its fix. The test protocol —
 length-prefixed frames, an echo, a delay, an operation that panics,
 one that holds — lives in `adaptertest/testproto`; `core` and its tests import
 no protocol, so `core` is built and proven before either adapter exists. The
-null service of §6.10 serves the benchmarks only; no test asserts on its
-answers.
-
-**What a handler test is worth, and what it is not.** A handler test against
-the in-memory service catches what no other layer does cheaply:
-
-- **argument translation**, read from the state the call leaves. An SMB
-  `CREATE` whose deny mode is dropped on the way to `OpenRequest` still opens
-  the file, and every single-client test passes; a second, conflicting open
-  that succeeds shows the field missing. An offset truncated to 32 bits shows
-  in the file's content, a stability level mapped wrong in the reply's
-  committed level, a disposition swapped in what the open created.
-- **reply edges the store cannot easily produce** — a size past 2^32, a time
-  before 1970, every service error on every operation — injected by the fault
-  wrapper in one line.
-
-It proves nothing about semantics, which are the service suite's, and nothing
-about whether a client accepts the bytes, which are the golden vectors' and the
-wire tests'. It asserts on the reply and on state, never on which calls were
-made ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)), so a
-handler free to fetch attributes once rather than twice does not break its
-test. The one-call rule (§4.3) is checked where the calls are written, by §7.1,
-and where breaking it shows, by §7.4's races.
+null service of §6.10 serves the allocation gate (`unit/adapter-allocs`) and
+the benchmarks only; nothing asserts on its answers.
 
 **Translations are tested as pure functions.** Each protocol's translations
 ([RFC 21 §11](rfc-21-nfs.md#11.%20Translation), [RFC 22 §16](rfc-22-smb.md#16.%20Translation)), open state's
@@ -3171,24 +3150,23 @@ silently matches nothing is caught. The same test lists adapter files over 800
 lines and fails on one not in its allowlist (§2.5), fails a `wire` package that
 imports anything but the standard library and `pkg/resources` (§2.5), and
 fails a call of an entry method — `Root`, `SecInfo`, `ListShares` — outside
-the entry handlers of §4.10. It enforces the one-call rule of §4.3, so the
-operation table needs no column for it: a handler with a path that reaches two
-calls of service methods `vfs.Mutates` reports fails, naming the handler and
-the calls. It also fails, in both directions, a package
+the entry handlers of §4.10. It also fails, in both directions, a package
 under `pkg/` other than the two constructors `pkg/adapter/nfs` and
 `pkg/adapter/smb` that imports anything under `internal/adapter/`, and an
 implementation package that imports a constructor. It starts with no
 allowlist: today's adapters are deleted rather than moved, so nothing is
-grandfathered in. The other direction, that the service imports no adapter,
+grandfathered in. The walk reads each package's own imports; its `_test.go`
+files may also import `pkg/vfs/vfstest` and `adaptertest`, whose in-memory
+service builds the real filesystem, and nothing else the list forbids, so no
+forbidden package reaches an adapter's build. The other direction, that the service imports no adapter,
 stays with the service's own architecture check
 ([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)).
 
 ### 7.2 Handlers against a verified service
 
-Each handler is tested against the **in-memory service**: the real
-`*vfs.Filesystem` over memory stores, or a `vfstest` implementation, either
-one passing the service's conformance suite
-([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)). Error answers and reply edges
+Each handler is tested against the **in-memory service**, `vfstest.Memory`: the
+real `*vfs.Filesystem` over memory stores, passing the service's conformance
+suite ([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)). Error answers and reply edges
 come through `vfstest`'s fault wrapper around it, which fails a named method
 on cue ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). A
 handler test asserts two things:
@@ -3197,12 +3175,27 @@ handler test asserts two things:
    for each injected error;
 2. the state the service holds afterwards is what the request asked for — the
    bytes at the offset written, the open's deny mode refusing a conflicting
-   open, nothing changed where the request should have changed nothing — so a
-   handler that answers from adapter state where it should have called is
-   caught too (§4.3).
+   open, nothing changed where the request should have changed nothing.
 
-Neither asserts which service calls were made: the one-call rule is §7.1's.
-The service decides; a handler that works only because it did the checking
+Argument translation shows in that state. An SMB `CREATE` whose deny mode is
+dropped on the way to `OpenRequest` still opens the file, and every
+single-client test passes; a second, conflicting open that succeeds shows the
+field missing. An offset truncated to 32 bits shows in the file's content, a
+disposition swapped in what the open created. A request field with no
+observable effect is checked by the codec round trips and golden vectors
+(§5.4), not by the handler test. Reply edges the store cannot easily produce —
+a size past 2^32, a time before 1970, every service error on every operation —
+are one line of the fault wrapper.
+
+The one-call rule of §4.3 is read from `vfstest.Memory`'s own record of the
+mutating calls it served, an output of the verified implementation
+([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)): a handler test
+fails when a request leaves more than one, so the operation table needs no
+column for it. A handler that answers from adapter state where it should have
+called the service is caught by the same record: the missing call shows as a
+missing entry (§4.3). Read-only calls are not asserted, so a handler free to
+fetch attributes once rather than twice does not break its test. The service
+decides; a handler that works only because it did the checking
 itself, rather than the service, shows as a reply the service's state does not
 explain. Semantics are tested once, in the service's suite
 ([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)).
@@ -3218,6 +3211,7 @@ func TestWrite3(t *testing.T) {
 	rep := runGolden(t, h.OpTable(), "write3-4k.call") // golden request bytes through the row: 4 KiB at 8192, FILE_SYNC
 	assertGolden(t, rep, "write3-4k.reply")
 	assertContent(t, mem, fh, 8192, data4k)            // the offset reached the service whole
+	assertOneMutation(t, mem)                          // mem's own record: one mutating call
 
 	svc.Fail("Write", vfs.ErrShareViolation)           // the next Write fails
 	rep = runGolden(t, h.OpTable(), "write3-4k.call")
