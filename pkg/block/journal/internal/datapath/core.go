@@ -256,8 +256,15 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// The pool asks the read-only check before each spare it makes, so a
 	// read-only journal makes none (RFC 1 §5.4). The headroom's spare class
 	// is sized by the records it holds, whole spares at the charge the
-	// admission table draws by; zero records reserve no headroom spare, and
-	// the half rule then never throttles a content write.
+	// admission table draws by.
+	//
+	// decision: zero headroom records readies no headroom spare and so
+	// throttles no content write — the journal fails open, holding no
+	// headroom to measure — because zero is the wire value only while the
+	// open path that resolves every setting's default does not exist; the
+	// journals it wires resolve the default and pass the figure here.
+	// Withdraw once a zero HeadroomRecords can reach this from a caller
+	// that names a setting, rather than only a wiring that names none.
 	targets := deps.Targets
 	if headroomRecords > 0 {
 		targets.Headroom = int((int64(headroomRecords)*capacity.RecordCharge + state.Set.Cap() - 1) / state.Set.Cap())

@@ -277,11 +277,11 @@ type Grant struct {
 // write below half the headroom's drawing side, first among the limits
 // because only the engine's own reclaim clears it — then the version
 // limit, the index bound, the share's limit, the journal's maximum, and
-// the spare pool last — naming its own missing amount and unit. A
-// refusal performs no I/O, never waits and never evicts; each is counted by RefusedCount and
-// opened as one reserve_refused span. An error the filesystem itself
-// returned (ENOSPC from a spare the pool reached for) is passed through
-// as itself and counts nothing.
+// the spare pool last — naming its own missing amount and unit. A refusal
+// performs no I/O, never waits and never evicts; each is counted by
+// RefusedCount and opened as one reserve_refused span. An error the
+// filesystem itself returned (ENOSPC from a spare the pool reached for) is
+// passed through as itself and counts nothing.
 //
 // decision: Hold runs outside the critical section because the pool's lock
 // is of the same capacity domain and no two locks of one domain are held
@@ -342,7 +342,7 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// half — one entry short, nothing held, the one limit only the
 	// engine's own reclaim clears.
 	if belowHalf {
-		return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitHeadroom, Missing: 1, Unit: core.UnitEntries})
+		return nil, c.refuse(ctx, *refuseHeadroom(1))
 	}
 	// The share's settled figure is seeded once per tag, read from the set
 	// before the section — the set's lock is of this same domain, so the

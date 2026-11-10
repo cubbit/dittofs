@@ -32,9 +32,9 @@ import (
 // refuses naming the limit that would not take them — the share's, the
 // journal's, the index's, the version limit's, the headroom's or the spare
 // pool's — with the shortfall, at once, with no I/O and holding nothing
-// behind. Its grant
-// covers the pieces the split it sized drew: they take their spares from
-// the grant's hold, and the unused part returns when the write does. One
+// behind. Its grant covers the pieces the split it sized drew: they take
+// their spares from the grant's hold, and the unused part returns when the
+// write does. One
 // piece more than the split can still be drawn — the room another appender
 // spent between the take and this write's rolls, a window neither its
 // charge nor its hold covers — and that one rolls unreserved; see the decision at the loop below for its ceiling and what
