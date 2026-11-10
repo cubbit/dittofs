@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,7 +84,10 @@ func TestCopyRefusedChunk(t *testing.T) {
 	p := pattern(2*chunk + chunk/2)
 	src := u.committedFile(t, "src", p)
 	dst := u.create(t, "dst")
-	// The third chunk reaches past the source's end, which its admission refuses.
+	// The third chunk reaches past the source's end, which its admission
+	// refuses: the route of a source truncated between two chunks of a copy
+	// that was valid when it came in. A copy past the source's end at its
+	// start is refused before the engine, by the filesystem service.
 	n, err := u.copy(t.Context(), src, dst, vfserr.Extent{Len: 3 * chunk})
 	if err != nil || n != 2*chunk {
 		t.Fatalf("Copy with its third chunk refused: %d, %v; want %d, nil", n, err, 2*chunk)
@@ -135,6 +139,49 @@ func TestCopyDeadline(t *testing.T) {
 				t.Errorf("chunk %d: the destination after the running chunk completed reads wrong", k)
 			}
 		})
+	}
+}
+
+// endsOnCue is a context whose Err answers context.Canceled once end is
+// called, while its Done stays open: it ends between two chunks of a copy,
+// as a deadline met after a chunk answered and before the next starts,
+// without the running chunk's wait seeing it.
+type endsOnCue struct {
+	context.Context
+	ended atomic.Bool
+}
+
+func (c *endsOnCue) end() { c.ended.Store(true) }
+
+func (c *endsOnCue) Err() error {
+	if c.ended.Load() {
+		return context.Canceled
+	}
+	return c.Context.Err()
+}
+
+// The deadline met between two chunks starts no further one: the copy
+// answers the first chunk's bytes and the destination past it is unchanged.
+func TestCopyDeadlineBetweenChunks(t *testing.T) {
+	ctx := &endsOnCue{Context: t.Context()}
+	u := copyUnit(t, onClone(func(cctx context.Context, next engine.Existence, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
+		if op.Spec.SrcOff == 0 {
+			ctx.end()
+		}
+		return next.Clone(cctx, op, pending)
+	}))
+	p := pattern(2 * chunk)
+	src := u.committedFile(t, "src", p)
+	dst := u.committedFile(t, "dst", fill(2*chunk, 'd'))
+	n, err := u.copy(ctx, src, dst, vfserr.Extent{Len: 2 * chunk})
+	if err != nil || n != chunk {
+		t.Fatalf("Copy with the deadline met after its first chunk: %d, %v; want %d, nil", n, err, chunk)
+	}
+	if got := u.read(t, dst, 0, chunk); !bytes.Equal(got, p[:chunk]) {
+		t.Error("the first chunk read back wrong")
+	}
+	if got := u.read(t, dst, chunk, chunk); !bytes.Equal(got, fill(chunk, 'd')) {
+		t.Error("the destination past the first chunk changed: a chunk started past the deadline")
 	}
 }
 

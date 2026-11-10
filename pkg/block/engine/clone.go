@@ -274,7 +274,7 @@ func invalid(x vfserr.Extent, oneFile bool) bool {
 // decision: a copy's edges. The chunk is the smaller of copyChunk and
 // clone_max_len, so no chunk is one the length rule refuses. At the caller's
 // deadline Copy answers the bytes of the chunks done and leaves the running
-// chunk to finish; with no chunk done it answers the first chunk's error, a
+// chunk to finish, starting no other; with no chunk done it answers the first chunk's error, a
 // Delay, never 0, which an NFSv4.2 client would read as nothing left to copy.
 const copyChunk = 64 << 20
 
@@ -300,7 +300,8 @@ func chunks(xs []vfserr.Extent, maxLen int64) iter.Seq[vfserr.Extent] {
 // failure after earlier chunks are done answers the short count of those and
 // nil, from which the client continues; only the first chunk's failure
 // answers its error. A chunk that meets the caller's deadline is left
-// running and is not counted (copyChunk).
+// running and is not counted, and a deadline met between two chunks starts
+// no further one (copyChunk).
 func (e *Engine) Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfserr.Extent) (int64, error) {
 	for _, x := range xs {
 		if invalid(x, src == dst) {
@@ -313,6 +314,9 @@ func (e *Engine) Copy(ctx context.Context, srcShare entity.ShareID, src entity.F
 	}
 	var done int64
 	for c := range chunks(xs, st.CloneMaxLen) {
+		if done > 0 && ctx.Err() != nil {
+			return done, nil // past the deadline: start no chunk the count will not include
+		}
 		if err := e.Clone(ctx, srcShare, src, dstShare, dst, c); err != nil {
 			if done > 0 {
 				return done, nil
