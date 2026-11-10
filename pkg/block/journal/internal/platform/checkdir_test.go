@@ -68,7 +68,7 @@ func TestCheckDir_RefusalMatchesErrUnsuitableStorage(t *testing.T) {
 		t.Fatalf("got %v, want it matching core.ErrUnsuitableStorage", err)
 	}
 
-	if !strings.Contains(err.Error(), "nobarrier") || !strings.Contains(err.Error(), dir) {
+	if !strings.Contains(err.Error(), "nobarrier") || !strings.Contains(err.Error(), platformtest.ProbeDir(dir)) {
 		t.Errorf("got %q, want the message naming the rule and the directory", err)
 	}
 }
