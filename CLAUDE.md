@@ -365,8 +365,9 @@ changing the line.
 
 ## Commits & PRs
 
-- PR descriptions, review comments and replies follow
-  `.github/instructions/pr-writing.instructions.md`.
+- Opening a PR (base, title and description, assignee, auto-merge, stacking) follows
+  `.github/instructions/pr-opening.instructions.md`; review comments and replies follow
+  `.github/instructions/pr-commenting.instructions.md`.
 - Never mention Claude Code, AI tools, or add `Co-Authored-By` lines for AI.
 - Keep commit messages concise.
 - Sign commits (`git commit -S`) when possible.
