@@ -13,208 +13,165 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // The fixed figures of every rig: a cap small enough that a real pool makes
-// its spares quickly in a temporary directory, a room most requests fit, and
-// the maximums that mean "none".
+// its spares quickly in a temporary directory, and a version limit no test
+// reaches.
 const (
 	testCap  = int64(64 << 10)
-	roomBig  = int64(8 << 20)
-	maxNone  = int64(1) << 62
 	limitBig = uint64(1) << 40
 )
 
-// tag1 is the share every test request writes as.
-const tag1 = core.ShareTag(1)
+// tag1 is the share every test request writes as; tagOther is the share a
+// rig's own filler records are written as, so they never touch tag1's figures.
+const (
+	tag1     = core.ShareTag(1)
+	tagOther = core.ShareTag(99)
+)
 
-// fake is the injected facts of a Capacity: the plain funcs a rig's Config is
-// built from, each with the counts a test watches. Its zero value answers
-// every check as "no limit": writable, versions left, no index bound.
-type fake struct {
-	admitErr atomic.Value // error, nil until a test stores one
-	holdErr  atomic.Value // *holdOutcome, nil until a test stores one
-	left     atomic.Uint64
-	checks   atomic.Int64
-	check    func(core.FileID, core.Extent) error
-
-	mu      sync.Mutex
-	pending map[core.ShareTag]int64
-	retired map[core.ShareTag]int64
-
-	ready    atomic.Int64
-	holdGate atomic.Bool
-	holds    atomic.Int64
-	room     atomic.Int64
-
-	footprint atomic.Int64
+// rigOpts shapes a rig's real collaborators. Build one from std.
+type rigOpts struct {
+	// spares is the content spares left ready once the stream is primed.
+	spares int
+	// unprimed leaves stream 1 with no active segment, so its room is zero
+	// and a write's every piece rolls.
+	unprimed bool
+	// room, when positive on a primed rig, is the most payload room the
+	// stream is left with: a filler record on another tag spends the rest.
+	room int64
+	// makerMax is the maker's journal maximum; zero bounds it to exactly the
+	// segments the rig makes, so the pool never grows past the spares named.
+	makerMax int64
+	// maxBytes is the admission's journal maximum; zero bounds nothing.
+	maxBytes int64
+	// indexBound is the index's entry bound; zero is generous.
+	indexBound int64
+	// noVersions leaves the counters with no version limit, so none is left.
+	noVersions bool
+	// cfg adjusts the Config before New runs.
+	cfg func(*Config)
 }
 
-func (f *fake) admit() error {
-	if v, ok := f.admitErr.Load().(error); ok {
-		return v
-	}
-	return nil
-}
+// std is the rig most tests want: three ready spares, a primed stream.
+func std() rigOpts { return rigOpts{spares: 3} }
 
-func (f *fake) checkIndex(id core.FileID, e core.Extent) error {
-	f.checks.Add(1)
-	if f.check != nil {
-		return f.check(id, e)
-	}
-	return nil
-}
-
-func (f *fake) versionsLeft() uint64 { return f.left.Load() }
-
-func (f *fake) used() int64 { return f.footprint.Load() }
-
-func (f *fake) shareBytes(tag core.ShareTag) int64 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.pending[tag]
-}
-
-// shareFigures reads the pair the way the set's own accessor does: the
-// settled bytes beside the cumulative retired bytes, under the fake's one
-// lock, so a seed or a Retired call that reads it sees every modelled
-// retirement exactly once.
-func (f *fake) shareFigures(tag core.ShareTag) (settled, retired int64) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.pending[tag], f.retired[tag]
-}
-
-// setRetired sets the tag's cumulative retired record bytes — the figure
-// a modelled retirement leaves behind.
-func (f *fake) setRetired(tag core.ShareTag, n int64) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.retired == nil {
-		f.retired = map[core.ShareTag]int64{}
-	}
-	f.retired[tag] = n
-}
-
-func (f *fake) setShare(tag core.ShareTag, n int64) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.pending == nil {
-		f.pending = map[core.ShareTag]int64{}
-	}
-	f.pending[tag] = n
-}
-
-// incrShare raises the share's record bytes the way the stream's own ledger
-// does when a record is written: the test calls it before Grant.Wrote, as
-// the datapath's append does.
-func (f *fake) incrShare(tag core.ShareTag, n int64) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.pending == nil {
-		f.pending = map[core.ShareTag]int64{}
-	}
-	f.pending[tag] += n
-}
-
-func (f *fake) readySpares() int { return int(f.ready.Load()) }
-
-// roomOf is the rig's Room answer: the payload room the stream names,
-// defaulted generous so most tests' payloads sit whole in one record.
-func (f *fake) roomOf(int) int64 { return f.room.Load() }
-
-// holdOutcome is what the rig's hold answers with when the fake overrides
-// the pool: an error stands in for the pool's own answer, nil grants. A
-// park set makes the first hold wait on it before answering with the
-// error — the overlap window a real pool's I/O opens, deterministically —
-// and started carries one signal when that hold arrives.
-type holdOutcome struct {
-	err     error
-	park    chan struct{}
-	started chan struct{}
-	once    sync.Once
-}
-
-// setHoldErr makes the rig's hold answer with err; a real nil grants
-// through the pool again.
-func (f *fake) setHoldErr(err error) {
-	f.holdErr.Store(&holdOutcome{err: err})
-}
-
-// setHoldPark makes the rig's hold answer with err, the first caller kept
-// waiting on the returned park channel before its answer, so a take's
-// reservation stays held across other takes' sections exactly as it does
-// while a real hold reaches the pool's storage.
-func (f *fake) setHoldPark(err error) (park chan struct{}, started chan struct{}) {
-	park = make(chan struct{})
-	started = make(chan struct{}, 1)
-	f.holdErr.Store(&holdOutcome{err: err, park: park, started: started})
-	return park, started
-}
-
-// rig is a Capacity over a fake's facts and a real segment pool, whose Hold
-// the capacity calls through; the pool readies three content spares and
-// closes when the test ends.
+// rig is a Capacity over the real collaborators the datapath wires it to: a
+// real segment set, maker and pool over a test directory, real streams, a real
+// index and counters, and a real durability layer. Where a test needs a delay,
+// a park or a refusal, it sets one of the thin fault wrappers around the real
+// call (holdSpy, holdFault, or a wrapper it puts around a Config func).
 type rig struct {
-	f    *fake
-	c    *Capacity
-	pool *segment.Pool
-	set  *segment.Set
+	c       *Capacity
+	set     *segment.Set
+	pool    *segment.Pool
+	idx     *index.Index
+	ctr     *index.Counters
+	dur     *durability.Durability
+	streams *segment.Streams
 
-	// holdSpy, when set, runs inside the hold func with the capacity mutex
-	// released, observing each call the capacity makes.
+	// holds and checks record the calls that reach the pool's Hold and the
+	// index's CheckWrite; both pass the call through.
+	holds, checks atomic.Int64
+
+	// holdSpy, when set, runs before each real hold with the capacity mutex
+	// released, observing or parking the call.
 	holdSpy func(n int)
+	// holdFault, when set, runs before each real hold; a non-nil error fails
+	// that hold in place of the pool, a nil one lets the pool answer.
+	holdFault func(n int) error
+
+	files atomic.Uint64
+	seq   atomic.Uint64
 }
 
-// newRig builds a Capacity over fake facts and a real pool with three
-// content spares, and adjusts the Config through cfg before New runs. The
-// fake's versions counter starts generous and its ready count mirrors the
-// pool's, so a test overrides either only where it means to.
-func newRig(t *testing.T, cfg func(*Config)) *rig {
-	return newRigMax(t, maxNone, cfg)
+// domains is the file append domain table the durability layer wants: one
+// mutex per file.
+type domains struct{ m sync.Map }
+
+func (d *domains) Lock(id core.FileID) func() {
+	mu, _ := d.m.LoadOrStore(id, new(sync.Mutex))
+	mu.(*sync.Mutex).Lock()
+	return mu.(*sync.Mutex).Unlock
 }
 
-// newRigMax is newRig with the Maker's own journal maximum set: the set
-// refuses a spare its reservation would cross that maximum, the same wall
-// an open journal's makes meet.
-func newRigMax(t *testing.T, makerMax int64, cfg func(*Config)) *rig {
+// newRig builds the rig o names and waits, on exact state, until the pool and
+// the set agree the spares are made.
+func newRig(t *testing.T, o rigOpts) *rig {
 	t.Helper()
 
 	seam, err := kit.NewSeam(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSeam: %v", err)
 	}
-	set := segment.NewSet(testCap, nil)
-	maker := segment.NewMaker(seam.FS(), set, makerMax, 0, nil)
-	pool := segment.NewPool(maker, segment.Targets{Content: 3}, nil, nil)
-	pool.Start()
-	t.Cleanup(pool.Stop)
-
-	// The pool's three content spares are real makes, so wait for them.
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
-		if c := pool.Counters(); c.Spares >= 3 {
-			break
+	r := &rig{ctr: &index.Counters{}}
+	if !o.noVersions {
+		if err := r.ctr.SetVersionLimit(core.Version{Counter: limitBig}); err != nil {
+			t.Fatalf("SetVersionLimit: %v", err)
 		}
 	}
-	if c := pool.Counters(); c.Spares < 3 {
-		t.Fatalf("the pool never readied its spares: %+v", c)
+	bound := o.indexBound
+	if bound == 0 {
+		bound = 1 << 20
+	}
+	r.idx = index.New(bound)
+	d, err := durability.New(durability.Config{
+		Clock:    kit.NewStopwatchClock(),
+		Domains:  &domains{},
+		Index:    r.idx,
+		Dir:      t.TempDir(),
+		Counters: r.ctr,
+		MarkLoss: r.idx.Lose,
+	})
+	if err != nil {
+		t.Fatalf("durability.New: %v", err)
+	}
+	r.dur = d
+
+	r.set = segment.NewSet(testCap, nil)
+	// The pool keeps one spare more than asked while the stream is primed, for
+	// the prime takes one; the maker's maximum keeps it from making another.
+	target, made := o.spares, o.spares
+	if !o.unprimed {
+		target, made = o.spares+1, o.spares+1
+	}
+	makerMax := o.makerMax
+	if makerMax == 0 {
+		makerMax = max(int64(made), 1) * testCap
+	}
+	maker := segment.NewMaker(seam.FS(), r.set, makerMax, 0, nil)
+	r.pool = segment.NewPool(maker, segment.Targets{Content: target}, d.Admit, nil)
+	cache := segment.NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(64))
+	r.streams = segment.NewStreams(2, core.JournalID{0xc, 0xa, 0x9}, r.set, r.pool, cache, d.Sink)
+	d.Start(r.streams)
+	r.pool.Start()
+	t.Cleanup(func() {
+		d.Stop()
+		_ = r.streams.Close()
+		r.pool.Stop()
+		_ = cache.Shutdown()
+	})
+	r.awaitSpares(t, target)
+
+	if !o.unprimed {
+		r.prime(t, o.room)
+		r.awaitSpares(t, o.spares)
 	}
 
-	f := &fake{}
-	f.left.Store(limitBig)
-	f.room.Store(roomBig)
-	f.ready.Store(int64(pool.ReadyContent()))
-	f.holdGate.Store(true)
-	r := &rig{f: f, pool: pool, set: set}
 	c := Config{
-		Admit:        f.admit,
-		CheckIndex:   f.checkIndex,
-		VersionsLeft: f.versionsLeft,
-		Footprint:    f.used,
-		ShareFigures: f.shareFigures,
+		Admit: d.Admit,
+		CheckIndex: func(f core.FileID, e core.Extent) error {
+			r.checks.Add(1)
+			return r.idx.CheckWrite(f, e)
+		},
+		VersionsLeft: r.ctr.VersionsLeft,
+		Footprint:    func() int64 { return r.set.Counters().UsedBytes },
+		ShareFigures: r.set.ShareBytesAndRetired,
 		Room: func(stream int) int64 {
 			// Take must hold its own section when this runs: a caller
 			// snapshotting the room before the section could take the
@@ -225,55 +182,182 @@ func newRigMax(t *testing.T, makerMax int64, cfg func(*Config)) *rig {
 				r.c.mu.Unlock()
 				t.Errorf("Room read outside the capacity section: a caller snapshot can straddle a landing")
 			}
-			return f.roomOf(stream)
+			return r.streams.Stream(stream).Room()
 		},
-		ReadySpares: f.readySpares,
+		ReadySpares: r.pool.ReadyContent,
 		Hold:        r.hold,
-		MaxBytes:    maxNone,
+		MaxBytes:    o.maxBytes,
 		SegmentCap:  testCap,
 	}
-	if cfg != nil {
-		cfg(&c)
+	if o.cfg != nil {
+		o.cfg(&c)
 	}
 	r.c = New(c)
 	return r
 }
 
-// hold is the capacity's Hold func. The fake's ready count is the pool's
-// own answer here too — the rig's fake overrides how many content spares
-// exist, not only what Take reads — so a hold over what the fake says is
-// ready is refused by the pool's own refusal, exactly as the real pool
-// refuses it, and a hold that fits is granted from the real pool's spares.
-// A test that names the fake's ready for the journal's coverage figure
-// alone clears holdGate, which lets the real pool answer the hold: its
-// three spares exist whatever the journal's covered need reads. The fake's
-// hold error, when one is set, stands in for the pool's answer before
-// either path runs. The spy runs first, so it observes every call with
-// the capacity mutex released no matter the outcome.
+// awaitSpares waits, on the pool's and the set's own counts, until exactly n
+// content spares are ready and none is being made.
+func (r *rig) awaitSpares(t *testing.T, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if p, s := r.pool.Counters(), r.set.Counters(); p.Spares == int64(n) && s.Spares == int64(n) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the pool never readied %d spares: %+v, set %+v", n, r.pool.Counters(), r.set.Counters())
+		}
+	}
+}
+
+// prime gives stream 1 an active segment by appending one filler record on
+// tagOther; room > 0 sizes the filler so the stream is left at most that much
+// payload room.
+func (r *rig) prime(t *testing.T, room int64) {
+	t.Helper()
+	p := int64(0)
+	if room > 0 {
+		for ; segment.WriteRoom(testCap, format.SegmentHeaderSize+segment.RecordBytes(p), 1) > room; p += 8 {
+			if p > segment.EmptyRoom(testCap) {
+				t.Fatalf("no filler leaves a room of %d", room)
+			}
+		}
+	}
+	r.append(t, segment.Roll{}, tagOther, p)
+}
+
+// room is the payload room stream 1 has now.
+func (r *rig) room() int64 { return r.streams.Stream(1).Room() }
+
+// file returns a file id of its own.
+func (r *rig) file() core.FileID {
+	return core.NewFileID([16]byte{byte(r.files.Add(1)), 0xf})
+}
+
+// append appends one real write record of payload bytes under tag to stream 1,
+// rolling as roll says, and returns where it landed and how many payload bytes
+// it placed (a payload past the room is split at the segment's edge).
+func (r *rig) append(t *testing.T, roll segment.Roll, tag core.ShareTag, payload int64) segment.Placed {
+	t.Helper()
+	seq := r.seq.Add(1)
+	p, err := r.streams.Stream(1).AppendRoll(format.RecordHeader{
+		Kind: format.KindWrite, File: r.file(), Extent: core.Extent{Len: payload},
+		Seq: core.Seq(seq), Version: core.Version{Counter: seq}, Tag: tag,
+	}, format.RecordBody{Payload: make([]byte, payload), MTime: 1}, roll)
+	if err != nil {
+		t.Fatalf("Append(%d): %v", payload, err)
+	}
+	return p
+}
+
+// seed lands a real record of payload bytes under tag1, as a recovered open or
+// an earlier write would have, and returns its segment.
+func (r *rig) seed(t *testing.T, payload int64) core.SegmentID {
+	t.Helper()
+	p := r.append(t, segment.Roll{}, tag1, payload)
+	if p.N != payload {
+		t.Fatalf("the seed record placed %d of %d bytes", p.N, payload)
+	}
+	return p.Loc.Segment
+}
+
+// land appends the whole of g's write as real records, the way the datapath
+// does, handing each piece to g.Wrote once it is appended.
+func (r *rig) land(t *testing.T, g *Grant, payload int64) {
+	t.Helper()
+	for done := int64(0); done < payload; {
+		p := r.append(t, segment.Roll{Hold: g.Hold()}, tag1, payload-done)
+		g.Wrote(segment.RecordBytes(p.N))
+		done += p.N
+	}
+}
+
+// seal seals stream 1's active segment, so the set may retire it.
+func (r *rig) seal(t *testing.T) {
+	t.Helper()
+	if _, err := r.streams.Stream(1).Seal(false); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+}
+
+// retire removes the sealed segment seg from the set, the move a retirement
+// makes of the set's figures: the settled bytes fall and the cumulative
+// retired bytes rise.
+func (r *rig) retire(t *testing.T, seg core.SegmentID) {
+	t.Helper()
+	if _, err := r.set.Retire(seg); err != nil {
+		t.Fatalf("Retire(%d): %v", seg, err)
+	}
+}
+
+// fillIndex publishes one write on a file of its own, which is the whole of a
+// one-entry index's bound, so the next write on another file is refused.
+func (r *rig) fillIndex(t *testing.T) {
+	t.Helper()
+	seq := core.Seq(r.seq.Add(1))
+	p := index.Placed{Extent: core.Extent{Len: 4096}, Record: index.RecordAt{Segment: 1}, Version: core.Version{Counter: uint64(seq)}}
+	if _, err := r.idx.WriteRetain(tag1, r.file(), p, seq); err != nil {
+		t.Fatalf("WriteRetain: %v", err)
+	}
+}
+
+// awaitReady waits, on the pool's own count, until n content spares are ready.
+func (r *rig) awaitReady(t *testing.T, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); r.pool.ReadyContent() < n; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the pool never readied %d spares: %+v", n, r.pool.Counters())
+		}
+	}
+}
+
+// hold is the capacity's Hold func: a recording wrapper around the pool's
+// Hold, with the spy and the fault the test set.
 func (r *rig) hold(n int) (*segment.Hold, error) {
-	r.f.holds.Add(1)
+	r.holds.Add(1)
 	if spy := r.holdSpy; spy != nil {
 		spy(n)
 	}
-	if v, ok := r.f.holdErr.Load().(*holdOutcome); ok && v != nil {
-		if v.park != nil {
-			v.once.Do(func() {
-				v.started <- struct{}{}
-				<-v.park
-			})
-		}
-		return nil, v.err
-	}
-	if r.f.holdGate.Load() {
-		if ready := r.f.readySpares(); ready < n {
-			return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: int64(n - ready), Unit: core.UnitSegments}
+	if f := r.holdFault; f != nil {
+		if err := f(n); err != nil {
+			return nil, err
 		}
 	}
 	return r.pool.Hold(n)
 }
 
-// req is the request every test starts from: tag1, stream 1, 4096 record
-// bytes that fit an 8 MiB room, no share limit.
+// failHolds makes the next times holds fail with err in place of the pool,
+// and then lets the pool answer again.
+func (r *rig) failHolds(err error, times int64) {
+	var left atomic.Int64
+	left.Store(times)
+	r.holdFault = func(int) error {
+		if left.Add(-1) >= 0 {
+			return err
+		}
+		return nil
+	}
+}
+
+// parkFirstHold makes the first hold signal started and wait for release
+// before the pool answers it.
+func (r *rig) parkFirstHold() (started <-chan struct{}, release func()) {
+	in, gate := make(chan struct{}, 1), make(chan struct{})
+	var once sync.Once
+	r.holdSpy = func(int) {
+		once.Do(func() {
+			in <- struct{}{}
+			<-gate
+		})
+	}
+	return in, func() { close(gate) }
+}
+
+// share is tag1's settled record bytes as the set reports them.
+func (r *rig) share() int64 { return r.set.ShareBytes(tag1) }
+
+// req is the request every test starts from: tag1, stream 1, 4096 payload
+// bytes that fit the stream's room, no share limit.
 func req() Request {
 	return Request{
 		Tag:     tag1,
@@ -323,18 +407,25 @@ func (r *rig) refused(t *testing.T, rq Request, want core.Limit) *core.NoSpaceEr
 // write over its share's limit with no spare ready names the share, not the
 // pool.
 func TestTake_OrderOfRefusals(t *testing.T) {
-	// Read-only first: the sentinel itself, nothing reserved, no hold asked,
-	// no other limit consulted. Every other limit refuses this request too,
-	// so only the order can name the read-only state.
-	r := newRig(t, nil)
-	r.f.admitErr.Store(core.ErrJournalReadOnly)
-	r.f.left.Store(0)
-	r.f.setShare(tag1, 1)
-	r.f.check = func(core.FileID, core.Extent) error {
-		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: 1, Unit: core.UnitEntries}
+	// everyLimit is a rig whose every limit refuses the request below: no
+	// version left, a full index, a share over its limit, a journal maximum
+	// of one byte.
+	everyLimit := func(t *testing.T) *rig {
+		o := std()
+		o.noVersions, o.indexBound, o.maxBytes = true, 1, 1
+		r := newRig(t, o)
+		r.seed(t, 0)
+		r.fillIndex(t)
+		return r
 	}
 	q := req()
 	q.ShareLimit = 1
+
+	// Read-only first: the sentinel itself, nothing reserved, no hold asked,
+	// no other limit consulted. Every other limit refuses this request too,
+	// so only the order can name the read-only state.
+	r := everyLimit(t)
+	r.dur.Enter(errors.New("the directory turned read-only"))
 	_, err := r.c.Take(context.Background(), q)
 	if !errors.Is(err, core.ErrJournalReadOnly) {
 		t.Fatalf("a read-only journal refused with %v, want ErrJournalReadOnly", err)
@@ -342,58 +433,51 @@ func TestTake_OrderOfRefusals(t *testing.T) {
 	if got := r.c.ReservedBytes(); got != 0 {
 		t.Fatalf("a read-only refusal reserved %d bytes, want 0", got)
 	}
-	if got := r.f.checks.Load(); got != 0 {
+	if got := r.checks.Load(); got != 0 {
 		t.Fatalf("a read-only refusal ran the index pre-check %d times, want 0", got)
 	}
-	if got := r.f.holds.Load(); got != 0 {
+	if got := r.holds.Load(); got != 0 {
 		t.Fatalf("a read-only refusal asked for %d holds, want 0", got)
 	}
 
 	// Version before index, share, journal and spare.
-	r = newRig(t, func(c *Config) { c.MaxBytes = 1 })
-	r.f.left.Store(0)
-	r.f.setShare(tag1, 1)
-	r.f.footprint.Store(1)
-	r.f.check = func(core.FileID, core.Extent) error {
-		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: 1, Unit: core.UnitEntries}
-	}
-	_ = r.refused(t, q, core.LimitVersion)
+	_ = everyLimit(t).refused(t, q, core.LimitVersion)
 
 	// Index before share, journal and spare.
-	r = newRig(t, func(c *Config) { c.MaxBytes = 1 })
-	r.f.setShare(tag1, 1)
-	r.f.footprint.Store(1)
-	r.f.check = func(core.FileID, core.Extent) error {
-		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: 1, Unit: core.UnitEntries}
-	}
+	o := std()
+	o.indexBound, o.maxBytes = 1, 1
+	r = newRig(t, o)
+	r.seed(t, 0)
+	r.fillIndex(t)
 	_ = r.refused(t, q, core.LimitIndex)
 
 	// Share before journal and spare.
-	r = newRig(t, func(c *Config) { c.MaxBytes = 1 })
-	r.f.setShare(tag1, 1)
-	r.f.footprint.Store(1)
+	o = std()
+	o.maxBytes = 1
+	r = newRig(t, o)
+	r.seed(t, 0)
 	ns := r.refused(t, q, core.LimitShare)
 	if ns.Unit != core.UnitBytes {
 		t.Fatalf("the share refusal counts %s, want bytes", ns.Unit)
 	}
 
-	// Journal before spare: a write beyond its room, the footprint at the
-	// maximum, and the pool refusing too, is refused by the maximum.
-	r = newRig(t, func(c *Config) { c.MaxBytes = 1 })
-	r.f.footprint.Store(1)
-	r.f.ready.Store(0)
+	// Journal before spare: a write beyond its room, the journal at its
+	// maximum, and the pool holding no spare either, is refused by the
+	// maximum.
+	o = std()
+	o.unprimed, o.spares, o.maxBytes = true, 0, 1
+	r = newRig(t, o)
 	big := req()
 	big.Payload = 2 * testCap
-	r.f.room.Store(testCap / 2)
 	_ = r.refused(t, big, core.LimitJournal)
 
 	// The spare pool last, and only when no other limit refuses: the same
 	// write with no maximum, needing three spares with two ready.
-	r = newRig(t, nil)
-	r.f.ready.Store(2)
+	o = std()
+	o.unprimed, o.spares = true, 2
+	r = newRig(t, o)
 	big = req()
-	big.Payload = 3*testCap + 1
-	r.f.room.Store(testCap / 2)
+	big.Payload = 2*segment.EmptyRoom(testCap) + 50
 	ns = r.refused(t, big, core.LimitSpare)
 	if ns.Missing != 1 || ns.Unit != core.UnitSegments {
 		t.Fatalf("the spare refusal = %d %s, want one segment", ns.Missing, ns.Unit)
@@ -401,9 +485,10 @@ func TestTake_OrderOfRefusals(t *testing.T) {
 
 	// A write over its share's limit with no spare ready names the share:
 	// the pool answers only when every other limit would admit the write.
-	r = newRig(t, nil)
-	r.f.ready.Store(0)
-	r.f.setShare(tag1, 1)
+	o = std()
+	o.spares = 0
+	r = newRig(t, o)
+	r.seed(t, 0)
 	over := req()
 	over.ShareLimit = 2
 	_ = r.refused(t, over, core.LimitShare)
@@ -418,46 +503,48 @@ func TestTake_NamedRefusalFields(t *testing.T) {
 	// Share: the shortfall in bytes, taken against the record bytes the
 	// admission draws for the payload, so the refused figure names the
 	// record over the limit.
-	r := newRig(t, nil)
-	r.f.setShare(tag1, 100)
-	q := req() // payload 4096 at the rig's generous room: one record
+	r := newRig(t, std())
+	seed := segment.RecordBytes(0)
+	r.seed(t, 0)
+	q := req() // payload 4096 in the stream's room: one record
 	q.ShareLimit = 4100
 	ns := r.refused(t, q, core.LimitShare)
-	if ns.Missing != 100+segment.RecordBytes(4096)-4100 || ns.Unit != core.UnitBytes {
-		t.Fatalf("the share refusal = %d %s, want %d bytes", ns.Missing, ns.Unit, 100+segment.RecordBytes(4096)-4100)
+	if want := seed + segment.RecordBytes(4096) - 4100; ns.Missing != want || ns.Unit != core.UnitBytes {
+		t.Fatalf("the share refusal = %d %s, want %d bytes", ns.Missing, ns.Unit, want)
 	}
 
-	// Journal: a write two caps and a byte beyond its room needs two
-	// spares; one is ready and covers one, so the uncovered need is one
-	// cap; the maximum sits half a cap above the footprint, so what the
-	// need exceeds the maximum by is half a cap: the missing the refusal
-	// names is the difference the formula draws — the footprint plus the
-	// uncovered need, less the maximum.
-	used := testCap
-	r = newRig(t, func(c *Config) { c.MaxBytes = used + testCap/2 })
-	r.f.footprint.Store(used)
-	r.f.ready.Store(1)
+	// Journal: a write needing two spares with one ready; the footprint is
+	// the one ready spare's cap and the maximum sits half a cap above it, so
+	// the uncovered spare's cap exceeds the maximum's room by half a cap: the
+	// missing the refusal names is the difference the formula draws.
+	o := std()
+	o.unprimed, o.spares, o.maxBytes = true, 1, testCap+testCap/2
+	r = newRig(t, o)
 	q = req()
-	q.Payload = 2*testCap + 1
-	r.f.room.Store(testCap / 2)
+	q.Payload = segment.EmptyRoom(testCap) + 50
 	ns = r.refused(t, q, core.LimitJournal)
 	if ns.Missing != testCap/2 || ns.Unit != core.UnitBytes {
 		t.Fatalf("the journal refusal = %d %s, want half a cap in bytes", ns.Missing, ns.Unit)
 	}
 
-	// Index: the injected check's refusal, forwarded untouched.
-	r = newRig(t, nil)
-	r.f.check = func(core.FileID, core.Extent) error {
-		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: 3, Unit: core.UnitEntries}
+	// Index: the index's own refusal, forwarded untouched.
+	o = std()
+	o.indexBound = 1
+	r = newRig(t, o)
+	r.fillIndex(t)
+	want := asNoSpace(r.idx.CheckWrite(req().File, req().Extent))
+	if want == nil || want.Limit != core.LimitIndex {
+		t.Fatalf("the full index answered %v, want a refusal naming the index", want)
 	}
 	ns = r.refused(t, req(), core.LimitIndex)
-	if ns.Missing != 3 || ns.Unit != core.UnitEntries {
-		t.Fatalf("the index refusal = %d %s, want 3 entries", ns.Missing, ns.Unit)
+	if ns.Missing != want.Missing || ns.Unit != core.UnitEntries || want.Unit != core.UnitEntries {
+		t.Fatalf("the index refusal = %d %s, want the index's own %d %s", ns.Missing, ns.Unit, want.Missing, want.Unit)
 	}
 
 	// Version: one version.
-	r = newRig(t, nil)
-	r.f.left.Store(0)
+	o = std()
+	o.noVersions = true
+	r = newRig(t, o)
 	ns = r.refused(t, req(), core.LimitVersion)
 	if ns.Missing != 1 || ns.Unit != core.UnitVersions {
 		t.Fatalf("the version refusal = %d %s, want one version", ns.Missing, ns.Unit)
@@ -465,36 +552,43 @@ func TestTake_NamedRefusalFields(t *testing.T) {
 
 	// Spare: the ready spares short of what the pieces need. One ready,
 	// three pieces need spares, so two are missing.
-	r = newRig(t, nil)
-	r.f.ready.Store(1)
+	o = std()
+	o.unprimed, o.spares = true, 1
+	r = newRig(t, o)
 	q = req()
-	q.Payload = 3*testCap + 1
-	r.f.room.Store(testCap / 3)
+	q.Payload = 2*segment.EmptyRoom(testCap) + 50
 	ns = r.refused(t, q, core.LimitSpare)
 	if ns.Missing != 2 || ns.Unit != core.UnitSegments {
 		t.Fatalf("the spare refusal = %d %s, want two segments", ns.Missing, ns.Unit)
 	}
 }
 
-// TestTake_FitsRoomTakesNoSpare runs a thousand concurrent takes that all
-// fit the stream's room, with no ready spare and the journal's maximum
+// TestTake_FitsRoomTakesNoSpare runs four hundred concurrent takes that all
+// fit the stream's room together (each claims a record and its footer entry of
+// the real room, and four hundred of them sit inside it), with no ready spare and the journal's maximum
 // already reached, and checks every one is granted from the room and the
 // pool is never asked: a write that needs no new segment is never refused
 // by the maximum, which bounds only whole segments.
 func TestTake_FitsRoomTakesNoSpare(t *testing.T) {
-	// MaxBytes == UsedBytes: the footprint sits at the maximum, one cap,
-	// and no spare is ready.
-	r := newRig(t, func(c *Config) { c.MaxBytes = testCap })
-	r.f.footprint.Store(testCap)
-	r.f.ready.Store(0)
+	// MaxBytes == the footprint: the primed stream's one segment, a cap, and
+	// no spare is ready.
+	o := std()
+	o.spares, o.maxBytes = 0, testCap
+	r := newRig(t, o)
+	if used := r.set.Counters().UsedBytes; used != testCap {
+		t.Fatalf("the footprint is %d, want the one cap the maximum names", used)
+	}
 
+	const takes = 400
+	q := req()
+	q.Payload = 1
 	var wg sync.WaitGroup
 	var granted atomic.Int64
-	for range 1000 {
+	for range takes {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			g, err := r.c.Take(context.Background(), req())
+			g, err := r.c.Take(context.Background(), q)
 			if err != nil {
 				t.Errorf("a take that fits the room at the maximum: %v", err)
 				return
@@ -504,10 +598,10 @@ func TestTake_FitsRoomTakesNoSpare(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if got := granted.Load(); got != 1000 {
-		t.Fatalf("%d of 1000 takes that fit the room were granted, want all", got)
+	if got := granted.Load(); got != takes {
+		t.Fatalf("%d of %d takes that fit the room were granted, want all", got, takes)
 	}
-	if got := r.f.holds.Load(); got != 0 {
+	if got := r.holds.Load(); got != 0 {
 		t.Fatalf("the pool was asked for %d holds, want 0", got)
 	}
 }
@@ -517,8 +611,9 @@ func TestTake_FitsRoomTakesNoSpare(t *testing.T) {
 // three — never zero, and after the critical section ended: the spy asserts
 // TryLock on the capacity mutex succeeds while the hold runs.
 func TestTake_HoldsSparesBeyondRoom(t *testing.T) {
-	r := newRig(t, nil)
-	r.f.ready.Store(2) // two of the three the write needs
+	o := std()
+	o.spares, o.room = 2, testCap/2 // two of the three the write needs
+	r := newRig(t, o)
 
 	var asked atomic.Int64
 	var underMutex atomic.Bool
@@ -536,8 +631,7 @@ func TestTake_HoldsSparesBeyondRoom(t *testing.T) {
 	q := req()
 	// A write 2.5 caps larger than Room: its bytes beyond the room are
 	// 2.5 caps, which cross three segments, so three spares are held.
-	q.Payload = testCap/2 + testCap*5/2
-	r.f.room.Store(testCap / 2)
+	q.Payload = r.room() + testCap*5/2
 	ns := r.refused(t, q, core.LimitSpare)
 	if asked.Load() == 0 {
 		t.Fatal("Take never asked the pool for the spares a write beyond its room needs")
@@ -552,14 +646,15 @@ func TestTake_HoldsSparesBeyondRoom(t *testing.T) {
 
 // TestTake_RefusedHoldGivesBytesBack checks a hold the pool refuses gives
 // the reservation back — ReservedBytes falls to zero, one refusal counts —
-// and the same bytes are granted once the pool can hold them.
+// and the same bytes are granted once the pool can hold them. The refusal is
+// forced at the one hold, past a ready count that covered the need.
 func TestTake_RefusedHoldGivesBytesBack(t *testing.T) {
-	r := newRig(t, nil)
-	r.f.ready.Store(0)
-	r.f.setHoldErr(&core.NoSpaceError{Limit: core.LimitSpare, Missing: 2, Unit: core.UnitSegments})
+	o := std()
+	o.room = testCap / 2
+	r := newRig(t, o)
+	r.failHolds(&core.NoSpaceError{Limit: core.LimitSpare, Missing: 2, Unit: core.UnitSegments}, 1)
 	q := req()
 	q.Payload = 2 * testCap
-	r.f.room.Store(testCap / 2)
 	before := r.c.RefusedCount()
 	_ = r.refused(t, q, core.LimitSpare)
 	if got := r.c.RefusedCount(); got != before+1 {
@@ -570,7 +665,6 @@ func TestTake_RefusedHoldGivesBytesBack(t *testing.T) {
 	}
 
 	// The pool can hold the need again: the same bytes are granted.
-	r.f.setHoldErr(nil)
 	g := r.grant(t, q)
 	g.Release()
 }
@@ -588,9 +682,9 @@ func TestTake_MultiSegmentAskHoldsEveryPiece(t *testing.T) {
 	q := req()
 	q.Payload = 2*e + 50
 	q.Extent.Len = q.Payload
-	r := newRig(t, nil)
-	r.f.room.Store(0) // a fresh stream: every piece rolls
-	r.f.ready.Store(0)
+	o := std()
+	o.unprimed, o.spares = true, 0 // a fresh stream: every piece rolls
+	r := newRig(t, o)
 
 	ns := r.refused(t, q, core.LimitSpare)
 	if ns.Missing != 3 || ns.Unit != core.UnitSegments {
@@ -605,8 +699,8 @@ func TestTake_ExactFit(t *testing.T) {
 	// Share: an ask that fits the remaining bytes succeeds and a payload
 	// one byte larger — its ask crossing the record's grid — is refused
 	// with the one byte of the limit it passes.
-	r := newRig(t, nil)
-	r.f.setShare(tag1, 1000)
+	r := newRig(t, std())
+	r.seed(t, 896) // a 1000-byte record
 	q := req()
 	// The record a 2896-byte payload costs is 3000 bytes, against a limit
 	// that holds it and the 1000-byte seed exactly: the limit bounds the
@@ -621,27 +715,22 @@ func TestTake_ExactFit(t *testing.T) {
 	}
 
 	// Journal: the maximum bounds whole segments, so the one-byte-over edge
-	// runs at the segment's granularity — a write on a stream holding no
-	// room whose pieces need exactly one spare is granted when the
-	// maximum's remaining headroom covers its cap, and refused with one
-	// byte missing when the maximum is one byte short of it.
-	// One byte over: the same ask — one cap-plus-a-record write against a
-	// near-full active segment — at a maximum one byte short of the cap
-	// its one uncovered spare needs is refused with that one byte missing.
-	r = newRig(t, func(c *Config) { c.MaxBytes = testCap })
-	r.f.footprint.Store(0)
-	r.f.ready.Store(1)
+	// runs at the segment's granularity: a write whose tail rolls to one
+	// spare is granted when a ready spare covers it, and refused with one
+	// byte missing when none is ready and the maximum is one byte short of
+	// the cap that spare would need.
+	o := std()
+	o.spares, o.maxBytes = 1, 2*testCap // the stream's segment and the ready spare
+	r = newRig(t, o)
 	q = req()
-	q.Payload = segment.EmptyRoom(testCap) + 1
-	r.f.room.Store(testCap - 300) // nearly full: the tail rolls to one spare
+	q.Payload = r.room() + 1 // nearly full: the tail rolls to one spare
 	r.grant(t, q).Release()
 
-	r2 := newRig(t, func(c *Config) { c.MaxBytes = testCap - 1 })
-	r2.f.footprint.Store(0)
-	r2.f.ready.Store(0)
+	o = std()
+	o.spares, o.maxBytes = 0, 2*testCap-1 // the stream's segment, and a cap less a byte of room
+	r2 := newRig(t, o)
 	q = req()
-	q.Payload = segment.EmptyRoom(testCap) + 1
-	r2.f.room.Store(testCap - 300)
+	q.Payload = r2.room() + 1
 	ns = r2.refused(t, q, core.LimitJournal)
 	if ns.Missing != 1 {
 		t.Fatalf("the journal's one-byte-over refusal = %d missing, want 1", ns.Missing)
@@ -660,7 +749,7 @@ func TestTake_AtomicNoReadThenDecide(t *testing.T) {
 	// ask being the record a one-byte payload costs — and the grants are held until all sixteen have
 	// answered: the decision section decides each take whole, so exactly
 	// four pass and twelve are refused, never five.
-	r := newRig(t, nil)
+	r := newRig(t, std())
 	q := req()
 	q.Payload = 1
 	q.ShareLimit = 4 * (segment.RecordBytes(1))
@@ -695,7 +784,7 @@ func TestTake_AtomicNoReadThenDecide(t *testing.T) {
 	// is refused by the limit of one, so exactly one grant stands. A
 	// read-then-decide design has both read before either reserves — the
 	// hook would hold no section — and both are granted.
-	r = newRig(t, nil)
+	r = newRig(t, std())
 	hookIn := make(chan struct{}, 1)
 	hookRelease := make(chan struct{})
 	var armed atomic.Bool
@@ -749,8 +838,8 @@ func TestTake_AtomicNoReadThenDecide(t *testing.T) {
 // the index pre-check run exactly once, and without blocking: the caller's
 // one-second deadline covers the whole refusal.
 func TestTake_NoIONoWait(t *testing.T) {
-	r := newRig(t, nil)
-	r.f.setShare(tag1, 1)
+	r := newRig(t, std())
+	r.seed(t, 0)
 	q := req()
 	q.ShareLimit = 2
 
@@ -770,10 +859,10 @@ func TestTake_NoIONoWait(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the refused take blocked past its caller's deadline")
 	}
-	if got := r.f.holds.Load(); got != 0 {
+	if got := r.holds.Load(); got != 0 {
 		t.Fatalf("the refusal asked for %d holds, want 0", got)
 	}
-	if got := r.f.checks.Load(); got != 1 {
+	if got := r.checks.Load(); got != 1 {
 		t.Fatalf("the refusal ran the index pre-check %d times, want 1", got)
 	}
 }
@@ -797,10 +886,13 @@ func TestTake_RefusalCountsAndSpan(t *testing.T) {
 			s.err, s.ended = err, true
 		}
 	}
-	r := newRig(t, func(c *Config) { c.Tracer = tracer })
+	o := std()
+	o.room = testCap / 2
+	o.cfg = func(c *Config) { c.Tracer = tracer }
+	r := newRig(t, o)
 
 	// One refusal: one count, one ended span with the refusal's error.
-	r.f.setShare(tag1, 1)
+	r.seed(t, 0)
 	q := req()
 	q.ShareLimit = 2
 	before := r.c.RefusedCount()
@@ -819,10 +911,9 @@ func TestTake_RefusalCountsAndSpan(t *testing.T) {
 	// An ENOSPC-wrapped error from Hold: no count, no span, no ErrNoSpace
 	// match, and the reservation the failed hold held is returned.
 	enospc := &pathError{errno: syscall.ENOSPC}
-	r.f.setHoldErr(enospc)
+	r.failHolds(enospc, 1)
 	q = req()
 	q.Payload = 2 * testCap
-	r.f.room.Store(testCap / 2)
 	before = r.c.RefusedCount()
 	_, err := r.c.Take(context.Background(), q)
 	if err == nil {
@@ -865,14 +956,15 @@ func (e *pathError) Unwrap() error { return e.errno }
 // reservation — by the piece, with the share's already-counted bytes read
 // alongside the fallen reservation at the moment the hook runs — and that
 // Release after two of three pieces returns the third's bytes and the
-// unused spares, closes the hold, and is idempotent. The caller counts the
-// record in the share before it calls Wrote, as the append path does, so
-// inside Wrote's section the share's bytes hold what the piece wrote
-// while the reservation has just fallen by the same amount: the hook
+// unused spares, closes the hold, and is idempotent. The caller appends the
+// record, which counts it in the share, before it calls Wrote, as the append
+// path does, so inside Wrote's section the share's bytes hold what the piece
+// wrote while the reservation has just fallen by the same amount: the hook
 // reads both figures at that moment and the test asserts them together.
 func TestGrant_WroteAndRelease(t *testing.T) {
-	r := newRig(t, nil)
-	r.f.ready.Store(2) // two spares for a write that needs three
+	o := std()
+	o.unprimed = true // three spares for a write whose three pieces each roll
+	r := newRig(t, o)
 
 	type move struct {
 		n, reserved, share int64
@@ -882,26 +974,26 @@ func TestGrant_WroteAndRelease(t *testing.T) {
 	r.c.wroteHook = func(stream int, n, reserved int64) {
 		mu.Lock()
 		defer mu.Unlock()
-		moves = append(moves, move{n: n, reserved: reserved, share: r.f.shareBytes(tag1)})
+		moves = append(moves, move{n: n, reserved: reserved, share: r.share()})
 	}
 
+	e := segment.EmptyRoom(testCap)
 	q := req()
-	q.Payload = 3 * (testCap / 2)
-	r.f.room.Store(1)
+	q.Payload = 2*e + 4096
 	g := r.grant(t, q)
 	asked := r.c.ReservedBytes()
-	if asked <= 3*(testCap/2) {
+	if asked <= q.Payload {
 		t.Fatalf("the ask %d never rose over the payload by its pieces' overhead", asked)
 	}
 
-	// Two of three pieces are written: the stream's ledger raises the
-	// share's bytes before the grant is told, as the datapath's append
-	// does, and Wrote lowers the reservation by the piece.
-	piece := testCap / 2
-	r.f.incrShare(tag1, piece)
-	g.Wrote(piece)
-	r.f.incrShare(tag1, piece)
-	g.Wrote(piece)
+	// Two of three pieces are written: each is appended, which counts it in
+	// the share's bytes, before the grant is told, and Wrote lowers the
+	// reservation by the piece.
+	piece := segment.RecordBytes(e)
+	for range 2 {
+		p := r.append(t, segment.Roll{Hold: g.Hold()}, tag1, e)
+		g.Wrote(segment.RecordBytes(p.N))
+	}
 	mu.Lock()
 	if len(moves) != 2 {
 		mu.Unlock()
@@ -924,8 +1016,8 @@ func TestGrant_WroteAndRelease(t *testing.T) {
 	if got := r.c.ReservedBytes(); got != asked-2*piece {
 		t.Fatalf("after two pieces ReservedBytes = %d, want %d", got, asked-2*piece)
 	}
-	if before, after := r.f.shareBytes(tag1), int64(2*piece); before != after {
-		t.Fatalf("the share counts %d after two written pieces, want %d", before, after)
+	if got := r.share(); got != 2*piece {
+		t.Fatalf("the share counts %d after two written pieces, want %d", got, 2*piece)
 	}
 
 	// Release returns the third piece's bytes and the unused spares.
@@ -933,10 +1025,10 @@ func TestGrant_WroteAndRelease(t *testing.T) {
 	if got := r.c.ReservedBytes(); got != 0 {
 		t.Fatalf("after Release, ReservedBytes = %d, want 0", got)
 	}
-	if got := r.f.shareBytes(tag1); got != 2*piece {
+	if got := r.share(); got != 2*piece {
 		t.Fatalf("after Release the share counts %d, want only the two written pieces", got)
 	}
-	if got := r.f.holds.Load(); got != 1 {
+	if got := r.holds.Load(); got != 1 {
 		t.Fatalf("the pool was asked for %d holds, want 1", got)
 	}
 	if c := r.pool.Counters(); c.Held != 0 {
@@ -950,7 +1042,7 @@ func TestGrant_WroteAndRelease(t *testing.T) {
 // drive ReservedBytes negative: the pieces after Release, or beyond the
 // granted bytes, are clamped.
 func TestGrant_WroteBeyondReservation(t *testing.T) {
-	r := newRig(t, nil)
+	r := newRig(t, std())
 	q := req()
 	q.Payload = 100
 	g := r.grant(t, q)
@@ -975,20 +1067,19 @@ func TestGrant_WroteBeyondReservation(t *testing.T) {
 // second is refused by LimitJournal there, whichever way the first's hold
 // lands.
 func TestTake_JournalMaximumIsAtomic(t *testing.T) {
-	// The footprint is a fact the fake holds constant, so only the count
-	// can bound concurrent admissions: used sits at one cap, the maximum
-	// holds exactly one more, and every hold is refused by the stub with
-	// the pool's own spare refusal, so nothing but the count can mark how
-	// many takes have claimed the room while their holds are still pending.
-	used := testCap
-	r := newRig(t, func(c *Config) { c.MaxBytes = 2 * testCap })
-	r.f.footprint.Store(used)
-	r.f.ready.Store(1)
-	park, started := r.f.setHoldPark(&core.NoSpaceError{Limit: core.LimitSpare, Missing: 2, Unit: core.UnitSegments})
+	// The footprint is the one ready spare's cap, the maximum holds exactly
+	// one more, and the first admitted take's hold is parked before the pool
+	// answers it, so nothing but the count can mark how many takes have
+	// claimed the room while their holds are still pending. The pool's
+	// maker may make that second spare when a refused hold asks for it.
+	o := std()
+	o.unprimed, o.spares = true, 1
+	o.makerMax, o.maxBytes = 2*testCap, 2*testCap
+	r := newRig(t, o)
+	started, release := r.parkFirstHold()
 
 	q := req()
-	q.Payload = 3 * (testCap / 2)
-	r.f.room.Store(1) // one byte of room: the bytes roll into two spares
+	q.Payload = 3 * (testCap / 2) // no room: the bytes roll into two spares
 
 	var wg sync.WaitGroup
 	var granted atomic.Int64
@@ -1021,17 +1112,17 @@ func TestTake_JournalMaximumIsAtomic(t *testing.T) {
 	for byJournal.Load() < 15 && time.Now().Before(deadline) {
 		runtime.Gosched()
 	}
-	close(park)
+	release()
 	wg.Wait()
-	// The stub refuses every hold, parking the first caller while the
-	// others decide, so no take can be granted and the storm's observable
-	// is which limit refused. Exactly one take — whichever reached the
-	// section first — claims the maximum's one segment of room and parks in
-	// its hold; the count holds its room against every other take, so all
-	// fifteen are refused by the journal's maximum itself, never by the
-	// stub.
+	// The pool holds one ready spare against a hold of two, so it refuses
+	// the one admitted take, parked while the others decide: no take can be
+	// granted and the storm's observable is which limit refused. Exactly one
+	// take — whichever reached the section first — claims the maximum's one
+	// segment of room and parks in its hold; the count holds its room
+	// against every other take, so all fifteen are refused by the journal's
+	// maximum itself, never by the pool.
 	if got := granted.Load(); got != 0 {
-		t.Fatalf("%d of 16 takes were granted against a hold that refuses every ask, want 0", got)
+		t.Fatalf("%d of 16 takes were granted against a pool holding one of the two spares they need, want 0", got)
 	}
 	if got := byJournal.Load(); got != 15 {
 		t.Fatalf("%d of the 15 not-admitted takes were refused by the journal's maximum, want all 15", got)
@@ -1040,10 +1131,10 @@ func TestTake_JournalMaximumIsAtomic(t *testing.T) {
 		t.Fatalf("after the storm, ReservedBytes = %d, want 0", got)
 	}
 
-	// The stub's refusals returned every reservation, and the storm left
-	// the maximum's room intact: a take the pool can serve is granted.
-	r.f.setHoldErr(nil)
-	r.f.holdGate.Store(false)
+	// The refusals returned every reservation, and the storm left the
+	// maximum's room intact: the refused hold asked the pool for the missing
+	// spare, and once it is ready a take it can serve is granted.
+	r.awaitReady(t, 2)
 	g := r.grant(t, q)
 	g.Release()
 }
@@ -1051,7 +1142,7 @@ func TestTake_JournalMaximumIsAtomic(t *testing.T) {
 // TestTake_NegativeBytesRefused checks a negative Bytes is refused with
 // core.ErrInvalidExtent and reserves nothing, before any limit is consulted.
 func TestTake_NegativeBytesRefused(t *testing.T) {
-	r := newRig(t, nil)
+	r := newRig(t, std())
 	q := req()
 	q.Payload = -1
 	before := r.c.RefusedCount()
@@ -1071,11 +1162,11 @@ func TestTake_NegativeBytesRefused(t *testing.T) {
 // spare count negative nor overflows the reservation math: the refusal the
 // huge ask meets names a limit, not a wrapped number.
 func TestTake_BytesOverflowSafe(t *testing.T) {
-	r := newRig(t, nil)
-	r.f.ready.Store(0)
+	o := std()
+	o.unprimed, o.spares = true, 0
+	r := newRig(t, o)
 	q := req()
 	q.Payload = math.MaxInt64 - 1
-	r.f.room.Store(1)
 	ns := r.refused(t, q, 0)
 	if ns.Limit != core.LimitJournal && ns.Limit != core.LimitSpare {
 		t.Fatalf("a huge ask was refused by %s, want the journal's maximum or the pool's", ns.Limit)
@@ -1096,10 +1187,10 @@ func TestTake_ShareFigureIsExactUnderLandings(t *testing.T) {
 	// costs, against a limit holding exactly one ask over the 1000-byte
 	// seed, so one take
 	// fits and the second finds none.
-	r := newRig(t, nil)
+	r := newRig(t, std())
 	const seed = 1000
-	r.f.setShare(tag1, seed)
-	ask := recordSplit(2896, roomBig, testCap)
+	r.seed(t, seed-segment.RecordBytes(0))
+	ask := recordSplit(2896, r.room(), testCap)
 	if ask != 3000 {
 		t.Fatalf("the whole ask the admission charges for the payload = %d, want 3000; the test's figures depend on it", ask)
 	}
@@ -1109,12 +1200,13 @@ func TestTake_ShareFigureIsExactUnderLandings(t *testing.T) {
 	// set per take has there — while the other writer completes a whole
 	// record inside the park: the append that counts it in the set and
 	// the Wrote that hands it over. The check that follows must see the
-	// landed record whether the take's figure is owned or read.
+	// landed record whether the take's figure is owned or read. The park is
+	// a wrapper around the set's own read: it reads, then waits.
 	inPark := make(chan struct{})
 	release := make(chan struct{})
 	var parked atomic.Bool
 	shareRead := func(tag core.ShareTag) (settled, retired int64) {
-		v, dn := r.f.shareFigures(tag)
+		v, dn := r.set.ShareBytesAndRetired(tag)
 		// The victim's seam: read first, park, then return the stale
 		// figure — the read-then-decide order the RFC forbids: the
 		// landing below lands inside the park, after this read but
@@ -1128,56 +1220,42 @@ func TestTake_ShareFigureIsExactUnderLandings(t *testing.T) {
 	}
 	r.c.cfg.ShareFigures = shareRead
 
-	const writers = 4
-	start := make(chan struct{})
+	q := req()
+	q.Payload = 2896
+	q.ShareLimit = seed + ask
+
+	// The victim goes first and parks in the read.
 	var wg sync.WaitGroup
-	var granted, refused atomic.Int64
-	for i := range writers {
-		wg.Add(1)
-		go func(victim bool) {
-			defer wg.Done()
-			<-start
-			q := req()
-			q.Payload = 2896
-			q.ShareLimit = seed + ask
-			g, err := r.c.Take(context.Background(), q)
-			if err != nil {
-				if ns, ok := err.(*core.NoSpaceError); ok && ns.Limit == core.LimitShare {
-					refused.Add(1)
-					return
-				}
-				t.Errorf("Take = %v, want the share's limit", err)
-				return
-			}
-			granted.Add(1)
-			// The record lands right where the other takes may be
-			// deciding: the sequence that escapes a read-then-decide.
-			r.f.incrShare(tag1, segment.RecordBytes(2896))
-			g.Wrote(segment.RecordBytes(2896))
+	var victim error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		g, err := r.c.Take(context.Background(), q)
+		if err == nil {
 			g.Release()
-		}(i == 0)
-	}
-	// The victim goes first and parks; the others run to completion,
-	// landing whole records inside its park; only then does the victim's
-	// decision run.
-	close(start)
+		}
+		victim = err
+	}()
 	<-inPark
-	deadline := time.Now().Add(5 * time.Second)
-	for (granted.Load()+refused.Load()) < writers-1 && time.Now().Before(deadline) {
-		runtime.Gosched()
+
+	// The other writers run to completion one after the other inside the
+	// park: the first is granted and lands its whole record — the append that
+	// counts it in the set and the Wrote that hands it over — before the
+	// next takes, and every later take finds the landed record in the figure.
+	g := r.grant(t, q)
+	r.land(t, g, 2896)
+	g.Release()
+	for range 2 {
+		_ = r.refused(t, q, core.LimitShare)
 	}
-	if got := granted.Load(); got != 1 {
-		close(release)
-		wg.Wait()
-		t.Fatalf("%d takes granted before the parked one decided, want the one ask the limit holds", got)
-	}
+
+	// Only now does the victim's decision run, on the figure its stale read
+	// seeded: the tally the landing moved, not the read it returns.
 	close(release)
 	wg.Wait()
-	if got := granted.Load() + refused.Load(); got != writers {
-		t.Fatalf("%d grants + %d refusals, want all %d takes answered", granted.Load(), refused.Load(), writers)
-	}
-	if got := granted.Load(); got != 1 {
-		t.Fatalf("%d takes granted at a one-slot limit, want exactly 1: the landing inside the parked take's window escaped the figure", got)
+	var ns *core.NoSpaceError
+	if !errors.As(victim, &ns) || ns.Limit != core.LimitShare {
+		t.Fatalf("the parked take = %v, want the share's refusal: the landing inside its window escaped the figure", victim)
 	}
 }
 
@@ -1192,18 +1270,15 @@ func TestTake_ShareFigureIsExactUnderLandings(t *testing.T) {
 // at most one record header per displaced write, the bound the admission's
 // decision states.
 func TestTake_InterleavedDrawnPieceOversetsTheShareByOneHeader(t *testing.T) {
-	// The figures the staging depends on, checked the arithmetic stands:
-	const (
-		small = int64(4096)
-		large = int64(61049)
-	)
-	room := segment.EmptyRoom(testCap) // 65248 payload bytes the segment names
-	if room != 65248 || segment.RecordBytes(small) != 4200 || segment.RecordBytes(large) != 61160 {
-		t.Fatalf("the fixture's figures moved: room %d, rb(%d) %d, rb(%d) %d; the test's arithmetic depends on them",
-			room, small, segment.RecordBytes(small), large, segment.RecordBytes(large))
+	r := newRig(t, std())
+	// The stream's room, read by both takes: the larger write fits it whole
+	// with a thousand bytes to spare, and the smaller one lands first and
+	// spends more than that.
+	room := r.room()
+	small, large := int64(4096), room-1000
+	if segment.RecordBytes(small)+format.CatalogEntrySize <= room-large {
+		t.Fatalf("the fixture's figures moved: the small write leaves the large one its room")
 	}
-	r := newRig(t, nil)
-	r.f.room.Store(room)
 
 	// The limit holds the two writes' record bytes exactly.
 	limit := segment.RecordBytes(small) + segment.RecordBytes(large)
@@ -1220,18 +1295,16 @@ func TestTake_InterleavedDrawnPieceOversetsTheShareByOneHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the second take at the limit's exact remainder: %v", err)
 	}
-	r.f.incrShare(tag1, segment.RecordBytes(small))
-	gSmall.Wrote(segment.RecordBytes(small))
+	r.land(t, gSmall, small)
 	gSmall.Release()
 
 	// The larger writer lands with its cut moved: one piece more than its
 	// split, whose header is what the share passes the limit by.
-	hdr := segment.RecordBytes(0)
-	r.f.incrShare(tag1, segment.RecordBytes(large)+hdr)
-	gBig.Wrote(segment.RecordBytes(large) + hdr)
+	r.land(t, gBig, large)
 	gBig.Release()
 
-	if got := r.f.shareBytes(tag1); got != limit+hdr {
+	hdr := segment.RecordBytes(0)
+	if got := r.share(); got != limit+hdr {
 		t.Fatalf("the share settled %d, want the limit %d and the one drawn piece's header %d", got, limit, hdr)
 	}
 	if got := r.c.ReservedBytes(); got != 0 {
@@ -1245,16 +1318,16 @@ func TestTake_InterleavedDrawnPieceOversetsTheShareByOneHeader(t *testing.T) {
 // after it must still refuse past the limit, and the marker's ceiling — the
 // reconciliation with the set — holds for every landed record.
 func TestTake_ShareTallyNeverUndercountsTheLanded(t *testing.T) {
-	r := newRig(t, nil)
+	r := newRig(t, std())
 	// The share's settled figure the set itself reports (as a recovered
 	// open would): the seed every later take stands on.
-	r.f.setShare(tag1, 1000)
+	r.seed(t, 896) // a 1000-byte record
 	q := req()
 	q.Payload = 1500
 	q.ShareLimit = 4000
 	first := segment.RecordBytes(1500)
 	g := r.grant(t, q)
-	g.Wrote(first)
+	r.land(t, g, 1500)
 	g.Release()
 	// An unbounded ask the limit never refused: only its own Wrote moved
 	// the tally, as every write's does.
@@ -1263,8 +1336,7 @@ func TestTake_ShareTallyNeverUndercountsTheLanded(t *testing.T) {
 	q2.ShareLimit = 0
 	second := segment.RecordBytes(2000)
 	g2 := r.grant(t, q2)
-	r.f.incrShare(tag1, second)
-	g2.Wrote(second)
+	r.land(t, g2, 2000)
 	g2.Release()
 
 	// The next bounded take sees the whole settled figure: it refuses past
@@ -1284,23 +1356,25 @@ func TestTake_ShareTallyNeverUndercountsTheLanded(t *testing.T) {
 // capacity's own method, so the retry after a retirement passes and the
 // figure is whole.
 func TestTake_RetiredLowersTheTally(t *testing.T) {
-	r := newRig(t, nil)
-	r.f.setShare(tag1, 1000)
+	r := newRig(t, std())
+	seg := r.seed(t, 896) // a 1000-byte record
 	q := req()
 	// One ask beside the seed: a payload whose record costs 2896 bytes
 	// costs 3000 exactly against the 4000 limit.
 	q.Payload = 2896
 	q.ShareLimit = 4000
 	g := r.grant(t, q)
-	r.f.incrShare(tag1, segment.RecordBytes(2896))
-	g.Wrote(segment.RecordBytes(2896))
+	r.land(t, g, 2896)
 	g.Release()
 
-	// A retirement of the segment holding the record frees its bytes: the
+	// The tally holds both records, so the retry finds no room.
+	_ = r.refused(t, q, core.LimitShare)
+
+	// A retirement of the segment holding the records frees their bytes: the
 	// set's own figure falls, its cumulative retired figure rises, the
 	// caller tells the capacity, and the retry fits in the room it freed.
-	r.f.setShare(tag1, 1000)
-	r.f.setRetired(tag1, segment.RecordBytes(2896))
+	r.seal(t)
+	r.retire(t, seg)
 	r.c.Retired(tag1)
 	g2 := r.grant(t, q)
 	g2.Release()
@@ -1310,30 +1384,19 @@ func TestTake_RetiredLowersTheTally(t *testing.T) {
 // asking the whole room the stream names, and checks the ledger of
 // granted-but-unwritten room convicts the second: the first grant's
 // roomPart stands against its own figures, so the second take's bytes
-// roll into a spare the pool's stub refuses and it is refused, never two
+// roll into a spare the pool holds none of and it is refused, never two
 // grants of one window.
 func TestTake_RoomIsNotGrantedTwice(t *testing.T) {
-	var room atomic.Int64
-	room.Store(3 * (testCap / 2))
-	r := newRig(t, func(c *Config) {
-		c.Room = func(int) int64 { return room.Load() }
-		c.ReadySpares = func() int { return 0 }
-		c.Hold = func(n int) (*segment.Hold, error) {
-			return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: int64(n), Unit: core.UnitSegments}
-		}
-		c.MaxBytes = 0
-	})
+	o := std()
+	o.spares = 0
+	r := newRig(t, o)
+	room := r.room()
 	q := req()
-	// The payload whose record sits exactly in the room the stream
-	// names: its record on the record grid. The grid arithmetic is drawn from the same functions the
-	// admission charges, so the ask equals the room to the byte.
-	q.Payload = room.Load() - segment.RecordBytes(0)
-	for recordSplit(q.Payload, room.Load(), testCap) != room.Load() {
-		q.Payload -= 1
-	}
-	ask := recordSplit(q.Payload, room.Load(), testCap)
-	if ask != room.Load() {
-		t.Fatalf("the fixture asks %d against a room of %d; the figure depends on it", ask, room.Load())
+	// The payload that fills the room the stream names, so one grant claims
+	// all of it.
+	q.Payload = room
+	if ask := recordSplit(q.Payload, room, testCap); ask+format.CatalogEntrySize < room {
+		t.Fatalf("the fixture asks %d against a room of %d; the figure depends on it", ask, room)
 	}
 
 	var wg sync.WaitGroup
@@ -1376,18 +1439,16 @@ func TestTake_RoomIsNotGrantedTwice(t *testing.T) {
 // from the stream's room only what its landing takes from it: the record's
 // bytes and its footer entry. Two writes that together fit the active
 // segment, taken one after the other before either lands, are both granted
-// from the room with no spare held; a spare hold here is refused, so a
-// claim wider than the landing fails the test.
+// from the room with no spare held; the pool holds no spare, so a spare hold
+// here is refused and a claim wider than the landing fails the test.
 func TestTake_TwoWritesInTheRoomAreBothGrantedFromIt(t *testing.T) {
-	const first, second = 1000, 2000
-	r := newRig(t, func(c *Config) {
-		c.Hold = func(n int) (*segment.Hold, error) {
-			return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: int64(n), Unit: core.UnitSegments}
-		}
-	})
+	const first = 1000
+	o := std()
+	o.spares, o.room = 0, 5000
+	r := newRig(t, o)
 	// The room names the second write's payload exactly beyond the first
 	// record and its footer entry.
-	r.f.room.Store(segment.RecordBytes(first) + format.CatalogEntrySize + second)
+	second := r.room() - segment.RecordBytes(first) - format.CatalogEntrySize
 	q := req()
 	q.Payload = first
 	g1 := r.grant(t, q)
@@ -1405,20 +1466,17 @@ func TestTake_TwoWritesInTheRoomAreBothGrantedFromIt(t *testing.T) {
 // for another file, made after the landing and before Release, sees the
 // room the stream really has and is granted from it, not sent to a spare.
 func TestGrant_WroteGivesBackTheEntryRoom(t *testing.T) {
-	const first, second = 1000, 2000
-	r := newRig(t, func(c *Config) {
-		c.Hold = func(n int) (*segment.Hold, error) {
-			return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: int64(n), Unit: core.UnitSegments}
-		}
-	})
-	r.f.room.Store(segment.RecordBytes(first) + format.CatalogEntrySize + second)
+	const first = 1000
+	o := std()
+	o.spares, o.room = 0, 5000
+	r := newRig(t, o)
 	q := req()
 	q.Payload = first
 	g1 := r.grant(t, q)
 	// The landing lowers the stream's room by the record and its entry.
-	r.f.room.Store(second)
-	g1.Wrote(segment.RecordBytes(first))
-	q.Payload = second
+	r.land(t, g1, first)
+	// The room the stream has now is exactly what the second write needs.
+	q.Payload = r.room()
 	g2 := r.grant(t, q)
 	if g2.Hold() != nil {
 		t.Fatal("a write that fits the room held spares while the landed grant was unreleased")
@@ -1433,12 +1491,11 @@ func TestGrant_WroteGivesBackTheEntryRoom(t *testing.T) {
 // unchanged — the take runs before anything is drawn, so the refused
 // hold leaves the holds it found.
 func TestTake_OneReadySpareRefusesNeedOfTwo(t *testing.T) {
-	r := newRig(t, nil)
-	r.f.setShare(tag1, 0)
-	r.f.ready.Store(1) // the one spare an unreserved take can reach
+	o := std()
+	o.unprimed, o.spares = true, 1 // the one spare an unreserved take can reach
+	r := newRig(t, o)
 	q := req()
 	q.Payload = 3 * (testCap / 2) // its bytes roll into two spares
-	r.f.room.Store(0)
 	before := r.pool.Counters().Held
 	ns := r.refused(t, q, core.LimitSpare)
 	if ns.Missing != 1 || ns.Unit != core.UnitSegments {
