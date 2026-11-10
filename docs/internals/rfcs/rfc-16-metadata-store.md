@@ -2302,8 +2302,9 @@ serial order of the committed operations.
   no namespace is written until an operator names the copy.
 - **Cost assertions:** each §3 method has a stated bound on keys read and
   written (for example `Files.Get`: [RFC 7 §2.5](rfc-7-namespace-metadata.md#2.5%20Where%20%60size%60%20lives)'s; `Create`: at
-  most six writes). A counting `KV` wrapper records them, and the suite fails
-  when a method exceeds its bound. This is what keeps rule 2 of §1.2 true after
+  most six writes). The in-memory `KV` keeps its own record of the keys each
+  transaction read and wrote, its `Counts`, and the suite fails when a method
+  exceeds its bound. This is what keeps rule 2 of §1.2 true after
   the next refactor.
 
 ### 6.4 Faults and crashes
@@ -2404,8 +2405,8 @@ path blocks until explained, as [Test tiers](rfc-index.md#Test%20tiers) sets out
 - A trace span per operation carries one child span per `KV` call, with keys
   read, keys written and retries as attributes. A slow operation shows whether
   it waited on the KV, on a conflict retry, or on itself.
-- The counting `KV` wrapper of §6.3 is also a profiling tool: run it over a
-  workload and it reports, per operation, the key prefixes touched — the fastest
+- The in-memory `KV`'s `Counts` of §6.3 are also a profiling tool: run a
+  workload over it and they report, per operation, the key prefixes touched — the fastest
   way to find a hot key or a scan that should not be there.
 
 ### 7.4 Metadata footprint at 2 PB
