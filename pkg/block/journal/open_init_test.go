@@ -780,3 +780,55 @@ func swapCheckDir(t *testing.T, check func(string) error) {
 	checkDir = check
 	t.Cleanup(func() { checkDir = saved })
 }
+
+// TestInit_FailedInitKeepsAnotherInitsFormat fails an Init whose cleanup
+// takes away a journal it did not make: another Init finishes in the same
+// directory while this one waits at its sync, then this one fails, and the
+// format file standing there names the other journal's identity. Only a
+// format file that names the identity this Init drew is its own to remove.
+func TestInit_FailedInitKeepsAnotherInitsFormat(t *testing.T) {
+	s := newSeam(t)
+	boom := errors.New("the sync failed")
+	if err := s.seam.Schedule(kit.Failing(kit.OpSync, format.FormatTmpName, 1, boom)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	held := s.seam.Hold(t, kit.OpSync, format.FormatTmpName)
+
+	errc := make(chan error, 1)
+	go func() {
+		_, err := s.init(t)
+		errc <- err
+	}()
+	awaitHoldOrDone(t, held.Reached(), errc)
+
+	// The other Init's finished journal, put in place while this one waits.
+	other := JournalID{0xf0, 0x0d}
+	f, err := s.seam.Create(format.FormatFileName)
+	if err != nil {
+		t.Fatalf("plant the other journal's format file: %v", err)
+	}
+	b := format.AppendFormatFile(nil, format.FormatFile{Identity: other, Installation: installID})
+	if _, err := f.WriteAt(b, 0); err != nil {
+		t.Fatalf("write the other journal's format file: %v", err)
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatalf("sync the other journal's format file: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close the other journal's format file: %v", err)
+	}
+	if err := s.seam.SyncDir(); err != nil {
+		t.Fatalf("SyncDir: %v", err)
+	}
+	held.Release()
+
+	if err := <-errc; !errors.Is(err, boom) {
+		t.Fatalf("the failing Init returned %v, want the injected failure", err)
+	}
+	if names := listOS(t, s.dir); !slices.Equal(names, []string{format.FormatFileName}) {
+		t.Fatalf("after the failed Init the directory holds %v, want the other journal's format file alone", names)
+	}
+	if got := readFormatOS(t, s.dir); got.Identity != other {
+		t.Errorf("the format file names %v, want the other journal's %v", [16]byte(got.Identity), [16]byte(other))
+	}
+}
