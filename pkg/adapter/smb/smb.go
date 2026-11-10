@@ -16,8 +16,8 @@ func New(d adapter.Deps, s config.SMB) (adapter.Adapter, error) {
 		return nil, err
 	}
 	switch {
-	case d.Service == nil:
-		return nil, errors.New("smb: Deps.Service is required")
+	case d.VFS == nil:
+		return nil, errors.New("smb: Deps.VFS is required")
 	case d.Budgets == nil:
 		return nil, errors.New("smb: Deps.Budgets is required")
 	}

@@ -17,13 +17,13 @@ import (
 // no other component. A field is an interface where it has two
 // implementations, a concrete type where it has one. It carries the budgets
 // an adapter charges and no other: never the open-state budget or a share's
-// cap. Only Service and Budgets are required; New refuses a missing one by
+// cap. Only VFS and Budgets are required; New refuses a missing one by
 // name, and every other field may be nil.
 type Deps struct {
-	// Service is the adapter's only path to the filesystem: files, clients,
+	// VFS is the adapter's only path to the filesystem: files, clients,
 	// sign-in and principal spellings. It is the filesystem or the gateway,
 	// and the adapter cannot tell which.
-	Service vfs.Service
+	VFS vfs.Service
 	// Budgets are the four on the request path: receive, reply, connection
 	// state and hold.
 	Budgets *resources.Budgets
@@ -34,10 +34,11 @@ type Deps struct {
 	// loop reports to until it closes the Loop at unbind. nil watches
 	// nothing, as in a test.
 	Watch func(loop string) Loop
-	// Dial opens an outbound connection from a given local address: NLM's
-	// callbacks to a host, from the floating address it used. nil: a
+	// DialClient opens a connection back to a client, for a callback (an
+	// NFSv4.0 recall, NLM's GRANTED), from the local address the client
+	// reached, so a floating address keeps working after a takeover. nil: a
 	// net.Dialer bound to from. A test supplies one returning a pipe.
-	Dial func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+	DialClient func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
 }
 
 // Loop is one watched loop: Turn reports a pass, Idle a wait with nothing to

@@ -18,8 +18,8 @@ func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) {
 		return nil, err
 	}
 	switch {
-	case d.Service == nil:
-		return nil, errors.New("nfs: Deps.Service is required")
+	case d.VFS == nil:
+		return nil, errors.New("nfs: Deps.VFS is required")
 	case d.Budgets == nil:
 		return nil, errors.New("nfs: Deps.Budgets is required")
 	}

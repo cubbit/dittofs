@@ -48,7 +48,7 @@ type Serving struct {
 }
 
 type Deps struct {
-	Service vfs.Service
+	VFS vfs.Service
 
 	Budgets *resources.Budgets
 	Metrics *metrics.Registry
@@ -57,7 +57,7 @@ type Deps struct {
 
 	Watch func(loop string) Loop
 
-	Dial func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+	DialClient func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
 }
 
 type Loop interface {

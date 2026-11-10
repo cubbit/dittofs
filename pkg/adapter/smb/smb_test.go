@@ -19,24 +19,24 @@ func valid() config.SMB {
 	return s
 }
 
-// deps is the Deps New requires, Service and Budgets, and nothing else.
+// deps is the Deps New requires, VFS and Budgets, and nothing else.
 func deps() adapter.Deps {
-	return adapter.Deps{Service: vfstest.Null{}, Budgets: &resources.Budgets{}}
+	return adapter.Deps{VFS: vfstest.Null{}, Budgets: &resources.Budgets{}}
 }
 
-// New refuses Deps missing Service or Budgets, naming the field, and accepts
+// New refuses Deps missing VFS or Budgets, naming the field, and accepts
 // every other field nil.
 func TestNewRequiresServiceAndBudgets(t *testing.T) {
 	for field, d := range map[string]adapter.Deps{
-		"Deps.Service": {Budgets: &resources.Budgets{}},
-		"Deps.Budgets": {Service: vfstest.Null{}},
+		"Deps.VFS":     {Budgets: &resources.Budgets{}},
+		"Deps.Budgets": {VFS: vfstest.Null{}},
 	} {
 		if _, err := smb.New(d, valid()); err == nil || errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), field) {
 			t.Errorf("New without %s: %v, want refused naming %s", field, err, field)
 		}
 	}
 	if _, err := smb.New(deps(), valid()); !errors.Is(err, errors.ErrUnsupported) {
-		t.Errorf("New with only Service and Budgets: %v, want accepted as far as errors.ErrUnsupported", err)
+		t.Errorf("New with only VFS and Budgets: %v, want accepted as far as errors.ErrUnsupported", err)
 	}
 }
 
