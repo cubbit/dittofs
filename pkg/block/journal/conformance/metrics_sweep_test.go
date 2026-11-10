@@ -190,7 +190,7 @@ func TestMetrics_ConditionsMoveTheirMetric(t *testing.T) {
 		switch {
 		case errors.Is(err, journal.ErrSyncFailed):
 			if now := f.J.Stats().LossGeneration; now <= gen {
-				t.Fatalf("a failed window left the loss generation at %d, want it above %d", gen, now)
+				t.Fatalf("a failed window left the loss generation at %d, want it above %d", now, gen)
 			}
 			ev := lastLoss(t, f, journal.Stats{Losses: losses})
 			if ev.Reason != journal.LossFailedWindow || ev.File != id || ev.Extent.Off != 0 {
@@ -210,7 +210,10 @@ func TestMetrics_ConditionsMoveTheirMetric(t *testing.T) {
 
 	// A stale extent raises journal_stale_extents_total, publishes its
 	// LossStale event, and holds the loss generation: what was dropped is
-	// older than content already offloaded.
+	// older than content already offloaded. The drop happens inside the
+	// mark that names the covering ref (RFC 28 section 3.2 drops what is
+	// older), so the counters are snapshotted before it and the read
+	// afterwards resolves the extent remote and moves nothing.
 	t.Run("loss_stale", func(t *testing.T) {
 		wantNamed(t, "Counters.StaleExtents")
 		f := journaltest.New(t)
@@ -222,8 +225,8 @@ func TestMetrics_ConditionsMoveTheirMetric(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mark(t, h, id, e, newer)
 		before, losses, gen := f.J.Stats().Counters, f.J.Stats().Losses, f.J.Stats().LossGeneration
+		mark(t, h, id, e, newer)
 		read(t, h, id, 0, e.Len)
 		after := f.J.Stats().Counters
 		if after.StaleExtents <= before.StaleExtents {
@@ -280,7 +283,7 @@ func TestMetrics_ConditionsMoveTheirMetric(t *testing.T) {
 			t.Fatalf("a corrupt dirty extent moved CorruptExtentsDataLoss from %d to %d, want it risen", before.CorruptExtentsDataLoss, after.CorruptExtentsDataLoss)
 		}
 		if now := f.J.Stats().LossGeneration; now <= gen {
-			t.Fatalf("a corrupt dirty extent left the loss generation at %d, want it above %d: content not yet offloaded was lost", gen, now)
+			t.Fatalf("a corrupt dirty extent left the loss generation at %d, want it above %d: content not yet offloaded was lost", now, gen)
 		}
 		ev := lastLoss(t, f, journal.Stats{Losses: losses})
 		if ev.Reason != journal.LossCorrupt || ev.File != journaltest.File(3) || ev.Extent != ext(0, 4096) {

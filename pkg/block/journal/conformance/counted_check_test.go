@@ -405,6 +405,16 @@ func (f *fakeMixed) EndsFile(i int) bool {
 	return false
 }
 
+// FileStarts lists the interval at which each of the fakes' files starts.
+func (f *fakeMixed) FileStarts() []int {
+	starts, n := make([]int, len(f.files)), 0
+	for i, size := range f.files {
+		starts[i] = n
+		n += size
+	}
+	return starts
+}
+
 // Intervals is how many intervals the fakes' files hold.
 func (f *fakeMixed) Intervals() int {
 	total := 0

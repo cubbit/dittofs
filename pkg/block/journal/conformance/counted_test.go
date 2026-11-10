@@ -400,6 +400,17 @@ func (e *fixtureMixedEnv) EndsFile(i int) bool {
 	return false
 }
 
+// FileStarts lists the interval at which each streamed file starts: 0 for
+// the first, the interval after each earlier file's last one for the rest.
+func (e *fixtureMixedEnv) FileStarts() []int {
+	starts, n := make([]int, len(e.files)), 0
+	for i, size := range e.files {
+		starts[i] = n
+		n += int(size / countedStream)
+	}
+	return starts
+}
+
 // Intervals is how many intervals both files take at countedStream each.
 func (e *fixtureMixedEnv) Intervals() int {
 	total := 0
@@ -652,7 +663,7 @@ func TestCounted_MixedDurability(t *testing.T) {
 	})
 	h := f.Share(0)
 
-	runMixedRounds(t, &fixtureMixedEnv{
+	perFile := runMixedRounds(t, &fixtureMixedEnv{
 		t:        t,
 		f:        f,
 		h:        h,
@@ -660,4 +671,18 @@ func TestCounted_MixedDurability(t *testing.T) {
 		streamID: journaltest.File(1),
 		files:    countedFiles,
 	})
+
+	// Each streamed file must have measured at least one window on its own:
+	// the run-wide vacuity guard passes a leg that skipped every window
+	// whenever another leg measured, and the streamed file four times the
+	// other's size is the leg a design that waits on a grown backlog would
+	// skip precisely — the run's earlier shape let its bound go entirely
+	// unmeasured. The bound is absolute per window, so what each leg needs
+	// is its own non-empty set of measures, never a count against the
+	// other's.
+	for i, got := range perFile {
+		if got == 0 {
+			t.Fatalf("streamed file %d measured no window of its own: the bounds of its whole leg went unchecked", i)
+		}
+	}
 }
