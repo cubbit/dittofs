@@ -44,9 +44,11 @@ moving the adapters onto `vfs.Service` (stage 5) and RFC 20's shared pipeline, p
 (§10.2) and compound batching (§10.1).
 
 **D3. The engine through `Content`.** `internal/vfs` declares `Content`: exactly the RFC 8 methods
-§3.5's table and §5.3 call, no more. A fake implements it until stage 3; the real
-`*engine.Engine` then satisfies it unchanged. The method list (plan §4) is the contract to agree
-with the journal v2 team before either side builds against it.
+§3.5's table and §5.3 call, no more. Its conformance suite is written first, then the smallest
+in-memory `Content` that passes it, which stands in until stage 3; the real `*engine.Engine` then
+satisfies the interface unchanged and passes the same suite
+([RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)). The method list (plan §4)
+is the contract to agree with the journal v2 team before either side builds against it.
 
 **D4. Identity through a minimal real resolver in `internal/vfs/admit` (settled on #3526).**
 - There is one resolver until RFC 18 lands, so `Deps` has no `Identity` field yet; §2.3 keeps
@@ -67,14 +69,15 @@ with the journal v2 team before either side builds against it.
 - `Deps.Auth` and `Deps.Names` wait for RFC 18 with the `Principals` area (piece 3).
 
 **D5. Packages as §2.4 lays them out.** `pkg/vfs` is the contract (types, errors, ID codecs,
-`Service`, `Callbacks`, `Events`) plus `vfstest` (`Record`, `Null`, `RecordingCallbacks`) and its
+`Service`, `Callbacks`, `Events`) plus `vfstest` (`Faults`, `Callbacks`) and its
 `suite`. `internal/vfs` is the filesystem, one file per operation, with `admit`, `pseudofs`,
 `lockorder`, `quota` and `authz` as subpackages.
 
 **D6. Tests in §8's tiers, cheapest first.** Every piece lands with its unit-tier cases over the
-in-memory store, the fake `Content` and the real open-state table on `sim.TestClock`
-(`pkg/sim/clock.go`); no area fakes an open-state view. The integration tier needs the real
-engine, so it starts with stage 3; until then its cases, and so the V-rows, run against the fake.
+in-memory store, the in-memory `Content` (D3) and the real open-state table on `sim.TestClock`
+(`pkg/sim/clock.go`); no area stands in for an open-state view. The integration tier needs the
+real engine, so it starts with stage 3; until then its cases, and so the V-rows, run against the
+in-memory `Content`.
 Every stage 2 case is plain `go test` under `pkg/vfs` and `internal/vfs`, so the harness's `unit`
 suite runs it on every PR. RFC 17's integration tier is not the harness's `integration` suite
 (`-tags=integration`, Docker). No registered suite runs `go test -fuzz`, so §8's nightly fuzz
@@ -160,7 +163,7 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
    `vfs.Mutates`; `Call`, which every method but `Principals.SignIn` and `Spell` takes (D8); the codecs of
    every client-held ID, at RFC 14 §2.11's settled widths (a 24-bit
    shard, 5 grace-instance bits, a 40-bit `OpenID`, §10.3); `Service` as its seven areas;
-   `vfstest`'s `Record`, `Null`, `RecordingCallbacks` and `suite.Run`; §8's fuzz targets for
+   `vfstest`'s `Faults`, `Callbacks` and `suite.Run`; §8's fuzz targets for
    every ID decoder.
    Done when: every codec matches bytes written out by hand from §3.4's layout and RFC 14 §2.11's
    widths (no RFC carries vectors yet, plan §5 Q4), and `vfs.Errors()` holds every sentinel and
@@ -174,8 +177,8 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
    method stubbed, which the node hands to `Table.Start` with the filesystem's admission lock, since
    `Table.Start` refuses a nil one; the `lockorder` sorter that takes open-state steps, then
    [fold admission](../rfcs/rfc-7-namespace-metadata.md#9.2%20Timestamps), then accept locks
-   ([§5.0](../rfcs/rfc-17-vfs.md#5.0%20One%20lock%20order)), in one order; `Content`
-   and its fake; the architecture test (imports and call sites).
+   ([§5.0](../rfcs/rfc-17-vfs.md#5.0%20One%20lock%20order)), in one order; `Content`,
+   its conformance suite and the in-memory `Content` that passes it (D3); the architecture test (imports and call sites).
    Done when: V29 (→11), V32, V33 (→7), V34 (→10) pass.
 3. **Shares, admission and principals:** `Root`, `SecInfo`, `ListShares`, `StatFS` and `Quota`;
    admission on every call, uncached, with `MinProof` and `MinProtection` read from the export
@@ -285,8 +288,8 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
     `Data` (D7).
     Done when: V6, V7, V8, V12, V23, V24, V34, V35 pass.
 11. **Copy and clone:** synchronous, through the engine's `Copy` and `Clone`, after the engine's
-    S3 (#3546), not all of stage 3: against the fake, `Copy` is a memcpy whose tests can only
-    pass. Stage 2's clone path calls `Clone` and takes no open: the engine takes the clone-kind
+    S3 (#3546), not all of stage 3: against the in-memory `Content`, `Copy` is a memcpy whose
+    tests can only pass. Stage 2's clone path calls `Clone` and takes no open: the engine takes the clone-kind
     open through `Deps.Holds`, a `CloneHold` the root adapts from open state (#3546 §6 point 13).
     Done when: V22, V26, V29, V30, V31 pass.
 
@@ -309,12 +312,11 @@ The signatures are RFC 8 §12.1's: `Write(ctx, f, off, p []byte, o WriteOpts{Sus
 (Verifier, error)`, where `Done` releases the quota reservation, and `Commit(ctx, f, off, n)
 (Verifier, lossSeq uint64, error)`, whose loss sequence `Opens.Flushed` reads.
 
-Stage 2 writes the fake, since neither today's `engine.Store` nor `journaltest/model` can stand
-in for it.
-
-A check that any `Content` passes (verified bytes back, a version above the last drawn, nothing
-returned before its stage) waits for stage 3: run against the fake alone, it only proves the fake
-agrees with itself.
+Stage 2 writes the in-memory `Content`, since neither today's `engine.Store` nor
+`journaltest/model` can stand in for it, and writes its conformance suite first: verified bytes
+back, a version above the last drawn, nothing returned before its stage. Until stage 3 the suite
+holds only the in-memory `Content`; the engine runs it as it lands, which is what keeps the two
+from drifting.
 
 Not the filesystem's to call: `Apply`, `Start`, `Close`, the storage-binding calls `Bind`, `Unbind`
 and `Drop`, and the controls `PrepareCut`, `CommitCut`, `PreWarm`, `WaitOffloaded` and `Stats`,
