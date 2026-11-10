@@ -46,6 +46,13 @@ type opened struct {
 	table   bindings
 	stats   Stats
 	raised  []entity.ShardID
+
+	// tags is what the store records for each share's tag, read at step 1.
+	tags map[entity.ShareID]entity.TagRecord
+
+	// removals are the items step 4 found, posted to their journal's loop
+	// once the table is published.
+	removals []queuedRemoval
 }
 
 // openJournal is start step 1 for the one device (RFC 8 §2.5): it reads the
@@ -99,6 +106,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 		id:      expect,
 		table:   removedBindings(tags),
 		stats:   newStats(),
+		tags:    tags,
 	}
 
 	var served []Share

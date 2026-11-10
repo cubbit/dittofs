@@ -282,3 +282,17 @@
   category: feature
   reason: 'Epic 7: the version limit''s raise failing for 31s fences the node and its commit clears it; waits for epic 6''s retried raise (T6.7), which nothing issues yet, so the row then fails on never fencing. Fails at the fixture until the journal has Init, Open and Draw.'
   issue: '#3701'
+- test: TestRFC8A_RemovalCrashedBetweenBatchesResumes
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: a removal crashed between two batches resumes at the restart, the extent reads removed before the loop runs and after, and the record is pruned. Fails at the fixture until the journal has Init, Open, WriteAt, Sync, Truncate, Since and Settle.'
+  issue: '#3700'
+- test: TestRFC8A_RemovalDoneNotPrunedIsPrunedAtRestart
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: a release whose last batch committed and whose prune did not is pruned at the restart, and its index entry goes. Fails at the fixture until the journal has Init, Open, WriteAt, Delete, Since and Settle.'
+  issue: '#3700'

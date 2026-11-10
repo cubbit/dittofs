@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -436,7 +437,9 @@ func TestUnfinishedRemovals(t *testing.T) {
 	f.exist(other, write(1, 0, 4*mib))
 	f.remove(file, truncate(2, mib))
 	f.remove(other, truncate(2, mib))
-	if got := unfinished(4); len(got) != 1 || got[0] != (UnfinishedRemoval{file, entity.VersionOf(2)}) {
+
+	got := unfinished(4)
+	if len(got) != 1 || got[0].File != file || got[0].Version != entity.VersionOf(2) {
 		t.Fatalf("shard 4 after phase 1: %v", got)
 	}
 	if got := unfinished(0); len(got) != 1 || got[0].File != other {
@@ -475,6 +478,121 @@ func TestUnfinishedRemovals(t *testing.T) {
 	}
 	if got := unfinished(0); len(got) != 0 {
 		t.Errorf("shard 0 after the release's prune: %v", got)
+	}
+}
+
+// The listing carries each removal's record, so a restart can tell a clone
+// from a plain removal, and a removal done from one not done, without a read
+// of its own.
+func TestUnfinishedRemovalsCarriesTheRecord(t *testing.T) {
+	f := newContentFix(t, nil)
+	ctx := context.Background()
+
+	plain, released, cloned := f.file(0), f.file(0), f.file(0)
+
+	want := map[entity.FileID]entity.Removal{
+		plain: {
+			Version: entity.VersionOf(2),
+			Extent:  entity.ExtentOf(mib, entity.EndOfFile),
+			Kind:    entity.RemoveTruncate,
+			Cursor:  4096,
+		},
+		released: {
+			Version:     entity.VersionOf(3),
+			Extent:      entity.ExtentOf(0, entity.EndOfFile),
+			Kind:        entity.RemoveRelease,
+			Done:        true,
+			FileVersion: entity.VersionOf(1),
+		},
+		cloned: {
+			Version: entity.VersionOf(4),
+			Extent:  entity.ExtentOf(0, 8*mib),
+			Kind:    entity.RemoveClone,
+			Clone: &entity.CloneSpec{
+				SrcShare: f.share,
+				Src:      plain,
+				SrcOff:   mib,
+				DstOff:   2 * mib,
+				Len:      4 * mib,
+				AsOf:     entity.VersionOf(1),
+			},
+		},
+	}
+
+	if err := f.s.kv.Update(ctx, func(tx kv.Txn) error {
+		for file, m := range want {
+			if err := putRemoval(tx, f.share, file, m); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[entity.FileID]entity.Removal{}
+
+	for u, err := range f.s.Content().UnfinishedRemovals(ctx, f.share, 0) {
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		got[u.File] = u.Removal
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("%d removals listed, want %d: %+v", len(got), len(want), got)
+	}
+
+	for file, m := range want {
+		if !reflect.DeepEqual(got[file], m) {
+			t.Errorf("removal of file %v listed as %+v, want %+v", file, got[file], m)
+		}
+	}
+}
+
+// An index entry whose removal record is gone ends the listing with the
+// store's error: the prune deletes both in one transaction, so a recovery
+// that meets one has met corruption and must not go on as if it were whole.
+func TestUnfinishedRemovalsFailsOnAnEntryWithNoRecord(t *testing.T) {
+	f := newContentFix(t, nil)
+	ctx := context.Background()
+	file := f.file(0)
+	m := entity.Removal{
+		Version: entity.VersionOf(2),
+		Extent:  entity.ExtentOf(mib, entity.EndOfFile),
+		Kind:    entity.RemoveTruncate,
+	}
+
+	if err := f.s.kv.Update(ctx, func(tx kv.Txn) error {
+		if err := putRemoval(tx, f.share, file, m); err != nil {
+			return err
+		}
+
+		return tx.Delete(removalKey(f.share, file, m.Version))
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var listed int
+
+	var last error
+
+	for u, err := range f.s.Content().UnfinishedRemovals(ctx, f.share, 0) {
+		if err != nil {
+			last = err
+
+			break
+		}
+
+		listed++
+
+		_ = u
+	}
+
+	if !errors.Is(last, kv.ErrNotFound) || listed != 0 {
+		t.Errorf("listed %d entries, error %v, want none and kv.ErrNotFound", listed, last)
 	}
 }
 

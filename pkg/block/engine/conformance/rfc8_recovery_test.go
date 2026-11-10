@@ -11,6 +11,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -275,5 +276,143 @@ func TestRFC8A_RecoveryUsage(t *testing.T) {
 	again, err := f.FS.Store.Capacity().Usage(t.Context(), f.Share.ID)
 	if err != nil || again != got {
 		t.Errorf("usage after a second restart %+v, %v, want %+v unchanged", again, err, got)
+	}
+}
+
+// holeOffsets are where the removal test below deallocates four KiB, a gap
+// apart, so the holes stay separate and the truncate that follows has one to
+// drop per batch.
+var holeOffsets = []int64{4096, 12288, 20480}
+
+// cutCursor is where the first of the three batches leaves the truncate's
+// cursor: the start of the second hole.
+const cutCursor = 12288
+
+// readsRemoved checks the file reads as its truncate left it: 2048 bytes not
+// yet carved, and a hole from there on.
+func readsRemoved(t *testing.T, f *enginetest.Fixture, id entity.FileID) {
+	t.Helper()
+
+	sp, err := f.E.Allocation(t.Context(), f.Share.ID, id, 0)
+	if err != nil || sp.Offset != 0 || sp.Length != 2048 || sp.Class != entity.Uncarved {
+		t.Errorf("Allocation(0) = %+v, %v, want [0, 2048) uncarved", sp, err)
+	}
+
+	sp, err = f.E.Allocation(t.Context(), f.Share.ID, id, 4096)
+	if err != nil || sp.Offset != 4096 || sp.Length != 0 || sp.Class != entity.Hole {
+		t.Errorf("Allocation(4096) = %+v, %v, want a hole at 4096", sp, err)
+	}
+}
+
+// unfinishedOf is the removals of the share's shard not yet pruned.
+func unfinishedOf(t *testing.T, f *enginetest.Fixture) []kvstore.UnfinishedRemoval {
+	t.Helper()
+
+	var out []kvstore.UnfinishedRemoval
+
+	for u, err := range f.FS.Store.Content().UnfinishedRemovals(t.Context(), f.Share.ID, 0) {
+		if err != nil {
+			t.Fatalf("UnfinishedRemovals: %v", err)
+		}
+
+		out = append(out, u)
+	}
+
+	return out
+}
+
+// A removal crashed between two batches resumes at the restart: the extent
+// reads as removed before the loop runs and after, and the record is pruned.
+func TestRFC8A_RemovalCrashedBetweenBatchesResumes(t *testing.T) {
+	f := enginetest.NewWithSmallBatches(t, 14)
+	_, id := f.File("a")
+	write(t, f, id, 0, bytes.Repeat([]byte("a"), 24576))
+
+	if _, _, err := f.E.Commit(t.Context(), f.Share.ID, id, 0, 0); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	for _, off := range holeOffsets {
+		if err := f.E.Deallocate(t.Context(), f.Share.ID, id, off, 4096); err != nil {
+			t.Fatalf("Deallocate: %v", err)
+		}
+	}
+
+	f.HoldBatches()
+
+	if _, err := f.Handle().Truncate(t.Context(), journal.NewFileID(id), 2048); err != nil {
+		t.Fatalf("journal Truncate: %v", err)
+	}
+
+	f.Crash()
+
+	// The first batch commits and the second fails: the process dies there.
+	f.FailUpdatesAfter(1)
+	f.ReleaseBatches()
+	f.WaitBatches(2)
+	f.HoldBatches()
+	f.Crash()
+
+	left := unfinishedOf(t, f)
+	if len(left) != 1 || left[0].Removal.Cursor != cutCursor {
+		t.Fatalf("unfinished at the restart %+v, want one with cursor %d", left, cutCursor)
+	}
+
+	readsRemoved(t, f, id)
+	f.ReleaseBatches()
+	f.WaitBatches(1)
+	readsRemoved(t, f, id)
+
+	if got := unfinishedOf(t, f); len(got) != 0 {
+		t.Errorf("unfinished removals %v after the loop, want none", got)
+	}
+}
+
+// A release whose last batch committed and whose prune did not is pruned at
+// the restart, and its entry in the unfinished-removal index goes.
+func TestRFC8A_RemovalDoneNotPrunedIsPrunedAtRestart(t *testing.T) {
+	f := enginetest.New(t)
+	_, id := f.File("a")
+	write(t, f, id, 0, []byte("to release"))
+
+	ns := f.FS.Store.Namespace()
+
+	if _, err := ns.Unlink(t.Context(), f.FS.Admin, f.FS.Root, []byte("a")); err != nil {
+		t.Fatalf("Unlink: %v", err)
+	}
+
+	f.HoldBatches()
+
+	if _, err := f.Handle().Delete(t.Context(), journal.NewFileID(id)); err != nil {
+		t.Fatalf("journal Delete: %v", err)
+	}
+
+	f.Crash()
+
+	// The last batch committed and the process died before the prune.
+	if _, err := f.FS.Store.Content().Resume(t.Context(), f.Share.ID, id); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	f.HoldBatches()
+	f.Crash()
+
+	if got := len(unfinishedOf(t, f)); got != 1 {
+		t.Fatalf("%d removals unfinished at the restart, want the one done", got)
+	}
+
+	if len(f.KeysOf(id)) == 0 {
+		t.Fatal("the released file holds no key before its prune, want its removal and fences")
+	}
+
+	f.ReleaseBatches()
+	f.WaitBatches(1)
+
+	if got := unfinishedOf(t, f); len(got) != 0 {
+		t.Errorf("unfinished removals %v after the prune, want none", got)
+	}
+
+	if got := f.KeysOf(id); len(got) != 0 {
+		t.Errorf("the released file still holds %d keys after its prune: %q", len(got), got)
 	}
 }
