@@ -57,6 +57,14 @@ func NewStreams(n int, identity core.JournalID, set *Set, pool *Pool, cache *Des
 // choice that spreads a hot file, once a profile shows one stream saturated
 // while others sit idle.
 func (ss *Streams) For(file core.FileID) *Stream {
+	return ss.s[ss.IndexFor(file)]
+}
+
+// IndexFor returns the number of the stream the file's appends belong to:
+// the same hash For draws, exposed so a caller that keys its own per-stream
+// state beside the stream — the admission's room grant among them — can
+// never name a stream other than the one the appends land on.
+func (ss *Streams) IndexFor(file core.FileID) int {
 	// FNV-1a 64 over the file's identifier, written inline: no allocation,
 	// deterministic across processes, and the offset basis and the prime
 	// are the function's own.
@@ -66,7 +74,7 @@ func (ss *Streams) For(file core.FileID) *Stream {
 		h ^= uint64(b)
 		h *= 1099511628211
 	}
-	return ss.s[h%uint64(len(ss.s))]
+	return int(h % uint64(len(ss.s)))
 }
 
 // Stream returns stream i, for the callers that walk the streams rather than

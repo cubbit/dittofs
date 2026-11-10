@@ -216,3 +216,53 @@ func recordHeaderAt(t *testing.T, c *Core, seg core.SegmentID, off int64) format
 // cID returns the journal identity the test cores are built with, the one
 // the record headers verify against.
 func cID() core.JournalID { return testIdentity }
+
+// TestRetirement_WhileUnregisteredLowersTheSeedToo covers the hook against a
+// share that is closed when its segment retires: the executor's hook must
+// lower the figure the admission holds for the tag even then, for the seed
+// happens once and a reattached share would otherwise wait on a stale-high
+// figure until some unrelated retirement fired while it was registered.
+func TestRetirement_WhileUnregisteredLowersTheSeedToo(t *testing.T) {
+	c, _ := newTestCore(t)
+	const payload = 4096
+	// The limit holds exactly two of the write's asks, as the executor
+	// test's does: the first two land, every later ask is refused.
+	s := mustLimitShare(t, c, 1, 2*(recordBytes(payload)+askOverhead()))
+	f := testFile(1)
+	ctx := context.Background()
+	if _, err := c.WriteAt(ctx, s, f, 0, make([]byte, payload), 1); err != nil {
+		t.Fatalf("the first write: %v", err)
+	}
+	placed, ok := c.Index().Lookup(f, 0)
+	if !ok {
+		t.Fatal("the first write is not in the index")
+	}
+	// Seal, roll onto a successor and sync, so the first segment is one
+	// the retirer's drain can claim.
+	if _, err := c.Streams().For(f).Seal(false); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	h2 := sameStreamFile(c, f)
+	if _, err := c.WriteAt(ctx, s, h2, 0, make([]byte, payload), 1); err != nil {
+		t.Fatalf("the rolling write: %v", err)
+	}
+	syncFiles(t, c, f, h2)
+
+	// Close the handle before the retirement: the tag leaves the registry,
+	// and the segment retires while no share of it is registered.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := c.Retirer().Retire(placed.Record.Segment, segment.NotHeld); err != nil {
+		t.Fatalf("Retire(%d): %v", placed.Record.Segment, err)
+	}
+
+	// A fresh handle on the same tag must find the room the retirement
+	// freed: the seed already ran for this tag, so what the reattached
+	// share sees is the figure the hook lowers, not the set's pair.
+	s2 := mustLimitShare(t, c, 1, 2*(recordBytes(payload)+askOverhead()))
+	h3 := testFile(3)
+	if _, err := c.WriteAt(ctx, s2, h3, 0, make([]byte, payload), 1); err != nil {
+		t.Fatalf("the write after the reattach: %v", err)
+	}
+}

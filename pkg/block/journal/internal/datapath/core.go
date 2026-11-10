@@ -341,28 +341,28 @@ func (c *Core) Retirer() *segment.Retirer { return c.retirer }
 // the segment has left the set and holding no lock of the executor's, so it
 // must be safe for concurrent calls.
 //
-// decision: one retirement calls both Durability.Retired and Core.Retired for
-// every currently registered share's tag, because the executor's hook fires
-// with the segment's id only — after the segment left the set, which share's
-// records it held is no longer written anywhere the hook can read — so the
-// share whose limit the retirement freed is not known there. Durability.Retired
-// is not tag-dependent: it drops the copy table's entries in the segment and
-// marks its damaged row retired. Core.Retired is applied to every tag because
-// it subtracts only the positive delta of the tag's cumulative retired bytes
-// over the baseline the capacity already holds: a tag whose segment was not
-// this one computes a delta of zero and is told nothing, so calling it for
-// every registered tag is exact and costs one figure read per tag. The tags
-// are read off the registry's atomic pointer, and a share attached after the
-// hook read it seeds its figure from the set's pair anyway — the baseline the
-// seed takes in already carries the retirement — so no tag is missed. A share
-// closed concurrently is unregistered but its Retired call is exact the same
-// way. Overturned by an executor whose hook carries the tag, which would
-// name the one share directly.
+// decision: one retirement calls both Durability.Retired and the capacity's
+// Retired for every tag it holds a figure for, because the executor's hook
+// fires with the segment's id only — after the segment left the set, which
+// share's records it held is no longer written anywhere the hook can read —
+// so the share whose limit the retirement freed is not known there.
+// Durability.Retired is not tag-dependent: it drops the copy table's entries
+// in the segment and marks its damaged row retired. The capacity's Retired is
+// applied to every seeded tag — not the registry's — because the seed runs
+// once per tag: a share closed while its segment was waiting on the retirer
+// is unregistered at the hook, and a figure the hook left stale-high would
+// stay that way when the share reattached, refusing its writes naming the
+// share's limit until some unrelated retirement fired while a share of the
+// tag was registered again. A tag whose segment was not this one computes a
+// delta of zero over the baseline the capacity already holds, so calling it
+// for every seeded tag is exact and costs one figure read per tag. A tag
+// seeded for the first time after this hook read the set reads the pair the
+// retirement already moved, so it is missed by nothing. Overturned by an
+// executor whose hook carries the tag, which would name the one share
+// directly.
 func (c *Core) retiredSegment(id core.SegmentID) {
 	c.dur.Retired(id)
-	for _, tag := range c.Shares() {
-		c.Retired(tag)
-	}
+	c.cap.RetiredEverySeeded()
 }
 
 // Close stops the durability layer, then closes the streams, then stops the

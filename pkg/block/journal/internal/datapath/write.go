@@ -33,24 +33,6 @@ func sealOver(n int64) int64 {
 	return format.SealMarkerSize + n*format.CatalogEntrySize + format.TrailerSize
 }
 
-// streamOfID returns the stream the file's appends route to: the FNV-1a
-// hash of its FileID over the stream count, the same choice Streams.For
-// draws, so the admission's per-stream room grant keys on the stream its
-// own appends land on.
-func streamOfID(id core.FileID, n int) int {
-	const (
-		offset = 14695981039346656037
-		prime  = 1099511628211
-	)
-	b := id.Bytes()
-	h := uint64(offset)
-	for _, x := range b {
-		h ^= uint64(x)
-		h *= prime
-	}
-	return int(h % uint64(n))
-}
-
 // WriteAt appends p at off of file id as a write record under s's tag, then
 // publishes it to the placement index, and returns the version it carries.
 // mtime is the modification time the record carries.
@@ -71,8 +53,13 @@ func streamOfID(id core.FileID, n int) int {
 // refuses naming the limit that would not take them — the share's, the
 // journal's, the index's, the version limit's or the spare pool's — with the
 // shortfall, at once, with no I/O and holding nothing behind. Its grant
-// covers every piece the write splits into; the pieces take their spares
-// from the grant's hold, and the unused part returns when the write does.
+// covers the pieces the split it sized drew: they take their spares from
+// the grant's hold, and the unused part returns when the write does. One
+// piece more than the split can still be drawn — the room another appender
+// spent between the take and this write's rolls, the window the take's own
+// slack charges for and its hold does not cover — and that one rolls
+// unreserved; see the decision at the loop below for its ceiling and what
+// closes it.
 //
 // The version is drawn, and the record appended and published, with the
 // file's append domain held, so the versions of one file are appended in the
@@ -140,7 +127,7 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	grant, err := c.cap.Take(ctx, capacity.Request{
 		Tag:        s.Tag,
 		File:       id,
-		Stream:     streamOfID(id, c.streams.Len()),
+		Stream:     c.streams.IndexFor(id),
 		Extent:     core.Extent{Off: off, Len: int64(len(p))},
 		Payload:    int64(len(p)),
 		ShareLimit: s.Limit(),
@@ -174,17 +161,33 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			Tag:     s.Tag,
 		}, format.RecordBody{Payload: rest, MTime: mtime}, roll)
 		if err != nil {
-			// decision: a write that fails on a later piece, a device
-			// failing mid-write beyond what the streams' own refusal of a
-			// spoiled segment covers, returns no version, yet the pieces it
-			// already published stay held under the version it drew, so
-			// reads serve bytes the caller has no version to record. The
-			// capacity admission keeps its own refusals — a write past the
-			// limits or short of a spare — off this path: they answer
-			// before the version is drawn. What remains is a failure of the
-			// medium itself, which no reservation can predict. Overturned
-			// by returning the version with the error, if the caller can
-			// then record the partial write.
+			// decision: a write that fails on a later piece returns no
+			// version, yet the pieces it already published stay held under
+			// the version it drew, so reads serve bytes the caller has no
+			// version to record. The capacity admission keeps its own
+			// refusals — a write past the share's, the journal's, the
+			// index's or the version limit, and one whose spares the pool
+			// refused — off this path: they answer before the version is
+			// drawn. The rolls they no longer cover are the exception: the
+			// grant below fits a write to its stream's roomless state and
+			// holds only the spares the pieces its split sized need, so a
+			// roll whose room something else spent — the idle sealer
+			// sealing the active segment, a durability re-append or loss
+			// record that never passed the admission, another same-stream
+			// writer whose own spares-holding grant reserved the room this
+			// one claimed — draws a piece beyond the split, and the hold
+			// serves it only while a spare of its own is left: past that
+			// the roll runs unreserved and meets the pool's refusal here,
+			// after the version was drawn and possibly after an earlier
+			// piece published. The direction fails closed — the write that
+			// drew the piece is refused rather than admitted past a limit —
+			// and the window is accepted until the reserved-roll
+			// replacement of RFC 1 §6's interleaved reservation (the
+			// reserve-ahead work) hands the roll the displaced spare. The
+			// remaining cases after that are failures of the medium itself,
+			// which no reservation can predict. Overturned by returning the
+			// version with the error, if the caller can then record the
+			// partial write.
 			return core.Version{}, done, err
 		}
 		if pl.N <= 0 {

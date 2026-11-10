@@ -629,22 +629,11 @@ func readBack(t *testing.T, c *Core, f core.FileID, off, n int64) {
 	}
 }
 
-// streamOf returns which of the core's streams file f routes to: the
-// FNV-1a hash of its FileID over the stream count, the same choice
-// Streams.For draws. It lets a test pick two files that share a stream or
-// fall on two.
+// streamOf returns which of the core's streams file f routes to, from the
+// streams' own accessor, so a test picks two files that share a stream or
+// fall on two exactly as the writes do.
 func streamOf(c *Core, f core.FileID) int {
-	const (
-		offset = 14695981039346656037
-		prime  = 1099511628211
-	)
-	b := f.Bytes()
-	h := uint64(offset)
-	for _, x := range b {
-		h ^= uint64(x)
-		h *= prime
-	}
-	return int(h % uint64(c.streams.Len()))
+	return c.Streams().IndexFor(f)
 }
 
 // TestWriteAt_SpareThenRetrySucceeds checks a write whose pieces need more
@@ -1090,12 +1079,13 @@ func TestWriteAt_RefusalEvictsNothing(t *testing.T) {
 }
 
 // TestWriteAt_SameStreamWritersNeverMeetMidWriteRefusal drives eight
-// concurrent writers on one stream whose individual asks sit inside the
-// room the stream names but whose combined appends exceed it — so most
-// rolls happen while other writers' pieces are still landing — with the
-// pool holding nothing beyond the takes' own holds, and checks the
-// admission settles every write whole: each either lands every piece or
-// is refused whole before its version is drawn. None meets the pool's
+// concurrent writers on one stream, each asking a three-piece write on the
+// stream's fresh, roomless state — so every roll runs while other writers'
+// pieces are still landing — with the pool's refill gated at the seam: the
+// four ready spares it starts with are all there are, an unreserved roll is
+// really refused, and the fixture checks the admission settles every write
+// whole: each either lands every piece or is refused whole before its
+// version is drawn. None meets the pool's
 // refusal mid-flight, after its first piece published — the failure a
 // room read by the caller, stale against another writer's landing,
 // allowed: a take that grants a stale-high window holds no spare for the
@@ -1103,9 +1093,6 @@ func TestWriteAt_RefusalEvictsNothing(t *testing.T) {
 func TestWriteAt_SameStreamWritersNeverMeetMidWriteRefusal(t *testing.T) {
 	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
-	// Gate the refill: the pool serves only the spares the admission
-	// holds for the writers, so any write short of its pieces' spares
-	// meets the refusal the moment it rolls.
 	files := []core.FileID{testFile(1), testFile(3), testFile(5), testFile(7),
 		testFile(9), testFile(11), testFile(13), testFile(15)}
 	for _, f := range files {
@@ -1113,12 +1100,23 @@ func TestWriteAt_SameStreamWritersNeverMeetMidWriteRefusal(t *testing.T) {
 			t.Fatal("the fixture's files must share one stream")
 		}
 	}
-	// Each writer's payload fits the room the stream names while its
-	// warm-up sits unlanded; combined, eight of them cross the segment
-	// several times over.
-	room := roomAfter(0)
-	if int64(len(files))*room <= 4*testSegmentCap {
+	// Each writer's write is three whole pieces on the stream's fresh,
+	// roomless state — two full empty segments and a small tail — so the
+	// only spares its rolls reach are the ones its own grant holds. The
+	// stagger below keeps the takes landing among the first three's
+	// appends, so a grant's sized pieces meet whatever the earlier
+	// grant's landings leave them.
+	each := 2*emptyRoomOf(testSegmentCap) + 50
+	if int64(len(files))*(recordBytes(each)+askOverhead()) <= 8*testSegmentCap {
 		t.Fatal("the fixture's combined asks do not cross enough segments")
+	}
+	// Gate the maker at the seam: the refill makes nothing while the
+	// writers run, so the pool's four ready spares are all it has, an
+	// unreserved roll IS refused, and a write short of its pieces meets
+	// the refusal the moment its own hold runs out.
+	awaitSettledSpares(t, c, 2*testStreams)
+	if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, errMakeSpares)); err != nil {
+		t.Fatalf("Schedule: %v", err)
 	}
 	var wg sync.WaitGroup
 	var minted, refusedWhole atomic.Int64
@@ -1146,14 +1144,14 @@ func TestWriteAt_SameStreamWritersNeverMeetMidWriteRefusal(t *testing.T) {
 			} else {
 				<-gate
 			}
-			_, err := c.WriteAt(context.Background(), s, f, 0, make([]byte, room), 1)
+			_, err := c.WriteAt(context.Background(), s, f, 0, make([]byte, each), 1)
 			if err != nil {
 				// A take refuses before any byte moves, so a failed
 				// write whose records are on disk is one refused past
 				// its own first landed piece — the mid-write failure
 				// the admission exists to prevent.
 				recs := fileWrites(t, seam, f)
-				if len(recs) > 0 && int64(len(recs)) < room/emptyRoomOf(testSegmentCap)+2 {
+				if len(recs) > 0 && int64(len(recs)) < each/emptyRoomOf(testSegmentCap)+2 {
 					mu.Lock()
 					for ns := range errChain(err) {
 						if ns.Limit == core.LimitSpare {
@@ -1209,10 +1207,12 @@ func errChain(err error) map[*core.NoSpaceError]struct{} {
 // every ask charged whole — the record a payload costs plus the one extra
 // record's charge its interleaved pieces can draw — exactly two of the
 // three are admitted, the refusal names the shortfall over the settled
-// figure, and the share's settled bytes never pass the limit. (The drawn
-// piece itself — a write appends one record more than its take sized —
-// is staged and asserted at the admission's own seam in capacity's
-// TestTake_InterleavedDrawnPieceNeverOversetsTheShare.)
+// figure, and the share's settled bytes never pass the limit. The two
+// admitted writers are serialized end to end — writer two waits on writer
+// one's full WriteAt answer, so no piece of theirs interleaves mid-flight —
+// and the concurrent interleaving that draws the extra piece is covered at
+// the admission's own seam only, in capacity's
+// TestTake_InterleavedDrawnPieceNeverOversetsTheShare.
 //
 // The arithmetic the fixture is drawn in (record bytes of a payload of n:
 // header, fixed body bytes, payload, padding): rb(4096) = 4200, the extra
@@ -1282,5 +1282,58 @@ func TestWriteAt_InterleavedDrawnPieceStaysInsideTheLimit(t *testing.T) {
 	}
 	if got := c.ReservedBytes(); got != 0 {
 		t.Fatalf("ReservedBytes = %d after the writers, want 0", got)
+	}
+}
+
+// TestWriteAt_HeldSparesCoverEveryPieceOfAMultiSegmentWrite checks where
+// the refusal answers for a multi-segment write the journal cannot hold: a
+// write of two full empty-segment payloads and a small tail — three pieces
+// on a fresh stream, each an empty segment but the tail's — against a
+// journal of four caps whose footprint the warm write already sits at. A
+// hold one spare short of the pieces the stream's own split draws — the
+// ask bytes-over-the-cap sized — admitted the write, published its first
+// piece, drew its version and met the pool's refusal on its third roll; the
+// hold the pieces name refuses the whole write up front, naming the
+// journal's maximum ahead of the spare pool, and the write leaves nothing
+// behind.
+func TestWriteAt_HeldSparesCoverEveryPieceOfAMultiSegmentWrite(t *testing.T) {
+	// A journal of four caps: the warm write below spends two of them, the
+	// pool settles with the other two, and the footprint sits at the
+	// maximum, so the three-piece write's uncovered third segment is the
+	// journal's to refuse.
+	c, _ := newTestCore(t, capacityCoreOption(4*testSegmentCap))
+	s := mustShare(t, c, 1)
+	ctx := context.Background()
+
+	warm := testFile(1)
+	journalSettled(t, c, s, warm, 4*testSegmentCap)
+	f := testFile(2)
+	if streamOf(c, f) == streamOf(c, warm) {
+		t.Fatal("the two files share a stream; the fresh-stream leg cannot run")
+	}
+	beforeV := c.counters.NextVersion()
+
+	p := make([]byte, 2*emptyRoomOf(testSegmentCap)+50)
+	ns := refused(t, func() error {
+		_, err := c.WriteAt(ctx, s, f, 0, p, 1)
+		return err
+	}(), core.LimitJournal)
+	// The journal's refusal names the third segment the write needs that
+	// no ready spare covers and no headroom admits: one cap, the whole
+	// figure the maximum lacks.
+	if ns.Missing != testSegmentCap {
+		t.Fatalf("Missing = %d, want the one uncovered cap %d", ns.Missing, testSegmentCap)
+	}
+	// The refusal answered before the write drew or published anything:
+	// the short-held version of this fixture published its first piece
+	// and drew its version before the refusal met it.
+	if _, ok := c.Index().Lookup(f, 0); ok {
+		t.Fatal("the refused write published a piece")
+	}
+	if afterV := c.counters.NextVersion(); afterV != beforeV {
+		t.Fatalf("the refusal drew a version: next %v was %v", afterV, beforeV)
+	}
+	if got := c.ReservedBytes(); got != 0 {
+		t.Fatalf("ReservedBytes = %d after the refusal, want 0", got)
 	}
 }

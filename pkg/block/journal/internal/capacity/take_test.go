@@ -578,6 +578,29 @@ func TestTake_RefusedHoldGivesBytesBack(t *testing.T) {
 	g.Release()
 }
 
+// TestTake_MultiSegmentAskHoldsEveryPiece pins the figure the admission
+// holds whole segments by against the pieces the stream's own split draws:
+// an empty segment takes emptyRoom(cap) payload bytes — the cap less the
+// segment header, the seal's reserve and the record's own overhead — so a
+// payload of two full segments and a small tail sits in three pieces, and
+// the hold must name all three. Bytes divided by the cap name only two, the
+// figure a split the stream never draws, and the write it admitted would
+// meet the pool's refusal on its third roll, after its first piece landed.
+func TestTake_MultiSegmentAskHoldsEveryPiece(t *testing.T) {
+	e := emptyRoom(testCap)
+	q := req()
+	q.Payload = 2*e + 50
+	q.Extent.Len = q.Payload
+	r := newRig(t, nil)
+	r.f.room.Store(0) // a fresh stream: every piece rolls
+	r.f.ready.Store(0)
+
+	ns := r.refused(t, q, core.LimitSpare)
+	if ns.Missing != 3 || ns.Unit != core.UnitSegments {
+		t.Fatalf("the hold asked for %d segments, want the 3 pieces a payload of %d bytes rolls into", ns.Missing, q.Payload)
+	}
+}
+
 // TestTake_ExactFit checks a reservation of exactly the remaining space
 // succeeds and one byte more is refused, for the share's limit and for the
 // journal's maximum.
