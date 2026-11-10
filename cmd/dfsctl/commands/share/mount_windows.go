@@ -59,18 +59,15 @@ func mountNFS(sharePath, mountPoint string, port int, serverHost, nfsVersion str
 	// nolock, casesensitive, sec. There is no port option.
 	// See: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/mount
 	//
-	// If the NFS adapter is on a non-standard port, the user must either:
-	//   1. Configure the NFS adapter to use the standard port (2049)
-	//   2. Set up port forwarding from 2049 to the actual port
+	// When the port this command mounts is not 2049, the user must set up port
+	// forwarding from 2049 to it.
 	if port != defaultNFSPortStandard {
 		return fmt.Errorf(
-			"the Windows NFS client does not support mounting from a custom port (server is using port %d)\n\n"+
+			"the Windows NFS client does not support mounting from a custom port (this command mounts port %d)\n\n"+
 				"The Windows 'mount' command only connects to the standard NFS port (2049).\n"+
-				"To resolve this, either:\n\n"+
-				"  1. Serve NFS on port 2049 on the server (requires Administrator there).\n\n"+
-				"  2. Set up port forwarding from 2049 to %d (requires Administrator):\n"+
-				"     netsh interface portproxy add v4tov4 listenport=2049 listenaddress=127.0.0.1 connectport=%d connectaddress=127.0.0.1\n\n"+
-				"     Then retry the mount command.",
+				"To resolve this, set up port forwarding from 2049 to %d (requires Administrator):\n"+
+				"  netsh interface portproxy add v4tov4 listenport=2049 listenaddress=127.0.0.1 connectport=%d connectaddress=127.0.0.1\n\n"+
+				"  Then retry the mount command.",
 			port, port, port,
 		)
 	}
@@ -126,7 +123,7 @@ func mountSMB(sharePath, mountPoint string, port int, serverHost string) error {
 	// The standard 'net use' command does not support custom SMB ports.
 	// Windows Insider builds (25992+) added /TCPPORT: support to net use.
 	if port != 445 {
-		fmt.Printf("Note: Server is using non-standard SMB port %d.\n", port)
+		fmt.Printf("Note: this command mounts the non-standard SMB port %d.\n", port)
 		fmt.Printf("Attempting 'net use' with /TCPPORT:%d (requires Windows 11 Insider Build 25992+ or Windows Server 2025+).\n\n", port)
 		args = append(args, fmt.Sprintf("/TCPPORT:%d", port))
 	}
@@ -138,11 +135,9 @@ func mountSMB(sharePath, mountPoint string, port int, serverHost string) error {
 			return fmt.Errorf(
 				"mount failed: %w\nOutput: %s\n\n"+
 					"The /TCPPORT flag requires Windows 11 Insider Build 25992+ or Windows Server 2025+.\n"+
-					"On older Windows versions, you can either:\n\n"+
-					"  1. Serve SMB on port 445 on the server (requires Administrator there).\n\n"+
-					"  2. Set up port forwarding from 445 to %d (requires Administrator):\n"+
-					"     netsh interface portproxy add v4tov4 listenport=445 listenaddress=127.0.0.1 connectport=%d connectaddress=127.0.0.1\n"+
-					"     Then retry: dfsctl share mount --protocol smb %s %s",
+					"On older Windows versions, set up port forwarding from 445 to %d (requires Administrator):\n"+
+					"  netsh interface portproxy add v4tov4 listenport=445 listenaddress=127.0.0.1 connectport=%d connectaddress=127.0.0.1\n"+
+					"  Then retry: dfsctl share mount --protocol smb %s %s",
 				err, output, port, port, sharePath, mountPoint,
 			)
 		}

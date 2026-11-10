@@ -101,11 +101,12 @@ func applyKerberosDefaults(cfg *KerberosConfig) {
 	// Enabled defaults to false (opt-in for Kerberos)
 	// No need to set, zero value is false
 
-	// Krb5Conf is intentionally left empty here. The path is resolved at load
-	// time by resolveKrb5ConfPath (pkg/auth/kerberos), which layers the
-	// DITTOFS_KERBEROS_KRB5CONF override, the configured krb5_conf value, the
-	// standard KRB5_CONFIG env var, and a platform-appropriate default. Stamping
-	// a Unix "/etc/krb5.conf" here would shadow KRB5_CONFIG and break Windows.
+	// Krb5Conf is intentionally left empty here. Nothing on this branch reads
+	// it; the Kerberos authenticator of RFC 18 (§3.3) brings back the path
+	// resolution, which layers the DITTOFS_KERBEROS_KRB5CONF override, the
+	// configured krb5_conf value, the standard KRB5_CONFIG env var, and a
+	// platform-appropriate default. Stamping one platform's default path here
+	// would shadow KRB5_CONFIG and break the others.
 
 	// AD domain identity (AD-4): all optional and back-compatible.
 	//

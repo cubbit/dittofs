@@ -1722,7 +1722,7 @@ func unknownRuntimeStatus() health.ShareStatus {
 // runtime's cached checker layer. Callers MUST ensure h.runtime is
 // non-nil; this helper intentionally does not guard so the panic
 // surface stays visible in tests. Analogous to the statusFor helpers
-// in adapters.go / block_stores.go / metadata_stores.go. The caller is
+// in block_stores.go / metadata_stores.go. The caller is
 // responsible for bounding ctx with [HealthCheckTimeout]: single-entity
 // /status handlers wrap once at the handler level, and list handlers
 // wrap once before the populate loop so all entities share a single

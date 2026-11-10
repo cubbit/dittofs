@@ -304,15 +304,6 @@ configure_server() {
 
     info "Creating /demo share..."
     dfsctl share create --name /demo --metadata demo-meta --block-store demo-blocks
-
-    info "Enabling NFS adapter on port 2049..."
-    dfsctl adapter enable nfs --port 2049
-
-    info "Enabling SMB adapter on port 445..."
-    dfsctl adapter enable smb --port 445
-
-    info "Enabling portmapper on port 111..."
-    dfsctl adapter settings nfs update --portmapper-enabled --portmapper-port 111
 }
 
 # ---------------------------------------------------------------------------
@@ -345,12 +336,6 @@ main() {
 
     configure_server
 
-    # Restart so portmapper settings take effect on the NFS adapter
-    info "Restarting DittoFS to apply adapter settings..."
-    systemctl restart dittofs
-
-    wait_for_api
-
     echo ""
     echo "============================================="
     echo "  DittoFS Demo Setup Complete"
@@ -372,7 +357,6 @@ main() {
     echo ""
     echo "  Verify:"
     echo "    systemctl status dittofs"
-    echo "    dfsctl adapter list"
     echo "    dfsctl share list"
     echo "    showmount -e localhost"
     echo ""

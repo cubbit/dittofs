@@ -32,6 +32,9 @@ type UpdateAdapterRequest struct {
 	Config  any   `json:"config,omitempty"`
 }
 
+// decision: these methods are kept because compiled e2e and ad_dc tests call
+// them; the server answers 404 on their routes until the adapters' API returns.
+
 // ListAdapters returns all adapters.
 func (c *Client) ListAdapters() ([]Adapter, error) {
 	return listResources[Adapter](c, "/api/v1/adapters")

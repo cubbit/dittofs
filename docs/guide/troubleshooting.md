@@ -2,6 +2,12 @@
 
 This guide covers common issues and their solutions when working with DittoFS.
 
+> **Not served on this branch.** This build serves no file protocol. The entries
+> that mount a share or read an NFS or SMB error (connection, mount, permission,
+> file handle, cross-protocol, NFSv4 session, Kerberos and ACL issues, and the
+> `export not found` and `authentication failed` messages), and their
+> `adapters:` settings, describe the released server.
+
 ## Table of Contents
 
 - [Connection Issues](#connection-issues)

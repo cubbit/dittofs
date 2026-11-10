@@ -1,5 +1,7 @@
 # POSIX Compliance Testing for DittoFS
 
+> This branch serves no file protocol, so there is nothing to mount and the steps below describe the released server (see the note in the [NFS guide](../../docs/guide/nfs.md)).
+
 This directory contains POSIX compliance testing for DittoFS using [pjdfstest](https://github.com/saidsay-so/pjdfstest) (Rust rewrite).
 
 ## Overview
@@ -59,9 +61,6 @@ ADMIN_PASSWORD="<from-server-output>"
 
 # Create share
 ./dfsctl share create --name /export --metadata default --block-store default
-
-# Enable NFS adapter
-./dfsctl adapter update nfs --enabled true --port 12049
 
 # Mount NFS share
 sudo mkdir -p /tmp/dittofs-test

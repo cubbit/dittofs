@@ -65,8 +65,7 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 	}
 
 	// Start the AD-DC fixture (reuses setupADDC from ad_dc_integration_test.go).
-	_, _, _, cleanup := setupADDC(t)
-	defer cleanup()
+	setupADDC(t)
 
 	dcIP := getContainerIP(t)
 	t.Logf("AD-DC container IP: %s", dcIP)

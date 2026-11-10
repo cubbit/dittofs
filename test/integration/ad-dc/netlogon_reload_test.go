@@ -66,8 +66,7 @@ func TestNetlogonHotReload(t *testing.T) {
 		t.Skip("docker not found, skipping NETLOGON hot-reload test")
 	}
 
-	_, _, _, cleanup := setupADDC(t)
-	defer cleanup()
+	setupADDC(t)
 
 	dcIP := getContainerIP(t)
 	t.Logf("AD-DC container IP: %s", dcIP)
@@ -223,8 +222,7 @@ func TestNetlogonHotReload_PasswordRotation(t *testing.T) {
 		t.Skip("docker not found, skipping NETLOGON password-rotation test")
 	}
 
-	_, _, _, cleanup := setupADDC(t)
-	defer cleanup()
+	setupADDC(t)
 
 	dcIP := getContainerIP(t)
 	t.Logf("AD-DC container IP: %s", dcIP)

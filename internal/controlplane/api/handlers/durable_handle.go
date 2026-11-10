@@ -149,9 +149,6 @@ func (dh *DurableHandleHandler) ForceClose(w http.ResponseWriter, r *http.Reques
 		}
 
 		// Found the handle -- perform cleanup and delete.
-		// SYNC: These cleanup steps must match DurableHandleScavenger.cleanupAndDelete()
-		// in internal/adapter/smb/handlers/durable_scavenger.go.
-		// If you add a cleanup step here, add it there too (and vice versa).
 		cleanupDurableHandle(r.Context(), h, dh.rt, handleID)
 
 		// Delete from store
@@ -172,9 +169,6 @@ func (dh *DurableHandleHandler) ForceClose(w http.ResponseWriter, r *http.Reques
 
 // cleanupDurableHandle releases locks and flushes block data for a durable handle.
 // Does NOT delete the handle from the store (caller is responsible for that).
-//
-// SYNC: These cleanup steps must match DurableHandleScavenger.cleanupAndDelete()
-// in internal/adapter/smb/handlers/durable_scavenger.go.
 func cleanupDurableHandle(ctx context.Context, h *lock.PersistedDurableHandle, rt *runtime.Runtime, handleID string) {
 	// Step 1: Release byte-range locks
 	if metaSvc := rt.GetMetadataService(); metaSvc != nil && len(h.MetadataHandle) > 0 {

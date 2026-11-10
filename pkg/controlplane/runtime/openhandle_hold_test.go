@@ -94,7 +94,7 @@ func heldHashes(t *testing.T, rt *Runtime, shareName string) map[block.ContentHa
 	return got
 }
 
-// TestOpenHandleHold_OpenUnlinkedFileHeld is the core #1448 scenario: a file
+// TestOpenHandleHold_OpenUnlinkedFileHeld is the core scenario: a file
 // that is unlinked (nlink=0) while still open contributes its block hashes to
 // the GC mark live set; once the last handle closes, the hold disappears.
 func TestOpenHandleHold_OpenUnlinkedFileHeld(t *testing.T) {

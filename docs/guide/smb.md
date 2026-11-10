@@ -1,5 +1,9 @@
 # SMB
 
+> **Not served on this branch.** This build serves no file protocol; the SMB
+> adapter is being rebuilt (RFC 20, RFC 22). This guide describes SMB as the
+> released server serves it.
+
 DittoFS speaks SMB 2.0.2 through SMB 3.1.1 over TCP. This page covers everything an operator or
 end-user needs: supported dialects, how to mount, authentication, encryption and signing
 configuration, and lease/durable-handle behaviour as seen from clients.

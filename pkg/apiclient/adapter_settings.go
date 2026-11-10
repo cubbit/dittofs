@@ -95,6 +95,9 @@ func applySettingsOptions(url string, opts []SettingsOption) string {
 	return url
 }
 
+// decision: these methods are kept because compiled e2e tests and helpers call
+// them; the server answers 404 on their routes until the adapters' API returns.
+
 // GetNFSSettings returns the NFS adapter settings.
 func (c *Client) GetNFSSettings() (*NFSAdapterSettingsResponse, error) {
 	var resp NFSAdapterSettingsResponse

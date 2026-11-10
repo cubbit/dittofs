@@ -1,13 +1,12 @@
 # Samba Active Directory Domain Controller fixture.
 #
-# Unlike the MIT KDC in test/integration/kerberos (auth only, no PAC), a Samba
-# AD-DC issues Kerberos tickets carrying a Microsoft PAC (MS-PAC) with the
-# user's transitive group SIDs — exactly what AD-1 needs to validate PAC
-# decoding (DecodePAC) end to end against a real domain controller.
+# A real domain controller for the ad_dc tests: NETLOGON pass-through and its
+# hot reload, an online domain join followed by a member logon, and LDAP
+# resolution of domain users and groups.
 #
 # The container provisions a fresh domain on first start via entrypoint.sh,
 # creates test users + groups (some with RFC2307 uidNumber/gidNumber, some
-# without, to exercise the AD-3 idmap fallback later), and exports a service
+# without, for the LDAP resolver's RID fallback), and exports a service
 # keytab. It runs linux/amd64 so it works on Apple Silicon under emulation,
 # mirroring the other docker harnesses.
 FROM debian:bookworm-slim
@@ -38,8 +37,8 @@ RUN set -eu; \
 
 COPY --chmod=0755 entrypoint.sh /entrypoint.sh
 
-# 88 = Kerberos KDC, 389 = LDAP, 464 = kpasswd. The test maps 88 to a random
-# host port for the Go Kerberos client to reach.
+# 88 = Kerberos KDC, 389 = LDAP, 464 = kpasswd. The tests map 88 or 389 to a
+# random host port and wait on it while the domain provisions.
 EXPOSE 88/tcp 88/udp 389/tcp 464/tcp 464/udp
 
 ENTRYPOINT ["/entrypoint.sh"]

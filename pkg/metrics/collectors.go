@@ -190,7 +190,6 @@ func (c *runtimeCollector) Collect(ch chan<- prometheus.Metric) {
 		gauge(c.quotaUsedInodes, float64(q.UsedInodes), q.Scope, q.Principal, q.Share)
 		gauge(c.quotaLimitInodes, float64(q.LimitInodes), q.Scope, q.Principal, q.Share)
 	}
-
 }
 
 func boolToFloat(b bool) float64 {

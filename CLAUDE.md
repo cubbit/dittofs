@@ -7,7 +7,8 @@ conventions, and playbooks.
 ## Project
 
 DittoFS is an experimental modular virtual filesystem in Go. NFSv3/v4.0/v4.1 + SMB2/3 servers
-in userspace (no FUSE), with pluggable metadata and block stores. **Not production ready.**
+in userspace (no FUSE), with pluggable metadata and block stores; on this branch `dfs` serves
+no file protocol (rule 2 below). **Not production ready.**
 
 Two binaries: `dfs` (server, `cmd/dfs/`) and `dfsctl` (REST client, `cmd/dfsctl/`). Both use Cobra.
 
@@ -131,7 +132,8 @@ composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shar
 5. **WRITE validates before it answers:** `metaSvc.PrepareWrite` (permission check, type,
    read-only share) runs first, so a refused write keeps its own status; a zero-count write
    succeeds, and any other answers `ErrNoContentStore` before it breaks a lease or changes
-   metadata.
+   metadata. On this branch no WRITE handler exists, since the v1 adapters are gone;
+   `develop` keeps this rule for v1.
 
 6. **Error codes:** return `metadata.ExportError` values (`ErrNotDirectory`, `ErrNoEntity`,
    `ErrAccess`, `ErrExist`, `ErrNotEmpty`, …). Log expected errors at `Debug`, unexpected at `Error`.

@@ -518,7 +518,7 @@ Stop the DittoFS server
 Stop a running DittoFS server.
 
 Sends SIGTERM to the server process identified by the PID file, which triggers
-a graceful shutdown: in-flight NFS/SMB requests are drained, snapshot jobs are
+a graceful shutdown: in-flight requests are drained, snapshot jobs are
 flushed, and block stores are closed before the process exits. Use --force to
 send SIGKILL instead when a graceful stop is not responding.
 
@@ -3968,7 +3968,7 @@ Display the status of the connected DittoFS server.
 Calls the /health endpoint on the server configured in the current context and
 reports whether the server is running, how long it has been up, and whether the
 control-plane database is reachable. When a valid token is present, per-entity
-detail (shares, adapters, stores) is fetched from the API and rendered as a
+detail (shares, stores) is fetched from the API and rendered as a
 color-coded table. Use -o json or -o yaml for machine-readable output.
 
 ```

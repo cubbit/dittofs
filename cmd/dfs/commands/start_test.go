@@ -1,10 +1,9 @@
 package commands
 
 import (
-	"encoding/binary"
-
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"

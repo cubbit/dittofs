@@ -20,6 +20,9 @@ type NetgroupMember struct {
 	Value string `json:"value"`
 }
 
+// decision: these methods are kept because compiled e2e tests and helpers call
+// them; the server answers 404 on their routes until the adapters' API returns.
+
 // ListNetgroups returns all netgroups.
 func (c *Client) ListNetgroups() ([]*Netgroup, error) {
 	var netgroups []*Netgroup

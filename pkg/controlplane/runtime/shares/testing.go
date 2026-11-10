@@ -5,7 +5,6 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/remote"
 	"github.com/cubbit/dittofs/pkg/controlplane/models"
-	"github.com/cubbit/dittofs/pkg/metadata"
 )
 
 // InjectShareForTesting inserts a share directly, bypassing AddShare validation.
@@ -40,25 +39,6 @@ func (s *Service) RegisterShareForTesting(name string) {
 	}
 }
 
-// SetRootHandleForTesting sets a share's RootHandle in the registry under lock.
-// Test-only — RegisterShareForTesting leaves it empty, which makes an NFSv4
-// LOOKUP across the share's pseudo-fs export junction land on a zero-length
-// handle instead of the share root. Returns ErrShareNotFound if the share is
-// not registered.
-//
-// The handle is copied, so a caller that reuses or mutates its slice afterwards
-// cannot reach into registry state.
-func (s *Service) SetRootHandleForTesting(name string, handle metadata.FileHandle) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	share, ok := s.registry[name]
-	if !ok {
-		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
-	}
-	share.RootHandle = append(metadata.FileHandle(nil), handle...)
-	return nil
-}
-
 // SetLocalStoreDirForTesting overrides the per-share localStoreDir field.
 // Test-only — used by handler unit tests that bypass the full
 // AddShare composition path (which requires a DB-backed
@@ -72,37 +52,6 @@ func (s *Service) SetLocalStoreDirForTesting(name, dir string) error {
 		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
 	}
 	share.localStoreDir = dir
-	return nil
-}
-
-// SetEnabledForTesting overrides the per-share Enabled flag under the service
-// lock. Test-only — production code flips Enabled via DisableShare/EnableShare
-// (which also persist the DB row). Use this instead of mutating a *Share
-// returned by GetShare, which is now a snapshot copy. Returns ErrShareNotFound
-// if the share is not registered.
-func (s *Service) SetEnabledForTesting(name string, enabled bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	share, ok := s.registry[name]
-	if !ok {
-		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
-	}
-	share.Enabled = enabled
-	return nil
-}
-
-// SetSharePolicyForTesting overrides a share's DefaultPermission and Squash mode
-// in the registry under lock. Test-only — lets NFS auth tests exercise the
-// export-squash permission policy without a full AddShare flow.
-func (s *Service) SetSharePolicyForTesting(name, defaultPermission string, squash models.SquashMode) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	share, ok := s.registry[name]
-	if !ok {
-		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
-	}
-	share.DefaultPermission = defaultPermission
-	share.Squash = squash
 	return nil
 }
 
@@ -121,22 +70,6 @@ func (s *Service) SetExportAuthPolicyForTesting(name string, allowAuthSys, requi
 	}
 	share.AllowAuthSys = allowAuthSys
 	share.RequireKerberos = requireKerberos
-	return nil
-}
-
-// SetMinKerberosLevelForTesting overrides a share's MinKerberosLevel (the GSS
-// protection floor: "", "krb5", "krb5i", "krb5p") in the registry under lock.
-// Test-only — lets NFS auth tests exercise the min_kerberos_level floor
-// (NFS4ERR_WRONGSEC / MOUNT refusal) without a full AddShare flow. Returns
-// ErrShareNotFound if the share is not registered.
-func (s *Service) SetMinKerberosLevelForTesting(name, minLevel string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	share, ok := s.registry[name]
-	if !ok {
-		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
-	}
-	share.MinKerberosLevel = minLevel
 	return nil
 }
 

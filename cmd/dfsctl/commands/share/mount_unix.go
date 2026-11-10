@@ -140,7 +140,6 @@ func nfsVersionSuffix(nfsVersion string) string {
 }
 
 func mountSMB(sharePath, mountPoint string, port int, serverHost string) error {
-
 	username, err := resolveSMBUsername()
 	if err != nil {
 		return err
