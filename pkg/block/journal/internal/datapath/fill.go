@@ -104,6 +104,12 @@ func (c *Core) fillAndPublish(ctx context.Context, s *Share, id core.FileID, off
 		roll = segment.Roll{Hold: hold}
 	}
 	var filled int64
+	// decision: a gap that crosses N segments overshoots the index bound by at
+	// most N-1 entries, because CheckFill and the grant's Take charge a gap as
+	// one entry and Index.Fill has no admission of its own. Overturned by a
+	// bound a few entries over that costs more than the per-piece check would.
+	// decision: a failure on a later piece leaves the earlier pieces held
+	// offloaded, since their bytes are remote content at v, not lost writes.
 	for _, g := range gaps {
 		for done := int64(0); done < g.Len; {
 			seq, err := c.counters.NextSeq()

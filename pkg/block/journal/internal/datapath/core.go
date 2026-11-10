@@ -71,7 +71,7 @@ type coreOptions struct {
 	wrapDomains func(durability.Domains) durability.Domains
 	// accountSpy is told every non-zero delta Account applied.
 	accountSpy func(index.HeldDelta)
-	// tracer is the Tracer the core's Deps carry when a test sets none.
+	// tracer is the Tracer the core's Deps carry; nil means no tracing.
 	tracer core.Tracer
 	// state is the State newCore continues from; the zero State builds fresh.
 	state State

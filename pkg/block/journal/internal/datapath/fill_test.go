@@ -81,24 +81,24 @@ func TestFillWritesOnlyAbsentParts(t *testing.T) {
 
 func slices2(parts ...[]byte) []byte { return bytes.Join(parts, nil) }
 
-// A fill's charge for the gaps next to a held piece of the same record
-// matches what it adds: held bytes rise by the gaps' length alone.
+// A fill's charge for the gaps next to two held pieces of one record matches
+// what it adds: the index gains one entry per gap.
 func TestFillChargesGapsAdjacentToHeldPiece(t *testing.T) {
 	c, _ := newTestCore(t)
 	s := mustShare(t, c, 1)
 	f := testFile(2)
-	mustWrite(t, c, s, f, 4096, bytes.Repeat([]byte{'a'}, 4096))
-	mustWrite(t, c, s, f, 16384, bytes.Repeat([]byte{'b'}, 4096))
-	heldBefore, _, _ := c.heldBytes()
-	if err := c.Fill(context.Background(), s, f, 0, ff(24576), c.Index().AsOf(f), ver(1)); err != nil {
+	// One record, cut into two held pieces by a loss between them.
+	mustWrite(t, c, s, f, 4096, bytes.Repeat([]byte{'a'}, 16384))
+	if _, err := c.Index().Lose(f, core.Extent{Off: 8192, Len: 8192}, ver(9)); err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+	before := len(c.Index().FileEntries(f))
+	if err := c.Fill(context.Background(), s, f, 0, ff(24576), c.Index().AsOf(f), ver(10)); err != nil {
 		t.Fatalf("Fill: %v", err)
 	}
-	heldAfter, dirty, _ := c.heldBytes()
-	if added := heldAfter - heldBefore; added != 24576-8192 {
-		t.Fatalf("held grew by %d, want %d", added, 24576-8192)
-	}
-	if dirty != 8192 {
-		t.Fatalf("dirty = %d, want the two written pieces only", dirty)
+	// The gaps are [0,4096), [8192,16384) and [20480,24576): one entry each.
+	if added := len(c.Index().FileEntries(f)) - before; added != 3 {
+		t.Fatalf("the index gained %d entries, want 3, one per gap", added)
 	}
 }
 

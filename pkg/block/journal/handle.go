@@ -150,7 +150,7 @@ func (h *Handle) ReadAt(ctx context.Context, id FileID, off int64, p []byte) (n 
 // once less than half the headroom remains. Its absence check and its write are one step in
 // the file append domain, atomic with respect to WriteAt on the same file.
 func (h *Handle) Fill(ctx context.Context, id FileID, off int64, p []byte, asOf Version, v Version) error {
-	return ErrNotImplemented
+	return h.j.core.Fill(ctx, h.s, id, off, p, asOf, v)
 }
 
 // Truncate stops holding every extent of file id at or beyond size, and
