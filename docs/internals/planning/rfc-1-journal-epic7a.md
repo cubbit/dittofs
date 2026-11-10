@@ -536,6 +536,16 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
   first copy (T7.11). Any other read of the proof that fails with an I/O error, a tail record's
   first read or the direct re-read of an unnamed seal marker, refuses the open as above and is
   never taken as torn, so no truncation cuts what the device may still hold.
+- **D16, this epic covers a clean restart; recovering damaged data is E7b's and E9b's.** D6,
+  D13, D14 and D15 refuse an open that RFC 28 §3.3 opens or reconciles: a hold record, a lost
+  synced tail, a range that names no record or a `reconcile` or `reconciled` record, and a read
+  that keeps failing. Following the RFC would add the reconcile spare, `Reconciled`,
+  reconcile-retained pieces, the `DropOlder` loss reason, `HeadroomSparesShort`, the reconcile
+  fields of `Stats.Recovery` and unread files, about 25–40 man-days and changes to epics 5, 6 and
+  8. Settled with the RFC's author on the pull request that split epics 7 and 9. Each refusal
+  names what it found, serves nothing and writes nothing, and tests assert that, not the error
+  value. Prior art for refusing: from memory, a store that will not open on damage it cannot
+  account for rather than serve stale data. Overturned when E7b lands.
 
 ## 5. Target tree
 
@@ -1223,15 +1233,3 @@ A suggestion only: one pull request per subtask works as well.
   stands meanwhile.
 - **Runners for macOS and Windows** (E3's P22). T7.8's per-OS bodies compile everywhere and are
   exercised only on Linux in CI until a runner exists. **Decides:** CI owner. **Blocks:** nothing.
-- **Pending the RFC author's answer: refuse the open (D6, D13, D14, D15), or open where RFC 28 §3.3
-  says?** This epic refuses an open that RFC 28 §3.3 opens or reconciles: a hold record (D6), a
-  lost synced tail (D13), a range that names no record or a `reconcile` or `reconciled` record
-  (D14), and a read that keeps failing (D15). Each refusal names what it found, serves nothing and
-  writes nothing, and tests assert that, not the error value. Following the RFC instead adds, to
-  an epic that has no part of it today: the reconcile spare as a pool class, `Reconciled`,
-  reconcile-retained pieces, the `DropOlder` loss reason, `HeadroomSparesShort`, the reconcile
-  fields of `Stats.Recovery`, and unread files with `ErrUnreadable` on `Sync` and `Since`. That is
-  roughly 25–40 man-days, 5–6 subtasks, and changes to epics 5, 6 and 8. **Recommendation:**
-  refuse until E7b, as written; prior art for the refusal is "from memory": a store that refuses to
-  open on unrecoverable damage rather than serve stale data, as database engines do. **Decides:**
-  the RFC's author. **Blocks:** nothing here; until answered the epic stays as written.
