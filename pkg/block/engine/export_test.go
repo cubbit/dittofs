@@ -307,9 +307,6 @@ func (e *Engine) ClearOps(f entity.FileID) {
 	e.files.unlock(f, fe)
 }
 
-// OnCapture runs f after each batch's capture, before its sync.
-func (e *Engine) OnCapture(f func()) { e.hooks.captured.Store(&f) }
-
 // CommitNow is commitNow on share s's file f.
 func (e *Engine) CommitNow(ctx context.Context, s entity.ShareID, f entity.FileID) error {
 	b, err := e.bindingOf(s)
@@ -338,9 +335,6 @@ func (e *Engine) Due(j Journal, f entity.FileID) bool {
 
 // LostWhole is lostWhole on journal j.
 func (e *Engine) LostWhole(j Journal) { e.lostWhole(j) }
-
-// OnWritten runs f in each Write between its journal's WriteAt and its insert.
-func (e *Engine) OnWritten(f func()) { e.hooks.written.Store(&f) }
 
 // OnDrain runs f in each drain that read new losses, before it marks writes.
 func (e *Engine) OnDrain(f func()) { e.hooks.drained.Store(&f) }
@@ -431,9 +425,6 @@ func (e *Engine) PendingWrites(f entity.FileID, off, end int64) int {
 	return n
 }
 
-// OnStaged runs f in each removal between its journal step and its phase 1.
-func (e *Engine) OnStaged(f func()) { e.hooks.staged.Store(&f) }
-
 // OnIssued runs f with each version the engine counts as issued toward its
 // version limit.
 func (e *Engine) OnIssued(f func(journal.Version)) { e.onIssued.Store(&f) }
@@ -467,10 +458,6 @@ func (e *Engine) RemovalsPending() int {
 	}
 	return n
 }
-
-// NoGuardSkip has every capture take a file whose guard a removal holds,
-// as one would with the guard's skip removed.
-func (e *Engine) NoGuardSkip() { e.noGuardSkip.Store(true) }
 
 // StopRemovalLoops ends every journal's removal loop, as Close's stop of
 // the work queue does before its last group commit, and leaves the group
@@ -593,12 +580,11 @@ func (e *Engine) CommitAll(ctx context.Context, j Journal) error {
 		}
 		// A file a removal's guard holds is committed by that removal's own
 		// phase 1, and a batch would only skip it: wait for the guard rather
-		// than ask for batch after batch. Under the test seam a batch takes
-		// it, so it is asked for like any other.
+		// than ask for batch after batch.
 		var guard <-chan struct{}
 		asked := false
 		for _, f := range files {
-			if ch := e.guardOf(f); ch != nil && !e.noGuardSkip.Load() {
+			if ch := e.guardOf(f); ch != nil {
 				guard = ch
 				continue
 			}

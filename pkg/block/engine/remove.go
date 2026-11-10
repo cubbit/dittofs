@@ -191,7 +191,6 @@ func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID
 		e.release(r, false)
 		return err
 	}
-	e.staged()
 	return e.phase1(ctx, r, kvstore.RemoveOp{Kind: entity.RemoveTruncate, Extent: r.x})
 }
 
@@ -217,7 +216,6 @@ func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 		e.release(r, false)
 		return err
 	}
-	e.staged()
 	return e.phase1(ctx, r, kvstore.RemoveOp{Kind: entity.RemoveDeallocate, Extent: r.x})
 }
 
@@ -265,7 +263,6 @@ func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 	}
 	r.v = v
 	e.issued(b.vl, v)
-	e.staged()
 	op := kvstore.RemoveOp{Kind: entity.RemoveRelease, Extent: r.x, Version: entity.JournalVersion(v.Bytes()), Time: r.at}
 	switch err := e.tryPhase1(ctx, r, op); {
 	case err == nil:
@@ -672,11 +669,4 @@ func (e *Engine) committed(r *removal) (dones []func()) {
 	fe.ops = kept
 	e.files.removals.Add(1) // committed operations left the entry: see Allocation
 	return dones
-}
-
-// staged runs a test's seam between a removal's journal step and its phase 1.
-func (e *Engine) staged() {
-	if h := e.hooks.staged.Load(); h != nil {
-		(*h)()
-	}
 }

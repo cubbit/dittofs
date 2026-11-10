@@ -423,7 +423,6 @@ func (e *Engine) attempt(ctx context.Context, c *cloneRun, r *removal) answer {
 			return itemRetry
 		}
 		c.copied = true
-		e.staged()
 	}
 	pctx, cancel := e.bounded(ctx)
 	defer cancel()

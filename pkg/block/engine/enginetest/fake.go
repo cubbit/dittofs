@@ -772,6 +772,17 @@ func (h *FakeHandle) Settle(id journal.FileID, v journal.Version) {
 	}
 }
 
+// Settled is the newest version Settle covered file id through since the
+// journal last opened, zero when none.
+func (j *FakeJournal) Settled(id journal.FileID) journal.Version {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if f := j.files[id]; f != nil {
+		return f.settled
+	}
+	return journal.Version{}
+}
+
 // Files yields the share's files holding a piece, a marker or a loss.
 func (h *FakeHandle) Files() iter.Seq[journal.FileID] {
 	h.j.mu.Lock()

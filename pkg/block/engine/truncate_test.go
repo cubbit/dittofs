@@ -135,13 +135,13 @@ func TestATruncateDecidesOverAnAdmittedWrite(t *testing.T) {
 // Between a truncate down's journal step and its phase 1, the file's
 // overlay already shows the new size, set.
 func TestATruncatesOverlayBeforeItsPhase1(t *testing.T) {
-	u := newUnit(t)
+	u, h := newHookedUnit(t)
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
 	u.commit(t, f)
 	var o engine.Overlay
 	var pending bool
-	u.e.OnStaged(func() { o, pending, _ = u.e.Overlay(context.Background(), u.share.ID, f) })
+	h.guardedSync(&h.sync, f, func() { o, pending, _ = u.e.Overlay(context.Background(), u.share.ID, f) })
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
 		t.Fatal(err)
 	}

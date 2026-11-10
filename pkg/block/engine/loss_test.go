@@ -51,12 +51,12 @@ func TestTheLossSequence(t *testing.T) {
 // drained before the batch commits: the write commits lost, charging
 // nothing, and a read of it answers ErrLost.
 func TestALossBeforeTheBatchsSyncCommitsTheWriteLost(t *testing.T) {
-	u := newUnit(t)
+	u, jh := newHookedUnit(t)
 	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 	f := made.ID
 	u.write(t, f, 0, []byte("lost"))
 	var once sync.Once
-	u.e.OnCapture(func() { once.Do(func() { u.lose(f, 0, 4) }) })
+	jh.sync.set(func([]journal.FileID) { once.Do(func() { u.lose(f, 0, 4) }) })
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestAPartialLossMarksOnlyItsRuns(t *testing.T) {
 		{"two runs before the insert", [][2]int64{{0, 2}, {6, 2}}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			u := newUnit(t)
+			u, jh := newHookedUnit(t)
 			h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 			f := made.ID
 			lose := func() {
@@ -246,7 +246,7 @@ func TestAPartialLossMarksOnlyItsRuns(t *testing.T) {
 			}
 			if c.early {
 				var once sync.Once
-				u.e.OnWritten(func() { once.Do(lose) })
+				jh.written.set(func() { once.Do(lose) })
 			}
 			u.write(t, f, 0, []byte("12345678"))
 			if !c.early {
@@ -285,11 +285,11 @@ func TestAPartialLossMarksOnlyItsRuns(t *testing.T) {
 // pending write to mark, so the insert applies it: the batch commits the
 // write lost, charging nothing, a read answers ErrLost, and Done runs once.
 func TestALossBeforeTheWritesInsertCommitsItLost(t *testing.T) {
-	u := newUnit(t)
+	u, jh := newHookedUnit(t)
 	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 	f := made.ID
 	var once sync.Once
-	u.e.OnWritten(func() {
+	jh.written.set(func() {
 		once.Do(func() {
 			u.lose(f, 0, 4)
 			u.e.LossSeq(u.share.ID, f) // drains the loss
@@ -352,7 +352,7 @@ func TestALostDeviceLogsEachFailingFileCleared(t *testing.T) {
 func TestAnUnsyncedCorruptLossDropsTheWrite(t *testing.T) {
 	for _, early := range []bool{false, true} {
 		t.Run(map[bool]string{false: "pending", true: "before the insert"}[early], func(t *testing.T) {
-			u := newUnit(t)
+			u, jh := newHookedUnit(t)
 			h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 			f := made.ID
 			u.write(t, f, 0, []byte("held"))
@@ -369,7 +369,7 @@ func TestAnUnsyncedCorruptLossDropsTheWrite(t *testing.T) {
 			}
 			if early {
 				var once sync.Once
-				u.e.OnWritten(func() { once.Do(lose) })
+				jh.written.set(func() { once.Do(lose) })
 			}
 			u.clock.Advance(time.Since(u.clock.Now()) + time.Hour) // the write's mtime is past the file's
 			var dones atomic.Int32
@@ -467,7 +467,7 @@ func TestUnsyncedCorruptPiecesAroundALaterWriteDropTheWrite(t *testing.T) {
 		{"synced", true, false, []journal.Extent{head, tail}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			u := newUnit(t)
+			u, jh := newHookedUnit(t)
 			h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 			f := made.ID
 			var dones atomic.Int32
@@ -486,7 +486,7 @@ func TestUnsyncedCorruptPiecesAroundALaterWriteDropTheWrite(t *testing.T) {
 			}
 			if tc.early {
 				var once sync.Once
-				u.e.OnWritten(func() { once.Do(lose) })
+				jh.written.set(func() { once.Do(lose) })
 			}
 			u.write(t, f, 4, []byte("cccc"))
 			if !tc.early {

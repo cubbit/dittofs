@@ -159,11 +159,11 @@ func TestAFailingFileWhoseWritesWereDroppedIsCleared(t *testing.T) {
 // finds no pending write to drop, so the insert drops it: the committed size
 // excludes it, nothing is charged, and Done runs once.
 func TestAFailedWindowBeforeTheWritesInsertDropsIt(t *testing.T) {
-	u := newUnit(t)
+	u, jh := newHookedUnit(t)
 	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 	f := made.ID
 	var once sync.Once
-	u.e.OnWritten(func() {
+	jh.written.set(func() {
 		once.Do(func() {
 			u.failWindow(f, 0, 4)
 			u.e.LossSeq(u.share.ID, f) // drains the loss

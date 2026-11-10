@@ -59,9 +59,6 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	fe.writing = append(fe.writing, x)
 	e.files.unlock(f, fe)
 	ver, err := b.h.WriteAt(ctx, fileID(f), off, p, mtime)
-	if h := e.hooks.written.Load(); h != nil {
-		(*h)()
-	}
 	fe = e.files.lockFor(f) // the admitted write keeps the entry alive
 	fe.leave(x)
 	if err != nil {

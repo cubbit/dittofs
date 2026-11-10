@@ -117,17 +117,14 @@ func clonedHookedUnit(t *testing.T, deps ...func(*engine.Deps)) (*unit, *hookedH
 }
 
 // heldBeforePhase1 starts a clone of x and returns once it is held between
-// its copies and its phase 1, with the function that lets it go on and the
-// channel of its answer.
-func (u *unit) heldBeforePhase1(t *testing.T, src, dst entity.FileID, x vfserr.Extent) (release func(), answer <-chan error) {
+// its copies' sync and its phase 1, h the share's handle, with the function
+// that lets it go on and the channel of its answer.
+func (u *unit) heldBeforePhase1(t *testing.T, h *hookedHandle, src, dst entity.FileID, x vfserr.Extent) (release func(), answer <-chan error) {
 	t.Helper()
 	held, hold := make(chan struct{}), make(chan struct{})
-	var once atomic.Bool
-	u.e.OnStaged(func() {
-		if once.CompareAndSwap(false, true) {
-			close(held)
-			<-hold
-		}
+	h.guardedSync(&h.synced, dst, func() {
+		close(held)
+		<-hold
 	})
 	errc := u.startClone(context.Background(), src, dst, x)
 	select {
@@ -248,34 +245,19 @@ func TestACloneReservesItsCopiesAndWritesThemAboveItsVersion(t *testing.T) {
 // While the clone is held between its copies and its phase 1, the
 // destination's guard keeps its operations out of every batch: a group
 // commit asked for then commits none of them, and the clone then commits.
-// With the guard's skip removed a batch may commit the write below the
-// clone, but stops at the clone's operation: the destination's applied and
-// every Settle of it stay below the clone's version.
 func TestTheGuardKeepsACloneOutOfEveryBatch(t *testing.T) {
-	for _, skip := range []bool{true, false} {
-		t.Run(fmt.Sprint("skip ", skip), func(t *testing.T) { guardKeepsACloneOut(t, skip) })
-	}
-}
-
-func guardKeepsACloneOut(t *testing.T, skip bool) {
 	u, h := clonedHookedUnit(t)
-	if !skip {
-		u.e.NoGuardSkip()
-	}
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	u.write(t, dst, 4*mib, fill(10, 'w')) // below the clone, outside its extent
-	release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{Len: mib})
+	release, answer := u.heldBeforePhase1(t, h, src, dst, vfserr.Extent{Len: mib})
 	v := u.j.CloneTargets()[0].Version
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	_ = u.e.CommitAll(ctx, u.rec)
 	cancel()
 	applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst)
-	switch {
-	case skip && !applied.IsZero():
+	if !applied.IsZero() {
 		t.Errorf("a batch committed the destination's write at %v while the clone held its guard", applied)
-	case !applied.Less(entity.JournalVersion(v.Bytes())):
-		t.Errorf("a batch raised the destination's applied to %v, at or above the held clone's %v", applied, v)
 	}
 	for _, s := range h.settleLog() {
 		if s.v.Compare(v) >= 0 {
@@ -322,13 +304,13 @@ func TestAClonesPhase1PassesTheRunsEachWriteSupersedes(t *testing.T) {
 // the clone, and the store records its size and the hole: phase 1 applies
 // it after the clone, so no later commit skips it.
 func TestAWriteOutsideTheExtentDuringACloneSurvives(t *testing.T) {
-	u := clonedUnit(t)
+	u, h := clonedHookedUnit(t)
 	src := u.committedFile(t, "src", fill(2*mib, 's'))
 	if err := u.e.Deallocate(t.Context(), u.share.ID, src, mib, mib); err != nil {
 		t.Fatal(err)
 	}
 	dst := u.create(t, "dst")
-	release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{Len: 2 * mib})
+	release, answer := u.heldBeforePhase1(t, h, src, dst, vfserr.Extent{Len: 2 * mib})
 	if o, _, err := u.e.Overlay(t.Context(), u.share.ID, dst); err != nil || o.Size != 2*mib {
 		t.Errorf("the empty destination's overlay during the clone: %+v, %v; want the extent's end", o, err)
 	}
@@ -432,7 +414,7 @@ func TestAReleaseOfARegisteredSourceIsPending(t *testing.T) {
 	u, h := clonedHookedUnit(t)
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
-	release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{Len: mib})
+	release, answer := u.heldBeforePhase1(t, h, src, dst, vfserr.Extent{Len: mib})
 	ch, err := u.e.Delete(t.Context(), u.share.ID, src)
 	if err != nil || ch == nil {
 		t.Fatalf("a release of a registered source: %v, %v; want a pending channel", ch, err)
@@ -606,14 +588,15 @@ func TestAClonesPhase1SyncsWhatItCommits(t *testing.T) {
 	var u *unit
 	var dst entity.FileID
 	var durable atomic.Bool // the destination was durable when the store's Clone was called
-	u = clonedUnit(t, onClone(func(ctx context.Context, next engine.Existence, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
+	var h *hookedHandle
+	u, h = clonedHookedUnit(t, onClone(func(ctx context.Context, next engine.Existence, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
 		durable.Store(u.j.Durable(journal.NewFileID(dst)))
 		return next.Clone(ctx, op, pending)
 	}))
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	other := u.committedFile(t, "other", fill(10, 'o'))
 	dst = u.create(t, "dst")
-	release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{Len: mib})
+	release, answer := u.heldBeforePhase1(t, h, src, dst, vfserr.Extent{Len: mib})
 	if _, err := u.e.Write(t.Context(), u.share.ID, dst, 3*mib, fill(10, 'w'), engine.WriteOpts{Done: func() {}}); err != nil {
 		t.Fatal(err)
 	}
@@ -676,56 +659,6 @@ func TestALoopEndingLeavesARetriedCloneForRecovery(t *testing.T) {
 	}
 	if p := u.e.Pending(dst); len(p) != before || p[1].Version != cv {
 		t.Errorf("after the loop ended the entry holds %+v, want its %d operations, the clone's among them", p, before)
-	}
-}
-
-// A write staged outside a clone's extent while its phase 1 retries is
-// committed by no group commit, the guard's skip removed: the clone's
-// operation sits in the destination's pending operations at its version and
-// the capture stops there, so the destination's applied and every Settle of
-// it stay below the clone's version until phase 1 commits. A clone whose
-// operation is not pending lets a batch commit the write, and the store
-// then skips the clone as applied.
-func TestAGroupCommitStopsAtARetriedClone(t *testing.T) {
-	x := &refusingClone{}
-	u, h := clonedHookedUnit(t, onClone(x.clone))
-	u.e.NoGuardSkip()
-	src := u.committedFile(t, "src", fill(mib, 's'))
-	dst := u.create(t, "dst")
-	u.write(t, dst, 4*mib, fill(10, 'w'))
-	cv, errc := u.retriedClone(t, x, src, dst)
-	u.write(t, dst, 6*mib, fill(10, 'z'))
-	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-	_ = u.e.CommitAll(ctx, u.rec)
-	cancel()
-	applied, err := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if applied.IsZero() {
-		t.Error("the group commit did not commit the write below the clone")
-	}
-	if applied.Compare(entity.JournalVersion(cv.Bytes())) >= 0 {
-		t.Errorf("applied %v while the clone at %v retries phase 1", applied, cv)
-	}
-	for _, s := range h.settleLog() {
-		if s.v.Compare(cv) >= 0 {
-			t.Errorf("settled at %v while the clone at %v retries phase 1", s.v, cv)
-		}
-	}
-	x.left.Store(0)
-	if err := u.answered(t, "the clone's answer", errc); err != nil {
-		t.Errorf("the clone: %v", err)
-	}
-	applied, _ = u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst)
-	if applied.Compare(entity.JournalVersion(cv.Bytes())) < 0 {
-		t.Errorf("applied %v after the clone's phase 1, want at least its %v", applied, cv)
-	}
-	if got := u.read(t, dst, 0, 4); !bytes.Equal(got, fill(4, 's')) {
-		t.Error("the destination does not read the clone")
-	}
-	if got := u.read(t, dst, 6*mib, 10); !bytes.Equal(got, fill(10, 'z')) {
-		t.Error("the write above the clone does not read back")
 	}
 }
 
@@ -811,10 +744,10 @@ func TestAWriteInFlightDuringPhase1IsClaimed(t *testing.T) {
 // once, the release pending and the truncate DelayClone, rather than behind
 // the clone's guard.
 func TestARemovalOfAClonesDestinationAnswersAtOnce(t *testing.T) {
-	u := clonedUnit(t)
+	u, h := clonedHookedUnit(t)
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
-	release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{Len: mib})
+	release, answer := u.heldBeforePhase1(t, h, src, dst, vfserr.Extent{Len: mib})
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	if ch, err := u.e.Delete(ctx, u.share.ID, dst); err != nil || ch == nil {
@@ -832,10 +765,10 @@ func TestARemovalOfAClonesDestinationAnswersAtOnce(t *testing.T) {
 // A file holds one clone into it at a time: a second clone into another
 // extent of a destination a clone writes is refused DelayClone.
 func TestASecondCloneIntoADestinationIsRefused(t *testing.T) {
-	u := clonedUnit(t)
+	u, h := clonedHookedUnit(t)
 	src := u.committedFile(t, "src", fill(2*mib, 's'))
 	dst := u.create(t, "dst")
-	release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{Len: mib})
+	release, answer := u.heldBeforePhase1(t, h, src, dst, vfserr.Extent{Len: mib})
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	err := u.e.Clone(ctx, u.share.ID, src, u.share.ID, dst, vfserr.Extent{SrcOff: mib, DstOff: 4 * mib, Len: mib})
@@ -854,10 +787,10 @@ func TestASecondCloneIntoADestinationIsRefused(t *testing.T) {
 // An allocation of an empty destination cloned far from its start answers a
 // hole from 0 up to the extent, which the clone's journal step leaves.
 func TestAnAllocationBeforeAFarCloneIsAHole(t *testing.T) {
-	u := clonedUnit(t)
+	u, h := clonedHookedUnit(t)
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
-	release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{DstOff: 8 * mib, Len: mib})
+	release, answer := u.heldBeforePhase1(t, h, src, dst, vfserr.Extent{DstOff: 8 * mib, Len: mib})
 	sp, err := u.e.Allocation(t.Context(), u.share.ID, dst, 0)
 	if err != nil || sp.Class != entity.Hole || sp.Offset != 0 || sp.End() != 8*mib {
 		t.Errorf("an allocation from 0 of the destination: %+v, %v; want a hole up to 8 MiB", sp, err)
@@ -1047,11 +980,11 @@ func TestACloneIntoADestinationStillCloningIsDelayedBeforeItsJournalStep(t *test
 // A clone from a running clone's destination extent is answered DelayClone
 // at once, not behind that clone's guard.
 func TestACloneFromARunningClonesDestinationAnswersAtOnce(t *testing.T) {
-	u := clonedUnit(t)
+	u, h := clonedHookedUnit(t)
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	other := u.create(t, "other")
-	release, answer := u.heldBeforePhase1(t, src, dst, vfserr.Extent{Len: mib})
+	release, answer := u.heldBeforePhase1(t, h, src, dst, vfserr.Extent{Len: mib})
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	if err := u.e.Clone(ctx, u.share.ID, dst, u.share.ID, other, vfserr.Extent{Len: mib}); !isDelay(err, vfserr.DelayClone) {
@@ -1067,16 +1000,13 @@ func TestACloneFromARunningClonesDestinationAnswersAtOnce(t *testing.T) {
 // never the cancel, which would read as refused with nothing changed: the
 // clone runs on and changes the destination.
 func TestACancelledCloneCallAnswersDelayClone(t *testing.T) {
-	u := clonedUnit(t)
+	u, h := clonedHookedUnit(t)
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	held, hold := make(chan struct{}), make(chan struct{})
-	var once atomic.Bool
-	u.e.OnStaged(func() {
-		if once.CompareAndSwap(false, true) {
-			close(held)
-			<-hold
-		}
+	h.guardedSync(&h.synced, dst, func() {
+		close(held)
+		<-hold
 	})
 	ctx, cancel := context.WithCancel(t.Context())
 	errc := u.startClone(ctx, src, dst, vfserr.Extent{Len: mib})
