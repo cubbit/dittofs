@@ -287,12 +287,11 @@ why; `test/harness/bin/dt` runs one locally. What follows is only what those don
 Don't start two suites by hand at once: they collide on ports and mounts. `dt` runs cells in
 parallel only where the registry says each one is isolated (`parallel: true`).
 
-**Integration** (`-tags=integration`, `-p 1`) is for a backend the host must provide. Today CI
-starts Postgres and a KMIP server for it (`needs:` in `test/suites.yaml`), so control-plane
-Postgres and the KMIP key provider are tested there. The tier is moving to a real S3-compatible
-endpoint beside Badger on disk, and away from Postgres. CI starts no S3 endpoint yet, so a test
-that needs one skips in every run and guards nothing until one is wired in; don't count it as
-coverage. Badger under `t.TempDir()` and in-memory SQLite are real implementations, and their
+**Integration** (`-tags=integration`, `-p 1`) is for a backend the host must provide: a KMIP
+server for the key provider, and a real S3-compatible endpoint. Postgres is gone: the stores are
+Badger, and FoundationDB for a cluster, so don't add a Postgres test. CI starts no S3 endpoint
+yet, so a test that needs one skips in every run and guards nothing until one is wired in; don't
+count it as coverage. Badger under `t.TempDir()` and in-memory SQLite are real implementations, and their
 tests run untagged. Durability and ordering changes need a test on a real filesystem with
 the crash simulated beneath the code under test (RFC 1 §1.3), because a memory backend proves
 nothing about fsync or a crash. A backend the host lacks is a skip that names the environment
