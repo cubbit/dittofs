@@ -295,6 +295,11 @@ version.
 | NFS v4.1 (RFC 8881) | yes | sessions §3; pNFS (parallel NFS, clients reading data servers directly) only in a cluster, per [RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS): a single node advertises no metadata server and answers every layout operation `NFS4ERR_NOTSUPP` (§3.3) |
 | NFS v4.2 (RFC 7862, RFC 8276) | the subset of §9.3 | an operation outside it returns `NFS4ERR_NOTSUPP` |
 
+What is served is the operator's `adapters.nfs.versions` range within this
+table, all of it by default
+([RFC 20 §4.8](rfc-20-adapters.md#4.8%20Several%20versions%20of%20one%20protocol)); a range of
+only 4.x serves no MOUNT, NLM or NSM.
+
 - A `COMPOUND` whose minor version is above 2 **MUST** be answered
   `NFS4ERR_MINOR_VERS_MISMATCH` with no operation run.
 - The minor version is the client's choice per `COMPOUND`; the server
@@ -1566,7 +1571,9 @@ reached — is returned only for a drain
 
 - a gateway node draining towards another answers operations on a share with
   `NFS4ERR_MOVED`, and `fs_locations` names that node, in the same
-  installation and at the same path. `NFS4ERR_MOVED` goes only on an
+  installation and at the same path, as the service's `MoveTarget` reports it
+  for the share
+  ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)). `NFS4ERR_MOVED` goes only on an
   operation that uses the current filehandle, the only place RFC 8881 allows
   it; a compound holding any other operation the drain refuses is left
   unanswered, and none of its operations runs. A `GETATTR`

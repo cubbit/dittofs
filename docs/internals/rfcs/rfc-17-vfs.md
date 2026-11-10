@@ -456,7 +456,7 @@ names through `Peers.ClientState`
 > `Serve` then takes that and a `Service`. The adapters are not this RFC's to build: `node.New` builds
 each one last, as [RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface) and
 [§4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)
-say, and hands it the filesystem or the gateway as `adapter.Deps.Service` (§2), and
+say, and hands it the filesystem or the gateway as `adapter.Deps.VFS` (§2), and
 nothing else of the service.
 
 ### 2.4 Package layout
@@ -490,7 +490,7 @@ internal/vfs/                the filesystem, one file per operation; the gateway
   commit.go                  Commit, and the write verifier (§5.8)
   deallocate.go copy.go      Deallocate; Copy and Clone (§5.9)
   lock.go grant.go watch.go  Lock, CancelLock, TestLock, Unlock (§5.11); AckRecall; Watch, Unwatch
-  shares.go                  Root, SecInfo, ListShares, StatFS, Quota, Snapshots (§4.9)
+  shares.go                  Root, SecInfo, ListShares, StatFS, Quota, Snapshots, MoveTarget (§4.9)
   release.go grace.go        the four moments of release (§5.3); grace and pending-release recovery
   arch_test.go               imports, call sites and the gateway's fields (§8)
 ```
@@ -791,6 +791,7 @@ type Shares interface {
 	StatFS(ctx context.Context, c Call, h Handle) (FilesystemInfo, error)                // the share's, or the tighter of it and h's project
 	Quota(ctx context.Context, c Call, h Handle, p Principal) (Usage, Quota, error)      // p's own, else the share's default for its kind
 	Snapshots(ctx context.Context, c Call, h Handle) ([]SnapshotInfo, error)             // the snapshots visible at h's path (RFC 12 §2.5)
+	MoveTarget(ctx context.Context, c Call, h Handle) (netip.Addr, error)               // while this node drains: another gateway node serving h's share at the same path (RFC 15 §5.3), for an adapter's ErrMoved and NFSv4's fs_locations; the zero Addr when none, which is every answer until RFC 15's topology exists
 }
 ```
 
@@ -838,7 +839,7 @@ So no handler follows a mutation with a `GetAttr`
 client record or lease — and a handler may make any number of them:
 `Propose`, `Record`, `TestState`, `Lookup`, `ReadDir`, `GetAttr`, `GetACL`,
 `Xattrs`, `Streams`, `Access`, `Read`, `Seek`, `TestLock`, `Root`, `SecInfo`,
-`ListShares`, `StatFS`, `Quota`, `Snapshots` and `Spell`. Every other method may change
+`ListShares`, `StatFS`, `Quota`, `Snapshots`, `MoveTarget` and `Spell`. Every other method may change
 state, and RFC 20 §4.3 allows a handler one. `vfs.Mutates(op Op) bool` answers
 it, so `vfstest.Record` and the adapters' one-call test read it from one place.
 `Propose` is on the list because its record is volatile and nothing reads it
@@ -981,7 +982,7 @@ callback that fails or times out **MUST** be treated as the client not answering
 a recall that is not acknowledged by its deadline revokes the grant
 ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
 
-![A recall without a waiting worker: build01's NFS write conflicts with alice-pc's SMB lease, so the service sends RecallGrant, which the SMB adapter turns into a lease break, and answers ErrDelay at once, mapped to NFS4ERR_DELAY or NFS3ERR_JUKEBOX; alice-pc acknowledges, the service gets AckRecall, and build01's retry goes ahead. If alice-pc never answers, the break is forced at 35 s and the lease drops to none; if the conflicting caller is an SMB client, the SMB adapter sends an interim response and re-drives the call itself, held up to smb_pending_deadline, which exceeds the break deadline](img/rfc17-recall.svg)
+![A recall without a waiting worker: build01's NFS write conflicts with alice-pc's SMB lease, so the service sends RecallGrant, which the SMB adapter turns into a lease break, and answers ErrDelay at once, mapped to NFS4ERR_DELAY or NFS3ERR_JUKEBOX; alice-pc acknowledges, the service gets AckRecall, and build01's retry goes ahead. If alice-pc never answers, the break is forced at 35 s and the lease drops to none; if the conflicting caller is an SMB client, the SMB adapter sends an interim response and re-drives the call itself, held up to recall_timeout, which exceeds the break deadline](img/rfc17-recall.svg)
 
 **No worker waits on a client.** An operation that conflicts with a caching
 grant starts the recall and returns `ErrDelay` at once. An NFS adapter answers
@@ -1262,6 +1263,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `SignIn`, `Spell`, `Find` | RFC 18's authenticator and principal mapping, held by the filesystem ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface), [§4.1](rfc-18-identity.md#4.1%20Two%20directions%2C%20one%20mapping)) | — | the local filesystem; never forwarded |
 | `StatFS`, `Quota` | `Capacity.Info`, `Capacity.Usage`; the quota record (gap: no view but `ControlPlane.Quotas`) | — | primary |
 | `Snapshots` | RFC 12 `Snapshots.List`, filtered by the handle's path | — | primary |
+| `MoveTarget` | RFC 15 §5.3's topology, once it exists; until then nothing, and the answer is none | — | the local filesystem; never forwarded |
 
 **A change to a file's attributes or data is reported under the entry its open
 was made through.** A watch's `Change` names an entry of the directory it is
@@ -1351,7 +1353,7 @@ adapters' tables ([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20
 | `ErrRangeNotLocked` | an `Unlock` named a range the owner does not hold | — |
 | `ErrShareViolation` | a deny mode others hold conflicts, decided after handle caching is broken ([§5.3](#5.3%20Open%20and%20close)) | — |
 | `ErrDeletePending` | the file is marked delete on close ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)) | — |
-| `ErrGrace` | the shard is in grace and the request needs, or conflicts with, state that may still be reclaimed | — |
+| `ErrGrace` | the shard is in grace and the request needs, or conflicts with, state that may still be reclaimed | `*Grace{Until}`: when the shard's grace ends, so a holding adapter bounds its hold from the error (RFC 20 §4.6) |
 | `ErrDelay` | retry shortly | `*Delay{Cause; Until; Moved}`, below |
 | `ErrBlocked` | a lock waits, and will be granted through `LockWaitOver`: the service's answer for RFC 14's `LockResult{Waiting: true}` | — |
 | `ErrWrongSecurity` | the share's policy does not admit the call's flavour ([§4.9](#4.9%20Shares%2C%20mounts%20and%20trees)) | — |
@@ -1413,7 +1415,12 @@ const (
 	DelayCommit                          // a metadata commit is not landing: a stalled store, the version limit's raise, or (cluster) quota slack spent (RFC 8 §11.2, §5.6); or a stable write's sync may have lost it (§5.8)
 	DelayResources                       // a node memory pool is spent: the share cap or the open-state pool; an adapter builds the same for a reply reservation past its deadline (RFC 24 §4.2)
 )
-```
+
+
+// Grace is ErrGrace's typed value.
+type Grace struct {
+	Until time.Time // when the shard's grace ends; a bound, not a kind, so not compared
+}```
 
 Each typed error matches, under `errors.Is`, its sentinel and any value of its
 own type with the same kind, so an adapter's error table
@@ -1421,7 +1428,8 @@ own type with the same kind, so an adapter's error table
 rather than only its sentinel. The kind of an `AccessError`, `QuotaError`,
 `StateError` or `CrossError` is every field it has, so a field added later
 joins it; a `Delay`'s is its `Cause` and `Moved`, since `Until` is a bound,
-not a kind, and is not compared. A zero kind matches only another zero one.
+not a kind, and is not compared. A `Grace` has no kind: `Until` is its only
+field, so every `Grace` matches `ErrGrace` and any other `Grace`. A zero kind matches only another zero one.
 
 `Cause` labels metrics and selects how long an adapter holds the request and
 its final status (§3.2). **A transient refusal never becomes `ErrNoSpace` because a
