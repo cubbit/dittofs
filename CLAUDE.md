@@ -254,8 +254,10 @@ Its `message:` is the text of the check that fails, specific enough that no othe
 contains it, since it is matched as a substring. The entry is written with the test, and CI on
 that pull request confirms it. A Go suite with a `known` file is registered for the purpose:
 its own build tag, `format: go-json`, `tier: pr` and `known:`, the tag added to lint-go's
-`go vet -tags=` list, as `engine-conformance` is on `feat/storage-v2`. The change that makes the
-test pass removes its entry (§4.7 fails a run whose known failure passes).
+`go vet -tags=` list, and its name added to the plan job's select in
+`.github/workflows/tests.yml`, without which CI never runs it (RFC 29 §4.8), as
+`engine-conformance` is on `feat/storage-v2`. The change that makes the test pass removes its
+entry (§4.7 fails a run whose known failure passes).
 
 **Integration** (`-tags=integration`, `-p 1`) is for a backend the host must provide: a KMIP
 server for the key provider, and a real S3-compatible endpoint. Postgres is gone: the stores are
