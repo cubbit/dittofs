@@ -357,6 +357,23 @@ func TestSelfFenceOnARetriedRaise(t *testing.T) {
 	}
 }
 
+// The removal loop's prune, a retrying owner's, failing for 31 s fences the
+// node: the content view New wires counts toward the fence.
+func TestSelfFenceOnAFailingPrune(t *testing.T) {
+	u := newFenceUnit(t)
+	a := u.create(t, "a")
+	_, ct, _ := u.e.StoreViews()
+	ctx := engine.WithRetryingOwner(t.Context())
+	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+	if err := ct.PruneRemovals(ctx, u.share.ID, a, entity.JournalVersion{15: 1}); !errors.Is(err, errInjected) {
+		t.Fatalf("the prune over a failing store: %v", err)
+	}
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(a); !fenced(err) {
+		t.Fatalf("a write 31s into the prune failing: %v, want ErrDelay(DelayCommit)", err)
+	}
+}
+
 // fileRecord is file's record key as the fault schedule names it.
 func fileRecord(share entity.ShareID, file entity.FileID) string {
 	return keys.Describe(keys.ID(keys.ID([]byte{keys.KindF}, share[:]), file[:]))
