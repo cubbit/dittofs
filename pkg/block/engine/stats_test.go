@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -261,4 +262,81 @@ func TestStatsBesideWrites(t *testing.T) {
 	if got := u.e.Stats().Journals["unit"].Shares[u.share.ID].UsedBytes; got != 100 {
 		t.Errorf("the share's UsedBytes %d, want the 100 bytes written", got)
 	}
+}
+
+// A stalled removal whose phase 2 run advances without finishing clears
+// removal_stalled.
+func TestStatsClearsRemovalStalledOnAdvance(t *testing.T) {
+	x := &cutResume{resuming: newResuming()}
+	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x })
+	f := u.create(t, "f")
+	x.f = f
+	x.cut.Store(-1 << 30) // no run advances yet
+	u.write(t, f, 0, fill(16, 'a'))
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	x.mu.Lock()
+	x.failing[f] = true
+	x.mu.Unlock()
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
+		t.Fatal(err)
+	}
+	u.until(t, "f removal_stalled", func() bool {
+		_, ok := shareCondition(u.e.Stats(), u.share.ID, "removal_stalled", f)
+		return ok
+	})
+	x.cut.Store(1 << 30) // every run advances, none finishes
+	u.until(t, "removal_stalled cleared on advance", func() bool {
+		_, ok := shareCondition(u.e.Stats(), u.share.ID, "removal_stalled", f)
+		return !ok
+	})
+}
+
+// A stalled removal whose share is dropped while its phase 2 runs clears
+// removal_stalled when the run returns.
+func TestStatsClearsRemovalStalledOnDrop(t *testing.T) {
+	var f entity.FileID
+	var hold atomic.Bool
+	entered, open := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	u := newUnit(t, onResume(func(ctx context.Context, next engine.Content, s entity.ShareID, file entity.FileID) (bool, error) {
+		if file != f {
+			return next.Resume(ctx, s, file)
+		}
+		if hold.Load() {
+			once.Do(func() { close(entered) })
+			<-open
+		}
+		return false, errors.New("an injected phase 2 failure")
+	}))
+	f = u.create(t, "f")
+	u.write(t, f, 0, fill(16, 'a'))
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
+		t.Fatal(err)
+	}
+	u.until(t, "f removal_stalled", func() bool {
+		_, ok := shareCondition(u.e.Stats(), u.share.ID, "removal_stalled", f)
+		return ok
+	})
+	hold.Store(true)
+	u.until(t, "f's next run is held", func() bool {
+		select {
+		case <-entered:
+			return true
+		default:
+			return false
+		}
+	})
+	if err := u.e.DropShare(t.Context(), u.rec, u.share.ID); err != nil {
+		t.Fatal(err)
+	}
+	close(open)
+	u.until(t, "removal_stalled cleared once the dropped share's run returned", func() bool {
+		_, ok := shareCondition(u.e.Stats(), u.share.ID, "removal_stalled", f)
+		return !ok
+	})
 }

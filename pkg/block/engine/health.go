@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"sync"
@@ -142,7 +143,7 @@ const (
 const syncFailedFor = time.Hour
 
 // errRemovalStalled is removal_stalled's cause.
-var errRemovalStalled = errors.New("the removal failed five times in a row")
+var errRemovalStalled = fmt.Errorf("the removal failed %d times in a row", stallAfter)
 
 // errSyncWindowFailed is journal_sync_failed's cause.
 var errSyncWindowFailed = errors.New("a sync window failed and its unsynced writes were lost")
