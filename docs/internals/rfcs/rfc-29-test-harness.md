@@ -1935,7 +1935,8 @@ double, and no other:
    in that package or its `xxxtest` package, and passes the **same conformance suite** as the
    production implementation: a memory KV or store, an in-memory transport, a simulated disk.
    It may record its own outputs, and a test asserts on those outputs or on the resulting
-   state, never on which calls were made. For a dependency not built yet, its conformance
+   state, never on which calls were made, except through the pass-through record below. For a
+   dependency not built yet, its conformance
    suite is written first, then the smallest in-memory implementation that passes it; the
    production implementation passes the same suite when it lands.
 3. **Fault injection.** A wrapper around a real implementation, or around a kind 2, that fails,
