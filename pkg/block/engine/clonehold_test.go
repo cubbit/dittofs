@@ -295,7 +295,7 @@ func TestAFailedReleaseRetriesOnlyTheRelease(t *testing.T) {
 	u := clonedUnit(t, func(d *engine.Deps) { d.Holds = h })
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
-	before := u.e.RemovalRunsDone(u.share.ID)
+	before := u.e.Stats().RemovalRuns["done"]
 	if err := u.answered(t, "the clone while its Release fails", u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestAFailedReleaseRetriesOnlyTheRelease(t *testing.T) {
 	}
 	failing.Store(false)
 	u.until(t, "the Release retried to success", func() bool { return h.released() == 1 })
-	if got := u.e.RemovalRunsDone(u.share.ID) - before; got != 1 {
+	if got := u.e.Stats().RemovalRuns["done"] - before; got != 1 {
 		t.Errorf("engine_removal_runs_total{done} moved by %d, want 1 for the clone's one phase 2", got)
 	}
 }

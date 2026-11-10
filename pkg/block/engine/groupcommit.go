@@ -472,7 +472,7 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 		err := failed[c.f]
 		retry := shared
 		if err == nil || (syncErr == nil && !storeWide(err)) {
-			retry = g.outcome(c.f, err, len(batch) == 1 || alone[c.f])
+			retry = g.outcome(c.b, c.f, err, len(batch) == 1 || alone[c.f])
 		}
 		dones = append(dones, g.e.settle(g, c, err == nil, retry)...)
 	}
@@ -509,6 +509,17 @@ func (g *groupCommit) widen(err error, files int, timedOut bool) time.Time {
 	defer g.mu.Unlock()
 	if g.wideBackoff == 0 {
 		g.e.d.Logger.Warn("existence_commit_failing", "batch", files, "err", err)
+		// decision: a failure that blames no file names no share either, a
+		// batch spanning every share of the journal, so it is raised for
+		// the journal, which RFC 25's registry does not list for this
+		// condition. Raise it per share of the batch if the evaluator ever
+		// needs a share scope for it.
+		g.e.conds.raise(condKey{conditionExistenceCommitFailing, g}, Condition{
+			Name:    conditionExistenceCommitFailing,
+			Subject: Subject{Scope: ScopeJournal},
+			Cause:   err,
+			Detail:  fmt.Sprintf("a batch of %d files failed and no file is blamed: the group commit backs off whole", files),
+		}, time.Time{})
 	}
 	g.wideBackoff = nextBackoff(g.wideBackoff)
 	if timedOut {
@@ -526,6 +537,7 @@ func (g *groupCommit) narrowed() {
 	defer g.mu.Unlock()
 	if g.wideBackoff != 0 {
 		g.e.d.Logger.Warn("existence_commit_failing cleared")
+		g.e.conds.clear(condKey{conditionExistenceCommitFailing, g})
 	}
 	g.wideBackoff, g.wideCap = 0, 0
 }
@@ -533,8 +545,9 @@ func (g *groupCommit) narrowed() {
 // outcome records f's commit in a batch of one file or more: a success clears
 // its failure; a failure beside other files has it retried alone in the next
 // batch, and one alone backs it off by itself and raises
-// existence_commit_failing naming it. It answers when f may be taken again.
-func (g *groupCommit) outcome(f entity.FileID, err error, alone bool) (retry time.Time) {
+// existence_commit_failing naming it, for b's share. It answers when f may be
+// taken again.
+func (g *groupCommit) outcome(b *binding, f entity.FileID, err error, alone bool) (retry time.Time) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	fl := g.failing[f]
@@ -558,6 +571,12 @@ func (g *groupCommit) outcome(f entity.FileID, err error, alone bool) (retry tim
 	if !fl.raised {
 		fl.raised = true
 		g.e.d.Logger.Warn("existence_commit_failing", "file", f, "err", err)
+		g.e.conds.raise(condKey{conditionExistenceCommitFailing, fl}, Condition{
+			Name:    conditionExistenceCommitFailing,
+			Subject: Subject{Scope: ScopeShare, ID: b.share.ID.String()},
+			Cause:   err,
+			Detail:  "file " + f.String() + ": backed off as failing; its stability points answer retry-later until its existence commits",
+		}, time.Time{})
 	}
 	return g.e.d.Clock.Now().Add(fl.backoff)
 }
@@ -575,6 +594,7 @@ func (g *groupCommit) clearFailingLocked(f entity.FileID) {
 		delete(g.failing, f)
 		if fl.raised {
 			g.e.d.Logger.Warn("existence_commit_failing cleared", "file", f)
+			g.e.conds.clear(condKey{conditionExistenceCommitFailing, fl})
 		}
 	}
 }

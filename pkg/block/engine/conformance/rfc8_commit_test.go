@@ -141,7 +141,7 @@ func TestRFC8A_FailedWindow(t *testing.T) {
 	f := enginetest.New(t)
 	_, id := f.File("a")
 	v := write(t, f, id, 0, []byte("in a failed window"))
-	f.FailNextSync()
+	f.FailNextWindow()
 	cv, seq, err := f.E.Commit(t.Context(), f.Share.ID, id, 0, 0)
 	if err != nil || cv == v || seq == 0 {
 		t.Errorf("Commit over a failed window: verifier %x, sequence %d, %v; want success, other than %x, raised", cv, seq, err, v)

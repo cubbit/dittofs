@@ -94,7 +94,7 @@ func TestALoneWriteIsCommittedAtItsAge(t *testing.T) {
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("abc"))
 	eventually(t, "the group commit's timer is set", func() bool { return u.clock.Pending() > 0 })
-	if u.e.PendingApplied() != 0 {
+	if u.e.Stats().PendingExistenceOps != 0 {
 		t.Fatal("committed before its age")
 	}
 	u.clock.Advance(time.Second)
@@ -104,8 +104,8 @@ func TestALoneWriteIsCommittedAtItsAge(t *testing.T) {
 	if len(log.calls) != 2 || log.calls[0] != "sync" || log.calls[1] != "commit" {
 		t.Errorf("calls %v, want one sync then one commit", log.calls)
 	}
-	if u.e.PendingApplied() != 1 {
-		t.Errorf("engine_pending_existence_ops %d, want 1", u.e.PendingApplied())
+	if u.e.Stats().PendingExistenceOps != 1 {
+		t.Errorf("engine_pending_existence_ops %d, want 1", u.e.Stats().PendingExistenceOps)
 	}
 }
 

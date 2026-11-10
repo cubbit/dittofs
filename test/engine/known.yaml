@@ -296,3 +296,10 @@
   category: feature
   reason: 'Epic 6: a release whose last batch committed and whose prune did not is pruned at the restart, and its index entry goes. Fails at the fixture until the journal has Init, Open, WriteAt, Delete, Since and Settle.'
   issue: '#3700'
+- test: TestRFC8B_JournalSyncFailed
+  message: 'fixture: journal init: journal: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 7: a failed window with loss records raises journal_sync_failed, which clears an hour later on the test clock, while a failed sync whose window is re-appended raises none, and neither does a restart over the loss record; also the failed window (epic 4) and the start (epic 6). Fails at the fixture until the journal has Init, Open, WriteAt, Sync and fails windows.'
+  issue: '#3590'

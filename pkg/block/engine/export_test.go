@@ -220,11 +220,6 @@ func (e *Engine) AddPending(f entity.FileID, off, n int64) (drop func()) {
 	}
 }
 
-// FileStateWaits is the file_state lock-wait series: its count and total.
-func (e *Engine) FileStateWaits() (int64, time.Duration) {
-	return e.files.waits.count.Load(), time.Duration(e.files.waits.total.Load())
-}
-
 // FileStateWaiting is the callers waiting for an entry lock now.
 func (e *Engine) FileStateWaiting() int64 { return e.files.waits.waiting.Load() }
 
@@ -312,21 +307,6 @@ func (e *Engine) ClearOps(f entity.FileID) {
 	e.files.unlock(f, fe)
 }
 
-// Reads is engine_reads_total of class, by its label.
-func (e *Engine) Reads(class string) int64 {
-	for c, name := range readClassNames {
-		if name == class {
-			return e.reads.byClass[c].Load()
-		}
-	}
-	panic("no read class " + class)
-}
-
-// ReadSeconds is engine_read_seconds: its count and total.
-func (e *Engine) ReadSeconds() (int64, time.Duration) {
-	return e.reads.count.Load(), time.Duration(e.reads.total.Load())
-}
-
 // OnCapture runs f after each batch's capture, before its sync.
 func (e *Engine) OnCapture(f func()) { e.hooks.captured.Store(&f) }
 
@@ -341,9 +321,6 @@ func (e *Engine) CommitNow(ctx context.Context, s entity.ShareID, f entity.FileI
 
 // WaitBatch is waitBatch on f.
 func (e *Engine) WaitBatch(ctx context.Context, f entity.FileID) error { return e.waitBatch(ctx, f) }
-
-// PendingApplied is engine_pending_existence_ops.
-func (e *Engine) PendingApplied() int64 { return e.pendingApplied.Load() }
 
 // OnLookup runs f in lockFor between its lookup and its lock.
 func (e *Engine) OnLookup(f func()) { e.files.afterLookup = f }
@@ -376,9 +353,6 @@ func (e *Engine) SyncFile(ctx context.Context, s entity.ShareID, f entity.FileID
 	}
 	return e.sync(ctx, b, fileID(f))
 }
-
-// StabilityPoints is engine_stability_points_total.
-func (e *Engine) StabilityPoints() int64 { return e.stabilityPoints.Load() }
 
 // Failing reports whether existence_commit_failing names f on journal j.
 func (e *Engine) Failing(j Journal, f entity.FileID) bool {
@@ -422,38 +396,6 @@ func (e *Engine) LoopSteps(s entity.ShareID) int64 {
 		return 0
 	}
 	return b.gc.removals.steps.Load()
-}
-
-// RemovalRunsDone is engine_removal_runs_total{result="done"} on the share's
-// journal's loop.
-func (e *Engine) RemovalRunsDone(s entity.ShareID) int64 {
-	b, err := e.bindingOf(s)
-	if err != nil {
-		return 0
-	}
-	return b.gc.removals.runs[runDone].Load()
-}
-
-// RemovalRunsError is engine_removal_runs_total{result="error"} on the
-// share's journal's loop.
-func (e *Engine) RemovalRunsError(s entity.ShareID) int64 {
-	b, err := e.bindingOf(s)
-	if err != nil {
-		return 0
-	}
-
-	return b.gc.removals.runs[runError].Load()
-}
-
-// RemovalRunsConflict is engine_removal_runs_total{result="conflict"} on the
-// share's journal's loop.
-func (e *Engine) RemovalRunsConflict(s entity.ShareID) int64 {
-	b, err := e.bindingOf(s)
-	if err != nil {
-		return 0
-	}
-
-	return b.gc.removals.runs[runConflict].Load()
 }
 
 // Registrations is the count of f's source and destination registrations.
@@ -725,6 +667,7 @@ func (l *removalLoop) dropShare(s entity.ShareID) {
 	})
 	l.mu.Unlock()
 	for _, it := range dropped {
+		l.unstall(it)
 		if it.end != nil {
 			it.end()
 		}

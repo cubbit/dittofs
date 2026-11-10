@@ -20,7 +20,7 @@ func TestATruncateOverAWriteItsSyncDropsCommits(t *testing.T) {
 		t.Fatal(err)
 	}
 	u.failWindow(f, 0, 10)
-	applied := u.e.PendingApplied()
+	applied := u.e.Stats().PendingExistenceOps
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 5); err != nil {
 		t.Fatalf("Truncate: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestATruncateOverAWriteItsSyncDropsCommits(t *testing.T) {
 	if u.e.GuardHeld(f) || len(u.e.Pending(f)) != 0 {
 		t.Errorf("after it: guard %v, pending %+v; want neither", u.e.GuardHeld(f), u.e.Pending(f))
 	}
-	if n := u.e.PendingApplied() - applied; n != 0 {
+	if n := u.e.Stats().PendingExistenceOps - applied; n != 0 {
 		t.Errorf("%d operations counted applied, want none: the dropped write committed nothing", n)
 	}
 }

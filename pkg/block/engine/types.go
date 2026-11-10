@@ -42,6 +42,29 @@ type Stats struct {
 	// SelfFences is engine_self_fences_total{reason="store"}: each time the
 	// node fenced for a store that committed no write transaction.
 	SelfFences int64
+	// StabilityPoints is engine_stability_points_total.
+	StabilityPoints int64
+	// PendingExistenceOps is engine_pending_existence_ops' sum: the
+	// operations the existence commits committed.
+	PendingExistenceOps int64
+	// GroupCommitSplits is engine_group_commit_splits_total.
+	GroupCommitSplits int64
+	// Reads is engine_reads_total by its class label, and ReadSeconds
+	// engine_read_seconds.
+	Reads       map[string]int64
+	ReadSeconds Series
+	// FileStateLockWaits is engine_lock_wait_seconds{area="file_state"}: the
+	// contended takes of a file's state lock.
+	FileStateLockWaits Series
+	// RemovalRuns is engine_removal_runs_total by its result label, over
+	// every journal.
+	RemovalRuns map[string]int64
+}
+
+// Series is a duration series as a count and a sum.
+type Series struct {
+	Count int64
+	Total time.Duration
 }
 
 // WriteOpts is what a write carries besides its bytes.

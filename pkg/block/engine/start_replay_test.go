@@ -1662,7 +1662,7 @@ func TestReplayLeavesNoEntryAndCallsNoDone(t *testing.T) {
 		t.Errorf("%d file entries after the replay, want 0", n)
 	}
 
-	if n := r.e.PendingApplied(); n != 0 {
+	if n := r.e.Stats().PendingExistenceOps; n != 0 {
 		t.Errorf("%d operations went through the group commit, want 0", n)
 	}
 
