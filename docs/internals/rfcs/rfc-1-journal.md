@@ -1751,7 +1751,7 @@ The rest of this section specifies the placement index. In memory, the journal
 maintains for each `FileID` the tag that owns it, kept while any segment holds a
 record of the file ([§3](#3.%20Interface)), and an offset-ordered set
 of disjoint held extents, each
-mapped to a record location and carrying its content version and offloaded bit,
+mapped to a record location and carrying its record's sequence number, its content version and its offloaded bit,
 together with the file's removal markers ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)), which carry a version and no
 location, and its **retained extents** ([§3.11](#3.11%20Snapshot%20holds)): superseded content still kept for
 offload, each with its extent, version, record location and offloaded bit. Retained
@@ -1761,7 +1761,9 @@ extents and each other.
 Extents **MUST** be disjoint: a write superseding part of an existing extent
 **MUST** split or narrow it, never leave two extents covering one offset. A
 lookup **MUST** be unambiguous without consulting sequence numbers — they order
-records during recovery, not during a read.
+records during recovery, not during a read. The entry's sequence number is never
+consulted to resolve a lookup: it is kept so a read can compare it with the header
+it finds and so a record that does not verify can be named.
 
 ### 4.1 What it must answer
 
@@ -1812,8 +1814,12 @@ An entry costs about 53 bytes in order and 69 in random order, so the index's
 footprint tracks how many extents exist and is independent of how much content
 they describe.
 
-Measured with a 64-bit version, an entry is 40 bytes and 43 in a B-tree layout;
-with the 128-bit version of [§4.3](#4.3%20Versions) it is about 53, measured in one file of 10^6 extents.
+An entry is 40 bytes: it keeps the version's 64-bit counter half, the epoch half
+being zero in this format version ([§4.3](#4.3%20Versions)), and the record's 64-bit
+sequence number, which a read compares with the header it finds
+([RFC 28 §2.4](rfc-28-journal-format.md#2.4%20The%20segment%20catalog)). With the tree
+around it, it measures about 53 bytes, in one file of 10^6 extents. A format version
+that raises the epoch widens the entry by eight bytes and has to restate these figures.
 That is for extents written in order. Written in random order, a B-tree's nodes
 are less full. One whose full node first hands its last key to a right sibling
 with room, splitting only when the sibling is full too, measures about 69 bytes
@@ -1928,7 +1934,8 @@ counter or sequence number is the largest 64-bit value: the journal never issues
 it, since its version limit is exclusive, so such a record comes from damage or
 from another writer. The width is fixed now so that a
 later format version can raise the epoch ([RFC 10](rfc-10-journal-replication.md#2.3%20The%20journal%20extension)) without changing the
-record layout or the metadata that stores versions. Every version the journal
+record layout or the metadata that stores versions; the in-memory index stores only the
+counter half while the epoch is zero ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)). Every version the journal
 assigns **MUST** exceed every version on disk and the floor supplied at open
 ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)). Once the epoch half is raised, the floor is compared
 on the counter half only: epochs are ordered per file by the extension that

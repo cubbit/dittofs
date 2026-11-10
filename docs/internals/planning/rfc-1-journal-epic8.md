@@ -439,8 +439,8 @@ the rule that a persisted index is not authoritative (E3, E5, epic 7).
   uses a pooled buffer, so its allocations stay flat (R101).
 - **D5, "the catalog entry that sent a read there" is the index's entry.** RFC 28 §2.4 asks a
   read to compare the header it finds with the catalog entry. The running journal has no
-  catalog in memory: it has the index entry, which holds the same fields (file, offset, length,
-  kind, sequence number, version, record offset) and the segment id. The read compares the
+  catalog in memory: it has the index entry, which holds the fields the comparison needs (file, version,
+  sequence number, and placement: segment, record offset, skip, extent). The read compares the
   header it finds with them. A `decision:` marker at the comparison says so, and that a
   journal rebuilt from a catalog compares against the entries recovery placed in the index,
   which are the catalog's.
