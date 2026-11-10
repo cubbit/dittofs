@@ -1,7 +1,6 @@
 package journaltest
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -10,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
@@ -202,33 +200,34 @@ func TestTryKillEndsTheOldProcess(t *testing.T) {
 	}
 }
 
-// TestAwaitSparesFailsTheTestOnARefusingPool pins the fixture's failure when
-// the pool cannot reach its spares: the wait the open handed over refuses,
-// and the fixture fails its own test naming the pool, before any check runs
-// — a check never reads a journal whose pool it cannot account for. The
-// wait is a stub here, so the failure needs no fault and no wait.
-func TestAwaitSparesFailsTheTestOnARefusingPool(t *testing.T) {
+// TestAwaitSparesFailsTheTestOnASettlingShortPool pins the fixture's failure
+// when the pool cannot reach its spares: a journal whose spare makes all
+// fail settles short, the wait the open handed over answers the spare
+// refusal, and the fixture fails its own test naming the pool, before any
+// check runs — a check never reads a journal whose pool it cannot account
+// for. The fault is armed between the init and the open, on the real seam's
+// spare creates, so the pool that settles short is a real one.
+func TestAwaitSparesFailsTheTestOnASettlingShortPool(t *testing.T) {
+	eio := errors.New("injected EIO")
+
 	r := &fatalRecorder{TB: t}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		f := bareFixture(r, nil, FixtureSegmentCap, nil)
-		f.takeSparesWait(refusingSpares{})
+		if _, err := f.TryInit(); err != nil {
+			r.Fatalf("fixture: init: %v", err)
+		}
+		if err := f.Seam.Schedule(kit.Failing(kit.OpCreate, "*.spare.tmp", 0, eio)); err != nil {
+			r.Fatalf("fixture: schedule the spare fault: %v", err)
+		}
+		f.open(true)
 		f.awaitSpares()
 	}()
 	<-done
 
 	if !strings.HasPrefix(r.fatal, "fixture: ") ||
 		!strings.Contains(r.fatal, "the journal's pool did not reach its spares") {
-		t.Fatalf("a pool that refused its fill was reported as %q, want the fixture's own failure naming it", r.fatal)
+		t.Fatalf("a pool that settled short was reported as %q, want the fixture's own failure naming it", r.fatal)
 	}
-}
-
-// refusingSpares is a core.SparesWait whose wait always refuses, standing
-// for a pool that settled short: the shape the fixture must fail its own
-// test on.
-type refusingSpares struct{}
-
-func (refusingSpares) WaitSpares(context.Context) error {
-	return &core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}
 }

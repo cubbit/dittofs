@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 	"golang.org/x/sys/unix"
 )
@@ -646,28 +647,28 @@ func TestCheckProbeReadsItsCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if p.dir != dir || p.mountinfo != string(text) {
-		t.Errorf("got dir %q and mount table %q, want %q and %q", p.dir, p.mountinfo, dir, text)
+	if p.Dir != dir || p.Mountinfo != string(text) {
+		t.Errorf("got dir %q and mount table %q, want %q and %q", p.Dir, p.Mountinfo, dir, text)
 	}
 
-	if p.fsType != magicBtrfs || p.dirIno != btrfsSubvolumeRootIno || p.dirFlags != fsNoCOW|0x10 || p.mountID != dirMountID {
+	if p.FSType != magicBtrfs || p.DirIno != btrfsSubvolumeRootIno || p.DirFlags != fsNoCOW|0x10 || p.MountID != dirMountID {
 		t.Errorf("got type %#x, inode %d, flags %#x, mount ID %d; want %#x, %d, %#x, %d",
-			p.fsType, p.dirIno, p.dirFlags, p.mountID, magicBtrfs, btrfsSubvolumeRootIno, fsNoCOW|0x10, dirMountID)
+			p.FSType, p.DirIno, p.DirFlags, p.MountID, magicBtrfs, btrfsSubvolumeRootIno, fsNoCOW|0x10, dirMountID)
 	}
 
-	files := slices.Clone(p.files)
-	slices.SortFunc(files, func(a, b probedFile) int {
-		return strings.Compare(a.name, b.name)
+	files := slices.Clone(p.Files)
+	slices.SortFunc(files, func(a, b storage.ProbedFile) int {
+		return strings.Compare(a.Name, b.Name)
 	})
 
-	want := []probedFile{
+	want := []storage.ProbedFile{
 		{
-			name:  "00000000000000000001.seg",
-			flags: fsNoCOW | 0x4000,
+			Name:  "00000000000000000001.seg",
+			Flags: fsNoCOW | 0x4000,
 		},
 		{
-			name:  "format",
-			flags: fsNoCOW | 0x20,
+			Name:  "format",
+			Flags: fsNoCOW | 0x20,
 		},
 	}
 
@@ -1065,8 +1066,8 @@ func TestCheckMountIDNotReported(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if p.mountID != 0 {
-		t.Errorf("got mount ID %d, want 0 where stx_mask lacks STATX_MNT_ID", p.mountID)
+	if p.MountID != 0 {
+		t.Errorf("got mount ID %d, want 0 where stx_mask lacks STATX_MNT_ID", p.MountID)
 	}
 
 	if err := check(f.table(), mountinfo, dir); err != nil {
@@ -1112,8 +1113,8 @@ func TestCheckStatxMissing(t *testing.T) {
 		t.Fatalf("got %v, want statx's ENOSYS read as an unknown mount ID", err)
 	}
 
-	if p.mountID != 0 {
-		t.Errorf("got mount ID %d, want 0 where statx is missing", p.mountID)
+	if p.MountID != 0 {
+		t.Errorf("got mount ID %d, want 0 where statx is missing", p.MountID)
 	}
 
 	wantAllClosed(t, f)

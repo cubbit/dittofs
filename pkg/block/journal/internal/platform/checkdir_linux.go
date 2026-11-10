@@ -2,13 +2,11 @@
 
 package platform
 
-// CheckDir decides whether dir is suitable for a journal. It returns an
-// error matching core.ErrUnsuitableStorage for the first rule of the
-// platform profile a directory refuses — a mount without cache flushes, a
-// Btrfs directory that is not a subvolume root or keeps copy-on-write —
-// with its message naming the rule, the directory and what to change; any
-// other error as itself, which says nothing about whether the directory is
-// suitable; and nil for a suitable one.
-func CheckDir(dir string) error {
+// checkDirOS decides whether dir is suitable for a journal by the
+// platform's own probe: the real mount table, statfs and the ioctl answers
+// for dir, run through the verdict. Its inputs are swapped for a recorded
+// table and recorded answers in the platform's own tests, so no answer
+// there depends on the host's mounts.
+func checkDirOS(dir string) error {
 	return Check(dir)
 }

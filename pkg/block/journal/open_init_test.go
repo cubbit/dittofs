@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/platform/platformtest"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
@@ -38,10 +40,34 @@ func newSeam(t *testing.T) seamDir {
 	return seamDir{seam: seam, dir: dir}
 }
 
-// init inits a journal in the seam's directory through the seam's view.
+// init inits a journal in the seam's directory through the seam's view. The
+// platform check reads a suitable mount fed to the real verdict as an input:
+// a host's own mount table says nothing about a test's temporary directory,
+// and only the tests of the refusal feed one that fails a rule.
 func (s seamDir) init(t *testing.T) (JournalID, error) {
 	t.Helper()
-	return Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	return Init(context.Background(), s.dir, installID,
+		WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
+}
+
+// assertNoCalls fails the test when any storage call reached the seam: the
+// checks that must reach nowhere read the seam's own counters, a record of
+// what reached the real files, rather than a storage built to fail.
+func (s seamDir) assertNoCalls(t *testing.T) {
+	t.Helper()
+	for _, op := range []string{kit.OpCreate, kit.OpOpen, kit.OpRename, kit.OpRemove, kit.OpList, kit.OpSyncDir} {
+		if n := s.seam.Calls(op); n != 0 {
+			t.Errorf("the call reached the seam: %d %s calls were made", n, op)
+		}
+	}
+}
+
+// mountGather is the gather that answers the probe p for every directory, so
+// the real verdict reads the mount a test built for it.
+func mountGather(p storage.Probe) storage.Gather {
+	return func(string) (storage.Probe, error) {
+		return p, nil
+	}
 }
 
 // create leaves an empty file in the seam's directory, durable, as a
@@ -72,10 +98,12 @@ func (s seamDir) listSeam(t *testing.T) []string {
 }
 
 // initOS inits a journal in the real directory dir through the operating
-// system's files.
+// system's files, with a suitable mount fed to the platform check, as
+// seamDir.init feeds one, so a host whose own mount table refuses the
+// directory cannot shape the answer.
 func initOS(t *testing.T, dir string) (JournalID, error) {
 	t.Helper()
-	return Init(context.Background(), dir, installID)
+	return Init(context.Background(), dir, installID, WithMountProbe(platformtest.SuitableGather(dir)))
 }
 
 // makeLostAndFound leaves a lost+found holding a file in the real directory
@@ -527,15 +555,18 @@ func awaitHoldOrDone(t *testing.T, reached <-chan struct{}, done <-chan error) {
 // platform after it has written, or not at all: the check runs before any
 // file is created, and before the empty-directory refusal, so an unsuitable
 // directory that also holds another entry is refused as unsuitable, not as
-// non-empty, and nothing is created. The check is swapped for a refusal the
-// test controls, so no answer depends on the host's platform.
+// non-empty, and nothing is created. The mount the verdict reads is fed to
+// the real one through the option as an input, so no answer depends on the
+// host's platform.
 func TestInit_UnsuitableChecksBeforeAnyFile(t *testing.T) {
-	swapCheckDir(t, func(string) error { return ErrUnsuitableStorage })
-
 	t.Run("an empty directory", func(t *testing.T) {
 		dir := t.TempDir()
-		if _, err := initOS(t, dir); !errors.Is(err, ErrUnsuitableStorage) {
+		_, err := Init(context.Background(), dir, installID, WithMountProbe(mountGather(platformtest.NoBarrierMount(dir))))
+		if !errors.Is(err, ErrUnsuitableStorage) {
 			t.Fatalf("an unsuitable directory: Init returned %v, want ErrUnsuitableStorage", err)
+		}
+		if !strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), "remount with barriers") {
+			t.Errorf("the refusal %q names neither the directory nor the rule", err)
 		}
 		if names := listOS(t, dir); len(names) != 0 {
 			t.Errorf("after the refusal the directory holds %v, want it empty", names)
@@ -546,7 +577,7 @@ func TestInit_UnsuitableChecksBeforeAnyFile(t *testing.T) {
 		dir := t.TempDir()
 		makeLostAndFound(t, dir)
 
-		_, err := initOS(t, dir)
+		_, err := Init(context.Background(), dir, installID, WithMountProbe(mountGather(platformtest.NoBarrierMount(dir))))
 		if !errors.Is(err, ErrUnsuitableStorage) {
 			t.Fatalf("an unsuitable directory holding another entry: Init returned %v, want ErrUnsuitableStorage, not the empty-directory refusal", err)
 		}
@@ -558,18 +589,20 @@ func TestInit_UnsuitableChecksBeforeAnyFile(t *testing.T) {
 
 // TestInit_CheckError_ReturnedAsItself fails an Init that turns an error
 // met while checking into a refusal, or answers one with it: an error from
-// the platform checks — an I/O error, a mount table that does not describe
-// the directory — is returned as itself, matching neither
-// ErrUnsuitableStorage nor ErrNotEmpty, so a caller can tell a fault to fix
-// from a refusal, and nothing is created.
+// the platform checks — an I/O error, a mount table that cannot be read —
+// is returned as itself, matching neither ErrUnsuitableStorage nor
+// ErrNotEmpty, so a caller can tell a fault to fix from a refusal, and
+// nothing is created. The verdict takes it as the gather's error, so the
+// real one runs and answers it.
 func TestInit_CheckError_ReturnedAsItself(t *testing.T) {
-	probe := errors.New("the mount table does not parse")
-	swapCheckDir(t, func(string) error { return probe })
+	probe := &fs.PathError{Op: "open", Path: "/proc/self/mountinfo", Err: errors.New("an I/O error met while reading the mount table")}
 
 	dir := t.TempDir()
 	makeLostAndFound(t, dir)
 
-	_, err := initOS(t, dir)
+	_, err := Init(context.Background(), dir, installID, WithMountProbe(func(string) (storage.Probe, error) {
+		return storage.Probe{}, probe
+	}))
 	if !errors.Is(err, probe) {
 		t.Fatalf("Init returned %v, want the probe's error as itself", err)
 	}
@@ -603,15 +636,16 @@ func TestInit_NegativeSetting(t *testing.T) {
 			dir := t.TempDir()
 			makeLostAndFound(t, dir)
 
-			// The refusal must come before any directory access, so a
-			// storage whose every call fails proves none was made — a
-			// listing that ran would answer the injected failure, not
-			// ErrNotEmpty, and an empty-directory refusal with no listing
-			// at all cannot pass its own check.
+			// The refusal must come before any directory access, so the
+			// seam's own counters say no call was made: a listing that ran
+			// would answer the real directory, and an empty-directory
+			// refusal with no listing at all cannot pass its own check.
+			s := newSeam(t)
 			if _, err := Init(context.Background(), dir, installID,
-				append(append([]Option{}, opts...), WithStorage(failFS{}))...); !errors.Is(err, ErrInvalidSetting) {
+				append(append([]Option{}, opts...), WithStorage(s.seam.FS()))...); !errors.Is(err, ErrInvalidSetting) {
 				t.Fatalf("a negative %s: Init returned %v, want ErrInvalidSetting", name, err)
 			}
+			s.assertNoCalls(t)
 
 			if names := listOS(t, dir); !slices.Equal(names, []string{"lost+found"}) {
 				t.Errorf("after the refusal the directory holds %v, want the lost+found alone", names)
@@ -620,27 +654,14 @@ func TestInit_NegativeSetting(t *testing.T) {
 	}
 }
 
-// failFS is a storage.FS whose every call fails: the checks that must reach
-// nowhere take it, so a refusal that still consulted storage answers the
-// injected failure rather than the refusal the check expects.
-type failFS struct{}
-
-var errReached = errors.New("storage was reached")
-
-func (failFS) Create(string) (storage.File, error) { return nil, errReached }
-func (failFS) Open(string) (storage.File, error)   { return nil, errReached }
-func (failFS) Rename(string, string) error         { return errReached }
-func (failFS) Remove(string) error                 { return errReached }
-func (failFS) List() ([]string, error)             { return nil, errReached }
-func (failFS) SyncDir() error                      { return errReached }
-
-// TestInit_MissingDir_ReturnsListError fails an Init that answers a
+// TestInit_MissingDir_ReturnsTheStorageError fails an Init that answers a
 // directory I/O fault with a refusal, or creates the directory: a directory
-// that does not exist fails the listing, and the listing's error is
-// returned as itself — not ErrNotEmpty, not ErrUnsuitableStorage, and not
-// a made directory — so the caller can tell a missing directory from a
-// refused one.
-func TestInit_MissingDir_ReturnsListError(t *testing.T) {
+// that does not exist fails the first step that reads it — the platform
+// check on Linux, the listing elsewhere — and that step's error is
+// returned as itself, matching neither ErrNotEmpty nor
+// ErrUnsuitableStorage, and the directory is never made, so the caller can
+// tell a missing directory from a refused one.
+func TestInit_MissingDir_ReturnsTheStorageError(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "absent")
 
 	_, err := initOS(t, dir)
@@ -648,11 +669,11 @@ func TestInit_MissingDir_ReturnsListError(t *testing.T) {
 		t.Fatal("Init on a directory that does not exist returned no error")
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("got %v, want the listing's error matching fs.ErrNotExist", err)
+		t.Errorf("got %v, want the storage's not-exist error matching fs.ErrNotExist", err)
 	}
 	for _, target := range []error{ErrNotEmpty, ErrUnsuitableStorage} {
 		if errors.Is(err, target) {
-			t.Errorf("the listing's error matches %v, want it matching no refusal", target)
+			t.Errorf("the storage's error matches %v, want it matching no refusal", target)
 		}
 	}
 	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
@@ -664,17 +685,18 @@ func TestInit_MissingDir_ReturnsListError(t *testing.T) {
 // context: a call checks the context first, before any refusal check and
 // before it changes any state, and if it is done returns the context's
 // error having changed nothing. With the settings resolved, the context is
-// the next thing Init consults, so a storage whose every call fails proves
-// no write was attempted.
+// the next thing Init consults, so the seam's own counters prove no write
+// was attempted.
 func TestInit_CtxCheckedFirst(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	dir := t.TempDir()
-	if _, err := Init(ctx, dir, installID, WithStorage(failFS{})); !errors.Is(err, context.Canceled) {
+	s := newSeam(t)
+	if _, err := Init(ctx, s.dir, installID, WithStorage(s.seam.FS())); !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cancelled context: Init returned %v, want context.Canceled", err)
 	}
-	if names := listOS(t, dir); len(names) != 0 {
+	s.assertNoCalls(t)
+	if names := listOS(t, s.dir); len(names) != 0 {
 		t.Errorf("after the cancelled call the directory holds %v, want it empty", names)
 	}
 }
@@ -770,15 +792,6 @@ func TestInit_SyncDirFailureCleansUp(t *testing.T) {
 	if names := s.listSeam(t); len(names) != 0 {
 		t.Fatalf("after the failed sync the directory holds %v, want it cleaned of the journal whose creation failed", names)
 	}
-}
-
-// swapCheckDir replaces the platform check the tests inject through, and
-// restores the real one when the test ends.
-func swapCheckDir(t *testing.T, check func(string) error) {
-	t.Helper()
-	saved := checkDir
-	checkDir = check
-	t.Cleanup(func() { checkDir = saved })
 }
 
 // TestInit_FailedInitKeepsAnotherInitsFormat fails an Init whose cleanup

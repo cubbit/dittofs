@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
@@ -61,15 +62,15 @@ const (
 // probe returns a probe of dir under table whose attribute and inode answers
 // pass every Btrfs rule, so a case refuses only for what it changes. Its
 // mount ID is unknown.
-func probe(table, dir string, fsType uint32) linuxProbe {
-	return linuxProbe{
-		dir:       dir,
-		mountinfo: table,
-		fsType:    fsType,
+func probe(table, dir string, fsType uint32) storage.Probe {
+	return storage.Probe{
+		Dir:       dir,
+		Mountinfo: table,
+		FSType:    fsType,
 		// Recorded on a Btrfs subvolume root after chattr +C: FS_IOC_GETFLAGS
 		// answered FS_NOCOW_FL and stat inode 256.
-		dirFlags: 0x00800000,
-		dirIno:   256,
+		DirFlags: 0x00800000,
+		DirIno:   256,
 	}
 }
 
@@ -139,7 +140,7 @@ func TestCheckMountOptions(t *testing.T) {
 	}
 	for _, tc := range refused {
 		t.Run("refuses "+tc.name, func(t *testing.T) {
-			err := checkLinuxProbe(probe(hostLines+tc.line, dir, tc.fsType))
+			err := CheckProbe(probe(hostLines+tc.line, dir, tc.fsType))
 			wantBarrier(t, err, dir, "/srv/journal", tc.option)
 		})
 	}
@@ -159,33 +160,33 @@ func TestCheckMountOptions(t *testing.T) {
 	}
 	for _, tc := range passed {
 		t.Run("passes "+tc.name, func(t *testing.T) {
-			wantPass(t, checkLinuxProbe(probe(hostLines+tc.line, dir, tc.fsType)))
+			wantPass(t, CheckProbe(probe(hostLines+tc.line, dir, tc.fsType)))
 		})
 	}
 
 	// The mount point itself is held by its own mount, not by its parent.
 	t.Run("refuses the mount point itself", func(t *testing.T) {
-		err := checkLinuxProbe(probe(hostLines+ext4NestedNoBarrier, "/srv/journal", magicExt))
+		err := CheckProbe(probe(hostLines+ext4NestedNoBarrier, "/srv/journal", magicExt))
 		wantBarrier(t, err, "/srv/journal", "/srv/journal", "nobarrier")
 	})
 
 	// The option on the parent does not reach a nested mount that holds the
 	// directory without it.
 	t.Run("passes nobarrier on the parent only", func(t *testing.T) {
-		wantPass(t, checkLinuxProbe(probe(hostRootNoBarrier+ext4Nested, dir, magicExt)))
+		wantPass(t, CheckProbe(probe(hostRootNoBarrier+ext4Nested, dir, magicExt)))
 	})
 
 	// And the parent's option is read where the parent does hold the
 	// directory.
 	t.Run("refuses nobarrier on the root holding the directory", func(t *testing.T) {
-		err := checkLinuxProbe(probe(hostRootNoBarrier+ext4Nested, "/var/journal", magicExt))
+		err := CheckProbe(probe(hostRootNoBarrier+ext4Nested, "/var/journal", magicExt))
 		wantBarrier(t, err, "/var/journal", "/", "nobarrier")
 	})
 
 	// /data is not a prefix of /database on a path boundary.
 	t.Run("passes a sibling sharing a name prefix", func(t *testing.T) {
 		table := hostLines + "91 33 259:6 / /data rw,relatime shared:41 - ext4 /dev/nvme1n1p2 rw,nobarrier\n"
-		wantPass(t, checkLinuxProbe(probe(table, "/database/j", magicExt)))
+		wantPass(t, CheckProbe(probe(table, "/database/j", magicExt)))
 	})
 
 	// The kernel writes a space, a tab, a newline and a backslash in a mount
@@ -202,7 +203,7 @@ func TestCheckMountOptions(t *testing.T) {
 	} {
 		t.Run("refuses a mount point holding an escaped "+tc.name, func(t *testing.T) {
 			table := hostLines + "92 33 259:7 / " + tc.escaped + " rw,relatime shared:42 - ext4 /dev/nvme1n1p3 rw,nobarrier\n"
-			err := checkLinuxProbe(probe(table, tc.decoded+"/j", magicExt))
+			err := CheckProbe(probe(table, tc.decoded+"/j", magicExt))
 			wantBarrier(t, err, tc.decoded+"/j", tc.decoded, "nobarrier")
 		})
 	}
@@ -211,7 +212,7 @@ func TestCheckMountOptions(t *testing.T) {
 	// word does not refuse.
 	t.Run("passes an option that only contains the word", func(t *testing.T) {
 		line := "90 33 259:5 / /srv/journal rw,relatime shared:40 - ext4 /dev/nvme1n1p1 rw,nobarrier_x,barrier=01,x_nobarrier,xbarrier=0\n"
-		wantPass(t, checkLinuxProbe(probe(hostLines+line, dir, magicExt)))
+		wantPass(t, CheckProbe(probe(hostLines+line, dir, magicExt)))
 	})
 
 	// The barrier options are superblock options, the last field. The
@@ -219,17 +220,17 @@ func TestCheckMountOptions(t *testing.T) {
 	// only the VFS flags); this line puts one there to prove it is not read.
 	t.Run("passes nobarrier in the per-mount field only", func(t *testing.T) {
 		line := "90 33 259:5 / /srv/journal rw,relatime,nobarrier shared:40 - ext4 /dev/nvme1n1p1 rw\n"
-		wantPass(t, checkLinuxProbe(probe(hostLines+line, dir, magicExt)))
+		wantPass(t, CheckProbe(probe(hostLines+line, dir, magicExt)))
 	})
 
 	// The separator follows zero or more optional fields (proc(5)).
 	t.Run("refuses a mount with no optional field", func(t *testing.T) {
 		line := "93 33 259:5 / /srv/journal rw,relatime - ext4 /dev/nvme1n1p1 rw,nobarrier\n"
-		wantBarrier(t, checkLinuxProbe(probe(hostLines+line, dir, magicExt)), dir, "/srv/journal", "nobarrier")
+		wantBarrier(t, CheckProbe(probe(hostLines+line, dir, magicExt)), dir, "/srv/journal", "nobarrier")
 	})
 	t.Run("refuses a mount with two optional fields", func(t *testing.T) {
 		line := "93 33 259:5 / /srv/journal rw,relatime shared:40 master:12 - ext4 /dev/nvme1n1p1 rw,nobarrier\n"
-		wantBarrier(t, checkLinuxProbe(probe(hostLines+line, dir, magicExt)), dir, "/srv/journal", "nobarrier")
+		wantBarrier(t, CheckProbe(probe(hostLines+line, dir, magicExt)), dir, "/srv/journal", "nobarrier")
 	})
 
 	// Btrfs writes subvol= last (btrfs_show_options in fs/btrfs/super.c, every
@@ -239,11 +240,11 @@ func TestCheckMountOptions(t *testing.T) {
 	// subvolume named "a,nobarrier" is not an option.
 	t.Run("passes a btrfs subvolume named like the option", func(t *testing.T) {
 		line := "90 33 0:45 /a,nobarrier /srv/journal rw,relatime shared:40 - btrfs /dev/sdb1 rw,ssd,space_cache=v2,subvolid=257,subvol=/a,nobarrier\n"
-		wantPass(t, checkLinuxProbe(probe(hostLines+line, dir, magicBtrfs)))
+		wantPass(t, CheckProbe(probe(hostLines+line, dir, magicBtrfs)))
 	})
 	t.Run("passes a btrfs subvolume named like the option, as Linux 6.15 writes it", func(t *testing.T) {
 		line := `90 33 0:45 /a,nobarrier /srv/journal rw,relatime shared:40 - btrfs /dev/sdb1 rw,ssd,space_cache=v2,subvolid=257,subvol=/a\054nobarrier` + "\n"
-		wantPass(t, checkLinuxProbe(probe(hostLines+line, dir, magicBtrfs)))
+		wantPass(t, CheckProbe(probe(hostLines+line, dir, magicBtrfs)))
 	})
 
 	// 9p writes uname= and aname= as given, without escaping
@@ -253,26 +254,26 @@ func TestCheckMountOptions(t *testing.T) {
 	// stop the journal's check.
 	ninep := `97 33 0:61 / /mnt/d rw,noatime shared:45 - 9p drvfs rw,dirsync,aname=drvfs;path=D:\My Data;uid=1000;gid=1000,mmap,access=client,msize=65536,trans=fd,rfd=5,wfd=5` + "\n"
 	t.Run("passes beside a 9p mount with a space in its options", func(t *testing.T) {
-		wantPass(t, checkLinuxProbe(probe(hostLines+ninep+ext4Nested, dir, magicExt)))
+		wantPass(t, CheckProbe(probe(hostLines+ninep+ext4Nested, dir, magicExt)))
 	})
 
 	// Synthetic: an ext4 line of the same shape, holding the directory. The
 	// options after the space are still read.
 	t.Run("refuses nobarrier after a space in the held mount's options (synthetic)", func(t *testing.T) {
 		line := `90 33 259:5 / /srv/journal rw,relatime shared:40 - ext4 /dev/nvme1n1p1 rw,x=D:\My Data,nobarrier` + "\n"
-		wantBarrier(t, checkLinuxProbe(probe(hostLines+ninep+line, dir, magicExt)), dir, "/srv/journal", "nobarrier")
+		wantBarrier(t, CheckProbe(probe(hostLines+ninep+line, dir, magicExt)), dir, "/srv/journal", "nobarrier")
 	})
 
 	// The filesystem is the one statfs names: ext3 shares ext4's magic and
 	// the ext4 row.
 	t.Run("refuses ext3 by its statfs type", func(t *testing.T) {
 		line := "90 33 8:17 / /srv/journal rw,relatime - ext3 /dev/sdb1 rw,nobarrier,data=ordered\n"
-		wantBarrier(t, checkLinuxProbe(probe(hostLines+line, dir, magicExt)), dir, "/srv/journal", "nobarrier")
+		wantBarrier(t, CheckProbe(probe(hostLines+line, dir, magicExt)), dir, "/srv/journal", "nobarrier")
 	})
 
 	// A filesystem RFC 28 Appendix A does not list is not refused here.
 	t.Run("passes a tmpfs directory", func(t *testing.T) {
-		wantPass(t, checkLinuxProbe(probe(hostLines, "/run/user/1000/j", tmpfsMagic)))
+		wantPass(t, CheckProbe(probe(hostLines, "/run/user/1000/j", tmpfsMagic)))
 	})
 }
 
@@ -292,15 +293,15 @@ func TestCheckVisibleMount(t *testing.T) {
 	lower := "90 33 259:5 / /srv/journal rw,relatime shared:40 - ext4 /dev/nvme1n1p1 rw,nobarrier\n"
 	upper := "95 90 259:8 / /srv/journal rw,relatime shared:43 - ext4 /dev/nvme2n1p1 rw\n"
 	t.Run("passes a clean mount stacked over a nobarrier one", func(t *testing.T) {
-		wantPass(t, checkLinuxProbe(probe(hostLines+lower+upper, dir, magicExt)))
+		wantPass(t, CheckProbe(probe(hostLines+lower+upper, dir, magicExt)))
 	})
 	t.Run("passes a clean mount stacked over a nobarrier one, listed first", func(t *testing.T) {
-		wantPass(t, checkLinuxProbe(probe(hostLines+upper+lower, dir, magicExt)))
+		wantPass(t, CheckProbe(probe(hostLines+upper+lower, dir, magicExt)))
 	})
 	t.Run("refuses a nobarrier mount stacked over a clean one", func(t *testing.T) {
 		under := "90 33 259:5 / /srv/journal rw,relatime shared:40 - ext4 /dev/nvme1n1p1 rw\n"
 		over := "95 90 259:8 / /srv/journal rw,relatime shared:43 - ext4 /dev/nvme2n1p1 rw,nobarrier\n"
-		wantBarrier(t, checkLinuxProbe(probe(hostLines+over+under, dir, magicExt)), dir, "/srv/journal", "nobarrier")
+		wantBarrier(t, CheckProbe(probe(hostLines+over+under, dir, magicExt)), dir, "/srv/journal", "nobarrier")
 	})
 
 	// A mount without a parent writes its own ID as its parent's
@@ -308,7 +309,7 @@ func TestCheckVisibleMount(t *testing.T) {
 	// its own parent), and is the root too.
 	t.Run("refuses through a root that is its own parent", func(t *testing.T) {
 		table := strings.Replace(hostRootNoBarrier, "33 1 259:3", "33 33 259:3", 1)
-		wantBarrier(t, checkLinuxProbe(probe(table, "/var/journal", magicExt)), "/var/journal", "/", "nobarrier")
+		wantBarrier(t, CheckProbe(probe(table, "/var/journal", magicExt)), "/var/journal", "/", "nobarrier")
 	})
 
 	// The root is the process's root, the bottom of the stack at "/": a
@@ -317,21 +318,21 @@ func TestCheckVisibleMount(t *testing.T) {
 	// files, and statx reports the root's mount ID, not the stacked one's.
 	t.Run("passes a nobarrier mount stacked over a clean root", func(t *testing.T) {
 		over := "34 33 259:9 / / rw,relatime shared:2 - ext4 /dev/nvme2n1p2 rw,nobarrier\n"
-		wantPass(t, checkLinuxProbe(probe(hostLines+over, "/var/journal", magicExt)))
+		wantPass(t, CheckProbe(probe(hostLines+over, "/var/journal", magicExt)))
 	})
 	t.Run("refuses a clean mount stacked over a nobarrier root", func(t *testing.T) {
 		over := "34 33 259:9 / / rw,relatime shared:2 - ext4 /dev/nvme2n1p2 rw\n"
-		wantBarrier(t, checkLinuxProbe(probe(hostRootNoBarrier+over, "/var/journal", magicExt)), "/var/journal", "/", "nobarrier")
+		wantBarrier(t, CheckProbe(probe(hostRootNoBarrier+over, "/var/journal", magicExt)), "/var/journal", "/", "nobarrier")
 	})
 	t.Run("refuses a clean mount stacked over a nobarrier root, listed first", func(t *testing.T) {
 		over := "34 33 259:9 / / rw,relatime shared:2 - ext4 /dev/nvme2n1p2 rw\n"
-		wantBarrier(t, checkLinuxProbe(probe(over+hostRootNoBarrier, "/var/journal", magicExt)), "/var/journal", "/", "nobarrier")
+		wantBarrier(t, CheckProbe(probe(over+hostRootNoBarrier, "/var/journal", magicExt)), "/var/journal", "/", "nobarrier")
 	})
 	t.Run("refuses a clean mount stacked over a nobarrier root, with the root's mount ID", func(t *testing.T) {
 		over := "34 33 259:9 / / rw,relatime shared:2 - ext4 /dev/nvme2n1p2 rw\n"
 		p := probe(hostRootNoBarrier+over, "/var/journal", magicExt)
-		p.mountID = 33
-		wantBarrier(t, checkLinuxProbe(p), "/var/journal", "/", "nobarrier")
+		p.MountID = 33
+		wantBarrier(t, CheckProbe(p), "/var/journal", "/", "nobarrier")
 	})
 
 	// Two mounts at one point with one parent leave the visible one
@@ -341,7 +342,7 @@ func TestCheckVisibleMount(t *testing.T) {
 	t.Run("fails on two mounts tied at one point", func(t *testing.T) {
 		a := "90 33 259:5 / /srv/journal rw,relatime shared:40 - ext4 /dev/nvme1n1p1 rw\n"
 		b := "91 33 259:6 / /srv/journal rw,relatime shared:41 - ext4 /dev/nvme1n1p2 rw,nobarrier\n"
-		wantError(t, checkLinuxProbe(probe(hostLines+a+b, dir, magicExt)), errMountUnresolved)
+		wantError(t, CheckProbe(probe(hostLines+a+b, dir, magicExt)), errMountUnresolved)
 	})
 
 	// Mount IDs "may be reused after umount(2)" (proc(5)), so the top of a
@@ -349,12 +350,12 @@ func TestCheckVisibleMount(t *testing.T) {
 	t.Run("passes a clean top mount with the lower ID", func(t *testing.T) {
 		bottom := "95 33 259:5 / /srv/journal rw,relatime shared:40 - ext4 /dev/nvme1n1p1 rw,nobarrier\n"
 		top := "90 95 259:8 / /srv/journal rw,relatime shared:43 - ext4 /dev/nvme2n1p1 rw\n"
-		wantPass(t, checkLinuxProbe(probe(hostLines+bottom+top, dir, magicExt)))
+		wantPass(t, CheckProbe(probe(hostLines+bottom+top, dir, magicExt)))
 	})
 	t.Run("refuses a nobarrier top mount with the lower ID", func(t *testing.T) {
 		bottom := "95 33 259:5 / /srv/journal rw,relatime shared:40 - ext4 /dev/nvme1n1p1 rw\n"
 		top := "90 95 259:8 / /srv/journal rw,relatime shared:43 - ext4 /dev/nvme2n1p1 rw,nobarrier\n"
-		wantBarrier(t, checkLinuxProbe(probe(hostLines+bottom+top, dir, magicExt)), dir, "/srv/journal", "nobarrier")
+		wantBarrier(t, CheckProbe(probe(hostLines+bottom+top, dir, magicExt)), dir, "/srv/journal", "nobarrier")
 	})
 
 	// 95 is stacked on /srv over 90, so 91, mounted on /srv/journal under 90,
@@ -365,29 +366,29 @@ func TestCheckVisibleMount(t *testing.T) {
 		"91 90 259:6 / /srv/journal rw,relatime shared:41 - ext4 /dev/nvme1n1p2 rw\n" +
 		"95 90 259:8 / /srv rw,relatime shared:43 - ext4 /dev/nvme2n1p1 rw,nobarrier\n"
 	t.Run("refuses through a mount stacked on an ancestor", func(t *testing.T) {
-		wantBarrier(t, checkLinuxProbe(probe(hidden, dir, magicExt)), dir, "/srv", "nobarrier")
+		wantBarrier(t, CheckProbe(probe(hidden, dir, magicExt)), dir, "/srv", "nobarrier")
 	})
 	t.Run("refuses through a mount stacked on an ancestor, with its mount ID", func(t *testing.T) {
 		p := probe(hidden, dir, magicExt)
-		p.mountID = 95
-		wantBarrier(t, checkLinuxProbe(p), dir, "/srv", "nobarrier")
+		p.MountID = 95
+		wantBarrier(t, CheckProbe(p), dir, "/srv", "nobarrier")
 	})
 
 	// A mount ID is checked against the walk, never trusted in its place.
 	t.Run("fails when the mount ID names a hidden mount", func(t *testing.T) {
 		p := probe(hidden, dir, magicExt)
-		p.mountID = 91
-		wantError(t, checkLinuxProbe(p), errMountIDDisagrees)
+		p.MountID = 91
+		wantError(t, CheckProbe(p), errMountIDDisagrees)
 	})
 	t.Run("fails when the mount ID names no mount of the table", func(t *testing.T) {
 		p := probe(hidden, dir, magicExt)
-		p.mountID = 4242
-		wantError(t, checkLinuxProbe(p), errMountUnresolved)
+		p.MountID = 4242
+		wantError(t, CheckProbe(p), errMountUnresolved)
 	})
 	t.Run("passes when the mount ID agrees", func(t *testing.T) {
 		p := probe(hostLines+ext4Nested, dir, magicExt)
-		p.mountID = 90
-		wantPass(t, checkLinuxProbe(p))
+		p.MountID = 90
+		wantPass(t, CheckProbe(p))
 	})
 }
 
@@ -418,21 +419,21 @@ func TestCheckMountTable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			wantError(t, checkLinuxProbe(probe(tc.table, dir, tc.fsType)), tc.want)
+			wantError(t, CheckProbe(probe(tc.table, dir, tc.fsType)), tc.want)
 		})
 	}
 
 	// The directory must be absolute: a relative one would be walked from
 	// the root mount whatever it names.
 	t.Run("a relative directory", func(t *testing.T) {
-		wantError(t, checkLinuxProbe(probe(hostLines+ext4NestedNoBarrier, "srv/journal/j", magicExt)), errDirectoryNotClean)
+		wantError(t, CheckProbe(probe(hostLines+ext4NestedNoBarrier, "srv/journal/j", magicExt)), errDirectoryNotClean)
 	})
 
 	// The directory must be clean. The walk reads it as text, so here it
 	// would cross the clean mount at /srv/journal, while the kernel's ".."
 	// leaves that mount and the directory is /srv/j, on the nobarrier root.
 	t.Run("a directory that is not clean", func(t *testing.T) {
-		wantError(t, checkLinuxProbe(probe(hostRootNoBarrier+ext4Nested, "/srv/journal/../j", magicExt)), errDirectoryNotClean)
+		wantError(t, CheckProbe(probe(hostRootNoBarrier+ext4Nested, "/srv/journal/../j", magicExt)), errDirectoryNotClean)
 	})
 
 	// The reverse: a magic outside the list on a line whose type is listed.
@@ -449,28 +450,28 @@ func TestCheckMountTable(t *testing.T) {
 		{"btrfs", btrfsNested},
 	} {
 		t.Run("tmpfs directory on the "+tc.name+" mount", func(t *testing.T) {
-			wantError(t, checkLinuxProbe(probe(hostLines+tc.line, dir, tmpfsMagic)), errMountTypeMismatch)
+			wantError(t, CheckProbe(probe(hostLines+tc.line, dir, tmpfsMagic)), errMountTypeMismatch)
 		})
 	}
 
 	// A magic outside the list on a line of its own type still passes.
 	t.Run("tmpfs directory on a tmpfs mount", func(t *testing.T) {
 		line := "90 33 0:60 / /srv/journal rw,nosuid,nodev,relatime shared:40 - tmpfs tmpfs rw,size=1048576k,inode64\n"
-		wantPass(t, checkLinuxProbe(probe(hostLines+line, dir, tmpfsMagic)))
+		wantPass(t, CheckProbe(probe(hostLines+line, dir, tmpfsMagic)))
 	})
 
 	// Copied from the same host: a container's overlay mount.
 	t.Run("overlay directory on an overlay mount", func(t *testing.T) {
 		const merged = "/var/lib/docker/overlay2/91ac3de8a5642416436c948b912446d85c4f7cc79d9795e27e02cfee8f705348/merged"
 		line := "4480 33 0:72 / " + merged + " rw,relatime shared:1469 - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/NWAOTQRDFCMJ6YX2WMD4JLIOJP:/var/lib/docker/overlay2/l/AVMRQWDDOLOMATSJST66PCNJQS:/var/lib/docker/overlay2/l/I264ISPSJ3XXBZZQ4HCN6VOJGH,upperdir=/var/lib/docker/overlay2/91ac3de8a5642416436c948b912446d85c4f7cc79d9795e27e02cfee8f705348/diff,workdir=/var/lib/docker/overlay2/91ac3de8a5642416436c948b912446d85c4f7cc79d9795e27e02cfee8f705348/work\n"
-		wantPass(t, checkLinuxProbe(probe(hostLines+line, merged+"/j", overlayMagic)))
+		wantPass(t, CheckProbe(probe(hostLines+line, merged+"/j", overlayMagic)))
 	})
 
 	// ext2, ext3 and ext4 all report magic 0xef53: none is a mismatch.
 	for _, fs := range []string{"ext2", "ext3", "ext4"} {
 		t.Run(fs+" on magic 0xef53 is no mismatch", func(t *testing.T) {
 			line := "90 33 8:17 / /srv/journal rw,relatime - " + fs + " /dev/sdb1 rw\n"
-			wantPass(t, checkLinuxProbe(probe(hostLines+line, dir, magicExt)))
+			wantPass(t, CheckProbe(probe(hostLines+line, dir, magicExt)))
 		})
 	}
 }
@@ -485,12 +486,12 @@ func TestCheckCopyOnWrite(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	const dir = "/srv/journal"
-	btrfs := func() linuxProbe { return probe(hostLines+btrfsNested, dir, magicBtrfs) }
+	btrfs := func() storage.Probe { return probe(hostLines+btrfsNested, dir, magicBtrfs) }
 
 	t.Run("refuses a btrfs directory without the attribute", func(t *testing.T) {
 		p := btrfs()
-		p.dirFlags = 0
-		wantRefusal(t, checkLinuxProbe(p), ruleCopyOnWrite, dir, "", "", dir)
+		p.DirFlags = 0
+		wantRefusal(t, CheckProbe(p), ruleCopyOnWrite, dir, "", "", dir)
 	})
 
 	// Another flag does not stand in for the attribute. Recorded on Btrfs:
@@ -504,13 +505,13 @@ func TestCheckCopyOnWrite(t *testing.T) {
 	} {
 		t.Run("refuses a btrfs directory with only "+tc.name, func(t *testing.T) {
 			p := btrfs()
-			p.dirFlags = tc.flags
-			wantRefusal(t, checkLinuxProbe(p), ruleCopyOnWrite, dir, "", "", dir)
+			p.DirFlags = tc.flags
+			wantRefusal(t, CheckProbe(p), ruleCopyOnWrite, dir, "", "", dir)
 		})
 		t.Run("refuses a file with only "+tc.name+" in a +C directory", func(t *testing.T) {
 			p := btrfs()
-			p.files = []probedFile{{"format", tc.flags}}
-			wantRefusal(t, checkLinuxProbe(p), ruleCopyOnWrite, dir, "", "", dir+"/format")
+			p.Files = []storage.ProbedFile{{Name: "format", Flags: tc.flags}}
+			wantRefusal(t, CheckProbe(p), ruleCopyOnWrite, dir, "", "", dir+"/format")
 		})
 	}
 
@@ -519,19 +520,19 @@ func TestCheckCopyOnWrite(t *testing.T) {
 	// checking only one end does not find both.
 	t.Run("refuses a last file without the attribute in a +C directory", func(t *testing.T) {
 		p := btrfs()
-		p.files = []probedFile{
-			{"00000000000000000001.seg", fsNoCOW},
-			{"format", 0},
+		p.Files = []storage.ProbedFile{
+			{Name: "00000000000000000001.seg", Flags: fsNoCOW},
+			{Name: "format", Flags: 0},
 		}
-		wantRefusal(t, checkLinuxProbe(p), ruleCopyOnWrite, dir, "", "", dir+"/format")
+		wantRefusal(t, CheckProbe(p), ruleCopyOnWrite, dir, "", "", dir+"/format")
 	})
 	t.Run("refuses a first file without the attribute in a +C directory", func(t *testing.T) {
 		p := btrfs()
-		p.files = []probedFile{
-			{"format", 0},
-			{"00000000000000000001.seg", fsNoCOW},
+		p.Files = []storage.ProbedFile{
+			{Name: "format", Flags: 0},
+			{Name: "00000000000000000001.seg", Flags: fsNoCOW},
 		}
-		wantRefusal(t, checkLinuxProbe(p), ruleCopyOnWrite, dir, "", "", dir+"/format")
+		wantRefusal(t, CheckProbe(p), ruleCopyOnWrite, dir, "", "", dir+"/format")
 	})
 
 	// Inode 257 is an ordinary directory; inode 2 is the empty directory a
@@ -546,8 +547,8 @@ func TestCheckCopyOnWrite(t *testing.T) {
 	} {
 		t.Run("refuses "+tc.name+" as not a subvolume root", func(t *testing.T) {
 			p := btrfs()
-			p.dirIno = tc.ino
-			wantRefusal(t, checkLinuxProbe(p), ruleSubvolume, dir, "", "", dir)
+			p.DirIno = tc.ino
+			wantRefusal(t, CheckProbe(p), ruleSubvolume, dir, "", "", dir)
 		})
 	}
 
@@ -556,17 +557,17 @@ func TestCheckCopyOnWrite(t *testing.T) {
 	t.Run("passes the accepted form", func(t *testing.T) {
 		const noatime = 0x00000080
 		p := btrfs()
-		p.dirFlags = fsNoCOW | noatime
-		p.files = []probedFile{
-			{"format", fsNoCOW},
-			{"00000000000000000001.seg", fsNoCOW | noatime},
+		p.DirFlags = fsNoCOW | noatime
+		p.Files = []storage.ProbedFile{
+			{Name: "format", Flags: fsNoCOW},
+			{Name: "00000000000000000001.seg", Flags: fsNoCOW | noatime},
 		}
-		wantPass(t, checkLinuxProbe(p))
+		wantPass(t, CheckProbe(p))
 	})
 
 	// At Init the directory is empty.
 	t.Run("passes an empty accepted directory", func(t *testing.T) {
-		wantPass(t, checkLinuxProbe(btrfs()))
+		wantPass(t, CheckProbe(btrfs()))
 	})
 
 	// ext4 and XFS write allocated space in place: neither the attribute
@@ -581,10 +582,10 @@ func TestCheckCopyOnWrite(t *testing.T) {
 	} {
 		t.Run("passes "+tc.name+" without the attribute", func(t *testing.T) {
 			p := probe(hostLines+tc.line, dir, tc.fsType)
-			p.dirFlags = 0
-			p.dirIno = 2
-			p.files = []probedFile{{"format", 0}}
-			wantPass(t, checkLinuxProbe(p))
+			p.DirFlags = 0
+			p.DirIno = 2
+			p.Files = []storage.ProbedFile{{Name: "format", Flags: 0}}
+			wantPass(t, CheckProbe(p))
 		})
 	}
 }
@@ -596,11 +597,11 @@ func TestCheckRefusalOrder(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	const dir = "/srv/journal"
-	all := func(line string) linuxProbe {
+	all := func(line string) storage.Probe {
 		p := probe(hostLines+line, dir, magicBtrfs)
-		p.dirFlags = 0
-		p.dirIno = btrfsSubvolumeRootIno + 1
-		p.files = []probedFile{{"format", 0}}
+		p.DirFlags = 0
+		p.DirIno = btrfsSubvolumeRootIno + 1
+		p.Files = []storage.ProbedFile{{Name: "format", Flags: 0}}
 		return p
 	}
 
@@ -620,28 +621,28 @@ func TestCheckRefusalOrder(t *testing.T) {
 		}
 	}
 
-	only := func(line string) linuxProbe { return probe(hostLines+line, dir, magicBtrfs) }
+	only := func(line string) storage.Probe { return probe(hostLines+line, dir, magicBtrfs) }
 
-	err := checkLinuxProbe(all(btrfsNestedNoBarr))
+	err := CheckProbe(all(btrfsNestedNoBarr))
 	wantBarrier(t, err, dir, dir, "nobarrier")
-	sameAs(err, checkLinuxProbe(only(btrfsNestedNoBarr)))
+	sameAs(err, CheckProbe(only(btrfsNestedNoBarr)))
 
-	err = checkLinuxProbe(all(btrfsNested))
+	err = CheckProbe(all(btrfsNested))
 	wantRefusal(t, err, ruleSubvolume, dir, "", "", dir)
 	notRoot := only(btrfsNested)
-	notRoot.dirIno = btrfsSubvolumeRootIno + 1
-	sameAs(err, checkLinuxProbe(notRoot))
+	notRoot.DirIno = btrfsSubvolumeRootIno + 1
+	sameAs(err, CheckProbe(notRoot))
 
 	p := all(btrfsNested)
-	p.dirIno = btrfsSubvolumeRootIno
-	err = checkLinuxProbe(p)
+	p.DirIno = btrfsSubvolumeRootIno
+	err = CheckProbe(p)
 	wantRefusal(t, err, ruleCopyOnWrite, dir, "", "", dir)
 	noAttr := only(btrfsNested)
-	noAttr.dirFlags = 0
-	sameAs(err, checkLinuxProbe(noAttr))
+	noAttr.DirFlags = 0
+	sameAs(err, CheckProbe(noAttr))
 
-	p.dirFlags = fsNoCOW
-	wantRefusal(t, checkLinuxProbe(p), ruleCopyOnWrite, dir, "", "", dir+"/format")
+	p.DirFlags = fsNoCOW
+	wantRefusal(t, CheckProbe(p), ruleCopyOnWrite, dir, "", "", dir+"/format")
 }
 
 // TestCheckRefusalNamesWhat checks that the message an operator reads names
@@ -650,17 +651,17 @@ func TestCheckRefusalOrder(t *testing.T) {
 func TestCheckRefusalNamesWhat(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	btrfs := func() linuxProbe { return probe(hostLines+btrfsNested, "/srv/journal", magicBtrfs) }
+	btrfs := func() storage.Probe { return probe(hostLines+btrfsNested, "/srv/journal", magicBtrfs) }
 	noAttr := btrfs()
-	noAttr.dirFlags = 0
+	noAttr.DirFlags = 0
 	notRoot := btrfs()
-	notRoot.dirIno = btrfsSubvolumeRootIno + 1
+	notRoot.DirIno = btrfsSubvolumeRootIno + 1
 	badFile := btrfs()
-	badFile.files = []probedFile{{"format", 0}}
+	badFile.Files = []storage.ProbedFile{{Name: "format", Flags: 0}}
 
 	for _, tc := range []struct {
 		name string
-		p    linuxProbe
+		p    storage.Probe
 		want []string
 	}{
 		{"barrier", probe(hostLines+ext4NestedNoBarrier, "/srv/journal/j", magicExt),
@@ -670,7 +671,7 @@ func TestCheckRefusalNamesWhat(t *testing.T) {
 		{"file attribute", badFile, []string{"/srv/journal/format", "chattr +C", "copy it into a new file", "recreate the journal"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := checkLinuxProbe(tc.p)
+			err := CheckProbe(tc.p)
 			if err == nil {
 				t.Fatal("got nil, want a refusal")
 			}
@@ -691,24 +692,24 @@ func TestCheckRefusalNamesWhat(t *testing.T) {
 func TestCheckConcurrent(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	files := []probedFile{
-		{"format", fsNoCOW},
-		{"00000000000000000002.seg", fsNoCOW},
-		{"00000000000000000001.seg", fsNoCOW},
+	files := []storage.ProbedFile{
+		{Name: "format", Flags: fsNoCOW},
+		{Name: "00000000000000000002.seg", Flags: fsNoCOW},
+		{Name: "00000000000000000001.seg", Flags: fsNoCOW},
 	}
 	refused := probe(hostLines+btrfsNestedNoBarr, "/srv/journal", magicBtrfs)
-	refused.files = files
+	refused.Files = files
 	passed := probe(hostLines+btrfsNested, "/srv/journal", magicBtrfs)
-	passed.files = files
+	passed.Files = files
 
 	var wg sync.WaitGroup
 	errs := make([]error, 16)
 	for i := range errs {
 		wg.Go(func() {
 			if i%2 == 0 {
-				errs[i] = checkLinuxProbe(refused)
+				errs[i] = CheckProbe(refused)
 			} else {
-				errs[i] = checkLinuxProbe(passed)
+				errs[i] = CheckProbe(passed)
 			}
 		})
 	}
