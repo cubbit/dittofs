@@ -271,3 +271,58 @@ func TestFillStaleNotesItsRecord(t *testing.T) {
 		t.Fatal("a stale fill held its record")
 	}
 }
+
+// A fill reserves what it adds at its commit, so fills of different files that
+// all passed a read-only pre-check at the bound's edge cannot all commit: the
+// one past the limit is refused naming the index, and the count stays put.
+func TestFillReservesAgainstTheBound(t *testing.T) {
+	ix := New(2)
+	if _, err := ix.WriteRetain(testTag, fid(80), write(0, 10, rec(1, 0), 1), 1); err != nil {
+		t.Fatalf("WriteRetain: %v", err)
+	}
+	b, c := fid(81), fid(82)
+	// Both pass the pre-check at limit-1, as two concurrent fills would.
+	for _, id := range []core.FileID{b, c} {
+		if err := ix.CheckFillIndexBound(id, ext(0, 10)); err != nil {
+			t.Fatalf("CheckFillIndexBound: %v", err)
+		}
+	}
+	if _, err := ix.Fill(testTag, b, write(0, 10, rec(1, 100), 2), 2, ver(0)); err != nil {
+		t.Fatalf("Fill within the bound: %v", err)
+	}
+	if n := ix.fs.extentCount(); n != 2 {
+		t.Fatalf("count = %d after the fill within the bound, want 2", n)
+	}
+	_, err := ix.Fill(testTag, c, write(0, 10, rec(1, 200), 3), 3, ver(0))
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) || ns.Limit != core.LimitIndex {
+		t.Fatalf("Fill past the bound = %v, want a NoSpaceError naming the index", err)
+	}
+	if n := ix.fs.extentCount(); n != 2 {
+		t.Fatalf("count = %d after the refused fill, want 2: it reserved or held something", n)
+	}
+	// The record is in its segment already: the file is claimed and the record
+	// noted, with nothing held.
+	if tag, ok := ix.Owner(c); !ok || tag != testTag {
+		t.Fatalf("Owner = %v, %v, want the fill's tag", tag, ok)
+	}
+	if !ix.fs.mayOutrank(c, 2, ext(0, 10), Numbers{Version: ver(8), Seq: 10}) {
+		t.Fatal("a removal record in another segment may be dropped while the refused fill's record lives")
+	}
+	if _, ok := ix.Lookup(c, 0); ok {
+		t.Fatal("a fill refused by the bound held its record")
+	}
+}
+
+// A fill refused as stale after its admission gives the reservation back: the
+// count is what it was.
+func TestFillStaleReleasesItsReservation(t *testing.T) {
+	ix := New(4)
+	ix.RaiseFloor(ver(5))
+	if _, err := ix.Fill(testTag, fid(83), write(0, 10, rec(1, 0), 1), 1, ver(0)); !errors.Is(err, core.ErrStaleFill) {
+		t.Fatalf("Fill = %v, want ErrStaleFill", err)
+	}
+	if n := ix.fs.extentCount(); n != 0 {
+		t.Fatalf("count = %d after a stale fill, want 0", n)
+	}
+}

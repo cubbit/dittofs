@@ -308,6 +308,7 @@ func TestDeltaSumMatchesCounters(t *testing.T) {
 	}
 	for seed := uint64(1); seed <= uint64(seeds); seed++ {
 		fs := &files{}
+		fs.setExtentLimit(1 << 20)
 		w := &deltaWorld{t: t, fs: fs, rng: rand.New(rand.NewPCG(seed, 3796)), seed: seed}
 		var fl []*deltaFile
 		for i := range byte(4) {

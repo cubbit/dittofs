@@ -206,20 +206,40 @@ func (f *file) fillParts(p Placed, fn func(Placed)) {
 // as WriteRetain ignores it. A record's seq is never 0, so an entry held under
 // 0 would fail every read's header check.
 //
-// A fill refused by the tag check changes nothing. A fill refused as stale
-// has its record in a segment already, so it still claims the file and notes
-// the record in the file's drop ranges, holding nothing: on a file with no
-// entry that leaves an entry, kept while a segment holds a record of it.
-// CheckFill, the pre-check, changes nothing either way.
+// The entries the fill adds are admitted against the bound first, as a
+// write's are, and committed in the same update; a refusal reserves nothing.
+//
+// A fill refused by the tag check changes nothing. A fill refused as stale or
+// by the bound has its record in a segment already, so it still claims the
+// file and notes the record in the file's drop ranges, holding nothing: on a
+// file with no entry that leaves an entry, kept while a segment holds a record
+// of it. CheckFill, the pre-check, changes nothing either way.
 func (fs *files) fill(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq, asOf core.Version) (HeldDelta, error) {
-	return fs.update(id, func(f *file) error {
+	var err error
+	if fs.view(id, func(f *file) { err = f.check(tag, id) }) && err != nil {
+		return HeldDelta{}, err
+	}
+	// The record is already in its segment, so it is noted before either
+	// refusal: the file stays claimed and the record in its drop ranges.
+	note := func(f *file) error {
 		if err := f.check(tag, id); err != nil {
 			return err
 		}
-		// The record is already in its segment, so it is noted before the
-		// staleness return: a refusal below still leaves the file claimed and
-		// the record in its drop ranges.
-		if err := f.recorded(p.Record.Segment, p.Extent, Numbers{Version: p.Version, Seq: seq}, tag, id); err != nil {
+		return f.recorded(p.Record.Segment, p.Extent, Numbers{Version: p.Version, Seq: seq}, tag, id)
+	}
+	// decision: the bound is checked before staleness, so a fill both stale and
+	// over the bound is refused naming the index and is not counted as stale.
+	// It is refused either way; only the label and the stale count differ.
+	// Overturned by a measured stale-refusal rate that matters at the bound.
+	adm, err := fs.admitFill(id, p)
+	if err != nil {
+		if _, nerr := fs.update(id, note); nerr != nil {
+			return HeldDelta{}, nerr
+		}
+		return HeldDelta{}, err
+	}
+	return fs.commit(id, adm, func(f *file) error {
+		if err := note(f); err != nil {
 			return err
 		}
 		if fs.checkedAgainst(f, id).Counter > asOf.Counter {

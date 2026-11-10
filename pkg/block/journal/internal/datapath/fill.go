@@ -108,10 +108,6 @@ func (c *Core) fillAndPublish(ctx context.Context, s *Share, id core.FileID, off
 		roll = segment.Roll{Hold: hold}
 	}
 	var filled int64
-	// decision: a gap that crosses N segments overshoots the index bound by at
-	// most N-1 entries, because the grant's Take charges a gap as one entry and
-	// Index.Fill has no admission of its own. Overturned when an index a few
-	// entries over its bound causes a visible refusal.
 	// decision: a failure on a later piece leaves the earlier pieces held
 	// offloaded, since their bytes are remote content at v, not lost writes.
 	for _, g := range gaps {
@@ -136,15 +132,17 @@ func (c *Core) fillAndPublish(ctx context.Context, s *Share, id core.FileID, off
 				return filled, fmt.Errorf("datapath: the stream placed no byte of a %d-byte piece of file %v at offset %d", len(rest), id, g.Off+done)
 			}
 			grant.Wrote(pl.Loc.Len)
-			// decision: the index may still refuse the publish as stale, after its
-			// record is in the segment: a floor raise by another file's change
-			// between the pre-check and here. The record stays on disk, but the
-			// index has noted it in the file's drop ranges and claimed the
-			// file, so a later removal record is kept while its segment lives.
-			// Recovery replays it as held offloaded content, which is correct
-			// remote content at v; nothing resurrects. The caller reads the
-			// remote again. Overturned by a refusal here that costs a caller
-			// more than one remote read.
+			// decision: the index may still refuse the publish after its record is
+			// in the segment: as stale, a floor raise by another file's change
+			// between the pre-check and here, or by the bound, the entries this
+			// piece adds not fitting the count other files' commits, or this fill's own
+			// earlier pieces, have raised since Take's read-only check. Either way the record stays on disk,
+			// but the index has noted it in the file's drop ranges and claimed
+			// the file, so a later removal record is kept while its segment
+			// lives, and it reserved nothing. Recovery replays it as held
+			// offloaded content, which is correct remote content at v; nothing
+			// resurrects. The caller reads the remote again. Overturned by a
+			// refusal here that costs a caller more than one remote read.
 			hd, err := c.index.Fill(s.Tag, id, index.Placed{
 				Extent:  core.Extent{Off: g.Off + done, Len: pl.N},
 				Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},

@@ -120,8 +120,7 @@ func (f *file) splits(e core.Extent) bool {
 // an offload report on the same file, which can make the committed delta
 // differ from the admitted one. commit applies the true delta, so the count
 // never drifts. The overshoot is at most the entries a racing release or
-// report can split in, and a fill racing a splitting removal's admission can
-// add one more split that nothing reserved. Revisit if the count is seen
+// report can split in. Revisit if the count is seen
 // above the bound by more than a handful of entries.
 func (fs *files) admitWrite(id core.FileID, e core.Extent, retain bool) (int64, error) {
 	// A file with no entry holds nothing: a write of bytes adds one entry
@@ -134,8 +133,10 @@ func (fs *files) admitWrite(id core.FileID, e core.Extent, retain bool) (int64, 
 	return fs.reserve(max(n, 0))
 }
 
-// admitFill reserves the entries a fill of p on id would add. It is refused
-// as admitWrite is, and races as admitWrite does.
+// admitFill reserves the entries a fill of p on id would add, and reports them
+// for files.fill to commit. It is refused as admitWrite is, and races as
+// admitWrite does. The fill's record is in its segment by then, so the caller
+// notes it before returning a refusal.
 func (fs *files) admitFill(id core.FileID, p Placed) (int64, error) {
 	// A file with no entry holds nothing, so a fill of bytes occupies a whole
 	// absent extent — one entry — and a zero-length one occupies none.
@@ -173,23 +174,26 @@ func (fs *files) checkFill(tag core.ShareTag, id core.FileID, asOf core.Version)
 }
 
 // CheckFillIndexBound predicts a fill of e against the index's bound alone,
-// the one check of the bound a fill has, run by the capacity gate after its
-// read-only gate: it counts the gaps of e over the file's held pieces with no
-// marker masking any — only the fill's own version can lift a mask, and this
-// check runs before that version is known — so the figure is the ceiling the
-// fill's version can never exceed: whatever parts its resolution trims away,
-// the check never passes a fill the admission would refuse. It takes the
-// file's read lock, claims nothing, reserves nothing and creates no entry.
-// A refusal counts and names itself as the bound's others do.
+// run by the capacity gate after its read-only gate so a fill the bound would
+// refuse is refused before any I/O: it counts the gaps of e over the file's
+// held pieces with no marker masking any — only the fill's own version can
+// lift a mask, and this check runs before that version is known — so the
+// figure is the ceiling the fill's version can never exceed. It takes the
+// file's read lock, claims nothing, reserves nothing and creates no entry. A
+// refusal counts and names itself as the bound's others do.
 //
-// decision: the capacity gate runs this tag-free bound over the hull of a
-// fill's gaps, after the fill has already run CheckFill under the file's
-// append domain. The gate's figure is an upper bound on the entries the fill
-// adds, so it can refuse a fill the index would admit when the count stands
+// decision: this is a read-only over-count, not the reservation: the entries
+// are reserved by Index.Fill's admission at publish, so fills of different
+// files that all pass this check at the bound's edge cannot all commit. The
+// check can refuse a fill the admission would admit when the count stands
 // within a few entries of the bound — a masked part the hull still counts. That
-// over-refusal is accepted: it fails closed, and only at the bound, where a
-// write is refused too. Overturned when an index a few entries over its bound
-// causes a visible refusal, which would pass the exact gaps into the admission.
+// over-refusal fails closed and only at the bound, where a write is refused
+// too. It can also pass a fill that publish then refuses part-way: a gap that
+// crosses a segment boundary is counted as one entry but adds one per piece,
+// so a later piece's admission is refused after its I/O with the earlier
+// pieces published. That too fails closed. Overturned when an index a few
+// entries over its bound causes a visible refusal, which would pass the exact
+// gaps into the admission.
 func (ix *Index) CheckFillIndexBound(id core.FileID, e core.Extent) error {
 	// A file with no entry holds nothing: a fill of bytes occupies one
 	// wholly absent extent, a zero-length one none — as FillGaps answers it.

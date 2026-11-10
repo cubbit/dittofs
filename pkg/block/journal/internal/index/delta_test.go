@@ -301,6 +301,7 @@ func TestMutatorDeltas(t *testing.T) {
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			var fs files
+			fs.setExtentLimit(1 << 20)
 			id := fid(1)
 			if _, err := fs.commit(id, 0, func(f *file) error {
 				seq++
@@ -350,6 +351,7 @@ func TestFillClaimsTheFile(t *testing.T) {
 	p := write(0, 4096, rec(2, 0), 5)
 
 	var fs files
+	fs.setExtentLimit(1 << 20)
 	d, err := fs.fill(owner, id, p, 1, ver(1))
 	if err != nil {
 		t.Fatal(err)
@@ -369,6 +371,7 @@ func TestFillClaimsTheFile(t *testing.T) {
 	// delete, which leaves the bucket's version behind and the entry gone.
 	t.Run("stale", func(t *testing.T) {
 		var fs files
+		fs.setExtentLimit(1 << 20)
 		asOf := fs.asOf(id)
 		change(t, &fs, id, func(f *file) error {
 			f.write(write(0, 4, rec(1, 0), 2))
@@ -394,6 +397,7 @@ func TestFillClaimsTheFile(t *testing.T) {
 	// only a retained piece leaves it, claims it: its record is in a segment.
 	t.Run("stale, on a file with content and no owner", func(t *testing.T) {
 		var fs files
+		fs.setExtentLimit(1 << 20)
 		change(t, &fs, id, func(f *file) error {
 			f.retained.add(Retained{Piece: Piece{Extent: ext(0, 4096), Record: rec(1, 0), Version: ver(2)}, By: ver(6)})
 			f.change = ver(3) // a change the fill's asOf predates
@@ -422,6 +426,7 @@ func TestFillClaimsTheFile(t *testing.T) {
 	// A fill of a file another tag owns changes nothing, and the owner stays.
 	t.Run("another share's", func(t *testing.T) {
 		var fs files
+		fs.setExtentLimit(1 << 20)
 		if _, err := fs.fill(owner, id, p, 1, ver(1)); err != nil {
 			t.Fatal(err)
 		}

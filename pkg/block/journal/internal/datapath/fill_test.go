@@ -520,3 +520,51 @@ func TestFillAdmittedByTheFillIndexCheck(t *testing.T) {
 		t.Fatalf("a write adding one entry with one entry of room = %v, want nil", err)
 	}
 }
+
+// Two fills of different files pass Take's read-only index check at limit-1 and
+// both reach storage; only one commits. The other is refused at publish naming
+// the index, leaves its record noted and its file claimed, and holds nothing.
+func TestFillsPastTheIndexBoundAdmitOnePerEntry(t *testing.T) {
+	c, seam := newTestCore(t, func(o *coreOptions) { o.extentLimit = 2 })
+	s := mustShare(t, c, 1)
+	mustWrite(t, c, s, testFile(80), 0, []byte("x")) // one entry of the two
+	hold := seam.Hold(t, kit.OpWrite, "*")
+
+	// Both appends must reach the seam: on one stream the second would wait
+	// behind the first's append.
+	a, b := racePairPicker(t, c)()
+	files := []core.FileID{a, b}
+	errs := make(chan error, len(files))
+	for _, f := range files {
+		go func() { errs <- c.Fill(context.Background(), s, f, 0, ff(4096), ver(0), ver(1)) }()
+	}
+	eventually(t, "both fills' appends to reach storage", func() bool { return hold.Waiting() >= 2 })
+	hold.Release()
+
+	var ok, bounded int
+	for range files {
+		err := <-errs
+		var ns *core.NoSpaceError
+		switch {
+		case err == nil:
+			ok++
+		case errors.As(err, &ns) && ns.Limit == core.LimitIndex:
+			bounded++
+		default:
+			t.Fatalf("Fill = %v, want nil or a refusal naming the index", err)
+		}
+	}
+	if ok != 1 || bounded != 1 {
+		t.Fatalf("%d fills committed and %d were refused by the bound, want 1 and 1", ok, bounded)
+	}
+	held := 0
+	for _, f := range files {
+		if tag, ok := c.Index().Owner(f); !ok || tag != s.Tag {
+			t.Fatalf("Owner of %v = %v, %v, want the share that appended the record", f, tag, ok)
+		}
+		held += len(c.Index().FileEntries(f))
+	}
+	if held != 1 {
+		t.Fatalf("the two files hold %d entries, want 1: the refused fill held its record", held)
+	}
+}

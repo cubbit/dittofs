@@ -53,6 +53,7 @@ func idOutside(b int, n int) core.FileID { return idInBucket((b + 1 + n) % floor
 // first. One journal-wide floor refuses the fill of X.
 func TestFloorBuckets(t *testing.T) {
 	var fs files
+	fs.setExtentLimit(1 << 20)
 	const others = 10000
 
 	// X: no entry, so X is checked against its bucket.
@@ -116,6 +117,7 @@ func TestFloorBuckets(t *testing.T) {
 // leaves the fill through.
 func TestDeleteInTheSameBucketRefuses(t *testing.T) {
 	var fs files
+	fs.setExtentLimit(1 << 20)
 	x := idInBucket(0)
 	z := idInBucket(0, x)
 	asOf := fs.asOf(x)
@@ -146,6 +148,7 @@ func TestStaleFill(t *testing.T) {
 	// the bucket the release's removal raised before the drop.
 	t.Run("released to nothing", func(t *testing.T) {
 		var fs files
+		fs.setExtentLimit(1 << 20)
 		id := fid(1)
 		asOf := fs.asOf(id)
 		change(t, &fs, id, func(f *file) error { f.write(write(0, 8, rec(1, 0), 5)); return nil })
@@ -172,6 +175,7 @@ func TestStaleFill(t *testing.T) {
 	// own change version carry the refusal.
 	t.Run("released in part", func(t *testing.T) {
 		var fs files
+		fs.setExtentLimit(1 << 20)
 		id := fid(1)
 		asOf := fs.asOf(id)
 		change(t, &fs, id, func(f *file) error {
@@ -201,6 +205,7 @@ func TestStaleFill(t *testing.T) {
 	// change version, and masked by the markers besides.
 	t.Run("truncated down and up, unsettled", func(t *testing.T) {
 		var fs files
+		fs.setExtentLimit(1 << 20)
 		id := fid(1)
 		asOf := fs.asOf(id)
 		change(t, &fs, id, func(f *file) error {
@@ -220,6 +225,7 @@ func TestStaleFill(t *testing.T) {
 	// against the bucket the settled removal raised before the drop.
 	t.Run("truncated down and up, settled", func(t *testing.T) {
 		var fs files
+		fs.setExtentLimit(1 << 20)
 		id := fid(1)
 		asOf := fs.asOf(id)
 		change(t, &fs, id, func(f *file) error {
@@ -248,6 +254,7 @@ func TestFillAtOrAboveTheChangeVersionIsAccepted(t *testing.T) {
 	// With an entry: the check runs against the entry's change version.
 	t.Run("with an entry", func(t *testing.T) {
 		var fs files
+		fs.setExtentLimit(1 << 20)
 		id := fid(1)
 		change(t, &fs, id, func(f *file) error { f.write(write(0, 4, rec(1, 0), 5)); return nil })
 		if _, err := fs.fill(1, id, write(4, 4, rec(1, 64), 5), 1, ver(5)); err != nil {
@@ -263,6 +270,7 @@ func TestFillAtOrAboveTheChangeVersionIsAccepted(t *testing.T) {
 	// gone from the set and the entry drops.
 	t.Run("with no entry", func(t *testing.T) {
 		var fs files
+		fs.setExtentLimit(1 << 20)
 		id := fid(1)
 		change(t, &fs, id, func(f *file) error {
 			f.write(write(0, 4, rec(1, 0), 5))
@@ -291,6 +299,7 @@ func TestFillAtOrAboveTheChangeVersionIsAccepted(t *testing.T) {
 
 		// Against the entry's own change version.
 		var fs files
+		fs.setExtentLimit(1 << 20)
 		id := fid(1)
 		change(t, &fs, id, func(f *file) error { f.write(write(0, 4, rec(1, 0), 101)); return nil })
 		if _, err := fs.fill(1, id, write(4, 4, rec(1, 64), 0), 1, epoch); !errors.Is(err, core.ErrStaleFill) {
@@ -389,6 +398,7 @@ func TestWhatRaisesTheChangeVersion(t *testing.T) {
 // and would otherwise answer a read begun before a delete.
 func TestDropRaisesTheBucketToTheEntryVersion(t *testing.T) {
 	var fs files
+	fs.setExtentLimit(1 << 20)
 	a := idInBucket(0)
 	b := idInBucket(0, a)
 
@@ -506,6 +516,7 @@ func TestDropRaisesTheBucketToTheEntryVersion(t *testing.T) {
 // leaves the file checked against it.
 func TestOpenStartsEveryBucket(t *testing.T) {
 	var fs files
+	fs.setExtentLimit(1 << 20)
 	fs.openBuckets(ver(10))
 
 	if got := fs.buckets[0].Load(); got != 10 {
@@ -554,6 +565,7 @@ func TestOpenStartsEveryBucket(t *testing.T) {
 // check still uses the bucket.
 func TestStaleFillKeepsTheEntryNotingItsRecord(t *testing.T) {
 	var fs files
+	fs.setExtentLimit(1 << 20)
 	id := fid(1)
 	// Give the file's bucket a version above the fill's asOf through another
 	// file's drop, without creating id's entry.
@@ -628,6 +640,7 @@ func TestBucketsSpreadIDs(t *testing.T) {
 // writers have finished, is asserted here.
 func TestBucketRaiseRacesReads(t *testing.T) {
 	var fs files
+	fs.setExtentLimit(1 << 20)
 	const bucket, drops = 17, 64
 	victim := idInBucket(bucket)
 
