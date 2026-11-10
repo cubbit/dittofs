@@ -15,15 +15,13 @@ import (
 // at 2,048 records drawn.
 const bigRecords = 8192
 
-// hrFake is the injected facts of a Headroom: the pool's headroom bytes and
-// the set's footprint, each a plain read. Its zero value answers "no
-// headroom byte, nothing used", and its Admit is always writable.
+// hrFake is the injected facts of a Headroom: the set's footprint, a plain
+// read. Its zero value answers "nothing used", and its Admit is always
+// writable.
 type hrFake struct {
-	headroomBytes atomic.Int64
-	footprint     atomic.Int64
+	footprint atomic.Int64
 }
 
-func (f *hrFake) pool() int64  { return f.headroomBytes.Load() }
 func (f *hrFake) foot() int64  { return f.footprint.Load() }
 func (f *hrFake) admit() error { return nil }
 
@@ -31,15 +29,13 @@ func (f *hrFake) admit() error { return nil }
 // the headroom is drawn.
 func (f *hrFake) parkAtLimit() { f.footprint.Store(1 << 40) }
 
-// newFull rigs a Headroom of records records over a fresh fake: the pool
-// answers the configured size and the journal sits far below its maximum.
+// newFull rigs a Headroom of records records over a fresh fake: the journal
+// sits far below its maximum.
 func newFull(t *testing.T, records int) (*Headroom, *hrFake) {
 	t.Helper()
 	f := &hrFake{}
-	f.headroomBytes.Store(int64(records) * RecordCharge)
 	h := NewHeadroom(HeadroomConfig{
 		Records:    records,
-		Pool:       f.pool,
 		Footprint:  f.foot,
 		MaxBytes:   1 << 40,
 		SegmentCap: 1 << 20,
@@ -279,8 +275,8 @@ func TestRepackCopyNeverRefused(t *testing.T) {
 }
 
 func TestAdmitThenDrawnChargesOneRecord(t *testing.T) {
-	// The sequence Task 2 wires — Admit, then Drawn once the record is
-	// appended — must charge the record once, not twice: the free side a
+	// Admit, then Drawn once the record is appended — the sequence a
+	// header-only appender will run — must charge the record once, not twice: the free side a
 	// later Admit reads moves by one record charge per appended record.
 	// The journal sits at its limit the whole time, so every Drawn runs
 	// its counter path and every appended record counts in headroom_draws.
@@ -345,39 +341,38 @@ func TestAdmitBelowTheLimit(t *testing.T) {
 	}
 }
 
-func TestEmptyPool(t *testing.T) {
-	// An empty pool at the limit names a headroom of nothing: every class
-	// is refused — an Open included, for the reserve holds no record
-	// either — but a repack copy, whose reserve is elsewhere, is not.
+func TestMeasureIsTheLedgerAlone(t *testing.T) {
+	// The measure is the configured size less the records drawn: nothing a
+	// pool reports moves it, so the headroom spare a header-only roll took
+	// leaves the edge where it was — a removal admitted over the reserve,
+	// refused at it, an Open admitted after.
 	h, f := newFull(t, bigRecords)
-	f.headroomBytes.Store(0)
 	f.parkAtLimit()
-	for _, c := range []RecordClass{
-		Release, Truncate, Deallocate, Delete, CloneTarget, Offloaded,
-		Unmark, Loss, Hold, Unhold, Stamp, Forget, Reconciled, Open,
-	} {
-		_, err := h.Admit(context.Background(), c)
-		noSpaceOrFatal(t, err)
+	drawWith(t, h, Release, bigRecords-4096-1)
+	if _, err := h.Admit(context.Background(), Delete); err != nil {
+		t.Fatalf("one record over the reserve a removal was refused: %v", err)
 	}
-	if _, err := h.Admit(context.Background(), RepackCopy); err != nil {
-		t.Fatalf("beside an empty headroom a repack copy was refused: %v", err)
+	_, err := h.Admit(context.Background(), Delete)
+	noSpaceOrFatal(t, err)
+	if _, err := h.Admit(context.Background(), Open); err != nil {
+		t.Fatalf("with the reserve left an Open was refused: %v", err)
 	}
 }
 
-func TestPoolShortOfConfigured(t *testing.T) {
-	// The size is the smaller of the pool's bytes and the configured
-	// records: a pool holding only 4,200 records' bytes leaves a drawing
-	// side of 104 — not the configured 4,096 — whatever Records says.
-	h, f := newFull(t, bigRecords)
+func TestNoRecordsAdmitsEveryClass(t *testing.T) {
+	// A headroom of no records has nothing to measure: every class is
+	// admitted at the limit, draws nothing and throttles no write.
+	h, f := newFull(t, 0)
 	f.parkAtLimit()
-	f.headroomBytes.Store(4200 * RecordCharge)
-	drawWith(t, h, Release, 4200-OpenReserveRecords(bigRecords))
-	_, err := h.Admit(context.Background(), Release)
-	noSpaceOrFatal(t, err)
-	// The open reserve of the configured size still holds: an Open is
-	// admitted beside the drawing side the pool fell short of.
-	if _, err := h.Admit(context.Background(), Open); err != nil {
-		t.Fatalf("with the pool short and the reserve left an Open was refused: %v", err)
+	for c := Release; c <= RepackCopy; c++ {
+		d, err := h.Admit(context.Background(), c)
+		if err != nil || !d.Append {
+			t.Fatalf("%s with no records = %+v, %v; want admitted", c, d, err)
+		}
+		h.Drawn(d)
+	}
+	if h.Draws() != 0 || h.BelowHalf() {
+		t.Fatalf("draws = %d, below half = %v; want none", h.Draws(), h.BelowHalf())
 	}
 }
 

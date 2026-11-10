@@ -9,6 +9,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
@@ -175,4 +176,30 @@ func TestRFC1B_RepackBesideShareAtLimit_Admission(t *testing.T) {
 		t.Fatalf("headroom_draws = %d: a repack copy drew", got)
 	}
 	mustAdmit(t, c, capacity.Delete) // still reserve+1 left
+}
+
+// TestRFC1B_HeadroomSurvivesItsSpareLeavingThePool checks the headroom is
+// not read off the pool's ready spares: with the headroom spare taken, as a
+// header-only roll at the limit takes it, a release and an open's record are
+// still admitted and the content throttle does not refuse on that alone.
+func TestRFC1B_HeadroomSurvivesItsSpareLeavingThePool(t *testing.T) {
+	c, _, s, f := atTheLimit(t)
+	if _, err := c.pool.Take(segment.Headroom); err != nil {
+		t.Fatalf("taking the headroom spare: %v", err)
+	}
+	if got := c.pool.Counters().HeadroomBytes; got != 0 {
+		t.Fatalf("the pool still holds %d headroom bytes after the take", got)
+	}
+	mustAdmit(t, c, capacity.Release)
+	mustAdmit(t, c, capacity.Open)
+	if c.headroom.BelowHalf() {
+		t.Fatal("the headroom spare leaving the pool put the headroom below half")
+	}
+	// A content write is not refused naming the headroom; it may meet
+	// another limit, which is not what is under test.
+	_, err := c.WriteAt(context.Background(), s, f, 1<<20, []byte("w"), 1)
+	var ns *core.NoSpaceError
+	if errors.As(err, &ns) && ns.Limit == core.LimitHeadroom {
+		t.Fatalf("the write was refused naming the headroom: %v", err)
+	}
 }

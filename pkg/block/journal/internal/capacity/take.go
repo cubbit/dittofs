@@ -77,10 +77,10 @@ type Config struct {
 
 	// BelowHalf reports whether the headroom's drawing side — its size
 	// without the open reserve — has fallen below half while the journal
-	// holds its limit: the content-write throttle. It takes no lock of this
-	// domain itself but reads the pool's and the set's, so Take reads it
-	// as a snapshot outside the decision section, like the pool's and the
-	// set's reads beside it.
+	// holds its limit: the content-write throttle. It takes the headroom's
+	// own mutex, never held across a pool or set read, and Take reads it as
+	// a snapshot outside the decision section, so it never runs under
+	// Take's mutex.
 	BelowHalf func() bool
 
 	// Tracer opens the spans the refusals are recorded in; nil traces

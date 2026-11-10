@@ -69,17 +69,13 @@ func OpenReserveRecords(headroomRecords int) int {
 // constants. Every func is required; a nil one panics at construction, which
 // is a wiring bug and reads as one.
 //
-// decision: the funcs carry no lock of the capacity domain. The pool's and
-// the set's reads are lock-free snapshots of counters the wiring owns; the
-// drawn figure below is this package's own, so the check and the draw are
-// one section that holds no other layer's lock.
+// decision: the funcs carry no lock of the capacity domain. The set's read
+// is a lock-free snapshot of a counter the wiring owns; the drawn figure
+// below is this package's own, so the check and the draw are one section
+// that holds no other layer's lock.
 type HeadroomConfig struct {
 	// Records is the configured headroom, in records without bytes.
 	Records int
-
-	// Pool reports the headroom bytes allocated now, as the spare pool
-	// holds them: the headroom spares created ahead of need.
-	Pool func() (headroomBytes int64)
 
 	// Footprint reports the journal's accounted used bytes: every segment
 	// and every spare at its cap.
@@ -101,12 +97,15 @@ type HeadroomConfig struct {
 // Headroom is the admission table for records without bytes and the
 // counter they move. It is safe from any goroutine.
 //
-// decision: the headroom's size is the smaller of what the spare pool
-// holds and what the settings asked for (Records x RecordCharge): the pool
-// allocates whole segments, so its HeadroomBytes can sit above the
-// configured figure by the rounding, and bytes over it are not a headroom
-// the records can draw on; the missing spares of a pool still making them
-// are not one either.
+// decision: the headroom is measured by its ledger alone: its size is the
+// configured Records x RecordCharge and what is left is that size less the
+// records drawn while the journal was at its limit. The spare pool is not
+// consulted, because it counts only the headroom spares ready now: a
+// header-only roll that takes the headroom spare drops that figure to zero
+// until the refill lands, and a measure that followed it would refuse every
+// class, an open's records included, at the moment the journal needs them.
+// Overturned by a journal whose headroom spares are lost to something other
+// than a roll, which this ledger would not see.
 //
 // ponytail: the check and the draw share one mutex, so every
 // header-only record crosses it briefly and no I/O runs under it. Upgrade
@@ -120,8 +119,13 @@ type Headroom struct {
 	// drawn is the record bytes the headroom has admitted and no Refund
 	// has returned; guarded by mu.
 	//
-	// ponytail: drawn only grows until a retirement returns headroom,
-	// upgrade by crediting it from the retirement path when repack lands.
+	// ponytail: drawn only grows until a retirement returns headroom. With
+	// the default 65,536 records, about 30,720 cumulative at-limit draws put
+	// the journal below half, so content writes are refused each time it
+	// returns to the limit, and about 61,440 exhaust it, so every non-Open
+	// record at the limit is refused; drawn lives in memory, so a restart
+	// resets it. Upgrade by crediting it from the retirement path when repack
+	// lands.
 	drawn int64
 	// draws is the headroom_draws counter, records appended while the
 	// journal was at its limit; guarded by mu.
@@ -131,7 +135,7 @@ type Headroom struct {
 // NewHeadroom returns a Headroom over cfg. A nil injected func is a wiring
 // bug and panics here.
 func NewHeadroom(cfg HeadroomConfig) *Headroom {
-	if cfg.Pool == nil || cfg.Footprint == nil || cfg.Admit == nil {
+	if cfg.Footprint == nil || cfg.Admit == nil {
 		panic("capacity: the headroom needs every injected fact")
 	}
 	return &Headroom{
@@ -140,7 +144,9 @@ func NewHeadroom(cfg HeadroomConfig) *Headroom {
 	}
 }
 
-// Draw reports whether the caller appends the record it asked about. An
+// Draw reports whether the caller appends the record it asked about. Pair
+// each admitted draw with exactly one Drawn or one Refund: a token replayed
+// double-counts or over-credits, and the clamp in Refund only floors it. An
 // admission answers Draw{Append: false} only when the record must not be
 // appended — an Offloaded record below half, whose bits are set in memory
 // only, so the extents become evictable at once and a crash loses them,
@@ -193,17 +199,19 @@ func (h *Headroom) Admit(ctx context.Context, c RecordClass) (Draw, error) {
 	}
 	// The at-limit read runs before the section: the set's lock is of this
 	// same capacity domain, and no two locks of one domain are held at
-	// once. Below the limit every class is admitted and draws nothing.
-	if !h.atLimit() {
+	// once. Below the limit every class is admitted and draws nothing, and
+	// so is every class of a headroom of no records, which has none to
+	// measure.
+	if h.cfg.Records <= 0 || !h.atLimit() {
 		return Draw{Append: true}, nil
 	}
 
-	pool := recordsOf(h.clampedPool())
-	size := pool - h.reserve // the drawing side: the headroom without the open reserve
+	total := h.cfg.Records
+	size := total - h.reserve // the drawing side: the headroom without the open reserve
 	half := size / 2
 
 	h.mu.Lock()
-	free := pool - recordsOf(h.drawn)
+	free := total - recordsOf(h.drawn)
 	switch {
 	case free <= h.reserve:
 		// Exhausted for this class: only the open reserve is left, which
@@ -304,26 +312,15 @@ func (h *Headroom) Draws() uint64 {
 // limit gated. The footprint read runs before the section for the same
 // domain reason as Admit's.
 func (h *Headroom) BelowHalf() bool {
-	if !h.atLimit() {
+	if h.cfg.Records <= 0 || !h.atLimit() {
 		return false
 	}
-	pool := recordsOf(h.clampedPool())
-	size := pool - h.reserve
+	total := h.cfg.Records
+	size := total - h.reserve
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	free := pool - recordsOf(h.drawn)
+	free := total - recordsOf(h.drawn)
 	return free-h.reserve < size/2
-}
-
-// clampedPool returns the headroom bytes the records draw on: the smaller
-// of what the spare pool holds and what the settings asked for, per the
-// construction decision above.
-func (h *Headroom) clampedPool() int64 {
-	poolBytes := h.cfg.Pool()
-	if configured := int64(h.cfg.Records) * RecordCharge; poolBytes > configured {
-		poolBytes = configured
-	}
-	return poolBytes
 }
 
 // refuseHeadroom is the named refusal a class that drew nothing hands its

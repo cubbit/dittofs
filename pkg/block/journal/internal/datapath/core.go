@@ -283,12 +283,11 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// seam turned read-only refuses at once, before any limit is read.
 	//
 	// The headroom's admission table runs over the same facts the content
-	// admission reads — the pool's headroom bytes, the set's footprint, the
-	// shared maximum — and lends Take its half rule below, so both derive
+	// admission reads — the set's footprint and the shared maximum — and
+	// measures itself by its own ledger, not the pool, and lends Take its half rule below, so both derive
 	// from one wiring of each fact.
 	c.headroom = capacity.NewHeadroom(capacity.HeadroomConfig{
 		Records:    headroomRecords,
-		Pool:       func() int64 { return c.pool.Counters().HeadroomBytes },
 		Footprint:  func() int64 { return state.Set.Counters().UsedBytes },
 		MaxBytes:   maxBytes,
 		SegmentCap: state.Set.Cap(),
