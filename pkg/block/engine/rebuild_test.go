@@ -202,6 +202,9 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 			if err := m.writeErr(t, m.one.ID, m.src, runLen/2); err != nil {
 				t.Errorf("a write into the source extent once the clone is done: %v", err)
 			}
+			// That write's version can wake a raise under the small block; it
+			// settles before the test's store closes, not after.
+			m.e.WaitRaises(t)
 		})
 	}
 }
