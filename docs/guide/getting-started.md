@@ -130,6 +130,9 @@ dfsctl share permission grant /export --user $(whoami) --level read-write
 
 ## 7. Mount over NFS
 
+> **Not served on this branch.** This build serves no file protocol; this step
+> describes the released server (see the [NFS guide](nfs.md)).
+
 <details>
 <summary><strong>Client prerequisites (Linux)</strong></summary>
 
@@ -158,6 +161,9 @@ Writes land in the share's journal first and sync to S3 in the background. More 
 options, Kerberos, and NFS-over-TLS are in the [NFS guide](nfs.md).
 
 ## 8. Mount over SMB
+
+> **Not served on this branch.** This build serves no file protocol; this step
+> describes the released server (see the [SMB guide](smb.md)).
 
 SMB always requires user authentication:
 

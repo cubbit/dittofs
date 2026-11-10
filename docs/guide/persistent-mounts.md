@@ -1,5 +1,9 @@
 # Mount at Boot
 
+> **Not served on this branch.** This build serves no file protocol; the NFS and
+> SMB adapters are being rebuilt (RFC 20, RFC 21, RFC 22). This page describes
+> mounts of the released server.
+
 Mounts made with `mount` don't survive a reboot. To mount a DittoFS share
 automatically, add it to `/etc/fstab`. This page covers Linux clients.
 

@@ -1,5 +1,9 @@
 # Connecting a Windows Client to DittoFS
 
+> **Not served on this branch.** This build serves no file protocol; the SMB and
+> NFS adapters are being rebuilt (RFC 20, RFC 21, RFC 22). This guide describes
+> Windows clients of the released server.
+
 This guide walks through mounting a DittoFS share on a Windows machine over SMB, and using the
 Windows NFS client if needed. It assumes DittoFS is already running on a Linux or macOS host.
 

@@ -1,5 +1,9 @@
 # Windows Active Directory Setup Runbook
 
+> **Not served on this branch.** This build serves no file protocol; the SMB and
+> NFS adapters are being rebuilt (RFC 20, RFC 21, RFC 22). This runbook
+> describes the released server.
+
 End-to-end guide for a Windows administrator to join **DittoFS** to an existing
 **Windows Server Active Directory** domain and give domain users SMB (and NFS)
 access to a share — **without creating any local DittoFS user for them**

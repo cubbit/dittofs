@@ -157,6 +157,8 @@ stores, mounts and other users. So: **set it before the very first start.**
 
 ### Serve an NFS share in under a minute
 
+> This branch serves no file protocol, so the mount steps below describe the released server (see the note in the [NFS guide](docs/guide/nfs.md)).
+
 ```bash
 # 1. Start the server (see above), then log in
 ./dfsctl login --server http://localhost:8080 --username admin
@@ -183,10 +185,7 @@ stores, mounts and other users. So: **set it before the very first start.**
 ./dfsctl share create --name /export --metadata default --block-store s3-remote
 ./dfsctl share permission grant /export --user $(whoami) --level read-write
 
-# 5. Enable the NFS adapter
-./dfsctl adapter enable nfs
-
-# 6. Mount it
+# 5. Mount it
 # Linux:
 sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
 # macOS:
