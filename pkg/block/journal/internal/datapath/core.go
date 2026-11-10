@@ -56,13 +56,25 @@ type coreOptions struct {
 	// afterAppend runs in WriteAt right after a record is appended and before
 	// it is published, with the file's append domain held.
 	afterAppend func()
+	// beforeResolve runs in ReadAt after the as-of is read and the file's
+	// append domain released, before the span is resolved.
+	beforeResolve func()
+	// beforeRead runs in ReadAt after the span is resolved and the index
+	// released, before the first record is read from storage.
+	beforeRead func()
+	// afterCorrupt runs in ReadAt after Corrupt answered a record that did not
+	// verify and before the read goes on from that answer.
+	afterCorrupt func()
+	// segmentCap replaces the test helper's segment size, so a test can write
+	// a record larger than the default segment holds.
+	segmentCap int64
 	// noLimit keeps the test helper's generous version limit off the core, so
 	// a test can hold a fresh core that issues nothing until it sets one.
 	noLimit bool
 }
 
-// Core is the journal's assembled write path: the placement index, the
-// segment streams, the durability layer over them, and the counters that
+// Core is the journal's assembled write and read paths: the placement index,
+// the segment streams, the durability layer over them, and the counters that
 // follow the index's held-state deltas.
 //
 // decision: a Core owns no lock of its own. The one domain it uses is the file
@@ -90,6 +102,21 @@ type Core struct {
 	// New with no options. It is a field of the core and not of Deps so that no
 	// production wiring can set it.
 	afterAppend func()
+
+	// beforeResolve is a test seam that holds a read between reading its
+	// as-of and resolving its span. It is nil outside tests, for the same
+	// reason afterAppend is.
+	beforeResolve func()
+
+	// beforeRead is a test seam that holds a read between resolving its span
+	// and reading its records. It is nil outside tests, for the same reason
+	// afterAppend is.
+	beforeRead func()
+
+	// afterCorrupt is a test seam that holds a read between Corrupt's answer
+	// and the read of a copy it named. It is nil outside tests, for the same
+	// reason afterAppend is.
+	afterCorrupt func()
 
 	// registry is the open handles, replaced whole under registryMu and read
 	// through the pointer alone. See shares.go.
@@ -138,7 +165,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy, afterAppend: o.afterAppend}
+	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)
