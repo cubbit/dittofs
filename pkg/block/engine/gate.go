@@ -19,8 +19,11 @@ type gate struct {
 // units entered and not withdrawn.
 const shutBit = 1 << 62
 
-// whatWorkInFlight names the join of a share's gate for the joining seam.
-const whatWorkInFlight = "work in flight"
+// The joining seam's text for what Unbind waits for.
+const (
+	whatWorkInFlight = "work in flight"
+	whatRemovalBatch = "a removal batch"
+)
 
 // enter admits one unit, and reports false once the gate is shut. A single
 // compare and swap checks the shut bit and adds the unit, so no unit gets in

@@ -788,3 +788,27 @@ func (e *Engine) LifecycleLockFree() bool {
 
 	return true
 }
+
+// EnqueueKind posts an item of kind on share s's removal loop, even when the
+// share refuses calls, that calls run and then ends; end is called if the
+// item is ended without running.
+func (e *Engine) EnqueueKind(
+	s entity.ShareID,
+	kind entity.RemovalKind,
+	run func(ctx context.Context),
+	end func(),
+) {
+	b := e.table()[s]
+
+	b.gc.removals.enqueue(&loopItem{
+		b:    b,
+		f:    entity.NewFileID(),
+		kind: kind,
+		run: func(ctx context.Context) answer {
+			run(ctx)
+
+			return itemDone
+		},
+		end: end,
+	})
+}
