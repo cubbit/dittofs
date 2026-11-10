@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"log/slog"
 	"math"
 	"slices"
@@ -19,6 +20,27 @@ type Config struct {
 	Tracer  Tracer
 	Logger  *slog.Logger
 	Storage storage.FS
+
+	// SparesReady, when not nil, is called by Open with the opened journal's
+	// spare-pool wait, before Open returns: the callback a test uses to take
+	// the wait its fixture blocks on. It is a hook the test components pass
+	// through WithSparesReady, off the journal's public surface; production
+	// callers set nothing, and an Open with no callback runs the same either
+	// way.
+	SparesReady func(SparesWait)
+}
+
+// SparesWait waits for the spare pool of the journal Open built. WaitSpares
+// blocks until every class of spare the journal's own targets name holds its
+// target, and reports the pool's own word — settled, settled short, or
+// stopped — as its error. It is declared here, and not at the pool, so the
+// option that passes it stays a type of this package, in reach of code
+// inside the journal's tree alone.
+type SparesWait interface {
+	// WaitSpares blocks until the pool settles at its targets, and returns
+	// nil there, the context's error once it is done, the core.ErrClosed of
+	// a stopped pool, and the spare refusal of a pool that settled short.
+	WaitSpares(ctx context.Context) error
 }
 
 // Settings are the journal's settings. A zero field takes its default; a

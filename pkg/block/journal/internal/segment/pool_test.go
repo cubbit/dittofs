@@ -1896,3 +1896,146 @@ func TestPoolReadOnlyMakesNoSpare(t *testing.T) {
 	// fails this test on its own line rather than at the cleanup's.
 	p.Stop()
 }
+
+// waitSpares is WaitSpares bound for a bounded real time, so a wait that
+// wrongly blocks past its settle fails the test rather than hanging it: the
+// bound only turns a hang into a failure, never a settle into a wait. The
+// backstop is short because the wait is event-driven — a wait over a pool
+// whose settle it missed crosses the bound rather than riding its kick.
+func waitSpares(t *testing.T, p *segment.Pool) error {
+	t.Helper()
+
+	type answered struct {
+		err error
+	}
+	done := make(chan answered, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+		defer cancel()
+		done <- answered{p.WaitSpares(ctx)}
+	}()
+	select {
+	case a := <-done:
+		return a.err
+	case <-t.Context().Done():
+		t.Fatalf("WaitSpares was still blocked when the test ended: %v", t.Context().Err())
+		return nil
+	}
+}
+
+// TestPoolWaitSparesReturnsOnlyOnceSettled: the wait blocks while the refill
+// pass runs — a make held at the seam holds it — and returns nil only once
+// every class holds its target; a second wait over a settled pool returns at
+// once, with no further settle to wake it.
+func TestPoolWaitSparesReturnsOnlyOnceSettled(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 2, Headroom: 1, Reserve: 1}, noMax, 0, nil)
+
+	// Both holds registered before Start, the first parking the headroom's
+	// single make: the refill fills headroom first, so the wait cannot reach
+	// its answer until that make is let go.
+	h1 := seam.HoldFirst(t, kit.OpCreate, "*")
+	p.Start()
+	if err := waitSpares(t, p); err == nil {
+		t.Fatal("WaitSpares returned nil while the fill's first make was still held at the seam")
+	}
+
+	// The settle itself: released, the pass fills every class and the wait
+	// reads the pool at its targets.
+	h1.Release()
+	if err := waitSpares(t, p); err != nil {
+		t.Fatalf("WaitSpares over a settled pool: %v", err)
+	}
+	c := p.Counters()
+	if c.Spares != 2 || c.HeadroomBytes != segCap || c.RepackReserveBytes != segCap {
+		t.Fatalf("WaitSpares returned with the pool at %+v, want content 2, headroom and reserve at a segment each", c)
+	}
+
+	// A pool already settled answers a fresh wait at once, with no kick to
+	// wake it: that the wait below returns is the whole check — the bound
+	// built into the test's helper would out a wait parked on a settle that
+	// never comes.
+	if err := waitSpares(t, p); err != nil {
+		t.Fatalf("a second WaitSpares over the settled pool: %v", err)
+	}
+
+	p.Stop()
+}
+
+// TestPoolWaitSparesRefusedWhenNeverStarted: a pool that has never started
+// never settles, so its wait refuses at once, naming the spare limit as a
+// take does.
+func TestPoolWaitSparesRefusedWhenNeverStarted(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	err := waitSpares(t, p)
+	assertSpareRefusal(t, "the wait before Start", err, 1)
+	if seam.Calls(kit.OpCreate) != 0 {
+		t.Fatalf("the wait before Start made %d spares, want none: the wait never fills", seam.Calls(kit.OpCreate))
+	}
+}
+
+// TestPoolWaitSparesShortWhenAMakeFails: a wait over a pool whose makes fail
+// returns the spare refusal once the pass has ended in shortage — the pool
+// reporting it cannot reach its targets — rather than blocking for a spare
+// the device will not give.
+func TestPoolWaitSparesShortWhenAMakeFails(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	if err := seam.Schedule(kit.Failing(kit.OpCreate, "*", 0, syscall.ENOSPC)); err != nil {
+		t.Fatal(err)
+	}
+	p.Start()
+
+	err := waitSpares(t, p)
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) {
+		t.Fatalf("the wait over a pool whose every make failed returned %v, want the spare refusal naming the shortage", err)
+	}
+	if ns.Limit != core.LimitSpare {
+		t.Fatalf("the wait named the %s limit, want %s", ns.Limit, core.LimitSpare)
+	}
+	p.Stop()
+}
+
+// TestPoolWaitSparesStoppedDuringTheWait: a wait blocked on a fill the seam
+// holds returns core.ErrClosed once the pool stops, and the Stop joins the
+// worker with the waiter gone, leaking nothing.
+func TestPoolWaitSparesStoppedDuringTheWait(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	h1 := seam.HoldFirst(t, kit.OpCreate, "*")
+	p.Start()
+
+	answered := make(chan error, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { answered <- p.WaitSpares(ctx) }()
+
+	// The wait is blocked on the held make, and Stop joins the worker —
+	// which cannot leave the held create until the hold below is let go — so
+	// Stop runs on a goroutine of its own: its settle answers the wait
+	// whether the worker reached the hold or not, the release then lets the
+	// join return, and the stopped pool must refuse a fresh wait at once
+	// rather than park it.
+	stopped := make(chan struct{}, 1)
+	go func() { p.Stop(); close(stopped) }()
+	select {
+	case err := <-answered:
+		if !errors.Is(err, core.ErrClosed) {
+			t.Fatalf("the wait stopped mid-fill returned %v, want core.ErrClosed", err)
+		}
+	case <-time.After(10 * time.Second):
+		h1.Release()
+		t.Fatal("the wait blocked in a fill the pool left behind: Stop did not answer it")
+	}
+	h1.Release()
+	<-stopped
+	if err := waitSpares(t, p); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("a wait over the stopped pool returned %v, want core.ErrClosed", err)
+	}
+}

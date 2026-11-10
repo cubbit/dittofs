@@ -82,3 +82,20 @@ func WithLogger(l *slog.Logger) Option {
 	}
 	return Option{func(cfg *core.Config) { cfg.Logger = l }}
 }
+
+// WithSparesReady makes Open call f with the opened journal's spare-pool wait
+// before it returns, so the caller — a test fixture, whose journal is real
+// after Open hands it over while the pool's first spares are still being made
+// in the background — can block until the pool settles at the targets Open
+// itself sized. The wait reaches Open's own core, whose targets are the ones
+// its build sized, so the sizing has one home.
+//
+// decision: the parameter is a callback over an internal type, as WithStorage's
+// is, so only code inside the journal's tree can write one and no public
+// method joins Journal or its value types. Withdrawn when the wait moves to a
+// surface a caller can reach without a hook — a Stats that reports the ready
+// spares, or a WriteAt that waits rather than answering retry — by whoever
+// lands one; the other end then carries the fixture's wait.
+func WithSparesReady(f func(core.SparesWait)) Option {
+	return Option{func(cfg *core.Config) { cfg.SparesReady = f }}
+}

@@ -328,6 +328,14 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, opts
 		// returning it.
 		return nil, err
 	}
+	// The spare-pool wait is handed over before the caller sees the journal,
+	// so a caller that waits on it blocks nothing Open still has to do: the
+	// pool has been the open's own background since New, and the hook only
+	// gives the caller a handle to its settle event. The callback is nil in
+	// every production call.
+	if cfg.SparesReady != nil {
+		cfg.SparesReady(c)
+	}
 	return newJournal(c), nil
 }
 

@@ -1,6 +1,7 @@
 package datapath
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -364,6 +365,13 @@ func (c *Core) retiredSegment(id core.SegmentID) {
 	c.dur.Retired(id)
 	c.cap.RetiredEverySeeded()
 }
+
+// WaitSpares blocks until the pool has readied every spare the open's own
+// targets name, or reports the pool's word for why it stopped filling. It is
+// the core half of the hook Open hands its caller's SparesReady callback: the
+// wait the fixture blocks on is the pool's own settle event, woken by the
+// refill and never by time.
+func (c *Core) WaitSpares(ctx context.Context) error { return c.pool.WaitSpares(ctx) }
 
 // Close stops the durability layer, then closes the streams, then stops the
 // idle sealer, the pool and the retirer — every background worker joined
