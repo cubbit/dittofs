@@ -257,7 +257,7 @@ scheduler, snapshots, a cluster or RFC 26 are not catalogued here (§7). RFC 17'
 composes, so they are epic 9's. The `Content` check is what one `Content` call promises the
 next: bytes written read back, `Draw` above every version drawn or staged before it,
 `Overlay` reflecting a write at once, a `Commit` answered after its writes' sync, a removed
-extent read as zeros or end of file. It runs over stage 2's fake and the engine alike.
+extent read as zeros or end of file. It runs over piece 12's in-memory `Content` and the engine alike.
 
 **The test components.** The fixture composing the engine over the real `journal` on a
 temporary directory, `kvstore` on an in-memory `kv.KV` and `sim.TestClock`; a
@@ -389,7 +389,7 @@ harness (`journaltest/prof`) wired to the fixture.
 | 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 12 | 40.25 | C | 7, 8 |
 | 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 5 | 18 | C | 9 |
 | 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.75 | A | 5, 9 |
-| 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over stage 2's fake and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
+| 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over the in-memory `Content` and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
 | | **Total** | | **65** | **191** | | |
 
@@ -800,8 +800,8 @@ Sections owned: RFC 8 §8 (the release is the journal's `Delete`, never `Release
   §4.3 says `Errors()` returns every sentinel and so gains the sentence that it omits a value
   only the service and the engine exchange, in the RFC pull request after #3608 (§6 point 15).
 - T5.5 Removals interleaved with writes and commits, over the in-memory journal; the same with a
-  crash over T2.2's fixture and the journal's crash seam (rule 8). A hook in the in-memory
-  journal between its `Truncate` or `Deallocate` and the call's return starts a `ReadAt` of
+  crash over T2.2's fixture and the journal's crash seam (rule 8). A fault wrapper around the
+  in-memory journal, between its `Truncate` or `Deallocate` and the call's return, starts a `ReadAt` of
   the removed extent on another goroutine, and waits until that read has either returned or
   is blocked on the file's entry lock (a lock-wait hook) before letting the removal go on:
   the read then finds the pending removal, never **Lost** (a build that releases the lock
@@ -1038,8 +1038,8 @@ owned: RFC 17 §8's integration tier for the engine's side; RFC 8 §12.1's singl
 
 - T9.1 `internal/vfs` aliases the engine's `WriteOpts` and `Overlay` (C4); `*engine.Engine`
   satisfies `vfs.Content`.
-- T9.2 The `Content` check: its cases, run over stage 2's fake, moved to an importable
-  package (§6 point 10), and over the engine.
+- T9.2 The `Content` check: RFC 17 plan piece 12's `contenttest.Run` over the engine (§6
+  point 10).
 - T9.3 `suite.Run` over `vfs.New` composed with the engine, `kvstore`, the real open-state
   table and a temporary journal directory, with fault injection below.
 - T9.4 RFC 17's V19, V20 (adapted: `DelayCapacity` while superseded records remain, served
@@ -1138,8 +1138,8 @@ follows the journal's, not this part's (§6 point 7).
    RFC 17 plan (#3530) builds piece 11 "after the engine's S3 (#3546), not all of stage 3",
    with no open among its Needs, since stage 2's clone path calls `Clone` and takes no open
    (point 13).
-10. **The fake `Content`** moves from `internal/vfs/content_test.go` to an importable package
-    so the `Content` check, the conformance suite the engine also passes, runs over it (T9.2).
+10. **The `Content` check** is RFC 17 plan piece 12's `contenttest.Run`, over that piece's
+    in-memory `Content`; T9.2 runs it over the engine too, and nothing moves.
     Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
     three kinds.
 11. **Open state's `Releasing`**, the stage 1 follow-up, gates T5.4's tests and T8.3's

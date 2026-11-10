@@ -493,8 +493,9 @@ the rule that a persisted index is not authoritative (E3, E5, epic 7).
   file rebuilt under two tags is a flag on the file's entry, which epic 7's rebuild sets and
   this epic's refusal reads.
 - **D11, the recorder wraps the locks of every package.** `lockorder` defines the six ranks and
-  `Mutex` and `RWMutex` types that take a rank. A recorder pointer is nil in production and set
-  by tests; each acquisition costs one atomic load. E4's file index and file map and E5's segment
+  `Mutex` and `RWMutex` types that take a rank. The journal instance holds the recorder, nil in
+  production, and hands it to each lock it builds; a test sets it per instance from
+  `export_test.go`, never through a package variable. Each acquisition costs one atomic load. E4's file index and file map and E5's segment
   append lock adopt the types, which is an edit in their packages (T8.11). A `ponytail:` marker at
   the load names the ceiling, a load on every lock, and the upgrade, a build tag that compiles
   the check out of production, once a profile of J2 shows it.

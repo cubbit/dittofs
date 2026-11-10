@@ -370,8 +370,8 @@ listed test fails on the regression it names (after "catches").
   before the commit, or the guard held across it); the reservation counter at zero after a
   truncate over pending writes (catches phase 1 without `Done`); a hook between the journal's
   `Truncate` and phase 1 stages a write at *v*+1: the size is the truncate's grown by the
-  write, never the pre-truncate size (catches a claim above *v*, D8); a hook inside the in-memory
-  journal's `Truncate` blocks it while a group commit runs: the other files commit and the
+  write, never the pre-truncate size (catches a claim above *v*, D8); a fault wrapper around the in-memory
+  journal delays its `Truncate` while a group commit runs: the other files commit and the
   guarded one is skipped (catches a capture that takes the entry's lock); a batch held
   between its capture and its `Existence.Commit` on the file: phase 1 starts only after it
   returns, and the captured writes are committed (catches a phase 1 that overtakes the
@@ -495,12 +495,13 @@ listed test fails on the regression it names (after "catches").
 - **Covers:** R7, R26, R27.
   RFC 8 §7.1 over a truncate in flight (D2), RFC 6 §3.4's version order, §5.1's
   sync before existence for a truncate.
-- **Deliverables:** tests only, and the in-memory journal's hooks they need in `export_test.go`.
+- **Deliverables:** tests only: the engine's own hooks in `export_test.go`, and a fault wrapper
+  around the in-memory journal in `enginetest` for the pauses inside the journal's calls.
 - **Rows:** §5.1 sync before existence, the truncate half, and a truncate up crashed before
   its group commit, whose size the restart serves; over the real journal and its crash
   seam, red until it exists; the restart is epic 6's, which the row composes.
-- **Tests:** a hook in the in-memory journal between its `Truncate` or `Deallocate` and the call's
-  return starts a `ReadAt` of the removed extent on another goroutine and waits until it has
+- **Tests:** a fault wrapper around the in-memory journal, between its `Truncate` or `Deallocate`
+  and the call's return, starts a `ReadAt` of the removed extent on another goroutine and waits until it has
   returned or is blocked on the entry's lock (a lock-wait hook): the read finds the pending
   removal, never **Lost** (catches the lock released before the insert, every run); a
   randomised interleaving of writes, truncates, deallocates and group commits under `-race`

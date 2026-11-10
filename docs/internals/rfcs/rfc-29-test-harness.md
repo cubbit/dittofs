@@ -1950,8 +1950,8 @@ answers in the dependency's place. Its record is the output a test asserts on.
 
 These are not doubles at all. A sink that only keeps what the code under test delivered is
 an output and needs no conformance suite, and a count that is itself the requirement (one
-query per key, at most one call per second) is an output too, read from a metric, from the
-kind 2's own record or from the record above. A per-OS table is data, tested by its contents,
+query per key, at most one call per second) is an output too, read from a metric, from a
+counter the kind 2 exports and its conformance suite covers, or from the record above. A per-OS table is data, tested by its contents,
 and a tunable such as a sampling rate is an input passed through the constructor. A `Null`
 service answers every call at once to measure the adapter's own cost (the allocation gate and
 benchmarks); nothing asserts on its answers, so it is a load, not a double.

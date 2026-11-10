@@ -392,7 +392,7 @@ listed test fails on the regression it names (after "catches").
   epic 6's `Start` composes the engine in E2's fixture or the journal can inject a loss.
 - **Tests,** over the in-memory journal: two writes with the test clock advanced an hour between them
   answer equal verifiers (catches a clock input); each input raised alone changes the
-  verifier (catches an input dropped from the hash); a loss injected by an in-memory journal hook
+  verifier (catches an input dropped from the hash); a loss injected by a fault wrapper around the in-memory journal
   between `WriteAt` and the reply leaves that write's verifier and changes the next
   `Commit`'s (catches sampling after staging).
 
