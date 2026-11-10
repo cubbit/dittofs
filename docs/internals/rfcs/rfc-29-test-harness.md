@@ -1942,11 +1942,21 @@ double, and no other:
    delays, tears or crashes on cue. An error answer a test needs is given this way, by a fault
    wrapper, not by a stub.
 
-Three things are not doubles at all. A sink that only keeps what the code under test delivered
-is an output and needs no conformance suite, and a count that is itself the requirement (one
-query per key, at most one call per second) is an output too, read from a metric or from the
-kind 2's own record, never from a counting wrapper. A per-OS table is data, tested by its
-contents, and a tunable such as a sampling rate is an input passed through the constructor.
+When the call reaching a dependency is itself the requirement — a sync reaching storage, one
+mutating call per request, one query per key — a wrapper around the real implementation, or
+around a kind 2, may record what reached it. It records and passes the call through; it never
+answers in the dependency's place. Its record is the output a test asserts on.
+
+These are not doubles at all. A sink that only keeps what the code under test delivered is an
+output and needs no conformance suite, and a count that is itself the requirement (one query per
+key, at most one call per second) is an output too, read from a metric, from the kind 2's own
+record or from the record above. A per-OS table is data, tested by its contents, and a tunable
+such as a sampling rate is an input passed through the constructor. A `Null` service answers
+every call at once to measure the adapter's own cost (the allocation gate and benchmarks);
+nothing asserts on its answers, so it is a load, not a double. A hook in the code under test
+that pauses it at a point, or delivers what it reached there, is not a double either: it is set
+per instance from `export_test.go`, never through a package variable, and never answers in
+place of the code.
 
 A deterministic simulation is built from these three, so it is allowed. Not allowed: a canned
 stub written for one test; a recording or counting fake used to check which calls were made; a
