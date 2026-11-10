@@ -1897,11 +1897,10 @@ func TestPoolReadOnlyMakesNoSpare(t *testing.T) {
 	p.Stop()
 }
 
-// waitSpares is WaitSpares bound for a bounded real time, so a wait that
-// wrongly blocks past its settle fails the test rather than hanging it: the
-// bound only turns a hang into a failure, never a settle into a wait. The
-// backstop is short because the wait is event-driven — a wait over a pool
-// whose settle it missed crosses the bound rather than riding its kick.
+// waitSpares runs WaitSpares until it answers, bounded only by the test's own
+// context: it is the helper of waits expected to settle, whose success must not
+// depend on real time. A wait that never answers fails at the panicking
+// deadline the go test runner gives the suite, not here.
 func waitSpares(t *testing.T, p *segment.Pool) error {
 	t.Helper()
 
@@ -1910,10 +1909,36 @@ func waitSpares(t *testing.T, p *segment.Pool) error {
 	}
 	done := make(chan answered, 1)
 	go func() {
-		ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-		defer cancel()
+		done <- answered{p.WaitSpares(t.Context())}
+	}()
+	select {
+	case a := <-done:
+		return a.err
+	case <-t.Context().Done():
+		t.Fatalf("WaitSpares was still blocked when the test ended: %v", t.Context().Err())
+		return nil
+	}
+}
+
+// waitStillParked asserts the wait does not answer on its own: the wait is
+// started, confirmed parked on the pool's settle condition, and only then
+// bounded by a short context, so a wait that never parks fails on a real
+// answer rather than on the absence of one, and a wait that wrongly wakes
+// fails on its wrong answer rather than on the bound. It returns what the
+// wait answered when the bound crossed it — waits expected to stay parked.
+func waitStillParked(t *testing.T, p *segment.Pool) error {
+	t.Helper()
+
+	type answered struct {
+		err error
+	}
+	done := make(chan answered, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	go func() {
 		done <- answered{p.WaitSpares(ctx)}
 	}()
+	awaitParked(t, p, 1)
 	select {
 	case a := <-done:
 		return a.err
@@ -1934,18 +1959,25 @@ func TestPoolWaitSparesReturnsOnlyOnceSettled(t *testing.T) {
 
 	// Both holds registered before Start, the first parking the headroom's
 	// single make: the refill fills headroom first, so the wait cannot reach
-	// its answer until that make is let go.
+	// its answer until that make is let go. The wait is confirmed parked
+	// before the block below reads its answer, so the check does not race
+	// the wait's arrival against the held make.
 	h1 := seam.HoldFirst(t, kit.OpCreate, "*")
 	p.Start()
-	if err := waitSpares(t, p); err == nil {
-		t.Fatal("WaitSpares returned nil while the fill's first make was still held at the seam")
+	err := waitStillParked(t, p)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WaitSpares while the fill's first make was held returned %v, want the context's deadline", err)
+	}
+	var ns *core.NoSpaceError
+	if errors.As(err, &ns) {
+		t.Fatalf("WaitSpares while the fill was held answered the spare refusal naming %s over a pass still promised", ns.Limit)
 	}
 
 	// The settle itself: released, the pass fills every class and the wait
 	// reads the pool at its targets.
 	h1.Release()
 	if err := waitSpares(t, p); err != nil {
-		t.Fatalf("WaitSpares over a settled pool: %v", err)
+		t.Fatalf("WaitSpares over the settled pool: %v", err)
 	}
 	c := p.Counters()
 	if c.Spares != 2 || c.HeadroomBytes != segCap || c.RepackReserveBytes != segCap {
@@ -1953,13 +1985,79 @@ func TestPoolWaitSparesReturnsOnlyOnceSettled(t *testing.T) {
 	}
 
 	// A pool already settled answers a fresh wait at once, with no kick to
-	// wake it: that the wait below returns is the whole check — the bound
-	// built into the test's helper would out a wait parked on a settle that
-	// never comes.
+	// wake it: that the wait below returns is the whole check.
 	if err := waitSpares(t, p); err != nil {
 		t.Fatalf("a second WaitSpares over the settled pool: %v", err)
 	}
 
+	p.Stop()
+}
+
+// awaitParked waits for the pool to report n waits parked on its settle
+// condition, within a bounded count of yields.
+func awaitParked(t *testing.T, p *segment.Pool, n int) {
+	t.Helper()
+
+	for range poolAttempts {
+		if p.ParkedWaitersForTest() == n {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("the pool never showed %d waits parked: %d are", n, p.ParkedWaitersForTest())
+}
+
+// TestPoolWaitSparesQueuedKickIsNotAShortage: the kick a take enqueues while
+// the pool's pass has already settled stands as a promised pass — a wait
+// arriving in the gap between the settle and the worker's relaying of the
+// queued kick parks for that pass and is not answered as a shortage, and the
+// pass it was promised fills the spare the take drew.
+func TestPoolWaitSparesQueuedKickIsNotAShortage(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, set, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "the content spare ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 })
+
+	// The take hands the pool a spare and asks for its replacement, and a
+	// second hold parks the replacement's make the moment the worker
+	// relays the queued kick: whatever the worker has reached — take, ask,
+	// or the held make — the wait below must cross it as a promised pass
+	// and answer the refill, never the shortage of a pool it read idle.
+	h2 := seam.HoldFirst(t, kit.OpCreate, "*")
+	if id, err := p.Take(segment.Content); err != nil || id == 0 {
+		h2.Release()
+		t.Fatalf("the take of the ready spare: (%d, %v)", id, err)
+	}
+	// The wait runs beside the parked make: an unmarked kick is answered
+	// as a shortage while the make it asked for still sits held, so the
+	// wait is joined on a goroutine, confirmed parked, and only then is the
+	// make let go — the wait that answers afterwards reads the refill, not
+	// a deadline and not a shortage.
+	answered := make(chan error, 1)
+	go func() { answered <- p.WaitSpares(t.Context()) }()
+	awaitParked(t, p, 1)
+	h2.Release()
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatalf("WaitSpares over a take's queued kick answered %v, want the refill it promised", err)
+		}
+	case <-time.After(10 * time.Second):
+		h2.Release()
+		t.Fatal("WaitSpares never answered the refill its pass was holding")
+	}
+	awaitCounters(t, "the take's replacement ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 })
+	awaitCounters(t, "the take's replacement ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 })
+	if err := set.Check(); err != nil {
+		t.Fatalf("the ledger after the take and its refill: %v", err)
+	}
+	if seam.Calls(kit.OpCreate) != 2 {
+		t.Fatalf("the pool made %d spares for a target of 1, want the take's one replacement", seam.Calls(kit.OpCreate))
+	}
 	p.Stop()
 }
 
@@ -2004,6 +2102,11 @@ func TestPoolWaitSparesShortWhenAMakeFails(t *testing.T) {
 // TestPoolWaitSparesStoppedDuringTheWait: a wait blocked on a fill the seam
 // holds returns core.ErrClosed once the pool stops, and the Stop joins the
 // worker with the waiter gone, leaking nothing.
+// TestPoolWaitSparesStoppedDuringTheWait: a wait blocked on a fill the seam
+// holds returns core.ErrClosed once the pool stops, and the Stop joins the
+// worker with the waiter gone, leaking nothing. The wait is confirmed parked
+// before the stop, so the check exercises the wake a stop sends a parked
+// waiter, not the entry refusal a late arrival takes.
 func TestPoolWaitSparesStoppedDuringTheWait(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -2015,23 +2118,23 @@ func TestPoolWaitSparesStoppedDuringTheWait(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	go func() { answered <- p.WaitSpares(ctx) }()
+	awaitParked(t, p, 1)
 
-	// The wait is blocked on the held make, and Stop joins the worker —
-	// which cannot leave the held create until the hold below is let go — so
-	// Stop runs on a goroutine of its own: its settle answers the wait
-	// whether the worker reached the hold or not, the release then lets the
-	// join return, and the stopped pool must refuse a fresh wait at once
-	// rather than park it.
-	stopped := make(chan struct{}, 1)
+	// The wait is confirmed parked on the held make, and Stop joins the
+	// worker — which cannot leave the held create until the hold below is
+	// let go — so Stop runs on a goroutine of its own: its settle answers
+	// the parked wait, the release then lets the join return, and the
+	// stopped pool must refuse a fresh wait at once rather than park it.
+	stopped := make(chan struct{})
 	go func() { p.Stop(); close(stopped) }()
 	select {
 	case err := <-answered:
 		if !errors.Is(err, core.ErrClosed) {
-			t.Fatalf("the wait stopped mid-fill returned %v, want core.ErrClosed", err)
+			t.Fatalf("the parked wait the pool stopped returned %v, want core.ErrClosed", err)
 		}
 	case <-time.After(10 * time.Second):
 		h1.Release()
-		t.Fatal("the wait blocked in a fill the pool left behind: Stop did not answer it")
+		t.Fatal("the parked wait blocked in a fill the pool left behind: Stop did not answer it")
 	}
 	h1.Release()
 	<-stopped
