@@ -1924,6 +1924,50 @@ a percentage.
   only) and the journal simulation (many small files against large segments under heavy writes).
   They use the same result format, so runs compare over time.
 
+### 4.11 Test doubles
+
+A test runs against its real collaborators. Every RFC's test strategy allows three kinds of
+double, and no other:
+
+1. **Inputs.** An injected clock and a seeded random source: time and randomness are inputs,
+   not collaborators.
+2. **A verified in-memory implementation.** It lives with the package that owns the interface,
+   in that package or its `xxxtest` package, and passes the **same conformance suite** as the
+   production implementation: a memory KV or store, an in-memory transport, a simulated disk.
+   It may record its own outputs, and a test asserts on those outputs or on the resulting
+   state, never on which calls were made, except through the pass-through record below. For a
+   dependency not built yet, its conformance
+   suite is written first, then the smallest in-memory implementation that passes it; the
+   production implementation passes the same suite when it lands.
+3. **Fault injection.** A wrapper around a real implementation, or around a kind 2, that fails,
+   delays, tears or crashes on cue. An error answer a test needs is given this way, by a fault
+   wrapper, not by a stub.
+
+When the call reaching a dependency is itself the requirement — a sync reaching storage, one
+mutating call per request, one query per key — a wrapper around the real implementation, or
+around a kind 2, may record what reached it. It records and passes the call through; it never
+answers in the dependency's place. Its record is the output a test asserts on.
+
+These are not doubles at all. A sink that only keeps what the code under test delivered is
+an output and needs no conformance suite, and a count that is itself the requirement (one
+query per key, at most one call per second) is an output too, read from a metric, from a
+counter the kind 2 exports and its conformance suite covers, or from the record above. A per-OS table is data, tested by its contents,
+and a tunable such as a sampling rate is an input passed through the constructor. A `Null`
+service answers every call at once to measure the adapter's own cost (the allocation gate and
+benchmarks); nothing asserts on its answers, so it is a load, not a double.
+A hook in the code under test that pauses it at a point, or delivers what it reached there, is
+not a double either: it is set per instance from `export_test.go`, never through a package
+variable, and never answers in place of the code.
+
+A deterministic simulation is built from the three kinds, so it is allowed. Not allowed: a canned
+stub written for one test; a recording or counting fake used to check which calls were made; a
+double that no conformance suite holds to the real one; swapping a package-level variable.
+
+**External systems** (a KDC, a domain controller, an LDAP directory, S3) are tested for real in
+`integration`, and their parsing and logic are pure functions with unit tests. A stand-in runs
+in `unit` only as a kind 2, whose conformance suite also runs against the real system in
+`integration`.
+
 ## 5. What this doesn't change
 
 - **The tests and what they are graded against.** pjdfstest, pynfs, WPTS, smbtorture, the

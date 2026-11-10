@@ -8,8 +8,8 @@
 [RFC 17](../rfcs/rfc-17-vfs.md) §9's decision to delete rather than migrate.
 **Track:** the team.
 **Epic 1 estimate: 9 subtasks, 15.5 man-days.**
-**Depends on:** nothing in this programme: `pkg/vfs`, `vfstest.Null` and `vfstest.Record`
-exist on `feat/storage-v2`. The surface is written against RFC 20 as the review follow-ups
+**Depends on:** nothing in this programme: `pkg/vfs` and `vfstest.Null` exist on
+`feat/storage-v2`. The surface is written against RFC 20 as the review follow-ups
 leave it (#3892 and #3903: a drain's refusal answered over SMB by an interim with no final,
 a single-reply compound judged whole while draining), as RFC 20 now stands on
 `feat/storage-v2`.
@@ -88,8 +88,9 @@ two `New`); `pkg/resources`' signatures; `core`'s §4.7 surface with stub bodies
 ## 2. General rules for each epic
 
 1. **Independent unit tests, under `-race`.** Each epic carries its own unit tests. It may use
-   another epic's implementation once that has landed, `vfstest.Null` and `vfstest.Record`, and
-   E2's `testproto` and leak checks. `core` is tested from `package core_test` on `testproto` and
+   another epic's implementation once that has landed, `vfstest.Memory` and `vfstest.Faults`, and
+   E2's `testproto` and leak checks. Every double is one of
+   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds. `core` is tested from `package core_test` on `testproto` and
    never through NFS or SMB; no `core` test imports a protocol package. Connections are real TCP
    over loopback, with real deadlines and socket options read back from the socket. Test at the
    layer that consumes a value (`CLAUDE.md`, "Verifying a change"): a setting is asserted on a
@@ -269,7 +270,7 @@ which epic owns the rest.
 | R69 | `Conn` is opaque; a protocol reaches it only through `Send(h Header, msg *Buf, before uint64) error`, `Established()`, `Keep() (release func())`, `Settings() config.Settings` (D15), `Close(err error)` (bodies: E4, E5) | MUST | §4.7 | T1.7 |
 | R70 | `HoldCodec` is `{Key(h) uint64; Interim(h, grant bool, after []Header, out *Buf) error; Final(h, grant bool) Header; Cancels(h) (key uint64, ok bool); Pends(h, err error) bool}` | MUST | §4.7 | T1.7 |
 | R71 | `ErrParked` and core's refusals `ErrNotSupported`, `ErrVersion`, `ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree`, `ErrNoFH`, `ErrTooLong`, `ErrExpired`, `ErrNotLast`, `ErrTooManyPending`, `ErrMoved`, `ErrDraining` are distinct sentinels; `Errors() []error` (body: T1.7) | MUST | §4.7 | T1.7 |
-| R72 | `Dispatcher` is `{Dispatch(ctx, c *Conn, rec *Buf); Drain()}`, `ErrMoved` or `ErrDraining` decided per request (D16), the seam a connection's own tests stub | MUST | §4.7 | T1.7 |
+| R72 | A connection hands each record to the pipeline, a concrete type with no interface between them; the pipeline's drain takes no argument, `ErrMoved` or `ErrDraining` decided per request (D16); a connection's own tests run the real pipeline (E4) | MUST | §4.7 | T1.7 |
 | R73 | `NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)`; `Listener{Network string; Port uint16; Protocol Protocol}`; `*Server` implements `adapter.Adapter` (bodies: E4) | MUST | §4.7, §3.4, §2.5 | T1.7 |
 | R74 | Nothing in `core`'s surface names a dialect; nothing is looked up later: no registry, no global, no service in a context value | invariant | §4.7 | T1.7 |
 | R75 | What SMB needs from `core` is in the frozen surface: a handshake and kept state, a session level and per-message protocol state, held and parked replies, a cancel, chained members each with its own header and offset, a per-request drain decision (proved by E2 T2.2) | MUST | §4.7; owner decision | T1.7 |
@@ -364,7 +365,7 @@ which epic owns the rest.
   `Conn.Settings` are how `core`, the control plane and a protocol read it (R35, R41, R69;
   RFC 20 §3.6). Each `New` keeps its typed parameter.
 - **D16, the drain's target is per request.** `Stop(ctx)` keeps its signature and
-  `Dispatcher.Drain()` takes no argument: while draining, `core` asks the service for each
+  the pipeline's drain takes no argument: while draining, `core` asks the service for each
   refused request whether its share has a gateway to move to (`ErrMoved`) or none
   (`ErrDraining`), since RFC 21 decides per share. The call is `vfs.Shares.MoveTarget`, named
   in RFC 17 by T1.9, since a method added to `vfs.Service` after S1 would break every
@@ -448,7 +449,7 @@ internal/
       protocol.go                    Protocol, Framer, Stages, HeaderCodec, Router, Security, FlowControl, ReplayCache, Header
       dispatch.go                    OpTable, Op, Invocation, Role, Bind, Handler, NewOpTable, Version, Range, Needs, Status, Request, Park, Call, Middleware
       errors.go                      ErrorTable, ErrorRow, NewErrorTable, Map, the sentinels, Errors
-      conn.go                        Conn, Send, Established, Keep, Settings, Close, Dispatcher
+      conn.go                        Conn, Send, Established, Keep, Settings, Close
       hold.go                        HoldCodec, ErrParked
       server.go                      Server, NewServer, Listener
       bind_test.go exports_test.go
@@ -486,7 +487,7 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
   - D6's statement that every adapter setting is live, and no restart machinery;
   - D15's `config.Settings`, `Common`, `Validate`, `Conn.Settings`, and
     `Reconfigure`'s and `NewServer`'s new parameter;
-  - D16's per-request service call for the drain's target, and `Drain()` with no argument;
+  - D16's per-request service call for the drain's target, and the pipeline's drain with no argument;
   - D17's `State`, `Health` and `ConnInfo` fields;
   - D18's `NewBufPool` (RFC 24 §2.5) and `BufPool.Get`'s key;
   - D10's `Deps.Metrics` and D11's `*resources.Buf`;
@@ -793,9 +794,14 @@ cannot build apart.
 - `metrics.Registry` an alias of the branch's `Metrics` rather than RFC 25's registry (D10).
   Owner: RFC 25.
 - `vfs.Grace{Until}` (D26), named in RFC 17 by T1.9. Owner: RFC 17's plan, before E5's T5.5.
-- `vfs.Shares.MoveTarget` (D16), named in RFC 17 by T1.9, in `pkg/vfs`, `*vfs.Filesystem`,
-  `vfstest.Null` and `vfstest.Record`. Owner: RFC 17's plan, before E4 calls it; until RFC
+- `vfs.Shares.MoveTarget` (D16), named in RFC 17 by T1.9, in `pkg/vfs`, `*vfs.Filesystem`
+  (so `vfstest.Memory`) and `vfstest.Null`. Owner: RFC 17's plan, before E4 calls it; until RFC
   15's topology exists it answers none.
+- `vfstest.Memory`, the in-memory service passing RFC 17 §8's conformance suite, and
+  `vfstest.Faults`, its fault wrapper, which every handler and `core` test runs on; `Null` serves
+  the allocation gate and the benchmarks only (RFC 20 §7.2). Owner: RFC 17's plan, piece 12, a
+  stage-2 follow-up estimated there, which delivers `Memory` with its in-memory `Content`; it
+  must land before E4's first test, which calls it, so E4's tests wait on that piece.
 - The open-unlinked hold's feed (D22): whatever tracks open files in v2 (RFC 17's opens,
   through the adapters) sets it before any protocol is served. Owner: the cutover.
 - The share-policy gates (D23): flavor and Kerberos-level policy, the netgroup allowlist and

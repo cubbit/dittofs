@@ -1040,7 +1040,7 @@ alike. A new transform gets it by registering.
 | T10 | Build chains that differ in a transform's version, in a length-affecting setting and in current material: three different IDs. Change only a setting that is not length-affecting: the same ID. |
 | [§2.8](#2.8%20The%20chain%20ID) | Golden vectors, from an independent implementation working from [§2.8](#2.8%20The%20chain%20ID)'s byte table alone: the chain ID of the empty chain, of the default encrypting chain with one data key, and of a compress-then-encrypt chain with two materials. Swap the order of two materials, change one byte of a fingerprint, or encode a length prefix as 2 bytes or little-endian: each gives a different ID than the vector. |
 | T5 | Make a transform's factory fail: the store does not open, and no body is written. |
-| T6 | A fake transform that decodes to wrong bytes: every read through the codec fails. |
+| T6 | A fault wrapper around a real transform that corrupts its decoded bytes: every read through the codec fails. |
 | T7 | A decode that returns `ErrMaterialUnavailable` reaches the engine as the remote being unavailable, is retried, and never yields zeros or an absent chunk. One that returns `ErrMaterialDestroyed` is not retried and reports the chunk Lost. |
 | T8 | Force each decode error: the codec returns only its own errors. |
 | [§5.2](#5.2%20Relocation%20re-encodes) | Relocate a block written under an old chain: every body in the new block carries the current envelope. |

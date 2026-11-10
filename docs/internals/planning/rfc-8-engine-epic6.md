@@ -14,7 +14,7 @@ what a raised incarnation does to the grace instance.
 **Track:** C.
 **Epic 6 estimate: 12 subtasks, 40.25 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Engine`, `Deps`,
-`Journal`, `Handle`, `Lifecycle`, `Share`, `ShareState`, `Stats`) and E2's fixture and fake
+`Journal`, `Handle`, `Lifecycle`, `Share`, `ShareState`, `Stats`) and E2's fixture and in-memory
 journal. T6.1 also needs the RFC 8 §2.1 and RFC 16 §3 text that settles #3631 and #3632, and
 the source of a share's journal (§9 point 14), since it changes E1's frozen `Lifecycle`.
 T6.2 extends the share table epic 3's T3.1 declares, already on epic 3's branch. T6.4 needs
@@ -105,12 +105,12 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal, `kvstore` and the real open-state table,
-  the fault-injecting `kv.KV` (its T2.3), the fake journal and the profiler wiring.
+  the fault-injecting `kv.KV` (its T2.3), the in-memory journal and the profiler wiring.
 - **Epics 3, 4, 5, 7 and 8**: write, read and overlay (3); commit, group commit and losses
   (4); removals (5); capacity, self-fence and health (7); clone and copy (8). Their subtasks
   are cited as `T<epic>.<n>`.
 - **S1**, interfaces frozen and `Content` agreed with the filesystem service. **S2**, red
-  suite in CI. **S3**, engine complete over the fake journal: epics 3 to 8 done, every row
+  suite in CI. **S3**, engine complete over the in-memory journal: epics 3 to 8 done, every row
   whose journal call exists green. **S4**, the journal's calls built.
 - **E13, E15, E19, E29, E40, E42**: RFC 8 §13's invariants of those numbers, not epics. E13: no
   background work outlives a component it uses; E15: existence is re-applied at recovery
@@ -127,10 +127,11 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
 
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation, the implementation of an epic it depends on once
-   that has landed, and E2's test components: above all the fake journal, which stands in
+   that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12).
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -166,11 +167,9 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
    engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
-8. **Real dependencies for properties of those dependencies.** No fake stands in for a
-   check about what the real thing does: the real journal on a real directory, with its crash
-   seam, for durability, recovery and loss; the real `kvstore` for what a transaction
-   commits and conflicts on. The fake journal is for the engine's pure logic only, and no
-   conformance row runs over it.
+8. **Real dependencies for properties of those dependencies.** The
+   [plan's rule 8](rfc-8-journal-only-engine-plan.md#1.5%20General%20rules%20for%20each%20epic),
+   as written there.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -194,18 +193,18 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| 1 Unit tests | all | T6.2 to T6.10 test over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition until T6.2's `Bind` replaces its hook; T6.1 and T6.11 over `kvstoretest`'s suite. T6.3 extends the fake with `Open`'s refusals, `Forget`, `Strand` and `Stats`' tags and versions; T6.5 with `Files`, `Since` and `Settle`; T6.7 with `SetVersionLimit` and a counter that issues against it |
+| 1 Unit tests | all | T6.2 to T6.10 test over E2's in-memory journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition until T6.2's `Bind` replaces its hook; T6.1 and T6.11 over `kvstoretest`'s suite. T6.3 extends the in-memory journal with `Open`'s refusals, `Forget`, `Strand` and `Stats`' tags and versions; T6.5 with `Files`, `Since` and `Settle`; T6.7 with `SetVersionLimit` and a counter that issues against it |
 | 2 Fuzz | none | no parser. The `ponytail:` marker at the read-resolution table already says why |
 | 3 Observability | T6.3, T6.5, T6.6, T6.7, T6.10 | no new counter and no new span: RFC 8 §14 names none for start, bindings or the version limit. Conditions through `Stats`: a share refused at start, named with its device (T6.3); `journal_lost` (T6.3, T6.10) and `journal_unsuitable` (T6.10), each per journal. Logs: a refused share and a stranded tag at `Warn`, with held and dirty bytes for the tag (T6.3, T6.6); a release marker settled as data loss at `Error`, naming the file (T6.5); a version-limit raise that fails at the store at `Warn`, and a version limit the journal refuses at `Error` (T6.7). |
 | 4 Profiling | all | the unit composition's `prof.Watch` covers every test: a raise goroutine (T6.7), a retry loop (T6.10) or a loop left running past `Close` (T6.8) fails it |
 | 5 Public and internal | all | internal tests of the share table (T6.2), the floor and limit arithmetic (T6.3, T6.7) and the trigger (T6.7); the rest through `*Engine`; `-race` in T6.2, T6.7, T6.8 and T6.9. What the engine hands the journal is asserted where the journal acts on it: the floor by the version the next `WriteAt` returns over the real journal (T6.2, T6.3), the limit by the version a `Draw` is refused at (T6.7); what it hands the store by reading the keys back through `kvstore` (T6.1, T6.4) |
 | 6 Known failures | T6.2 to T6.10 | E2 delivered four of its rows; the rows this epic owns are written here, over E2's fixture, red in `known.yaml` naming this epic's issue until the journal calls they need exist, and removed in the change that turns them green |
 | 7 v2 ignores v1 | all | nothing new is imported; `kvstore` is not v1 |
-| 8 Real dependencies | T6.1, T6.3, T6.5, T6.7, T6.9, T6.10 | the identity, limits and incarnations from the real `kvstore`; the floor, the refusal of a missing or foreign journal, the recovery, the version limit, `Drop`'s `Forget` and the retried open over the real journal and its crash seam. Every §15 row runs over the fixture; the fake keeps the unit tests (the retry loop's, the content calls' answers after `Unbind`) |
+| 8 Real dependencies | T6.1, T6.3, T6.5, T6.7, T6.9, T6.10 | the identity, limits and incarnations from the real `kvstore`; the floor, the refusal of a missing or foreign journal, the recovery, the version limit, `Drop`'s `Forget` and the retried open over the real journal and its crash seam. Every §15 row runs over the fixture; the in-memory journal keeps the unit tests (the retry loop's, the content calls' answers after `Unbind`) |
 | 9 Comments | all | epic 3's copy-on-write share table `decision:`, kept at the `bindings` type (T6.2); `kvstore`'s `decision:` at `RaiseIncarnations`, rewritten for `RaiseAtStart` (T6.1); the `ponytail:` markers at `RaiseAtStart`, `Tags` and `VersionLimits` removed (T6.11); the version-limit headroom `decision:`, burst `ponytail:` and the raise's retry wait `decision:` (T6.7), RFC 8 §2.5's `decision:` on an error a check meets (T6.3), and the markers of §4 |
 | 10 Tests can fail | all | each test below names the change it catches |
 | 11 Exports | T6.1, T6.3 | `Lifecycle` changes shape (D4) and gains `Tags` (D2), as RFC 16 §3 declares them (§9 points 1 and 2); `Tags`' record type is declared in `entity`, beside the store's other records, so `kvstore` imports no engine, and `entity.Shard` gains the primary's journal identity (D10, §9 point 14); `kvstore` gains `RecordJournal` on the opened store (D3, §9 point 5), the `JD` key kind and `Lifecycle()`; `Stats` gains the refused shares and the journal conditions (T6.3). Test hooks live in `export_test.go` |
-| 12 Creates only what it declares | all | each fake journal call lands with the subtask that first calls it; `RecordJournal` with T6.1, whose fixture is its first caller; `kv.Counting`'s count of Updates and of the most keys one Update wrote with T6.1; the fixture's second share with T6.2 and its second device with T6.10 |
+| 12 Creates only what it declares | all | each in-memory journal call lands with the subtask that first calls it; `RecordJournal` with T6.1, whose fixture is its first caller; the in-memory `kv.KV`'s own record of Updates and of the most keys one Update wrote (`Counts`) with T6.1; the fixture's second share with T6.2 and its second device with T6.10 |
 
 ## 3. Requirements and invariants
 
@@ -452,7 +451,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 
 ```text
 pkg/metadata/kv/
-  counting.go        T6.1  a count of Updates and the most keys one Update wrote
+  badgerkv/          T6.1  the in-memory KV keeps `Counts`: Updates and the most keys one Update wrote
 pkg/metadata/entity/
   control.go         T6.1  Tags' record, its three removal states (D2) and its shards'
                            journal identities (D10)
@@ -526,9 +525,10 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   overwritten key named and the older index key of a journal recorded again (D3), and
   rewriting, in the same transaction, the primary journal identity of every shard that names
   the deleted one (D10), with its `ponytail:`; the engine's `Lifecycle` declaring the seven
-  calls. `kv.Counting` gains a count of Updates and the most keys one Update wrote, its
-  first consumer here. In E2's fixture, the real view replaces the stub `Lifecycle` that
-  refuses every call (`unbuiltLifecycle`), and the fixture records `Fixture.Journal`, the
+  calls. The in-memory `kv.KV`'s own record (`Counts`) gains a count of Updates and the most
+  keys one Update wrote, its first consumer here. In E2's fixture, the real view replaces
+  `unbuiltLifecycle`, a fault answer refusing every call until this epic replaces it, and the
+  fixture records `Fixture.Journal`, the
   `JournalID` it kept from `Init`, through `RecordJournal`, so the view's `JournalID`
   answers it for the fixture's directory.
 - **Acceptance criteria:**
@@ -642,7 +642,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
     else touches its directory.
   - No `WriteAt` or `Draw` reaches a journal before its `SetVersionLimit`.
   - A failure at any point closes every handle and journal opened so far, in reverse.
-- **Tests:** over the fake: a store recording identity A and a directory holding B, both
+- **Tests:** over the in-memory journal: a store recording identity A and a directory holding B, both
   shares of the device refused by name, `Start` succeeds, the other device's share serves
   and has `Share` called on its own journal only (catches a foreign journal opened, R16,
   and a handle on every journal, R7, D10), and a content call naming a refused share
@@ -736,9 +736,9 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   line naming the file, and the next restart quiet (R27); a release marker a crash left
   mid-retry finished by the restart; the share's usage counters read back after recovery
   equal the bytes re-applied, and a second restart leaves them unchanged (catches usage not
-  recorded, or counted twice, R23). Over the fake: a clone marker reaches the rebuild hook
-  and no `Remove` (R26); the fake records the file's sync, the existence commit and `Settle`
-  in that order, and an existence commit made to fail leaves `Settle` uncalled and the
+  recorded, or counted twice, R23). Over the in-memory journal: a clone marker reaches the rebuild hook
+  and no `Remove` (R26); the in-memory journal's own output log shows the file synced before, and settled
+  after, the existence commit the in-memory `kv.KV` records, and an existence commit made to fail leaves `Settle` uncalled and the
   marker yielded again at the next start (catches a `Settle` before the commit, or a commit
   before the sync, R24).
 
@@ -761,7 +761,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   crashed between batches resumes and the extent reads removed throughout; a crash after a
   removal's last batch and before its prune: the restart prunes it, a release's leftover
   keys included, and its `S‖id‖rr` entry goes (catches a resume that posts only removals not
-  done, R29); over the fake, 10⁴
+  done, R29); over the in-memory journal, 10⁴
   unfinished removals posted and `Start` returning before the loop's first batch (catches a
   start that runs them, R29); a tag left by a deleted share stranded before `Start` returns,
   so before any file of the journal is served, and a share's tag that
@@ -777,7 +777,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
 - **Deliverables:** in `recover.go` (D6): the per-journal peak-rate buckets,
   `issued(journal, v)` called from `Write` and `Draw`, and at the removal and clone steps
   already merged when it lands (T5.1, T5.2, T5.4, T8.2 and T8.6, each with its test over the
-  fake); a step that lands after T6.7 adds its own call and test, so the call lands with
+  in-memory journal); a step that lands after T6.7 adds its own call and test, so the call lands with
   whichever of the step and T6.7 comes second and neither waits for the other; the raise
   goroutine: `RaiseVersionLimits` for every served share to a block above the
   larger of the limit last passed and `Stats().NextVersion`, `SetVersionLimit` after the
@@ -811,14 +811,14 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   the issue for a knob the conformance package can reach (rule 11 keeps hooks in
   `export_test.go`), opened before this subtask merges, not #3701, which closes with it. The
   start and crash halves' entry goes when they pass; this one stays until that issue is
-  done, so the raise halves stay red meanwhile. Over the fake, the same wrong changes are
+  done, so the raise halves stay red meanwhile. Over the in-memory journal, the same wrong changes are
   caught: a raise held before the store: the journal has only `Start`'s limit (catches
   `SetVersionLimit` before the raise commits); a raise held after its commit and before
   `SetVersionLimit`, then a share bound: the `Bind` waits on the raise lock and its
   `S‖id‖vl` is at least the limit the journal ends with (catches a `Bind` without the lock,
   D6); a `Bind` held inside its own `RaiseVersionLimits` call while a `Draw` past the
   trigger wakes the raise: the raise waits on the lock and passes no new limit (catches the
-  lock taken only after the limit write, R36). Over the fake: a rate held below the trigger
+  lock taken only after the limit write, R36). Over the in-memory journal: a rate held below the trigger
   and raised in one step, the raise due on the next `Draw` with the test clock not advanced
   (catches a timer, R34); the peak computed from a 60 s history (catches a window of the
   last second only); with a non-zero `existence_age` E and a steady peak rate r, versions
@@ -839,7 +839,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   limit passed, the next write served (catches a raise run only when woken); a `Draw` past
   the trigger, or a failed `Bind`'s check, while a raise runs: one more pass after it,
   which raises only if the versions left are still within the trigger (catches a wake lost while a raise runs); a
-  `SetVersionLimit` the fake journal refuses: no second call, one `Error` log, a later
+  `SetVersionLimit` the in-memory journal refuses once: its limit stays unchanged, one `Error` log, a later
   version past the trigger wakes no raise, and a write at the limit answers `ErrDelay`, not
   `ErrNoSpace`, and a `Bind` that attaches a share to that journal answers the journal's error (catches a refused
   limit retried in a loop, and a `Bind` that joins a journal no raise will lift); a `Bind`
@@ -873,26 +873,26 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   - No `Handle.Close` or `Journal.Close` is called while a loop that uses it runs.
   - No binding is published once `Close` has begun.
   - `Close` never calls `Forget`.
-- **Tests:** over the fake: a removal loop held in a batch past the context's deadline,
+- **Tests:** over the in-memory journal: a removal loop held in a batch past the context's deadline,
   `Close` returns its error and the journal and every handle on it are still open (catches a
   close under a live loop, R42, R43); the same with `context.Background()` and the test
   clock advanced past the default: `Close` returns its error (catches a bound taken from
   `ctx` alone, D7); the same with a 120 s deadline and the clock past 30 s: `Close` still
   waits (catches the default applied over a deadline, D7); a `Bind` held in `Share`, then
   `Close` called, then the `Bind` released: nothing is published, the `Bind` answers
-  `ErrUnavailable`, and the fake records its handle closed before the journal (catches a
+  `ErrUnavailable`, and the in-memory journal records its handle closed before the journal (catches a
   publish not checked under the mutex, and a journal closed under a `Bind`, R39, R42); a
   group commit batch held in its store commit by a `kv.KV` wrapper when `Close` begins: no
   handle or journal is closed until the batch returns and its goroutine is joined (catches
-  a journal closed under a running group commit, R41, R42); the fake records the order of
+  a journal closed under a running group commit, R41, R42); the in-memory journal records the order of
   every close (catches journals closed before handles); a content
-  call and a `Bind` made once `Close` has begun answer `ErrUnavailable`, and the fake
+  call and a `Bind` made once `Close` has begun answer `ErrUnavailable`, and the in-memory journal
   records no version drawn after it (R39); a clean `Close` and restart over the fixture with
   `Since` yielding nothing above `applied`, the share's tag still in `Stats` and a synced
   write reading back (catches a `Close` that calls `Forget`, R40, R46); T5.4's
   `ErrUnavailable` outcome: a `Close` while the loop retries a release's phase 1 yields
   `ErrUnavailable` on its channel with no `done(...)`, leaves the marker, and a restart then
-  settles it (R48); a `Served` stub that never returns: `Close` returns within its deadline,
+  settles it (R48); a fault wrapper around the open-state table holding `Served` forever: `Close` returns within its deadline,
   the wait's goroutine is gone and the clone `Removal` is still listed at the next start
   (catches a `Close` hung on a shard never served, R49), written with T6.8 or T8.6,
   whichever lands last; a `Bind` that took over a handle, failed, its handle's `Close`
@@ -931,7 +931,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   batch has returned; while it is held in that join, a content call, a removal batch and a
   clone posted for the share are each refused (catches an `Unbind` that joins first and
   refuses after, R44); no entry for its tag remains after `Drop`, red in `known.yaml` until
-  the journal has `Forget` (§9 point 10). Over the fake: one call per content method that
+  the journal has `Forget` (§9 point 10). Over the in-memory journal: one call per content method that
   returns an error, naming the share after `Unbind`, each `ErrStale`, not `DelayFrozen`
   (R12); `Drop` under writes with a batch due as it joins: T4.7's reservation counter back
   to zero and one `Done` per write (catches a `Done` missed or doubled, R47); `Forget`
@@ -943,8 +943,8 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   answering `ErrDelay` (catches the lifecycle mutex held across a join, D1); T5.4's stall
   ended by `Drop` yielding `ErrUnavailable` with no `done(...)` and, once `Drop` returns, no
   marker of the tag in the journal (R48); `Unbind` of a share whose rebuilt clone waits on a
-  `Served` stub: `Unbind` has not returned while the stub blocks, and returns only once the
-  stub is released and the clone is done (catches a cancel in place of the join, R44, R49),
+  `Served` a fault wrapper holds: `Unbind` has not returned while it is held, and returns only
+  once the wrapper releases it and the clone is done (catches a cancel in place of the join, R44, R49),
   written with T6.9 or T8.6, whichever lands last.
 
 ### T6.10 A journal refused as unsuitable at start
@@ -987,7 +987,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   the next retry attaches it; a late attach whose `Since` is held: a read of that journal's
   files answers `ErrDelay` until step 3 has run for it (catches a file served before its
   recovery, R32). Red in `known.yaml` until the journal declares
-  `ErrUnsuitableStorage` and refuses at its seam (§9 point 10). Over the fake: the retry
+  `ErrUnsuitableStorage` and refuses at its seam (§9 point 10). Over the in-memory journal: the retry
   loop's unit tests (one goroutine per refused journal, none left after `Close`); a retry's
   `Open` held, `Close` called, then `Open` released: no removal loop starts, the journal is
   closed, and `Close` returns (catches a late attach that outlives stop step 2, E13).
@@ -1019,7 +1019,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   first call (catches a raise that skips the shards that look done); 3 × `K` shares, one
   removed and one retired: `Tags` answers each once with its own state (catches a share
   lost or repeated at a batch edge); `VersionLimits` over 3 × `K` shares: one `GetMany` per
-  batch by a counting `kv.KV` (catches one read per share, the round trips #3741 counts).
+  batch by the in-memory `kv.KV`'s own record (catches one read per share, the round trips #3741 counts).
   FoundationDB's five seconds are not tested here: no unit test runs `fdbkv`.
 
 ### T6.12 The replay takes a write's `Over` from `Since`
@@ -1032,7 +1032,7 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
 - **Deliverables:** step 3's replay passes each write's `Change.Over` into
   `kvstore.PendingOp.Over`, which `Existence.Commit` already writes overwrite records over
   (epic 4's D6), in place of the runs it computes from its own batch; that computation and its
-  `decision:` waiting for `Change.Over` removed. E2's fake journal yields `Over` as RFC 1
+  `decision:` waiting for `Change.Over` removed. E2's in-memory journal yields `Over` as RFC 1
   §3.10 states it, and `PendingOp.Over`'s comment names the replay's runs from `Since`.
 - **Acceptance criteria:**
   - A replayed write whose `Since` entry names an `Over` run commits an overwrite record there,
@@ -1065,7 +1065,7 @@ flowchart TD
   T6_6 & T6_9 --> T6_10["T6.10 Unsuitable journal at start"]
   T6_5 --> T6_12["T6.12 Over from Since"]
   J2(["journal: Change.Over"]):::sync -.-> T6_12
-  T6_6 & T6_9 & T6_10 --> S3(["S3 engine complete over the fake journal"]):::sync
+  T6_6 & T6_9 & T6_10 --> S3(["S3 engine complete over the in-memory journal"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
@@ -1073,9 +1073,9 @@ T6.1 to T6.4 and T6.11 need only the RFC text for #3631, #3632, #3633 and §9 po
 3's table (T3.1) and E2's `kv.KV` (T2.3), and fill the wait for epics 4 and 5; T6.7 follows as soon as epic
 3's `Write` and `Draw` land. T6.5 is the riskiest, for the order of sync, commit and
 `Settle` across a crash, and starts once epic 4's T4.3 and epic 5's T5.4 exist. Checkpoint
-after T6.4: a share bound and served over the fake journal; the fixture's `Start` gets past
+after T6.4: a share bound and served over the in-memory journal; the fixture's `Start` gets past
 `Lifecycle` once the journal has `Init`, which the fixture calls first. Checkpoint after
-T6.6: a restart over the fake journal recovers every file.
+T6.6: a restart over the in-memory journal recovers every file.
 
 ## 8. Suggested pull requests
 
