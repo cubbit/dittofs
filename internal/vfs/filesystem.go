@@ -160,6 +160,7 @@ type Filesystem struct {
 	watches   openstate.Watches
 	watchers  watchers       // the watches set here, as their changes are delivered
 	reg       *registry      // each client's callback paths
+	notifying inOrder        // each client's Notify deliveries, in the order raised
 	sending   sync.WaitGroup // the callbacks being delivered and the releases being run
 	marks     releaser
 

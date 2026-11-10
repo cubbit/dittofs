@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -180,18 +179,15 @@ func (s *attrs) touch(t *testing.T, dir vfs.Handle, name string) vfs.Handle {
 }
 
 // heard waits for cb to have been notified of len(want) changes, waits
-// again for any more, and fails unless they are want, in any order: each
-// delivery runs on its own, so two need not arrive in the order raised.
+// again for any more, and fails unless they are want, in order: a client's
+// deliveries reach it in the order they were raised.
 func heard(t *testing.T, s *attrs, cb *vfstest.RecordingCallbacks, want ...string) map[string]openstate.ChangeMask {
 	t.Helper()
 	notes(t, s.shares, cb, len(want))
 	s.clock.Advance(10 * time.Second)
 	time.Sleep(50 * time.Millisecond)
-	got := notes(t, s.shares, cb, len(want))
-	slices.Sort(got)
-	want = slices.Sorted(slices.Values(want))
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("the watch heard %q, want %q", got, want)
+	if got := notes(t, s.shares, cb, len(want)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the watch heard %q, want %q in order", got, want)
 	}
 	what := map[string]openstate.ChangeMask{}
 	for _, ch := range changes(cb) {
@@ -516,6 +512,47 @@ func TestAnExclusiveCreatesRetryIsNotReported(t *testing.T) {
 	}
 	s.touch(t, s.fs.Root, "g")
 	if got := notes(t, s.shares, cb, 2); !reflect.DeepEqual(got, []string{"f", "g"}) {
+		t.Errorf("the watch heard %q, want f then g", got)
+	}
+}
+
+// slowNotify is a client slow to take a Notify of slow: it holds that one
+// back, unrecorded, until another reaches it or a while has passed.
+type slowNotify struct {
+	*vfstest.RecordingCallbacks
+	slow  string
+	other chan struct{}
+	once  sync.Once
+}
+
+func (c *slowNotify) Notify(ctx context.Context, w vfs.WatchID, ch []vfs.Change) error {
+	if string(ch[0].Name) == c.slow {
+		select {
+		case <-c.other:
+		case <-time.After(200 * time.Millisecond):
+		}
+	} else {
+		c.once.Do(func() { close(c.other) })
+	}
+	return c.RecordingCallbacks.Notify(ctx, w, ch)
+}
+
+// A client hears its watches' changes in the order they were raised, the
+// later one waiting while it is slow to take the first.
+func TestAClientHearsItsChangesInOrder(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	cb := &slowNotify{RecordingCallbacks: &vfstest.RecordingCallbacks{}, slow: "f", other: make(chan struct{})}
+	alice := signedIn(s.alice.Principal, 1)
+	info := smb("alice-pc", 1)
+	id, _, err := s.Connect(ctx, alice, info, cb)
+	s.must(t, err)
+	alice.Protocol, alice.Client = info.Protocol, id
+	w, err := s.Watch(ctx, alice, vfs.WatchSpec{Dir: s.fs.Root, Filter: openstate.ChangeAddEntry})
+	s.must(t, err)
+	s.Notify(alice.Client, w, []vfs.Change{{What: openstate.ChangeAddEntry, Name: []byte("f")}})
+	s.Notify(alice.Client, w, []vfs.Change{{What: openstate.ChangeAddEntry, Name: []byte("g")}})
+	if got := notes(t, s.shares, cb.RecordingCallbacks, 2); !reflect.DeepEqual(got, []string{"f", "g"}) {
 		t.Errorf("the watch heard %q, want f then g", got)
 	}
 }
