@@ -539,8 +539,9 @@ The contract is `pkg/identity`, a leaf importing metadata types only: the value
 types (`Identity`, `ProofKind`, `Protection`, `Claims`, `Evidence`, `Keys`,
 `SignInStep`, `SignInResult`, `Caller`, `Spelling`, `Scheme`, `SID`,
 `NTLMAuthenticate`), the errors, the interfaces of §3.1, §4.1, §6.1 and §8.1,
-and `NewHashes`. Its test helpers are `identitytest`: `Static`, each interface
-returning fixed values, and a fake directory. The server is `internal/identity`,
+and `NewHashes`. Its test helpers are `identitytest`: an in-memory directory and
+domain controller, each held by its conformance suite to the real one
+([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). The server is `internal/identity`,
 with the LDAP client alone in `internal/identity/directory` so only it imports
 LDAP; only `internal/node` imports the server. `pkg/vfs` aliases the value types
 an adapter needs ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), so an
@@ -1872,7 +1873,8 @@ client sending uids the store does not know.
 
 Each check below fails silently when broken. There are two tiers. **Tier 1**
 drives identity alone, through its own interfaces, against the real metadata
-store and with a fake directory, KDC and domain controller, no filesystem and no
+store and with `identitytest`'s in-memory directory and domain controller, tickets
+made with the test realm's keys as a KDC makes them, no filesystem and no
 adapter. **Tier 2** runs on the composed single-node harness
 ([index](rfc-index.md)), through both adapters. A row marked **(cluster)** names
 the RFC 15 row that covers it on two nodes. The `Minter` and allocation rules —
@@ -1893,7 +1895,7 @@ RFC 16's conformance suite's, not repeated here.
 | admin needs proof | 2 | A grant names uid 1500 `admin`. Over `AUTH_SYS` as uid 1500, read a mode-0600 file of another user: refused. Give the principal a Kerberos name; over `sec=krb5`: granted. `S-1-5-32-544` in a test PAC for a non-admin: not `admin`. | `admin` from a uid or a SID |
 | roles grant nothing | 2 | [RFC 23 §12](rfc-23-control-plane.md#12.%20Conformance)'s §5.1 check, which also asserts that the account holds no spelling. | — |
 | disable takes effect | 2 | bob holds an SMB open and an NFS GSS context; make one call on each, a cache hit. Disable bob; before the `State` is applied, the next call is still served; apply it (fake clock): every call from both is refused. | a cached caller outliving a disable |
-| in-flight disable | 1 | Block bob's record read in a fake store. Disable bob and apply the new `State`. Release the read: nothing cached under the new `State`, and bob's next call misses and is refused. | a stale resolution stamped with the new generation |
+| in-flight disable | 1 | Block bob's record read with a fault wrapper around the store. Disable bob and apply the new `State`. Release the read: nothing cached under the new `State`, and bob's next call misses and is refused. | a stale resolution stamped with the new generation |
 | group cap | 1 | A principal in 1 025 groups: refused, never resolved with fewer. A nested group whose read fails mid-closure: the call fails. A membership cycle: resolved. | truncated group lists; a cycle read as a failure |
 | owner strings | 2 | Over `sec=krb5`, `chown` to `alice@corp.example` and to `alice@other.example`: success, then `NFS4ERR_BADOWNER`. Over `AUTH_SYS`, `GETATTR`: numeric owners. A file owned by a deleted user: `nobody@…`, and over SMB `S-1-0-0`. | names mapped by guesswork |
 | PAC | 1 | A ticket whose PAC server signature is corrupted: refused. A ticket with no PAC, and one with a PAC holding no logon-information buffer, for a user in a store group: accepted, the group applies. A PAC carrying a SID of the installation's own domain for a local group with a share grant: that SID dropped, the grant not given. | an unverified or unfiltered PAC trusted; every modern KDC refused |
@@ -1902,12 +1904,12 @@ RFC 16's conformance suite's, not repeated here.
 | deny-only lookup error | 1 | Inject a store error on the `sid` index while mapping a PAC's deny-only SID: the call fails, never resolved without the deny. | a deny dropped by an error |
 | binding | 2 | Over SMB, alice holds a Kerberos session. Delete alice and create a user named alice: every call on the old session refused; a fresh sign-in acts as the new principal. Repeat with an NTLM pass-through session, its user SID re-linked. | a live context re-mapped by name |
 | re-authentication | 2 | alice re-authenticates her SMB session with a wrong password: the session gone. As alice with a new ticket: trees and opens kept, the new `Expires` in force. As bob: the session acts as bob, and alice's open keeps its grant. Past `Expires`, `CLOSE` and an unlock succeed and a read is refused. | a failed proof leaving the old identity in place; a client unable to release what it holds |
-| pass-through | 1 | A directory user with no `krb` row signs in by NTLM pass-through: the caller is the principal holding its verified user SID; a wrong password reaches the fake domain controller once. | no mapping path; amplified lockouts |
+| pass-through | 1 | A directory user with no `krb` row signs in by NTLM pass-through: the caller is the principal holding its verified user SID; a wrong password raises the domain controller's bad-password count by one. | no mapping path; amplified lockouts |
 | no file spelling | 2 | On a share whose only grant is authenticated users read, a machine principal reads a file: refused, not `authenticated`. A second machine's state operation on the first's `SP4_MACH_CRED` client record: refused. A grant naming a machine or an API-only account: refused. | a machine treated as an authenticated file caller |
 | `none` is stored | 2 | Grant `Finance` read-write and alice `none`: alice refused. Remove alice's grant: alice granted through `Finance`. | `none` stored as no grant |
 | directory deadline | 1 | Resolve bob over NTLM; remove bob from a directory group. Keep the session open past the TTL: his next call drops the group, with no generation change. | a cached caller outliving the directory answer |
 | SID-less directory | 1 | An RFC 2307 entry with no SID: the minted principal holds a local SID from the RID counter, unchanged when the directory later adds one. | a directory principal with no SID |
-| logon throttle | 1 | 10 wrong passwords for alice from one address, then the right one: refused, outcome `throttled`, and the fake domain controller saw 10 attempts, not 11. | a throttle that still checks the credential |
+| logon throttle | 1 | 10 wrong passwords for alice from one address, then the right one: refused, outcome `throttled`, and the domain controller's bad-password count is 10, not 11, a count the domain controller's suite holds to the real one, its reset on a success included. | a throttle that still checks the credential |
 | expiry | 2 | Over `sec=krb5`, keep a context open past its ticket's `Expires`: the next request is refused with the expired-credential answer. | a context served past its ticket |
 | replay | 1 | The same AP-REQ twice: the second refused, outcome `replay`. | no replay cache |
 | keytab rollover | 1 | During a rollover, tickets under the old and the new key version are both accepted; past the retention, an old-version ticket is refused. | a rotation failing tickets, or a retired key accepted forever |
@@ -1917,8 +1919,8 @@ RFC 16's conformance suite's, not repeated here.
 | NTLM domain | 1 | A standalone installation's CHALLENGE advertises its own NetBIOS name; an AUTHENTICATE naming it in another case: verified locally. | every standalone login refused |
 | no local password for a directory user | 1 | `NewHashes` for a directory principal: `ErrInvalid`, nothing stored; a local NTLM sign-in naming one: refused. | two passwords for one principal |
 | directory TLS | 1 | A record asking for plain LDAP, or for skipping verification: refused at validation. A directory behind a self-signed certificate, then one whose host name does not match: no bind sent, lookups `ErrUnavailable`, nothing cached. A referral to another host: not followed. | a bind credential handed to whoever answers |
-| one query per key | 1 | 100 concurrent lookups of one key against a counting fake directory: 1 query. | a sign-in storm multiplied per connection |
-| exact queries | 1 | Look up a name holding `*`, `(`, `)` and `\`: the fake directory receives the escaped filter. Two entries answering one name: `ErrUnavailable`, outcome `ambiguous`, nothing bound. | a name matching another entry |
+| one query per key | 1 | 100 concurrent lookups of one key: `identity_directory_lookups_total` rises by 1, and the in-memory directory's own record of the queries it answered holds one. | a sign-in storm multiplied per connection |
+| exact queries | 1 | Look up names holding `*`, `(`, `)` and `\` in a directory that also holds the entries they would match as a filter: each resolves to its own entry only. Two entries answering one name: `ErrUnavailable`, outcome `ambiguous`, nothing bound. | a name matching another entry |
 | lookup cap | 1 | One client address sends 101 distinct unknown uids in a minute: at most 100 directory queries, the rest refused retryably, none mapped to anonymous. | a uid spray loading the directory |
 | anonymous lookup | 2 | Over an anonymous session on `IPC$`, `LookupSids` of an unminted directory SID: no record written. | an unauthenticated caller minting principals |
 | name case | 1 | Two users whose names differ only in case: the second refused as a duplicate. | names unique byte for byte |
@@ -1926,7 +1928,7 @@ RFC 16's conformance suite's, not repeated here.
 | mint from a claim, guarded | 2 | Send `AUTH_SYS` calls for 10^4 uids the directory does not hold: assert each acts as anonymous and no record is written. Send calls for 500 `uidNumber`s it holds, from 50 addresses at once: assert no more than the node cap minted per minute, the rest refused retryably, never anonymous. Rename a minted entry in the directory: assert the same `PrincipalID` with the new name after the TTL. Disable one entry and delete another: assert both refused after the TTL. | a mint on the client's word, a scan bounded only per address, or a record that follows the entry's name |
 | mint conflict | 1 | Mint directory user alice, then sign in bob, whose entry has another SID and alice's `uidNumber`: the sign-in fails, bob is bound to no principal, alice's record unchanged. Two concurrent mints of one entry: both bind to one principal. | a lost mint bound to whoever holds the row |
 | NTLM without a domain controller | 2 | With a directory and no pass-through, an NTLM sign-in for a user only in the directory: `ErrLogonFailure`, and no session. | a directory-only user let in |
-| token checks | 1 | Against a test issuer, ID tokens with the wrong issuer, the wrong audience, several audiences and another `azp`, an expired `exp`, an `nbf` ahead past the skew, a corrupted signature, `alg` `none`, `alg` `HS256` keyed with the issuer's public key bytes, `RS256` naming an EC key, and no `kid` against a two-key set: each refused `ErrLogonFailure`. A discovery document whose `issuer` differs: refused. | a check skipped; algorithm confusion |
+| token checks | 1 | Against a test issuer, a real signer with test keys rather than a stand-in, ID tokens with the wrong issuer, the wrong audience, several audiences and another `azp`, an expired `exp`, an `nbf` ahead past the skew, a corrupted signature, `alg` `none`, `alg` `HS256` keyed with the issuer's public key bytes, `RS256` naming an EC key, and no `kid` against a two-key set: each refused `ErrLogonFailure`. A discovery document whose `issuer` differs: refused. | a check skipped; algorithm confusion |
 | key-set outage | 1 | Sign in once, then make the key set unreachable under a fake clock: within the hour plus 15 minutes sign-in succeeds, counted stale; past it `ErrUnavailable` and no session. An issuer behind a certificate that does not verify: refused. | fail-open on an outage |
 | unlinked subject | 1 | A subject linked to no user: refused. Link alice's subject; give alice's old e-mail address to bob's subject at the issuer: alice's next sign-in is the same principal, bob's is refused. | a subject let in unlinked; linking by e-mail |
 | forwarded identity **(cluster)** | — | [RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)'s rows cover forwarding; this suite adds a unit row: `Resolve` of an `Identity` with evidence at `Claimed` is `ErrInvalid`. | a gateway bug becoming an impersonation |
@@ -1936,18 +1938,26 @@ never allocate past the input's size times a constant, and decode∘encode is th
 identity on what decodes; `FuzzPAC` includes PACs with no logon-information
 buffer. The NTLM message decoder is RFC 20's. **Unit.** Resolution's five steps
 run as one table-driven test over (proof kind × squash × grant × no file
-spelling) against a fake store; `NewHashes` is a pure function with a table of
+spelling) against the in-memory metadata store; `NewHashes` is a pure function with a table of
 its own.
 
-**Who fakes what.** `*vfs.Filesystem`'s unit tests fake identity with
-`identitytest.Static`. Adapter tests fake only `vfs.Service`, sign-in included
+**Who stands in for what.** `*vfs.Filesystem`'s unit tests use the real identity
+server over the in-memory metadata store. Adapter tests replace only `vfs.Service`,
+sign-in included, with a verified in-memory one
 ([RFC 20 §7](rfc-20-adapters.md#7.%20Tests)), never identity. The management
 API's sign-in is tested against the real identity server, called directly
 ([RFC 23 §12](rfc-23-control-plane.md#12.%20Conformance)).
 
-**Suites.** Tier 1, identity alone with a fake directory, KDC and domain
+**Suites.** Tier 1, identity alone with the in-memory directory and domain
 controller, and Tier 2, through both adapters on the composed single-node
-harness, run in `unit`, with the fuzz seeds and table tests. Tier 2 is the
+harness, run in `unit`, with the fuzz seeds and table tests. The in-memory
+directory and domain controller stand in only because a suite holds each to the
+real one ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). The
+directory's rows: exact queries, the escaping of an LDAP filter's special characters, and an
+ambiguous name. The domain controller's: pass-through, the bad-password count
+rising by one per wrong password, and the count reset by a success. Both suites
+run against the in-memory ones in `unit` and against a real LDAP directory and
+domain controller in `integration/ad-dc`. Tier 2 is the
 in-process layer, as RFC 20 §7.4 is, not RFC 17's and RFC 19's kernel-client
 rows, which run in `e2e/cross-protocol`. The allocation rules are RFC 16's and
 the roles row RFC 23's; the forwarded-identity row's cluster half has no suite

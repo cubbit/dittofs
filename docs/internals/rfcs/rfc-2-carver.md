@@ -357,7 +357,7 @@ makes swapping the boundary function a change to one thing instead of two.
 
 Neither layer declares an interface or needs a capability from anything else.
 [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) says every component must build and pass its tests with each declared
-interface stubbed out; here there is nothing to stub. The chunker goes further —
+interface replaced by a test double; here there is nothing to replace. The chunker goes further —
 with no reader and no hash, a byte slice is the whole fixture.
 
 This is a requirement, not a lucky accident, and an implementation **MUST** keep
@@ -1037,7 +1037,7 @@ adopted later with no migration.
 | A6 | A chunk is reused without a lookup only within one block. |
 | A7 | A block short of its target was closed by the count cap or is the last of its pass. |
 
-Each check is a pure function of a chunk stream, a stub lookup and settings.
+Each check is a pure function of a chunk stream, a lookup over a map of stored chunks and settings.
 
 | Requirement | Check |
 | --- | --- |

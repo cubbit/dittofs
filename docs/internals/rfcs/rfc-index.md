@@ -301,7 +301,8 @@ on that path becomes its baseline.
 
 Each RFC builds the seam its own component needs; this section owns what they
 share, so a check that crosses components runs against one composition rather
-than a private one per RFC.
+than a private one per RFC. Every double is one of
+[RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 
 1. **One clock and one fault interface.** Every component that reads time —
    the journal, the engine, the syncer, GC, the snapshot cut, leases — takes it
@@ -318,7 +319,7 @@ than a private one per RFC.
    component declares the methods it uses in its own package, in standard-library
    types, so the node's one clock and the seeded fault satisfy each as they are;
    none defines a private clock. The
-   seams are the journal's storage seam ([RFC 1 §1.3](rfc-1-journal.md#1.3%20It%20is%20testable%20on%20its%20own)), the fake store
+   seams are the journal's storage seam ([RFC 1 §1.3](rfc-1-journal.md#1.3%20It%20is%20testable%20on%20its%20own)), the fault wrapper around the syncer's in-memory store
    ([RFC 3 §1.4](rfc-3-syncer.md#1.4%20It%20is%20testable%20on%20its%20own)), the fault transport under a real store client
    ([RFC 4 §7.2](rfc-4-remote-tier.md#7.2%20Fault%20transport)) and the fault-injecting store wrappers
    ([RFC 16 §6.4](rfc-16-metadata-store.md#6.4%20Faults%20and%20crashes)). A seam with a private clock cannot take part in a

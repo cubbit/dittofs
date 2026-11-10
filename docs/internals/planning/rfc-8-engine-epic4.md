@@ -12,7 +12,7 @@ and §5.8, for `Done` and the verifier the service hands its clients.
 `journalv2` to `journal`.
 **Epic 4 estimate: 7 subtasks, 23 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Commit`, `LossSeq`,
-`WriteOpts.Done`, `Settings`, `Deps.Existence`) and E2's fake journal; epic 3, built:
+`WriteOpts.Done`, `Settings`, `Deps.Existence`) and E2's in-memory journal; epic 3, built:
 T3.1's per-file entries and their drop of an empty entry marked dead, T3.2's `Write`, which
 records each pending operation with its `Done`, and its stand-in verifier (`zeroVerifier`, behind the engine's `sample` field),
 which T4.1 replaces. #3608 and #3609, which put the share on every content call.
@@ -39,7 +39,7 @@ restating it.
 
 §3's requirements, through §6's subtasks; the `kvstore` changes they need (`PendingOp`'s
 modify and change times, a whole loss's `Lost` extent, the marks write) and the test components they add to E2's
-(the fake journal's sync marks, `Report`, `FailSync(also)` and `Durable`, the fixture's
+(the in-memory journal's sync marks, `Report`, `FailSync(also)` and `Durable`, the fixture's
 `FailNextSync` and `Stall`, and `newUnitOver`).
 
 ### 1.2 Out of scope
@@ -71,11 +71,11 @@ modify and change times, a whole loss's `Lost` extent, the marks write) and the 
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal and `kvstore`, the fault-injecting
-  `kv.KV`, the fake journal and the profiler wiring.
+  `kv.KV`, the in-memory journal and the profiler wiring.
 - **S1**, interfaces frozen and `Content` agreed with the filesystem service.
 - **S2**, red suite in CI: E2's suite runs on every pull request, listed whole as known
   failures; epics 3, 4 and 6 start here.
-- **S3**, engine complete over the fake journal: epics 3 to 8 done, every row whose journal
+- **S3**, engine complete over the in-memory journal: epics 3 to 8 done, every row whose journal
   call exists green.
 - **E15, E19, E24, E27, E31, E35, E40**: RFC 8 §13's invariants of those numbers, not epics.
 - **`G`, `K`**: `group_commit.max_files` (`Settings.GroupCommitMaxFiles`, RFC 8 §5.2) and
@@ -87,10 +87,11 @@ modify and change times, a whole loss's `Lost` extent, the marks write) and the 
 
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation, the implementation of an epic it depends on once
-   that has landed, and E2's test components: above all the fake journal, which stands in
+   that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12).
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -126,11 +127,9 @@ modify and change times, a whole loss's `Lost` extent, the marks write) and the 
    engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
-8. **Real dependencies for properties of those dependencies.** No fake stands in for a
-   check about what the real thing does: the real journal on a real directory, with its crash
-   seam, for durability, recovery and loss; the real `kvstore` for what a transaction
-   commits and conflicts on. The fake journal is for the engine's pure logic only, and no
-   conformance row runs over it.
+8. **Real dependencies for properties of those dependencies.** The
+   [plan's rule 8](rfc-8-journal-only-engine-plan.md#1.5%20General%20rules%20for%20each%20epic),
+   as written there.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -155,14 +154,14 @@ modify and change times, a whole loss's `Lost` extent, the marks write) and the 
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| 1 Unit tests | all | every subtask tests over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition; the split's test puts a `kv.KV` wrapper under `kvstore` through `newUnitOver`, and the stalled store's a stalling `Existence` wrapper, since E2's fault-injecting `kv.KV` does not exist |
+| 1 Unit tests | all | every subtask tests over E2's in-memory journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition; the split's test puts a `kv.KV` wrapper under `kvstore` through `newUnitOver`, and the stalled store's a stalling `Existence` wrapper, since E2's fault-injecting `kv.KV` does not exist |
 | 2 Fuzz | none | no parser: the group commit's split is checked by its table test (T4.4), which carries RFC 8 §15's `ponytail:` marker |
 | 3 Observability | T4.2, T4.3, T4.4 | T4.2 counts `engine_stability_points_total` and opens `engine.sync`; T4.3 records `engine_pending_existence_ops` (the operations one commit applied) and opens `engine.existence_commit`; T4.4 counts `engine_group_commit_splits_total` and raises `existence_commit_failing` naming the file, logged at `Warn` on entering and leaving. Counters in unexported fields epic 7's `Stats` exposes; none labelled by share |
 | 4 Profiling | all | the unit composition calls `prof.Watch`; T4.3's timer and its batch goroutine are joined by `closeGroupCommits`, which the tests call as epic 6's `Close` will, so a leak fails the test that composes the engine |
 | 5 Public and internal | all | the split (T4.4) and the claim (T4.7) tested internally; `Commit` and `LossSeq` through `*Engine`; `-race` in T4.3, T4.4 and T4.7. What the commit writes, the split times and the loss op's charge included, is asserted over the real `kvstore` (T4.3, T4.5), and the verifier where the service reads it, by `Commit`'s answer against `Write`'s (T4.1) |
 | 6 Known failures | T4.1, T4.2, T4.3, T4.4, T4.6 | `TestRFC8A_Verifier` and `TestRFC8A_StableWriteLazyExistence` are already listed, naming epic 6, whose start they also need; T4.1 and T4.2 add their engine assertions and leave those entries. The new rows, verifier inputs (T4.1), overwrite waits for existence, stalled store and marks wait (T4.2), sync before existence (T4.3), group commit, sync marks ride in one batch and sync marks are keyed by stream (T4.4), and failed window with verifier after a loss (T4.6), enter `test/engine/known.yaml` naming this epic's issue, red until the journal's `Init`, `Sync`, crash seam and loss events exist; a row an epic-4 change turns green leaves it in that change |
 | 7 v2 ignores v1 | none | no new import |
-| 8 Real dependencies | T4.1, T4.2, T4.3, T4.4, T4.6 | every conformance row runs over the real journal and `kvstore`; the fake journal is for the unit tests of the engine's logic only, none of which stands in for a row |
+| 8 Real dependencies | T4.1, T4.2, T4.3, T4.4, T4.6 | every conformance row runs over the real journal and `kvstore`; the in-memory journal is for the unit tests of the engine's logic only, none of which stands in for a row |
 | 9 Comments | all | the markers of §4 at their code sites, and three of RFC 8 §5.1's: the loss sequence's floor (`ponytail:`, T4.5), the lazy existence of appends (`decision:`, T4.2) and the stable-overwrite cost (`ponytail:`, T4.2) |
 | 10 Tests can fail | all | each test below names the change it catches |
 | 11 Exports | all | nothing new is exported from `engine`; the test hooks live in `export_test.go`, the reservation counter in `enginetest`. `kvstore.PendingOp`'s new fields, `Lost` among them, are `kvstore`'s own, used by its caller |
@@ -360,7 +359,7 @@ pkg/block/engine/
                     T4.7  the claim and its release
   loss.go           T4.5  the sync function, the drain, the loss sequence and its floor, LossSeq, a device lost whole (D8, D9, D11, D12)
                     T4.6  the failed window's report in the sync function
-  write.go          T4.1  the `sample` field set to D1's derivation in place of `zeroVerifier`
+  write.go          T4.1  the `sample` default set to D1's derivation in place of `zeroVerifier`
   unbuilt.go        T4.2, T4.5  Commit and LossSeq leave it
   export_test.go    T4.1–T4.7  the binding's inputs, the batch hook, the loss hook
   enginetest/
@@ -391,9 +390,9 @@ listed test fails on the regression it names (after "catches").
   field set to D1's derivation with D2's read, in place of `zeroVerifier`.
 - **Rows:** §4.1 verifier and §4.1 verifier inputs (adapted), over the real journal; red until
   epic 6's `Start` composes the engine in E2's fixture or the journal can inject a loss.
-- **Tests,** over the fake: two writes with the test clock advanced an hour between them
+- **Tests,** over the in-memory journal: two writes with the test clock advanced an hour between them
   answer equal verifiers (catches a clock input); each input raised alone changes the
-  verifier (catches an input dropped from the hash); a loss injected by a fake-journal hook
+  verifier (catches an input dropped from the hash); a loss injected by a fault wrapper around the in-memory journal
   between `WriteAt` and the reply leaves that write's verifier and changes the next
   `Commit`'s (catches sampling after staging).
 
@@ -416,7 +415,8 @@ listed test fails on the regression it names (after "catches").
   existence (adapted); §5.1, §11.2 stalled store and §5.1 marks wait, §11.2 stalled store,
   through `Fixture.Stall`. Red until the
   journal's `Sync` exists.
-- **Tests,** over the fake and the real `kvstore` with a transaction counter: an append's
+- **Tests,** over the in-memory journal and the real `kvstore` on the in-memory `kv.KV`, whose own record
+  (`Counts`) counts transactions: an append's
   `Commit` makes zero transactions (catches a commit before every reply); an overwrite's
   returns after one (catches an answer after the sync alone); an operation staged during
   `Commit`'s sync, whose batch a hook keeps from being captured, does not hold the `Commit`
@@ -454,13 +454,14 @@ listed test fails on the regression it names (after "catches").
   deleted), each with its own test. The superseded runs: one function computing each write's `Over` from the entry's
   pending writes, which `PendingExistence` calls and epic 5's T5.1 and epic 8's T8.2 reuse,
   and `kvstore.PendingOp`'s `Over` (D6), with `Existence.Commit` writing an overwrite record
-  over it. E2's fake journal gains sync marks: `Sync` returns them, `Stats().SyncMarks` keeps each
+  over it. E2's in-memory journal gains sync marks: `Sync` returns them, `Stats().SyncMarks` keeps each
   stream's latest merged by `Stream` (RFC 1 §3.7), `MarksRecorded` logs them.
 - **Rows:** §5.1 sync before existence, the write and `Commit` half; red until the journal's
   crash seam and `Sync` exist.
-- **Tests,** over the fake with a call log: `Sync` before `Existence.Commit` in every batch
-  (catches a commit before the sync); 64 due files and `G = 16` give four calls (catches an
-  unbounded batch); the test clock advanced to `existence_age` commits a lone write (catches
+- **Tests,** over the in-memory journal's sync marks and the transactions the in-memory `kv.KV` committed:
+  every batch's transaction holds only files the in-memory journal had already synced (catches a commit
+  before the sync); 64 due files and `G = 16` give four transactions (catches an unbounded
+  batch); the test clock advanced to `existence_age` commits a lone write (catches
   no timer); every committed file's `Settle` at the highest version committed for it, none
   for a file the store failed (catches no settle, or one past what committed). Over the real
   `kvstore`: a suspended write committed over an earlier one keeps the earlier `Mtime` and
@@ -468,9 +469,9 @@ listed test fails on the regression it names (after "catches").
   its capture and its `Existence.Commit`: `Overlay` still answers the captured writes
   (catches operations moved out of the entry); a `waitBatch` returns only once the batch
   returns (catches a commit that overtakes it); a `commitNow` for a write staged after the
-  capture returns only after the next batch (catches D10's "covers" taken as "any batch"). Over the fake: 64 due files and `G = 16`
-  carry the marks on exactly one call, a group commit with no batch due makes one call with
-  the marks alone, and `MarksRecorded` gets what each committed call recorded (catches marks
+  capture returns only after the next batch (catches D10's "covers" taken as "any batch"). Over the in-memory journal: 64 due files and `G = 16`
+  carry the marks in exactly one committed transaction, a group commit with no batch due
+  commits one transaction with the marks alone, and `MarksRecorded` gets what each committed call recorded (catches marks
   on every transaction, or on none).
   Under `-race`, a hook between `lockFor`'s lookup and its lock in which the commit drops the
   entry: the write lands in a live entry, `Overlay` reflects it, the next batch commits it
@@ -504,11 +505,12 @@ listed test fails on the regression it names (after "catches").
 - **Rows:** §5.2 group commit (adapted), over the real journal and `kvstore`, red until the
   journal's `Sync` exists; §5.2 sync marks ride in one batch and §5.2 sync marks are keyed by stream, over the
   same, red until it returns marks.
-- **Tests:** the split's table over a stub `Existence`, each failure shape (a file in the
-  map, a whole-call error, two failing files, every file failing, each on a batch carrying
-  the marks; the marks pulled out on a whole-call error and sent alone once; the marks alone
-  failing with a store error, retried alone with backoff) against the expected calls
-  (catches a committed file resubmitted, or a failing one resubmitted with the rest). Over
+- **Tests:** the split's table over the real `kvstore` through `newUnitOver`'s fault
+  wrapper, each failure shape (a file in the map, a whole-call error, two failing files,
+  every file failing, each on a batch carrying the marks; the marks pulled out on a whole-call
+  error and sent alone once; the marks alone failing with a store error, retried alone with
+  backoff) against the transactions the in-memory `kv.KV` committed (catches a committed file
+  resubmitted, or a failing one resubmitted with the rest). Over
   the real `kvstore` through `newUnitOver`: one file's File record undecodable, the other
   files' overwrite `Commit`s succeed, that file's answers `ErrDelay` and the condition names
   it (catches a whole-batch failure); a conflict held past a `Commit`'s deadline answers
@@ -519,9 +521,10 @@ listed test fails on the regression it names (after "catches").
   retrying until the caller's deadline); the "sync marks ride in one batch" row's case of a
   store naming the marks keys, through `newUnitOver`'s wrapper, since the real `kvstore` names
   none; the condition cleared on `dropShare` and on
-  `lostWhole` (catches a condition naming a file nothing will commit); a `kv.KV` wrapper
-  recording the mark sees it on every group-commit call and on no `Existence.Overwrites` call
-  of a `Commit` (catches a retried call left unmarked, which the self-fence never counts).
+  `lostWhole` (catches a condition naming a file nothing will commit); a `kv.KV` fault
+  wrapper failing every call that carries the mark fails every group commit, while each
+  `Commit`'s `Existence.Overwrites` call still succeeds (catches a retried call left unmarked, which the
+  self-fence never counts).
 
 ### T4.5 The loss sequence
 
@@ -546,10 +549,10 @@ listed test fails on the regression it names (after "catches").
   `decision:` marker at the discard names that order, withdrawn with epic 3's D3. A
   `ponytail:` marker: a kept event of a file never written again stays until the process
   ends; prune it with §9 point 5's loss path. `kvstore`'s `PendingOp.Lost` (D6), with its own test.
-  E2's fake journal gains `Report`, which injects a loss event, an offloaded one included,
+  E2's in-memory journal gains `Report`, which injects a loss event, an offloaded one included,
   and a gap in the ring.
 - **Rows:** none of its own; the verifier after a loss is T4.6's.
-- **Tests,** over the fake's ring through `Report`: one event raises one file (catches a
+- **Tests,** over the in-memory journal's ring through `Report`: one event raises one file (catches a
   journal-wide raise for every loss); an `Offloaded` or `LossStale` event raises nothing
   (catches a raise RFC 8 §4.1's "on nothing else" forbids); a gap raises a file with no event
   (catches a drain that trusts the ring); `LossSeq` after a loss with no `Commit` is raised
@@ -581,11 +584,11 @@ listed test fails on the regression it names (after "catches").
   `Done` charging nothing; an unmatched `LossFailedWindow` event kept as T4.5 keeps a corrupt
   one, the insert dropping the write it names instead of inserting it, its `Done` charging
   nothing; `Commit` answering it with the new verifier and sequence, never `ErrUnavailable`
-  (epic 3's D4 left an unnamed journal error so). E2's fake journal gains `FailSync(also)`
+  (epic 3's D4 left an unnamed journal error so). E2's in-memory journal gains `FailSync(also)`
   and `Durable`, and its fixture `FailNextSync`.
 - **Rows:** §5.1 failed window and §4.1 verifier after a loss, over the real journal; red
   until the journal fails windows.
-- **Tests,** over the fake: a `SyncError` returned to the group commit's sync names file A;
+- **Tests,** over the in-memory journal: a `SyncError` returned to the group commit's sync names file A;
   A's next `Commit` answers the new verifier and a raised sequence, and its following one
   after a new write matches that write's (catches a report lost when no `Commit` waited, and
   a file wedged); a `SyncError` on `Commit`'s own sync answers success with the new verifier
@@ -612,7 +615,7 @@ listed test fails on the regression it names (after "catches").
   accepted `Write` and decremented by its `Done`, failing the test on a second call, reused
   by epics 5, 6 and 8.
 - **Rows:** none.
-- **Tests,** over the fake with the counter: failed windows, corrupt losses and `lostWhole`
+- **Tests,** over the in-memory journal with the counter: failed windows, corrupt losses and `lostWhole`
   interleaved with writes and batches return it to zero under `-race` (catches a missed
   `Done`); a batch whose commit fails then succeeds calls each `Done` once (catches a `Done`
   before the commit, or none after the retry); a batch captures a write whose window then

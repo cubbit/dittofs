@@ -141,7 +141,8 @@ format, no recovery and no reclamation.
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
-   to fake (rule 12).
+   to fake (rule 12). Every double is one of
+   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference
@@ -492,8 +493,9 @@ the rule that a persisted index is not authoritative (E3, E5, epic 7).
   file rebuilt under two tags is a flag on the file's entry, which epic 7's rebuild sets and
   this epic's refusal reads.
 - **D11, the recorder wraps the locks of every package.** `lockorder` defines the six ranks and
-  `Mutex` and `RWMutex` types that take a rank. A recorder pointer is nil in production and set
-  by tests; each acquisition costs one atomic load. E4's file index and file map and E5's segment
+  `Mutex` and `RWMutex` types that take a rank. The journal instance holds the recorder, nil in
+  production, and hands it to each lock it builds; a test sets it per instance from
+  `export_test.go`, never through a package variable. Each acquisition costs one atomic load. E4's file index and file map and E5's segment
   append lock adopt the types, which is an edit in their packages (T8.11). A `ponytail:` marker at
   the load names the ceiling, a load on every lock, and the upgrade, a build tag that compiles
   the check out of production, once a profile of J2 shows it.
@@ -847,7 +849,7 @@ before admission). The recorder's order across a tagged write is T8.11's test.
   - A refusal changes no extent's offloaded bit and evicts nothing.
   - A write refused by capacity holds no lock on the file index and no domain after it returns.
 - **Tests:** `TestRFC1B_Reservation` with 16 writers (R66, R68); `TestRFC1B_NamedRefusal`
-  (R69, R70); the recorder asserting `Pool.Hold` runs with D9's mutex released (catches a capacity lock taken under another of its domain, RFC 1 §8.3); a test of many small writes on one stream against fewer ready spares, counting the pool's holds (catches a spare held for a write that fits, R66); a retirement through the executor with the copy table read back (catches a `Retired` left unwired); `TestRFC1B_ShareLimit` (R67); `TestEdge_ReservationExactFitShare` and
+  (R69, R70); the lock-order recorder of T8.11 reporting no violation across `Take`, its own output, which it reports if `Pool.Hold` runs under D9's mutex (catches a capacity lock taken under another of its domain, RFC 1 §8.3); a test of many small writes on one stream against fewer ready spares, with the pool's held spares read from its state after each (catches a spare held for a write that fits, R66); a retirement through the executor with the copy table read back (catches a `Retired` left unwired); `TestRFC1B_ShareLimit` (R67); `TestEdge_ReservationExactFitShare` and
   `TestEdge_ReservationExactFitJournal` (R104); `TestEdge_FilesystemENOSPCIsNotErrNoSpace` (R72);
   a test that fills a share and the journal and asserts which limit is named for each
   combination, `spare` last (R71); a test that counts the seam's calls across a refusal and finds
@@ -1149,7 +1151,7 @@ its counter (R75); `ReservedBytes` read at the
   - A write waiting on its file's append domain is not abandoned by a cancelled context.
   - A `WriteAt` and a `ReadAt` held at the seam when `Close` is called finish, and calls made
     after the flag fail with `ErrClosed`.
-  - With a repack-like worker in flight (a registered stub), `Close` stops it before any segment
+  - With a repack-like worker in flight (one the test registers), `Close` stops it before any segment
     is closed and nothing runs afterwards.
   - A removal parked in `WaitDurable` when `Close` is called is a call in flight: `Close` waits for it and returns once the held sync is released, with no hang and no `ErrClosed` for the removal.
   - No goroutine outlives `Close`.

@@ -204,10 +204,12 @@ Windows user hits it.
   Buffers are pooled by size class, replies are sent in gathered writes, and
   Nagle's algorithm is off.
 - Tests run in layers: codecs, the shared `core` on a test-only protocol
-  over a null service, handlers against a recording service, the boundary checks,
+  over the in-memory service, handlers against the in-memory service with faults
+  injected, the boundary checks,
   third-party suites, kernel clients end to end, and wire tests that compare
   with a reference server field by field, every accepted difference recorded.
-  Benchmarks against the null service give the adapter's own cost.
+  Benchmarks and the allocation gate against the null service give the
+  adapter's own cost.
 
 ---
 
@@ -433,8 +435,8 @@ thin with four rules:
    a handler is one function that makes one service call (§4.3). Neither holds
    a connection.
 4. **An interface only where there are two implementations.** `vfs.Service`
-   (the filesystem, the gateway, the recording fake, the null service), the authenticator (the
-   local store, a domain, a fake), a protocol and its stages (NFS's RPC
+   (the filesystem, the gateway, the fault wrapper, the null service), the authenticator (the
+   local store, a domain), a protocol and its stages (NFS's RPC
    protocol, SMB), a sidecar (§3.5). Everything else is a concrete type.
 
 ```mermaid
@@ -477,11 +479,11 @@ flowchart TB
 
 - **`pkg/`** holds contracts several components build against: `pkg/vfs`, the
   service interface and its value types (RFC 17), and `pkg/vfs/vfstest`, its
-  hand-written recording fake and null service and the service's conformance
+  in-memory service, fault wrapper and null service and the service's conformance
   suite (§7.2, §6.10, [RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)). Nothing adapter-
   specific is in `pkg/` but `pkg/adapter` below.
 - **`pkg/adapter/`** holds the adapter's public surface, as `pkg/vfs` holds
-  the service's: the contract the node drives (`Adapter`, `Health`,
+  the service's: the contract the node drives (`Adapter`, `State`, `Health`,
   `ConnInfo`, `Sidecar`, `Serving`) and `Deps`, in `pkg/adapter`; the
   settings shapes, in the leaf `pkg/adapter/config`; and one constructor per
   protocol, `pkg/adapter/nfs.New` and `pkg/adapter/smb.New`, each a call into
@@ -501,12 +503,12 @@ The import test of §7.1 checks both directions.
 
 ```text
 pkg/vfs/                    the service interface (RFC 17)
-pkg/vfs/vfstest/            the recording fake and the null service
+pkg/vfs/vfstest/            the in-memory service, its fault wrapper, the null service
 pkg/resources/              RFC 24's budgets and pooled buffers, shared by every component (§6.8)
 pkg/adapter/                the public surface, as pkg/vfs is the service's:
-  adapter.go                the contract the node drives: Adapter, Health, ConnInfo, Sidecar, Serving (§3.4, §3.5)
+  adapter.go                the contract the node drives: Adapter, State, Health, ConnInfo, Sidecar, Serving, Loop (§3.4, §3.5)
   deps.go                   Deps (§3.4)
-  config/                   the settings shapes, live and restart-only marked (RFC 13): a leaf
+  config/                   the settings shapes, their defaults and Settings (§3.6): a leaf
   nfs/  smb/                New: one public constructor each, a call into the implementation
 internal/adapter/
   core/                     one package, a file per concern; imports no protocol:
@@ -555,7 +557,7 @@ window — is in `protocol/`, the protocol's stages.
 
 | Pattern | Where | Why here |
 | --- | --- | --- |
-| composition root, constructor injection | `New(Deps, Settings)` (§3.4) | every dependency visible in one struct; a test builds an adapter from fakes |
+| composition root, constructor injection | `New(Deps, Settings)` (§3.4) | every dependency visible in one struct; a test builds an adapter from in-memory implementations and fault wrappers ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)) |
 | contract in its own package | `adapter.Adapter` in `pkg/adapter`; `vfs.Service` in `pkg/vfs` | the caller and the implementations import one package that imports neither; implementations return concrete types |
 | table-driven dispatch, typed by generics | `Op`, `Bind` (§4.7) | one row per operation; the decoder, handler and encoder of a row are type-checked together; versions are data (§4.8) |
 | small strategies, nil for the default | `Stages` (§4.7) | each stage is one job and one unit test; a protocol without replay or credits leaves that stage nil |
@@ -599,8 +601,12 @@ Every adapter runs through the same four states, driven by the node
   `GETATTR`, an NFSv4.0 `RENEW`), so the `CLOSE` or `DELEGRETURN` a client sends
   behind a `GETATTR` runs, and a client told the share moved can read
   `fs_locations`. Any other new request gets the drain's error: `ErrMoved` when
-  the drain names a takeover target, `ErrDraining` when it names none (the only
-  node stopping). A table maps `ErrMoved` to the protocol's move signal where
+  the service names another gateway node the request's share can move to,
+  `ErrDraining` when it names none (the only node stopping) or the request
+  names no filehandle. `core` asks the service's `MoveTarget`
+  ([RFC 17](rfc-17-vfs.md)) for each request it refuses, about the handle the
+  request names (§4.7's `Invocation.Handle`), so each share is judged on its
+  own; until [RFC 15](rfc-15-topology.md)'s topology exists it answers none. A table maps `ErrMoved` to the protocol's move signal where
   the operation can carry one (`NFS4ERR_MOVED` with `fs_locations`,
   [RFC 21 §7.4](rfc-21-nfs.md#7.4%20Pseudo-filesystem%2C%20SECINFO%20and%20locations);
   Witness `CLIENT_MOVE` first, [RFC 22 §14](rfc-22-smb.md#14.%20Witness)), and
@@ -871,29 +877,63 @@ package adapter // pkg/adapter
 // implements it for every protocol.
 type Adapter interface {
 	// Start moves configured to serving: every listener bound, or none, and
-	// the error names what failed.
+	// the error names what failed. Start after Stop is refused: a stopped
+	// adapter is never started again, and the node builds a new one with New.
 	Start(ctx context.Context) error
 
 	// Reconfigure adds and removes listeners and applies live settings to
-	// connections set up after it returns (§3.1). A restart-only setting is
-	// refused; the node applies it by Stop and Start.
-	Reconfigure(ctx context.Context, s config.Adapter) error
+	// connections set up after it returns (§3.1). s is the adapter's own
+	// protocol's shape, config.NFS or config.SMB; the other protocol's is
+	// refused with an error (§3.6). Every adapter setting is live today.
+	Reconfigure(ctx context.Context, s config.Settings) error
 
 	// Stop moves serving to draining to stopped. ctx's deadline is the drain
-	// deadline; requests still running at it are abandoned (§3.1). It drains
-	// towards a target (ErrMoved) when the topology names another gateway
-	// node for the shares (RFC 15 §5.3), as RFC 21 §7.4's fs_locations does,
-	// and with none (ErrDraining) otherwise.
+	// deadline; requests still running at it are abandoned (§3.1). A request
+	// refused while draining gets ErrMoved when the service names another
+	// gateway node for its share (RFC 15 §5.3), as RFC 21 §7.4's
+	// fs_locations does, and ErrDraining otherwise; core asks the service's
+	// MoveTarget per request (§3.1). Stop is idempotent: a second call
+	// returns once the adapter is stopped.
 	Stop(ctx context.Context) error
 
-	// Health is ready when serving with every listener bound; draining reports
-	// not ready (RFC 25 §3.6).
+	// Health is ready when serving with no condition raised; configured and
+	// draining report not ready (RFC 25 §3.6).
 	Health() Health
 
-	// Connections lists the connections open now — protocol, remote address,
-	// session, since — for the API's client list. It is read from core's
-	// connection registry, never written by protocol code.
+	// Connections lists the connections open now, for the API's client
+	// list. It is read from core's connection registry, never written by
+	// protocol code.
 	Connections() iter.Seq[ConnInfo]
+}
+
+// State is one of §3.1's states. Its String is "configured", "serving",
+// "draining" or "stopped".
+type State uint8
+
+func (s State) String() string
+
+const (
+	StateConfigured State = iota
+	StateServing
+	StateDraining
+	StateStopped
+)
+
+// Health is what the node reads for readiness and its conditions (§3.7).
+type Health struct {
+	State      State
+	Conditions []string // §3.7's conditions this adapter raises now, by name: adapter_listener_lost
+}
+
+// Ready is serving with no condition raised.
+func (h Health) Ready() bool
+
+// ConnInfo is one open connection.
+type ConnInfo struct {
+	Protocol string         // "nfs", "smb"
+	Remote   netip.AddrPort // the client's address
+	Session  string         // the protocol's session the connection carries, as text; empty where none
+	Since    time.Time      // accepted at
 }
 ```
 
@@ -904,22 +944,32 @@ package adapter // pkg/adapter
 
 // Deps is what an adapter is handed by node.New. It builds no other component (RFC 23 §2.1).
 // A field is an interface where it has two implementations, a concrete type
-// where it has one.
+// where it has one. Only VFS and Budgets are required, and New refuses a
+// missing one by name; every other field has a working zero value.
 type Deps struct {
-	Service vfs.Service       // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
-	Pools   *resources.Pools  // RFC 24 §2.3 (pkg/resources): receive, reply, connection state
-	Metrics *metrics.Registry // RFC 25 §2
-	Tracer  trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
-	Logger  *slog.Logger
-	// Watch registers a loop with the node's liveness watchdog (RFC 25 §3.5):
-	// turn reports a pass, idle a wait with nothing to do (an accept loop at
-	// its accept deadline), stop unregisters it at unbind. The node adapts
-	// health.Loop's Turn, Idle and Close to this; nil watches nothing, as in a test.
-	Watch func(loop string) (turn, idle, stop func())
-	// Dial opens an outbound connection from a given local address: NLM's
-	// callbacks to a host, from the floating address it used (§3.3). A test
-	// supplies one returning a pipe.
-	Dial func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+	VFS     vfs.Service         // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
+	Budgets *resources.Budgets  // RFC 24 §2.5 (pkg/resources): the four budgets on the request path, receive, reply, connection state and hold
+	Metrics *metrics.Registry   // RFC 25 §8.2; nil registers nothing
+	Tracer  trace.Tracer        // RFC 25 §8.1: spans; nil is the no-op tracer
+	Logger  *slog.Logger        // nil discards
+	// Watch registers a loop with the node's liveness watchdog (RFC 25 §3.5)
+	// and returns it: Turn reports a pass, Idle a wait with nothing to do (an
+	// accept loop at its accept deadline), Close unregisters it at unbind.
+	// RFC 25's health loop satisfies Loop as it is. nil watches nothing.
+	Watch func(loop string) Loop
+	// DialClient opens a connection back to a client, for a callback (an
+	// NFSv4.0 recall, NLM's GRANTED), from the local address the client
+	// reached, so a floating address keeps working after a takeover (§3.3).
+	// nil is a net.Dialer bound to that address; a test supplies one
+	// returning a pipe.
+	DialClient func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+}
+
+// Loop is one watched loop (RFC 25 §3.5).
+type Loop interface {
+	Turn()
+	Idle()
+	Close()
 }
 ```
 
@@ -934,7 +984,8 @@ func smb.New(d adapter.Deps, s config.SMB) (adapter.Adapter, error) // pkg/adapt
 
 `New` fails on a setting the adapter cannot apply, so the failure is at
 configured, not at the first request (§3.1). Settings arrive in exactly two
-places: `New` and `Reconfigure`.
+places: `New`, which takes its protocol's shape, and `Reconfigure`, which takes
+`config.Settings`, which `config.NFS` and `config.SMB` implement (§3.6).
 
 
 ### 3.5 Sidecars
@@ -1040,8 +1091,15 @@ Four kinds of change, and only two reach the adapter:
 | --- | --- | --- | --- |
 | share policy | its grants, read-only, netgroups | the next request | the service, which reads the share list by version per request ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); no adapter is touched |
 | share encryption requirement | encryption required | the next tree connect; a tree holds the flag it connected with for its life | the service, at `TreeConnect` |
-| live adapter setting | dialect range, idle timeout, connection limit, a sidecar enabled | connections and sessions set up afterwards | `Reconfigure` |
-| restart-class adapter setting | what [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table marks restart-only | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
+| live adapter setting | NFS version range, SMB dialect range, idle timeout | connections and sessions set up afterwards | `Reconfigure` |
+| restart-class adapter setting | none today: every adapter row of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table is live (below) | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
+
+`connection_limit` is a node's, not an adapter's: the node hands each adapter
+its share of it (§6.4,
+[RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)), so it is no field of
+the shapes below. A sidecar's enabled flag is not an adapter setting either:
+the node applies it by `Sync`, with the serving adapters or with none (§3.5,
+[RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)).
 
 > decision: a share's encryption requirement is read at tree connect and held
 > for the tree's life. Unwrap enforces it per tree (§5.5); reading the share
@@ -1065,39 +1123,138 @@ the adapter binds each of its listeners on each of them (§4.7's `Listener`).
 > operator, changes `Addrs` while serving. Withdraw it if a bind on a live
 > adapter is found to disturb the connections already accepted.
 
+**The settings shapes.** One shape per protocol, each embedding what every
+adapter reads:
+
+```go
+package config // pkg/adapter/config: a leaf
+
+// Adapter is what every adapter reads; core reads only this. Each adapter
+// record carries its own copy, under adapters.<protocol>.
+type Adapter struct {
+	Addrs              []netip.Addr  `json:"-"`                   // supplied by the node, live (below); a record naming it is refused as an unknown field
+	DrainTimeout       time.Duration `json:"drain_timeout"`       // 90 s; at least the break deadline plus the request deadline, 65 s
+	IdleTimeout        time.Duration `json:"idle_timeout"`        // 15 min
+	WriteTimeout       time.Duration `json:"write_timeout"`       // 60 s
+	HandshakeTimeout   time.Duration `json:"handshake_timeout"`   // 30 s
+	ReadTimeout        time.Duration `json:"read_timeout"`        // 30 s: the rest of a request once its first byte arrived
+	DisabledOperations []string      `json:"disabled_operations"` // none
+}
+
+// Common returns the Adapter, promoted into NFS and SMB.
+func (a Adapter) Common() Adapter { return a }
+
+// TLS is NFS over TLS (§5.5). Mode is "off" (the default), "opportunistic"
+// or "require"; any mode but off requires CertFile and KeyFile, and a file
+// set while off is refused. The version is fixed at TLS 1.3.
+type TLS struct {
+	Mode     string `json:"mode"`
+	CertFile string `json:"cert_file"`
+	KeyFile  string `json:"key_file"`
+	ClientCA string `json:"client_ca"`
+}
+
+// VersionRange is the versions an adapter serves, inclusive, as the protocol
+// names them. Validate refuses an unknown value or Min above Max, naming the
+// field (Versions.Min, Dialects.Max, ...).
+type VersionRange struct {
+	Min string `json:"min"`
+	Max string `json:"max"`
+}
+
+type NFS struct {
+	Adapter
+	TLS      TLS          `json:"tls"`
+	Versions VersionRange `json:"versions"` // "3", "4.0", "4.1", "4.2"; 3 to 4.2. "3" is NFSv3 with MOUNT v3, NLM v4 and NSM v1
+}
+
+type SMB struct {
+	Adapter
+	Dialects       VersionRange  `json:"dialects"`        // "2.1", "3.0", "3.0.2", "3.1.1"; 2.1 to 3.1.1
+	PendingTimeout time.Duration `json:"pending_timeout"` // 10 min: longest a request refused for a transient cause is held
+	RecallTimeout  time.Duration `json:"recall_timeout"`  // 60 s: longest a request held on a recall; must exceed the 35 s break deadline
+}
+
+// DefaultNFS and DefaultSMB hold every default in one reviewed function; the
+// loader decodes a record over them, so an omitted field keeps its default.
+func DefaultNFS() NFS
+func DefaultSMB() SMB
+
+// Validate checks every field against its rule, shapes and ranges only,
+// touching no file, and returns an error naming the field and the rule; it
+// never clamps or fills a default, and refuses a zero value where one is
+// required. New, Reconfigure and the control plane call it.
+func (NFS) Validate() error
+func (SMB) Validate() error
+
+// Settings is what Reconfigure takes, so that a protocol's own live settings
+// reach it. Reconfigure refuses another protocol's shape, or any other type,
+// with an error.
+type Settings interface {
+	Validate() error
+	Common() Adapter
+}
+```
+
+- **Every field names its key** with a `json:"…"` tag. Every adapter key is
+  `adapters.<protocol>.<field>` — `adapters.smb.idle_timeout`,
+  `adapters.nfs.tls.mode`, `adapters.smb.pending_timeout` — and the least
+  configuration is `adapters: {nfs: {enabled: true}, smb: {enabled: true}}`.
+- **Defaults are code**, in `DefaultNFS` and `DefaultSMB`: the loader runs
+  `s := config.DefaultNFS(); decode(&s)`.
+- **`Validate` is the component's own**, run by `New`, by `Reconfigure` and by
+  the control plane, which has none of its own
+  ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)). It reads no file,
+  since the control plane runs it when a record is written, on a host that
+  may not hold the serving node's certificates. The TLS certificate files are
+  loaded by `New`, at configured, and by `Reconfigure` before the snapshot
+  swap, so an unloadable certificate fails at configured or is refused by
+  `Reconfigure`, never at the first handshake (§3.1). It does not see
+  migration settings, so the rule that `pending_timeout` exceed
+  `migration.freeze_timeout` plus the break deadline is the control plane's
+  cross-component check (RFC 13 §6). The package stays a leaf, importing
+  nothing under `internal/`.
+- **Every adapter setting is live**; RFC 13 Appendix B records each one's
+  class. The first restart-only setting brings a sentinel error and a
+  one-field comparison in `Reconfigure`, and nothing before it.
+
 **Inside the adapter, settings are one immutable snapshot.**
 
 ```go
 type Server struct {
-	settings atomic.Pointer[config.Adapter]
+	settings atomic.Pointer[config.Settings] // the protocol's whole shape, as New or the last Reconfigure gave it
 	// …
 }
 
-func (s *Server) Reconfigure(ctx context.Context, next config.Adapter) error {
-	if err := validate(next); err != nil {
+func (s *Server) Reconfigure(ctx context.Context, next config.Settings) error {
+	if !sameProtocol(*s.settings.Load(), next) {
+		return errOtherProtocol // config.SMB handed to the NFS adapter, or the reverse
+	}
+	if err := next.Validate(); err != nil {
 		return err // refused; what is running is unchanged
 	}
-	if restartOnly(*s.settings.Load(), next) {
-		return ErrRestartRequired // the node drains and starts instead
-	}
-	if err := s.listeners.open(added(next)); err != nil {
+	addrs := next.Common().Addrs
+	if err := s.listeners.open(added(addrs)); err != nil {
 		return err // all or none
 	}
-	s.settings.Store(&next)            // read by the next accept
-	s.listeners.close(ctx, removed(next)) // and their connections (§3.1)
+	s.settings.Store(&next)                // read by the next accept
+	s.listeners.close(ctx, removed(addrs)) // and their connections (§3.1)
 	return nil
 }
 ```
 
 - A connection loads the snapshot once, at accept, and a session at setup;
   neither reads it again. A request therefore never sees two settings, and no
-  lock is on the request path.
+  lock is on the request path. `core` reads the common part through
+  `Common`; a protocol reads its own shape from the connection's
+  snapshot, `Conn.Settings` (§4.7), when `NewConn` builds the connection's
+  stages.
 - New listeners open before the snapshot changes and removed ones close after,
   so a moved address is never unserved between the two.
 - A refusal leaves the running adapter as it was; the node reports it on its
   status record
   ([RFC 23 §2.4](rfc-23-control-plane.md#2.4%20What%20a%20node%20reports)).
-- `core`'s tests cover it on the test-only protocol over the null service (§7): an open connection keeps its
+- `core`'s tests cover it on the test-only protocol over the in-memory service (§7): an open connection keeps its
   settings, a new one gets the new ones, a removed address's connections close,
   and a bind that fails changes nothing.
 
@@ -1111,8 +1268,8 @@ An adapter contributes three things, all from `core`, none from protocol code:
 | Answer | What the adapter supplies |
 | --- | --- |
 | **liveness** ([RFC 25 §3.5](rfc-25-observability.md#3.5%20Liveness)) | each accept loop reports a turn through `Deps.Watch`, or reports idle; a loop that does neither for 60 s fails liveness. A connection's reader legitimately blocks on its socket and is not watched. Nothing else the adapter does can fail it |
-| **readiness** ([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)) | `Health()`: ready when serving with every listener bound; not ready while configured or draining. The node is ready for clients when every enabled adapter is serving or was refused at configured; a refused adapter is reported unhealthy with its error, and the others keep serving |
-| **conditions** ([RFC 25 §3.1](rfc-25-observability.md#3.1%20Conditions)) | `adapter_listener_lost`, a listener whose socket failed while serving, `unhealthy`; `adapter_refused`, an adapter whose settings failed at configured, `unhealthy` with the error; `sidecar_failed` (§3.5), `degraded`; `adapter_record_unreadable`, naming the protocol, `degraded` while `Adapter` bytes fail to decode — the usual cause a rolling upgrade across record versions — raising a ticket at once. Each derived from current evidence and cleared when it no longer holds |
+| **readiness** ([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)) | `Health()`: ready when serving with every listener bound; not ready while configured or draining. The node is ready for clients when every enabled adapter is serving or was refused at configured. A refused adapter has no `Health`: the node raises `adapter_refused` from the error `New` or `Start` returned, and the others keep serving |
+| **conditions** ([RFC 25 §3.1](rfc-25-observability.md#3.1%20Conditions)) | `adapter_listener_lost`, a listener whose socket failed while serving, `unhealthy`; `adapter_refused`, raised by the node for an adapter whose `New` or `Start` failed, `unhealthy` with the error; `sidecar_failed` (§3.5), `degraded`; `adapter_record_unreadable`, naming the protocol, `degraded` while `Adapter` bytes fail to decode — the usual cause a rolling upgrade across record versions — raising a ticket at once. Each derived from current evidence and cleared when it no longer holds |
 
 A refused setting is not readiness either: it is refused on every node that reads it, so steering clients elsewhere helps none of them, and an unready node would take the management API that can fix the setting out of service with it. A sidecar's failure and a single client's trouble are not readiness: a node
 that serves files is ready whether or not mDNS is advertising it.
@@ -1259,12 +1416,13 @@ func (h *Handlers) Write(ctx context.Context, r *core.Request, a *WRITE3args) (*
 
 The service is a field of the handler set, given once by `node.New`
 (§4.7), not reached through the connection or the context: a connection holds
-connection state only (§2.2), and a handler test builds `Handlers{svc: fake}`
-with no connection at all (§7.2).
+connection state only (§2.2), and a handler test builds `Handlers{svc: mem}`
+over the in-memory service with no connection at all (§7.2).
 
 It looks up no share, checks no permission, tests no lock and calls no engine.
-A version that did any of them fails the import test (§7.1) or the recording
-service's expectations (§7.2).
+A version that did any of them fails the import and call-site test (§7.1), or
+a handler test that finds the service's state, not the adapter's, deciding, or
+more than one mutating call in the in-memory service's record (§7.2).
 
 **A compound is a sequence of handlers.** NFSv4 `COMPOUND` and SMB compounded
 requests are run by the adapter's compound runner, one handler per operation,
@@ -1452,9 +1610,13 @@ mechanism, used only by tests, so every exchange runs in-process:
   principal, encrypted with the test keytab's own key, and the initiator turns
   it into an AP-REQ. Acceptance, AP-REP, subkeys, PAC parsing, expiry and
   replay detection run against real Kerberos messages, deterministically.
-- **NTLM** from a test user's password, against a fake service whose `SignIn`
-  holds its NT hash; pass-through is the same fake answering as a domain
-  controller would.
+- **NTLM** from a test user's password, against the in-memory service, whose
+  local store holds its NT hash. Pass-through runs in `unit` against RFC 18's
+  in-memory domain controller, a kind 2 its suite holds to the real one, and
+  against a real one in `integration`'s `ad-dc` option
+  ([RFC 18 §10](rfc-18-identity.md#10.%20Conformance)), as
+  [RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) has external
+  systems tested.
 - **SPNEGO** over both, including the mechanism-list MIC and a client that
   offers Kerberos first and falls back to NTLM.
 - **RFC 4121 tokens** against the RFC's and MIT's published test vectors.
@@ -1551,28 +1713,41 @@ it holds — the service counts nothing about holds:
   against a floor of 256 requests and 32 MiB of write data, and past it against
   the node's hold pool
   ([RFC 24 §4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go));
-  a request neither can take, when its hold starts on an `ErrDelay` the service
+  a request neither can take, when its hold starts on an error the service
   returned, is answered `STATUS_INSUFFICIENT_RESOURCES` at once, holds nothing
   and is counted (§10.1). A call still in the service when its interim goes out
   is counted and never refused, as below. The count lives and dies with the
   connection, so it needs no key across processes;
 - **the interim response is the adapter's timer.** An SMB request still
   unanswered a short interval after it reached the service — a call waiting
-  behind a clone — or answered `ErrDelay` of a class that holds gets its
+  behind a clone — or answered an error whose row has a `Hold` gets its
   interim `STATUS_PENDING` from the adapter's own timer, so nothing crosses
   into the service to announce a hold;
 - each attempt re-runs the held `Invocation`'s `Resolve` and `Call` (§4.7), with
   a fresh 30 s attempt deadline inside the hold's bound (§6.4) —
   the same decoded arguments, the wire IDs resolved again, so an open closed
   meanwhile is seen;
-- how long a request is held is the protocol's bound for the delay's cause
-  ([RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)),
-  applied by the pipeline from the `Delay`'s cause; a handler never chooses;
+- how long a request is held is its row's `Hold` (§4.7's `ErrorRow`),
+  evaluated on each attempt's error from the hold's start; a row without
+  `Hold` is answered at once with its status. A handler never chooses. The
+  bounds are the protocol's ([RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)). It
+  is a function because the settings behind it are live and a freeze's bound
+  comes from the error itself (`Delay.Until`, a grace's end); it is on the row
+  so that policy and final status stay together, and the totality test (§7.3)
+  covers both: it checks every error maps, and the table holds a `Hold` on
+  every row its protocol RFC holds. SMB's `New` builds each `Hold` as a closure
+  over the adapter's live settings, so a held request follows the latest
+  `pending_timeout` and `recall_timeout`, not its connection's snapshot:
+  the one exception to a connection reading its settings once (§3.6);
+- at arrival, in a table that Holds, `core` evaluates the row that maps the
+  clone wait (`ErrDelay` of `DelayClone`) with the hold's start at now, and
+  passes that deadline as `vfs.WithHold`; a table with no such row passes no
+  `WithHold`;
 - a client `CANCEL` or a closed connection ends the hold, and for a waiting lock
   calls `CancelLock` before answering ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks));
 - every request pending on a connection, held past its interim or parked,
   counts toward one ceiling, `Stages.MaxPending` (SMB: 511, RFC 22 §3.3). It is
-  checked when a hold starts on an `ErrDelay` the service returned, and in
+  checked when a hold starts on an error the service returned, and in
   `Park`; past it the request is answered at once with `ErrTooManyPending`. A
   call the interim timer finds still in the service goes pending past it, and
   past the hold floor with the hold pool full; its interim then withholds its
@@ -1581,6 +1756,11 @@ it holds — the service counts nothing about holds:
   on that interim and are granted in full. A drain's refusal, answered by an
   interim that no final follows (§4.7), holds nothing and counts toward
   neither the ceiling nor the floor.
+
+> decision: a held request's bound follows the adapter's live settings, not
+> its connection's snapshot. A hold outlives the settings change it straddles,
+> and the operator's new bound is the one that should apply. Overturn it if a
+> client is found that breaks when a held request's bound moves.
 
 > decision: a call the interim timer finds in the service goes pending past the
 > ceiling, and past the floor with the hold pool full, because answering it at
@@ -1619,7 +1799,7 @@ it holds — the service counts nothing about holds:
 **Who builds what.** `node.New` builds the service, the
 authenticator and the pools, then each adapter with `New(Deps, Settings)`
 (§3.4). `New` builds the protocol's stages, its handler sets — one per program
-and version for NFS, one for SMB — each holding `Deps.Service`, and their
+and version for NFS, one for SMB — each holding `Deps.VFS`, and their
 tables, and returns a `*core.Server` that runs them. Nothing is looked up
 later: no registry, no global, no service in a context value. §2.5's drawing
 shows the whole.
@@ -1631,6 +1811,9 @@ services supply only the two that are required:
 
 ```go
 package core
+
+// Buf in core's signatures is RFC 24's resources.Buf (§6.8), written
+// *resources.Buf in code; core declares no alias of its own.
 
 // Protocol is what one listener speaks: ONC RPC for NFS and its auxiliary
 // services, SMB2 for SMB. A datagram listener runs the same stages, one record
@@ -1732,6 +1915,10 @@ type OpTable struct {
 	Ops    map[uint32]*Op
 	Errors *ErrorTable // §4.5; per operation table, so NFSv3 and NFSv4 map differently
 	Holds  bool        // §4.6: SMB holds and re-drives what RFC 22 §16.5 holds, by error and cause; NFS answers every error at once
+	// ReadOp reads the operation code at the head of a compound member's bytes,
+	// and how many bytes it took: NFSv4's argop. Set on a table that is a
+	// compound row's Members; nil elsewhere.
+	ReadOp func(b []byte) (op uint32, n int, err error)
 }
 
 type Op struct {
@@ -1742,21 +1929,41 @@ type Op struct {
 	Cacheable bool
 	Role      Role  // what the operation always does to state (§3.1, §4.4); per request: Invocation.Role
 	Expired   bool  // runs on an expired credential: re-authentication, logoff (§4.4; RFC 18 §3.8)
-	Decode    func(body []byte, v Version) (Invocation, error)
+	Decode    func(body []byte, v Version) (inv Invocation, n int, err error) // n: the bytes of body it consumed
+	Members   *OpTable // non-nil on a compound row (NFSv4's COMPOUND): its members' table, which the runner decodes from after n (below)
 }
 
-// Invocation is one decoded operation: four closures over the decoded request
-// and its reply, filled by Bind. A struct, not an interface: Bind is its only
-// producer.
+// Invocation is one decoded operation: closures over the decoded request and
+// its reply. A struct, not an interface. Bind produces it for every row but a
+// compound row, whose Decode the protocol writes and which builds its
+// Invocation directly, setting Count from the arguments it decoded.
 type Invocation struct {
 	Bound   func() int                                 // the reply bound (§4.2)
 	Resolve func(r *Request) error                     // wire IDs to service values
 	Call    func(ctx context.Context, r *Request) error // the handler
+	// Encode runs on every request that gets a final reply, so its reply may
+	// be nil: the request refused before Call, or a handler that returned
+	// (nil, err). An encoder accepts a nil reply and encodes the status alone.
+	// A handler may return a reply with its error, as an NFSv3 failure carries
+	// its WCC data: Call keeps whatever reply the handler returned.
 	Encode  func(out *Buf, v Version) error
-	// Role, after Resolve, says what this request does to state: an SMB LOCK
-	// whose elements unlock releases it, a WRITE to an open under a break
-	// flushes it, an NFSv4 OPEN that claims a delegated open flushes it. nil:
-	// Op.Role decides alone.
+	// Handle is the filehandle the request's own arguments name (a PUTFH's),
+	// read before Resolve, which core hands the service to learn a draining
+	// request's move target (§3.1); the service resolves it, core never parses
+	// it. nil: the request names none.
+	Handle func() (vfs.Handle, bool)
+	// Count is a compound row's: the members its arguments say follow, set by
+	// that row's own Decode. 0 on every other row.
+	Count int
+	// Role says what this request does to state: an SMB LOCK whose elements
+	// unlock releases it, a WRITE to an open under a break flushes it, an
+	// NFSv4 OPEN that claims a delegated open flushes it. It is called in
+	// two cases only. Judging a single-reply compound whole while draining
+	// (below), the runner calls it before Resolve, and it reads only the
+	// decoded arguments and the state an explicit stateid among them names.
+	// Everywhere else it is called after Resolve, and only while draining or
+	// on an expired credential, so a request served normally pays for no
+	// second lookup. nil: Op.Role decides alone.
 	Role func(r *Request) Role
 }
 
@@ -1774,15 +1981,17 @@ const (
 // Bind joins a row's codec pair and handler, type-checked against each other,
 // and returns the row's Decode.
 func Bind[Req, Rep any](
-	dec func(b []byte, v Version, req *Req) error,
+	dec func(b []byte, v Version, req *Req) (n int, err error), // n: the bytes of b it consumed, which Decode returns
 	bound func(req *Req) int,
 	resolve func(r *Request, req *Req) error, // nil: the operation names no wire ID
 	role func(r *Request, req *Req) Role,     // nil: Op.Role decides alone
+	handle func(req *Req) (vfs.Handle, bool), // nil: the arguments name no filehandle
 	h Handler[Req, Rep],
 	enc func(rep *Rep, v Version, out *Buf) error,
-) func([]byte, Version) (Invocation, error)
+) func([]byte, Version) (Invocation, int, error)
 
-// NewOpTable builds a table and checks it: codes unique, ranges well formed.
+// NewOpTable builds a table and checks it: codes unique, ranges well formed,
+// and no ErrorRow.Hold unless holds.
 func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
 
 // Version is a protocol's version, minor version or dialect; Range a closed
@@ -1818,6 +2027,12 @@ type ErrorRow struct {
 	Ops      []uint32 // nil: every operation
 	Versions *Range   // nil: every version
 	NoReply  bool     // no final reply (ErrDraining, and ErrMoved where no move signal fits, §3.1); a table that Holds sends an interim granting the request's credits; Status unused
+	// Hold, only in a table that Holds (NewOpTable refuses it elsewhere): a
+	// request whose latest attempt maps here is held and re-driven until the
+	// deadline Hold returns, counted from the hold's start, and is then
+	// answered Status. A deadline at or before the attempt's time answers
+	// Status now, with no further attempt. nil: answered Status at once.
+	Hold     func(err error, start time.Time) time.Time
 	Status   Status
 }
 func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable
@@ -1830,7 +2045,7 @@ A table is built beside its handlers, one line per operation:
 func (h *Handlers) OpTable() *core.OpTable {
 	return core.NewOpTable(errorTable, false,
 		&core.Op{Name: "WRITE", Code: proc3Write,
-			Decode: core.Bind(xdr.DecodeWRITE3args, writeBound, nil, nil, h.Write, xdr.EncodeWRITE3res)},
+			Decode: core.Bind(xdr.DecodeWRITE3args, writeBound, nil, nil, nil, h.Write, xdr.EncodeWRITE3res)},
 		// … one row per procedure
 	)
 }
@@ -1848,23 +2063,35 @@ if cached, err := stages.Replay.Lookup(ctx, h); cached != nil { conn.write(wrap(
 tbl, r, err := stages.Router.Route(h, prev) // prev: the member before a related one
 op := tbl.Ops[h.Op()]               // absent: not supported
 err = check(op, h, r)               // Versions, Needs (§4.2)
-inv, err := op.Decode(body(rec), h.Version())
+inv, _, err := op.Decode(body(rec), h.Version()) // the bytes consumed matter to the compound runner only (below)
 err = reserveReply(ctx, inv.Bound()) // RFC 24 §3.3
 err = inv.Resolve(r)
-role := roleOf(op, inv, r) // inv.Role(r), or op.Role where nil
+role := op.Role
+if draining || expired(r) { role = roleOf(op, inv, r) } // inv.Role(r), or op.Role where nil; not asked otherwise
 if err == nil && expired(r) && !op.Expired && role != RoleRelease { err = ErrExpired } // §4.4
-if err == nil && draining && role == RoleNone { err = drainErr } // §3.1: ErrMoved or ErrDraining; never per operation in a single-reply compound (below)
-if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve when tbl.Holds
+if err == nil && draining && role == RoleNone { err = drainErr(ctx, r, inv) } // §3.1: ErrMoved if MoveTarget names a gateway for inv.Handle's share, else ErrDraining; never per operation in a single-reply compound (below)
+if err == nil { err = chain(inv.Call)(ctx, r) } // middleware; held and re-driven from Resolve until the Hold of the row err maps to passes (§4.6)
 st, send := tbl.Errors.Map(err, op, h.Version())
-if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); return } // a NoReply row: no final reply; where the table holds (SMB) an interim grants the request's credits back, and after, the credits read from the headers of the chain members after it (0 outside a chain) (HoldCodec.Interim)
+if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); return } // a NoReply row: no final reply; where the table holds (SMB) an interim grants the request's credits back, and those of the chain members after it, whose headers it is handed (none outside a chain) (HoldCodec.Interim)
 reply := encode(stages.Header, h, st, inv)
 if op.Cacheable { stages.Replay.Store(h, reply) } // a clear copy, before Wrap
 err = stages.Security.Wrap(h, reply) // a chain's replies: once, joined (below)
 conn.write(reply) // the writer's queue (§6.2)
 ```
 
-For NFSv4 the RPC procedure is `COMPOUND`, whose row hands the operations to
-the compound runner with the minor version's operation table; an SMB chain
+For NFSv4 the RPC procedure is `COMPOUND`, a compound row: its `Members` is
+the minor version's operation table. Its `Decode` decodes the compound's own
+arguments and builds its `Invocation` itself rather than through `Bind`, so it
+can set `Invocation.Count` to the array's count; it returns the bytes
+they took. The runner refuses a count past the compound cap with `ErrTooLong`
+before it decodes any member (§4.3); otherwise it decodes exactly `Count`
+members, each's operation code read with `Members.ReadOp` and its arguments
+with that row's `Decode`, moving on by the bytes each returned, and refuses
+bytes left after the last as the compound's decode error (§5.2), before any
+member runs. Outside a drain, a member k that does not decode — its arguments
+malformed, or a code its table has no row for, which RFC 21 answers from its
+`ILLEGAL` row — is answered with that error once the members before it have
+run; nothing past it runs, and the reply ends there. An SMB chain
 reaches the same runner from one record, each member with its own header at
 its own offset (`Decode(rec, off)`, `Header.Next`). The runner repeats the
 steps from `check` to `encode` per operation, carrying the compound state in
@@ -1877,10 +2104,10 @@ its handles carry over. It encodes each member's reply, joins them with
 signs each member over its own bytes, `NextCommand` and padding included, and
 encrypts the record once.
 
-A member before the last that the service answered `ErrDelay` of a holding
-class, so applied nothing, is answered in one of two ways, as
-`HoldCodec.Pends` says for its cause: at once, the runner replacing the
-`ErrDelay` with `ErrNotLast` before its table maps it, since a hold row's
+A member before the last that the service answered an error whose row holds
+(an `ErrDelay`, a grace, an unavailable share), so applied nothing, is
+answered in one of two ways, as `HoldCodec.Pends` says for that error: at once, the runner replacing the
+error with `ErrNotLast` before its table maps it, since a hold row's
 status speaks for a hold that will not happen, and the chain goes on; or pending, as the last member is, the
 replies before it and its interim going out as one chain and the members after
 it running once it has answered, their replies chained after its final one.
@@ -1895,9 +2122,22 @@ run, and the client replays them once it reconnects. In an SMB chain, where
 each member has its own reply, the members before it stay applied and are
 answered: their replies go out chained with the refused member's interim,
 which grants its credits and those of the members after it, and no final
-reply follows. The members after it are never decoded, so the runner reads
-only their headers and passes their credits to `HoldCodec.Interim` as `after`.
-One before it that went pending gets its final reply as usual.
+reply follows. The members after it are not otherwise decoded, so the runner
+decodes only their headers, with `HeaderCodec.Decode`, and hands them to
+`HoldCodec.Interim` as `after`. That costs one header decode per later member,
+into a slice taken from a `sync.Pool` and put back once the interim is encoded
+(a connection runs up to its cap of requests at once, so no per-connection
+slice is safe), and only on a drain's refusal.
+A later member whose header does not decode ends the chain there: the interim
+grants the credits of those before it that decoded, and nothing past it is
+read. One before it that went pending gets its final reply as usual.
+
+> decision: the credits of the members after a refused one are granted from
+> headers no `Security` stage verified, since those members are never
+> unwrapped. The grant is bounded by `Interim`'s sum, which saturates at the
+> connection's credit target, so a forged value grants a client at most the
+> target it could already hold. Verify each header before granting if a client
+> is found that turns such a grant into more than the target.
 
 An NFSv4 `COMPOUND` has one reply, and a results array cut short under
 `NFS4_OK` is malformed (RFC 8881 §16.2.3), so a `NoReply` refusal in it leaves
@@ -1924,9 +2164,20 @@ as they run: a compound that began while serving runs whole. Judged per
 operation, a drain starting between its `CLOSE` and its `READ` would apply the
 `CLOSE` and leave the reply unsent, with the slot unchanged, so the
 retransmission would meet `NFS4ERR_BAD_STATEID`. An operation that does not
-decode counts as refused with a `NoReply` row.
+decode counts as refused with a `NoReply` row; this is the only place a
+member that does not decode is judged rather than answered.
 
-> decision: `Pends` is asked only for an `ErrDelay` the service returned. A
+Which drain error the compound's refused members get is decided once, with
+the rest. The runner hands the service each filehandle a member's decoded
+arguments name (`Invocation.Handle`, a `PUTFH`'s), and the service's
+`MoveTarget` ([RFC 17](rfc-17-vfs.md)) resolves it; the adapter never parses
+it. The refusal is `ErrMoved` only when the compound names at least one
+handle and every one names a share with a target, and `ErrDraining`, so no
+reply, otherwise: a compound that reaches its share another way, as a
+`LOOKUP` across a junction from `PUTROOTFH` does, is left unanswered, and the
+client retries.
+
+> decision: `Pends` is asked only for an error the service returned. A
 > call still in the service can apply after any answer, so answering it at
 > once could report a failed `WRITE` whose data lands a moment later; such a
 > member always goes pending. Withdraw it only if the service gains a way to
@@ -1989,6 +2240,10 @@ func (c *Conn) Established()
 // every release is called (§6.4).
 func (c *Conn) Keep() (release func())
 
+// Settings is the settings snapshot this connection loaded at accept, the
+// protocol's whole shape (§3.6); NewConn reads its own from it.
+func (c *Conn) Settings() config.Settings
+
 // Close ends the connection for a protocol violation the protocol finds: an
 // SMB message that fails decryption, a second NEGOTIATE (MS-SMB2 3.3.5.2.1.1,
 // 3.3.5.4), a moved continuously available share's trees (§3.3). The reader
@@ -2010,28 +2265,30 @@ func (c *Conn) Close(err error)
 // connection's message-ID window passes the key if a client is found that
 // cancels that early.
 type HoldCodec interface {
-	Key(h Header) uint64
+	Key(h Header) uint64 // never 0, which Conn.Send's before uses for none: SMB maps MessageId 0 (NEGOTIATE) to a non-zero key
 	// Interim encodes STATUS_PENDING. It grants the request's credits if grant;
 	// if not (a call in the service past MaxPending, or past the hold floor
 	// with the hold pool full, §4.6), only what keeps the client's balance at
 	// one. Either way it grants the credits of the chain members answered
 	// before it, which ride on its header. For a NoReply row (a drain's
-	// refusal) it grants the request's credits and after, the credits of the
-	// chain members after it, which do not run: the runner reads them from
-	// those members' headers, since it decodes nothing else of them. No Final
-	// follows, nothing is held, and it counts against no floor or MaxPending.
-	// Every other interim passes after 0.
-	Interim(h Header, grant bool, after uint16, out *Buf) error
+	// refusal) it grants the request's credits and those of the chain
+	// members after it, which do not run: the runner hands it their headers,
+	// the only part of them it decodes, and the codec reads their credits and
+	// sums them, saturating at the connection's credit target (RFC 22 §3.3)
+	// rather than wrapping. core knows nothing of credits. No Final follows,
+	// nothing is held, and it counts against no floor or MaxPending. Every
+	// other interim is handed no headers.
+	Interim(h Header, grant bool, after []Header, out *Buf) error
 	// Final is the final reply's header, with the async ID. If grant (true
 	// only when its interim withheld), it grants the request's credits less
 	// what the interim granted of them; otherwise none.
 	Final(h Header, grant bool) Header
 	Cancels(h Header) (key uint64, ok bool) // a CANCEL ends the hold it names and gets no reply
-	// Pends says whether a chain member before the last, answered ErrDelay
-	// with cause, goes pending (true) or is answered at once as ErrNotLast.
-	// It is asked only for an ErrDelay the service returned;
+	// Pends says whether a chain member before the last, answered err whose
+	// row holds, goes pending (true) or is answered at once as ErrNotLast.
+	// It is asked only for an error the service returned;
 	// a member the interim timer finds still in the service always pends.
-	Pends(h Header, cause vfs.DelayCause) bool
+	Pends(h Header, err error) bool
 }
 
 // ErrParked is what a handler returns, with its reply value, after Park:
@@ -2083,26 +2340,26 @@ var (
 	ErrNotLast        = errors.New("core: not the last member of a chain") // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")     // Stages.MaxPending
 	// ErrMoved and ErrDraining are what a request §3.1 does not serve gets
-	// while the adapter drains: ErrMoved where the drain names a takeover
-	// target (the move signal), ErrDraining where it names none (no final reply,
-	// ErrorRow.NoReply).
+	// while the adapter drains: ErrMoved where the service names a gateway
+	// node for the request's share (the move signal), ErrDraining where it
+	// names none (no final reply, ErrorRow.NoReply).
 	ErrMoved    = errors.New("core: moved")
 	ErrDraining = errors.New("core: draining")
 )
 
 func Errors() []error
 
-// Dispatcher is what a connection hands each framed record to. The pipeline
-// is the one implementation; a connection's own tests supply a stub.
-type Dispatcher interface {
-	Dispatch(ctx context.Context, c *Conn, rec *Buf)
-	Drain(moved bool) // from now on only requests §3.1 serves run; the rest get ErrMoved if moved, else ErrDraining
-}
+// A connection hands each framed record to the pipeline, a concrete type
+// with one implementation, so no interface stands between them (§2.5's rule 4).
+// From the pipeline's drain on, only requests §3.1 serves run; the rest get
+// ErrMoved or ErrDraining, decided per request (§3.1). A connection's own
+// tests run the real pipeline on the test-only protocol (§7).
 
 // NewServer returns the adapter New hands back: each listener bound on each
 // of the settings' Addrs, all or none at Start (§3.1); Reconfigure binds them
-// on an added address the same way (§3.6).
-func NewServer(d adapter.Deps, s config.Adapter, ls ...Listener) (*Server, error)
+// on an added address the same way (§3.6). s is the protocol's whole shape,
+// which New was given; core reads its Adapter.
+func NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)
 
 type Listener struct {
 	Network  string // "tcp" or "udp"
@@ -2115,6 +2372,29 @@ These, with the types above, are `core`'s exported surface; a protocol
 reaches nothing else in it. `adaptertest`'s test-only protocol drives every
 one of them (§7), so the surface is proven before either protocol is built on
 it.
+
+> decision: a compound row is named by one field and split by one hook.
+> `Op.Decode` returns the bytes it consumed, `Op.Members` names the members'
+> table and `Invocation.Count` the members to expect, so the runner checks the
+> cap, decodes every member and refuses trailing bytes before any runs, as
+> judging a compound whole while draining needs. Reading a member's operation
+> code is the members' table's `ReadOp`, because its encoding is the
+> protocol's (an XDR `argop` for NFSv4) and no stage reads inside a body.
+> Revisit if a protocol's compound cannot state its count before its members.
+
+> decision: four additions proposed from prior servers add no surface, since
+> each need is met inside a body. A release hook on `Invocation`: a held
+> request keeps its receive `Buf` retained until it ends, so decoded arguments
+> that point into it stay valid across every re-drive (§6.8). A carrier for
+> RPC `PROG_MISMATCH`'s low and high versions: NFS's `HeaderCodec.Encode`
+> writes them from its own tables, which hold the versions each program
+> serves. A non-waiting reserve for `Park`: `Reserve` under a context already
+> past its deadline tries once and fails at once
+> ([RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used)).
+> A guard against a `Reservation` released twice through a copy: `Release`
+> zeroes the `Reservation` it is called on, and a `Reservation` is moved,
+> never copied (RFC 24 §2.5). Add the surface when a body is found that
+> cannot meet its need this way.
 
 **One request, end to end.** An NFSv3 `WRITE`:
 
@@ -2151,6 +2431,49 @@ decoded:
 | NFSv4 minor versions | one table for program 100003 version 4; `COMPOUND`'s minor version selects each row's `Versions` column | minor version not served: `NFS4ERR_MINOR_VERS_MISMATCH`, nothing run ([RFC 21 §2.1](rfc-21-nfs.md#2.1%20Versions%20served)); an operation outside its minor versions: the status RFC 21 names |
 | SMB dialects | one table; the dialect `NEGOTIATE` fixed for the connection selects each row's `Versions` column | a command outside the dialect: `STATUS_NOT_SUPPORTED`; dialects not served are never negotiated ([RFC 22 §3.1](rfc-22-smb.md#3.1%20Dialects)) |
 
+**`New` builds every table; only the Router filters.** `New` builds every
+table its protocol has, always, whatever the settings say. The Router alone
+selects what is served, reading the range — NFS's `Versions`, SMB's
+`Dialects` (§3.6) — from the connection's settings snapshot
+(`Conn.Settings`), never from `New`'s copy; so a `Reconfigure` that widens or
+narrows the range rebuilds nothing, and a connection keeps what it
+negotiated.
+
+- **NFS.** The Router maps (program, version) to a table, and answers a
+  version outside the connection's range `PROG_MISMATCH`, naming the range's
+  lowest and highest served; an NFSv4 minor version outside it gets
+  `NFS4ERR_MINOR_VERS_MISMATCH`, nothing run. NFSv3's table is served only
+  when `"3"` is in range, MOUNT, NLM and NSM with it, so a range of only 4.x
+  serves none of the three.
+- **SMB.** One table; `NEGOTIATE` picks the highest dialect the client offers
+  inside `Conn.Settings()`'s `Dialects`, and a dialect outside it is never
+  negotiated.
+- **No operation registers itself.** No `init()` appends to a global table:
+  each table's row list is its table of contents, one line per operation,
+  each row built in its operation's own file (§2.5's layout).
+
+```go
+// nfs.go: New composes; it names no operation
+func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) {
+	if err := s.Validate(); err != nil {
+		return nil, err
+	}
+	t := protocol.Tables{
+		V3:    v3.Table(&v3.Handlers{VFS: d.VFS}),
+		V4:    v4.Table(&v4.Handlers{VFS: d.VFS}), // minor versions are its rows' Versions column
+		Mount: mount.Table(&mount.Handlers{VFS: d.VFS}),
+		NLM:   nlm.Table(&nlm.Handlers{VFS: d.VFS}),
+		NSM:   nsm.Table(&nsm.Handlers{VFS: d.VFS}),
+	}
+	return core.NewServer(d, s, core.Listener{Network: "tcp", Port: 2049, Protocol: protocol.New(t)})
+}
+
+// ops/v3/table.go: the row list, one line per operation; each row is built in its operation's own file
+func Table(h *Handlers) *core.OpTable {
+	return core.NewOpTable(errorTable, false, h.nullOp(), h.getattrOp(), h.lookupOp(), h.readOp(), h.writeOp() /* … */)
+}
+```
+
 Where versions share a handler and where they do not:
 
 - **Same request to the service, different wire.** NFSv4.0 and 4.1 `READ`,
@@ -2185,7 +2508,7 @@ is tested once, on its own.
 | handlers | SMB 2.1 to 3.1.1 | `smb/ops` | one handler per command for every dialect (§4.8) |
 | handlers | NFSv4.0 to 4.2 | `nfs/ops/v4` | one handler per operation for every minor version it spans (§4.8) |
 | error tables' type and totality test | all protocols | `core` | the rows are each protocol's; the check is one (§4.5) |
-| test helpers | all protocols | `adaptertest` | golden vectors, the recording service, the null service (§7) |
+| test helpers | all protocols | `adaptertest` | golden vectors, the test-only protocol, the in-memory service's setup (§7) |
 
 **Not shared: NFSv3 and NFSv4 handlers.** A v3 procedure and the v4
 operation it resembles make the same service call with different arguments
@@ -2273,8 +2596,9 @@ What follows from the service owning it:
   every protocol through the service's next call, with nothing to refresh,
   subscribe to or invalidate here.
 
-Tests: each entry handler is tested against the recording service (§7.2),
-which proves it makes its one call and maps each error; that a share is
+Tests: each entry handler is tested against the in-memory service (§7.2),
+which proves it answers from the service and maps each error, injected by the
+fault wrapper; that a share is
 refused on every path — `PUTFH` of a held handle, a walk from `PUTROOTFH`, a
 lock naming only an open, a `TREE_CONNECT` — is a cross-protocol row (§7.4),
 since it is the service's rule and the adapters' only duty is not to go round
@@ -2412,7 +2736,9 @@ server answers, and the same TCP connection is upgraded to TLS before any
 other request. `core.Conn` offers that upgrade once, to the stage that asked —
 `StartTLS(cfg)`, called by NFS's `Header` stage after the reply is sent — and
 from then on the reader and writer read and write through TLS; frame and every
-stage above it are unchanged.
+stage above it are unchanged. `StartTLS` is not in §4.7's list: it is added to
+`Conn` with RFC 21's `NULL` handler, a method on a concrete type that changes
+no existing signature.
 
 It is configured on the NFS adapter, as today:
 
@@ -2423,8 +2749,7 @@ adapters:
       cert_file: /etc/dittofs/tls/tls.crt
       key_file:  /etc/dittofs/tls/tls.key
       client_ca: /etc/dittofs/tls/ca.crt  # optional: mutual TLS
-      min_version: "1.3"                   # RFC 9289's floor
-      mode: opportunistic                  # or require
+      mode: opportunistic                  # off (the default), opportunistic or require; TLS 1.3, RFC 9289's floor, fixed
 ```
 
 | Setting | Means | Class |
@@ -2432,8 +2757,8 @@ adapters:
 | `cert_file`, `key_file` | the server's certificate; DittoFS loads files and issues nothing | live: the files are re-read when they change, and handshakes begun afterwards use the new pair; a connection already upgraded keeps its session |
 | `client_ca` | require and verify a client certificate | live, for handshakes begun afterwards |
 | `mode: opportunistic` | a client that sends the `AUTH_TLS` probe is upgraded; one that does not is served in plaintext | live, for connections accepted afterwards |
+| `mode: off` | no TLS, the default; `cert_file`, `key_file` or `client_ca` set with it is refused | live, as above |
 | `mode: require` | any call before the upgrade but the `AUTH_TLS` probe is refused and the connection closed | as above |
-| `min_version` | TLS 1.3 by default | live, as `cert_file` |
 
 The certificate loading and reload are the shared `tlsconfig` code the control
 plane's own listener uses ([RFC 23](rfc-23-control-plane.md)); the adapter adds
@@ -2516,7 +2841,7 @@ inside the service, or a reply reservation's deadline, before it — is one clas
 `ErrDelay` with `DelayResources`
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), which the
 adapter builds itself for its own reply-reservation refusal. A request whose
-hold starts on an `ErrDelay` the service returned, past its connection's hold
+hold starts on an error the service returned, past its connection's hold
 floor with the hold pool full, is the adapter's own refusal; a call still in
 the service is never refused (§4.6). The error table answers both at once and holds neither; the statuses
 are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
@@ -2531,17 +2856,17 @@ are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
 
 | Limit | Applies to | On expiry |
 | --- | --- | --- |
-| request deadline | each attempt of every service call: a fixed 30 s from arrival, set by the pipeline and carried in the context ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). A held request (§4.6) is bounded in total by its cause's hold bound — `smb_pending_deadline` on a recall, `smb_pending_cap` for a transient refusal — and each re-drive is a fresh 30 s attempt inside it; a waiting lock and an SMB `CHANGE_NOTIFY` have none | the service's answer at the deadline is mapped as any other; a drain or closed connection cancels |
-| frame deadline | the rest of a request once its first byte has arrived | connection closed: a client that trickles a request holds a receive reservation (§4.1) |
-| idle timeout | a connection with no request and no held state | closed |
-| write deadline | the writer, per message | connection closed |
-| handshake deadline | negotiate and authenticate | connection closed |
+| request deadline | each attempt of every service call: a fixed 30 s from arrival, set by the pipeline and carried in the context ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). A held request (§4.6) is bounded in total by its cause's hold bound — SMB's `recall_timeout` on a recall, `pending_timeout` for a transient refusal — and each re-drive is a fresh 30 s attempt inside it; a waiting lock and an SMB `CHANGE_NOTIFY` have none | the service's answer at the deadline is mapped as any other; a drain or closed connection cancels |
+| read timeout, `read_timeout` | the rest of a request once its first byte has arrived | connection closed: a client that trickles a request holds a receive reservation (§4.1) |
+| idle timeout, `idle_timeout` | a connection with no request and no held state | closed |
+| write timeout, `write_timeout` | the writer, per message | connection closed |
+| handshake timeout, `handshake_timeout` | negotiate and authenticate | connection closed |
 | connection limit | per node, `connection_limit`, and a quarter of it per address ([RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)) | new connections closed at accept, never left in the listen backlog |
 | accept failure | an `Accept` error the listener can recover from, such as no file descriptor left | retried after a backoff from 10 ms doubling to 1 s; failing for 60 s raises `adapter_listener_lost` (§3.7) |
-| drain deadline | draining (§3.1) | remaining requests abandoned |
+| drain timeout, `drain_timeout` | draining (§3.1) | remaining requests abandoned |
 
-The deadlines but one are settings in [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings),
-the same for every protocol; the request deadline is fixed
+The timeouts are settings in [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings),
+each adapter's own under `adapters.<protocol>`; the request deadline is fixed
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)); the connection limit is
 [RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)'s, and the accept backoff
 is fixed. A connection holding state the client relies on — an NFSv4.1
@@ -2682,17 +3007,20 @@ package resources // pkg/resources (RFC 24 §2.8): shared by every component
 // Buf is one pooled buffer, shared by reference count. Its reservation is
 // released with its bytes, so budget and memory never disagree.
 type Buf struct {
-	B     []byte              // len is the record's or reply's; cap is the class size
-	class uint8
-	refs  atomic.Int32
-	res   Reservation
+	B []byte // len is the record's or reply's; cap is the class size
+	// unexported: its class, its reference count and its Reservation
 }
 
-func (p *BufPool) Get(ctx context.Context, n int) (*Buf, error) // reserve n's class, then take a buffer: refs = 1
+func NewBufPool(b *WaitBudget) *BufPool                         // RFC 24 §2.5: every buffer it hands out is reserved from b, the receive or reply budget
+func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) // one reservation for key of n's class plus RFC 24 §3.1's per-request overhead (8 KiB), released with the buffer; then a buffer: refs = 1
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
 ```
 
+- **Each `Server` builds its own.** `core` builds a `BufPool` over each budget
+  of `Deps.Budgets` it takes buffers from, receive for requests and reply for
+  replies; `Deps` carries the budgets and no allocator, so nothing outside
+  `core` shares its free lists.
 - **One free list per class.** Each class of
   [RFC 24 §3.1](rfc-24-resources.md#3.1%20Buffer%20classes) has a
   `sync.Pool` of `*Buf`, so a buffer idle across collections is returned to the
@@ -2778,39 +3106,22 @@ the ones above it cannot, and none stands in for another:
 | --- | --- | --- | --- |
 | codec | bytes ↔ fields, as the specification and the reference server have them | golden vectors, round trips, fuzzing (§5.4) | per change |
 | stages | each protocol stage alone (§4.7): header codecs and security on golden and specification vectors; flow control and replay caches as state machines; routers on a table of versions | unit tests, no socket | per change |
-| `core` | lifecycle, drain, reconfigure, connection limit, flow control, writer order, slow-client isolation, panic recovery, cancellation, no buffer leaked | `adaptertest`'s test-only protocol over loopback against the **null service** (§6.10), given scripted delays, driven over a plain connection; it has a handshake, session levels, kept state, held and parked requests, a cancel and chained messages, so every type of §4.7 is exercised | per change |
-| handler | translation: the right service call with the right arguments, and the right reply for each answer | a recording service (§7.2) | per change |
-| boundary | imports, error-table totality, one mutating call | §7.1, §7.2, §7.3 | per change |
+| `core` | lifecycle, drain, reconfigure, connection limit, flow control, writer order, slow-client isolation, panic recovery, cancellation, no buffer leaked | `adaptertest`'s test-only protocol over loopback against the **in-memory service** (§7.2), its delays given by the fault wrapper, driven over a plain connection; it has a handshake, session levels, kept state, held and parked requests, a cancel and chained messages, so every type of §4.7 is exercised | per change |
+| handler | translation: the request reaches the service with the right arguments, and the right reply for each answer; one mutating call | the in-memory service, with faults injected (§7.2) | per change |
+| boundary | imports, error-table totality | §7.1, §7.3 | per change |
 | in-process | an adapter on the real service and in-memory stores, driven by §8.2's scripted client over loopback; no root, no kernel client | Go tests | per change |
 | conformance | the protocol as third-party clients see it: pynfs, cthon04, nfstest, smbtorture, WPTS, pjdfstest | [RFC 21 §13](rfc-21-nfs.md#13.%20Conformance), [RFC 22 §18](rfc-22-smb.md#18.%20Conformance), run by [RFC 29](rfc-29-test-harness.md#4.3%20Tiers) | per change on the production profile, after merge on every profile |
 | end to end | the scenarios of this RFC with kernel clients on a composed node (§7.5) | `test/e2e` | after merge and nightly |
 | wire diff | field-by-field agreement with reference servers | §8 | nightly |
 
-The `core` layer runs a test-only protocol, over the null service, so what it
-finds is `core`'s and neither a store's nor a protocol's: a drain bug found
+The `core` layer runs a test-only protocol, over the in-memory service, so what
+it finds is `core`'s and neither a store's nor a protocol's: a drain bug found
 there is a `core` bug, and both adapters share its fix. The test protocol —
-length-prefixed frames, an echo, a scripted delay, an operation that panics,
+length-prefixed frames, an echo, a delay, an operation that panics,
 one that holds — lives in `adaptertest/testproto`; `core` and its tests import
-no protocol, so `core` is built and proven before either adapter exists.
-
-**What the recording service is worth, and what it is not.** A handler test
-against a fake service catches what no other layer does cheaply:
-
-- **argument translation.** An SMB `CREATE` whose deny mode is dropped on the
-  way to `OpenRequest` still opens the file against a real service, and every
-  single-client test passes; only the recorded call shows the field missing.
-  The same for an offset truncated to 32 bits, a stability level mapped wrong,
-  a disposition swapped.
-- **the one-call rule.** A handler that composes (§4.3) still works against a
-  real service, until two clients race; the recorded calls show it at once.
-- **reply edges the store cannot easily produce** — a size past 2^32, a time
-  before 1970, every service error on every operation — scripted in one line.
-
-It proves nothing about semantics, which are the service suite's, and nothing
-about whether a client accepts the bytes, which are the golden vectors' and the
-wire tests'. Its cost is brittleness, so a handler test pins the **mutating**
-call exactly, with its arguments, and read-only calls by name only — a handler
-free to fetch attributes once rather than twice does not break its test.
+no protocol, so `core` is built and proven before either adapter exists. The
+null service of §6.10 serves the allocation gate (`unit/adapter-allocs`) and
+the benchmarks only; nothing asserts on its answers.
 
 **Translations are tested as pure functions.** Each protocol's translations
 ([RFC 21 §11](rfc-21-nfs.md#11.%20Translation), [RFC 22 §16](rfc-22-smb.md#16.%20Translation)), open state's
@@ -2845,46 +3156,70 @@ under `pkg/` other than the two constructors `pkg/adapter/nfs` and
 `pkg/adapter/smb` that imports anything under `internal/adapter/`, and an
 implementation package that imports a constructor. It starts with no
 allowlist: today's adapters are deleted rather than moved, so nothing is
-grandfathered in. The other direction, that the service imports no adapter,
+grandfathered in. The walk reads each package's own imports; its `_test.go`
+files may also import `pkg/vfs/vfstest` and `adaptertest`, whose in-memory
+service builds the real filesystem, and nothing else the list forbids, so no
+forbidden package reaches an adapter's build. The other direction, that the service imports no adapter,
 stays with the service's own architecture check
 ([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)).
 
-### 7.2 Handlers against a recording service
+### 7.2 Handlers against a verified service
 
-Each handler is tested against a fake `vfs.Service` that records every call
-and returns scripted answers. A handler test asserts three things:
+Each handler is tested against the **in-memory service**, `vfstest.Memory`: the
+real `*vfs.Filesystem` over memory stores, passing the service's conformance
+suite ([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)). Error answers and reply edges
+come through `vfstest`'s fault wrapper around it, which fails a named method
+on cue ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). A
+handler test asserts two things:
 
-1. the decoded request produced exactly the expected mutating call, with the
-   expected arguments, or none where none is expected — so a handler that
-   answers from adapter state where it should have called is caught too
-   (§4.3);
-2. for each scripted answer, including each error, the encoded reply is the
-   expected bytes or golden fields;
-3. no other mutating call was made; read-only calls are checked by name only.
+1. the encoded reply is the expected bytes or golden fields, for a success and
+   for each injected error;
+2. the state the service holds afterwards is what the request asked for — the
+   bytes at the offset written, the open's deny mode refusing a conflicting
+   open, nothing changed where the request should have changed nothing.
 
-The recording fake is generated from the service interface, so a new service
-method is recorded without hand edits. It also knows which service methods
-mutate, so the one-call rule of §4.3 is enforced here and needs no column in
-the operation table. A handler test **MUST NOT** use a real
-store or engine: a handler that works only because a real store did the
-checking is exactly the leak this RFC forbids. Semantics are tested once, in
-the service's suite ([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)).
+Argument translation shows in that state. An SMB `CREATE` whose deny mode is
+dropped on the way to `OpenRequest` still opens the file, and every
+single-client test passes; a second, conflicting open that succeeds shows the
+field missing. An offset truncated to 32 bits shows in the file's content, a
+disposition swapped in what the open created. A request field with no
+observable effect is checked by the codec round trips and golden vectors
+(§5.4), not by the handler test. Reply edges the store cannot easily produce —
+a size past 2^32, a time before 1970, every service error on every operation —
+are one line of the fault wrapper.
+
+The one-call rule of §4.3 is read from `vfstest.Memory`'s record of the
+mutating calls it served. The record lives in a recording wrapper in `vfstest`
+around the `*vfs.Filesystem`, never in `*vfs.Filesystem` itself; it records each
+call and passes it through, never answering in its place, the kind
+[RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) allows when the call
+reaching a dependency is itself the requirement. A handler test
+fails when a request leaves more than one, so the operation table needs no
+column for it. A handler that answers from adapter state where it should have
+called the service is caught by the same record: the missing call shows as a
+missing entry (§4.3). Read-only calls are not asserted, so a handler free to
+fetch attributes once rather than twice does not break its test. The service
+decides; a handler that works only because it did the checking
+itself, rather than the service, shows as a reply the service's state does not
+explain. Semantics are tested once, in the service's suite
+([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)).
 
 **Example.**
 
 ```go
 func TestWrite3(t *testing.T) {
-	svc := vfstest.Record(t)                          // records every Service method
-	h := &v3.Handlers{svc: svc}                       // what nfs.New would build (§4.7)
-	svc.Expect("Write").Args(anyCtx, ident, vfs.Anonymous(fh), int64(8192), data4k, vfs.FileSync).
-		Return(vfs.WriteResult{N: 4096, Verifier: verf, WCC: wcc}, nil) // the mutating call, pinned with its arguments
-	rep := runGolden(t, h.OpTable(), "write3-4k.call") // golden request bytes through the row
-	svc.AssertDone()                                  // that Write, and no other call
+	mem := vfstest.Memory(t)                           // the in-memory service, held to RFC 17 §8's suite
+	svc := vfstest.Faults(mem)                         // passes through until told to fail
+	h := &v3.Handlers{svc: svc}                        // what nfs.New would build (§4.7)
+	fh := mkfile(t, mem, "f")
+	rep := runGolden(t, h.OpTable(), "write3-4k.call") // golden request bytes through the row: 4 KiB at 8192, FILE_SYNC
 	assertGolden(t, rep, "write3-4k.reply")
+	assertContent(t, mem, fh, 8192, data4k)            // the offset reached the service whole
+	assertOneMutation(t, mem)                          // mem's own record: one mutating call
 
-	svc.Expect("Write").Return(vfs.WriteResult{}, vfs.ErrShareViolation)
+	svc.Fail("Write", vfs.ErrShareViolation)           // the next Write fails
 	rep = runGolden(t, h.OpTable(), "write3-4k.call")
-	assertStatus(t, rep, NFS3ERR_ACCES)               // the table's row, not a guess
+	assertStatus(t, rep, NFS3ERR_ACCES)                // the table's row, not a guess
 }
 ```
 
@@ -3063,7 +3398,7 @@ end-to-end benchmark.
 | A13 | Every wire divergence from the reference server that survives normalisation is a red run or a recorded entry citing a protocol RFC rule. |
 | A14 | Nagle's algorithm is off on every connection, and the socket buffers are left to the kernel. |
 | A15 | No handler checks a precondition its operation-table row carries. |
-| A16 | An adapter reaches the service only through the `Deps.Service` it was built with; nothing looks the service up while serving. |
+| A16 | An adapter reaches the service only through the `Deps.VFS` it was built with; nothing looks the service up while serving. |
 | A17 | A version or dialect selects a table; no handler branches on the version to decide which service call to make. |
 | A18 | A pooled buffer returns to its pool, with its reservation, only at its last borrower's release; an idle node's pools hold zero reserved bytes. |
 | A19 | A sidecar reaches no service and holds no client state, runs only while one of its adapters serves, and its failure fails neither an adapter nor readiness. |
@@ -3246,7 +3581,7 @@ which.
 | §3.2 | the client registry fed by `core` | each adapter writes the control plane's client table from its connection loop — **replace** with `Connections()` (§3.4) |
 | §4.2 | operations switched off by a setting, answered as absent | an NFS per-adapter block list, checked in the dispatchers — **replace** |
 | §5.5 | TLS below the pipeline | NFS over TLS with opportunistic and required modes, mutual TLS and certificate reload — **keep**, through `Conn.StartTLS` |
-| §7 | the recording service and the null service | shared fixtures in `internal/adapter/testruntime` build real stores — **replace**; the fixture is where the recording service starts |
+| §7 | the in-memory service, its fault wrapper and the null service | shared fixtures in `internal/adapter/testruntime` build real stores — **replace**; the fixture is where the in-memory service starts |
 | §4.10 | no pseudo-filesystem and no entry gate in the adapter | the NFSv4 adapter builds the pseudo-filesystem itself (`v4/pseudofs`, about 900 lines, used from 33 files) and gates share entry at `PUTFH` and a junction-crossing `LOOKUP` (`shareEntryStatus`), which checks share state and netgroups but not the flavour policy, so `LOCK`, `LOCKT`, `LOCKU` reach a Kerberos-only share over AUTH_SYS — **delete** both; the service's per-call admission covers every path |
 | §4.1 | one pipeline | two dispatch stacks with nothing shared above the socket; the connection loops are near-identical copies |
 | §4.2 | precondition columns | SMB's table carries needs-session and needs-tree; NFSv4 looks operations up in three per-version maps with a per-share block list; NFSv3 gates in its dispatcher |
@@ -3262,7 +3597,7 @@ which.
 | §6.10 | codec and pipeline allocation gates against a null service | no allocation assertion in adapter tests; no null service |
 | §6.1, §6.3 | flow control is the protocol's | one goroutine per connection and one per request, bounded by a per-connection cap of 100 for both protocols; slots (64) and credits exist; no node-wide in-flight bound |
 | §6.7 | TCP options | Nagle off and keepalive at Go's 15 s default already; no probe count or `TCP_USER_TIMEOUT` set; socket buffers untouched |
-| §7.2 | handlers against a recording service | handler tests run on real in-memory stores and engines; four fakes in total |
+| §7.2 | handlers against a verified in-memory service, faults injected | handler tests run on real in-memory stores and engines; four fakes in total |
 | §8 | differential wire tests | a capture corpus with a normaliser exists for Kerberos, LDAP, NFSv4 ACLs and SMB security descriptors only; standard suites run nightly; the interop playbook is manual |
 | RFC 21 §2.2 | every NFS-family program over TCP only | NFS itself is TCP only, but MOUNT, NLM and NSM are also served over UDP |
 
