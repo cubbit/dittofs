@@ -1223,7 +1223,8 @@ alert in §4.8 treats them differently, which is the main defence against anothe
   `dt run --place dedicated`;
 - **infrastructure:** `cloud:<provider>` (credentials and provisioned infrastructure), and
   `service:<name>` for the services `dt services` starts (`s3`, the S3-compatible
-  service container of §4.11, `postgres`, `kmip`).
+  service container of §4.11, `postgres`, `kmip`). The rename from `localstack` is code work
+  still to do: `test/suites.yaml` and `dt services` still name `localstack`.
 
 `dt doctor` reports which are met. For an unmet need, `dt run` either moves the whole run to the
 `dtc` container (when it provides it and `--in` allows, §4.4), or reports the suite as not run, with the reason. It is
@@ -1944,6 +1945,12 @@ double, and no other:
    delays, tears or crashes on cue. An error answer a test needs is given this way, by a fault
    wrapper, not by a stub.
 
+Three things are not doubles at all. A sink that only keeps what the code under test delivered
+is an output and needs no conformance suite, and a count that is itself the requirement (one
+query per key, at most one call per second) is an output too, read from a metric or from the
+kind 2's own record, never from a counting wrapper. A per-OS table is data, tested by its
+contents, and a tunable such as a sampling rate is an input passed through the constructor.
+
 A deterministic simulation is built from these three, so it is allowed. Not allowed: a canned
 stub written for one test; a recording or counting fake used to check which calls were made; a
 double that no conformance suite holds to the real one; swapping a package-level variable.
@@ -1951,8 +1958,8 @@ double that no conformance suite holds to the real one; swapping a package-level
 **External systems** (a KDC, a domain controller, an LDAP directory, S3) are tested for real in
 `integration`, and their parsing and logic are pure functions with unit tests. A stand-in runs
 in `unit` only as a kind 2, whose conformance suite also runs against the real system in
-`integration`. The S3 the suites use is an S3-compatible service in a container (RustFS, MinIO
-or SeaweedFS; not yet chosen).
+`integration`. The S3 the suites use is an S3-compatible service in a container, which product
+is still open (§9).
 
 ## 5. What this doesn't change
 
@@ -2224,6 +2231,9 @@ Settled before revision 4:
   since those runners can't run the S3 service container, which `badger-s3` needs.
 - Where the test tools come from: `flake.lock`, built with Nix on Linux as today (§4.5).
 - The scenario lock: `setup.sh` owns it and exits 75, since #3018 (§4.6).
+
+Still open:
+- Which S3-compatible service the `s3` container runs (§4.11): RustFS, MinIO or SeaweedFS.
 
 ## Appendix A. What was checked
 
