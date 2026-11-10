@@ -15,11 +15,13 @@ import (
 //
 // The claim is not made here: an appending call claims the file at its
 // publish, where the index's WriteRetain re-checks the tag and claims the
-// untagged entry in the same update that notes the record. The check below
-// and that claim run under the file's append domain — a call holds it from
-// before its check until its publish returns — so checking a file's tag and
-// claiming it are one step: two first writes of one new FileID through two
-// handles cannot both find the file untagged. A call refused between the two
+// untagged entry in the same update that notes the record. The second check,
+// in appendAndPublish, and that claim run under the file's append domain — a
+// call holds it from before that check until its publish returns — so
+// checking a file's tag and claiming it are one step: two first writes of one
+// new FileID through two handles cannot both find the file untagged. The
+// first check, before the domain, is the cheaper refusal that answers without
+// queueing behind a writer already holding it. A call refused at either
 // claims nothing, for the refusal precedes its draw and its record.
 //
 // decision: the tag is checked per file, not per extent. A file belongs to
