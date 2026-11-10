@@ -67,8 +67,9 @@ type window struct {
 	// none of its own. It is also set by a Corrupt that answered the window's
 	// failure, so a second Corrupt of the window does not raise again, and it
 	// stays set until the next batch is settled. Each batch raises for the
-	// failures it answers whatever it finds set. A read-only journal raises once for its entry instead
-	// (raiseOnce), whatever the window says, so both can land for one window
+	// failures it answers whatever it finds set. A read-only journal raises
+	// once for its entry instead (raiseOnce), whatever the window says, so
+	// both can land for one window
 	// there: a spare raise, an extra one and never a missing one, which only
 	// makes a client resend. Overturned if that costs something; takeCorrupt
 	// would then call the entry's raiseOnce when Admit() != nil to share one

@@ -58,6 +58,8 @@ type lostRecord struct {
 // Overturned by a journal that keeps a second device it can still append to,
 // or by failed removals seen to survive a restart, which would record them in
 // the metadata store.
+// A held record's failed end place is dropped here although its held copy may
+// verify; the decision on settlePlaced (holds.go) states the ceiling.
 func (d *Durability) failReadOnly(st *stream) {
 	ro := d.Admit()
 	if ro == nil {

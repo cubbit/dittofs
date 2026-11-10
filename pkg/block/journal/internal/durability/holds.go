@@ -366,10 +366,10 @@ func (d *Durability) retryHold(st *stream, set *segment.Set, seg core.SegmentID)
 // lock held, and stays held with the place it was appended at until that
 // place completes. A re-append that fails, or one not made because the
 // journal turned read-only meanwhile, leaves the record held for the next
-// pass. A record already re-appended
-// leaves the hold once its new place has completed (followed through any
-// later re-append of a window of its own), and is re-appended again if a read
-// has repointed the index back to the copy since.
+// pass. A record already re-appended leaves the hold once its new place has
+// completed (followed through any later re-append of a window of its own),
+// and is re-appended again if a read has repointed the index back to the copy
+// since.
 //
 // The hold lasts until the new place completes, not until its append, because
 // a held record was acknowledged at the place found corrupt: the copy is the
@@ -476,18 +476,20 @@ func (d *Durability) unplace(st *stream, seg core.SegmentID, h *segHold, c owned
 // while that place is pending. The caller holds c.File's append domain.
 //
 // decision: a record whose last place was lost also leaves the hold. That
-// place is lost only when its window's re-read did not verify, the read-only
-// pass failed it, or a read found it corrupt with no copy verifying, and each
-// of those has already dropped the record's extents from the index and
-// reported it lost, its loss record excluding every copy of its sequence
-// number at recovery, so the copy keeps nothing a release could cost. The ceiling is that the drop itself is the
+// place is lost only when its window's re-read did not verify or a read found
+// it corrupt with no copy verifying, and each of those has already dropped the
+// record's extents from the index and reported it lost, its loss record
+// excluding every copy of its sequence number at recovery, so the copy keeps
+// nothing a release could cost. The ceiling is that the drop itself is the
 // loss of an acknowledged record whose held copy may still verify: the
 // failure path fails the new place without asking whether a hold backs it.
-// A read-only journal never reaches here, as its step does nothing, so there
-// the copy's segment stays claimed for a record already dropped until the
-// journal closes. Overturned by a ruling that such a record must survive,
-// which needs the failure path to repoint the index back to the held copy
-// instead of dropping and reporting it.
+// A read-only journal never reaches here, as its step returns early and the
+// mode is never left: there the new place stays held and claimed, and
+// failReadOnly still drops its extents and publishes an event although the
+// held copy may verify. No loss record is written, so a restart replays the
+// copy and recovery brings the record back. Overturned by a ruling that such
+// a record must survive, which needs the failure path to repoint the index
+// back to the held copy instead of dropping it.
 func (d *Durability) settlePlaced(st *stream, seg core.SegmentID, h *segHold, c ownedCopy, placed segment.Location) {
 	st.mu.Lock()
 	last := st.followLocked(placed)

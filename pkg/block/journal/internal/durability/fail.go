@@ -32,6 +32,8 @@ func isLoss(w segment.Written) bool { return w.Kind == format.KindLoss }
 // records are appended with no domain held: an append may roll, seal and sync,
 // and a read of the file must not wait on it. st.mu is never held across a
 // call into the index or the domains.
+// A held record's failed end place is dropped here although its held copy may
+// verify; the decision on settlePlaced (holds.go) states the ceiling.
 func (d *Durability) failEntries(st *stream, w *window, content []entry) {
 	if len(content) == 0 {
 		// Nothing to drop and no generation to raise.
