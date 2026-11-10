@@ -6,61 +6,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
-	"github.com/cubbit/dittofs/internal/adapter/testruntime"
+	"github.com/cubbit/dittofs/internal/controlplane/runtimetest"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 	"github.com/cubbit/dittofs/pkg/controlplane/store"
-	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata"
 
 	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
-
-// mockAdapter implements runtime.ProtocolAdapter for testing
-type mockAdapter struct {
-	protocol string
-	port     int
-	ready    chan struct{}
-}
-
-func newMockAdapter(protocol string, port int) *mockAdapter {
-	return &mockAdapter{protocol: protocol, port: port, ready: make(chan struct{})}
-}
-
-func (m *mockAdapter) Serve(ctx context.Context) error {
-	close(m.ready)
-	<-ctx.Done()
-	return ctx.Err()
-}
-
-func (m *mockAdapter) Stop(ctx context.Context) error {
-	return nil
-}
-
-func (m *mockAdapter) Protocol() string {
-	return m.protocol
-}
-
-func (m *mockAdapter) Port() int {
-	return m.port
-}
-
-// ListenerReady reports the mock as bound as soon as Serve runs: it has no
-// real socket, so there is nothing to wait for beyond the goroutine starting.
-func (m *mockAdapter) ListenerReady() <-chan struct{} {
-	return m.ready
-}
-
-// Healthcheck satisfies the [adapters.ProtocolAdapter] interface. The mock has
-// no real lifecycle state, so it always reports healthy with the current
-// timestamp; tests that need richer behaviour should use a dedicated fake.
-func (m *mockAdapter) Healthcheck(_ context.Context) health.Report {
-	return health.Report{
-		Status:    health.StatusHealthy,
-		CheckedAt: time.Now().UTC(),
-	}
-}
 
 func TestLiveness_ReturnsOK(t *testing.T) {
 	handler := NewHealthHandler(nil)
@@ -238,9 +191,9 @@ func TestReadiness_NoShares_ReturnsOK(t *testing.T) {
 	}
 }
 
-func TestReadiness_WithSharesNoAdapters_ReturnsOK(t *testing.T) {
+func TestReadiness_WithShares_ReturnsOK(t *testing.T) {
 	ctx := context.Background()
-	reg, bsID := testruntime.NewWithShareStore(t)
+	reg, bsID := runtimetest.NewWithShareStore(t)
 
 	// Register metadata store
 	metaStore := badgertest.NewInMemory(t)
@@ -265,8 +218,6 @@ func TestReadiness_WithSharesNoAdapters_ReturnsOK(t *testing.T) {
 
 	handler.Readiness(w, req)
 
-	// Readiness returns OK if registry is initialized, even without adapters
-	// This allows Kubernetes pods to become ready before adapters start
 	if w.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
 	}
@@ -288,74 +239,5 @@ func TestReadiness_WithSharesNoAdapters_ReturnsOK(t *testing.T) {
 
 	if data["shares"].(float64) != 1 {
 		t.Errorf("Expected 1 share, got %v", data["shares"])
-	}
-}
-
-func TestReadiness_WithSharesAndAdapters_ReturnsOK(t *testing.T) {
-	ctx := context.Background()
-	reg, bsID := testruntime.NewWithShareStore(t)
-
-	// Register metadata store
-	metaStore := badgertest.NewInMemory(t)
-	if err := reg.RegisterMetadataStore("test-meta", metaStore); err != nil {
-		t.Fatalf("Failed to register metadata store: %v", err)
-	}
-
-	// Add a share
-	shareConfig := &runtime.ShareConfig{
-		Name:          "/test",
-		MetadataStore: "test-meta",
-		BlockStoreID:  bsID,
-		RootAttr:      &metadata.FileAttr{},
-	}
-	if err := reg.AddShare(ctx, shareConfig); err != nil {
-		t.Fatalf("Failed to add share: %v", err)
-	}
-
-	// Add a mock adapter
-	adapter := newMockAdapter("test", 12345)
-	if err := reg.AddAdapter(adapter); err != nil {
-		t.Fatalf("Failed to add adapter: %v", err)
-	}
-	defer func() {
-		_ = reg.StopAllAdapters()
-	}()
-
-	handler := NewHealthHandler(reg)
-	req := httptest.NewRequest("GET", "/health/ready", nil)
-	w := httptest.NewRecorder()
-
-	handler.Readiness(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
-	}
-
-	var resp Response
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("Failed to decode response: %v", err)
-	}
-
-	if resp.Status != "healthy" {
-		t.Errorf("Expected status 'healthy', got '%s'", resp.Status)
-	}
-
-	data, ok := resp.Data.(map[string]interface{})
-	if !ok {
-		t.Fatalf("Expected Data to be a map, got %T", resp.Data)
-	}
-
-	if data["shares"].(float64) != 1 {
-		t.Errorf("Expected 1 share, got %v", data["shares"])
-	}
-
-	// Check adapter info in response
-	adapters, ok := data["adapters"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("Expected adapters to be a map, got %T", data["adapters"])
-	}
-
-	if adapters["running"].(float64) != 1 {
-		t.Errorf("Expected 1 running adapter, got %v", adapters["running"])
 	}
 }

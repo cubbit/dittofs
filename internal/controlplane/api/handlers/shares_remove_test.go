@@ -13,7 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/cubbit/dittofs/internal/adapter/testruntime"
+	"github.com/cubbit/dittofs/internal/controlplane/runtimetest"
 	"github.com/cubbit/dittofs/pkg/controlplane/models"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
@@ -113,7 +113,7 @@ func newShareServer(t *testing.T) *shareServer {
 	t.Cleanup(func() { _ = md.Close() })
 
 	rtStore := &gatedStore{Store: cp}
-	rt := testruntime.New(t, rtStore)
+	rt := runtimetest.New(t, rtStore)
 	// A journal root of its own, so the tests can look under it.
 	journal := t.TempDir()
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{JournalRoot: journal})

@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/auth/netlogon"
@@ -14,8 +12,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/block"
 	"github.com/cubbit/dittofs/pkg/controlplane/models"
-	"github.com/cubbit/dittofs/pkg/controlplane/runtime/adapters"
-	"github.com/cubbit/dittofs/pkg/controlplane/runtime/identity"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime/lifecycle"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime/snapshotsched"
@@ -30,30 +26,6 @@ import (
 
 // DefaultShutdownTimeout is the default timeout for graceful shutdown.
 const DefaultShutdownTimeout = lifecycle.DefaultShutdownTimeout
-
-// Type aliases re-exported for backward compatibility.
-type (
-	ProtocolAdapter = adapters.ProtocolAdapter
-	RuntimeSetter   = adapters.RuntimeSetter
-	AdapterFactory  = adapters.AdapterFactory
-	AuxiliaryServer = lifecycle.AuxiliaryServer
-)
-
-type shareIdentityProvider struct {
-	sharesSvc *shares.Service
-}
-
-func (p *shareIdentityProvider) GetShareIdentityInfo(shareName string) (*identity.ShareInfo, error) {
-	share, err := p.sharesSvc.GetShare(shareName)
-	if err != nil {
-		return nil, err
-	}
-	return &identity.ShareInfo{
-		Squash:       share.Squash,
-		AnonymousUID: share.AnonymousUID,
-		AnonymousGID: share.AnonymousGID,
-	}, nil
-}
 
 // keyedMutex is a lazily-populated registry of per-key locks. The same key
 // always yields the same pointer, so independent callers that look a key up
@@ -78,9 +50,8 @@ func (k *keyedMutex[M]) get(key string) *M {
 	return l
 }
 
-// Runtime manages all runtime state for shares and protocol adapters.
-// It composes sub-services for adapters, stores, shares, mounts,
-// lifecycle, and identity mapping.
+// Runtime manages all runtime state for shares.
+// It composes sub-services for stores, shares and lifecycle.
 type Runtime struct {
 	mu    sync.RWMutex
 	store store.Store
@@ -93,20 +64,9 @@ type Runtime struct {
 
 	metadataService *metadata.Service
 
-	// netgroupDecisions memoizes recent netgroup allow/deny verdicts keyed by
-	// netgroup and client IP, so a protocol with no mount step does not query the
-	// netgroup store on every request. Entries expire after netgroupDecisionTTL
-	// and expired ones are swept on insert.
-	netgroupDecisionsMu sync.Mutex
-	netgroupDecisions   map[string]netgroupDecision
-
-	adaptersSvc    *adapters.Service
-	storesSvc      *stores.Service
-	sharesSvc      *shares.Service
-	lifecycleSvc   *lifecycle.Service
-	identitySvc    *identity.Service
-	mountTracker   *MountTracker
-	clientRegistry *ClientRegistry
+	storesSvc    *stores.Service
+	sharesSvc    *shares.Service
+	lifecycleSvc *lifecycle.Service
 
 	// skippedShares maps a share name to the reason it is not being served.
 	// A share that exists in the control-plane store but whose runtime setup
@@ -129,10 +89,8 @@ type Runtime struct {
 	// clean bill of health. Guarded by mu.
 	shareIntegrity map[string]*health.IntegrityStatus
 
-	// metrics is the Prometheus metrics handle, set at startup. It is the
-	// carrier for inline adapter instruments (RED, connection, auth counters):
-	// adapters reach it via Runtime so no per-adapter plumbing is needed. May
-	// be nil; all metrics.Metrics Record* methods are nil-safe.
+	// metrics is the Prometheus metrics handle, set at startup. May be nil;
+	// all metrics.Metrics Record* methods are nil-safe.
 	metrics *metrics.Metrics
 
 	// trashSvc is the recycle-bin service (list/restore/empty + reaper),
@@ -152,15 +110,6 @@ type Runtime struct {
 	localStoreDefaults *shares.LocalStoreDefaults
 	gcDefaults         *GCDefaults
 	gcReg              *gcRegistry
-	settingsWatcher    *SettingsWatcher
-
-	adapterProviders   map[string]any
-	adapterProvidersMu sync.RWMutex
-	// oplockBreaker mirrors the "oplock_breaker" adapter provider for the NFS
-	// read/write hot path: every op checks it, but it is set at most once (when
-	// SMB registers). An atomic load replaces the RWMutex+map lookup, so the
-	// common no-SMB case is a single nil-check instead of a locked map access.
-	oplockBreaker atomic.Value
 
 	// snapDeleteLocks is the shared registry of per-share RWMutexes that
 	// serialize the snapshot GC mark phase (HeldHashes, RLock) against
@@ -192,14 +141,6 @@ type Runtime struct {
 	runtimeCtx    context.Context
 	runtimeCancel context.CancelFunc
 
-	identityChangeCallbacks callbackList
-
-	// identityProviderChangeCallbacks fire when an identity provider's
-	// configuration (LDAP/Kerberos) is changed via the API. Adapters register a
-	// closure that rebuilds and re-injects their identity resolver so a new
-	// directory config takes effect without a restart.
-	identityProviderChangeCallbacks callbackList
-
 	// ldapConfig is the optional LDAP/AD identity provider configuration set at
 	// startup from the server config. When present and Enabled, BuildIdentityResolver
 	// registers an LDAP provider in the identity resolution chain. Guarded by mu.
@@ -210,34 +151,30 @@ type Runtime struct {
 	// Kerberos could satisfy. Set at startup by SetKerberosEnabled. Guarded by mu.
 	kerberosEnabled bool
 
-	// netlogonCredential is the optional NETLOGON machine credential / DC binding
-	// used for SMB NTLM pass-through. Set at startup from the Kerberos
-	// machine-account config and updated by the identity-provider API; nil when
-	// passthrough is disabled. The SMB adapter reads it from its
-	// OnIdentityProviderConfigChange callback to hot-reload the secure channel
-	// without a restart (#1325). Guarded by mu.
-	netlogonCredential *netlogon.MachineCredential
+	// netlogonController is the NETLOGON machine-account controller the admin
+	// API reports on and rotates through; nil when passthrough is not
+	// configured. Guarded by mu.
+	netlogonController *netlogon.Controller
+
+	// openFiles are the sources of open handles the open-handle hold consults.
+	// See SetOpenFileEnumerators. Guarded by mu.
+	openFiles []OpenFileEnumerator
 
 	// statusCheckers is the lazy per-entity cached health-checker
 	// map backing [Runtime.BlockStoreChecker],
-	// [Runtime.MetadataStoreChecker], [Runtime.AdapterChecker], and
-	// [Runtime.ShareChecker]. Initialized in [New].
+	// [Runtime.MetadataStoreChecker], and [Runtime.ShareChecker]. Initialized in [New].
 	statusCheckers *checkerCache
 }
 
 func New(s store.Store) *Runtime {
 	rt := &Runtime{
-		store:            s,
-		metadataService:  metadata.New(),
-		mountTracker:     NewMountTracker(),
-		clientRegistry:   NewClientRegistry(),
-		adapterProviders: make(map[string]any),
-		storesSvc:        stores.New(),
-		sharesSvc:        shares.New(),
-		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),
-		identitySvc:      identity.New(),
-		statusCheckers:   newCheckerCache(StatusCacheTTL),
-		gcReg:            newGCRegistry(),
+		store:           s,
+		metadataService: metadata.New(),
+		storesSvc:       stores.New(),
+		sharesSvc:       shares.New(),
+		lifecycleSvc:    lifecycle.New(DefaultShutdownTimeout),
+		statusCheckers:  newCheckerCache(StatusCacheTTL),
+		gcReg:           newGCRegistry(),
 	}
 
 	// Long-lived ctx for snapshot orchestration goroutines.
@@ -265,27 +202,13 @@ func New(s store.Store) *Runtime {
 		rt.metadataService.SetQuotaGracePersister(&quotaGracePersister{rt: rt})
 	}
 
-	rt.adaptersSvc = adapters.New(s, DefaultShutdownTimeout)
-	rt.adaptersSvc.SetRuntime(rt)
-
-	if s != nil {
-		rt.settingsWatcher = NewSettingsWatcher(s, DefaultPollInterval)
-	}
-
 	return rt
-}
-
-// --- Adapter Management (delegated to adapters.Service) ---
-
-func (r *Runtime) SetAdapterFactory(factory AdapterFactory) {
-	r.adaptersSvc.SetAdapterFactory(factory)
 }
 
 func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 	if d == 0 {
 		d = DefaultShutdownTimeout
 	}
-	r.adaptersSvc.SetShutdownTimeout(d)
 	r.lifecycleSvc.SetShutdownTimeout(d)
 }
 
@@ -328,47 +251,6 @@ func (r *Runtime) StopBackgroundWorkers() {
 	if r.gcReg != nil {
 		r.gcReg.stopActive(startupDrainTimeout)
 	}
-}
-
-func (r *Runtime) CreateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
-	return r.adaptersSvc.CreateAdapter(ctx, cfg)
-}
-
-func (r *Runtime) DeleteAdapter(ctx context.Context, adapterType string) error {
-	return r.adaptersSvc.DeleteAdapter(ctx, adapterType)
-}
-
-func (r *Runtime) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
-	return r.adaptersSvc.UpdateAdapter(ctx, cfg)
-}
-
-func (r *Runtime) EnableAdapter(ctx context.Context, adapterType string) error {
-	return r.adaptersSvc.EnableAdapter(ctx, adapterType)
-}
-
-func (r *Runtime) DisableAdapter(ctx context.Context, adapterType string) error {
-	return r.adaptersSvc.DisableAdapter(ctx, adapterType)
-}
-
-func (r *Runtime) StopAllAdapters() error {
-	return r.adaptersSvc.StopAllAdapters()
-}
-
-func (r *Runtime) LoadAdaptersFromStore(ctx context.Context) error {
-	return r.adaptersSvc.LoadAdaptersFromStore(ctx)
-}
-
-func (r *Runtime) ListRunningAdapters() []string {
-	return r.adaptersSvc.ListRunningAdapters()
-}
-
-func (r *Runtime) IsAdapterRunning(adapterType string) bool {
-	return r.adaptersSvc.IsAdapterRunning(adapterType)
-}
-
-// AddAdapter directly starts a pre-created adapter (for testing, bypasses store).
-func (r *Runtime) AddAdapter(adapter ProtocolAdapter) error {
-	return r.adaptersSvc.AddAdapter(adapter)
 }
 
 // --- Metadata Store Management (delegated to stores.Service) ---
@@ -561,11 +443,9 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	if err := r.ReconcileShareRootACL(ctx, config.Name); err != nil {
 		logger.Warn("failed to reconcile share root ACL", "share", config.Name, "error", err)
 	}
-	// A share created under a name that was just removed can find trees left
-	// over from the old one: the sweep a removal fires cannot re-resolve a tree
-	// whose share is gone, so it leaves it carrying the removed share's
-	// permission. Re-resolve them now that the name resolves again. Independent
-	// of the reconcile above, which is a projection and can fail.
+	// A share created under a name that was just removed is a permission change
+	// for that name, so the auth-cache event is raised. Independent of the
+	// reconcile above, which is a projection and can fail.
 	r.InvalidateAuthCache()
 	return nil
 }
@@ -722,8 +602,7 @@ func (r *Runtime) SetShareTrashConfig(name string, cfg shares.TrashSettings) err
 }
 
 // SetShareNetgroup updates the live netgroup association for a share's NFS
-// export. An empty netgroupName clears the association (allow-all). Takes
-// effect immediately for subsequent CheckNetgroupAccess calls.
+// export. An empty netgroupName clears the association (allow-all).
 func (r *Runtime) SetShareNetgroup(name, netgroupName string) error {
 	return r.sharesSvc.SetShareNetgroup(name, netgroupName)
 }
@@ -780,19 +659,30 @@ func (r *Runtime) ShareExists(name string) bool {
 	return r.sharesSvc.ShareExists(name)
 }
 
+// OnShareChange registers a callback fired with the share list whenever it
+// changes. Returns an unsubscribe function.
+//
+// decision: nothing on this server subscribes but runtimetest's cleanup,
+// because no protocol is served. The event stays for the v2 components that
+// will subscribe; delete it if none does by the cutover.
 func (r *Runtime) OnShareChange(callback func(shares []string)) func() {
 	return r.sharesSvc.OnShareChange(callback)
 }
 
 // OnAuthCacheInvalidate registers a callback fired when a share's permission
-// state changes (grant/revoke, default-permission, squash), so protocol adapters
-// can drop cached per-identity authorization. Returns an unsubscribe function.
+// state changes (grant/revoke, default-permission, squash). Returns an
+// unsubscribe function.
+//
+// decision: nothing on this server subscribes, because no protocol is served
+// and nothing caches a per-identity permission, so every raise fires into an
+// empty list. The event stays for the v2 components that may subscribe;
+// delete it, with its raise sites, if none does by the cutover.
 func (r *Runtime) OnAuthCacheInvalidate(callback func()) func() {
 	return r.sharesSvc.OnAuthCacheInvalidate(callback)
 }
 
-// InvalidateAuthCache notifies registered adapters to drop cached authorization
-// and re-decide what they resolved once. Raised by whatever changed who may
+// InvalidateAuthCache fires the callbacks registered with
+// OnAuthCacheInvalidate. Raised by whatever changed who may
 // access a share — a grant write, a share-level policy change, an identity
 // mapping — never by the root-ACL projection, which can fail without the
 // authority behind it having failed.
@@ -841,7 +731,7 @@ func (r *Runtime) GetShareUsage(ctx context.Context, shareName string) (usedByte
 
 // --- Lifecycle (delegated to lifecycle.Service) ---
 
-func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
+func (r *Runtime) SetAPIServer(server lifecycle.AuxiliaryServer) {
 	r.lifecycleSvc.SetAPIServer(server)
 }
 
@@ -868,10 +758,7 @@ func (r *Runtime) Metrics() *metrics.Metrics {
 var startupDrainTimeout = 10 * time.Second
 
 func (r *Runtime) Serve(ctx context.Context) error {
-	r.clientRegistry.StartSweeper(ctx)
-
-	// Launch the recycle-bin reaper alongside the client sweeper. Like the
-	// sweeper it exits on ctx cancellation, and on the Stop the lifecycle
+	// Launch the recycle-bin reaper. It exits on ctx cancellation, and on the Stop the lifecycle
 	// shutdown issues — which is what reaches it when that ctx is still live.
 	r.Trash().Start(ctx)
 
@@ -904,8 +791,6 @@ func (r *Runtime) Serve(ctx context.Context) error {
 	}
 
 	err := r.lifecycleSvc.Serve(ctx, lifecycle.Deps{
-		Settings:         r.settingsWatcher,
-		AdapterLoader:    r.adaptersSvc,
 		MetadataFlusher:  r.metadataService,
 		StoreCloser:      r.storesSvc,
 		MachineSIDStore:  r.store,
@@ -954,44 +839,6 @@ func (r *Runtime) drainStartupWorkers(ctx context.Context) {
 	// the lifecycle drain makes, and idempotent, so running both costs nothing.
 	r.StopBackgroundWorkers()
 
-	// The settings watcher is started before the adapter load that is the
-	// likeliest startup failure, and it polls the same store on a timer. Stop
-	// waits for a poll already in flight, which is what makes it a join — but it
-	// takes no context, and on a startup error the context that poll is running
-	// under is still live, so a store call that hangs would hang this join and
-	// with it the process. Bounded like the scheduler's, and it says which of
-	// the two happened.
-	//
-	// decision: this join gets its own budget rather than sharing one window
-	// with the snapshot drain below. A single window covering both is spent by
-	// whichever join hangs first, and the second one then receives an
-	// already-expired context and returns without waiting at all — so the
-	// hardest failure would silently skip the drain this path exists to
-	// perform. The cost is that a boot failing with both workers wedged takes
-	// two windows to give up instead of one. Withdraw the split if the
-	// failed-boot path ever needs a hard ceiling on total time.
-	if r.settingsWatcher != nil {
-		watchCtx, cancelWatch := context.WithTimeout(parent, startupDrainTimeout)
-		stopped := make(chan struct{})
-		go func() {
-			defer close(stopped)
-			r.settingsWatcher.Stop()
-		}()
-		select {
-		case <-stopped:
-		// decision: the failed-start drain gives up here rather than waiting
-		// out a poll that is not returning. The boot is already being abandoned,
-		// and an unbounded wait would leave a process that cannot exit — which
-		// is worse than a query that finds the store closed under it. Same
-		// condition as the other two: withdraw the bound if a poll ever performs
-		// a write whose partial application outlives the process.
-		case <-watchCtx.Done():
-			logger.Warn("startup drain: settings watcher was not joined before the store closes; " +
-				"a poll may still be running against it")
-		}
-		cancelWatch()
-	}
-
 	snapCtx, cancelSnap := context.WithTimeout(parent, startupDrainTimeout)
 	defer cancelSnap()
 	r.shutdownSnapshots(snapCtx)
@@ -1000,88 +847,11 @@ func (r *Runtime) drainStartupWorkers(ctx context.Context) {
 // ShutdownSnapshots exposes shutdownSnapshots for the lifecycle.Service
 // shutdown sequence so the normal server path (signal -> ctx cancel ->
 // lifecycle.shutdown) drains in-flight snapshot goroutines BEFORE
-// StopAllAdapters / CloseMetadataStores. It exists to satisfy
+// CloseMetadataStores. It exists to satisfy
 // lifecycle.SnapshotDrainer without exporting internal lifecycle details, and
 // a test that has finished with a runtime is its only other caller.
 func (r *Runtime) ShutdownSnapshots(ctx context.Context) {
 	r.shutdownSnapshots(ctx)
-}
-
-// --- Identity Mapping (delegated to identity.Service) ---
-
-func (r *Runtime) ApplyIdentityMapping(shareName string, ident *metadata.Identity) (*metadata.Identity, error) {
-	return r.identitySvc.ApplyIdentityMapping(shareName, ident, &shareIdentityProvider{sharesSvc: r.sharesSvc})
-}
-
-// --- Client Tracking (delegated to ClientRegistry) ---
-
-// Clients returns the client registry for protocol client tracking.
-func (r *Runtime) Clients() *ClientRegistry {
-	return r.clientRegistry
-}
-
-// --- Mount Tracking (delegated to MountTracker) ---
-
-func (r *Runtime) Mounts() *MountTracker {
-	return r.mountTracker
-}
-
-func (r *Runtime) RecordMount(clientAddr, shareName string, mountTime int64) {
-	r.mountTracker.Record(clientAddr, "nfs", shareName, mountTime)
-}
-
-// RemoveMount drops the NFS mount record for one client and one export.
-func (r *Runtime) RemoveMount(clientAddr, shareName string) bool {
-	return r.mountTracker.Remove(clientAddr, "nfs", shareName)
-}
-
-// RemoveAllMounts drops every NFS mount record held by one client and returns
-// how many went away; other clients and the client's own SMB records stay.
-func (r *Runtime) RemoveAllMounts(clientAddr string) int {
-	return r.mountTracker.RemoveByClient(clientAddr, "nfs")
-}
-
-// ListMounts converts unified mount records to the legacy NFS format.
-func (r *Runtime) ListMounts() []*LegacyMountInfo {
-	unified := r.mountTracker.List()
-	result := make([]*LegacyMountInfo, 0, len(unified))
-	for _, m := range unified {
-		ts, ok := m.AdapterData.(int64)
-		if !ok {
-			ts = m.MountedAt.Unix()
-		}
-		result = append(result, &LegacyMountInfo{
-			ClientAddr: m.ClientAddr,
-			ShareName:  m.ShareName,
-			MountTime:  ts,
-		})
-	}
-	return result
-}
-
-// --- Client Management ---
-
-// DisconnectClient performs protocol-specific teardown for a client.
-// It looks up the client record, finds the adapter by protocol, closes the
-// TCP connection (triggering cleanup chain), then deregisters the client.
-// Returns the removed ClientRecord or nil if not found.
-func (r *Runtime) DisconnectClient(clientID string) *ClientRecord {
-	record := r.clientRegistry.Get(clientID)
-	if record == nil {
-		return nil
-	}
-
-	// Force-close the TCP connection — this triggers handleConnectionClose()
-	// which handles protocol-specific cleanup (NFS state revocation, SMB LOGOFF).
-	r.adaptersSvc.ForceCloseClientConnection(record.Protocol, record.Address)
-
-	// Best-effort deregister — cleanup chain may have already removed it.
-	r.clientRegistry.Deregister(clientID)
-
-	// Return the snapshot taken before teardown to avoid TOCTOU: the client
-	// existed when we started, and we acted on it regardless of race with
-	// the cleanup chain.
-	return record
 }
 
 // --- Service Access ---
@@ -1266,190 +1036,32 @@ func (r *Runtime) ResolveDirectoryPrincipalSID(ctx context.Context, name string,
 	return provider.ResolvePrincipalSID(ctx, name, isGroup)
 }
 
-// SetNetlogonCredential sets the NETLOGON machine credential / DC binding used
-// for SMB NTLM pass-through. A nil value disables passthrough. It is set at
-// startup from the Kerberos machine-account config and updated by the
-// identity-provider API; the SMB adapter reads it on an
-// OnIdentityProviderConfigChange notification to hot-reload its secure channel.
-func (r *Runtime) SetNetlogonCredential(cred *netlogon.MachineCredential) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.netlogonCredential = cred
-}
-
-// NetlogonCredential returns the configured NETLOGON machine credential, or nil
-// when passthrough is disabled. The returned pointer is the live value; callers
-// must not mutate it.
-func (r *Runtime) NetlogonCredential() *netlogon.MachineCredential {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.netlogonCredential
-}
-
-// netlogonControllerKey is the adapter-provider key under which the NETLOGON
-// machine-account controller is registered (#1631).
-const netlogonControllerKey = "netlogon"
-
 // SetNetlogonController registers the NETLOGON machine-account controller so the
 // admin API (`netlogon status` / `netlogon rotate`) can introspect and rotate the
 // machine account on the running server. Set once at startup when passthrough is
 // configured; a nil-controller process simply never registers one.
 func (r *Runtime) SetNetlogonController(c *netlogon.Controller) {
-	r.SetAdapterProvider(netlogonControllerKey, c)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.netlogonController = c
 }
 
 // NetlogonController returns the registered NETLOGON machine-account controller,
 // or nil when passthrough is not configured on this server.
 func (r *Runtime) NetlogonController() *netlogon.Controller {
-	c, _ := r.GetAdapterProvider(netlogonControllerKey).(*netlogon.Controller)
-	return c
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.netlogonController
 }
 
-// callbackList is a subscribe/notify list of parameterless callbacks. The zero
-// value is ready to use. Unsubscribing nils the slot rather than removing it,
-// so indices handed to earlier subscribers stay valid; notify snapshots the
-// slice and fires outside the lock, so a callback may re-enter the list.
-type callbackList struct {
-	mu  sync.Mutex
-	fns []func()
-}
-
-// add registers fn and returns a function that unsubscribes it.
-func (c *callbackList) add(fn func()) func() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.fns = append(c.fns, fn)
-	idx := len(c.fns) - 1
-	return func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.fns[idx] = nil
-	}
-}
-
-// notify fires every registered callback.
-func (c *callbackList) notify() {
-	c.mu.Lock()
-	fns := slices.Clone(c.fns)
-	c.mu.Unlock()
-	for _, fn := range fns {
-		if fn != nil {
-			fn()
-		}
-	}
-}
-
-// OnIdentityMappingChange registers a callback invoked when identity mappings
-// are created or deleted via the API. Adapters use this to invalidate their
-// identity resolver caches. Returns an unsubscribe function.
-func (r *Runtime) OnIdentityMappingChange(fn func()) func() {
-	return r.identityChangeCallbacks.add(fn)
-}
-
-// NotifyIdentityMappingChange fires all registered identity change callbacks.
-//
-// It also raises an auth-cache invalidation, which re-reads each session's user
-// record and re-resolves every tree's share permission against it.
-//
-// decision: that is less than it sounds, and deliberately so. The sweep looks
-// the session's user up by the username it authenticated as and reuses the PAC
-// SIDs stored on the session, so it picks up a changed or deleted user record
-// and changed grants — but it does not re-run the principal-to-username mapping
-// itself. A session admitted under a mapping that has since been deleted keeps
-// the identity it was admitted with until it re-authenticates. Remapping an
-// established session would mean publishing a new user record onto it, and that
-// field is read unlocked on the dispatch path. Withdraw this exemption by
-// revoking the affected sessions outright, which is the same machinery
-// RevalidateAuthorization already uses for a deleted user, if a mapping delete
-// ever needs to take effect mid-connection.
+// NotifyIdentityMappingChange raises an auth-cache invalidation when identity
+// mappings are created or deleted via the API.
 func (r *Runtime) NotifyIdentityMappingChange() {
-	r.identityChangeCallbacks.notify()
 	r.InvalidateAuthCache()
 }
 
-// OnIdentityProviderConfigChange registers a callback invoked when an identity
-// provider's configuration is changed via the API. Adapters use this to rebuild
-// and re-inject their identity resolver so a new LDAP directory config takes
-// effect without a restart. Returns an unsubscribe function.
-func (r *Runtime) OnIdentityProviderConfigChange(fn func()) func() {
-	return r.identityProviderChangeCallbacks.add(fn)
-}
-
-// NotifyIdentityProviderConfigChange fires all registered identity-provider
-// config change callbacks.
-//
-// It also raises an auth-cache invalidation: the callbacks rebuild the resolver
-// but re-decide nothing that was already resolved, and a directory config
-// change rewrites how group membership and foreign SIDs resolve — which is what
-// share grants are evaluated against.
-//
-// decision: as with NotifyIdentityMappingChange, the sweep re-resolves an
-// established session's grants but not its identity. It carries the session's
-// stored PAC SIDs into the new resolution rather than rebuilding them from the
-// changed provider, so a directory change reaches an established session only
-// through the grants it re-evaluates. Same withdrawal condition: revoke the
-// affected sessions if a provider change has to land mid-connection.
+// NotifyIdentityProviderConfigChange raises an auth-cache invalidation when an
+// identity provider's configuration is changed via the API.
 func (r *Runtime) NotifyIdentityProviderConfigChange() {
-	r.identityProviderChangeCallbacks.notify()
 	r.InvalidateAuthCache()
-}
-
-// --- Settings Access ---
-
-func (r *Runtime) GetSettingsWatcher() *SettingsWatcher { return r.settingsWatcher }
-
-func (r *Runtime) GetNFSSettings() *models.NFSAdapterSettings {
-	if r.settingsWatcher == nil {
-		return nil
-	}
-	return r.settingsWatcher.GetNFSSettings()
-}
-
-func (r *Runtime) GetSMBSettings() *models.SMBAdapterSettings {
-	if r.settingsWatcher == nil {
-		return nil
-	}
-	return r.settingsWatcher.GetSMBSettings()
-}
-
-// --- Adapter Providers ---
-
-func (r *Runtime) SetAdapterProvider(key string, p any) {
-	r.adapterProvidersMu.Lock()
-	r.adapterProviders[key] = p
-	r.adapterProvidersMu.Unlock()
-
-	// Mirror the oplock breaker into an atomic for the NFS hot path. Keyed by
-	// the literal to avoid importing pkg/adapter (which imports runtime).
-	// Wrap in a stable holder: atomic.Value.Store panics on a nil interface or
-	// a changing concrete type, but SetAdapterProvider accepts nil and may be
-	// called more than once — the holder keeps the stored type constant.
-	if key == OplockBreakerProviderKey {
-		r.oplockBreaker.Store(oplockProviderHolder{p: p})
-	}
-}
-
-// OplockBreakerProviderKey is the adapter provider key for the OplockBreaker.
-// Used with SetAdapterProvider / GetAdapterProvider to register and retrieve
-// the cross-protocol oplock breaker without import cycles between protocol
-// packages.
-const OplockBreakerProviderKey = "oplock_breaker"
-
-// oplockProviderHolder gives the oplockBreaker atomic.Value a single, stable
-// concrete type so nil providers and repeat registrations never panic Store.
-type oplockProviderHolder struct{ p any }
-
-// OplockBreakerProvider returns the registered cross-protocol oplock breaker
-// (as an opaque any the NFS handlers type-assert), or nil if none is
-// registered. A lock-free atomic load: the NFS read/write path calls this per
-// op and the no-SMB case must stay cheap.
-func (r *Runtime) OplockBreakerProvider() any {
-	h, _ := r.oplockBreaker.Load().(oplockProviderHolder)
-	return h.p
-}
-
-func (r *Runtime) GetAdapterProvider(key string) any {
-	r.adapterProvidersMu.RLock()
-	defer r.adapterProvidersMu.RUnlock()
-	return r.adapterProviders[key]
 }

@@ -131,13 +131,7 @@ func (h *IdentityMappingHandler) ListForUser(w http.ResponseWriter, r *http.Requ
 	WriteJSONOK(w, mappingsToResponse(mappings))
 }
 
-// RemoveLegacy handles DELETE /api/v1/adapters/{type}/identity-mappings/{principal}.
-// Backward-compatible endpoint that defaults provider to "kerberos".
-func (h *IdentityMappingHandler) RemoveLegacy(w http.ResponseWriter, r *http.Request) {
-	h.deleteMapping(w, r, "kerberos")
-}
-
-// deleteMapping is the shared implementation for Delete and DeleteLegacy.
+// deleteMapping deletes the mapping of the request's principal under provider.
 func (h *IdentityMappingHandler) deleteMapping(w http.ResponseWriter, r *http.Request, provider string) {
 	principal := chi.URLParam(r, "principal")
 	if principal == "" {

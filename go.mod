@@ -8,8 +8,6 @@ go 1.26.0
 // go1.27.3.
 toolchain go1.26.10
 
-require github.com/rasky/go-xdr v0.0.0-20170124162913-1a41d1a06c93
-
 require (
 	github.com/aws/aws-sdk-go-v2 v1.47.3
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
@@ -27,7 +25,7 @@ require (
 	github.com/hirochachacha/go-smb2 v1.1.0
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jackc/pgx/v5 v5.11.0 // indirect
-	github.com/jcmturner/gofork v1.7.6
+	github.com/jcmturner/gofork v1.7.6 // indirect
 	github.com/jcmturner/gokrb5/v8 v8.4.4
 	github.com/manifoldco/promptui v0.9.0
 	github.com/oiweiwei/go-msrpc v1.6.4
@@ -178,7 +176,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.58.0
-	golang.org/x/net v0.60.0
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect

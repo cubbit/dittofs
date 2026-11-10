@@ -254,16 +254,6 @@ func dittofsSetup(ctx context.Context, env BackendEnv, durability string, maxSiz
 		"--server", dittofsAPIURL, "--username", "admin", "--password", dittofsAdminPass); err != nil {
 		return fmt.Errorf("dfsctl login: %w", err)
 	}
-	// NFS is served by default, but SMB is not — the smb3 cells mount //127.0.0.1
-	// on dittofsSMBPort, so the SMB adapter must be enabled explicitly or every
-	// smb3 mount fails ECONNREFUSED. Idempotent (enable creates the record if
-	// absent); takes effect without a restart.
-	if err := exec.Sh(ctx, "dfsctl", "adapter", "enable", "smb", "--port", dittofsSMBPort); err != nil {
-		return fmt.Errorf("dfsctl adapter enable smb: %w", err)
-	}
-	if err := waitPort(ctx, dittofsSMBPort); err != nil {
-		return fmt.Errorf("dfs did not open SMB port %s: %w", dittofsSMBPort, err)
-	}
 	if err := exec.Sh(ctx, "dfsctl", "store", "metadata", "add",
 		"--name", dittofsMeta, "--db-path", dittofsDataDir+"/meta"); err != nil {
 		return err
@@ -350,12 +340,9 @@ func dittofsMount(ctx context.Context, proto Protocol) (string, error) {
 	default:
 		return "", fmt.Errorf("dittofs-s3: unsupported protocol %s", proto)
 	}
-	// Adding the metadata/block stores and creating the share hot-reloads the
-	// running adapter, which briefly closes and reopens the SMB listener; a mount
-	// that lands in that window fails "Host is down" (the port is momentarily
-	// gone). waitPort above only proves the listener was up right after `adapter
-	// enable`, not after the later share-create reload. Retry so the mount rides
-	// out the reload instead of failing the whole cell over a ~few-second gap.
+	// A mount that lands while the SMB listener is briefly closed fails "Host is
+	// down" (the port is momentarily gone). Retry so the mount rides out such a
+	// gap instead of failing the whole cell over a ~few-second window.
 	const mountAttempts = 8
 	var err error
 	for attempt := 0; attempt < mountAttempts; attempt++ {

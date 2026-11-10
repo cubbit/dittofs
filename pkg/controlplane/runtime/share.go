@@ -14,7 +14,6 @@ import (
 
 // Type aliases re-exported for backward compatibility.
 type (
-	Share           = shares.Share
-	ShareConfig     = shares.ShareConfig
-	LegacyMountInfo = shares.LegacyMountInfo
+	Share       = shares.Share
+	ShareConfig = shares.ShareConfig
 )

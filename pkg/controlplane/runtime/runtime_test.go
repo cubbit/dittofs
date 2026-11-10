@@ -5,9 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/controlplane/models"
-	"github.com/cubbit/dittofs/pkg/metadata"
-
 	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
@@ -25,17 +22,8 @@ func TestNew(t *testing.T) {
 	if rt.sharesSvc == nil {
 		t.Error("expected shares service to be initialized")
 	}
-	if rt.mountTracker == nil {
-		t.Error("expected mount tracker to be initialized")
-	}
-	if rt.adaptersSvc == nil {
-		t.Error("expected adapters service to be initialized")
-	}
 	if rt.lifecycleSvc == nil {
 		t.Error("expected lifecycle service to be initialized")
-	}
-	if rt.identitySvc == nil {
-		t.Error("expected identity service to be initialized")
 	}
 }
 
@@ -45,7 +33,7 @@ func TestSetShutdownTimeout(t *testing.T) {
 
 	t.Run("set custom timeout does not panic", func(t *testing.T) {
 		rt.SetShutdownTimeout(60 * time.Second)
-		// Timeout is delegated to adapters and lifecycle sub-services;
+		// Timeout is delegated to the lifecycle sub-service;
 		// we verify it doesn't panic.
 	})
 
@@ -154,104 +142,6 @@ func TestCountMetadataStores(t *testing.T) {
 	}
 	if rt.CountMetadataStores() != 1 {
 		t.Errorf("expected 1, got %d", rt.CountMetadataStores())
-	}
-}
-
-func TestMountTracking(t *testing.T) {
-	rt := New(nil)
-	setJournalRoot(t, rt)
-
-	t.Run("record mount", func(t *testing.T) {
-		rt.RecordMount("192.168.1.100:12345", "/export", 1000)
-
-		mounts := rt.ListMounts()
-		if len(mounts) != 1 {
-			t.Fatalf("expected 1 mount, got %d", len(mounts))
-		}
-		if mounts[0].ClientAddr != "192.168.1.100:12345" {
-			t.Errorf("expected client addr '192.168.1.100:12345', got %q", mounts[0].ClientAddr)
-		}
-		if mounts[0].ShareName != "/export" {
-			t.Errorf("expected share '/export', got %q", mounts[0].ShareName)
-		}
-		if mounts[0].MountTime != 1000 {
-			t.Errorf("expected mount time 1000, got %d", mounts[0].MountTime)
-		}
-	})
-
-	t.Run("remove mount", func(t *testing.T) {
-		removed := rt.RemoveMount("192.168.1.100:12345", "/export")
-		if !removed {
-			t.Error("expected mount to be removed")
-		}
-
-		removed = rt.RemoveMount("192.168.1.100:12345", "/export")
-		if removed {
-			t.Error("expected false for already removed mount")
-		}
-
-		if len(rt.ListMounts()) != 0 {
-			t.Error("expected no mounts after removal")
-		}
-	})
-
-	t.Run("remove non-existing mount", func(t *testing.T) {
-		removed := rt.RemoveMount("non-existing", "/export")
-		if removed {
-			t.Error("expected false for non-existing mount")
-		}
-	})
-
-	t.Run("remove mount leaves the client's other exports", func(t *testing.T) {
-		rt.RecordMount("client1", "/share1", 1000)
-		rt.RecordMount("client1", "/share2", 2000)
-
-		if !rt.RemoveMount("client1", "/share1") {
-			t.Fatal("expected /share1 to be removed")
-		}
-
-		mounts := rt.ListMounts()
-		if len(mounts) != 1 || mounts[0].ShareName != "/share2" {
-			t.Errorf("expected only /share2 left, got %+v", mounts)
-		}
-		rt.RemoveAllMounts("client1")
-	})
-
-	t.Run("remove all mounts is scoped to the client", func(t *testing.T) {
-		rt.RecordMount("client1", "/share1", 1000)
-		rt.RecordMount("client1", "/share2", 2000)
-		rt.RecordMount("client2", "/share3", 3000)
-
-		count := rt.RemoveAllMounts("client1")
-		if count != 2 {
-			t.Errorf("expected 2 removed, got %d", count)
-		}
-
-		mounts := rt.ListMounts()
-		if len(mounts) != 1 || mounts[0].ClientAddr != "client2" {
-			t.Errorf("expected client2's mount left, got %+v", mounts)
-		}
-		rt.RemoveAllMounts("client2")
-	})
-}
-
-func TestListMountsIsolation(t *testing.T) {
-	rt := New(nil)
-	setJournalRoot(t, rt)
-	rt.RecordMount("client1", "/share1", 1000)
-
-	mounts := rt.ListMounts()
-	if len(mounts) != 1 {
-		t.Fatalf("expected 1 mount, got %d", len(mounts))
-	}
-
-	// Modify returned mount to verify it's a copy
-	mounts[0].ClientAddr = "modified"
-
-	// Original should be unchanged
-	originalMounts := rt.ListMounts()
-	if originalMounts[0].ClientAddr != "client1" {
-		t.Error("ListMounts should return copies, not references")
 	}
 }
 
@@ -410,112 +300,6 @@ func TestShareOperations(t *testing.T) {
 	})
 }
 
-func TestApplyIdentityMapping(t *testing.T) {
-	// Helper to create a fresh runtime with a share for each test
-	setupRuntime := func(squash models.SquashMode) *Runtime {
-		rt := New(nil)
-		setJournalRoot(t, rt)
-		rt.sharesSvc.InjectShareForTesting(&Share{
-			Name:         "/export",
-			Squash:       squash,
-			AnonymousUID: 65534,
-			AnonymousGID: 65534,
-		})
-		return rt
-	}
-
-	// Helper to create identity with UID/GID
-	makeIdentity := func(uid, gid uint32, username string) *metadata.Identity {
-		return &metadata.Identity{
-			UID:      &uid,
-			GID:      &gid,
-			Username: username,
-		}
-	}
-
-	t.Run("AUTH_NULL always maps to anonymous", func(t *testing.T) {
-		rt := setupRuntime(models.SquashRootToAdmin)
-		identity := &metadata.Identity{UID: nil, GID: nil}
-
-		effective, err := rt.ApplyIdentityMapping("/export", identity)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if *effective.UID != 65534 || *effective.GID != 65534 {
-			t.Errorf("expected anonymous (65534/65534), got (%d/%d)", *effective.UID, *effective.GID)
-		}
-	})
-
-	t.Run("non-existing share fails", func(t *testing.T) {
-		rt := setupRuntime(models.SquashRootToAdmin)
-		uid := uint32(1000)
-		identity := &metadata.Identity{UID: &uid}
-
-		_, err := rt.ApplyIdentityMapping("/not-found", identity)
-		if err == nil {
-			t.Fatal("expected error for non-existing share")
-		}
-	})
-
-	// Table-driven tests for squash modes
-	tests := []struct {
-		name       string
-		squash     models.SquashMode
-		inputUID   uint32
-		inputGID   uint32
-		wantUID    uint32
-		wantGID    uint32
-		wantIsAnon bool // true if username should be "anonymous(N)"
-		wantIsRoot bool // true if username should be "root"
-	}{
-		// SquashNone: all UIDs pass through unchanged
-		{"none/normal_user", models.SquashNone, 1000, 1000, 1000, 1000, false, false},
-		{"none/root", models.SquashNone, 0, 0, 0, 0, false, false},
-
-		// SquashRootToAdmin: all UIDs pass through unchanged (root keeps admin)
-		{"root_to_admin/normal_user", models.SquashRootToAdmin, 1000, 1000, 1000, 1000, false, false},
-		{"root_to_admin/root", models.SquashRootToAdmin, 0, 0, 0, 0, false, false},
-
-		// SquashRootToGuest: root mapped to anonymous, others pass through
-		{"root_to_guest/normal_user", models.SquashRootToGuest, 1000, 1000, 1000, 1000, false, false},
-		{"root_to_guest/root", models.SquashRootToGuest, 0, 0, 65534, 65534, true, false},
-
-		// SquashAllToAdmin: all users mapped to root
-		{"all_to_admin/normal_user", models.SquashAllToAdmin, 1000, 1000, 0, 0, false, true},
-		{"all_to_admin/root", models.SquashAllToAdmin, 0, 0, 0, 0, false, true},
-
-		// SquashAllToGuest: all users mapped to anonymous
-		{"all_to_guest/normal_user", models.SquashAllToGuest, 1000, 1000, 65534, 65534, true, false},
-		{"all_to_guest/root", models.SquashAllToGuest, 0, 0, 65534, 65534, true, false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			rt := setupRuntime(tc.squash)
-			identity := makeIdentity(tc.inputUID, tc.inputGID, "testuser")
-
-			effective, err := rt.ApplyIdentityMapping("/export", identity)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if *effective.UID != tc.wantUID {
-				t.Errorf("expected UID %d, got %d", tc.wantUID, *effective.UID)
-			}
-			if *effective.GID != tc.wantGID {
-				t.Errorf("expected GID %d, got %d", tc.wantGID, *effective.GID)
-			}
-
-			if tc.wantIsAnon && effective.Username != "anonymous(65534)" {
-				t.Errorf("expected anonymous username, got %q", effective.Username)
-			}
-			if tc.wantIsRoot && effective.Username != "root" {
-				t.Errorf("expected 'root' username, got %q", effective.Username)
-			}
-		})
-	}
-}
-
 func TestGetMetadataStoreForShare(t *testing.T) {
 	rt, bsID := newRuntimeWithBlockStore(t)
 	ctx := context.Background()
@@ -560,31 +344,6 @@ func TestGetServices(t *testing.T) {
 		if svc == nil {
 			t.Error("expected non-nil metadata service")
 		}
-	})
-}
-
-func TestAdapterManagementBasics(t *testing.T) {
-	rt := New(nil)
-	setJournalRoot(t, rt)
-
-	t.Run("list running adapters empty", func(t *testing.T) {
-		adapters := rt.ListRunningAdapters()
-		if len(adapters) != 0 {
-			t.Errorf("expected empty list, got %d items", len(adapters))
-		}
-	})
-
-	t.Run("is adapter running false for non-existing", func(t *testing.T) {
-		if rt.IsAdapterRunning("nfs") {
-			t.Error("expected false for non-existing adapter")
-		}
-	})
-
-	t.Run("set adapter factory", func(t *testing.T) {
-		rt.SetAdapterFactory(func(cfg *models.AdapterConfig) (ProtocolAdapter, error) {
-			return nil, nil
-		})
-		// Factory should be set (no error means success)
 	})
 }
 

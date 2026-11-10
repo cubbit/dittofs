@@ -37,13 +37,6 @@ func (c *Client) ListAdapters() ([]Adapter, error) {
 	return listResources[Adapter](c, "/api/v1/adapters")
 }
 
-// ListAdapterPorts returns adapter type/port info without config. Unlike
-// ListAdapters it is reachable by any authenticated user, so it is the
-// right call for port discovery (e.g. before mounting a share).
-func (c *Client) ListAdapterPorts() ([]Adapter, error) {
-	return listResources[Adapter](c, "/api/v1/adapters/ports")
-}
-
 // GetAdapter returns an adapter by type.
 func (c *Client) GetAdapter(adapterType string) (*Adapter, error) {
 	return getResource[Adapter](c, resourcePath("/api/v1/adapters/%s", adapterType))
@@ -57,9 +50,4 @@ func (c *Client) CreateAdapter(req *CreateAdapterRequest) (*Adapter, error) {
 // UpdateAdapter updates an existing adapter.
 func (c *Client) UpdateAdapter(adapterType string, req *UpdateAdapterRequest) (*Adapter, error) {
 	return updateResource[Adapter](c, resourcePath("/api/v1/adapters/%s", adapterType), req)
-}
-
-// RemoveAdapter deletes an adapter.
-func (c *Client) RemoveAdapter(adapterType string) error {
-	return deleteResource(c, resourcePath("/api/v1/adapters/%s", adapterType))
 }

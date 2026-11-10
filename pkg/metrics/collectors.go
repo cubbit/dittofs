@@ -57,9 +57,6 @@ type runtimeCollector struct {
 	quotaLimitBytes  *prometheus.Desc
 	quotaUsedInodes  *prometheus.Desc
 	quotaLimitInodes *prometheus.Desc
-
-	// Clients.
-	clientsActive *prometheus.Desc
 }
 
 func newRuntimeCollector(p Provider) *runtimeCollector {
@@ -107,8 +104,6 @@ func newRuntimeCollector(p Provider) *runtimeCollector {
 		quotaLimitBytes:  d(fqdn("quota", "limit_bytes"), "Hard byte limit for a quota principal (0 = unlimited).", quota),
 		quotaUsedInodes:  d(fqdn("quota", "used_inodes"), "Inodes used by a quota principal.", quota),
 		quotaLimitInodes: d(fqdn("quota", "limit_inodes"), "Hard inode limit for a quota principal (0 = unlimited).", quota),
-
-		clientsActive: d(fqdn("client", "connections_active"), "Active client connections per protocol.", []string{"protocol"}),
 	}
 }
 
@@ -130,7 +125,6 @@ func (c *runtimeCollector) allDescs() []*prometheus.Desc {
 		c.integrityLastScan, c.integrityScanFailed, c.integrityScanDuration, c.integrityFilesScanned, c.integrityFindings,
 		c.offlineSafe, c.offlineRemoteBytes, c.offlineRemoteRanges,
 		c.quotaUsedBytes, c.quotaLimitBytes, c.quotaUsedInodes, c.quotaLimitInodes,
-		c.clientsActive,
 	}
 }
 
@@ -197,8 +191,6 @@ func (c *runtimeCollector) Collect(ch chan<- prometheus.Metric) {
 		gauge(c.quotaLimitInodes, float64(q.LimitInodes), q.Scope, q.Principal, q.Share)
 	}
 
-	gauge(c.clientsActive, float64(snap.Clients.NFS), "nfs")
-	gauge(c.clientsActive, float64(snap.Clients.SMB), "smb")
 }
 
 func boolToFloat(b bool) float64 {

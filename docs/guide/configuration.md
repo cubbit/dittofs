@@ -1190,79 +1190,14 @@ dfsctl share permission revoke /export --user alice
 
 ### 10. Protocol Adapters
 
-Protocol adapters and their settings live in the control-plane database. Log in
-with `dfsctl login`, then use `adapter enable`, `adapter disable`, and
-`adapter edit` for lifecycle and ports; use `adapter settings` for protocol tuning.
-These settings do not belong in the server YAML/TOML file and are not read from
-`DITTOFS_ADAPTERS_*` environment variables.
-
-```bash
-# Set listen ports (the default NFS/SMB ports are 12049/12445)
-dfsctl adapter edit nfs --port 12049
-dfsctl adapter edit smb --port 12445
-
-# Inspect persisted protocol settings
-dfsctl adapter settings nfs show
-dfsctl adapter settings smb show
-```
-
-#### NFS settings migration
-
-The old names below were nested under the removed NFS adapter config section.
-Timeout flags take seconds, rather than duration strings such as `90s`.
-
-| Old name | Current command or status |
-| --- | --- |
-| `enabled`, `port` | `dfsctl adapter enable nfs`, `dfsctl adapter disable nfs`, or `dfsctl adapter edit nfs --port 12049` |
-| `max_connections` | `dfsctl adapter settings nfs update --max-connections 1024` |
-| `portmapper.enabled`, `portmapper.port` | `dfsctl adapter settings nfs update --portmapper-enabled --portmapper-port 10111` (restart the adapter to apply) |
-| `udp.enabled` | `dfsctl adapter settings nfs update --udp-enabled` (restart the adapter to apply) |
-| `v4_enabled` | No supported switch for NFSv4 alone; the enabled NFS adapter serves both NFSv3 and NFSv4. |
-| `delegations_enabled`, `max_delegations` | `dfsctl adapter settings nfs update --delegations-enabled --max-delegations 10000` |
-| `grace_period`, `lease_time` | `dfsctl adapter settings nfs update --grace-period 90 --lease-time 90` |
-| `timeouts.read`, `timeouts.write`, `timeouts.idle`, `timeouts.shutdown` | No corresponding transport-timeout CLI flags. The server's top-level `shutdown_timeout` controls server shutdown, not these adapter fields. |
-| `metrics_log_interval`, `rate_limiting.*` | No supported replacement in server config or adapter settings. Use the top-level [Prometheus metrics configuration](#metrics-prometheus) for observability. |
-
-#### SMB settings migration
-
-The old names below were nested under the removed SMB adapter config section.
-Rows without a supported flag are explicitly marked. For keys without an
-exposed override, `adapter edit smb --config` is not a workaround.
-
-| Old name | Current command or status |
-| --- | --- |
-| `enabled`, `port` | `dfsctl adapter enable smb`, `dfsctl adapter disable smb`, or `dfsctl adapter edit smb --port 12445` |
-| `max_connections` | `dfsctl adapter settings smb update --max-connections 1024` |
-| `min_dialect`, `max_dialect` | `dfsctl adapter settings smb update --min-dialect SMB3.0 --max-dialect SMB3.1.1` |
-| `signing.enabled`, `signing.required` | `dfsctl adapter settings smb update --signing required`; modes are `disabled`, `enabled`, and `required`. SMB 3.1.1 still requires signing. |
-| `signing.preferred_algorithms` | No exposed override; algorithms are negotiated from built-in support. |
-| `encryption.encryption_mode` | No equivalent three-mode flag. `dfsctl adapter settings smb update --enable-encryption` can enable encryption support, but does not select a global `required` policy; see [encryption below](#smb3-encryption-configuration). |
-| `encryption.allowed_ciphers` | Not configurable: the cipher set is fixed, and `adapter edit smb --config` refuses a non-empty list. |
-| `leases.enabled` | No exposed global lease toggle. |
-| `leases.directory_leases` | REST-only `directory_leasing_enabled` in `PATCH /api/v1/adapters/smb/settings`; no CLI flag. |
-| `leases.lease_break_timeout` | No SMB CLI override: lease breaks use a fixed **5-second** bound. `--oplock-break-timeout` controls traditional oplocks only. |
-| `durable_handles.enabled`, `durable_handles.max_handles_per_session` | No exposed equivalents. Durable-handle support requires a suitable metadata store. |
-| `durable_handles.default_timeout` | No server override; the runtime default/maximum is 300 seconds, and clients may request less. |
-| `durable_handles.scavenger_interval` | No exposed override; the built-in scan interval is 10 seconds. |
-| `timeouts.read`, `timeouts.write`, `timeouts.idle`, `timeouts.shutdown` | No corresponding transport-timeout CLI flags. `--session-timeout` is not a replacement for transport idle timeout. |
-| `max_requests_per_connection`, `metrics_log_interval` | No exposed overrides; the request limit is fixed at 100, and the old metrics-log setting is not consumed. |
-| `credits.strategy`, `credits.min_grant`, `credits.max_grant`, `credits.initial_grant`, `credits.max_session_credits` | No exposed overrides; built-in defaults are `echo`, 1, 8192, 1, and 8192, respectively. |
-| `credits.load_threshold_high`, `credits.load_threshold_low`, `credits.aggressive_client_threshold` | No exposed overrides; the default `echo` strategy does not use adaptive thresholds. |
-| `cross_protocol.delegation_recall_timeout`, `cross_protocol.anti_storm_ttl` | No SMB CLI overrides; see [cross-protocol coordination](#cross-protocol-coordination). |
-
-For example, require signing and allow SMB 3.x clients:
-
-```bash
-dfsctl adapter settings smb update --signing required \
-  --min-dialect SMB3.0 --max-dialect SMB3.1.1
-```
+This build serves no file protocol: `dfs start` runs only the control-plane
+REST API and metrics. The adapter, grace, netgroup and client commands and
+their REST routes are removed. Adapter settings already stored in the
+control-plane database are kept for a later release that serves NFS and SMB
+again. These settings never belonged in the server YAML/TOML file and are not
+read from `DITTOFS_ADAPTERS_*` environment variables.
 
 ### SMB3 Encryption Configuration
-
-The shipped adapter uses `preferred` encryption mode. The
-`--enable-encryption` flag enables support; setting it to `false` does not switch
-the running adapter to `disabled`. There is no CLI flag for selecting a global
-`required` mode.
 
 Require encrypted SMB traffic for a particular share with `--encrypt-data`:
 
@@ -1274,111 +1209,10 @@ dfsctl share create --name /secure --metadata default \
 See the [SMB security model](security.md#smb-encryption) for protocol-level
 enforcement and the distinction between session and per-share encryption.
 
-### SMB3 Signing Configuration
-
-Use `dfsctl adapter settings smb update --signing required` to require signing.
-`enabled` offers signing and `disabled` relaxes it for older dialects; SMB 3.1.1
-requires signing regardless of this setting. Signing algorithms are negotiated;
-there is no `preferred_algorithms` CLI flag.
-
-### SMB3 Dialect Configuration
-
-Use `--min-dialect` and `--max-dialect` on `dfsctl adapter settings smb update`,
-with names such as `SMB2.1`, `SMB3.0`, `SMB3.0.2`, and `SMB3.1.1`. The example
-above excludes SMB 2.x clients.
-
-### SMB3 Lease Configuration
-
-SMB lease breaks have a fixed 5-second bound. For **traditional oplocks**,
-`dfsctl adapter settings smb update --oplock-break-timeout 35` sets the wait in
-seconds (supported range: 5–120). This does not change lease-break timing.
-Directory leasing is controlled by the REST setting listed in the migration table.
-
-### SMB3 Durable Handle Configuration
-
-Durable handles require a metadata store that implements durable-handle storage.
-The adapter does not expose the removed timeout, capacity, enable, or scavenger
-fields through the CLI or server config. The migration table records the current
-runtime timeout and scan interval.
-
-### Cross-Protocol Coordination
-
-Cross-protocol coordination uses programmatic defaults rather than SMB YAML or
-environment overrides. The delegation recall timeout is 90 seconds and the
-anti-storm TTL is 5 seconds; neither has an SMB adapter settings flag.
-
-#### Network discovery (mDNS / WS-Discovery)
-
-DittoFS can advertise itself on the LAN so it appears in **macOS Finder →
-Network**, Linux file managers (via Avahi), and the **Windows Explorer →
-Network** view — the same job the external `avahi-daemon` and `wsdd`/`wsdd2`
-daemons do for Samba, but built in-process. Discovery is **off by default** and
-managed through the live adapter settings (`dfsctl` / REST), so it applies
-immediately without an adapter restart:
-
-```bash
-# mDNS / DNS-SD — macOS Finder + Linux Avahi
-dfsctl adapter settings nfs update --mdns-enabled          # advertises _nfs._tcp (port 12049)
-dfsctl adapter settings smb update --mdns-enabled          # advertises _smb._tcp + _device-info._tcp
-
-# WS-Discovery — Windows Explorer Network (SMB only; Windows does not browse NFS)
-dfsctl adapter settings smb update --wsdiscovery-enabled
-```
-
-This opens additional listeners: mDNS on UDP `5353`, and — for WS-Discovery —
-UDP `3702` plus an HTTP metadata endpoint on TCP `5357`. NFS advertises the
-first export's path in a `path=` TXT record so Finder mounts the right share.
-
-**Advertised name.** All advertisers share one instance-wide name, so a server
-shows up consistently across Finder and Explorer. It defaults to
-`DittoFS-<hostname>` (e.g. `DittoFS-VM2`) — distinct per host so several DittoFS
-servers on one LAN stay distinguishable — and is overridable:
-
-```bash
-dfsctl settings set discovery.name "Marketing Files"   # custom instance name
-dfsctl settings set discovery.name ""                  # revert to DittoFS-<hostname>
-```
-
-Each adapter formats the name for its own protocol: mDNS uses it verbatim, while
-WS-Discovery folds it to a NetBIOS-legal computer name (upper-cased, illegal
-characters replaced with `-`, capped at 15 characters) since Explorer renders it
-as a Windows computer name. A name change takes effect the next time an
-advertiser (re)starts — toggle discovery off/on, or restart the adapter.
-
-> **Note:** discovery is multicast-based and LAN-local. It works on a host
-> network (bare metal, VM, or a `hostNetwork` pod) but does **not** traverse
-> standard Kubernetes / overlay networks — Explorer and Finder will only see the
-> server on the same L2 segment. Mounting by name/IP always works regardless.
-> WS-Discovery makes the machine *appear* in Explorer; Windows still connects to
-> SMB on port `445`, so the SMB adapter must be reachable there.
-
-> **Windows host firewall:** when DittoFS runs *on* a Windows host, the built-in
-> "Network Discovery" firewall rules only cover Windows' own services (they are
-> scoped to `System` / `svchost`), so inbound traffic to `dfs.exe` is dropped by
-> default. Explorer then discovers the server over multicast but silently fails
-> the follow-up metadata fetch (a TCP `5357` connection that never completes),
-> and the machine never renders. Add inbound allow rules for the `dfs.exe`
-> program on TCP `5357` and UDP `3702`/`5353`:
->
-> ```powershell
-> New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD meta)"  -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5357 -Program "C:\path\to\dfs.exe" -Profile Any
-> New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD probe)" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 3702 -Program "C:\path\to\dfs.exe" -Profile Any
-> New-NetFirewallRule -DisplayName "DittoFS Discovery (mDNS)"      -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5353 -Program "C:\path\to\dfs.exe" -Profile Any
-> ```
->
-> This is a Windows-host concern only; a Linux DittoFS host needs no equivalent
-> (any host firewall there just needs the same ports open).
-
 ### 11. NFSv4 Configuration
 
-Manage NFSv4 settings through the running server after `dfsctl login`:
-
-```bash
-dfsctl adapter settings nfs update --delegations-enabled --max-delegations 10000 \
-  --grace-period 90 --lease-time 90
-```
-
-The timeout flags above accept integer seconds.
+NFSv4 delegation, grace-period and lease settings were adapter settings; see
+[Protocol Adapters](#10-protocol-adapters).
 
 ### 12. Kerberos Configuration
 
@@ -1811,7 +1645,6 @@ spec:
 | ⭐ `dittofs_adapter_requests_total{protocol,op,status}` | Per-protocol request RED counter (`status` is `ok` or `error`). |
 | `dittofs_adapter_request_duration_seconds{protocol,op}` | Request latency histogram. |
 | `dittofs_adapter_connections_total{protocol}` | Connections accepted since start, by protocol. |
-| `dittofs_client_connections_active{protocol}` | Active client connections, by protocol. |
 | `dittofs_auth_attempts_total{protocol,mechanism}` / `dittofs_auth_failures_total{protocol,mechanism}` | Authentication attempts and failures (`mechanism` is `sys`/`krb5`/`ntlm`). |
 | ⭐ `dittofs_remote_up{share}` | `1` if the share's remote backend is healthy, else `0`. |
 | ⭐ `dittofs_sync_pending_bytes{share}` | On-disk bytes present locally but not yet mirrored to the remote (data at risk). |
@@ -1992,18 +1825,15 @@ export DITTOFS_CONTROLPLANE_PPROF_BLOCK_RATE_NS=1000000
 DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 ```
 
-Store instances and protocol adapters are managed through the control-plane
-API and `dfsctl`; their settings are persisted in the database.
-After logging in, use `dfsctl store metadata add` to create a metadata store,
-`dfsctl adapter edit nfs --port 12049` to set the NFS port, and
-`dfsctl adapter settings nfs show` or `dfsctl adapter settings smb show` to
-inspect protocol settings. See the [CLI reference](cli.md) for supported
-settings and update flags.
+Store instances are managed through the control-plane API and `dfsctl`; their
+settings are persisted in the database. After logging in, use
+`dfsctl store metadata add` to create a metadata store. See the
+[CLI reference](cli.md) for supported settings and update flags.
 
 ## Configuration Precedence
 
 Server settings are applied in the following order (highest to lowest priority).
-This precedence does not apply to stores or adapters managed through `dfsctl`:
+This precedence does not apply to stores managed through `dfsctl`:
 
 1. **Environment Variables** (`DITTOFS_*`) - Highest priority
 2. **Configuration File** (YAML/TOML)
@@ -2028,13 +1858,12 @@ logging:
   level: INFO
 ```
 
-Then create stores, shares, and enable adapters via CLI:
+Then create stores and shares via CLI:
 
 ```bash
 ./dfsctl store metadata add --name default --in-memory
 ./dfsctl store block add --name default-blocks --type memory
 ./dfsctl share create --name /export --metadata default --block-store default-blocks
-./dfsctl adapter enable nfs
 ```
 
 ### Development Setup
@@ -2051,7 +1880,6 @@ logging:
 ./dfsctl store metadata add --name dev-memory --in-memory
 ./dfsctl store block add --name dev-blocks --type memory
 ./dfsctl share create --name /export --metadata dev-memory --block-store dev-blocks
-./dfsctl adapter enable nfs --port 12049
 ```
 
 ### Production Setup
@@ -2072,7 +1900,7 @@ metrics:
   port: 9090
 ```
 
-Then create stores, shares, and enable adapters via CLI:
+Then create stores and shares via CLI:
 
 ```bash
 # Create stores
@@ -2084,9 +1912,6 @@ Then create stores, shares, and enable adapters via CLI:
 # Create share and grant permissions
 ./dfsctl share create --name /export --metadata prod-badger --block-store prod-s3
 ./dfsctl share permission grant /export --user alice --level read-write
-
-# Enable NFS adapter
-./dfsctl adapter enable nfs --port 12049
 ```
 
 ### Multi-Share with Different Backends
@@ -2112,9 +1937,6 @@ Different shares using different storage backends:
 # Grant permissions
 ./dfsctl share permission grant /temp --user alice --level read-write
 ./dfsctl share permission grant /cloud --user alice --level read-write
-
-# Enable NFS adapter
-./dfsctl adapter enable nfs
 ```
 
 ### Shared Metadata Pattern
@@ -2135,9 +1957,6 @@ Multiple shares sharing the same metadata database:
 # Both shares use the same metadata store, different block stores
 ./dfsctl share create --name /prod --metadata shared-badger --block-store s3-production
 ./dfsctl share create --name /archive --metadata shared-badger --block-store s3-archive
-
-# Enable NFS adapter
-./dfsctl adapter enable nfs
 ```
 
 ## IDE Support with JSON Schema

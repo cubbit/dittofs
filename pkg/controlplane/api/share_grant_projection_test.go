@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/internal/adapter/testruntime"
 	"github.com/cubbit/dittofs/internal/controlplane/api/auth"
+	"github.com/cubbit/dittofs/internal/controlplane/runtimetest"
 	"github.com/cubbit/dittofs/pkg/controlplane/models"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
 	"github.com/cubbit/dittofs/pkg/controlplane/store"
@@ -47,7 +47,7 @@ func newRootACLTestRouter(t *testing.T, shareNames ...string) (http.Handler, str
 		t.Fatalf("create jwt service: %v", err)
 	}
 
-	rt := testruntime.New(t, cpStore)
+	rt := runtimetest.New(t, cpStore)
 
 	metaCfg := &models.MetadataStoreConfig{Name: "test-meta", Type: "badger", Config: `{"in_memory":true}`}
 	metaID, err := cpStore.CreateMetadataStore(ctx, metaCfg)

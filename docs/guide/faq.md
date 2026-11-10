@@ -67,9 +67,9 @@ both TCP and UDP. Because BSD/macOS lock clients (`rpc.lockd`/`rpc.statd`) reach
 NLM/NSM over **UDP** and discover it via the standard portmapper on **port 111**,
 NFSv3 locking from those clients requires two opt-in settings on the server:
 
-- enable the UDP transport: `dfsctl adapter settings nfs update --udp-enabled true`
-- enable the portmapper, reachable on **port 111**: `dfsctl adapter settings nfs
-  update --portmapper-enabled true --portmapper-port 111` (binding 111 needs root
+- enable the UDP transport (the NFS adapter's `udp_enabled` setting)
+- enable the portmapper, reachable on **port 111** (the NFS adapter's
+  `portmapper_enabled` and `portmapper_port` settings; binding 111 needs root
   / `NET_BIND_SERVICE`; on Kubernetes the operator exposes it via the Service)
 
 then restart the adapter. Both are **disabled by default**. Note that NFSv3

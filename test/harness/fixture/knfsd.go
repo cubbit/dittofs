@@ -55,12 +55,12 @@ func StartKnfsd(ctx context.Context, f registry.Fixture, out string, w io.Writer
 	// a listener it adds there, such as RDMA's, is the host's.
 	nfsd := []string{"rpc.nfsd", "--port", strconv.Itoa(knfsdPort), "--no-nfs-version", "3",
 		"--nfs-version", "4.0", "--nfs-version", "4.1", "--nfs-version", "4.2", "--no-udp", "--grace-time", "10"}
-	settings, err := nfsSettings(f) // the lease, read as a dfs fixture's
-	if err != nil {
-		return nil, err
-	}
-	if settings != nil && settings.LeaseTime != nil {
-		nfsd = append(nfsd, "--lease-time", strconv.Itoa(*settings.LeaseTime))
+	if f.Lease != "" {
+		d, err := time.ParseDuration(f.Lease)
+		if err != nil || d <= 0 || d%time.Second != 0 {
+			return nil, fmt.Errorf("lease %q: a whole number of seconds, as 30s", f.Lease)
+		}
+		nfsd = append(nfsd, "--lease-time", strconv.Itoa(int(d/time.Second)))
 	}
 	// ponytail: a dt that is killed leaves the server, rpc.mountd and the
 	// tmpfs behind, and the next knfsd cell finds its port taken and doesn't

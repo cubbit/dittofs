@@ -6,6 +6,10 @@ Exercise caution before deploying in production environments without thorough te
 For the internal mechanism design and threat model, see
 [`../internals/security-model.md`](../internals/security-model.md).
 
+> **Not served on this branch.** This build serves no file protocol. The NFS and
+> SMB sections below, and their `adapters:` settings, describe the released
+> server.
+
 ## Table of Contents
 
 - [What is implemented](#what-is-implemented)
@@ -198,16 +202,8 @@ Signing behavior:
 - **Required** (default `false`): when `true`, the server rejects unsigned messages from
   established sessions.
 
-Configure via `dfsctl`, where the two states above are selected by one tri-state flag
-(`disabled` | `enabled` | `required`):
-
-```bash
-# Advertise signing and reject unsigned messages
-./dfsctl adapter settings smb update --signing required
-
-# Advertise signing but still accept unsigned messages (the default)
-./dfsctl adapter settings smb update --signing enabled
-```
+The two states above are stored as one tri-state SMB adapter setting
+(`disabled` | `enabled` | `required`); this build has no command to change it.
 
 **Recommendation:** set `required: true` for all production deployments to prevent tampering even
 when encryption is not used.
@@ -284,10 +280,11 @@ IP addresses, CIDR ranges and hostnames. A share with a netgroup accepts only
 clients whose address matches a member; a share with no netgroup accepts any
 client.
 
+This build removes the netgroup commands and their REST routes, so a netgroup
+cannot be created or edited; netgroups already stored in the control-plane
+database are kept. One is attached to a share with:
+
 ```bash
-dfsctl netgroup create trusted-net
-dfsctl netgroup add-member trusted-net --type cidr --value 192.168.1.0/24
-dfsctl netgroup add-member trusted-net --type ip   --value 192.168.1.50
 dfsctl share nfs-config set /export --netgroup trusted-net
 ```
 
@@ -599,32 +596,16 @@ kerberos:
   max_clock_skew: 5m
   context_ttl: 8h
 
-# Shares, their netgroup allowlist and their squash mode live in the control
-# plane, not this file. Create them once:
+# Shares and their squash mode live in the control plane, not this file.
+# Create them once:
 #
-#   dfsctl netgroup create trusted-net
-#   dfsctl netgroup add-member trusted-net --type cidr --value 10.0.0.0/8
 #   dfsctl share create --name /export --metadata default --block-store default \
-    --read-only --squash root_to_guest
-#   dfsctl share nfs-config set /export --netgroup trusted-net
-
-adapters:
-  nfs:
-    port: 12049
-    max_connections: 100
-    timeouts:
-      idle: 5m
-  smb:
-    port: 12445
-    signing:
-      enabled: true
-      required: true
-    encryption:
-      encryption_mode: required
-      allowed_ciphers: []
+#     --read-only --squash root_to_guest
+#
+# This build serves no file protocol, so it reads no adapter block here.
 ```
 
-See [`./configuration.md`](./configuration.md) for the full adapter configuration reference.
+See [`./configuration.md`](./configuration.md) for the full configuration reference.
 
 ---
 

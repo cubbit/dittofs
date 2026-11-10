@@ -13,7 +13,6 @@ import (
 
 	"github.com/cubbit/dittofs/internal/bytesize"
 	"github.com/cubbit/dittofs/internal/logger"
-	"github.com/cubbit/dittofs/pkg/adapter/nfs/identity"
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/controlplane/api"
 	"github.com/cubbit/dittofs/pkg/controlplane/store"
@@ -613,9 +612,6 @@ type KerberosConfig struct {
 	// Default: 10000
 	MaxContexts int `mapstructure:"max_contexts" yaml:"max_contexts"`
 
-	// IdentityMapping configures how Kerberos principals are mapped to Unix identities.
-	IdentityMapping IdentityMappingConfig `mapstructure:"identity_mapping" yaml:"identity_mapping"`
-
 	// MachineAccount configures the machine account (computer object) for NETLOGON support.
 	MachineAccount MachineAccountConfig `mapstructure:"machine_account" yaml:"machine_account"`
 }
@@ -625,10 +621,7 @@ type KerberosConfig struct {
 // Negative durations/counts are rejected (0 means "use the default", applied
 // in ApplyDefaults): a negative ContextTTL would expire every live GSS context
 // on each cleanup sweep (auth-availability churn), and a negative MaxClockSkew
-// would reject otherwise-valid tickets. The identity-mapping Strategy is
-// validated against the supported set (only "static" is implemented;
-// BuildStaticMapper ignores any other value, so an unvalidated typo silently
-// degrades to static mapping).
+// would reject otherwise-valid tickets.
 func (c *KerberosConfig) Validate() error {
 	if c.ContextTTL < 0 {
 		return fmt.Errorf("kerberos.context_ttl must be >= 0 (got %v); 0 uses the default", c.ContextTTL)
@@ -638,12 +631,6 @@ func (c *KerberosConfig) Validate() error {
 	}
 	if c.MaxContexts < 0 {
 		return fmt.Errorf("kerberos.max_contexts must be >= 0 (got %d); 0 uses the default", c.MaxContexts)
-	}
-	switch c.IdentityMapping.Strategy {
-	case "", "static":
-		// "" is normalized to "static" in ApplyDefaults.
-	default:
-		return fmt.Errorf("kerberos.identity_mapping.strategy %q is not supported (only \"static\")", c.IdentityMapping.Strategy)
 	}
 	// AD domain identity fields are all optional (empty => standalone WORKGROUP
 	// behavior). When set, sanity-check their shape so a transposed realm vs
@@ -711,71 +698,6 @@ func (c *OnlineJoinConfig) Validate() error {
 		return fmt.Errorf("kerberos.machine_account.online_join.rotation_interval must be >= 0 (got %v; 0 disables rotation)", c.RotationInterval)
 	}
 	return nil
-}
-
-// IdentityMappingConfig controls how Kerberos principals are mapped to Unix UID/GID.
-//
-// The mapping strategy determines how authenticated Kerberos principals
-// (e.g., "alice@EXAMPLE.COM") are converted to Unix identities for
-// NFS file permission checks.
-type IdentityMappingConfig struct {
-	// Strategy selects the identity mapping approach.
-	// Currently supported: "static" (map from config file)
-	// Future: "ldap", "nsswitch", "regex"
-	// Default: "static"
-	Strategy string `mapstructure:"strategy" yaml:"strategy"`
-
-	// StaticMap maps "principal@REALM" strings to Unix identities.
-	// Only used when Strategy is "static".
-	// Example: {"alice@EXAMPLE.COM": {UID: 1000, GID: 1000}}
-	StaticMap map[string]StaticIdentity `mapstructure:"static_map" yaml:"static_map"`
-
-	// DefaultUID is the Unix UID assigned to principals not found in StaticMap.
-	// Default: 65534 (nobody)
-	DefaultUID uint32 `mapstructure:"default_uid" yaml:"default_uid"`
-
-	// DefaultGID is the Unix GID assigned to principals not found in StaticMap.
-	// Default: 65534 (nogroup)
-	DefaultGID uint32 `mapstructure:"default_gid" yaml:"default_gid"`
-}
-
-// StaticIdentity represents a Unix identity for a specific Kerberos principal.
-type StaticIdentity struct {
-	// UID is the Unix user ID
-	UID uint32 `mapstructure:"uid" yaml:"uid"`
-
-	// GID is the Unix primary group ID
-	GID uint32 `mapstructure:"gid" yaml:"gid"`
-
-	// GIDs is a list of supplementary group IDs
-	GIDs []uint32 `mapstructure:"gids" yaml:"gids,omitempty"`
-}
-
-// BuildStaticMapper converts an IdentityMappingConfig to an identity.StaticMapper.
-// This is the canonical conversion point between config types and identity types.
-func BuildStaticMapper(idCfg *IdentityMappingConfig) *identity.StaticMapper {
-	if idCfg == nil {
-		return identity.NewStaticMapper(&identity.StaticMapperConfig{})
-	}
-
-	staticMap := make(map[string]identity.StaticIdentity, len(idCfg.StaticMap))
-	for k, v := range idCfg.StaticMap {
-		var gidsCopy []uint32
-		if v.GIDs != nil {
-			gidsCopy = make([]uint32, len(v.GIDs))
-			copy(gidsCopy, v.GIDs)
-		}
-		staticMap[k] = identity.StaticIdentity{
-			UID:  v.UID,
-			GID:  v.GID,
-			GIDs: gidsCopy,
-		}
-	}
-	return identity.NewStaticMapper(&identity.StaticMapperConfig{
-		StaticMap:  staticMap,
-		DefaultUID: idCfg.DefaultUID,
-		DefaultGID: idCfg.DefaultGID,
-	})
 }
 
 // Load loads configuration from file, environment, and defaults.

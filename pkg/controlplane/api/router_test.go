@@ -1,10 +1,8 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -15,7 +13,7 @@ import (
 )
 
 // newTestRouter builds a router + JWT service backed by an in-memory store,
-// returning the store so tests can seed fixtures (e.g. adapters) and the
+// returning the store so tests can seed fixtures and the
 // runtime so they can subscribe to its change events.
 func newTestRouter(t *testing.T, pprofEnabled bool) (http.Handler, *auth.JWTService, store.Store, *runtime.Runtime) {
 	t.Helper()
@@ -96,53 +94,6 @@ func TestPprofRequiresAdminAuth(t *testing.T) {
 				t.Errorf("status = %d, want %d (body=%q)", rec.Code, tc.wantStatus, rec.Body.String())
 			}
 		})
-	}
-}
-
-// TestAdapterPortsAuthenticatedNonAdmin verifies the authz split on the
-// adapter read routes: the full listing stays admin/operator-only, while the
-// lean port-discovery endpoint is reachable by any authenticated user (so a
-// plain share-user can find the port to mount) and never exposes adapter
-// Config.
-func TestAdapterPortsAuthenticatedNonAdmin(t *testing.T) {
-	router, jwtService, cpStore, _ := newTestRouter(t, false)
-
-	if _, err := cpStore.CreateAdapter(context.Background(), &models.AdapterConfig{
-		ID:        "nfs-adapter",
-		Type:      "nfs",
-		Enabled:   true,
-		Port:      12049,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}); err != nil {
-		t.Fatalf("seed adapter: %v", err)
-	}
-
-	userToken := "Bearer " + tokenFor(t, jwtService, models.RoleUser)
-
-	// Full listing stays role-gated: a plain user is forbidden.
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/adapters", nil)
-	req.Header.Set("Authorization", userToken)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("GET /adapters as user = %d, want %d", rec.Code, http.StatusForbidden)
-	}
-
-	// Port discovery is open to any authenticated user and returns the port.
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/adapters/ports", nil)
-	req.Header.Set("Authorization", userToken)
-	rec = httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /adapters/ports as user = %d, want %d (body=%q)", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if body := rec.Body.String(); !strings.Contains(body, `"port":12049`) {
-		t.Errorf("ports response missing port: %q", body)
-	}
-	// Config must never leak through the unprivileged endpoint.
-	if body := rec.Body.String(); strings.Contains(body, `"config"`) {
-		t.Errorf("ports response leaked config: %q", body)
 	}
 }
 

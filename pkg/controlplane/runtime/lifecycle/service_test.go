@@ -10,28 +10,6 @@ import (
 
 // ---- fakes -----------------------------------------------------------------
 
-type fakeSettings struct {
-	loadErr                  error
-	loaded, started, stopped bool
-}
-
-func (f *fakeSettings) LoadInitial(ctx context.Context) error { f.loaded = true; return f.loadErr }
-func (f *fakeSettings) Start(ctx context.Context)             { f.started = true }
-func (f *fakeSettings) Stop()                                 { f.stopped = true }
-
-type fakeAdapters struct {
-	loadErr         error
-	loaded, stopped bool
-	stopErr         error
-}
-
-func (f *fakeAdapters) LoadAdaptersFromStore(ctx context.Context) error {
-	f.loaded = true
-	return f.loadErr
-}
-
-func (f *fakeAdapters) StopAllAdapters() error { f.stopped = true; return f.stopErr }
-
 type fakeFlusher struct {
 	called bool
 	n      int
@@ -178,7 +156,7 @@ func TestSetAPIServerPanicsAfterServe(t *testing.T) {
 	s := New(time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Serve returns immediately on cancelled ctx
-	_ = s.Serve(ctx, Deps{AdapterLoader: &fakeAdapters{}})
+	_ = s.Serve(ctx, Deps{})
 
 	defer func() {
 		if recover() == nil {
@@ -192,8 +170,6 @@ func TestSetAPIServerPanicsAfterServe(t *testing.T) {
 // cancelled. With a nil SID store, an ephemeral SID is generated.
 func TestServeGracefulShutdownOnCancel(t *testing.T) {
 	s := New(time.Second)
-	settings := &fakeSettings{}
-	adapters := &fakeAdapters{}
 	flusher := &fakeFlusher{n: 3}
 	closer := &fakeStoreCloser{}
 	drainer := &fakeDrainer{}
@@ -204,8 +180,6 @@ func TestServeGracefulShutdownOnCancel(t *testing.T) {
 	cancel()
 
 	err := s.Serve(ctx, Deps{
-		Settings:                settings,
-		AdapterLoader:           adapters,
 		MetadataFlusher:         flusher,
 		StoreCloser:             closer,
 		SnapshotDrainer:         drainer,
@@ -217,12 +191,6 @@ func TestServeGracefulShutdownOnCancel(t *testing.T) {
 	}
 	if s.SIDMapper() == nil {
 		t.Error("ephemeral SID mapper not generated for nil store")
-	}
-	if !settings.loaded || !settings.started || !settings.stopped {
-		t.Errorf("settings lifecycle incomplete: %+v", settings)
-	}
-	if !adapters.loaded || !adapters.stopped {
-		t.Errorf("adapters lifecycle incomplete: %+v", adapters)
 	}
 	if !drainer.drained {
 		t.Error("snapshot drainer not invoked")
@@ -253,25 +221,6 @@ func TestServeGracefulShutdownOnCancel(t *testing.T) {
 	}
 }
 
-// A failure loading adapters aborts Serve before entering the select loop and
-// is returned wrapped.
-func TestServeAdapterLoadFailure(t *testing.T) {
-	s := New(time.Second)
-	adapters := &fakeAdapters{loadErr: errors.New("boom")}
-	closer := &fakeStoreCloser{}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	err := s.Serve(ctx, Deps{AdapterLoader: adapters, StoreCloser: closer})
-	if err == nil {
-		t.Fatal("expected error from adapter load failure")
-	}
-	// shutdown() is NOT reached on early adapter-load return.
-	if closer.closed {
-		t.Error("metadata stores should not be closed on early adapter-load failure")
-	}
-}
-
 // When the API server's Start fails, Serve shuts down and returns the wrapped
 // API error rather than ctx.Err().
 func TestServeAPIServerFailureTriggersShutdown(t *testing.T) {
@@ -284,7 +233,7 @@ func TestServeAPIServerFailureTriggersShutdown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := s.Serve(ctx, Deps{AdapterLoader: &fakeAdapters{}, StoreCloser: closer})
+	err := s.Serve(ctx, Deps{StoreCloser: closer})
 	if err == nil || !errors.Is(err, api.startErr) {
 		t.Errorf("err = %v, want wrapped %v", err, api.startErr)
 	}
@@ -296,30 +245,19 @@ func TestServeAPIServerFailureTriggersShutdown(t *testing.T) {
 	}
 }
 
-// A Deps without an AdapterLoader is a programming error: both startup and
-// shutdown dereference it unconditionally, so Serve rejects it instead of
-// panicking.
-func TestServeRequiresAdapterLoader(t *testing.T) {
-	s := New(time.Second)
-	if err := s.Serve(context.Background(), Deps{}); err == nil {
-		t.Fatal("expected error for Deps without an AdapterLoader")
-	}
-}
-
 // Serve uses sync.Once: a second call is a no-op and returns nil.
 func TestServeOnlyRunsOnce(t *testing.T) {
 	s := New(time.Second)
-	adapters := &fakeAdapters{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_ = s.Serve(ctx, Deps{AdapterLoader: adapters})
+	_ = s.Serve(ctx, Deps{})
 
-	second := &fakeAdapters{}
-	if err := s.Serve(ctx, Deps{AdapterLoader: second}); err != nil {
+	second := &fakeStoreCloser{}
+	if err := s.Serve(ctx, Deps{StoreCloser: second}); err != nil {
 		t.Errorf("second Serve = %v, want nil", err)
 	}
-	if second.loaded {
-		t.Error("second Serve should not have loaded adapters")
+	if second.closed {
+		t.Error("second Serve should not have run its shutdown")
 	}
 }
 

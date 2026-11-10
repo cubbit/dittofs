@@ -16,9 +16,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/store/badger/badgertest"
 )
 
-// fakeOpenFileSource is a test OpenFileEnumerator registered through the
-// adapter-provider registry, exactly like the NFSv4 state manager and the
-// SMB handler are in production.
+// fakeOpenFileSource is a test OpenFileEnumerator installed with
+// SetOpenFileEnumerators.
 type fakeOpenFileSource struct {
 	handles [][]byte
 	err     error
@@ -107,7 +106,7 @@ func TestOpenHandleHold_OpenUnlinkedFileHeld(t *testing.T) {
 	})
 
 	src := &fakeOpenFileSource{handles: [][]byte{fh}}
-	rt.SetAdapterProvider("test_open_files", src)
+	rt.SetOpenFileEnumerators(src)
 
 	got := heldHashes(t, rt, "share")
 	assert.Len(t, got, 2)
@@ -126,7 +125,7 @@ func TestOpenHandleHold_LinkedFileSkipped(t *testing.T) {
 	fh := openHoldPutFile(t, store, "share", "/linked.bin", 1, "p1", []block.ChunkRef{
 		{Hash: hashAll(0x33), Offset: 0, Size: 64},
 	})
-	rt.SetAdapterProvider("test_open_files", &fakeOpenFileSource{handles: [][]byte{fh}})
+	rt.SetOpenFileEnumerators(&fakeOpenFileSource{handles: [][]byte{fh}})
 	assert.Empty(t, heldHashes(t, rt, "share"))
 }
 
@@ -145,7 +144,7 @@ func TestOpenHandleHold_StaleAndForeignHandlesSkipped(t *testing.T) {
 	foreign, err := store.GenerateHandle(ctx, "othershare", "/f.bin")
 	require.NoError(t, err)
 
-	rt.SetAdapterProvider("test_open_files", &fakeOpenFileSource{handles: [][]byte{stale, foreign}})
+	rt.SetOpenFileEnumerators(&fakeOpenFileSource{handles: [][]byte{stale, foreign}})
 	assert.Empty(t, heldHashes(t, rt, "share"))
 
 	// Open-unlinked file in a share outside the provider's scope contributes
@@ -153,7 +152,7 @@ func TestOpenHandleHold_StaleAndForeignHandlesSkipped(t *testing.T) {
 	fh := openHoldPutFile(t, store, "share", "/scoped.bin", 0, "p2", []block.ChunkRef{
 		{Hash: hashAll(0x44), Offset: 0, Size: 64},
 	})
-	rt.SetAdapterProvider("test_open_files", &fakeOpenFileSource{handles: [][]byte{fh}})
+	rt.SetOpenFileEnumerators(&fakeOpenFileSource{handles: [][]byte{fh}})
 	p := &openHandleHoldProvider{rt: rt, shares: map[string]struct{}{"unrelated": {}}}
 	var emitted int
 	require.NoError(t, p.HeldHashes(ctx, "remote-1", nil, func(block.ContentHash) error {
@@ -167,8 +166,8 @@ func TestOpenHandleHold_StaleAndForeignHandlesSkipped(t *testing.T) {
 // failure aborts the mark phase instead of silently sweeping held blocks.
 func TestOpenHandleHold_EnumeratorErrorFailsClosed(t *testing.T) {
 	rt, _ := newOpenHoldRuntime(t, "share")
-	boom := errors.New("adapter unavailable")
-	rt.SetAdapterProvider("test_open_files", &fakeOpenFileSource{err: boom})
+	boom := errors.New("enumerator unavailable")
+	rt.SetOpenFileEnumerators(&fakeOpenFileSource{err: boom})
 	p := &openHandleHoldProvider{rt: rt, shares: map[string]struct{}{"share": {}}}
 	err := p.HeldHashes(context.Background(), "remote-1", nil, func(block.ContentHash) error { return nil })
 	require.ErrorIs(t, err, boom)
@@ -183,7 +182,7 @@ func TestOpenHandleHold_CanceledContextStopsEarly(t *testing.T) {
 	fh := openHoldPutFile(t, store, "share", "/scratch.bin", 0, "p1", []block.ChunkRef{
 		{Hash: hashAll(0x77), Offset: 0, Size: 64},
 	})
-	rt.SetAdapterProvider("test_open_files", &fakeOpenFileSource{handles: [][]byte{fh}})
+	rt.SetOpenFileEnumerators(&fakeOpenFileSource{handles: [][]byte{fh}})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -216,7 +215,7 @@ func TestOpenHandleHold_GCHoldForRemoteCombines(t *testing.T) {
 	fh := openHoldPutFile(t, store, "share", "/combined.bin", 0, "p3", []block.ChunkRef{
 		{Hash: h, Offset: 0, Size: 64},
 	})
-	rt.SetAdapterProvider("test_open_files", &fakeOpenFileSource{handles: [][]byte{fh}})
+	rt.SetOpenFileEnumerators(&fakeOpenFileSource{handles: [][]byte{fh}})
 
 	hold := rt.gcHoldForRemote([]string{"share"})
 	got := make(map[block.ContentHash]struct{})
@@ -234,8 +233,7 @@ func TestOpenHandleHold_CrossProtocolDedup(t *testing.T) {
 	fh := openHoldPutFile(t, store, "share", "/both.bin", 0, "p4", []block.ChunkRef{
 		{Hash: hashAll(0x66), Offset: 0, Size: 64},
 	})
-	rt.SetAdapterProvider("test_nfs_open", &fakeOpenFileSource{handles: [][]byte{fh}})
-	rt.SetAdapterProvider("test_smb_open", &fakeOpenFileSource{handles: [][]byte{fh}})
+	rt.SetOpenFileEnumerators(&fakeOpenFileSource{handles: [][]byte{fh}}, &fakeOpenFileSource{handles: [][]byte{fh}})
 
 	visits := 0
 	require.NoError(t, rt.forEachOpenUnlinkedFile(context.Background(),
@@ -261,7 +259,7 @@ func TestReapStrandedRows_SkipsOpenUnlinkedPayloads(t *testing.T) {
 	seedReconcileFB(t, ctx, store, "stranded", 1, old)
 
 	src := &fakeOpenFileSource{handles: [][]byte{fh}}
-	rt.SetAdapterProvider("test_open_files", src)
+	rt.SetOpenFileEnumerators(src)
 
 	graceCutoff := time.Now().Add(-time.Hour)
 	reaped, err := rt.reapStrandedRows(ctx, "share", store, graceCutoff, false)

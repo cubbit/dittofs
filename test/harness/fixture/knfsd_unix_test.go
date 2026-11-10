@@ -193,6 +193,16 @@ func TestKnfsd(t *testing.T) {
 	}
 }
 
+// A lease that isn't a whole number of seconds is refused before any step.
+func TestKnfsdRefusesAFractionalLease(t *testing.T) {
+	fakeKnfsd(t)
+	var w bytes.Buffer
+	_, err := StartKnfsd(context.Background(), registry.Fixture{Server: "knfsd", NFS: registry.NFS{Version: "export"}, Lease: "1.5s"}, t.TempDir(), &w)
+	if err == nil || !strings.Contains(err.Error(), "whole number of seconds") {
+		t.Fatalf("StartKnfsd: %v, want the lease refused", err)
+	}
+}
+
 // A setup that fails undoes what it did, the last step first, and the step
 // it failed in: a failed mount of the tmpfs is unmounted, a failed export
 // leaves rpc.mountd and the server unstarted, a server that doesn't answer,

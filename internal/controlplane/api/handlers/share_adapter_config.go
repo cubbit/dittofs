@@ -156,6 +156,13 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	if req.RequireKerberos != nil {
 		opts.RequireKerberos = *req.RequireKerberos
 	}
+	// decision: this route keeps writing and validating the share's NFS policy
+	// (squash, anonymous UID/GID, netgroup, the flavor pair refused below), and
+	// pushes it into the running share, although nothing on this server reads
+	// it: no protocol is served. It is kept for the v2 adapters, which read the
+	// same stored rows. Delete it, with the policy fields on the runtime share,
+	// if the v2 adapters take their share policy from somewhere else.
+	//
 	// A share reachable by no auth flavor at all would export while refusing
 	// every client, and SECINFO would narrow to an empty list. Two settings
 	// produce it — requiring Kerberos the server does not have, and forbidding
@@ -188,9 +195,7 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Push the netgroup association into the running share so it takes effect
-	// immediately (CheckNetgroupAccess reads NetgroupName from the runtime
-	// registry).
+	// Push the netgroup association into the running share's registry entry.
 	if req.Netgroup != nil && h.runtime != nil {
 		if err := h.runtime.SetShareNetgroup(share.Name, netgroupName); err != nil {
 			logger.Warn("NFS config persisted but failed to update runtime netgroup",
@@ -199,10 +204,8 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Squash / anonymous-UID changes alter how client UIDs map to identities but
-	// do not flow through ReconcileShareRootACL. Push them into the running share
-	// so ResolveSharePermission / ApplyIdentityMapping read the new policy, then
-	// drop cached per-identity authorization so it takes effect on active clients
-	// without an adapter restart.
+	// do not flow through ReconcileShareRootACL. Push them into the running share,
+	// then raise an auth-cache invalidation.
 	if h.runtime != nil {
 		if req.Squash != nil || req.AnonymousUID != nil || req.AnonymousGID != nil {
 			if err := h.runtime.SetShareSquash(share.Name, opts.GetSquashMode(), opts.AnonymousUID, opts.AnonymousGID); err != nil {

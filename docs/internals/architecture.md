@@ -2,6 +2,13 @@
 
 This document provides a deep dive into DittoFS's architecture, design patterns, and internal implementation.
 
+> **On this branch the v1 protocol adapters are deleted.** `pkg/adapter`,
+> `internal/adapter` and the runtime's adapter half are gone and no file protocol
+> is served, so the diagram, the runtime's sub-services, the adapter and
+> Kerberos sections and the directory map below still describe what this branch
+> removed. RFC 20's v2 adapters replace them; see
+> [RFC 20](rfcs/rfc-20-adapters.md).
+
 **Storage terms used throughout** (see the [Glossary](../guide/glossary.md) for protocol and security terms):
 
 - **CAS** (Content-Addressed Storage) — blocks are named by the hash of their contents rather than by location, so identical data is stored once and deduplicated automatically.
@@ -12,7 +19,6 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 
 - [Core Abstraction Layers](#core-abstraction-layers)
 - [Data path](#data-path)
-- [Adapter Pattern](#adapter-pattern)
 - [Control Plane Pattern](#control-plane-pattern)
 - [Service Layer](#service-layer)
 - [Built-In and Custom Backends](#built-in-and-custom-backends)
@@ -452,57 +458,6 @@ call only (`WithRestoreTimeout`).
 
 For the full operator runbook see
 [SNAPSHOTS.md](../guide/snapshots.md).
-
-## Adapter Pattern
-
-DittoFS uses the Adapter pattern to provide clean protocol abstractions:
-
-```go
-// ProtocolAdapter interface (defined in runtime package to avoid import cycles)
-type ProtocolAdapter interface {
-    Serve(ctx context.Context) error
-    Stop(ctx context.Context) error
-    Protocol() string
-    Port() int
-}
-
-// RuntimeSetter - adapters that need runtime access implement this.
-// The parameter is `any` on purpose: pkg/adapter cannot import
-// pkg/controlplane/runtime (the runtime imports the adapter contract), so
-// implementations type-assert to *runtime.Runtime and panic on a mismatch.
-type RuntimeSetter interface {
-    SetRuntime(rt any)
-}
-
-// Multiple adapters can run concurrently, sharing the same runtime
-rt := runtime.New(cpStore)
-rt.SetAdapterFactory(createAdapterFactory())
-rt.Serve(ctx)  // Loads adapters from store and starts them
-```
-
-### Shared adapter helpers (internal/adapter/common)
-
-NFSv3, NFSv4, and SMB v2/3 handlers share a single package of helpers at
-`internal/adapter/common/` so the three adapters do not each carry a
-private copy of the same logic. The package exposes:
-
-- **No content store**: `common.ErrNoContentStore` is the answer every
-  data operation gives while the data path is cut: `block.ErrNoContentStore`
-  in the I/O row, so each protocol's `StatusForErr` maps it to its own I/O
-  status.
-- **Metadata error translation**: per-package `StatusFor` switches in the
-  adapter types packages (`internal/adapter/nfs/types`,
-  `internal/adapter/nfs/v4/types`, `internal/adapter/smb/types`), each with
-  its enum-walk test; `StatusForErr` is the error-level wrapper. SMB lock-
-  operation context uses the parallel `StatusForLock`/`StatusForLockErr`
-  functions in the same package (e.g., `ErrLocked` →
-  `STATUS_LOCK_NOT_GRANTED` in lock context vs. `STATUS_FILE_LOCK_CONFLICT`
-  in general I/O context). Adding a new `metadata.ErrorCode` means adding a
-  switch arm plus an expectation row in each relevant package — the
-  enum-walk test fails loudly if either is missing.
-
-See CONTRIBUTING.md "Adding a new metadata.ErrorCode" for the recipe and
-NFS.md / SMB.md "Error mapping" for protocol-specific notes.
 
 ### Object ownership: a client-supplied identifier is not authorization
 

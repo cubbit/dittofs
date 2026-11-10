@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/controlplane/models"
-	"github.com/cubbit/dittofs/pkg/controlplane/runtime/adapters"
 	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/cubbit/dittofs/pkg/controlplane/store"
 	"github.com/cubbit/dittofs/pkg/health"
@@ -59,48 +58,6 @@ func (c *countingMetaStore) Healthcheck(ctx context.Context) health.Report {
 
 func (c *countingMetaStore) Count() int64 { return atomic.LoadInt64(&c.calls) }
 
-// fakeAdapter is a minimal [adapters.ProtocolAdapter] implementation
-// suitable for the adapter checker test. Only Healthcheck is
-// exercised meaningfully; Serve blocks until ctx is canceled so
-// AddAdapter's goroutine exits cleanly.
-type fakeAdapter struct {
-	protocol string
-	calls    int64
-	status   health.Status
-	stopped  chan struct{}
-	ready    chan struct{}
-}
-
-func newFakeAdapter(protocol string, status health.Status) *fakeAdapter {
-	return &fakeAdapter{
-		protocol: protocol,
-		status:   status,
-		stopped:  make(chan struct{}),
-		ready:    make(chan struct{}),
-	}
-}
-
-func (a *fakeAdapter) Serve(ctx context.Context) error {
-	close(a.ready)
-	<-ctx.Done()
-	close(a.stopped)
-	return ctx.Err()
-}
-
-func (a *fakeAdapter) Stop(_ context.Context) error   { return nil }
-func (a *fakeAdapter) ListenerReady() <-chan struct{} { return a.ready }
-func (a *fakeAdapter) Protocol() string               { return a.protocol }
-func (a *fakeAdapter) Port() int                      { return 0 }
-func (a *fakeAdapter) Healthcheck(_ context.Context) health.Report {
-	atomic.AddInt64(&a.calls, 1)
-	return health.Report{Status: a.status, CheckedAt: time.Now().UTC()}
-}
-
-func (a *fakeAdapter) Count() int64 { return atomic.LoadInt64(&a.calls) }
-
-// compile-time check.
-var _ adapters.ProtocolAdapter = (*fakeAdapter)(nil)
-
 func TestStatusCheckers_MetadataStore_CachedAcrossCalls(t *testing.T) {
 	rt, _ := newRuntimeForChecks(t)
 	rt.statusCheckers = newCheckerCache(5 * time.Second)
@@ -117,6 +74,32 @@ func TestStatusCheckers_MetadataStore_CachedAcrossCalls(t *testing.T) {
 
 	if got := meta.Count(); got != 1 {
 		t.Errorf("expected 1 underlying Healthcheck call, got %d", got)
+	}
+}
+
+// TestStatusCheckers_TTLExpiry proves newCheckerCache passes its TTL through
+// to the cached checkers: a call after the TTL window re-probes the store
+// instead of returning the cached report.
+func TestStatusCheckers_TTLExpiry(t *testing.T) {
+	rt, _ := newRuntimeForChecks(t)
+	ttl := 10 * time.Millisecond
+	rt.statusCheckers = newCheckerCache(ttl)
+
+	meta := newCountingMetaStore(t)
+	if err := rt.RegisterMetadataStore("m-ttl", meta); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
+	}
+
+	_ = rt.MetadataStoreChecker("m-ttl").Healthcheck(context.Background())
+	if got := meta.Count(); got != 1 {
+		t.Fatalf("first call probe count = %d, want 1", got)
+	}
+
+	time.Sleep(ttl * 5)
+
+	_ = rt.MetadataStoreChecker("m-ttl").Healthcheck(context.Background())
+	if got := meta.Count(); got < 2 {
+		t.Errorf("probe count after the TTL = %d, want at least 2 (the cache did not expire)", got)
 	}
 }
 
@@ -141,40 +124,6 @@ func TestStatusCheckers_MetadataStore_UnknownReturnsNotLoaded(t *testing.T) {
 	}
 	if !strings.Contains(rep.Message, "not loaded") {
 		t.Errorf("message = %q, want it to mention 'not loaded'", rep.Message)
-	}
-}
-
-func TestStatusCheckers_Adapter_NotRunningThenRunning(t *testing.T) {
-	rt, _ := newRuntimeForChecks(t)
-
-	// Not running → unknown
-	rep := rt.AdapterChecker("fake").Healthcheck(context.Background())
-	if rep.Status != health.StatusUnknown {
-		t.Errorf("unregistered adapter status = %s, want unknown", rep.Status)
-	}
-	if !strings.Contains(rep.Message, "not running") {
-		t.Errorf("message = %q, want 'not running'", rep.Message)
-	}
-
-	// The "not running" report was cached. Reset the cache to exercise
-	// the running path without waiting for TTL.
-	rt.statusCheckers = newCheckerCache(5 * time.Second)
-
-	fa := newFakeAdapter("fake", health.StatusHealthy)
-	if err := rt.AddAdapter(fa); err != nil {
-		t.Fatalf("AddAdapter: %v", err)
-	}
-	t.Cleanup(func() { _ = rt.StopAllAdapters() })
-
-	rep = rt.AdapterChecker("fake").Healthcheck(context.Background())
-	if rep.Status != health.StatusHealthy {
-		t.Errorf("running adapter status = %s, want healthy", rep.Status)
-	}
-
-	// A second call inside TTL must NOT re-invoke the adapter probe.
-	_ = rt.AdapterChecker("fake").Healthcheck(context.Background())
-	if got := fa.Count(); got != 1 {
-		t.Errorf("expected 1 underlying Healthcheck call, got %d", got)
 	}
 }
 
@@ -238,93 +187,6 @@ func TestStatusCheckers_BlockStore_MemoryStoreHealthy(t *testing.T) {
 	rep2 := rt.BlockStoreChecker("mem").Healthcheck(context.Background())
 	if rep2.Status != health.StatusHealthy {
 		t.Errorf("second call status = %s, want healthy", rep2.Status)
-	}
-}
-
-// mutableFakeAdapter is a [adapters.ProtocolAdapter] whose
-// Healthcheck return value can be swapped at runtime. Used by the
-// TTL expiry test to prove that a second call after TTL elapses
-// produces a freshly probed report instead of the cached one.
-type mutableFakeAdapter struct {
-	protocol string
-	calls    int64
-	status   atomic.Value // health.Status
-	stopped  chan struct{}
-	ready    chan struct{}
-}
-
-func newMutableFakeAdapter(protocol string, initial health.Status) *mutableFakeAdapter {
-	a := &mutableFakeAdapter{
-		protocol: protocol,
-		stopped:  make(chan struct{}),
-		ready:    make(chan struct{}),
-	}
-	a.status.Store(initial)
-	return a
-}
-
-func (a *mutableFakeAdapter) Serve(ctx context.Context) error {
-	close(a.ready)
-	<-ctx.Done()
-	close(a.stopped)
-	return ctx.Err()
-}
-
-func (a *mutableFakeAdapter) Stop(_ context.Context) error   { return nil }
-func (a *mutableFakeAdapter) ListenerReady() <-chan struct{} { return a.ready }
-func (a *mutableFakeAdapter) Protocol() string               { return a.protocol }
-func (a *mutableFakeAdapter) Port() int                      { return 0 }
-func (a *mutableFakeAdapter) Healthcheck(_ context.Context) health.Report {
-	atomic.AddInt64(&a.calls, 1)
-	return health.Report{Status: a.status.Load().(health.Status), CheckedAt: time.Now().UTC()}
-}
-func (a *mutableFakeAdapter) SetStatus(s health.Status) { a.status.Store(s) }
-func (a *mutableFakeAdapter) Count() int64              { return atomic.LoadInt64(&a.calls) }
-
-var _ adapters.ProtocolAdapter = (*mutableFakeAdapter)(nil)
-
-// TestStatusCheckers_TTLExpiry proves the CachedChecker layer
-// actually honors its TTL: a second Healthcheck call after the TTL
-// window must produce a freshly probed report, not the cached one.
-// The test swaps the underlying adapter's status between the two
-// calls and asserts the second call sees the new value.
-func TestStatusCheckers_TTLExpiry(t *testing.T) {
-	rt, _ := newRuntimeForChecks(t)
-	// Very short TTL so the test completes quickly. We sleep past
-	// this window between the two Healthcheck calls.
-	ttl := 10 * time.Millisecond
-	rt.statusCheckers = newCheckerCache(ttl)
-
-	fa := newMutableFakeAdapter("fake-ttl", health.StatusHealthy)
-	if err := rt.AddAdapter(fa); err != nil {
-		t.Fatalf("AddAdapter: %v", err)
-	}
-	t.Cleanup(func() { _ = rt.StopAllAdapters() })
-
-	// First call: probes the adapter once and caches the healthy
-	// report.
-	rep1 := rt.AdapterChecker("fake-ttl").Healthcheck(context.Background())
-	if rep1.Status != health.StatusHealthy {
-		t.Fatalf("first call status = %s, want healthy", rep1.Status)
-	}
-	if got := fa.Count(); got != 1 {
-		t.Fatalf("first call underlying probe count = %d, want 1", got)
-	}
-
-	// Flip the adapter's health and wait past the TTL window so the
-	// CachedChecker discards its memoized report.
-	fa.SetStatus(health.StatusUnhealthy)
-	time.Sleep(ttl * 5)
-
-	// Second call: MUST re-probe and observe the new status. If the
-	// cache incorrectly returned the stale healthy report, this fails
-	// with status=healthy and underlying call count still 1.
-	rep2 := rt.AdapterChecker("fake-ttl").Healthcheck(context.Background())
-	if rep2.Status != health.StatusUnhealthy {
-		t.Errorf("second call status = %s, want unhealthy (cache did not expire)", rep2.Status)
-	}
-	if got := fa.Count(); got < 2 {
-		t.Errorf("expected at least 2 underlying Healthcheck calls after TTL, got %d", got)
 	}
 }
 
