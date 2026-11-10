@@ -138,6 +138,17 @@ const (
 
 	// designFailsSync makes the small writer's first measured Sync fail.
 	designFailsSync mixedDesign = "failing sync"
+
+	// designBacklogWait answers a Sync by chasing the stream: each fsync
+	// pass covers only what was pending as the pass began, so every
+	// interval the stream lands during the wait deserves a park of its
+	// own, and a park that asks is fed — the growth with the other
+	// writer's appends the row's bound exists to fail. The design fails
+	// in the first leg: the run's first measured window already holds its
+	// own record and three fed intervals against the bound's one, so no
+	// window of another and larger file is ever reached; the bound is per
+	// window, not per file, and one fed interval is all the room it has.
+	designBacklogWait mixedDesign = "waits the stream's backlog"
 )
 
 // fakeCase is one choreography case: the design the fake journal answers
@@ -394,6 +405,16 @@ func (f *fakeMixed) EndsFile(i int) bool {
 	return false
 }
 
+// FileStarts lists the interval at which each of the fakes' files starts.
+func (f *fakeMixed) FileStarts() []int {
+	starts, n := make([]int, len(f.files)), 0
+	for i, size := range f.files {
+		starts[i] = n
+		n += size
+	}
+	return starts
+}
+
 // Intervals is how many intervals the fakes' files hold.
 func (f *fakeMixed) Intervals() int {
 	total := 0
@@ -489,6 +510,28 @@ func (f *fakeMixed) SyncSmall() error {
 		for f.pending > 0 || f.smallPend > 0 {
 			f.fsync(f.active)
 			f.flush()
+		}
+		return nil
+	case designBacklogWait:
+		// The chasing design's first pass covers only what was pending as
+		// it began, and every later pass only what landed during the one
+		// before, so each of the stream's landings during the wait
+		// deserves a park of its own.
+		covered, coveredSmalls := f.pending, f.smallPend
+		f.fsync(f.active)
+		f.durable += covered
+		f.pending -= covered
+		if coveredSmalls > 0 {
+			f.smallPend = 0
+		}
+		// The loop ends because the feeder stops feeding after mixedFeeds
+		// intervals: past that cap no interval lands during a park, so a
+		// pass clears exactly what it began with and pending reaches zero.
+		for f.pending > 0 {
+			covered = f.pending
+			f.fsync(f.active)
+			f.durable += covered
+			f.pending -= covered
 		}
 		return nil
 	}
@@ -669,6 +712,13 @@ func TestCounted_MixedChoreography(t *testing.T) {
 		{"never syncs", fakeCase{design: designNeverSyncs}, "less durable than written"},
 		{"failing write", fakeCase{design: designFailsWrite}, "opening write"},
 		{"failing sync", fakeCase{design: designFailsSync}, "measured Sync"},
+		// The chasing design: the run's first measured window fails the
+		// bound — its own record and three fed intervals against the
+		// bound's one — so the design is caught inside the first leg's
+		// rounds, and no window of any later file is reached. The bound is
+		// what forbids the growth: it is per window, and a window may
+		// carry one fed interval only.
+		{"waits the stream's backlog", fakeCase{design: designBacklogWait, files: fakeCheckFiles, segCap: fakeCheckSegCap}, "durable in one window"},
 		// Names change on every append, so every window is skipped and the
 		// run measures nothing: the vacuity guard is the only thing that
 		// fails it, and this case is the pin that disabling the guard

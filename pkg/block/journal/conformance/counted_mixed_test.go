@@ -65,6 +65,11 @@ type mixedEnv interface {
 	// from 0, is the last of its file.
 	EndsFile(i int) bool
 
+	// FileStarts lists the interval each streamed file starts at, counting
+	// the stream's intervals from 0, in the files' order: the interval
+	// after a file's last one starts the next file.
+	FileStarts() []int
+
 	// Intervals is how many intervals the stream lands in all. The protocol
 	// consumes exactly one per round plus whatever it feeds, and never runs
 	// a round the stream cannot open.
@@ -180,7 +185,15 @@ func settleParked(t mixedTB, gate *kit.SimGate) {
 // hold that honest: a rule keyed anything else arms a round whose interval
 // ends a file, and the watcher cases catch every closing sync that ran
 // armed.
-func runMixedRounds(t mixedTB, env mixedEnv) {
+// runMixedRounds drives the mixed-durability protocol of RFC 1 section 9.7
+// over env's stream and returns how many windows each streamed file
+// measured, one entry per file in the stream's order; the run-wide teardown
+// below fails a run that measured nothing at all, and whether an empty leg
+// is a failure is the caller's, since the boundary rule can disarm a whole
+// small file — the fakes' five-interval file never arms a window — and a
+// check whose every leg is large enough to measure holds each to at least
+// one window.
+func runMixedRounds(t mixedTB, env mixedEnv) []int {
 	t.Helper()
 
 	gate := &kit.SimGate{Match: mixedMatch}
@@ -240,7 +253,16 @@ func runMixedRounds(t mixedTB, env mixedEnv) {
 		}
 	}()
 
+	// measured counts the windows of the whole run for the vacuity guard:
+	// a run whose every window was skipped proves nothing about any design.
+	// fileMeasured counts them per streamed file, keyed on the interval each
+	// file starts at: the interval that follows a file's last one starts
+	// the next file, so a leg's count is settled the moment the next file
+	// opens. Both files' counts are returned, so a check that runs legs
+	// large enough to need it can hold each to at least one window.
 	measured := 0
+	fileStarts, measuredPerFile := env.FileStarts(), make([]int, len(env.FileStarts()))
+	fileIdx, fileMeasured := 0, 0
 	for interval := 0; interval < env.Intervals(); {
 		// Hand the stream its opening interval and wait for it to land. A
 		// stream that returns here has run every interval it was given and
@@ -277,6 +299,16 @@ func runMixedRounds(t mixedTB, env mixedEnv) {
 		interval++
 		if !confirmed {
 			break
+		}
+		// The opening interval just landed started a later file: the leg
+		// before it is settled — it cannot measure again — and the count
+		// moves to that file's own.
+		for fileIdx+1 < len(fileStarts) && interval == fileStarts[fileIdx+1] {
+			if measuredPerFile[fileIdx] != fileMeasured {
+				t.Fatalf("per-file measurement bookkeeping drifted: counted %d windows for file %d, recorded %d", fileMeasured, fileIdx, measuredPerFile[fileIdx])
+			}
+			fileIdx++
+			fileMeasured = 0
 		}
 
 		// The window's boundary rule: never measure a round whose opening
@@ -434,6 +466,8 @@ func runMixedRounds(t mixedTB, env mixedEnv) {
 				t.Fatalf("a small writer's Sync made %d bytes durable in one window - its own record, the fed intervals and a roll header leave no room for more - at interval %d, bound %d", waited, interval, env.WindowBound())
 			}
 			measured++
+			fileMeasured++
+			measuredPerFile[fileIdx]++
 		}
 	}
 
@@ -464,6 +498,21 @@ func runMixedRounds(t mixedTB, env mixedEnv) {
 	if floor := env.DurableFloor(); env.DurableTotal() < floor {
 		t.Fatalf("the run ended with durable %d, want at least the %d its writes took", env.DurableTotal(), floor)
 	}
+
+	// The last leg's counts were never settled by a next file opening, so
+	// they are folded in here; measuredPerFile has now counted every
+	// window of every file the stream landed.
+	if measuredPerFile[fileIdx] != fileMeasured {
+		t.Fatalf("per-file measurement bookkeeping drifted: counted %d windows for the last file %d, recorded %d", fileMeasured, fileIdx, measuredPerFile[fileIdx])
+	}
+	total := 0
+	for _, n := range measuredPerFile {
+		total += n
+	}
+	if total != measured {
+		t.Fatalf("the files measured %d windows between them and the run measured %d, want the same count", total, measured)
+	}
+	return measuredPerFile
 }
 
 // takeArrival reports whether an armed call's arrival is still queued, and
