@@ -407,6 +407,28 @@ func TestSelfFenceNotOnAConflict(t *testing.T) {
 	}
 }
 
+// A store error ahead of a long conflict does not fence the node: the
+// conflict is the latest attempt, and it failed on its own.
+func TestSelfFenceNotOnAConflictAfterAStoreError(t *testing.T) {
+	u := newFenceUnit(t)
+	u.e.SetConflictBound(20 * time.Millisecond)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t,
+		nextUpdate(sim.FaultAction{Err: errInjected}),
+		sim.Rule{Op: kvtest.OpGet, Key: fileRecord(u.share.ID, a), Action: sim.FaultAction{Err: kv.ErrConflict}},
+		sim.Rule{Op: kvtest.OpGet, Key: "J‖*", Action: sim.FaultAction{Err: kv.ErrConflict}},
+	)
+	u.commitInBackground(t, a)
+	eventually(t, "the conflicting file named failing", func() bool { return u.e.Failing(u.rec, a) })
+	u.advanceInSteps(time.Minute)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Errorf("a write after one store error then a minute of conflicts: %v, want acknowledged", err)
+	}
+}
+
 // A commit the store reached through conflicts it retried counts as a
 // commit: it restarts the 30 s of a retrying owner failing beside it.
 func TestSelfFenceCountsAConflictRetriedToSuccess(t *testing.T) {
