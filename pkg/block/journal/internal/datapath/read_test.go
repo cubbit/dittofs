@@ -120,14 +120,54 @@ func TestReadThroughClosedHandleIsRefused(t *testing.T) {
 	}
 }
 
-// pattern returns n bytes that differ from their neighbours and from the
-// sentinel, seeded by seed.
+// pattern returns n bytes seeded by seed, none of them zero or a sentinel
+// byte, from a xorshift stream: no offset shift a test uses maps the pattern
+// onto itself, so a read that serves the right length from the wrong place in
+// a record shows. pattern(m, seed) is a prefix of pattern(n, seed) for m < n.
 func pattern(n int, seed byte) []byte {
 	b := make([]byte, n)
+	x := uint32(seed)*0x9e3779b9 + 0x7f4a7c15
+	if x == 0 {
+		x = 1
+	}
 	for i := range b {
-		b[i] = byte(i*7+int(seed)) | 1
+		x ^= x << 13
+		x ^= x >> 17
+		x ^= x << 5
+		v := byte(x%253) + 1 // 1..253
+		if v >= 0xA4 {
+			v += 2 // 0xA4 and 0xA5 are the tests' sentinels
+		}
+		b[i] = v
 	}
 	return b
+}
+
+func TestPatternIsNotPeriodic(t *testing.T) {
+	const n = 4 << 20
+	b := pattern(n, 3)
+	if i := bytes.IndexByte(b, 0); i >= 0 {
+		t.Fatalf("pattern has a zero byte at %d", i)
+	}
+	if bytes.IndexByte(b, 0xA4) >= 0 || bytes.IndexByte(b, 0xA5) >= 0 {
+		t.Fatal("pattern holds a sentinel byte")
+	}
+	for _, d := range []int{1, 256, 1000, 4096, 65536, 1 << 20} {
+		same := 0
+		for i := 0; i+d < n; i++ {
+			if b[i] == b[i+d] {
+				same++
+			}
+		}
+		// A stream with no period near d agrees with its shift on about one
+		// byte in 253.
+		if limit := (n - d) / 100; same > limit {
+			t.Fatalf("pattern agrees with itself shifted by %d on %d of %d bytes", d, same, n-d)
+		}
+	}
+	if bytes.Equal(pattern(4096, 1), pattern(4096, 2)) {
+		t.Fatal("two seeds give the same pattern")
+	}
 }
 
 // sentinel is the byte a test fills p with to see which bytes a read wrote.
@@ -150,7 +190,10 @@ func TestReadServesRequestedBytesOnly(t *testing.T) {
 		t.Fatalf("the write landed in more than one record: %+v %+v", first, last)
 	}
 
-	const off, size = 512 << 10, 4 << 10
+	// The read starts off any 256-byte boundary inside the record, so a read
+	// that ignored where in the payload the piece starts would serve the
+	// wrong bytes.
+	const off, size = 512<<10 + 1000, 4 << 10
 	p := sentinels(size)
 	n, missing, held, _, err := c.ReadAt(context.Background(), s, f, off, p)
 	if err != nil {
