@@ -27,7 +27,7 @@ func deps() adapter.Deps {
 
 // New refuses Deps missing VFS or Budgets, naming every field missing and
 // no other, and accepts every other field nil.
-func TestNewRequiresServiceAndBudgets(t *testing.T) {
+func TestNewRequiresVFSAndBudgets(t *testing.T) {
 	for _, c := range []struct {
 		name         string
 		d            adapter.Deps
