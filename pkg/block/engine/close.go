@@ -50,6 +50,22 @@ func (e *Engine) newBound(ctx context.Context) *stopBound {
 	return b
 }
 
+// over reports whether the bound has ended, without waiting.
+func (b *stopBound) over() bool {
+	if b == nil {
+		return false
+	}
+
+	select {
+	case <-b.ctx.Done():
+		return true
+	case <-b.timer:
+		return true
+	default:
+		return false
+	}
+}
+
 // join waits for done, which ends what, and reports true, or reports false
 // when the bound ends first. It fires the joining seam with what once it has
 // to wait.
@@ -96,6 +112,16 @@ func (b *stopBound) join(done <-chan struct{}, what string) bool {
 // Close runs after the filesystem service has stopped (RFC 8 §2.5), so no
 // content call is in flight when it begins; one that draws a version or
 // admits a clone at that moment is outside its contract.
+//
+// decision: Close calls no Done for a write it leaves uncommitted (a file a
+// removal guards, the pending existence of a read-only journal): the
+// filesystem service, whose quota tracker holds the reservation a Done
+// releases, has stopped before Close runs, and the next start re-applies the
+// write from the journal and charges it, with nothing reserved (RFC 8 §5.1,
+// "After a restart nothing is reserved"). RFC 8 §5.1 lists the paths that
+// call Done and Close is not one; the stop-serving sweep it does list is the
+// node ceasing to serve a shard while the process lives. Overturned if the
+// RFC has Close call Done for the writes it leaves.
 func (e *Engine) Close(ctx context.Context) error {
 	e.mu.Lock()
 
@@ -178,24 +204,29 @@ func (e *Engine) stopGroupCommits(b *stopBound) error {
 	e.gcMu.Unlock()
 
 	for _, g := range gcs {
-		// decision: a journal that is read-only is not synced at Close. Its
-		// sync is refused, so a last group commit over it commits nothing
-		// and waits for the stop bound, while the pending existence is in
-		// the journal, where the next Start's recovery re-applies it (RFC 8
-		// §2.5, Start step 3). The handles and the journal still close, in
-		// reverse order, and the group commits are still stopped and joined:
-		// RFC 1 §8.7 has the journal's Close close every segment descriptor
-		// without a final sync, so it has nothing to refuse on a read-only
-		// device. RFC 1 §5.4 and RFC 8 §2.5 say nothing about the Close of a
-		// read-only journal. Overturned if the journal's Close syncs, or if
-		// the RFC asks Close to report the existence it left.
-		if ro := g.j.Stats().ReadOnly; ro.ReadOnly {
-			e.d.Logger.Warn("close left a read-only journal's pending existence to the next start",
-				"err", ro.Err)
-
-			continue
-		}
-
+		// decision: a journal that is read-only is not synced at Close, whether
+		// it was so when Close began or turned so during the last group
+		// commit (commitAll checks each round). RFC 8 §2.5 has the engine
+		// refuse every sync of a read-only journal ("once the journal reports
+		// itself read-only, the engine refuses every sync"), so a last group
+		// commit over it commits nothing and would wait for the stop bound,
+		// while the pending existence is in the journal, where the next
+		// Start's recovery re-applies it (Start step 3). The handles and the
+		// journal still close, in reverse order, and the group commits are
+		// still stopped and joined: RFC 1 §8.7 has the journal's Close close
+		// every segment descriptor without a final sync, so it has nothing to
+		// refuse on a read-only device. RFC 1 §5.4 says nothing about the
+		// Close of a read-only journal. Overturned if the journal's Close
+		// syncs, or if the RFC asks Close to report the existence it left.
+		//
+		// decision: a last group commit that does not land within the stop
+		// bound leaves the journal and every handle open and says so, as every
+		// other join does (RFC 8 §2.5 step 5), and does not cancel the batch.
+		// Cancelling it and closing would turn a slow store into work for the
+		// next start's recovery; left running, a Close the caller retries
+		// finds the store answered and ends clean. RFC 8 §2.5 step 2 only
+		// bounds the commit. Overturned if the RFC has a commit that misses
+		// the bound close the journal and leave its existence to recovery.
 		if !g.commitAll(b) {
 			return stuck("the last group commit")
 		}
@@ -310,8 +341,8 @@ func (e *Engine) lifecycleEnded() {
 
 // closeAll closes every handle, newest binding first, and then every
 // journal, newest first: the reverse of the order they were opened in (RFC 8
-// §2.5 step 4). A handle or journal already closed by an earlier Close is
-// skipped, so a Close that follows a failed one closes nothing twice.
+// §2.5 step 4). It runs once: stop sets final before it, and a later Close
+// answers that result without running the steps again.
 func (e *Engine) closeAll() error {
 	e.mu.Lock()
 	journals := slices.Clone(e.journals)
@@ -339,10 +370,6 @@ func (e *Engine) closeAll() error {
 	var errs []error
 
 	for _, b := range bs {
-		if !b.closed.CompareAndSwap(false, true) {
-			continue
-		}
-
 		if err := b.h.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("engine: close: handle of share %v: %w",
 				b.share.ID, e.journalErr(err)))
@@ -350,10 +377,6 @@ func (e *Engine) closeAll() error {
 	}
 
 	for _, vl := range slices.Backward(journals) {
-		if !vl.closed.CompareAndSwap(false, true) {
-			continue
-		}
-
 		if err := vl.j.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("engine: close: journal: %w", e.journalErr(err)))
 		}

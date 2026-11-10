@@ -268,11 +268,29 @@ func (g *groupCommit) halt(b *stopBound) bool {
 // removal loops stopped nothing releases it, a phase 1 cut short is left for
 // the next start (RFC 8 §2.5 step 2), and committing the file would commit
 // the writes above the cut operation.
+//
+// A journal found read-only, before the first batch or while one runs, is
+// left alone and commitAll reports true: the engine refuses every sync of it,
+// so its files would be asked again until the bound ended (RFC 8 §2.5). The
+// pending existence stays in the journal for the next start's recovery.
+//
+// decision: the batch in flight is read after the files are marked, not
+// before. The loop's own timer can take a file between the two, which the
+// marking then finds gone and asks for nothing; a batch that took one and
+// already returned shows as a new returned channel. Read before the marking,
+// the flag is stale and commitAll reports true over a batch that halt then
+// cuts.
 func (g *groupCommit) commitAll(b *stopBound) bool {
 	for {
+		if ro := g.j.Stats().ReadOnly; ro.ReadOnly {
+			g.e.d.Logger.Warn("close left a read-only journal's pending existence to the next start",
+				"err", ro.Err)
+
+			return true
+		}
+
 		g.mu.Lock()
 		files := slices.Collect(maps.Keys(g.due))
-		inFlight := g.inFlight
 		returned := g.returned
 		g.mu.Unlock()
 
@@ -292,7 +310,11 @@ func (g *groupCommit) commitAll(b *stopBound) bool {
 			g.mu.Unlock()
 		}
 
-		if !asked && !inFlight {
+		g.mu.Lock()
+		again := g.inFlight || g.returned != returned
+		g.mu.Unlock()
+
+		if !asked && !again {
 			return true
 		}
 

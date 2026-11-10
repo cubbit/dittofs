@@ -128,6 +128,34 @@ func reached(t *testing.T, fired <-chan struct{}, closed <-chan error) {
 	}
 }
 
+// stays fails the test if Close returns, or closes anything recorded in ev,
+// within a short real wait: Close has reached a join and what it waits for is
+// still running, so a join removed from Close shows here and not as a Close
+// that merely finished a moment later.
+func stays(t *testing.T, closed <-chan error, ev *events) {
+	t.Helper()
+
+	select {
+	case err := <-closed:
+		t.Fatalf("Close = %v while what it waits for still runs", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if got := ev.list(); len(got) != 0 {
+		t.Fatalf("closes %v under work that still runs", got)
+	}
+}
+
+// cloneEnded waits for a clone's answer, which Close's stop of the removal
+// loop the clone runs under makes ErrUnavailable.
+func cloneEnded(t *testing.T, answer <-chan error) {
+	t.Helper()
+
+	if err := <-answer; !unavailable(err) {
+		t.Errorf("Clone = %v, want ErrUnavailable: the stop ended its loop", err)
+	}
+}
+
 // unavailable reports whether err is ErrUnavailable.
 func unavailable(err error) bool {
 	return errors.Is(err, vfserr.ErrUnavailable)
@@ -843,6 +871,7 @@ func TestCloseJoinsACloneGoroutineThatIgnoresItsContext(t *testing.T) {
 		closed := closing(u.e, context.Background())
 
 		reached(t, waiting, closed)
+		stays(t, closed, u.ev)
 		u.clock.Advance(engine.StopBoundDefault)
 
 		err := <-closed
@@ -855,7 +884,7 @@ func TestCloseJoinsACloneGoroutineThatIgnoresItsContext(t *testing.T) {
 		}
 
 		release()
-		<-answer
+		cloneEnded(t, answer)
 	})
 
 	t.Run("released", func(t *testing.T) {
@@ -867,8 +896,9 @@ func TestCloseJoinsACloneGoroutineThatIgnoresItsContext(t *testing.T) {
 		closed := closing(u.e, context.Background())
 
 		reached(t, waiting, closed)
+		stays(t, closed, u.ev)
 		release()
-		<-answer
+		cloneEnded(t, answer)
 
 		if err := <-closed; err != nil {
 			t.Errorf("Close = %v, want nil", err)
@@ -1263,7 +1293,7 @@ func TestTheRaiseWokenByLoopWorkDuringTheStopRunsAndIsJoinedAfterIt(t *testing.T
 		t.Errorf("Close = %v, want nil", err)
 	}
 
-	<-answer
+	cloneEnded(t, answer)
 
 	calls := sl.raiseCalls()[calls0:]
 	if len(calls) != 1 {
@@ -1331,6 +1361,7 @@ func TestCloseCancelsAndJoinsARaiseBlockedInTheStore(t *testing.T) {
 		t.Errorf("the raise's context is %v when Close joins it, want cancelled", err)
 	}
 
+	stays(t, closed, u.ev)
 	open()
 
 	if err := <-closed; err != nil {

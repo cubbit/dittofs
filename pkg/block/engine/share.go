@@ -34,8 +34,7 @@ type binding struct {
 	primary     primary       // the verifier's other inputs from the shard's primary
 	gc          *groupCommit  // the group commit of j
 	removed     bool
-	seq         uint64      // the order bindings were made in, which Close undoes in reverse
-	closed      atomic.Bool // Close closed its handle
+	seq         uint64 // the order bindings were made in, which Close undoes in reverse
 }
 
 // bindings is the share table, read on every content call without a lock. A

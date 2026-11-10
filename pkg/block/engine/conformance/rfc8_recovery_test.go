@@ -126,11 +126,14 @@ func TestRFC8A_CleanCloseThenRestartReappliesNothing(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	f.Restart()
-
-	if got := f.Committed(h).Size; got != int64(len(p)) {
-		t.Errorf("committed size after a clean stop %d, want %d", got, len(p))
-	}
+	// Checked while the process is stopped: the restart's recovery commits an
+	// append's existence itself, so a check after it passes with the last group
+	// commit skipped.
+	f.RestartAfter(func() {
+		if got := f.Committed(h).Size; got != int64(len(p)) {
+			t.Errorf("committed size after a clean stop %d, want %d", got, len(p))
+		}
+	})
 
 	applied := journal.VersionFromBytes(f.Committed(h).Applied)
 	if cs := changesOf(t, f, id, applied); len(cs) != 0 {

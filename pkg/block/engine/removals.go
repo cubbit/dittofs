@@ -214,10 +214,16 @@ func (l *removalLoop) unstall(it *loopItem) {
 }
 
 // halt stops the loop, joins its goroutine within the bound b and ends every
-// item left. It reports false when the join did not end in b, leaving the
-// loop stopped and its items to be ended by a later halt that joins: the stop
-// is signalled once, and each item ended once, by whichever call sees the
-// goroutine end.
+// item left. It reports false when the join did not end in b, or when b ended
+// between two items' ends, leaving the loop stopped and the items not yet
+// ended to a later halt: the stop is signalled once, and each item ended
+// once, by whichever call takes it from the list.
+//
+// decision: the ends run one at a time and the bound is checked before each,
+// since an end can wait on the store: a clone's end releases its hold on the
+// source, bounded by the conflict bound but outside the stop bound, so a
+// Close with many clones would otherwise run past it by that bound for each.
+// One end can still run past the bound by the conflict bound.
 func (l *removalLoop) halt(b *stopBound) bool {
 	l.mu.Lock()
 	first := !l.closed
@@ -239,19 +245,31 @@ func (l *removalLoop) halt(b *stopBound) bool {
 		return false
 	}
 
-	l.mu.Lock()
-	items := l.ending
-	l.ending = nil
-	l.mu.Unlock()
+	for {
+		l.mu.Lock()
 
-	for _, it := range items {
+		if len(l.ending) == 0 {
+			l.ending = nil
+			l.mu.Unlock()
+
+			return true
+		}
+
+		if b.over() {
+			l.mu.Unlock()
+
+			return false
+		}
+
+		it := l.ending[0]
+		l.ending = l.ending[1:]
+		l.mu.Unlock()
+
 		l.unstall(it)
 		if it.end != nil {
 			it.end()
 		}
 	}
-
-	return true
 }
 
 // isDropped reports whether share s was dropped: nothing of it is noted for

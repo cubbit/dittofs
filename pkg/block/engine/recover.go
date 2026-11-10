@@ -537,8 +537,6 @@ type versionLimit struct {
 	// raise lock.
 	refused atomic.Bool
 	refusal error
-
-	closed atomic.Bool // Close closed the journal
 }
 
 // newVersionLimit is the version limit of journal j, its raise lock free.
