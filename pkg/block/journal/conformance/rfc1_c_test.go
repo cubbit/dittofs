@@ -803,8 +803,15 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		// next is refused by the limit itself: the limit counts the records'
 		// header bytes beside their payload, so a first payload as large as
 		// the limit would be refused and fill nothing.
+		//
+		// The loop is bounded, as fillShare's is: a journal whose share-limit
+		// admission is not written takes every write it is handed, and an
+		// unbounded fill of a never-refusing share writes on until the
+		// storage beneath refuses; running out of bounds without a refusal
+		// fails naming what was written, so the leg names the missing
+		// admission rather than its cost.
 		filled := 0
-		for ; ; filled++ {
+		for range 2 * journaltest.FixtureMaxBytes / chunk {
 			_, err := tryWrite(t, h, id, int64(filled)*chunk, distinct(filled, chunk))
 			if errors.Is(err, journal.ErrNoSpace) {
 				refusal(t, err, "WriteAt", journal.LimitShare)
@@ -814,6 +821,11 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("fill the share to its limit: %v", err)
 			}
+			filled++
+		}
+		if filled == int(2*journaltest.FixtureMaxBytes/chunk) {
+			t.Fatalf("%d writes into a share limited to %d bytes were never refused by its limit",
+				filled, limit)
 		}
 		if filled == 0 {
 			t.Fatalf("the share's first write was refused, so its limit leaves no room for any record")
