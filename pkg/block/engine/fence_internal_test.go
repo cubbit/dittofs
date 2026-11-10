@@ -125,14 +125,15 @@ func TestFenceBeginRacesAReader(t *testing.T) {
 	}
 }
 
-// A retrying owner's failure that a commit followed is not the cause of a
-// stall an idle minute later: node_fenced names errNoCommit.
+// A retrying owner's failure that its own commit followed is not the cause
+// of a stall an idle minute later: node_fenced names errNoCommit.
 func TestFenceCauseOfAStallAfterARecoveredFailure(t *testing.T) {
 	f, clock := newClockFence()
+	owner := withRetryingOwner(context.Background())
 	f.begin()
-	f.end(withRetryingOwner(context.Background()), errStoreDown)
+	f.end(owner, errStoreDown)
 	f.begin()
-	f.end(context.Background(), nil)
+	f.end(owner, nil)
 	clock.Advance(time.Minute)
 	f.begin()
 	clock.Advance(fenceAfter)
@@ -247,17 +248,17 @@ func TestFenceRecordsEveryWriteTransaction(t *testing.T) {
 			if p.seen != 1 {
 				t.Errorf("%d outstanding while it ran, want 1", p.seen)
 			}
-			if n, failing := f.outstanding.Load(), f.failing.Load(); n != 0 || !failing {
-				t.Errorf("after it: %d outstanding, failing %v; want 0 and failing", n, failing)
+			if n, failing := f.outstanding.Load(), f.failing.Load(); n != 0 || failing != 1 {
+				t.Errorf("after it: %d outstanding, %d owners failing; want 0 and 1", n, failing)
 			}
 		})
 	}
 }
 
 // A retrying owner's error that fails one file or one call is not the
-// store's: it leaves the node not failing. A retrying owner's context is
-// cancelled only when its loop stops, so context.Canceled reaches the fence
-// only then.
+// store's: it ends that owner's failing at the store before it, leaving the
+// node not failing. A retrying owner's context is cancelled only when its
+// loop stops, so context.Canceled reaches the fence only then.
 func TestFenceNotFailingOnACallsOwnError(t *testing.T) {
 	// The store refuses a clone of nothing before it reads a key.
 	refused := kvstore.Existence{}.Clone(context.Background(), kvstore.CloneOp{}, nil)
@@ -273,10 +274,13 @@ func TestFenceNotFailingOnACallsOwnError(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, _ := newClockFence()
+			owner := withRetryingOwner(context.Background())
 			f.begin()
-			f.end(withRetryingOwner(context.Background()), fmt.Errorf("wrapped: %w", err))
-			if f.failing.Load() {
-				t.Error("the node failing on a call's own error")
+			f.end(owner, errStoreDown)
+			f.begin()
+			f.end(owner, fmt.Errorf("wrapped: %w", err))
+			if n := f.failing.Load(); n != 0 {
+				t.Errorf("%d owners failing after the latest attempt's own error, want 0", n)
 			}
 		})
 	}
@@ -293,5 +297,35 @@ func TestFenceResumeAdvancedThenFailedCommits(t *testing.T) {
 	}
 	if got, want := time.Duration(f.lastCommit.Load()), 70*time.Second; got != want {
 		t.Errorf("last commit at %v, want %v", got, want)
+	}
+}
+
+// Failing is per owner: one owner's commit, its own failure or its stop
+// clears its failing alone, never another's still failing at the store, so
+// the node fences fenceAfter after its last commit; and an owner that stops
+// while failing leaves an idle node unfenced.
+func TestFenceFailingIsPerOwner(t *testing.T) {
+	f, clock := newClockFence()
+	failer, other := withRetryingOwner(context.Background()), withRetryingOwner(context.Background())
+	f.begin()
+	f.end(failer, errStoreDown)
+	for _, err := range []error{kvstore.ErrConflict, nil} {
+		f.begin()
+		f.end(other, err)
+	}
+	f.release(ownerOf(other))
+	if n := f.failing.Load(); n != 1 {
+		t.Fatalf("%d owners failing, want the failing owner's 1", n)
+	}
+	clock.Advance(fenceAfter)
+	if !f.holds() {
+		t.Fatal("not fenced fenceAfter after the last commit, an owner failing throughout")
+	}
+	f.release(ownerOf(failer))
+	if f.holds() {
+		t.Error("the node fenced once its failing owner stopped")
+	}
+	if n := f.failing.Load(); n != 0 {
+		t.Errorf("%d owners failing once the failing owner stopped, want 0", n)
 	}
 }

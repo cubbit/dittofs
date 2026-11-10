@@ -500,6 +500,64 @@ func TestSelfFenceNotOnAConflictAfterAStoreError(t *testing.T) {
 	}
 }
 
+// One owner's conflicts do not hide another's store failure: the raise
+// failing at the store for 140 s, a prune that conflicts every 15 s beside
+// it, fences the node. A failing flag shared by every owner fences nothing
+// here, as each conflict clears it and each failed raise then starts a fresh
+// 30 s.
+func TestSelfFenceNotHiddenByAnotherOwnersConflict(t *testing.T) {
+	u := newFenceUnit(t)
+	a := u.create(t, "a")
+	_, ct, lc := u.e.StoreViews()
+	raise, prune := engine.WithRetryingOwner(t.Context()), engine.WithRetryingOwner(t.Context())
+	to, err := lc.VersionLimits(raise, []entity.ShareID{u.share.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raiseFails := func() {
+		t.Helper()
+		u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+		if err := lc.RaiseVersionLimits(raise, to); !errors.Is(err, errInjected) {
+			t.Fatalf("the raise over a failing store: %v", err)
+		}
+	}
+	for range 8 {
+		raiseFails()
+		u.clock.Advance(10 * time.Second)
+		u.fault(t, sim.Rule{Op: kvtest.OpGet, Key: "*", Action: sim.FaultAction{Err: kv.ErrConflict}})
+		bctx, cancel := context.WithTimeout(prune, 50*time.Millisecond)
+		if err := ct.PruneRemovals(bctx, u.share.ID, a, entity.JournalVersion{15: 1}); !errors.Is(err, kvstore.ErrConflict) {
+			cancel()
+			t.Fatalf("the prune over a conflicting store: %v", err)
+		}
+		cancel()
+		u.clock.Advance(5 * time.Second)
+	}
+	raiseFails()
+	u.clock.Advance(20 * time.Second)
+	if _, err := u.tryWrite(a); !fenced(err) {
+		t.Errorf("a write 140s into the raise failing, a prune conflicting beside it: %v, want ErrDelay(DelayCommit)", err)
+	}
+}
+
+// A group commit that stops while failing at the store leaves no failing
+// behind: a minute later the idle node is not fenced.
+func TestSelfFenceNotLeftByAStoppedOwner(t *testing.T) {
+	u := newFenceUnit(t)
+	a := u.create(t, "a")
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+	u.commitInBackground(t, a)
+	eventually(t, "the group commit failing at the store", func() bool { _, failing := u.e.FenceBusy(); return failing })
+	u.e.CloseGroupCommits()
+	u.clock.Advance(time.Minute)
+	if c, ok := u.nodeFenced(); ok {
+		t.Errorf("node_fenced %v a minute after the failing group commit stopped, want none", c)
+	}
+}
+
 // A commit the store reached through conflicts it retried counts as a
 // commit: it restarts the 30 s of a retrying owner failing beside it.
 func TestSelfFenceCountsAConflictRetriedToSuccess(t *testing.T) {

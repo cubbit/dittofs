@@ -39,7 +39,7 @@ type fence struct {
 	lastCommit  atomic.Int64 // the clock's Elapsed at the last commit, in nanoseconds
 	since       atomic.Int64 // the Elapsed at which the node last went from no transaction outstanding or failing to one
 	outstanding atomic.Int64 // write transactions running now
-	failing     atomic.Bool  // the latest attempt of a retrying owner failed at the store as a whole
+	failing     atomic.Int64 // retrying owners whose latest attempt failed at the store as a whole
 	lastErr     atomic.Pointer[error]
 	entered     atomic.Pointer[fenceEntry] // the fence's entry while it holds, nil while lifted
 	fences      atomic.Int64               // engine_self_fences_total{reason="store"}
@@ -57,7 +57,7 @@ type fence struct {
 func (f *fence) begin() {
 	for {
 		n := f.outstanding.Load()
-		if n == 0 && !f.failing.Load() {
+		if n == 0 && f.failing.Load() == 0 {
 			raise(&f.since, int64(f.clock.Elapsed()))
 		}
 		if f.outstanding.CompareAndSwap(n, n+1) {
@@ -77,41 +77,48 @@ func raise(a *atomic.Int64, v int64) {
 }
 
 // end brackets the write transaction begin started, ctx and err being the
-// call's. A nil err is a commit, and clears the fence. An error is failing
-// only under the retrying-owner mark and only when it is the store's
-// (storeFailed); a one-shot call's error is neither a commit nor a failure.
-// A retrying owner's attempt that fails on its own (a conflict, a stale
-// file, a cancelled context) clears failing, since failing is timed from the
-// latest attempt and that one did not fail at the store.
-//
-// ponytail: one failing flag for the node rather than one per owner. A
-// commit, or an attempt that fails on its own, clears it while another owner
-// is still failing at the store, and that owner's next attempt, up to one
-// maximum backoff later (the group commit's backoffMax, 30 s), sets it again
-// and starts a fresh fenceAfter: the node can fence as late as 60 s after its
-// last commit, not 30 s. Only another call clears it, so once an owner can be
-// dropped while failing (a share's Unbind or Drop) the flag outlives the
-// owner and an idle node stays fenced until something commits or another
-// owner's attempt fails on its own. Keep the failing state per owner, carried
-// by the mark and dropped with it, when owners become droppable or that lag
-// is seen to matter.
+// call's. A nil err is a commit, and restarts the fence's clock. Failing is
+// per owner (RFC 8 §11.2): an error fails ctx's retrying owner when it is
+// the store's (storeFailed), and its commit or an attempt that fails on its
+// own (a conflict, a stale file, a cancelled context) clears that owner
+// alone, since an owner's failing is timed from its latest attempt. Neither
+// clears another owner still failing at the store. A one-shot call's error
+// is neither a commit nor a failure.
 func (f *fence) end(ctx context.Context, err error) {
+	o := ownerOf(ctx)
 	switch {
-	case err == nil:
-		f.committed()
-	case isRetryingOwner(ctx) && storeFailed(err):
+	case o != nil && err != nil && storeFailed(err):
 		f.lastErr.Store(&err)
-		f.failing.Store(true) // before the count leaves zero, so no reader sees the node idle meanwhile
-	case isRetryingOwner(ctx):
-		f.failing.Store(false) // the latest attempt failed on its own, not at the store
+		// Counted before outstanding leaves zero, so no reader sees the
+		// node idle meanwhile.
+		if !o.failing.Swap(true) {
+			f.failing.Add(1)
+		}
+	case o != nil:
+		f.release(o)
+	}
+	if err == nil {
+		f.committed()
 	}
 	f.outstanding.Add(-1)
 }
 
-// committed records a commit: it restarts the fence's clock and lifts it.
+// release ends o's failing, if it is, so an owner that commits, fails on
+// its own, or stops leaves no failing behind. A retrying owner's loop calls
+// it as it returns, after its last store call, so an owner that stops while
+// failing does not keep an idle node fenced. f is nil only in a test that
+// builds its engine without New.
+func (f *fence) release(o *ownerState) {
+	if f != nil && o != nil && o.failing.Swap(false) {
+		f.failing.Add(-1)
+	}
+}
+
+// committed records a commit: it restarts the fence's clock and lifts it. It
+// clears no owner's failing; a node another owner is failing on fences
+// fenceAfter after this commit.
 func (f *fence) committed() {
 	f.lastCommit.Store(int64(f.clock.Elapsed()))
-	f.failing.Store(false)
 	f.lift()
 }
 
@@ -146,7 +153,7 @@ func storeFailed(err error) bool {
 // the other order pairs an old from with a later now and fences.
 func (f *fence) holds() bool {
 	now := int64(f.clock.Elapsed())
-	busy := f.outstanding.Load() > 0 || f.failing.Load()
+	busy := f.outstanding.Load() > 0 || f.failing.Load() > 0
 	from := max(f.lastCommit.Load(), f.since.Load())
 	if !busy || now-from < int64(fenceAfter) {
 		f.lift()
@@ -221,10 +228,10 @@ func (e *Engine) fenceGate(b *binding) error {
 }
 
 // cause is the store's error a retrying owner's latest attempt failed with,
-// while one is failing, or errNoCommit. An error a commit since followed is
-// not the cause of a later stall.
+// while one is failing, or errNoCommit. An error no owner is failing with
+// any more is not the cause of a later stall.
 func (f *fence) cause() error {
-	if p := f.lastErr.Load(); p != nil && f.failing.Load() {
+	if p := f.lastErr.Load(); p != nil && f.failing.Load() > 0 {
 		return *p
 	}
 	return errNoCommit

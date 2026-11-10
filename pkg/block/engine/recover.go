@@ -759,7 +759,10 @@ func (e *Engine) raiseLoop(vl *versionLimit) {
 		defer c.Add(-1)
 	}
 
-	ctx := e.raising.ctx
+	// Each raise loop is one retrying owner, for its whole life.
+	ctx := withRetryingOwner(e.raising.ctx)
+	defer e.fence.release(ownerOf(ctx)) // a stopped owner fails no more
+
 	wait := retryFirst
 
 	for {

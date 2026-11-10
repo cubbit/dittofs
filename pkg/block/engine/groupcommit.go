@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -279,6 +280,7 @@ func (g *groupCommit) poke() {
 
 func (g *groupCommit) run() {
 	defer close(g.done)
+	defer g.e.fence.release(ownerOf(g.ctx)) // a stopped owner fails no more
 	for {
 		select {
 		case <-g.stop:
@@ -861,19 +863,26 @@ func (e *Engine) commitMarksAlone(ctx context.Context, mw *kvstore.MarksWrite) e
 }
 
 // retryingOwner marks a context whose store calls their caller retries
-// itself, the group commit's and the removal loop's, so the self-fence counts a whole-call failure
-// of one as failing and a file's own failure not (RFC 8 §11.2).
+// itself, the group commit's, the removal loop's and the version limit's
+// raise, so the self-fence counts a whole-call failure of one as failing and
+// a file's own failure not (RFC 8 §11.2). The mark carries the owner's state:
+// an owner creates it once, when its loop starts, and calls the store under
+// it for its whole life, so every attempt it retries is the same owner's.
 type retryingOwner struct{}
 
-// withRetryingOwner is ctx with the retrying-owner mark.
+// ownerState is one retrying owner's part of the self-fence: whether its
+// latest attempt failed at the store.
+type ownerState struct{ failing atomic.Bool }
+
+// withRetryingOwner is ctx marked as a new retrying owner's.
 func withRetryingOwner(ctx context.Context) context.Context {
-	return context.WithValue(ctx, retryingOwner{}, true)
+	return context.WithValue(ctx, retryingOwner{}, &ownerState{})
 }
 
-// isRetryingOwner reports whether ctx carries the retrying-owner mark.
-func isRetryingOwner(ctx context.Context) bool {
-	marked, _ := ctx.Value(retryingOwner{}).(bool)
-	return marked
+// ownerOf is the retrying owner ctx is marked with, or nil.
+func ownerOf(ctx context.Context) *ownerState {
+	o, _ := ctx.Value(retryingOwner{}).(*ownerState)
+	return o
 }
 
 // storeWide reports that err fails every file alike, so halving the batch
