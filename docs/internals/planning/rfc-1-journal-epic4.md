@@ -33,7 +33,7 @@ and tests can cite them.
 | R2 | A lookup is unambiguous without consulting sequence numbers | §4 | 2 |
 | R3 | Held content need not be contiguous or start at offset 0 | §2 | 2 |
 | R4 | One entry per contiguous held piece of one record with one offloaded bit. A report, `MarkOffloaded` or `Unmark` that ends inside a piece splits it where the bit changes, and the parts join again once the bit matches. Two records never share an entry | §4.2 | 2 |
-| R5 | A held extent carries its record location, content version and offloaded bit | §2, §4 | 2 |
+| R5 | A held extent carries its record location, sequence number, content version and offloaded bit | §2, §4 | 2 |
 | R6 | The offloaded bit is never consulted to answer a read | §2 | 2 |
 | R7 | Retained extents are a separate set that may overlap held extents and each other, and are never served | §4, §3.11 | 6 |
 | R8 | A removal marker has an extent and a version and no location. Inside its extent, content below its version is not held and content at or above it is. A removal drops what it covers whatever its offloaded bit, and is never gated on it | §3.6 | 5 |
@@ -117,7 +117,7 @@ hand-written, because the import rule allows stdlib only. *Covers* R13, R15, R44
 *Tests:* a property test against a sorted-slice oracle, and fuzzing. *Deps:* none.
 
 **E4-2 — Held-extent set for one file.** Disjoint entries, each with an extent, a location,
-a version and an offloaded bit. Insert splits and narrows (the three-way split, and
+a sequence number, a version and an offloaded bit. Insert splits and narrows (the three-way split, and
 covering several extents plus parts of two), and there are point and span queries with
 exact gaps. Release (stop holding, no marker, all-or-nothing on the offloaded predicate)
 and setting the offloaded bit over a span. *Covers* R1–R6, R13–R16, R36, R46–R48.
