@@ -174,17 +174,17 @@ fixture's hook that composes the filesystem (D4) and its span record (D5); the t
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| 1 Unit tests | all | T9.1 tests over the engine's unit composition: E2's in-memory journal and the real `kvstore` on an in-memory `kv.KV`. T9.2 runs the `Content` suite over that composition and over E2's fixture. T9.3 to T9.6 run over the composition, on the fixture. Every double is one of RFC 29 §4.11's kinds: `sim.TestClock` (an input), the in-memory journal and the in-memory `kv.KV` (verified in-memory implementations, each held to its suite), the fault-injecting `kv.KV` and the journal's crash seam (fault injection). The fixture's span record (D5) keeps what the engine delivered, an output. No stub and no recording fake |
+| 1 Unit tests | all | T9.1 tests over the engine's unit composition: E2's in-memory journal and the real `kvstore` on an in-memory `kv.KV`. T9.2 runs the `Content` suite over that composition and over E2's fixture. T9.3 to T9.6 run over the composition, on the fixture. Every double is one of RFC 29 §4.11's kinds: `sim.TestClock` (an input); the in-memory `kv.KV`, held to its suite, and the in-memory journal, which the journal's epic 3 ([`rfc-1-journal-plan.md`](rfc-1-journal-plan.md)) holds to the journal's conformance suite but which on `feat/storage-v2` nothing under `pkg/block/journal` runs over yet (§9, point 12); the fault-injecting `kv.KV`, its keyed fault and the journal's crash seam (fault injection); `kv.Counting`, a wrapper that records each call and passes it through. The fixture's span record (D5) keeps what the engine delivered, an output. No stub and no recording fake: D3 moves neither `recJournal` nor `noHolds` |
 | 2 Fuzz | none | no parser. The integration tier's fuzz targets are the filesystem service's (§1.2) |
 | 3 Observability | T9.5 | no new counter, condition or span name. T9.5 reads RFC 8 §14's `engine.sync` and `engine.existence_commit` and an RFC 8 §11.1 condition through the composition. The composition's `Deps.Logger` is the fixture's, narrowed with `With("component", "engine")` as rule 3 asks |
 | 4 Profiling | all | the fixture's `prof.Watch` covers every test of the package, the filesystem's goroutines included, so a waiter or loop left running after the composition stops fails the test |
 | 5 Public and internal | all | every assertion is read where the value is consumed: what a client of `vfs.Service` is answered, and what `kvstore` committed. No test reads the engine's internals. `suite.Run` and the rows run under `-race` |
 | 6 Known failures | T9.2, T9.3, T9.4, T9.6 | every test over the fixture is red at the journal's `Init`, so it enters `test/engine/known.yaml` naming this epic's issue, and leaves in the change that turns it green (D6). T9.1's tests and T9.2's half over the in-memory journal are green in `unit` from the start |
 | 7 v2 ignores v1 | T9.2, T9.3 | the tests that import `internal/vfs` live in `internal/vfs/integration`, outside `pkg/block/engine`, so the import walk and its allowlist do not change. D3's move adds no import `enginetest` lacks |
-| 8 Real dependencies | T9.3 to T9.6 | crash survival (V19), failed windows and losses (V25) and repack (V20) over the real journal and its crash seam; transaction counts from the in-memory `kv.KV`'s own `Counts`; commits and conflicts from the real `kvstore`. The in-memory journal runs only under T9.1 and T9.2's first half, which check the engine against the `Content` contract, not an engine conformance row |
+| 8 Real dependencies | T9.3 to T9.6 | crash survival (V19), failed windows and losses (V25) and repack (V20) over the real journal and its crash seam; transaction counts from `kv.Counting` over the in-memory `kv.KV` (RFC 29 §4.11's pass-through record, since V19 makes the transaction count the requirement); commits and conflicts from the real `kvstore`. The in-memory journal runs only under T9.1 and T9.2's first half, which check the engine against the `Content` contract, not an engine conformance row |
 | 9 Comments | T9.1, T9.3 | T9.1 drops `internal/vfs/filesystem.go`'s `ponytail:` naming the declared `WriteOpts` and `Overlay` and the missing existence commit, since both shortcuts are replaced; D4's marker at the fixture's hook. No new `ponytail:` |
 | 10 Tests can fail | all | each test below names the change it catches |
-| 11 Exports | T9.1 | the engine gains one method, D1's, and only once RFC 8 §12.1 names it (§9, point 1). `enginetest` gains the unit composition (D3) and the fixture's hook and span record (D4, D5), test components of an exported test package |
+| 11 Exports | T9.1 | the engine gains one method, D1's, a wrapper over `commitNow` that replaces the test export `CommitNow`, and only once RFC 8 §12.1 names it (§9, point 1). `enginetest` gains the unit composition (D3), the fixture's hook, keyed fault, `TakeUpdates` and span record (D4, D5, T9.3, T9.4), test components of an exported test package |
 | 12 Creates only what it declares | all | `internal/vfs/integration` lands with its first test (T9.2 or T9.3, whichever lands first), the fixture's hook with T9.3, its span record with T9.5 |
 
 ## 3. Requirements and invariants
@@ -233,24 +233,38 @@ Only what the RFCs leave to the code.
 - **D1, the existence commit on the engine's surface.** `internal/vfs.Content` declares
   `CommitExistence(ctx, s, f) error`, which the filesystem calls before an owner or group
   change (R2), and RFC 8 §12.1 names no such method, so `*Engine` does not satisfy `Content`
-  today. The engine gains it, committing the file's pending existence through epic 4's
-  per-file existence commit (T4.3), which joins the group commit, and calling each committed
-  write's `Done`, as every existence commit does. Rule 11 holds the export until RFC 8 §12.1
-  and RFC 17 §3.5's `SetAttr` row name it (§9, point 1). The alternative, the filesystem
+  today. Epic 4 built the body as `commitNow` (`pkg/block/engine/groupcommit.go`, T4.3), which
+  joins the group commit, and `export_test.go` exports it to the engine's tests as `CommitNow`.
+  T9.1 promotes it: `CommitExistence` resolves the share with `bindingOf`, calls `commitNow`
+  and maps its error through `waitErr`, as `Commit` does, so a deadline is `ErrDelay` with the
+  file's cause rather than `context.DeadlineExceeded`; the test export `CommitNow` is deleted.
+  No new engine machinery. Rule 11 holds the export until RFC 8 §12.1 and RFC 17 §3.5's
+  `SetAttr` row name it (§9, point 1). The alternative, the filesystem
   calling `Commit` over the whole file, syncs and waits only for overwrites (RFC 8 §5.1), so
   an append staged before the change would still charge the new owner.
 - **D2, one test package outside the engine, in two halves.** The tests that import
   `internal/vfs` live in `internal/vfs/integration`, test files only, which neither the
-  engine's import walk nor RFC 17 §8's architecture check refuses (it refuses an engine
-  import only in `admit`, `pseudofs` and `lockorder`). Its tests over the in-memory journal
-  build untagged and run in `unit`; its tests over E2's fixture carry `engine_conformance`,
-  and `engine-conformance`'s `cmd` gains `./internal/vfs/integration/...`.
+  engine's import walk nor RFC 17 §8's architecture check refuses (it refuses an import
+  below declared reads only in `admit`, `pseudofs`, `lockorder` and `quota`). Its tests over
+  the in-memory journal build untagged and run in `unit`; its tests over E2's fixture carry
+  `engine_conformance`, not RFC 17 §8 "Suites"' `unit`: they start red over the journal and
+  `unit` keeps no known list (rule 6). Each moves to `unit` with the change that empties its
+  `known.yaml` entry (epic 10). `engine-conformance`'s `cmd` gains
+  `./internal/vfs/integration/...`.
 - **D3, the unit composition moves to `enginetest`.** Epic 3's unit composition (the engine
   over the in-memory journal and the real `kvstore`, `pkg/block/engine/unit_test.go`) is
   unexported, so nothing outside the engine's package can build it. T9.2 moves it to
   `enginetest` as an exported constructor that the engine's own tests and
   `internal/vfs/integration` both call, rather than writing a second one. It is the only
   composition over which the `Content` suite runs green before the journal's `Init` exists.
+  What moves is the composition without its two doubles the testing rule bans: `recJournal`,
+  which records each `Share` call's floor and every handle's `Close` for tests to read (a
+  recording fake), and `noHolds`, a nil-embedded `engine.CloneHold` (a stub). The exported
+  `NewUnit(t, UnitOptions)` takes the `Deps` changes, a fault wrapper over the in-memory
+  journal and one over the in-memory `kv.KV` (each nil for none), and composes the real
+  `openstate.Table` as `rebuild_test.go`'s `withOpenState` does. The engine's own tests keep
+  their wrapper through the journal option. Neither double moves; whether `recJournal`
+  survives in the engine's tests is epic 6's call.
 - **D4, the fixture composes the filesystem.** The filesystem is the open-state table's `Sink`
   and admission `Order`, and is built over that table and the engine, so the fixture cannot
   compose it after the fact. T9.3 gives `enginetest.New` an option carrying a compose hook,
@@ -261,13 +275,17 @@ Only what the RFCs leave to the code.
   read. A `decision:` marker at the option: the hook builds no node and no adapter, as RFC 17
   §8's integration tier has none; withdraw it when stage 4's `node.New` composes the same
   pieces and the tier moves onto it.
-- **D5, spans are an output the fixture keeps.** The fixture's `Tracer` keeps every span it is
+- **D5, spans are an output the fixture keeps.** The fixture's `Tracer` (its `trace`, which
+  today only holds and counts removal batches) also keeps every span it is
   handed: its name, its attributes and the span its context carried, which RFC 29 §4.11 counts
   as an output rather than a double. `internal/vfs.Deps` carries no tracer on this base, so the
   filesystem opens no `vfs.<Op>` span yet; the test opens its own span in the context it hands
   the service, standing in for it, and R9's parent is that span. `engine.existence_commit` is
   opened by the group commit's loop for a batch of many callers' files, not under any one
-  caller, so T9.5 asserts it is recorded for the call's file, not its parent (§9, point 4).
+  caller, and on `feat/storage-v2` it carries only `slog.Int("files", n)`, no share or file.
+  So T9.5 asserts a span named `engine.existence_commit` with `files` ≥ 1 ended between the
+  write and its reply, not its parent and not that it covered the call's file (§9, points 4
+  and 5).
 - **D6, red rows and who removes them.** Each test over the fixture enters `known.yaml` with
   `fix: planned`, a reason naming the journal calls it waits for, and this epic's issue. The
   change that turns one green removes its entry, a journal pull request included (rule 6).
@@ -284,11 +302,13 @@ Only what the RFCs leave to the code.
 
 ```text
 pkg/block/engine/
-  commit.go           T9.1  CommitExistence, over T4.3's per-file existence commit (D1)
+  commit.go           T9.1  CommitExistence, commitNow promoted with waitErr's mapping (D1)
+  export_test.go      T9.1  CommitNow deleted
   unit_test.go        T9.2  calls enginetest's unit composition (D3)
   enginetest/
     unit.go           T9.2  the unit composition, moved from unit_test.go (D3)
-    fixture.go        T9.3  the compose option and its hook (D4)
+    fixture.go        T9.3  the compose option and its hook (D4); FailUpdatesSetting
+                      T9.4  kv.Counting over the store's kv.KV; TakeUpdates
                       T9.5  the span record (D5)
 internal/vfs/
   filesystem.go       T9.1  WriteOpts and Overlay aliased from the engine; the ponytail: dropped;
@@ -313,7 +333,7 @@ regression it names (after "catches").
 
 ### T9.1 The engine as the filesystem's Content
 
-**Subtask T9.1 estimate: 1.25 man-days.**
+**Subtask T9.1 estimate: 1 man-days.**
 
 - **Track:** A. **Depends on:** E1; epic 4's T4.3, built; the RFC change of §9, point 1.
 - **Covers:** R1, R2 (the engine's half).
@@ -321,8 +341,9 @@ regression it names (after "catches").
   `type Overlay = engine.Overlay` in place of the declarations, the `ponytail:` above
   `Content` dropped, and `var _ Content = (*engine.Engine)(nil)`; in the engine,
   `func (e *Engine) CommitExistence(ctx context.Context, s ShareID, f FileID) error` (D1),
-  answering an unbound share as every content method does; the RFC 8 §12.1 table and
-  signature block and RFC 17 §3.5's `SetAttr` row, in an RFC pull request on `develop` that
+  `bindingOf`, then `commitNow` with its error through `waitErr`, answering an unbound share
+  as every content method does, and `export_test.go`'s `CommitNow` deleted; the RFC 8 §12.1
+  table and signature block and RFC 17 §3.5's `SetAttr` row, in an RFC pull request on `develop` that
   lands first.
 - **Acceptance criteria:** `internal/vfs` builds with the assertion; the engine's existence
   commit runs on request and calls each committed write's `Done` once.
@@ -330,8 +351,12 @@ regression it names (after "catches").
   `CommitExistence`: the store's committed File holds the write's size and charge, and the
   reservations outstanding are zero (catches a method that only syncs, leaving the existence
   to the group commit's age); called again with nothing pending, it commits nothing, counted by
-  the in-memory `kv.KV`'s `Counts`, and no `Done` runs twice (catches a second `Done`); on a
-  share with no binding, `ErrDelay` with `DelayFrozen`. The alias needs no test: the assertion
+  `kv.Counting` wrapped over the in-memory `kv.KV`, and no `Done` runs twice (catches a second
+  `Done`); on a share with no binding, `ErrDelay` with `DelayFrozen`; with the store failing
+  every `Update` (the unit's `kv.KV` fault wrapper), a write staged, then `CommitExistence`
+  under a 50 ms deadline: `ErrDelay`, never `context.DeadlineExceeded` (catches a method that
+  returns `commitNow`'s error unmapped, which `internal/vfs/attrs.go`'s `storeErr` would not
+  answer as a delay). The alias needs no test: the assertion
   fails the build if the engine's types and `Content`'s drift.
 
 ### T9.2 The Content suite over the engine
@@ -357,18 +382,21 @@ regression it names (after "catches").
   `Draw` at or below a version staged before it, an `Overlay` that misses a write staged an
   instant before, a `Commit` answered before its writes' sync, or a removed extent read as
   anything but zeros or end of file. A case the engine passes only on the in-memory journal
-  is a finding for the journal's conformance suite, which holds the in-memory journal to the
-  real one.
+  is a finding for the journal's conformance suite, which is to hold the in-memory journal to
+  the real one and does not yet (§9, point 12).
 
 ### T9.3 suite.Run over the composition
 
-**Subtask T9.3 estimate: 3.5 man-days.**
+**Subtask T9.3 estimate: 3.75 man-days.**
 
 - **Track:** A. **Depends on:** T9.1; S3, for `Close` and `Unbind` (T6.8, T6.9), which a
   restart calls; stage 2's piece 8, landed.
 - **Covers:** R2 (through the filesystem), R4–R8.
-- **Deliverables:** the fixture's compose option (D4, its marker); `compose_test.go`, the
-  composition: `vfs.New` with `Meta` the fixture's store, `Open` its table, `Engine` its
+- **Deliverables:** the fixture's compose option (D4, its marker); a keyed fault on the
+  fixture's `kv.KV`, `func (f *Fixture) FailUpdatesSetting(match func(key []byte) bool)`,
+  failing an `Update` whose transaction sets a key `match` accepts and passing every other,
+  since `failingKV`'s `FailUpdatesAfter` fails every `Update` store-wide; `compose_test.go`,
+  the composition: `vfs.New` with `Meta` the fixture's store, `Open` its table, `Engine` its
   engine, the fixture's logger, rebuilt at every restart and crash; a share limit small
   enough for T9.4's capacity row, set through `enginetest.ShareOf`; `suite_test.go`,
   `suite.Run` over the composition and this epic's own cases, behind `engine_conformance`
@@ -391,7 +419,8 @@ regression it names (after "catches").
   her file, then a chown to bob: the write is charged to alice and bob's usage rises by the
   file's charge once, read from the store's quota record (catches a chown that skips the
   engine's existence commit, leaving the write to charge bob at its own commit, R2); a store
-  failing one file's existence commit through the fault-injecting `kv.KV`: that file's
+  failing one file's existence commit through the keyed fault, matching that file's keys:
+  that file's
   stable overwrite through the service is never answered success while the fault holds,
   while another file's stable overwrite commits (catches a fault that wedges every file, or
   a failed commit answered as stable, R5).
@@ -403,15 +432,17 @@ regression it names (after "catches").
 - **Track:** A. **Depends on:** T9.3; epic 7's refusal table and scoped repack (T7.1a,
   T7.1b), for V20.
 - **Covers:** R5 (the small journal), R11, R12, R13, R15.
-- **Deliverables:** `rows_test.go`, one test per row named for it, behind `engine_conformance`
+- **Deliverables:** the fixture's `kv.KV` wrapped in `kv.Counting`, the pass-through
+  wrapper, with `func (f *Fixture) TakeUpdates() kv.UpdateCounts`, for V19's append case;
+  `rows_test.go`, one test per row named for it, behind `engine_conformance`
   and in `known.yaml` (D6), each adapted row's doc comment naming the cases it leaves and
   their owner (D7).
 - **Rows:** RFC 17 §6 V19, V20 (adapted), V22's write, truncate and deallocate cases, V25
   (adapted).
 - **Tests:** V19: an SMB durable open's write asked unstable, then `Crash` after the reply:
   the bytes read back after the restart (catches a persistent open's write left unstable); a
-  stable append: the in-memory `kv.KV`'s `Counts` show no transaction between the write and
-  its reply (catches an append waiting for its existence commit); a stable overwrite with the
+  stable append: the fixture's `TakeUpdates` shows no `Update` between the write and its
+  reply (catches an append waiting for its existence commit); a stable overwrite with the
   fixture's store stalled: `ErrDelay` at the call's deadline, never success (catches an
   overwrite answered at the sync alone). V20: overwrites of one range until the small share
   is refused: `ErrDelay` with `DelayCapacity`, and the retry succeeds once the refusal's
@@ -442,10 +473,11 @@ regression it names (after "catches").
 - **Tests:** a stable write through the service, its context carrying the test's span: the
   record holds `engine.sync` whose parent is that span (catches a service or engine that
   detaches the context, such as a commit run on a background context, which leaves the span a
-  root); a stable overwrite: the record holds `engine.existence_commit` for a batch including
-  the file (catches an overwrite whose existence commit opens no span); a store failing one
-  file's commit through the fault-injecting `kv.KV`, written and committed through the
-  service: `Stats` names `existence_commit_failing` for that file's share and file, and once
+  root); a stable overwrite: the record holds a span named `engine.existence_commit` with
+  `files` ≥ 1 that ended between the write and its reply (catches an overwrite whose
+  existence commit opens no span); a store failing one file's commit through the fixture's
+  keyed fault (T9.3), matching that file's keys, written and committed through the service:
+  `Stats` names `existence_commit_failing` for that file's share and file, and once
   the store recovers and the next commit lands, `Stats` no longer does (catches a condition
   the engine logs but never records, or never clears).
 
@@ -501,9 +533,9 @@ be written over it. T9.4, T9.5 and T9.6 are independent of each other.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T9.1 | 1.25 | epic 4; the RFC change | the engine becomes the filesystem's `Content` |
+| 1 | T9.1 | 1 | epic 4; the RFC change | the engine becomes the filesystem's `Content` |
 | 2 | T9.2 | 2.5 | PR 1; stage 2's piece 12 | the `Content` suite over the engine, and the unit composition it needs |
-| 3 | T9.3, T9.4, T9.5 | 8.25 | PR 1; S3; epic 7's T7.3 | the composition, and every row and check over it that needs only S3 |
+| 3 | T9.3, T9.4, T9.5 | 8.5 | PR 1; S3; epic 7's T7.3 | the composition, and every row and check over it that needs only S3 |
 | 4 | T9.6 | 1.25 | PR 3; epic 8's T8.4, T8.5 | the copy and clone rows, which stage 2's piece 11 turns green |
 
 A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can be open at
@@ -516,7 +548,8 @@ once.
    `internal/vfs` calls `Content.CommitExistence` for it, yet RFC 8 §12.1's table and
    signature block, and RFC 17 §3.5's `SetAttr` row (`Draw`; `Truncate` for a size), name no
    such method. D1 adds it; RFC 8 §12.1 and RFC 17 §3.5 gain it first, in an RFC pull request
-   on `develop` (rule 11).
+   on `develop` (rule 11): [#3989](https://github.com/cubbit/dittofs/pull/3989) names
+   `CommitExistence` there.
 2. **Who owns Copy's checks at the service.** As [#3979](https://github.com/cubbit/dittofs/pull/3979)
    words RFC 17 §5.9, a copy or clone whose range ends past the source's size is refused
    `ErrInvalid` at the service's admission (step 2), and RFC 21 turns a `COPY` count of 0 into
@@ -528,8 +561,8 @@ once.
    epic 8's D2 and D12 should say the engine's refusal is a clone's backstop only. #3979's
    other change, a continuing copy that waits for the running chunk, is what epic 8's D6 and
    D12 already build, and T9.6's short-count case checks it.
-3. **The testing rule governs every row.** `CLAUDE.md`'s "Writing tests" (#3931 and #3932,
-   open on `develop`) and RFC 29 §4.11 (#3939, merged on `feat/storage-v2`, brought to
+3. **The testing rule governs every row.** `CLAUDE.md`'s "Writing tests" (#3931, merged on
+   `develop`, and #3932, open) and RFC 29 §4.11 (#3939, merged on `feat/storage-v2`, brought to
    `develop` by #3961) allow no stub and no recording fake; §2.1 maps each double here to its
    kind. This changes T9.2 from moving a fake `Content` to an importable package: the suite
    and the in-memory `Content` are stage 2's piece 12 (`internal/vfs/contenttest`), written
@@ -554,8 +587,9 @@ once.
 8. **What the engine still answers `errUnbuilt` for**, on `feat/storage-v2`: `Copy` (until
    T8.5); `Clone` past its admission, which undoes its registrations unless a test's
    stand-in lets it run (until T8.4); `Close`, `Unbind` and `Drop` (epic 6's T6.8, T6.9).
-   And `CommitExistence` is not declared at all (point 1). `errUnbuilt`'s own `decision:`
-   says every call is built before the filesystem runs over it, which S3 and T9.1 meet.
+   And `CommitExistence` is not exported: its body is `commitNow`, reached only by the
+   engine's tests through `export_test.go`'s `CommitNow` (point 1). `errUnbuilt`'s own
+   `decision:` says every call is built before the filesystem runs over it, which S3 and T9.1 meet.
 9. **This epic's issue.** Every `known.yaml` entry it adds names an issue, and the harness
    refuses a planned entry without one, so the epic issue exists before T9.2's or T9.3's pull
    request.
@@ -563,6 +597,12 @@ once.
     journal's `Init` answers `ErrNotImplemented` on `feat/storage-v2`, and every test over the
     fixture fails there; only T9.1 and T9.2's half over the in-memory journal are green. Epic
     10 removes the rest as the journal's calls land.
-11. **The estimate is above the first figure, 11.5 man-days, by 1.75.** D1's method and its RFC
-    change, D3's move and D4's compose hook are work the first figure did not see, and the
-    copy and clone rows became their own subtask, T9.6, since stage 2's piece 11 gates them.
+11. **The estimate is above the first figure, 11.5 man-days, by 1.75.** D1's wrapper and its
+    RFC change, D3's move, D4's compose hook and T9.3's keyed fault are work the first figure
+    did not see, and the copy and clone rows became their own subtask, T9.6, since stage 2's
+    piece 11 gates them.
+12. **The in-memory journal is not yet held to the journal's conformance suite.** On
+    `feat/storage-v2`, `enginetest.FakeJournal` is used only from `pkg/block/engine`, and
+    nothing under `pkg/block/journal` runs over it; the journal's epic 3 does that. Until
+    it does, T9.1 and T9.2's unit half rest on an unverified double; T9.2's half over the
+    fixture and the real journal is what checks the same cases.
