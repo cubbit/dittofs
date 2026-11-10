@@ -202,7 +202,7 @@ which epic owns the rest.
 | R22 | `Adapter` has `Start(ctx) error`, `Reconfigure(ctx, config.Settings) error` (D15), `Stop(ctx) error`, `Health() Health`, `Connections() iter.Seq[ConnInfo]`; their behaviour is E4's | MUST | §3.4 | T1.4 |
 | R23 | `ConnInfo` is `{Protocol string; Remote netip.AddrPort; Session string; Since time.Time}` (D17); `Connections()` is read from `core`'s registry, never written by protocol code (E4) | MUST | §3.4 | T1.4 |
 | R24 | `Health` is `{State State; Conditions []string}` with `Ready() bool`, serving with no condition raised (D17); `State` is §3.1's `StateConfigured`, `StateServing`, `StateDraining`, `StateStopped`, with a `String`; an adapter whose `New` or `Start` failed has no `Health`, and the node raises `adapter_refused` from the error; E4 fills it | MUST | §3.4, §3.7 | T1.4 |
-| R25 | `Deps` holds `VFS vfs.Service`, `Budgets *resources.Budgets`, `Metrics *metrics.Registry` (D10), `Tracer trace.Tracer`, `Logger *slog.Logger`, `Watch func(loop string) Loop`, `Dial func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)`; `Loop` is `{Turn(); Idle(); Close()}`; only `VFS` and `Budgets` are required (`New` refuses a missing one by name), and each other field has a working zero value | MUST | §3.4 | T1.4 |
+| R25 | `Deps` holds `VFS vfs.Service`, `Budgets *resources.Budgets`, `Metrics *metrics.Registry` (D10), `Tracer trace.Tracer`, `Logger *slog.Logger`, `Watch func(loop string) Loop`, `DialClient func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)`; `Loop` is `{Turn(); Idle(); Close()}`; only `VFS` and `Budgets` are required (`New` refuses a missing one by name), and each other field has a working zero value | MUST | §3.4 | T1.4 |
 | R26 | A `Deps` field is an interface where it has two implementations and a concrete type where it has one; `Deps` carries no registry or service locator, and `Deps.VFS` is the adapter's only path to the service (A16's behaviour: E5) | invariant | §3.4, §2.5 ("not used"), §9 A16 | T1.4 |
 | R27 | A nil `Watch` watches nothing, as in a test; RFC 25's `health.Loop` satisfies `Loop` as it is (accept loop's calls: E4) | MUST | §3.4, §3.7; RFC 25 §8.1 | T1.4 (the field); E4 T4.7 (the test, D9) |
 | R28 | An adapter takes only the budgets it charges: `Deps` carries `Budgets`, never the open-state budget or the share cap | MUST | RFC 24 §2.7 | T1.4 |
@@ -624,7 +624,7 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
 - **Track:** the team. **Depends on:** T1.9, T1.6 (`Deps` names `resources.Budgets`).
 - **Covers:** R13, R14, R15, R19, R21–R31.
 - **Deliverables:** `adapter.go` (`Adapter`, `State` with `String`, `Health` with `Ready`,
-  `ConnInfo`, `Sidecar`, `Serving`, `Loop`), `deps.go` (`Deps`, with `Watch` and `Dial`), signatures as RFC 20 §3.4, §3.5
+  `ConnInfo`, `Sidecar`, `Serving`, `Loop`), `deps.go` (`Deps`, with `Watch` and `DialClient`), signatures as RFC 20 §3.4, §3.5
   and T1.9 state them, `Health` and `ConnInfo` as D17; a `decision:` marker on `Adapter` saying it is an interface with one
   implementation because the node may not import `internal/` (RFC 20 §2.5).
 - **Acceptance criteria:**
