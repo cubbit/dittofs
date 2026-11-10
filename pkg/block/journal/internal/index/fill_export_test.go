@@ -65,10 +65,9 @@ func TestCheckFillStaleAndOtherShare(t *testing.T) {
 	if _, err := ix.WriteRetain(testTag, id, write(0, 4096, rec(1, 0), 3), 3); err != nil {
 		t.Fatalf("WriteRetain: %v", err)
 	}
-	gaps := []core.Extent{ext(4096, 512)}
 
 	// The tag is refused before the staleness, as Fill refuses it.
-	err := ix.CheckFill(testTag+1, id, ver(0), gaps)
+	err := ix.CheckFill(testTag+1, id, ver(0))
 	var other *core.OtherShareError
 	if !errors.As(err, &other) || !errors.Is(err, core.ErrOtherShare) {
 		t.Fatalf("CheckFill through another share = %v, want ErrOtherShare", err)
@@ -79,7 +78,7 @@ func TestCheckFillStaleAndOtherShare(t *testing.T) {
 
 	// A fill resolved before the write that changed the file is refused
 	// with ErrStaleFill.
-	if err := ix.CheckFill(testTag, id, ver(1), gaps); !errors.Is(err, core.ErrStaleFill) {
+	if err := ix.CheckFill(testTag, id, ver(1)); !errors.Is(err, core.ErrStaleFill) {
 		t.Fatalf("a stale CheckFill = %v, want ErrStaleFill", err)
 	}
 	// Neither refusal claimed the file or changed its entry, and neither
@@ -93,7 +92,7 @@ func TestCheckFillStaleAndOtherShare(t *testing.T) {
 	}
 
 	// A fill of the file as it stands passes and reserves nothing.
-	if err := ix.CheckFill(testTag, id, ver(3), gaps); err != nil {
+	if err := ix.CheckFill(testTag, id, ver(3)); err != nil {
 		t.Fatalf("a fresh CheckFill = %v, want nil", err)
 	}
 	if c := ix.fs.extentCount(); c != 1 {
@@ -104,62 +103,15 @@ func TestCheckFillStaleAndOtherShare(t *testing.T) {
 	// checked against its bucket, so a floor above asOf refuses it. The
 	// check leaves the file with no entry.
 	fresh := fid(32)
-	if err := ix.CheckFill(testTag, fresh, ver(0), nil); err != nil {
+	if err := ix.CheckFill(testTag, fresh, ver(0)); err != nil {
 		t.Fatalf("CheckFill of a file with no entry = %v, want nil", err)
 	}
 	if n := ix.fs.len(); n != 1 {
 		t.Fatalf("file table holds %d entries after the checks, want 1", n)
 	}
 	ix.RaiseFloor(ver(4))
-	if err := ix.CheckFill(testTag, fresh, ver(0), nil); !errors.Is(err, core.ErrStaleFill) {
+	if err := ix.CheckFill(testTag, fresh, ver(0)); !errors.Is(err, core.ErrStaleFill) {
 		t.Fatalf("CheckFill below the floor = %v, want ErrStaleFill", err)
-	}
-}
-
-// TestCheckFillIndexBound: against a count standing at the bound, a fill
-// whose gaps would add an entry is refused with the NoSpaceError naming the
-// index the fill's admission would, counted once per check, and the refusal
-// reserves nothing; a gap the file already holds adds no entry, so it passes
-// at the bound.
-func TestCheckFillIndexBound(t *testing.T) {
-	ix := New(2)
-	a, b, c := fid(41), fid(42), fid(43)
-	for i, id := range []core.FileID{a, b} {
-		p := write(int64(i)*4096, 4096, rec(1, uint32(i)*4096), uint64(i+1))
-		if _, err := ix.WriteRetain(testTag, id, p, core.Seq(i+1)); err != nil {
-			t.Fatalf("WriteRetain: %v", err)
-		}
-	}
-	if got := ix.fs.extentCount(); got != 2 {
-		t.Fatalf("count = %d, want 2", got)
-	}
-
-	// A gap on a third file is one wholly absent extent, so at the bound the
-	// check is refused with the shortfall of one entry.
-	err := ix.CheckFill(testTag, c, ver(0), []core.Extent{ext(0, 100)})
-	assertIndexRefusal(t, err)
-	var ns *core.NoSpaceError
-	if !errors.As(err, &ns) {
-		t.Fatalf("CheckFill refused with %T, want *core.NoSpaceError", err)
-	}
-	if ns.Limit != core.LimitIndex || ns.Unit != core.UnitEntries || ns.Missing != 1 {
-		t.Fatalf("CheckFill's refusal = %+v, want the index, 1 missing, in entries", ns)
-	}
-	if r := ix.fs.indexRefusals(); r != 1 {
-		t.Fatalf("after one refused CheckFill, refusals = %d, want 1", r)
-	}
-	// The refused check reserved nothing, so the count stands at the bound.
-	if got := ix.fs.extentCount(); got != 2 {
-		t.Fatalf("after a refused CheckFill, the count = %d, want the 2 the commit stands at", got)
-	}
-
-	// A gap the file already holds adds no entry, so even at the bound the
-	// check passes it, as the admission's whole-gap rule would.
-	if err := ix.CheckFill(testTag, a, ver(1), []core.Extent{ext(0, 100)}); err != nil {
-		t.Fatalf("CheckFill of a held gap at the bound = %v, want nil", err)
-	}
-	if r := ix.fs.indexRefusals(); r != 1 {
-		t.Fatalf("after a passed CheckFill, refusals = %d, want the 1 of the refusal alone", r)
 	}
 }
 
@@ -262,5 +214,40 @@ func TestCheckFillIndexBoundTagFree(t *testing.T) {
 	}
 	if n := ix2.fs.len(); n != 1 {
 		t.Fatalf("file table holds %d entries, want the one the fixture wrote: the check created none", n)
+	}
+}
+
+// TestFillNotesItsRecordInDropRanges: a fill's record is noted in the file's
+// drop ranges as a write's is, so a removal record in another segment may not
+// be dropped while the fill's segment lives.
+func TestFillNotesItsRecordInDropRanges(t *testing.T) {
+	ix := New(1 << 20)
+	id := fid(51)
+	if _, err := ix.Fill(testTag, id, write(0, 100, rec(1, 0), 7), 9, ix.AsOf(id)); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	if !ix.fs.mayOutrank(id, 2, ext(0, 100), Numbers{Version: ver(8), Seq: 10}) {
+		t.Fatal("a removal record in another segment may be dropped while the fill's record still lives")
+	}
+}
+
+// A fill's pre-check checks the tag and the staleness and no bound: a count
+// above the limit refuses neither a fill of a held extent nor a fill of a
+// fresh one, whose refusal is the capacity gate's, after its read-only gate.
+func TestCheckFillChecksNoBound(t *testing.T) {
+	ix := New(1 << 20)
+	a := fid(52)
+	if _, err := ix.WriteRetain(testTag, a, write(0, 4096, rec(1, 0), 1), 1); err != nil {
+		t.Fatalf("WriteRetain: %v", err)
+	}
+	ix.fs.limit.Store(0)
+	if err := ix.CheckFill(testTag, a, ver(1)); err != nil {
+		t.Fatalf("CheckFill with the count above the limit = %v, want nil", err)
+	}
+	if err := ix.CheckFill(testTag, fid(53), ver(0)); err != nil {
+		t.Fatalf("CheckFill of a fresh file with the count above the limit = %v, want nil", err)
+	}
+	if r := ix.fs.indexRefusals(); r != 0 {
+		t.Fatalf("refusals = %d, want 0", r)
 	}
 }

@@ -428,3 +428,44 @@ func TestFillDoesNotOverwriteConcurrentWrite(t *testing.T) {
 		t.Fatal("the fill overwrote the write")
 	}
 }
+
+// With the index at its bound, a read-only journal refuses a fill with the
+// read-only sentinel, not the index's refusal: the bound is checked after the
+// read-only gate.
+func TestFillReadOnlyBeforeIndexBound(t *testing.T) {
+	c, _ := newTestCore(t, func(o *coreOptions) { o.extentLimit = 1 })
+	s := mustShare(t, c, 1)
+	mustWrite(t, c, s, testFile(60), 0, []byte("a")) // the one entry the bound allows
+	c.Durability().Enter(syscall.EROFS)
+	err := c.Fill(context.Background(), s, testFile(61), 0, ff(64), ver(0), ver(1))
+	if !errors.Is(err, core.ErrJournalReadOnly) {
+		t.Fatalf("Fill of a read-only journal at the index bound = %v, want ErrJournalReadOnly", err)
+	}
+}
+
+// Several gaps cost a record each: a share limit that fits one record of all
+// their bytes but not four records is refused naming the share, and a limit
+// that fits the four admits the fill.
+func TestFillChargesEveryGapsRecord(t *testing.T) {
+	setup := func(t *testing.T, limit int64) (*Core, *Share, core.FileID) {
+		c, _ := newTestCore(t)
+		s := mustLimitShare(t, c, 1, limit)
+		f := testFile(62)
+		for off := int64(8); off < 64; off += 16 {
+			mustWrite(t, c, s, f, off, bytes.Repeat([]byte{'h'}, 8))
+		}
+		return c, s, f
+	}
+	held := 4 * recordBytes(8)
+	oneRecord := recordBytes(32) + recordBytes(0) // what four 8-byte gaps ask as one split
+	fourRecords := 4 * (recordBytes(8) + recordBytes(0))
+
+	c, s, f := setup(t, held+oneRecord)
+	err := c.Fill(context.Background(), s, f, 0, ff(64), c.Index().AsOf(f), ver(1))
+	_ = refused(t, err, core.LimitShare)
+
+	c, s, f = setup(t, held+fourRecords)
+	if err := c.Fill(context.Background(), s, f, 0, ff(64), c.Index().AsOf(f), ver(1)); err != nil {
+		t.Fatalf("Fill within the share limit = %v, want nil", err)
+	}
+}

@@ -70,7 +70,7 @@ func (c *Core) fillAndPublish(ctx context.Context, s *Share, id core.FileID, off
 	gaps := c.index.FillGaps(id, core.Extent{Off: off, Len: int64(len(p))}, v)
 	// Staleness is checked even when nothing is absent: a fill of a file that
 	// changed since the caller's read is refused whole either way.
-	if err := c.index.CheckFill(s.Tag, id, asOf, gaps); err != nil {
+	if err := c.index.CheckFill(s.Tag, id, asOf); err != nil {
 		if errors.Is(err, core.ErrStaleFill) {
 			c.fillRefused.Add(1)
 		}
@@ -79,10 +79,14 @@ func (c *Core) fillAndPublish(ctx context.Context, s *Share, id core.FileID, off
 	if len(gaps) == 0 {
 		return 0, nil
 	}
+	// Take sizes the payload as one split with one record header; each further
+	// gap appends a record of its own, so it adds its header and body bytes and
+	// the padding its length may need, and the reservation fails closed.
 	var payload int64
 	for _, g := range gaps {
 		payload += g.Len
 	}
+	payload += int64(len(gaps)-1) * (segment.RecordBytes(0) + 7)
 	last := gaps[len(gaps)-1]
 	stream := c.streams.For(id)
 	grant, err := c.cap.Take(ctx, capacity.Request{
@@ -105,9 +109,9 @@ func (c *Core) fillAndPublish(ctx context.Context, s *Share, id core.FileID, off
 	}
 	var filled int64
 	// decision: a gap that crosses N segments overshoots the index bound by at
-	// most N-1 entries, because CheckFill and the grant's Take charge a gap as
-	// one entry and Index.Fill has no admission of its own. Overturned by a
-	// bound a few entries over that costs more than the per-piece check would.
+	// most N-1 entries, because the grant's Take charges a gap as one entry and
+	// Index.Fill has no admission of its own. Overturned when an index a few
+	// entries over its bound causes a visible refusal.
 	// decision: a failure on a later piece leaves the earlier pieces held
 	// offloaded, since their bytes are remote content at v, not lost writes.
 	for _, g := range gaps {
@@ -140,8 +144,15 @@ func (c *Core) fillAndPublish(ctx context.Context, s *Share, id core.FileID, off
 			// caller gets the error and the record stays on disk, never
 			// published by this run, as a write's does; the fill held bytes
 			// the remote tier still has, so nothing is lost, and the caller
-			// reads the remote again. Overturned by a refusal here that
-			// costs a caller more than one remote read.
+			// reads the remote again. The orphan is a KindFill record at
+			// version v with a higher seq, and recovery replays it as held
+			// offloaded content: correct remote content at v, but never noted
+			// in the file's drop ranges, because the refusal comes before the
+			// index notes the record. If a later Delete's removal record is
+			// dropped before the orphan's segment retires, the orphan returns.
+			// The window is any bucket raise by another file's drop or any
+			// share attach, both journal-wide. Overturned by noting the record
+			// in the index's fill before its staleness return.
 			hd, err := c.index.Fill(s.Tag, id, index.Placed{
 				Extent:  core.Extent{Off: g.Off + done, Len: pl.N},
 				Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},

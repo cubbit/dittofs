@@ -74,19 +74,15 @@ func (ix *Index) FillGaps(id core.FileID, e core.Extent, v core.Version) []core.
 	return gaps
 }
 
-// CheckFill predicts a fill of the gaps on id against the entry's staleness
-// and the index's bound without reserving: it returns the refusal the fill
-// itself would — ErrOtherShare when the file is another share's, then
-// ErrStaleFill when the version id is checked against stands above asOf, the
-// comparison files.fill makes — then a NoSpaceError naming the index, the
-// shortfall in entries, counted by the index's refusals counter, when the
-// gaps' put calls would raise the count above the bound. It reserves nothing
-// and claims nothing: an entry the caller has already resolved its gaps
-// against is charged exactly once, so a caller that checked and then
-// admitted finds the index where the check left it. It creates no entry and
-// takes the named file's lock shared, exactly as CheckWrite does.
-func (ix *Index) CheckFill(tag core.ShareTag, id core.FileID, asOf core.Version, gaps []core.Extent) error {
-	return ix.fs.checkFill(tag, id, asOf, gaps)
+// CheckFill predicts a fill on id against the file's tag and staleness
+// without reserving: it returns the refusal the fill itself would —
+// ErrOtherShare when the file is another share's, then ErrStaleFill when the
+// version id is checked against stands above asOf, the comparison files.fill
+// makes. It checks no bound: the capacity gate's CheckFillIndexBound is the
+// fill's one. It claims nothing, creates no entry and takes the named file's
+// lock shared.
+func (ix *Index) CheckFill(tag core.ShareTag, id core.FileID, asOf core.Version) error {
+	return ix.fs.checkFill(tag, id, asOf)
 }
 
 // Fill holds the parts of p a fill at p's version holds — where nothing is

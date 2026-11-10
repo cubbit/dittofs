@@ -147,17 +147,12 @@ func (fs *files) admitFill(id core.FileID, p Placed) (int64, error) {
 	return fs.reserve(max(n, 0))
 }
 
-// checkFill predicts a fill's staleness and admission without reserving: it
-// runs the tag check and the staleness comparison files.fill makes — the
-// entry's checkedAgainst against asOf, its counter halves alone — and then
-// the bound over the entries the gaps would hold. The gaps are the caller's
-// FillGaps answer for the same version, put as a fill puts them, so the
-// entries they name are the ones the fill's admission would reserve, exactly
-// once each. The bound here is the one checkWrite applies: what fillAdds
-// would predict over the file's current content, which the gaps already
-// account for, never more. It touches no count, so a caller that checked and
-// then admitted finds it where the check left it, and it creates no entry.
-func (fs *files) checkFill(tag core.ShareTag, id core.FileID, asOf core.Version, gaps []core.Extent) error {
+// checkFill predicts a fill's refusals without reserving: it runs the tag
+// check and the staleness comparison files.fill makes — the entry's
+// checkedAgainst against asOf, its counter halves alone. It does not check the
+// bound: that is the capacity gate's, after its read-only gate. It touches no
+// count and creates no entry.
+func (fs *files) checkFill(tag core.ShareTag, id core.FileID, asOf core.Version) error {
 	var refused error
 	if !fs.view(id, func(f *file) {
 		if refused = f.check(tag, id); refused != nil {
@@ -165,31 +160,21 @@ func (fs *files) checkFill(tag core.ShareTag, id core.FileID, asOf core.Version,
 		}
 		if fs.checkedAgainst(f, id).Counter > asOf.Counter {
 			refused = core.ErrStaleFill
-			return
 		}
-		gaps = fillGapExtents(f, gaps)
 	}) {
 		// A file with no entry is nobody's, so no tag check refused, and it
-		// is checked against its floor bucket alone. It holds nothing, so
-		// every gap is wholly absent, which the caller's FillGaps answer
-		// already names.
+		// is checked against its floor bucket alone.
 		if fs.buckets[bucketOf(id)].Load() > asOf.Counter {
 			return core.ErrStaleFill
 		}
-	} else if refused != nil {
-		return refused
+		return nil
 	}
-	c, limit := fs.count.Load(), fs.limit.Load()
-	if c+int64(len(gaps)) > limit {
-		fs.refusals.Add(1)
-		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + int64(len(gaps)) - limit, Unit: core.UnitEntries}
-	}
-	return nil
+	return refused
 }
 
 // CheckFillIndexBound predicts a fill of e against the index's bound alone,
-// the one piece CheckFill needs beside the tag and staleness checks the
-// caller owns: it counts the gaps of e over the file's held pieces with no
+// the one check of the bound a fill has, run by the capacity gate after its
+// read-only gate: it counts the gaps of e over the file's held pieces with no
 // marker masking any — only the fill's own version can lift a mask, and this
 // check runs before that version is known — so the figure is the ceiling the
 // fill's version can never exceed: whatever parts its resolution trims away,
@@ -199,12 +184,12 @@ func (fs *files) checkFill(tag core.ShareTag, id core.FileID, asOf core.Version,
 //
 // decision: the capacity gate runs this tag-free bound over the hull of a
 // fill's gaps, after the fill has already run CheckFill under the file's
-// append domain with the exact gaps and its own version. The gate's figure is
-// an upper bound on those gaps, so it can refuse a fill CheckFill passed when
-// the count stands within a few entries of the bound — a masked part the hull
-// still counts. That over-refusal is accepted: it fails closed, and only at
-// the bound, where a write is refused too. Overturned by a fill refused there
-// that a caller needs to land, which would pass the gaps into the admission.
+// append domain. The gate's figure is an upper bound on the entries the fill
+// adds, so it can refuse a fill the index would admit when the count stands
+// within a few entries of the bound — a masked part the hull still counts. That
+// over-refusal is accepted: it fails closed, and only at the bound, where a
+// write is refused too. Overturned when an index a few entries over its bound
+// causes a visible refusal, which would pass the exact gaps into the admission.
 func (ix *Index) CheckFillIndexBound(id core.FileID, e core.Extent) error {
 	// A file with no entry holds nothing: a fill of bytes occupies one
 	// wholly absent extent, a zero-length one none — as FillGaps answers it.
@@ -219,20 +204,6 @@ func (ix *Index) CheckFillIndexBound(id core.FileID, e core.Extent) error {
 		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(n, 1) - limit, Unit: core.UnitEntries}
 	}
 	return nil
-}
-
-// fillGapExtents rebuilds the caller's gaps as they stand against the file's
-// current content, in a fresh slice: the parts of them nothing held covers.
-// The caller holds the file's lock. A caller that passed the gaps of an older
-// read is told the truer figure the content now stands at, so the check never
-// refuses a fill the admission would admit. The result never shares the
-// caller's backing array, which the check leaves the caller in control of.
-func fillGapExtents(f *file, gaps []core.Extent) []core.Extent {
-	var out []core.Extent
-	for _, e := range gaps {
-		_, out = f.held.span(e, nil, out)
-	}
-	return out
 }
 
 // reserve adds want to the count when the limit allows it, or refuses with a

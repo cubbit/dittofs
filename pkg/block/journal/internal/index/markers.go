@@ -187,7 +187,7 @@ func (f *file) fillParts(p Placed, fn func(Placed)) {
 	part(cursor, extentEnd(p.Extent))
 }
 
-// fill holds p for id under tag as a Fill does, claiming the file for tag in
+// fill holds p for id under tag as a Fill does, claiming the file for tag and noting its record in the drop ranges, in
 // the same update, so the delta it returns carries its owner and no fill's
 // bytes are accounted under the zero tag. A file another tag owns is refused
 // with the claim's OtherShareError, before the staleness check, as every
@@ -218,7 +218,7 @@ func (fs *files) fill(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq,
 		if fs.checkedAgainst(f, id).Counter > asOf.Counter {
 			return core.ErrStaleFill
 		}
-		if err := f.claim(tag, id); err != nil {
+		if err := f.recorded(p.Record.Segment, p.Extent, Numbers{Version: p.Version, Seq: seq}, tag, id); err != nil {
 			return err
 		}
 		p.Seq = seq
