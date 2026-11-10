@@ -69,15 +69,15 @@ func TestRebuildGolden(t *testing.T) {
 	expect := func(t *testing.T, fs *files, ctr *Counters, step string) {
 		t.Helper()
 		want := []Piece{
-			{Extent: ext(0, 4*KiB), Record: rec(14, 0), Version: ver(7), Offloaded: true},
-			{Extent: ext(4*KiB, 8*KiB), Record: rec(12, 16*KiB), Version: ver(8)},
-			{Extent: ext(20*KiB, 4*KiB), Record: rec(13, 8*KiB), Version: ver(9)},
+			{Extent: ext(0, 4*KiB), Record: rec(14, 0), Version: ver(7), Seq: 120, Offloaded: true},
+			{Extent: ext(4*KiB, 8*KiB), Record: rec(12, 16*KiB), Version: ver(8), Seq: 103},
+			{Extent: ext(20*KiB, 4*KiB), Record: rec(13, 8*KiB), Version: ver(9), Seq: 110},
 		}
 		if got := heldPieces(fs, alice); !slices.Equal(got, want) {
 			t.Fatalf("%s: alice held:\n got  %+v\n want %+v", step, got, want)
 		}
 		if got := heldPieces(fs, bob); !slices.Equal(got, []Piece{
-			{Extent: ext(0, 4*KiB), Record: rec(12, 8*KiB), Version: ver(6)},
+			{Extent: ext(0, 4*KiB), Record: rec(12, 8*KiB), Version: ver(6), Seq: 102},
 		}) {
 			t.Fatalf("%s: bob held %+v: another file's records moved alice's", step, got)
 		}
@@ -161,7 +161,7 @@ func TestRebuildPrecedenceTiesAndCopies(t *testing.T) {
 				t.Fatal(err)
 			}
 			if got := heldPieces(&fs, fid(1)); !slices.Equal(got, []Piece{
-				{Extent: ext(0, 8), Record: rec(2, 4096), Version: ver(7)},
+				{Extent: ext(0, 8), Record: rec(2, 4096), Version: ver(7), Seq: 9},
 			}) {
 				t.Fatalf("order %v: held %+v, want the copy's record", order, got)
 			}
@@ -189,7 +189,7 @@ func TestRebuildPrecedenceTiesAndCopies(t *testing.T) {
 				t.Fatal(err)
 			}
 			if got := heldPieces(&fs, id); !slices.Equal(got, []Piece{
-				{Extent: ext(0, 4), Record: rec(1, 200), Version: ver(7)},
+				{Extent: ext(0, 4), Record: rec(1, 200), Version: ver(7), Seq: 7},
 			}) {
 				t.Fatalf("order %v: held = %+v, want the piece read from the copy at 200", order, got)
 			}
@@ -217,7 +217,7 @@ func TestRebuildPrecedenceTiesAndCopies(t *testing.T) {
 				t.Fatal(err)
 			}
 			if got := heldPieces(&fs, fid(1)); !slices.Equal(got, []Piece{
-				{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(8)},
+				{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(8), Seq: 3},
 			}) {
 				t.Fatalf("order %v: held %+v, want the v8 bytes", order, got)
 			}
@@ -267,7 +267,7 @@ func TestRebuildPrecedenceTiesAndCopies(t *testing.T) {
 			// the tie-break's pick: whichever order the copies were fed in,
 			// the same one is kept.
 			if got := heldPieces(&fs, id); !slices.Equal(got, []Piece{
-				{Extent: ext(0, 4), Record: rec(3, 200), Version: ver(7)},
+				{Extent: ext(0, 4), Record: rec(3, 200), Version: ver(7), Seq: 8},
 			}) {
 				t.Fatalf("order %v: held = %+v, want the piece read from the copy at (3, 200)", order, got)
 			}
@@ -304,7 +304,7 @@ func TestRebuildRemovals(t *testing.T) {
 			// would be held by a removal that dropped content whatever its
 			// version.
 			if got := heldPieces(&fs, id); !slices.Equal(got, []Piece{
-				{Extent: ext(0, 16), Record: rec(2, 0), Version: ver(9)},
+				{Extent: ext(0, 16), Record: rec(2, 0), Version: ver(9), Seq: 9},
 			}) {
 				t.Fatalf("order %v: held %+v, want the v9 write whole", order, got)
 			}
@@ -428,19 +428,19 @@ func TestRebuildOffloadedBits(t *testing.T) {
 		}
 	}
 	// off takes Record indices, so a scene orders [0 1 2] plus mark records.
-	dirtyV8 := Piece{Extent: ext(8, 8), Record: rec(1, 128), Version: ver(8)}
+	dirtyV8 := Piece{Extent: ext(8, 8), Record: rec(1, 128), Version: ver(8), Seq: 3}
 	bit := func(p Piece) Piece { p.Offloaded = true; return p }
 
 	// An offloaded record above the v5 mark's version marks the v8 piece;
 	// one at v5 leaves it dirty.
 	scene(t,
 		[]Record{recd(RecOffloaded, fid(1), 9, 8, 2, 0, 0, 16)},
-		[]Piece{bit(Piece{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(5)}), bit(dirtyV8)},
+		[]Piece{bit(Piece{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(5), Seq: 1}), bit(dirtyV8)},
 		[]int{0, 1, 2, 3}, []int{3, 2, 1, 0},
 	)
 	scene(t,
 		[]Record{recd(RecOffloaded, fid(1), 9, 5, 2, 0, 8, 8)},
-		[]Piece{bit(Piece{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(5)}), dirtyV8},
+		[]Piece{bit(Piece{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(5), Seq: 1}), dirtyV8},
 		[]int{0, 1, 2, 3}, []int{3, 2, 1, 0},
 	)
 
@@ -448,12 +448,12 @@ func TestRebuildOffloadedBits(t *testing.T) {
 	// one with a lower seq does not.
 	scene(t,
 		[]Record{recd(RecUnmark, fid(1), 9, 5, 2, 0, 0, 8)},
-		[]Piece{{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(5)}, dirtyV8},
+		[]Piece{{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(5), Seq: 1}, dirtyV8},
 		[]int{0, 1, 2, 3}, []int{3, 2, 1, 0},
 	)
 	scene(t,
 		[]Record{recd(RecUnmark, fid(1), 1, 5, 0, 0, 0, 8)},
-		[]Piece{bit(Piece{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(5)}), dirtyV8},
+		[]Piece{bit(Piece{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(5), Seq: 1}), dirtyV8},
 		[]int{0, 1, 2, 3}, []int{3, 2, 1, 0},
 	)
 
@@ -461,7 +461,7 @@ func TestRebuildOffloadedBits(t *testing.T) {
 	// content newer than what it unmarks.
 	scene(t,
 		[]Record{recd(RecUnmark, fid(1), 4, 4, 1, 0, 0, 16)},
-		[]Piece{bit(Piece{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(5)}), dirtyV8},
+		[]Piece{bit(Piece{Extent: ext(0, 8), Record: rec(1, 0), Version: ver(5), Seq: 1}), dirtyV8},
 		[]int{0, 1, 2, 3}, []int{3, 2, 1, 0},
 	)
 
@@ -492,7 +492,7 @@ func TestRebuildOffloadedBits(t *testing.T) {
 				if err := b.Finish(ver(0)); err != nil {
 					t.Fatal(err)
 				}
-				want := []Piece{{Extent: ext(0, 4), Record: rec(2, 0), Version: ver(7), Offloaded: scene2.want}}
+				want := []Piece{{Extent: ext(0, 4), Record: rec(2, 0), Version: ver(7), Seq: 5, Offloaded: scene2.want}}
 				if got := heldPieces(&fs, id); !slices.Equal(got, want) {
 					t.Fatalf("order %v: held = %+v, want the fill offloaded=%v", order, got, scene2.want)
 				}
@@ -508,7 +508,7 @@ func TestRebuildOffloadedBits(t *testing.T) {
 			recd(RecOffloaded, fid(1), 2, 5, 1, 64, 0, 8),
 			recd(RecWrite, fid(1), 9, 5, 2, 4096, 0, 8), // the repack copy
 		},
-		[]Piece{bit(Piece{Extent: ext(0, 8), Record: rec(2, 4096), Version: ver(5)}), dirtyV8},
+		[]Piece{bit(Piece{Extent: ext(0, 8), Record: rec(2, 4096), Version: ver(5), Seq: 9}), dirtyV8},
 		[]int{0, 1, 2, 3, 4}, []int{4, 3, 2, 1, 0},
 	)
 }
@@ -688,7 +688,7 @@ func TestRebuildCountersAndBuckets(t *testing.T) {
 		if got := fs.asOf(fid(5)); got != ver(5) {
 			t.Fatalf("asOf of a file with no entry = %v, want 5, the fed maximum", got)
 		}
-		if _, err := fs.fill(7, id, write(0, 4, rec(2, 0), 0), ver(4)); !errors.Is(err, core.ErrStaleFill) {
+		if _, err := fs.fill(7, id, write(0, 4, rec(2, 0), 0), 1, ver(4)); !errors.Is(err, core.ErrStaleFill) {
 			t.Fatalf("fill below the bucket start = %v, want ErrStaleFill", err)
 		}
 		fs.view(id, func(f *file) {
@@ -815,6 +815,11 @@ func TestRebuildRefusals(t *testing.T) {
 			r := recd(RecWrite, fid(1), math.MaxUint64, 5, 1, 0, 0, 8)
 			return r
 		}(), core.ErrUnknownFormat},
+		// The journal issues from 1, so a record that verifies with sequence
+		// number 0 comes from damage or another writer.
+		{"a write with no seq", recd(RecWrite, fid(1), 0, 5, 1, 0, 0, 8), core.ErrUnknownFormat},
+		{"a fill with no seq", recd(RecFill, fid(1), 0, 5, 1, 0, 0, 8), core.ErrUnknownFormat},
+		{"a truncate with no seq", recd(RecTruncate, fid(1), 0, 5, 1, 0, 4, 0), core.ErrUnknownFormat},
 		// A record longer than a segment cannot sit in one: its payload
 		// would run past the segment's end, and the piece's 32-bit record
 		// offset and length could not name it.

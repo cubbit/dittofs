@@ -80,8 +80,8 @@ func TestRepointRecordLeavesOtherRecords(t *testing.T) {
 		t.Fatalf("moved = %d, want 1", moved)
 	}
 	want := []Piece{
-		piece(0, 4096, rec(2, 0), 0, 5, false),
-		piece(8192, 4096, rec(1, 4096), 0, 7, false),
+		written(piece(0, 4096, rec(2, 0), 0, 5, false)),
+		written(piece(8192, 4096, rec(1, 4096), 0, 7, false)),
 	}
 	if got := heldOf(ix, testFile); !slices.Equal(got, want) {
 		t.Fatalf("held:\n got  %+v\n want %+v", got, want)

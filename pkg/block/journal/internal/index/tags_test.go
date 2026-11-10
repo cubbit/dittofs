@@ -248,3 +248,16 @@ func TestTagConflictsDropWhenTheEntryLeavesLater(t *testing.T) {
 		t.Fatalf("TagConflicts() after the entry left the map = %+v, want none", cs)
 	}
 }
+
+// TestOwnerNamesTheFilesTag checks Owner answers the tag a write claimed the
+// file for, and nothing for a file with no entry.
+func TestOwnerNamesTheFilesTag(t *testing.T) {
+	ix := New(1 << 20)
+	if _, ok := ix.Owner(testFile); ok {
+		t.Fatal("Owner answers a file with no entry")
+	}
+	seqWrite(t, ix, write(0, 10, rec(1, 64), 1), 1)
+	if tag, ok := ix.Owner(testFile); !ok || tag != testTag {
+		t.Fatalf("Owner = %d, %v; want %d", tag, ok, testTag)
+	}
+}

@@ -17,14 +17,16 @@ func New(extentLimit int64) *Index {
 
 // WriteRetain publishes a client write of p to id through tag: it checks the
 // file's owner, admits the write against the extent bound, notes the record
-// with p's version and seq, and holds p, retaining what it supersedes as
-// superseded by p's version. It takes the file's lock exclusively. A refusal
+// with p's version and seq, and holds p under seq, retaining what it
+// supersedes as superseded by p's version. p.Seq is ignored: the record's
+// sequence number is seq. It takes the file's lock exclusively. A refusal
 // holds nothing.
 func (ix *Index) WriteRetain(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq) (HeldDelta, error) {
 	var err error
 	if ix.fs.view(id, func(f *file) { err = f.check(tag, id) }) && err != nil {
 		return HeldDelta{}, err
 	}
+	p.Seq = seq
 	adm, err := ix.fs.admitWrite(id, p.Extent, true)
 	if err != nil {
 		return HeldDelta{}, err

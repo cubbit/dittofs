@@ -198,6 +198,16 @@ func (b *rebuilder) Feed(r Record) error {
 	if r.Off < 0 || r.Len < 0 || r.Off > math.MaxInt64-r.Len {
 		return fmt.Errorf("%w: record extent [%d, +%d)", core.ErrUnknownFormat, r.Off, r.Len)
 	}
+	// A record carrying sequence number 0 is refused like one above the
+	// greatest: the journal issues every kind of record a number from its one
+	// counter, which starts at 1, so 0 comes from damage or another writer,
+	// and a write held under it would fail the header check of every read of
+	// its range until the next open. The check sits here and not in
+	// Counters.Observe, which is handed numbers with no kind and is only ever
+	// called from here.
+	if r.Numbers.Seq == 0 {
+		return fmt.Errorf("%w: a kind %d record with seq 0, below every number issued", core.ErrUnknownFormat, r.Kind)
+	}
 	s := b.shards[hashID(r.File)>>(64-6)]
 	s.mu.Lock()
 	// A feeder that read finishing before the claim, then waited on this
@@ -245,6 +255,10 @@ func (b *rebuilder) Feed(r Record) error {
 // and hands the pieces over with their bits. Overturned when the hold rules
 // land and need the superseded pieces the replay cuts, in which case the
 // replay grows a hook at the cut computing what a hold keeps.
+//
+// The piece must carry its record's sequence number in r.Seq: a retained piece
+// is held again as it is when its record fails, and a held entry with no
+// sequence number fails every read's header check.
 //
 // Once Finish has begun the piece is refused with errRebuilt: a piece the
 // shard has already drained would never reach the file it names.
@@ -483,7 +497,7 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 		e := core.Extent{Off: r.off, Len: r.n}
 		switch r.kind {
 		case RecWrite:
-			f.write(Placed{Extent: e, Record: RecordAt{Segment: r.seg, Offset: r.at}, Version: r.numbers.Version})
+			f.write(Placed{Extent: e, Record: RecordAt{Segment: r.seg, Offset: r.at}, Version: r.numbers.Version, Seq: r.numbers.Seq})
 		case RecFill:
 			// decision: a fill replays as a plain put. A fill record
 			// covers exactly the extents that were absent when its journal
@@ -495,7 +509,7 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 			// by a fill record whose extent names bytes its journal still
 			// held when it appended the record, which the mask would have
 			// left alone and a put supersedes.
-			f.held.put(Piece{Extent: e, Record: RecordAt{Segment: r.seg, Offset: r.at}, Version: r.numbers.Version})
+			f.held.put(Piece{Extent: e, Record: RecordAt{Segment: r.seg, Offset: r.at}, Version: r.numbers.Version, Seq: r.numbers.Seq})
 			// A fill's own mark, so an unmark's order against it matters
 			// exactly as against a real offloaded record: filled content
 			// enters the journal already offloaded, from the remote tier.
