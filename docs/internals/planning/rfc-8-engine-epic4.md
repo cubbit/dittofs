@@ -90,10 +90,8 @@ modify and change times, a whole loss's `Lost` extent, the marks write) and the 
    that has landed, and E2's test components: above all the fake journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
-   three kinds: the test clock, an in-memory implementation held to its interface's
-   conformance suite, or a fault wrapper. A test asserts on the engine's answers, on resulting
-   state and on what a double records of its own outputs, never on which calls the engine made.
+   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -134,8 +132,7 @@ modify and change times, a whole loss's `Lost` extent, the marks write) and the 
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
    commits and conflicts on. The fake journal is for the engine's pure logic only, and no
    engine conformance row runs over it. It is held to the real journal by the journal's own
-   conformance suite (RFC 1 §9.4): it passes the suite's rows that need no crash, fault or
-   platform, the rows the real journal passes on `platform.OS`.
+   conformance suite (RFC 1 §9.4): it passes the RFC 1 §3 rows that need no real storage.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -365,7 +362,7 @@ pkg/block/engine/
                     T4.7  the claim and its release
   loss.go           T4.5  the sync function, the drain, the loss sequence and its floor, LossSeq, a device lost whole (D8, D9, D11, D12)
                     T4.6  the failed window's report in the sync function
-  write.go          T4.1  the `sample` field set to D1's derivation in place of `zeroVerifier`
+  write.go          T4.1  the `sample` default set to D1's derivation in place of `zeroVerifier`
   unbuilt.go        T4.2, T4.5  Commit and LossSeq leave it
   export_test.go    T4.1–T4.7  the binding's inputs, the batch hook, the loss hook
   enginetest/
@@ -421,7 +418,8 @@ listed test fails on the regression it names (after "catches").
   existence (adapted); §5.1, §11.2 stalled store and §5.1 marks wait, §11.2 stalled store,
   through `Fixture.Stall`. Red until the
   journal's `Sync` exists.
-- **Tests,** over the fake and the real `kvstore` with a transaction counter: an append's
+- **Tests,** over the fake and the real `kvstore` on the in-memory `kv.KV`, whose own record
+  (`Counts`) counts transactions: an append's
   `Commit` makes zero transactions (catches a commit before every reply); an overwrite's
   returns after one (catches an answer after the sync alone); an operation staged during
   `Commit`'s sync, whose batch a hook keeps from being captured, does not hold the `Commit`
