@@ -337,6 +337,9 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, opts
 		ExtentLimit: s.ExtentLimit,
 		Descriptors: cfg.Budget,
 		Targets:     buildTargets(s),
+
+		MaxBytes:      s.MaxBytes,
+		IdleSealBytes: s.IdleSealBytes,
 	}, datapath.State{Counters: counters})
 	if err != nil {
 		// datapath.New takes its own cleanup when a layer below it fails, and
@@ -406,24 +409,23 @@ func buildTargets(s core.Settings) segment.Targets {
 }
 
 // resolveDefaults returns the settings with every zero naming its default:
-// the append streams, the extent limit, the headroom's records and the spare
-// target, which defaults to one spare per stream. Nothing here refuses: a
+// the append streams, the extent limit, the headroom's records, the idle-seal
+// threshold and the spare target, which defaults to one spare per stream. Nothing here refuses: a
 // negative setting was already refused when the options were resolved.
 //
-// ponytail: MaxBytes is left at what the caller named or zero. The journal's
-// maximum bounds the storage a write may allocate, but no write path admits
-// against it yet — the core that allocates takes no maximum from the open — so
-// a journal opened with MaxBytes set is no smaller than one opened without it,
-// and a write past it is not refused. The open also makes storage whatever
-// MaxBytes says, because the spare pool's targets are built before any write
-// is admitted: with the default settings — 16 streams, whose spare target
-// defaults to one spare per stream, a headroom of 65536 records no larger
-// than the segment cap, and a repack reserve of one segment — a fresh Open
-// makes 18 spares of SegmentCap bytes each (16 content + 1 headroom + 1
-// reserve, about 4.5 GiB at the format's 256 MiB cap). The spares hold no
-// write data; they are the segments writes roll onto. Upgrade with capacity
-// admission that reserves each spare's cap against the maximum, so a write
-// past it is refused naming the journal and the pool is bounded by it.
+// ponytail: MaxBytes is passed to the core as the caller named it, and zero
+// leaves the journal unbounded, where the settings' default is 80% of the
+// filesystem's size at open. The default is not derived here, so a journal
+// opened without a maximum admits by every other limit alone. Upgrade by
+// deriving the default from the filesystem's size when the open resolves it.
+// The maximum is not free for the open: the spare pool's targets are built
+// before any write is admitted, and the spares it makes are reserved against
+// the maximum, so a maximum below what the targets name leaves the pool short.
+// With the default settings — 16 streams, whose spare target defaults to one
+// spare per stream, a headroom of 65536 records no larger than the segment
+// cap, and a repack reserve of one segment — an unbounded Open makes 18 spares
+// of SegmentCap bytes each (16 content + 1 headroom + 1 reserve, about 4.5 GiB
+// at the format's 256 MiB cap).
 func resolveDefaults(s core.Settings) core.Settings {
 	if s.Streams < 1 {
 		s.Streams = defaultStreams
@@ -433,6 +435,9 @@ func resolveDefaults(s core.Settings) core.Settings {
 	}
 	if s.HeadroomRecords < 1 {
 		s.HeadroomRecords = defaultHeadroomRecords
+	}
+	if s.IdleSealBytes < 1 {
+		s.IdleSealBytes = defaultIdleSealBytes
 	}
 	if s.SpareTarget < 1 {
 		s.SpareTarget = s.Streams
@@ -450,4 +455,5 @@ const (
 	defaultStreams         = 16
 	defaultExtentLimit     = 1 << 26
 	defaultHeadroomRecords = 65536
+	defaultIdleSealBytes   = 16 << 20
 )

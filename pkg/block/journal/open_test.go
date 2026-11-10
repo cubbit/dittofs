@@ -993,3 +993,54 @@ func TestJournal_SecondCloseIsErrClosed(t *testing.T) {
 		t.Fatalf("the second Close returned %v, want ErrClosed", err)
 	}
 }
+
+// TestOpen_MaxBytes_RefusesAWritePastTheMaximum fails an Open that leaves the
+// journal's maximum out of the core it builds: a write whose segments cannot
+// fit under the configured maximum is refused with a NoSpaceError naming the
+// journal, not the spare limit an unbounded pool answers with.
+func TestOpen_MaxBytes_RefusesAWritePastTheMaximum(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := newSeam(t)
+	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// One stream and one headroom record keep the pool at three segments (a
+	// spare, the headroom and the repack reserve), so a maximum of four caps
+	// leaves room for one more and a write of eight caps cannot be served.
+	set := openSettings()
+	set.Streams = 1
+	set.HeadroomRecords = 1
+	set.MaxBytes = 4 * openSegmentCap
+	var wait core.SparesWait
+	opts := append(openOptsDir(s, kit.NewStopwatchClock()),
+		WithSettings(set),
+		WithSparesReady(func(w core.SparesWait) { wait = w }))
+	j, err := Open(context.Background(), s.dir, Version{}, id, opts...)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		if err := j.Close(); err != nil {
+			t.Errorf("close the opened journal: %v", err)
+		}
+	}()
+	if err := wait.WaitSpares(context.Background()); err != nil {
+		t.Fatalf("WaitSpares: %v", err)
+	}
+	if err := j.SetVersionLimit(openLimit); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+	h, err := j.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+
+	_, err = h.WriteAt(context.Background(), fileOf(1), 0, make([]byte, 8*openSegmentCap), 1)
+	var ns *NoSpaceError
+	if !errors.As(err, &ns) || ns.Limit != LimitJournal {
+		t.Fatalf("a write of eight segments under a four-segment maximum = %v, want a NoSpaceError naming the journal", err)
+	}
+}
