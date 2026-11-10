@@ -2966,8 +2966,8 @@ joins the serving each `CloneClose` left to run after its clone is answered.
 ### 11.3 Methods
 
 There is one table, with one entry per file. Its calls are grouped into seven
-interfaces, the **views**, so each area of the filesystem service depends on,
-and fakes in its tests, only the calls it makes. A view adds no state and no
+interfaces, the **views**, so each area of the filesystem service depends on
+only the calls it makes. A view adds no state and no
 step of its own: each is a small unexported struct over the one core, and a
 deny-mode check in `Opens` and a lock in `Locks` run under the same entry
 mutex. `Clients` runs at the client's lease owner, `Expire` and `Revoke` also
@@ -3291,9 +3291,9 @@ itself (§2.6, §2.7): the table declares no error for it.
 ## 12. Invariants, and the test of each
 
 Every test runs in the table's own package suite — `*Table` over the in-memory
-store, a recording `Sink`, the fake clock and a seeded `Deps.Rand` — unless it
-names another layer. Every duration is advanced on the fake clock, never waited
-for; a check that needs real time is an e2e check and says so. A row asserting a
+store, a `Sink` that keeps what the table delivered, the fake clock and a seeded
+`Deps.Rand` — unless it names another layer. Every duration is advanced on the
+fake clock, never waited for; a check that needs real time is an e2e check and says so. A row asserting a
 wire value names the RFC 21 or RFC 22 row that asserts it; here it asserts the
 neutral error or `ClientStatus` field. Authorisation, delegation I/O,
 handle-break order and client ownership are RFC 17's V8, V18, V21 and V24.
@@ -3377,7 +3377,7 @@ The table is tested in layers, cheapest first, as
 | Layer | What it covers |
 | --- | --- |
 | pure units | each subpackage of §11.1 alone: `ranges` (range algebra), `conflict` (§6's matrix cell by cell, §5.2's table), `sequence` (the owner sequence and the lock replay index), `grantfsm`, `grace` (`Done` marks and early end) |
-| table suite | §12's rows: the whole `*Table` through its seven views over the fixture — the in-memory store, a recording `Sink`, the fake clock, a seeded `Deps.Rand` |
+| table suite | §12's rows: the whole `*Table` through its seven views over the fixture — the in-memory store, a `Sink` that keeps what the table delivered, the fake clock, a seeded `Deps.Rand` |
 | fault injection | below the real table, not in place of it: a fault KV under the store, a failing `Sink`, the fake clock |
 | model | interleavings of open, lock, recall and expiry under `-race`, against a sequential model; model-based fuzzing, below |
 | fuzz | every client-chosen input, below |
@@ -3385,11 +3385,14 @@ The table is tested in layers, cheapest first, as
 | service, cross-protocol | RFC 17 `vfstest/suite`'s `crossproto.go` (L1, L20); each adapter's translation is RFC 21's and RFC 22's |
 | e2e | RFC 29, below |
 
-A consumer of open state fakes only the view it uses, with a hand-written fake
-beside the consumer: a test of the service's lock area fakes `Locks`, never the
-other six. Only the table suite runs the whole `*Table`, since a rule that
-crosses views — a deny mode against a lock, an expiry releasing every kind — is
-a property of the one step, which no fake of one view can show.
+A consumer of open state is tested over the real `*Table` on the in-memory
+store and the fake clock, through the view it uses: a test of the service's lock
+area takes `Locks` from it, and no consumer stands in for a view
+([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). The `Sink` keeps what the
+table delivered, its output, and a row asserts on that or on the table's state,
+never on which calls were made. Only the table suite covers every row, since a
+rule that crosses views — a deny mode against a lock, an expiry releasing every
+kind — is a property of the one step.
 
 **Fuzzing.** Every client-chosen input has a `testing.F` target, seeded with
 the suite's values; the reference codecs are `pkg/vfs`'s, fuzzed by
