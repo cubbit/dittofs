@@ -91,11 +91,6 @@ type Core struct {
 	dur      *durability.Durability
 	domains  durability.Domains
 
-	// segmentCap is the size a segment is accounted at: no record ends past
-	// it, so a read refuses a header that says one does before it reads the
-	// body.
-	segmentCap int64
-
 	held, dirty, retained atomic.Int64
 	writtenBytes          atomic.Uint64
 	accountSpy            func(index.HeldDelta)
@@ -170,7 +165,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{segmentCap: deps.SegmentCap, index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt}
+	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)

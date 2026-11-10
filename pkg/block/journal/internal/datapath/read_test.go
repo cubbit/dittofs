@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
@@ -293,5 +294,32 @@ func TestReadMissingIsExactAcrossManyExtents(t *testing.T) {
 		if !bytes.Equal(p[h.Extent.Off-50:h.Extent.Off-50+h.Extent.Len], pattern(100, byte(i))) {
 			t.Fatalf("the bytes of held %v are not the bytes written", h)
 		}
+	}
+}
+
+// TestReadBoundsARecordByTheSetItsSegmentsRollAt builds a core over a segment
+// set whose size differs from the one Deps names: the streams roll at the
+// set's size, so an ordinary record must read whole by that bound.
+func TestReadBoundsARecordByTheSetItsSegmentsRollAt(t *testing.T) {
+	c, _ := newTestCore(t, func(o *coreOptions) {
+		o.state.Set = segment.NewSet(testSegmentCap, nil)
+		// Deps names a size no record fits in; nothing builds a set from it.
+		o.segmentCap = 1
+	})
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	data := pattern(4<<10, 20)
+	v, err := c.WriteAt(context.Background(), s, f, 0, data, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := sentinels(4 << 10)
+	n, missing, held, _, err := c.ReadAt(context.Background(), s, f, 0, p)
+	if err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	want := []core.Held{{Extent: core.Extent{Off: 0, Len: 4 << 10}, Version: v}}
+	if n != 4<<10 || len(missing) != 0 || !slices.Equal(held, want) || !bytes.Equal(p, data) {
+		t.Fatalf("n = %d missing %v held %v: an ordinary record was not served", n, missing, held)
 	}
 }

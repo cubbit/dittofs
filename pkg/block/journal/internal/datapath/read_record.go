@@ -76,13 +76,13 @@ func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileI
 	// record whose body the segment cannot hold is bad on its header alone,
 	// as the scan rules it.
 	//
-	// decision: the bound is the segment size this core accounts segments
-	// at, not the size of the segment's file, which the read does not learn.
-	// It holds because that size is fixed for a journal's life: segments
+	// decision: the bound is the cap of the segment set the streams roll at,
+	// not the size of the segment's file, which the read does not learn. It
+	// holds because the set's cap is fixed for a journal's life: segments
 	// written under a larger one would have their records past this one
 	// refused as damaged. Overturned by a segment size that can change
 	// between opens, which would bound by the segment's own recorded size.
-	if int64(at.Offset)+h.Size() > c.segmentCap {
+	if int64(at.Offset)+h.Size() > c.set.Cap() {
 		return nil, format.RecordHeader{}, recordHeaderDamaged, nil
 	}
 	if !headerMatches(h, id, pieces) {

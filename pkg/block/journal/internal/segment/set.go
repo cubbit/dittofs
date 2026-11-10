@@ -185,6 +185,11 @@ func NewSet(segCap int64, log *slog.Logger) *Set {
 	}
 }
 
+// Cap returns the size every segment of the set is accounted at, which no
+// record a stream appends to one of its segments ends past. It is fixed when
+// the set is made and takes no lock.
+func (s *Set) Cap() int64 { return s.cap }
+
 // ownsLocked reports whether the id is already in the set or among the
 // spares. Only ids the ledger does not own may be added.
 func (s *Set) ownsLocked(id core.SegmentID) bool {
