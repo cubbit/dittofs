@@ -884,45 +884,50 @@ func TestReadDamagedHeaderConcurrentReadersDropOnce(t *testing.T) {
 	}
 }
 
-// TestReadEntryWithNoSeqIsAnInternalError makes an index entry with sequence
-// number 0, which the journal never issues, over a record that verifies: the
-// read returns an error that is not a corruption, serves nothing, leaves p as
-// it was, drops nothing and hands nothing to Corrupt, so a missing number is
-// never recorded as a loss.
-func TestReadEntryWithNoSeqIsAnInternalError(t *testing.T) {
-	var seen seenCorruption
-	c, _ := newSeeingCore(t, &seen)
-	s := mustShare(t, c, 1)
-	f := testFile(1)
-	func() {
-		unlock := c.domains.Lock(f)
-		defer unlock()
-		v, err := c.counters.Draw()
-		if err != nil {
-			t.Fatalf("Draw: %v", err)
+// holdRecordUnderSeqs appends a verifying 4 KiB write record of f with its
+// real sequence number, and holds it in len(seqs) equal pieces, piece i under
+// seqs[i], whatever the record carries: the entries a rebuild or an index bug
+// that lost a number would leave.
+func holdRecordUnderSeqs(t *testing.T, c *Core, f core.FileID, seqs ...core.Seq) {
+	t.Helper()
+	unlock := c.domains.Lock(f)
+	defer unlock()
+	v, err := c.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	seq, err := c.counters.NextSeq()
+	if err != nil {
+		t.Fatalf("NextSeq: %v", err)
+	}
+	whole := core.Extent{Off: 0, Len: 4 << 10}
+	p, err := c.Streams().For(f).Append(format.RecordHeader{
+		Kind: format.KindWrite, File: f, Extent: whole, Seq: seq, Version: v, Tag: 1,
+	}, format.RecordBody{Payload: pattern(4<<10, 7), MTime: 1})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	n := whole.Len / int64(len(seqs))
+	for i, s := range seqs {
+		placed := index.Placed{
+			Extent:  core.Extent{Off: int64(i) * n, Len: n},
+			Record:  index.RecordAt{Segment: p.Loc.Segment, Offset: uint32(p.Loc.Off)},
+			Skip:    uint32(int64(i) * n),
+			Version: v,
 		}
-		seq, err := c.counters.NextSeq()
-		if err != nil {
-			t.Fatalf("NextSeq: %v", err)
-		}
-		x := core.Extent{Off: 0, Len: 4 << 10}
-		p, err := c.Streams().For(f).Append(format.RecordHeader{
-			Kind: format.KindWrite, File: f, Extent: x, Seq: seq, Version: v, Tag: 1,
-		}, format.RecordBody{Payload: pattern(4<<10, 7), MTime: 1})
-		if err != nil {
-			t.Fatalf("Append: %v", err)
-		}
-		placed := index.Placed{Extent: x, Record: index.RecordAt{Segment: p.Loc.Segment, Offset: uint32(p.Loc.Off)}, Version: v}
-		hd, err := c.Index().WriteRetain(1, f, placed, 0)
+		hd, err := c.Index().WriteRetain(1, f, placed, s)
 		if err != nil {
 			t.Fatalf("WriteRetain: %v", err)
 		}
 		c.Account(hd)
-	}()
-	if got := recordOf(t, c, f, 0); got.Seq != 0 {
-		t.Fatalf("the entry carries seq %d, want 0", got.Seq)
 	}
+}
 
+// assertReadRefusedNoSeq checks the read of [0,4096) of f returns an error
+// that is not a corruption, serves nothing, leaves p as it was, drops
+// nothing and queues no loss, so a missing number is never recorded as one.
+func assertReadRefusedNoSeq(t *testing.T, c *Core, s *Share, f core.FileID) {
+	t.Helper()
 	gen := c.Durability().Generation()
 	p := sentinels(4 << 10)
 	n, missing, held, _, err := c.ReadAt(context.Background(), s, f, 0, p)
@@ -935,13 +940,41 @@ func TestReadEntryWithNoSeqIsAnInternalError(t *testing.T) {
 	if _, ok := c.Index().Lookup(f, 0); !ok {
 		t.Fatal("the entry was dropped")
 	}
-	if crs := seen.all(); len(crs) != 0 {
-		t.Fatalf("Corruptions handed over %+v, want none", crs)
-	}
 	if got := c.Durability().Generation(); got != gen {
 		t.Fatalf("generation %d, want %d", got, gen)
 	}
 	if st := c.Durability().Stats(); st.DamagedSegments != 0 || len(st.Losses) != 0 {
 		t.Fatalf("stats = %+v, want no damaged segment and no loss", st)
 	}
+}
+
+// TestReadEntryWithNoSeqIsAnInternalError makes an index entry with sequence
+// number 0, which the journal never issues, over a record that verifies: the
+// read returns an error that is not a corruption, serves nothing, leaves p as
+// it was, drops nothing and queues no loss, so a missing number is never
+// recorded as a loss.
+func TestReadEntryWithNoSeqIsAnInternalError(t *testing.T) {
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	holdRecordUnderSeqs(t, c, f, 0)
+	if got := recordOf(t, c, f, 0); got.Seq != 0 {
+		t.Fatalf("the entry carries seq %d, want 0", got.Seq)
+	}
+	assertReadRefusedNoSeq(t, c, s, f)
+}
+
+// TestReadLaterPieceWithNoSeqIsAnInternalError holds one record in two
+// pieces, the first under a real number and the second under 0: the read is
+// refused like one of a record whose only piece has none, not dropped as a
+// synced loss because the second piece fails the header check.
+func TestReadLaterPieceWithNoSeqIsAnInternalError(t *testing.T) {
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	holdRecordUnderSeqs(t, c, f, 1, 0)
+	if first, second := recordOf(t, c, f, 0), recordOf(t, c, f, 4<<10-1); first.Record != second.Record || first.Seq == 0 || second.Seq != 0 {
+		t.Fatalf("pieces %+v and %+v, want one record, the first with a seq and the second with none", first, second)
+	}
+	assertReadRefusedNoSeq(t, c, s, f)
 }

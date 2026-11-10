@@ -815,6 +815,11 @@ func TestRebuildRefusals(t *testing.T) {
 			r := recd(RecWrite, fid(1), math.MaxUint64, 5, 1, 0, 0, 8)
 			return r
 		}(), core.ErrUnknownFormat},
+		// The journal issues from 1, so a record that verifies with sequence
+		// number 0 comes from damage or another writer.
+		{"a write with no seq", recd(RecWrite, fid(1), 0, 5, 1, 0, 0, 8), core.ErrUnknownFormat},
+		{"a fill with no seq", recd(RecFill, fid(1), 0, 5, 1, 0, 0, 8), core.ErrUnknownFormat},
+		{"a truncate with no seq", recd(RecTruncate, fid(1), 0, 5, 1, 0, 4, 0), core.ErrUnknownFormat},
 		// A record longer than a segment cannot sit in one: its payload
 		// would run past the segment's end, and the piece's 32-bit record
 		// offset and length could not name it.

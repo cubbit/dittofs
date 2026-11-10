@@ -156,13 +156,14 @@ func (r *reading) serveRecord(g recordPieces, again bool) error {
 		return nil
 	}
 
-	// decision: an index entry with sequence number 0 is an index bug, not
-	// damage: the journal never issues 0, so no header can match it and every
-	// read of the entry would fail the header check. The read returns an
-	// error, serves nothing, drops nothing and hands nothing to Corrupt, so a
-	// missing number is never recorded as a synced loss. Overturned if seq 0
-	// ever becomes a valid issued number.
-	if g.pieces[0].Seq == 0 {
+	// decision: an index entry with sequence number 0 means damage the open
+	// should have refused or an index bug: the journal issues every record a
+	// number from 1, and no header can match 0. The read returns an error,
+	// serves nothing, drops nothing and hands nothing to Corrupt, so the
+	// missing number never becomes a recorded loss. Every piece of the record
+	// is checked, since one with 0 fails the header check of the whole group
+	// whatever the others carry. Overturned if 0 becomes a valid issued number.
+	if slices.ContainsFunc(g.pieces, func(pc index.Placed) bool { return pc.Seq == 0 }) {
 		return fmt.Errorf("journal: index entry of file %v at %+v carries no sequence number", r.id, g.at)
 	}
 	cr := r.corruption(g, h, verdict)

@@ -198,6 +198,16 @@ func (b *rebuilder) Feed(r Record) error {
 	if r.Off < 0 || r.Len < 0 || r.Off > math.MaxInt64-r.Len {
 		return fmt.Errorf("%w: record extent [%d, +%d)", core.ErrUnknownFormat, r.Off, r.Len)
 	}
+	// A record carrying sequence number 0 is refused like one above the
+	// greatest: the journal issues every kind of record a number from its one
+	// counter, which starts at 1, so 0 comes from damage or another writer,
+	// and a write held under it would fail the header check of every read of
+	// its range until the next open. The check sits here and not in
+	// Counters.Observe, which is handed numbers with no kind and is only ever
+	// called from here.
+	if r.Numbers.Seq == 0 {
+		return fmt.Errorf("%w: a kind %d record with seq 0, below every number issued", core.ErrUnknownFormat, r.Kind)
+	}
 	s := b.shards[hashID(r.File)>>(64-6)]
 	s.mu.Lock()
 	// A feeder that read finishing before the claim, then waited on this
