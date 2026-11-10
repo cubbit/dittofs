@@ -5,27 +5,28 @@ import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 // The journal's errors, declared in internal/core so the internal packages can
 // return them. Each one's contract is documented at its declaration.
 var (
-	ErrNotImplemented   = core.ErrNotImplemented
-	ErrClosed           = core.ErrClosed
-	ErrHandleOpen       = core.ErrHandleOpen
-	ErrNotEmpty         = core.ErrNotEmpty
-	ErrNoJournal        = core.ErrNoJournal
-	ErrUnidentified     = core.ErrUnidentified
-	ErrIdentityMismatch = core.ErrIdentityMismatch
-	ErrUnknownFormat    = core.ErrUnknownFormat
-	ErrCorrupt          = core.ErrCorrupt
-	ErrStaleFill        = core.ErrStaleFill
-	ErrNotOffloaded     = core.ErrNotOffloaded
-	ErrNotOffered       = core.ErrNotOffered
-	ErrOfferEnded       = core.ErrOfferEnded
-	ErrZeroLength       = core.ErrZeroLength
-	ErrInvalidExtent    = core.ErrInvalidExtent
-	ErrSyncFailed       = core.ErrSyncFailed
-	ErrNoSpace          = core.ErrNoSpace
-	ErrOtherShare       = core.ErrOtherShare
-	ErrInvalidSetting   = core.ErrInvalidSetting
-	ErrNoClock          = core.ErrNoClock
-	ErrJournalReadOnly  = core.ErrJournalReadOnly
+	ErrNotImplemented    = core.ErrNotImplemented
+	ErrClosed            = core.ErrClosed
+	ErrHandleOpen        = core.ErrHandleOpen
+	ErrNotEmpty          = core.ErrNotEmpty
+	ErrNoJournal         = core.ErrNoJournal
+	ErrUnidentified      = core.ErrUnidentified
+	ErrIdentityMismatch  = core.ErrIdentityMismatch
+	ErrUnknownFormat     = core.ErrUnknownFormat
+	ErrCorrupt           = core.ErrCorrupt
+	ErrStaleFill         = core.ErrStaleFill
+	ErrNotOffloaded      = core.ErrNotOffloaded
+	ErrNotOffered        = core.ErrNotOffered
+	ErrOfferEnded        = core.ErrOfferEnded
+	ErrZeroLength        = core.ErrZeroLength
+	ErrInvalidExtent     = core.ErrInvalidExtent
+	ErrSyncFailed        = core.ErrSyncFailed
+	ErrNoSpace           = core.ErrNoSpace
+	ErrOtherShare        = core.ErrOtherShare
+	ErrInvalidSetting    = core.ErrInvalidSetting
+	ErrNoClock           = core.ErrNoClock
+	ErrJournalReadOnly   = core.ErrJournalReadOnly
+	ErrUnsuitableStorage = core.ErrUnsuitableStorage
 )
 
 type (

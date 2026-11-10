@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // The statfs filesystem types the probe tells apart. Each is pinned to its
@@ -102,6 +104,14 @@ type refusal struct {
 	// directory or the file without the attribute for ruleCopyOnWrite, the
 	// volume GUID path for ruleCachePolicy.
 	path string
+}
+
+// Is reports whether target is core.ErrUnsuitableStorage: a refusal is the
+// directory the caller may fix, and every rule's refusal answers the one
+// sentinel. An error met while checking matches nothing here, so a caller
+// can tell a fault from a refusal.
+func (r *refusal) Is(target error) bool {
+	return target == core.ErrUnsuitableStorage
 }
 
 func (r *refusal) Error() string {

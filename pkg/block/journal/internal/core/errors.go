@@ -121,6 +121,17 @@ var (
 	// share's handle named a file that belongs to another share. Nothing of
 	// the file is served, appended, changed or offered. It is never retried.
 	ErrOtherShare = errors.New("journal: file belongs to another share")
+
+	// ErrUnsuitableStorage is matched by every refusal of a directory a rule
+	// of the platform profile refuses: a mount whose syncs do not reach the
+	// device, or, on a copy-on-write filesystem, a directory where a write
+	// into allocated space could still allocate. Its message names the rule,
+	// the directory and what to change, so an operator can fix it. An error
+	// met while checking — an I/O error, or a mount table that does not
+	// describe the directory — is returned as itself and never matches it,
+	// so a caller can tell an installation to fix from a fault. It is never
+	// retried.
+	ErrUnsuitableStorage = errors.New("journal: unsuitable storage")
 )
 
 // Limit names the limit that refused a reservation.
