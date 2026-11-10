@@ -346,12 +346,9 @@ func newFixture(t *testing.T, wrap func(kv.KV) kv.KV) *Fixture {
 		t.Fatalf("fixture: record the journal: %v", err)
 	}
 
-	f.Share = engine.Share{
-		ID:    f.FS.Share.ID,
-		Tag:   journal.ShareTag(f.FS.Share.Tag),
-		Shard: 0, // every share has the one shard, zero
-		State: engine.Serving,
-	}
+	// The share's tag and shard are the ones the store minted when it put
+	// the share; the share value the FS kept from before the put has neither.
+	f.Share = ShareOf(t, f.FS.Store, f.FS.Share.ID, 0)
 
 	f.addSecond()
 

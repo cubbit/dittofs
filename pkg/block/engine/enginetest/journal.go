@@ -18,7 +18,7 @@ import (
 // returns are the engine's Handle, each handed to opened, and their Reserve
 // returns the engine's Reservation.
 func wrapJournal(j *journal.Journal, opened func(journal.ShareTag, engine.Handle)) engine.Journal {
-	return wrappedJournal{j, opened}
+	return &wrappedJournal{j, opened}
 }
 
 var (
@@ -31,7 +31,7 @@ type wrappedJournal struct {
 	opened func(journal.ShareTag, engine.Handle)
 }
 
-func (j wrappedJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version) (engine.Handle, error) {
+func (j *wrappedJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version) (engine.Handle, error) {
 	h, err := j.Journal.Share(tag, limit, floor)
 	if err != nil {
 		return nil, err
@@ -44,8 +44,8 @@ func (j wrappedJournal) Share(tag journal.ShareTag, limit int64, floor journal.V
 // yet, so over the real journal the engine records none and no stability
 // point waits on one. Withdraw these three once the journal reports its
 // marks.
-func (j wrappedJournal) SyncMarks() []entity.SyncMark    { return nil }
-func (j wrappedJournal) MarksRecorded([]entity.SyncMark) {}
+func (j *wrappedJournal) SyncMarks() []entity.SyncMark    { return nil }
+func (j *wrappedJournal) MarksRecorded([]entity.SyncMark) {}
 
 type handle struct{ *journal.Handle }
 
