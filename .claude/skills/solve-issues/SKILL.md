@@ -1,6 +1,6 @@
 ---
 name: solve-issues
-description: Work several DittoFS issues at once by fanning out one subagent per issue, each running the fix-issue skill in its own worktree, then serializing the merges back into develop. Use whenever more than one DittoFS issue number is handed over in a single ask ("/solve-issues 1823 1843", "fix 1888 and 1923", "clear these four issues", "work through the audit backlog"), or when a list or milestone of issues should be worked in parallel. For a single issue, use fix-issue directly instead.
+description: Work several DittoFS issues at once by fanning out one subagent per issue, each running the fix-issue skill in its own worktree, then shepherding their PRs through the develop merge queue. Use whenever more than one DittoFS issue number is handed over in a single ask ("/solve-issues 1823 1843", "fix 1888 and 1923", "clear these four issues", "work through the audit backlog"), or when a list or milestone of issues should be worked in parallel. For a single issue, use fix-issue directly instead.
 ---
 
 # Solving several issues in parallel
@@ -94,9 +94,10 @@ Use the fix-issue skill to work DittoFS issue(s) #<N>[, #<M> in order].
 Worktree: ~/dittofs-worktrees/<slug>   (create it yourself, branch off origin/develop)
 
 Deviations from fix-issue for this parallel run:
-- STOP once the PR is pushed and your own local verification is done.
-  Do NOT merge, do NOT wait for CI, and do NOT arm a Monitor or any
-  polling loop on check status, the merge queue, or Copilot. Report the
+- STOP once the PR is open (pr-opening: assigned, auto-merge on) and your
+  own local verification is done. Do NOT merge by hand, do NOT wait for
+  CI, and do NOT arm a Monitor or any polling loop on check status, the
+  merge queue, or Copilot. Report the
   PR number and a one-paragraph summary of the root cause, then exit.
   The orchestrator holds one watch across every PR and will send you the
   failing job and its output if CI goes red; you resume from your own
@@ -213,33 +214,32 @@ Do not merge on a green matrix without checking Copilot first
 (`feedback_check_copilot_before_merge`) — but the point here is the opposite ordering
 problem: do not *wait* for the matrix before checking Copilot either.
 
-## 5. Merge serially
+## 5. Shepherd the merge queue
 
-Never merge concurrently. Each squash-merge moves `develop`, which invalidates
-every other branch's base — CI green on a stale base proves nothing about the
-tree that actually results.
+Do not merge by hand. Each agent opened its PR with auto-merge on (`pr-opening`),
+and the target's merge queue serializes the landing: it tests every PR on top of
+the target plus the entries ahead of it, so a green check on a stale base no longer
+decides anything, and nothing needs rebasing just because another PR landed.
 
-Order by blast radius, smallest first, so the risky change rebases onto known-good
-work rather than the reverse. For each PR in turn:
+What the queue does not do is your part:
 
-```bash
-gh pr checks <PR>                                  # still green on the current base?
-gh pr merge <PR> --squash --delete-branch
-# The issue auto-closes: develop is the default branch. To add verification
-# notes use `gh issue comment` — `gh issue close --comment` on an already-closed
-# issue exits 0 and drops the comment.
-```
+- **Check `Closes #NNNN` on every PR** (`gh pr view <PR> --json body`), before it
+  is approved — see the scratchpad collision in step 3.
+- **Gate the approval on Copilot.** Auto-merge fires once the PR is approved and
+  green, so every Copilot finding (step 4b) must be addressed before approval
+  lands, not after.
+- **Order, when it matters.** The queue lands PRs in the order they become ready.
+  Where one must land before another, the PRs are stacked (`pr-opening`), and the
+  upper one is retargeted onto the target after the lower one merges. An agent that
+  holds several issues on the same code (step 1) is the usual case.
+- **Ejections.** A PR that conflicts or turns a check red inside the queue is
+  removed from it. Hand it back to that issue's agent with the failure — it has the
+  context you do not — and once fixed, it re-queues with `gh pr merge <PR> --auto`.
 
-Then, before the next one:
-
-```bash
-cd ~/dittofs-worktrees/<next-slug>
-git fetch origin && git rebase origin/develop && git push --force-with-lease
-```
-
-and wait for its checks again. If a rebase produces conflicts or turns a check
-red, hand it back to that issue's agent with the failure — it has the context
-you do not.
+On `develop`, the default branch, the issues close themselves on merge; on any
+other target, close them by hand. To add verification notes use
+`gh issue comment` — `gh issue close --comment` on an already-closed issue exits
+0 and drops the comment.
 
 Once everything is landed:
 
