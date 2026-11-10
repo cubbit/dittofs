@@ -623,7 +623,8 @@ interface for that capability in its own package, named for the need rather than
 for the provider. The composition root supplies an implementation at composition
 time.
 Each component **MUST** build and pass its tests with every such interface
-stubbed.
+supplied by a verified in-memory implementation, or a fault wrapper around one
+([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)).
 
 A capability **MUST NOT** be negotiated by type assertion on an interface the
 provider does not declare it satisfies. A capability that is absent **MUST**
