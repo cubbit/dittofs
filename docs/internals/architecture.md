@@ -2,6 +2,13 @@
 
 This document provides a deep dive into DittoFS's architecture, design patterns, and internal implementation.
 
+> **On this branch the v1 protocol adapters are deleted.** `pkg/adapter`,
+> `internal/adapter` and the runtime's adapter half are gone and no file protocol
+> is served, so the diagram, the runtime's sub-services, the adapter and
+> Kerberos sections and the directory map below still describe what this branch
+> removed. RFC 20's v2 adapters replace them; see
+> [RFC 20](rfcs/rfc-20-adapters.md).
+
 **Storage terms used throughout** (see the [Glossary](../guide/glossary.md) for protocol and security terms):
 
 - **CAS** (Content-Addressed Storage) — blocks are named by the hash of their contents rather than by location, so identical data is stored once and deduplicated automatically.
@@ -12,7 +19,6 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 
 - [Core Abstraction Layers](#core-abstraction-layers)
 - [Data path](#data-path)
-- [Adapter Pattern](#adapter-pattern)
 - [Control Plane Pattern](#control-plane-pattern)
 - [Service Layer](#service-layer)
 - [Built-In and Custom Backends](#built-in-and-custom-backends)
@@ -452,12 +458,6 @@ call only (`WithRestoreTimeout`).
 
 For the full operator runbook see
 [SNAPSHOTS.md](../guide/snapshots.md).
-
-## Adapter Pattern
-
-On this branch the v1 protocol adapters (`pkg/adapter`, `internal/adapter`) are
-deleted and no file protocol is served. RFC 20's v2 adapters replace them; see
-[RFC 20](rfcs/rfc-20-adapters.md).
 
 ### Object ownership: a client-supplied identifier is not authorization
 
