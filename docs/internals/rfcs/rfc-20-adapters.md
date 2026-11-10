@@ -1611,8 +1611,9 @@ mechanism, used only by tests, so every exchange runs in-process:
   it into an AP-REQ. Acceptance, AP-REP, subkeys, PAC parsing, expiry and
   replay detection run against real Kerberos messages, deterministically.
 - **NTLM** from a test user's password, against the in-memory service, whose
-  local store holds its NT hash. Pass-through needs a domain controller, so it
-  is tested against a real one in `integration`'s `ad-dc` option
+  local store holds its NT hash. Pass-through runs in `unit` against RFC 18's
+  in-memory domain controller, a kind 2 its suite holds to the real one, and
+  against a real one in `integration`'s `ad-dc` option
   ([RFC 18 §10](rfc-18-identity.md#10.%20Conformance)), as
   [RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) has external
   systems tested.
