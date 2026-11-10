@@ -201,7 +201,7 @@ rfc1 / 9.4 / D / "backlog age":
 rfc1 / 9.4 / D / "clean bytes count as occupancy":
   tests: [TestRFC1D_CleanBytesCountAsOccupancy]
 rfc1 / 9.4 / D / "metrics are reachable":
-  tests: [TestRFC1D_MetricsAreReachable, TestMetrics_Epic6ConditionsMoveTheirMetric, TestMetrics_Epic6ExporterNames]
+  tests: [TestRFC1D_MetricsAreReachable, TestMetrics_ConditionsMoveTheirMetric, TestMetrics_ExporterNames]
 rfc1 / 9.4 / D / "loss events":
   tests: [TestRFC1D_LossEvents]
 rfc1 / 9.4 / D / "segment held-bytes":

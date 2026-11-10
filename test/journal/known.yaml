@@ -10,11 +10,11 @@
   reason: 'No journal yet: the fixture fails at Init. Needs the bounded sync timer and the data path.'
   issue: '#3378'
   message: 'fixture:'
-- test: TestMetrics_Epic6ConditionsMoveTheirMetric
+- test: TestMetrics_ConditionsMoveTheirMetric
   status: fail
   fix: planned
   category: feature
-  reason: 'No journal yet: the fixture fails at Init. Needs the data path, group commit, the re-append, the loss counters of each reason, the corrupt outcomes and the read-only state counted.'
+  reason: 'No journal yet: the fixture fails at Init. Needs the data path, group commit, window resolution, the loss counters of each reason, the corrupt outcomes and the read-only state counted.'
   issue: '#3378'
   message: 'fixture:'
 - test: TestModel

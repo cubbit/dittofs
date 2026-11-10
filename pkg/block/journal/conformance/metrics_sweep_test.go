@@ -23,12 +23,12 @@ import (
 // the condition it names, and the name an operator would scrape lives in
 // this table, one row per field.
 //
-// decision: superseded_extents has no Counters field on this branch: the
-// sweep would drive its loss event's Reason and report the missing counter
-// rather than inventing one, but no public call produces that reason either,
-// so it has no row here. The cost is one follow-up task adding the counter
-// and its subtest beside the others; a field the journal does not keep
-// cannot be asserted to move.
+// decision: the superseded and acknowledged loss reasons have neither a row
+// nor a subtest: no public call drops a superseded extent or acknowledges an
+// unreadable one, and a superseded loss has no counter to raise. Both are
+// left unasserted rather than stubbed with a drive that drives nothing.
+// Overturned when those calls land, when their rows and subtests go in
+// beside the others' rows.
 var metricNames = map[string]string{
 	"Counters.Syncs":                    "journal_syncs_total",
 	"Counters.SyncFailures":             "journal_sync_failures_total",
@@ -36,9 +36,25 @@ var metricNames = map[string]string{
 	"Counters.CorruptExtentsDataLoss":   `journal_corrupt_extents_total{outcome="data_loss"}`,
 	"Counters.CorruptExtentsRepairable": `journal_corrupt_extents_total{outcome="repairable"}`,
 	"Counters.StaleExtents":             "journal_stale_extents_total",
-	"Stats.LossGeneration":              "journal_loss_generation",
-	"Stats.Losses":                      "journal_losses",
 	"Stats.ReadOnly":                    "journal_read_only",
+}
+
+// snakeCase returns the field half of a field path, in the exporter's snake
+// case.
+func snakeCase(field string) string {
+	_, name, _ := strings.Cut(field, ".")
+	var b strings.Builder
+	for i := range name {
+		if c := name[i]; c >= 'A' && c <= 'Z' {
+			if i > 0 {
+				b.WriteByte('_')
+			}
+			b.WriteByte(c + 'a' - 'A')
+		} else {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // exporterName derives the metric name the engine's exporter gives the Stats
@@ -62,56 +78,42 @@ func exporterName(field, snake string) string {
 	return name
 }
 
-// TestMetrics_Epic6ExporterNames checks that every row of metricNames is the
-// name the exporter's rule gives its field: each counter journal_<field>_total,
+// TestMetrics_ExporterNames checks that every row of metricNames is the name
+// the exporter's rule gives its field: each counter journal_<field>_total,
 // each gauge journal_<field>, the corrupt extents labelled with their
 // outcome. A mistyped or stale row fails here rather than handing the
 // operator a metric name nothing serves.
-func TestMetrics_Epic6ExporterNames(t *testing.T) {
+func TestMetrics_ExporterNames(t *testing.T) {
 	for field, name := range metricNames {
-		_, snake, _ := strings.Cut(field, ".")
-		var b strings.Builder
-		for i := range snake {
-			if c := snake[i]; c >= 'A' && c <= 'Z' {
-				if i > 0 {
-					b.WriteByte('_')
-				}
-				b.WriteByte(c + 'a' - 'A')
-			} else {
-				b.WriteByte(c)
-			}
-		}
-		if want := exporterName(field, b.String()); name != want {
-			t.Errorf("%s maps to %q, want the exporter's name %q", field, name, want)
+		if want := exporterName(field, snakeCase(field)); name != want {
+			t.Errorf("%s maps to %q, want the exported name %q", field, name, want)
 		}
 	}
 }
 
-// wantNamed asserts, for the field the subtest drives, that the metric name
-// the exporter gives it exists in the table: each subtest names its row, so
-// the table is checked row by row and a field with no name fails the sweep.
+// wantNamed fails the subtest unless metricNames names field with exactly
+// the name the exporter's rule gives it: a field absent from the table
+// fails, and so does a row whose name drifted from what its field exports.
 func wantNamed(t *testing.T, field string) {
 	t.Helper()
 
-	if metricNames[field] == "" {
-		t.Fatalf("%s has no metric name in the sweep's table", field)
+	name, ok := metricNames[field]
+	if !ok {
+		t.Fatalf("%s has no row in the metrics table", field)
+	}
+	if want := exporterName(field, snakeCase(field)); name != want {
+		t.Fatalf("%s maps to %q, want the exported name %q", field, name, want)
 	}
 }
 
-// TestMetrics_Epic6ConditionsMoveTheirMetric drives the condition each
-// metric of this area names and reads the metric through Stats: a sync, a
-// failed sync, a re-append, a loss of each reason, a corrupt extent of each
-// outcome, and a read-only entry. Each subtest starts from a fresh fixture,
-// asserts its metric moved and the sibling another condition could raise by
-// mistake stayed flat, and names its row of metricNames.
-//
-// decision: the superseded and acknowledged loss reasons have no subtest
-// here: no public call produces them (DropOlder and DropSuperseded land with
-// a later epic's surface), and an acknowledged loss needs an operator call
-// that does not exist. Rather than stub a drive, the sweep asserts none of
-// them and the missing rows are reported. Overturned when the reconcile
-// surface lands, when both subtests go in beside the others.
-func TestMetrics_Epic6ConditionsMoveTheirMetric(t *testing.T) {
+// TestMetrics_ConditionsMoveTheirMetric drives the condition each metric of
+// this area names and reads the metric through Stats: a sync, a failed sync,
+// a failed window in both its resolutions, a stale loss, a corrupt extent of
+// each outcome, a corrupt loss event, and a read-only entry. Each subtest
+// starts from a fresh fixture, asserts its metric moved and the sibling
+// another condition could raise by mistake stayed flat, and names its row
+// of metricNames.
+func TestMetrics_ConditionsMoveTheirMetric(t *testing.T) {
 	// A clean sync raises journal_syncs_total and leaves the failure
 	// counter flat.
 	t.Run("sync", func(t *testing.T) {
@@ -151,72 +153,58 @@ func TestMetrics_Epic6ConditionsMoveTheirMetric(t *testing.T) {
 		}
 	})
 
-	// A failed window re-appended by the journal raises
-	// journal_sync_reappended_bytes_total and holds the loss generation:
-	// re-appending loses nothing. failWindow fails the segment's reads too,
-	// so the window can resolve only from the copy the journal kept at write
-	// time, and a journal that kept one re-appends rather than fails. Content
-	// re-appended from a copy holds the generation and moves only the
-	// re-appended-bytes counter; a window failed whole is loss_failed_window's
-	// leg, and one whose sync merely failed is failed_sync's.
-	t.Run("reappend", func(t *testing.T) {
+	// A failed sync window resolves by re-appending its records or by
+	// failing them, and only its Sync's own answer names which way the
+	// journal chose: nil over a re-append, ErrSyncFailed over a failure.
+	// failWindow fails the segment's reads beside its sync, so the window
+	// resolves only from a copy the journal kept at write time, never from
+	// the segment's pages. The window's sync failed whichever resolution it
+	// got, so SyncFailures rises either way, and the half the answer named
+	// must hold whole: a re-append moves SyncReappendedBytes, holds the
+	// loss generation and publishes no loss event, a failure raises the
+	// generation and publishes a LossFailedWindow event for the write it
+	// lost.
+	//
+	// decision: the interface names no way to choose the resolution, so
+	// the check requires the half its own Sync answer gave whole; a journal
+	// that always re-appends from a kept copy leaves the failure half
+	// unexercised, and one that never keeps a copy leaves the other.
+	// Overturned if the resolution becomes settable.
+	t.Run("failed_window", func(t *testing.T) {
 		wantNamed(t, "Counters.SyncReappendedBytes")
+		wantNamed(t, "Counters.SyncFailures")
 		f := journaltest.New(t)
 		h := f.Share(0)
 		id := journaltest.File(20)
-		write(t, h, id, 0, pattern("reappend", 4096))
-		seg := segmentOf(t, f, id, 0)
-		before, gen := f.J.Stats().Counters, f.J.Stats().LossGeneration
-		failWindow(t, f, seg)
-		err := h.Sync(t.Context(), id)
-		f.Seam.SetFault(nil)
-		stub(t, "Sync", err)
-		if errors.Is(err, journal.ErrSyncFailed) {
-			t.Fatalf("the window failed rather than re-appending, so Counters.SyncReappendedBytes cannot rise: a journal that keeps a copy re-appends, and one that re-reads the segment cannot, with its reads failed")
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		after := f.J.Stats().Counters
-		if after.SyncReappendedBytes <= before.SyncReappendedBytes {
-			t.Fatalf("a re-appended window moved Counters.SyncReappendedBytes from %d to %d, want it risen", before.SyncReappendedBytes, after.SyncReappendedBytes)
-		}
-		if now := f.J.Stats().LossGeneration; now != gen {
-			t.Fatalf("a re-append moved the loss generation from %d to %d, want it held: nothing was lost", gen, now)
-		}
-	})
-
-	// A window the journal fails — its segment's reads failing beside its
-	// sync, so it can resolve only from a copy the journal does not keep —
-	// raises the loss generation, publishes a LossFailedWindow event for
-	// the write it lost, and raises SyncFailures. The re-appended
-	// resolution is reappend's leg.
-	t.Run("loss_failed_window", func(t *testing.T) {
-		wantNamed(t, "Stats.LossGeneration")
-		f := journaltest.New(t)
-		h := f.Share(0)
-		id := journaltest.File(30)
-		p := pattern("window", 4096)
-		write(t, h, id, 0, p)
+		write(t, h, id, 0, pattern("window", 4096))
 		seg := segmentOf(t, f, id, 0)
 		before, losses, gen := f.J.Stats().Counters, f.J.Stats().Losses, f.J.Stats().LossGeneration
 		failWindow(t, f, seg)
 		err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
-		if !errors.Is(err, journal.ErrSyncFailed) {
-			t.Fatalf("a window the journal fails returned %v, want ErrSyncFailed; the re-appended resolution is the reappend subtest's", err)
-		}
 		after := f.J.Stats().Counters
 		if after.SyncFailures <= before.SyncFailures {
-			t.Fatalf("a failed window moved Counters.SyncFailures from %d to %d, want it risen", before.SyncFailures, after.SyncFailures)
+			t.Fatalf("the failed window moved Counters.SyncFailures from %d to %d, want it risen: its sync failed however it resolved", before.SyncFailures, after.SyncFailures)
 		}
-		ev := lastLoss(t, f, journal.Stats{Losses: losses})
-		if ev.Reason != journal.LossFailedWindow || ev.File != id || ev.Extent.Off != 0 {
-			t.Fatalf("the failed window published %+v, want a LossFailedWindow event of file %v at offset 0", ev, id)
-		}
-		if now := f.J.Stats().LossGeneration; now <= gen {
-			t.Fatalf("a failed window left the loss generation at %d, want it above %d", gen, now)
+		switch {
+		case errors.Is(err, journal.ErrSyncFailed):
+			if now := f.J.Stats().LossGeneration; now <= gen {
+				t.Fatalf("a failed window left the loss generation at %d, want it above %d", gen, now)
+			}
+			ev := lastLoss(t, f, journal.Stats{Losses: losses})
+			if ev.Reason != journal.LossFailedWindow || ev.File != id || ev.Extent.Off != 0 {
+				t.Fatalf("the failed window published %+v, want a LossFailedWindow event of file %v at offset 0", ev, id)
+			}
+		case err == nil:
+			if after.SyncReappendedBytes <= before.SyncReappendedBytes {
+				t.Fatalf("a re-appended window moved Counters.SyncReappendedBytes from %d to %d, want it risen", before.SyncReappendedBytes, after.SyncReappendedBytes)
+			}
+			if now, was := f.J.Stats().Losses, f.J.Stats().LossGeneration; len(now) != len(losses) || was != gen {
+				t.Fatalf("a re-append published the losses %+v and moved the loss generation from %d to %d, want no event and it held: nothing was lost", now[len(losses):], gen, was)
+			}
+		default:
+			t.Fatalf("the Sync over the failed window returned %v, want ErrSyncFailed or a re-append's nil", err)
 		}
 	})
 
@@ -279,20 +267,24 @@ func TestMetrics_Epic6ConditionsMoveTheirMetric(t *testing.T) {
 		}
 	})
 
-	// A corrupt extent whose offloaded bit is unset publishes a LossCorrupt
-	// event, the loss reason the data-loss outcome names, and raises the
-	// loss generation: content not yet offloaded was lost.
+	// A corrupt extent whose offloaded bit is unset also publishes a
+	// LossCorrupt event, the loss reason the data-loss outcome names, and
+	// raises the loss generation: content not yet offloaded was lost.
 	t.Run("loss_corrupt", func(t *testing.T) {
-		wantNamed(t, "Stats.Losses")
+		wantNamed(t, "Counters.CorruptExtentsDataLoss")
 		f := journaltest.New(t)
-		before := f.J.Stats().Losses
+		before, losses, gen := f.J.Stats().Counters, f.J.Stats().Losses, f.J.Stats().LossGeneration
 		loseDirty(t, f, 3)
-		ev := lastLoss(t, f, journal.Stats{Losses: before})
+		after := f.J.Stats().Counters
+		if after.CorruptExtentsDataLoss <= before.CorruptExtentsDataLoss {
+			t.Fatalf("a corrupt dirty extent moved CorruptExtentsDataLoss from %d to %d, want it risen", before.CorruptExtentsDataLoss, after.CorruptExtentsDataLoss)
+		}
+		if now := f.J.Stats().LossGeneration; now <= gen {
+			t.Fatalf("a corrupt dirty extent left the loss generation at %d, want it above %d: content not yet offloaded was lost", gen, now)
+		}
+		ev := lastLoss(t, f, journal.Stats{Losses: losses})
 		if ev.Reason != journal.LossCorrupt || ev.File != journaltest.File(3) || ev.Extent != ext(0, 4096) {
 			t.Fatalf("the corrupt drop published %+v, want a LossCorrupt event of file %v at %+v", ev, journaltest.File(3), ext(0, 4096))
-		}
-		if after := f.J.Stats().Counters.CorruptExtentsDataLoss; after == 0 {
-			t.Fatalf("CorruptExtentsDataLoss = %d after a corrupt dirty extent, want it risen", after)
 		}
 	})
 
