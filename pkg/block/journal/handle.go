@@ -124,11 +124,10 @@ func (h *Handle) Sync(ctx context.Context, ids ...FileID) error {
 // append domain, then resolves the extents under the file index domain held
 // shared, and reads from storage with neither held. A record that does not
 // verify goes to the corruption rule: it is served from a copy that verifies,
-// or dropped and its extents reported missing. An I/O error is returned
-// wrapped. A record whose header fails to decode, or decodes naming another
-// file or version, is refused with an error wrapping ErrCorrupt when the
-// journal holds no sequence number for it. On an error n and held still
-// describe what was copied into p.
+// or dropped and its extents reported missing, whether its payload, its
+// header, or the record its header names is what fails. An I/O error is
+// returned wrapped. On an error n and held still describe what was copied
+// into p.
 func (h *Handle) ReadAt(ctx context.Context, id FileID, off int64, p []byte) (n int, missing []Extent, held []Held, asOf Version, err error) {
 	return h.j.core.ReadAt(ctx, h.s, id, off, p)
 }

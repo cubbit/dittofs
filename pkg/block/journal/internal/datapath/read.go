@@ -3,7 +3,6 @@ package datapath
 import (
 	"cmp"
 	"context"
-	"fmt"
 	"math"
 	"slices"
 
@@ -32,17 +31,17 @@ import (
 // once, whole, with no lock held, and no byte of it is copied into p until its
 // header decoded at its own place, matched every index entry that named it,
 // and its whole payload verified. A record that fails a check is handed to
-// Corrupt: its pieces are served from the copy Corrupt names, or reported
+// Corrupt under the sequence number its index entries carry, whatever its
+// header says: its pieces are served from the copy Corrupt names, or reported
 // missing when Corrupt dropped them. A record whose segment was retired
 // between the resolve and the read is resolved again once, and what the index
 // then names is served or reported missing.
 //
 // An I/O error is returned wrapped and changes nothing. So is a segment
 // reference refused under descriptor pressure, wrapping
-// segment.ErrNoDescriptor, which the caller may retry. So is a refusal of a
-// record the index still names whose sequence number nothing trustworthy
-// names, which wraps core.ErrCorrupt. On any error n and held, in offset
-// order, still describe what was copied into p before it, and missing is nil.
+// segment.ErrNoDescriptor, which the caller may retry. On any error n and
+// held, in offset order, still describe what was copied into p before it, and
+// missing is nil.
 func (c *Core) ReadAt(ctx context.Context, s *Share, id core.FileID, off int64, p []byte) (n int, missing []core.Extent, held []core.Held, asOf core.Version, err error) {
 	if err = ctx.Err(); err != nil {
 		return 0, nil, nil, core.Version{}, err
@@ -156,19 +155,13 @@ func (r *reading) serveRecord(g recordPieces, again bool) error {
 		return nil
 	}
 
-	cr, known := r.corruption(g, h, verdict)
-	if !known {
-		// A record the index no longer names was dropped or repointed by
-		// another read's Corrupt since this read resolved it: what the index
-		// names now is resolved instead of refusing a record nothing serves.
-		if !r.c.index.Names(r.id, g.at) {
-			return r.resolveAgain(g, again)
-		}
-		return fmt.Errorf("datapath: the record of file %v at segment %d offset %d does not verify and its sequence number is unknown: %w", r.id, g.at.Segment, g.at.Offset, core.ErrCorrupt)
-	}
+	cr := r.corruption(g, h, verdict)
 	// readRecord released its segment reference before it returned,
 	// and the read holds no domain: Corrupt takes the file's append domain
 	// itself.
+	if r.c.beforeCorrupt != nil {
+		r.c.beforeCorrupt(cr)
+	}
 	out, err := r.c.dur.Corrupt(r.ctx, cr)
 	if err != nil {
 		return err
@@ -204,50 +197,49 @@ func (r *reading) serveRecord(g recordPieces, again bool) error {
 	return nil
 }
 
-// corruption names g's record for Corrupt, and reports false when nothing
-// trustworthy names its sequence number. The record's version is the one the
-// index entries carry. Its sequence number, extent and share come from the
-// stream's ledger while it still holds the record, which is what the writer
-// reported for that place and no damage on disk can change; otherwise from
-// the header, when the header decodes and is still this record's: a write or
-// a fill of this file at the version the index entries carry, disagreeing
-// with them, if at all, only in its extent.
+// corruption names g's record for Corrupt. Its sequence number and version
+// are the ones the index entries carry: the entry was made with the number of
+// the record it names, and a copy the index was repointed to carries the
+// same. Its extent and share come from the stream's ledger while it still
+// holds the record, which is what the writer reported for that place and no
+// damage on disk can change; otherwise from the header, when the header
+// decodes and is still this record's; otherwise the extent is the pieces the
+// read resolved and the share the file's owner.
 //
-// decision: a record the ledger no longer holds, and the index still names,
-// is refused with an error wrapping core.ErrCorrupt instead of handed to
-// Corrupt when its header cannot name its sequence number: a header that does
-// not decode or overruns its segment, or one that decodes but is of another
-// kind, file or version. Corrupt needs the
-// record's own sequence number to find its copy and to name the loss, and the
-// index keeps none per record. A header that fails its checksum supplies
-// none; one of another kind, file or version supplies the number of the
-// record it describes, not of the one the index meant, and handed to Corrupt
-// that number can find the other record's copy and repoint this file's
-// entries to it, so the record is never dropped and its loss never recorded.
-// The read serves nothing of it, reports nothing missing for it and changes
-// nothing, so every read of that range fails until an open finds the record.
-// A record the index no longer names is resolved again instead: another
-// read's Corrupt took it after this read resolved it. Withdraw this when
-// the index records a sequence number per record, or when the loss key and
-// the loss record accept an unknown one and Corrupt is then called without a
-// number.
-func (r *reading) corruption(g recordPieces, h format.RecordHeader, verdict recordVerdict) (durability.Corruption, bool) {
+// decision: a header's own sequence number is never handed to Corrupt. A
+// header of another kind, file, version or number, verifying at this place,
+// describes another record, and its number could find that record's copy and
+// repoint this file's entries to it. Only the index entry names the record
+// the read was sent to, so a record whose header cannot be trusted is dropped
+// under that number, as one whose payload does not verify. The extent from
+// the pieces can be narrower than the record's header extent, which only
+// decides what the drop lifts of what the record superseded: nothing, once
+// its sync completed, which is when the ledger no longer holds it. Overturned
+// if a record can leave the ledger before what it superseded is lifted.
+func (r *reading) corruption(g recordPieces, h format.RecordHeader, verdict recordVerdict) durability.Corruption {
 	cr := durability.Corruption{
 		File:    r.id,
 		Record:  g.at,
+		Seq:     g.pieces[0].Seq,
 		Version: g.pieces[0].Version,
 	}
 	if w, ok := r.c.dur.Tracked(r.id, g.at); ok {
-		cr.Share, cr.Seq, cr.Extent = w.Tag, w.Seq, w.Extent
-		return cr, true
+		cr.Share, cr.Extent = w.Tag, w.Extent
+		return cr
 	}
 	ours := verdict != recordHeaderDamaged && (h.Kind == format.KindWrite || h.Kind == format.KindFill) &&
-		h.File == r.id && h.Version == cr.Version
-	if !ours {
-		return durability.Corruption{}, false
+		h.File == r.id && h.Version == cr.Version && h.Seq == cr.Seq
+	if ours {
+		cr.Share, cr.Extent = h.Tag, h.Extent
+		return cr
 	}
-	cr.Share, cr.Seq, cr.Extent = h.Tag, h.Seq, h.Extent
-	return cr, true
+	cr.Share, _ = r.c.index.Owner(r.id)
+	lo, hi := g.pieces[0].Extent.Off, int64(0)
+	for _, pc := range g.pieces {
+		lo, hi = min(lo, pc.Extent.Off), max(hi, pc.Extent.Off+pc.Extent.Len)
+	}
+	cr.Extent = core.Extent{Off: lo, Len: hi - lo}
+	return cr
 }
 
 // resolveAgain serves g's pieces from what the index names for them now,

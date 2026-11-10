@@ -26,8 +26,8 @@ const (
 	// its fields can be trusted.
 	recordHeaderDamaged
 	// recordMismatch is a record whose header decodes but disagrees with the
-	// index entries that sent the read there: another file, kind, version or
-	// extent.
+	// index entries that sent the read there: another file, kind, version,
+	// sequence number or extent.
 	recordMismatch
 	// recordBodyBad is a record whose header decodes and matches, and whose
 	// body does not match the header's payload checksum.
@@ -126,16 +126,16 @@ func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileI
 }
 
 // headerMatches reports whether h is the record every piece of pieces names:
-// a record with a payload, of file id, of the piece's version, whose extent
-// places the piece's first byte at the piece's Skip into its payload and
-// holds the whole piece.
+// a record with a payload, of file id, of the piece's version and sequence
+// number, whose extent places the piece's first byte at the piece's Skip into
+// its payload and holds the whole piece.
 //
 // decision: the header is checked against the index entry that sent the read
 // there, not against a catalog: the running journal keeps no catalog in
-// memory, and an index entry carries no sequence number, so none is compared.
-// A journal rebuilt from a catalog compares against the entries its recovery
-// placed in the index, which are the catalog's. Overturned by a sequence
-// number kept per index entry, which this check would then compare too.
+// memory, and the index entry holds the catalog's fields for the record. A
+// journal rebuilt from a catalog compares against the entries its recovery
+// placed in the index, which are the catalog's. Overturned by a catalog kept
+// in memory, which would then be the one compared.
 func headerMatches(h format.RecordHeader, id core.FileID, pieces []index.Placed) bool {
 	if h.Kind != format.KindWrite && h.Kind != format.KindFill {
 		return false
@@ -145,7 +145,7 @@ func headerMatches(h format.RecordHeader, id core.FileID, pieces []index.Placed)
 	}
 	for _, pc := range pieces {
 		skip := int64(pc.Skip)
-		if pc.Version != h.Version || h.Extent.Off+skip != pc.Extent.Off || skip+pc.Extent.Len > h.Extent.Len {
+		if pc.Version != h.Version || pc.Seq != h.Seq || h.Extent.Off+skip != pc.Extent.Off || skip+pc.Extent.Len > h.Extent.Len {
 			return false
 		}
 	}

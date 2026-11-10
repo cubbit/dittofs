@@ -384,10 +384,10 @@ func (st *stream) takeCorrupt(c Corruption, dirty bool) (synced, lost bool) {
 // record was completed or taken out, or was never tracked. It changes nothing
 // and holds the stream's mutex only for the scan.
 //
-// A reader whose record's header does not decode learns the record's sequence
-// number here: a completed record is the one case it cannot answer, because
-// nothing in memory keeps a sequence number per record once its sync was
-// applied.
+// A reader whose record's header cannot be trusted learns the record's
+// extent and share here while the record is unsynced, when the drop still has
+// to hold again what the record superseded; the sequence number it names the
+// record by is its index entry's.
 //
 // ponytail: a linear scan of the ledger and the pending windows, as
 // takeCorrupt's, and upgraded with it.
