@@ -155,7 +155,7 @@ func TestCommitWaitsOnlyForAnOverwrite(t *testing.T) {
 	if u.e.HasEntry(f) {
 		t.Errorf("after the overwrite's Commit f still holds %+v", u.e.Pending(f))
 	}
-	if n := u.e.StabilityPoints(); n != 2 {
+	if n := u.e.Stats().StabilityPoints; n != 2 {
 		t.Errorf("engine_stability_points_total %d, want 2", n)
 	}
 }

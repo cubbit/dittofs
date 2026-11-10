@@ -193,7 +193,7 @@ func TestReadResolutionTable(t *testing.T) {
 			if c.calls != row.calls {
 				t.Errorf("%d covering lookups; want %d", c.calls, row.calls)
 			}
-			if got := u.e.Reads(row.class); got != 1 {
+			if got := u.e.Stats().Reads[row.class]; got != 1 {
 				t.Errorf("reads of class %s: %d; want 1", row.class, got)
 			}
 		})
@@ -243,11 +243,11 @@ func TestAReadAsksTheJournalFirst(t *testing.T) {
 	if fmt.Sprint(log) != fmt.Sprint([]string{"read 4096+4096"}) {
 		t.Errorf("a read the journal holds whole: calls %v", log)
 	}
-	if n, total := u.e.ReadSeconds(); n != 2 || total != 2*time.Second {
-		t.Errorf("engine_read_seconds: %d reads totalling %v; want 2 totalling 2s", n, total)
+	if s := u.e.Stats().ReadSeconds; s.Count != 2 || s.Total != 2*time.Second {
+		t.Errorf("engine_read_seconds: %d reads totalling %v; want 2 totalling 2s", s.Count, s.Total)
 	}
-	if u.e.Reads("journal") != 1 || u.e.Reads("hole") != 1 {
-		t.Errorf("reads: journal %d, hole %d; want 1 each", u.e.Reads("journal"), u.e.Reads("hole"))
+	if u.e.Stats().Reads["journal"] != 1 || u.e.Stats().Reads["hole"] != 1 {
+		t.Errorf("reads: journal %d, hole %d; want 1 each", u.e.Stats().Reads["journal"], u.e.Stats().Reads["hole"])
 	}
 }
 
@@ -458,8 +458,8 @@ func TestAReadOfAnotherSharesFileIsCorrupt(t *testing.T) {
 	u.write(t, f, 0, []byte("a"))
 	_, err := u.e.Read(t.Context(), other.ID, f, 0, make([]byte, 1))
 	var foreign *journal.OtherShareError
-	if !errors.Is(err, vfserr.ErrCorrupt) || errors.As(err, &foreign) || u.e.Reads("corrupt") != 1 {
-		t.Errorf("Read = %v, counted corrupt %d; want ErrCorrupt, counted once", err, u.e.Reads("corrupt"))
+	if !errors.Is(err, vfserr.ErrCorrupt) || errors.As(err, &foreign) || u.e.Stats().Reads["corrupt"] != 1 {
+		t.Errorf("Read = %v, counted corrupt %d; want ErrCorrupt, counted once", err, u.e.Stats().Reads["corrupt"])
 	}
 	if n := errs.Load(); n != 1 {
 		t.Errorf("%d Error lines for a corrupt read; want 1", n)
@@ -628,8 +628,8 @@ func TestAReaskCountsTheClassOfItsLastPass(t *testing.T) {
 	if n, err := u.e.Read(t.Context(), u.share.ID, f, 0, dst); n != 8*kib || err != nil || !bytes.Equal(dst, fill(8*kib, 'b')) {
 		t.Fatalf("Read = %d, %v; want the write's 8 KiB", n, err)
 	}
-	if st.calls != 1 || u.e.Reads("journal") != 1 || u.e.Reads("hole") != 0 {
-		t.Errorf("%d covering lookups, counted journal %d, hole %d; want 1 lookup, counted journal once", st.calls, u.e.Reads("journal"), u.e.Reads("hole"))
+	if st.calls != 1 || u.e.Stats().Reads["journal"] != 1 || u.e.Stats().Reads["hole"] != 0 {
+		t.Errorf("%d covering lookups, counted journal %d, hole %d; want 1 lookup, counted journal once", st.calls, u.e.Stats().Reads["journal"], u.e.Stats().Reads["hole"])
 	}
 }
 
@@ -719,11 +719,11 @@ func TestAReadAskedAgainEndsAtItsDeadline(t *testing.T) {
 				t.Errorf("Read = %d, %v after %d lookups", n, err, st.calls)
 			}
 			for _, class := range []string{"journal", "hole", "lost", "corrupt", "unavailable"} {
-				if got := u.e.Reads(class); got != 0 {
+				if got := u.e.Stats().Reads[class]; got != 0 {
 					t.Errorf("counted under %s: %d", class, got)
 				}
 			}
-			if k, _ := u.e.ReadSeconds(); k != 1 {
+			if k := u.e.Stats().ReadSeconds.Count; k != 1 {
 				t.Errorf("engine_read_seconds counted %d reads; want 1", k)
 			}
 		})
@@ -796,8 +796,8 @@ func TestPendingOperationsMakeHolesInCommittedData(t *testing.T) {
 	}
 	u.e.AddOp(f, v.Counter, false, 4*kib, 4*kib)
 	dst := fill(4*kib, 0xFF)
-	if n, err := u.e.Read(t.Context(), u.share.ID, f, 4*kib, dst); n != 4*kib || err != nil || !zeros(dst) || u.e.Reads("hole") != 1 {
-		t.Errorf("a pending deallocate: Read = %d, %v, zeros %v, counted hole %d; want 4 KiB of zeros, counted hole", n, err, zeros(dst), u.e.Reads("hole"))
+	if n, err := u.e.Read(t.Context(), u.share.ID, f, 4*kib, dst); n != 4*kib || err != nil || !zeros(dst) || u.e.Stats().Reads["hole"] != 1 {
+		t.Errorf("a pending deallocate: Read = %d, %v, zeros %v, counted hole %d; want 4 KiB of zeros, counted hole", n, err, zeros(dst), u.e.Stats().Reads["hole"])
 	}
 
 	g := u.create(t, "g")

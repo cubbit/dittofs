@@ -167,20 +167,22 @@ func (l *removalLoop) step(it *loopItem) {
 	backoff := loopBackoff
 	switch a {
 	case itemDone:
-		if it.stalled {
-			log.Warn("removal_stalled cleared", "file", it.f, "kind", it.kind)
-		}
+		l.unstall(it)
 		return
 	case itemAdvanced:
-		if it.stalled {
-			log.Warn("removal_stalled cleared", "file", it.f, "kind", it.kind)
-		}
-		it.fails, it.stalled, backoff = 0, false, 0
+		l.unstall(it)
+		it.fails, backoff = 0, 0
 	case itemRetry:
 		it.fails++
 		if it.fails >= stallAfter && !it.stalled {
 			it.stalled = true
 			log.Warn("removal_stalled", "file", it.f, "kind", it.kind)
+			l.e.conds.raise(condKey{conditionRemovalStalled, it}, Condition{
+				Name:    conditionRemovalStalled,
+				Subject: Subject{Scope: ScopeShare, ID: it.b.share.ID.String()},
+				Cause:   errRemovalStalled,
+				Detail:  "file " + it.f.String() + ", kind " + it.kind.String() + ": retried at its backoff",
+			}, time.Time{})
 		}
 	}
 	it.notBefore = l.e.d.Clock.Now().Add(backoff)
@@ -190,9 +192,23 @@ func (l *removalLoop) step(it *loopItem) {
 		l.items = append(l.items, it)
 	}
 	l.mu.Unlock()
-	if ended && it.end != nil {
-		it.end()
+	if ended {
+		l.unstall(it)
+		if it.end != nil {
+			it.end()
+		}
 	}
+}
+
+// unstall clears removal_stalled for it, once it finished, advanced or left
+// the loop.
+func (l *removalLoop) unstall(it *loopItem) {
+	if !it.stalled {
+		return
+	}
+	it.stalled = false
+	l.e.d.Logger.Warn("removal_stalled cleared", "file", it.f, "kind", it.kind)
+	l.e.conds.clear(condKey{conditionRemovalStalled, it})
 }
 
 // close stops the loop, joins its goroutine and ends every item left. A
@@ -211,6 +227,7 @@ func (l *removalLoop) close() {
 	close(l.stop)
 	<-l.done
 	for _, it := range items {
+		l.unstall(it)
 		if it.end != nil {
 			it.end()
 		}

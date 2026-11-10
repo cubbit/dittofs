@@ -214,7 +214,9 @@ func undid(err error) bool {
 // write, calling its Done and charging nothing, any other corrupt loss of a
 // write still pending marks the run of that write it names lost, so its
 // existence commit records that run lost and charges nothing for it, and a
-// failed window's loss records its file as raised by its window.
+// failed window's loss records its file as raised by its window. A failed
+// window's event, unless found at open, raises journal_sync_failed for an
+// hour from the drain that read it.
 //
 // The drain holds the journal's loss lock until every write it marks is
 // marked, so a drain that finds an event already applied finds its write
@@ -243,6 +245,7 @@ func (e *Engine) drain(b *binding) journal.ReadOnlyState {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var lost []journal.LossEvent
+	windowFailed := false
 	st := b.j.Stats()
 	for _, ev := range st.Losses {
 		if ev.SeqNum <= l.seq {
@@ -252,6 +255,9 @@ func (e *Engine) drain(b *binding) journal.ReadOnlyState {
 			l.raiseAll() // the ring dropped events this drain never saw
 		}
 		l.seq = ev.SeqNum
+		// A window found failed at open failed before the restart, and a
+		// window re-appended publishes no event at all.
+		windowFailed = windowFailed || (ev.Reason == journal.LossFailedWindow && !ev.AtOpen)
 		// decision: a superseded loss is to be skipped here as a stale one
 		// is (RFC 8 §5.1: the reconcile raises superseded content, the
 		// drain does not). The journal exports no superseded reason yet:
@@ -277,6 +283,14 @@ func (e *Engine) drain(b *binding) journal.ReadOnlyState {
 			}
 			l.windows[f] = true
 		}
+	}
+	if windowFailed {
+		e.conds.raise(condKey{conditionJournalSyncFailed, b.gc}, Condition{
+			Name:    conditionJournalSyncFailed,
+			Subject: Subject{Scope: ScopeJournal},
+			Cause:   errSyncWindowFailed,
+			Detail:  "acknowledged writes were lost in a failed sync window; clears an hour after the latest",
+		}, e.d.Clock.Now().Add(syncFailedFor))
 	}
 	if h := e.hooks.drained.Load(); h != nil {
 		(*h)()

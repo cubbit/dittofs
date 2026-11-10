@@ -8,6 +8,7 @@ package engine
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"maps"
 	"sync"
@@ -51,6 +52,8 @@ type Engine struct {
 	starting  bool                        // a Start runs: a lifecycle call answers ErrDelay
 	started   bool                        // a Start succeeded
 	health    Stats                       // the shares refused at start and the conditions raised
+
+	conds conditionSet // the conditions raised as the engine runs
 
 	gcMu            sync.Mutex
 	gcs             map[Journal]*groupCommit                                                   // each journal's group commit
@@ -290,29 +293,103 @@ func (e *Engine) whileStarting() error {
 	return nil
 }
 
-// Stats reports the engine's counters and conditions: before Start, none.
-// A read-only journal's condition is read from the journal on each call, so
-// it clears once the journal takes writes again.
-// It evaluates the self-fence, as a write's gate does.
+// Stats reports the engine's counters, its journals' figures and its
+// conditions: before Start, none. The figures and a read-only journal's
+// condition are read from the journal's own Stats on each call, so they are
+// current and the condition clears once the journal takes writes again. It
+// evaluates the self-fence, as a write's gate does.
+//
+// It is a read: of the engine's locks it takes only the lifecycle mutex,
+// which no content call takes, and the condition set's, which is held for no
+// call; it reads the share table and the counters without a lock and makes
+// no I/O beyond each journal's Stats.
 func (e *Engine) Stats() Stats {
 	e.mu.Lock()
 	s := e.health.clone()
 	js, id := e.journals, e.journalID
 	e.mu.Unlock()
 
+	table := e.table()
+	conds := e.conds.current(e.d.Clock.Now())
+
 	for _, j := range js { // Start serves one device: journals[0] is Devices[0]'s
 		dir := e.d.Devices[0]
-		if c, ok := readOnlyCondition(j.j.Stats().ReadOnly, dir, id); ok {
-			js := s.Journals[dir]
+		st := j.j.Stats()
+		js := s.Journals[dir]
+		js.MaxBytes, js.UsedBytes = st.MaxBytes, st.UsedBytes
+		js.DirtyBytes, js.UnreclaimedBytes = st.DirtyBytes, st.UnreclaimedBytes
+		js.NextVersion, js.VersionLimit = st.NextVersion, st.VersionLimit
+		js.Shares = map[entity.ShareID]JournalShareStats{}
+		for sid, b := range table {
+			if b.removed || b.j != j.j {
+				continue
+			}
+			ts := st.Shares[b.share.Tag]
+			js.Shares[sid] = JournalShareStats{
+				Limit:            ts.Limit,
+				UsedBytes:        ts.UsedBytes,
+				HeldBytes:        ts.HeldBytes,
+				UnreclaimedBytes: ts.UnreclaimedBytes,
+			}
+		}
+		if c, ok := readOnlyCondition(st.ReadOnly, dir, id); ok {
 			js.Conditions = append(js.Conditions, c)
-			s.Journals[dir] = js
+		}
+		// ponytail: every journal condition the set holds is reported for
+		// the one device Start serves, as Start's own ponytail says. Key
+		// them by the group commit's journal once Start serves more.
+		for _, c := range conds {
+			if c.Subject.Scope == ScopeJournal {
+				c.Subject.ID, c.Subject.Name = hex.EncodeToString(id[:]), dir
+				js.Conditions = append(js.Conditions, c)
+			}
+		}
+		s.Journals[dir] = js
+	}
+
+	for _, c := range conds {
+		if c.Subject.Scope != ScopeShare {
+			continue
+		}
+		if sid, err := entity.ParseShareID(c.Subject.ID); err == nil {
+			sh := s.Shares[sid]
+			sh.Conditions = append(sh.Conditions, c)
+			s.Shares[sid] = sh
 		}
 	}
 
 	if c, ok := e.fence.condition(); ok {
 		s.Node.Conditions = append(s.Node.Conditions, c)
 	}
-	s.SelfFences = e.fence.fences.Load()
+	e.counters(&s, table)
 
 	return s
+}
+
+// counters copies the engine's counters into s, the removal runs summed over
+// the group commits of the shares in table.
+func (e *Engine) counters(s *Stats, table bindings) {
+	s.SelfFences = e.fence.fences.Load()
+	s.StabilityPoints = e.stabilityPoints.Load()
+	s.PendingExistenceOps = e.pendingApplied.Load()
+	s.GroupCommitSplits = e.splits.Load()
+	s.Reads = map[string]int64{}
+	for c, name := range readClassNames {
+		if name != "" {
+			s.Reads[name] = e.reads.byClass[c].Load()
+		}
+	}
+	s.ReadSeconds = Series{Count: e.reads.count.Load(), Total: time.Duration(e.reads.total.Load())}
+	s.FileStateLockWaits = Series{Count: e.files.waits.count.Load(), Total: time.Duration(e.files.waits.total.Load())}
+	s.RemovalRuns = map[string]int64{}
+	seen := map[*groupCommit]bool{}
+	for _, b := range table {
+		if b.removed || b.gc == nil || seen[b.gc] {
+			continue
+		}
+		seen[b.gc] = true
+		for r, name := range runResultNames {
+			s.RemovalRuns[name] += b.gc.removals.runs[r].Load()
+		}
+	}
 }

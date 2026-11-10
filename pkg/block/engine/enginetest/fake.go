@@ -42,6 +42,7 @@ type FakeJournal struct {
 	limit     uint64 // no version is issued at or above it; zero until set
 	files     map[journal.FileID]*fakeFile
 	held      map[journal.ShareTag]int64 // held bytes per tag
+	used      map[journal.ShareTag]int64 // record bytes appended per tag, never given back
 	offloaded map[journal.ShareTag]int64 // SetOffloaded's bytes per tag, held and not dirty
 	stranded  []journal.ShareTag         // Strand's tags, in order; forgotten at a reopen
 	losses    []journal.LossEvent
@@ -133,6 +134,7 @@ func NewFakeJournal() *FakeJournal {
 	return &FakeJournal{
 		files:     map[journal.FileID]*fakeFile{},
 		held:      map[journal.ShareTag]int64{},
+		used:      map[journal.ShareTag]int64{},
 		offloaded: map[journal.ShareTag]int64{},
 		seg:       1,
 	}
@@ -205,8 +207,9 @@ func (j *FakeJournal) SetVersionLimit(mark journal.Version) error {
 	return nil
 }
 
-// Stats reports the loss ring and generation, each tag's held bytes, the
-// version limit last set and the next version the counter issues.
+// Stats reports the loss ring and generation, each tag's held bytes and, as
+// its used bytes, the record bytes appended under it, the version limit last
+// set and the next version the counter issues.
 func (j *FakeJournal) Stats() journal.Stats {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -225,6 +228,12 @@ func (j *FakeJournal) Stats() journal.Stats {
 			DirtyBytes: max(0, n-j.offloaded[tag]),
 		}
 		s.HeldBytes += n
+	}
+	for tag, n := range j.used {
+		ts := s.Shares[tag]
+		ts.UsedBytes = n
+		s.Shares[tag] = ts
+		s.UsedBytes += n
 	}
 	return s
 }
@@ -530,6 +539,7 @@ func (h *FakeHandle) ReadAt(_ context.Context, id journal.FileID, off int64, p [
 func (j *FakeJournal) appendRecord(f *fakeFile, n int64) {
 	j.seq++
 	j.end += n
+	j.used[f.tag] += n
 	f.rec = record{j.seg, j.end, n, j.seq}
 }
 
