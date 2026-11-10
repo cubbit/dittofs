@@ -5,7 +5,6 @@ import (
 	"errors"
 	"math"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,17 +90,6 @@ func TestAWriteStagesTheClocksTime(t *testing.T) {
 	}
 }
 
-// countingHandle counts the journal's WriteAt calls.
-type countingHandle struct {
-	engine.Handle
-	n atomic.Int64
-}
-
-func (h *countingHandle) WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error) {
-	h.n.Add(1)
-	return h.Handle.WriteAt(ctx, id, off, p, mtime)
-}
-
 // ctxHandle answers WriteAt with its context's error, as a journal does once
 // the call's context ends.
 type ctxHandle struct{ engine.Handle }
@@ -168,25 +156,20 @@ func TestARefusedWriteLeavesNothing(t *testing.T) {
 	}
 }
 
-// A zero-length write stages nothing and calls Done once; a negative offset
-// or a range past the largest offset is ErrInvalid; a write of an unbound share is ErrDelay with DelayFrozen and
+// A zero-length write stages nothing, drawing no version from the journal,
+// and calls Done once; a negative offset or a range past the largest offset
+// is ErrInvalid; a write of an unbound share is ErrDelay with DelayFrozen and
 // calls no Done.
 func TestAWriteOfNothing(t *testing.T) {
-	var h *countingHandle
-	u := newUnitWith(t, unitConfig{
-		wrap: func(x engine.Handle) engine.Handle {
-			h = &countingHandle{Handle: x}
-
-			return h
-		},
-	})
+	u := newUnit(t)
+	next := u.j.Stats().NextVersion
 	f := entity.NewFileID()
 	n := 0
 	if _, err := u.e.Write(t.Context(), u.share.ID, f, 7, nil, engine.WriteOpts{Done: func() { n++ }}); err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 || h.n.Load() != 0 || u.e.HasEntry(f) {
-		t.Errorf("a zero-length write: Done called %d times, %d stagings, entry %v; want once, none, none", n, h.n.Load(), u.e.HasEntry(f))
+	if got := u.j.Stats().NextVersion; n != 1 || got != next || u.e.HasEntry(f) {
+		t.Errorf("a zero-length write: Done called %d times, journal's next version %v from %v, entry %v; want once, unmoved, none", n, got, next, u.e.HasEntry(f))
 	}
 	if _, err := u.e.Write(t.Context(), u.share.ID, f, -1, []byte("a"), engine.WriteOpts{Done: func() { n++ }}); !errors.Is(err, vfserr.ErrInvalid) {
 		t.Errorf("a negative offset: %v, want ErrInvalid", err)
@@ -198,8 +181,8 @@ func TestAWriteOfNothing(t *testing.T) {
 	if _, err := u.e.Write(t.Context(), entity.NewShareID(), f, 0, []byte("a"), engine.WriteOpts{Done: func() { n++ }}); !errors.As(err, &d) || d.Cause != vfserr.DelayFrozen {
 		t.Errorf("a write of an unbound share: %v, want ErrDelay(DelayFrozen)", err)
 	}
-	if n != 1 || h.n.Load() != 0 {
-		t.Errorf("refused writes called Done %d times and staged %d", n-1, h.n.Load())
+	if got := u.j.Stats().NextVersion; n != 1 || got != next {
+		t.Errorf("refused writes called Done %d times and moved the journal's next version from %v to %v", n-1, next, got)
 	}
 }
 

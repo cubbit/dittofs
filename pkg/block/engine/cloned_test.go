@@ -469,8 +469,18 @@ func TestAReleaseOfARegisteredSourceIsPending(t *testing.T) {
 	if !isDelay(got, vfserr.DelayClone) {
 		t.Errorf("the pending release's outcome: %v, want DelayClone", got)
 	}
-	if n := h.deletes.Load(); n != 0 {
-		t.Errorf("the journal saw %d Delete calls for a release behind a clone, want none", n)
+	held := false
+	for c, err := range u.h.Since(t.Context(), journal.NewFileID(src), journal.Version{}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Kind == journal.ChangeDelete {
+			t.Errorf("the journal holds a Delete of the source at %v for a release behind a clone", c.Version)
+		}
+		held = held || c.Kind == journal.ChangeWrite
+	}
+	if !held {
+		t.Error("the journal no longer holds the source's bytes after a release behind a clone")
 	}
 	u.clock.Advance(10 * time.Second)
 	time.Sleep(10 * time.Millisecond)

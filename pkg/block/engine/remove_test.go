@@ -30,8 +30,6 @@ type hookedHandle struct {
 	sync        filesHook // run inside Sync, before the journal's, once set
 	synced      filesHook // run inside Sync, after the journal's, once set
 	written     armed     // run inside WriteAt, after the journal's, once set
-	writes      atomic.Int32
-	deletes     atomic.Int32
 }
 
 func (h *hookedHandle) Truncate(ctx context.Context, id journal.FileID, size int64) (journal.Version, error) {
@@ -55,13 +53,7 @@ func (h *hookedHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]entit
 	return marks, err
 }
 
-func (h *hookedHandle) Delete(ctx context.Context, id journal.FileID) (journal.Version, error) {
-	h.deletes.Add(1)
-	return h.Handle.Delete(ctx, id)
-}
-
 func (h *hookedHandle) WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error) {
-	h.writes.Add(1)
 	v, err := h.Handle.WriteAt(ctx, id, off, p, mtime)
 	h.written.run()
 	return v, err
@@ -444,21 +436,21 @@ func TestACommitWaitsOutATruncateInFlight(t *testing.T) {
 }
 
 // A deallocate's phase 1 records the extent as one hole at once, stages no
-// zeros through the journal's write, and a write into the extent after it
-// reads back.
+// zeros through the journal's write, drawing the journal's one version for
+// its marker alone, and a write into the extent after it reads back.
 func TestADeallocateRecordsItsHoleAtOnce(t *testing.T) {
-	u, h := newHookedUnit(t)
+	u := newUnit(t)
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
 	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
-	h.writes.Store(0)
+	next := u.j.Stats().NextVersion.Counter
 	if err := u.e.Deallocate(t.Context(), u.share.ID, f, 4, 8); err != nil {
 		t.Fatal(err)
 	}
-	if n := h.writes.Load(); n != 0 {
-		t.Errorf("a deallocate made %d journal writes", n)
+	if n := u.j.Stats().NextVersion.Counter - next; n != 1 {
+		t.Errorf("a deallocate drew %d versions from the journal, want its marker's alone", n)
 	}
 	run, hole, err := u.fs.Store.Existence().Allocation(t.Context(), u.share.ID, f, 4)
 	if err != nil || !hole || run != (entity.Extent{Offset: 4, Length: 8}) {
