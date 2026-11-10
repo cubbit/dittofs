@@ -17,7 +17,7 @@ func dueOnVersion(t *testing.T, u *unit, n uint64) {
 	t.Helper()
 
 	next := u.j.Stats().NextVersion.Counter
-	u.e.SetBlockForTest(2 * (unitLimit - next - n + 1))
+	u.e.SetBlockForTest(2 * (u.limit - next - n + 1))
 }
 
 // raised reports whether the journal was given a limit above the one the
@@ -27,7 +27,7 @@ func raised(t *testing.T, u *unit) bool {
 
 	u.e.WaitRaises(t)
 
-	return u.j.Stats().VersionLimit.Counter > unitLimit
+	return u.j.Stats().VersionLimit.Counter > u.limit
 }
 
 // A version issued by a removal or a clone step, not only by a write or a

@@ -33,19 +33,22 @@ type unit struct {
 	rec   *recJournal // the engine's view of j, which records each Share and Close
 	fs    *kvstoretest.FS
 	clock *sim.TestClock
+	limit uint64 // the fake journal's version limit once the unit was built
 	share engine.Share
 	h     engine.Handle // the share's handle on the fake journal, as its Share returned it
 }
 
-// unitLimit is the fake journal's version limit in a unit test.
+// unitLimit is a version above every one the fake journal issues in a unit
+// test, whose versions follow the clock in nanoseconds.
 const unitLimit = 1 << 62
 
 // unitConfig is what a test asks of newUnitWith.
 type unitConfig struct {
-	deps    []func(*engine.Deps)              // each changes the engine's Deps before New
-	unbound bool                              // leaves the share unbound: the test binds what it needs
-	wrap    func(engine.Handle) engine.Handle // hands the engine every handle the fake journal opens through it
-	kv      func(kv.KV) kv.KV                 // wraps the store's kv.KV
+	deps      []func(*engine.Deps)              // each changes the engine's Deps before New
+	unbound   bool                              // leaves the share unbound: the test binds what it needs
+	unstarted bool                              // leaves the engine unstarted, and so the share unbound
+	wrap      func(engine.Handle) engine.Handle // hands the engine every handle the fake journal opens through it
+	kv        func(kv.KV) kv.KV                 // wraps the store's kv.KV
 }
 
 // newUnit is the unit with its share bound, each of deps changing the
@@ -124,17 +127,16 @@ func newUnitWith(t *testing.T, c unitConfig) *unit {
 
 	u.e = e
 
-	// The version limit start raises; the fake refuses every version below
-	// none. It sits above every version the store stamps, which follow the
-	// clock in nanoseconds, so a share's floor stays below it. It is set
-	// before the engine is handed the journal, which reads it as the limit
-	// last passed.
-	if err := u.j.SetVersionLimit(journal.Version{Counter: unitLimit}); err != nil {
+	if c.unstarted {
+		u.share = enginetest.ShareOf(t, u.fs.Store, u.fs.Share.ID, 1<<30)
+		return u
+	}
+
+	if err := e.Start(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
 
-	e.SetJournalsForTest(u.rec)
-
+	u.limit = u.j.Stats().VersionLimit.Counter
 	u.share = enginetest.ShareOf(t, u.fs.Store, u.fs.Share.ID, 1<<30)
 
 	if c.unbound {
@@ -146,6 +148,7 @@ func newUnitWith(t *testing.T, c unitConfig) *unit {
 	}
 
 	u.h = u.rec.raw(0)
+	u.limit = u.j.Stats().VersionLimit.Counter
 
 	return u
 }

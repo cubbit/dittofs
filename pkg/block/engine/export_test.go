@@ -29,9 +29,10 @@ var (
 	ErrNotRaised       = errNotRaised
 )
 
-// SetJournalsForTest sets the journals the engine has open, as Start will,
-// each with the limit last passed read from the journal itself, so the engine
-// and the journal agree on it.
+// SetJournalsForTest sets the journals the engine has open, each with the
+// limit last passed read from the journal itself. Start opens one journal
+// only, so this is the one way to give the engine two, for Bind's refusal of
+// them.
 func (e *Engine) SetJournalsForTest(js ...Journal) {
 	vls := make([]*versionLimit, 0, len(js))
 

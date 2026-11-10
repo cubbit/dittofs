@@ -59,11 +59,15 @@ func TestCloneAdmission(t *testing.T) {
 		deps: []func(*engine.Deps){func(d *engine.Deps) {
 			ns.Existence, ns.Content = d.Existence, d.Content
 			d.Existence, d.Content = ns, ns
+			open := d.Open
+			d.Open = func(ctx context.Context, dir string, floor journal.Version, id journal.JournalID) (engine.Journal, error) {
+				j, err := open(ctx, dir, floor, id)
+				return everyCallJournal{j, &calls}, err
+			}
 		}},
 		unbound: true,
 		wrap:    func(h engine.Handle) engine.Handle { return everyCallHandle{h, &calls} },
 	})
-	u.e.SetJournalsForTest(everyCallJournal{u.rec, &calls})
 	if err := u.e.Bind(t.Context(), u.share); err != nil {
 		t.Fatal(err)
 	}

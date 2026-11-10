@@ -1222,37 +1222,20 @@ func TestStartUsesBlockField(t *testing.T) {
 	}
 }
 
-// The journals handed to the engine by hand carry the limit the journal
-// holds, so a write far below it wakes no raise.
-func TestSetJournalsForTestSeedsTheLimit(t *testing.T) {
-	u := newUnitWith(t, unitConfig{
-		unbound: true,
-	})
+// The limit Start and Bind set at the journal is the limit the engine last
+// passed, so a write far below it wakes no raise.
+func TestAWriteFarBelowTheLimitWakesNoRaise(t *testing.T) {
+	u := newUnit(t)
 	u.e.TrackRaisesForTest()
 
-	if err := u.e.Bind(t.Context(), u.share); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := u.e.Write(
-		t.Context(),
-		u.share.ID,
-		entity.FileID{0xd9},
-		0,
-		[]byte("x"),
-		engine.WriteOpts{
-			Done: func() {
-			},
-		},
-	)
-	if err != nil {
+	if _, err := u.e.Write(t.Context(), u.share.ID, entity.FileID{0xd9}, 0, []byte("x"), engine.WriteOpts{Done: func() {}}); err != nil {
 		t.Fatal(err)
 	}
 
 	u.e.WaitRaises(t)
 
-	if got := u.j.Stats().VersionLimit.Counter; got != unitLimit {
-		t.Errorf("the fake's limit is %d after one write, want %d", got, uint64(unitLimit))
+	if got := u.j.Stats().VersionLimit.Counter; got != u.limit {
+		t.Errorf("the fake's limit is %d after one write, want %d", got, u.limit)
 	}
 }
 
