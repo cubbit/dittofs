@@ -74,8 +74,13 @@ func tagOnly(t *testing.T) (*Core, *Share, *Share, core.FileID) {
 		t.Fatalf("F holds no piece at 0 after A's write")
 	}
 	seg := format.SegmentName(p.Record.Segment)
-	if err := seam.Schedule(kit.Failing(kit.OpSync, seg, 1, errors.New("injected sync failure"))); err != nil {
-		t.Fatalf("the seam refused the failing sync rule: %v", err)
+	// The failed segment's pages do not read back either, so its window cannot
+	// re-append the record from them and fails it.
+	if err := seam.Schedule(
+		kit.Failing(kit.OpSync, seg, 1, errors.New("injected sync failure")),
+		kit.Failing(kit.OpRead, seg, 0, errors.New("injected read failure")),
+	); err != nil {
+		t.Fatalf("the seam refused the failing sync and read rules: %v", err)
 	}
 	if err := c.Durability().Sync(context.Background(), f); err == nil {
 		t.Fatal("the sync of F's unsynced record returned nil")
@@ -89,6 +94,11 @@ func tagOnly(t *testing.T) (*Core, *Share, *Share, core.FileID) {
 		_, ok := c.Index().Lookup(f, 0)
 		return !ok
 	})
+	// The window is settled: the segment reads back again, so the scan of the
+	// disk below sees it.
+	if err := seam.Schedule(); err != nil {
+		t.Fatalf("the seam refused to clear its rules: %v", err)
+	}
 	if err := c.checkTag(b, f); err == nil {
 		t.Fatal("the tag-only file checks clean through B, want ErrOtherShare")
 	} else {
