@@ -259,7 +259,7 @@ epic leaves.
 | 9 Markers | T9.1, T9.2, T9.3, T9.4, T9.5, T9.6, T9.7, T9.9, T9.10 | T9.1 places D2's and D4's `ponytail:` and D3's and D20's `decision:`; T9.2 the RFC's `ponytail:` on whole-segment freeing at the hand-over (D5); T9.3 D21's `ponytail:`; T9.4 RFC 28 §3.3's `decision:` that a dead unread content record pins nothing; T9.5 D7's and D18's `decision:`; T9.6 RFC 1 §6's `ponytail:` on a carried loss record's size; T9.7 D8's `decision:`; T9.9 D16's `ponytail:` and the share seal's `decision:`; T9.10 D10's `decision:`. T9.8 and T9.11 place none. §4 lists every marker with its ceiling |
 | 10 A test can fail | all | each test names the bug it catches in §6 |
 | 11 Exports | T9.3, T9.9 | one name is added: `Stats.SuspectSegments`, which RFC 1 §3.7 declares and S1 lacks (T9.3), as written there. `Repack`, `RepackScope`, `Forget`, `Strand` and `Inspector.Segments` are E1's. The per-segment unreclaimed figure stays internal until RFC 1 §4.4 names it (D16) |
-| 12 Creates only what it declares | all | `internal/reclaim` lands with T9.1, its first consumer being T9.2 in the same pull request; `internal/unread` lands with T9.3, its first consumer being T9.5; each later file lands with its subtask |
+| 12 Creates only what it declares | all | `internal/reclaim` lands with T9.1, its first consumer being T9.2 in the same pull request; `internal/unread` lands with T9.3, its first consumer being T9.4; each later file lands with its subtask |
 
 ## 3. Requirements and invariants
 
@@ -372,7 +372,7 @@ epic leaves.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R61 | The journal keeps one set of unread records, those whose read no attempt completed, keyed by segment and offset with the record's length and whether it is content or header-only; every reader of the journal marks and clears through it, and a mark names the I/O error as `ErrUnreadable` wraps it | invariant | RFC 28 §3.3, RFC 1 §3 | T9.3 |
+| R61 | The journal keeps one set of unread records, those whose read no attempt completed, keyed by segment and offset with the record's length and whether it is content or header-only; repack's reads in this epic mark and clear through it, and `ReadAt`, `Offered` and the open are to (§9); a mark names the I/O error as `ErrUnreadable` wraps it | invariant | RFC 28 §3.3, RFC 1 §3 | T9.3 |
 | R62 | A read that fails is started again only while fewer than 3 attempts have been made, less than 15 s has passed since the first, and the request's deadline has not passed; an access to a record already in the set makes one attempt. A read that returns bytes removes the record from the set, and the bytes are checked as any record's | MUST | RFC 28 §3.3 | T9.3 |
 | R63 | A segment holding a record of the set is suspect until every such record has read or its segment is retired: `Stats.SuspectSegments` counts it from a maintained value, never a walk, and its unread ranges are listed as an offset and a length | invariant | RFC 28 §3.3, RFC 1 §3.7, §4.4 | T9.3 |
 
@@ -503,8 +503,8 @@ epic leaves.
   its segments to name in a segment-set scope, so it aims by share. Overturned when RFC 1 §4.4
   names the field; then `SegmentInfo` exports it. Open point in §9.
 - **D17, this epic implements `Inspector.Segments`, and only it.** Selection by segment-set scope
-  and the engine's capacity step need the per-segment rows while the journal runs; `File`, `All`
-  and `Verify` stay epic 7b's.
+  and the engine's capacity step need the per-segment rows while the journal runs; `File` and
+  `All` are wired by epic 7a's T7.6, and `Verify` stays epic 7b's.
 - **D18, a source read that fails holds the unit; it never reaches `Corrupt`.** T9.5 reads a
   source through E5's positioned read inside T9.3's `Try`, which holds RFC 28 §3.3's retry bound.
   A read that fails with an I/O error after it marks the record unread and its segment suspect in
@@ -675,7 +675,7 @@ test/journal/known.yaml T9.12  rows turned green removed; rows needing epic 9b r
 
 **Subtask T9.3 estimate: 2.5 man-days.**
 
-- **Track:** B. **Depends on:** S3; T7.1 of E7a (the bound on a failed read); E2's fault schedule.
+- **Track:** B. **Depends on:** S3; T7.1 of E7a (the bound on a failed read); E5's retirement report (T5.9); E8's `Stats` aggregation (T8.13); E2's fault schedule.
 - **Covers:** R61–R63.
 - **Deliverables:** `internal/unread/set.go`: the journal's one set of unread records (D21).
   `Try(ctx, ref, read)` runs a read with the bound of T7.1's `readretry` (R62): up to 3 attempts for
@@ -779,7 +779,7 @@ test/journal/known.yaml T9.12  rows turned green removed; rows needing epic 9b r
     nothing copied and is dropped through `Corrupt`.
   - A source whose read fails with `EIO` three times has nothing copied, no extent dropped, no
     loss record appended and `DamagedSegments` unchanged; its segment is suspect and the unit is
-    abandoned. With the device restored, the next pass reads it in one attempt and copies it.
+    abandoned. With the device restored and an access through `Try` that reads the record (the test makes it; `ReadAt` is not wired to the set yet, §9), the record leaves the set and the next pass copies it.
   - Two adjacent held pieces of one write split across two records at one version are copied as
     one record; a fill beside a write at the same version is not merged with it.
   - A copy of a fill is a fill, and a reopen sets its bit; a copy of a write keeps the source's

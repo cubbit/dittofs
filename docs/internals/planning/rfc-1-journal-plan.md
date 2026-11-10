@@ -260,12 +260,12 @@ run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
 | 7a | **Recovery and identity: reopening a journal** | `Open` with recovery after a clean exit or a crash (E8 delivers a minimal `Init` and `Open` of a directory with no segment), sync marks, rebuild by catalog and by scan, torn vs corrupt, the unproven tail and its re-append, emptying the segments the open ends, counters, spare re-adoption, offloaded bits, losses and forgets at open, tag conflicts, `Inspector.File` and `All` over the assembled index | 15 | A | 9a, 10, 11 |
 | 7b | **Recovery and identity: the rest** | `Restamp`, `RebuildFormat`, `AcknowledgeUnreadable` and `Acknowledge`, unread records held at open, the journal half of the reconcile, `Verify`, recovery benchmarks, retained extents from hold records | not broken down | A | 9b (holds) |
 | 8 | **Data path and capacity** ⛔ | a minimal `Init` and `Open` for S3, `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 15 | B | 9a, 9b, 11 |
-| 9a | **Reclamation and tags** | Liveness of records and segments, auto-retire, the journal's unread set, `Repack` (also scoped to a share), `Inspector.Segments`, `Forget`, `Strand` | 11 | B | 7a (T9.1), 11 |
+| 9a | **Reclamation and tags** | Liveness of records and segments, auto-retire, the journal's unread set, `Repack` (also scoped to a share), `Inspector.Segments`, `Forget`, `Strand` | 12 | B | 7a (T9.1), 11 |
 | 9b | **Offload, release and holds** | `Offload`, `OffloadMany`, pins, `report`, `MarkOffloaded`, `Unmark` and the stale rule, `Release`, snapshot holds | not broken down | B | 11 |
 | 10 | **Start and initialisation** | Start check and its two refusals, `journal.Init` in the initialisation step and the `J‖journal` writes, wipe of devices left by an interrupted step, device config keys | 5 | A | 11 |
 | 11 | **Engine on the RFC 16 store** 🔀 | Stage 3 of #3119, planned after S4a: engine wiring (`Fill`, `report`, `Release`), per-device registry, version floor and limit, store contracts, error mapping, salvage, exporters and alert rules, API and CLI, system e2e tests | planned after S4a | team | 12 |
 | 12 | **E2E green** 🔀 | Burn down the known-failure list, soak, benchmarks J1–J5 and J8, CI tier registration, profiling baselines | 8 | team | release |
-| | | | **~122 + E7b + E9b + E11** | | |
+| | | | **~123 + E7b + E9b + E11** | | |
 
 Epics 7 and 9 are each split in two. Epics 7a and 9a are what a share needs to restart, after a
 clean exit or a crash, and to get space back without a remote tier; they are what the

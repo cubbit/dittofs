@@ -280,7 +280,7 @@ each refusal.
 | 8 Real storage | T7.4, T7.7, T7.9, T7.10, T7.11, T7.12, T7.13, T7.15 | every torn, crash, unlink and damage check runs on E3's `platform.OS` through E2's crash-simulating seam, never an in-memory filesystem. Direct reads (T7.8) are checked on a real file whose page cache holds bytes the device does not |
 | 9 Comment markers | T7.1, T7.2, T7.3, T7.4, T7.5, T7.7, T7.8, T7.10, T7.11, T7.12, T7.13 | the RFC's markers at their code sites: RFC 28 §3.3's two `ponytail:` notes on the failed slot and the forward search (T7.4), its `decision:` on emptying an ended segment whole (T7.13), its `ponytail:` on a segment's absence taken as its retirement (T7.10), and its two `decision:` notes on a failed read (T7.1); RFC 1 §6's `decision:` on the open reserve (T7.12) and its `ponytail:` on a loss record's bytes in a copy (T7.13). This epic's D2 (T7.1), D3 (T7.3), D4 (T7.11), D6 (T7.5), D8 (T7.2), D11 (T7.8), D12 (T7.7), D13 (T7.10), D14 (T7.2, T7.4) and D15 (T7.1, T7.2) at theirs |
 | 10 A test must be able to fail | all | §6 names, per test, the change that would make it fail |
-| 11 Exported only if RFC 1 §3 uses it | T7.1, T7.2, T7.10, T7.14 | the S1 surface lacks four names RFC 1 §3 declares for the open: `Open`'s `marks` argument and `SyncMark` (T7.10), `SegmentRange` and `*UnreadableRangesError` wrapping `ErrUnreadable` (T7.1, T7.2), and `Stats.SyncMarks` (T7.14). This epic adds them as RFC 1 §3 writes them (§9). `Stats.Recovery`, `RejectedSegments`, `DamagedSegments`, `TagConflicts`, `TornTails` and `ScanResyncs` exist since S1. The `recovery` package is internal |
+| 11 Exported only if RFC 1 §3 uses it | T7.1, T7.2, T7.10, T7.14 | the S1 surface lacks five names RFC 1 §3 declares for the open: `Open`'s `marks` argument and `SyncMark` (T7.10), `SegmentRange`, `*UnreadableRangesError` and `ErrUnreadable` (T7.1, T7.2), and `Stats.SyncMarks` (T7.14). This epic adds them as RFC 1 §3 writes them (§9). `Stats.Recovery`, `RejectedSegments`, `DamagedSegments`, `TagConflicts`, `TornTails` and `ScanResyncs` exist since S1. The `recovery` package is internal |
 | 12 Created with its consumer | all | `internal/recovery` and `internal/readretry` land with T7.1, called by `Open`; each file lands with the subtask that uses it. `ReadAtDirect` exists since E3, reading through the page cache; T7.8 replaces its per-OS bodies, and T7.9 is the first caller that needs them |
 
 ## 3. Requirements and invariants
@@ -297,7 +297,7 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
 | R3 | Open ignores a `format.tmp` | invariant | RFC 28 §2.1 | T7.1 |
 | R4 | A file the journal does not recognise is left alone, not deleted | MUST | RFC 28 §2.1 | T7.1 |
 | R5 | Open unlinks every `.spare.tmp` it finds | invariant | RFC 28 §2.2 | T7.1 |
-| R6 | The id of every spare or recycle made after open is above every id the directory named at open, `.seg` and `.spare.tmp` files included, and above every sync mark's segment | invariant | RFC 28 §2.2, §3.3 | T7.1, T7.10 |
+| R6 | The id of every spare or recycle made after open is above every id the directory named at open, `.seg` and `.spare.tmp` files included, and above every sync mark's segment | invariant | RFC 28 §2.2, §3.3 | T7.1, T7.10, T7.11 |
 | R7 | Recovery reads only the `format` file and the segments, consults no component outside the journal, and does not require the process that wrote the segments to have exited cleanly | MUST NOT | RFC 28 §2.1, §3.1 | T7.2, T7.6 |
 | R8 | A segment whose header verifies and names another journal identity contributes nothing to the index, is reported, and is left on disk untouched | MUST NOT | RFC 28 §3.1, §3.4 | T7.1, T7.7 |
 | R9 | A segment whose format version the binary does not recognise, or that is newer than the `format` file's, fails the open | invariant | RFC 28 §2.2 | T7.1 |
@@ -356,8 +356,8 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
 | R42 | A segment header that does not verify is damage only where proven synced (a verifying record names a synced-through offset past it, a verifying seal marker follows it, or a successor names the segment), and torn otherwise; either way the segment's records are attached on their own checksums, it is treated as one that could have been open at a crash unless a successor names it, and a torn header ends the segment | invariant | RFC 28 §3.1 | T7.4 |
 | R43 | A record found not to verify at open has the extents it backs left out of the index and serves no byte, never zeros; its loss is reported as data loss or repairable by its offloaded bit; its loss record is appended once, unless another copy verifies, on the open reserve, and past the reserve the loss is deferred: the extent is dropped, the event published as found at open and marked deferred, a synced one yielded by `Files` and `Since` until `Settle` covers it, and the record written into the copy that retires its segment | MUST | RFC 28 §3.3, RFC 1 §3.8, §6 | T7.12, T7.13 |
 | R44 | A range that names no record — a refused range the torn-tail rule makes corruption in a segment whose catalog does not verify, a refused range below a sync mark's `Through` in such a segment, a named predecessor's missing end, or a lost synced tail — is found with the bounds RFC 28 §3.3 gives, and the content it may have superseded is never served | invariant | RFC 28 §3.3 | T7.4, T7.10 |
-| R45 | `DamagedSegments` counts every segment the open reports damaged, never one with only a torn header, tail or slot unless a sync mark proves it synced, never a torn slot above every mark's `Through`, and keeps counting it until the journal closes, even once the open empties or retires it | invariant | RFC 1 §3.7 | T7.4, T7.14, T7.10 |
-| R46 | A read at open that fails with an I/O error is never evidence of zeros, of a torn write or of corruption: its bytes are never classed, a segment it touches is never a spare, its range is never truncated or cut off, and no loss record is appended for it. A read is started again only while fewer than 3 attempts have been made, less than 15 s has passed since the first, and the open's deadline has not passed | MUST NOT | RFC 28 §3.1, §3.3, RFC 1 §3 | T7.1, T7.2, T7.7 |
+| R45 | `DamagedSegments` counts every segment the open reports damaged, never one with only a torn header, tail or slot unless a sync mark proves it synced, never a torn slot above every mark's `Through`, and keeps counting it until the journal closes, even once the open empties or retires it | invariant | RFC 1 §3.7 | T7.4, T7.10, T7.14 |
+| R46 | A read at open that fails with an I/O error is never evidence of zeros, of a torn write or of corruption: its bytes are never classed, a segment it touches is never a spare, its range is never truncated or cut off, and no loss record is appended for it. A read is started again only while fewer than 3 attempts have been made, less than 15 s has passed since the first, and the open's deadline has not passed | MUST NOT | RFC 28 §3.1, §3.3, RFC 1 §3 | T7.1, T7.2, T7.7, T7.9 |
 
 **Tails and segments the open ends**
 
@@ -367,10 +367,10 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
 | R48 | A seal marker no successor names proves its seal only once the segment is synced and the marker re-read past the page cache verifies; one that does not, or whose segment's sync fails, is treated as absent: the segment is unsealed, its tail verified as R47 says, and the marker part of its torn tail. A read through the cache after that sync proves nothing more | invariant | RFC 28 §3.3 | T7.9 |
 | R49 | A record of the unproven tail that verified at the first read and not past the page cache, and every record of a tail whose sync fails, is re-appended, keeping its numbers, from the copy the first read verified, to a spare that is then synced, drawing on the repack reserve; one that verified at neither read is torn; the segment whose sync failed is a failed segment, never sealed | MUST | RFC 28 §3.1, RFC 1 §5.3 | T7.11 |
 | R50 | A torn tail is truncated at its start, never below a verifying record and so never below the highest synced-through offset a verifying record names; the truncation is made durable and the segment sealed with its seal marker, footer and trailer after the last verifying record, before anything is appended; the stream continues in a new segment. This truncation and the seal's free tail are the only bytes inside a segment the journal frees | MUST | RFC 28 §3.3, RFC 1 §7.1 | T7.12 |
-| R51 | A torn slot before a verifying record (zeros included), a record the re-read of an unproven tail finds not to verify, a torn segment header, or a failed append's slot found again ends the segment: it is truncated the same way and gets no seal marker, and the stream continues in a new segment naming no predecessor | invariant | RFC 28 §3.1, §3.3 | T7.12, T7.11 |
+| R51 | A torn slot before a verifying record (zeros included), a record the re-read of an unproven tail finds not to verify, a torn segment header, or a failed append's slot found again ends the segment: it is truncated the same way and gets no seal marker, and the stream continues in a new segment naming no predecessor | invariant | RFC 28 §3.1, §3.3 | T7.11, T7.12 |
 | R52 | Once its tail is proven, a segment is sealed after its last verifying record, unless a sync of it failed in this open, which leaves it a failed segment that is never sealed, or the open ends it | invariant | RFC 28 §3.1 | T7.12 |
 | R53 | Every segment the open ends is emptied before the journal serves, after every unproven tail is proven or re-appended: the open's loss records are appended and synced first; then every attached segment that is not held is retired, never a spare, each retirement refilling the reserve; then each ended segment's records that repack would carry forward are re-appended whole, never merged, keeping their numbers, with the loss record of each record that fails only when read for the copy and has no other verifying copy and each deferred loss whose record is in the segment, into a spare that is sealed and synced; a record whose copy already verifies in a segment the open neither ends nor saw fail is skipped, and that segment stays held; then the ended segment is unlinked and the directory synced. A target whose sync fails is a failed segment and its records go once more to another spare; a second refusal in a row, or no spare to be had, fails the open and leaves the ended segment on disk. A segment holding a deferred loss is never retired without that copy. A crash part way leaves no record held twice | invariant | RFC 28 §3.3, RFC 1 §6, §7.2 | T7.13 |
-| R54 | The open's re-appends and copies draw on the repack reserve, never on a share's limit, and its loss records on the open reserve, so a journal opened at its maximum, or one whose headroom ran out before the crash, still opens | invariant | RFC 28 §3.1, §3.3, RFC 1 §6 | T7.12, T7.13, T7.11 |
+| R54 | The open's re-appends and copies draw on the repack reserve, never on a share's limit, and its loss records on the open reserve, so a journal opened at its maximum, or one whose headroom ran out before the crash, still opens | invariant | RFC 28 §3.1, §3.3, RFC 1 §6 | T7.11, T7.12, T7.13 |
 
 **Spares**
 
@@ -388,7 +388,7 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
 | --- | --- | --- | --- | --- |
 | R60 | `Open` takes the caller's sync marks and checks the scanned tails against them once every unproven tail is verified and before the open appends, zeroes or takes from the pool anything, so a refused open changes nothing and no record the open appends lands past a mark's offset | MUST | RFC 1 §3, RFC 28 §3.3 | T7.10 |
 | R61 | A segment holding no verifying record whose id a mark names is ended, takes no append, and is unlinked by the open's emptying; a mark whose segment is not on disk is read as retired | invariant | RFC 28 §3.3 | T7.10 |
-| R62 | A mark's tail is lost when its segment is on disk with its last verifying record, if any, ending below the mark's `Offset`, no copy of the record carrying the mark's `Sequence` verifies anywhere, and that record is not one the open will re-append from a first read that verified; a lost tail is never read as a torn tail | invariant | RFC 28 §3.3 | T7.10 |
+| R62 | A mark's tail is lost, a mark whose `Offset` is past its segment's header being the only one that can be, when its segment is on disk with its last verifying record, if any, ending below the mark's `Offset`, no copy of the record carrying the mark's `Sequence` verifies anywhere, and that record is not one the open will re-append from a first read that verified; a lost tail is never read as a torn tail | invariant | RFC 28 §3.3 | T7.10 |
 
 **Observability**
 
@@ -530,8 +530,11 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
   range, so the engine's start already refuses the journal's shares and retries the open on it.
   RFC 28 §3.3's two `decision:` notes on a failed read go at the retry, and a `decision:` marker
   of this epic's names the ceiling — a transient fault on a named record keeps the journal closed
-  until the read succeeds — and is withdrawn with E7b. A read past the page cache in the tail's
-  proof that fails is not such a read: R49 re-appends the record from its first copy (T7.11).
+  until the read succeeds — and is withdrawn with E7b. A direct re-read in the tail's proof of a record
+  whose first read verified, and that fails, is not such a read: R49 re-appends the record from its
+  first copy (T7.11). Any other read of the proof that fails with an I/O error, a tail record's
+  first read or the direct re-read of an unnamed seal marker, refuses the open as above and is
+  never taken as torn, so no truncation cuts what the device may still hold.
 
 ## 5. Target tree
 
@@ -547,8 +550,6 @@ pkg/block/journal/
       run.go             T7.1, T7.10   Run(ctx, dir, floor, expect, marks): the phases, the context check, the open span
       attach.go          T7.1    the directory listing, .spare.tmp, the id high-water mark, headers, foreign, orphans (D2)
       read.go            T7.1    the open's reads through readretry, and the unreadable ranges (D15)
-    readretry/
-      retry.go           T7.1    the bound on a failed read: 3 attempts, 15 s, the context (E9a's T9.3 reuses it)
       scan.go            T7.2    scanning a segment and feeding the builder, the concurrent readers (D8), the reconcile kinds (D14)
       catalog.go         T7.3    reading a catalog, demotion to a scan, header-only payloads (D3)
       tail.go            T7.4    torn against corrupt, stream topology, the segment's fate, ranges that name no record (D14)
@@ -562,6 +563,8 @@ pkg/block/journal/
       copy.go            T7.11   the copier: whole records, numbers kept, a sealed and synced spare, one retry (D4)
       marks.go           T7.10   the marks: counters, the proof below Through, the mark's segment, the lost-tail check (D13)
       *_test.go
+    readretry/
+      retry.go           T7.1    the bound on a failed read: 3 attempts, 15 s, the context (E9a's T9.3 reuses it)
     platform/
       direct_linux.go    T7.8    ReadAtDirect with O_DIRECT (D11)
       direct_darwin.go   T7.8    ReadAtDirect with F_NOCACHE
@@ -780,7 +783,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
 
 **Subtask T7.6 estimate: 3.5 man-days.**
 
-- **Track:** A. **Depends on:** T7.5; E4-11 (`Finish(floor)`); E5's segment set and ledger
+- **Track:** A. **Depends on:** T7.5; E4-11 (`Finish(floor)`), E4-12 (the index read-out `Inspect` returns); E5's segment set and ledger
   (T5.1), pool (T5.5); E8's `New` (D2 of E8), conflict flag (T8.4), dirty-file list (T8.9) and
   `Stats` aggregation (T8.13); E9a's liveness tracker (T9.1).
 - **Covers:** R7 (no outside input), R12 (markers and buckets), R22 (the floor), R23, R29–R33,
@@ -820,7 +823,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   - After `Forget(T)` and a reopen, the forget record stays live until the last segment that held
     a record of `T` below it is retired, and not after; a segment holding only settled, outranked
     removals reports not held without a read.
-- **Tests:** the rows of R73 (`TestRFC1C_Monotonicity`, `TestRFC1C_EpochHalfIsZero`, `TestRFC1C_CloneTargetSurvivesCrash`, `TestRFC1C_UnclaimedTagReported`, `TestRFC1C_UnclaimedTagsAreTheCallersToName`, `TestRFC1C_FileIsItsSharesShare`, `TestRFC28C_VersionFloor`, `TestRFC28A_WriteCarriesItsMtime`, `TestRFC1C_CancelledCallChangesNothingOrCompletes`); the before-and-after comparison of `Stats`, `Files` and
+- **Tests:** the rows of R73 (`TestRFC1C_Monotonicity`, `TestRFC1C_EpochHalfIsZero`, `TestRFC1C_CloneTargetSurvivesCrash`, `TestRFC1C_UnclaimedTagReported`, `TestRFC1C_UnclaimedTagsAreTheCallersToName`, `TestRFC1C_FileIsItsSharesShare`, `TestRFC28C_VersionFloor`, `TestRFC28A_WriteCarriesItsMtime`, `TestRFC1C_CancelledCallChangesNothingOrCompletes`); `Inspect().File` and `All` against the model after a reopen, offloaded bits included (catches a read-out left as a stub, which fails every row that reads the index through it, R68); a reopen under a lower `ExtentLimit` (catches an open refused for it, R23); the before-and-after comparison of `Stats`, `Files` and
   `DirtyFiles` (catches a derived value not rebuilt, R31, tested at its consumer); RFC 1 §9.4's
   "a failed number is never issued again" (catches a number taken from the disk alone, which gives
   a new write a failed number and a later reopen drops it after its `Sync` succeeded, R30); the floor case
@@ -955,8 +958,9 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
     does not fail.
   - A mark naming a segment id above every one on disk: the next segment made after the open takes
     a higher id, and the next sequence number exceeds the mark's.
-  - A segment the mark names holding no verifying record is never re-adopted, and is gone after
-    the open.
+  - A segment the mark names holding no verifying record, with the mark's `Offset` at its header's
+    end so nothing was lost, is never re-adopted, and is gone after the open; with the `Offset`
+    past the header and no copy anywhere it is a lost tail and refuses the open.
 - **Tests:** the torn-slot, torn-header and counter halves of R80 ("a mark proves only up to `Through`", added here, §9); the rot below `Through` (catches a mark ignored, which would cut a synced record as torn, R36); the lost tail with and without a cached copy (catches a lost tail read as torn, R62, or a record about to be re-appended counted as lost); the same lost tail refused three opens in a row, comparing the directory and the spare count each time (catches a check that runs after the re-append, which burns a spare per retry until the repack reserve is gone, D13); the mark's empty segment (catches it re-adopted as a spare, where a re-append would land and hide the loss, R55); the id and sequence above the marks (catches a drained directory reissuing them, R6, R30).
 
 ### T7.11 Re-appending what the device lost
@@ -965,7 +969,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
 
 - **Track:** A. **Depends on:** T7.7, T7.9, T7.10; E5's pool (T5.5), seal writer (T5.7) and end
   of a segment (T5.10); E6's `WaitDurable` (T6.1) and failed segment (T6.3).
-- **Covers:** R49, R51 (a re-read that fails), R54 (re-appends), R75 (the re-append halves).
+- **Covers:** R6 (above the marks), R49, R51 (a re-read that fails), R54 (re-appends), R75 (the re-append halves).
 - **Deliverables:** `internal/recovery/copy.go`: the copier T7.13 reuses (D4, with its
   `decision:` marker). It writes whole records, never merged, keeping their sequence numbers and
   versions, into a spare taken from the repack reserve, never a share's limit (R54), seals the
@@ -1086,15 +1090,15 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
 
 **Subtask T7.14 estimate: 2.25 man-days.**
 
-- **Track:** A. **Depends on:** T7.6, T7.11; E8's `Stats` aggregation (T8.13).
+- **Track:** A. **Depends on:** T7.6, T7.13; E8's `Stats` aggregation (T8.13).
 - **Covers:** R34, R45 (kept until close), R63, R64, R66, R67, R78.
 - **Deliverables:** `internal/recovery/stats.go`: `Recovery` (segments by catalog, by scan, the
   open's duration on the injected clock), `RejectedSegments`, the `TornTails` and `ScanResyncs`
   counters, set once at open and read by `Stats` without a walk; `DamagedSegments` keeps a segment
   the open emptied or retired counted until close, and the segment is marked damaged and retired
   in E5's set so E9a's `Inspector.Segments` keeps its row under its old id until close.
-  `Stats.SyncMarks`, a field RFC 1 §3 declares and S1 lacks, is set per stream once T7.11's
-  re-appends have run, to what the open recovered (R34). The `open` span's phase children carry
+  `Stats.SyncMarks`, a field RFC 1 §3 declares and S1 lacks, is set per stream once the cut, the
+  seal and the emptying have run (T7.11, T7.12, T7.13), to what the open recovered (R34). The `open` span's phase children carry
   the segment counts as attributes.
 - **Acceptance criteria:**
   - After an open that read k segments by catalog and m by scan, `Recovery` says k and m and a
@@ -1129,6 +1133,8 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   - The journal's own seam order holds whatever the faults: a successor taken only after its
     predecessor's seal sync, an ended segment unlinked only after its copies' sync, a segment
     retired at open only after the open's loss records' sync.
+  - A reopen the open refuses by D13, D14 or D15 counts as agreeing with the model only where RFC 28
+    §4.4 excuses the fault; the refusal names the range and serves nothing.
   - `known.yaml` names no test this epic turned green, and the runner passes.
 - **Tests:** `TestDamage_LostWrites`, `TestDamage_TornWrites`, `TestDamage_ReorderedWrites`,
   `TestDamage_SegmentDeleted` and the model's crash seeds (each catches a recovery that comes back
@@ -1156,7 +1162,7 @@ flowchart TD
   C1 --> T7_13["T7.13 Emptying ended segments"]
   T7_11 --> T7_13
   T9_1 -.-> T7_13
-  T7_6 & T7_11 --> T7_14["T7.14 Statistics and span"]
+  T7_6 & T7_13 --> T7_14["T7.14 Statistics and span"]
   T7_13 --> C2(["after T7.13: every crash reopens"]):::sync
   C2 & T7_14 --> T7_15["T7.15 Crash matrix and burn-down"]
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
@@ -1171,7 +1177,7 @@ flowchart TD
   D15 refuse, and the engine's start can rely on `Open`. E9a's crash tests wait for C2: a lost
   copy before a later record is a torn slot, which ends its segment, and the open before C2
   refuses that.
-- T7.8 needs nothing of this epic and can start at once; T7.14 can run beside T7.12 and T7.13.
+- T7.8 needs nothing of this epic and can start at once; T7.14 follows T7.13.
 - T7.6's registration and T7.13's retirement wait for E9a's T9.1, which track B builds first
   after S3.
 
