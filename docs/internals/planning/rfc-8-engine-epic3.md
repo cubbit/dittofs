@@ -12,7 +12,7 @@ write records; [RFC 17](../rfcs/rfc-17-vfs.md) §2.3 and §5.7, for `Content` an
 **Epic 3 estimate: 6 subtasks, 13 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's `pkg/block/engine` surface
 (`Engine`, `Deps`, the `Journal` and `Handle` interfaces, `WriteOpts`, `Overlay`) and E2's
-fake journal (`enginetest.FakeJournal`), profiler wiring and red rows; #3608 and #3609,
+in-memory journal (`enginetest.FakeJournal`), profiler wiring and red rows; #3608 and #3609,
 which put the share on every content call (D1). Nothing of epic 4:
 `Write` answers a stand-in verifier until epic 4's T4.1 replaces it (D12).
 **Blocks:** epic 4, whose group commit captures the pending operations T3.1 and T3.2
@@ -71,11 +71,11 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal and `kvstore`, the fault-injecting
-  `kv.KV`, the fake journal and the profiler wiring.
+  `kv.KV`, the in-memory journal and the profiler wiring.
 - **S1**, interfaces frozen and `Content` agreed with the filesystem service.
 - **S2**, red suite in CI: E2's suite runs on every pull request, listed whole as known
   failures; epics 3, 4 and 6 start here.
-- **S3**, engine complete over the fake journal: epics 3 to 8 done, every row whose journal
+- **S3**, engine complete over the in-memory journal: epics 3 to 8 done, every row whose journal
   call exists green.
 - **S4**, the journal's calls built: the journal v2 team's work this engine calls; the rows
   still red wait only on it.
@@ -91,10 +91,10 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
 
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation, the implementation of an epic it depends on once
-   that has landed, and E2's test components: above all the fake journal, which stands in
+   that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
    kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
@@ -133,12 +133,9 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
    engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
-8. **Real dependencies for properties of those dependencies.** No fake stands in for a
-   check about what the real thing does: the real journal on a real directory, with its crash
-   seam, for durability, recovery and loss; the real `kvstore` for what a transaction
-   commits and conflicts on. The fake journal is for the engine's pure logic only, and no
-   engine conformance row runs over it. It is held to the real journal by the journal's own
-   conformance suite (RFC 1 §9.4): it passes the RFC 1 §3 rows that need no real storage.
+8. **Real dependencies for properties of those dependencies.** The
+   [plan's rule 8](rfc-8-journal-only-engine-plan.md#1.5%20General%20rules%20for%20each%20epic),
+   as written there.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -162,14 +159,14 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| 1 Unit tests | all | every subtask tests over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, composed by T3.1's unit composition (D2), since `Bind` and `Start` are epic 6's |
+| 1 Unit tests | all | every subtask tests over E2's in-memory journal and the real `kvstore` on an in-memory `kv.KV`, composed by T3.1's unit composition (D2), since `Bind` and `Start` are epic 6's |
 | 2 Fuzz | none | no parser: the engine reads typed journal and store answers. T3.5 puts RFC 8 §15's `ponytail:` marker at the read-resolution table, which its table test checks instead |
 | 3 Observability | T3.1, T3.5 | the logger is `Deps.Logger`, already narrowed to `component=engine`. T3.1 records `engine_lock_wait_seconds{area="file_state"}`, T3.5 `engine_reads_total{class}` and `engine_read_seconds`, none labelled by share, in unexported counters that epic 7's `Stats` exposes (D9). T3.5 logs a **Lost** or corrupt read at `Error`, once per extent. No span: this part's write and read wait on none of RFC 8 §14's stages (no sync, no existence commit, no fetch, no pacing) |
 | 4 Profiling | all | T3.1's unit composition calls `prof.Watch`, so every unit test of the epic fails on a leaked goroutine, descriptor or heap |
 | 5 Public and internal | all | internal tests of the replay (T3.4) and the resolution table (T3.5); the content methods tested through `*Engine`; `-race` runs in T3.1, T3.2 and T3.5. Values the engine hands the store (`Covering`'s and `Allocation`'s share, file and extent) are asserted over the real `kvstore`; the `mtime` handed the journal is asserted where the journal reads it back, by `Since` over the real journal (T3.2) |
 | 6 Known failures | T3.2 | T3.2's test over the real journal enters `test/engine/known.yaml` naming this epic's issue; any row an epic-3 change turns green leaves it in that change |
 | 7 v2 ignores v1 | T3.1 | the import walk stays as it is; T3.1 adds the unit composition's imports (`journaltest/prof`, `kvstoretest`, `badgerkv`, `kv`, `sim`) for the engine's own test package to its allowlist, by name |
-| 8 Real dependencies | T3.2, T3.5, T3.6 | the store's answers come from the real `kvstore`; the fake journal stands in only for the engine's logic; the `mtime` check runs over the real journal |
+| 8 Real dependencies | T3.2, T3.5, T3.6 | the store's answers come from the real `kvstore`; the in-memory journal stands in only for the engine's logic; the `mtime` check runs over the real journal |
 | 9 Comments | all | the markers of §4, each at its code site; RFC 8 §2.3's per-file bound at the entry map (T3.1) |
 | 10 Tests can fail | all | each test below names the change it catches |
 | 11 Exports | all | nothing new is exported: the content methods are E1's; the test hooks live in `export_test.go` |
@@ -324,7 +321,7 @@ subtasks and tests can cite them.
 pkg/block/engine/
   file.go           T3.1  per-file entries, sharded by file; pending operations; bindingOf (D1)
   export_test.go    T3.1  the binding hook, counter accessors (D2, D9)
-  unit_test.go      T3.1  the unit composition over the fake journal and the real kvstore
+  unit_test.go      T3.1  the unit composition over the in-memory journal and the real kvstore
   imports_test.go   T3.1  allowlist entries for the composition's imports
   write.go          T3.2  Write, the identifier and version conversions, the error mapping (D4)
                     T3.3  Draw
@@ -390,11 +387,11 @@ test/engine/known.yaml    T3.2  its entry
   - A refused write leaves no operation, calls no `Done`, and leaves no entry behind.
 - **Tests:** a `Write` with every `Existence` and `Content` call blocked until the test ends,
   which still returns (catches a store call on the write path, R6); the change `Since`
-  reports carries the clock's time, and 0 under `TimeModify`, over the fake journal and,
+  reports carries the clock's time, and 0 under `TimeModify`, over the in-memory journal and,
   behind the tag, over the real one where the journal reads it back (catches a wrong unit or
-  an ignored `Suspend`); a `sample` given through the constructor that records the fake
+  an ignored `Suspend`); a `sample` given through the constructor that records the in-memory
   journal's own count of staged `WriteAt`s in a recorder started at -1 and answers a verifier
-  of its own: the hook ran once, the recorder reads 0,
+  of its own: the recorder reads 0,
   and `Write` returned the hook's verifier (catches sampling after staging, R8, which the
   zero stand-in alone cannot show, a `Write` that never calls it, or one answering another
   verifier); a
@@ -418,7 +415,7 @@ test/engine/known.yaml    T3.2  its entry
   - A `Draw` after a `Write` of the same journal answers a higher version; a `Draw` takes no
     entry and creates none.
 - **Tests:** write, draw, write: the three versions strictly increase (catches a version from
-  a counter of the engine's own or from the clock); `Draw` at the fake's version limit
+  a counter of the engine's own or from the clock); `Draw` at the in-memory journal's version limit
   answers `ErrDelay` with `DelayCommit`, not a `NoSpaceError` and not `DelayCapacity`.
 
 ### T3.4 Overlay
@@ -474,7 +471,7 @@ test/engine/known.yaml    T3.2  its entry
   `context.Canceled`, and with the deadline reached inside a re-ask's `ReadAt`
   `context.DeadlineExceeded`, itself and unwrapped (D4, D6); a lost extent
   read, a hole committed over it, then read again reads zeros (catches a kept resolution,
-  R18); a pending write the fake journal loses reads `ErrLost`, a gap below a pending
+  R18); a pending write the in-memory journal loses reads `ErrLost`, a gap below a pending
   write past the committed size reads zeros; a pending deallocate inside committed data
   reads zeros, class not `lost`; a pending truncate to 4 KiB, then a pending write at 50
   KiB: [4 KiB, 50 KiB) reads zeros (a build applying only writes fails both **Lost**); a
@@ -502,7 +499,7 @@ test/engine/known.yaml    T3.2  its entry
   - `Allocation` makes no journal call.
   - The run answered is the longest one of a single class from `off`, pending operations
     included.
-- **Tests:** over the real `kvstore`: a committed file of data whose bytes the fake journal
+- **Tests:** over the real `kvstore`: a committed file of data whose bytes the in-memory journal
   then loses still answers data (catches an answer from what the journal holds, R30); a
   committed hole under a pending write answers data over the write and hole after it
   (R31); a pending deallocate inside committed data splits the run; a pending truncate
@@ -516,7 +513,7 @@ flowchart TD
   T3_1 --> T3_2["T3.2 Write"]
   T3_2 --> C1(["after T3.2: pending operations recorded, epic 4's capture can start"]):::sync
   T3_2 --> T3_3["T3.3 Draw"] & T3_4["T3.4 Overlay"] & T3_5["T3.5 Read"] & T3_6["T3.6 Allocation"]
-  T3_4 & T3_5 & T3_6 --> C2(["after T3.6: a file's bytes in and out over the fake journal"]):::sync
+  T3_4 & T3_5 & T3_6 --> C2(["after T3.6: a file's bytes in and out over the in-memory journal"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 

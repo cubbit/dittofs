@@ -605,10 +605,12 @@ Every conformance subtask also:
   - **Registration** (D1, D2): the `journal_conformance` tag, the `journal-conformance`
     suite and `journal` group in `test/suites.yaml`, the tag on `lint-go`'s vet line, and
     `test/journal/known.yaml`.
-  - **Reuse by another implementation:** the RFC 1 §3 rows that need no real storage are
-    also exported as `conformance.Run(t, open)`, which takes a constructor, so an in-memory
-    journal (the engine's) is held to them (RFC 29 §4.11); the storage, RFC 28 and damage
-    rows stay the real journal's.
+  - **Reuse by another implementation:** the in-memory journal's rows, named in
+    [the plan's epic 3](rfc-1-journal-plan.md), are also exported as
+    `conformance.Run(t, open)`, so the engine's in-memory journal is held to them (RFC 29 §4.11). `open` returns the narrow
+    interfaces the engine consumes (RFC 8 §2), declared in the suite's package, so the
+    fixture splits: these rows run on a constructor with no directory, seam or `Crash`. The
+    storage, RFC 28 and damage rows stay the real journal's.
 - **Done when:**
   - `dt run journal-conformance` is green, with every test graded `known`;
   - removing any one entry from `known.yaml` makes the run fail with that test as new;

@@ -41,7 +41,7 @@ the RFC rather than restating it.
 ### 1.1 In scope
 
 §3's requirements, through §6's subtasks; `kvstore`'s `Clone` change (D15), `Share.Namespace`,
-and the fake journal's `CloneTarget`, `Reserve` and `Reservation`, with `Since` yielding the
+and the in-memory journal's `CloneTarget`, `Reserve` and `Reservation`, with `Since` yielding the
 clone marker.
 
 ### 1.2 Out of scope
@@ -70,11 +70,11 @@ clone marker.
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal, `kvstore` and the real open-state table,
-  the fault-injecting `kv.KV`, the fake journal and the profiler wiring.
+  the fault-injecting `kv.KV`, the in-memory journal and the profiler wiring.
 - **Epics 3 to 6**: write, read and overlay (3); commit, group commit and losses (4);
   removals (5); start, bindings and recovery (6). Their subtasks are cited as `T<epic>.<n>`.
 - **S1**, interfaces frozen and `Content` agreed with the filesystem service. **S2**, red
-  suite in CI. **S3**, engine complete over the fake journal: epics 3 to 8 done, every row
+  suite in CI. **S3**, engine complete over the in-memory journal: epics 3 to 8 done, every row
   whose journal call exists green. **S4**, the journal's calls built.
 - **The guard**: epic 5's per-file guard (its D1).
 - **A registration**: an extent of a file a running clone has frozen (RFC 8 §9.1).
@@ -86,10 +86,10 @@ clone marker.
 
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation, the implementation of an epic it depends on once
-   that has landed, and E2's test components: above all the fake journal, which stands in
+   that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
    kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
@@ -126,12 +126,9 @@ clone marker.
    engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
-8. **Real dependencies for properties of those dependencies.** No fake stands in for a
-   check about what the real thing does: the real journal on a real directory, with its crash
-   seam, for durability, recovery and loss; the real `kvstore` for what a transaction
-   commits and conflicts on. The fake journal is for the engine's pure logic only, and no
-   engine conformance row runs over it. It is held to the real journal by the journal's own
-   conformance suite (RFC 1 §9.4): it passes the RFC 1 §3 rows that need no real storage.
+8. **Real dependencies for properties of those dependencies.** The
+   [plan's rule 8](rfc-8-journal-only-engine-plan.md#1.5%20General%20rules%20for%20each%20epic),
+   as written there.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -155,7 +152,7 @@ clone marker.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| 1 Unit tests | all | every subtask tests over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition, with the real open-state table as `Deps.Holds`, behind a fault wrapper where a test needs an answer it cannot produce; T8.2 extends the fake with `CloneTarget`, `Reserve` and the clone marker `Since` yields |
+| 1 Unit tests | all | every subtask tests over E2's in-memory journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition, with the real open-state table as `Deps.Holds`, behind a fault wrapper where a test needs an answer it cannot produce; T8.2 extends the in-memory journal with `CloneTarget`, `Reserve` and the clone marker `Since` yields |
 | 2 Fuzz | none | no parser. RFC 8 §15's `ponytail:` names `Copy`'s extents among the parts its tables check; T8.5's table test is that check, and the marker already stands at the read-resolution table, so no second one |
 | 3 Observability | T8.2, T8.3, T8.6 | no new counter and no new condition: a clone's phase 2 is a removal of kind clone, counted in epic 5's `engine_removal_runs_total`, `engine_removals_pending` and `engine_removals_oldest_seconds`, and its `removal_stalled` condition is unhealthy, not degraded (RFC 8 §8.1). T8.3 opens each clone's `Resume` as the removal loop's root span, its kind an attribute. RFC 8 §14's span events for a wait on a registration are not recorded: the `Tracer` declares no event, and a call never waits on one here (§9, point 1). T8.2 logs a phase-1 refusal met after the journal step at `Error` (D8); T8.3 a failed `Hold` at `Error`; T8.6 a rebuilt clone at `Info`, naming both files, and reports a rebuilt clone whose source's shard is not served after five backoffs as `removal_stalled` for its clone `Removal` (D11) |
 | 4 Profiling | all | the unit composition's `prof.Watch` covers every test, a clone's detached goroutine (D6) included: one leaked past `Close` fails it |
@@ -166,7 +163,7 @@ clone marker.
 | 9 Comments | all | the markers of §4, each at its code site, and RFC 8 §9.1's two: the copy chunk's `decision:` at `Copy` (T8.5) and the copy-through-the-journal `decision:` at the copy step (T8.2) |
 | 10 Tests can fail | all | each test below names the change it catches |
 | 11 Exports | T8.1a | one field: `Share.Namespace`, which RFC 8 §12.1's `Share` declares (D2). `Clone`, `Copy`, `CloneHold` and `CloneSrc` are E1's; test hooks live in `export_test.go` |
-| 12 Creates only what it declares | all | the fake's clone calls land in T8.2, their first consumer; the pending-operation kind for a clone in T8.2, which replays it; the done-clone memory (D7) in T8.4, which reads it |
+| 12 Creates only what it declares | all | the in-memory journal's clone calls land in T8.2, their first consumer; the pending-operation kind for a clone in T8.2, which replays it; the done-clone memory (D7) in T8.4, which reads it |
 
 
 ## 3. Requirements and invariants
@@ -418,10 +415,10 @@ listed test fails on the regression it names (after "catches").
   `types.go`; the hooks in `export_test.go`.
 - **Rows:** §9.1 overlapping clone; §9.1 refusals and §9.1 clone never waits, their
   admission halves.
-- **Tests:** a table of refusals over the fake and the in-memory `kv.KV`'s committed
+- **Tests:** a table of refusals over the in-memory journal and the in-memory `kv.KV`'s committed
   transactions: `f[0, 8 MiB)` onto `f[1, 9 MiB)` `ErrInvalid`, one byte over `clone_max_len`
   `ErrInvalid`, a zero length `ErrInvalid`, two namespaces `ErrCross` with `CrossNamespace`,
-  an unbound share on either side `DelayFrozen`, each leaving the fake unchanged and zero
+  an unbound share on either side `DelayFrozen`, each leaving the in-memory journal unchanged and zero
   transactions committed (catches a check after `CloneTarget`); `f[0, 4 MiB)` onto `f[8, 12 MiB)`
   admitted (catches overlap judged by file alone); a write held between `entryFor` and
   `WriteAt` by a hook, then a clone's registration: it returns only after the write staged
@@ -483,7 +480,7 @@ listed test fails on the regression it names (after "catches").
   §9.1's `decision:` on copying through the journal at the copy step. T5.4's `ErrDelay`
   branch: `Delete` of a file with a registration answered pending before the journal's
   `Delete`, the channel yielding `DelayClone` when the registration drops (T8.3), or
-  `ErrUnavailable` at `Close` or `Drop`. The fake journal's `CloneTarget` (removes the extent
+  `ErrUnavailable` at `Close` or `Drop`. The in-memory journal's `CloneTarget` (removes the extent
   as `Deallocate` does and leaves a marker with the spec), `Reserve` and `Reservation` (draw,
   refusal by an injected `NoSpaceError`, `Close`), and `Since` yielding the marker as
   `Change.Clone`. The version the journal step returns, and each version a copy's
@@ -495,7 +492,7 @@ listed test fails on the regression it names (after "catches").
   the registrations dropped waits for T8.3's real signal and lands with it. Hooks here are
   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s: set per instance
   from `export_test.go`, never through a package variable. The stall between two batches is T8.4's, the power cut
-  after the answer T8.6's. A reservation refused by the fake: the clone fails with the mapped
+  after the answer T8.6's. A reservation refused by the in-memory journal: the clone fails with the mapped
   error, both registrations are gone, the destination reads its prior content, and the
   journal saw no `CloneTarget` (catches a refusal after the journal step); a source extent
   ending past the source's end at `asOf`: `ErrInvalid`, no `CloneTarget`, the destination
@@ -510,7 +507,7 @@ listed test fails on the regression it names (after "catches").
   **Lost**); over the real `kvstore`, after phase 1 the source has an open record of the
   clone kind naming the destination and *v*, and the destination's `Covering` over the extent
   answers `ErrDelay` until done (the consumer of `CloneOp`, rule 5); a source whose middle run
-  the fake journal lost after its existence committed: the destination reads **Lost** there
+  the in-memory journal lost after its existence committed: the destination reads **Lost** there
   and the source's bytes around it (catches zero-filling an uncarved run); a write into the
   destination outside the extent at each stall reads back after the clone (catches a removal
   wider than the extent); a release of the source while registered returns a pending channel,
@@ -533,10 +530,10 @@ listed test fails on the regression it names (after "catches").
   group commit changes nothing (catches `Clone` setting `applied` over the write, D15); a
   write to the destination outside the extent and an overwrite of part of it, both pending
   below *v*: after phase 1 an overwrite record covers the overlapped runs (catches phase 1
-  passing the destination's writes without their superseded runs); over the fake, with the
+  passing the destination's writes without their superseded runs); over the in-memory journal, with the
   test block of 16, a clone whose `CloneTarget` version is past the trigger and no other
   call issuing a version: the raise runs and the journal gets the new limit (catches a clone
-  target that does not call `issued`); over the fake, a clone that makes three copies, each
+  target that does not call `issued`); over the in-memory journal, a clone that makes three copies, each
   copy's version past the trigger in turn: the raise runs after each and the journal gets
   each new limit (catches a copy that does not call `issued`).
 
@@ -631,7 +628,7 @@ listed test fails on the regression it names (after "catches").
   order, each run as a clone; the count of the chunks done; D12's edges; RFC 8 §9.1's chunk
   `decision:` marker and D12's beside it.
 - **Rows:** §9.1 refusals, the `COPY` half (engine side).
-- **Tests:** the chunk table, read from the clone markers the fake's `Since` yields, for extents of 1 byte, exactly
+- **Tests:** the chunk table, read from the clone markers the in-memory journal's `Since` yields, for extents of 1 byte, exactly
   64 MiB, 200 MiB (64, 64, 64, 8), two extents, and `clone_max_len` below 64 MiB (catches an
   off-by-one chunk end, reordering, or chunks the length rule refuses); a `Copy` whose
   extents overlap in one file answers `ErrInvalid` before any chunk; the third chunk refused
@@ -680,7 +677,7 @@ listed test fails on the regression it names (after "catches").
   until released: the destination unfinished before it, `removal_stalled` names the clone `Removal` after
   five backoffs and clears once it returns (catches a silent wait, D11), and an `Unbind` of
   the source's share before then returns only after the wrapper releases it and the clone is done
-  (catches a join that abandons the clone); over the fake, a restart that re-makes two copies
+  (catches a join that abandons the clone); over the in-memory journal, a restart that re-makes two copies
   of a clone, each copy's version past the trigger in turn: the raise runs after each, as in
   T8.2 (catches a re-made copy that does not call `issued`).
 
@@ -700,14 +697,14 @@ flowchart TD
   epic6(["epic 6: Close, Unbind, start steps 3 and 4"]):::sync -.-> T8_4 & T8_6
   T8_4 --> T8_5["T8.5 Copy"]
   T8_3 --> T8_6["T8.6 Rebuild at start"]
-  T8_5 & T8_6 --> S3(["S3 engine complete over the fake journal"]):::sync
+  T8_5 & T8_6 --> S3(["S3 engine complete over the in-memory journal"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
 T8.1a needs only epic 3 and fills track A's wait for epic 5; epic 5's T5.1 checks its
 registrations, and T8.1b lands with T5.1, so the two epics form no cycle. T8.2 is the riskiest, for the guard held across the copies and
 phase 1's order against the group commit. Checkpoint after T8.3: a clone runs end to end
-over the fake journal. T8.4 and T8.6 can run in parallel once T8.3 and epic 6 have landed.
+over the in-memory journal. T8.4 and T8.6 can run in parallel once T8.3 and epic 6 have landed.
 
 ## 8. Suggested pull requests
 
@@ -715,7 +712,7 @@ over the fake journal. T8.4 and T8.6 can run in parallel once T8.3 and epic 6 ha
 | --- | --- | --- | --- | --- |
 | 1 | T8.1a | 2.5 | epic 3 | admission and the registrations, which epic 5's T5.1 reads |
 | — | T8.1b | 1 | lands in epic 5's PR 1 | the removal checks, in T5.1's entry-lock section |
-| 2 | T8.2 | 5.25 | PR 1; epic 5's PR 1 and PR 2 (T5.1, T5.4); epic 4's T4.3 and T4.5 | the clone up to phase 1 and the fake's clone calls |
+| 2 | T8.2 | 5.25 | PR 1; epic 5's PR 1 and PR 2 (T5.1, T5.4); epic 4's T4.3 and T4.5 | the clone up to phase 1 and the in-memory journal's clone calls |
 | 3 | T8.3, T8.4 | 6.5 | PR 2; T5.3, T6.8, T6.9 | phase 2 and the clone's answer: the hold, the join, the deadline |
 | 4 | T8.5, T8.6 | 4.5 | PR 3; T6.5, T6.6 | `Copy` and the restart, each a consumer of the finished clone |
 

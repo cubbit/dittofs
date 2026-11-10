@@ -672,6 +672,11 @@ known failures:
   - RFC 28 §4.2's directory flush on NTFS, on real storage with a power cut.
 - **The storage-agnostic leg:** the conformance tests that need no crash and no fault run
   once more on `platform.OS`, so the seam is never the only storage under test.
+- **The in-memory journal's rows:** the storage-agnostic leg's tests minus the capacity
+  refusals (a refused reservation, a share's limit, the index bound and the headroom), which
+  need a device. Epic 2's `conformance.Run(t, open)` runs this set; `open` returns the narrow
+  interfaces the engine consumes (RFC 8 §2), declared where the suite lives, and the engine's
+  in-memory journal passes it.
 - **Planted records:** RFC 1 §9.4 Group C's "a file is its share's", which plants a record
   of a file under a second tag through the encoders.
 

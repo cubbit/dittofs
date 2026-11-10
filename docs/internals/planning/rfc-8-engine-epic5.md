@@ -15,7 +15,7 @@ on it.
 `journalv2` to `journal`.
 **Epic 5 estimate: 5 subtasks, 15.5 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Truncate`, `Deallocate`,
-`Delete`, `Deps.Existence.Remove`, `Deps.Content.Resume` and `PruneRemovals`) and E2's fake
+`Delete`, `Deps.Existence.Remove`, `Deps.Content.Resume` and `PruneRemovals`) and E2's in-memory
 journal; epic 3, built: T3.1's per-file entries, whose pending-operation kinds for truncate
 and deallocate T3.4 to T3.6 already replay; epic 4's T4.3 (the capture this epic's guard
 makes skip a file, the superseded runs phase 1 passes, the in-batch mark phase 1 waits
@@ -76,11 +76,11 @@ retry channel with `vfserr.ErrFileOpen`, landed from `feat/enginev2-delete-retry
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal and `kvstore`, the fault-injecting
-  `kv.KV`, the fake journal and the profiler wiring.
+  `kv.KV`, the in-memory journal and the profiler wiring.
 - **S1**, interfaces frozen and `Content` agreed with the filesystem service.
 - **S2**, red suite in CI: E2's suite runs on every pull request, listed whole as known
   failures; epics 3, 4 and 6 start here.
-- **S3**, engine complete over the fake journal: epics 3 to 8 done, every row whose journal
+- **S3**, engine complete over the in-memory journal: epics 3 to 8 done, every row whose journal
   call exists green.
 - **E6, E16, E17, E19, E40**: RFC 8 §13's invariants of those numbers, not epics.
 - **Phase 1, phase 2**: a removal's first metadata transaction, `Existence.Remove`, and its
@@ -92,10 +92,10 @@ retry channel with `vfserr.ErrFileOpen`, landed from `feat/enginev2-delete-retry
 
 1. **Independent unit tests.** Each epic carries its own unit tests. It may use another
    epic's pure in-memory implementation, the implementation of an epic it depends on once
-   that has landed, and E2's test components: above all the fake journal, which stands in
+   that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
    kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
@@ -132,12 +132,9 @@ retry channel with `vfserr.ErrFileOpen`, landed from `feat/enginev2-delete-retry
    engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
    allowlist names each package an exception applies to, test packages included. v1 is not
    touched: it is deleted at the cutover.
-8. **Real dependencies for properties of those dependencies.** No fake stands in for a
-   check about what the real thing does: the real journal on a real directory, with its crash
-   seam, for durability, recovery and loss; the real `kvstore` for what a transaction
-   commits and conflicts on. The fake journal is for the engine's pure logic only, and no
-   engine conformance row runs over it. It is held to the real journal by the journal's own
-   conformance suite (RFC 1 §9.4): it passes the RFC 1 §3 rows that need no real storage.
+8. **Real dependencies for properties of those dependencies.** The
+   [plan's rule 8](rfc-8-journal-only-engine-plan.md#1.5%20General%20rules%20for%20each%20epic),
+   as written there.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -162,14 +159,14 @@ retry channel with `vfserr.ErrFileOpen`, landed from `feat/enginev2-delete-retry
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| 1 Unit tests | all | every subtask tests over E2's fake journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition; the wedge's unit test puts a failing `Content` wrapper in through `newUnit`'s options, since E2's fault-injecting `kv.KV` (T2.3) is not built |
+| 1 Unit tests | all | every subtask tests over E2's in-memory journal and the real `kvstore` on an in-memory `kv.KV`, through epic 3's unit composition; the wedge's unit test puts a failing `Content` wrapper in through `newUnit`'s options, since E2's fault-injecting `kv.KV` (T2.3) is not built |
 | 2 Fuzz | none | no parser: the engine hands typed removals to the journal and the store |
 | 3 Observability | T5.1, T5.3 | `engine_removals_pending` and `engine_removals_oldest_seconds`, per share under RFC 25 §2.5's worst-n rule, and `engine_removal_runs_total{result}` with `done`, `advanced`, `conflict` or `error`, in unexported fields epic 7's `Stats` exposes; `removal_stalled` naming the file and the removal's kind, logged at `Warn` on entering and leaving; each phase-2 run a root span through `Deps.Tracer` (T5.3). A wait on a file's guard or its in-batch mark is a span event (T5.1) |
 | 4 Profiling | all | the unit composition calls `prof.Watch`; the loop's goroutine per journal is joined at `Close`, and a pending release's channel is buffered by one, so no sender is left blocked on it |
 | 5 Public and internal | all | the loop's stall count tested internally (T5.3); the removals through `*Engine`; `-race` in T5.1, T5.4 and T5.5. What phase 1 writes (the size, the merged hole, the removal record) is asserted over the real `kvstore` |
 | 6 Known failures | T5.1, T5.2, T5.3, T5.5 | their rows over the real journal, §8.1 terminal failure (T5.1, T5.3), §8.2 deallocate (T5.2), §8.1 removal wedge and §8.1 phase 1 past the journal step (T5.3), and §5.1 sync before existence's truncate half with the truncate-up crash (T5.5), enter `test/engine/known.yaml` naming this epic's issue, red until the journal's `Truncate`, `Deallocate`, `Delete`, `Settle` and crash seam exist |
 | 7 v2 ignores v1 | none | no new import: T5.4's test over the real open-state table runs through E2's fixture, which composes it |
-| 8 Real dependencies | T5.1–T5.5 | every conformance row runs over the real journal and `kvstore`; the fake journal is for the unit tests, the interleavings and the hooks, none of which stands in for a row |
+| 8 Real dependencies | T5.1–T5.5 | every conformance row runs over the real journal and `kvstore`; the in-memory journal is for the unit tests, the interleavings and the hooks, none of which stands in for a row |
 | 9 Comments | all | the markers of §4 at their code sites, the removal loop's `ponytail:` among them |
 | 10 Tests can fail | all | each test below names the change it catches |
 | 11 Exports | T5.1, T5.4 | `Deps.Existence` gains `Size` (D4), and `Delete`'s frozen signature becomes `(retry <-chan error, err error)` with `vfserr.ErrFileOpen` beside it (T5.4), the two changes to E1's surface (§9, point 1, for `Size`); the hooks live in `export_test.go` |
@@ -366,14 +363,14 @@ listed test fails on the regression it names (after "catches").
 - **Rows:** §8.1 terminal failure, the call's half, over the real journal, `kvstore` and E2's
   fault-injecting `kv.KV` (T2.3); red until the journal's `Truncate` and `Settle` exist.
   `TestATerminalRemovalCommitsTheExistenceBelowItBeforeItsSettle` and
-  `TestATerminalRemovalCommitsALossBelowItBeforeItsSettle` stay unit tests over the fake,
+  `TestATerminalRemovalCommitsALossBelowItBeforeItsSettle` stay unit tests over the in-memory journal,
   carrying the row's engine assertions.
-- **Tests,** over the fake and the real `kvstore`: a truncate's phase 1 writes the size and
+- **Tests,** over the in-memory journal and the real `kvstore`: a truncate's phase 1 writes the size and
   the removal record, then one `Settle` at *v* after the guard's release (catches a settle
   before the commit, or the guard held across it); the reservation counter at zero after a
   truncate over pending writes (catches phase 1 without `Done`); a hook between the journal's
   `Truncate` and phase 1 stages a write at *v*+1: the size is the truncate's grown by the
-  write, never the pre-truncate size (catches a claim above *v*, D8); a hook inside the fake
+  write, never the pre-truncate size (catches a claim above *v*, D8); a hook inside the in-memory
   journal's `Truncate` blocks it while a group commit runs: the other files commit and the
   guarded one is skipped (catches a capture that takes the entry's lock); a batch held
   between its capture and its `Existence.Commit` on the file: phase 1 starts only after it
@@ -395,7 +392,7 @@ listed test fails on the regression it names (after "catches").
   without their superseded runs);
   `TestATerminalRemovalCommitsTheExistenceBelowItBeforeItsSettle` and
   `TestATerminalRemovalCommitsALossBelowItBeforeItsSettle` (catch a settle before the
-  existence below it commits, a loss's included); over the fake, with the test block of 16,
+  existence below it commits, a loss's included); over the in-memory journal, with the test block of 16,
   a `Truncate` whose version is past the trigger and no other call issuing a version: the
   raise runs and the journal gets the new limit (catches a truncate that does not call
   `issued`).
@@ -415,8 +412,8 @@ listed test fails on the regression it names (after "catches").
   exists.
 - **Tests:** over the real `kvstore`, the merged hole present after phase 1 with phase 2 held
   by the loop's hook (catches a hole left to phase 2); a write into the extent between the
-  phases reads back, not zeros (the same bug through its consumer); over the fake, a
-  deallocate stages nothing, the fake's held extents unchanged by it (catches zeros staged); over the fake, with the test block
+  phases reads back, not zeros (the same bug through its consumer); over the in-memory journal, a
+  deallocate stages nothing, the in-memory journal's held extents unchanged by it (catches zeros staged); over the in-memory journal, with the test block
   of 16, a `Deallocate` whose version is past the trigger and no other call issuing a
   version: the raise runs and the journal gets the new limit (catches a deallocate that does
   not call `issued`).
@@ -442,9 +439,9 @@ listed test fails on the regression it names (after "catches").
   `kv.KV` (T2.3); red until the journal's `Truncate` and `Settle` exist. §8.1 phase 1 past
   the journal step and §8.1 terminal failure, the retry's half, over the same, red until
   the same calls exist. `TestAGroupCommitStopsAtARetriedRemoval`, the guard's skip turned
-  off, and `TestATerminalRemovalsFailedCommitIsRetried` stay unit tests over the fake,
+  off, and `TestATerminalRemovalsFailedCommitIsRetried` stay unit tests over the in-memory journal,
   carrying the rows' engine assertions.
-- **Tests,** over the fake's clock: five failures raise the condition and four do not
+- **Tests,** over the in-memory journal's clock: five failures raise the condition and four do not
   (catches an off-by-one, or a count across files); a retry-uncounted answer leaves the
   count (catches epic 8's hold retries counted); a `Content` wrapper through `newUnit`'s
   options failing one file's batches: the other file's removal completes and the stalled one
@@ -476,7 +473,7 @@ listed test fails on the regression it names (after "catches").
   epic 6. The version the journal step returns is passed to epic 6's `issued`, as `Write`
   and `Draw` do (RFC 8 §2.7).
 - **Rows:** none of its own.
-- **Tests,** over the fake: after `Delete` the fake still holds the file's extents, none
+- **Tests,** over the in-memory journal: after `Delete` the in-memory journal still holds the file's extents, none
   evicted (catches the eviction call); a store stalled past the deadline, then cleared: the channel yields nil
   once and the marker is settled (catches a pending release answered as failed); a stall
   ended by an abort yields `ErrFileOpen` (catches the catch-all mapping it to
@@ -486,7 +483,7 @@ listed test fails on the regression it names (after "catches").
   `kvstore`: an open by handle racing the last close's release loses no bytes, and an
   aborted phase 1 leaves the file openable, its loss logged and the reservation counter at
   zero (catches an abort that drops the pending writes it should keep, or keeps the file
-  marked); over the fake, with the test block of 16, a `Delete` whose version is past the
+  marked); over the in-memory journal, with the test block of 16, a `Delete` whose version is past the
   trigger and no other call issuing a version: the raise runs and the journal gets the new
   limit (catches a delete that does not call `issued`).
 
@@ -498,11 +495,11 @@ listed test fails on the regression it names (after "catches").
 - **Covers:** R7, R26, R27.
   RFC 8 §7.1 over a truncate in flight (D2), RFC 6 §3.4's version order, §5.1's
   sync before existence for a truncate.
-- **Deliverables:** tests only, and the fake journal's hooks they need in `export_test.go`.
+- **Deliverables:** tests only, and the in-memory journal's hooks they need in `export_test.go`.
 - **Rows:** §5.1 sync before existence, the truncate half, and a truncate up crashed before
   its group commit, whose size the restart serves; over the real journal and its crash
   seam, red until it exists; the restart is epic 6's, which the row composes.
-- **Tests:** a hook in the fake journal between its `Truncate` or `Deallocate` and the call's
+- **Tests:** a hook in the in-memory journal between its `Truncate` or `Deallocate` and the call's
   return starts a `ReadAt` of the removed extent on another goroutine and waits until it has
   returned or is blocked on the entry's lock (a lock-wait hook): the read finds the pending
   removal, never **Lost** (catches the lock released before the insert, every run); a
@@ -522,7 +519,7 @@ flowchart TD
   T5_3 --> T5_4["T5.4 Release contract"]
   T5_3 --> C2(["after T5.3: the loop, epics 6 and 8 can enqueue"]):::sync
   T5_2 & T5_3 --> T5_5["T5.5 Interleavings"]
-  T5_4 & T5_5 --> C3(["after T5.5: removals complete over the fake journal"]):::sync
+  T5_4 & T5_5 --> C3(["after T5.5: removals complete over the in-memory journal"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
