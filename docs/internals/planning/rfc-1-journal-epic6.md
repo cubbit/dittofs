@@ -584,8 +584,8 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
   Each subtask of §6 states its tests at the layer that consumes the data (the stream's
   tracker, the index's held set, the seam's log), and the rows that become green when `Open`
   exists are named so the epic that wires it removes them from the known-failure list. The
-  seam's log is its own record of what reached storage, an output, as its call counts are
-  (epic 2).
+  seam's log is its record of what reached storage, passed through to it, an output, as its
+  call counts are (epic 2, rule 5).
 
 ## 5. Target tree
 

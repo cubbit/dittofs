@@ -673,8 +673,8 @@ already took.
   `UsedBytes` in `Stats` equals the journal's for its tag (catches a share read from the
   wrong tag); a journal-maximum refusal whose `Missing` is above the room left, nothing
   freed: `Stats` still reports `journal_full` (catches a clear on room for the missing
-  amount alone, D9); on a full device with nothing written, the seam's own record of the
-  `FreeSpace` reads it answered shows one at the wake, then no more than one per second of
+  amount alone, D9); on a full device with nothing written, the seam's record of the
+  `FreeSpace` reads that reached the filesystem, passed through to it, shows one at the wake, then no more than one per second of
   the test clock, and none for a `Stats` read (catches a clear nothing triggers, or a `Stats`
   that reads, D9, R32);
   with a file's state lock held through `export_test.go`, `Stats` returns within a second

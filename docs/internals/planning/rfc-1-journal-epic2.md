@@ -679,7 +679,9 @@ Every conformance subtask also:
   the row names. Corruption is introduced through the seam's durable image.
 - **Rules:**
   - 5: the checks observe the disk only through the seam's call counts and images, never
-    through internal packages.
+    through internal packages. The counts are the record
+    [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles) allows: the seam
+    records what reached storage and passes it through, and that record is the output.
   - 8: every "crash and reopen" is the seam's.
 
 ### 2.8 RFC 1 Group A, part 2: repack, sync windows and losses; counted sync checks
