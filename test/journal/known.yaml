@@ -91,7 +91,7 @@
 - test: TestRFC1A_OfferStopsAtThrough
   status: fail
   fix: planned
-  category: feature
+  category: bug
   reason: 'The journal opens; the check fails on its first write. A write that needs more than one spare above the pool''s content target is refused naming the spare limit for ever: the pool''s demand level is lowered by each landed spare while the ready count rises, so the goal is met one spare short. Needs the pool''s demand accounting fixed.'
   issue: '#3379'
   message: 'refused for want of a spare; the journal never made one'
@@ -147,7 +147,7 @@
 - test: TestRFC1A_UnlinkUnderRead
   status: fail
   fix: planned
-  category: feature
+  category: bug
   reason: 'The journal opens; the check fails on its first write. A write that needs more than one spare above the pool''s content target is refused naming the spare limit for ever: the pool''s demand level is lowered by each landed spare while the ready count rises, so the goal is met one spare short. Needs the pool''s demand accounting fixed.'
   issue: '#3379'
   message: 'refused for want of a spare; the journal never made one'
@@ -2121,7 +2121,7 @@
 - test: TestRFC1A_RepackUnderRead
   status: fail
   fix: planned
-  category: feature
+  category: bug
   reason: 'The journal opens; the check fails on its first write. A write that needs more than one spare above the pool''s content target is refused naming the spare limit for ever: the pool''s demand level is lowered by each landed spare while the ready count rises, so the goal is met one spare short. Needs the pool''s demand accounting fixed.'
   issue: '#3379'
   message: 'refused for want of a spare; the journal never made one'
