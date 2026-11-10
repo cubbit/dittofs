@@ -302,17 +302,22 @@ func TestFillOpensSpan(t *testing.T) {
 	if err := c.Fill(context.Background(), s, f, 0, ff(64), ver(0), ver(1)); err != nil {
 		t.Fatalf("Fill: %v", err)
 	}
+	// A stale fill's span ends with its refusal.
+	c.Index().RaiseFloor(ver(5))
+	if err := c.Fill(context.Background(), s, testFile(13), 0, ff(64), ver(0), ver(1)); !errors.Is(err, core.ErrStaleFill) {
+		t.Fatalf("stale Fill = %v, want ErrStaleFill", err)
+	}
 	mu.Lock()
 	defer mu.Unlock()
+	var spans []error
 	for i, op := range ops {
 		if op == core.SpanFill {
-			if ends[i] != nil {
-				t.Fatalf("the fill span ended with %v", ends[i])
-			}
-			return
+			spans = append(spans, ends[i])
 		}
 	}
-	t.Fatalf("no fill span opened: %v", ops)
+	if len(spans) != 2 || spans[0] != nil || !errors.Is(spans[1], core.ErrStaleFill) {
+		t.Fatalf("fill spans ended with %v, want nil then ErrStaleFill", spans)
+	}
 }
 
 func TestFillReservesLikeAWrite(t *testing.T) {
@@ -467,5 +472,51 @@ func TestFillChargesEveryGapsRecord(t *testing.T) {
 	c, s, f = setup(t, held+fourRecords)
 	if err := c.Fill(context.Background(), s, f, 0, ff(64), c.Index().AsOf(f), ver(1)); err != nil {
 		t.Fatalf("Fill within the share limit = %v, want nil", err)
+	}
+}
+
+// A fill refused as stale at publish — a floor raise between its pre-check and
+// its publish — leaves its record in a segment, so the index claims the file
+// for the share all the same.
+func TestFillRefusedAtPublishClaimsTheFile(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(70)
+	mustWrite(t, c, s, testFile(98), 0, []byte("x"))
+	mustWrite(t, c, s, testFile(99), 0, []byte("x"))
+	hold := seam.HoldFirst(t, kit.OpWrite, "*")
+
+	filled := make(chan error, 1)
+	go func() { filled <- c.Fill(context.Background(), s, f, 0, ff(4096), ver(0), ver(1)) }()
+	eventually(t, "the fill's append to reach storage", func() bool { return hold.Waiting() > 0 })
+	c.Index().RaiseFloor(ver(5))
+	hold.Release()
+
+	if err := <-filled; !errors.Is(err, core.ErrStaleFill) {
+		t.Fatalf("Fill = %v, want ErrStaleFill", err)
+	}
+	if got := c.FillRefused(); got != 1 {
+		t.Fatalf("FillRefused = %d, want 1", got)
+	}
+	if n := len(fillRecords(t, seam)); n != 1 {
+		t.Fatalf("%d fill records on disk, want the refused one", n)
+	}
+	if tag, ok := c.Index().Owner(f); !ok || tag != s.Tag {
+		t.Fatalf("Owner = %v, %v, want the share that appended the record", tag, ok)
+	}
+}
+
+// A fill is admitted by the entries its gaps add, not a write's: around a held
+// piece it adds two, so with one entry of room it is refused naming the index,
+// while a write of the same extent adds one and is granted.
+func TestFillAdmittedByTheFillIndexCheck(t *testing.T) {
+	c, _ := newTestCore(t, func(o *coreOptions) { o.extentLimit = 2 })
+	s := mustShare(t, c, 1)
+	f := testFile(71)
+	mustWrite(t, c, s, f, 50, bytes.Repeat([]byte{'a'}, 100))
+	err := c.Fill(context.Background(), s, f, 0, ff(200), c.Index().AsOf(f), ver(1))
+	_ = refused(t, err, core.LimitIndex)
+	if _, err := c.WriteAt(context.Background(), s, f, 0, bytes.Repeat([]byte{'w'}, 200), 1); err != nil {
+		t.Fatalf("a write adding one entry with one entry of room = %v, want nil", err)
 	}
 }

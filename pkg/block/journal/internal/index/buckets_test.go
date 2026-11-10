@@ -163,8 +163,8 @@ func TestStaleFill(t *testing.T) {
 		if ps := heldPieces(&fs, id); len(ps) != 0 {
 			t.Fatalf("held after the refused fill = %+v, want nothing", ps)
 		}
-		if present(&fs, id) {
-			t.Fatal("a refused fill on a file with no entry left one")
+		if !present(&fs, id) {
+			t.Fatal("a stale fill dropped the entry that notes its record")
 		}
 	})
 
@@ -548,11 +548,11 @@ func TestOpenStartsEveryBucket(t *testing.T) {
 	}
 }
 
-// TestRefusedFillLeavesNoEntry: a refused fill on a file with no entry must
+// TestStaleFillKeepsTheEntryNotingItsRecord: a refused fill on a file with no entry must
 // not leave one behind, since the fill wrote nothing. An entry left holding
 // nothing would pin the fill's version against a later check that should use
 // the bucket.
-func TestRefusedFillLeavesNoEntry(t *testing.T) {
+func TestStaleFillKeepsTheEntryNotingItsRecord(t *testing.T) {
 	var fs files
 	id := fid(1)
 	// Give the file's bucket a version above the fill's asOf through another
@@ -570,8 +570,9 @@ func TestRefusedFillLeavesNoEntry(t *testing.T) {
 	if _, err := fs.fill(1, id, write(0, 4, rec(1, 0), 0), 1, ver(1)); !errors.Is(err, core.ErrStaleFill) {
 		t.Fatalf("refused fill = %v, want ErrStaleFill", err)
 	}
-	if present(&fs, id) || fs.len() != 0 {
-		t.Fatal("a refused fill on a file with no entry left an entry")
+	// The record is in a segment, so the entry that notes it stays, holding nothing.
+	if !present(&fs, id) || len(heldPieces(&fs, id)) != 0 {
+		t.Fatal("a stale fill did not leave the entry noting its record, or held content")
 	}
 }
 
@@ -740,8 +741,8 @@ func TestRaiseFloor_FileWithNoEntryReportsTheFloor(t *testing.T) {
 	if es := ix.FileEntries(id); len(es) != 0 {
 		t.Fatalf("a refused fill left entries: %v", es)
 	}
-	if n := ix.fs.len(); n != 0 {
-		t.Fatalf("a refused fill left %d file entries", n)
+	if n := ix.fs.len(); n != 1 {
+		t.Fatalf("a stale fill left %d file entries, want the one noting its record", n)
 	}
 }
 

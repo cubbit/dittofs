@@ -251,3 +251,23 @@ func TestCheckFillChecksNoBound(t *testing.T) {
 		t.Fatalf("refusals = %d, want 0", r)
 	}
 }
+
+// A fill refused as stale has its record in a segment already: the index
+// claims the file and notes the record in its drop ranges, and holds nothing.
+func TestFillStaleNotesItsRecord(t *testing.T) {
+	ix := New(1 << 20)
+	id := fid(54)
+	ix.RaiseFloor(ver(5))
+	if _, err := ix.Fill(testTag, id, write(0, 100, rec(1, 0), 1), 9, ver(0)); !errors.Is(err, core.ErrStaleFill) {
+		t.Fatalf("Fill = %v, want ErrStaleFill", err)
+	}
+	if tag, ok := ix.Owner(id); !ok || tag != testTag {
+		t.Fatalf("Owner = %v, %v, want the fill's tag", tag, ok)
+	}
+	if !ix.fs.mayOutrank(id, 2, ext(0, 100), Numbers{Version: ver(8), Seq: 10}) {
+		t.Fatal("a removal record in another segment may be dropped while the refused fill's record lives")
+	}
+	if _, ok := ix.Lookup(id, 0); ok {
+		t.Fatal("a stale fill held its record")
+	}
+}

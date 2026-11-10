@@ -379,14 +379,18 @@ func TestFillClaimsTheFile(t *testing.T) {
 		if !errors.Is(err, core.ErrStaleFill) || d != (HeldDelta{}) {
 			t.Fatalf("fill = (%+v, %v), want the zero delta and ErrStaleFill", d, err)
 		}
-		if fs.view(id, func(*file) {}) {
-			t.Fatalf("a stale fill left an entry: %+v", fs.inspect(id))
+		// The record is in a segment: the entry noting it stays, holding nothing.
+		if !fs.view(id, func(f *file) {
+			if tag, ok := f.owner(); !ok || tag != owner {
+				t.Fatalf("a stale fill's owner = %d, %v, want the fill's tag", tag, ok)
+			}
+		}) || len(fs.inspect(id)) != 0 {
+			t.Fatalf("a stale fill's entry = %+v, want one noting its record and holding nothing", fs.inspect(id))
 		}
 	})
 
 	// A stale fill of a file with content and no owner, as a rebuild given
-	// only a retained piece leaves it, must not claim: the entry survives the
-	// refusal, so a claim made before the staleness check would stay.
+	// only a retained piece leaves it, claims it: its record is in a segment.
 	t.Run("stale, on a file with content and no owner", func(t *testing.T) {
 		var fs files
 		change(t, &fs, id, func(f *file) error {
@@ -405,12 +409,12 @@ func TestFillClaimsTheFile(t *testing.T) {
 			t.Fatalf("fill = (%+v, %v), want the zero delta and ErrStaleFill", d, err)
 		}
 		fs.view(id, func(f *file) {
-			if tag, ok := f.owner(); ok {
-				t.Fatalf("a stale fill claimed the file for %d", tag)
+			if tag, ok := f.owner(); !ok || tag != owner {
+				t.Fatalf("a stale fill's owner = %d, %v, want the fill's tag", tag, ok)
 			}
 		})
-		if !reflect.DeepEqual(fs.inspect(id), before) {
-			t.Fatalf("a refused fill changed the file:\n before %+v\n after  %+v", before, fs.inspect(id))
+		if got := fs.inspect(id); len(got) != len(before) {
+			t.Fatalf("a stale fill held content:\n before %+v\n after  %+v", before, got)
 		}
 	})
 

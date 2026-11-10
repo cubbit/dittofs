@@ -136,23 +136,15 @@ func (c *Core) fillAndPublish(ctx context.Context, s *Share, id core.FileID, off
 				return filled, fmt.Errorf("datapath: the stream placed no byte of a %d-byte piece of file %v at offset %d", len(rest), id, g.Off+done)
 			}
 			grant.Wrote(pl.Loc.Len)
-			// decision: the index may still refuse the publish after its
-			// record is in the segment. The tag cannot change under the append
-			// domain held here, but the staleness the pre-check read can: a
-			// change to another file raises the floor bucket a file with no
-			// entry reports, between the pre-check and this publish. The
-			// caller gets the error and the record stays on disk, never
-			// published by this run, as a write's does; the fill held bytes
-			// the remote tier still has, so nothing is lost, and the caller
-			// reads the remote again. The orphan is a KindFill record at
-			// version v with a higher seq, and recovery replays it as held
-			// offloaded content: correct remote content at v, but never noted
-			// in the file's drop ranges, because the refusal comes before the
-			// index notes the record. If a later Delete's removal record is
-			// dropped before the orphan's segment retires, the orphan returns.
-			// The window is any bucket raise by another file's drop or any
-			// share attach, both journal-wide. Overturned by noting the record
-			// in the index's fill before its staleness return.
+			// decision: the index may still refuse the publish as stale, after its
+			// record is in the segment: a floor raise by another file's change
+			// between the pre-check and here. The record stays on disk, but the
+			// index has noted it in the file's drop ranges and claimed the
+			// file, so a later removal record is kept while its segment lives.
+			// Recovery replays it as held offloaded content, which is correct
+			// remote content at v; nothing resurrects. The caller reads the
+			// remote again. Overturned by a refusal here that costs a caller
+			// more than one remote read.
 			hd, err := c.index.Fill(s.Tag, id, index.Placed{
 				Extent:  core.Extent{Off: g.Off + done, Len: pl.N},
 				Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},

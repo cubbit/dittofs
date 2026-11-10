@@ -92,8 +92,9 @@ func (ix *Index) CheckFill(tag core.ShareTag, id core.FileID, asOf core.Version)
 // the claim's OtherShareError when another share owns the file, and with
 // core.ErrStaleFill — matched with errors.Is — when the version id is
 // checked against stands above asOf. A fill changes no change version, so a
-// read's AsOf is unmoved. A refused fill changes nothing, the claim
-// included. It takes the file's lock exclusively.
+// read's AsOf is unmoved. A fill refused by the tag check changes
+// nothing; one refused as stale notes its record in the file's drop ranges and
+// claims the file, the record being in its segment already. It takes the file's lock exclusively.
 func (ix *Index) Fill(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq, asOf core.Version) (HeldDelta, error) {
 	return ix.fs.fill(tag, id, p, seq, asOf)
 }
