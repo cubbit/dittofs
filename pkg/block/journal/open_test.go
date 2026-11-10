@@ -320,8 +320,10 @@ func TestOpen_SecondOpenAfterClose_ErrNotImplemented(t *testing.T) {
 	writeReady(t, h, fileOf(1), "run")
 
 	// Close the handle and the journal, so every file the run touched is
-	// closed and the directory's names are all there is to see. The journal's
-	// own cleanup would close it again, so it is dropped first.
+	// closed and the directory's names are all there is to see. initAndOpen's
+	// own cleanup then closes the journal a second time too, relying on a
+	// second Close joining the core's own first close and reporting what it
+	// did.
 	if err := h.Close(); err != nil {
 		t.Fatalf("Close the handle: %v", err)
 	}
@@ -454,6 +456,107 @@ func TestOpen_CorruptFormat_ErrCorrupt(t *testing.T) {
 			t.Errorf("the corrupt refusal also matches %v, want it matching no other refusal", target)
 		}
 	}
+}
+
+// TestOpen_WrongFormatFileLength_ErrCorrupt fails an Open that reads only the
+// first FormatFileSize bytes of the format file and casts the rest away: a
+// file longer than the format's is damaged like one whose checksum does not
+// verify, so every trailing byte makes the open fail with ErrCorrupt, and a
+// file exactly FormatFileSize still opens. A file one byte short is the
+// damaged case the decoder's own length check already refuses, checked here
+// so both wrong lengths are held by one place.
+func TestOpen_WrongFormatFileLength_ErrCorrupt(t *testing.T) {
+	s := newSeam(t)
+	id, err := Init(context.Background(), s.dir, installID, WithStorage(s.seam.FS()))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	appendFormatByte(t, s)
+	_, err = Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...)
+	if !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("Open of a format file one byte long returned %v, want ErrCorrupt", err)
+	}
+	for _, target := range []error{ErrUnknownFormat, ErrNoJournal, ErrIdentityMismatch} {
+		if errors.Is(err, target) {
+			t.Errorf("the long refusal also matches %v, want it matching no other refusal", target)
+		}
+	}
+
+	// Truncate back to the exact size, so the same directory shows the open
+	// taking a file of the format's own length again; then one byte below
+	// it, the damaged file on the other side.
+	resetFormat(t, s)
+	j, err := Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...)
+	if err != nil {
+		t.Fatalf("Open of a format file of the exact size: %v", err)
+	}
+	if err := j.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+
+	shortenFormat(t, s)
+	if _, err := Open(context.Background(), s.dir, Version{}, id, openOpts(s.seam, kit.NewStopwatchClock())...); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("Open of a format file one byte short returned %v, want ErrCorrupt", err)
+	}
+}
+
+// appendFormatByte writes one byte past the format file's end, so the file
+// holds a whole format file and one byte more, through the seam's view — the
+// route the journal's own open reads.
+func appendFormatByte(t *testing.T, s seamDir) {
+	t.Helper()
+
+	b, err := os.ReadFile(filepath.Join(s.dir, format.FormatFileName))
+	if err != nil {
+		t.Fatalf("read the format file: %v", err)
+	}
+	if len(b) != format.FormatFileSize {
+		t.Fatalf("the format file is %d bytes, want the format's %d", len(b), format.FormatFileSize)
+	}
+	f, err := s.seam.Open(format.FormatFileName)
+	if err != nil {
+		t.Fatalf("open the format file through the seam: %v", err)
+	}
+	if _, err := f.WriteAt([]byte{0}, format.FormatFileSize); err != nil {
+		t.Fatalf("extend the format file: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close the extended format file: %v", err)
+	}
+}
+
+// resetFormat takes the format file back to its exact size, through the
+// seam's view.
+func resetFormat(t *testing.T, s seamDir) {
+	t.Helper()
+
+	if err := truncateFormat(s.seam, format.FormatFileSize); err != nil {
+		t.Fatalf("restore the format file's size: %v", err)
+	}
+}
+
+// shortenFormat takes one byte off the format file's end, through the seam's
+// view.
+func shortenFormat(t *testing.T, s seamDir) {
+	t.Helper()
+
+	if err := truncateFormat(s.seam, format.FormatFileSize-1); err != nil {
+		t.Fatalf("shorten the format file: %v", err)
+	}
+}
+
+// truncateFormat sets the format file's size through the seam.
+func truncateFormat(seam *kit.Seam, size int64) error {
+	f, err := seam.Open(format.FormatFileName)
+	if err != nil {
+		return err
+	}
+	if err := f.Truncate(size); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // TestOpen_UnknownFormatVersion fails an Open that upgrades or ignores a

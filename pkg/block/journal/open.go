@@ -218,6 +218,17 @@ func removePartialFormat(fs storage.FS) {
 //
 // Open requires WithClock. Without it, Open fails with ErrNoClock and opens
 // nothing.
+//
+// decision: Open returns while the spare pool is still making its first
+// spares, so the journal a caller holds may have none ready yet. Until one
+// lands, a write on a stream that needs a spare to roll onto is refused at
+// once with ErrNoSpace naming LimitSpare — a retryable refusal, not a
+// failure: the caller that retries the write takes a spare that has landed
+// in the meantime, and the fixture's own wait, handed over through
+// WithSparesReady, is the caller that must not retry. Withdrawing the
+// refusal altogether — a WriteAt that waits for a spare, or an Open that
+// returns only once the pool has made its first ones — is the later change
+// that removes it.
 func Open(ctx context.Context, dir string, floor Version, expect JournalID, opts ...Option) (*Journal, error) {
 	cfg, err := resolveConfig(dir, opts)
 	if err != nil {
@@ -260,7 +271,12 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, opts
 	if err != nil {
 		return nil, err
 	}
-	b := make([]byte, format.FormatFileSize)
+	// One byte past the format's size is read as well, so a file holding a
+	// whole format file and anything after it is handed to the decoder whole:
+	// the decoder judges length strictly, and a read that stopped at the
+	// format's own size would take a longer file as the valid prefix it
+	// holds and cast the trailing bytes away.
+	b := make([]byte, format.FormatFileSize+1)
 	n, rerr := f.ReadAt(b, 0)
 	if err := f.Close(); err != nil {
 		return nil, err
@@ -398,7 +414,15 @@ func buildTargets(s core.Settings) segment.Targets {
 // path makes is checked against it. Admitting the maximum, so a write past
 // it is refused naming the journal, is the one piece of the capacity path
 // this open leaves out; until it lands, a journal opened with MaxBytes set is
-// no smaller than one opened without it.
+// no smaller than one opened without it. The open itself makes some storage
+// whatever MaxBytes says, because the spare pool's targets are built before
+// any write is admitted: with the default settings — 16 streams, whose spare
+// target defaults to one spare per stream, a headroom of 65536 records no
+// larger than the segment cap, and a repack reserve of one segment — the pool
+// makes 18 spares of SegmentCap bytes each (16 content + 1 headroom + 1
+// reserve, about 4.5 GiB at the format's 256 MiB cap), per fresh Open. The
+// spares hold no write data; they are the segments writes roll onto, and the
+// capacity admission that admits MaxBytes is what can bound them to it.
 func resolveDefaults(s core.Settings) core.Settings {
 	if s.Streams < 1 {
 		s.Streams = defaultStreams
