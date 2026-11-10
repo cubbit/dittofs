@@ -122,10 +122,17 @@ func withSpare() starterOption {
 	}
 }
 
-// withStartDeps changes the engine's Deps before New.
+// withStartDeps changes the engine's Deps before New, after any change an
+// earlier option asked.
 func withStartDeps(f func(*engine.Deps)) starterOption {
 	return func(c *starterConfig) {
-		c.deps = f
+		prev := c.deps
+		c.deps = func(d *engine.Deps) {
+			if prev != nil {
+				prev(d)
+			}
+			f(d)
+		}
 	}
 }
 

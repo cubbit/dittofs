@@ -50,9 +50,13 @@ type opened struct {
 	// tags is what the store records for each share's tag, read at step 1.
 	tags map[entity.ShareID]entity.TagRecord
 
-	// removals are the items step 4 found, posted to their journal's loop
-	// once the table is published.
+	// removals are the items steps 3 and 4 found, posted to their journal's
+	// loop once the table is published.
 	removals []queuedRemoval
+
+	// rebuilt are the clones step 4 rebuilt, each started once the table
+	// is published.
+	rebuilt []func()
 }
 
 // openJournal is start step 1 for the one device (RFC 8 §2.5): it reads the
@@ -683,6 +687,10 @@ func (e *Engine) second() uint64 {
 // from the device's peak IOPS rather than the last minute, when the burst
 // check is refused at a rate a deployment reaches.
 func (e *Engine) issued(vl *versionLimit, v journal.Version) {
+	if h := e.onIssued.Load(); h != nil {
+		(*h)(v)
+	}
+
 	peak := vl.rate.add(e.second())
 
 	if vl.refused.Load() {

@@ -63,22 +63,21 @@ type Engine struct {
 	afterRegister   func()                                                                     // a test's hook: run once a clone's registrations are installed, the clone then stopping
 	fakeCloneDone   atomic.Bool                                                                // a test's stand-in for the joins of a running clone: set, a clone runs past its registrations
 	noGuardSkip     atomic.Bool                                                                // a test's seam: capture takes a guarded file, so a test proves the stop at a removal alone
+	onIssued        atomic.Pointer[func(journal.Version)]                                      // a test's seam: handed each version issued counts toward the version limit
 
-	// cloneMarker is called by start step 3 for each clone marker the journal
-	// yields above a file's applied version, with the share, the file, the
-	// marker's spec and its version. Nothing above the marker is applied. It
-	// is the seam where a clone is rebuilt from its marker, and nil does
-	// nothing.
+	// cloneMarker, a test's stand-in for the clone's rebuild, is called by
+	// start step 3 for each clone marker the journal yields above a file's
+	// applied version, with the share, the file, the marker's spec and its
+	// version, in place of the rebuild. Nothing above the marker is applied.
 	cloneMarker cloneMarkerFunc
 
 	block   uint64 // the versions one raise of the version limit covers
 	raising raises // the version limit raises running
 
-	// cloneRemoval is called by start step 4 for each clone removal not done
-	// the shard's unfinished-removal index lists, with the share, the file and
-	// the record. Nothing is posted for the file. It is the seam where a
-	// clone is rebuilt from its record, and nil makes Start fail, as it does
-	// for a clone marker.
+	// cloneRemoval, a test's stand-in for the clone's rebuild, is called by
+	// start step 4 for each clone removal not done the shard's
+	// unfinished-removal index lists, with the share, the file and the
+	// record, in place of the rebuild. Nothing is posted for the file.
 	cloneRemoval cloneRemovalFunc
 }
 
@@ -202,6 +201,10 @@ func (e *Engine) Start(ctx context.Context, shares []Share) error {
 	// them on its own goroutine, so Start never waits for a batch.
 	for _, q := range o.removals {
 		q.b.gc.removals.enqueue(q.it)
+	}
+
+	for _, run := range o.rebuilt {
+		run()
 	}
 
 	return nil

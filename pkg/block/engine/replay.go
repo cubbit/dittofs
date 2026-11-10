@@ -38,7 +38,7 @@ func (e *Engine) replay(ctx context.Context, o *opened) error {
 		}
 
 		for id := range b.h.Files() {
-			if err := e.replayFile(ctx, b, id, now); err != nil {
+			if err := e.replayFile(ctx, o, b, id, now); err != nil {
 				return err
 			}
 		}
@@ -51,6 +51,7 @@ func (e *Engine) replay(ctx context.Context, o *opened) error {
 // the journal after each commit.
 func (e *Engine) replayFile(
 	ctx context.Context,
+	o *opened,
 	b *binding,
 	id journal.FileID,
 	now time.Time,
@@ -89,6 +90,7 @@ func (e *Engine) replayFile(
 
 	r := &replayer{
 		e:    e,
+		o:    o,
 		b:    b,
 		id:   id,
 		f:    f,
@@ -236,6 +238,7 @@ func hull(a, b journal.Extent) journal.Extent {
 // removal, a clone marker or the end of the file commits them.
 type replayer struct {
 	e      *Engine
+	o      *opened
 	b      *binding
 	id     journal.FileID
 	f      entity.FileID
@@ -245,75 +248,78 @@ type replayer struct {
 	mtimes []time.Time // the modification time each operation of batch sets, zero for none
 }
 
-// run applies steps in order and commits what is left.
+// run applies steps in order and commits what is left. A clone marker
+// commits what is below it and hands the clone, with the steps above it, to
+// its rebuild: nothing above it is applied here.
 func (r *replayer) run(ctx context.Context, steps []replayStep) error {
-	for _, s := range steps {
-		stop, err := r.apply(ctx, s)
-		if err != nil {
-			return err
+	for i, s := range steps {
+		if s.kind == journal.ChangeCloneTarget {
+			return r.clone(ctx, s, steps[i+1:])
 		}
 
-		if stop {
-			break
+		if err := r.apply(ctx, s); err != nil {
+			return err
 		}
 	}
 
 	return r.commit(ctx)
 }
 
-// apply applies step s. It answers stop for a clone marker, above which
-// nothing is applied.
-func (r *replayer) apply(ctx context.Context, s replayStep) (stop bool, err error) {
+// clone commits the batch below the clone marker s, then rebuilds its clone
+// from its spec, never applying it as a removal, which would leave the
+// destination reading zeros (RFC 8 §2.5 step 3).
+func (r *replayer) clone(ctx context.Context, s replayStep, above []replayStep) error {
+	if err := r.commit(ctx); err != nil {
+		return err
+	}
+
+	if s.clone == nil {
+		return fmt.Errorf("engine: start: the clone marker of file %v at %v carries no spec", r.f, s.version)
+	}
+
+	if hook := r.e.cloneMarker; hook != nil {
+		hook(r.b.share.ID, r.f, *s.clone, s.version)
+
+		return nil
+	}
+
+	return r.e.rebuildMarker(ctx, r.o, r.b, r.f, *s.clone, s.version, above)
+}
+
+// apply applies step s.
+func (r *replayer) apply(ctx context.Context, s replayStep) error {
 	switch s.kind {
 	case journal.ChangeWrite:
 		r.stageWrite(s)
 
-		return false, nil
+		return nil
 	case journal.ChangeTruncate:
 		// A truncate at or above the size the earlier operations leave masks
 		// nothing, so it is a grow with no phase 1, as on the live path.
 		if s.extent.Off >= r.size {
 			r.stageGrow(s)
 
-			return false, nil
+			return nil
 		}
 
 		r.size = s.extent.Off
 		x := entity.ExtentOf(s.extent.Off, entity.EndOfFile)
 
-		return false, r.remove(ctx, s, entity.RemoveTruncate, x)
+		return r.remove(ctx, s, entity.RemoveTruncate, x)
 	case journal.ChangeDeallocate:
 		x := entity.Extent{
 			Offset: s.extent.Off,
 			Length: s.extent.Len,
 		}
 
-		return false, r.remove(ctx, s, entity.RemoveDeallocate, x)
+		return r.remove(ctx, s, entity.RemoveDeallocate, x)
 	case journal.ChangeDelete:
 		x := entity.ExtentOf(0, entity.EndOfFile)
 
-		return false, r.remove(ctx, s, entity.RemoveRelease, x)
-	case journal.ChangeCloneTarget:
-		if err := r.commit(ctx); err != nil {
-			return true, err
-		}
-
-		// The destination is not served until the clone's phase 1 commits
-		// (RFC 8 §2.5 step 4), so with no hook to rebuild the clone Start
-		// fails, as Clone does, rather than serve the file as it was.
-		hook := r.e.cloneMarker
-		if hook == nil {
-			return true, fmt.Errorf("engine: start: rebuild the clone of file %v: %w", r.f, errUnbuilt)
-		}
-
-		if s.clone != nil {
-			hook(r.b.share.ID, r.f, *s.clone, s.version)
-		}
-
-		return true, nil
+		return r.remove(ctx, s, entity.RemoveRelease, x)
 	}
 
-	return false, fmt.Errorf("engine: start: change kind %d of file %v is not known", s.kind, r.f)
+	return fmt.Errorf("engine: start: change kind %d of file %v is not known", s.kind, r.f)
 }
 
 // stageWrite adds the write to the batch, with the change time of the
