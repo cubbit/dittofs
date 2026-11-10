@@ -94,10 +94,8 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
    that has landed, and E2's test components: above all the fake journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
-   three kinds: the test clock, an in-memory implementation held to its interface's
-   conformance suite, or a fault wrapper. A test asserts on the engine's answers, on resulting
-   state and on what a double records of its own outputs, never on which calls the engine made.
+   fake (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
    read resolution and the group commit's split, by its tables, not by fuzz, and says so in a
@@ -140,8 +138,7 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
    commits and conflicts on. The fake journal is for the engine's pure logic only, and no
    engine conformance row runs over it. It is held to the real journal by the journal's own
-   conformance suite (RFC 1 §9.4): it passes the suite's rows that need no crash, fault or
-   platform, the rows the real journal passes on `platform.OS`.
+   conformance suite (RFC 1 §9.4): it passes the RFC 1 §3 rows that need no real storage.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -315,17 +312,18 @@ subtasks and tests can cite them.
   `decision:` marker names it.
 - **D12, the verifier before epic 4.** `Write` returns RFC 8 §4.1's verifier, whose inputs
   T4.1 derives, and nothing in this epic may wait for epic 4. T3.2 samples the verifier
-  through the engine's `sample` field, set to `zeroVerifier`, which answers a fixed zero
-  verifier, with a `ponytail:` marker: a write's verifier, a stable one's included, means
-  nothing until T4.1 sets that field to the derived one, so a client comparing verifiers sees
-  no restart or loss until then; T4.1 replaces it, and nothing else does.
+  through the engine's `sample` function, an input its constructor takes, `zeroVerifier` by
+  default, which answers a fixed zero verifier, with a `ponytail:` marker: a write's
+  verifier, a stable one's included, means nothing until T4.1 sets that default to the
+  derived one, so a client comparing verifiers sees no restart or loss until then; T4.1
+  replaces it, and nothing else does.
 
 ## 5. Target tree
 
 ```text
 pkg/block/engine/
   file.go           T3.1  per-file entries, sharded by file; pending operations; bindingOf (D1)
-  export_test.go    T3.1  the binding hook, counter accessors and the verifier swap (D2, D9, D12)
+  export_test.go    T3.1  the binding hook, counter accessors (D2, D9)
   unit_test.go      T3.1  the unit composition over the fake journal and the real kvstore
   imports_test.go   T3.1  allowlist entries for the composition's imports
   write.go          T3.2  Write, the identifier and version conversions, the error mapping (D4)
@@ -394,9 +392,9 @@ test/engine/known.yaml    T3.2  its entry
   which still returns (catches a store call on the write path, R6); the change `Since`
   reports carries the clock's time, and 0 under `TimeModify`, over the fake journal and,
   behind the tag, over the real one where the journal reads it back (catches a wrong unit or
-  an ignored `Suspend`); a journal wrapper that counts `WriteAt` calls, with
-  the `sample` field swapped through `export_test.go` for one that records that count in a recorder
-  started at -1 and answers a verifier of its own: the hook ran once, the recorder reads 0,
+  an ignored `Suspend`); a `sample` given through the constructor that records the fake
+  journal's own count of staged `WriteAt`s in a recorder started at -1 and answers a verifier
+  of its own: the hook ran once, the recorder reads 0,
   and `Write` returned the hook's verifier (catches sampling after staging, R8, which the
   zero stand-in alone cannot show, a `Write` that never calls it, or one answering another
   verifier); a
@@ -464,9 +462,10 @@ test/engine/known.yaml    T3.2  its entry
 - **Tests:** the table test over the real `kvstore` holding each class, a fault wrapper
   answering the ones it cannot hold, `dst` prefilled with 0xFF: hole and zero ref read zeros, uncarved at or below `asOf` `ErrLost`, carved
   `ErrUnavailable`, past the end a short read (a build serving zeros for any other row
-  fails it, R19, R26, R29); a fault wrapper failing every `Covering` call made before
-  `ReadAt` answers or outside a missing extent's exact bounds: reads with and without missing
-  extents still succeed (R17); over the real
+  fails it, R19, R26, R29); reads with and without missing extents, where the in-memory
+  store's own record shows one `Covering` per missing extent, inside its exact bounds, and
+  none for a read the journal answers whole (R17); a fault wrapper failing `Covering`: the
+  read fails with that error (catches an engine that swallows it); over the real
   `kvstore`, with a `Content` wrapper that commits existence through `Existence.Commit`
   between the journal step and `Covering`: an overwrite, a hole fill and a growing write
   each read back, never `ErrLost`; keying the re-ask on overwrite records alone fails the
