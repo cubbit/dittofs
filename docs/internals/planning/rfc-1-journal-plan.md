@@ -684,6 +684,8 @@ code.
 - **Index structure:**
   - an outer hash map from `FileID` to a per-file B-tree keyed on start offset;
   - held extents (disjoint), retained extents (may overlap) and removal markers;
+  - each held write's `Over`, the runs it superseded with their versions, kept after the
+    superseded write leaves the index until `Settle` passes it (RFC 1 §3.10; epic 4's R50);
   - split, narrow and remove in `O(log n)`;
   - span queries returning held extents and exact gaps in `O(log n + k)`.
 - **Ordering:**
@@ -836,6 +838,11 @@ with recovery and owns the rules below that need a segment on disk.
   - in any segment order, concurrently;
   - markers start unsettled, and the floor buckets rebuilt at the highest version on disk
     or in the floor (RFC 28 §3.1);
+  - each held write's `Over` rebuilt from the records it superseded, so `Since` after a
+    reopen yields the runs it yielded before the crash (RFC 1 §3.10). Acceptance and test:
+    RFC 1 §9.4's "`Since` yields `Over` after the superseded write left the index" in its
+    reopen half, red in `known.yaml` until here, and catalog and scan rebuilds giving the
+    same `Over`;
   - retained extents rebuilt from hold, unhold, stamp and offloaded records;
   - loss records re-entered in the ring as "found at open";
   - forget records applied;
@@ -928,7 +935,7 @@ Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.
     change it did not see;
   - `Truncate`, `Deallocate`, `Delete`, `CloneTarget`, with markers;
   - `Since` and `Settle`, with a write's modification time read from its record when
-    `Since` yields it (RFC 28 §2.3, §2.4);
+    `Since` yields it (RFC 28 §2.3, §2.4), and its `Over` (RFC 1 §3.10; epic 8's R112);
   - `Extents`, `Files`, `DirtyFiles` (O(dirty files), no walk).
 - **Capacity:**
   - atomic reservation against the share limit and the journal maximum;

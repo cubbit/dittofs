@@ -43,6 +43,7 @@ and tests can cite them.
 | R12 | Each `FileID` keeps its owning tag while any segment holds a record of the file, even after its change-version entry (R35) is dropped | §3, §4 | 3, 10 |
 | R47 | A release stops holding its extents, splitting or narrowing them, and leaves **no** marker. It raises no change version (R33). It is refused, with no partial progress, when any part is not offloaded: the index offers the all-offloaded predicate and the all-or-nothing removal, and E9 owns the hold and successor rules | §3.5 | 2 |
 | R49 | The index side of `Since` reads a consistent view of the file and holds the file index lock no longer than a read does. The version-order sort is O(n log n) per call over the file's yielded items | §3.10 | 3, 5 |
+| R50 | A held write extent keeps its `Over`: each run where it superseded another write of the file, with that write's version, recorded when the superseding insert splits, narrows or removes it, so it outlives the superseded write's entry. The index side of `Since(from)` yields the runs whose superseded version is above `from`; `Settle` past the extent's version drops them; the rebuild derives them from the records it is fed | §3.10 | 5, 11 |
 
 **Queries, cost and concurrency**
 
@@ -141,7 +142,10 @@ index level, concurrent `Draw`, and the cases just below and at the limit. *Deps
 (can run in parallel with E4-1).
 
 **E4-5 — Removal markers, `Since` and `Settle`.** Truncate, deallocate, delete and clone
-target markers, `Settle(v)`, and the index side of `Since`. *Covers* R8–R11, R49. *Tests:* a
+target markers, `Settle(v)`, the index side of `Since`, and each held write's `Over`.
+*Covers* R8–R11, R49, R50. *Tests:* the §9.4 "`Since` yields `Over` after the superseded
+write left the index" row without the crash (catches `Over` read from what the index still
+holds), and a
 removal over non-offloaded content still drops it, and the
 §9.4 "no resurrection" and "removals survive to `Since`" rows without the crash, the clone
 spec round trip, and the §9.2 truncate and deallocate cases. *Deps:* E4-3, E4-4.
@@ -176,8 +180,8 @@ numbers, produce the index precedence gives. Markers start unsettled, counters a
 are set from the maxima, segment counters and drop ranges are rebuilt, and an over-bound
 result is allowed. The ticket chooses between sort-then-apply and a precedence-aware insert
 with transient release shadows, and how concurrent feeding works (R32). *Covers* R9,
-R23, R26–R28, R32, R35, R40, R43. *Tests:* RFC 1 §4.5 as a golden case, shuffled order
-gives an identical index, an incremental build equals a rebuild, and a concurrent feed
+R23, R26–R28, R32, R35, R40, R43, R50. *Tests:* RFC 1 §4.5 as a golden case, shuffled order
+gives an identical index, `Over` included, an incremental build equals a rebuild, and a concurrent feed
 under `-race` (or the merge, if that is the decision). *Deps:* E4-2 through E4-10.
 
 **E4-12 — Inspection read-out, memory check, model fuzz.** A stable per-file and bulk
