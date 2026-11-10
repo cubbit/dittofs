@@ -220,19 +220,25 @@ Only three kinds of test double are allowed:
    that passes it. The real implementation must pass the same suite when it lands.
 3. **Fault injection:** a wrapper around a real implementation, or around kind 2, that fails,
    delays, tears or crashes on cue. A scripted error answer is a fault, so it comes from such a
-   wrapper. It may count calls to decide when to fire, but tests assert on the code's outputs or
-   on the wrapped implementation's state, never on the wrapper's own count.
+   wrapper. It may count calls to decide when to fire.
 
 Deterministic simulation is built only from these three, so it is allowed.
 
 **Outputs are not interactions.** A sink that only keeps what the code under test delivered
 needs no conformance suite: a `Sink` that stores the events it was given is fine, and asserting
-that `Close` was called twice is not. A count that *is* the requirement, such as one batched read per
-batch, comes from a metric or from a counter the in-memory implementation exports and its
-conformance suite covers, never from a separate counting wrapper; the recording fake banned below
-is one that no suite holds to the real implementation. A per-OS table is data, so test its
-contents. A tunable such as a
-sampling rate is an input, passed in through the constructor.
+that `Close` was called twice is not. A count that *is* the requirement, such as one batched
+read per batch, comes from a metric or from a counter the in-memory implementation exports and
+its conformance suite covers, never from a counting fake that answers in the dependency's place;
+the recording fake banned below is one that no suite holds to the real implementation. A per-OS
+table is data, so test its contents. A tunable such as a sampling rate is an input, passed in
+through the constructor.
+
+When the call reaching a dependency is itself the requirement (a sync reaching storage, one
+mutating call per request), a wrapper that records each call and passes it through, never
+answering in its place, keeps a record a test may assert on. A hook in the code under test
+that pauses it, or delivers what it reached, is set per instance from `export_test.go`. A null
+implementation that answers every call at once, to measure the caller's own cost, is a load,
+not a double: nothing asserts on its answers. RFC 29 §4.11 has the whole rule.
 
 Banned:
 
