@@ -301,9 +301,8 @@ on that path becomes its baseline.
 
 Each RFC builds the seam its own component needs; this section owns what they
 share, so a check that crosses components runs against one composition rather
-than a private one per RFC. The doubles a test may use are
-[RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)'s three: an injected clock or seed, a
-verified in-memory implementation, and a fault wrapper.
+than a private one per RFC. Every double is one of
+[RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 
 1. **One clock and one fault interface.** Every component that reads time —
    the journal, the engine, the syncer, GC, the snapshot cut, leases — takes it
