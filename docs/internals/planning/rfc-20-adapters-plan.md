@@ -11,11 +11,11 @@ RFCs, with how far each is in scope:
 
 - [RFC 17](../rfcs/rfc-17-vfs.md), the filesystem service: **constraints only**, except
   `vfs.WithHold` (RFC 17 §5.9), which `pkg/vfs` lacks and epic 5 adds; `vfs.WithRequestID`
-  (RFC 17 §4.7) is a ledger row (§6.2). `pkg/vfs`,
-  `vfstest.Record` and `vfstest.Null` exist on `feat/storage-v2`; tests here use neither
-  `Record` nor `Null`, but the in-memory service, `vfstest.Memory`, held to RFC 17 §8's suite,
-  and its fault wrapper, `vfstest.Faults` ([RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles));
-  `Null` serves the pipeline benchmark only.
+  (RFC 17 §4.7) is a ledger row (§6.2). `pkg/vfs` and
+  `vfstest.Null` exist on `feat/storage-v2`; tests here use the in-memory service,
+  `vfstest.Memory`, held to RFC 17 §8's suite, and its fault wrapper, `vfstest.Faults`, which
+  RFC 17's plan delivers (ledger, §6.2); `Null` serves the allocation gate and the pipeline
+  benchmark only.
 - [RFC 24](../rfcs/rfc-24-resources.md), resources: **only the parts this RFC cannot work
   without**: `Budget`, `WaitBudget`, `Reservation`, `Budgets`, `Buf` and `BufPool` in `pkg/resources` (epic 3).
 - [RFC 13](../rfcs/rfc-13-configuration.md), configuration: **only the parts this RFC cannot work
@@ -71,8 +71,7 @@ through the real pipeline. Operations arrive with RFC 21 and RFC 22.
 ### 1.2 How the plan is organised
 
 Epic 1 deletes v1 and fixes the surface: the contract, the settings, the constructors, the
-budget and buffer API, and `core`'s protocol-facing types, the dispatch seam between the
-connection and the pipeline included. Epic 2 builds the test-only protocol that proves `core`
+budget and buffer API, and `core`'s protocol-facing types. Epic 2 builds the test-only protocol that proves `core`
 alone, and the import test. Four middle epics follow on three tracks: track A owns buffers and
 dispatch, track B the connection, the lifecycle and the sidecar runner, track C both protocol
 scaffolds and, while it waits for S3, part of dispatch. The node's integration waits for S4. The
@@ -244,10 +243,8 @@ and 5.
 
 1. **Independent unit tests, under `-race`.** Each epic carries its own unit tests. It may use
    another epic's implementation once that has landed, `vfstest.Memory` and `vfstest.Faults`, and
-   E2's `testproto` and leak checks. Its doubles are RFC 29 §4.11's three kinds only: an
-   interface whose implementation has not landed is stood in for by the smallest in-memory one
-   that passes that interface's conformance suite, written first, which the real one passes
-   when it lands; no test asserts which calls were made. `core` is tested from `package core_test` on `testproto` and
+   E2's `testproto` and leak checks. Every double is one of
+   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds. `core` is tested from `package core_test` on `testproto` and
    never through NFS or SMB; no `core` test imports a protocol package. Connections are real TCP
    over loopback, with real deadlines and socket options read back from the socket. Test at the
    layer that consumes a value (`CLAUDE.md`, "Verifying a change"): a setting is asserted on a
@@ -346,7 +343,7 @@ flowchart TD
   end
   S2 --> E3 & E4 & E6
   E3 -. "Buf, Budgets" .-> E4
-  E4 -. "Conn behind the dispatch seam" .-> E5
+  E4 -. "Conn sends the pipeline's replies" .-> E5
   E4 & E5 --> S3(["S3 core serves testproto end to end"]):::sync
   S3 -. "New on the real runner" .-> E6
   S4(["S4 internal/node exists, RFC 23"]):::sync --> E7["E7 Integration with the node 🔀"]:::sync
@@ -382,7 +379,7 @@ flowchart TD
 | ⛔ E1 | everything | `pkg/adapter` is recreated at v1's path, and every epic builds on its types |
 | ⛔ E2 | E3–E6 | `core` is proven only on `testproto`; the import test must run from the first package |
 | E3 | E4, E5, partly | the reader reserves receive bytes before a body; the pipeline reserves the reply. Both start on E1's stubs and finish on E3 |
-| E4 | E5, partly | the pipeline is tested behind the dispatch seam with an in-memory sender held to the sender's conformance suite, which `Conn` passes too; its end-to-end tests need `Conn` |
+| E4 | E5, partly | the pipeline's tests that send a reply run on the real `Conn` over loopback |
 | E4, E5 | E6's `New`, via S3 | a scaffold is done only when "not supported" goes through the real pipeline; `protocol/` is built before, against the frozen surface |
 | 🔀 S4 | E7 | no node to wire into |
 | E6 | E8 | `unit/adapter-allocs` runs every gate, the scaffolds' included |
@@ -391,14 +388,12 @@ flowchart TD
 ### 3.4 Splitting the work
 
 - **Track A: E3 → E5.** Buffers and budgets first, then the request path through them: the
-  pipeline, tables, compound runner, held requests and request context, tested behind the
-  dispatch seam with an in-memory sender until E4's `Conn` lands. E5 writes the sender's
-  conformance suite first; the in-memory sender passes it, and `Conn` must when it lands.
+  pipeline, tables, compound runner, held requests and request context, tested on `testproto`;
+  the tests that send a reply run on E4's real `Conn` over loopback, and land once it does.
 - **Track B: E4.** The connection and the adapter's life: `Server`, listeners, accept and its
   limits, the reader and writer, drain, `Reconfigure`, health, TCP, then the sidecar runner. Its
-  drain and cancellation tests run against an in-memory dispatcher until E5's pipeline lands,
-  then again end to end at S3. E4 writes the `Dispatcher` conformance suite first; the
-  in-memory dispatcher passes it, and E5's pipeline must when it lands.
+  drain and cancellation tests run the real pipeline, so they land once E5's does, and end to
+  end at S3.
 - **Track C: E6, with part of E5.** Both `wire/` packages first (about 6 man-days), which need only
   E1's types. Track C would then idle until S3, so it takes three E5 subtasks that need only E1's
   types and `testproto`: the middleware chain (T5.6), the error table (T5.7) and observability
@@ -423,7 +418,7 @@ pkg/
 internal/
   adapter/
     core/                     E1 types, E4 and E5 bodies
-      protocol.go             E1: Protocol, Framer, Stages, stage interfaces, Header, Dispatcher
+      protocol.go             E1: Protocol, Framer, Stages, stage interfaces, Header
       dispatch.go             E1 types, E5: OpTable, Op (with Role), Invocation, Bind, Needs, Range, Request
       errors.go               E1 type, E5: ErrorTable, totality check
       server.go settings.go conn.go                               E4
@@ -545,8 +540,8 @@ refuse), §3.1 (classes), §2.7's zero-at-close.
 The adapter's life and its connections, in `core`: the four states, listeners, accept and its
 limits, one reader and one writer per connection, drain, `Reconfigure` with its settings
 snapshot, health, and the TCP options. Then the sidecar runner in `internal/sidecar`, which
-follows those states. Proven on `testproto` over loopback, first behind the dispatch seam with the
-in-memory dispatcher of §3.4, then end to end against `vfstest.Memory` at S3.
+follows those states. Proven on `testproto` over loopback, its drain and cancellation tests on
+the real pipeline once E5's lands (§3.4), then end to end against `vfstest.Memory` at S3.
 
 RFC sections: §3.1 (states, drain, abandon at the deadline, auxiliary listeners all or none),
 §3.2 (a connection's lifecycle; the session-keyed cleanup wait as a `core` mechanism), §3.5,
@@ -557,10 +552,10 @@ rows, A10, A11, A14, A19, A20.
 - T4.2 Accept: connection limit per node and a quarter per address, closed at accept; the
   connection-state charge; backoff 10 ms to 1 s and `adapter_listener_lost` after 60 s.
 - T4.3 `Conn` reader: one small-class read buffer, records cut from it or read into their class,
-  receive reservation before the body, frame deadline, hand-off through the dispatch seam.
+  receive reservation before the body, frame deadline, hand-off to the pipeline.
 - T4.4 `Conn` writer: bounded queue, gathered `net.Buffers` writes, write deadline, a send that
   queues a message ahead of a named reply (RFC 20 §6.2), the reader stopped at a full queue.
-- T4.5 Drain, close and cancellation: no accept; the dispatch seam told the adapter is draining,
+- T4.5 Drain, close and cancellation: no accept; the pipeline told the adapter is draining,
   each refused request answered `ErrMoved` or `ErrDraining` as the service says of its share,
   through RFC 17's call (none until RFC 15's topology exists, §6.2);
   in-flight requests awaited up to the drain deadline, then their contexts cancelled and their
@@ -579,8 +574,8 @@ rows, A10, A11, A14, A19, A20.
 - T4.9 The sidecar runner, lifted from v1's `pkg/adapter/sidecar.Group` on `develop`: `Sync` with
   the serving set after an adapter is serving and before it drains, idempotent, a disabled
   sidecar synced with the empty set, a failing one raising `sidecar_failed` without touching the
-  adapters or readiness; tested with `testproto` adapters and an in-memory sidecar held to the
-  `Sidecar` conformance suite, written first, its failure given by a fault wrapper.
+  adapters or readiness; tested with `testproto` adapters and a trivial real sidecar, its
+  failure given by a fault wrapper.
 
 ### Epic 5 — Dispatch
 
@@ -589,12 +584,12 @@ rows, A10, A11, A14, A19, A20.
 The request path in `core`: §4.1's stages in order with their defaults and refusals, the drain
 filter, operation tables and their precondition columns, the reply reservation, the compound
 runner, held requests and their re-drive, the middleware chain, the error-table mapping and
-totality check, the request context, and the observability of RFC 20 §10. Tested behind the
-dispatch seam with the in-memory sender of §3.4, then end to end on `Conn` at S3, against
+totality check, the request context, and the observability of RFC 20 §10. Tested on `testproto`,
+its replies sent by E4's real `Conn` over loopback (§3.4), end to end at S3, against
 `vfstest.Memory` and `vfstest.Faults`.
 
 RFC sections: §3.1's drain filter, §4.1, §4.2, §4.3's runner and reply budget (the one-call rule
-is §7.1's call-site check), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's table selection, §6.3,
+is read from `vfstest.Memory`'s record of mutating calls, §7.2), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's table selection, §6.3,
 §6.4's request deadline (its request ID: §6.2), §6.5's client-cancel half, §6.6, §6.9's request rows,
 §6.10's pipeline row, §10, A4, A6, A7, A15, A16, A17.
 
@@ -740,8 +735,8 @@ RFC sections: §6.10's codec and pipeline rows.
    live on `docs/skills-epic-plan-breakdown`. §1.5's instruction names a path that exists only
    once that pull request merges.
 9. **The critical path is long.** E1 → E2 → E3 → E4 and E5 → S3 → E6's second half → E8 holds
-   most of the estimate; the dispatch seam and track C's share of E5 are what keep the tracks
-   parallel.
+   most of the estimate; track C's share of E5 is what keeps the tracks parallel, and E4's and
+   E5's tests that need the other's half wait for it.
 10. **The first milestone needs two pieces no plan builds yet.** An SMB mount with AD sign-in
    needs `gss` (risk 5) and the authenticator behind `SignIn` (keytab, PAC, NTLMv2, NETLOGON,
    LDAP), which goes to an RFC 18 plan that does not exist. Either the RFC 22 plan takes the
@@ -767,7 +762,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, RFC 4121 tokens, `gsstest` | no handshake to drive it | the RFC 22 plan, until its own RFC (risk 5) | first `SESSION_SETUP` or GSS `INIT` |
 | `translate` (ACLs, access masks, times, attributes, `Fit`) | no handler calls it | RFC 21/22 plans | their first handler epic |
 | each protocol's error-table rows and its totality test (RFC 20 §7.3) | rows are protocol choices | RFC 21/22 plans | with their handlers |
-| handler tests on `vfstest.Memory` and `vfstest.Faults` (§7.2), the one-call rule enforced per handler by §7.1's call-site check | no handlers | RFC 21/22 plans | every handler epic |
+| handler tests on `vfstest.Memory` and `vfstest.Faults` (§7.2), the one-call rule read per handler from `vfstest.Memory`'s record of mutating calls | no handlers | RFC 21/22 plans | every handler epic |
 | operation codecs, their golden vectors from reference captures, 0-allocation gates for `READ`, `WRITE`, `GETATTR`, `QUERY_INFO` | no handlers | RFC 21/22 plans | with those operations |
 | import test: entry-method call sites (§4.10, §7.1) and the 800-line allowlist (§2.5) | vacuous with no handlers | RFC 21/22 plans | first handler epic |
 | scripted client (§8.2) and a shared golden helper | first consumers are wire tests and benchmarks | RFC 21/22 plans | first wire-test or benchmark epic |
@@ -795,7 +790,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | `pkg/apiclient`'s adapter and netgroup methods, kept for the e2e helpers `lint-go` vets; their routes answer 404 | compiled tests still call them | cutover | with their routes |
 | `metrics.Registry` an alias of `pkg/metrics`' `Metrics` (T1.6), not RFC 25 §8.2's registry | the registry is not built | RFC 25 | when the registry is built |
 | `vfs.Grace{Until}`, the typed `ErrGrace` carrying the shard's grace end, which an `ErrorRow.Hold` reads to bound a hold (RFC 17 §4.3) | named in RFC 17 by T1.9; not yet in `pkg/vfs` | RFC 17 plan: the type in `pkg/vfs`, returned by `*vfs.Filesystem` | before E5's T5.5 |
-| `vfs.Shares.MoveTarget`, which says whether a draining request's share has a gateway to move to (`ErrMoved`) or none (`ErrDraining`), asked per request (RFC 20 §3.1) | named in RFC 17 by T1.9; not yet in `pkg/vfs` | RFC 17 plan: the method in `pkg/vfs`, `*vfs.Filesystem`, `vfstest.Null` and `vfstest.Record`, answering none | before E4's T4.5 calls it; a real target once RFC 15's topology exists |
+| `vfs.Shares.MoveTarget`, which says whether a draining request's share has a gateway to move to (`ErrMoved`) or none (`ErrDraining`), asked per request (RFC 20 §3.1) | named in RFC 17 by T1.9; not yet in `pkg/vfs` | RFC 17 plan: the method in `pkg/vfs`, `*vfs.Filesystem` (so `vfstest.Memory`) and `vfstest.Null`, answering none | before E4's T4.5 calls it; a real target once RFC 15's topology exists |
 
 ## 7. RFC coverage
 
@@ -817,7 +812,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | §4.4 (identity, `gss`) | §6.2 |
 | §4.5 (error tables) | E5 (type, totality helper); rows: §6.2 |
 | §4.6 (held requests) | E5 |
-| §4.7 (wiring, stages, `Bind`, middleware; connection state, holds, park, chains, `Dispatcher`) | E1 (types), E2 (`testproto`'s stateful half), E4 (`Established`, `Keep`), E5 |
+| §4.7 (wiring, stages, `Bind`, middleware; connection state, holds, park, chains) | E1 (types), E2 (`testproto`'s stateful half), E4 (`Established`, `Keep`), E5 |
 | §4.8 (versions) | E5 (selection), E6 (routers) |
 | §4.9, §4.10 | §6.2 |
 | §5.1, §5.2, §5.4 (codecs) | E6 (headers); operations: §6.2 |
