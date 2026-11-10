@@ -403,10 +403,10 @@ func NewWaitBudget(name string, ceiling int64) *WaitBudget
 func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Reservation, error)
 func (b *WaitBudget) Reserved() int64
 
-// Reservation is a value from either, moved and never copied: Release returns n to
-// its budget, and to key's count on a WaitBudget, then zeroes the Reservation, so a
-// second Release does nothing.
-type Reservation struct{ /* its budget, key, n */ }
+// Reservation is a value from either, so taking one allocates nothing; it is moved,
+// never copied. Release returns its bytes to its budget, and to its key's count on a
+// WaitBudget, then zeroes the Reservation, so a second Release does nothing.
+type Reservation struct{ /* unexported: the budget it came from, the key, the bytes */ }
 func (r *Reservation) Release()
 
 // Budgets is what an adapter is handed (RFC 20 §3.4): the four budgets on the request path.

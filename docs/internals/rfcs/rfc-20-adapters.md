@@ -2949,10 +2949,8 @@ package resources // pkg/resources (RFC 24 §2.8): shared by every component
 // Buf is one pooled buffer, shared by reference count. Its reservation is
 // released with its bytes, so budget and memory never disagree.
 type Buf struct {
-	B     []byte              // len is the record's or reply's; cap is the class size
-	class uint8
-	refs  atomic.Int32
-	res   Reservation
+	B []byte // len is the record's or reply's; cap is the class size
+	// unexported: its class, its reference count and its Reservation
 }
 
 func NewBufPool(b *WaitBudget) *BufPool                         // RFC 24 §2.5: every buffer it hands out is reserved from b, the receive or reply budget
