@@ -200,19 +200,42 @@ These rules apply to every new or changed test. Older tests that break them are 
 when you touch them, not in a sweep.
 
 **No mocks, no stubs.** Needing one is a design smell: the code under test is coupled to
-something it should take as an argument. Restructure the code instead of faking the dependency:
+something it should take as an argument. Restructure the code so the test runs against real
+collaborators:
 
 - Put the logic in a function of its inputs, and test that function. Keep the I/O at the edge,
   in a thin layer.
-- Take a dependency as a small interface the consumer declares, and test it against a **real**
-  implementation of that interface: the memory metadata or block store, `t.TempDir()`, a
-  listener on `127.0.0.1:0`, an in-memory SQLite control-plane store.
-- Don't swap a package-level `var` in a test (`serveRuntime = func…`). That is a stub with
-  global scope: it leaks across parallel tests, and it tests a program that production never
-  runs. Pass the dependency in instead.
-- Hand-written fakes that return canned answers or record calls count as stubs. A test built on
-  one proves only that the code agrees with the fake. When the fake drifts from the real
-  implementation, or the real one is deleted, the test stays green while guarding nothing.
+- Take a dependency as a small interface the consumer declares, and test against a **real**
+  implementation of it: the memory metadata or block store, `t.TempDir()`, a listener on
+  `127.0.0.1:0`, an in-memory SQLite control-plane store.
+
+Only three kinds of test double are allowed:
+
+1. **An injected clock or seeded random source.** These are inputs to the code, not
+   collaborators.
+2. **A verified in-memory implementation.** It lives with the package that owns the interface,
+   and it passes the **same conformance suite** as the production implementation. It may record
+   its own outputs, and tests assert on those outputs or on resulting state. A dependency that
+   isn't built yet gets its conformance suite first, then the smallest in-memory implementation
+   that passes it. The real implementation must pass the same suite when it lands.
+3. **Fault injection:** a wrapper around a real implementation, or around kind 2, that fails,
+   delays, tears or crashes on cue. A scripted error answer is a fault, so it comes from such a
+   wrapper.
+
+Deterministic simulation is built only from these three, so it is allowed.
+
+Banned:
+
+- a canned stub written for one test;
+- a recording or counting fake used to check which calls were made;
+- a double that no conformance suite holds to the real implementation;
+- swapping a package-level `var` (`serveRuntime = func…`).
+
+These test a program that production never runs. When the double drifts from the real
+implementation, the test stays green while guarding nothing.
+
+External systems (a KDC, a domain controller, an LDAP directory, S3) are tested for real at the
+integration tier. Their parsing and logic are pure functions with unit tests.
 
 ## Verifying a change
 
