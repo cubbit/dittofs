@@ -758,14 +758,14 @@ for:
 
 | Dependency | Supplied as | In a test |
 | --- | --- | --- |
-| a backend | the `Store` interface of [§1.3](#1.3%20Interface) | a fault-injecting fake |
+| a backend | the `Store` interface of [§1.3](#1.3%20Interface) | the in-memory store under a fault wrapper |
 | the bytes to upload | the `src` closure passed to `Upload` | a closure over a byte slice |
 | time | the one clock interface every component takes ([index, Test harness](rfc-index.md#Test%20harness)), never a clock of its own | that interface's virtual clock |
 | logging | a structured logger | a handler that records the lines |
 
 No journal, no carver, no metadata store, no engine, no disk and no network.
-A conformance check **MUST** be writable as: build a syncer over a fake store,
-call it, assert on what the fake saw and what came back. An implementation that
+A conformance check **MUST** be writable as: build a syncer over the in-memory store,
+call it, assert on what the store holds, the load it recorded and what came back. An implementation that
 picks up another dependency loses that, and **MUST NOT**.
 
 **Time is virtual in tests.** The probe interval, the unhealthy log interval,
@@ -776,7 +776,9 @@ therefore **MUST NOT** read time from anywhere the virtual clock cannot replace.
 A check that sleeps on the real clock is slow, and on a loaded machine it fails
 for reasons that have nothing to do with the syncer.
 
-**The fake store is the fixture every check shares.** Per call it can:
+**The in-memory store is the fixture every check shares.** It is a verified
+in-memory `Store` ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)): the Group A checks run against it and
+against the remote tier's adapter alike ([§8.1](#8.1%20Kinds%20of%20test)). A fault wrapper around it can, per call:
 
 - take a set latency and a set time per byte, so the pool binds ([§7.3](#7.3%20What%20must%20not%20stand%20in));
 - fail with any error of the set in [§1.3](#1.3%20Interface), throttling included, once or every time, in one direction or both;
@@ -785,7 +787,7 @@ for reasons that have nothing to do with the syncer.
 - hold every call until the test releases it;
 - fail or pass the probe of either direction, its own or a shared one.
 
-And it records, with the syncer's own per-flow counters beside it: calls in
+And the store records its own load, with the syncer's own per-flow counters beside it: calls in
 flight, per store and per flow, and their peak (S1,
 S17); the order calls reached it (S13, S18); attempts per block; bytes it holds.
 
@@ -794,7 +796,7 @@ pool full, the heap in use above the idle baseline **MUST** stay within the boun
 of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) plus a stated slack. The test chooses the chunk `Max` and pool size large
 enough that the Go runtime's own noise stays under that slack.
 
-The fake covers the syncer's logic. It does not cover the adapter from the remote
+The in-memory store covers the syncer's logic. It does not cover the adapter from the remote
 tier to `Store`, nor a real backend's failure modes; those run the same checks
 against a local emulator of the remote service ([§7.3](#7.3%20What%20must%20not%20stand%20in)).
 
@@ -1961,19 +1963,19 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) throttling | Answer puts with `ErrThrottled`; assert the flow is held for the backoff, the transfer retries, other flows are dispatched meanwhile, and the store's health is unchanged. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) retry budget | Fail every call on one store; assert retries on it stay within its budget, no transfer makes more than four attempts, exhausted attempts are reported with the last error, and the backoffs of transfers that failed together are spread. |
 | [§1.3](#1.3%20Interface) partial prefetch | `Prefetch` two non-adjacent chunks of a block; assert the store is asked for those ranges only, and that an empty `want` asks for the whole block. |
-| [§1.3](#1.3%20Interface) error values are the syncer's | Build the syncer with an import test; assert it imports neither the remote tier nor the transforms, and that a fake store returning each of the syncer's own error values gets the row of [§1.3](#1.3%20Interface)'s table it names. |
+| [§1.3](#1.3%20Interface) error values are the syncer's | Build the syncer with an import test; assert it imports neither the remote tier nor the transforms, and that the in-memory store, its fault wrapper returning each of the syncer's own error values, gets the row of [§1.3](#1.3%20Interface)'s table it names. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) first byte, per direction | Hold a get before its first body byte, and a put after its last body byte sent; assert both fail at the first-byte bound. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) fetch resume | Fail a whole-block fetch transiently after three chunks; assert the retry requests only the rest and no chunk is yielded twice. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) per direction | Fail every put probe and put; assert fetches from the store still run. Fail every get; assert uploads still run. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) drift condition | Raise a store's drift condition through `SetDrift` with both probes passing; assert uploads to it are refused at once and fetches still run. Clear it; assert uploads resume without waiting for a probe transition. A syncer that reads only its probes keeps putting into the drifted store. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) window re-trip | Trip a store's put direction by the failure window, drain its put bucket to the reserve, then re-admit it with 96 puts in flight failing 3% transiently: it stays healthy, and its puts complete. Fail more than a tenth of them: it turns unhealthy again and the denial backoff doubles. A design that re-trips on the first failure keeps the store unhealthy for hours. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) lone slow tail | On an idle store, give one fetch a first byte past the 90th percentile: it gets its one slow-tail retry, where a bare 5% share would round to none. |
-| [§1.3](#1.3%20Interface) raw transfer | `FetchRaw` a block whose store returns one byte fewer, or one more, than the recorded size: the call fails and nothing is written past the size. `UploadRaw` a staged block to a fake immutable store: the bytes it saw equal the staged bytes, nothing decoded them, and the call returns the store's version. `FetchVersion` of that version returns verified chunks; of another version, that version's. A design that copies through `Fetch` and `Upload` asks for material here and fails without it. Reset a `FetchRaw` after 3 MiB: the retry asks for the range from 3 MiB, and the staged bytes equal the stored ones. Flip one staged byte before `UploadRaw`: the put fails on its checksum. Flip one byte of a whole-block get on a source returning a response checksum: `FetchRaw`'s retry asks for byte 0 onward, not for nothing, and the staged bytes equal the stored ones. Copy from a source whose stored checksum is the destination's kind, flipping one byte of a resumed range: `FetchRaw` returns the source's stored checksum and `UploadRaw` fails on it. Repeat from a CRC32C source to an MD5 destination: `FetchRaw` finds the staging against the source's CRC32C, re-fetches from byte 0, and returns the MD5 of correct bytes. To a destination with no up-front checksum, damage the staging after `FetchRaw`: the `ETag` the put returns mismatches the passed sum and `UploadRaw` fails `ErrCorrupt`. Hold a `Small` call's one request unanswered: the attempt fails at the small-call bound and is retried, never held for the copier's context. List 10⁴ versions through `Small`: one page per call, a retried page resuming after the last key returned. Answer a copier's retention extension with `503 SlowDown` through `Small`: it backs off and succeeds, counted as throttling, not failure. |
+| [§1.3](#1.3%20Interface) raw transfer | `FetchRaw` a block whose store returns one byte fewer, or one more, than the recorded size: the call fails and nothing is written past the size. `UploadRaw` a staged block to the in-memory store set immutable: the bytes it holds equal the staged bytes, nothing decoded them, and the call returns the store's version. `FetchVersion` of that version returns verified chunks; of another version, that version's. A design that copies through `Fetch` and `Upload` asks for material here and fails without it. Reset a `FetchRaw` after 3 MiB: the retry asks for the range from 3 MiB, and the staged bytes equal the stored ones. Flip one staged byte before `UploadRaw`: the put fails on its checksum. Flip one byte of a whole-block get on a source returning a response checksum: `FetchRaw`'s retry asks for byte 0 onward, not for nothing, and the staged bytes equal the stored ones. Copy from a source whose stored checksum is the destination's kind, flipping one byte of a resumed range: `FetchRaw` returns the source's stored checksum and `UploadRaw` fails on it. Repeat from a CRC32C source to an MD5 destination: `FetchRaw` finds the staging against the source's CRC32C, re-fetches from byte 0, and returns the MD5 of correct bytes. To a destination with no up-front checksum, damage the staging after `FetchRaw`: the `ETag` the put returns mismatches the passed sum and `UploadRaw` fails `ErrCorrupt`. Hold a `Small` call's one request unanswered: the attempt fails at the small-call bound and is retried, never held for the copier's context. List 10⁴ versions through `Small`: one page per call, a retried page resuming after the last key returned. Answer a copier's retention extension with `503 SlowDown` through `Small`: it backs off and succeeds, counted as throttling, not failure. |
 | [§1.3](#1.3%20Interface) small-body cap | `Small` a get whose body is 256 KiB at 32 KiB/s: it completes inside the small-call bound. Over a 40 TiB copy, no progress object put and no listing page read through `Small` exceeds 256 KiB. Run a `Recheck` pass over a suspended store holding 10⁷ versions: every `Small` call reads one setting or one page and ends within the bound, and the pass resumes from its last page after a transient failure instead of restarting. |
 | [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) copy staging | Copy from a source at 200 MiB/s to a destination at 50 MiB/s: staging memory never exceeds the per-flow cap times the largest encoded block plus two parts, spill never exceeds its cap and never lands on a journal's device, and `FetchRaw` waits, holding no worker, once memory plus spill reach the cap. Run two such copies to different folders and a GC relocation at once: their staging together stays within the same one budget, and each still progresses. Restart mid-copy: the spill is empty before the copy resumes. A design with a budget per copy holds twice it here. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) no put probe | Register a store with `PutProbe` false: over an hour no put probe reaches it. Fail every upload for the failure window: put-unhealthy, uploads refused; with no probe and no transfer, it turns healthy after its hold-down and the next upload is sent; fail that one too: unhealthy again with the hold-down doubled. A design that waits for a put probe here latches it unhealthy for good. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) cause per direction | Turn a store put-unhealthy with `ErrDenied` of cause quota, then another with cause access, a third with cause size, a fourth with `ErrTransient`, and raise a fifth's drift condition: `Flow.Health(Put)` wraps the quota cause, the access cause, the size cause, `ErrTransient` and `ErrDrift` in turn, and `Flow.Healthy(Put)` is false for all five. |
-| [§1.3](#1.3%20Interface) destroyed material | A fake store returning `ErrMaterialDestroyed` on every fetch for the failure window: each call fails unretried with that error, never `ErrCorrupt`, and the store stays get-healthy. |
+| [§1.3](#1.3%20Interface) destroyed material | The in-memory store, its fault wrapper returning `ErrMaterialDestroyed` on every fetch for the failure window: each call fails unretried with that error, never `ErrCorrupt`, and the store stays get-healthy. |
 | [§1.3](#1.3%20Interface) unregister | `Unregister` a store with an open flow: refused. Close its flows and unregister it: its probes stop and its counters leave `Stats`. |
 | [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch) re-home and close | Join a queued speculative fetch with a demand from another flow; assert it moves to the demanding flow in the demand class. Close the flow that owns a running joined fetch; assert the other flows' callers are detached, not failed. Detach a caller holding its chunk; assert its bytes are unchanged until its next iteration while the fetch continues. |
 
@@ -1990,13 +1992,13 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 
 Conformance says the syncer is correct; these say what it costs. They use the
 real clock — a virtual clock makes time free, the opposite of what a benchmark
-wants — and a fake store with a simulated link: a per-call latency and a
+wants — and the in-memory store with a simulated link: a per-call latency and a
 per-byte time, never zero ([§7.3](#7.3%20What%20must%20not%20stand%20in)). Each reports throughput, allocations and
 peak memory, and a result is recorded with the revision it measured.
 
 | # | Measures | Setup | Expect |
 | --- | --- | --- | --- |
-| B1 | the syncer's own overhead | the same pool size, once through the syncer and once as raw calls on the fake store | throughput within a few percent of raw; no allocation per chunk once warm, buffers being reused |
+| B1 | the syncer's own overhead | the same pool size, once through the syncer and once as raw calls on the in-memory store | throughput within a few percent of raw; no allocation per chunk once warm, buffers being reused |
 | B2 | scheduler cost | one transfer dispatched with 1, 10, 100 and 1,000 flows waiting | flat: DRR is O(1) per dispatch ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
 | B3 | fairness under load | one flow saturating uploads on a slow store; a second issuing fetches | the second flow's p99 wait within one round; the first never above its cap |
 | B4 | joined fetches | N readers on one cold chunk | one transfer, whatever N ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
@@ -2018,12 +2020,12 @@ section is the plan around it.
 
 | Kind | What it covers | How |
 | --- | --- | --- |
-| Conformance | every check in [§7](#7.%20Conformance), Groups A and B | the fault-injecting fake store of [§1.4](#1.4%20It%20is%20testable%20on%20its%20own), virtual time, race detector |
-| Real backend | what the fake cannot fail like ([§7.3](#7.3%20What%20must%20not%20stand%20in)) | nightly: the Group A checks and the lifecycle checks against a local emulator of the remote service, with a fault proxy between them |
+| Conformance | every check in [§7](#7.%20Conformance), Groups A and B | the in-memory store and fault wrapper of [§1.4](#1.4%20It%20is%20testable%20on%20its%20own), virtual time, race detector |
+| Real backend | what the in-memory store cannot fail like ([§7.3](#7.3%20What%20must%20not%20stand%20in)) | nightly: the Group A checks and the lifecycle checks against a local emulator of the remote service, with a fault proxy between them |
 | Scheduler model | S13, S17, S18 and S20 over arrivals no hand-written case thinks of | random flows, classes, block sizes, joins and arrival times on the virtual clock, checked after every dispatch against a reference: the highest class first, deficit round robin within it, who runs next, that no flow or store exceeds its cap or fair share, and that waiters stay within the bound. A failing run is shrunk and kept |
 | Memory | S2 | held-pool heap checks ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)) |
 | Structure | the dependency set of [§1.4](#1.4%20It%20is%20testable%20on%20its%20own) | an import test |
-| Benchmark | [§7.4](#7.4%20Benchmarks), B1–B5 | real time; B1–B4 on a fake with a simulated link, B5 on a real store; after merge, never gating ([§8.4](#8.4%20What%20CI%20checks%20instead%20of%20timing)) |
+| Benchmark | [§7.4](#7.4%20Benchmarks), B1–B5 | real time; B1–B4 on the in-memory store with a simulated link, B5 on a real store; after merge, never gating ([§8.4](#8.4%20What%20CI%20checks%20instead%20of%20timing)) |
 | Soak | leaks and drift | hours, nightly, against a local emulator of the remote service with outages injected on a cycle, asserting tasks, open connections, `inflight_bytes` and queue depth return to idle after each |
 
 There is no crash test here. The syncer persists nothing (S7), so a crash leaves
@@ -2072,14 +2074,14 @@ The conformance, model and fault tests **MUST** reach these.
 
 ### 8.3 Faults and outside interference
 
-Faults are injected systematically: the fake store fails the *n*th call of a
+Faults are injected systematically: the fault wrapper fails the *n*th call of a
 scripted run, for every *n*, with each failure kind of [§1.4](#1.4%20It%20is%20testable%20on%20its%20own) — transient,
 terminal, committed with the response lost, stopped part-way, corrupted, held.
 After each, every transfer has ended with a report (S4), nothing unconfirmed was
 reported stored (S5, S6), and no chunk that failed verification was yielded
 (S10).
 
-Against the real backend, a fault proxy adds what the fake cannot: a connection
+Against the real backend, a fault proxy adds what the in-memory store cannot: a connection
 reset mid-body, a bandwidth cap below the throughput floor, throttling, and
 a response dropped after the store committed.
 
@@ -2098,7 +2100,7 @@ sees:
 ### 8.4 What CI checks instead of timing
 
 What gates a change is only the counts below, on the virtual clock and against
-the fake, with the same answer on any machine. Each is the count behind one
+the in-memory store, with the same answer on any machine. Each is the count behind one
 benchmark:
 
 - **allocations**: none per chunk once warm (B1);
@@ -2114,13 +2116,13 @@ benchmark:
 
 ### 8.5 Performance targets
 
-B1 is stated against raw calls on the same fake, and B5 against the sizing
+B1 is stated against raw calls on the same in-memory store, and B5 against the sizing
 tool's raw figure for the same store, so both hold on any link. Results are
 recorded in absolute numbers.
 
 | # | Metric | Proposed target |
 | --- | --- | --- |
-| B1 | throughput through the syncer, same pool size | ≥ 97% of raw calls on the fake |
+| B1 | throughput through the syncer, same pool size | ≥ 97% of raw calls on the in-memory store |
 | B2 | one dispatch with 1,000 flows waiting | ≤ 1 µs, and flat from 1 flow |
 | B3 | a fetch's queue wait while another flow saturates uploads | p99 within one round |
 | B5 | throughput through the syncer on a real store | ≥ 95% of the sizing tool's raw figure; below 90% is a regression |
@@ -2134,9 +2136,9 @@ B4 is a count, not a speed, and is fully checked in CI.
 
 Beside what [the RFC index](rfc-index.md#Test%20tiers) asks every result to record: the backend and its
 region, round-trip time, bandwidth, block size, the pool sizes and the sizing
-tool's raw figures; for B1–B4, the fake's simulated latency and per-byte time.
+tool's raw figures; for B1–B4, the in-memory store's simulated latency and per-byte time.
 
-**Suites.** §7's Group A and B checks against the fault-injecting fake store and §8's model, memory,
+**Suites.** §7's Group A and B checks against the in-memory store and its fault wrapper and §8's model, memory,
 import, fault-sweep and counted checks run in `unit`, an allocation count the race detector skews in
 `unit/nonrace`; §8.1's real-backend checks, against the local emulator behind a fault proxy, run in
 `integration`. No suite runs yet §7.4's benchmarks or §8.1's nightly soak.
