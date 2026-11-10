@@ -12,7 +12,10 @@ RFCs, with how far each is in scope:
 - [RFC 17](../rfcs/rfc-17-vfs.md), the filesystem service: **constraints only**, except
   `vfs.WithHold` (RFC 17 §5.9), which `pkg/vfs` lacks and epic 5 adds; `vfs.WithRequestID`
   (RFC 17 §4.7) is a ledger row (§6.2). `pkg/vfs`,
-  `vfstest.Record` and `vfstest.Null` exist on `feat/storage-v2`.
+  `vfstest.Record` and `vfstest.Null` exist on `feat/storage-v2`; tests here use neither
+  `Record` nor `Null`, but the in-memory service, `vfstest.Memory`, held to RFC 17 §8's suite,
+  and its fault wrapper, `vfstest.Faults` ([RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles));
+  `Null` serves the pipeline benchmark only.
 - [RFC 24](../rfcs/rfc-24-resources.md), resources: **only the parts this RFC cannot work
   without**: `Budget`, `WaitBudget`, `Reservation`, `Budgets`, `Buf` and `BufPool` in `pkg/resources` (epic 3).
 - [RFC 13](../rfcs/rfc-13-configuration.md), configuration: **only the parts this RFC cannot work
@@ -53,7 +56,7 @@ branch is `feat/storage-v2`, on which RFC 17's plan has merged; the plan documen
 | Buffers | a three-class `sync.Pool` of byte slices behind package functions | `pkg/resources`: reference-counted `Buf` behind a `Budget` reservation, shared with any component |
 | Drain | cancels every request, 100 ms read deadline | stops accepting, serves what each request's `Role` allows, finishes what the service holds, abandons at the deadline |
 | Sidecars | each adapter runs its own group | one runner driven by the serving set |
-| Tests | handlers on real stores; four fakes | `core` on a test-only protocol over `vfstest.Null`; the import test from the first commit |
+| Tests | handlers on real stores; four fakes | `core` on a test-only protocol over `vfstest.Memory`; the import test from the first commit |
 
 **Dependency limits.** What an adapter may import is RFC 20 §2.3's list, which its §7.1 import
 test enforces; this plan does not restate it. Liveness reaches an adapter as `Deps.Watch`, which
@@ -157,8 +160,8 @@ registers no red suite**. Each test lands green with the epic that makes it pass
 what those tests stand on:
 
 - **`adaptertest/testproto`**: a protocol of length-prefixed frames with operations that echo,
-  wait a scripted time, panic, hold (answer `ErrDelay` of a holding class), take a `Role` an
-  argument sets (for the drain filter and the expiry gate) and mutate through `vfstest.Null`; toy `Security` (a checksum), `Flow` (a
+  wait a given time, panic, hold (answer `ErrDelay` of a holding class), take a `Role` an
+  argument sets (for the drain filter and the expiry gate) and mutate through `vfstest.Memory`; toy `Security` (a checksum), `Flow` (a
   counter) and `Replay` (a map) stages, and a `HoldCodec` whose interim and final headers carry
   the credits they grant against a client balance the test reads; a version range for the `Versions` column. Tests drive it
   over a plain `net.Conn`. Its stateful half exercises the rest of RFC 20 §4.7, so the surface frozen
@@ -240,8 +243,11 @@ and 5.
 >   document, and its subtask issues take the same release, also when created later.
 
 1. **Independent unit tests, under `-race`.** Each epic carries its own unit tests. It may use
-   another epic's implementation once that has landed, `vfstest.Null` and `vfstest.Record`, and
-   E2's `testproto` and leak checks. `core` is tested from `package core_test` on `testproto` and
+   another epic's implementation once that has landed, `vfstest.Memory` and `vfstest.Faults`, and
+   E2's `testproto` and leak checks. Its doubles are RFC 29 §4.11's three kinds only: an
+   interface whose implementation has not landed is stood in for by the smallest in-memory one
+   that passes that interface's conformance suite, written first, which the real one passes
+   when it lands; no test asserts which calls were made. `core` is tested from `package core_test` on `testproto` and
    never through NFS or SMB; no `core` test imports a protocol package. Connections are real TCP
    over loopback, with real deadlines and socket options read back from the socket. Test at the
    layer that consumes a value (`CLAUDE.md`, "Verifying a change"): a setting is asserted on a
@@ -362,7 +368,7 @@ flowchart TD
   import test runs in `unit` and reports its seeded violation. Unblocks E3, E4 and E6's `wire/`
   and `protocol/`.
 - **🔀 S3 `core` serves `testproto` end to end** (after E4 and E5). A `testproto` request goes
-  accept → frame → pipeline → `vfstest.Null` → reply; drain serves what its `Role` allows (RFC 20 §3.1)
+  accept → frame → pipeline → `vfstest.Memory` → reply; drain serves what its `Role` allows (RFC 20 §3.1)
   and abandons at the deadline; reconfigure and the leak checks pass; the handshake deadline, kept
   state, held and parked requests, cancel and chains run on `testproto`'s stateful half. Unblocks E6's `New`, which
   wires each `protocol/` to the real runner.
@@ -376,7 +382,7 @@ flowchart TD
 | ⛔ E1 | everything | `pkg/adapter` is recreated at v1's path, and every epic builds on its types |
 | ⛔ E2 | E3–E6 | `core` is proven only on `testproto`; the import test must run from the first package |
 | E3 | E4, E5, partly | the reader reserves receive bytes before a body; the pipeline reserves the reply. Both start on E1's stubs and finish on E3 |
-| E4 | E5, partly | the pipeline is tested behind the dispatch seam with a fake sender; its end-to-end tests need `Conn` |
+| E4 | E5, partly | the pipeline is tested behind the dispatch seam with an in-memory sender held to the sender's conformance suite, which `Conn` passes too; its end-to-end tests need `Conn` |
 | E4, E5 | E6's `New`, via S3 | a scaffold is done only when "not supported" goes through the real pipeline; `protocol/` is built before, against the frozen surface |
 | 🔀 S4 | E7 | no node to wire into |
 | E6 | E8 | `unit/adapter-allocs` runs every gate, the scaffolds' included |
@@ -386,16 +392,18 @@ flowchart TD
 
 - **Track A: E3 → E5.** Buffers and budgets first, then the request path through them: the
   pipeline, tables, compound runner, held requests and request context, tested behind the
-  dispatch seam with a fake sender until E4's `Conn` lands.
+  dispatch seam with an in-memory sender until E4's `Conn` lands. E5 writes the sender's
+  conformance suite first; the in-memory sender passes it, and `Conn` must when it lands.
 - **Track B: E4.** The connection and the adapter's life: `Server`, listeners, accept and its
   limits, the reader and writer, drain, `Reconfigure`, health, TCP, then the sidecar runner. Its
-  drain and cancellation tests run against a stub dispatcher until E5's pipeline lands, then
-  again end to end at S3.
+  drain and cancellation tests run against an in-memory dispatcher until E5's pipeline lands,
+  then again end to end at S3. E4 writes the `Dispatcher` conformance suite first; the
+  in-memory dispatcher passes it, and E5's pipeline must when it lands.
 - **Track C: E6, with part of E5.** Both `wire/` packages first (about 6 man-days), which need only
   E1's types. Track C would then idle until S3, so it takes three E5 subtasks that need only E1's
   types and `testproto`: the middleware chain (T5.6), the error table (T5.7) and observability
   (T5.9). Then each `protocol/` from S2: what epic 6 builds, the `Router` over its tables, is
-  unit-tested against the frozen surface, `testproto`'s stateful half and a fake service, leaving
+  unit-tested against the frozen surface, `testproto`'s stateful half and `vfstest.Memory`, leaving
   only `New`'s wiring to the real runner for S3. SMB's `Security` and `HoldCodec` are the RFC 22
   plan's (ledger), which can start them at S2 the same way.
 - **The team.** E1 and E2 before the tracks start; E8 after them. E7 when S4 is reached.
@@ -537,8 +545,8 @@ refuse), §3.1 (classes), §2.7's zero-at-close.
 The adapter's life and its connections, in `core`: the four states, listeners, accept and its
 limits, one reader and one writer per connection, drain, `Reconfigure` with its settings
 snapshot, health, and the TCP options. Then the sidecar runner in `internal/sidecar`, which
-follows those states. Proven on `testproto` over loopback, first behind the dispatch seam with a
-stub dispatcher, then end to end against `vfstest.Null` at S3.
+follows those states. Proven on `testproto` over loopback, first behind the dispatch seam with the
+in-memory dispatcher of §3.4, then end to end against `vfstest.Memory` at S3.
 
 RFC sections: §3.1 (states, drain, abandon at the deadline, auxiliary listeners all or none),
 §3.2 (a connection's lifecycle; the session-keyed cleanup wait as a `core` mechanism), §3.5,
@@ -571,7 +579,8 @@ rows, A10, A11, A14, A19, A20.
 - T4.9 The sidecar runner, lifted from v1's `pkg/adapter/sidecar.Group` on `develop`: `Sync` with
   the serving set after an adapter is serving and before it drains, idempotent, a disabled
   sidecar synced with the empty set, a failing one raising `sidecar_failed` without touching the
-  adapters or readiness; tested with fake sidecars and `testproto` adapters.
+  adapters or readiness; tested with `testproto` adapters and an in-memory sidecar held to the
+  `Sidecar` conformance suite, written first, its failure given by a fault wrapper.
 
 ### Epic 5 — Dispatch
 
@@ -581,11 +590,11 @@ The request path in `core`: §4.1's stages in order with their defaults and refu
 filter, operation tables and their precondition columns, the reply reservation, the compound
 runner, held requests and their re-drive, the middleware chain, the error-table mapping and
 totality check, the request context, and the observability of RFC 20 §10. Tested behind the
-dispatch seam with a fake sender, then end to end on `Conn` at S3, against `vfstest.Null` and
-`vfstest.Record`.
+dispatch seam with the in-memory sender of §3.4, then end to end on `Conn` at S3, against
+`vfstest.Memory` and `vfstest.Faults`.
 
 RFC sections: §3.1's drain filter, §4.1, §4.2, §4.3's runner and reply budget (the one-call rule
-is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's table selection, §6.3,
+is §7.1's call-site check), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's table selection, §6.3,
 §6.4's request deadline (its request ID: §6.2), §6.5's client-cancel half, §6.6, §6.9's request rows,
 §6.10's pipeline row, §10, A4, A6, A7, A15, A16, A17.
 
@@ -610,8 +619,8 @@ is `vfstest.Record`'s), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's t
   `Recharge(to *Budget) error`: additive after S1, brought by this subtask with an RFC 24
   amendment): interim timer and `HoldCodec.Interim` (`after` 0 on every hold), the final reply under
   `HoldCodec.Final`, re-drive from `Resolve` with a fresh attempt deadline inside the hold bound,
-  `vfs.WithHold` added to `pkg/vfs` (RFC 17 §5.9) and passed on every call, asserted on the
-  context `vfstest.Record` receives (its reader, the clone wait, is RFC 17 plan piece 11's, V30),
+  `vfs.WithHold` added to `pkg/vfs` (RFC 17 §5.9) and passed on every call, asserted where it
+  is read, by the in-memory service's clone wait (RFC 17 plan piece 11's, V30),
   the per-connection
   floor and the hold pool, the credits on `testproto`'s balance for each case §4.6 and
   `HoldCodec` name (past the ceiling; past the floor with the hold pool full; cancelled; a chain
@@ -758,7 +767,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, RFC 4121 tokens, `gsstest` | no handshake to drive it | the RFC 22 plan, until its own RFC (risk 5) | first `SESSION_SETUP` or GSS `INIT` |
 | `translate` (ACLs, access masks, times, attributes, `Fit`) | no handler calls it | RFC 21/22 plans | their first handler epic |
 | each protocol's error-table rows and its totality test (RFC 20 §7.3) | rows are protocol choices | RFC 21/22 plans | with their handlers |
-| handler tests on `vfstest.Record` (§7.2), the one-call rule enforced per handler | no handlers | RFC 21/22 plans | every handler epic |
+| handler tests on `vfstest.Memory` and `vfstest.Faults` (§7.2), the one-call rule enforced per handler by §7.1's call-site check | no handlers | RFC 21/22 plans | every handler epic |
 | operation codecs, their golden vectors from reference captures, 0-allocation gates for `READ`, `WRITE`, `GETATTR`, `QUERY_INFO` | no handlers | RFC 21/22 plans | with those operations |
 | import test: entry-method call sites (§4.10, §7.1) and the 800-line allowlist (§2.5) | vacuous with no handlers | RFC 21/22 plans | first handler epic |
 | scripted client (§8.2) and a shared golden helper | first consumers are wire tests and benchmarks | RFC 21/22 plans | first wire-test or benchmark epic |
