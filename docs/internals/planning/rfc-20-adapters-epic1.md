@@ -225,7 +225,7 @@ which epic owns the rest.
 | R35 | Three shapes: `config.Adapter`, and `config.NFS` and `config.SMB` embedding it; `config.Settings` is `{Validate() error; Common() Adapter}`, which both implement, `Common` promoted from `Adapter`; `Reconfigure` refuses another protocol's shape or any other type (D15) | MUST | §3.4, §3.6 | T1.5 |
 | R36 | Every field names its key with a `json:"…"` tag; every key is `adapters.<protocol>.<field>`; every adapter setting is live, RFC 13's table recording each one's class (D6, D28) | MUST | §2.5, §3.6; RFC 13 §5, Appendix B | T1.5 |
 | R37 | `config.Adapter.Addrs` holds the listen addresses the node supplies from the host's bootstrap and the addresses it took over, never from the settings record (`json:"-"`); it is live, with §3.6's `decision:` marker at the field | MUST | §3.6 (and decision); RFC 13 §2.2; rule 7 | T1.5 |
-| R38 | The adapter settings RFC 13 lists are fields with their stated defaults: `drain_timeout` 90 s, `idle_timeout` 15 min, `write_timeout` 60 s, `handshake_timeout` 30 s, `read_timeout` 30 s, `disabled_operations` none; NFS's `tls` (`config.TLS{Mode, CertFile, KeyFile, ClientCA}`, `mode` `off` by default, `opportunistic` or `require`; TLS 1.3 fixed); SMB's `dialects` (2.1 to 3.1.1), `pending_timeout` (10 min) and `recall_timeout` (60 s), read by SMB's `Hold` closures from the live settings rather than the connection's snapshot (D27). Not a field: `connection_limit` is node-wide, and the node hands each adapter its share (E4 enforces it, E7 hands it) | MUST | RFC 13 Appendix B; RFC 20 §3.6, §4.2, §6.4 | T1.5 |
+| R38 | The adapter settings RFC 13 lists are fields with their stated defaults: `drain_timeout` 90 s, `idle_timeout` 15 min, `write_timeout` 60 s, `handshake_timeout` 30 s, `read_timeout` 30 s, `disabled_operations` none; NFS's `tls` (`config.TLS{Mode, CertFile, KeyFile, ClientCA}`, `mode` `off` by default, `opportunistic` or `require`; TLS 1.3 fixed) and `versions` (`config.VersionRange{Min, Max}`, `3` to `4.2`); SMB's `dialects` (the same `VersionRange`, `2.1` to `3.1.1`), `pending_timeout` (10 min) and `recall_timeout` (60 s), read by SMB's `Hold` closures from the live settings rather than the connection's snapshot (D27). Not a field: `connection_limit` is node-wide, and the node hands each adapter its share (E4 enforces it, E7 hands it) | MUST | RFC 13 Appendix B; RFC 20 §3.6, §4.2, §6.4 | T1.5 |
 | R39 | Every default is in `DefaultNFS` or `DefaultSMB`, stated in its RFC, or the setting is required; the code fills in no unreviewed default | MUST | RFC 13 §4.2; RFC 20 §3.6 | T1.5 |
 | R40 | A value out of range or of the wrong type is refused with an error naming the field and the rule; never clamped, rounded or replaced by a default | MUST, MUST NOT | RFC 13 §6 | T1.5 |
 | R41 | The validator is the component's own, `(NFS) Validate() error` and `(SMB) Validate() error`, run by `New`, by `Reconfigure` (E4) and by the control plane (E7, cutover), which has none of its own; it reads no file, and the rule relating `pending_timeout` to `migration.freeze_timeout` is the control plane's cross-component check | MUST | RFC 13 §6; RFC 20 §3.6 | T1.5 |
@@ -423,6 +423,10 @@ which epic owns the rest.
   `…Timeout` as Go names them; `Validate` and `Common` as methods; the waiting and refusing
   budgets as two types under `Budgets`; `Watch` returning a `Loop`; `Health.Ready()` derived
   rather than stored; TLS 1.3 fixed. Each removes a way to get the surface wrong (R35–R48).
+- **D29, an adapter serves a range of versions.** `config.VersionRange{Min, Max}` is NFS's
+  `Versions` (`3` to `4.2`) and SMB's `Dialects` (`2.1` to `3.1.1`), live; `New` builds every
+  table and the router serves what the connection's snapshot of the range selects (RFC 20 §4.8).
+  E1 builds the type, fields, defaults and checks; E6 the routers, RFC 21 and 22 the tables.
 
 ## 5. Target tree
 
@@ -432,7 +436,7 @@ test/required-tests.json             T1.3  two internal/vfs/admit gates
 test/suites.yaml                     T1.3  lint-go vet tags without kerberos
 docs/internals/rfcs/rfc-20-adapters.md  T1.9  S1 amendments (on feat/storage-v2)
 docs/internals/rfcs/rfc-24-resources.md T1.9
-docs/internals/rfcs/rfc-13-configuration.md T1.9  adapters.smb.dialects row
+docs/internals/rfcs/rfc-13-configuration.md T1.9  adapters.smb.dialects and adapters.nfs.versions rows
 docs/internals/rfcs/rfc-23-control-plane.md T1.9  re-enabled adapter built anew
 docs/internals/rfcs/rfc-17-vfs.md      T1.9  Shares.MoveTarget
 docs/internals/rfcs/rfc-21-nfs.md      T1.9  fs_locations from MoveTarget
@@ -494,7 +498,8 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
     file, and certificates loaded by `New` and `Reconfigure`;
   - RFC 17 amended too: `MoveTarget` on its `Shares` area (D16), and RFC 21 §7.4's
     `fs_locations` pointing at it;
-  - RFC 13 Appendix B's `adapters.smb.dialects` row; RFC 23's re-enabled adapter built with
+  - RFC 13 Appendix B's `adapters.smb.dialects` and `adapters.nfs.versions` rows (D29), RFC 21
+    §2.1's and RFC 22 §3.1's sentences on the range, RFC 20 §4.8's paragraph; RFC 23's re-enabled adapter built with
     `New`; `connection_limit` stated as the node's, no adapter field;
   - `Start` after `Stop` refused, and `Stop` idempotent, stated on the contract;
   - the text fixes: `Deps.Budgets` names four budgets, as RFC 24 §2.5 does; §3.6's table
@@ -648,8 +653,9 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
 - **Deliverables:** `config.go`: `Adapter`, `NFS`, `SMB`, `TLS` in the shape RFC 20 §3.6
   states: every field named by its `json` tag, under `adapters.<protocol>`; the RFC 13 adapter
   rows as fields (`DrainTimeout`, `IdleTimeout`, `WriteTimeout`, `HandshakeTimeout`,
-  `ReadTimeout`, `DisabledOperations`, NFS's `TLS{Mode, CertFile, KeyFile, ClientCA}`, SMB's
-  `Dialects{Min, Max}`, `PendingTimeout`, `RecallTimeout`; not the node's connection limit,
+  `ReadTimeout`, `DisabledOperations`, NFS's `TLS{Mode, CertFile, KeyFile, ClientCA}` and
+  `Versions`, SMB's `Dialects`, both `VersionRange{Min, Max}` (D29), `PendingTimeout`,
+  `RecallTimeout`; not the node's connection limit,
   R38); `Addrs` tagged `json:"-"` with §3.6's `decision:` marker; `DefaultNFS` and
   `DefaultSMB` holding every default; `Settings`, `Common` and the `Validate` methods (D15), run
   by `New`. `Validate` checks shapes and ranges, fills no default, refuses a zero value where
@@ -663,6 +669,8 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
   - A TLS `mode` other than `off` without `cert_file` and `key_file`, and a file set while
     `off`, are refused.
   - A record naming `Addrs` is refused as an unknown field.
+  - An unknown version or dialect, or `Min` above `Max`, is refused naming the field
+    (`Versions.Min`, `Dialects.Max`).
   - A share's policy and encryption requirement are no fields here.
 - **Tests:** `DefaultNFS()` and `DefaultSMB()` each pass `Validate`, and each default equals
   its RFC value (catches an unreviewed default, or defaults that do not validate); every field
@@ -670,7 +678,9 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
   invalid values, each refused naming its field (catches a clamp); 64 s refused and 65 s
   accepted for `drain_timeout` (catches the bound); the TLS mode rules (catch a `require`
   without a certificate); a decode over `DefaultSMB()` of a record naming one field keeps every
-  other default (catches a loader that zeroes what the record omits).
+  other default (catches a loader that zeroes what the record omits); an NFS range of only
+  4.x and one of `"3"` alone both validate, and `"2"` and `"4.3"` do not (catches a version
+  list that drifts from RFC 21 §2.1).
 - **Rules:** rule 7: the `Addrs` `decision:` and D6's at `Reconfigure` (E4); rule 9: only what
   RFC 20 §3.6 names.
 

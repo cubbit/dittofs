@@ -295,6 +295,11 @@ version.
 | NFS v4.1 (RFC 8881) | yes | sessions §3; pNFS (parallel NFS, clients reading data servers directly) only in a cluster, per [RFC 15 §5.1](rfc-15-topology.md#5.1%20pNFS): a single node advertises no metadata server and answers every layout operation `NFS4ERR_NOTSUPP` (§3.3) |
 | NFS v4.2 (RFC 7862, RFC 8276) | the subset of §9.3 | an operation outside it returns `NFS4ERR_NOTSUPP` |
 
+What is served is the operator's `adapters.nfs.versions` range within this
+table, all of it by default
+([RFC 20 §4.8](rfc-20-adapters.md#4.8%20Several%20versions%20of%20one%20protocol)); a range of
+only 4.x serves no MOUNT, NLM or NSM.
+
 - A `COMPOUND` whose minor version is above 2 **MUST** be answered
   `NFS4ERR_MINOR_VERS_MISMATCH` with no operation run.
 - The minor version is the client's choice per `COMPOUND`; the server

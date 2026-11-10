@@ -371,7 +371,8 @@ prefer the strongest algorithms.
 ### 3.1 Dialects
 
 - The server negotiates the highest of **3.1.1, 3.0.2, 3.0, 2.1** the client
-  offers.
+  offers inside `adapters.smb.dialects`, the operator's range, all four by
+  default ([RFC 20 §4.8](rfc-20-adapters.md#4.8%20Several%20versions%20of%20one%20protocol)).
 - **SMB1 is refused.** An SMB1 `NEGOTIATE` naming an SMB2 dialect string is
   answered with the SMB2 multi-protocol response (MS-SMB2 3.3.5.3.1); one
   naming none is answered by closing the connection.

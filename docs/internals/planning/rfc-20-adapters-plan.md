@@ -467,7 +467,8 @@ deleted).
 - T1.4 `pkg/adapter`: the contract and `Deps`, `Watch` returning a `Loop`; `State`, `Health`
   with `Ready()`, `ConnInfo` as RFC 20 §3.4 states them. 0.75 man-days.
 - T1.5 `pkg/adapter/config`: the three settings shapes, `NFS` and `SMB` embedding `Adapter`;
-  `TLS`; `Settings` with the `Validate` and `Common` methods; `DefaultNFS` and `DefaultSMB`;
+  `TLS`; `VersionRange` for NFS's `Versions` and SMB's `Dialects`; `Settings` with the `Validate`
+  and `Common` methods; `DefaultNFS` and `DefaultSMB`;
   every field's key a `json` tag; `Addrs` supplied by the node and live.
   2 man-days.
 - T1.6 `pkg/resources`: `Budget`, `WaitBudget`, `Reservation`, `Budgets`, `Buf`, `BufPool`, `NewBufPool`,
@@ -661,10 +662,13 @@ and SMB rows, §5.1, §5.2, §5.4 for the headers, §6.10's codec gate for the h
   they need written by hand; golden vectors from RFC 5531's encodings; fuzz targets; 0-allocation
   gate.
 - T6.3 `smb/protocol` and `New` (internal and public): `Router` by dialect over the empty tables;
-  every command not supported over loopback, leak checks clean.
+  `NEGOTIATE` picking the highest dialect offered inside `Dialects`, read from the connection's
+  settings snapshot; every command not supported over loopback, leak checks clean.
 - T6.4 `nfs/protocol` and `New` (internal and public): `Router` by (program, version) over empty
   tables; unknown program, version and procedure each refused as RFC 5531 says over loopback,
-  leak checks clean.
+  a version outside `Versions` answered `PROG_MISMATCH` naming the range's ends and a minor
+  version outside it `NFS4ERR_MINOR_VERS_MISMATCH`, the range read from the connection's
+  settings snapshot; leak checks clean.
 
 ### Epic 7 — Integration with the node 🔀
 

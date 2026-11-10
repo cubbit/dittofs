@@ -1089,7 +1089,7 @@ Four kinds of change, and only two reach the adapter:
 | --- | --- | --- | --- |
 | share policy | its grants, read-only, netgroups | the next request | the service, which reads the share list by version per request ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); no adapter is touched |
 | share encryption requirement | encryption required | the next tree connect; a tree holds the flag it connected with for its life | the service, at `TreeConnect` |
-| live adapter setting | dialect range, idle timeout | connections and sessions set up afterwards | `Reconfigure` |
+| live adapter setting | NFS version range, SMB dialect range, idle timeout | connections and sessions set up afterwards | `Reconfigure` |
 | restart-class adapter setting | none today: every adapter row of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table is live (below) | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
 
 `connection_limit` is a node's, not an adapter's: the node hands each adapter
@@ -1152,17 +1152,23 @@ type TLS struct {
 	ClientCA string `json:"client_ca"`
 }
 
+// VersionRange is the versions an adapter serves, inclusive, as the protocol
+// names them. Validate refuses an unknown value or Min above Max, naming the
+// field (Versions.Min, Dialects.Max, ...).
+type VersionRange struct {
+	Min string `json:"min"`
+	Max string `json:"max"`
+}
+
 type NFS struct {
 	Adapter
-	TLS TLS `json:"tls"`
+	TLS      TLS          `json:"tls"`
+	Versions VersionRange `json:"versions"` // "3", "4.0", "4.1", "4.2"; 3 to 4.2. "3" is NFSv3 with MOUNT v3, NLM v4 and NSM v1
 }
 
 type SMB struct {
 	Adapter
-	Dialects struct {
-		Min string `json:"min"` // "2.1", "3.0", "3.0.2" or "3.1.1"
-		Max string `json:"max"`
-	} `json:"dialects"` // 2.1 to 3.1.1
+	Dialects       VersionRange  `json:"dialects"`        // "2.1", "3.0", "3.0.2", "3.1.1"; 2.1 to 3.1.1
 	PendingTimeout time.Duration `json:"pending_timeout"` // 10 min: longest a request refused for a transient cause is held
 	RecallTimeout  time.Duration `json:"recall_timeout"`  // 60 s: longest a request held on a recall; must exceed the 35 s break deadline
 }
@@ -2418,6 +2424,19 @@ decoded:
 | NFS and its auxiliary services (MOUNT, NLM, NSM) | the RPC header's (program, version): one table per pair | unknown program `PROG_UNAVAIL`; known program, version not served `PROG_MISMATCH` naming the lowest and highest served; unknown procedure `PROC_UNAVAIL` |
 | NFSv4 minor versions | one table for program 100003 version 4; `COMPOUND`'s minor version selects each row's `Versions` column | minor version not served: `NFS4ERR_MINOR_VERS_MISMATCH`, nothing run ([RFC 21 §2.1](rfc-21-nfs.md#2.1%20Versions%20served)); an operation outside its minor versions: the status RFC 21 names |
 | SMB dialects | one table; the dialect `NEGOTIATE` fixed for the connection selects each row's `Versions` column | a command outside the dialect: `STATUS_NOT_SUPPORTED`; dialects not served are never negotiated ([RFC 22 §3.1](rfc-22-smb.md#3.1%20Dialects)) |
+
+**The settings select what is served.** `New` builds every table its protocol
+has, and the adapter serves what the settings' range selects: NFS's
+`Versions`, SMB's `Dialects` (§3.6). The range is live, so the router reads
+it from the connection's settings snapshot (`Conn.Settings`), never from
+`New`'s copy, and a connection keeps what it negotiated. Outside the range a
+request is answered as the table above answers a version not served: an RPC
+program version `PROG_MISMATCH`, naming the range's lowest and highest
+served; an NFSv4 minor version `NFS4ERR_MINOR_VERS_MISMATCH`, nothing run;
+an SMB dialect never negotiated, `NEGOTIATE` picking the highest the client
+offers inside the range. NFSv3's tables are served only when `"3"` is in
+range, MOUNT, NLM and NSM with them, so a range of only 4.x serves none of
+the three.
 
 Where versions share a handler and where they do not:
 
