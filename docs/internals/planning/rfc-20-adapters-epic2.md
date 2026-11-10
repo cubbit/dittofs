@@ -6,7 +6,7 @@ protocol drives every symbol), §7 (the `core` layer), §7.1 (imports), §9 A1 a
 [RFC 29](../rfcs/rfc-29-test-harness.md) §4.11 (test doubles); `CLAUDE.md`, "Writing tests",
 as `develop` has it.
 **Track:** the team.
-**Epic 2 estimate: 5 subtasks, 9.25 man-days.**
+**Epic 2 estimate: 5 subtasks, 9.5 man-days.**
 **Depends on:** **S1, surface frozen**: E1's `internal/adapter/core` surface (RFC 20 §4.7, with
 stub bodies and a working `Bind`), `pkg/adapter`'s `Deps`, `pkg/resources`' `Budgets`, `Buf` and
 `NewBufPool`, and `pkg/vfs`' `Service` and error set. Nothing in this epic runs a `core` body.
@@ -179,6 +179,7 @@ names the epic that owns the rest.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
+| R32 | A connection hands each record to the pipeline, a concrete type with one implementation, so no interface stands between them, and a connection's tests run the real pipeline | MUST | §4.7; E1's R72 | T2.2b |
 | R15 | `core` is proven on a test-only protocol in `adaptertest/testproto`, of length-prefixed frames, with an echo, a delay, an operation that panics and one that holds; its delays and the error that holds come from the fault wrapper around the in-memory service, not from the protocol (D5) | MUST | RFC 20 §7, §2.5 (layout) | T2.1 |
 | R16 | It has a handshake, session levels, kept state, held and parked requests, a cancel and chained messages, so every type of §4.7 is exercised: every §4.7 symbol a protocol implements or calls is referenced from its non-test code | MUST | §7, §4.7 (closing sentence); E1's R75 | T2.2a, T2.2b |
 | R17 | It is driven over a plain connection: a client writes its records to any `net.Conn` and keeps the credit balance the replies grant | MUST | §7; owner decision | T2.1 |
@@ -240,12 +241,13 @@ names the epic that owns the rest.
   record's `Buf` is retained, which `core` does for a request's life (RFC 20 §4.7's release-hook
   `decision:`). A `decision:` marker at the type names that bound: withdraw it if `core` ever
   releases a record before its request ends.
-- **D5, no wait or hold operation.** RFC 20 §7 gives the test protocol's delays to the fault
+- **D5, no wait or hold operation; the user chose this.** Delays, holds and transient errors
+  come only from `vfstest.Faults` around `vfstest.Memory`. RFC 20 §7 gives the test protocol's delays to the fault
   wrapper, and RFC 29 §4.11 gives an error answer to a fault wrapper too. So the one operation
   that calls the service, `Create`, is the delay (a `Faults` delay held until the test releases
   it) and the hold (a `Faults` `ErrDelay` mapped to version 2's hold row); `testproto` has no
   operation that sleeps or fabricates a service error. A `decision:` marker at the hold row says
-  so.
+  so. It depends on `Faults` gaining a fault that holds a call until the test releases it (§9).
 - **D6, a parked request completes on the test's cue.** `Park`'s operation registers no waiter
   in the service: it proves `core`'s `Park`, not the service's lock wait, which RFC 21's and 22's
   handler tests prove against `Memory`. The test completes it with `Protocol.Release(key, err)`,
@@ -277,11 +279,11 @@ names the epic that owns the rest.
 - **D11, the budget half's failing test is E3's.** `Budget.Reserved` and `WaitBudget.Reserved`
   panic until E3, so `budgetsHeld` lands here, read by `CheckLeaks`, and its failing test, a
   `Buf` kept past the test's end, lands with E3's T3.3, where `Reserved` gets its body.
-- **D12, the allocation cell lands here.** `testproto`'s header gate is the first allocation gate
+- **D12, the allocation cell lands here; the user chose this.** `testproto`'s header gate is the first allocation gate
   written, so `unit/adapter-allocs` and its fixed `dt run` step in the unit job, as
   `unit/journal-index` has, land with it in T2.1 rather than with `BufPool`'s in E3. E3's T3.3
   adds its package to the cell's command.
-- **D13, the goroutine check compares goroutine IDs, not a count.** `CheckLeaks` reads
+- **D13, the goroutine check compares goroutine IDs, not a count; the user chose this.** `CheckLeaks` reads
   `runtime.Stack(buf, true)` when it is called and keeps each goroutine's ID; at the test's end
   it reads it again, polling the condition until no goroutine absent from the first read is
   left or a 10 s backstop passes, and reports each one left with its stack. A count
@@ -320,7 +322,8 @@ names the epic that owns the rest.
     the bytes, so a change costs those and nothing in another epic, but the layout is still
     written as final, since E5's chain and compound tests depend on what it can say.
   `testproto` needs no symbol RFC 20 §4.7 does not name, so nothing here amends the frozen
-  surface; the one surface question it raises is `core.Dispatcher` (§9).
+  surface; the one surface change it makes is D19's deletion of `core.Dispatcher`, which §4.7
+  never named.
 - **D18, what is deferred, and why that costs no migration.** Each later addition is additive,
   in one place, and changes no signature another epic calls: the import test's entry-method,
   800-line and `translate` clauses are new cases in `violations` and new seeds (RFC 21 and 22);
@@ -328,6 +331,14 @@ names the epic that owns the rest.
   inside each `wire` package, and touches nothing here; operations a later `core` test needs
   of `testproto` are new rows and new `Msg` fields, which leave every existing field and
   code as it is.
+- **D19, `core.Dispatcher` is deleted; the user chose this.** E1's `conn.go` exports a
+  `Dispatcher` interface between the connection and the pipeline and says a connection's tests
+  supply a stub. RFC 20 §4.7 says the pipeline is a concrete type with no interface between
+  them and that a connection's tests run the real pipeline, and a stub is a banned double.
+  T2.2b deletes the interface from `internal/adapter/core/conn.go` and its declaration from the
+  golden surface file `internal/adapter/core/testdata/surface/core.golden`. The RFC needs no
+  amendment, since §4.7 never named it. Changing this after E4 has built the connection would
+  mean reworking the connection's tests, which is why it is settled here, before any body exists.
 
 ## 5. Target tree
 
@@ -352,6 +363,8 @@ pkg/adapter/adapter_test.go        T2.3  import-shape test removed (D14)
 pkg/adapter/config/config_test.go  T2.3  import-shape test removed (D14)
 pkg/adapter/nfs/nfs_test.go        T2.3  vfstest.Null{} for internal/vfs (D15)
 pkg/adapter/smb/smb_test.go        T2.3  vfstest.Null{} for internal/vfs (D15)
+internal/adapter/core/conn.go      T2.2b  Dispatcher deleted (D19)
+internal/adapter/core/testdata/surface/core.golden  T2.2b  Dispatcher's entry deleted (D19)
 test/suites.yaml                   T2.1  unit/adapter-allocs cell
 .github/workflows/tests.yml        T2.1  its fixed dt run step in the unit job
 ```
@@ -539,10 +552,10 @@ func (c *Client) Balance() int             // credits granted less credits charg
 
 ### T2.2b `testproto`'s stateful operations
 
-**Subtask T2.2b estimate: 2.25 man-days.**
+**Subtask T2.2b estimate: 2.5 man-days.**
 
 - **Track:** the team. **Depends on:** T2.2a.
-- **Covers:** R16, R18, R24, R25.
+- **Covers:** R16, R18, R24, R25, R32.
 - **Deliverables:** `state.go`:
   - the session registry, one per `Protocol` (R24), and `OnClose` dropping the connection's
     references;
@@ -556,7 +569,8 @@ func (c *Client) Balance() int             // credits granted less credits charg
   - the compound row of version 1 (R25): its `Decode` reading a count and building the
     `Invocation` directly, `Members` the version-1 table with its `ReadOp`; `Stages.MaxPending`
     of 8;
-  - `state_test.go`'s coverage check (D16).
+  - `state_test.go`'s coverage check (D16);
+  - `core.Dispatcher` deleted from `conn.go`, with its declaration in `core.golden` (D19).
 - **What each `core` behaviour is given, and where its test lands:**
 
   | `core` behaviour | What `testproto` gives it | Test lands in |
@@ -577,14 +591,14 @@ func (c *Client) Balance() int             // credits granted less credits charg
     files, and every exported method of `Conn` and `Request` by name, but for those a protocol
     neither implements nor calls, which the test lists with the reason for each: `NewServer`,
     `Server`, `Listener` (a test's), `Errors` (the totality helper's), `Call` and `Middleware`
-    (`core`'s chain), `Dispatcher` (the connection's seam to the pipeline, §9).
+    (`core`'s chain). `Dispatcher` is not on the list, since D19 deletes it.
   - The compound row's `Decode` sets `Count` from its arguments and returns the bytes it took;
     `ReadOp` returns each member's code and length, and refuses a code past the record.
 - **Tests:** the registry: two connections carrying one session, the first's `OnClose` leaving it
   to the second and the second's ending it (catches a drop that ends a session another connection
   still carries, R24); the coverage check (catches an operation dropped from `testproto` that was the only
-  caller of a §4.7 symbol, which would leave that symbol unproven at S3, R16); the compound row's
-  `Decode` on a count of three and on trailing bytes (catches a count read from the wrong field
+  caller of a §4.7 symbol, which would leave that symbol unproven at S3, R16); E1's `exports_test.go` against the edited `core.golden` (fails if `Dispatcher` comes
+  back, R32); the compound row's `Decode` on a count of three and on trailing bytes (catches a count read from the wrong field
   or bytes miscounted, which E5's runner would then refuse as a decode error). The operations'
   behaviour is not tested here: it is `core`'s, run by the tests the table names.
 - **Rules:** rule 1: `Park` and `Notify` call `core`; nothing here answers in the service's
@@ -670,7 +684,7 @@ the frozen surface and is verified alone; it first runs through `core` at S3.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T2.3, T2.4 | 2.75 | — | the boundary checks every later package lands under; open beside PR 2 |
-| 2 | T2.1, T2.2a, T2.2b | 6.5 | — | `testproto` whole, so its coverage check runs on the protocol it covers |
+| 2 | T2.1, T2.2a, T2.2b | 6.75 | — | `testproto` whole, so its coverage check runs on the protocol it covers |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -684,12 +698,6 @@ A suggestion only: one pull request per subtask works as well.
   its answers (RFC 20 §7).
 - **`vfstest.Record` still exists,** a recording fake RFC 29 §4.11 bans; `testproto` and the
   leak check never use it. RFC 17's plan deletes it.
-- **`core.Dispatcher` contradicts RFC 20 §4.7.** E1's `conn.go` exports a `Dispatcher` interface
-  between the connection and the pipeline, and says a connection's own tests supply a stub; §4.7
-  says the pipeline is a concrete type with no interface between them, and that a connection's
-  tests run the real pipeline (E1's R72), and a stub is a banned double. T2.2b's coverage check
-  lists it as not a protocol's. E4, which writes the connection, should drop it from `core` and
-  its golden file, or RFC 20 should name it.
 - **Rule 4's header gate and the `Header` interface.** A header returned by value as a
   `core.Header` is boxed, which allocates; `testproto` meets the gate with a pointer into the
   record (D4), and E6's two header codecs face the same choice.
@@ -701,21 +709,14 @@ A suggestion only: one pull request per subtask works as well.
     falls by about 0.25 man-days;
   - no operation that waits a given time, and no operation that answers `ErrDelay` itself: both
     come from `vfstest.Faults` (D5);
+  - `core.Dispatcher` is deleted here, not by E4 (D19);
   - S2 as first stated ("`testproto` runs over a `net.Conn`") cannot hold before E4 and E5: at S2
     the client writes records over a real connection and `testproto` compiles and is verified
     alone, and E1's R75 ("proved by E2 T2.2") is proved at S2 as expressibility, by the coverage
     check, and as behaviour at S3;
-  - the stateful half is split into T2.2a and T2.2b, and the total is 9.25 man-days against the
-    first figure of 8, the difference being the client, D3's second table, the cell and D13's
-    goroutine IDs.
-- **Pending the user's answer.** Each is written above with the recommended option in place:
-  - the goroutine check by goroutine IDs from `runtime.Stack`, rather than a count or a new
-    `goleak` dependency (D13, T2.4);
-  - `core.Dispatcher` removed from `core` by E4, rather than named in RFC 20 §4.7 (the point
-    above; T2.2b's exemption list);
-  - delays and holds from `vfstest.Faults`, with no waiting or self-holding operation (D5,
-    T2.1);
-  - the allocation cell in T2.1 rather than E3's T3.3 (D12).
+  - the stateful half is split into T2.2a and T2.2b, and the total is 9.5 man-days against the
+    first figure of 8, the difference being the client, D3's second table, the cell, D13's
+    goroutine IDs and D19.
 - **The least certain estimates:** T2.1 (the format and its vectors are new, and the client's
   balance must match T2.2a's `HoldCodec` before either has a consumer) and T2.2b (the compound
   row's `Decode` is the one piece written directly rather than through `Bind`).
