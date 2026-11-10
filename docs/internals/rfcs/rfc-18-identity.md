@@ -1953,11 +1953,11 @@ controller, and Tier 2, through both adapters on the composed single-node
 harness, run in `unit`, with the fuzz seeds and table tests. The in-memory
 directory and domain controller stand in only because a suite holds each to the
 real one ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). The
-directory's rows: exact queries, the escaping of `*`, `(`, `)` and `\`, and an
+directory's rows: exact queries, the escaping of an LDAP filter's special characters, and an
 ambiguous name. The domain controller's: pass-through, the bad-password count
 rising by one per wrong password, and the count reset by a success. Both suites
 run against the in-memory ones in `unit` and against a real LDAP directory and
-domain controller in `integration`'s `ad-dc` option. Tier 2 is the
+domain controller in `integration/ad-dc`. Tier 2 is the
 in-process layer, as RFC 20 §7.4 is, not RFC 17's and RFC 19's kernel-client
 rows, which run in `e2e/cross-protocol`. The allocation rules are RFC 16's and
 the roles row RFC 23's; the forwarded-identity row's cluster half has no suite
