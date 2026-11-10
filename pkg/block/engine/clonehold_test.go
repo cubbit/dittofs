@@ -323,7 +323,7 @@ func TestAHungHoldOrReleaseIsCutAndCounted(t *testing.T) {
 	if err := u.e.Truncate(t.Context(), u.share.ID, g, 4); err != nil {
 		t.Fatal(err)
 	}
-	u.until(t, "another file's removal pruned while the hold hangs", func() bool { _, ok := x.prunedAt(g); return ok })
+	u.until(t, "another file's removal pruned while the hold hangs", func() bool { return u.unpruned(t, g) == 0 })
 	u.until(t, "removal_stalled for the destination", func() bool { return u.e.RemovalStalled(dst) })
 	if u.phase2Done(dst, mib) {
 		t.Error("phase 2 ran while the hold hung")
@@ -468,8 +468,8 @@ func TestAStalledClonePhase2KeepsItsRegistrations(t *testing.T) {
 	x.mu.Unlock()
 	errc := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
 	u.until(t, "removal_stalled for the destination", func() bool { return u.e.RemovalStalled(dst) })
-	if x.resumed(dst) < 5 {
-		t.Errorf("stalled after %d Resumes, want five failures first", x.resumed(dst))
+	if got := u.e.Stats().RemovalRuns["error"]; got < 5 {
+		t.Errorf("stalled after %d failed runs in engine_removal_runs_total{error}, want five first", got)
 	}
 	if !logged(logs, "removal_stalled", dst) {
 		t.Error("no removal_stalled line names the destination")
@@ -729,7 +729,7 @@ func TestRemovalsOfACloningDestinationWaitForIt(t *testing.T) {
 	if err != nil || ch == nil {
 		t.Fatalf("an unlink of the destination during phase 2: %v, %v; want it pending", ch, err)
 	}
-	if _, ok := x.prunedAt(dst); ok {
+	if u.unpruned(t, dst) == 0 {
 		t.Error("the clone's removal was pruned before its phase 2 ran")
 	}
 
@@ -740,8 +740,8 @@ func TestRemovalsOfACloningDestinationWaitForIt(t *testing.T) {
 	if got := u.answered(t, "the pending unlink", ch); !isDelay(got, vfserr.DelayClone) {
 		t.Errorf("the pending unlink: %v, want DelayClone to run it again", got)
 	}
-	if _, ok := x.prunedAt(dst); !ok {
-		t.Error("the clone's removal was not pruned once done")
+	if n := u.unpruned(t, dst); n != 0 {
+		t.Errorf("%d of the destination's removals not pruned once the clone is done", n)
 	}
 	if err := u.e.Deallocate(ctx, s, dst, 0, 4096); err != nil {
 		t.Fatalf("the punch once the clone is done: %v", err)
