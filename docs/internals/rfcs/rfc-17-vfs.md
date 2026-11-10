@@ -2737,7 +2737,8 @@ answers.
 **`Content` conformance.** `internal/vfs/contenttest.Run(t, newContent)` holds every `Content`
 to the calls §3.5 and §5.3 make: verified bytes back, a version above the last drawn, nothing
 returned before its stage. It is written before the in-memory `Content` that passes it, which
-stands in for the engine until the engine passes the same suite and is then deleted.
+stands in for the engine in the unit tiers and in `vfstest.Memory`, and the engine passing the same
+suite is what keeps the two together.
 
 **Fuzzing.** Every input a client chooses has a `testing.F` target, seeded
 with the golden vectors and the suite's own values:

@@ -45,8 +45,9 @@ moving the adapters onto `vfs.Service` (stage 5) and RFC 20's shared pipeline, p
 
 **D3. The engine through `Content`.** `internal/vfs` declares `Content`: exactly the RFC 8 methods
 §3.5's table and §5.3 call, no more. Its conformance suite is written first, then the smallest
-in-memory `Content` that passes it, which stands in until stage 3; the real `*engine.Engine` then
-satisfies the interface unchanged and passes the same suite, and the in-memory `Content` is deleted
+in-memory `Content` that passes it; the real `*engine.Engine` satisfies the interface unchanged
+at stage 3. The in-memory `Content` stays: it stands in for the engine in the unit tiers and in
+`vfstest.Memory`, and the engine passing the same suite is what keeps the two together
 ([RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)). The method list (plan §4)
 is the contract to agree with the journal v2 team before either side builds against it.
 
@@ -318,8 +319,9 @@ The signatures are RFC 8 §12.1's: `Write(ctx, f, off, p []byte, o WriteOpts{Sus
 Stage 2 writes the in-memory `Content`, since neither today's `engine.Store` nor
 `journaltest/model` can stand in for it, and writes its conformance suite first: verified bytes
 back, a version above the last drawn, nothing returned before its stage. Until stage 3 the suite
-holds only the in-memory `Content`; the engine runs it as it lands, which is what keeps the two
-from drifting, and once the engine passes it at stage 3 the in-memory `Content` is deleted.
+holds only the in-memory `Content`; the engine runs it as it lands. The in-memory `Content` then
+stands in for the engine in the unit tiers and in `vfstest.Memory`, and the engine passing the
+same suite is what keeps the two together.
 
 Not the filesystem's to call: `Apply`, `Start`, `Close`, the storage-binding calls `Bind`, `Unbind`
 and `Drop`, and the controls `PrepareCut`, `CommitCut`, `PreWarm`, `WaitOffloaded` and `Stats`,
