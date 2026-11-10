@@ -41,10 +41,11 @@ func fuzzFiles(t *testing.T, c *Core) []core.FileID {
 // answers it without setting an owner, and the other handle's next write of
 // the file still claims it.
 //
-// The input is a flat sequence of 4-byte operations: byte 0's low bit picks
+// The input is a flat sequence of 2-byte operations: byte 0's low bit picks
 // the handle, its next bit the operation and, on a write, the bit after that
-// the zero-length shape; byte 2 picks the file and byte 3 the payload's first
-// byte, so a mutation of any byte changes something the oracle answers.
+// the zero-length shape; byte 1 picks the file. Every byte is read, so a
+// mutation of any of them changes something the oracle answers, and the write
+// payload is a fixed few bytes, which the oracle ignores beyond its length.
 //
 // Every input builds a fresh core and a fresh oracle. The fixture costs a
 // directory, a segment pool and the wait for the pool's spares — more than an
@@ -67,9 +68,9 @@ func FuzzTagClaims(f *testing.F) {
 		var owners [4]core.ShareTag
 
 		var ops strings.Builder
-		for pos, op := 0, 0; pos+3 < len(data); pos, op = pos+4, op+1 {
+		for pos, op := 0, 0; pos+1 < len(data); pos, op = pos+2, op+1 {
 			h := int(data[pos] & 0x1)
-			file := int(data[pos+2]) % len(files)
+			file := int(data[pos+1]) % len(files)
 			owner := owners[file]
 			fmt.Fprintf(&ops, "op %d: handle %d (tag %d) file %d (owner %d)", op, h, handles[h].Tag, file, owner)
 			switch {
@@ -85,10 +86,11 @@ func FuzzTagClaims(f *testing.F) {
 				// A write: zero-length when the byte's 0x4 bit is set. Both
 				// shapes name the file all the same, so both serve or refuse
 				// together; only the claim differs, for a zero-length write
-				// makes none.
+				// makes none. The payload is fixed, for the oracle answers
+				// its length alone.
 				var payload []byte
 				if data[pos]&0x4 == 0 {
-					payload = []byte{data[pos+3], 'x', 'y', 'z'}
+					payload = fuzzPayload
 				}
 				fmt.Fprintf(&ops, ": a write of %q\n", payload)
 				before := takeTagState(t, c, seam, files[file])
@@ -193,35 +195,39 @@ func fuzzAssertUnchanged(t *testing.T, c *Core, seam *kit.Seam, f core.FileID, b
 	}
 }
 
-// tagSeeds are the hand-written inputs, at four bytes per operation as the
+// fuzzPayload is the fixed few-byte payload every non-zero-length fuzz write
+// carries: the oracle answers a write's length alone, so no input byte spends
+// itself on the payload's content.
+var fuzzPayload = []byte("fuzz")
+
+// tagSeeds are the hand-written inputs, at two bytes per operation as the
 // fuzz loop decodes them: byte 0 = handle bit 0x1, operation bit 0x2 and, on
-// a write, zero-length bit 0x4; byte 2 = the file; byte 3 = the payload's
-// first byte.
+// a write, zero-length bit 0x4; byte 1 = the file.
 var tagSeeds = [][]byte{
 	// A claims file 0; B's write and B's read-side check of it are refused.
-	{0x00, 0, 0x00, 'a', 0x01, 0, 0x00, 'b', 0x03, 0, 0x00, 'b'},
+	{0x00, 0x00, 0x01, 0x00, 0x03, 0x00},
 
 	// B claims file 1; A's write and A's read-side check of it are refused.
-	{0x01, 0, 0x01, 'b', 0x00, 0, 0x01, 'a', 0x02, 0, 0x01, 'a'},
+	{0x01, 0x01, 0x00, 0x01, 0x02, 0x01},
 
 	// B's read-side check of unowned file 2 claims nothing, so A's write of
 	// it serves and claims it; B's check of it is refused after.
-	{0x03, 0, 0x02, 'x', 0x00, 0, 0x02, 'a', 0x03, 0, 0x02, 'x'},
+	{0x03, 0x02, 0x00, 0x02, 0x03, 0x02},
 
 	// Both handles' read-side checks of unowned file 3 claim nothing, so
 	// A's write of it serves and claims it.
-	{0x02, 0, 0x03, 'x', 0x03, 0, 0x03, 'x', 0x00, 0, 0x03, 'a', 0x03, 0, 0x03, 'x'},
+	{0x02, 0x03, 0x03, 0x03, 0x00, 0x03, 0x03, 0x03},
 
 	// A's zero-length write of unowned file 0 claims nothing, so B's write of
 	// it serves and claims it, and A's zero-length write of B's file is then
 	// refused — the wrong handle never reaches the shape's clean return.
-	{0x04, 0, 0x00, 'a', 0x01, 0, 0x00, 'b', 0x04, 0, 0x00, 'a'},
+	{0x04, 0x00, 0x01, 0x00, 0x04, 0x00},
 
 	// Both handles write every file: each file's first writer claims it and
 	// every other handle's write of it is refused. Eight operations, all four
 	// files on both handles.
-	{0x00, 0, 0x00, 'a', 0x01, 0, 0x00, 'b',
-		0x00, 0, 0x01, 'a', 0x01, 0, 0x01, 'b',
-		0x00, 0, 0x02, 'a', 0x01, 0, 0x02, 'b',
-		0x00, 0, 0x03, 'a', 0x01, 0, 0x03, 'b'},
+	{0x00, 0x00, 0x01, 0x00,
+		0x00, 0x01, 0x01, 0x01,
+		0x00, 0x02, 0x01, 0x02,
+		0x00, 0x03, 0x01, 0x03},
 }

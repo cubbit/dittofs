@@ -5,10 +5,11 @@ import (
 	"errors"
 	"math"
 	"sync"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
@@ -289,7 +290,10 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 			// first. A rebuild is pinned at the index level, where the
 			// rebuilder is reachable: TestTagConflictsFromRebuild and its
 			// neighbours in index/tags_test.go hold that a file whose records
-			// name one tag claims that tag, a rivalled one its conflict.
+			// name one tag claims that tag, a rivalled one its conflict. The
+			// state a segment's last record leaving the disk leaves — the
+			// next claim of the file a fresh one — is pinned there too, by
+			// TestTagOutlivesChangeVersion and TestTagConflictsLeaveWithTheEntry.
 			c2, _ := newTestCore(t, func(o *coreOptions) { o.state = State{Index: c.Index()} })
 			a2, b2 := twoHandles(t, c2)
 			if _, err := c2.WriteAt(context.Background(), b2, f, 4, []byte("bb"), 1); !errors.Is(err, core.ErrOtherShare) {
@@ -297,21 +301,6 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 			}
 			if _, err := c2.WriteAt(context.Background(), a2, f, 4, []byte("cc"), 1); err != nil {
 				t.Fatalf("A's write of the carried tag-only file: %v", err)
-			}
-		})
-
-		t.Run("segment_gone_claims", func(t *testing.T) {
-			c, _, b, f := tagOnly(t)
-			// Once no segment holds a record of the file, the next appending
-			// call claims it afresh. Reaching that from the datapath needs a
-			// segment's unlink, which no call here wires; the state it
-			// leaves — a file no record holds a tag for — is what ClearTag
-			// makes over the tag-only entry, and B's write claims F over it.
-			if err := c.Index().ClearTag(f); err != nil {
-				t.Fatalf("ClearTag: %v", err)
-			}
-			if _, err := c.WriteAt(context.Background(), b, f, 8, []byte("dd"), 1); err != nil {
-				t.Fatalf("B's claim of F once no record holds its tag: %v", err)
 			}
 		})
 	})
@@ -370,6 +359,8 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 		f := testFile(20)
 		parked := make(chan struct{})
 		release := make(chan struct{})
+		var armed atomic.Bool
+		waiting := make(chan struct{})
 		c, seam := newTestCore(t, func(o *coreOptions) {
 			o.afterAppend = func() {
 				select {
@@ -379,6 +370,17 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 					<-release
 				}
 			}
+			// The domain table closes waiting the first time B's write asks
+			// for F's domain, which proves B passed its in-front-of-the-
+			// domain check: that check, against the entry before A's publish,
+			// must have found F untagged. Only a write that reaches the
+			// domain can be told the claim it could not see — a timer here
+			// would only catch B if it arrived inside the timer's window and
+			// would pass, in-domain check removed, whenever it arrived later
+			// and its early check met A's published claim.
+			o.wrapDomains = func(d durability.Domains) durability.Domains {
+				return lockSignal{d, f, &armed, waiting}
+			}
 		})
 		a, b := twoHandles(t, c)
 		doneA := make(chan error, 1)
@@ -387,22 +389,18 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 			doneA <- err
 		}()
 		<-parked
+		armed.Store(true)
 		// B's write names the same new FileID while A's is parked after its
-		// append. It must block on the file's append domain — the check and
-		// the claim are one step under it — so it returns nothing before A
-		// publishes; once A does, B is refused with ErrOtherShare.
+		// append. It passes its early check — F is still untagged, for A has
+		// not published — and queues on F's append domain. Only the check
+		// under the domain can meet A's claim there, so B is refused with
+		// ErrOtherShare once A publishes, without appending anything.
 		done := make(chan error, 1)
 		go func() {
 			_, err := c.WriteAt(context.Background(), b, f, 8, []byte("bbbb"), 1)
 			done <- err
 		}()
-		select {
-		case err := <-done:
-			t.Fatalf("B's write returned %v while A's held the append domain", err)
-		case <-time.After(50 * time.Millisecond):
-			// B is parked on the file's domain: let A finish and see B
-			// refused.
-		}
+		<-waiting
 		close(release)
 		if err := <-doneA; err != nil {
 			t.Fatalf("A's parked write: %v", err)
@@ -440,10 +438,10 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 		c, seam := newTestCore(t)
 		a, b := twoHandles(t, c)
 		ctx := context.Background()
-		next := raceFilePicker(t, c)
+		nextPair := racePairPicker(t, c)
 		const rounds = 500
 		for round := range rounds {
-			fa, fb := next(), next()
+			fa, fb := nextPair()
 			before := takeRaceCounters(t, c)
 			var mu sync.Mutex
 			var won, lost int
@@ -488,34 +486,41 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 	})
 }
 
-// raceFilePicker returns a function handing out fresh FileIDs in pairs whose
+// lockSignal wraps the file append domain table and closes waiting the first
+// time Lock asks for f's domain once armed, before handing the ask on — the
+// signal that a call has passed whatever runs before it and queued on the
+// domain, which a timer can only catch by racing the caller to it.
+type lockSignal struct {
+	durability.Domains
+	f       core.FileID
+	armed   *atomic.Bool
+	waiting chan struct{}
+}
+
+func (l lockSignal) Lock(id core.FileID) func() {
+	if id == l.f && l.armed.CompareAndSwap(true, false) {
+		close(l.waiting)
+	}
+	return l.Domains.Lock(id)
+}
+
+// racePairPicker returns a function handing out fresh FileIDs in pairs whose
 // members sit on the core's two distinct streams, so a round's two raced
-// claims are on both streams and every round races a first claim of files
-// the core has not seen. The ids spread a counter over three bytes, so none
-// is the all-zero identifier the record format refuses, and when a pair's
-// members happen to share a stream the picker advances until they differ:
-// the first pair is asserted to differ, so a wrong pairing fails the test
-// rather than passing.
-func raceFilePicker(t *testing.T, c *Core) func() core.FileID {
+// claims are on both streams and every round races a first claim of files the
+// core has not seen. The ids spread a counter over three bytes, so none is
+// the all-zero identifier the record format refuses, and the picker advances
+// until a pair's two ids sit on two streams before handing the pair out.
+func racePairPicker(t *testing.T, c *Core) func() (core.FileID, core.FileID) {
 	t.Helper()
 	// The ids start past the bytes the other subtests name.
 	n := 31
-	first := true
-	return func() core.FileID {
-		if first {
-			// The pair handed out first is asserted to differ, so a wrong
-			// pairing fails the test rather than passing.
-			if c.Streams().For(pickRaceFile(n)) == c.Streams().For(pickRaceFile(n+1)) {
-				t.Fatal("the pair's two ids sit on one stream; pick ids the streams differ on")
-			}
-			first = false
-		}
+	return func() (core.FileID, core.FileID) {
 		for c.Streams().For(pickRaceFile(n)) == c.Streams().For(pickRaceFile(n+1)) {
 			n++
 		}
-		f := pickRaceFile(n)
-		n++
-		return f
+		fa, fb := pickRaceFile(n), pickRaceFile(n+1)
+		n += 2
+		return fa, fb
 	}
 }
 
