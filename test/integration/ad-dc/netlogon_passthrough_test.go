@@ -69,10 +69,9 @@ func TestNetlogonPassthroughAlice(t *testing.T) {
 		t.Skip("docker not found, skipping NETLOGON passthrough test")
 	}
 
-	// setupADDC starts the Samba AD-DC container (or reuses it if already running).
-	// We only need the keytab/krb5conf paths here; the DC address comes from docker inspect.
-	_, _, _, cleanup := setupADDC(t)
-	defer cleanup()
+	// setupADDC starts this test's Samba AD-DC container; the DC address comes
+	// from docker inspect.
+	setupADDC(t)
 
 	dcIP := getContainerIP(t)
 	t.Logf("AD-DC container IP: %s", dcIP)

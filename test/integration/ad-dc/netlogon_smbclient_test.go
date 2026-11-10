@@ -48,10 +48,8 @@ func TestSMBNTLMNetlogonPassthrough(t *testing.T) {
 
 	// Step 1: start the Samba AD-DC fixture.
 	// setupADDC is defined in ad_dc_integration_test.go (same package).
-	// We only need the DC container IP for NETLOGON; the returned keytab +
-	// krb5conf are not used by this test (it forces NTLM).
-	_, _, _, dcCleanup := setupADDC(t)
-	defer dcCleanup()
+	// Only the DC container IP is used, for NETLOGON (this test forces NTLM).
+	setupADDC(t)
 
 	dcIP := getContainerIP(t)
 	t.Logf("AD-DC container IP: %s (used for NETLOGON DCAddresses)", dcIP)

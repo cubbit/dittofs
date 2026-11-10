@@ -94,12 +94,10 @@ func adDockerExec(args ...string) ([]byte, error) {
 // AD-DC Docker Setup
 
 // setupADDC builds the Samba AD-DC image, runs it (letting its own entrypoint
-// provision the domain), waits for the KDC to accept connections, and copies
-// the exported keytab + a host-side krb5.conf pointing at the mapped KDC port.
-func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, cleanup func()) {
+// provision the domain), and waits for the KDC to accept connections and the
+// entrypoint's setup to finish. The container is removed when the test ends.
+func setupADDC(t *testing.T) {
 	t.Helper()
-
-	tmpDir := t.TempDir()
 
 	// Address a container private to this test so no other test's teardown can
 	// remove the DC out from under an in-flight docker exec.
@@ -107,7 +105,7 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 	adContainerName = container
 
 	// Register the teardown before the container exists, capturing this test's
-	// name, so a t.Fatalf anywhere below (port discovery, readiness, keytab copy)
+	// name, so a t.Fatalf anywhere below (port discovery, readiness)
 	// cannot orphan the container — sibling tests use different names and their
 	// cleanup cannot reclaim it.
 	t.Cleanup(func() {
@@ -160,7 +158,7 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 	}
 	portStr := strings.TrimSpace(string(portOut))
 	parts := strings.Split(portStr, ":")
-	kdcHostPort, err = strconv.Atoi(parts[len(parts)-1])
+	kdcHostPort, err := strconv.Atoi(parts[len(parts)-1])
 	if err != nil {
 		t.Fatalf("parse port %q: %v", portStr, err)
 	}
@@ -174,43 +172,6 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 	// The samba that served the setup keeps running, so the DC stays up from here.
 	t.Log("Waiting for the AD-DC setup to finish...")
 	waitForADReady(t, 4*time.Minute)
-
-	// Copy the keytab out of the container. docker cp reads as root inside the
-	// container, so the fixture's chmod 0400 / chown to the dittofs uid does
-	// not block us (it would block a host volume mount).
-	keytabPath = filepath.Join(tmpDir, "dittofs.keytab")
-	if out, err := adDockerCombined("cp",
-		adContainerName+":/keytabs/dittofs.keytab", keytabPath); err != nil {
-		dumpADLogs(t)
-		t.Fatalf("copy keytab: %v\n%s", err, out)
-	}
-
-	// Write a host-side krb5.conf that points the realm KDC at the mapped host
-	// port (force TCP, the mapped port is TCP only). The Samba-generated
-	// krb5.conf in the container references the DC hostname, which the host
-	// cannot resolve — so we synthesise a minimal one.
-	krb5ConfPath = filepath.Join(tmpDir, "krb5.conf")
-	hostKrb5Conf := fmt.Sprintf(`[libdefaults]
-    default_realm = %s
-    dns_lookup_realm = false
-    dns_lookup_kdc = false
-    udp_preference_limit = 1
-    rdns = false
-
-[realms]
-    %s = {
-        kdc = 127.0.0.1:%d
-    }
-`, adRealm, adRealm, kdcHostPort)
-	if err := os.WriteFile(krb5ConfPath, []byte(hostKrb5Conf), 0o644); err != nil {
-		t.Fatalf("write krb5.conf: %v", err)
-	}
-
-	cleanup = func() {
-		t.Log("Cleaning up AD-DC container...")
-		_ = exec.Command("docker", "rm", "-f", container).Run()
-	}
-	return kdcHostPort, keytabPath, krb5ConfPath, cleanup
 }
 
 func findADDockerfileDir(t *testing.T) string {
