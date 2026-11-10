@@ -886,8 +886,10 @@ with nothing of it dropped, and the result says so.
 
 ### 3.4 Adapters
 
-An adapter is configured by settings at installation scope, which a node record
-**MAY** override ([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)); its listen addresses are bootstrap facts of
+An adapter is configured by its own record, at installation scope per adapter
+([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)): every key is
+`adapters.<protocol>.<field>`, the common timeouts included, so each adapter
+carries its own copy; its listen addresses are bootstrap facts of
 each host ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)), not records. The resource is
 `/adapters/{protocol}`, with `enabled` and the protocol's settings:
 

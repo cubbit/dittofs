@@ -982,7 +982,7 @@ callback that fails or times out **MUST** be treated as the client not answering
 a recall that is not acknowledged by its deadline revokes the grant
 ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
 
-![A recall without a waiting worker: build01's NFS write conflicts with alice-pc's SMB lease, so the service sends RecallGrant, which the SMB adapter turns into a lease break, and answers ErrDelay at once, mapped to NFS4ERR_DELAY or NFS3ERR_JUKEBOX; alice-pc acknowledges, the service gets AckRecall, and build01's retry goes ahead. If alice-pc never answers, the break is forced at 35 s and the lease drops to none; if the conflicting caller is an SMB client, the SMB adapter sends an interim response and re-drives the call itself, held up to smb_pending_deadline, which exceeds the break deadline](img/rfc17-recall.svg)
+![A recall without a waiting worker: build01's NFS write conflicts with alice-pc's SMB lease, so the service sends RecallGrant, which the SMB adapter turns into a lease break, and answers ErrDelay at once, mapped to NFS4ERR_DELAY or NFS3ERR_JUKEBOX; alice-pc acknowledges, the service gets AckRecall, and build01's retry goes ahead. If alice-pc never answers, the break is forced at 35 s and the lease drops to none; if the conflicting caller is an SMB client, the SMB adapter sends an interim response and re-drives the call itself, held up to recall_timeout, which exceeds the break deadline](img/rfc17-recall.svg)
 
 **No worker waits on a client.** An operation that conflicts with a caching
 grant starts the recall and returns `ErrDelay` at once. An NFS adapter answers

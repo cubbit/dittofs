@@ -381,35 +381,45 @@ It may then exceed *L*.
 
 A pool is a counter, not an allocator. Each consumer of a counted pool **MUST**
 reserve the bytes it is about to hold from its pool **before** it holds them,
-and release them when it frees them:
+and release them when it frees them. A counted pool is a `Budget` or a
+`WaitBudget` in code, as its row says it refuses or waits:
 
 ```go
 package resources // pkg/resources
 
-// Budget is one counted pool (§2.3): waits or refuses at its ceiling, as the pool's row says.
-type Budget struct{ /* name, ceiling, waits bool, reserved, per-key DRR queues */ }
-func NewBudget(name string, ceiling int64, waits bool) *Budget
-// Reserve charges n bytes for key. A waiting budget waits within ctx; a refusing one refuses at once.
-// Under a ctx already past its deadline a waiting budget tries once and refuses at once, as Park needs.
-func (b *Budget) Reserve(ctx context.Context, key netip.Addr, n int64) (Reservation, error)
+// Budget is a counted pool that refuses at its ceiling (§2.3): connection state, hold, open state.
+type Budget struct{ /* name, ceiling, reserved */ }
+func NewBudget(name string, ceiling int64) *Budget
+func (b *Budget) Reserve(n int64) (Reservation, error) // refuses at once past the ceiling
 // Reclaim charges n past the ceiling, refusing only past twice it; a durable one never refuses (§4.6).
 func (b *Budget) Reclaim(n int64, durable bool) (Reservation, error)
 func (b *Budget) Reserved() int64 // for gauges and the leak check (§2.7)
 
-// Reservation is a value, moved and never copied: Release returns n to the budget
-// and to key's count, then zeroes the Reservation, so a second Release does nothing.
-type Reservation struct{ b *Budget; key netip.Addr; n int64 }
+// WaitBudget is a counted pool that waits at its ceiling, fair per key (§4.1): receive, reply.
+type WaitBudget struct{ /* name, ceiling, reserved, per-key DRR queues */ }
+func NewWaitBudget(name string, ceiling int64) *WaitBudget
+// Reserve charges n bytes for key, waiting within ctx. Under a ctx already past
+// its deadline it tries once and refuses at once, as Park needs.
+func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Reservation, error)
+func (b *WaitBudget) Reserved() int64
+
+// Reservation is a value from either, moved and never copied: Release returns n to
+// its budget, and to key's count on a WaitBudget, then zeroes the Reservation, so a
+// second Release does nothing.
+type Reservation struct{ /* its budget, key, n */ }
 func (r *Reservation) Release()
 
-// Pools is what an adapter is handed (RFC 20 §3.4): the four budgets on the request path.
-type Pools struct{ Receive, Reply, Conn, Hold *Budget }
+// Budgets is what an adapter is handed (RFC 20 §3.4): the four budgets on the request path.
+type Budgets struct {
+	Receive, Reply   *WaitBudget
+	Connection, Hold *Budget
+}
 
-func NewBufPool(b *Budget) *BufPool // RFC 20 §6.8's buffers in §3.1's classes, each reserved from b, its Get keyed as Reserve is
+func NewBufPool(b *WaitBudget) *BufPool // RFC 20 §6.8's buffers in §3.1's classes, each reserved from b, its Get keyed as Reserve is
 ```
 
-- Whether a budget waits or refuses is fixed by its pool's row (§2.3), so one
-  `Reserve` serves both. A refusing budget ignores `key`; its callers pass the
-  zero `netip.Addr`.
+- Whether a pool waits or refuses is fixed by its row (§2.3), so it is a type:
+  only a `WaitBudget` takes a context and a key.
 - `Reservation` is a value, so taking one allocates nothing. It keeps its
   key, so a release lowers that key's count, which §4.1's cap reads.
 - `Reclaim` is the open-state table's, for a reclaim during grace (§4.6): it
@@ -479,15 +489,15 @@ debug.SetMemoryLimit(lim.Bytes * 15 / 16)          // (a) before any pool fills
 sp := resources.SplitFor(lim)                      // (a) §2.3, §2.4: the fractions and floors
 st, _ := metadata.Open(ctx, kv, metadata.Options{CacheBytes: sp.Meta /* … */}) // a size, §7.3
 err = sp.Check(settings)                           // (b) §4.4, §7: refuses what does not fit
-pools := &resources.Pools{
-	Receive: resources.NewBudget("receive", sp.Receive, true),
-	Reply:   resources.NewBudget("reply", sp.Reply, true),
-	Conn:    resources.NewBudget("connection", sp.Conn, false),
-	Hold:    resources.NewBudget("hold", sp.Hold, false),
+budgets := &resources.Budgets{
+	Receive:    resources.NewWaitBudget("receive", sp.Receive),
+	Reply:      resources.NewWaitBudget("reply", sp.Reply),
+	Connection: resources.NewBudget("connection", sp.Conn),
+	Hold:       resources.NewBudget("hold", sp.Hold),
 }
-ost := openstate.New(openstate.Deps{Budget: resources.NewBudget("open", sp.Open, false) /* … */})
-svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(pools.Receive, pools.Reply) /* … */})
-// every adapter is handed pools as adapter.Deps.Pools (RFC 20 §3.4); the journals take
+ost := openstate.New(openstate.Deps{Budget: resources.NewBudget("open", sp.Open) /* … */})
+svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(budgets.Receive, budgets.Reply) /* … */})
+// every adapter is handed budgets as adapter.Deps.Budgets (RFC 20 §3.4); the journals take
 // sp.Index and the syncer sp.Transfers as sizes (§7.1, §7.2); CPU tokens are a
 // semaphore.Weighted over sp.Tokens (§6.2)
 ```
@@ -496,17 +506,17 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(pools.Receive, pools.Re
 | --- | --- | --- | --- |
 | `Limit` | the root, first | the root | read once; never changes |
 | `Split` | the root, from `Limit` | the root, a value | recomputed only at the next start |
-| `Pools`: receive, reply, connection state, hold | the root | shared by every adapter's `core` | none; checked at zero after the adapters stop |
+| `Budgets`: receive, reply, connection state, hold | the root | shared by every adapter's `core` | none; checked at zero after the adapters stop |
 | open-state `Budget` | the root | the open-state table; **(cluster)** also the dedup table | as above |
 | `ShareCap` | the root, over receive and reply | the service's admission, in `*vfs.Filesystem` | entries dropped at zero |
 | CPU tokens | the root, from `Split` | shared by background workers | none |
 | sizes: metadata store, index, transfers | the root, from `Split` | the store, each journal, the syncer | handed at construction; the owner sizes itself |
 
 - **A consumer takes only the budgets it charges**, as fields of its own
-  `Deps`, never the whole set: `adapter.Deps` takes `Pools`, `openstate.Deps` the
+  `Deps`, never the whole set: `adapter.Deps` takes `Budgets`, `openstate.Deps` the
   open-state budget, `vfs.Deps` the share cap; the store, the journals and the
   syncer take a size, not a budget.
-- **Nothing here has a lifecycle.** `Detect`, `SplitFor` and `NewBudget` start
+- **Nothing here has a lifecycle.** `Detect`, `SplitFor`, `NewBudget` and `NewWaitBudget` start
   no goroutine and open nothing; a release grants the next waiter on the
   releasing goroutine. There is no `Start` or `Close`. After the adapters and
   the service have stopped, the root logs any budget whose `Reserved()` is not
@@ -533,7 +543,7 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(pools.Receive, pools.Re
 pkg/resources/
   limit.go        Limit, Detect: the runtime limit, the control group, the host (§2.1)
   split.go        Split, SplitFor, Check: fractions, floors, the ceilings' sum, settings (§2.3, §2.4, §7)
-  budget.go       Budget, Reservation, Pools: counted pools and their turns (§2.5, §4.1)
+  budget.go       Budget, WaitBudget, Reservation, Budgets: counted pools and their turns (§2.5, §4.1)
   buf.go          Buf, BufPool, NewBufPool: §3.1's classes, a sync.Pool per class, reference counted, reserved before taken (RFC 20 §6.8)
   sharecap.go     ShareCap, WithCharge, ChargeOf (§4.2)
   fd.go           the open-file split and fd_limit_low (§6.3)
@@ -806,7 +816,7 @@ func ChargeOf(ctx context.Context) (receive, reply int64) // 0, 0 for an interna
 // receive and reply budgets, whose fill it reads. A map entry exists only while a share
 // has a call in flight, so a removed share leaves nothing behind.
 type ShareCap struct{ /* mu; per share: receive bytes, reply bytes */ }
-func NewShareCap(receive, reply *Budget) *ShareCap
+func NewShareCap(receive, reply *WaitBudget) *ShareCap
 func (c *ShareCap) Admit(ctx context.Context, share uint64, exempt bool) (release func(), err error)
 ```
 

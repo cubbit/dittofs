@@ -504,9 +504,9 @@ pkg/vfs/                    the service interface (RFC 17)
 pkg/vfs/vfstest/            the recording fake and the null service
 pkg/resources/              RFC 24's budgets and pooled buffers, shared by every component (§6.8)
 pkg/adapter/                the public surface, as pkg/vfs is the service's:
-  adapter.go                the contract the node drives: Adapter, State, Health, ConnInfo, Sidecar, Serving (§3.4, §3.5)
+  adapter.go                the contract the node drives: Adapter, State, Health, ConnInfo, Sidecar, Serving, Loop (§3.4, §3.5)
   deps.go                   Deps (§3.4)
-  config/                   the settings shapes, the sealed Settings and RestartRequired (§3.6), restart-only fields tagged (RFC 13): a leaf
+  config/                   the settings shapes, their defaults and Settings (§3.6): a leaf
   nfs/  smb/                New: one public constructor each, a call into the implementation
 internal/adapter/
   core/                     one package, a file per concern; imports no protocol:
@@ -882,9 +882,7 @@ type Adapter interface {
 	// Reconfigure adds and removes listeners and applies live settings to
 	// connections set up after it returns (§3.1). s is the adapter's own
 	// protocol's shape, config.NFS or config.SMB; the other protocol's is
-	// refused with an error (§3.6). A restart-only
-	// setting is refused with an error wrapping config.ErrRestartRequired;
-	// the node applies it by Stop, New and Start.
+	// refused with an error (§3.6). Every adapter setting is live today.
 	Reconfigure(ctx context.Context, s config.Settings) error
 
 	// Stop moves serving to draining to stopped. ctx's deadline is the drain
@@ -896,7 +894,7 @@ type Adapter interface {
 	// returns once the adapter is stopped.
 	Stop(ctx context.Context) error
 
-	// Health is ready when serving with every listener bound; configured and
+	// Health is ready when serving with no condition raised; configured and
 	// draining report not ready (RFC 25 §3.6).
 	Health() Health
 
@@ -906,8 +904,11 @@ type Adapter interface {
 	Connections() iter.Seq[ConnInfo]
 }
 
-// State is one of §3.1's states.
+// State is one of §3.1's states. Its String is "configured", "serving",
+// "draining" or "stopped".
 type State uint8
+
+func (s State) String() string
 
 const (
 	StateConfigured State = iota
@@ -919,9 +920,11 @@ const (
 // Health is what the node reads for readiness and its conditions (§3.7).
 type Health struct {
 	State      State
-	Ready      bool     // serving with every listener bound
 	Conditions []string // §3.7's conditions this adapter raises now, by name: adapter_listener_lost
 }
+
+// Ready is serving with no condition raised.
+func (h Health) Ready() bool
 
 // ConnInfo is one open connection.
 type ConnInfo struct {
@@ -939,22 +942,30 @@ package adapter // pkg/adapter
 
 // Deps is what an adapter is handed by node.New. It builds no other component (RFC 23 §2.1).
 // A field is an interface where it has two implementations, a concrete type
-// where it has one.
+// where it has one. Only Service and Budgets are required, and New refuses a
+// missing one by name; every other field has a working zero value.
 type Deps struct {
-	Service vfs.Service       // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
-	Pools   *resources.Pools  // RFC 24 §2.5 (pkg/resources): the four budgets on the request path, receive, reply, connection state and hold
-	Metrics *metrics.Registry // RFC 25 §8.2
-	Tracer  trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
-	Logger  *slog.Logger
-	// Watch registers a loop with the node's liveness watchdog (RFC 25 §3.5):
-	// turn reports a pass, idle a wait with nothing to do (an accept loop at
-	// its accept deadline), stop unregisters it at unbind. The node adapts
-	// health.Loop's Turn, Idle and Close to this; nil watches nothing, as in a test.
-	Watch func(loop string) (turn, idle, stop func())
+	Service vfs.Service         // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
+	Budgets *resources.Budgets  // RFC 24 §2.5 (pkg/resources): the four budgets on the request path, receive, reply, connection state and hold
+	Metrics *metrics.Registry   // RFC 25 §8.2; nil registers nothing
+	Tracer  trace.Tracer        // RFC 25 §8.1: spans; nil is the no-op tracer
+	Logger  *slog.Logger        // nil discards
+	// Watch registers a loop with the node's liveness watchdog (RFC 25 §3.5)
+	// and returns it: Turn reports a pass, Idle a wait with nothing to do (an
+	// accept loop at its accept deadline), Close unregisters it at unbind.
+	// RFC 25's health loop satisfies Loop as it is. nil watches nothing.
+	Watch func(loop string) Loop
 	// Dial opens an outbound connection from a given local address: NLM's
-	// callbacks to a host, from the floating address it used (§3.3). A test
-	// supplies one returning a pipe.
+	// callbacks to a host, from the floating address it used (§3.3). nil is
+	// a net.Dialer bound to that address; a test supplies one returning a pipe.
 	Dial func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+}
+
+// Loop is one watched loop (RFC 25 §3.5).
+type Loop interface {
+	Turn()
+	Idle()
+	Close()
 }
 ```
 
@@ -970,8 +981,7 @@ func smb.New(d adapter.Deps, s config.SMB) (adapter.Adapter, error) // pkg/adapt
 `New` fails on a setting the adapter cannot apply, so the failure is at
 configured, not at the first request (§3.1). Settings arrive in exactly two
 places: `New`, which takes its protocol's shape, and `Reconfigure`, which takes
-`config.Settings`, an interface only `config.NFS` and `config.SMB` satisfy
-(§3.6).
+`config.Settings`, which `config.NFS` and `config.SMB` implement (§3.6).
 
 
 ### 3.5 Sidecars
@@ -1078,7 +1088,7 @@ Four kinds of change, and only two reach the adapter:
 | share policy | its grants, read-only, netgroups | the next request | the service, which reads the share list by version per request ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); no adapter is touched |
 | share encryption requirement | encryption required | the next tree connect; a tree holds the flag it connected with for its life | the service, at `TreeConnect` |
 | live adapter setting | dialect range, idle timeout | connections and sessions set up afterwards | `Reconfigure` |
-| restart-class adapter setting | what [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table marks restart-only | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
+| restart-class adapter setting | none today: every adapter row of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table is live (below) | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
 
 `connection_limit` is a node's, not an adapter's: the node hands each adapter
 its share of it (§6.4,
@@ -1115,79 +1125,88 @@ adapter reads:
 ```go
 package config // pkg/adapter/config: a leaf
 
-// Adapter is what every adapter reads; core reads only this.
+// Adapter is what every adapter reads; core reads only this. Each adapter
+// record carries its own copy, under adapters.<protocol>.
 type Adapter struct {
-	Addrs []netip.Addr // supplied by the node, live (below)
-	// … RFC 13 Appendix B's adapter rows, each with its default; not connection_limit, the node's
+	Addrs              []netip.Addr  `json:"-"`                   // supplied by the node, live (below); a record naming it is refused as an unknown field
+	DrainTimeout       time.Duration `json:"drain_timeout"`       // 90 s; at least the break deadline plus the request deadline, 65 s
+	IdleTimeout        time.Duration `json:"idle_timeout"`        // 15 min
+	WriteTimeout       time.Duration `json:"write_timeout"`       // 60 s
+	HandshakeTimeout   time.Duration `json:"handshake_timeout"`   // 30 s
+	ReadTimeout        time.Duration `json:"read_timeout"`        // 30 s: the rest of a request once its first byte arrived
+	DisabledOperations []string      `json:"disabled_operations"` // none
 }
 
-// NFS and SMB are each protocol's whole shape: the common part, and what
-// only that protocol reads (NFS's TLS; SMB's dialect range, smb_pending_cap
-// and smb_pending_deadline).
+// Common returns the Adapter, promoted into NFS and SMB.
+func (a Adapter) Common() Adapter { return a }
+
+// TLS is NFS over TLS (§5.5). Mode is "off" (the default), "opportunistic"
+// or "require"; any mode but off requires CertFile and KeyFile, and a file
+// set while off is refused. The version is fixed at TLS 1.3.
+type TLS struct {
+	Mode     string `json:"mode"`
+	CertFile string `json:"cert_file"`
+	KeyFile  string `json:"key_file"`
+	ClientCA string `json:"client_ca"`
+}
+
 type NFS struct {
 	Adapter
-	// …
+	TLS TLS `json:"tls"`
 }
+
 type SMB struct {
 	Adapter
-	// …
+	Dialects struct {
+		Min string `json:"min"` // "2.1", "3.0", "3.0.2" or "3.1.1"
+		Max string `json:"max"`
+	} `json:"dialects"` // 2.1 to 3.1.1
+	PendingTimeout time.Duration `json:"pending_timeout"` // 10 min: longest a request refused for a transient cause is held
+	RecallTimeout  time.Duration `json:"recall_timeout"`  // 60 s: longest a request held on a recall; must exceed the 35 s break deadline
 }
 
+// DefaultNFS and DefaultSMB hold every default in one reviewed function; the
+// loader decodes a record over them, so an omitted field keeps its default.
+func DefaultNFS() NFS
+func DefaultSMB() SMB
+
+// Validate checks every field against its rule, shapes and ranges only,
+// touching no file, and returns an error naming the field and the rule; it
+// never clamps or fills a default, and refuses a zero value where one is
+// required. New, Reconfigure and the control plane call it.
+func (NFS) Validate() error
+func (SMB) Validate() error
+
 // Settings is what Reconfigure takes, so that a protocol's own live settings
-// reach it. Its one method is unexported, but a *NFS, or a struct elsewhere
-// embedding NFS, satisfies it too: Validate and RestartRequired accept only
-// an NFS or SMB value and refuse anything else with an error, and
-// Reconfigure refuses the other protocol's shape.
-type Settings interface{ common() Adapter }
-
-// AdapterOf returns the Adapter s embeds. It is called only on settings
-// Validate accepted; for any other type it returns the zero Adapter, never
-// a panic.
-func AdapterOf(s Settings) Adapter
-
-// Validate checks every field of s against its rule — shapes and ranges
-// only, touching no file — and returns an error naming the field and the
-// rule; it never clamps or defaults. New, Reconfigure and the control plane
-// call it.
-func Validate(s Settings) error
-
-// ErrRestartRequired is wrapped by an error refusing a change to a
-// restart-only field.
-var ErrRestartRequired = errors.New("config: restart required")
-
-// RestartRequired compares two shapes of one protocol, field by field. It
-// returns nil when no field tagged restart:"true" differs, and otherwise an
-// error wrapping ErrRestartRequired that names each one that does.
-func RestartRequired(old, next Settings) error
+// reach it. Reconfigure refuses another protocol's shape, or any other type,
+// with an error.
+type Settings interface {
+	Validate() error
+	Common() Adapter
+}
 ```
 
-- **A field's mark is a struct tag.** A restart-only field carries
-  `restart:"true"`; a live one carries none. `RestartRequired` reads the tags,
-  so a field cannot be added without a mark, and a test compares every field's
-  mark with RFC 13 Appendix B's class.
-- **Defaults are struct tags too.** A field's default is a `default:"…"`
-  tag, read by the record loader that builds the shape; `Validate` never
-  fills a default, and refuses a zero value where a value is required.
-- **Nested blocks are unnamed struct fields**, so the package exports no type
-  beyond the three shapes: `NFS.TLS{CertFile, KeyFile, ClientCA, MinVersion,
-  Mode}` and `SMB.Dialects{Min, Max}`, a dialect written as a string, `"2.1"`,
-  `"3.0"`, `"3.0.2"` or `"3.1.1"`.
-- **One validator, `Validate`**, run by `New`, by `Reconfigure` and by the
-  control plane, which has none of its own
+- **Every field names its key** with a `json:"…"` tag. Every adapter key is
+  `adapters.<protocol>.<field>` — `adapters.smb.idle_timeout`,
+  `adapters.nfs.tls.mode`, `adapters.smb.pending_timeout` — and the least
+  configuration is `adapters: {nfs: {enabled: true}, smb: {enabled: true}}`.
+- **Defaults are code**, in `DefaultNFS` and `DefaultSMB`: the loader runs
+  `s := config.DefaultNFS(); decode(&s)`.
+- **`Validate` is the component's own**, run by `New`, by `Reconfigure` and by
+  the control plane, which has none of its own
   ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)). It reads no file,
   since the control plane runs it when a record is written, on a host that
   may not hold the serving node's certificates. The TLS certificate files are
   loaded by `New`, at configured, and by `Reconfigure` before the snapshot
   swap, so an unloadable certificate fails at configured or is refused by
-  `Reconfigure`, never at the first handshake (§3.1). The package stays a
-  leaf, importing nothing under `internal/`.
-
-> decision: no adapter field is restart-only today. Every adapter row of RFC
-> 13 Appendix B is live, and `Addrs`, which RFC 13 marks restart-only for the
-> bootstrap file, is live here (below); so `RestartRequired` returns nil for
-> every pair, and the tag and the comparison exist so that the first
-> restart-only field needs no new mechanism. Tag one when a setting is found
-> that a connection accepted after `Reconfigure` cannot pick up.
+  `Reconfigure`, never at the first handshake (§3.1). It does not see
+  migration settings, so the rule that `pending_timeout` exceed
+  `migration.freeze_timeout` plus the break deadline is the control plane's
+  cross-component check (RFC 13 §6). The package stays a leaf, importing
+  nothing under `internal/`.
+- **Every adapter setting is live**; RFC 13 Appendix B records each one's
+  class. The first restart-only setting brings a sentinel error and a
+  one-field comparison in `Reconfigure`, and nothing before it.
 
 **Inside the adapter, settings are one immutable snapshot.**
 
@@ -1201,13 +1220,10 @@ func (s *Server) Reconfigure(ctx context.Context, next config.Settings) error {
 	if !sameProtocol(*s.settings.Load(), next) {
 		return errOtherProtocol // config.SMB handed to the NFS adapter, or the reverse
 	}
-	if err := config.Validate(next); err != nil {
+	if err := next.Validate(); err != nil {
 		return err // refused; what is running is unchanged
 	}
-	if err := config.RestartRequired(*s.settings.Load(), next); err != nil {
-		return err // wraps config.ErrRestartRequired: the node drains and starts instead
-	}
-	addrs := config.AdapterOf(next).Addrs
+	addrs := next.Common().Addrs
 	if err := s.listeners.open(added(addrs)); err != nil {
 		return err // all or none
 	}
@@ -1220,7 +1236,7 @@ func (s *Server) Reconfigure(ctx context.Context, next config.Settings) error {
 - A connection loads the snapshot once, at accept, and a session at setup;
   neither reads it again. A request therefore never sees two settings, and no
   lock is on the request path. `core` reads the common part through
-  `config.AdapterOf`; a protocol reads its own shape from the connection's
+  `Common`; a protocol reads its own shape from the connection's
   snapshot, `Conn.Settings` (§4.7), when `NewConn` builds the connection's
   stages.
 - New listeners open before the snapshot changes and removed ones close after,
@@ -1706,7 +1722,7 @@ it holds — the service counts nothing about holds:
   covers both: it checks every error maps, and the table holds a `Hold` on
   every row its protocol RFC holds. SMB's `New` builds each `Hold` as a closure
   over the adapter's live settings, so a held request follows the latest
-  `smb_pending_cap` and `smb_pending_deadline`, not its connection's snapshot:
+  `pending_timeout` and `recall_timeout`, not its connection's snapshot:
   the one exception to a connection reading its settings once (§3.6);
 - at arrival, in a table that Holds, `core` evaluates the row that maps the
   clone wait (`ErrDelay` of `DelayClone`) with the hold's start at now, and
@@ -2675,8 +2691,7 @@ adapters:
       cert_file: /etc/dittofs/tls/tls.crt
       key_file:  /etc/dittofs/tls/tls.key
       client_ca: /etc/dittofs/tls/ca.crt  # optional: mutual TLS
-      min_version: "1.3"                   # RFC 9289's floor
-      mode: opportunistic                  # or require
+      mode: opportunistic                  # off (the default), opportunistic or require; TLS 1.3, RFC 9289's floor, fixed
 ```
 
 | Setting | Means | Class |
@@ -2684,8 +2699,8 @@ adapters:
 | `cert_file`, `key_file` | the server's certificate; DittoFS loads files and issues nothing | live: the files are re-read when they change, and handshakes begun afterwards use the new pair; a connection already upgraded keeps its session |
 | `client_ca` | require and verify a client certificate | live, for handshakes begun afterwards |
 | `mode: opportunistic` | a client that sends the `AUTH_TLS` probe is upgraded; one that does not is served in plaintext | live, for connections accepted afterwards |
+| `mode: off` | no TLS, the default; `cert_file`, `key_file` or `client_ca` set with it is refused | live, as above |
 | `mode: require` | any call before the upgrade but the `AUTH_TLS` probe is refused and the connection closed | as above |
-| `min_version` | TLS 1.3 by default | live, as `cert_file` |
 
 The certificate loading and reload are the shared `tlsconfig` code the control
 plane's own listener uses ([RFC 23](rfc-23-control-plane.md)); the adapter adds
@@ -2783,17 +2798,17 @@ are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
 
 | Limit | Applies to | On expiry |
 | --- | --- | --- |
-| request deadline | each attempt of every service call: a fixed 30 s from arrival, set by the pipeline and carried in the context ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). A held request (§4.6) is bounded in total by its cause's hold bound — `smb_pending_deadline` on a recall, `smb_pending_cap` for a transient refusal — and each re-drive is a fresh 30 s attempt inside it; a waiting lock and an SMB `CHANGE_NOTIFY` have none | the service's answer at the deadline is mapped as any other; a drain or closed connection cancels |
-| frame deadline | the rest of a request once its first byte has arrived | connection closed: a client that trickles a request holds a receive reservation (§4.1) |
-| idle timeout | a connection with no request and no held state | closed |
-| write deadline | the writer, per message | connection closed |
-| handshake deadline | negotiate and authenticate | connection closed |
+| request deadline | each attempt of every service call: a fixed 30 s from arrival, set by the pipeline and carried in the context ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). A held request (§4.6) is bounded in total by its cause's hold bound — SMB's `recall_timeout` on a recall, `pending_timeout` for a transient refusal — and each re-drive is a fresh 30 s attempt inside it; a waiting lock and an SMB `CHANGE_NOTIFY` have none | the service's answer at the deadline is mapped as any other; a drain or closed connection cancels |
+| read timeout, `read_timeout` | the rest of a request once its first byte has arrived | connection closed: a client that trickles a request holds a receive reservation (§4.1) |
+| idle timeout, `idle_timeout` | a connection with no request and no held state | closed |
+| write timeout, `write_timeout` | the writer, per message | connection closed |
+| handshake timeout, `handshake_timeout` | negotiate and authenticate | connection closed |
 | connection limit | per node, `connection_limit`, and a quarter of it per address ([RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)) | new connections closed at accept, never left in the listen backlog |
 | accept failure | an `Accept` error the listener can recover from, such as no file descriptor left | retried after a backoff from 10 ms doubling to 1 s; failing for 60 s raises `adapter_listener_lost` (§3.7) |
-| drain deadline | draining (§3.1) | remaining requests abandoned |
+| drain timeout, `drain_timeout` | draining (§3.1) | remaining requests abandoned |
 
-The deadlines but one are settings in [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings),
-the same for every protocol; the request deadline is fixed
+The timeouts are settings in [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings),
+each adapter's own under `adapters.<protocol>`; the request deadline is fixed
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)); the connection limit is
 [RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)'s, and the accept backoff
 is fixed. A connection holding state the client relies on — an NFSv4.1
@@ -2940,14 +2955,14 @@ type Buf struct {
 	res   Reservation
 }
 
-func NewBufPool(b *Budget) *BufPool                             // RFC 24 §2.5: every buffer it hands out is reserved from b
+func NewBufPool(b *WaitBudget) *BufPool                         // RFC 24 §2.5: every buffer it hands out is reserved from b, the receive or reply budget
 func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) // one reservation for key of n's class plus RFC 24 §3.1's per-request overhead (8 KiB), released with the buffer; then a buffer: refs = 1
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
 ```
 
 - **Each `Server` builds its own.** `core` builds a `BufPool` over each budget
-  of `Deps.Pools` it takes buffers from, receive for requests and reply for
+  of `Deps.Budgets` it takes buffers from, receive for requests and reply for
   replies; `Deps` carries the budgets and no allocator, so nothing outside
   `core` shares its free lists.
 - **One free list per class.** Each class of
