@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -912,4 +913,48 @@ func TestADeleteWhoseRetryIsPostedWhileUnbindJoinsIsEndedByDrop(t *testing.T) {
 		t.Errorf("the release yields a second value %v", extra)
 	default:
 	}
+}
+
+// A Close after a Drop whose close of the handle failed after closing it,
+// with no retry, takes the handle's ErrClosed as closed and closes the
+// journal; any other error of that close is still reported, naming the share.
+func TestCloseAfterAFailedDropTreatsErrClosedAsClosed(t *testing.T) {
+	t.Run("the handle is already closed", func(t *testing.T) {
+		u := newUnit(t)
+		h := u.rec.handle(0)
+
+		h.closeErr = errInjected
+
+		u.unbind(t)
+
+		if err := u.e.Drop(t.Context(), u.share.ID); !unavailable(err) {
+			t.Fatalf("Drop with a failing close = %v, want ErrUnavailable from the close", err)
+		}
+
+		h.closeErr = nil
+
+		if err := u.e.Close(t.Context()); err != nil {
+			t.Errorf("Close = %v, want nil: the handle was closed already", err)
+		}
+
+		u.wantEvents(t, handleClose(u.share), handleClose(u.share), "journal close")
+	})
+
+	t.Run("another error is reported", func(t *testing.T) {
+		u := newUnit(t)
+		h := u.rec.handle(0)
+
+		h.closeErr = errInjected
+
+		u.unbind(t)
+
+		if err := u.e.Drop(t.Context(), u.share.ID); !unavailable(err) {
+			t.Fatalf("Drop with a failing close = %v, want ErrUnavailable from the close", err)
+		}
+
+		err := u.e.Close(t.Context())
+		if !unavailable(err) || !strings.Contains(err.Error(), fmt.Sprint(u.share.ID)) {
+			t.Errorf("Close = %v, want ErrUnavailable naming the share", err)
+		}
+	})
 }

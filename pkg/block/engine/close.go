@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -371,7 +372,8 @@ func (e *Engine) closeAll() error {
 	var errs []error
 
 	for _, b := range bs {
-		if err := b.h.Close(); err != nil {
+		// A handle a failed Drop closed answers ErrClosed: it is closed.
+		if err := b.h.Close(); err != nil && !errors.Is(err, journal.ErrClosed) {
 			errs = append(errs, fmt.Errorf("engine: close: handle of share %v: %w",
 				b.share.ID, e.journalErr(err)))
 		}
