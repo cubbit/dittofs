@@ -55,6 +55,7 @@ jobs:
           filters: |
             journal:
               - 'pkg/block/journal/**'
+              - 'internal/prof/**'
               - 'pkg/sim/**'
               - 'go.mod'
               - 'go.sum'
@@ -73,4 +74,4 @@ jobs:
       - name: Run the journal tests
         if: github.event_name != 'pull_request' || steps.filter.outputs.journal == 'true'
         shell: bash
-        run: go test -race -count=1 -p 2 -timeout=25m ./pkg/block/journal/...
+        run: go test -race -count=1 -p 2 -timeout=25m ./pkg/block/journal/... ./internal/prof/...

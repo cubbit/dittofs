@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/internal/prof"
 )
 
 // flushingOn returns a STORAGE_WRITE_CACHE_PROPERTY answer for a disk whose

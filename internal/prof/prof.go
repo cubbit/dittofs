@@ -1,9 +1,9 @@
 // Package prof fails a test that leaves goroutines, open descriptors or live
 // heap behind it.
 //
-// It sits in the journal's tree, so the journal's import rule holds it to the
-// standard library. Nothing in it is specific to the journal: move it out of
-// the tree once a package outside the journal needs it.
+// It imports the standard library only, which its own import test holds: the
+// journal, the engine and the adapters read it from their tests, so a
+// dependency taken here would reach each of them.
 package prof
 
 import (

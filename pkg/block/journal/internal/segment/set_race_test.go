@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // TestConcurrentRetireSubtractsOnce: many goroutines retire the same segment

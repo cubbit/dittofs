@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/model"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // modelSeed is the seed of TestModel's sequence.

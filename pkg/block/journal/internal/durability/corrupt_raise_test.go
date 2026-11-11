@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // syncAtTake makes Corrupt run a Sync of the file at the point its drop of an

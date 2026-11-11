@@ -136,7 +136,7 @@ jobs:
               | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
                 or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
                 or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest" or .suite == "fio-verify"
-                or .suite == "journal-conformance" or .suite == "engine-conformance"
+                or .suite == "journal-conformance" or .suite == "engine-conformance" or .suite == "adapter-conformance"
                 or IN(.name; "unit/windows", "unit/nonrace", "integration/ad-dc", "bench-smoke"))
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))
               | .job_timeout_minutes = .timeout_minutes + 15]' "$RUNNER_TEMP/plan.json" > "$RUNNER_TEMP/cells.json"
