@@ -34,19 +34,6 @@ func (h *heldPhase1) clone(ctx context.Context, next engine.Existence, op kvstor
 	return next.Clone(ctx, op, pending)
 }
 
-// within waits for ch's answer, failing the test if none comes in time, for
-// a rig, which has no unit's answered.
-func within(t *testing.T, what string, ch <-chan error) error {
-	t.Helper()
-	select {
-	case err := <-ch:
-		return err
-	case <-time.After(10 * time.Second):
-		t.Fatalf("no answer: %s", what)
-		return nil
-	}
-}
-
 // waitsForTheClone fails the test unless the Unbind answering unbound waits
 // for work in flight, the clone, before it answers.
 func waitsForTheClone(t *testing.T, joined <-chan string, unbound <-chan error) {
