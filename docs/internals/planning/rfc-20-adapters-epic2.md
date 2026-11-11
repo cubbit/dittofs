@@ -799,9 +799,11 @@ A suggestion only: one pull request per subtask works as well.
   timed wait is forbidden), on which D5 and D6 rest; owner RFC 17's plan, piece 12, before T2.3,
   which names that fault. T2.3 stays in S2, since the
   import test must hold E3's first package (the plan's §3.3), so a late piece 12 holds E3 too.
-- **Deferral-ledger row this breakdown adds:** the import test's clause that `translate` imports
-  only neutral types (RFC 20 §2.3), with `translate`'s first package, owner RFC 21's and 22's
-  plans.
+- **Deferral-ledger row this breakdown adds:** the import test's cases for the packages two
+  protocols share, each added with the package's first commit: that a protocol may import
+  `translate` and `gss`, which the test refuses today as another adapter's; that `translate`
+  imports only neutral types (RFC 20 §2.3); `gss`'s own clause; and that `smb/dcerpc` imports no
+  SMB package. Owner RFC 21's and 22's plans.
 - **Where this breakdown departs from the epic's first description,** for its owner to confirm:
   - the allocation cell and its fixed step move from E3's T3.3 to T2.1 (D12), and the budget
     check's failing test lands here red (D11), so E3's estimate falls by about 0.5 man-days;
