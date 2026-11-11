@@ -86,11 +86,12 @@ type Stats struct {
 // that case; the clamp is the guard for when it can.
 //
 // ponytail: the figure ignores footer entries, segment headers and trailers,
-// which the set does not count, and a dead record's header and padding stay
-// counted as backed until its segment retires. Ceiling: about one record
-// header plus padding per dead record. Upgrade to a per-record backed-bytes
-// refcount in the index, which costs index memory against the bound of RFC 1
-// §4.2, once that error shows in a capacity decision.
+// which the set does not count, and the header and padding of every record on
+// disk stay counted as backed until its segment retires. Ceiling: one record
+// header plus padding per dead record, so a segment of dead small writes or
+// dead removal records reads near zero while wholly reclaimable. Upgrade to a
+// per-record backed-bytes count once repack picks segments by this figure or
+// that error shows in a capacity decision.
 func (c *Core) Stats() Stats {
 	var s Stats
 	s.MaxBytes = c.maxBytes
