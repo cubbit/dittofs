@@ -135,6 +135,10 @@ type Set struct {
 	segs   map[core.SegmentID]*entry
 	spares map[core.SegmentID]struct{}
 	tags   map[core.ShareTag]int64
+	// over is each share tag's record bytes that are not payload — headers,
+	// padding and the whole of every payload-free record — kept beside tags
+	// and folded back by the same retirement.
+	over map[core.ShareTag]int64
 	// retired is each share tag's cumulative record bytes released by
 	// retirements and recycles — the monotone figure of what left, never
 	// lowered, read beside tags by the journal's admission seed. The two
@@ -189,6 +193,9 @@ type entry struct {
 	held int64
 	// tags is nil until the first record byte is accounted to the segment.
 	tags map[core.ShareTag]int64
+	// over is the part of tags that is not payload, per tag; nil until the
+	// first record is accounted.
+	over map[core.ShareTag]int64
 }
 
 // absentMessage is the Warn of a retire or recycle that subtracted nothing.
@@ -211,6 +218,7 @@ func NewSet(segCap int64, log *slog.Logger) *Set {
 		segs:    make(map[core.SegmentID]*entry),
 		spares:  make(map[core.SegmentID]struct{}),
 		tags:    make(map[core.ShareTag]int64),
+		over:    make(map[core.ShareTag]int64),
 		retired: make(map[core.ShareTag]int64),
 	}
 }
@@ -547,7 +555,7 @@ func (s *Set) Shrink(id core.SegmentID, size int64) error {
 // waiting here. Upgrade to per-segment counters per tag once a profile shows
 // it, and let the retire and recycle paths fold them back into each share's
 // total before releasing its per-tag bytes.
-func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n int64) error {
+func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n, overhead int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -558,7 +566,7 @@ func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n int64) error {
 	if e.state != Active && e.state != Ended {
 		return ErrWrongState
 	}
-	if n <= 0 {
+	if n <= 0 || overhead < 0 || overhead > n {
 		return ErrBadSize
 	}
 	// The record's bytes sit inside storage the segment already accounts for,
@@ -571,10 +579,26 @@ func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n int64) error {
 	if e.tags == nil {
 		e.tags = make(map[core.ShareTag]int64)
 	}
+	if e.over == nil {
+		e.over = make(map[core.ShareTag]int64)
+	}
 	e.held += n
 	e.tags[tag] += n
 	s.tags[tag] += n
+	if overhead > 0 {
+		e.over[tag] += overhead
+		s.over[tag] += overhead
+	}
 	return nil
+}
+
+// TagOverhead returns a copy of the non-payload bytes of the records held per
+// share tag: each record's whole size less its payload. Taken under the set's
+// lock from the maintained map — no walk of the set.
+func (s *Set) TagOverhead() map[core.ShareTag]int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.over)
 }
 
 // TagBytes returns a copy of the record bytes held per share tag, taken under
@@ -889,6 +913,13 @@ func (s *Set) removeLocked(id core.SegmentID, e *entry) {
 			s.tags[tag] = left
 		}
 	}
+	for tag, n := range e.over {
+		if left := s.over[tag] - n; left == 0 {
+			delete(s.over, tag)
+		} else {
+			s.over[tag] = left
+		}
+	}
 }
 
 // Counters returns the ledger's maintained counters. One lock, one struct
@@ -952,6 +983,22 @@ func (s *Set) Check() error {
 		}
 	}
 
+	overs := make(map[core.ShareTag]int64)
+	for _, e := range s.segs {
+		for tag, n := range e.over {
+			overs[tag] += n
+		}
+	}
+	overMatch := len(overs) == len(s.over)
+	if overMatch {
+		for tag, n := range overs {
+			if s.over[tag] != n {
+				overMatch = false
+				break
+			}
+		}
+	}
+
 	spares := int64(len(s.spares))
 	tagsMatch := len(held) == len(s.tags)
 	if tagsMatch {
@@ -966,7 +1013,7 @@ func (s *Set) Check() error {
 		s.c.Segments == segments &&
 		s.c.Sealed == sealed &&
 		s.c.Spares == spares &&
-		tagsMatch {
+		tagsMatch && overMatch {
 		return nil
 	}
 	if s.c.UsedBytes != sum {
@@ -976,6 +1023,10 @@ func (s *Set) Check() error {
 	if !tagsMatch {
 		return fmt.Errorf("%w: the shares' record bytes do not match the segments' entries: %v vs %v",
 			ErrMismatch, s.tags, held)
+	}
+	if !overMatch {
+		return fmt.Errorf("%w: the shares' overhead bytes do not match the segments' entries: %v vs %v",
+			ErrMismatch, s.over, overs)
 	}
 	return fmt.Errorf("%w: the counts do not match the set: %d segments vs %d, %d sealed vs %d, %d spares vs %d",
 		ErrMismatch, s.c.Segments, segments, s.c.Sealed, sealed, s.c.Spares, spares)

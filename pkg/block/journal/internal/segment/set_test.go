@@ -316,10 +316,10 @@ func TestRecycleKeepsFootprint(t *testing.T) {
 	if err := s.Take(old); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
-	if err := s.AddRecord(old, tagA, 100); err != nil {
+	if err := s.AddRecord(old, tagA, 100, 0); err != nil {
 		t.Fatalf("AddRecord A: %v", err)
 	}
-	if err := s.AddRecord(old, tagB, 60); err != nil {
+	if err := s.AddRecord(old, tagB, 60, 0); err != nil {
 		t.Fatalf("AddRecord B: %v", err)
 	}
 	if err := s.Seal(old, true); err != nil {
@@ -554,7 +554,7 @@ func TestAnEarlySealIsNeverRecycled(t *testing.T) {
 	if err := s.Take(id); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
-	if err := s.AddRecord(id, tag, 100); err != nil {
+	if err := s.AddRecord(id, tag, 100, 0); err != nil {
 		t.Fatalf("AddRecord: %v", err)
 	}
 
@@ -871,10 +871,10 @@ func TestRetireKeepsADroppedShareTotalForTheCheck(t *testing.T) {
 		}
 	}
 	tag := core.ShareTag(4)
-	if err := s.AddRecord(one, tag, 100); err != nil {
+	if err := s.AddRecord(one, tag, 100, 0); err != nil {
 		t.Fatalf("AddRecord: %v", err)
 	}
-	if err := s.AddRecord(two, tag, 60); err != nil {
+	if err := s.AddRecord(two, tag, 60, 0); err != nil {
 		t.Fatalf("AddRecord: %v", err)
 	}
 	if err := s.Seal(one, true); err != nil {
@@ -925,7 +925,7 @@ func TestRetireActiveRefused(t *testing.T) {
 	if err := s.Take(id); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
-	if err := s.AddRecord(id, 1, 32); err != nil {
+	if err := s.AddRecord(id, 1, 32, 0); err != nil {
 		t.Fatalf("AddRecord: %v", err)
 	}
 	before := s.Counters()
@@ -974,7 +974,7 @@ func TestCheckComparesTheEntriesHeldWithTheirTags(t *testing.T) {
 	if err := s.Take(id); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
-	if err := s.AddRecord(id, tag, 4000); err != nil {
+	if err := s.AddRecord(id, tag, 4000, 0); err != nil {
 		t.Fatalf("AddRecord: %v", err)
 	}
 
@@ -983,7 +983,7 @@ func TestCheckComparesTheEntriesHeldWithTheirTags(t *testing.T) {
 	s.mu.Lock()
 	s.segs[id].held = 0
 	s.mu.Unlock()
-	if err := s.AddRecord(id, tag, 4000); err != nil {
+	if err := s.AddRecord(id, tag, 4000, 0); err != nil {
 		t.Fatalf("AddRecord after the drift: %v, want it admitted: the drift is the bug, not the record", err)
 	}
 	err := s.Check()
@@ -1040,7 +1040,7 @@ func TestCheckComparesEveryMaintainedCountWithTheSet(t *testing.T) {
 		if err := s.Take(2); err != nil {
 			t.Fatalf("Take: %v", err)
 		}
-		if err := s.AddRecord(2, core.ShareTag(3), 400); err != nil {
+		if err := s.AddRecord(2, core.ShareTag(3), 400, 0); err != nil {
 			t.Fatalf("AddRecord: %v", err)
 		}
 		if err := s.Seal(1, true); err != nil {
@@ -1361,13 +1361,13 @@ func TestSnapshot(t *testing.T) {
 			t.Fatalf("Take(%d): %v", id, err)
 		}
 	}
-	if err := s.AddRecord(1, 7, 100); err != nil {
+	if err := s.AddRecord(1, 7, 100, 0); err != nil {
 		t.Fatalf("AddRecord(1): %v", err)
 	}
-	if err := s.AddRecord(2, 7, 40); err != nil {
+	if err := s.AddRecord(2, 7, 40, 0); err != nil {
 		t.Fatalf("AddRecord(2, 7): %v", err)
 	}
-	if err := s.AddRecord(2, 8, 60); err != nil {
+	if err := s.AddRecord(2, 8, 60, 0); err != nil {
 		t.Fatalf("AddRecord(2, 8): %v", err)
 	}
 	if err := s.Seal(2, true); err != nil {
@@ -1399,5 +1399,128 @@ func TestSnapshot(t *testing.T) {
 	}
 	if got := s.Snapshot()[1].Tags[7]; got != 40 {
 		t.Fatalf("a second Snapshot's Tags[7]: got %d, want 40", got)
+	}
+}
+
+// overheadSet returns a set holding one sealed segment that carries two
+// records of one tag: a write's 4096 payload bytes plus a 96-byte header, and
+// a 100-byte record with no payload.
+func overheadSet(t *testing.T) (s *Set, id core.SegmentID, tag core.ShareTag) {
+	t.Helper()
+	s = NewSet(8192, nil)
+	id, tag = core.SegmentID(1), core.ShareTag(7)
+	if err := s.AddSpare(id, noMax); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	if err := s.Take(id); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	if err := s.AddRecord(id, tag, 4096+96, 96); err != nil {
+		t.Fatalf("AddRecord write: %v", err)
+	}
+	if err := s.AddRecord(id, tag, 100, 100); err != nil {
+		t.Fatalf("AddRecord bare: %v", err)
+	}
+	if err := s.Seal(id, true); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	return s, id, tag
+}
+
+func TestSetOverheadCharges(t *testing.T) {
+	s, _, tag := overheadSet(t)
+	if got := s.TagOverhead()[tag]; got != 196 {
+		t.Fatalf("TagOverhead[tag] = %d, want 196", got)
+	}
+	if got := s.TagBytes()[tag]; got != 4096+96+100 {
+		t.Fatalf("TagBytes[tag] = %d, want %d", got, 4096+96+100)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestSetOverheadFoldsBackOnRetire(t *testing.T) {
+	s, id, _ := overheadSet(t)
+	if _, err := s.Retire(id); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	if got := s.TagOverhead(); len(got) != 0 {
+		t.Fatalf("TagOverhead after Retire = %v, want empty", got)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestSetOverheadFoldsBackOnRecycle(t *testing.T) {
+	s, id, _ := overheadSet(t)
+	if err := s.Recycle(id, 2); err != nil {
+		t.Fatalf("Recycle: %v", err)
+	}
+	if got := s.TagOverhead(); len(got) != 0 {
+		t.Fatalf("TagOverhead after Recycle = %v, want empty", got)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+}
+
+func TestSetOverheadRefusesOutOfRange(t *testing.T) {
+	s, _, tag := overheadSet(t)
+	// overheadSet sealed its segment; refusals need an active one.
+	act := core.SegmentID(3)
+	if err := s.AddSpare(act, noMax); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	if err := s.Take(act); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	for name, c := range map[string]struct{ n, over int64 }{
+		"over above n": {100, 101},
+		"negative":     {100, -1},
+		"no bytes":     {0, 0},
+		"negative n":   {-1, 0},
+	} {
+		if err := s.AddRecord(act, tag, c.n, c.over); !errors.Is(err, ErrBadSize) {
+			t.Fatalf("%s: AddRecord err = %v, want ErrBadSize", name, err)
+		}
+	}
+	if got := s.TagOverhead()[tag]; got != 196 {
+		t.Fatalf("TagOverhead[tag] = %d after refusals, want 196", got)
+	}
+	if got := s.TagBytes()[tag]; got != 4096+96+100 {
+		t.Fatalf("TagBytes[tag] = %d after refusals, want %d", got, 4096+96+100)
+	}
+}
+
+func TestSetOverheadReturnsACopy(t *testing.T) {
+	s, _, tag := overheadSet(t)
+	s.TagOverhead()[tag] = 1
+	if got := s.TagOverhead()[tag]; got != 196 {
+		t.Fatalf("TagOverhead[tag] = %d after mutating a returned map, want 196", got)
+	}
+}
+
+func TestSetOverheadZeroLeavesNoKey(t *testing.T) {
+	s, id, tag := overheadSet(t)
+	if _, err := s.Retire(id); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	act := core.SegmentID(2)
+	if err := s.AddSpare(act, noMax); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	if err := s.Take(act); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	if err := s.AddRecord(act, tag, 64, 0); err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+	if got := s.TagOverhead(); len(got) != 0 {
+		t.Fatalf("TagOverhead = %v after an overhead-0 record, want no key", got)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("Check: %v", err)
 	}
 }

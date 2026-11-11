@@ -1008,8 +1008,10 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 
 		// The bytes are the share's once written (R55). The lock order puts
 		// capacity before segment append (RFC 1 §8.3), so this runs with no
-		// lock of the stream's held — never under appendMu.
-		if err := s.set.AddRecord(id, h.Tag, size); err != nil {
+		// lock of the stream's held — never under appendMu. Overhead is the
+		// record's whole size less its payload, the length the index counts held
+		// or retained for it; a kind with no payload placed 0.
+		if err := s.set.AddRecord(id, h.Tag, size, size-placed); err != nil {
 			return Placed{}, err
 		}
 		return Placed{Loc: Location{Segment: id, Off: off, Len: size}, N: placed, Rolled: rolled}, nil
