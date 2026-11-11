@@ -265,7 +265,8 @@ func (e *Engine) stopRaise(b *stopBound) error {
 // stopWork stops the background work that takes journal versions: each
 // journal's removal loop, which refuses new dispatch, cancels the batch in
 // flight and ends the items left, and the goroutines of the clones admitted
-// before Close (RFC 8 §2.5 step 2). A clone whose phase 1 was cut short stays
+// before Close and of the rebuilt clones still waiting for their source's
+// shard (RFC 8 §2.5 step 2). A clone whose phase 1 was cut short stays
 // in its file's entry for the next start to rebuild.
 func (e *Engine) stopWork(b *stopBound) error {
 	e.gcMu.Lock()

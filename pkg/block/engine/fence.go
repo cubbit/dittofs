@@ -108,6 +108,12 @@ func (f *fence) end(ctx context.Context, err error) {
 // it as it returns, after its last store call, so an owner that stops while
 // failing does not keep an idle node fenced. f is nil only in a test that
 // builds its engine without New.
+//
+// decision: runClone and unstage carry the removal loop's mark off its
+// goroutine, so a store error of theirs after the loop's release marks the
+// owner failing again, and nothing releases it. That holds only while such an
+// error comes after Close halted the loops; release from cloning's join too
+// if one is seen fencing a live node.
 func (f *fence) release(o *ownerState) {
 	if f != nil && o != nil && o.failing.Swap(false) {
 		f.failing.Add(-1)

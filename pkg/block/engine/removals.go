@@ -452,8 +452,20 @@ func (e *Engine) clonePhase2(c *cloneRun, r *removal) *loopItem {
 		return itemDone
 	}
 	it.end = func() {
-		// The loop ended, its context with it: the release runs under its own.
-		if held {
+		// The loop ended, its context with it: the release runs under its own,
+		// and only once the clone is done or its share was dropped. A loop
+		// that Close stopped before the last batch takes no Release, so the
+		// source's clone-kind open record stays and the next start's rebuild
+		// holds the source from it, its phase 2 left to finish (RFC 8 §2.5
+		// step 2).
+		//
+		// decision: a dropped destination share releases the hold mid-clone,
+		// as Drop is to take the clone's removal record with the share,
+		// leaving no start to rebuild it. Drop is not built, so only the test
+		// seam reaches this today. The source's clone-kind open record stays
+		// in the source share and holds it again at the next start, so Drop
+		// must delete it too (dropCloneHold).
+		if held && (p2done || c.db.gc.removals.isDropped(c.db.share.ID)) {
 			if err := release(context.Background()); err != nil {
 				e.d.Logger.Warn("a clone's release of its source at its loop's end failed", "src", c.src, "dst", c.dst, "err", err)
 			}
