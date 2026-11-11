@@ -368,8 +368,9 @@ with a `decision:` marker (below) rather than leaving the next reader to infer t
 
 - Comments describe the code's **behaviour** — what it does and why, in terms of
   the code itself. Never reference things external to the code: no issue/PR
-  numbers, no CI/runner/OS names, no phase/plan/decision IDs. Those belong in
-  commit messages, PR descriptions, or `.planning/`, not in source.
+  numbers, no CI/runner/OS names, no phase/plan/epic/subtask/requirement/decision
+  IDs (E3, T4.2, R13, S2, D1). Those belong in commit messages, PR descriptions,
+  or `.planning/`, not in source.
 
 ### `ponytail:` markers
 
