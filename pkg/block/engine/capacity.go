@@ -24,6 +24,7 @@ type row struct {
 	wait    bool              // wait for the version limit's raise before answering
 	delay   vfserr.DelayCause // the cause of the retry-later answer
 	noSpace bool              // answer ErrNoSpace at once
+	why     string            // what the no-space answer names; the full device when empty
 }
 
 // capacityRefusal reports whether err is a capacity refusal and which. A
@@ -117,7 +118,12 @@ var unknownRow = row{delay: vfserr.DelayCapacity}
 // answer is the error a client gets for a refusal with this row.
 func (r row) answer() error {
 	if r.noSpace {
-		return fmt.Errorf("engine: the journal's device is full: %w", vfserr.ErrNoSpace)
+		why := r.why
+		if why == "" {
+			why = "the journal's device is full"
+		}
+
+		return fmt.Errorf("engine: %s: %w", why, vfserr.ErrNoSpace)
 	}
 
 	return &vfserr.Delay{Cause: r.delay}
@@ -156,6 +162,13 @@ func (e *Engine) answered(b *binding, err error) (error, bool) {
 		}
 	}
 
+	return e.answeredAs(b, err, r, rw), true
+}
+
+// answeredAs is the answer of row rw to the refusal err of b's journal, which
+// it counts and logs, and for which it raises journal_full when the refusal is
+// the journal's own.
+func (e *Engine) answeredAs(b *binding, err error, r refusal, rw row) error {
 	e.refusals.Add(1)
 
 	answer := rw.answer()
@@ -169,7 +182,9 @@ func (e *Engine) answered(b *binding, err error) (error, bool) {
 		)
 	}
 
-	return answer, true
+	e.raiseFull(b, r, err)
+
+	return answer
 }
 
 // String names the refusal for a log line: its limit, or the device.
@@ -201,6 +216,8 @@ func answeringRefusals[T any](
 	wait bool,
 	call func() (T, error),
 ) (T, error) {
+	var at step
+
 	for {
 		changed := b.vl.watch()
 
@@ -215,6 +232,14 @@ func answeringRefusals[T any](
 		}
 
 		if wait && e.mayWait(ctx, b, r, changed) && e.awaitRaise(ctx, changed) {
+			continue
+		}
+
+		if relieves(r) {
+			if answer, again := e.relieved(ctx, b, err, r, &at); !again {
+				return got, answer
+			}
+
 			continue
 		}
 
@@ -314,4 +339,38 @@ func refusing[T any](
 	}
 
 	return got, err
+}
+
+// relieved runs the next step of the repack path for a refusal err by r, which
+// the caller retries when again is true, and otherwise answers: by what is left
+// to free once the last step ran (RFC 8 §10.2), retry-later of the same cause
+// at once when the caller's deadline has passed or its context ended, never no
+// space (RFC 0 §10.3), and an unavailable journal when it is closed. A pass is
+// counted on its journal from its first step to its answer.
+func (e *Engine) relieved(
+	ctx context.Context,
+	b *binding,
+	err error,
+	r refusal,
+	at *step,
+) (answer error, again bool) {
+	if e.expired(ctx) {
+		return e.answeredAs(b, err, r, row{delay: vfserr.DelayCapacity}), false
+	}
+
+	if *at == stepLast {
+		others := b.gc.cap.passes.Load() > 0
+
+		return e.answeredAs(b, err, r, settled(r, e.left(b, r), others)), false
+	}
+
+	if serr := e.relieve(ctx, b, r, at); serr != nil {
+		if errors.Is(serr, journal.ErrClosed) {
+			return e.journalErr(serr), false
+		}
+
+		return e.answeredAs(b, err, r, row{delay: vfserr.DelayCapacity}), false
+	}
+
+	return nil, true
 }

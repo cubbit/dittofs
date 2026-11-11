@@ -857,3 +857,9 @@ func (e *Engine) HoldRaiseLockForTest(ctx context.Context, s entity.ShareID) (fu
 
 	return vl.release, nil
 }
+
+// SettledForTest reports whether the answer to a refusal by limit l, with left
+// bytes to free and another pass running or not, is retry-later.
+func SettledForTest(l journal.Limit, left int64, others bool) bool {
+	return !settled(refusal{limit: l}, left, others).noSpace
+}

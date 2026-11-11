@@ -4,6 +4,7 @@ package conformance
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"maps"
 	"os"
@@ -612,4 +613,341 @@ func TestRFC8A_RetryLaterAtTheShareLimit(t *testing.T) {
 	}
 
 	t.Fatal("the share never reached its journal limit")
+}
+
+// The fixture journal's segment and maximum, as the fixture sets them: the
+// conformance package imports no test kit.
+const (
+	mib      = 1 << 20
+	maxBytes = 64 * mib
+)
+
+// bound is a generous real-time backstop for a wait that must end: a wrong
+// engine fails on the assertion instead of hanging the package.
+const bound = 10 * time.Second
+
+// within waits for ch, failing t naming what never happened.
+func within[T any](t *testing.T, what string, ch <-chan T) T {
+	t.Helper()
+
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(bound):
+		t.Fatalf("%s: not within %v", what, bound)
+	}
+
+	panic("unreachable")
+}
+
+// putSecond writes n bytes of c at off of file id of the fixture's second
+// share, under a context that ends after bound.
+func putSecond(
+	t *testing.T,
+	f *enginetest.Fixture,
+	id entity.FileID,
+	off int64,
+	n int,
+	c byte,
+) error {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), bound)
+	defer cancel()
+
+	_, err := f.E.Write(
+		ctx,
+		f.Second.ID,
+		id,
+		off,
+		bytes.Repeat([]byte{c}, n),
+		engine.WriteOpts{Done: func() {}},
+	)
+
+	return err
+}
+
+// mustSecond is putSecond that must be served.
+func mustSecond(t *testing.T, f *enginetest.Fixture, id entity.FileID, off int64, n int, c byte) {
+	t.Helper()
+
+	if err := putSecond(t, f, id, off, n, c); err != nil {
+		t.Fatalf("write of %d bytes at %d: %v", n, off, err)
+	}
+}
+
+// limitedSecond binds the second share with a journal limit of limit bytes.
+func limitedSecond(t *testing.T, f *enginetest.Fixture, limit int64) {
+	t.Helper()
+
+	f.Second.Limit = limit
+
+	if err := f.E.Bind(t.Context(), f.Second); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+}
+
+// unreclaimed is the journal's figures for share id: its unreclaimed bytes.
+func unreclaimed(f *enginetest.Fixture, id entity.ShareID) int64 {
+	return f.E.Stats().Journals[f.Dir].Shares[id].UnreclaimedBytes
+}
+
+// overwriteTwice writes mebibytes of 'a' then of 'b' over the same range of
+// file id of share sh, so that many mebibytes are superseded once synced.
+func overwriteTwice(
+	t *testing.T,
+	f *enginetest.Fixture,
+	sh entity.ShareID,
+	id entity.FileID,
+	mebibytes int,
+) {
+	t.Helper()
+
+	for _, c := range []byte{'a', 'b'} {
+		for i := range mebibytes {
+			p := bytes.Repeat([]byte{c}, mib)
+
+			opts := engine.WriteOpts{Done: func() {}}
+
+			if _, err := f.E.Write(t.Context(), sh, id, int64(i*mib), p, opts); err != nil {
+				t.Fatalf("write %d of %c: %v", i, c, err)
+			}
+		}
+	}
+}
+
+// RFC 8 §15.2's "scoped repack": share A at its limit with unreclaimed bytes in
+// segments shared with B's data, and emptier segments of B elsewhere: A's write
+// is served after the repack of A's scope, and B's emptier segments stay.
+func TestRFC8A_CapacityScopedRepack(t *testing.T) {
+	f := enginetest.New(t)
+	limitedSecond(t, f, 8*mib)
+
+	_, fb := f.File("b")
+	fa := secondFile(t, f, "a")
+
+	overwriteTwice(t, f, f.Share.ID, fb, 2)
+	overwriteTwice(t, f, f.Second.ID, fa, 4)
+	f.Clock.Advance(time.Minute)
+
+	mustSecond(t, f, fa, 4*mib, mib, 'c')
+
+	if unreclaimed(f, f.Share.ID) == 0 {
+		t.Error("B's unreclaimed bytes are gone: the repack was journal-wide")
+	}
+}
+
+// Two refusals race for the only unreclaimed segments, the first refusal's
+// repack held at the journal's storage: the second answers ErrDelay, never
+// ErrNoSpace, and is served once the hold is let go.
+func TestRFC8A_CapacityRacingRefusals(t *testing.T) {
+	f := enginetest.New(t)
+	limitedSecond(t, f, 4*mib)
+
+	fa := secondFile(t, f, "a")
+	overwriteTwice(t, f, f.Second.ID, fa, 2)
+	f.Clock.Advance(time.Minute)
+
+	hold := f.Seam.HoldFirst(t, "remove", "*")
+	first := make(chan error, 1)
+
+	go func() {
+		first <- putSecond(t, f, fa, 2*mib, mib, 'c')
+	}()
+
+	within(t, "the first repack reaching the storage seam", hold.Reached())
+
+	err := putSecond(t, f, fa, 3*mib, mib, 'd')
+
+	var d *vfserr.Delay
+	if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity {
+		t.Errorf(
+			"the second refusal while the first's repack is held: %v, want ErrDelay(DelayCapacity)",
+			err,
+		)
+	}
+
+	hold.Release()
+
+	if err := within(t, "the first write's answer", first); err != nil {
+		t.Errorf("the first write once the hold is let go: %v, want served", err)
+	}
+
+	mustSecond(t, f, fa, 3*mib, mib, 'd')
+}
+
+// An overwrite at the share's limit left unsynced by the held sync timer: the
+// share's unreclaimed bytes are 0 before the scope sync, and the write is served
+// after the last step.
+func TestRFC8A_CapacityOverwriteServedAfterTheLastStep(t *testing.T) {
+	f := enginetest.New(t)
+	limitedSecond(t, f, 4*mib)
+
+	fa := secondFile(t, f, "a")
+	overwriteTwice(t, f, f.Second.ID, fa, 2)
+
+	if got := unreclaimed(f, f.Second.ID); got != 0 {
+		t.Fatalf("UnreclaimedBytes = %d before the scope sync, want 0", got)
+	}
+
+	mustSecond(t, f, fa, 2*mib, mib, 'c')
+}
+
+// The same with nothing left to free: no space, and the first write's bytes
+// still read back.
+func TestRFC8A_CapacityNothingLeftToFree(t *testing.T) {
+	f := enginetest.New(t)
+	limitedSecond(t, f, 2*mib)
+
+	fa := secondFile(t, f, "a")
+	mustSecond(t, f, fa, 0, 2*mib, 'k')
+
+	if err := putSecond(t, f, fa, 2*mib, mib, 'x'); !errors.Is(err, vfserr.ErrNoSpace) {
+		t.Fatalf("a write at the limit with nothing to free: %v, want ErrNoSpace", err)
+	}
+
+	got := make([]byte, mib)
+	if _, err := f.E.Read(t.Context(), f.Second.ID, fa, 0, got); err != nil || got[0] != 'k' {
+		t.Errorf("the first write reads back %q, %v, want 'k'", got[:1], err)
+	}
+}
+
+// The journal at its maximum with its unreclaimed bytes only in active segments
+// after the sync: the write is served after the last step.
+func TestRFC8A_CapacityJournalMaximumActiveSegmentsOnly(t *testing.T) {
+	f := enginetest.New(t)
+
+	_, id := f.File("a")
+	n := int(maxBytes/mib) / 2
+
+	overwriteTwice(t, f, f.Share.ID, id, n)
+	write(t, f, id, int64(n*mib), bytes.Repeat([]byte{'c'}, mib))
+}
+
+// A refusal's pass held mid-pass on a failed segment whose window has resolved,
+// then a second refusal: ErrDelay, served once the hold is let go.
+func TestRFC8A_CapacityResolvedFailedSegmentCountsAsLeft(t *testing.T) {
+	f := enginetest.New(t)
+	limitedSecond(t, f, 4*mib)
+
+	fa := secondFile(t, f, "a")
+	overwriteTwice(t, f, f.Second.ID, fa, 2)
+	f.FailNextSync()
+	f.Clock.Advance(time.Minute)
+
+	hold := f.Seam.HoldFirst(t, "remove", "*")
+	first := make(chan error, 1)
+
+	go func() {
+		first <- putSecond(t, f, fa, 2*mib, mib, 'c')
+	}()
+
+	within(t, "the first repack reaching the storage seam", hold.Reached())
+
+	var d *vfserr.Delay
+	if err := putSecond(t, f, fa, 3*mib, mib, 'd'); !errors.As(err, &d) {
+		t.Errorf("the second refusal: %v, want ErrDelay", err)
+	}
+
+	hold.Release()
+
+	if err := within(t, "the first write's answer", first); err != nil {
+		t.Errorf("the first write: %v, want served", err)
+	}
+}
+
+// A timer sync's failed window in a file of share A, then a refusal of A whose
+// scope sync takes the window's report: the file's next Commit fails once and
+// the one after succeeds.
+func TestRFC8A_CapacityScopeSyncTakesAFailedWindow(t *testing.T) {
+	f := enginetest.New(t)
+	limitedSecond(t, f, 4*mib)
+
+	fa := secondFile(t, f, "a")
+	overwriteTwice(t, f, f.Second.ID, fa, 2)
+	f.FailNextWindow()
+	f.Clock.Advance(time.Minute)
+
+	mustSecond(t, f, fa, 2*mib, mib, 'c')
+
+	if _, seq, err := f.E.Commit(t.Context(), f.Second.ID, fa, 0, 0); err != nil || seq != 1 {
+		t.Errorf("the file's next Commit: sequence %d, %v, want the raised sequence 1", seq, err)
+	}
+
+	if _, seq, err := f.E.Commit(t.Context(), f.Second.ID, fa, 0, 0); err != nil || seq != 1 {
+		t.Errorf("the Commit after: sequence %d, %v, want 1 again and no error", seq, err)
+	}
+}
+
+// A refusal while a failed window is unresolved: the window is made in a
+// segment that also holds share A's synced, superseded bytes, its writes all
+// B's, and the seam holds the sync that resolves it. A, at its limit, is
+// refused: its scope sync covers only A's files, so it does not wait on that
+// sync. ErrDelay comes under a tenth of the caller's deadline, and the write is
+// served once the window resolves.
+func TestRFC8A_CapacityRefusalWhileAWindowIsUnresolved(t *testing.T) {
+	f := enginetest.New(t)
+	limitedSecond(t, f, 4*mib)
+
+	fa := secondFile(t, f, "a")
+	overwriteTwice(t, f, f.Second.ID, fa, 2)
+	f.Clock.Advance(time.Minute)
+
+	_, fb := f.File("b")
+	write(t, f, fb, 0, bytes.Repeat([]byte{'w'}, 4<<10))
+
+	f.FailNextWindow()
+
+	hold := f.Seam.Hold(t, "sync", "*")
+	f.Clock.Advance(time.Minute)
+	within(t, "the re-append's sync reaching the seam", hold.Reached())
+
+	// the deadline is real time, since the caller's context cannot
+	// end on the test clock; the assertion is that the answer does not wait for it.
+	start := time.Now()
+	err := putSecond(t, f, fa, 2*mib, mib, 'c')
+
+	var d *vfserr.Delay
+	if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity {
+		t.Fatalf("a refusal over an unresolved window: %v, want ErrDelay(DelayCapacity)", err)
+	}
+
+	if took := time.Since(start); took > bound/10 {
+		t.Errorf("the refusal took %v, want under %v: it waited on the sync", took, bound/10)
+	}
+
+	hold.Release()
+	f.Clock.Advance(time.Minute)
+	mustSecond(t, f, fa, 2*mib, mib, 'c')
+}
+
+// Small overwrites at the index bound left unsynced: the write is served after
+// the last step's sync.
+func TestRFC8A_CapacityIndexBoundServedAfterTheSync(t *testing.T) {
+	f := enginetest.New(t)
+
+	_, id := f.File("a")
+
+	for range 64 {
+		write(t, f, id, 0, bytes.Repeat([]byte{'s'}, 4<<10))
+	}
+
+	write(t, f, id, 0, bytes.Repeat([]byte{'t'}, 4<<10))
+}
+
+// One share at its limit with dirty bytes and another share's segments with
+// superseded bytes: the repack frees space for a third share's write.
+func TestRFC8A_CapacityRepackReserveServesAThirdShare(t *testing.T) {
+	f := enginetest.New(t)
+	limitedSecond(t, f, 2*mib)
+
+	fa := secondFile(t, f, "a")
+	mustSecond(t, f, fa, 0, 2*mib, 'd')
+
+	_, fb := f.File("b")
+	overwriteTwice(t, f, f.Share.ID, fb, 2)
+	f.Clock.Advance(time.Minute)
+
+	_, fc := f.File("c")
+	write(t, f, fc, 0, bytes.Repeat([]byte{'e'}, mib))
 }

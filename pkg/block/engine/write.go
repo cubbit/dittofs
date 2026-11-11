@@ -87,6 +87,8 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 		return vfserr.Verifier{}, err
 	}
 
+	e.acceptedWrite(b)
+
 	ver, fe := got.ver, got.fe
 	// A loss drained since WriteAt answered found no pending write to apply
 	// to and was kept: one that drops its write (see drops) drops it, its

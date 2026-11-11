@@ -67,6 +67,8 @@ type FakeJournal struct {
 	afterRefusal func()         // AfterRefusal's action, run inside a refused WriteAt
 	refused      map[Call]error // Refuse's errors, until cleared
 
+	sm *segModel // the opt-in segment model, nil when off
+
 	refuseReserve error // RefuseReserve's error: the next Reserve answers it
 }
 
@@ -78,7 +80,8 @@ type fakeFile struct {
 	changes []journal.Change // markers and losses
 	settled journal.Version  // Settle's newest version: changes at or below it are hidden until a reopen
 	asOf    journal.Version
-	rec     record // its newest record
+	rec     record       // its newest record
+	pending []superseded // bytes whose superseding record is not synced yet
 }
 
 // unsettled is the file's markers and losses that Settle has not covered.
@@ -113,6 +116,7 @@ type piece struct {
 	b     []byte
 	v     journal.Version
 	mtime int64
+	seg   *fseg // the segment holding it, with the segment model on
 }
 
 func (p piece) end() int64 { return p.off + int64(len(p.b)) }
@@ -233,7 +237,19 @@ func (j *FakeJournal) Stats() journal.Stats {
 		s.Shares[tag] = ts
 		s.UsedBytes += n
 	}
+
+	if j.sm != nil {
+		j.segStats(&s)
+	}
 	return s
+}
+
+// headroomRefusal reports whether err is a refusal naming the headroom, which
+// a write under a reservation passes (RFC 1 §6).
+func headroomRefusal(err error) bool {
+	var ns *journal.NoSpaceError
+
+	return errors.As(err, &ns) && ns.Limit == journal.LimitHeadroom
 }
 
 // Close closes the journal and every handle.
@@ -421,10 +437,6 @@ func (j *FakeJournal) SetOffloaded(tag journal.ShareTag, n int64) {
 	j.offloaded[tag] = n
 }
 
-func (j *FakeJournal) Repack(context.Context, int64, journal.RepackScope) (int64, error) {
-	return 0, journal.ErrNotImplemented
-}
-
 // cut stops holding [from, to) of f, narrowing or splitting the pieces it
 // crosses, and answers the newest version it dropped, ok false when it
 // dropped nothing. j.mu is held.
@@ -436,12 +448,15 @@ func (j *FakeJournal) cut(f *fakeFile, from, to int64) (newest journal.Version, 
 			continue
 		}
 		if p.off < from {
-			kept = append(kept, piece{p.off, p.b[:from-p.off], p.v, p.mtime})
+			kept = append(kept, piece{p.off, p.b[:from-p.off], p.v, p.mtime, p.seg})
 		}
 		if p.end() > to {
-			kept = append(kept, piece{to, p.b[to-p.off:], p.v, p.mtime})
+			kept = append(kept, piece{to, p.b[to-p.off:], p.v, p.mtime, p.seg})
 		}
 		j.held[f.tag] -= min(p.end(), to) - max(p.off, from)
+		if j.sm != nil {
+			j.supersede(f, p.seg, min(p.end(), to)-max(p.off, from))
+		}
 		if !ok || p.v.Compare(newest) > 0 {
 			newest, ok = p.v, true
 		}
@@ -481,7 +496,7 @@ func (h *FakeHandle) WriteAt(
 	p []byte,
 	mtime int64,
 ) (journal.Version, error) {
-	v, err := h.writeAt(ctx, id, off, p, mtime)
+	v, err := h.writeAt(ctx, id, off, p, mtime, false)
 
 	var noSpace *journal.NoSpaceError
 	if !errors.As(err, &noSpace) {
@@ -516,6 +531,7 @@ func (h *FakeHandle) writeAt(
 	off int64,
 	p []byte,
 	mtime int64,
+	reserved bool,
 ) (journal.Version, error) {
 	j := h.j
 	j.mu.Lock()
@@ -528,13 +544,21 @@ func (h *FakeHandle) writeAt(
 		return journal.Version{}, err
 	}
 
-	if err := j.refused[CallWriteAt]; err != nil {
+	if err := j.refused[CallWriteAt]; err != nil && (!reserved || !headroomRefusal(err)) {
 		return journal.Version{}, err
+	}
+
+	var seg *fseg
+
+	if j.sm != nil {
+		if seg, err = j.place(h, id, int64(len(p))); err != nil {
+			return journal.Version{}, err
+		}
 	}
 	// ponytail: the share's limit counts held bytes, not record bytes, so an
 	// overwrite counts its new bytes only once the old are cut. A unit test of
 	// the engine's refusal mapping needs only that a refusal names its limit.
-	if h.limit > 0 && j.held[h.tag]+int64(len(p)) > h.limit {
+	if j.sm == nil && h.limit > 0 && j.held[h.tag]+int64(len(p)) > h.limit {
 		return journal.Version{}, &journal.NoSpaceError{Limit: journal.LimitShare, Missing: j.held[h.tag] + int64(len(p)) - h.limit, Unit: journal.UnitBytes}
 	}
 	v, err := j.draw()
@@ -543,7 +567,15 @@ func (h *FakeHandle) writeAt(
 	}
 	j.cut(f, off, off+int64(len(p)))
 	j.appendRecord(f, int64(len(p)))
-	f.pieces = append(f.pieces, piece{off, slices.Clone(p), v, mtime})
+
+	if seg != nil {
+		n := int64(len(p))
+		seg.fill += n
+		seg.rec[h.tag] += n
+		seg.live[h.tag] += n
+	}
+
+	f.pieces = append(f.pieces, piece{off, slices.Clone(p), v, mtime, seg})
 	slices.SortFunc(f.pieces, func(a, b piece) int { return cmp.Compare(a.off, b.off) })
 	j.held[h.tag] += int64(len(p))
 	f.asOf = v
@@ -620,6 +652,10 @@ func (h *FakeHandle) Sync(_ context.Context, ids ...journal.FileID) ([]entity.Sy
 	var newest record
 	for _, id := range ids {
 		delete(j.undurable, id)
+
+		if f := j.files[id]; f != nil {
+			f.flush()
+		}
 		if f := j.files[id]; f != nil && f.rec.seq > newest.seq {
 			newest = f.rec
 		}
@@ -936,7 +972,8 @@ func (r *fakeReservation) WriteAt(ctx context.Context, id journal.FileID, off in
 	r.left--
 	h := *r.h
 	h.limit = 0
-	return h.WriteAt(ctx, id, off, p, mtime)
+
+	return h.writeAt(ctx, id, off, p, mtime, true)
 }
 
 // Close gives back what the reservation did not use.

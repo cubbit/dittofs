@@ -52,6 +52,8 @@ type groupCommit struct {
 
 	removals *removalLoop // the journal's removal work
 	stopOnce sync.Once    // the stop is signalled once, however often Close joins it
+
+	cap capState // the journal's refusals: passes running, failing steps, journal_full's figures
 }
 
 // marks is what a group commit knows of its journal's sync marks.
