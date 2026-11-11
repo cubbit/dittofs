@@ -533,14 +533,16 @@ func (sc *scanner) read(off, n int64) ([]byte, error) {
 	// keeps the wide window throughout, whose one read of each byte it
 	// crosses is the cheaper walk there.
 	//
-	// decision: a wide refill at a search position may cover the body of
-	// the record the search finds further on, so a header-only walk can
-	// read that body's bytes incidentally after a range of bad bytes. Only
-	// a record reached by resynchronisation is exposed, and only to bytes
-	// within one window of the search position; the rule the walk keeps is
-	// that no read starts inside an attached record's body. Withdrawn if a
-	// scan is ever ruled to read no payload byte at all, for the search
-	// would then need a header-sized read per slot or a bounded window.
+	// decision: after a bad range the search refills with the wide window,
+	// so the bodies of every record that lies within one window
+	// (scanWindow bytes) of the search position may be read incidentally:
+	// read, never verified or reported. Records the walk steps over by
+	// length still read exact sizes, and no read starts inside an attached
+	// record's body. The ceiling is one window per resynchronisation.
+	// Overturned if a profile shows that over-reading; upgrade by capping
+	// the refill at the first verifying header found. Withdrawn if a scan
+	// is ever ruled to read no payload byte at all, for the search would
+	// then need a header-sized read per slot or a bounded window.
 	if sc.headerOnly && !sc.searching {
 		want = n
 	} else if off < sc.narrowUntil {
