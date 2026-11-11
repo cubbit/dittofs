@@ -47,29 +47,6 @@ func (c *Core) Stranded(tag core.ShareTag) bool {
 	return slices.Contains(*p, tag)
 }
 
-// unstrand takes tag out of the stranded set, as Forget does once it has
-// dropped the tag whole. A tag the set does not hold is left alone: the
-// set is unchanged and nothing is returned.
-func (c *Core) unstrand(tag core.ShareTag) {
-	c.strandMu.Lock()
-	defer c.strandMu.Unlock()
-	p := c.stranded.Load()
-	if p == nil {
-		return
-	}
-	set := *p
-	if !slices.Contains(set, tag) {
-		return
-	}
-	next := make([]core.ShareTag, 0, len(set)-1)
-	for _, t := range set {
-		if t != tag {
-			next = append(next, t)
-		}
-	}
-	c.stranded.Store(&next)
-}
-
 // closed reports whether the core's Close has begun.
 func (c *Core) closed() bool {
 	return c.closedFlag.Load()

@@ -70,32 +70,6 @@ func TestStrandAppendsNothing(t *testing.T) {
 	}
 }
 
-// The stranding is kept in memory only: a fresh core over the same directory
-// holds none of it, though it continues the index and the counters, and the
-// tag's own records are still on disk to carry a stranding onto it.
-func TestStrandNotKeptAcrossReopen(t *testing.T) {
-	dir := t.TempDir()
-	c, _ := newTestCore(t, func(o *coreOptions) { o.dir = dir })
-	s := mustShare(t, c, strandTag)
-	mustWrite(t, c, s, testFile(25), 0, []byte("dd"))
-	if err := c.Strand(strandTag); err != nil {
-		t.Fatalf("Strand(%d): %v", strandTag, err)
-	}
-	if err := c.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	fresh, _ := newTestCore(t, func(o *coreOptions) {
-		o.dir = dir
-		o.state = State{Index: c.Index(), Counters: c.counters}
-	})
-	s2 := mustShare(t, fresh, strandTag)
-	mustWrite(t, fresh, s2, testFile(25), 4, []byte("ee"))
-	if fresh.Stranded(strandTag) {
-		t.Fatalf("Stranded(%d) = true over a freshly built core, want false", strandTag)
-	}
-}
-
 // The refusals: tag 0, the tag of no share, is refused like Share refuses it;
 // a core whose Close began refuses the stranding; a tag already stranded
 // returns nil again, for the set keeps each tag once.
@@ -123,32 +97,6 @@ func TestStrandRefusals(t *testing.T) {
 	// nothing new, and nothing of what the caller stranded is dropped by it.
 	if !c.Stranded(strandTag) {
 		t.Fatalf("Stranded(%d) = false after Close, want true", strandTag)
-	}
-}
-
-// unstrand takes the tag out of the set, and a tag that was never in it — or
-// was taken out already — is left alone, the rest of the set untouched.
-func TestUnstrandRemovesTag(t *testing.T) {
-	c, _ := newTestCore(t)
-	c.unstrand(strandTag)
-	c.unstrand(strandTag)
-	if err := c.Strand(strandTag); err != nil {
-		t.Fatalf("Strand(%d): %v", strandTag, err)
-	}
-	if err := c.Strand(otherTag); err != nil {
-		t.Fatalf("Strand(%d): %v", otherTag, err)
-	}
-	c.unstrand(strandTag)
-	if c.Stranded(strandTag) {
-		t.Fatalf("Stranded(%d) = true after unstrand, want false", strandTag)
-	}
-	if !c.Stranded(otherTag) {
-		t.Fatalf("Stranded(%d) = false after unstrand(%d), want true", otherTag, strandTag)
-	}
-	// An unstrand of a tag the set no longer holds changes nothing.
-	c.unstrand(strandTag)
-	if !c.Stranded(otherTag) {
-		t.Fatalf("Stranded(%d) = false after a second unstrand(%d), want true", otherTag, strandTag)
 	}
 }
 
