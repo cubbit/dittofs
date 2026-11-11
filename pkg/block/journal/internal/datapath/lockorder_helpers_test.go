@@ -2,6 +2,7 @@ package datapath
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -222,11 +223,14 @@ func TestRecordedCoreFixture(t *testing.T) {
 			unlock()
 		})
 
-	// The stream probe holds a plain storage guard — the one rank ordered
-	// above the segment append a probe can hold — then reads a stream's
-	// room, which takes its append lock alone.
-	expectOutOfOrder(t, rec, lockorder.StorageGuard, "streams",
-		[]lockorder.Rank{lockorder.SegmentAppend}, func() { c.streams.Stream(0).Room() })
+	// The stream probes hold a plain storage guard — the one rank ordered
+	// above the segment append a probe can hold — then read each stream's
+	// room, which takes that stream's append lock alone. One probe per
+	// stream, so a stream whose lock was left unranked fails its own.
+	for i := 0; i < c.streams.Len(); i++ {
+		expectOutOfOrder(t, rec, lockorder.StorageGuard, fmt.Sprintf("stream %d", i),
+			[]lockorder.Rank{lockorder.SegmentAppend}, func() { c.streams.Stream(i).Room() })
+	}
 
 	// The descriptor cache's guard is a pin, which orders nothing and
 	// breaks no rule: its wiring is proven by the pin appearing on this
@@ -240,14 +244,23 @@ func TestRecordedCoreFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Acquire of the fixture's segment: %v", err)
 	}
-	// The release is deferred the moment the reference exists, so a failed
-	// assertion below cannot leak it into the cleanup's Close, whose
-	// Shutdown waits for every reference.
-	defer ref.Release()
+	// A reference is released exactly once, on the passing path and on a
+	// failed assertion alike: the deferred closure releases a reference no
+	// explicit release returned from, so a failed assertion cannot leak it
+	// into the cleanup's Close — whose Shutdown waits for every reference
+	// and would hang — while a second release on the passing path would
+	// corrupt the cache's refcounts.
+	var released bool
+	defer func() {
+		if !released {
+			ref.Release()
+		}
+	}()
 	if got := countRank(rec.Held(), lockorder.StorageGuard); got != pins+1 {
 		t.Fatalf("cache wiring: storage guard holds while the reference is held = %d, want %d", got, pins+1)
 	}
 	ref.Release()
+	released = true
 	if got := countRank(rec.Held(), lockorder.StorageGuard); got != pins {
 		t.Fatalf("cache wiring: storage guard holds after the reference released = %d, want %d", got, pins)
 	}
