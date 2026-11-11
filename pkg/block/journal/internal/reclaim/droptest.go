@@ -73,11 +73,14 @@ func (t *Tracker) droppableLocked(rec Rec) bool {
 		if !rec.Synced {
 			// An unsynced loss reaches only the record it names, by its
 			// sequence number, wherever that record sits, so it is
-			// droppable once no live registration of the file carries the
-			// named number — the records the segments hold of the file are
-			// the tracker's own registrations, and the record the loss
-			// named was one of the file's — and once nothing else it can
-			// outrank remains either.
+			// droppable once nothing holds that record: no live
+			// registration of the file carries the named number — the
+			// records the segments hold of the file are the tracker's own
+			// registrations, and the record the loss named was one of the
+			// file's — and no holder of the loss's own presence marks
+			// remains — the open-time answer to the same question, a
+			// registry entry that holds nothing by itself — and once
+			// nothing else it can outrank remains either.
 			//
 			// decision: the registry is trusted only beside an outranking
 			// guard, and the answer fails closed on both. The registry
@@ -100,6 +103,9 @@ func (t *Tracker) droppableLocked(rec Rec) bool {
 				if r.Seq == rec.Named {
 					return false
 				}
+			}
+			if len(t.marks[rec]) > 0 {
+				return false
 			}
 			return !t.ix.MayOutrank(rec.File, rec.Seg, e, rec.Pair)
 		}
@@ -148,6 +154,16 @@ func (t *Tracker) droppableLocked(rec Rec) bool {
 // queries. Upgrade to an index of removal records by extent when a re-test
 // of a heavy file shows in a profile, which also lifts rm off the walk's
 // reads.
+// markTaken drops an unsynced loss record's presence marks once the
+// registry has given up its registration, so a mark set exists only while
+// its loss record counts live, exactly as forgetTaken treats a snapshot.
+// The caller holds rm.
+func (t *Tracker) markTaken(rec Rec) {
+	if rec.Kind == format.KindLoss {
+		delete(t.marks, rec)
+	}
+}
+
 func (t *Tracker) retest(files ...core.FileID) {
 	t.rm.Lock()
 	rel := make([]Rec, 0, 8)
@@ -161,6 +177,7 @@ func (t *Tracker) retest(files ...core.FileID) {
 			for range n {
 				if t.droppableLocked(rec) && t.take(rec) {
 					t.forgetTaken(rec)
+					t.markTaken(rec)
 					rel = append(rel, rec)
 				}
 			}
@@ -234,6 +251,35 @@ func (t *Tracker) CopiesDone(files []core.FileID) { t.retest(files...) }
 // one and Held of a retired segment answers from the index's counters
 // alone, which the relay has emptied. Call it once the unlink or recycle
 // is durable.
+// pruneMarks takes the retired segment out of every unsynced loss record's
+// presence marks and returns the files of the losses whose mark sets
+// emptied here: the marks hold nothing and lower no count, but a loss
+// whose last holder left is one the re-test must now judge — through the
+// same drop test every release reaches, with the registry walk and the
+// outranking guard, never taken here — and the files returned are the
+// entries the retirement's re-test needs to reach those losses even when
+// the caller's files list names none of them. The caller holds rm.
+func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
+	var files []core.FileID
+	for rec, marks := range t.marks {
+		if rec.Seg == seg {
+			// The loss record counted in the retired segment; its marks
+			// leave with its registration.
+			delete(t.marks, rec)
+			continue
+		}
+		if _, ok := marks[seg]; !ok {
+			continue
+		}
+		delete(marks, seg)
+		if len(marks) == 0 {
+			delete(t.marks, rec)
+			files = append(files, rec.File)
+		}
+	}
+	return files
+}
+
 func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 	t.rm.Lock()
 	st := t.stateOf(seg)
@@ -262,6 +308,7 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 			// named.
 			for t.take(rec) {
 				t.forgetTaken(rec)
+				t.markTaken(rec)
 				rel = append(rel, rec)
 			}
 		}
@@ -292,6 +339,21 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 			}
 		}
 	}
+	// The retired segment leaves every mark set that names it: a mark
+	// holds nothing, so its leaving lowers no count — but a loss record
+	// whose marks empty here, its last holder gone, is NOT taken. It is
+	// instead re-tested: its file joins files, and the drop test the
+	// retirement's re-test runs judges it through the registry walk and
+	// the outranking guard like any other record, so nothing releases
+	// while the named record is still registered somewhere or something
+	// lower-pair overlaps what the loss covers. The appended file also
+	// covers a caller's list that names none of it. The loss records the
+	// marks name sit in other segments — a segment holding a copy of what
+	// a loss in it names is a reach the record the loss names does not
+	// have — so the only marks of the retired segment's own records would
+	// be a loss and its holder in one, whose registration the take above
+	// has already released.
+	files = append(files, t.pruneMarks(seg)...)
 	t.rm.Unlock()
 	t.retireHolds(seg)
 	for _, rec := range rel {

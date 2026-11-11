@@ -81,6 +81,18 @@ type Tracker struct {
 	// record's registration does, and a retired segment leaves every
 	// snapshot that names it.
 	forgets map[Rec]map[core.SegmentID]struct{}
+	// marks is each live unsynced loss record's presence marks, keyed by
+	// the whole Rec of the loss itself: the segments still holding copies
+	// of the record it names, the only thing that keeps the loss from
+	// answering droppable. A mark lives in the registry alone — it raises
+	// no segment count and holds nothing — so a holder segment is held or
+	// not by its own bytes and header-only records, never by the mark.
+	// Two loss records naming one sequence number with different extents
+	// keep their own mark sets, whatever holder they share, and each ends
+	// with its own record's release. Guarded by rm, like forgets; an entry
+	// leaves when the loss's registration does, and a retired holder
+	// segment leaves every mark set that names it.
+	marks map[Rec]map[core.SegmentID]struct{}
 
 	// mu serialises creating states: a leaf lock, held only while the state
 	// table is copied, never across the index or a candidate call.
@@ -120,6 +132,36 @@ type Tracker struct {
 type endedHold struct {
 	seg  core.SegmentID
 	last int64
+}
+
+// Located is one header-only record of an open's rebuild beside where it
+// sits: the record as reclamation sees it, and the segment and offset the
+// rebuild found its header at. The location is carried for the rebuild's
+// call shape — the tracker keys a record by the whole Rec, which names the
+// segment itself — and reaches nothing inside the registration.
+type Located struct {
+	Rec Rec
+	Loc index.RecordAt
+}
+
+// ForgetSet is one forget record of an open's rebuild with its snapshot:
+// the segments that held records of the record's tag below it when the
+// journal appended it, collected per tag and segment by the rebuild's
+// feed — the set the forget's registration re-checks against the set's own
+// member answer.
+type ForgetSet struct {
+	Rec  Rec
+	Segs []core.SegmentID
+}
+
+// UnsyncedLoss is one unsynced loss record of an open's rebuild with the
+// segments still holding copies of the record it names: the reach of an
+// unsynced loss is the record it names alone, so its liveness ends when the
+// last of these segments retires, and the registration below reads the
+// list exactly the forget's snapshot reads its own.
+type UnsyncedLoss struct {
+	Rec    Rec
+	HeldBy []core.SegmentID
 }
 
 // New returns a tracker that answers Held from ix's per-segment bytes,
@@ -225,6 +267,7 @@ func (t *Tracker) Unregister(rec Rec) {
 	held := t.take(rec)
 	if held {
 		t.forgetTaken(rec)
+		t.markTaken(rec)
 	}
 	t.rm.Unlock()
 	if !held {
@@ -409,6 +452,82 @@ func (t *Tracker) forgetTaken(rec Rec) {
 	if rec.Kind == format.KindForget {
 		delete(t.forgets, rec)
 	}
+}
+
+// RegisterAtOpen is the registration the rebuild at an open hands its
+// records to, so the tracker the journal opens with answers as one fed the
+// same records as they were appended would: every header-only record
+// counts live exactly as Register counts it, whatever its kind — one the
+// drop test would already answer droppable included, which drops at the
+// next event of its file — each forget record registers with the snapshot
+// its caller collected (RegisterForget's own rule), and each unsynced
+// loss record beside a presence mark of the record it names in every
+// segment holding one (registerMark), so the loss's drop query finds the
+// named record through the marks until the last holder retires. An
+// unknown or unsupported kind registers live: what the tracker cannot
+// answer about it keeps, the safe direction.
+//
+// RegisterAtOpen must be called with SetMember wired to the segment
+// ledger. A forget's snapshot was collected while the open scanned, and
+// its registration re-checks each of its segments against the member
+// answer; without one — nil treats every snapshot segment as present — a
+// segment the open retired between the collection and this call stays in
+// the snapshot, keeping the forget record live past the last segment that
+// held the tag's records.
+//
+// The lists carry no order between them and concurrent callers register
+// concurrently — a rebuild whose segment scans run in parallel feeds
+// shards of its records — so the result depends on neither: plain
+// registrations commute by their own locks, a forget's snapshot and a
+// loss's marks are keyed by the whole record, and a loss whose named
+// copies the same feed also registers stays undroppable until their
+// holder leaves either way. Registering a record twice counts it twice,
+// as Register itself does: an open hands each attached record exactly
+// once, whatever its copies.
+func (t *Tracker) RegisterAtOpen(recs []Located, forgets []ForgetSet, unsynced []UnsyncedLoss) {
+	for _, l := range recs {
+		t.Register(l.Rec)
+	}
+	for _, f := range forgets {
+		t.RegisterForget(f.Rec, f.Segs)
+	}
+	for _, u := range unsynced {
+		t.Register(u.Rec)
+		for _, seg := range u.HeldBy {
+			t.registerMark(u.Rec, seg)
+		}
+	}
+}
+
+// registerMark keeps one presence mark of the unsynced loss record rec: a
+// registry-only entry naming a segment still holding a copy of the record
+// rec.Named names. The mark is what the loss's drop query reads — no live
+// registration of the file carries the named sequence number while one
+// stands — and it holds nothing: the holder segment answers Held by its
+// own bytes and counts alone, is a candidacy exactly when it would be
+// without the mark, and its retirement takes the mark from the registry
+// alone, lowering no count, because the mark raised none.
+//
+// decision: the mark makes the loss live without pinning its holder,
+// because the holder's retirement — the one path that ends a segment's
+// holding of a record — is what ends the loss, and a mark counted as a
+// live record would hold the holder itself, so the retirement the loss
+// waits for would wait on a segment the tracker pins: a wait with no end.
+// The rule holds while a holder segment leaves the set only through
+// SegmentRetired, the single retirement path, whose take below reaches the
+// marks; a path that emptied or unlinked a holder without it would leave
+// the loss undroppable for ever — a record kept too long, the safer
+// direction — until that path reached the marks too.
+func (t *Tracker) registerMark(rec Rec, seg core.SegmentID) {
+	t.rm.Lock()
+	defer t.rm.Unlock()
+	if t.marks == nil {
+		t.marks = make(map[Rec]map[core.SegmentID]struct{})
+	}
+	if t.marks[rec] == nil {
+		t.marks[rec] = make(map[core.SegmentID]struct{})
+	}
+	t.marks[rec][seg] = struct{}{}
 }
 
 // HoldEnded registers one hold on an ended segment: the copies of its
