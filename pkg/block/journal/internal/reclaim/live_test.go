@@ -236,7 +236,7 @@ func TestHeld_OneLiveRecord(t *testing.T) {
 // knows, allocate nothing — the steady update, which is the common shape.
 // The scope is that pair of calls alone: a segment's or a file's first
 // record may allocate its state and its table entries, and the re-test
-// events — Retest, MarkerSettled, CopiesDone, SegmentRetired, OpenDone —
+// events — Retest, MarkerSettled, SegmentRetired, OpenDone —
 // allocate by design, the release slice and the per-walk dedupe map.
 // Measured outside -race, which changes allocation counts.
 func TestRegisterUnregisterAllocations(t *testing.T) {

@@ -49,9 +49,9 @@ func covered(rec Rec) core.Extent {
 // An unknown kind is never droppable either: what the tracker cannot name it
 // keeps, the safe direction of a removal kept too long.
 //
-// It takes the registry lock only for an unsynced loss; the re-test, which
-// holds that lock across its walk, reaches the same answer through
-// droppableLocked.
+// It takes the registry lock for every kind, the forget and unsynced-loss
+// rules read registries it guards; the re-test, which holds that lock across
+// its walk, reaches the same answer through droppableLocked.
 func (t *Tracker) Droppable(rec Rec) bool {
 	t.rm.Lock()
 	defer t.rm.Unlock()
@@ -193,12 +193,14 @@ func (t *Tracker) retest(files ...core.FileID) {
 	}
 }
 
-// Retest re-tests the records registered live of file: each one the drop
-// test now answers droppable stops counting live, exactly as Unregister
-// releasing it would. It is the event a change of the file's state carries
-// that the tracker has none of its own: a settle the caller ran straight
-// through the index, a range retired the file's answers counted on.
-func (t *Tracker) Retest(file core.FileID) { t.retest(file) }
+// Retest re-tests the records registered live of each of files: each one the
+// drop test now answers droppable stops counting live, exactly as Unregister
+// releasing it would. It is the event a change of a file's state carries that
+// the tracker has none of its own: a settle the caller ran straight through
+// the index, a range retired the file's answers counted on, a pass's copies
+// appended on disk below the removals that could outrank them — the test runs
+// only once the pass's own copies are appended, its target segment's included.
+func (t *Tracker) Retest(files ...core.FileID) { t.retest(files...) }
 
 // MarkerSettled states that metadata has recorded every removal of file at
 // or below v — the marker-covered state the index serves is settled with it
@@ -210,12 +212,6 @@ func (t *Tracker) MarkerSettled(file core.FileID, v core.Version) {
 	t.ix.Settle(file, v)
 	t.retest(file)
 }
-
-// CopiesDone re-tests the records registered live of each of files: a
-// pass's copies are on disk below the removals that could outrank them
-// like any other record, so the test runs only once the pass's own copies
-// are appended, its target segment's included.
-func (t *Tracker) CopiesDone(files []core.FileID) { t.retest(files...) }
 
 // pruneMarks takes the retired segment out of every unsynced loss record's
 // presence marks and returns the files of the losses whose mark sets
@@ -305,7 +301,6 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 			for f := range st.files {
 				files = append(files, f)
 			}
-			st.files = nil
 		}
 		st.mu.Unlock()
 	}

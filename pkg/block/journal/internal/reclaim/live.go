@@ -47,7 +47,8 @@ type Rec struct {
 // the index counts, the records registered live, a deferred-loss flag and a
 // count of ended holds — the things that keep a segment held with no
 // content. It is safe for concurrent use: Held reads atomics alone and takes
-// no lock, and each update locks only the one segment it names.
+// no lock; every update takes the registry lock rm, and the ones that move a
+// segment's counters also lock the one segment they name.
 type Tracker struct {
 	ix        *index.Index
 	candidate func(core.SegmentID)
@@ -112,7 +113,7 @@ type Tracker struct {
 	m atomic.Pointer[map[core.SegmentID]*segState]
 
 	// hm guards the ended holds below. It is taken by HoldEnded,
-	// MarksRecorded and SealObserved only — nothing that holds it calls
+	// MarksRecorded, SealObserved and retireHolds only — nothing that holds it calls
 	// back into the tracker — so it joins no cycle and sits beside the
 	// processing of the states, whose locks the releases take only after
 	// hm is back down.
@@ -132,16 +133,6 @@ type Tracker struct {
 type endedHold struct {
 	seg  core.SegmentID
 	last int64
-}
-
-// Located is one header-only record of an open's rebuild beside where it
-// sits: the record as reclamation sees it, and the segment and offset the
-// rebuild found its header at. The location is carried for the rebuild's
-// call shape — the tracker keys a record by the whole Rec, which names the
-// segment itself — and reaches nothing inside the registration.
-type Located struct {
-	Rec Rec
-	Loc index.RecordAt
 }
 
 // ForgetSet is one forget record of an open's rebuild with its snapshot:
@@ -354,10 +345,14 @@ func (t *Tracker) releaseCount(rec Rec) {
 // release shares: the candidate fires exactly once for the held-to-not-held
 // crossing, whichever concurrent release is the one that crosses it. The
 // two isHeld reads span the change under the state's lock, so two releases
-// of one segment's last registrations still answer one candidacy. The count
-// never goes below zero: a release with no count left is a pairing the
-// registries did not make, and changing nothing is safer than taking a
-// count that is not this release's. The caller has found the state.
+// of one segment's last registrations still answer one candidacy. The caller
+// has found the state.
+//
+// The clamp at zero is a defensive floor, unreachable while every release is
+// take-gated: the registry hands over one registration per count, so a
+// release with no count left is a pairing the registries did not make. It
+// stays because a negative count would offset the next live records and make
+// Held answer false over them, so changing nothing is the safe direction.
 func (t *Tracker) lowerCount(seg core.SegmentID, st *segState, n *atomic.Int64) {
 	st.mu.Lock()
 	if n.Load() <= 0 {
@@ -529,9 +524,12 @@ func (t *Tracker) forgetTaken(rec Rec) {
 // as Register itself does: an open hands each attached record exactly
 // once, whatever its copies. The open ends its registration with one
 // OpenDone call, after every RegisterAtOpen and after SetMember.
-func (t *Tracker) RegisterAtOpen(recs []Located, forgets []ForgetSet, unsynced []UnsyncedLoss) {
-	for _, l := range recs {
-		t.Register(l.Rec)
+//
+// The plain records carry no location: the tracker keys a record by the whole
+// Rec, which names its segment, so a location is added when a reader exists.
+func (t *Tracker) RegisterAtOpen(recs []Rec, forgets []ForgetSet, unsynced []UnsyncedLoss) {
+	for _, r := range recs {
+		t.Register(r)
 	}
 	for _, f := range forgets {
 		t.RegisterForget(f.Rec, f.Segs)
@@ -798,8 +796,7 @@ type segState struct {
 	// zero; Held consults it for the day one does.
 	holds atomic.Int64
 	// files are the files the segment's registered records named. Entries
-	// are never removed until the segment's retirement empties the table:
-	// a retired segment's file names answer from them, which a
-	// SegmentRetired whose caller carried no list asks for.
+	// are never removed; the state leaves the tracker with the segment, and
+	// SegmentRetired reads them when its caller carried no list.
 	files map[core.FileID]struct{}
 }

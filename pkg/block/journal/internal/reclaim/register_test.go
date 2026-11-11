@@ -26,7 +26,7 @@ const lossSlot = int64(1) << 30
 type openCase struct {
 	f        *fixture
 	segs     []core.SegmentID
-	located  []Located
+	located  []Rec
 	forgets  []ForgetSet
 	unsynced []UnsyncedLoss
 }
@@ -61,7 +61,7 @@ func drawCase(t *testing.T, r *rand.Rand, scale int) *openCase {
 	var named []namedCopy
 
 	register := func(rec Rec) {
-		c.located = append(c.located, Located{Rec: rec, Loc: index.RecordAt{Segment: rec.Seg, Offset: at}})
+		c.located = append(c.located, rec)
 	}
 	for i := range max(2, scale) {
 		file := files[r.IntN(len(files))]
@@ -98,7 +98,6 @@ func drawCase(t *testing.T, r *rand.Rand, scale int) *openCase {
 	stamp := c.f.takeIn(t)
 	c.segs = append(c.segs, stamp)
 	seq++
-	at += 4096
 	register(Rec{
 		Kind: format.KindStamp, File: fid(9), Seg: stamp,
 		Ext:  core.Extent{Off: 0, Len: 4096},
@@ -159,7 +158,7 @@ func sampleSegs(r *rand.Rand, ss []core.SegmentID) []core.SegmentID {
 // of its record beside a presence mark in each segment holding the record
 // it names — the mark makes the loss live without holding its holder,
 // exactly the open registration's own rule.
-func liveLocated(tr *Tracker, l Located)  { tr.Register(l.Rec) }
+func liveLocated(tr *Tracker, r Rec)      { tr.Register(r) }
 func liveForget(tr *Tracker, f ForgetSet) { tr.RegisterForget(f.Rec, f.Segs) }
 func liveUnsynced(tr *Tracker, u UnsyncedLoss) {
 	tr.Register(u.Rec)
@@ -190,11 +189,11 @@ func (c *openCase) live() *Tracker {
 func (c *openCase) checkAgainstLive(t *testing.T, tr, want *Tracker) {
 	t.Helper()
 	for _, l := range c.located {
-		if got, oracle := tr.Droppable(l.Rec), want.Droppable(l.Rec); got != oracle {
-			t.Fatalf("Droppable of a located %s record = %v, want %v: the live feed of the same record's answer", l.Rec.Kind, got, oracle)
+		if got, oracle := tr.Droppable(l), want.Droppable(l); got != oracle {
+			t.Fatalf("Droppable of a located %s record = %v, want %v: the live feed of the same record's answer", l.Kind, got, oracle)
 		}
-		if got, oracle := tr.Held(l.Rec.Seg), want.Held(l.Rec.Seg); got != oracle {
-			t.Fatalf("Held of the segment of a located %s record = %v, want %v: the live feed of the same record's answer", l.Rec.Kind, got, oracle)
+		if got, oracle := tr.Held(l.Seg), want.Held(l.Seg); got != oracle {
+			t.Fatalf("Held of the segment of a located %s record = %v, want %v: the live feed of the same record's answer", l.Kind, got, oracle)
 		}
 	}
 	for _, f := range c.forgets {
@@ -253,13 +252,13 @@ func TestRegisterAtOpen_AnyOrder(t *testing.T) {
 				}
 			}
 			for _, l := range c.located {
-				if l.Rec.Kind != format.KindStamp {
+				if l.Kind != format.KindStamp {
 					continue
 				}
-				if got := open.Droppable(l.Rec); got {
+				if got := open.Droppable(l); got {
 					t.Fatalf("Droppable of a stamp record, a kind no drop rule covers = %v, want false: the open fails closed", got)
 				}
-				if got := open.Held(l.Rec.Seg); !got {
+				if got := open.Held(l.Seg); !got {
 					t.Fatalf("Held of the stamp record's segment = %v, want true: the open registers what it cannot answer about", got)
 				}
 			}
@@ -300,14 +299,14 @@ func shuffled[T any](r *rand.Rand, ss []T) []T {
 // feederShards is one feeder's shard of a concurrent registration: its
 // slices of the three lists.
 type feederShards struct {
-	located  []Located
+	located  []Rec
 	forgets  []ForgetSet
 	unsynced []UnsyncedLoss
 }
 
 // shardAll splits the three lists between 2-4 feeders, every record to
 // exactly one.
-func shardAll(r *rand.Rand, located []Located, forgets []ForgetSet, unsynced []UnsyncedLoss) []feederShards {
+func shardAll(r *rand.Rand, located []Rec, forgets []ForgetSet, unsynced []UnsyncedLoss) []feederShards {
 	n := 2 + r.IntN(3)
 	shards := make([]feederShards, n)
 	for _, l := range located {
@@ -602,7 +601,7 @@ func TestOpenDone_DropsAlreadyDroppableRecords(t *testing.T) {
 		Ext:  core.Extent{Off: 1 << 20},
 		Pair: index.Numbers{Version: ver(5), Seq: 6}, Seq: 6,
 	}
-	tr.RegisterAtOpen([]Located{{Rec: trunc, Loc: index.RecordAt{Segment: seg, Offset: 0}}}, nil, nil)
+	tr.RegisterAtOpen([]Rec{trunc}, nil, nil)
 	if got := tr.Droppable(trunc); !got {
 		t.Fatalf("Droppable of the settled truncate before OpenDone = %v, want true: nothing below its pair overlaps what it covers", got)
 	}
@@ -643,7 +642,7 @@ func TestOpenDone_KeepsLiveRecordsOpenBytes(t *testing.T) {
 		Ext:  core.Extent{Off: 1 << 20},
 		Pair: index.Numbers{Version: ver(5), Seq: 6}, Seq: 6,
 	}
-	tr.RegisterAtOpen([]Located{{Rec: trunc, Loc: index.RecordAt{Segment: seg, Offset: 0}}}, nil, nil)
+	tr.RegisterAtOpen([]Rec{trunc}, nil, nil)
 	tr.OpenDone()
 	if got := tr.Droppable(trunc); got {
 		t.Fatalf("Droppable of the unsettled truncate after OpenDone = %v, want false: the marker term keeps it", got)

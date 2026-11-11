@@ -770,7 +770,7 @@ func TestRetest_DuplicatedFileListReleasedOnce(t *testing.T) {
 	tr.Register(kept)
 
 	// The same file, twice in one event's list.
-	tr.CopiesDone([]core.FileID{id, id})
+	tr.Retest(id, id)
 	if _, ok := tr.recs[id][settled]; ok {
 		t.Fatalf("the settled truncate is still registered, want the duplicated-list re-test to have dropped it once")
 	}
