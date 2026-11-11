@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -230,55 +231,29 @@ func TestADroppedSharesRunningItemIsEnded(t *testing.T) {
 	}
 }
 
-// resumeAnswer is one scripted phase-2 run: what Resume answers, and the
-// prune's error after a Resume that finished.
-type resumeAnswer struct {
-	advanced      bool
-	err, pruneErr error
-}
-
-// scriptedContent answers Resume and PruneRemovals from its script in turn.
-type scriptedContent struct {
-	Content
-	script []resumeAnswer
-	n      int
-}
-
-func (c *scriptedContent) Resume(context.Context, entity.ShareID, entity.FileID) (bool, error) {
-	c.n++
-	return c.script[c.n-1].advanced, c.script[c.n-1].err
-}
-
-func (c *scriptedContent) PruneRemovals(context.Context, entity.ShareID, entity.FileID, entity.JournalVersion) error {
-	return c.script[c.n-1].pruneErr
-}
-
-// Each phase-2 run is counted once in engine_removal_runs_total, by its
-// result: done once Resume and the prune both succeed, advanced when Resume
-// moved the cursor whatever its error, conflict for a store conflict from
-// either, and error for anything else.
-func TestPhase2RunsAreCountedByResult(t *testing.T) {
+// Each phase-2 run is labelled in engine_removal_runs_total by its result:
+// done once Resume and the prune both succeed, advanced when Resume moved the
+// cursor whatever its error, conflict for a store conflict from either, and
+// error for anything else; only advanced runs again at once.
+func TestPhase2RunsAreLabelledByResult(t *testing.T) {
 	failed := errors.New("a store failure")
-	c := &scriptedContent{script: []resumeAnswer{
-		{},                            // done
-		{advanced: true, err: failed}, // advanced
-		{advanced: true, err: kvstore.ErrConflict}, // advanced
-		{err: kvstore.ErrConflict},                 // conflict
-		{pruneErr: kvstore.ErrConflict},            // conflict
-		{err: failed},                              // error
-		{pruneErr: failed},                         // error
-	}}
-	e := &Engine{d: Deps{Content: c}}
-	e.conflictBound.Store(int64(time.Second))
-	l := newRemovalLoop(e)
-	it := e.phase2(&removal{b: &binding{gc: &groupCommit{removals: l}}, f: entity.NewFileID()})
-	for range c.script {
-		it.run(t.Context())
-	}
-	want := map[string]int64{"done": 1, "advanced": 2, "conflict": 2, "error": 2}
-	for res, name := range runResultNames {
-		if got := l.runs[res].Load(); got != want[name] {
-			t.Errorf("engine_removal_runs_total{result=%q} = %d, want %d", name, got, want[name])
+	for _, c := range []struct {
+		advanced bool
+		err      error
+		res      runResult
+		a        answer
+	}{
+		{false, nil, runDone, itemDone},
+		{true, failed, runAdvanced, itemAdvanced},
+		{true, kvstore.ErrConflict, runAdvanced, itemAdvanced},
+		{false, kvstore.ErrConflict, runConflict, itemRetry},
+		{false, fmt.Errorf("wrapped: %w", kvstore.ErrConflict), runConflict, itemRetry},
+		{false, failed, runError, itemRetry},
+	} {
+		res, a := phase2Result(c.advanced, c.err)
+		if res != c.res || a != c.a {
+			t.Errorf("a run advanced %v answering %v: %s, answer %d; want %s, answer %d",
+				c.advanced, c.err, runResultNames[res], a, runResultNames[c.res], c.a)
 		}
 	}
 }

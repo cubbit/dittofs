@@ -376,6 +376,38 @@ func TestSelfFenceOnAFailingPrune(t *testing.T) {
 	}
 }
 
+// A phase 2 run whose Resume committed a batch before a later one failed is
+// a commit: the bound restarts from it, though the run answers the store's
+// error and its owner stays failing at the store.
+func TestSelfFenceCountsAnAdvancedPhase2AsACommit(t *testing.T) {
+	u := newCutUnit(t)
+	runs := func() map[string]int64 { return u.e.Stats().RemovalRuns }
+	f := u.create(t, "f")
+	u.holed(t, f, 3)
+	u.fault(t, removalSet(2, 0, errInjected)) // every batch fails, so no run advances
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a failed phase 2 run", func() bool { return runs()["error"] > 0 })
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(20 * time.Second)
+	eventually(t, "a second failed phase 2 run", func() bool { return runs()["error"] > 1 })
+	// The next run, a second on, commits its first batch and fails its second.
+	u.fault(t, removalSet(2, 0, errInjected))
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(time.Second)
+	eventually(t, "an advanced phase 2 run", func() bool { return runs()["advanced"] == 1 })
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(29 * time.Second)
+	if c, ok := u.nodeFenced(); ok {
+		t.Fatalf("fenced 29 s after a phase 2 run committed a batch, 50 s after the truncate: %v", c)
+	}
+	u.clock.Advance(2 * time.Second)
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("not fenced 31 s after the phase 2 run committed a batch, its owner failing since")
+	}
+}
+
 // fence fences the node: the version limit's raise, a retrying owner's,
 // failing for 31 s.
 func (u *fenceUnit) fence(t *testing.T) {

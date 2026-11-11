@@ -82,6 +82,7 @@ type removalLoop struct {
 	dropped map[entity.ShareID]bool  // shares dropped: an item of one, running or enqueued, is ended
 	waits   map[*loopItem]bool       // items waiting outside the loop, removal_stalled: see waiting
 	steps   atomic.Int64             // items run, for a test to wait on a run
+	parked  atomic.Bool              // waiting with its timer armed, for a test to step the clock past it
 	runs    [runResults]atomic.Int64 // engine_removal_runs_total by result
 	wake    chan struct{}
 	stop    chan struct{}
@@ -125,16 +126,23 @@ func (l *removalLoop) run() {
 			l.step(it)
 			continue
 		}
+		select {
+		case <-l.wake: // an enqueue since next looked: look again before arming a timer
+			continue
+		default:
+		}
 		var timer <-chan struct{}
 		if wait >= 0 {
 			timer = l.e.d.Clock.After(wait)
 		}
+		l.parked.Store(true)
 		select {
 		case <-l.wake:
 		case <-timer:
 		case <-l.stop:
 			return
 		}
+		l.parked.Store(false)
 	}
 }
 
@@ -346,18 +354,25 @@ func (e *Engine) phase2(r *removal) *loopItem {
 		if err == nil {
 			err = e.d.Content.PruneRemovals(ctx, share, r.f, v)
 		}
-		res, a := runError, itemRetry
-		switch {
-		case err == nil:
-			res, a = runDone, itemDone
-		case advanced:
-			res, a = runAdvanced, itemAdvanced
-		case errors.Is(err, kvstore.ErrConflict):
-			res = runConflict
-		}
+		res, a := phase2Result(advanced, err)
 		r.b.gc.removals.runs[res].Add(1)
 		return a
 	}}
+}
+
+// phase2Result is a phase-2 run's result and answer from whether Resume
+// advanced and the run's error, Resume's or the prune's.
+func phase2Result(advanced bool, err error) (runResult, answer) {
+	switch {
+	case err == nil:
+		return runDone, itemDone
+	case advanced:
+		return runAdvanced, itemAdvanced
+	case errors.Is(err, kvstore.ErrConflict):
+		return runConflict, itemRetry
+	default:
+		return runError, itemRetry
+	}
 }
 
 // clonePhase2 is clone c's item once its phase 1 committed, r the clone's

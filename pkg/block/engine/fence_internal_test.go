@@ -144,17 +144,21 @@ func TestFenceCauseOfAStallAfterARecoveredFailure(t *testing.T) {
 	}
 }
 
-// probe stands in for the store behind the fenced views: each write
+// probe is the store failing behind the fenced views: each write
 // transaction records the count the fence holds outstanding while it runs,
-// and answers advanced and err.
+// and fails with errStoreDown.
+//
+// decision: the probe fails every call on cue and embeds no store, since the
+// engine's import rule keeps the store out of its internal tests. Its
+// success path is the real store's, reached through StoreViews in
+// fence_test.go (TestSelfFenceCountsAnAdvancedPhase2AsACommit for Resume).
+// Withdraw it if the engine's internal tests may import the store.
 type probe struct {
-	f        *fence
-	seen     int64
-	advanced bool
-	err      error
+	f    *fence
+	seen int64
 }
 
-func (p *probe) call() error { p.seen = p.f.outstanding.Load(); return p.err }
+func (p *probe) call() error { p.seen = p.f.outstanding.Load(); return errStoreDown }
 
 type probeExistence struct {
 	Existence
@@ -179,7 +183,7 @@ type probeContent struct {
 }
 
 func (c probeContent) Resume(context.Context, entity.ShareID, entity.FileID) (bool, error) {
-	return c.advanced, c.call()
+	return false, c.call()
 }
 
 func (c probeContent) PruneRemovals(context.Context, entity.ShareID, entity.FileID, entity.JournalVersion) error {
@@ -242,7 +246,7 @@ func TestFenceRecordsEveryWriteTransaction(t *testing.T) {
 	for name, call := range fencedCalls {
 		t.Run(name, func(t *testing.T) {
 			f, _ := newClockFence()
-			p := &probe{f: f, err: errStoreDown}
+			p := &probe{f: f}
 			if err := call(withRetryingOwner(context.Background()), p); !errors.Is(err, errStoreDown) {
 				t.Fatalf("the call answered %v, want the store's error", err)
 			}
@@ -284,20 +288,6 @@ func TestFenceNotFailingOnACallsOwnError(t *testing.T) {
 				t.Errorf("%d owners failing after the latest attempt's own error, want 0", n)
 			}
 		})
-	}
-}
-
-// Resume's batches that committed before a later one failed are a commit:
-// they restart the bound, though the call answers the store's error.
-func TestFenceResumeAdvancedThenFailedCommits(t *testing.T) {
-	f, clock := newClockFence()
-	clock.Advance(10 * time.Second)
-	p := &probe{f: f, advanced: true, err: errStoreDown}
-	if err := fencedCalls["Content.Resume"](withRetryingOwner(context.Background()), p); !errors.Is(err, errStoreDown) {
-		t.Fatalf("Resume answered %v, want the store's error", err)
-	}
-	if got, want := time.Duration(f.lastCommit.Load()), 70*time.Second; got != want {
-		t.Errorf("last commit at %v, want %v", got, want)
 	}
 }
 
