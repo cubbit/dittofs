@@ -7,8 +7,9 @@ import (
 
 // Rank orders the lock domains: file append → capacity → file index →
 // file map → segment append → storage guard. An acquisition follows the
-// order, and no two locks of one domain are held at once. Zero is unranked:
-// a lock with rank 0 is still excluded from checks while its mutex works.
+// order, and no two locks of one domain are held at once. Zero is
+// unranked: a lock with rank 0 is never reported to the recorder, while
+// its mutex works whether or not one is installed.
 type Rank uint8
 
 const (
@@ -40,23 +41,40 @@ var rankNames = [...]string{
 }
 
 func (r Rank) String() string {
-	if int(r) < len(rankNames) {
+	if r != 0 && int(r) < len(rankNames) {
 		return rankNames[r]
 	}
 	return "unranked"
 }
 
+// readIdentity is the identity a read hold records itself under, distinct
+// from the RWMutex pointer an exclusive hold uses. A reader's second,
+// nested RLock of its own guard is the one same-domain exemption; a
+// reader taking its own guard exclusively records under the pointer and
+// is reported like any other hold.
+type readIdentity struct{ rw *RWMutex }
+
 // Mutex is a sync.Mutex that reports every acquisition to a recorder when
-// one is installed. The zero value works as a plain, unranked mutex.
+// one is installed. The zero value works as a plain, unranked mutex,
+// before Init and without a recorder.
 type Mutex struct {
 	mu   sync.Mutex
 	rank Rank
 	rec  atomic.Pointer[Recorder]
 }
 
-// Init installs the rank and the recorder, which may be nil: a nil recorder
-// leaves the mutex recording nothing. Init may be called at any point in the
-// mutex's life; the next Lock or Unlock reports to what it last installed.
+var _ sync.Locker = (*Mutex)(nil)
+
+// Init installs the rank and, when rec is non-nil, the recorder that the
+// mutex reports every acquisition to; a rank of 0 keeps the mutex working
+// while telling the recorder nothing.
+//
+// decision: Init writes the rank as a plain field Lock and Unlock read,
+// so it must be called before the mutex is shared or used concurrently.
+// A recorder installed while the lock is already held never saw that
+// hold, so the hold's release is dropped by the recorder and its books
+// stay balanced; no atomic rank/recorder pair is needed, since no
+// concurrent Init exists under this contract.
 func (m *Mutex) Init(rank Rank, rec *Recorder) {
 	m.rank = rank
 	m.rec.Store(rec)
@@ -79,18 +97,20 @@ func (m *Mutex) Unlock() {
 	m.mu.Unlock()
 }
 
-// RWMutex is the same arrangement over sync.RWMutex, for the storage guard:
-// readers hold it shared, an unlink or a recycle exclusively. Readers and
-// writers all record an acquisition under the one rank, so two shared holds
-// appear to the recorder as two held locks of one domain when they are the
-// same instance's — which the same-domain check exempts, since sharing is
-// the point of a read lock.
+// RWMutex is the same arrangement over sync.RWMutex, for the storage
+// guard: readers hold it shared, an unlink or a recycle exclusively. A
+// read hold records itself under a readIdentity, so a reader's nested
+// RLocks of its own guard are exempt from the same-domain rule while a
+// reader taking its own guard exclusively is reported like any hold.
 type RWMutex struct {
 	mu   sync.RWMutex
 	rank Rank
 	rec  atomic.Pointer[Recorder]
 }
 
+var _ sync.Locker = (*RWMutex)(nil)
+
+// Init installs the rank and the recorder; the contract is Mutex.Init's.
 func (rw *RWMutex) Init(rank Rank, rec *Recorder) {
 	rw.rank = rank
 	rw.rec.Store(rec)
@@ -112,14 +132,14 @@ func (rw *RWMutex) Unlock() {
 
 func (rw *RWMutex) RLock() {
 	if r := rw.rec.Load(); r != nil {
-		r.Acquire(rw.rank, rw)
+		r.Acquire(rw.rank, readIdentity{rw: rw})
 	}
 	rw.mu.RLock()
 }
 
 func (rw *RWMutex) RUnlock() {
 	if r := rw.rec.Load(); r != nil {
-		defer r.Release(rw.rank, rw)
+		defer r.Release(rw.rank, readIdentity{rw: rw})
 	}
 	rw.mu.RUnlock()
 }

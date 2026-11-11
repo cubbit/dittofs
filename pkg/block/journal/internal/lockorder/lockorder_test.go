@@ -8,119 +8,166 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 )
 
-// tryAcquire starts lock on another goroutine and returns the channel its
-// completion closes. The caller must let the goroutine finish — by
-// releasing what blocks it — and then release the hold it took, since the
-// goroutine cannot.
-func tryAcquire(lock func()) <-chan struct{} {
-	done := make(chan struct{})
-	go func() {
-		lock()
-		close(done)
-	}()
-	return done
-}
+// backstop bounds a wait that must end: crossing it proves the event never
+// came, not that it was slow.
+const backstop = 10 * time.Second
 
-// waitBackstop waits for done, failing the test on the generous backstop
-// only: a wait long enough to cross proves the event never came, not that
-// it was slow.
-func waitBackstop(t *testing.T, done <-chan struct{}, what string) {
-	t.Helper()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Error(what)
+// countUnder runs workers goroutines that each increment a plain, non-atomic
+// counter iters times inside lock, and returns the total. The race
+// detector is the check that lock excludes: any interleaving of two
+// goroutines inside it reports a data race, and lost increments would
+// also leave the total short.
+func countUnder(lock, unlock func(), workers, iters int) int {
+	var n int
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for range iters {
+				lock()
+				n++
+				unlock()
+			}
+		}()
 	}
+	wg.Wait()
+	return n
 }
 
-// TestNilRecorder_Excludes exercises the mutexes with no recorder at all: the
-// recorder is diagnostic and never part of the locking, so each exclusion
-// must hold without one. A lock that excludes is checked non-blocking, its
-// release checked by joining the blocked goroutine afterwards.
+// TestNilRecorder_Excludes exercises the mutexes with no recorder at all:
+// the recorder is diagnostic and never part of the locking, so each
+// exclusion must hold without one, which the race detector plus the
+// counted totals check.
 func TestNilRecorder_Excludes(t *testing.T) {
-	t.Run("Mutex", func(t *testing.T) {
+	t.Run("Mutex excludes", func(t *testing.T) {
 		var m lockorder.Mutex
 		m.Init(lockorder.FileAppend, nil)
-		m.Lock()
-		done := tryAcquire(m.Lock)
-		select {
-		case <-done:
-			t.Error("Lock under a held Lock succeeded: the mutex does not exclude")
-		default:
+		if got, want := countUnder(m.Lock, m.Unlock, 8, 200), 8*200; got != want {
+			t.Errorf("counted %d increments under the lock, want %d: the mutex lost updates, so it does not exclude", got, want)
 		}
-		m.Unlock()
-		waitBackstop(t, done, "the second Lock never acquired after Unlock: the mutex does not release")
-		m.Unlock() // release the hold the other goroutine took
 	})
 
-	t.Run("RWMutex blocks a writer", func(t *testing.T) {
+	t.Run("RWMutex writer excludes writer", func(t *testing.T) {
 		var rw lockorder.RWMutex
 		rw.Init(lockorder.FileIndex, nil)
-		rw.Lock()
-		done := tryAcquire(rw.Lock)
-		select {
-		case <-done:
-			t.Error("Lock under a held Lock succeeded: the writer does not exclude the writer")
-		default:
+		if got, want := countUnder(rw.Lock, rw.Unlock, 8, 200), 8*200; got != want {
+			t.Errorf("counted %d increments under the write lock, want %d: the writer does not exclude the writer", got, want)
 		}
-		rw.Unlock()
-		waitBackstop(t, done, "the blocked Lock never acquired after Unlock: the writer does not release")
-		rw.Unlock()
 	})
 
-	t.Run("RWMutex blocks a reader under a writer", func(t *testing.T) {
+	t.Run("RWMutex writer excludes reader", func(t *testing.T) {
 		var rw lockorder.RWMutex
 		rw.Init(lockorder.FileIndex, nil)
-		rw.Lock()
-		done := tryAcquire(rw.RLock)
-		select {
-		case <-done:
-			t.Error("RLock under a held Lock succeeded: the writer does not exclude the reader")
-		default:
+		// Writers increment a plain counter; readers read it under the
+		// guard. Every increment must land — a reader inside an
+		// exclusive hold pairs with a writer at the same moment, which
+		// the race detector reports and the total catches — and the
+		// readers' own concurrent reads of one another prove sharing.
+		var n int
+		var wg sync.WaitGroup
+		wg.Add(8)
+		for i := range 8 {
+			go func() {
+				defer wg.Done()
+				for range 200 {
+					if i%2 == 0 {
+						rw.Lock()
+						n++
+						rw.Unlock()
+					} else {
+						rw.RLock()
+						_ = n
+						rw.RUnlock()
+					}
+				}
+			}()
 		}
-		rw.Unlock()
-		waitBackstop(t, done, "the blocked RLock never acquired after Unlock: the writer does not release the reader")
-		rw.RUnlock()
+		wg.Wait()
+		if got, want := n, 4*200; got != want {
+			t.Errorf("counted %d writer increments, want %d: the writer lost updates while readers ran", got, want)
+		}
 	})
 
 	t.Run("RWMutex shares between readers", func(t *testing.T) {
 		var rw lockorder.RWMutex
 		rw.Init(lockorder.FileIndex, nil)
-		rw.RLock()
-		done := tryAcquire(rw.RLock)
-		waitBackstop(t, done, "RLock under a held RLock never completed: the guard does not share between readers")
-		rw.RUnlock() // the main goroutine's hold
-		rw.RUnlock() // the joined goroutine's hold
+		// The rendezvous completes only with both readers inside the
+		// guard at once, which is sharing itself; a writer-preferring
+		// or exclusive guard leaves the second reader waiting and the
+		// backstop fails.
+		r1In, r2In := make(chan struct{}), make(chan struct{})
+		release1, release2 := make(chan struct{}), make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			rw.RLock()
+			defer rw.RUnlock()
+			close(r1In)
+			<-release1
+		}()
+		go func() {
+			defer wg.Done()
+			rw.RLock()
+			defer rw.RUnlock()
+			close(r2In)
+			<-release2
+		}()
+		for i, in := range []<-chan struct{}{r1In, r2In} {
+			select {
+			case <-in:
+			case <-time.After(backstop):
+				t.Errorf("reader %d never entered the guard while reader 1 held it: the guard does not share between readers", i+1)
+				return
+			}
+		}
+		close(release1)
+		close(release2)
+		wg.Wait()
 	})
 }
 
-// TestNilRecorder_Uninit locks an un-Init-ed Mutex and RWMutex: the zero
-// value is a working plain mutex, so Init is an option rather than a
-// requirement.
-func TestNilRecorder_Uninit(t *testing.T) {
-	var m lockorder.Mutex
-	m.Lock()
-	done := tryAcquire(m.Lock)
-	select {
-	case <-done:
-		t.Error("un-Init-ed Lock under a held Lock succeeded: the zero value does not exclude")
-	default:
-	}
-	m.Unlock()
-	waitBackstop(t, done, "the blocked un-Init-ed Lock never acquired after Unlock")
-	m.Unlock()
+// TestNilRecorder_AcquiresAfterRelease checks the other half of a working
+// lock: a goroutine blocked on a held lock must take it over once the
+// holder releases, and a block on one hold may not wedge the lock.
+func TestNilRecorder_AcquiresAfterRelease(t *testing.T) {
+	t.Run("Mutex", func(t *testing.T) {
+		var m lockorder.Mutex
+		m.Init(lockorder.FileAppend, nil)
+		m.Lock()
+		done := make(chan struct{})
+		go func() {
+			m.Lock()
+			close(done)
+		}()
+		m.Unlock()
+		select {
+		case <-done:
+			m.Unlock() // release the hold the other goroutine took over
+		case <-time.After(backstop):
+			t.Error("the blocked Lock never acquired after Unlock: the mutex does not release")
+		}
+	})
 
-	var rw lockorder.RWMutex
-	rw.Lock()
-	done = tryAcquire(rw.RLock)
-	select {
-	case <-done:
-		t.Error("un-Init-ed RLock under a held Lock succeeded: the zero value does not exclude")
-	default:
-	}
-	rw.Unlock()
-	waitBackstop(t, done, "the blocked un-Init-ed RLock never acquired after Unlock")
-	rw.RUnlock()
+	t.Run("RWMutex reader under writer, un-Init-ed", func(t *testing.T) {
+		// The zero value is a working plain mutex, so Init is an option
+		// rather than a requirement.
+		var rw lockorder.RWMutex
+		rw.Lock()
+		done := make(chan struct{})
+		go func() {
+			rw.RLock()
+			close(done)
+		}()
+		rw.Unlock()
+		select {
+		case <-done:
+			rw.RUnlock()
+		case <-time.After(backstop):
+			t.Error("the blocked un-Init-ed RLock never acquired after Unlock")
+		}
+	})
 }
 
 func TestNilRecorder_MethodsAreNoOps(t *testing.T) {
@@ -134,18 +181,19 @@ func TestNilRecorder_MethodsAreNoOps(t *testing.T) {
 	if got := rec.Held(); got != nil {
 		t.Errorf("nil receiver Held() = %v, want nil", got)
 	}
-	if got := rec.Checks("any"); got != 0 {
-		t.Errorf("nil receiver Checks(%q) = %d, want 0", "any", got)
+	if got, want := rec.Checks("any"), 0; got != want {
+		t.Errorf("nil receiver Checks(%q) = %d, want %d", "any", got, want)
 	}
 	if got := rec.Violations(); got != nil {
 		t.Errorf("nil receiver Violations() = %v, want nil", got)
 	}
 }
 
-// sink gives each measured critical section a body, which is also what keeps
-// staticcheck's empty-critical-section check off the measurement: the body
-// allocates nothing, so the count still reflects only the lock pair.
-var sink int
+// sinkAbsorbs gives each measured critical section a body, which is also
+// what keeps staticcheck's empty-critical-section check off the
+// measurement: the body allocates nothing, so the count still reflects
+// only the lock pair.
+var sinkAbsorbs int
 
 func TestNilRecorder_ZeroAllocs(t *testing.T) {
 	var m lockorder.Mutex
@@ -155,7 +203,7 @@ func TestNilRecorder_ZeroAllocs(t *testing.T) {
 	m.Unlock()
 	got := testing.AllocsPerRun(100, func() {
 		m.Lock()
-		sink++
+		sinkAbsorbs++
 		m.Unlock()
 	})
 	if got > 0 {
@@ -169,7 +217,7 @@ func TestNilRecorder_ZeroAllocs(t *testing.T) {
 	rw.RUnlock()
 	got = testing.AllocsPerRun(100, func() {
 		rw.RLock()
-		sink++
+		sinkAbsorbs++
 		rw.RUnlock()
 	})
 	if got > 0 {
@@ -185,7 +233,7 @@ func BenchmarkLockNilRecorder(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			m.Lock()
-			sink++
+			sinkAbsorbs++
 			m.Unlock()
 		}
 	})
@@ -193,7 +241,7 @@ func BenchmarkLockNilRecorder(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			plain.Lock()
-			sink++
+			sinkAbsorbs++
 			plain.Unlock()
 		}
 	})

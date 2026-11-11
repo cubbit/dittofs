@@ -1,6 +1,7 @@
 package lockorder
 
 import (
+	"bytes"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -14,9 +15,8 @@ const (
 	// is held.
 	OutOfOrder Kind = iota
 	// SameDomain is two locks of one domain held at once, so two files'
-	// append locks together, or two read locks of distinct instances of
-	// one domain. Two holds of the same lock instance are exempt, since a
-	// shared lock is meant to nest in itself.
+	// append locks together. Only a nested read hold of one RWMutex is
+	// exempt, since readers share.
 	SameDomain
 	// GuardUnderIndex is the storage guard acquired under the file index:
 	// the order that deadlocks against reclamation, which repoints under
@@ -66,9 +66,10 @@ type Violation struct {
 	Stack string
 }
 
-// heldLock is one lock a goroutine holds. id is the lock's identity, by
-// convention its pointer, so two locks of one domain are told apart while
-// one lock nesting in itself is recognised.
+// heldLock is one lock a goroutine holds. id is the lock's identity: the
+// lock's pointer for an exclusive hold, a readIdentity for a shared hold
+// of one RWMutex, so two locks of one domain stay told apart while a
+// reader's nested hold of its own guard is recognised.
 type heldLock struct {
 	rank Rank
 	id   any
@@ -78,16 +79,20 @@ type heldLock struct {
 // It is test machinery: the ranked mutexes reach it through an atomic
 // pointer, so a nil one costs one load per acquisition and its checks never
 // run in production. Every method returns immediately on a nil receiver.
-// The zero value is not usable; build it with NewRecorder. Its own mutex is
-// a plain sync.Mutex, unranked, because the recorder is not part of the
-// lock order it polices.
+// A rank of 0 is never recorded: an unranked lock is invisible to the
+// checks while its mutex works as a plain one. The zero value is not
+// usable; build it with NewRecorder. Its own mutex is a plain sync.Mutex,
+// unranked, because the recorder is not part of the lock order it polices.
 type Recorder struct {
 	mu sync.Mutex
-	// byGoroutine is each goroutine's held locks in acquisition order;
-	// holder is the goroutine that last acquired a lock identity, so a
-	// release runs on whichever goroutine owns it.
+	// byGoroutine is each goroutine's held locks in acquisition order.
+	// holder counts, per identity, how many holds of it each goroutine
+	// has on the books: several goroutines may hold one identity at
+	// once — a contended mutex whose next acquirer's attempt is already
+	// recorded, or the readers sharing one guard — so the identity maps
+	// to a set of holders, not one.
 	byGoroutine map[uint64][]heldLock
-	holder      map[any]uint64
+	holder      map[any]map[uint64]int
 	violations  []Violation
 	checks      map[string]int
 }
@@ -95,7 +100,7 @@ type Recorder struct {
 func NewRecorder() *Recorder {
 	return &Recorder{
 		byGoroutine: make(map[uint64][]heldLock),
-		holder:      make(map[any]uint64),
+		holder:      make(map[any]map[uint64]int),
 		checks:      make(map[string]int),
 	}
 }
@@ -103,11 +108,14 @@ func NewRecorder() *Recorder {
 // Acquire records that the calling goroutine takes the lock id of the
 // given rank, and records a violation when that breaks a rule. It runs
 // before the lock is taken, so an order that would deadlock is reported
-// first and the account survives a run that then hangs. The rules are
-// checked in a fixed priority — same domain, guard under index, acquire
-// under map, out of order — and only the highest priority one is recorded.
+// first and the account survives a run that then hangs — and so a
+// goroutine waiting out another holder puts its hold on the books before
+// it owns the lock, which the per-identity holder set keeps apart from
+// the holder's own. The rules are checked in a fixed priority — same
+// domain, guard under index, acquire under map, out of order — and only
+// the highest priority one is recorded. A rank of 0 is never recorded.
 func (r *Recorder) Acquire(rank Rank, id any) {
-	if r == nil {
+	if r == nil || rank == 0 {
 		return
 	}
 	gid := goroutineID()
@@ -115,21 +123,34 @@ func (r *Recorder) Acquire(rank Rank, id any) {
 	defer r.mu.Unlock()
 
 	heldNow := r.byGoroutine[gid]
-	// A re-entrant hold of the same lock skips the checks: a shared lock
-	// nesting in itself is how readers use it. One entry is kept per
-	// hold, so the releases stay balanced.
-	for _, h := range heldNow {
-		if h.rank == rank && h.id == id {
-			r.byGoroutine[gid] = append(heldNow, h)
-			r.holder[id] = gid
-			return
+	// decision: a nested read hold of one RWMutex — the same readIdentity
+	// twice — is the one exemption from the same-domain rule, since
+	// readers share. Every other same-rank acquisition, a Mutex locked
+	// twice or a reader taking its own guard exclusively, is a certain
+	// self-deadlock and is reported: an exclusive identity is a pointer,
+	// which never equals a readIdentity. The exemption's ceiling: a
+	// recursive RLock can still deadlock against a writer waiting
+	// between the two holds and is not reported; withdraw the exemption
+	// if such a pattern ever appears.
+	if _, isRead := id.(readIdentity); isRead {
+		for _, h := range heldNow {
+			if h.id == id && h.rank == rank {
+				r.byGoroutine[gid] = append(heldNow, h)
+				r.holder[id][gid]++
+				return
+			}
 		}
 	}
 
 	r.recordAcquisition(heldNow, rank)
 
 	r.byGoroutine[gid] = append(heldNow, heldLock{rank: rank, id: id})
-	r.holder[id] = gid
+	holders := r.holder[id]
+	if holders == nil {
+		holders = make(map[uint64]int)
+		r.holder[id] = holders
+	}
+	holders[gid]++
 }
 
 // recordAcquisition runs the priority-ordered rules for an acquisition
@@ -178,10 +199,12 @@ func (r *Recorder) recordAcquisition(heldNow []heldLock, rank Rank) {
 	})
 }
 
-// Release records that the lock id is no longer held: the holder map finds
-// the goroutine that acquired it, so the release may run on another
-// goroutine than the acquisition. A release of an identity the recorder
-// never saw — a lock held before its recorder was installed — is ignored.
+// Release records that the lock id is no longer held. It removes the
+// caller's own recorded hold of id first, so a concurrent goroutine's hold
+// or recorded attempt on the same lock is untouched; only a release from a
+// goroutine that holds no hold of id — a cross-goroutine unlock — falls
+// back to the holder set. A release of an identity the recorder never saw
+// — a lock held before its recorder was installed — is ignored.
 func (r *Recorder) Release(_ Rank, id any) {
 	if r == nil {
 		return
@@ -189,37 +212,61 @@ func (r *Recorder) Release(_ Rank, id any) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	gid, ok := r.holder[id]
-	if !ok {
-		return
-	}
-	hs := r.byGoroutine[gid]
-	for i := len(hs) - 1; i >= 0; i-- {
-		if hs[i].id != id {
-			continue
-		}
-		hs = append(hs[:i], hs[i+1:]...)
-		if len(hs) == 0 {
-			delete(r.byGoroutine, gid)
-			delete(r.holder, id)
+	gid := goroutineID()
+	// The caller's own list first: the common release, whose hold must
+	// not be confused with a concurrent goroutine's hold or recorded
+	// attempt on the same identity. The last matching entry is dropped:
+	// a writer's hold sits at the top of its own list.
+	if hs, ok := r.byGoroutine[gid]; ok {
+		for i := len(hs) - 1; i >= 0; i-- {
+			if hs[i].id != id {
+				continue
+			}
+			r.drop(gid, hs, i, id)
 			return
 		}
-		r.byGoroutine[gid] = hs
-		// A nested hold of the same identity keeps it registered, so a
-		// further release still finds its goroutine.
-		stillHeld := false
-		for _, h := range hs {
-			if h.id == id {
-				stillHeld = true
-				break
+	}
+	// The caller never acquired this identity: a cross-goroutine unlock,
+	// which the holder set routes to the one goroutine that holds it.
+	// With several holders on the books — contended readers whose
+	// attempts are recorded while another holder still owns the lock —
+	// a release from a goroutine that holds no hold of it names no
+	// single holder, so it is ignored rather than guess.
+	if holders := r.holder[id]; len(holders) == 1 {
+		for holderGid := range holders {
+			if hs, ok := r.byGoroutine[holderGid]; ok {
+				for i := len(hs) - 1; i >= 0; i-- {
+					if hs[i].id != id {
+						continue
+					}
+					r.drop(holderGid, hs, i, id)
+					return
+				}
 			}
 		}
-		if !stillHeld {
-			delete(r.holder, id)
-		}
+	}
+}
+
+// drop removes one recorded hold of id from gid's list, keeping the
+// per-identity holder count in step with the list. Borrows both list
+// halves rather than name a middle.
+func (r *Recorder) drop(gid uint64, hs []heldLock, i int, id any) {
+	r.byGoroutine[gid] = append(hs[:i], hs[i+1:]...)
+	if len(r.byGoroutine[gid]) == 0 {
+		delete(r.byGoroutine, gid)
+	}
+	holders := r.holder[id]
+	if holders == nil {
 		return
 	}
-	delete(r.holder, id)
+	if holders[gid] > 1 {
+		holders[gid]--
+		return
+	}
+	delete(holders, gid)
+	if len(holders) == 0 {
+		delete(r.holder, id)
+	}
 }
 
 // IO records that the caller is about to do I/O. I/O under the file index
@@ -351,7 +398,7 @@ func ranksOf(hs []heldLock) []Rank {
 func goroutineID() uint64 {
 	var buf [64]byte
 	n := runtime.Stack(buf[:], false)
-	rest, ok := bytesCutPrefix(buf[:n], "goroutine ")
+	rest, ok := bytes.CutPrefix(buf[:n], []byte("goroutine "))
 	if !ok {
 		return 0
 	}
@@ -363,11 +410,4 @@ func goroutineID() uint64 {
 		id = id*10 + uint64(c-'0')
 	}
 	return id
-}
-
-func bytesCutPrefix(b []byte, prefix string) ([]byte, bool) {
-	if len(b) < len(prefix) || string(b[:len(prefix)]) != prefix {
-		return nil, false
-	}
-	return b[len(prefix):], true
 }
