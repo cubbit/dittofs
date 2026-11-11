@@ -96,6 +96,10 @@ type Fixture struct {
 	// directory the platform profile refuses.
 	refuse atomic.Bool
 
+	// fake, once set by WithFakeJournal, is the journal every process start
+	// opens in place of the one in Dir.
+	fake *FakeJournal
+
 	// cloneGate, once set by HoldNextClone, holds the next clone's phase 1.
 	cloneGate atomic.Pointer[gate]
 	// startGate, once set by HoldNextStart, holds the next engine start.
@@ -338,6 +342,22 @@ func New(t *testing.T, opts ...Option) *Fixture {
 
 // Option changes what New composes.
 type Option func(*Fixture)
+
+// WithFakeJournal has every process start open one in-memory journal, kept
+// across Restart and Crash, in place of the journal in Dir: for a check of the
+// composition's own order of work that the journal's unbuilt parts would stop
+// first. The fixture's journal-side controls (the seam's faults, the handles
+// of HandleOf, Reinit) act on the journal in Dir, which nothing reads then.
+//
+// decision: a check run this way proves nothing about the journal, only what
+// the engine and the service above it do in what order; the fake stands in
+// where the logic under test is theirs. Its Crash is a Reopen, since the fake
+// holds every operation durable at once. Withdraw it, and run those checks
+// over the journal alone, once a restart reopens a journal that holds
+// segments.
+func WithFakeJournal() Option {
+	return func(f *Fixture) { f.fake = NewFakeJournal() }
+}
 
 // Service is what a compose hook builds over the fixture's open-state table
 // and engine: the table's Sink, with Admission its Order, started after the
@@ -695,6 +715,10 @@ func (f *Fixture) start() {
 					"journal: directory %s refused: mount has no barriers: %w",
 					dir, journal.ErrUnsuitableStorage,
 				)
+			}
+			if f.fake != nil {
+				f.fake.Reopen()
+				return f.fake, nil
 			}
 			j, err := journal.Open(ctx, dir, floor, expect, nil,
 				journal.WithClock(f.Clock), journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS()),

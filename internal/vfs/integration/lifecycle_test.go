@@ -6,14 +6,29 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // A restart and a crash start the filesystem only once the engine's start has
 // finished: while the new engine's start is held inside its start steps, the
 // filesystem built for the new process refuses a call as not serving, and
-// once the start is let through it serves the call.
+// once the start is let through it serves the call. The order is the
+// composition's, so it is checked over the fake journal too, where a restart
+// reaches the engine's start whatever the journal can reopen.
 func TestTheFilesystemStartsAfterTheEngine(t *testing.T) {
+	for _, j := range []struct {
+		name string
+		opts []enginetest.Option
+	}{
+		{"journal", nil},
+		{"fake journal", []enginetest.Option{enginetest.WithFakeJournal()}},
+	} {
+		t.Run(j.name, func(t *testing.T) { theFilesystemStartsAfterTheEngine(t, j.opts...) })
+	}
+}
+
+func theFilesystemStartsAfterTheEngine(t *testing.T, opts ...enginetest.Option) {
 	for _, tc := range []struct {
 		name  string
 		start func(c *composition)
@@ -22,7 +37,7 @@ func TestTheFilesystemStartsAfterTheEngine(t *testing.T) {
 		{"crash", func(c *composition) { c.Crash() }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := compose(t)
+			c := compose(t, opts...)
 			h, _ := c.File("f")
 			entered, release := c.HoldNextStart()
 			started := make(chan struct{})
