@@ -48,7 +48,7 @@ func (u *unit) bindShare(t *testing.T, name string, ns entity.NamespaceID) entit
 }
 
 // Admission refuses before registering anything, and admits up to its
-// bounds: an admitted clone reaches the steps not built yet.
+// bounds: an admitted clone is stopped once registered.
 //
 // The journal is left as it was and the store is never reached, admitted or
 // not: the journal's Stats are compared and the store reads and writes
@@ -61,6 +61,7 @@ func TestCloneAdmission(t *testing.T) {
 	f, g := entity.NewFileID(), entity.NewFileID()
 	same := u.bindShare(t, "same", entity.NamespaceID{})
 	other := u.bindShare(t, "other", entity.NewNamespaceID())
+	u.e.SetAfterRegister(func() {})
 	counts.Take()
 	counts.TakeUpdates()
 	before := u.j.Stats()
@@ -102,7 +103,7 @@ func TestCloneAdmission(t *testing.T) {
 
 func isInvalid(err error) bool { return errors.Is(err, vfserr.ErrInvalid) }
 func frozen(err error) bool    { return isDelay(err, vfserr.DelayFrozen) }
-func admitted(err error) bool  { return errors.Is(err, engine.ErrUnbuilt) }
+func admitted(err error) bool  { return errors.Is(err, engine.ErrStopped) }
 func isCrossNamespace(err error) bool {
 	var c *vfserr.CrossError
 	return errors.As(err, &c) && c.Kind == vfserr.CrossNamespace

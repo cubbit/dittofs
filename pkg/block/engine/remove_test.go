@@ -320,8 +320,8 @@ func TestACloneWaitsOutATruncateInFlight(t *testing.T) {
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-cloned; err != engine.ErrUnbuilt {
-		t.Errorf("clone: %v, want the unbuilt answer", err)
+	if err := <-cloned; err != engine.ErrStopped {
+		t.Errorf("clone: %v, want it stopped once registered", err)
 	}
 }
 
@@ -361,8 +361,8 @@ func TestAChangeIntoARegistrationIsDelayClone(t *testing.T) {
 			}
 			err := c.change(u, f, c.off)
 			close(out)
-			if err := <-cloned; !errors.Is(err, engine.ErrUnbuilt) {
-				t.Errorf("clone: %v, want the unbuilt answer", err)
+			if err := <-cloned; !errors.Is(err, engine.ErrStopped) {
+				t.Errorf("clone: %v, want it stopped once registered", err)
 			}
 			if c.refused && !isDelay(err, vfserr.DelayClone) {
 				t.Errorf("%s: %v, want ErrDelay(DelayClone)", c.name, err)

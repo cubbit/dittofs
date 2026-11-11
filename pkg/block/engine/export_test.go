@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"runtime"
 	"slices"
@@ -368,10 +369,19 @@ func (e *Engine) SetConflictBound(d time.Duration) { e.conflictBound.Store(int64
 // RetryingOwner reports whether ctx carries the retrying-owner mark.
 func RetryingOwner(ctx context.Context) bool { return ownerOf(ctx) != nil }
 
+// ErrStopped answers a clone SetAfterRegister's hook stopped.
+var ErrStopped = errors.New("engine test: the clone stopped once registered")
+
 // SetAfterRegister makes h run once each clone's registrations are
 // installed; the clone then stops, its registrations undone, answering
-// ErrUnbuilt: a test of admission alone.
-func (e *Engine) SetAfterRegister(h func()) { e.afterRegister = h }
+// ErrStopped: a test of admission alone. A nil h lets clones run.
+func (e *Engine) SetAfterRegister(h func()) {
+	if h == nil {
+		e.afterRegister = nil
+		return
+	}
+	e.afterRegister = func() error { h(); return ErrStopped }
+}
 
 // SetCloneMarkerHook makes h run for each clone marker start step 3 finds,
 // standing in for the clone's rebuild.
@@ -384,10 +394,6 @@ func (e *Engine) SetCloneMarkerHook(h cloneMarkerFunc) {
 func (e *Engine) SetCloneRemovalHook(h cloneRemovalFunc) {
 	e.cloneRemoval = h
 }
-
-// FakeCloneDone lets a clone run past its registrations to its done signal,
-// standing in for the joins a served engine does not have yet.
-func (e *Engine) FakeCloneDone() { e.fakeCloneDone.Store(true) }
 
 // LoopSteps is the count of items the share's journal's removal loop ran.
 func (e *Engine) LoopSteps(s entity.ShareID) int64 {

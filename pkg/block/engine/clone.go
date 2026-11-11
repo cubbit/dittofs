@@ -158,18 +158,19 @@ func (fe *fileEntry) drop(r *reg) {
 // binding on either side (DelayFrozen), a zero or negative length or offset,
 // overlapping extents of one file and a length over clone_max_len
 // (ErrInvalid), two write namespaces (ErrCross with CrossNamespace), and an
-// extent a running clone holds (DelayClone). It then registers the source
-// extent and the destination extent. Close joins a running clone's goroutine
-// and cancels its context, and Unbind of either share joins it, but nothing
-// joins a running clone across a retry yet, so it then undoes both and
-// answers errUnbuilt; with a test's stand-in it runs on: step 1 on the call
-// (prepare), whose refusal undoes both registrations and changes nothing,
-// then from the journal step on its own goroutine (runClone) and the removal
-// loop (clonePhase2), where it fails only if the loop ends first, answering
-// ErrUnavailable, until its phase 2 is done; the call waits for it within its
-// own context, whose end, a deadline or a cancel, answers DelayClone and
-// leaves the clone running, as the clone may already have changed the
-// destination and only a call that changed nothing answers refused.
+// extent a running clone holds (DelayClone). A call naming the source,
+// destination, offsets and length of a clone running into the destination
+// joins it (RFC 8 §9.1), starting no second clone; one naming another spec
+// meets the running clone's registrations, answering DelayClone. Otherwise it
+// registers the source extent and the destination extent, then runs step 1
+// on the call (prepare), whose refusal undoes both registrations and changes
+// nothing, then from the journal step on its own goroutine (runClone) and the
+// removal loop (clonePhase2), where it fails only if the loop ends first,
+// answering ErrUnavailable, until its phase 2 is done. The call, and every
+// one that joins the clone, waits for it within its own context, whose end, a
+// deadline or a cancel, answers DelayClone and leaves the clone running, as
+// the clone may already have changed the destination and only a call that
+// changed nothing answers refused.
 //
 // decision: a clone between two shares on one node is admitted, as both
 // shards are this node's and no failover or handover can split them while
@@ -214,6 +215,14 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	if sb.share.Namespace != db.share.Namespace {
 		return &vfserr.CrossError{Kind: vfserr.CrossNamespace}
 	}
+	// decision: a clone is joined only once its step 1 is done (addClone): a
+	// retry meeting it in step 1, where the first call's own context still
+	// governs and its end refuses the clone, meets its registrations and
+	// answers DelayClone, and the client retries again. Join it there too if
+	// retries are seen answered DelayClone behind clones that were not slow.
+	if c := e.runningClone(dstShare, dst); c != nil && c.names(srcShare, src, x) {
+		return c.wait(ctx)
+	}
 	rs := &reg{Extent: entity.Extent{Offset: x.SrcOff, Length: x.Len}}
 	rd := &reg{Extent: entity.Extent{Offset: x.DstOff, Length: x.Len}, dst: true}
 	if err := e.register(ctx, src, rs); err != nil {
@@ -223,24 +232,12 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		e.unregister(src, rs)
 		return err
 	}
-	if !e.fakeCloneDone.Load() {
-		// A clone stops once registered while no retry joins a running one:
-		// a test of admission alone runs its hook first, and a test's
-		// stand-in lets it run on.
-		//
-		// decision: everything past this gate, step 1, the journal step, the
-		// copies, phase 1, the hold on the source, phase 2, the release and
-		// the done signal, runs only under the test's stand-in, never in a
-		// served engine: Close joins the clone's goroutine (e.cloning) and
-		// Unbind joins the clone (enterShares), but a retry with the same
-		// spec starts a second clone rather than joining the first. Withdraw
-		// it when the running clones are kept where a retry joins them.
-		if h := e.afterRegister; h != nil {
-			h()
+	if h := e.afterRegister; h != nil {
+		if err := h(); err != nil { // a test of admission alone stops the clone here
+			e.unregister(dst, rd)
+			e.unregister(src, rs)
+			return err
 		}
-		e.unregister(dst, rd)
-		e.unregister(src, rs)
-		return errUnbuilt
 	}
 	c := &cloneRun{sb: sb, db: db, src: src, dst: dst, rs: rs, rd: rd, done: make(chan struct{})}
 	if !c.enterShares() { // an Unbind began since the call entered: nothing changed
@@ -253,6 +250,7 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		return err
 	}
 
+	e.addClone(c)
 	e.cloning.Add(1)
 
 	go func() {
@@ -261,12 +259,65 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		e.runClone(c)
 	}()
 
+	return c.wait(ctx)
+}
+
+// wait answers c's outcome once it is done, or DelayClone at ctx's end,
+// leaving it running: it may have changed the destination, so it is never
+// answered as refused.
+func (c *cloneRun) wait(ctx context.Context) error {
 	select {
 	case <-c.done:
 		return c.err
 	case <-ctx.Done():
-		return delayClone() // it may have changed the destination: never answered as refused
+		return delayClone()
 	}
+}
+
+// cloneKey names a running clone by its destination: a file takes one clone
+// into it at a time (refuseChange).
+type cloneKey struct {
+	share entity.ShareID
+	file  entity.FileID
+}
+
+// names reports whether a clone of x of src of share srcShare is c's: the
+// same source, destination, offsets and length, which RFC 8 §9.1 calls a
+// retry. The destination is c's key.
+func (c *cloneRun) names(srcShare entity.ShareID, src entity.FileID, x vfserr.Extent) bool {
+	return c.sb.share.ID == srcShare && c.src == src &&
+		c.spec.SrcOff == x.SrcOff && c.spec.DstOff == x.DstOff && c.spec.Len == x.Len
+}
+
+// runningClone is the clone running into dst of share s, nil when none is.
+//
+// ponytail: a retry joins a clone only while it runs; one after it is done
+// runs the clone again rather than answering success at once, as no done
+// clone's spec is kept. Keep the spec in both files' entries until a write or
+// removal over either extent drops it, bounded node-wide, when a client's
+// retries are seen re-running clones that were done.
+func (e *Engine) runningClone(s entity.ShareID, dst entity.FileID) *cloneRun {
+	e.clonesMu.Lock()
+	defer e.clonesMu.Unlock()
+	return e.clones[cloneKey{s, dst}]
+}
+
+// addClone keeps c, past its step 1, where a retry of it finds it, until it
+// settles (dropClone).
+func (e *Engine) addClone(c *cloneRun) {
+	e.clonesMu.Lock()
+	e.clones[cloneKey{c.db.share.ID, c.dst}] = c
+	e.clonesMu.Unlock()
+}
+
+// dropClone removes c from the running clones, if it is there.
+func (e *Engine) dropClone(c *cloneRun) {
+	k := cloneKey{c.db.share.ID, c.dst}
+	e.clonesMu.Lock()
+	if e.clones[k] == c {
+		delete(e.clones, k)
+	}
+	e.clonesMu.Unlock()
 }
 
 // invalid reports whether x is refused ErrInvalid whatever its length: a
@@ -461,11 +512,6 @@ func (e *Engine) size(ctx context.Context, c *cloneRun) (journal.Version, error)
 // entry, then what attempt runs. A failure before CloneTarget changes nothing
 // and fails the clone; from CloneTarget on it never fails: what attempt
 // cannot finish, the loop retries, the guard held.
-//
-// ponytail: Close joins the goroutine (e.cloning) and Unbind the clone
-// (enterShares), but nothing keeps it where a retry with the same spec could
-// find it; the engine's map of running clones, which retries join, replaces
-// it.
 func (e *Engine) runClone(c *cloneRun) {
 	ctx := c.db.gc.removals.ctx
 	r, err := e.begin(ctx, c.db, c.dst, entity.RemoveClone, c.rd.Extent)
@@ -742,7 +788,8 @@ func (e *Engine) endClone(c *cloneRun, err error) {
 }
 
 // settleClone is endClone short of leaving the gates: its reservation, when
-// one is held, is given back, both registrations go, which a release answered
+// one is held, is given back, it leaves the running clones, both
+// registrations go, which a release answered
 // pending behind them sees at its next look, and its done signal is raised. A
 // clone settles with a nil err once its phase 2 is done, before its hold on
 // the source is released, and leaves the gates after that release
@@ -752,6 +799,7 @@ func (e *Engine) settleClone(c *cloneRun, err error) {
 		_ = c.res.Close()
 		c.res = nil
 	}
+	e.dropClone(c)
 	e.unregister(c.dst, c.rd)
 	e.unregister(c.src, c.rs)
 	c.err = err
