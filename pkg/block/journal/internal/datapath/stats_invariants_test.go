@@ -57,18 +57,21 @@ func TestRFC1D_NamedInequalitiesHold(t *testing.T) {
 			defer workers.Done()
 			f := testFile(w)
 			for i := 0; i < 60; i++ {
-				if _, err := c.WriteAt(ctx, s, f, int64(i%5)*4096, make([]byte, 4096+i*64), 1); err != nil {
+				if err := retryRefused(func() error {
+					_, err := c.WriteAt(ctx, s, f, int64(i%5)*4096, make([]byte, 4096+i*64), 1)
+					return err
+				}, core.LimitSpare); err != nil {
 					t.Errorf("WriteAt: %v", err)
 					return
 				}
 				switch i % 7 {
 				case 3:
-					if _, err := c.Truncate(ctx, s, f, 4096); err != nil {
+					if err := retryRefused(func() error { _, err := c.Truncate(ctx, s, f, 4096); return err }, core.LimitSpare, core.LimitHeadroom); err != nil {
 						t.Errorf("Truncate: %v", err)
 						return
 					}
 				case 6:
-					if _, err := c.Delete(ctx, s, f); err != nil {
+					if err := retryRefused(func() error { _, err := c.Delete(ctx, s, f); return err }, core.LimitSpare, core.LimitHeadroom); err != nil {
 						t.Errorf("Delete: %v", err)
 						return
 					}
@@ -230,7 +233,10 @@ func TestRFC1D_WedgeIsVisibleDirty(t *testing.T) {
 	mustShare(t, c, 2)
 	var err error
 	for i := 0; err == nil && i < 1000; i++ {
-		_, err = c.WriteAt(context.Background(), holder, testFile(byte(1+i%50)), int64(i/50)*4096, make([]byte, 4096), 1)
+		err = retryRefused(func() error {
+			_, err := c.WriteAt(context.Background(), holder, testFile(byte(1+i%50)), int64(i/50)*4096, make([]byte, 4096), 1)
+			return err
+		}, core.LimitSpare)
 	}
 	_ = refused(t, err, core.LimitJournal)
 
