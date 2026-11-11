@@ -11,6 +11,9 @@ import (
 // ShareStats is one share's figures; see the journal package's ShareStats.
 type ShareStats struct {
 	Limit, UsedBytes, ReservedBytes, HeldBytes, DirtyBytes, UnreclaimedBytes int64
+	// UnreclaimedEndedBytes is the part of UnreclaimedBytes in segments that
+	// take no further append; zero, like UnreclaimedBytes, until Repack seals.
+	UnreclaimedEndedBytes int64
 }
 
 // Counters are the cumulative counts since the core was built.
@@ -32,7 +35,7 @@ type Stats struct {
 	OldestDirty                                               time.Time
 	Files                                                     int
 	ExtentCount                                               int64
-	DropRanges, Segments, Sealed                              int
+	DropRanges, Segments, Sealed, Spares                      int
 	UnreclaimedBytes, HeadroomBytes, RepackReserveBytes       int64
 	PinnedSegments, OpenDescriptors, DescriptorLimit          int
 	DamagedSegments                                           int
@@ -55,12 +58,16 @@ type Stats struct {
 // segment set and takes no lock a write holds across its append.
 //
 // decision: the snapshot is not consistent, and the read order keeps only the
-// documented inequalities. DirtyBytes is read before HeldBytes, because a
-// writer raises held before dirty and lowers dirty before held, so a later
-// held read is never below an earlier dirty one. UsedBytes comes from the
-// set, which allocation raises before a record is reserved in it, and
-// ReservedBytes is read last so it never counts a reservation the other
-// figures predate. Any other pair may differ by one operation in flight.
+// documented inequalities. A writer raises held before dirty and lowers dirty
+// before held, so dirty <= held holds at every instant, but that protects only
+// a reader seeing both at one instant: a fall landing between a dirty read and
+// a held read leaves the pair dirty above held. The pair is therefore re-read
+// until dirty <= held, which ends because a pair read with no fall between
+// satisfies it. A reservation is released only after its record is counted in
+// its share's UsedBytes, so ReservedBytes and ReservedByTag are read before
+// the set's figures: a record in flight is then counted in at least one of
+// them. UsedBytes comes from the set, which allocation raises before a record
+// is reserved in it. Any other pair may differ by one operation in flight.
 //
 // decision: UnreclaimedBytes is zero, for the journal and every share. The
 // index has no per-record backing hook, so the figure cannot be kept without
@@ -69,8 +76,17 @@ type Stats struct {
 func (c *Core) Stats() Stats {
 	var s Stats
 	s.MaxBytes = c.maxBytes
-	s.DirtyBytes = c.dirty.Load()
-	s.HeldBytes = c.held.Load()
+	reserved, reservedBy := c.cap.ReservedBytes(), c.cap.ReservedByTag()
+	for {
+		d := c.dirty.Load()
+		if c.betweenHeldReads != nil {
+			c.betweenHeldReads()
+		}
+		if h := c.held.Load(); d <= h {
+			s.DirtyBytes, s.HeldBytes = d, h
+			break
+		}
+	}
 	s.OldestDirty = c.oldestDirty()
 
 	sc := c.set.Counters()
@@ -82,7 +98,7 @@ func (c *Core) Stats() Stats {
 	s.TagConflicts = ix.TagConflicts()
 
 	pc := c.pool.Counters()
-	s.HeadroomBytes, s.RepackReserveBytes = pc.HeadroomBytes, pc.RepackReserveBytes
+	s.Spares, s.HeadroomBytes, s.RepackReserveBytes = int(pc.Spares), pc.HeadroomBytes, pc.RepackReserveBytes
 	ds := c.cache.Stats()
 	s.OpenDescriptors, s.DescriptorLimit = ds.Open, ds.Limit
 
@@ -125,9 +141,8 @@ func (c *Core) Stats() Stats {
 		s.Shares[t] = ss
 	}
 
-	// Last, so a reservation never outlives the figures read above.
-	s.ReservedBytes = c.cap.ReservedBytes()
-	for t, r := range c.cap.ReservedByTag() {
+	s.ReservedBytes = reserved
+	for t, r := range reservedBy {
 		if ss, ok := s.Shares[t]; ok {
 			ss.ReservedBytes = r
 			s.Shares[t] = ss

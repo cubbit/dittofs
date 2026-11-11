@@ -79,6 +79,8 @@ type coreOptions struct {
 	// stepSpy runs in Account between its three counter updates, told how many
 	// have been applied.
 	stepSpy func(step int)
+	// betweenHeldReads runs in Stats between its dirty and held reads.
+	betweenHeldReads func()
 	// tracer is the Tracer the core's Deps carry; nil means no tracing.
 	tracer core.Tracer
 	// state is the State newCore continues from; the zero State builds fresh.
@@ -173,6 +175,12 @@ type Core struct {
 	//
 	// decision: it is nil outside tests, for the same reason afterAppend is.
 	stepSpy func(step int)
+
+	// betweenHeldReads is a test seam that stands between Stats' reads of the
+	// dirty and held counters, so a test can land an update there.
+	//
+	// decision: it is nil outside tests, for the same reason stepSpy is.
+	betweenHeldReads func()
 
 	// afterAppend is a test seam that holds a write in the gap between its
 	// append and its publish.
@@ -269,7 +277,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)

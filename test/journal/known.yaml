@@ -188,7 +188,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Stats serves the descriptor budget; the check now stops on a stub call before it reads it. Needs the data path, segments and reopens counted in Stats.'
+  reason: 'Stats serves the descriptor budget; the check now stops on a stub call after it reads it. Needs the data path, segments and reopens counted in Stats.'
   issue: '#3378'
   message: 'stub: Sync'
 
@@ -220,7 +220,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Stats serves ExtentLimit; the check now stops on a stub call before it reads it. Needs the index entry bound refusing writes and splitting removals, MarkOffloaded, release and repack.'
+  reason: 'Stats serves ExtentLimit; the check now stops on a stub call after it reads it. Needs the index entry bound refusing writes and splitting removals, MarkOffloaded, release and repack.'
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
@@ -252,7 +252,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Stats serves HeadroomBytes; the check now stops on a stub call before it reads it. Needs the data path, the headroom half rule, offload, holds, stamps and recovery of offloaded bits.'
+  reason: 'Stats serves HeadroomBytes; the check now stops on a stub call after it reads it. Needs the data path, the headroom half rule, offload, holds, stamps and recovery of offloaded bits.'
   issue: '#3379'
   message: 'stub: Sync'
 
@@ -364,7 +364,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Stats serves per-share UsedBytes; the check now stops on a stub call before it reads it. Needs the data path, segments, their accounting, per-share record accounting and idle sealing.'
+  reason: 'Stats serves per-share UsedBytes; the check now stops on a stub call after it reads it. Needs the data path, segments, their accounting, per-share record accounting and idle sealing.'
   issue: '#3378'
   message: 'stub: Sync'
 
@@ -531,7 +531,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Stats serves UsedBytes; the check now stops on a stub call before it reads it. Needs segments, their accounting and the data path.'
+  reason: 'Stats serves UsedBytes; the check now stops on a stub call after it reads it. Needs segments, their accounting and the data path.'
   issue: '#3378'
   message: 'stub: Inspect.File'
 
@@ -539,7 +539,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Stats serves OldestDirty; the check now stops on a stub call before it reads it. Needs the data path and MarkOffloaded.'
+  reason: 'Stats serves OldestDirty; the check now stops on a stub call after it reads it. Needs the data path and MarkOffloaded.'
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
@@ -1819,7 +1819,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Stats serves FillRefused; the check now stops on a stub call before it reads it. Needs the data path.'
+  reason: 'Stats serves FillRefused; the check now stops on a stub call after it reads it. Needs the data path.'
   issue: '#3378'
   message: 'stub: Sync'
 

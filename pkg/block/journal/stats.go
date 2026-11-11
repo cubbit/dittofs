@@ -36,7 +36,7 @@ func statsFrom(c datapath.Stats) Stats {
 		MaxBytes: c.MaxBytes, UsedBytes: c.UsedBytes, ReservedBytes: c.ReservedBytes,
 		HeldBytes: c.HeldBytes, DirtyBytes: c.DirtyBytes, OldestDirty: c.OldestDirty,
 		Files: c.Files, ExtentCount: c.ExtentCount, DropRanges: c.DropRanges,
-		Segments: c.Segments, Sealed: c.Sealed, UnreclaimedBytes: c.UnreclaimedBytes,
+		Segments: c.Segments, Sealed: c.Sealed, Spares: c.Spares, UnreclaimedBytes: c.UnreclaimedBytes,
 		HeadroomBytes: c.HeadroomBytes, RepackReserveBytes: c.RepackReserveBytes,
 		PinnedSegments: c.PinnedSegments, OpenDescriptors: c.OpenDescriptors, DescriptorLimit: c.DescriptorLimit,
 		DamagedSegments: c.DamagedSegments,
@@ -80,6 +80,12 @@ func statsFrom(c datapath.Stats) Stats {
 //
 // Every map and slice in a Stats belongs to the caller: Stats returns copies
 // and never keeps them.
+//
+// decision: Stats carries no SuspectSegments, SyncMarks or HeadroomSparesShort,
+// and Counters no descriptor_overruns or descriptor_open_failures, though RFC 1
+// sections 3.7 and 3.9 list them: no maintained source exists for any of them,
+// and a statistic only a walk can produce is omitted. Overturned for each as
+// its source lands.
 type Stats struct {
 	// MaxBytes is the configured capacity. Kind: gauge.
 	MaxBytes int64
@@ -118,6 +124,16 @@ type Stats struct {
 	// Segments is the number of segments in total, and Sealed the number of
 	// them sealed. Both are gauges.
 	Segments, Sealed int
+
+	// Spares is the number of spare segments the pool holds, made or recycled
+	// and taken by no stream yet, each counted in UsedBytes at the segment cap.
+	// Kind: gauge.
+	//
+	// decision: it counts every spare the pool holds, whatever its class. RFC 1
+	// section 3.7 counts only the content class and leaves the headroom, the
+	// repack reserve and the reconcile spare out. Overturned when the pool
+	// reports the content class apart from the others.
+	Spares int
 
 	// UnreclaimedBytes is the storage in segments not yet unlinked that backs
 	// no held or retained extent and no live record: what repack can recover.
@@ -233,6 +249,10 @@ type ShareStats struct {
 // Counters are the journal's cumulative counts since open. Every field is a
 // counter: it only rises, and restarts at zero on open. Each answers something
 // only the journal knows.
+//
+// decision: the descriptor_overruns and descriptor_open_failures counters of
+// RFC 1 section 3.9 are not carried: nothing maintains them yet. Overturned
+// when the descriptor cache counts them.
 type Counters struct {
 	// WrittenBytes is the client bytes accepted by WriteAt.
 	WrittenBytes uint64

@@ -21,9 +21,6 @@ func checkNamed(t *testing.T, when string, s Stats) {
 	if s.ReservedBytes < 0 {
 		t.Errorf("%s: ReservedBytes = %d, want >= 0", when, s.ReservedBytes)
 	}
-	if s.HeldBytes > s.UsedBytes {
-		t.Errorf("%s: HeldBytes %d > UsedBytes %d: held bytes live in allocated segments", when, s.HeldBytes, s.UsedBytes)
-	}
 }
 
 // TestRFC1D_NamedInequalitiesHold samples Stats in a tight loop while writers,
@@ -85,6 +82,45 @@ func TestRFC1D_NamedInequalitiesHold(t *testing.T) {
 	workers.Wait()
 	close(stop)
 	sampler.Wait()
+	// The testable form of the second inequality: held bytes live in allocated
+	// segments. It is checked quiescent because held is read before used, and
+	// a retire can lower used in between.
+	if st := c.Stats(); st.HeldBytes > st.UsedBytes {
+		t.Errorf("quiescent: HeldBytes %d > UsedBytes %d: held bytes live in allocated segments", st.HeldBytes, st.UsedBytes)
+	}
+}
+
+// TestRFC1D_DirtyUnderHeldWhenAFallLandsBetweenTheReads lands a whole fall of
+// held and dirty bytes between Stats' dirty and held reads: the pair it
+// returns still has dirty at most held.
+func TestRFC1D_DirtyUnderHeldWhenAFallLandsBetweenTheReads(t *testing.T) {
+	var c *Core
+	var once sync.Once
+	c, _ = newTestCore(t, func(o *coreOptions) {
+		o.betweenHeldReads = func() {
+			once.Do(func() {
+				c.Account(index.HeldDelta{Tag: 7, File: testFile(9), HeldBytes: -4096, DirtyBytes: -4096})
+			})
+		}
+	})
+	c.Account(index.HeldDelta{Tag: 7, File: testFile(9), HeldBytes: 4096, DirtyBytes: 4096})
+	st := c.Stats()
+	if st.DirtyBytes > st.HeldBytes {
+		t.Fatalf("DirtyBytes %d > HeldBytes %d after a fall landed between the reads", st.DirtyBytes, st.HeldBytes)
+	}
+}
+
+// TestRFC1D_SparesAreThePoolsReadySpares checks Spares reports the pool's
+// ready content spares, each counted in UsedBytes at the segment cap.
+func TestRFC1D_SparesAreThePoolsReadySpares(t *testing.T) {
+	c, _ := newTestCore(t)
+	st := c.Stats()
+	if want := int(c.pool.Counters().Spares); st.Spares != want || st.Spares == 0 {
+		t.Fatalf("Spares = %d, want the pool's %d (non-zero)", st.Spares, want)
+	}
+	if st.UsedBytes < int64(st.Spares)*testSegmentCap {
+		t.Fatalf("UsedBytes %d does not cover %d spares at %d", st.UsedBytes, st.Spares, testSegmentCap)
+	}
 }
 
 // TestRFC1D_UpdateOrderKeepsDirtyUnderHeld applies a rise and a fall of held
@@ -110,7 +146,8 @@ func TestRFC1D_UpdateOrderKeepsDirtyUnderHeld(t *testing.T) {
 }
 
 // TestRFC1D_StatsTakeNoWriteLock holds a file's append domain and a write
-// inside its append, and checks Stats still answers.
+// inside its append, and checks Stats still answers. It proves only that the
+// file append domain is not taken: another lock a write holds would not show.
 func TestRFC1D_StatsTakeNoWriteLock(t *testing.T) {
 	reached, release := make(chan struct{}), make(chan struct{})
 	var once, closeOnce sync.Once
@@ -151,7 +188,9 @@ func TestRFC1D_StatsTakeNoWriteLock(t *testing.T) {
 }
 
 // TestRFC1D_StatsCostIsFlat compares the allocations of a Stats call over a
-// journal ten times the size in extents and segments: they do not grow.
+// journal ten times the size in extents and segments: they do not grow. The
+// allocation count is a proxy: it cannot see time spent walking a structure
+// that allocates nothing.
 func TestRFC1D_StatsCostIsFlat(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector inflates allocation counts")
@@ -187,8 +226,8 @@ func TestRFC1D_StatsCostIsFlat(t *testing.T) {
 // bytes used, and the share holding them.
 func TestRFC1D_WedgeIsVisibleDirty(t *testing.T) {
 	c, _ := newTestCore(t, capacityCoreOption(5*testSegmentCap))
-	holder, idle := mustShare(t, c, 1), mustShare(t, c, 2)
-	_ = idle
+	holder := mustShare(t, c, 1)
+	mustShare(t, c, 2)
 	var err error
 	for i := 0; err == nil && i < 1000; i++ {
 		_, err = c.WriteAt(context.Background(), holder, testFile(byte(1+i%50)), int64(i/50)*4096, make([]byte, 4096), 1)
@@ -253,26 +292,48 @@ func indexTruth(c *Core, tags ...core.ShareTag) map[core.ShareTag]shareHeld {
 	return out
 }
 
-// wantStatsMatchIndex waits until Stats' journal and share figures equal what
-// the index holds, and fails with the last difference if they never do: a
-// path that changed held state without a delta leaves them apart for good.
+// statsDiff returns how Stats' journal and share figures differ from what the
+// index holds, or "" when they agree.
+func statsDiff(c *Core, tag core.ShareTag) string {
+	truth := indexTruth(c, tag)[tag]
+	st := c.Stats()
+	sh := st.Shares[tag]
+	_, _, ret := c.heldBytes()
+	if st.HeldBytes != truth.Held || st.DirtyBytes != truth.Dirty || ret != truth.Retained ||
+		sh.HeldBytes != truth.Held || sh.DirtyBytes != truth.Dirty {
+		return fmt.Sprintf("Stats held/dirty %d/%d (retained counter %d), share %d/%d; index held/dirty/retained %+v",
+			st.HeldBytes, st.DirtyBytes, ret, sh.HeldBytes, sh.DirtyBytes, truth)
+	}
+	return ""
+}
+
+// wantStatsMatchIndexNow fails unless Stats equals the index at once. Account
+// is synchronous with the write or the sync that returned, so a path that
+// completed before this call has no lag to wait out.
+func wantStatsMatchIndexNow(t *testing.T, c *Core, when string, tag core.ShareTag) {
+	t.Helper()
+	if d := statsDiff(c, tag); d != "" {
+		t.Fatalf("%s: %s", when, d)
+	}
+}
+
+// wantStatsMatchIndex waits until Stats equals the index and fails with the
+// last difference if it never does. It polls only where the figure lags: a
+// window's failure and a corrupt read's drop are applied by a worker after the
+// call that found them returned.
 func wantStatsMatchIndex(t *testing.T, c *Core, when string, tag core.ShareTag) {
 	t.Helper()
 	var diff string
-	waitIn(t, 10*time.Second, when+": Stats to equal the index", func() bool {
-		truth := indexTruth(c, tag)[tag]
-		st := c.Stats()
-		sh := st.Shares[tag]
-		_, _, ret := c.heldBytes()
-		diff = ""
-		if st.HeldBytes != truth.Held || st.DirtyBytes != truth.Dirty || ret != truth.Retained ||
-			sh.HeldBytes != truth.Held || sh.DirtyBytes != truth.Dirty {
-			diff = fmt.Sprintf("Stats held/dirty %d/%d (retained counter %d), share %d/%d; index held/dirty/retained %+v",
-				st.HeldBytes, st.DirtyBytes, ret, sh.HeldBytes, sh.DirtyBytes, truth)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if diff = statsDiff(c, tag); diff == "" {
+			return
 		}
-		return diff == ""
-	})
-	_ = diff
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: %s", when, diff)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // A sync window that fails drops the write's record; the figures follow the
@@ -284,7 +345,7 @@ func TestRFC1D_FailedSyncWindowFiguresMatchIndex(t *testing.T) {
 	h.f = f
 	a := mustWrite(t, c, s, f, 0, make([]byte, 4096))
 	syncFiles(t, c, f)
-	wantStatsMatchIndex(t, c, "after the first write synced", 1)
+	wantStatsMatchIndexNow(t, c, "after the first write synced", 1)
 	h.arm()
 	mustWrite(t, c, s, f, 0, make([]byte, 4096))
 	h.open()
@@ -309,12 +370,12 @@ func TestRFC1D_SyncLiftingRetainedFiguresMatchIndex(t *testing.T) {
 	f := testFile(1)
 	mustWrite(t, c, s, f, 0, make([]byte, 4096))
 	mustWrite(t, c, s, f, 0, make([]byte, 4096))
-	wantStatsMatchIndex(t, c, "with the older write retained", 1)
+	wantStatsMatchIndexNow(t, c, "with the older write retained", 1)
 	if _, _, r := c.heldBytes(); r != 4096 {
 		t.Fatalf("retained = %d, want 4096 before the sync", r)
 	}
 	syncFiles(t, c, f)
-	wantStatsMatchIndex(t, c, "after the sync lifted it", 1)
+	wantStatsMatchIndexNow(t, c, "after the sync lifted it", 1)
 	if st := c.Stats(); st.HeldBytes != 4096 || st.DirtyBytes != 4096 {
 		t.Fatalf("held/dirty = %d/%d, want 4096 each", st.HeldBytes, st.DirtyBytes)
 	}
@@ -330,7 +391,7 @@ func TestRFC1D_CorruptReadFiguresMatchIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	syncFiles(t, c, f)
-	wantStatsMatchIndex(t, c, "before the corruption", 1)
+	wantStatsMatchIndexNow(t, c, "before the corruption", 1)
 	r := recordOf(t, c, f, 0).Record
 	flip(t, seam, r.Segment, payloadStart(r)+1<<20-1)
 	readUntouched(t, c, s, f, 0, 4<<10, []core.Extent{{Off: 0, Len: 4 << 10}})

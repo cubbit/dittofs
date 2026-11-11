@@ -138,7 +138,7 @@ func TestStatsFromDistinct(t *testing.T) {
 	ro := errors.New("read-only cause")
 	in := datapath.Stats{
 		MaxBytes: 1, UsedBytes: 2, ReservedBytes: 3, HeldBytes: 4, DirtyBytes: 5,
-		OldestDirty: at, Files: 6, ExtentCount: 7, DropRanges: 8, Segments: 9, Sealed: 10,
+		OldestDirty: at, Files: 6, ExtentCount: 7, DropRanges: 8, Segments: 9, Sealed: 10, Spares: 23,
 		UnreclaimedBytes: 11, HeadroomBytes: 12, RepackReserveBytes: 13, PinnedSegments: 14,
 		OpenDescriptors: 15, DescriptorLimit: 16, DamagedSegments: 17,
 		LastSyncError:  &durability.SyncFailure{Err: boom, At: at.Add(time.Second)},
@@ -162,7 +162,7 @@ func TestStatsFromDistinct(t *testing.T) {
 
 	want := Stats{
 		MaxBytes: 1, UsedBytes: 2, ReservedBytes: 3, HeldBytes: 4, DirtyBytes: 5,
-		OldestDirty: at, Files: 6, ExtentCount: 7, DropRanges: 8, Segments: 9, Sealed: 10,
+		OldestDirty: at, Files: 6, ExtentCount: 7, DropRanges: 8, Segments: 9, Sealed: 10, Spares: 23,
 		UnreclaimedBytes: 11, HeadroomBytes: 12, RepackReserveBytes: 13, PinnedSegments: 14,
 		OpenDescriptors: 15, DescriptorLimit: 16, DamagedSegments: 17,
 		LastSyncError:  &SyncFailure{Err: boom, At: at.Add(time.Second)},

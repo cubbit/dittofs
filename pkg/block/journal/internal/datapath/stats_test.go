@@ -127,7 +127,25 @@ func driveStats(t *testing.T) []statsScenario {
 		r := recordOf(t, c, f, 0).Record
 		flip(t, seam, r.Segment, payloadStart(r)+1<<20-1)
 		readUntouched(t, c, s, f, 0, 4<<10, []core.Extent{{Off: 0, Len: 4 << 10}})
+		// The loss is recorded by the durability worker, so wait for it.
+		lossOf(t, c, f)
 		out = append(out, statsScenario{"corrupt", c.Stats()})
+	}
+
+	// The same with the extent offloaded: a fill's bytes are repairable.
+	{
+		c, seam := newTestCore(t, func(o *coreOptions) { o.segmentCap = 4 << 20 })
+		s := mustShare(t, c, 3)
+		f := testFile(1)
+		if err := c.Fill(ctx, s, f, 0, pattern(1<<20, 5), ver(0), ver(1)); err != nil {
+			t.Fatalf("Fill: %v", err)
+		}
+		syncFiles(t, c, f)
+		r := recordOf(t, c, f, 0).Record
+		flip(t, seam, r.Segment, payloadStart(r)-8+1<<20-1)
+		readUntouched(t, c, s, f, 0, 4<<10, []core.Extent{{Off: 0, Len: 4 << 10}})
+		lossOf(t, c, f)
+		out = append(out, statsScenario{"corrupt offloaded", c.Stats()})
 	}
 
 	// A refused sync is counted and its failure kept.
@@ -180,15 +198,16 @@ func driveStats(t *testing.T) []statsScenario {
 // counters the condition names, read through Core.Stats, and no other.
 func TestStatsMetricsMoveOnTheirCondition(t *testing.T) {
 	want := map[string][]string{
-		"writes":       {"WrittenBytes", "FilledBytes", "Syncs"},
-		"stale fill":   {"WrittenBytes", "FillRefused"},
-		"index bound":  {"WrittenBytes", "IndexRefusals"},
-		"share limit":  {"WrittenBytes", "ReservationRefused"},
-		"retire":       {"WrittenBytes", "FreedBytes", "DoubleRetires"},
-		"corrupt":      {"WrittenBytes", "Syncs"},
-		"sync failure": {"WrittenBytes", "Syncs", "SyncFailures", "SyncReappendedBytes"},
-		"read-only":    {"WrittenBytes", "ReservationRefused"},
-		"headroom":     {"WrittenBytes", "HeadroomDraws"},
+		"writes":            {"WrittenBytes", "FilledBytes", "Syncs"},
+		"stale fill":        {"WrittenBytes", "FillRefused"},
+		"index bound":       {"WrittenBytes", "IndexRefusals"},
+		"share limit":       {"WrittenBytes", "ReservationRefused"},
+		"retire":            {"WrittenBytes", "FreedBytes", "DoubleRetires"},
+		"corrupt":           {"WrittenBytes", "Syncs", "CorruptExtentsDataLoss"},
+		"corrupt offloaded": {"FilledBytes", "Syncs", "CorruptExtentsRepairable"},
+		"sync failure":      {"WrittenBytes", "Syncs", "SyncFailures", "SyncReappendedBytes"},
+		"read-only":         {"WrittenBytes", "ReservationRefused"},
+		"headroom":          {"WrittenBytes", "HeadroomDraws"},
 	}
 	for _, sc := range driveStats(t) {
 		v := reflect.ValueOf(sc.s.Counters)
@@ -271,27 +290,26 @@ func TestStatsResultIsCallerOwned(t *testing.T) {
 // statsUnserved names the fields of Stats, ShareStats and Counters no
 // scenario here raises, each with why.
 var statsUnserved = map[string]string{
-	"Shares.UnreclaimedBytes":           "the index has no per-record backing hook, so it is kept at zero",
-	"Shares.ReservedBytes":              "a reservation is open only inside a write, and no seam stands inside it; the capacity tests drive it",
-	"UnreclaimedBytes":                  "the index has no per-record backing hook, so it is kept at zero",
-	"Counters.OfferedBytes":             "offload is not built yet",
-	"Counters.MarkedBytes":              "offload is not built yet",
-	"Counters.ReleasedBytes":            "release is not built yet",
-	"Counters.RepackedBytes":            "repack is not built yet",
-	"PinnedSegments":                    "offload is not built yet",
-	"Recovery":                          "recovery reporting is not in the core's figures",
-	"RejectedSegments":                  "recovery reporting is not in the core's figures",
-	"Counters.TornTails":                "recovery reporting is not in the core's figures",
-	"Counters.ScanResyncs":              "recovery reporting is not in the core's figures",
-	"TagConflicts":                      "only a rebuild of rival records raises it; the index's own tests drive that",
-	"Counters.CorruptExtentsDataLoss":   "needs a corrupt record; the read-corrupt tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
-	"Counters.CorruptExtentsRepairable": "needs a corrupt record; the read-corrupt tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
-	"Counters.StaleExtents":             "needs a stale loss; the durability layer's tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
-	"Counters.SupersededExtents":        "needs a superseded loss; the durability layer's tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
-	"Counters.SpareRefusals":            "needs a roll with no spare ready; the pool's tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
-	"Counters.SegmentReopens":           "needs a closed descriptor reopened; the descriptor tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
-	"RepackReserveBytes":                "the test core's pool targets no repack reserve",
-	"ReservedBytes":                     "a reservation is open only inside a write, and no seam stands inside it; the capacity tests drive it",
+	"Shares.UnreclaimedEndedBytes": "no Repack seals yet, so no segment is ended with unreclaimed bytes; zero until it does",
+	"Shares.UnreclaimedBytes":      "the index has no per-record backing hook, so it is kept at zero",
+	"Shares.ReservedBytes":         "a reservation is open only inside a write, and no seam stands inside it; the capacity tests drive it",
+	"UnreclaimedBytes":             "the index has no per-record backing hook, so it is kept at zero",
+	"Counters.OfferedBytes":        "offload is not built yet",
+	"Counters.MarkedBytes":         "offload is not built yet",
+	"Counters.ReleasedBytes":       "release is not built yet",
+	"Counters.RepackedBytes":       "repack is not built yet",
+	"PinnedSegments":               "offload is not built yet",
+	"Recovery":                     "recovery reporting is not in the core's figures",
+	"RejectedSegments":             "recovery reporting is not in the core's figures",
+	"Counters.TornTails":           "recovery reporting is not in the core's figures",
+	"Counters.ScanResyncs":         "recovery reporting is not in the core's figures",
+	"TagConflicts":                 "only a rebuild of rival records raises it; the index's own tests drive that",
+	"Counters.StaleExtents":        "needs a stale loss; the durability layer's tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
+	"Counters.SupersededExtents":   "needs a superseded loss; the durability layer's tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
+	"Counters.SpareRefusals":       "needs a roll with no spare ready; the pool's tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
+	"Counters.SegmentReopens":      "needs a closed descriptor reopened; the descriptor tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
+	"RepackReserveBytes":           "the test core's pool targets no repack reserve",
+	"ReservedBytes":                "a reservation is open only inside a write, and no seam stands inside it; the capacity tests drive it",
 }
 
 // TestStatsEveryFieldIsServedOrNamed checks a field of Stats, ShareStats or
@@ -301,7 +319,9 @@ func TestStatsEveryFieldIsServedOrNamed(t *testing.T) {
 	nonzero := map[string]bool{}
 	note := func(prefix string, v reflect.Value) {
 		for i := range v.NumField() {
-			if f := v.Field(i); !f.IsZero() && !((f.Kind() == reflect.Slice || f.Kind() == reflect.Map) && f.Len() == 0) {
+			f := v.Field(i)
+			empty := (f.Kind() == reflect.Slice || f.Kind() == reflect.Map) && f.Len() == 0
+			if !f.IsZero() && !empty {
 				nonzero[prefix+v.Type().Field(i).Name] = true
 			}
 		}

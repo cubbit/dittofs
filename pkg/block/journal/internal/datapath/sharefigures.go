@@ -26,8 +26,9 @@ type shareLedger struct {
 	m  map[core.ShareTag]*shareHeld
 }
 
-// apply adds d's byte changes to its share, held raised before dirty on a rise
-// and dirty lowered before held on a fall. Tag 0 marks the journal's own
+// apply adds d's byte changes to its share. The three figures change under one
+// hold of the mutex and a reader takes it too, so no order among them shows.
+// Tag 0 marks the journal's own
 // records and is not a share, so it is not kept.
 func (l *shareLedger) apply(d index.HeldDelta) {
 	if d.Tag == 0 {
@@ -43,9 +44,8 @@ func (l *shareLedger) apply(d index.HeldDelta) {
 		f = new(shareHeld)
 		l.m[d.Tag] = f
 	}
-	f.Held += max(d.HeldBytes, 0)
+	f.Held += d.HeldBytes
 	f.Dirty += d.DirtyBytes
-	f.Held += min(d.HeldBytes, 0)
 	f.Retained += d.RetainedBytes
 }
 
