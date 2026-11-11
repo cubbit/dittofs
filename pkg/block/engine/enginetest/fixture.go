@@ -98,6 +98,8 @@ type Fixture struct {
 	kv      *failingKV                // the store's kv.KV, failing Updates when a test asks
 	batches atomic.Pointer[batchHold] // holds every removal batch at its span while set
 	ended   chan struct{}             // one value per removal batch span that ended
+	spansMu sync.Mutex
+	spans   []*Span // every span ended, in the order they ended
 
 	compose func(*Fixture, *engine.Engine) Service // builds the service each process start composes; nil for none
 	svc     Service                                // the service running now, built by compose
@@ -237,30 +239,56 @@ func (f *Fixture) FailUpdatesAfter(n int) {
 	f.kv.left.Store(int64(n))
 }
 
-// trace is the engine's Tracer: it holds a removal batch while a hold is set
-// and counts the spans that end.
-func (f *Fixture) trace(
+// Span is a span the fixture's Trace was handed: its name, its attributes and
+// the span the context it was opened in carried, nil for a root.
+type Span struct {
+	Name   string
+	Attrs  []slog.Attr
+	Parent *Span
+}
+
+// spanKey is the context key under which Trace carries the span it opened.
+type spanKey struct{}
+
+// Trace is the engine's Tracer, and opens a test's own spans: it opens a span
+// named name as a child of the one ctx carries and keeps it once ended, for
+// Spans. It also holds a removal batch while a hold is set and counts the
+// removal batch spans that end.
+func (f *Fixture) Trace(
 	ctx context.Context,
 	name string,
-	_ ...slog.Attr,
+	attrs ...slog.Attr,
 ) (context.Context, func(error)) {
-	if name != "engine.removal_batch" {
-		return ctx, func(error) {}
-	}
-
-	if h := f.batches.Load(); h != nil {
+	parent, _ := ctx.Value(spanKey{}).(*Span)
+	sp := &Span{Name: name, Attrs: attrs, Parent: parent}
+	batch := name == "engine.removal_batch"
+	if h := f.batches.Load(); batch && h != nil {
 		select {
 		case <-h.release:
 		case <-ctx.Done():
 		}
 	}
 
-	return ctx, func(error) {
+	return context.WithValue(ctx, spanKey{}, sp), func(error) {
+		f.spansMu.Lock()
+		f.spans = append(f.spans, sp)
+		f.spansMu.Unlock()
+		if !batch {
+			return
+		}
 		select {
 		case f.ended <- struct{}{}:
 		default:
 		}
 	}
+}
+
+// Spans is every span ended so far, in the order they ended, across restarts.
+func (f *Fixture) Spans() []*Span {
+	f.spansMu.Lock()
+	defer f.spansMu.Unlock()
+
+	return slices.Clone(f.spans)
 }
 
 // New creates the journal and the store, then starts a process over them: the
@@ -632,7 +660,7 @@ func (f *Fixture) start() {
 		Holds:     Holds(f.Opens, f.FS.Store.Opens()),
 		Clock:     f.Clock,
 		Logger:    f.logger,
-		Tracer:    f.trace,
+		Tracer:    f.Trace,
 	})
 	if err != nil {
 		t.Fatalf("fixture: engine: %v", err)
