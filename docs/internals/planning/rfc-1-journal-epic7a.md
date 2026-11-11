@@ -90,7 +90,7 @@ each refusal.
   `scan_resyncs`, and the open runs under an `open` span with a child span per phase;
 - `Inspect().File` and `All` read out the index the open assembled;
 - the crash checks of RFC 28 §4.4 pass over `Open` for lost, torn and reordered writes, its bit
-  flips waiting for epics 7b and 9b, and every conformance test this epic turns green has left
+  flips at the catalog entry, trailer and `format` sites (the others are E9a's, E9b's and E7b's), and every conformance test this epic turns green has left
   `test/journal/known.yaml`.
 
 ### 1.1 In scope
@@ -150,11 +150,24 @@ each refusal.
   reconcile stays owed", "a recovery seal holds no catalog of a range", "a counted range is not
   counted again", "a lost synced tail", "a scan resynchronises" (its corrupt length field in a
   sealed segment with no catalog), the named-predecessor half of "truncated sealed segment", and
-  the RFC 28 §4.4 bit flips: E7b, and E9b for the rows that mark records offloaded first. Until
+  the RFC 28 §4.4 bit flips in a record header (E7b, with E9b for the rows that mark records
+  offloaded first), in a record's body (E9b) and at the segment header and seal marker (E9a, whose
+  `Inspector.Segments` the test reads); T7.15 runs those at the catalog entry, the trailer and the
+  `format` file. Until
   then the open refuses each such range (D13, D14), and T7.4 and T7.10 test the refusal.
 - The rows that hold an unread record: RFC 28 §4.2 A "a failed read is not damage", "unproven
   tail with a failed re-read", the second half of "unreadable is not empty", "an unread file at
   start" and the acknowledgement rows: E7b. Until then the open refuses (D15).
+- The conformance tests that call `MarkOffloaded`, `Release` or `Offload` before they reopen
+  (`TestRFC28C_SourcesAgree`, `TestRFC28C_SpareIsWholeOrAbsent`, `TestRFC28C_RetiredSegmentsAreRecycled`,
+  `TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead`, `TestRFC28C_VersionFloor`,
+  `TestRFC1C_Monotonicity`, `TestRFC1C_UnclaimedTagsAreTheCallersToName`,
+  `TestRFC1C_CancelledCallChangesNothingOrCompletes`, `TestRFC1C_HeaderOnlyRecordsReappended`,
+  `TestRFC1C_FileIsItsSharesShare`, `TestDamage_SegmentDeleted`): E9b, and they stay listed for it.
+  The tests that need `Restamp` or `Verify` (`TestRFC28C_FormatFile`, `TestRFC28C_TrailerTorn`) or
+  an open over a range that names no record (`TestRFC28C_SealMarkerCopiedIntoAPayload`,
+  `TestRFC28A_AZeroSlotIsNotTheEnd`) are E7b's. This epic tests the halves of these rows that
+  need none of those calls.
 - The offload rows that reopen a journal: RFC 28 §4.2 C "bits survive restart", "reseed by
   version" and "stale extent", and A "unmark clears", with the stale rule and `MarkOffloaded`'s
   and `Unmark`'s semantics (RFC 28 §3.2): E9b. This epic rebuilds the bits from the records on
@@ -415,7 +428,7 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
 | R76 | RFC 28 §4.2 C "rebuild", "torn tail cut off", "a recycled segment's old catalog is never read", "an open at an exhausted headroom"; RFC 1 §9.4 D "metrics are reachable" (the torn tail) | test row | RFC 28 §4.2 C, RFC 1 §9.4 D | T7.12 |
 | R77 | RFC 28 §4.2 C "an ended segment is emptied once", the ended-segment half of "an open at an exhausted headroom", and the failed-append reopen of "a recycled segment's old catalog is never read" | test row | RFC 28 §4.2 C | T7.13 |
 | R78 | RFC 1 §9.4 D "metrics are reachable" (the rejected segment) | test row | RFC 1 §9.4 D | T7.14 |
-| R79 | RFC 28 §4.4 over `Open`: lost, torn and reordered writes at every sync point of every operation that syncs, `Open`'s own included, each reopen agreeing with the reference model as §4.4 says; the model run with crashes. Its bit flips are not this epic's (§1.2) | test row | RFC 28 §4.4, RFC 1 §9.1 | T7.15 |
+| R79 | RFC 28 §4.4 over `Open`: lost, torn and reordered writes at every sync point of every operation that syncs, `Open`'s own included, each reopen agreeing with the reference model as §4.4 says; the model run with crashes. Its bit flips at the catalog entry, trailer and `format` sites are this epic's, the others are not (§1.2) | test row | RFC 28 §4.4, RFC 1 §9.1 | T7.15 |
 | R80 | RFC 28 §4.2 C "a mark proves only up to `Through`" (its torn-slot, torn-header and counter halves) | test row | RFC 28 §4.2 C | T7.10 |
 
 ## 4. Decisions this epic takes
@@ -518,9 +531,9 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
   written. Tests of D13, D14 and D15 assert the open fails naming the range or mark, serves nothing and writes
   nothing, not the error value. A `decision:` marker at each site names the ceiling — a rotted header in a segment
   with no verifying catalog, a truncated named predecessor, or a rotted record below a mark's
-  `Through` keeps the journal closed until E7b — and is withdrawn with E7b. No RFC 28 §4.4 bit
-  flip is tested here: every flip site first marks records offloaded, which is E9b's
-  `MarkOffloaded`, and the header flips need E7b's reconcile (§1.2).
+  `Through` keeps the journal closed until E7b — and is withdrawn with E7b. The RFC 28 §4.4 bit
+  flips in a record header need E7b's reconcile, and those in a record's body mark records
+  offloaded first, which is E9b's `MarkOffloaded` (§1.2).
 - **D15, any read at open that fails refuses the open.** RFC 28 §3.3 holds a record whose read
   fails as unread and opens the journal where a header or a catalog names it, failing the open
   only for a range nothing names. Holding an unread record, the suspect segment and the unread
@@ -631,7 +644,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   - A segment of version 2, or of a version above the `format` file's, fails the open.
   - A context cancelled before any phase returns the context's error with nothing changed but the
     `.spare.tmp` unlinks.
-- **Tests:** the rows of R69 (`TestRFC28C_ForeignSegment`, `TestRFC28C_ForeignHeaderIsForeignNotDamaged`, `TestDamage_UnnamedFileLeftAlone`, `TestRFC28C_UnidentifiedDirectory`, `TestRFC28C_JournalGone`, `TestRFC28C_InterruptedInit`, `TestRFC28C_FormatFile`, `TestRFC28C_KindValuesRefused`, and the first half of the "`format` rebuilt" row); a cancel injected at each phase boundary (catches a phase that
+- **Tests:** the rows of R69 (`TestRFC28C_ForeignSegment`, `TestRFC28C_ForeignHeaderIsForeignNotDamaged`, `TestDamage_UnnamedFileLeftAlone`, `TestRFC28C_UnidentifiedDirectory`, `TestRFC28C_JournalGone`, `TestRFC28C_InterruptedInit`, `TestRFC28C_KindValuesRefused`, and the first half of the "`format` rebuilt" row); a cancel injected at each phase boundary (catches a phase that
   ignores the context); a `.spare.tmp` with the highest id in the directory, then a spare made
   after open (catches an allocator seeded only from `.seg` names, R6); a file named
   `00000000000000000042.seg.bak` and one named `notes.txt` left in place (catches a classifier
@@ -701,7 +714,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
     seal marker before its footer each demote the segment to a scan with the same index.
   - A recycled segment whose old trailer survived is scanned and none of its old records attached.
   - A corrupt record in a catalogued segment leaves every neighbour readable.
-- **Tests:** the rows of R70 (`TestRFC28C_SourcesAgree`, `TestRFC28C_TrailerTorn`, `TestRFC28C_UnknownVersion`, `TestRFC28C_NeighboursSurvive`, `TestRFC28A_FooterIsNotAuthoritative`); the both-ways equality over the model workload (catches a source
+- **Tests:** the rows of R70 (`TestRFC28C_UnknownVersion`, `TestRFC28C_NeighboursSurvive`, `TestRFC28A_FooterIsNotAuthoritative`); the both-ways equality over the model workload (catches a source
   that drops a kind, R15); a recycled segment with its zeroing dropped at the seam (catches a
   trailer accepted without its seal marker, R17); an entry whose header disagrees (catches an
   entry trusted over its record, R13).
@@ -744,7 +757,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   - A segment header that does not verify is damage when a seal marker follows it and torn
     otherwise; its records are attached either way, and a torn one ends its segment.
   - `DamagedSegments` is never raised by a torn header, tail or slot.
-- **Tests:** the rows of R71 (`TestRFC28C_SyncedDamageIsNotATornTail`, the newest-segment half of `TestRFC28C_TruncatedSealedSegment`, `TestRFC28C_SealMarkerCopiedIntoAPayload`, `TestRFC28A_AZeroSlotIsNotTheEnd`); one test per acceptance bullet, each with the seam writing the
+- **Tests:** the rows of R71 (`TestRFC28C_SyncedDamageIsNotATornTail`, the newest-segment half of `TestRFC28C_TruncatedSealedSegment`); one test per acceptance bullet, each with the seam writing the
   exact bytes (catches a rule applied to the wrong segment class); the rotted header with and
   without a catalog (catches a range dropped by a header it cannot trust, which would serve the
   older version, R44); `FuzzOpen` (catches a panic or an extent the bytes do not hold).
@@ -784,7 +797,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
     loss record names it, and nothing is reported damaged.
   - A record failed by a read-only journal and found whole at the next open in the process is not
     held, gets an unsynced loss record, and neither `LossGeneration` nor `Losses` moves.
-- **Tests:** the rows of R72 (`TestRFC1C_LossSurvivesRestart`, `TestRFC1C_ForgetLeavesNothingToSettle`, `TestRFC28C_BadCopyDoesNotMaskAGoodOne`, `TestRFC1C_HeaderOnlyRecordsReappended`, and the reopen halves of "removals survive to `Since`" and "a partly superseded record is still checked"); the synced loss at `Since` across a clean exit (catches a loss rebuilt as settled, so the engine never commits the lost write's existence, R12); the repaired-bytes case (catches a loss applied by position rather
+- **Tests:** the rows of R72 (`TestRFC1C_LossSurvivesRestart`, `TestRFC1C_ForgetLeavesNothingToSettle`, `TestRFC28C_BadCopyDoesNotMaskAGoodOne`, and the reopen halves of "removals survive to `Since`" and "a partly superseded record is still checked"); the synced loss at `Since` across a clean exit (catches a loss rebuilt as settled, so the engine never commits the lost write's existence, R12); the repaired-bytes case (catches a loss applied by position rather
   than by sequence number); the synced-versus-unsynced pair (catches a loss keyed on "at or
   below", RFC 1 §3.8); the `superseded` half (catches a loss applied over the whole record, R24);
   the read-only drop with the registry's list (catches a reopen that serves a write its `Sync`
@@ -834,7 +847,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   - After `Forget(T)` and a reopen, the forget record stays live until the last segment that held
     a record of `T` below it is retired, and not after; a segment holding only settled, outranked
     removals reports not held without a read.
-- **Tests:** the rows of R73 (`TestRFC1C_Monotonicity`, `TestRFC1C_EpochHalfIsZero`, `TestRFC1C_CloneTargetSurvivesCrash`, `TestRFC1C_UnclaimedTagReported`, `TestRFC1C_UnclaimedTagsAreTheCallersToName`, `TestRFC1C_FileIsItsSharesShare`, `TestRFC28C_VersionFloor`, `TestRFC28A_WriteCarriesItsMtime`, `TestRFC1C_CancelledCallChangesNothingOrCompletes`); `Inspect().File` and `All` against the model after a reopen, offloaded bits included (catches a read-out left as a stub, which fails every row that reads the index through it, R68); a reopen under a lower `ExtentLimit` (catches an open refused for it, R23); the before-and-after comparison of `Stats`, `Files` and
+- **Tests:** the rows of R73 (`TestRFC1C_EpochHalfIsZero`, `TestRFC1C_CloneTargetSurvivesCrash`, `TestRFC1C_UnclaimedTagReported`, `TestRFC28A_WriteCarriesItsMtime`); `Inspect().File` and `All` against the model after a reopen, offloaded bits included (catches a read-out left as a stub, which fails every row that reads the index through it, R68); a reopen under a lower `ExtentLimit` (catches an open refused for it, R23); the before-and-after comparison of `Stats`, `Files` and
   `DirtyFiles` (catches a derived value not rebuilt, R31, tested at its consumer); RFC 1 §9.4's
   "a failed number is never issued again" (catches a number taken from the disk alone, which gives
   a new write a failed number and a later reopen drops it after its `Sync` succeeded, R30); the floor case
@@ -871,7 +884,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   - A spare short of the cap is unlinked and made again.
   - With the open's directory sync failing at the seam, the open fails, no spare is taken or
     unlinked, and a later open with the fault cleared succeeds with its reserves whole.
-- **Tests:** the rows of R74 (`TestRFC28C_SparesAreReAdopted`, `TestRFC28A_DirectoryEntrySurvives`, `TestRFC28C_SpareIsWholeOrAbsent`, `TestRFC28C_RetiredSegmentsAreRecycled`, and the first half of "unreadable is not empty"); the foreign record-less segment (catches the record-less test run
+- **Tests:** the rows of R74 (`TestRFC28C_SparesAreReAdopted`, `TestRFC28A_DirectoryEntrySurvives`, and the first half of "unreadable is not empty"); the foreign record-less segment (catches the record-less test run
   before the identity check, R56); the unreadable segment (catches an I/O error read as zeros,
   which would zero acknowledged writes, R46); the failing directory sync (catches a spare taken
   whose name is not durable); a punched hole in a spare on Linux (catches a size-only check where
@@ -1043,7 +1056,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
     by `Files` and `Since` until `Settle`.
   - The public `Open` of a journal that was closed cleanly, or killed with only torn tails,
     returns a journal that serves.
-- **Tests:** the rows of R76 (`TestRFC28C_Rebuild`, `TestRFC28C_TornTailCutOff`, `TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead`, `TestRFC1D_MetricsAreReachable`, and the sealed-segment half of "an open at an exhausted headroom", added here, §9); the second crash after the cut (catches an append after torn bytes,
+- **Tests:** the rows of R76 (`TestRFC28C_Rebuild`, `TestRFC28C_TornTailCutOff`, `TestRFC1D_MetricsAreReachable`, and the sealed-segment half of "an open at an exhausted headroom", added here, §9); the second crash after the cut (catches an append after torn bytes,
   RFC 28 §3.3); the loss-record durability before return (catches a loss lost again at the next
   crash, R43); the exhausted headroom (catches the open's loss records drawn on the headroom,
   which would refuse the open, R54); the deferral past the reserve (catches a deferred loss
@@ -1088,7 +1101,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
     a second failure fails the open with the sync error, takes no third spare, and leaves the
     ended segment on disk.
   - A journal at its maximum whose open ends a segment still opens.
-- **Tests:** the rows of R77 (`TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead`, the ended-segment half of "an open at an exhausted headroom", and "an ended segment is emptied once", added here); the crash at every step (catches a copy skipped only because the
+- **Tests:** the rows of R77 (the ended-segment half of "an open at an exhausted headroom", and "an ended segment is emptied once", added here); the crash at every step (catches a copy skipped only because the
   page cache held it, or an unlink before the loss records were durable); the dead segment beside
   an ended one (catches a superset retirement that leaves the emptying short of spares, D7); the
   deferred loss in a copy (catches a segment retired without its deferred record, which would
@@ -1132,10 +1145,13 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   unnamed marker's and the tail's syncs, the tail's re-appends, the truncation and its seal, a
   re-append of the emptying, a spare's zeroing, the loss records' sync, the unlink); each reopen
   compared with E2's reference model as §4.4 says; E2's model run with crashes from fixed seeds.
-  `TestDamage_BitFlip` is no part of it: every flip site marks records offloaded before it flips,
-  which needs E9b's `MarkOffloaded`, and the header flips that leave a range naming no record need
-  E7b's reconcile, so its rows stay in `known.yaml`, each pointed at whichever of 7b and 9b
-  closes last. Its subtask removes each conformance test this epic turns green from `known.yaml` (rule 6);
+  `TestDamage_BitFlip` runs at the catalog entry, trailer and `format` sites, which mark no record
+  offloaded: a flipped bit there is read by scan with the same index and no byte changed, or
+  refuses the open for `format` without writing to it. Its other sites are not this epic's: the
+  record and body sites mark records offloaded first (E9b's `MarkOffloaded`), the record-header
+  sites leave a range naming no record (E7b's reconcile), and the segment-header and seal-marker
+  sites read `Inspector.Segments` (E9a's T9.9), so their rows stay in `known.yaml`, each pointed at
+  that epic's issue. Its subtask removes each conformance test this epic turns green from `known.yaml` (rule 6);
   this one re-points every other entry that waits only on E7b, E9a or E9b to that epic's issue,
   which stays `status: fail` (§9).
 - **Acceptance criteria:**
@@ -1146,9 +1162,11 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
     retired at open only after the open's loss records' sync.
   - A reopen the open refuses by D13, D14 or D15 counts as agreeing with the model only where RFC 28
     §4.4 excuses the fault; the refusal names the range and serves nothing.
+  - A flipped bit in the catalog entry or the trailer is read by scan with the same index and no
+    byte changed; one in the `format` file refuses the open and writes nothing to it.
   - `known.yaml` names no test this epic turned green, and the runner passes.
 - **Tests:** `TestDamage_LostWrites`, `TestDamage_TornWrites`, `TestDamage_ReorderedWrites`,
-  `TestDamage_SegmentDeleted` and the model's crash seeds (each catches a recovery that comes back
+  `TestDamage_BitFlip/catalog_entry`, `/trailer` and `/format` and the model's crash seeds (each catches a recovery that comes back
   describing something other than what is on disk); the seam-order assertions (catch an ordering
   bug a fault would excuse).
 
