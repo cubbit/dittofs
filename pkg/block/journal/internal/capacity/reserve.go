@@ -36,11 +36,12 @@ type ReserveRequest struct {
 //
 // decision: the count treats every write as interleaved with the stream's
 // other writes, so any one of them can straddle a cap whatever its size — one
-// piece for its head and one for its tail beside the caps it crosses. The
-// count over-reserves footer and index entries by up to one per write, a few
-// KiB for a clone's copies. Upgrade to giving a reservation's writes an
-// append stream of their own, which makes its spares exact, if spare_refusals
-// shows reserved writes among them.
+// piece for its head and one for its tail beside the caps it crosses.
+//
+// ponytail: counting pieces as interleaved over-reserves footer and index
+// entries by up to one per write, a few KiB for a clone's copies. Upgrade to
+// giving a reservation's writes an append stream of their own, which makes its
+// spares exact, if spare_refusals shows reserved writes among them.
 func PiecesFor(bytes int64, writes int, segCap int64) (pieces, spares int) {
 	if bytes <= 0 || writes <= 0 || segCap <= 0 {
 		return 0, 0

@@ -462,10 +462,21 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// The entries open reservations hold are not the write's to spend: the
 	// pre-check above sized the write's own entries against the index's
 	// count, and this leaves the held ones beside it.
-	if left := c.cfg.EntriesLeft(); left <= c.heldEntries {
-		missing := c.heldEntries - left + 1
-		c.mu.Unlock()
-		return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitIndex, Missing: missing, Unit: core.UnitEntries})
+	//
+	// decision: the check applies only while a reservation holds entries,
+	// because a call that adds none — a fill whose every part is already
+	// held, or a write that is net-zero on the count — is admitted by the
+	// bound at any count, exactly-full included, and an unconditional check
+	// would refuse it where the pre-check did not. A zero-gap fill beside an
+	// open reservation is refused here even though it adds nothing; that
+	// fails closed, and closes when a pre-check reports the entries its
+	// call would add.
+	if c.heldEntries > 0 {
+		if left := c.cfg.EntriesLeft(); left <= c.heldEntries {
+			missing := c.heldEntries - left + 1
+			c.mu.Unlock()
+			return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitIndex, Missing: missing, Unit: core.UnitEntries})
+		}
 	}
 
 	// The room grant and the spares. The room is read inside the section,

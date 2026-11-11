@@ -459,6 +459,31 @@ func TestTakeFillRefusedByOtherLimits(t *testing.T) {
 	_ = r.refused(t, big, core.LimitSpare)
 }
 
+// TestTake_ZeroGapFillAtFullIndex checks a fill that adds no index entry is
+// admitted at an exactly-full index: the bound gates what a call adds, and a
+// fill whose every part is already held adds none.
+func TestTake_ZeroGapFillAtFullIndex(t *testing.T) {
+	o := std()
+	o.indexBound = 1
+	r := newRig(t, o)
+
+	// The index's one entry is a 4096-byte piece this fill covers whole, so
+	// the fill has no gap and leaves the count where it stands.
+	id := core.NewFileID([16]byte{1, 0xf})
+	p := index.Placed{Extent: core.Extent{Len: 4096}, Record: index.RecordAt{Segment: 1}, Version: core.Version{Counter: 1}}
+	if _, err := r.idx.WriteRetain(tag1, id, p, 1); err != nil {
+		t.Fatalf("WriteRetain: %v", err)
+	}
+
+	q := req()
+	q.File, q.Fill = id, true
+	g, err := r.c.Take(context.Background(), q)
+	if err != nil {
+		t.Fatalf("a fill that adds no entry at an exactly-full index: %v", err)
+	}
+	g.Release()
+}
+
 // TestTake_OrderOfRefusals drives one request every limit refuses at once
 // and checks the first still standing names itself: read-only, then version,
 // index, share, journal, and the spare pool last. The closing case holds: a
