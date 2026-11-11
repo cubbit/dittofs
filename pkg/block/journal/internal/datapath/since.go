@@ -206,8 +206,8 @@ func (r *sinceRead) written(ch index.Change, mtime int64) core.Change {
 //
 // decision: a record Corrupt reports dropped is followed through the index like
 // a retired one, because Corrupt answers dropped also for a record that moved
-// after the copy was taken; a piece still named at the dropped record is a
-// refused drop, which its loss marker stands for, and is left out. For a piece
+// after the copy was taken; a piece still named at the dropped record is left
+// out, as a refused drop, whose marker, for a synced record, stands for it. For a piece
 // the index no longer holds, the losses at that version are yielded.
 //
 // decision: nothing is marked dropped for a lookup that missed. A record split
