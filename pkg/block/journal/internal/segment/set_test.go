@@ -1075,6 +1075,8 @@ func TestCheckComparesEveryMaintainedCountWithTheSet(t *testing.T) {
 		// no entry charges it, so only the shares' totals comparison can
 		// report it
 		{"share total", func(s *Set) { s.tags[core.ShareTag(9)] = 1 }, "shares' record bytes"},
+		// likewise for the overhead totals
+		{"share overhead", func(s *Set) { s.over[core.ShareTag(9)] = 1 }, "overhead bytes"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			drift(c.name, c.says, c.corrupt)
