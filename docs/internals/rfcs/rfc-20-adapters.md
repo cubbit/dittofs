@@ -1080,7 +1080,7 @@ sequenceDiagram
   alt live setting
     R->>A: Reconfigure(ctx, settings at G)
   else restart-class setting
-    R->>A: Stop (drain), New, Start — this adapter only
+    R->>A: New, then Stop (drain) the old and Start the new, this adapter only
   end
   R->>S: Sync(serving adapters)
   R->>M: node status: G applied, or refused with the error
@@ -1093,7 +1093,7 @@ Four kinds of change, and only two reach the adapter:
 | share policy | its grants, read-only, netgroups | the next request | the service, which reads the share list by version per request ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); no adapter is touched |
 | share encryption requirement | encryption required | the next tree connect; a tree holds the flag it connected with for its life | the service, at `TreeConnect` |
 | live adapter setting | NFS version range, SMB dialect range, idle timeout | connections and sessions set up afterwards | `Reconfigure` |
-| restart-class adapter setting | `port` alone; every other adapter row of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table is live (below) | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
+| restart-class adapter setting | `port` alone; every other adapter row of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table is live (below) | after that adapter alone drains and starts | `New`, then the old one's `Stop` and the new one's `Start` ([RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)) |
 
 `connection_limit` is a node's, not an adapter's: the node hands each adapter
 its share of it (§6.4,

@@ -646,7 +646,7 @@ The node holds two pictures: the **desired** one, read from records, and the
 | an adapter's live setting | applies it to connections set up afterwards ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)) |
 | an adapter's restart-class setting | builds a new adapter through its factory with the new settings. `New` opens nothing, so a setting it refuses leaves the old adapter serving and the record refused. Only then the node drains and stops the old adapter and starts the new one; the others keep serving. If the new one fails to start, the node builds and starts one with the last settings that served, and reports the record refused (§2.4) |
 | a sidecar enabled or disabled | `Sync` with the serving adapters, or with none ([RFC 20 §3.5](rfc-20-adapters.md#3.5%20Sidecars)) |
-| a node-scoped or installation-scoped restart-class setting | nothing until the process next starts; the node reports the record as restart-pending (§2.4) |
+| a node-scoped or installation-scoped restart-class setting other than an adapter's (row above) | nothing until the process next starts; the node reports the record as restart-pending (§2.4) |
 | a principal, grant or export policy | `apply`, handing identity and `*vfs.Filesystem` the new generation; their generations and versions are in the identity and admission cache keys ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) |
 | a shard record | nothing: the gateway's `Router` reads shard records itself, and [RFC 11](rfc-11-ownership.md)'s epochs keep its routing correct |
 
@@ -895,7 +895,8 @@ An adapter is configured by its own record, at installation scope per adapter
 ([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)): every key is
 `adapters.<protocol>.<field>`, the common timeouts included, so each adapter
 carries its own copy, its port included: `adapters.<protocol>.port`, with a
-node override where one host must bind elsewhere
+node override where one host must bind elsewhere, a node-scoped `Setting`
+written through the setting resource (§3.1)
 ([RFC 20 §3.6](rfc-20-adapters.md#3.6%20Changing%20settings%20while%20serving)). Its listen addresses are bootstrap
 facts of each host ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)), not records. The resource is
 `/adapters/{protocol}`, with `enabled` and the protocol's settings:
@@ -959,8 +960,23 @@ them and decides nothing about identity:
   from no grant ([RFC 18 §6.4](rfc-18-identity.md#6.4%20Share%20access%20from%20the%20grants)).
   `DELETE /shares/{id}/grants/{principal}` removes the grant, through RFC 16's
   `DeleteGrant`, so the principal falls through to its groups' grants. A grant
-  naming a machine principal is refused with `ErrInvalid` (§5.1). Netgroups are put and deleted whole; a client rule naming a
-  deleted one fails closed (RFC 16).
+  naming a machine principal is refused with `ErrInvalid` (§5.1). A grant
+  takes the principal's ID only. To grant a directory principal by name or
+  SID, the client first runs `resolve-principal`, an operation whose runner
+  asks identity's `Find` and mints the principal in its own transaction
+  ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)'s `Minter`); its result is the ID the grant's `PUT` names,
+  so neither write depends on a running component (§4.3). Netgroups are put and deleted whole; a client rule naming a
+  deleted one fails closed (RFC 16);
+- **the domain join** is an operation the runner drives through identity:
+  `join-domain` creates the computer account, or, offline, takes one an
+  administrator created with its password; `leave-domain` removes it;
+  `rotate-machine-password` changes the password at the domain controller,
+  then writes the machine password's next `Secret` version
+  ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). `test-directory` checks that every node reaches the
+  directory the record names, and reports each node's answer. The join's
+  state is the installation's status: the computer account's name and the
+  machine password's version, the last rotation. Each node reports its secure
+  channel's health among its conditions (§2.4).
 
 [RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds%20and%20well-known%20principals)'s figure follows a user's create
 from this API through the principals generation to its next sign-in, beside
@@ -1028,6 +1044,10 @@ this table is all of them:
 | `decommission` | node | `admin` | no | [RFC 13 §5.5](rfc-13-configuration.md#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap) |
 | `acknowledge-unreadable` | node | `admin` | yes | [RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) |
 | `declare-lost` | backup location | `admin` | yes | [RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record), [RFC 26 §4.1](rfc-26-catalog-backups.md#4.1%20Interfaces) |
+| `resolve-principal` | installation | `operator` | yes | §3.5, [RFC 18 §4.6](rfc-18-identity.md#4.6%20Names) |
+| `test-directory` | installation | `admin` | yes | §3.5, [RFC 18 §5.1](rfc-18-identity.md#5.1%20What%20a%20directory%20provides) |
+| `join-domain`, `leave-domain` | installation | `admin` | yes | §3.5, [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2) |
+| `rotate-machine-password` | installation | `admin` | yes | §3.5, [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2) |
 | `cancel` | operation | the role that may start its kind | no | §4.6 |
 
 An operation's `Kind` is an `OpKind`, a closed set read from this table and
@@ -1402,7 +1422,7 @@ second store.
 ### 5.4 The bootstrap administrator and the first password
 
 - **Created once, by initialisation.** The explicit initialisation step
-  ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)) creates one account, `admin`, with role `admin`, and, unless the host's file names one, generates the node's identity and writes it beside its journals. A start
+  ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)) creates one account, `admin`, with role `admin`, and the node's identity ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)). A start
   never creates one, so an installation whose accounts were all deleted is not
   repaired by restarting it (below).
 - **It is not a file user.** `admin` **MUST NOT** be given uid 0, any other uid,

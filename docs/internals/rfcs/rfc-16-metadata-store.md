@@ -320,7 +320,7 @@ behaviour beyond pure methods (§2.4), and each renders as JSON for debugging
 | `Share`, `ShareGrant`, `Snapshot` | a share, who may reach it, its snapshots | §2.3 |
 | `Node`, `Shard`, `SlotTable` | cluster membership and shard placement ([RFC 11](rfc-11-ownership.md)) | §2.3 |
 | `Setting`, `Secret` | configuration values and sealed credentials ([RFC 13](rfc-13-configuration.md)) | §2.3 |
-| `Operation`, `IdempotencyRecord`, `Session`, `APIToken`, `AuditRecord`, `AuditCursor`, `NodeStatus` | the management API's records (RFC 23) | §2.3 |
+| `Operation`, `IdempotencyRecord`, `Session`, `APIToken`, `SignInFailures`, `AuditRecord`, `AuditCursor`, `NodeStatus` | the management API's records (RFC 23) | §2.3 |
 
 Holes, removals, fences, cuts, put intents, the GC index keys and
 the chunk change stamp are [RFC 6](rfc-6-block-metadata.md)'s bookkeeping for its guarantees. They are
@@ -394,7 +394,7 @@ what moves with a share:
 | Scope | Entities | Moves with a share export ([RFC 26](rfc-26-catalog-backups.md)) |
 | --- | --- | --- |
 | Per share | Share, ShareGrant, ExportPolicy, Snapshot | yes |
-| Server-wide | Installation, User, Group, Membership, Netgroup, Node, NodeLease, NodeStatus, Shard, Setting, ShareList, ClaimGeneration, and the management API's Operation, IdempotencyRecord, Session, APIToken, AuditRecord and AuditCursor | no — an export carries the principals its files, grants and export policy reference — the policy's `Anonymous` among them (§5, decision 8) — and every netgroup its policy references, with its members, so an import can refuse one that collides ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)) |
+| Server-wide | Installation, User, Group, Membership, Netgroup, Node, NodeLease, NodeStatus, Shard, Setting, ShareList, ClaimGeneration, and the management API's Operation, IdempotencyRecord, Session, APIToken, SignInFailures, AuditRecord and AuditCursor | no — an export carries the principals its files, grants and export policy reference — the policy's `Anonymous` among them (§5, decision 8) — and every netgroup its policy references, with its members, so an import can refuse one that collides ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)) |
 
 ```go
 // User and Group are principals with a name. A file refers to them only by
@@ -738,6 +738,11 @@ type APIToken struct { // RFC 23 §5.3
 	Account Principal
 	Hash    [32]byte  // of the token; never the token
 	Expires time.Time // no later than api.token_max_lifetime after creation
+}
+
+type SignInFailures struct { // RFC 23 §5.3: one per account and one per source address
+	Count uint32    // consecutive failed sign-ins; a success resets the account's
+	Last  time.Time // store time of the last failure, which the next wait counts from
 }
 
 type AuditRecord struct { // RFC 23 §6: append-only; deleted only past audit.retention
@@ -1263,7 +1268,7 @@ type ControlPlane interface {
 	PutSetting(ctx context.Context, s Setting, expect uint64) error
 
 	// The management API's own records (§2.3) — Operation, IdempotencyRecord,
-	// Session, APIToken, AuditRecord, AuditCursor — are reached here too,
+	// Session, APIToken, SignInFailures, AuditRecord, AuditCursor — are reached here too,
 	// indicatively one read and one conditional write each, written in the
 	// transaction of the request it records. An AuditRecord is append-only;
 	// a cursor's write names the holder it read. NodeStatus is not here: every
@@ -1275,17 +1280,24 @@ type ControlPlane interface {
 	// the request's writes through tx, which carries this view's Put*, Set*
 	// and Delete* without their ctx, each checking its expect as above; Write
 	// then writes meta's AuditRecord and, when meta names a key, its
-	// IdempotencyRecord, and commits all of them or none. Before fn, Write reads
+	// IdempotencyRecord, and commits all of them or none. fn may complete
+	// what only its writes decide through meta's pointers — the audit
+	// record's After and Outcome, the idempotency record's Answer — since
+	// Write records them after fn returns. Before fn, Write reads
 	// that key's record with conflict tracking: one with the same digest returns
 	// ErrIdempotentReplay carrying the recorded answer, and fn does not run; one
 	// with another digest returns ErrIdempotencyMismatch. Two requests that both
-	// miss the record conflict on its key, so the one that retries finds it. A transaction
-	// conflict retries fn from the start, so fn holds no state between calls;
-	// an expect that does not match returns ErrGenerationMismatch through fn
-	// and is not retried. The methods above stay, each one Write with no
-	// audit, for the callers RFC 23 §6 does not audit: the node's own
-	// node-status write, and a deletion's batches after its audited mark. The
-	// operation runner's state changes go through Write, each with its audit.
+	// miss the record conflict on its key, so the one that retries finds it. A
+	// transaction conflict retries the whole transaction, the key's read
+	// included, so fn holds no state between calls; an expect that does not
+	// match returns ErrGenerationMismatch through fn, commits nothing and is
+	// not retried. A refusal RFC 23 §6 audits is recorded by a second Write
+	// whose fn writes only what the refusal counts, SignInFailures for a
+	// sign-in, and whose meta carries the refusal's audit. The methods above
+	// stay, each one Write with no audit, for the callers RFC 23 §6 does not
+	// audit: the audit cursor's advance, and a deletion's batches after its
+	// audited mark. Every operation's state change, a deletion's end
+	// included, goes through Write with its audit.
 	Write(ctx context.Context, meta WriteMeta, fn func(tx ControlPlaneTx) error) error
 }
 
@@ -1818,8 +1830,9 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `OP‖opID` | Operation (§2.3), deleted 7 days after it ends (RFC 23 §4.6) |
 | | `OPR‖kind‖target` | running-operation index: one per target and operation kind → `opID`, written when the operation starts and deleted when it ends, so a second request for the same work finds it in one read and is refused (RFC 23 §4.6); `kind` the operation's kind as a string, `target` tagged |
 | | `IK‖account‖key` | IdempotencyRecord (§2.3), written in the request's own transaction (RFC 23 §4.5) |
-| | `XP‖expiry‖tagged` | expiry index for the management API's records that expire: one empty key per idempotency record (tag 0x01, account and key), finished operation (0x02, `opID`) and session (0x03, session ID), written and deleted with it, so the sweep is one ordered scan |
+| | `XP‖expiry‖tagged` | expiry index for the management API's records that expire: one empty key per idempotency record (tag 0x01, account and key), finished operation (0x02, `opID`), session (0x03, session ID) and source's sign-in failures (0x04, address), written and deleted with it, so the sweep is one ordered scan |
 | | `SS‖session`, `SSH‖hash`, `SS‖session‖h‖hash` | Session (§2.3); refresh-token index: a refresh token's hash → session ID, the current one and every one it replaced, until the session expires, so presenting an invalidated token finds the session it must revoke (RFC 23 §5.3); and its reverse, one empty key per hash the session has retained, written with its `SSH` row, so the expiry sweep (`XP`, tag 0x03) deletes the session's `SSH` rows by one range of its own, never a scan of `SSH` |
+| | `SF‖tagged` | SignInFailures (§2.3), keyed by the account (tag 0x01, principal) or the source address (0x02), written in the refused sign-in's own transaction with its audit record (RFC 23 §5.3); a source's is deleted by the expiry sweep 24 h after its last failure (`XP`, tag 0x04) |
 | | `AT‖tokenID`, `ATH‖hash`, `ATA‖principal‖tokenID` | APIToken (§2.3); token index: the hash → token ID; per-account index, for listing and for deleting an account's tokens with it |
 | | `AU‖time‖auditID` | AuditRecord (§2.3), in store-time order, so a time-range read and the retention sweep are one range; never rewritten (RFC 23 §6) |
 | | `AUX‖tagged‖time‖auditID` | audit index: one empty key per record for each of its actor (tag 0x01, principal), target (0x02, resource kind and ID) and taking node (0x03, `NodeID`), so the reads RFC 23 §6 filters by and the per-node export RFC 25 §4.3 reads are ranges |

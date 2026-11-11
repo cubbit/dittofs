@@ -208,6 +208,7 @@ One directory per journal, containing:
 | Name | Is |
 | --- | --- |
 | `format` | the format version, the **journal identity** — a random 128-bit value chosen when the journal is created and never changed — and the **installation ID** the explicit initialisation step wrote ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), all covered by a checksum; byte layout below. From the replication extension's version on it also holds the journal's **generation**, which only that extension changes: it is raised, and swapped into the metadata store, at every open of the journal and every acquisition and renewal of its node's lease — at open and acquisition before anything is served from it — and a journal whose swap loses serves nothing more ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)). An unrecognised version, or a checksum that does not verify, **MUST** fail the open, not be upgraded or repaired silently. |
+| `node-id` | the node's identity, written by the node after `Init`, never by the journal, which leaves it alone ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)) |
 | `<id>.seg` | a segment: its id ([§2.2](#2.2%20Segments)) in 20 decimal digits, zero-padded, so names sort as ids do |
 
 An implementation **MUST NOT** require any other file to reconstruct its state
