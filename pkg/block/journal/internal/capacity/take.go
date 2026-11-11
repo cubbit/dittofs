@@ -228,11 +228,13 @@ type Capacity struct {
 	// theirs has drawn yet, counted beside VersionsLeft the same way.
 	heldVersions uint64
 
-	// reservedAsk is the journal-side bytes open reservations hold — their
-	// payload bytes and the footer entry per piece — charged against the
-	// journal's maximum beside the footprint, so two reservations cannot
-	// claim one room. It is separate from reserved, whose grants' bytes sit
-	// inside allocated segments and so already in the footprint.
+	// reservedAsk is the journal-side bytes open reservations hold that the
+	// footprint does not: their payload bytes and the footer entry per piece
+	// while the hold is being served, and afterwards only what no held spare
+	// covers. It is charged against the journal's maximum beside the footprint,
+	// so two reservations cannot claim one room. It is separate from reserved,
+	// whose grants' bytes sit inside allocated segments and so already in the
+	// footprint.
 	reservedAsk int64
 
 	// pendingSeats is the whole segments open admissions have reserved
@@ -693,9 +695,9 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// this take's own shortfall is the part it reserves: creating a
 	// segment reserves its cap against the maximum (RFC 1 §6), and the
 	// reservation is honoured from the section that admits it, never from
-	// the pool's answer alone. The bytes open reservations hold are not
-	// the write's to spend either: their ask rides beside the footprint,
-	// for it names room in segments not yet allocated.
+	// the pool's answer alone. The part of an open reservation's ask
+	// no held spare covers is not the write's to spend either: it rides beside
+	// the footprint.
 	var seats int
 	if sparesN > 0 && c.cfg.MaxBytes > 0 {
 		cover := readySnap - c.pendingSeats

@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -125,8 +126,8 @@ func TestReserve_ExactFitShare(t *testing.T) {
 		t.Fatalf("ReservedBytes = %d after the exact-fit reservation, want the ask's %d bytes",
 			r.c.ReservedBytes(), want)
 	}
-	if got := r.c.reservedAsk; got != 4096+int64(pieces)*format.CatalogEntrySize {
-		t.Fatalf("the journal-side ask = %d, want the bytes and their %d footer entries", got, pieces)
+	if got := r.c.reservedAsk; got != 0 {
+		t.Fatalf("the journal-side ask = %d once the hold covers its %d pieces, want 0: the spares are charged once, in the footprint", got, pieces)
 	}
 	if got := r.pool.Counters().Held; got != int64(spares) {
 		t.Fatalf("the pool holds %d spares, want the reservation's %d", got, spares)
@@ -173,17 +174,33 @@ func TestReserve_ExactFitJournal(t *testing.T) {
 	}
 }
 
-// TestReserve_JournalRoomHeldAcrossReservations checks two reservations that
-// both read one footprint's remaining room cannot both be taken: the room a
-// reservation names is in segments not yet allocated, so the first's ask is
-// charged beside the footprint for the second to find spent.
-func TestReserve_JournalRoomHeldAcrossReservations(t *testing.T) {
+// TestReserve_JournalRoomHeldWhileTheHoldIsInFlight checks two reservations
+// that both read one footprint's remaining room cannot both pass while the
+// first's hold is still being served: the first's ask is charged beside the
+// footprint until its spares answer, for the second to find spent, and falls to
+// zero once they do, the spares being in the footprint already.
+func TestReserve_JournalRoomHeldWhileTheHoldIsInFlight(t *testing.T) {
 	r := newRig(t, std())
 	pieces, _ := PiecesFor(4096, 1, testCap)
 	one := int64(4096 + pieces*format.CatalogEntrySize)
 	r.c.cfg.MaxBytes = r.set.Counters().UsedBytes + one
 
-	rs := r.reserve(t, rq())
+	parked, resume := make(chan struct{}), make(chan struct{})
+	r.holdSpy = func(int) {
+		close(parked)
+		<-resume
+	}
+	type result struct {
+		rs  *Reservation
+		err error
+	}
+	first := make(chan result, 1)
+	go func() {
+		rs, err := r.c.Reserve(context.Background(), rq())
+		first <- result{rs, err}
+	}()
+	<-parked
+
 	second, err := r.c.Reserve(context.Background(), rq())
 	if err == nil {
 		second.Release()
@@ -200,8 +217,50 @@ func TestReserve_JournalRoomHeldAcrossReservations(t *testing.T) {
 		t.Fatalf("the refused second reservation left ReservedBytes = %d, want the first's 4096", got)
 	}
 
-	rs.Release()
-	r.reserve(t, rq()).Release()
+	close(resume)
+	res := <-first
+	if res.err != nil {
+		t.Fatalf("the first reservation: %v", res.err)
+	}
+	defer res.rs.Release()
+	if got := r.c.reservedAsk; got != 0 {
+		t.Fatalf("after the hold answered, the journal-side ask = %d, want 0", got)
+	}
+}
+
+// TestReserve_JournalMaximumChargedOnce checks a reservation is charged against
+// the journal's maximum once: its held spares are in the footprint, as are the
+// spares the maker makes to stay ahead of them, so the ask beside the footprint
+// is zero and a plain write's headroom (maximum less footprint less that ask)
+// falls by the footprint's growth alone, not by the growth and the ask.
+func TestReserve_JournalMaximumChargedOnce(t *testing.T) {
+	o := std()
+	o.spares, o.unprimed = 5, true
+	o.makerMax = 20 * testCap
+	r := newRig(t, o)
+	foot0 := r.set.Counters().UsedBytes
+
+	q := rq()
+	q.Bytes = 3*testCap - 4096
+	rs := r.reserve(t, q)
+	defer rs.Release()
+	held := r.pool.Counters().Held
+	if held == 0 {
+		t.Fatal("the reservation holds no spare")
+	}
+	// The maker keeps the content target ready beside every held spare.
+	for deadline := time.Now().Add(5 * time.Second); r.pool.Counters().Spares < 5+held; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the pool never made up its target beside %d held spares: %+v", held, r.pool.Counters())
+		}
+	}
+	growth := r.set.Counters().UsedBytes - foot0
+	if want := held * testCap; growth != want {
+		t.Fatalf("the footprint grew by %d, want the %d held spares' %d", growth, held, want)
+	}
+	if got := r.c.reservedAsk; got != 0 {
+		t.Fatalf("the journal-side ask = %d beside a footprint that grew by %d, want 0: the held spares are charged once, when made", got, growth)
+	}
 }
 
 // TestReserve_IndexRefusesByPieces checks a reservation whose pieces would
@@ -296,39 +355,32 @@ func TestReserve_SpareRefusalHoldsNothing(t *testing.T) {
 	}
 }
 
-// TestReserve_JournalRoomCannotBeSpentBySpares checks a plain write that needs
-// a segment no ready spare covers is refused naming the journal's maximum once
-// a reservation holds the ask's bytes: the room the reservation names is in
-// segments not yet allocated, and the write's own segment has none left.
-func TestReserve_JournalRoomCannotBeSpentBySpares(t *testing.T) {
+// TestReserve_AskDoesNotShrinkTheRoomForASeat checks a plain write whose piece
+// needs a segment no ready spare covers is refused naming the journal's maximum
+// by exactly what the segments it needs lack, an open reservation's ask adding
+// nothing to it: the reservation's room is in the spares it holds, which the
+// footprint already counts.
+func TestReserve_AskDoesNotShrinkTheRoomForASeat(t *testing.T) {
 	o := std()
 	o.unprimed, o.spares = true, 2 // the plain write's every piece rolls onto a spare
 	r := newRig(t, o)
 
-	pieces, spares := PiecesFor(4096, 1, testCap)
-	ask := int64(4096 + pieces*format.CatalogEntrySize)
-	if spares != 2 {
-		t.Fatalf("the reservation needs %d spares, want the pool's own 2", spares)
-	}
-
 	q := req()
 	q.Payload = segment.EmptyRoom(testCap) + 50 // two pieces, both on spares
-	// The maximum holds the footprint, the reservation's ask and a byte less
-	// than the two caps the plain write's spares need.
-	spareCaps := int64(spares) * testCap
-	r.c.cfg.MaxBytes = r.set.Counters().UsedBytes + ask + spareCaps - 1
+	// The maximum leaves a byte less than the two segments beside the footprint.
+	r.c.cfg.MaxBytes = r.set.Counters().UsedBytes + 2*testCap - 1
 
 	// While nothing is reserved the plain write is admitted: the room is
 	// there for its two spares.
 	r.grant(t, q).Release()
 
-	// The same write beside the reservation: the byte the reservation holds
-	// is the byte the write's second cap lacks.
+	// Beside the reservation no spare is left for the write, so its pieces need
+	// segments of their own, two caps against the room the maximum leaves.
 	rs := r.reserve(t, rq())
 	defer rs.Release()
 	ns := r.refusedWrite(t, q, core.LimitJournal)
 	if ns.Missing != 1 || ns.Unit != core.UnitBytes {
-		t.Fatalf("the plain write's refusal = %d %s, want the one byte the reservation holds", ns.Missing, ns.Unit)
+		t.Fatalf("the plain write's refusal = %d %s, want the one byte the two segments lack, not that and the reservation's ask", ns.Missing, ns.Unit)
 	}
 }
 

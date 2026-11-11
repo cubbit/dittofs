@@ -83,9 +83,14 @@ func PiecesFor(bytes int64, writes int, segCap int64) (pieces, spares int) {
 //
 // decision: the pieces the ask is sized by are interleaved (PiecesFor), and
 // the journal's maximum is charged the ask's bytes and their footer entries
-// beside the footprint: a reservation's room is in segments it has not
-// allocated yet, so the footprint does not hold it, and two reservations that
-// both read the same footprint must not both claim its room.
+// beside the footprint only while the hold is being served: two reservations
+// that both read the same footprint must not both pass. Once the hold answers,
+// its spares are segments already in the footprint (and the pool makes more to
+// stay ahead of them, in the footprint too), so the part of the ask they cover
+// is no longer charged beside it: the room is charged once, when the spare is
+// made. A ready spare is taken whole, so the ask a hold does not cover is the
+// excess over its spares' caps, zero for every ask PiecesFor sizes. Withdrawn
+// if a hold can ever serve spares that are not in the footprint.
 //
 // decision: the held entries and versions ride beside the injected reads
 // rather than inside an index or counter reservation, because both layers'
@@ -178,9 +183,11 @@ func (c *Capacity) Reserve(ctx context.Context, r ReserveRequest) (*Reservation,
 		}
 	}
 	// Journal maximum: the ask's bytes and footer entries beside what
-	// reservations already hold, what admitted takes have seated and no hold
-	// has settled, and the footprint, for a reservation names room in segments
-	// not yet allocated. The seats are the whole segments Take reserved for the
+	// reservations whose hold is not yet served still charge, what admitted
+	// takes have seated and no hold has settled, and the footprint. This ask
+	// is counted whole, though its spares will be in the footprint, so a
+	// reservation of exactly the room left is taken and a byte more refused.
+	// The seats are the whole segments Take reserved for the
 	// spares it still needs (pendingSeats), each at its cap, so the two agree:
 	// a reservation cannot claim room a take in flight has already seated.
 	if c.cfg.MaxBytes > 0 {
@@ -215,9 +222,19 @@ func (c *Capacity) Reserve(ctx context.Context, r ReserveRequest) (*Reservation,
 		}
 		return nil, err
 	}
+	// The hold's spares are segments already in the footprint, so the part of
+	// the ask they cover is charged once, there: the ask's charge beside the
+	// footprint falls to what no held spare covers. Left in place it would be
+	// charged again until Release, on top of the spares the pool keeps making
+	// to stay ahead of the holds.
+	ask := r.Bytes + footer
+	charged := max(ask-int64(spares)*c.cfg.SegmentCap, 0)
+	c.mu.Lock()
+	c.reservedAsk -= ask - charged
+	c.mu.Unlock()
 	return &Reservation{
 		c: c, tag: r.Tag,
-		bytes: r.Bytes, bytesAsk: r.Bytes + footer,
+		bytes: r.Bytes, bytesAsk: charged,
 		entries: idx, versions: versions, hold: hold,
 		leftBytes: r.Bytes, leftEntries: idx, leftVersions: versions,
 	}, nil
@@ -242,10 +259,10 @@ type Reservation struct {
 	c   *Capacity
 	tag core.ShareTag
 
-	// bytes is the record bytes the ask named, and bytesAsk is those bytes
-	// with the footer entry of every piece: the journal-side figure the open
-	// reservation charges until its Release, for its pieces land in spares it
-	// already holds. entries and versions are the index entries and versions
+	// bytes is the record bytes the ask named, and bytesAsk is the part of
+	// those bytes and the footer entry of every piece that no held spare covers:
+	// the journal-side figure the open reservation still charges beside the
+	// footprint until its Release. entries and versions are the index entries and versions
 	// it holds.
 	bytes    int64
 	bytesAsk int64
@@ -472,11 +489,11 @@ func (r *Reservation) NeedsSpares() int {
 // index entries, versions and spares. It is idempotent — a second Release does
 // nothing.
 //
-// decision: the journal's maximum keeps the reservation's whole ask until
-// this call, not only what its writes have not drawn: the room the ask names
-// is in the spares the reservation holds, so no byte of it returns to the
-// maximum before the hold does, and a plain write cannot claim it. It fails
-// closed. The entries and versions a write drew stay spent — a write that
+// decision: the journal's maximum keeps charging the part of the ask no held
+// spare covers until this call, not only what its writes have not drawn, so no
+// byte of it returns to the maximum before the hold does. The part the spares
+// cover is in the footprint, and stays there after the call as ready spares.
+// It fails closed. The entries and versions a write drew stay spent — a write that
 // failed part-way may have published its pieces — so a shortfall there
 // refuses the reservation's next write rather than admitting it past a bound.
 func (r *Reservation) Release() {
