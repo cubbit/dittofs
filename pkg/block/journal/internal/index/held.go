@@ -193,6 +193,11 @@ type heldSet struct {
 	// pieces, whose bytes metadata holds; that it has recorded the write's
 	// Over is not guaranteed here. Revisit if a lost Over of a released write
 	// can be seen by a caller of Since.
+	//
+	// decision: a failed write can remain named as the was of a run. The extra
+	// run only makes Since report an overwrite record for the later write, which
+	// is the sole effect. Revisit if a caller treats a run's was as a write
+	// that is still held.
 	over []overRun
 }
 

@@ -15,7 +15,9 @@ import (
 // Since yields the changes of file id strictly above from, in version order:
 // each held extent with the modification time its record carries and the runs
 // it superseded, each unsettled removal marker, and each synced loss. Of one
-// version, markers come before extents, then extents in offset order. An
+// version, markers come before extents, then extents in offset order; a loss
+// yielded in place of a dropped record can follow a write at the same version,
+// though the two never overlap. An
 // unsynced loss and a loss of a superseded write leave no marker, so neither
 // is yielded.
 //

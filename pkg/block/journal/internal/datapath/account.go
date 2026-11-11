@@ -7,9 +7,19 @@ import "github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 // dirty-file list when it moves its file across the dirty line or changes its
 // oldest dirty time.
 //
-// It takes no lock and needs none: it only adds to atomics, which commute, so
-// the order two callers apply their deltas in does not matter. Most callers
-// hold the changed file's append domain; the loss path does not.
+// The counters are atomics, which commute, so the order two callers apply
+// their deltas in does not matter to them. The dirty-file list does not
+// commute: apply takes its own mutex and sets state, so two deltas of one file
+// applied in opposite order can leave a stale entry. Every caller but one
+// holds the changed file's append domain, which orders them; the exception is
+// the loss path's markLoss, when the loss is not already Marked (the
+// refused-drop fallback).
+//
+// decision: the dirty list is ordered by the append domain alone, and the
+// unmarked loss path is not. apply re-adds a file only on BecameDirty, so a
+// BecameClean applied after a concurrent BecameDirty of the same file leaves
+// it dirty but unlisted. Overturned if that fallback is seen to race a write to
+// the same file, which would need the list ordered by a per-file sequence.
 //
 // decision: the counters follow the index's delta rather than each caller's
 // own arithmetic, because a caller that adjusts a counter itself is a caller

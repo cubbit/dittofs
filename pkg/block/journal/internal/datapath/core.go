@@ -57,6 +57,11 @@ type Deps struct {
 //
 // decision: State is plain data handed to New and holds no lock domain of its
 // own; the index and counters it carries take their own short, I/O-free locks.
+//
+// decision: a rebuilt index does not seed the dirty-file list, because apply
+// adds a file only on BecameDirty and a rebuild's deltas are discarded. This is
+// harmless while Open refuses a directory holding segments, so no core starts
+// from a rebuilt index. Recovery must seed the list from the rebuilt files.
 type State struct {
 	Index    *index.Index
 	Counters *index.Counters
