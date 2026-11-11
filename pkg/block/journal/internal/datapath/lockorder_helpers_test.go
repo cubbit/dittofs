@@ -360,3 +360,32 @@ func withoutPins(held []lockorder.Rank) []lockorder.Rank {
 	}
 	return out
 }
+
+// abandonRecorded leaves the core unclosed when its test already failed on
+// the watchdog: the cleanup's Close would wait on the blocked call the run
+// failed the test on, so the core is registered as abandoned and the cleanup
+// skips it, the same reason the public concurrency test abandons its
+// journal rather than closing it.
+func abandonRecorded(t *testing.T, c *Core) {
+	t.Helper()
+	abandonedCores.Store(c, struct{}{})
+}
+
+// otherFreshFileOn picks a fresh file id on stream n other than the ones
+// named, starting its search past every id the other fresh-picking helpers
+// hand out so two picks on one stream cannot collide.
+func otherFreshFileOn(c *Core, n int, not ...core.FileID) core.FileID {
+outer:
+	for k := uint64(1100); ; k++ {
+		id := fid(k)
+		if c.streams.IndexFor(id) != n {
+			continue
+		}
+		for _, f := range not {
+			if f == id {
+				continue outer
+			}
+		}
+		return id
+	}
+}
