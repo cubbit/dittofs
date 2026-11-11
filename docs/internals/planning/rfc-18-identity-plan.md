@@ -655,7 +655,7 @@ func (s *Server) Find(ctx context.Context, sp Spelling, o FindOpts) (metadata.Pr
 }
 
 // Runner kinds (D8, E7). Each step is recorded; a resumed run starts at the first unrecorded one.
-var join = runner.Steps{ // online; the offline join verifies an existing account instead
+var join = runner.Steps{ // online; the offline join verifies an existing account instead, then runs rotate
 	sealPassword,    // a Secret version (RFC 13 §7), sealed before the DC sees it
 	createComputer,  // cifs/ and host/ names, msDS-SupportedEncryptionTypes 0x18 (A4); skipped if the DC already accepts the sealed version
 	writeNetBIOS,    // identity.netbios_name (A2)
@@ -892,8 +892,8 @@ the keytab derived from it.
 - Domain-controller discovery from DNS, lifted from v1, or the directory record's explicit address
   and DNS server (A3).
 - The online and the offline join as runner kinds (D8), each writing `identity.netbios_name`; the
-  online join's refusal of an existing account unless taken over; the offline join's AES check and
-  its report of the account's service names (RFC 18 §3.5).
+  online join's refusal of an existing account unless taken over; the offline join's AES check, its
+  report of the account's service names, and its closing rotation (RFC 18 §3.5).
 - The keys of the names the computer account holds derived from the machine password, tagged with
   its key version number, beside the imported keytab epic 5 loads for every other name (RFC 18
   §3.3).
