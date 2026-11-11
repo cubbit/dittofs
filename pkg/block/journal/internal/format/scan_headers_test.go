@@ -307,3 +307,31 @@ func TestScanHeadersBodyPastTheSizeIsNotAttached(t *testing.T) {
 		t.Errorf("refused = %+v, want none", got.Refused)
 	}
 }
+
+// TestScanHeadersZeroTailReadsOncePerWindow: a segment whose records are
+// followed by a multi-megabyte zero tail is searched to its end in reads of
+// the window's size, not one read per 8-byte slot. The bound is a small
+// constant times the window count plus the records the walk steps through.
+func TestScanHeadersZeroTailReadsOncePerWindow(t *testing.T) {
+	recs := scanTestRecords()
+	seg, offs := scanSegment(t, testIdentity, recs...)
+	size := int64(4*scanWindow) + int64(len(seg))
+	seg = append(seg, make([]byte, size-int64(len(seg)))...)
+
+	rec := &recordingReader{b: seg}
+	got, err := ScanSegmentHeaders(rec, size, testIdentity, testSegment)
+	if err != nil {
+		t.Fatalf("ScanSegmentHeaders = %v, want no error", err)
+	}
+	if len(got.Records) != len(offs) {
+		t.Fatalf("attached %d records, want the %d planted", len(got.Records), len(offs))
+	}
+	if got.End != size {
+		t.Fatalf("end %d, want the size %d", got.End, size)
+	}
+	limit := 2*(size/scanWindow+1) + int64(len(offs)) + 2
+	if int64(len(rec.reads)) > limit {
+		t.Errorf("a zero tail of %d bytes took %d reads, want at most %d: one per window, not one per slot",
+			size, len(rec.reads), limit)
+	}
+}

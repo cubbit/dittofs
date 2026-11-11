@@ -281,6 +281,9 @@ type scanner struct {
 	// alone (read), so no read reaches a body. The window's fetch of
 	// already-held bytes keeps serving the search's zero-telling.
 	headerOnly bool
+	// searching is set while the forward search runs: a header-only refill
+	// goes wide there, for the bytes it crosses are no attached record's.
+	searching bool
 
 	Scan
 }
@@ -439,6 +442,8 @@ func (sc *scanner) examineRecord(b []byte, off int64) slot {
 func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err error) {
 	end = sc.size
 	found = slot{outcome: slotNothing}
+	sc.searching = true
+	defer func() { sc.searching = false }()
 	// The walk's examination of off has already put [off, off+8) in the
 	// window, so this telling is a window hit: it cannot fail, and the
 	// branch below keeps the error contract without ever being taken —
@@ -516,13 +521,27 @@ func (sc *scanner) read(off, n int64) ([]byte, error) {
 		return sc.window[off-sc.cur : off-sc.cur+n], nil
 	}
 	want := min(int64(scanWindow), sc.size-off)
-	// A header-only walk refills each slot's own bytes alone, never wide:
-	// a wide refill would run ahead through the bodies of records the walk
-	// has no reason to check, and narrowUntil cannot stop it, for it
-	// narrows only after a refill has already failed. A ScanSegment walk
-	// keeps the wide window, whose one read of each byte it crosses is the
-	// cheaper walk there.
-	if sc.headerOnly {
+	// A header-only walk refills each slot's own bytes alone while it
+	// steps from one attached record to the next, never wide: a wide
+	// refill there would run ahead through the body of the record the walk
+	// is about to step over, and narrowUntil cannot stop it, for it
+	// narrows only after a refill has already failed. The forward search
+	// refills wide, header-only or not: the bytes it crosses are past the
+	// last attached record or between records that did not verify, so no
+	// attached body is among them, and a per-slot refill there would cost
+	// one read per 8 bytes over an unwritten tail. A ScanSegment walk
+	// keeps the wide window throughout, whose one read of each byte it
+	// crosses is the cheaper walk there.
+	//
+	// decision: a wide refill at a search position may cover the body of
+	// the record the search finds further on, so a header-only walk can
+	// read that body's bytes incidentally after a range of bad bytes. Only
+	// a record reached by resynchronisation is exposed, and only to bytes
+	// within one window of the search position; the rule the walk keeps is
+	// that no read starts inside an attached record's body. Withdrawn if a
+	// scan is ever ruled to read no payload byte at all, for the search
+	// would then need a header-sized read per slot or a bounded window.
+	if sc.headerOnly && !sc.searching {
 		want = n
 	} else if off < sc.narrowUntil {
 		// Every caller asks only the bytes its own slot holds, min(96,
