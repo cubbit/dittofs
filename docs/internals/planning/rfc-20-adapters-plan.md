@@ -123,7 +123,9 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
 - **`pkg/adapter/config`** (RFC 20 §3.6, RFC 13): `Adapter`, and `NFS` and `SMB` embedding it;
   `TLS`; `Settings{Validate() error; Common() Adapter}`; `DefaultNFS` and `DefaultSMB`; every
   key `adapters.<protocol>.<field>` from a `json` tag; no restart machinery, since every
-  adapter setting is live.
+  adapter setting is live but `Port`, restart-class, which epic 2 adds to the frozen shape
+  (its D20) and whose refusal and binding land with `Reconfigure` (T4.6) and `New` (T6.3,
+  T6.4).
 - **`pkg/adapter/nfs.New`, `pkg/adapter/smb.New`**: signatures and stubs returning an error.
 - **`pkg/resources`** (RFC 24 §2.5, §3.1, RFC 20 §6.8): `Budget`, `WaitBudget`, `Reservation`,
   `Budgets`, `Buf`, `BufPool` and `NewBufPool(*WaitBudget)` (only `BufPool` is called a pool,
@@ -580,7 +582,8 @@ rows, A10, A11, A14, A19, A20.
   replies dropped; closing cancels each request's context and runs `OnClose`; cleanup keyed by
   session before a reconnect of that session is served.
 - T4.6 `Reconfigure`: refuse the other protocol's settings or any other type, validate (the
-  shape's `Validate`, also run by `New`), load the TLS certificates, open added listeners before swapping the snapshot, close removed
+  shape's `Validate`, also run by `New`), refuse a changed `Port` with a sentinel error, one
+  field compared (RFC 20 §3.6), load the TLS certificates, open added listeners before swapping the snapshot, close removed
   ones and their connections after.
 - T4.7 Health (`Health.Ready()` from the state and the conditions, liveness from accept-loop
   `Loop.Turn` and `Idle` through `Deps.Watch`, a nil `Watch` watching nothing, `adapter_listener_lost`; `adapter_refused` is the node's, E7),
@@ -690,12 +693,13 @@ and SMB rows, §5.1, §5.2, §5.4 for the headers, §6.10's codec gate for the h
 - T6.2 `nfs/wire`: record-mark framer with the cap, RPC call and reply header, AUTH_SYS, the XDR
   they need written by hand; golden vectors from RFC 5531's encodings; fuzz targets; 0-allocation
   gate.
-- T6.3 `smb/protocol` and `New` (internal and public), `New` composing the tables as RFC 20
-  §4.8's example does, building every one and naming no operation: `Router` by dialect over the
+- T6.3 `smb/protocol` and `New` (internal and public), `New` binding on `Port` the listener it
+  would put on 445 (RFC 20 §3.6) and composing the tables as RFC 20 §4.8's example does, building every one and naming no operation: `Router` by dialect over the
   empty tables;
   `NEGOTIATE` picking the highest dialect offered inside `Dialects`, read from the connection's
   settings snapshot; every command not supported over loopback, leak checks clean.
-- T6.4 `nfs/protocol` and `New` (internal and public), `New` building every table (`protocol.Tables`)
+- T6.4 `nfs/protocol` and `New` (internal and public), `New` binding on `Port` the listeners it
+  would put on 2049 (RFC 20 §3.6) and building every table (`protocol.Tables`)
   as RFC 20 §4.8's example does, no `init()` registration: `Router` by (program, version) over empty
   tables; unknown program, version and procedure each refused as RFC 5531 says over loopback,
   a version outside `Versions` answered `PROG_MISMATCH` naming the range's ends and a minor

@@ -11,6 +11,8 @@ func DefaultSMB() SMB
 type Adapter struct {
 	Addrs []netip.Addr `json:"-"`
 
+	Port uint16 `json:"port"`
+
 	DrainTimeout time.Duration `json:"drain_timeout"`
 
 	IdleTimeout time.Duration `json:"idle_timeout"`

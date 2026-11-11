@@ -11,7 +11,8 @@ and its closing sentence: the test-only protocol drives every symbol), §7 (the 
 stub bodies and a working `Bind`), `pkg/adapter`'s `Deps`, `pkg/resources`' `Budgets`, `Buf` and
 `BufPool`, and `pkg/vfs`' `Service` and error set; **the Serving/Addrs surface change**, which lands in
 this document's own pull request, in a commit ahead of it: RFC 20 §3.4, §3.5 and §4.7 amended, `adapter.Socket`, `Serving.Listeners map[Socket][]netip.AddrPort`,
-`Adapter.Addrs()`, `core.Listener.Services` and the `(*Server).Addrs()` stub, with both golden files (D19). T2.3 also
+`Adapter.Addrs()`, `core.Listener.Services` and the `(*Server).Addrs()` stub, with both golden files (D19),
+and `config.Adapter.Port` with its golden file and RFC 20 §3.6 amended (D20). T2.3 also
 needs `vfstest.Memory` (§9).
 **Blocks:** E3, which turns the budget and replay specifications green and registers `BufPool`'s
 gate in the allocation cell this epic creates; E4 and E5, whose tests run `core` on `testproto`
@@ -324,7 +325,9 @@ names the epic that owns the rest.
     every `core` test builds its requests and reads its replies through them;
   - `adapter.Adapter.Addrs()`, `core.Listener.Services` and `adapter.Serving` (D19): E4's tests, the end-to-end specification,
     the node's sidecar report and every sidecar read them, so a changed shape is an RFC amendment
-    and an edit of each; the epic's owner settled them before any body exists.
+    and an edit of each; the epic's owner settled them before any body exists;
+  - `config.Adapter.Port` (D20): `testproto.Settings` embeds `config.Adapter`, and the node's
+    loader, `New` and `Reconfigure` all read the field, so it is added before any of them.
   What is deferred is additive and in one place: the import test's entry-method, 800-line and
   `translate` clauses are new cases and seeds (RFC 21 and 22); a golden-vector helper is E6's,
   inside each `wire` package; a new operation a later `core` test needs is a new row and new
@@ -360,6 +363,18 @@ names the epic that owns the rest.
   (the Serving/Addrs surface change) lands in this document's pull request, in a commit ahead of
   the document, and amends RFC 20 §3.4, §3.5 and §4.7 and adds the types, the stub and both golden files; this epic
   only reads it. E4 writes the bodies: `Addrs` in T4.1, the `Serving` report in T4.9.
+- **D20, the port is a setting, and its field lands now.** RFC 23's plan (its A1) makes an
+  adapter's port the `adapters.<protocol>.port` setting, at installation scope with a node
+  override and restart-class, while the listen addresses stay the host's, in
+  `config.Adapter.Addrs`. RFC 20 §3.6 states it: `Port uint16 json:"port"`, defaulting to the
+  protocol's port (2049 for NFS, 445 for SMB) and 0 letting the system pick. RFC 23's plan
+  places the field with the node's config loader in epic 7 (its O7), but `config.Adapter` is
+  surface frozen at S1 and `testproto.Settings` embeds it, so the field, its defaults and the
+  golden file land with the Serving/Addrs surface change, in this document's pull request.
+  The behaviour waits for the bodies: `Reconfigure` refusing a changed `Port` with a sentinel
+  error is T4.6's, binding on it is `New`'s in T6.3 and T6.4, and building a new adapter for a
+  change is the node's, in E7. No sentinel is declared now: nothing matches it before E4, and
+  adding an exported error is additive.
 
 ## 5. Target tree
 
@@ -780,7 +795,8 @@ A suggestion only: one pull request per subtask works as well.
   - no operation that waits a given time or answers `ErrDelay` itself, and no test hook that
     completes a request: delays, holds and parks wait on `vfstest.Faults` (D5, D6);
   - `core.Dispatcher` is deleted here, not by E4 (D18); the Serving/Addrs surface change lands
-    in this document's pull request, ahead of it (D19);
+    in this document's pull request, ahead of it (D19), and so does `config.Adapter.Port`,
+    which RFC 23's plan placed in E7 (D20);
   - the journal's profiler moves to `internal/prof` and is the leak check's goroutine half (D13);
   - a red suite is registered, `adapter-conformance`, against "registers no red suite";
   - the total is 10.5 man-days against the first figure of 8: the client, D3's second table,

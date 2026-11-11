@@ -22,9 +22,11 @@ func TestDefaultsAreRFC13s(t *testing.T) {
 		HandshakeTimeout: 30 * time.Second,
 		ReadTimeout:      30 * time.Second,
 	}
-	wantNFS := NFS{Adapter: common, TLS: TLS{Mode: "off"}, Versions: VersionRange{Min: "3", Max: "4.2"}}
+	nfsCommon, smbCommon := common, common
+	nfsCommon.Port, smbCommon.Port = 2049, 445
+	wantNFS := NFS{Adapter: nfsCommon, TLS: TLS{Mode: "off"}, Versions: VersionRange{Min: "3", Max: "4.2"}}
 	wantSMB := SMB{
-		Adapter:        common,
+		Adapter:        smbCommon,
 		Dialects:       VersionRange{Min: "2.1", Max: "3.1.1"},
 		PendingTimeout: 10 * time.Minute,
 		RecallTimeout:  60 * time.Second,

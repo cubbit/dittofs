@@ -884,7 +884,8 @@ type Adapter interface {
 	// Reconfigure adds and removes listeners and applies live settings to
 	// connections set up after it returns (§3.1). s is the adapter's own
 	// protocol's shape, config.NFS or config.SMB; the other protocol's is
-	// refused with an error (§3.6). Every adapter setting is live today.
+	// refused with an error (§3.6). Every adapter setting is live but `port`,
+	// which never reaches Reconfigure: the node builds a new adapter (§3.6).
 	Reconfigure(ctx context.Context, s config.Settings) error
 
 	// Stop moves serving to draining to stopped. ctx's deadline is the drain
@@ -1121,7 +1122,7 @@ Four kinds of change, and only two reach the adapter:
 | share policy | its grants, read-only, netgroups | the next request | the service, which reads the share list by version per request ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); no adapter is touched |
 | share encryption requirement | encryption required | the next tree connect; a tree holds the flag it connected with for its life | the service, at `TreeConnect` |
 | live adapter setting | NFS version range, SMB dialect range, idle timeout | connections and sessions set up afterwards | `Reconfigure` |
-| restart-class adapter setting | none today: every adapter row of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table is live (below) | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
+| restart-class adapter setting | `port` alone; every other adapter row of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table is live (below) | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
 
 `connection_limit` is a node's, not an adapter's: the node hands each adapter
 its share of it (§6.4,
@@ -1135,8 +1136,13 @@ the node applies it by `Sync`, with the serving adapters or with none (§3.5,
 > policy on every message would put a service read on the request path. A
 > tree connected before the change keeps its flag until it disconnects.
 
-**Listen addresses are not adapter settings.** A host's listen addresses are
-bootstrap facts ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
+**Listen addresses are not adapter settings; the port is.** A host's listen
+addresses are bootstrap facts ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
+An adapter's port is its `port` setting, at installation scope with a node
+override, restart-class ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)):
+the protocol's `New` binds each listener it would put on its default port on
+`port` instead, and a change builds a new adapter
+([RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)).
 `Reconfigure` still adds and removes listeners, for two callers only: a
 namespace move's release of an address
 ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)),
@@ -1162,6 +1168,7 @@ package config // pkg/adapter/config: a leaf
 // record carries its own copy, under adapters.<protocol>.
 type Adapter struct {
 	Addrs              []netip.Addr  `json:"-"`                   // supplied by the node, live (below); a record naming it is refused as an unknown field
+	Port               uint16        `json:"port"`                // restart-class (above); the protocol's default port, and 0 lets the system pick, for tests
 	DrainTimeout       time.Duration `json:"drain_timeout"`       // 90 s; at least the break deadline plus the request deadline, 65 s
 	IdleTimeout        time.Duration `json:"idle_timeout"`        // 15 min
 	WriteTimeout       time.Duration `json:"write_timeout"`       // 60 s
@@ -1243,9 +1250,10 @@ type Settings interface {
   `migration.freeze_timeout` plus the break deadline is the control plane's
   cross-component check (RFC 13 §6). The package stays a leaf, importing
   nothing under `internal/`.
-- **Every adapter setting is live**; RFC 13 Appendix B records each one's
-  class. The first restart-only setting brings a sentinel error and a
-  one-field comparison in `Reconfigure`, and nothing before it.
+- **Every adapter setting is live but `port`**; RFC 13 Appendix B records
+  each one's class. `Reconfigure` refuses a changed `port` with a sentinel
+  error, a one-field comparison, since the node applies it by building a new
+  adapter and never calls `Reconfigure` for it.
 
 **Inside the adapter, settings are one immutable snapshot.**
 
