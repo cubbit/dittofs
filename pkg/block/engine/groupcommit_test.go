@@ -1133,3 +1133,58 @@ func TestABatchSlowerThanTheBoundIsHalvedUntilItCommits(t *testing.T) {
 		return u.e.FileEntries() == 0
 	})
 }
+
+// A caller whose version a batch covered leaves a later caller's ask for the
+// same file in place: the next batch takes the file for the later caller's
+// higher version, with the clock nowhere near the existence age.
+func TestACoveredCallerKeepsALaterAskForTheSameFile(t *testing.T) {
+	u := newUnit(t)
+	f := u.create(t, "a")
+	u.write(t, f, 0, []byte("one"))
+	first := u.e.Pending(f)[0].Version
+
+	// The loop's pass after the first batch waits before its take, so no batch
+	// runs between the later caller's ask and the covered caller's answer.
+	var hold atomic.Bool
+	var once sync.Once
+	held, release := make(chan struct{}), make(chan struct{})
+	u.e.OnTake(func() { hold.Store(true) })
+	u.e.OnLoop(func() {
+		if hold.Load() {
+			once.Do(func() { close(held); <-release })
+		}
+	})
+	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("after 5 s the loop never passed again after the first batch")
+	}
+
+	u.write(t, f, 3, []byte("two"))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	later := make(chan error, 1)
+	go func() { later <- u.e.CommitNow(ctx, u.share.ID, f) }()
+	eventually(t, "the later caller asked for f now", func() bool { return u.e.DueNow(u.rec, f) })
+	if err := u.e.CommitThrough(t.Context(), u.share.ID, f, first); err != nil {
+		t.Fatalf("the covered caller: %v", err)
+	}
+	if !u.e.DueNow(u.rec, f) {
+		t.Errorf("the covered caller cleared the later caller's ask for f")
+	}
+	close(release)
+
+	select {
+	case err := <-later:
+		if err != nil {
+			t.Errorf("the later caller: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Errorf("after 5 s the later caller still waits: the covered caller dropped its ask, so f waits for its existence age")
+		cancel()
+		<-later
+	}
+}

@@ -81,9 +81,10 @@ var errLost = fmt.Errorf("engine: journal device lost: %w", vfserr.ErrUnavailabl
 // dueFile is a file with uncommitted operations, waiting for a batch.
 type dueFile struct {
 	b         *binding
-	oldest    time.Time // when its oldest uncommitted operation was staged
-	now       bool      // a stability point, recovery or a clone asked for it
-	notBefore time.Time // a failed commit's retry, not taken before this
+	oldest    time.Time       // when its oldest uncommitted operation was staged
+	now       bool            // a stability point, recovery or a clone asked for it
+	asked     journal.Version // the highest version a commitThrough asked now through
+	notBefore time.Time       // a failed commit's retry, not taken before this
 }
 
 // failure is a file whose existence commit failed: retried alone in the next
@@ -386,6 +387,9 @@ func (g *groupCommit) run() {
 		case <-g.stop:
 			return
 		default:
+		}
+		if h := g.e.beforeTake.Load(); h != nil {
+			(*h)()
 		}
 		batch, last, wait := g.take()
 		if h := g.e.hooks.taken.Load(); h != nil && len(batch) > 0 {
@@ -1122,8 +1126,10 @@ func (e *Engine) commitThrough(ctx context.Context, b *binding, f entity.FileID,
 		g.mu.Unlock()
 		if e.covered(f, target) {
 			g.mu.Lock()
-			if d := g.due[f]; d != nil && d.now {
-				d.now = false // the ask is answered; a later write is due by its age
+			// The ask is answered, unless a later caller asked through a
+			// version above target; a later write is due by its age.
+			if d := g.due[f]; d != nil && d.now && d.asked.Compare(target) <= 0 {
+				d.now = false
 			}
 			g.mu.Unlock()
 			return nil
@@ -1152,6 +1158,9 @@ func (e *Engine) commitThrough(ctx context.Context, b *binding, f entity.FileID,
 			g.due[f] = d
 		}
 		d.now = true
+		if target.Compare(d.asked) > 0 {
+			d.asked = target
+		}
 		g.mu.Unlock()
 		g.poke()
 		select {
