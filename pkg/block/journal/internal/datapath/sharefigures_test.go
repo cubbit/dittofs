@@ -47,8 +47,9 @@ func TestShareFiguresFollowEachTag(t *testing.T) {
 	wantShare(t, c, "other share untouched", 1, shareHeld{Held: 8192, Dirty: 4096})
 }
 
-// A removal lowers dirty bytes with held bytes in one delta, and the counters
-// and the share's figures end equal.
+// A removal's delta lowers held and dirty bytes together, and the counters and
+// the share's figures both end at zero. It asserts the end state, not the order
+// the two are applied in.
 func TestShareFiguresMatchCounters(t *testing.T) {
 	var mu sync.Mutex
 	var seen []index.HeldDelta
@@ -74,7 +75,8 @@ func TestShareFiguresMatchCounters(t *testing.T) {
 }
 
 // A reader never sees a share's dirty bytes above its held bytes while deltas
-// rise and fall, because it takes the three figures as one step.
+// rise and fall. This guards the ledger's mutex (the three figures read as one
+// step), not the order held and dirty are applied in.
 func TestShareFiguresReadAsOneStep(t *testing.T) {
 	c, _ := newTestCore(t)
 	done := make(chan struct{})
@@ -110,10 +112,11 @@ func TestOldestDirty(t *testing.T) {
 		t.Fatalf("a clean core's oldest dirty = %v, want zero", got)
 	}
 	a, b := testFile(1), testFile(2)
-	t0 := clk.Now()
+	// The oldest is the second the write fell in: never later than the write.
+	t0 := clk.Now().Truncate(time.Second)
 	mustWrite(t, c, s, a, 0, make([]byte, 4096))
 	clk.Advance(time.Minute)
-	t1 := clk.Now()
+	t1 := clk.Now().Truncate(time.Second)
 	mustWrite(t, c, s, b, 0, make([]byte, 4096))
 	if got := c.oldestDirty(); !got.Equal(t0) {
 		t.Fatalf("oldest dirty = %v, want %v", got, t0)
@@ -129,5 +132,43 @@ func TestOldestDirty(t *testing.T) {
 	}
 	if got := c.oldestDirty(); !got.IsZero() {
 		t.Fatalf("after all files went, oldest dirty = %v, want zero", got)
+	}
+}
+
+// A file whose bytes become offloaded leaves the dirty set without a removal.
+// The datapath has no offload path yet, so the delta such a path would produce
+// is handed to Account directly.
+func TestOldestDirtyAfterOffload(t *testing.T) {
+	c, clk := dirtyClockCore(t)
+	s := mustShare(t, c, 1)
+	a, b := testFile(1), testFile(2)
+	mustWrite(t, c, s, a, 0, make([]byte, 4096))
+	clk.Advance(time.Minute)
+	t1 := clk.Now().Truncate(time.Second)
+	mustWrite(t, c, s, b, 0, make([]byte, 4096))
+	c.Account(index.HeldDelta{Tag: 1, File: a, DirtyBytes: -4096, Dirty: index.BecameClean})
+	if got := c.oldestDirty(); !got.Equal(t1) {
+		t.Fatalf("after the oldest file was offloaded, oldest dirty = %v, want %v", got, t1)
+	}
+}
+
+// Files written within one second share one bucket, so the oldest is found
+// among the seconds of backlog, not among its files.
+func TestOldestDirtyBucketsBySecond(t *testing.T) {
+	c, clk := dirtyClockCore(t)
+	s := mustShare(t, c, 1)
+	start := clk.Now().Truncate(time.Second)
+	for i := byte(1); i <= 20; i++ {
+		mustWrite(t, c, s, testFile(i), 0, make([]byte, 512))
+		clk.Advance(time.Millisecond)
+	}
+	c.dirtyFiles.mu.Lock()
+	n := len(c.dirtyFiles.byTime)
+	c.dirtyFiles.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("20 files written in one second hold %d buckets, want 1", n)
+	}
+	if got, want := c.oldestDirty(), start; !got.Equal(want) {
+		t.Fatalf("oldest dirty = %v, want %v", got, want)
 	}
 }

@@ -34,14 +34,14 @@ type DirtyFile struct {
 type dirtyList struct {
 	mu sync.Mutex
 	m  map[core.FileID]dirtyEntry
-	// byTime counts the listed files by their oldest dirty time (UnixNano),
-	// the bucket a delta's OldestDirty already carries. Files with an unknown
-	// (zero) time are not counted.
+	// byTime counts the listed files by the whole second of their oldest dirty
+	// time (Unix seconds, rounded down). Files with an unknown (zero) time are
+	// not counted.
 	//
 	// ponytail: the oldest is the lowest key, found by a scan, so its cost
-	// grows with the number of distinct times, not extents or files. Upgrade
-	// to a min-heap with lazy deletion when distinct times pile up in a
-	// profile.
+	// grows with the seconds the dirty backlog spans, not with files or
+	// extents. Upgrade to a min-heap with lazy deletion when a backlog that
+	// spans many seconds shows the scan in a profile.
 	byTime map[int64]int
 }
 
@@ -52,14 +52,15 @@ func (l *dirtyList) count(t time.Time, n int) {
 	if l.byTime == nil {
 		l.byTime = make(map[int64]int)
 	}
-	k := t.UnixNano()
+	k := t.Unix()
 	if l.byTime[k] += n; l.byTime[k] == 0 {
 		delete(l.byTime, k)
 	}
 }
 
-// oldestDirty returns the oldest dirty write time of any file, or the zero
-// time when no listed file has a known one.
+// oldestDirty returns the start of the second of the oldest dirty write of any
+// file, so it can overstate that write's age by under a second and never
+// understates it, or the zero time when no listed file has a known one.
 func (c *Core) oldestDirty() time.Time {
 	l := &c.dirtyFiles
 	l.mu.Lock()
@@ -74,7 +75,7 @@ func (c *Core) oldestDirty() time.Time {
 	if first {
 		return time.Time{}
 	}
-	return time.Unix(0, lo)
+	return time.Unix(lo, 0)
 }
 
 type dirtyEntry struct {

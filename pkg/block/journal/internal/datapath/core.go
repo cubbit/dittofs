@@ -135,7 +135,8 @@ type coreOptions struct {
 // decision: a Core owns no lock that spans I/O. The one domain it uses is the
 // file append domain, taken through its domain table and held across a file's
 // append and publish, which includes I/O; its counters are atomics. Its two
-// mutexes, the dirty-file list's and the per-share ledger's, are leaves, each held only for a map operation. Revisit
+// mutexes, the dirty-file list's and the per-share ledger's, are leaves, each
+// held only for a map operation. Revisit
 // if a core-wide invariant ever needs a mutex that outlives one.
 type Core struct {
 	index         *index.Index
