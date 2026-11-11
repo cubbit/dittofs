@@ -119,7 +119,7 @@ func TestOverIsEmptyForMarkersAndLoss(t *testing.T) {
 	}
 }
 
-// TestOverSurvivesOrphanedSuperseder: when the superseding write's own
+// TestOverOrphanedRunWaitsForSettle: when the superseding write's own
 // piece is released, its run waits for a settle at its version and does not
 // leak onto an unrelated write.
 func TestOverOrphanedRunWaitsForSettle(t *testing.T) {

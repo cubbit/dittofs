@@ -179,7 +179,7 @@ type heldSet struct {
 	// outlives the superseded piece, which is gone from the tree by then. They
 	// are in no order.
 	//
-	// ponytail: a slice, scanned whole by a chain walk and by a settle, and
+	// ponytail: a slice, scanned whole by overOf and by a settle, and
 	// holding a run per overlap of a write until a settle at that write's
 	// version, so a file rewritten many times with no settle between grows by
 	// a run a rewrite. The runs are not counted against the extent bound.
@@ -189,9 +189,10 @@ type heldSet struct {
 	//
 	// decision: the runs end with the file's entry. An entry whose held set is
 	// empty and which has no marker is dropped, and its runs go with it: no
-	// write is left to report them, and what a release took out was offloaded,
-	// so metadata holds it. Revisit if a release can leave a write whose
-	// existence, with its Over, metadata has not recorded.
+	// write is left to report them. A release takes out only offloaded
+	// pieces, whose bytes metadata holds; that it has recorded the write's
+	// Over is not guaranteed here. Revisit if a lost Over of a released write
+	// can be seen by a caller of Since.
 	over []overRun
 }
 

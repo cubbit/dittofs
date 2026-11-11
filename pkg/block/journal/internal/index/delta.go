@@ -64,7 +64,7 @@ type HeldDelta struct {
 // dirtyTimes keeps, for one file, the write time of each version that still
 // has a byte with an unset offloaded bit, held or retained, in ascending
 // version order. A write's time is monotone in its version, so the head is
-// the oldest dirty write. A version's entry is dropped by prune once its last
+// the oldest dirty write. A version's entry is dropped by oldest once its last
 // dirty byte has left; it is not dropped at the moment the count reaches zero,
 // because an edit takes a piece out and puts its parts back within one call.
 //
@@ -80,6 +80,9 @@ type verDirty struct {
 	bytes   int64
 }
 
+// decision: find keys on the counter alone, which names a version because the
+// epoch is always zero in this format: a record with another epoch is refused
+// on encode and decode. Key on the whole version if an epoch is ever raised.
 func (d *dirtyTimes) find(counter uint64) (int, bool) {
 	return slices.BinarySearchFunc(d.vers, counter, func(e verDirty, c uint64) int {
 		switch {

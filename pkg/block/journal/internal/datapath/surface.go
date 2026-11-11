@@ -19,6 +19,8 @@ func (c *Core) Settle(s *Share, id core.FileID, v core.Version) {
 }
 
 // Extents returns the extents of file id the journal holds, in offset order.
+// Neighbouring pieces of one record that differ only in their offloaded bit
+// come back as one extent.
 func (c *Core) Extents(s *Share, id core.FileID) ([]core.Extent, error) {
 	exit, err := s.enter()
 	if err != nil {
