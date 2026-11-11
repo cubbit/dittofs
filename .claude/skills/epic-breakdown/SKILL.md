@@ -51,7 +51,7 @@ Two things decide the numbers: the order of work, and whether an id has been cit
   other epic documents name this epic's subtasks, so a cited id keeps its number for the
   same work. When the order of work changes, **move the subtask in §6 and §7 and keep its
   number**, even where that leaves the numbers out of order. Before renumbering anything,
-  look for citations as `issues.md` 6.8 says.
+  look for citations as `issues.md` 6.9 says.
 - **Split with a letter suffix, never by renumbering.** A subtask split after its id was
   cited becomes `T4.3a`, `T4.3b`; work mapped to `T4.3` then covers both parts.
 - **Never reuse or drop a cited id.** A subtask added once ids are cited takes the next free
@@ -314,7 +314,11 @@ Header, one field per line: **Sources:** the RFC sections owned, with links.
 
 ## 1. Goal                     — what exists at the end; "at the end of the epic" bullets
 ### 1.1 In scope
-### 1.2 Out of scope           — and which epic owns each item
+### 1.2 Out of scope           — and which epic owns each item; a deferral beyond the plan
+                                 cites its row in the plan's §6 deferral ledger, never
+                                 restates it; one with no row gets it through a pull
+                                 request against the plan, also when an older document is
+                                 revised
 ### 1.3 Names used here        — a legend, one line each, of the plan's names the document
                                  and its §2 table use: every `E<n>` and `S<n>`, and
                                  role names such as "the integration epic", with what each
@@ -452,7 +456,7 @@ Before handing over, check:
     comm -23 - <(awk '/^### 1\.3 /{f=1; next} /^#/{f=0} f' <epic-doc> |
                  rg -N -o -w 'E[0-9]+[a-z]?|S[0-9]+[a-z]?' | sort -u)
   ```
-- No GitHub issue was created or synced unless the user asked (`issues.md` 6.7 checks the
+- No GitHub issue was created or synced unless the user asked (`issues.md` 6.8 checks the
   rest when they did).
 
 Then report the output path, the requirement count, the subtask count and the man-day total
