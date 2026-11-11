@@ -25,6 +25,10 @@ const (
 	// AcquireUnderMap is anything acquired while the file map is held;
 	// its domain covers only finding, adding or removing one entry.
 	AcquireUnderMap
+	// GuardWaitUnderLock is the storage guard's drain wait taken while a
+	// lock of another domain is held: the one guarded form that blocks
+	// must run holding nothing but the wait.
+	GuardWaitUnderLock
 	// IOUnderIndex is I/O performed under the file index, which is
 	// memory; nothing slow may run under it.
 	IOUnderIndex
@@ -37,13 +41,14 @@ const (
 )
 
 var kindNames = [...]string{
-	OutOfOrder:      "out of order",
-	SameDomain:      "same domain",
-	GuardUnderIndex: "guard under index",
-	AcquireUnderMap: "acquire under map",
-	IOUnderIndex:    "io under index",
-	HeldAtCallback:  "held at callback",
-	HeldAtWait:      "held at wait",
+	OutOfOrder:         "out of order",
+	SameDomain:         "same domain",
+	GuardUnderIndex:    "guard under index",
+	AcquireUnderMap:    "acquire under map",
+	GuardWaitUnderLock: "guard wait under lock",
+	IOUnderIndex:       "io under index",
+	HeldAtCallback:     "held at callback",
+	HeldAtWait:         "held at wait",
 }
 
 func (k Kind) String() string {
@@ -142,7 +147,7 @@ func (r *Recorder) Acquire(rank Rank, id any) {
 		}
 	}
 
-	r.recordAcquisition(heldNow, rank, false)
+	r.recordAcquisition(heldNow, rank, false, id)
 
 	r.byGoroutine[gid] = append(heldNow, heldLock{rank: rank, id: id})
 	holders := r.holder[id]
@@ -154,11 +159,13 @@ func (r *Recorder) Acquire(rank Rank, id any) {
 }
 
 // AcquireRef records that the calling goroutine takes a storage guard
-// reference of id — a shared hold, the way an RWMutex read hold is. It is
-// exempt from the same-domain rule against other guard references only:
-// every other rule still binds it, and the exemption never reaches a plain
-// StorageGuard acquisition, which a drain wait's exclusive hold must keep
-// clear of every reference the goroutine holds. A rank of 0 is never
+// reference of id — a pin: a shared hold that never waits on anything, so
+// while it sits on the books it orders nothing the same goroutine takes
+// later. The rules still bind the reference's own acquisition (under the
+// file index or the file map it is reported like any hold), and the drain
+// wait — a plain StorageGuard acquisition — is checked both against the
+// locks the goroutine holds (it must hold none) and against a reference
+// of its own segment (a certain self-deadlock). A rank of 0 is never
 // recorded, like Acquire.
 func (r *Recorder) AcquireRef(id any) {
 	if r == nil {
@@ -169,7 +176,7 @@ func (r *Recorder) AcquireRef(id any) {
 	defer r.mu.Unlock()
 
 	heldNow := r.byGoroutine[gid]
-	r.recordAcquisition(heldNow, StorageGuard, true)
+	r.recordAcquisition(heldNow, StorageGuard, true, id)
 
 	ref := heldLock{rank: StorageGuard, id: refIdentity{e: id}}
 	r.byGoroutine[gid] = append(heldNow, ref)
@@ -189,34 +196,86 @@ func (r *Recorder) ReleaseRef(id any) {
 	r.Release(StorageGuard, refIdentity{e: id})
 }
 
-// recordAcquisition runs the priority-ordered rules for an acquisition
-// that is not a re-entrant hold, and records the first rule it breaks.
-// refExempt names an acquisition — a storage guard reference — whose
-// same-domain check skips other held references, the one exemption below;
-// every other rule it runs unchanged.
-func (r *Recorder) recordAcquisition(heldNow []heldLock, rank Rank, refExempt bool) {
-	kind, broke := Kind(0), false
-	for _, h := range heldNow {
-		if h.rank != rank {
+// orderingHeld is the held set whose locks order what the same goroutine
+// acquires over them: every hold except a storage guard reference, which is
+// a pin and orders nothing.
+func orderingHeld(held []heldLock) []heldLock {
+	out := held[:0:0]
+	for _, h := range held {
+		if _, isRef := h.id.(refIdentity); isRef {
 			continue
 		}
-		// decision: a guard reference held beside another guard reference
-		// is not reported, because references are shared: a reference
-		// never waits on another reference's holder, and a stream rolling
-		// onto its next segment holds the old one's ref while it takes
-		// the successor's. Withdraw the exemption if a reference acquire
-		// ever blocks on another reference; the drain wait — a plain
-		// StorageGuard acquisition — stays checked against every hold.
-		if refExempt {
-			if _, isRef := h.id.(refIdentity); isRef {
+		out = append(out, h)
+	}
+	return out
+}
+
+// recordAcquisition runs the priority-ordered rules for an acquisition that
+// is not a re-entrant hold, and records the first rule it breaks. isRef names
+// an acquisition that is a storage guard reference of refID; every other
+// acquisition passes isRef false. The rules, in priority order: same domain;
+// guard under index; acquire under map; the drain wait's wait-under-lock;
+// out of order.
+//
+// decision: a held reference is a pin — it never waits on anything — so it
+// is excluded from the held set that orders the same goroutine's later
+// acquisitions, and no rule but its own acquisition and the drain wait's own
+// checks ever sees it. The reference's acquisition itself is still checked
+// against every hold — a ref taken under the file index or the file map is
+// reported like any acquisition — and the drain wait, the one guarded form
+// that blocks, is checked to hold no lock at all, and against a reference of
+// its own segment, which is the certain self-deadlock: a drain wait while
+// holding one waits for the caller itself. A reference of a different
+// segment held across the drain's wait is not reported — a pin never blocks
+// the drain, so holding one costs the wait nothing but the drain's own
+// length, which is the ceiling of that exemption: withdraw it if a reference
+// ever comes to bind the wait itself. Withdraw the whole exclusion if a pin
+// ever waits on a lock.
+func (r *Recorder) recordAcquisition(heldNow []heldLock, rank Rank, isRef bool, refID any) {
+	kind, broke := Kind(0), false
+
+	// order is the held set the acquisition is checked against: every hold,
+	// for the reference being taken now — a pin held beside a pin is
+	// nothing, but a ref taken under a lock is reported — and the
+	// pin-free set for every other acquisition.
+	order := heldNow
+	if !isRef {
+		order = orderingHeld(heldNow)
+	}
+
+	if !broke {
+		for _, h := range heldNow {
+			if h.rank != rank {
 				continue
 			}
+			if heldRef, isHeldRef := h.id.(refIdentity); isHeldRef {
+				// decision: a reference beside another reference is never
+				// reported, of one segment or two: references are pins,
+				// shared holds that never wait on anything. A drain wait
+				// that finds its own segment's reference still held is the
+				// certain self-deadlock — the wait would block on the pin
+				// of the caller itself — and is the one reported pair.
+				// Another segment's pin never blocks the drain, the ceiling
+				// the wait's own marker above names. Withdraw the exemption
+				// if a reference acquire ever blocks on another reference.
+				if isRef || rank != StorageGuard || heldRef.e != refID {
+					continue
+				}
+			} else if isRef {
+				// A reference taken while a plain guard hold is on the
+				// books is the self-deadlock's second order: the drain of
+				// the segment the reference pins. Any other guard hold is
+				// another segment's drain, which a pin does not block.
+				if h.id != refID {
+					continue
+				}
+			}
+			kind, broke = SameDomain, true
+			break
 		}
-		kind, broke = SameDomain, true
-		break
 	}
 	if !broke && rank == StorageGuard {
-		for _, h := range heldNow {
+		for _, h := range order {
 			if h.rank == FileIndex {
 				kind, broke = GuardUnderIndex, true
 				break
@@ -224,15 +283,27 @@ func (r *Recorder) recordAcquisition(heldNow []heldLock, rank Rank, refExempt bo
 		}
 	}
 	if !broke {
-		for _, h := range heldNow {
+		for _, h := range order {
 			if h.rank == FileMap {
 				kind, broke = AcquireUnderMap, true
 				break
 			}
 		}
 	}
+	if !broke && !isRef && rank == StorageGuard {
+		// The drain wait: the one guarded form that blocks on holders. It
+		// must run holding no lock of any domain — reclamation takes the
+		// guard "holding no other lock" — so any held lock reports here,
+		// after the rules that name which lock it was taken under.
+		for _, h := range order {
+			if h.rank != StorageGuard {
+				kind, broke = GuardWaitUnderLock, true
+				break
+			}
+		}
+	}
 	if !broke {
-		for _, h := range heldNow {
+		for _, h := range order {
 			if h.rank > rank {
 				kind, broke = OutOfOrder, true
 				break

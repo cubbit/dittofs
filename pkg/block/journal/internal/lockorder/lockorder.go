@@ -55,13 +55,13 @@ func (r Rank) String() string {
 type readIdentity struct{ rw *RWMutex }
 
 // refIdentity is the identity a storage guard reference records itself
-// under: the entry the reference holds. Holders share a segment's guard
-// and a reference never waits on another reference — a drain wait joins
-// the segment's refs one at a time — so a ref held beside another ref of
-// any segment is exempt from the same-domain rule, the way a reader's
-// nested hold of its own guard is. Every other rule still binds a ref,
-// and a plain StorageGuard acquisition — a drain wait's exclusive hold —
-// is checked against the refs the goroutine holds like any other hold.
+// under: the entry the reference holds. A reference is a pin — a shared
+// hold that never waits on anything — so while it sits on the acquiring
+// goroutine's books it orders nothing that goroutine takes later. The
+// rules still bind the reference's own acquisition, and the drain wait —
+// the one guarded form that blocks — is checked to hold no lock at all
+// and never to wait for a reference its own caller holds. The recorder's
+// decision marker at its ordering pass names the ceiling of both.
 type refIdentity struct{ e any }
 
 // Mutex is a sync.Mutex that reports every acquisition to a recorder when
