@@ -1112,13 +1112,13 @@ func (e *Engine) commitNow(ctx context.Context, b *binding, f entity.FileID) err
 	}
 	target := fe.ops[len(fe.ops)-1].version
 	e.files.unlock(f, fe)
-	if ro := b.j.Stats().ReadOnly; ro.ReadOnly {
-		return e.journalErr(readOnly(ro))
-	}
 	return e.commitThrough(ctx, b, f, target)
 }
 
 // commitThrough is commitNow covering f's operations at or below target only.
+// A journal read-only when it starts, or turned read-only while it waits, as
+// when the batch it drove fails its sync, answers at once as journalErr does;
+// operations a batch already committed answer nil first.
 func (e *Engine) commitThrough(ctx context.Context, b *binding, f entity.FileID, target journal.Version) error {
 	g := b.gc
 	for {
@@ -1138,6 +1138,9 @@ func (e *Engine) commitThrough(ctx context.Context, b *binding, f entity.FileID,
 		}
 		if lost {
 			return errLost
+		}
+		if ro := b.j.Stats().ReadOnly; ro.ReadOnly {
+			return e.journalErr(readOnly(ro))
 		}
 		// A removal holding f's guard commits f's operations below it in its
 		// own phase 1, and no batch captures f meanwhile: wait for the guard

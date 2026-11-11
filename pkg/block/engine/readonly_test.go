@@ -169,6 +169,21 @@ func TestCommitExistenceOverAReadOnlyJournal(t *testing.T) {
 				t.Errorf("CommitExistence of a file with nothing pending: %v, want nil", err)
 			}
 		})
+		// The journal turns read-only while the call waits: the batch it
+		// drove fails its sync, and the call answers then, not at its
+		// deadline.
+		t.Run(c.cause.Error()+" while waiting", func(t *testing.T) {
+			hook := &armed{}
+			u := newUnitWith(t, unitConfig{wrap: func(h engine.Handle) engine.Handle { return afterSync{h, hook} }})
+			f := u.create(t, "a")
+			u.write(t, f, 0, fill(4, 'a'))
+			hook.set(func() { u.j.ReadOnly(c.cause) })
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			if err := u.e.CommitExistence(ctx, u.share.ID, f); !errors.Is(err, c.want) {
+				t.Errorf("CommitExistence: %v, want %v", err, c.want)
+			}
+		})
 	}
 }
 
