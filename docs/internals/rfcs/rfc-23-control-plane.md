@@ -969,7 +969,11 @@ them and decides nothing about identity:
   deleted one fails closed (RFC 16);
 - **the domain join** is an operation the runner drives through identity:
   `join-domain` creates the computer account, or, offline, takes one an
-  administrator created with its password; `leave-domain` removes it;
+  administrator created with its password, which the call writes as the machine
+  password's first `Secret` version in its own transaction, so neither the
+  operation nor its audit record holds more than the reference, and the call keeps
+  no idempotency record (§4.5);
+  `leave-domain` removes it;
   `rotate-machine-password` changes the password at the domain controller,
   then writes the machine password's next `Secret` version
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). `test-directory` checks that every node reaches the
@@ -1183,8 +1187,8 @@ the answer it gave, written in the request's own transaction:
 - records are kept 24 h, then deleted.
 
 **A call that carries or issues a credential keeps no idempotency record.**
-Sign-in, refresh, `POST /auth/password`, `:set-password` and API-token creation
-**MUST NOT** carry an `Idempotency-Key` — one is refused `400` — and the server
+Sign-in, refresh, `POST /auth/password`, `:set-password`, API-token creation and
+an offline `join-domain` **MUST NOT** carry an `Idempotency-Key` — one is refused `400` — and the server
 records neither their digest nor their answer, so no token, password or digest
 of one is kept anywhere but §5.3's hashes. A retry is a new call:
 
@@ -1195,7 +1199,9 @@ of one is kept anywhere but §5.3's hashes. A retry is a new call:
   presents is no longer current; the client signs in with the new one;
 - a retried **`:set-password`** sets the same password again;
 - a retried **API-token creation** creates a second token. The first, never
-  shown, is listed under the account and revocable, and expires as §5.3 bounds.
+  shown, is listed under the account and revocable, and expires as §5.3 bounds;
+- a retried offline **`join-domain`** starts a second join with the same
+  password, as a new version; the client finds the first in the operation list.
 
 > decision: credential calls are not idempotent, because replaying their answer
 > means storing a usable credential for the record's 24 h, which §5.3's
@@ -1412,10 +1418,16 @@ second store.
   it signed has expired. No secret route writes it (§5.2).
 - **Throttling.** After 5 consecutive failed sign-ins for an account, or from
   one source address, each further attempt waits twice as long as the last,
-  from 1 s up to 5 min, answered `429` with `Retry-After`. A success resets the
-  account's count. Every failure is audited (§6). The counts are kept in the
-  store, written in the failure's audit transaction, so the bound is 5 per
-  account and per source installation-wide, not per node.
+  from 1 s up to 5 min, answered `429` with `Retry-After`. The counts are kept
+  in the store, so the bound is 5 per account and per source
+  installation-wide, not per node. An attempt is counted before its password is
+  checked, in one transaction that reads both counts and raises them, so
+  concurrent guesses cannot all pass at the same count; a write that fails
+  refuses the attempt. A success then resets the account's count and takes
+  back its own raise of the source's, and a failure is audited (§6). An account's count is keyed by its principal, so
+  spellings of one name share it, and a name that resolves to no account
+  counts against its source only. A source's count is forgotten 24 h after its
+  last failure.
 - **Transport.** The API **MUST** be served over TLS on every address but
   loopback. Its certificate and key are bootstrap facts of the host.
 
@@ -1439,8 +1451,9 @@ second store.
   must-change or not: a stolen first-sign-in token must not set a password on
   its own.
 - **Recovery.** Lost admin credentials are reset by an offline command of the
-  server binary on a node that is stopped, with the host's bootstrap. It sets a new generated password with must-change, writes
-  an audit record naming the host and the command, and nothing else. It is the
+  server binary on a node that is stopped, with the host's bootstrap. It sets a new generated password with must-change, clears
+  the account's sign-in failure count (§5.3), writes an audit record naming the
+  host and the command, and nothing else. It is the
   one change not made through the API.
 
 > decision: the break-glass reset bypasses the API, because the API is what is
@@ -1647,7 +1660,7 @@ These rules bind from the single node on, where most of them cost nothing
 | --- | --- |
 | CP1 | `node.New` builds every component; after start, only the node changes which components run, and only from records. |
 | CP2 | The API changes nothing but records; it never calls a component to change it, and a write answers success only after its transaction commits. |
-| CP3 | Every node applies records by their binding class, in counter order, and reports the position it has reconciled through per kind, the records it refused and those awaiting a restart; a record is applied on a node only when that position reaches the record's own and it is in neither set. |
+| CP3 | Every node applies records by their binding class, in counter order, and reports the position it has reconciled through per kind, the records it refused and those awaiting a restart; a record of a reconciled kind is applied on a node only when that position reaches the record's own and it is in neither set, and any other from its commit (§2.4). |
 | CP4 | Stop is the reverse of start; the API outlives the adapters and the store outlives everything. |
 | CP5 | Every `PUT`, `PATCH` and `DELETE` carries `If-Match` — or, for a `PUT` that creates, `If-None-Match: *` — checked inside the write's transaction; a write never commits over a tag, or over a record, its author did not read. |
 | CP6 | A request with a recorded idempotency key is answered from the record and applied at most once. |
@@ -1724,7 +1737,7 @@ builds a node any other way, and an architecture test fails on a caller of
 | §3.5 grants | Grant `Finance` read on a share and alice, a member, `none`: assert alice refused. `DELETE` alice's grant: assert her grant gone and alice granted read through `Finance`. `PUT` a grant naming a machine principal: assert `400` `ErrInvalid` and no grant written. | `none` stored as no grant, or a machine granted file access |
 | §4.4 lost update | Two clients read a policy, both `PUT` with the same `If-Match`, sent to two API nodes at once **(cluster)** and on one node in a tight loop: assert exactly one commits and the other is `412`. Send a `PUT` without `If-Match`: `428`. Two clients `PUT` the first grant of one principal with `If-None-Match: *`: assert one commits and the other is `412`. | the Start-here lost update; a create overwriting a concurrent one |
 | §4.4 background field | Start a re-home of a share; `PUT` its spec with a stale copy that includes its old namespace: assert the namespace is unchanged and the `PUT` refused. | a `PUT` reverting a component's write |
-| §4.5 idempotency | Send a `DELETE` with a key, drop the answer, resend: assert one operation, the same ID and body. Resend with the same key and another body: `422`. Send a create that fails validation, fix it and resend with the same key: accepted. Sign in, refresh and create an API token, each twice; read the store's raw keys: assert no idempotency record exists for them and no token value or password appears; assert the second refresh revoked the session. | double application on retry; a credential kept in a replay record |
+| §4.5 idempotency | Send a `DELETE` with a key, drop the answer, resend: assert one operation, the same ID and body. Resend with the same key and another body: `422`. Send a create that fails validation, fix it and resend with the same key: accepted. Sign in, refresh and create an API token, each twice; read the store's raw keys: assert no idempotency record exists for them and no token value or password appears; assert the second refresh revoked the session. Start an offline `join-domain`: assert no idempotency record exists for it, and its password is found only sealed, in the machine password's `Secret` (CP11). | double application on retry; a credential kept in a replay record |
 | §4.6 runner claim | **(cluster)** Start a credential rotation; kill the node that claims it; assert another node claims it after the claim expires and it completes, deleting the old version once. | an operation lost with its node |
 | §4.7 error table | For every error value in every closed set, provoke it through the API, or inject it at the seam where none can be provoked; assert each has a status and code, and `api_unmapped_errors_total` stays 0. | an error with no row |
 | §5.1 roles grant nothing | With the bootstrap admin and every role, mount every share over every flavour: assert every mount refused. Read the admin's record: no uid, gid, SID, Kerberos name or grant. | an API role leaking into file access ([RFC 18 §10](rfc-18-identity.md#10.%20Conformance)) |

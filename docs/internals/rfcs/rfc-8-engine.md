@@ -1173,7 +1173,7 @@ start step 4), and every later change arrives the same way.
 // declared beside the engine's code and holds only the methods §2.1's table
 // names; the root passes each component's concrete type.
 type Deps struct {
-	Node      NodeID    // this node's identity, from its bootstrap (RFC 13 §2.2); JournalID looks up its devices under it (§2.5 step 1; proposal, with RFC 16 §3.2's index key)
+	Node      NodeID    // this node's identity, from its journals' node-id files or its bootstrap (RFC 13 §2.2); JournalID looks up its devices under it (§2.5 step 1; proposal, with RFC 16 §3.2's index key)
 	Devices   []string  // one journal directory per device; Start opens each (§2.5 step 1)
 	Open      func(ctx context.Context, dir string, floor Version, expect JournalID, marks []SyncMark) (Journal, error) // RFC 1 §3 Open
 	AcknowledgeUnreadable func(ctx context.Context, dir string, expect JournalID, marks []SyncMark, ranges []SegmentRange) (AckResult, error) // RFC 1 §3, RFC 28 §3.3

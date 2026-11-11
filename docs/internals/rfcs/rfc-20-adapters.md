@@ -1139,7 +1139,7 @@ package config // pkg/adapter/config: a leaf
 // record carries its own copy, under adapters.<protocol>.
 type Adapter struct {
 	Addrs              []netip.Addr  `json:"-"`                   // supplied by the node, live (below); a record naming it is refused as an unknown field
-	Port               uint16        `json:"port"`                // restart-class (above); the protocol's default port, and 0 lets the system pick, for tests
+	Port               uint16        `json:"port"`                // restart-class (above); 12049 for NFS and 12445 for SMB (RFC 13 Appendix B), and 0 lets the system pick, for tests
 	DrainTimeout       time.Duration `json:"drain_timeout"`       // 90 s; at least the break deadline plus the request deadline, 65 s
 	IdleTimeout        time.Duration `json:"idle_timeout"`        // 15 min
 	WriteTimeout       time.Duration `json:"write_timeout"`       // 60 s
@@ -2473,7 +2473,7 @@ func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) {
 		NLM:   nlm.Table(&nlm.Handlers{VFS: d.VFS}),
 		NSM:   nsm.Table(&nsm.Handlers{VFS: d.VFS}),
 	}
-	return core.NewServer(d, s, core.Listener{Network: "tcp", Port: 2049, Protocol: protocol.New(t)})
+	return core.NewServer(d, s, core.Listener{Network: "tcp", Port: s.Port, Protocol: protocol.New(t)}) // 12049 unless set (RFC 13 Appendix B)
 }
 
 // ops/v3/table.go: the row list, one line per operation; each row is built in its operation's own file
