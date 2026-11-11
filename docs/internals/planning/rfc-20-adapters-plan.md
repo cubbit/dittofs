@@ -743,9 +743,9 @@ RFC sections: §6.10's codec and pipeline rows.
    tests E4's and E5's subtasks already carry, run on the real `Conn` and pipeline rather than on
    a stand-in, and the sidecar runner's trivial real sidecar is part of T4.9. `vfstest.Memory`
    and `Faults` are RFC 17 plan piece 12's, estimated there.
-10. **The first milestone needs two pieces.** An SMB mount with AD sign-in
-   needs `gss` (risk 5) and the authenticator behind `SignIn` (keytab, PAC, NTLMv2, NETLOGON,
-   LDAP), which goes to RFC 18's plan (#4058).
+10. **The first milestone needs two pieces.** An SMB mount with AD sign-in needs `gss` (risk 5)
+   and the authenticator behind `SignIn` (keytab, PAC, NTLMv2, NETLOGON, LDAP), which goes to
+   RFC 18's plan (#4058).
 
 ### 6.2 Deferral ledger
 
@@ -782,9 +782,9 @@ feature parity with develop. A row moves only to another owner, never off the le
 | `/api/v1/adapters`, the settings watcher, `dfsctl adapter` (deleted in T1.2); the persisted `NFSAdapterSettings` and `SMBAdapterSettings` rows and the share adapter config, mapped onto `pkg/adapter/config` | built on the Runtime | cutover, on `pkg/adapter` | stage 7 |
 | the `/clients` and `/mounts` listings and their registries (deleted in T1.2: nothing can add a record), the `/durable-handles` listing, empty once T1.1 deletes its producers; `dfsctl client` (deleted in T1.2) | read v1's connection and handle state | RFC 23's plan (#4050, D12), RFC 22 plan (durable handles) | with their records |
 | netgroup CRUD under `/api/v1/adapters/{type}/netgroups` (deleted in T1.2) | a control-plane record (RFC 23 §3.5) | RFC 23's plan (#4050, D12) | with RFC 23's records |
-| client eviction: `DELETE /api/v1/clients/{id}`, `dfsctl client evict` (`Runtime.DisconnectClient` → `ForceCloseClientConnection`, deleted in T1.2) | RFC 23 §4.2 makes v2's connection listing read-only, so nothing brings it back | RFC 23 edit, or dropped there by decision | RFC 23's plan (#4050), its O9 |
+| client eviction: `DELETE /api/v1/clients/{id}`, `dfsctl client evict` (`Runtime.DisconnectClient` → `ForceCloseClientConnection`, deleted in T1.2) | RFC 23 §4.2 makes v2's connection listing read-only, so nothing brings it back | an RFC adding an eviction call; until then the account is disabled (RFC 23's plan, #4050, O9) | that RFC |
 | `grace` and `nfs_clients` API endpoints (deleted in T1.2) | read NFSv4 state | RFC 21 plan, with cutover | stage 7 |
-| identity-mapping config (deleted in T1.1) | squash and mapping are RFC 18 §6's, per share | RFC 18's plan (#4058) | its epic 3 |
+| identity-mapping config (deleted in T1.1) | squash and mapping are RFC 18 §6's, per share | RFC 18's plan (#4058): squash in its epic 3; uid and gid mapping deferred by its O2 to RFC 21's plan | its epic 3; RFC 21's plan |
 | suites skipped on the branch by `tests.yml`'s V2 filter, `integration/kerberos` added to it and its fixed step removed in T1.3; the e2e build tags | nothing to mount | cutover | each green against v2; the V2 filter deleted once the adapters run on `vfs.Service`, as its own comment says |
 | `test/required-tests.json` pins for the adapters' authorization gates | the v1 tests are deleted | RFC 21/22 plans | each gate's test re-written |
 | `vfs.WithRequestID` (RFC 17 §4.7), set from the protocol's retry identity | its one reader is the gateway, which RFC 17's plan leaves to the cluster stage (D2) | RFC 17 cluster stage, in core's pipeline (RFC 20 §6.4), from each protocol's retry identity | when the gateway is built |
