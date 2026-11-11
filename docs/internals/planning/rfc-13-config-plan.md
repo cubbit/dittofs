@@ -401,8 +401,8 @@ user's decision; RFC 23's plan's D6 points here.
 **D8. Packages are named after RFC 13's own words.** `pkg/bootstrap` is the host file, what a node
 needs before it reaches the store. `pkg/settings` is the records in the store. `pkg/config` goes
 away, so "config" no longer names two things. A component's settings package is named `settings`
-too: `pkg/adapter/config` becomes `pkg/adapter/settings`, an RFC 20 surface rename that lands with
-RFC 20's plan (O5). This is the user's decision.
+too: `pkg/adapter/config` became `pkg/adapter/settings` in RFC 20's epic 2 breakdown (#4000, O5).
+This is the user's decision.
 - **Prior art.** None found.
 - **Applied by** epics 1 and 2.
 
@@ -609,8 +609,8 @@ RFC 13 §9's single-node rows run against a server `node.New` builds, through th
 - **O4. The components' sections.** Each component's settings package and its Appendix B rows are
   its own plan's. Epic 5 wires the sections declared by then; D3 reports every other Appendix B
   section until its plan declares it.
-- **O5. `pkg/adapter/config` becomes `pkg/adapter/settings`** (D8). It is RFC 20's frozen surface,
-  so the rename lands with RFC 20's plan's epic 2 breakdown (#4000), beside A1's `Port` field.
+- ~~**O5. `pkg/adapter/config` becomes `pkg/adapter/settings`** (D8).~~ Settled: #4000 renames it,
+  beside A1's `Port` field (its D20).
 - **O6. Estimates least certain.** Epic 3's write check, where `expect` and the newer-schema refusal
   meet the existing settings view's transaction.
 
