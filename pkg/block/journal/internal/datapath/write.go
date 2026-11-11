@@ -257,15 +257,15 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		// itself, without the domain: no path does that today, and a path
 		// that did would be the fault shape the rival mark exists for,
 		// reached only by a bug. The entry bound, likewise, is checked
-		// inside the admission's section above — Take's CheckWrite and its
-		// held-entry test — so a refusal here needs the window between that
-		// check and this publish, which a concurrent write's own admission
-		// can pass in: each admission names the entries its pieces will add
-		// and reserves them only at its publish. The caller gets the error
-		// and the record stays on disk, never published by this run. What is
-		// left here is the window no pre-check closes, and a refusal in it
-		// is overturn evidence for a bound the admission reserves as its
-		// own.
+		// inside the admission's section above — Take's CheckWrite, its
+		// held-entry test and its pending count — so a refusal here needs the
+		// window between that check and this publish, which a concurrent
+		// write's own admission can pass in: each admission names the entries
+		// its pieces will add and holds them as pending until they publish.
+		// The caller gets the error and the record stays on disk, never
+		// published by this run. What is left here is the window no pre-check
+		// closes, and a refusal in it is overturn evidence for a bound the
+		// admission reserves as its own.
 		hd, claimed, err := c.index.WriteRetainClaim(s.Tag, id, index.Placed{
 			Extent:  core.Extent{Off: off + done, Len: pl.N},
 			Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
@@ -276,11 +276,11 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			return core.Version{}, done, err
 		}
 		c.Account(hd)
-		// The piece's index entry is the bound's now: a reservation's held
-		// figure hands over what the index admitted, so a plain write beside
-		// this one finds it spent only once the index holds it — the safe
-		// order, for the count and the held figure never both miss it. An
-		// admitted write's grant hands nothing over.
+		// The piece's index entry is the bound's now: the figure that held it
+		// — a reservation's held entries, or a plain grant's pending ones —
+		// hands over what the index admitted, so a write beside this one finds
+		// it spent only once the index holds it — the safe order, for the
+		// count and both held figures never all miss it.
 		grant.Claimed(claimed)
 		// decision: the index exports no write that skips retaining what it
 		// supersedes, so a piece whose record a sync already covered lifts
