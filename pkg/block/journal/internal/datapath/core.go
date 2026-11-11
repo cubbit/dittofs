@@ -100,6 +100,9 @@ type coreOptions struct {
 	// segmentCap replaces the test helper's segment size, so a test can write
 	// a record larger than the default segment holds.
 	segmentCap int64
+	// dir replaces the test helper's own temp directory, so a test can build
+	// one core, close it and build the next over the same directory.
+	dir string
 	// noLimit keeps the test helper's generous version limit off the core, so
 	// a test can hold a fresh core that issues nothing until it sets one.
 	noLimit bool
@@ -163,8 +166,19 @@ type Core struct {
 	registry   atomic.Pointer[[]*Share]
 	registryMu sync.Mutex
 
-	closeOnce sync.Once
-	closeErr  error
+	// stranded is the set of stranded tags, replaced whole under strandMu
+	// and read through the pointer alone. See strand.go.
+	stranded atomic.Pointer[[]core.ShareTag]
+	// strandMu guards stranded's replacement; registryMu's own contract names
+	// only Share and Close as its takers, so this is a mutex of the strand
+	// set's own.
+	strandMu sync.Mutex
+
+	// closedFlag is set the moment Close begins, so a call that takes no
+	// context can refuse at once; the work itself runs under closeOnce.
+	closedFlag atomic.Bool
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 // unboundedBytes is the Maker's byte ceiling: none that a journal could
@@ -438,6 +452,7 @@ func (c *Core) WaitSpares(ctx context.Context) error { return c.pool.WaitSpares(
 // cache, whose Shutdown waits for every reader's reference and then closes
 // every descriptor. It is safe to call twice.
 func (c *Core) Close() error {
+	c.closedFlag.Store(true)
 	c.closeOnce.Do(func() {
 		c.dur.Stop()
 		serr := c.streams.Close()
