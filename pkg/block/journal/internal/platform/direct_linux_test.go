@@ -312,7 +312,11 @@ func residentPages(t *testing.T, fd int, length int) int {
 		t.Fatalf("mmap of the file's first %d bytes: %v", length, err)
 	}
 
-	defer unix.Munmap(front)
+	defer func() {
+		if err := unix.Munmap(front); err != nil {
+			t.Errorf("munmap: %v", err)
+		}
+	}()
 
 	vec := make([]byte, (length+unix.Getpagesize()-1)/unix.Getpagesize())
 
