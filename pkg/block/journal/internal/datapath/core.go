@@ -344,6 +344,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		CheckIndex:     state.Index.CheckWrite,
 		CheckFillIndex: state.Index.CheckFillIndexBound,
 		VersionsLeft:   state.Counters.VersionsLeft,
+		EntriesLeft:    state.Index.EntriesLeft,
 		Footprint:      func() (used int64) { return state.Set.Counters().UsedBytes },
 		ShareFigures:   state.Set.ShareBytesAndRetired,
 		Room:           func(stream int) int64 { return c.streams.Stream(stream).Room() },

@@ -54,6 +54,11 @@ type Config struct {
 	// limit; zero means the next draw is refused.
 	VersionsLeft func() uint64
 
+	// EntriesLeft reports how many placement index entries remain below the
+	// index's bound; zero means the next entry is refused. It takes no lock:
+	// the index reads its count and limit as two atomic loads.
+	EntriesLeft func() int64
+
 	// Footprint reports the journal's accounted used bytes: every segment
 	// and every spare at its cap.
 	Footprint func() (used int64)
@@ -192,6 +197,22 @@ type Capacity struct {
 	// each.
 	refused uint64
 
+	// heldEntries is the placement index entries open reservations hold and
+	// no write of theirs has drawn yet: Take and Reserve size their own asks
+	// against what the index has left after these.
+	heldEntries int64
+
+	// heldVersions is the versions open reservations hold and no write of
+	// theirs has drawn yet, counted beside VersionsLeft the same way.
+	heldVersions uint64
+
+	// reservedAsk is the journal-side bytes open reservations hold — their
+	// payload bytes and the footer entry per piece — charged against the
+	// journal's maximum beside the footprint, so two reservations cannot
+	// claim one room. It is separate from reserved, whose grants' bytes sit
+	// inside allocated segments and so already in the footprint.
+	reservedAsk int64
+
 	// pendingSeats is the whole segments open admissions have reserved
 	// against the journal's maximum whose spares no hold has served yet.
 	// A take whose coverage falls short of its need reserves the
@@ -226,7 +247,7 @@ type Capacity struct {
 // panics here.
 func New(cfg Config) *Capacity {
 	if cfg.Admit == nil || cfg.CheckIndex == nil || cfg.CheckFillIndex == nil ||
-		cfg.VersionsLeft == nil ||
+		cfg.VersionsLeft == nil || cfg.EntriesLeft == nil ||
 		cfg.Footprint == nil || cfg.ShareFigures == nil || cfg.Room == nil ||
 		cfg.ReadySpares == nil || cfg.Hold == nil || cfg.BelowHalf == nil {
 		panic("capacity: the admission needs every injected fact")
@@ -403,39 +424,21 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// set, seeded and reconciled beside the retired pair — or by driving
 	// them through this admission. Overturned by either.
 	c.mu.Lock()
-	if !c.seeded[r.Tag] {
-		c.mu.Unlock()
-		settled, retired := c.cfg.ShareFigures(r.Tag)
-		c.mu.Lock()
-		if !c.seeded[r.Tag] {
-			c.seeded[r.Tag] = true
-			// The retirements a racing Retired call already reported —
-			// whose set-decrements landed after this read, so the settled
-			// figure still holds their bytes — are the part of
-			// retiredSeen that the pair's own retired figure has not
-			// caught up with: subtracting them here accounts each once,
-			// and the baseline moves to the larger of the two figures
-			// so every later call's delta starts from what this seed
-			// already took in.
-			if over := c.retiredSeen[r.Tag] - retired; over > 0 {
-				settled -= over
-			}
-			c.shareTally[r.Tag] = settled
-			if c.retiredSeen[r.Tag] < retired {
-				c.retiredSeen[r.Tag] = retired
-			}
-		}
-	}
+	c.seedFor(r.Tag)
 
 	// Version limit: a write with no version left to draw is refused
-	// naming it before any byte is reserved.
+	// naming it before any byte is reserved. The versions open reservations
+	// hold are not the write's to spend, so the check sees them beside the
+	// counter.
 	//
 	// decision: a fill skips this check because it draws no version — its
 	// content lands under the version the caller read at — so the version
 	// limit does not gate it. Withdraw the skip if a fill ever draws one.
-	if !r.Fill && c.cfg.VersionsLeft() == 0 {
-		c.mu.Unlock()
-		return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitVersion, Missing: 1, Unit: core.UnitVersions})
+	if !r.Fill {
+		if left := c.cfg.VersionsLeft(); left < c.heldVersions+1 {
+			c.mu.Unlock()
+			return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitVersion, Missing: 1, Unit: core.UnitVersions})
+		}
 	}
 
 	// Index bound: the pre-check's refusal is forwarded as the check
@@ -455,6 +458,14 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 			return nil, c.refuse(ctx, *ns)
 		}
 		return nil, err
+	}
+	// The entries open reservations hold are not the write's to spend: the
+	// pre-check above sized the write's own entries against the index's
+	// count, and this leaves the held ones beside it.
+	if left := c.cfg.EntriesLeft(); left <= c.heldEntries {
+		missing := c.heldEntries - left + 1
+		c.mu.Unlock()
+		return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitIndex, Missing: missing, Unit: core.UnitEntries})
 	}
 
 	// The room grant and the spares. The room is read inside the section,
@@ -563,7 +574,9 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// this take's own shortfall is the part it reserves: creating a
 	// segment reserves its cap against the maximum (RFC 1 §6), and the
 	// reservation is honoured from the section that admits it, never from
-	// the pool's answer alone.
+	// the pool's answer alone. The bytes open reservations hold are not
+	// the write's to spend either: their ask rides beside the footprint,
+	// for it names room in segments not yet allocated.
 	var seats int
 	if sparesN > 0 && c.cfg.MaxBytes > 0 {
 		cover := readySnap - c.pendingSeats
@@ -580,7 +593,7 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 			// still refuses with the largest missing an int64 can name
 			// rather than a wrapped negative.
 			k := int64(c.pendingSeats + uncovered)
-			headroom := c.cfg.MaxBytes - footSnap
+			headroom := c.cfg.MaxBytes - footSnap - c.reservedAsk
 			if k > headroom/c.cfg.SegmentCap {
 				missing := k*c.cfg.SegmentCap - headroom
 				if missing < 0 {
@@ -638,6 +651,37 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 		c: c, tag: r.Tag, stream: r.Stream, bytes: bytes, left: bytes,
 		roomPart: roomPart,
 	}, nil
+}
+
+// seedFor seeds tag's own record-byte figure from the set's pair once per
+// tag, and takes a racing Retired call's already-reported bytes into account
+// on the way in. It is called with mu held and holds it across the set's
+// read by releasing it for that read and retaking it: the set's lock is of
+// this same domain, and no two locks of one domain are held at once.
+func (c *Capacity) seedFor(tag core.ShareTag) {
+	if c.seeded[tag] {
+		return
+	}
+	c.mu.Unlock()
+	settled, retired := c.cfg.ShareFigures(tag)
+	c.mu.Lock()
+	if c.seeded[tag] {
+		return
+	}
+	c.seeded[tag] = true
+	// The retirements a racing Retired call already reported — whose
+	// set-decrements landed after this read, so the settled figure still
+	// holds their bytes — are the part of retiredSeen that the pair's own
+	// retired figure has not caught up with: subtracting them here accounts
+	// each once, and the baseline moves to the larger of the two figures so
+	// every later call's delta starts from what this seed already took in.
+	if over := c.retiredSeen[tag] - retired; over > 0 {
+		settled -= over
+	}
+	c.shareTally[tag] = settled
+	if c.retiredSeen[tag] < retired {
+		c.retiredSeen[tag] = retired
+	}
 }
 
 // Retired lowers the share's figure by the retirements the tag's

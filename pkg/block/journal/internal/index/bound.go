@@ -210,6 +210,13 @@ func (ix *Index) CheckFillIndexBound(id core.FileID, e core.Extent) error {
 	return nil
 }
 
+// EntriesLeft reports how many entries remain below the index's bound: the
+// limit less the count, never negative. An admitter that holds entries back
+// for a reservation reads it to leave them unspent.
+func (ix *Index) EntriesLeft() int64 {
+	return max(ix.fs.limit.Load()-ix.fs.count.Load(), 0)
+}
+
 // reserve adds want to the count when the limit allows it, or refuses with a
 // NoSpaceError naming the index, counting the refusal. A reservation of
 // nothing is refused while the count stands above the limit — the first

@@ -171,6 +171,7 @@ func newRig(t *testing.T, o rigOpts) *rig {
 		},
 		CheckFillIndex: r.idx.CheckFillIndexBound,
 		VersionsLeft:   r.ctr.VersionsLeft,
+		EntriesLeft:    r.idx.EntriesLeft,
 		Footprint:      func() int64 { return r.set.Counters().UsedBytes },
 		ShareFigures:   r.set.ShareBytesAndRetired,
 		Room: func(stream int) int64 {
