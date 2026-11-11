@@ -182,22 +182,27 @@ func TestRegisterForget_LiveUntilEverySnapshotSegmentLeaves(t *testing.T) {
 	}
 
 	// A forget record registered with an empty snapshot names a barrier
-	// that released everything below it: it holds its segment only until
-	// the next event of its file re-tests it.
+	// that released everything below it: the record is droppable the
+	// moment it is registered, and because the zero file it registers
+	// under is one no later event of the journal reaches, the
+	// registration itself carries the re-test that drops it — the
+	// segment holding nothing else crosses at once.
 	solo := Rec{
 		Kind: format.KindForget, File: core.FileID{}, Seg: f.seg,
 		Pair: index.Numbers{Version: ver(19), Seq: 40}, Seq: 40,
 	}
 	tr.RegisterForget(solo, nil)
-	if got := tr.Held(f.seg); !got {
-		t.Fatalf("Held with an empty-snapshot forget record registered live = %v, want true: registers do not re-test", got)
-	}
-	tr.Retest(core.FileID{})
 	if got := tr.Held(f.seg); got {
-		t.Fatalf("Held after the re-test dropped the empty-snapshot forget record = %v, want false", got)
+		t.Fatalf("Held after registering an empty-snapshot forget record = %v, want false: the registration's own re-test drops it", got)
 	}
+	if len(fired) != 2 {
+		t.Fatalf("the candidate fired %d times with %v, want two: one firing per release", len(fired), fired)
+	}
+	// A later re-test of the zero file answers over an empty registry and
+	// releases nothing more.
+	tr.Retest(core.FileID{})
 	if got := len(fired); got != 2 {
-		t.Fatalf("the candidate fired %d times with %v, want two: one firing per release", got, fired)
+		t.Fatalf("the candidate fired %d times after the late re-test, want two still: an empty registry releases nothing", got)
 	}
 }
 
@@ -568,5 +573,119 @@ func TestSegmentRetired_ForgetRecordTakenWhateverTheFilesList(t *testing.T) {
 	}
 	if st := tr.stateOf(f.seg); st != nil {
 		t.Fatalf("the retired segment's state survived, want it gone")
+	}
+}
+
+// forgetAt draws one forget record for the tests below, at a fresh sequence
+// number each call so two registrations of the same record key never collide
+// with another test's.
+func forgetAt(seq uint64) Rec {
+	return Rec{
+		Kind: format.KindForget, File: core.FileID{}, Seg: 0,
+		Pair: index.Numbers{Version: ver(9), Seq: core.Seq(seq)}, Seq: core.Seq(seq),
+	}
+}
+
+// TestRegisterForget_EmptySnapshotDropsItself: a forget record registered
+// with an empty snapshot names a barrier that released everything below it,
+// so the record answers droppable at once — and its own registration, not a
+// later event of the zero file nothing reaches, must carry the re-test that
+// drops it: the segment holding nothing else crosses to not held and the
+// candidate fires exactly once.
+func TestRegisterForget_EmptySnapshotDropsItself(t *testing.T) {
+	f := newFixture(t)
+	var fired []core.SegmentID
+	tr := New(f.ix, func(seg core.SegmentID) { fired = append(fired, seg) })
+	seg := f.takeIn(t)
+	forget := forgetAt(20)
+	forget.Seg = seg
+	tr.RegisterForget(forget, nil)
+	if got := tr.Droppable(forget); !got {
+		t.Fatalf("Droppable of a forget record with an empty snapshot = %v, want true: no segment holds a record of its tag below it", got)
+	}
+	if got := tr.Held(seg); got {
+		t.Fatalf("Held of the segment holding only the empty-snapshot forget = %v, want false: the registration's own re-test must drop the record", got)
+	}
+	if len(fired) != 1 || fired[0] != seg {
+		t.Fatalf("the candidate fired %v, want [%d]: the registration's re-test is the one crossing", fired, seg)
+	}
+	if _, ok := tr.recs[core.FileID{}][forget]; ok {
+		t.Fatalf("the empty-snapshot forget record is still registered, want the registration's re-test to have taken it")
+	}
+}
+
+// TestRegisterForget_SnapshotPrunedToEmptyDropsItself: a forget record whose
+// snapshot segments were all retired before its registration — the member
+// re-check prunes each — is droppable the same moment, and the registration
+// itself must carry the re-test: the record's segment, holding nothing else,
+// answers not held with one candidacy.
+func TestRegisterForget_SnapshotPrunedToEmptyDropsItself(t *testing.T) {
+	f := newFixture(t)
+	var fired []core.SegmentID
+	tr := New(f.ix, func(seg core.SegmentID) { fired = append(fired, seg) })
+	tr.SetMember(func(seg core.SegmentID) bool {
+		_, err := f.set.State(seg)
+		return err == nil
+	})
+	one, two := f.takeIn(t), f.takeIn(t)
+	for _, s := range []core.SegmentID{one, two} {
+		if err := f.set.Seal(s, true); err != nil {
+			t.Fatalf("Seal of a snapshot segment: %v", err)
+		}
+		if _, err := f.set.Retire(s); err != nil {
+			t.Fatalf("Retire of a snapshot segment: %v", err)
+		}
+		tr.SegmentRetired(s, nil)
+	}
+	seg := f.takeIn(t)
+	forget := forgetAt(30)
+	forget.Seg = seg
+	tr.RegisterForget(forget, []core.SegmentID{one, two})
+	if got := tr.droppableLocked(forget); !got {
+		t.Fatalf("got %v, want true", got)
+	}
+	if got := tr.recs[core.FileID{}]; got[forget] != 0 {
+		t.Fatalf("got %v, want 0", got[forget])
+	}
+	if len(fired) != 1 || fired[0] != seg {
+		t.Fatalf("the candidate fired %v, want [%d]: the re-check-drained snapshot leaves the re-test the one crossing", fired, seg)
+	}
+	if _, ok := tr.recs[core.FileID{}]; ok {
+		t.Fatalf("the zero file's registry entry survived the drained-snapshot registration, want it removed when it empties")
+	}
+}
+
+// TestSegmentRetired_DoubledForgetSnapshotEmptied: a forget record registered
+// twice whose snapshot empties at a retirement must release BOTH
+// registrations — the records walk below takes per-registration, and the
+// forget branch above it must too — or the segment keeps a count and answers
+// held after everything that named it is gone.
+func TestSegmentRetired_DoubledForgetSnapshotEmptied(t *testing.T) {
+	f := newFixture(t)
+	var fired []core.SegmentID
+	tr := New(f.ix, func(seg core.SegmentID) { fired = append(fired, seg) })
+	seg := f.takeIn(t)
+	one := f.takeIn(t)
+	forget := forgetAt(40)
+	forget.Seg = seg
+	tr.RegisterForget(forget, []core.SegmentID{one})
+	tr.RegisterForget(forget, []core.SegmentID{one})
+	if got := tr.recs[core.FileID{}][forget]; got != 2 {
+		t.Fatalf("the doubled forget registered %d, want 2", got)
+	}
+	tr.SegmentRetired(one, nil)
+	if got, want := tr.recs[core.FileID{}][forget], 0; got != want {
+		t.Fatalf("after the snapshot emptied at the retirement, the doubled forget holds %d registrations, want %d: the forget branch releases each", got, want)
+	}
+	seg2 := f.takeIn(t)
+	_ = seg2
+	if st := tr.stateOf(seg); st != nil && st.live.Load() != 0 {
+		t.Fatalf("the double-registered forget's segment still counts %d live, want 0", st.live.Load())
+	}
+	// Holding nothing else, the segment crossed once the second
+	// registration released: exactly one candidacy, whichever order the two
+	// releases crossed the line.
+	if len(fired) != 1 || fired[0] != seg {
+		t.Fatalf("the candidate fired %v, want [%d]: one crossing for the two registrations", fired, seg)
 	}
 }

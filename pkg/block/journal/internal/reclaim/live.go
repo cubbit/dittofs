@@ -168,6 +168,15 @@ type UnsyncedLoss struct {
 // firing candidate with the id of each segment whose last thing left through
 // the tracker's own calls. A nil candidate fires nothing; a nil index is a
 // caller bug and panics.
+//
+// The candidate is a prompt, never a fact, and it must not mutate the
+// segment set: the tracker fires it from inside its own release paths, and
+// wired to the set as a retire observer the set holds its delivery lock
+// across the whole callback — a candidate that itself sealed, retired or
+// otherwise changed the set would self-deadlock on that lock. A consumer
+// claims the segment its own way and re-checks Held under the claim before
+// retiring anything, because a candidacy is only the tracker's word that
+// the crossing happened, and the crossing can always race back.
 func New(ix *index.Index, candidate func(core.SegmentID)) *Tracker {
 	if ix == nil {
 		panic("reclaim: a tracker needs its index")
@@ -226,6 +235,19 @@ func (t *Tracker) Held(seg core.SegmentID) bool {
 // that window takes only what the registry already holds, so it cannot
 // spend this registration's count, and a Held read in it errs on the held
 // side — the safe direction, a segment kept a moment past its last record.
+//
+// The caller's contract: every append path calls Register exactly once per
+// header-only record the path appends, before the segment carrying the
+// record can seal — the re-test events answer from the registry alone, so
+// a record nothing registered is one no re-test can release — and pairs it
+// with Unregister only for records the path unregisters by its own rules,
+// letting the registry own every re-test release instead: a caller's
+// Unregister of what a re-test already took answers nothing, by design.
+// The production paths that must register and currently do NOT: the loss
+// records the durability layer appends, the removals the datapath writes,
+// and the forget record. Until each of those lands, retirement wiring must
+// not be handed Held as its only gate — a segment holding an unregistered
+// record answers not held and would be retired under it.
 func (t *Tracker) Register(rec Rec) {
 	st := t.entry(rec.Seg)
 	st.mu.Lock()
@@ -402,7 +424,10 @@ func (t *Tracker) entryIfLive(seg core.SegmentID) *segState {
 // a retirement that runs after the insert finds the snapshot there and
 // prunes it itself. An empty remaining snapshot names a barrier that
 // released everything below the forget: the record is droppable the moment
-// it is registered and drops at the next event of its file. A segment
+// it is registered, and the registration itself carries the re-test that
+// drops it — the zero file a forget record registers under is one no later
+// event of the journal reaches, so waiting for one would pin the record's
+// own segment for the segment's life. A segment
 // pruned by the re-check or by a retirement is gone from the set for good —
 // a retired id is never drawn again — so a snapshot never names one twice.
 //
@@ -420,6 +445,7 @@ func (t *Tracker) entryIfLive(seg core.SegmentID) *segState {
 func (t *Tracker) RegisterForget(rec Rec, segs []core.SegmentID) {
 	t.Register(rec)
 	if len(segs) == 0 {
+		t.retest(rec.File)
 		return
 	}
 	t.rm.Lock()
@@ -441,6 +467,9 @@ func (t *Tracker) RegisterForget(rec Rec, segs []core.SegmentID) {
 	}
 	if len(snap) == 0 {
 		delete(t.forgets, rec)
+		t.rm.Unlock()
+		t.retest(rec.File)
+		return
 	}
 	t.rm.Unlock()
 }
@@ -458,8 +487,8 @@ func (t *Tracker) forgetTaken(rec Rec) {
 // records to, so the tracker the journal opens with answers as one fed the
 // same records as they were appended would: every header-only record
 // counts live exactly as Register counts it, whatever its kind — one the
-// drop test would already answer droppable included, which drops at the
-// next event of its file — each forget record registers with the snapshot
+// drop test would already answer droppable included, which the open's own
+// OpenDone drops — each forget record registers with the snapshot
 // its caller collected (RegisterForget's own rule), and each unsynced
 // loss record beside a presence mark of the record it names in every
 // segment holding one (registerMark), so the loss's drop query finds the
@@ -483,7 +512,8 @@ func (t *Tracker) forgetTaken(rec Rec) {
 // copies the same feed also registers stays undroppable until their
 // holder leaves either way. Registering a record twice counts it twice,
 // as Register itself does: an open hands each attached record exactly
-// once, whatever its copies.
+// once, whatever its copies. The open ends its registration with one
+// OpenDone call, after every RegisterAtOpen and after SetMember.
 func (t *Tracker) RegisterAtOpen(recs []Located, forgets []ForgetSet, unsynced []UnsyncedLoss) {
 	for _, l := range recs {
 		t.Register(l.Rec)
@@ -497,6 +527,42 @@ func (t *Tracker) RegisterAtOpen(recs []Located, forgets []ForgetSet, unsynced [
 			t.registerMark(u.Rec, seg)
 		}
 	}
+}
+
+// OpenDone re-tests every file with registered records, once each: it is
+// the close of the open's registration window, called once after every
+// RegisterAtOpen call — concurrent feeders included — and after SetMember,
+// so the re-test reads a registry no feeder is still filling. Every record
+// the open left in the registry is reached, a forget record's zero file
+// included, because the zero file holds the record's registration.
+//
+// The re-test is the open's own event, and it exists because a record the
+// drop test already answers droppable at registration — a marker settled
+// before the open read it, a release over nothing — would otherwise wait
+// for the next event of its file, and a file whose records all resolved at
+// the open may see no event for the journal's whole life: the track would
+// pin the record's segment until the segment retired, and retirement takes
+// the registration anyway — but the segment's bytes stay gone and a
+// candidate never fires for the crossing. RegisterAtOpen itself runs no
+// re-test, deliberately: a feeder's shard is not the whole attached set, so
+// a re-test inside it could drop an unsynced loss — which stays live while
+// any record of its file is registered — while the loss's own feed, or the
+// record it names, was still in another feeder's shard. The one re-test,
+// over the whole registry, is safe here.
+//
+// Calling it more than once is harmless: a re-test over a settled registry
+// drops what an earlier one left and nothing else.
+func (t *Tracker) OpenDone() {
+	t.rm.Lock()
+	files := make([]core.FileID, 0, len(t.recs))
+	for f := range t.recs {
+		files = append(files, f)
+	}
+	t.rm.Unlock()
+	if len(files) == 0 {
+		return
+	}
+	t.retest(files...)
 }
 
 // registerMark keeps one presence mark of the unsynced loss record rec: a

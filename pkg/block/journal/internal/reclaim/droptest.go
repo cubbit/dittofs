@@ -138,6 +138,16 @@ func (t *Tracker) droppableLocked(rec Rec) bool {
 	}
 }
 
+// markTaken drops an unsynced loss record's presence marks once the
+// registry has given up its registration, so a mark set exists only while
+// its loss record counts live, exactly as forgetTaken treats a snapshot.
+// The caller holds rm.
+func (t *Tracker) markTaken(rec Rec) {
+	if rec.Kind == format.KindLoss {
+		delete(t.marks, rec)
+	}
+}
+
 // retest walks the records registered live of files and, for each one the
 // drop test now answers droppable, unregisters it — every registration the
 // registry hands over is taken under the same rm the walk holds, one
@@ -154,16 +164,6 @@ func (t *Tracker) droppableLocked(rec Rec) bool {
 // queries. Upgrade to an index of removal records by extent when a re-test
 // of a heavy file shows in a profile, which also lifts rm off the walk's
 // reads.
-// markTaken drops an unsynced loss record's presence marks once the
-// registry has given up its registration, so a mark set exists only while
-// its loss record counts live, exactly as forgetTaken treats a snapshot.
-// The caller holds rm.
-func (t *Tracker) markTaken(rec Rec) {
-	if rec.Kind == format.KindLoss {
-		delete(t.marks, rec)
-	}
-}
-
 func (t *Tracker) retest(files ...core.FileID) {
 	t.rm.Lock()
 	rel := make([]Rec, 0, 8)
@@ -217,40 +217,6 @@ func (t *Tracker) MarkerSettled(file core.FileID, v core.Version) {
 // are appended, its target segment's included.
 func (t *Tracker) CopiesDone(files []core.FileID) { t.retest(files...) }
 
-// SegmentRetired ends a segment's liveness: every record still registered
-// live in seg stops counting — the registrations are taken from their
-// files' registries under rm, then their counts lowered one by one through
-// the same release path a record's own Unregister takes, so the candidate
-// fires for the held-to-not-held transition the retirement crosses exactly
-// as a release does — the relations the segment held in the index leave
-// too (its byte counters, and each named file's drop ranges of it, both
-// idempotent in the index, so a journal whose own retirement relays the
-// same calls meets them retired and retires nothing twice), and the files
-// its records named are re-tested, their answers no longer kept by anything
-// in seg. files, when empty, is filled from the tracker's own registry of
-// the segment's files; a caller carrying its own list must name every file
-// the segment held, or a file its list misses keeps its registry entries
-// for a segment no re-test will drop again. Every record registered live of
-// the retired segment is taken whatever the files list names — a forget
-// record's zero file is one such, and a caller's list never names it. The
-// holds citing seg as their copies are released with the retirement — the
-// segment is gone, and a still-held record of the segment it held ended
-// was carried to a copy durable before the hand-over — through the same
-// once-per-hold lowering a mark or a seal takes, and the holds the retired
-// segment itself was the keeping segment of leave the registry as its
-// state leaves the tracker, so neither registration outlives the segment.
-//
-// ponytail: the retirement walks the whole registry of forget records to
-// prune the ones naming the segment, O(forgets outstanding) beside the
-// records walk it already runs. Upgrade to an index of forget records by
-// snapshot segment when a retirement with many outstanding forgets shows
-// in a profile.
-//
-// The segment's state leaves the
-// tracker with the segment, so a scan of the states never visits a retired
-// one and Held of a retired segment answers from the index's counters
-// alone, which the relay has emptied. Call it once the unlink or recycle
-// is durable.
 // pruneMarks takes the retired segment out of every unsynced loss record's
 // presence marks and returns the files of the losses whose mark sets
 // emptied here: the marks hold nothing and lower no count, but a loss
@@ -280,6 +246,56 @@ func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
 	return files
 }
 
+// SegmentRetired ends a segment's liveness: every record still registered
+// live in seg stops counting — the registrations are taken from their
+// files' registries under rm, then their counts lowered one by one through
+// the same release path a record's own Unregister takes, so the candidate
+// fires for the held-to-not-held transition the retirement crosses exactly
+// as a release does — the relations the segment held in the index leave
+// too (its byte counters, and each named file's drop ranges of it, both
+// idempotent in the index, so a journal whose own retirement relays the
+// same calls meets them retired and retires nothing twice), and the files
+// its records named are re-tested, their answers no longer kept by anything
+// in seg. files, when empty, is filled from the tracker's own registry of
+// the segment's files; a caller carrying its own list must name every file
+// the segment held, or a file its list misses keeps its registry entries
+// for a segment no re-test will drop again. Every record registered live of
+// the retired segment is taken whatever the files list names — a forget
+// record's zero file is one such, and a caller's list never names it. The
+// holds citing seg as their copies are released with the retirement — the
+// segment is gone, and a still-held record of the segment it held ended
+// was carried to a copy durable before the hand-over — through the same
+// once-per-hold lowering a mark or a seal takes, and the holds the retired
+// segment itself was the keeping segment of leave the registry as its
+// state leaves the tracker, so neither registration outlives the segment.
+// The segment's state leaves the tracker with the segment, so a scan of
+// the states never visits a retired one and Held of a retired segment
+// answers from the index's counters alone, which the relay has emptied.
+// The intended wiring hands the set's retire observer the call —
+// set.OnRetire(func(id core.SegmentID) { tr.SegmentRetired(id, nil) }) —
+// where the nil files list makes the tracker fill the list from its own
+// registry of the segment's files. The wiring owner must confirm the
+// observer's delivery runs only once the unlink or recycle is durable:
+//
+// decision: the segment set delivers its retire observer with no lock of
+// the ledger's held (Set.Retire removes the segment under s.mu, releases
+// it, then calls the observer from retireSeen), but the durability of the
+// unlink or recycle the retirement names is the RETIRING PATH's to order —
+// the set fires the observer when the segment leaves the set, and whether
+// the storage removal is durable by then is a property of the caller
+// between its unlink and its Retire, which this code neither observes nor
+// controls. Wiring this call to OnRetire is safe only where that caller
+// has made removal durable before Retire.
+//
+// ponytail: the retirement walks the whole registry of forget records to
+// prune the ones naming the segment, O(forgets outstanding) beside a
+// records walk that visits every registered record of every file,
+// O(all registered records) — all of it under rm, and the call runs in
+// the retire observer's delivery when wired to OnRetire, so a stream roll
+// can wait behind one retirement's whole walk. Upgrade to a walk scoped
+// to the retiring segment's own files, from the state's files table, and
+// an index of forget records by snapshot segment, when a retirement of a
+// busy journal shows in a profile.
 func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 	t.rm.Lock()
 	st := t.stateOf(seg)
@@ -320,7 +336,7 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 	// a forget record whose snapshot empties here — its last tag-record
 	// bearing segment gone — is released exactly as the re-test would
 	// release it: the take gates the count on the registry as any release
-	// does.
+	// does, once per registration a doubled record holds.
 	for rec, snap := range t.forgets {
 		if rec.Seg == seg {
 			// The record counted in the retired segment; its snapshot
@@ -334,7 +350,10 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 		delete(snap, seg)
 		if len(snap) == 0 {
 			delete(t.forgets, rec)
-			if t.take(rec) {
+			// take() until the registry holds no more of the record, like
+			// the records walk above: a caller may have registered the
+			// forget twice, and each live registration lowers one count.
+			for t.take(rec) {
 				rel = append(rel, rec)
 			}
 		}

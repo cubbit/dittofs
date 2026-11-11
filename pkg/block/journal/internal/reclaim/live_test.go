@@ -231,12 +231,14 @@ func TestHeld_OneLiveRecord(t *testing.T) {
 	}
 }
 
-// TestRegisterUnregisterAllocations checks that an update to a segment whose
-// state already exists, of a file the segment already knows, allocates
-// nothing — the steady update to an existing segment and file, which is the
-// common shape; a segment's or a file's first record may allocate its state
-// and its table entries. Measured outside -race, which changes allocation
-// counts.
+// TestRegisterUnregisterAllocations checks that Register and Unregister on
+// a segment whose state already exists, of a file the segment already
+// knows, allocate nothing — the steady update, which is the common shape.
+// The scope is that pair of calls alone: a segment's or a file's first
+// record may allocate its state and its table entries, and the re-test
+// events — Retest, MarkerSettled, CopiesDone, SegmentRetired, OpenDone —
+// allocate by design, the release slice and the per-walk dedupe map.
+// Measured outside -race, which changes allocation counts.
 func TestRegisterUnregisterAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector changes allocation counts")

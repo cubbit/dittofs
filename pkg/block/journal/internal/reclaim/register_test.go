@@ -225,17 +225,22 @@ func (c *openCase) checkAgainstLive(t *testing.T, tr, want *Tracker) {
 // list's records, which a shuffle draws per case — and holds by the same
 // answers the semantic rules fix: an unsynced loss is droppable never while
 // a segment holding its named record is attached, and a record of a kind
-// no drop rule covers is never droppable and counts its segment held.
+// no drop rule covers is never droppable and counts its segment held. The
+// open's close completes the picture: one OpenDone after the registration
+// equals the live feed followed by a re-test of every file, because both
+// re-tests walk the same whole registry.
 func TestRegisterAtOpen_AnyOrder(t *testing.T) {
 	for seed := range 200 {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
 			r := rand.New(rand.NewPCG(uint64(seed), 3375))
 			c := drawCase(t, r, 2+r.IntN(9))
 			want := c.live()
+			want.retestAll()
 
 			sh := rand.New(rand.NewPCG(uint64(seed), 11))
 			open := New(c.f.ix, nil)
 			open.RegisterAtOpen(shuffled(sh, c.located), shuffled(sh, c.forgets), shuffled(sh, c.unsynced))
+			open.OpenDone()
 			c.checkAgainstLive(t, open, want)
 
 			// The rules the open registration itself must satisfy,
@@ -265,16 +270,20 @@ func TestRegisterAtOpen_AnyOrder(t *testing.T) {
 // TestRegisterAtOpen_ConcurrentFeeders: the same records registered by
 // several feeders at once, each holding a shard of the three lists — an
 // open whose segment scans run concurrently — give the same liveness the
-// append paths' own registrations would have, whatever interleaving ran.
+// append paths' own registrations would have, whatever interleaving ran,
+// with the open's close after the join: one OpenDone once every feeder is
+// done equals the live feed followed by a re-test of every file.
 func TestRegisterAtOpen_ConcurrentFeeders(t *testing.T) {
 	for seed := range 20 {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
 			r := rand.New(rand.NewPCG(uint64(seed), 3375))
 			c := drawCase(t, r, 2+r.IntN(9))
 			want := c.live()
+			want.retestAll()
 
 			conc := New(c.f.ix, nil)
 			registerConcurrent(conc, shardAll(r, c.located, c.forgets, c.unsynced))
+			conc.OpenDone()
 			c.checkAgainstLive(t, conc, want)
 		})
 	}
@@ -567,4 +576,96 @@ func TestRetireHolder_NilFilesListStillDropsLoss(t *testing.T) {
 	if got := tr.Held(f.seg); got {
 		t.Fatalf("Held of the loss record's own segment after its registration dropped = %v, want false", got)
 	}
+}
+
+// TestOpenDone_DropsAlreadyDroppableRecords: a record the drop test answers
+// droppable the moment the open registers it — its marker settled before the
+// open read it, nothing below its pair anywhere — counts live until the
+// open's own close, then drops: Held answers true before OpenDone and false
+// after, with one candidacy for the crossing, and the record answers
+// Droppable throughout, because Register never re-tests.
+func TestOpenDone_DropsAlreadyDroppableRecords(t *testing.T) {
+	f := newFixture(t)
+	var fired []core.SegmentID
+	tr := New(f.ix, func(seg core.SegmentID) { fired = append(fired, seg) })
+	id := fid(80)
+	seg := f.takeIn(t)
+	// A settled truncate nowhere outranked: the planted write over [0,1MiB)
+	// at (3,2) sits below its size.
+	p := newPlant(f)
+	p.write(t, id, f.seg, core.Extent{Off: 0, Len: 1 << 20}, 0, 3, 2)
+	p.truncate(t, id, f.seg, 1<<20, 4096, 5, 6)
+	p.finish(t)
+	f.ix.Settle(id, ver(9))
+	trunc := Rec{
+		Kind: format.KindTruncate, File: id, Seg: seg,
+		Ext:  core.Extent{Off: 1 << 20},
+		Pair: index.Numbers{Version: ver(5), Seq: 6}, Seq: 6,
+	}
+	tr.RegisterAtOpen([]Located{{Rec: trunc, Loc: index.RecordAt{Segment: seg, Offset: 0}}}, nil, nil)
+	if got := tr.Droppable(trunc); !got {
+		t.Fatalf("Droppable of the settled truncate before OpenDone = %v, want true: nothing below its pair overlaps what it covers", got)
+	}
+	if got := tr.Held(seg); !got {
+		t.Fatalf("Held before OpenDone = %v, want true: Register counts the already-droppable record live", got)
+	}
+	if got := len(fired); got != 0 {
+		t.Fatalf("the candidate fired %d times before OpenDone, want 0", got)
+	}
+	tr.OpenDone()
+	if got := tr.Held(seg); got {
+		t.Fatalf("Held after OpenDone = %v, want false: the open's own re-test drops the already-droppable record", got)
+	}
+	if len(fired) != 1 || fired[0] != seg {
+		t.Fatalf("the candidate fired %v, want [%d]: OpenDone is the one crossing", fired, seg)
+	}
+	if _, ok := tr.recs[id][trunc]; ok {
+		t.Fatalf("the settled truncate is still registered after OpenDone, want the re-test to have taken it")
+	}
+}
+
+// TestOpenDone_KeepsLiveRecordsOpenBytes: OpenDone re-tests, it does not
+// sweep: a record the drop test keeps — its marker unsettled, a lower-pair
+// record of its file overlapping what it covers — survives OpenDone exactly
+// as it survives every other re-test.
+func TestOpenDone_KeepsLiveRecordsOpenBytes(t *testing.T) {
+	f := newFixture(t)
+	tr := New(f.ix, nil)
+	id := fid(81)
+	seg := f.takeIn(t)
+	// An unsettled truncate beside a lower-pair write of its file it
+	// covers, in another segment.
+	p := newPlant(f)
+	p.write(t, id, f.seg, core.Extent{Off: 1 << 20, Len: 4096}, 0, 3, 2)
+	p.finish(t)
+	trunc := Rec{
+		Kind: format.KindTruncate, File: id, Seg: seg,
+		Ext:  core.Extent{Off: 1 << 20},
+		Pair: index.Numbers{Version: ver(5), Seq: 6}, Seq: 6,
+	}
+	tr.RegisterAtOpen([]Located{{Rec: trunc, Loc: index.RecordAt{Segment: seg, Offset: 0}}}, nil, nil)
+	tr.OpenDone()
+	if got := tr.Droppable(trunc); got {
+		t.Fatalf("Droppable of the unsettled truncate after OpenDone = %v, want false: the marker term keeps it", got)
+	}
+	if got := tr.Held(seg); !got {
+		t.Fatalf("Held after OpenDone = %v, want true: the re-test keeps the live record", got)
+	}
+}
+
+// retestAll is the oracle's OpenDone: a live-fed tracker followed by one
+// Retest of every file that ended with registered records answers exactly
+// as an open-registered tracker followed by one OpenDone, because both
+// re-tests walk the same whole registry.
+func (tr *Tracker) retestAll() {
+	tr.rm.Lock()
+	files := make([]core.FileID, 0, len(tr.recs))
+	for f := range tr.recs {
+		files = append(files, f)
+	}
+	tr.rm.Unlock()
+	if len(files) == 0 {
+		return
+	}
+	tr.retest(files...)
 }
