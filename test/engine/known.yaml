@@ -280,8 +280,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: the version limit''s raise failing for 31s fences the node and its commit clears it; waits for epic 6''s retried raise (T6.7), which nothing issues yet, so the row then fails on never fencing. Init and Open work; the fixture now attaches the share; the row stops at its own check: nothing retries the failing raise, so the node never fences. Then back to the row''s own need: until the journal has Draw.'
-  issue: '#3701'
+  reason: 'Epic 7: the version limit''s raise failing for 31s fences the node and its commit clears it. The engine side is done: the raise loop runs as a retrying owner. The row stops before its own check: the real journal refuses every Draw by the version limit with no raise in flight, answered retry-later (commit), and its Stats has no NextVersion (zero), so no raise ever falls due and the node never fences. Waits for the journal to report its version counter.'
+  issue: '#3590'
 - test: TestRFC8A_RemovalCrashedBetweenBatchesResumes
   message: 'vfs: retry shortly: commit'
   status: fail
