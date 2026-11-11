@@ -140,8 +140,8 @@ revision takes a letter (under "Terminology"), so the numbers above never move.
 
 | Role | Content |
 | --- | --- |
-| **E1 Interfaces** | The public surface only: the exported symbols with their exact signatures, the error set, and the injection points: options and the `Deps` fields RFC 25 §8 names (logger, metrics registry, tracer), or the RFC's own observability surface where rule 3's exception applies. Stub bodies. No behaviour, except where a type's encoding *is* the contract. An internal interface belongs here only if it has two consumers before any implementation exists (for example a storage seam that both an option and the smallest in-memory implementation passing the seam's conformance suite (kind 2 of `CLAUDE.md`'s "Writing tests") consume). Every other internal package — codecs, index, state machines — is created by the middle epic that implements it, as concrete types, with its first caller (rule 12). |
-| **E2 Red e2e suite and test foundations** | E2E tests for every use case and scenario that can be named: from the RFC, from the in-scope related RFCs, and from other sources (protocol specs, past issues, v1's own bug history). Every test in a suite that keeps a `known.yaml` starts red and is listed there as a known failure; one the suites paragraph puts in `unit` or `e2e` lands green with the epic that makes it pass (below). **E2 registers the suite with the harness**, not E2E green, so CI runs it from the first pull request and a test pinned green stays green; registered at the end, a test an epic turned green could go red again unseen. Concretely, E2 registers the red tests where the RFC's suites paragraph (RFC 29 R11) puts them: a suite of its own only when the paragraph calls for one, as an entry in the suite registry (`test/suites.yaml`) with `tier: pr` (the default, `merge`, keeps it off pull requests), `format: go-json` and `known:` naming its `known.yaml`, behind its own build tag so `unit` does not turn red on it, in a component group named for the component (RFC 29 §4.9); the tag joins `lint-go`'s `go vet -tags=` line, which is the only check that compiles tagged tests on a pull request; otherwise the existing suites the paragraph names. **An RFC with no suites paragraph** already fails `lint-repo`, since `dt docs --check` wants exactly one in every RFC: E2 gets a suite of its own, in that same form, and the pull request that registers it adds a minimal paragraph naming that suite, which §6 lists as an open point for the RFC's author to review. Each red test is one entry in its suite's `known.yaml`, never a pattern, which the test runner (`dt`) grades, so a listed test that passes fails the run and the epic that turns it green removes its entry. The entry is `status: fail`, `fix: planned`, `category: feature`, a `reason`, `message:` the failure it is known by, and `issue:` the issue of the epic that turns the test green (its subtask's issue where that epic already has subtask issues), written quoted as `issue: "#1234"` (unquoted, the `#` starts a YAML comment and the entry has no issue): a planned entry with no issue is refused, and one bad entry stops every runner command from loading the registry (`fix: wontfix` would load, and say the opposite of the truth). So **the plan's epic issues exist before E2's pull request lands**: E2 asks for them (`epic-breakdown` Step 6.3, for a merged plan) if they are missing, and they in turn need the RFC's roadmap epic; with no roadmap epic, stop and ask for one rather than cite some other issue. Where the red tests fail in a shared fixture until a later epic lands, that message is the text the fixture's failures start with (`message: 'fixture:'` in the journal's suite), so a test that fails for another reason is graded new rather than excused. A suite that keeps no `known.yaml` (`unit`, `e2e`) cannot hold a red test: a test the paragraph puts there lands green, with the epic that makes it pass. A new suite and group join the paragraph in the pull request that registers them, and that pull request runs `test/harness/bin/dt docs` so `docs/internals/testing.md` matches the registry; `lint-repo`'s `dt docs --check` compares that file with the registry and checks every RFC's paragraph: exactly one per RFC, and every code span in it naming a suite, group or option of the registry. The small test components that everything else needs (an injected clock, a reference model, a profiling harness, and a fault-injection wrapper only around an implementation that already exists; otherwise the wrapper lands with its first consumer) also go here. **A test lands with the epic that creates the packages it imports:** at S2 only E1's packages exist, so a test that needs a middle epic's package (an encoder, a platform layer) belongs to that epic and is listed there. Format checks in E2 write their bytes by hand from the RFC, which also makes them an oracle independent of the encoder. **The catalogue holds only what can run:** a scenario that needs a host nobody provisions is parked in §6, and a system-level scenario that a component-level test against a verified in-memory implementation already covers is dropped. |
+| **E1 Interfaces** | The public surface only: the exported symbols with their exact signatures, the error set, and the injection points: options and the `Deps` fields RFC 25 §8 names (logger, metrics registry, tracer), or the RFC's own observability surface where rule 3's exception applies. Stub bodies. No behaviour, except where a type's encoding *is* the contract. An internal interface belongs here only if it has two consumers before any implementation exists (for example a storage seam that an option takes and its conformance suite calls, before the smallest in-memory implementation passing that suite (kind 2 of `CLAUDE.md`'s "Writing tests") exists). Every other internal package — codecs, index, state machines — is created by the middle epic that implements it, as concrete types, with its first caller (rule 12). |
+| **E2 Red e2e suite and test foundations** | E2E tests for every use case and scenario that can be named: from the RFC, from the in-scope related RFCs, and from other sources (protocol specs, past issues, v1's own bug history). Every test in a suite that keeps a `known.yaml` starts red and is listed there as a known failure; one the suites paragraph puts in `unit` or `e2e` lands green with the epic that makes it pass (below). **E2 registers the suite with the harness**, not E2E green, so CI runs it from the first pull request and a test pinned green stays green; registered at the end, a test an epic turned green could go red again unseen. Concretely, E2 registers the red tests where the RFC's suites paragraph (RFC 29 R11) puts them: a suite of its own only when the paragraph calls for one, as an entry in the suite registry (`test/suites.yaml`) with `tier: pr` (the default, `merge`, keeps it off pull requests), `format: go-json` and `known:` naming its `known.yaml`, behind its own build tag so `unit` does not turn red on it, in a component group named for the component (RFC 29 §4.9); the tag joins `lint-go`'s `go vet -tags=` line, which is the only check that compiles tagged tests on a pull request; otherwise the existing suites the paragraph names. **An RFC with no suites paragraph** already fails `lint-repo`, since `dt docs --check` wants exactly one in every RFC: E2 gets a suite of its own, in that same form, and the pull request that registers it adds a minimal paragraph naming that suite, which §6 lists as an open point for the RFC's author to review. Each red test is one entry in its suite's `known.yaml`, never a pattern, which the test runner (`dt`) grades, so a listed test that passes fails the run and the epic that turns it green removes its entry. The entry is `status: fail`, `fix: planned`, `category: feature`, a `reason`, `message:` the failure it is known by, and `issue:` the issue of the epic that turns the test green (its subtask's issue where that epic already has subtask issues), written quoted as `issue: "#1234"` (unquoted, the `#` starts a YAML comment and the entry has no issue): a planned entry with no issue is refused, and one bad entry stops every runner command from loading the registry (`fix: wontfix` would load, and say the opposite of the truth). So **the plan's epic issues exist before E2's pull request lands**: E2 asks for them (`epic-breakdown` Step 6.3, for a merged plan) if they are missing, and they in turn need the RFC's roadmap epic; with no roadmap epic, stop and ask for one rather than cite some other issue. Where a red test fails in a shared fixture until a later epic lands, its message is the fixture's specific failing check (the step and the error it reports), not a prefix every fixture failure shares, so a test that fails for another reason is graded new rather than excused. A suite that keeps no `known.yaml` (`unit`, `e2e`) cannot hold a red test: a test the paragraph puts there lands green, with the epic that makes it pass. A new suite and group join the paragraph in the pull request that registers them, and that pull request runs `test/harness/bin/dt docs` so `docs/internals/testing.md` matches the registry; `lint-repo`'s `dt docs --check` compares that file with the registry and checks every RFC's paragraph: exactly one per RFC, and every code span in it naming a suite, group or option of the registry. The small test components that everything else needs (an injected clock, a reference model, a profiling harness, and a fault-injection wrapper only around an implementation that already exists; otherwise the wrapper lands with its first consumer) also go here. **A test lands with the epic that creates the packages it imports:** at S2 only E1's packages exist, so a test that needs a middle epic's package (an encoder, a platform layer) belongs to that epic and is listed there. Format checks in E2 write their bytes by hand from the RFC, which also makes them an oracle independent of the encoder. **The catalogue holds only what can run:** a scenario that needs a host nobody provisions is parked in §6, and a system-level scenario that a component-level test against a verified in-memory implementation already covers is dropped. |
 | **Integration** | Wire v2 into the system as the programme (Step 0 #8) stages it, not into code a later stage replaces. Typical shape changes: one instance per share becomes one per disk; a value read once at start becomes reloadable; an owner-local decision becomes cluster-wide. Also: the transition policy from Step 0 #3, config keys, observability wiring (the component's `Deps` from the root's logger, registry and tracer; its `health.Source` added to the evaluator; its conditions in RFC 25 §3.9's registry and its alert rules per RFC 25 §7 — or, under rule 3's exception, the bridge to them), error mapping, API and CLI. **If it depends on an interface not yet agreed** (owned by another team or stage), add a synchronisation point for that agreement, keep in this epic only what is already decided, and put the rest in a following epic that is **planned after** that point and not estimated (Step 3). |
 | **E2E green** | Burn down the suite's `known.yaml` to empty. Also soak tests, the benchmarks the RFC names, and the suite's tiers past `pr`; the suite itself was registered in E2. |
 | **Dashboards** (optional) | Only if Step 0 #9 said yes: a small number of dashboards, each with an automated test and a consumer before release. |
@@ -261,23 +261,18 @@ principles", since neither document holds a copy.
   is not. A `ponytail:` whose upgrade path is a migration or a rewrite of something later
   code pins is the user's choice: ask, and name that cost in the marker. The one exception is
   E1's stub bodies behind final signatures; nothing tests their answers.
-- **Tests follow `CLAUDE.md`'s "Writing tests"**, not a restatement of it. A deliverable
-  that is itself a test double says which of the allowed kinds it is and how it is verified.
-- **Tests run as CI runs them**, through the repo's test runner and suite registry (here
-  `test/harness/bin/dt run <suite>` and `test/suites.yaml`), not a bare `go test` that misses
-  their tags and known failures. A test lands red before the code that turns it green only in
-  a cell whose registry entry names a known-failure file (here a `known:` file, RFC 29 §4.7;
-  `engine-conformance` with `test/engine/known.yaml` on `feat/storage-v2` is the pattern):
-  one entry per test, never a pattern, with the failure `message:` it is known by and the
-  `issue:` of the epic that turns it green, written with the test and confirmed by CI on the
-  pull request that adds it. That epic removes the entry in the change that makes it pass,
-  once CI shows it passing: a known failure that passes fails the run. A suite with no
-  known-failure file holds no red test: E2 registers the cell its red tests need (Step 2's E2
-  row), and a later red test no registered cell holds registers its own with it.
+- **Tests follow `CLAUDE.md`'s "Writing tests"**, not a restatement of it, including how a
+  test runs through `dt` and how a test written before its code lands red as a known failure
+  ("By kind", which names every field of the entry). A deliverable that is itself a test
+  double says which of the allowed kinds it is; a kind 2 names the conformance suite it
+  passes.
+- **A suite with no known-failure file holds no red test:** E2 registers the cell its red
+  tests need (Step 2's E2 row), and a later red test no registered cell holds registers its
+  own with it.
 - **Without agents.** A run that cannot launch agents (a subagent, or a session with no
   agent tool) does each agent pass below itself, one after another, says in its report that
   they were not independent, and lists them as to-dos to run independently before the pull
-  request opens.
+  request leaves draft.
 - **Design the surface twice.** An independent architect agent, if one is available (for
   example `feature-dev:code-architect`), otherwise the fallback above, proposes the target
   tree and the exported surface independently of the agent writing the document; reconcile
@@ -293,8 +288,9 @@ principles", since neither document holds a copy.
   from memory. A subagent, which cannot ask, writes the recommended option in place, marks
   it "pending the user's answer" in the open points, and returns the questions in its
   report. A pending mark is an open point as Step 3 allows, never a bare TBD: the pull
-  request lists the question under "Decision needed" and does not auto-merge until the user
-  answers, and the mark goes when the answer is folded in.
+  request opens as a draft, without auto-merge (an exception to `pr-opening`'s "always
+  enable auto-merge"), with the question under "Decision needed". It leaves draft, with
+  auto-merge on, once the answer is folded in and the mark goes.
 - **Show the surface before it is settled.** The report lists the target tree (a plan's §4.1
   directory layout, an epic document's §5) and, for an epic document, the exported
   signatures in its Deliverables, for the user to approve before any code is written.
@@ -302,15 +298,15 @@ principles", since neither document holds a copy.
   agents" says), on the finished document: an **adversarial** one that states the
   document's claim in one sentence (for an epic document every obligation numbered, each
   with a subtask and either a test that can fail or the existing enforcement it names, as
-  `epic-breakdown` Step 2.4 allows; for a plan every in-scope RFC section mapped in §7; in
+  `epic-breakdown` Step 2.4 allows, never an E2 test that stays red after the epic; for a plan every in-scope RFC section mapped in §7; in
   both, nothing without a consumer) and tries to break it; a **correctness** one that reads
   every requirement or citation back against the lines it cites and runs the skill's own
   checks (`plan-check.awk` and Step 4 for a plan; `epic-breakdown/epic-check.awk` and that
   skill's Verification list for an epic document); and a **simplification** one that hunts
   for what can be cut, merged, or replaced by what the repository or the standard library
   already has. Fix what they find and wait for the user to approve the surface, then open
-  the pull request. A subagent, which cannot wait for that approval, lists the surface under
-  "Decision needed" in its place.
+  the pull request. A subagent, which cannot wait for that approval, opens it as a draft
+  with the surface under "Decision needed", as for a pending mark.
 
 ## Step 3 — Write the plan
 
@@ -542,10 +538,10 @@ use `epic-breakdown` in the document they are reading:
    test components, the implementation of an epic it depends on once that has landed, and
    only the test doubles `CLAUDE.md`'s "Writing tests" allows. E1 declares no internal
    interface for them to stand in for (rule 12).
-2. **Fuzz tests where relevant.** Use Go native fuzzing on every parser of input the
+2. **Fuzz tests where relevant** (`CLAUDE.md`, "Writing tests", "By kind", which names the
+   invariant a target asserts). Use Go native fuzzing on every parser of input the
    component did not just write itself: on-disk records, wire messages, config, API
    payloads. Where E2 has a reference model, also fuzz operation sequences against it.
-   The property: an input is either accepted as valid or rejected, never a panic.
 3. **Observability follows RFC 25.** Name the metrics, conditions and spans each epic
    owns, as RFC 25 defines them. **Exception:** where the RFC itself restricts its
    dependencies (for example to the standard library) or defines its own observability
@@ -558,8 +554,8 @@ use `epic-breakdown` in the document they are reading:
    public behaviour the epic enables, including concurrency under `-race`. Test at the
    layer that **consumes** a value (see `CLAUDE.md`, "Verifying a change").
 6. **Known failures shrink.** A red test that turns green leaves its suite's `known.yaml` in
-   the same change, as "Design principles" in `.claude/skills/rfc-to-epic-plan/SKILL.md`
-   says.
+   the same change (`CLAUDE.md`, "Writing tests", "By kind"; RFC 29 §4.7 fails a run whose
+   known failure passes).
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
    an import test. The test checks every package on its own, so its allowlist names each
    package an exception applies to, test packages included. v1 is touched only as the
