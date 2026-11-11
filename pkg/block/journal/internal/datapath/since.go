@@ -165,6 +165,11 @@ func (r *sinceRead) write(ch index.Change, bp *[]byte, depth int) ([]core.Change
 		_, _, mtime, verdict, err = r.c.readRecord(r.ctx, r.st, r.id, at, g.pieces, bp)
 		switch {
 		case segmentGone(err):
+			// decision: defence only. Corrupt's copy hold keeps the copy's
+			// segment claimed, so Retire refuses it and this is unreachable; it
+			// fails safe, as retarget ends the Since with errRecordMoving rather
+			// than skip. Overturned by a retirer that can take a claimed
+			// segment, or a copy served without the hold.
 			return r.retarget(ch, bp, depth, err)
 		case err == nil && verdict != recordVerifies:
 			// decision: a copy that does not verify here is not handed to
@@ -199,8 +204,8 @@ func (r *sinceRead) written(ch index.Change, mtime int64) core.Change {
 // decision: a record Corrupt reports dropped is followed through the index like
 // a retired one, because Corrupt answers dropped also for a record that moved
 // after the copy was taken; a piece still named at the dropped record is a
-// refused drop, which its loss marker stands for, and is left out. Only the
-// dropped record's losses are yielded for a piece the index no longer holds.
+// refused drop, which its loss marker stands for, and is left out. For a piece
+// the index no longer holds, the losses at that version are yielded.
 //
 // decision: nothing is marked dropped for a lookup that missed. A record split
 // into pieces can lose one to a newer write and have another moved by a repack,
