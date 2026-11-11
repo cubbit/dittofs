@@ -1267,7 +1267,7 @@ type ControlPlane interface {
 	Settings(ctx context.Context, scope SettingScope) iter.Seq2[Setting, error]
 	PutSetting(ctx context.Context, s Setting, expect uint64) error
 	DeleteSetting(ctx context.Context, scope SettingScope, key string, expect uint64) error // removes an override, so the wider scope's value is effective; raises the settings generation as a put does (RFC 13 §3)
-	Secret(ctx context.Context, id SecretRef, version uint64) (Secret, error) // one version, still sealed; ErrNotFound once pruned
+	Secret(ctx context.Context, id SecretRef, version uint64) (Secret, error) // one version, still sealed; version 0 reads the current one; ErrNotFound once pruned
 	PutSecret(ctx context.Context, s Secret, expect uint64) error             // a new version, expect naming the current one (0 for the first), raising the settings generation so every node resolves it (RFC 13 §7)
 	PruneSecret(ctx context.Context, id SecretRef, below uint64) error        // deletes every version below one every node reports holding (§2.4's NodeStatus)
 
