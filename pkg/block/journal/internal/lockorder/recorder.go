@@ -142,7 +142,7 @@ func (r *Recorder) Acquire(rank Rank, id any) {
 		}
 	}
 
-	r.recordAcquisition(heldNow, rank)
+	r.recordAcquisition(heldNow, rank, false)
 
 	r.byGoroutine[gid] = append(heldNow, heldLock{rank: rank, id: id})
 	holders := r.holder[id]
@@ -153,15 +153,67 @@ func (r *Recorder) Acquire(rank Rank, id any) {
 	holders[gid]++
 }
 
+// AcquireRef records that the calling goroutine takes a storage guard
+// reference of id — a shared hold, the way an RWMutex read hold is. It is
+// exempt from the same-domain rule against other guard references only:
+// every other rule still binds it, and the exemption never reaches a plain
+// StorageGuard acquisition, which a drain wait's exclusive hold must keep
+// clear of every reference the goroutine holds. A rank of 0 is never
+// recorded, like Acquire.
+func (r *Recorder) AcquireRef(id any) {
+	if r == nil {
+		return
+	}
+	gid := goroutineID()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	heldNow := r.byGoroutine[gid]
+	r.recordAcquisition(heldNow, StorageGuard, true)
+
+	ref := heldLock{rank: StorageGuard, id: refIdentity{e: id}}
+	r.byGoroutine[gid] = append(heldNow, ref)
+	holders := r.holder[ref.id]
+	if holders == nil {
+		holders = make(map[uint64]int)
+		r.holder[ref.id] = holders
+	}
+	holders[gid]++
+}
+
+// ReleaseRef ends the hold AcquireRef recorded, like Release.
+func (r *Recorder) ReleaseRef(id any) {
+	if r == nil {
+		return
+	}
+	r.Release(StorageGuard, refIdentity{e: id})
+}
+
 // recordAcquisition runs the priority-ordered rules for an acquisition
 // that is not a re-entrant hold, and records the first rule it breaks.
-func (r *Recorder) recordAcquisition(heldNow []heldLock, rank Rank) {
+// refExempt names an acquisition — a storage guard reference — whose
+// same-domain check skips other held references, the one exemption below;
+// every other rule it runs unchanged.
+func (r *Recorder) recordAcquisition(heldNow []heldLock, rank Rank, refExempt bool) {
 	kind, broke := Kind(0), false
 	for _, h := range heldNow {
-		if h.rank == rank {
-			kind, broke = SameDomain, true
-			break
+		if h.rank != rank {
+			continue
 		}
+		// decision: a guard reference held beside another guard reference
+		// is not reported, because references are shared: a reference
+		// never waits on another reference's holder, and a stream rolling
+		// onto its next segment holds the old one's ref while it takes
+		// the successor's. Withdraw the exemption if a reference acquire
+		// ever blocks on another reference; the drain wait — a plain
+		// StorageGuard acquisition — stays checked against every hold.
+		if refExempt {
+			if _, isRef := h.id.(refIdentity); isRef {
+				continue
+			}
+		}
+		kind, broke = SameDomain, true
+		break
 	}
 	if !broke && rank == StorageGuard {
 		for _, h := range heldNow {

@@ -54,6 +54,16 @@ func (r Rank) String() string {
 // is reported like any other hold.
 type readIdentity struct{ rw *RWMutex }
 
+// refIdentity is the identity a storage guard reference records itself
+// under: the entry the reference holds. Holders share a segment's guard
+// and a reference never waits on another reference — a drain wait joins
+// the segment's refs one at a time — so a ref held beside another ref of
+// any segment is exempt from the same-domain rule, the way a reader's
+// nested hold of its own guard is. Every other rule still binds a ref,
+// and a plain StorageGuard acquisition — a drain wait's exclusive hold —
+// is checked against the refs the goroutine holds like any other hold.
+type refIdentity struct{ e any }
+
 // Mutex is a sync.Mutex that reports every acquisition to a recorder when
 // one is installed. The zero value works as a plain, unranked mutex,
 // before Init and without a recorder.
@@ -96,6 +106,11 @@ func (m *Mutex) Unlock() {
 	}
 	m.mu.Unlock()
 }
+
+// TryLock is the underlying mutex's, unrecorded: a probe of held-ness is not
+// an acquisition the order rules bind, so a caller that holds nothing when it
+// fails answers the recorder nothing either.
+func (m *Mutex) TryLock() bool { return m.mu.TryLock() }
 
 // RWMutex is the same arrangement over sync.RWMutex, for the storage
 // guard: readers hold it shared, an unlink or a recycle exclusively. A

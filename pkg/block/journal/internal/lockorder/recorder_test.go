@@ -599,3 +599,134 @@ func TestChecks_CountsByLabel(t *testing.T) {
 		t.Errorf("Checks(%q) = %d, want %d", "c", got, want)
 	}
 }
+
+// TestRecorder_GuardRefs records the rules a storage guard reference breaks
+// and the one it may not: two refs of any segments held by one goroutine are
+// exempt from the same-domain rule — a reference never waits on another
+// reference — while the drain wait's plain guard acquisition stays checked
+// against every ref, and every other rule binds a ref as it binds any hold.
+func TestRecorder_GuardRefs(t *testing.T) {
+	tests := []struct {
+		name      string
+		drive     func(t *testing.T, rec *lockorder.Recorder)
+		wantKinds []lockorder.Kind
+		wantRank  lockorder.Rank
+	}{
+		{
+			name: "two refs of two segments",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				a, b := new(int), new(int)
+				rec.AcquireRef(a)
+				rec.AcquireRef(b)
+				if got, want := rec.Held(), []lockorder.Rank{lockorder.StorageGuard, lockorder.StorageGuard}; !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() with two refs = %v, want %v: both sits on the books until released", got, want)
+				}
+				rec.ReleaseRef(b)
+				rec.ReleaseRef(a)
+				if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() after both refs released = %v, want none", got)
+				}
+			},
+		},
+		{
+			name: "the same segment's ref twice",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				a := new(int)
+				rec.AcquireRef(a)
+				rec.AcquireRef(a)
+				rec.ReleaseRef(a)
+				rec.ReleaseRef(a)
+			},
+		},
+		{
+			name: "ref under file index",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				idx := new(int)
+				rec.Acquire(lockorder.FileIndex, idx)
+				rec.AcquireRef(new(int))
+			},
+			wantKinds: []lockorder.Kind{lockorder.GuardUnderIndex},
+			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			name: "ref then the drain wait's plain guard",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.AcquireRef(new(int))
+				rec.Acquire(lockorder.StorageGuard, new(int))
+			},
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			name: "the drain wait's plain guard then a ref",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.Acquire(lockorder.StorageGuard, new(int))
+				rec.AcquireRef(new(int))
+			},
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			name: "two refs under file index",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.Acquire(lockorder.FileIndex, new(int))
+				rec.AcquireRef(new(int))
+				rec.AcquireRef(new(int))
+			},
+			// The exemption reaches only the same-domain rule: the first
+			// ref is reported for the index and the second is too — the
+			// nested-ref exemption never covers a rule a plain hold
+			// breaks. The priority order keeps one report per ref.
+			wantKinds: []lockorder.Kind{lockorder.GuardUnderIndex, lockorder.GuardUnderIndex},
+			wantRank:  lockorder.StorageGuard,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := lockorder.NewRecorder()
+			tc.drive(t, rec)
+			vs := rec.Violations()
+			if got, want := kinds(vs), tc.wantKinds; !reflect.DeepEqual(got, want) {
+				t.Errorf("violation kinds = %v, want %v", got, want)
+			} else if len(tc.wantKinds) >= 1 {
+				if got, want := vs[0].Stack, ""; got == want {
+					t.Errorf("violation Stack is empty: it must name the acquisition that broke the rule")
+				}
+				if got, want := vs[0].Rank, tc.wantRank; got != want {
+					t.Errorf("first violation Rank = %v, want %v", got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestRecorder_GuardRefReleasedOnOtherGoroutine checks a ref acquired on one
+// goroutine may be released on another, as a descriptor reference is: the
+// holder's books empty and no violation is recorded.
+func TestRecorder_GuardRefReleasedOnOtherGoroutine(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	a := new(int)
+	acquired := make(chan struct{})
+	released := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		rec.AcquireRef(a)
+		close(acquired)
+		<-released
+		if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+			t.Errorf("the acquiring goroutine's Held() after the other's release = %v, want none", got)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-acquired
+		rec.ReleaseRef(a)
+		close(released)
+	}()
+	wg.Wait()
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none", got)
+	}
+}
