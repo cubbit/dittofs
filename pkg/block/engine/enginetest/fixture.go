@@ -98,6 +98,10 @@ type Fixture struct {
 	kv      *failingKV                // the store's kv.KV, failing Updates when a test asks
 	batches atomic.Pointer[batchHold] // holds every removal batch at its span while set
 	ended   chan struct{}             // one value per removal batch span that ended
+
+	compose func(*Fixture, *engine.Engine) Service // builds the service each process start composes; nil for none
+	svc     Service                                // the service running now, built by compose
+	serving bool                                   // svc was started and is not yet stopped
 }
 
 // batchHold holds the removal batches of the engine running now at their span
@@ -127,20 +131,20 @@ func (f *Fixture) HoldNextClone() (entered <-chan struct{}, release func()) {
 // for release.
 type gate struct{ entered, release chan struct{} }
 
-// FailNextSync makes the journal's next fsync fail, so the sync window it
-// belongs to fails.
+// FailNextSync makes the journal's next fsync of a segment fail, so the sync
+// window it belongs to fails. A spare's sync as it is made is not one.
 func (f *Fixture) FailNextSync() {
 	f.t.Helper()
-	if err := f.Seam.Schedule(kit.Failing(kit.OpSync, "*", 1, errors.New("fixture: an injected sync failure"))); err != nil {
+	if err := f.Seam.Schedule(kit.Failing(kit.OpSync, "*.seg", 1, errors.New("fixture: an injected sync failure"))); err != nil {
 		f.t.Fatalf("fixture: schedule a sync failure: %v", err)
 	}
 }
 
-// FailNextWindow makes the journal's next fsync fail and every segment in the
-// journal's directory serve its durable image to a read, so the window's
-// read-back does not verify and the window fails with loss records instead
-// of being re-appended. The stale reads last for the fixture's life; segments
-// created after the call read as written.
+// FailNextWindow makes the journal's next fsync of a segment fail and every
+// segment in the journal's directory serve its durable image to a read, so
+// the window's read-back does not verify and the window fails with loss
+// records instead of being re-appended. The stale reads last for the
+// fixture's life; segments created after the call read as written.
 func (f *Fixture) FailNextWindow() {
 	f.t.Helper()
 	f.FailNextSync()
@@ -213,6 +217,17 @@ func (f *Fixture) KeysOf(id entity.FileID) []string {
 	return out
 }
 
+// FailUpdatesSetting fails every Update whose transaction sets a key match
+// accepts, as a store refusing one file's records does, and lets every
+// other through. A nil match, or the next Crash, clears it.
+func (f *Fixture) FailUpdatesSetting(match func(key []byte) bool) {
+	if match == nil {
+		f.kv.setting.Store(nil)
+		return
+	}
+	f.kv.setting.Store(&match)
+}
+
 // FailUpdatesAfter lets the store's next n Updates through and fails every
 // one after them, as a store that stopped between two batches of a removal
 // does. The next Crash clears it.
@@ -251,10 +266,71 @@ func (f *Fixture) trace(
 // New creates the journal and the store, then starts a process over them: the
 // open-state table and the engine, the engine started with the share bound.
 // Everything is closed when the test ends.
-func New(t *testing.T) *Fixture {
+func New(t *testing.T, opts ...Option) *Fixture {
 	t.Helper()
 
-	return newFixture(t, nil)
+	return newFixture(t, nil, opts...)
+}
+
+// Option changes what New composes.
+type Option func(*Fixture)
+
+// Service is what a compose hook builds over the fixture's open-state table
+// and engine: the table's Sink, with Admission its Order, started after the
+// engine and drained and stopped before it.
+type Service interface {
+	openstate.Sink
+	Admission(f entity.FileID) (unlock func())
+	Start(ctx context.Context) error
+	Drain(ctx context.Context) error
+	Stop() error
+}
+
+// WithCompose has every process start, New's, Restart's and Crash's, build a
+// service with compose over the open-state table it built (f.Opens) and
+// engine e, both not yet started. The fixture then starts the table with the
+// service as its Sink and Order, then the engine, then the service, which
+// serves the shards itself; a stop drains and stops the service, then closes
+// the engine, then stops the table. Without it the table's Sink hears no one.
+//
+// decision: the hook builds a service and nothing around it, no node and no
+// protocol adapter, since the tier it composes runs the service over the
+// engine alone. Withdraw it once the node's own constructor composes these
+// pieces and the tier runs over that instead.
+func WithCompose(compose func(f *Fixture, e *engine.Engine) Service) Option {
+	return func(f *Fixture) { f.compose = compose }
+}
+
+// Logger is the logger the fixture hands the engine and open state.
+func (f *Fixture) Logger() *slog.Logger { return f.logger }
+
+// StopService drains and stops the composed service, leaving the open-state
+// table and the engine running until the fixture's own stop.
+func (f *Fixture) StopService() {
+	f.t.Helper()
+	f.stopService(true)
+}
+
+// stopService drains and stops the composed service, if one was built.
+// clean is false after a crash, when a failure is only logged.
+func (f *Fixture) stopService(clean bool) {
+	f.t.Helper()
+	if f.svc == nil {
+		return
+	}
+	report := f.t.Errorf
+	if !clean {
+		report = f.t.Logf
+	}
+	if f.serving {
+		if err := f.svc.Drain(context.Background()); err != nil {
+			report("fixture: service drain: %v", err)
+		}
+	}
+	if err := f.svc.Stop(); err != nil {
+		report("fixture: service stop: %v", err)
+	}
+	f.svc, f.serving = nil, false
 }
 
 // NewWithSmallBatches is New over a store whose transactions hold at most
@@ -271,10 +347,12 @@ func NewWithSmallBatches(t *testing.T, entries int) *Fixture {
 }
 
 // failingKV is a kv.KV that lets left Updates through and then fails each
-// one; a negative left fails none.
+// one; a negative left fails none. While setting holds a match, it also
+// fails each Update whose transaction sets a key the match accepts.
 type failingKV struct {
 	kv.KV
-	left atomic.Int64
+	left    atomic.Int64
+	setting atomic.Pointer[func(key []byte) bool]
 }
 
 func (k *failingKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
@@ -284,7 +362,37 @@ func (k *failingKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
 		return errors.New("fixture: an injected store failure")
 	}
 
-	return k.KV.Update(ctx, fn)
+	match := k.setting.Load()
+	if match == nil {
+		return k.KV.Update(ctx, fn)
+	}
+
+	return k.KV.Update(ctx, func(txn kv.Txn) error {
+		w := &settingTxn{Txn: txn, match: *match}
+		if err := fn(w); err != nil {
+			return err
+		}
+		if w.hit {
+			return errors.New("fixture: an injected store failure of a matched key")
+		}
+
+		return nil
+	})
+}
+
+// settingTxn is a transaction that notes whether it set a key match accepts.
+type settingTxn struct {
+	kv.Txn
+	match func(key []byte) bool
+	hit   bool
+}
+
+func (t *settingTxn) Set(key, value []byte) error {
+	if t.match(key) {
+		t.hit = true
+	}
+
+	return t.Txn.Set(key, value)
 }
 
 // limitedKV is a kv.KV whose transactions hold at most entries keys.
@@ -300,7 +408,7 @@ func (l limitedKV) Limits() kv.TxnLimits {
 	return lim
 }
 
-func newFixture(t *testing.T, wrap func(kv.KV) kv.KV) *Fixture {
+func newFixture(t *testing.T, wrap func(kv.KV) kv.KV, opts ...Option) *Fixture {
 	t.Helper()
 
 	// Registered first, so its checks run after every other cleanup has
@@ -321,6 +429,9 @@ func newFixture(t *testing.T, wrap func(kv.KV) kv.KV) *Fixture {
 		t:      t,
 		logger: slog.New(slog.NewTextHandler(t.Output(), nil)),
 		ended:  make(chan struct{}, 64),
+	}
+	for _, o := range opts {
+		o(f)
 	}
 
 	if f.Journal, err = journal.Init(t.Context(), dir, fixtureInstall,
@@ -419,6 +530,7 @@ func (f *Fixture) Crash(opts ...kit.CrashOption) {
 	f.t.Helper()
 	f.crashed.Store(true) // before the crash, so nothing the old engine runs meanwhile reaches the store
 	f.kv.left.Store(-1)
+	f.kv.setting.Store(nil)
 	if err := f.Seam.Crash(opts...); err != nil {
 		f.t.Fatalf("fixture: crash: %v", err)
 	}
@@ -488,7 +600,8 @@ func (f *Fixture) Committed(h entity.Handle) entity.File {
 }
 
 // start builds the open-state table and the engine over the fixture's
-// journal directory and store, and starts both.
+// journal directory and store, and the composed service over both when one
+// is asked for, then starts them in that order.
 func (f *Fixture) start() {
 	t := f.t
 	t.Helper()
@@ -499,13 +612,6 @@ func (f *Fixture) start() {
 	f.Opens, err = openstate.New(openstate.Deps{Records: f.FS.Store, Clock: f.Clock, Rand: rand.Reader, Logger: f.logger})
 	if err != nil {
 		t.Fatalf("fixture: open state: %v", err)
-	}
-	if err := f.Opens.Start(ctx, quietSink{}, noOrder); err != nil {
-		t.Fatalf("fixture: open state start: %v", err)
-	}
-	f.starts++
-	if err := f.Opens.Recovery().ServeShard(ctx, f.Share.ID, f.Share.Shard, f.starts); err != nil {
-		t.Fatalf("fixture: serve shard: %v", err)
 	}
 
 	e, err := engine.New(engine.Deps{
@@ -531,6 +637,23 @@ func (f *Fixture) start() {
 	if err != nil {
 		t.Fatalf("fixture: engine: %v", err)
 	}
+
+	var sink openstate.Sink = quietSink{}
+	order := openstate.Order(noOrder)
+	if f.compose != nil {
+		f.svc = f.compose(f, e)
+		sink, order = f.svc, f.svc.Admission
+	}
+	if err := f.Opens.Start(ctx, sink, order); err != nil {
+		t.Fatalf("fixture: open state start: %v", err)
+	}
+	if f.svc == nil {
+		f.starts++
+		if err := f.Opens.Recovery().ServeShard(ctx, f.Share.ID, f.Share.Shard, f.starts); err != nil {
+			t.Fatalf("fixture: serve shard: %v", err)
+		}
+	}
+
 	if err := e.Apply(Settings); err != nil {
 		t.Fatalf("fixture: engine settings: %v", err)
 	}
@@ -538,13 +661,22 @@ func (f *Fixture) start() {
 		t.Fatalf("fixture: engine start: %v", err)
 	}
 	f.E = e
+
+	if f.svc != nil {
+		if err := f.svc.Start(ctx); err != nil {
+			t.Fatalf("fixture: service start: %v", err)
+		}
+		f.serving = true
+	}
 }
 
-// stop closes the engine running now, if one started, and stops the
-// open-state table. clean is false after a crash, when the engine's close is
-// expected to fail and is only logged.
+// stop stops the composed service, if one was built, closes the engine
+// running now, if one started, and stops the open-state table. clean is false
+// after a crash, when the engine's close is expected to fail and is only
+// logged.
 func (f *Fixture) stop(clean bool) {
 	f.t.Helper()
+	f.stopService(clean)
 	if f.E != nil {
 		if err := f.E.Close(context.Background()); err != nil {
 			if clean {
@@ -679,9 +811,10 @@ func (h cloneHold) Served(ctx context.Context, s entity.ShardID) error {
 // errCrashed answers a store change the crashed process's engine makes.
 var errCrashed = errors.New("fixture: the process crashed: its engine commits nothing")
 
-// fencedExistence is the store's existence view, refusing every change once
-// crashed is set: a crashed process's engine closing must not commit what
-// only recovery may, or a row after the crash would pass without recovery.
+// fencedExistence is the store's existence view, keeping every change from
+// the store once crashed is set: a crashed process's engine closing must not
+// commit what only recovery may, or a row after the crash would pass without
+// recovery.
 type fencedExistence struct {
 	engine.Existence
 	crashed   *atomic.Bool
@@ -689,9 +822,16 @@ type fencedExistence struct {
 	cloneGate *atomic.Pointer[gate]
 }
 
+// Commit answers a crashed process's existence commit as done and writes
+// nothing: the store never sees it, as with a refusal, but the old engine's
+// close, whose last group commit waits for every pending file, ends rather
+// than retrying until a stop bound that runs on the fixture's clock.
 func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+	// decision: a crashed process's existence commit answers done, not
+	// refused, so the old engine's close ends; nothing reaches the store.
+	// Withdraw it if a row reads an answer the crashed engine gave.
 	if x.crashed.Load() {
-		return nil, errCrashed
+		return nil, nil
 	}
 	if x.stalled.Load() {
 		<-ctx.Done()
@@ -723,7 +863,7 @@ func (x fencedExistence) Clone(ctx context.Context, op kvstore.CloneOp, pending 
 }
 
 // fencedContent is the store's content view, refusing its changes once
-// crashed is set, as fencedExistence does.
+// crashed is set, as fencedExistence's Remove and Clone do.
 type fencedContent struct {
 	engine.Content
 	crashed *atomic.Bool

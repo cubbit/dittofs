@@ -303,3 +303,38 @@
   category: feature
   reason: 'Epic 7: a failed window with loss records raises journal_sync_failed, which clears an hour later on the test clock, while a failed sync whose window is re-appended raises none, and neither does a restart over the loss record; also the failed window (epic 4) and the start (epic 6). Init and Open work; the fixture now attaches the share; the row stops at its first journal-backed write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: until the journal has WriteAt, Sync and fails windows.'
   issue: '#3590'
+- test: TestStopClosesNothingItWasHanded
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration: the filesystem''s Stop closes neither the engine nor open state, read back through a direct engine Read and open state after it. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and ReadAt until the journal has them.'
+  issue: '#4052'
+- test: TestAPendingTruncateIsTheSize
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration: GetAttr answers a pending truncate''s size while its phase 1 is held at the store. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt, Truncate and Sync until the journal has them.'
+  issue: '#4052'
+- test: TestAChownChargesStagedBytesToTheOldOwnerFirst
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration: a chown commits the file''s pending existence first, so the staged write charges the old owner and moves to the new one once. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and Sync until the journal has them.'
+  issue: '#4052'
+- test: TestAFileFailingItsCommitDelaysOnlyItself
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration: a store refusing one file''s records leaves only that file''s stable overwrite unanswered, another''s committing. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and Sync until the journal has them.'
+  issue: '#4052'
+- test: TestACommittedWriteSurvivesACrash
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration: a write committed through the filesystem, its existence still pending, reads back through the composition rebuilt after a crash, the store holding the size the start''s re-application of existence wrote. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value until the journal reports its version counter. Then back to the row''s own need: at WriteAt, Sync and the replay''s ReadAt until the journal has them.'
+  issue: '#4052'
