@@ -78,7 +78,7 @@ func initAndOpen(t *testing.T) (*Journal, seamDir, JournalID) {
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	j, err := Open(context.Background(), s.dir, Version{}, id, openOptsDir(s, kit.NewStopwatchClock())...)
+	j, err := Open(context.Background(), s.dir, Version{}, id, nil, openOptsDir(s, kit.NewStopwatchClock())...)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestOpen_WrongIdentity_IdentityErrorNamesFound(t *testing.T) {
 
 	var wrong JournalID
 	wrong[0] = id[0] ^ 0xff
-	_, err = Open(context.Background(), s.dir, Version{}, wrong, openOptsDir(s, kit.NewStopwatchClock())...)
+	_, err = Open(context.Background(), s.dir, Version{}, wrong, nil, openOptsDir(s, kit.NewStopwatchClock())...)
 	var ie *IdentityError
 	if !errors.As(err, &ie) {
 		t.Fatalf("Open with the wrong identity returned %v, want an IdentityError", err)
@@ -197,7 +197,7 @@ func TestOpen_ExpectZero_IdentityErrorNames(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	_, err = Open(context.Background(), s.dir, Version{}, JournalID{}, openOptsDir(s, kit.NewStopwatchClock())...)
+	_, err = Open(context.Background(), s.dir, Version{}, JournalID{}, nil, openOptsDir(s, kit.NewStopwatchClock())...)
 	var ie *IdentityError
 	if !errors.As(err, &ie) {
 		t.Fatalf("Open with expect zero returned %v, want an IdentityError", err)
@@ -221,7 +221,7 @@ func TestOpen_ExpectZero_IdentityErrorNames(t *testing.T) {
 func TestOpen_ExpectZero_EmptyDir_ErrNoJournal(t *testing.T) {
 	s := newSeam(t)
 
-	_, err := Open(context.Background(), s.dir, Version{}, JournalID{}, openOptsDir(s, kit.NewStopwatchClock())...)
+	_, err := Open(context.Background(), s.dir, Version{}, JournalID{}, nil, openOptsDir(s, kit.NewStopwatchClock())...)
 	if !errors.Is(err, ErrNoJournal) {
 		t.Fatalf("Open with expect zero on an empty directory returned %v, want ErrNoJournal", err)
 	}
@@ -242,7 +242,7 @@ func TestOpen_ExpectZero_EmptyDir_ErrNoJournal(t *testing.T) {
 func TestOpen_MissingDir_ErrNoJournal_CreatesNothing(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "absent")
 
-	if _, err := Open(context.Background(), dir, Version{}, JournalID{0x01},
+	if _, err := Open(context.Background(), dir, Version{}, JournalID{0x01}, nil,
 		WithClock(kit.NewStopwatchClock())); !errors.Is(err, ErrNoJournal) {
 		t.Fatalf("Open of a missing directory returned %v, want ErrNoJournal", err)
 	}
@@ -258,7 +258,7 @@ func TestOpen_EmptyDir_ErrNoJournal_CreatesNothing(t *testing.T) {
 	s := newSeam(t)
 
 	expected := JournalID{0x01}
-	if _, err := Open(context.Background(), s.dir, Version{}, expected, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrNoJournal) {
+	if _, err := Open(context.Background(), s.dir, Version{}, expected, nil, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrNoJournal) {
 		t.Fatalf("Open of an empty directory returned %v, want ErrNoJournal", err)
 	}
 	if names := s.listSeam(t); len(names) != 0 {
@@ -275,7 +275,7 @@ func TestOpen_NeitherFormatNorSegment_ErrNoJournal(t *testing.T) {
 	s.create(t, "a foreign entry")
 
 	expected := JournalID{0x01}
-	if _, err := Open(context.Background(), s.dir, Version{}, expected, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrNoJournal) {
+	if _, err := Open(context.Background(), s.dir, Version{}, expected, nil, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrNoJournal) {
 		t.Fatalf("Open of a directory holding only a foreign entry returned %v, want ErrNoJournal", err)
 	}
 	if names := s.listSeam(t); !slices.Equal(names, []string{"a foreign entry"}) {
@@ -301,7 +301,7 @@ func TestOpen_SegmentNoFormat_ErrUnidentified_Untouched(t *testing.T) {
 			s.create(t, seg)
 
 			expected := JournalID{0x01}
-			_, err := Open(context.Background(), s.dir, Version{}, expected, openOptsDir(s, kit.NewStopwatchClock())...)
+			_, err := Open(context.Background(), s.dir, Version{}, expected, nil, openOptsDir(s, kit.NewStopwatchClock())...)
 			if !errors.Is(err, ErrUnidentified) {
 				t.Fatalf("a directory holding %s and no format: Open returned %v, want ErrUnidentified", seg, err)
 			}
@@ -350,7 +350,7 @@ func TestOpen_SecondOpenAfterClose_ErrNotImplemented(t *testing.T) {
 		t.Fatalf("the run left no segment: %v", names)
 	}
 
-	_, err = Open(context.Background(), dirOfSeam(seam), Version{}, id, openOptsDir(seam, kit.NewStopwatchClock())...)
+	_, err = Open(context.Background(), dirOfSeam(seam), Version{}, id, nil, openOptsDir(seam, kit.NewStopwatchClock())...)
 	if !errors.Is(err, ErrNotImplemented) {
 		t.Fatalf("a second Open of a journal that has run returned %v, want ErrNotImplemented", err)
 	}
@@ -373,7 +373,7 @@ func TestOpen_UnsuitableChecksBeforeWrite(t *testing.T) {
 	}
 
 	open := append(openOptsDir(s, kit.NewStopwatchClock()), WithMountProbe(mountGather(platformtest.NoBarrierMount(s.dir))))
-	_, err = Open(context.Background(), s.dir, Version{}, id, open...)
+	_, err = Open(context.Background(), s.dir, Version{}, id, nil, open...)
 	if !errors.Is(err, ErrUnsuitableStorage) {
 		t.Fatalf("an unsuitable directory: Open returned %v, want ErrUnsuitableStorage", err)
 	}
@@ -407,7 +407,7 @@ func TestOpen_CheckError_ReturnedAsItself(t *testing.T) {
 		return storage.Probe{}, probe
 	}))
 
-	_, err = Open(context.Background(), s.dir, Version{}, id, open...)
+	_, err = Open(context.Background(), s.dir, Version{}, id, nil, open...)
 	if !errors.Is(err, probe) {
 		t.Fatalf("Open returned %v, want the probe's error as itself", err)
 	}
@@ -425,7 +425,7 @@ func TestOpen_CheckError_ReturnedAsItself(t *testing.T) {
 func TestOpen_NoClock(t *testing.T) {
 	s := newSeam(t)
 
-	if _, err := Open(context.Background(), s.dir, Version{}, JournalID{0x01}, WithStorage(s.seam.FS())); !errors.Is(err, ErrNoClock) {
+	if _, err := Open(context.Background(), s.dir, Version{}, JournalID{0x01}, nil, WithStorage(s.seam.FS())); !errors.Is(err, ErrNoClock) {
 		t.Fatalf("Open with no clock returned %v, want ErrNoClock", err)
 	}
 	s.assertNoCalls(t)
@@ -454,7 +454,7 @@ func TestOpen_CtxCheckedFirst(t *testing.T) {
 	for i, op := range ops {
 		before[i] = s.seam.Calls(op)
 	}
-	if _, err := Open(ctx, s.dir, Version{}, id, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, context.Canceled) {
+	if _, err := Open(ctx, s.dir, Version{}, id, nil, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cancelled context: Open returned %v, want context.Canceled", err)
 	}
 	for i, op := range ops {
@@ -478,7 +478,7 @@ func TestOpen_CorruptFormat_ErrCorrupt(t *testing.T) {
 	}
 	damageFormat(t, s.dir)
 
-	if _, err := Open(context.Background(), s.dir, Version{}, id, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrCorrupt) {
+	if _, err := Open(context.Background(), s.dir, Version{}, id, nil, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Open of a corrupt format returned %v, want ErrCorrupt", err)
 	}
 	for _, target := range []error{ErrUnknownFormat, ErrNoJournal, ErrIdentityMismatch} {
@@ -503,7 +503,7 @@ func TestOpen_WrongFormatFileLength_ErrCorrupt(t *testing.T) {
 	}
 
 	appendFormatByte(t, s)
-	_, err = Open(context.Background(), s.dir, Version{}, id, openOptsDir(s, kit.NewStopwatchClock())...)
+	_, err = Open(context.Background(), s.dir, Version{}, id, nil, openOptsDir(s, kit.NewStopwatchClock())...)
 	if !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Open of a format file one byte long returned %v, want ErrCorrupt", err)
 	}
@@ -517,7 +517,7 @@ func TestOpen_WrongFormatFileLength_ErrCorrupt(t *testing.T) {
 	// taking a file of the format's own length again; then one byte below
 	// it, the damaged file on the other side.
 	resetFormat(t, s)
-	j, err := Open(context.Background(), s.dir, Version{}, id, openOptsDir(s, kit.NewStopwatchClock())...)
+	j, err := Open(context.Background(), s.dir, Version{}, id, nil, openOptsDir(s, kit.NewStopwatchClock())...)
 	if err != nil {
 		t.Fatalf("Open of a format file of the exact size: %v", err)
 	}
@@ -526,7 +526,7 @@ func TestOpen_WrongFormatFileLength_ErrCorrupt(t *testing.T) {
 	}
 
 	shortenFormat(t, s)
-	if _, err := Open(context.Background(), s.dir, Version{}, id, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrCorrupt) {
+	if _, err := Open(context.Background(), s.dir, Version{}, id, nil, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Open of a format file one byte short returned %v, want ErrCorrupt", err)
 	}
 }
@@ -604,7 +604,7 @@ func TestOpen_UnknownFormatVersion(t *testing.T) {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
 
-	if _, err := Open(context.Background(), dir, Version{}, JournalID{0x01},
+	if _, err := Open(context.Background(), dir, Version{}, JournalID{0x01}, nil,
 		openOptsDirAt(seam, dir, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
 		t.Fatalf("Open of an unknown format version returned %v, want ErrUnknownFormat", err)
 	}
@@ -628,7 +628,7 @@ func TestOpen_FloorRaisesCounter(t *testing.T) {
 	}
 
 	floor := Version{Counter: 1 << 30}
-	j, err := Open(context.Background(), s.dir, floor, id, openOptsDir(s, kit.NewStopwatchClock())...)
+	j, err := Open(context.Background(), s.dir, floor, id, nil, openOptsDir(s, kit.NewStopwatchClock())...)
 	if err != nil {
 		t.Fatalf("Open with a floor: %v", err)
 	}
@@ -652,7 +652,7 @@ func TestOpen_FloorRaisesCounter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if _, err := Open(context.Background(), s2.dir, Version{Epoch: 1, Counter: 5}, id2, openOptsDir(s2, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
+	if _, err := Open(context.Background(), s2.dir, Version{Epoch: 1, Counter: 5}, id2, nil, openOptsDir(s2, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
 		t.Fatalf("Open with an epochal floor returned %v, want ErrUnknownFormat", err)
 	}
 	if got := countSegments(listOS(t, s2.dir)); got != 0 {
@@ -678,7 +678,7 @@ func TestOpen_RefusedFloor_LeaksNothing_CreatesNothing(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	if _, err := Open(context.Background(), s.dir, Version{Epoch: 1, Counter: 5}, id, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
+	if _, err := Open(context.Background(), s.dir, Version{Epoch: 1, Counter: 5}, id, nil, openOptsDir(s, kit.NewStopwatchClock())...); !errors.Is(err, ErrUnknownFormat) {
 		t.Fatalf("Open with an epochal floor returned %v, want ErrUnknownFormat", err)
 	}
 
@@ -725,7 +725,7 @@ func TestOpen_ConcurrentCalls_IndependentJournalEach(t *testing.T) {
 	errs := make([]error, n)
 	for i := range errs {
 		wg.Go(func() {
-			j, err := Open(context.Background(), dirs[i], Version{}, ids[i], openOptsDirAt(seams[i], dirs[i], kit.NewStopwatchClock())...)
+			j, err := Open(context.Background(), dirs[i], Version{}, ids[i], nil, openOptsDirAt(seams[i], dirs[i], kit.NewStopwatchClock())...)
 			if err != nil {
 				errs[i] = err
 				return
@@ -860,7 +860,7 @@ func TestOpen_SparesReady_WaitsForThePool(t *testing.T) {
 	// let go: an answer before that names a wait over a pool it did not
 	// watch.
 	held := s.seam.HoldFirst(t, kit.OpCreate, "*")
-	j, err := Open(context.Background(), s.dir, Version{}, id, open...)
+	j, err := Open(context.Background(), s.dir, Version{}, id, nil, open...)
 	if err != nil {
 		held.Release()
 		t.Fatalf("Open: %v", err)
@@ -935,7 +935,7 @@ func TestOpen_SparesReady_CloseDuringTheWait(t *testing.T) {
 		wait = w
 	}))
 	held := s.seam.HoldFirst(t, kit.OpCreate, "*")
-	j, err := Open(context.Background(), s.dir, Version{}, id, open...)
+	j, err := Open(context.Background(), s.dir, Version{}, id, nil, open...)
 	if err != nil {
 		held.Release()
 		t.Fatalf("Open: %v", err)
@@ -1018,7 +1018,7 @@ func TestOpen_MaxBytes_RefusesAWritePastTheMaximum(t *testing.T) {
 	opts := append(openOptsDir(s, kit.NewStopwatchClock()),
 		WithSettings(set),
 		WithSparesReady(func(w core.SparesWait) { wait = w }))
-	j, err := Open(context.Background(), s.dir, Version{}, id, opts...)
+	j, err := Open(context.Background(), s.dir, Version{}, id, nil, opts...)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

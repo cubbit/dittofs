@@ -35,3 +35,27 @@ type SegmentID uint64
 // and no sequence number is issued twice. Where two records carry the same
 // content version, the higher sequence number wins.
 type Seq uint64
+
+// SyncMark is a per-stream sync mark a caller recorded durably and hands Open,
+// which recovery checks the scanned tails against. Stream is the append
+// stream's number, as its segments' headers carry it; Segment the segment id
+// the stream's last recorded sync reached; Through the stream's synced-through
+// offset there, never past a slot whose write failed or had not completed;
+// Offset the end of the last record that sync covered, which may lie past
+// Through and never names a seal marker, footer or trailer; Sequence that
+// record's sequence number.
+type SyncMark struct {
+	Stream   uint32
+	Segment  uint64
+	Through  int64
+	Offset   int64
+	Sequence uint64
+}
+
+// SegmentRange is a byte range of one segment: Len bytes starting at file
+// offset Off of segment Segment.
+type SegmentRange struct {
+	Segment SegmentID
+	Off     int64
+	Len     int64
+}

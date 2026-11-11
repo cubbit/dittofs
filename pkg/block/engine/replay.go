@@ -20,9 +20,10 @@ import (
 // decision: any error a journal's Since yields fails Start, as any failing
 // step does. RFC 8 §2.5 step 3 and step 8 skip a file whose Since yields
 // ErrUnreadable, which takes writes and serves no read, but the journal
-// declares no such error yet, so an unreadable record cannot be told from a
-// failing device. Overturned once the journal declares ErrUnreadable, when
-// that file is skipped and step 3 runs for it again once its record reads.
+// declares the error while Since never yields it yet, so an unreadable
+// record cannot be told from a failing device. Overturned once the
+// journal's Since returns ErrUnreadable, when that file is skipped and
+// step 3 runs for it again once its record reads.
 //
 // ponytail: start time grows linearly with the files a journal holds, one
 // file after another, each costing a read of its applied version and a walk of

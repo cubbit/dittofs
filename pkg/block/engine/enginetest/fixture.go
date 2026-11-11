@@ -665,7 +665,7 @@ func (f *Fixture) start() {
 					dir, journal.ErrUnsuitableStorage,
 				)
 			}
-			j, err := journal.Open(ctx, dir, floor, expect,
+			j, err := journal.Open(ctx, dir, floor, expect, nil,
 				journal.WithClock(f.Clock), journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS()),
 				journal.WithSettings(fixtureSettings))
 			if err != nil {

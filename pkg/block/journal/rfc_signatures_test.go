@@ -15,7 +15,9 @@ import (
 // this file stops compiling.
 var (
 	_ = func() (JournalID, error) { return Init(context.Context(nil), "", InstallationID{}) }
-	_ = func() (*Journal, error) { return Open(context.Context(nil), "", Version{}, JournalID{}) }
+	_ = func() (*Journal, error) {
+		return Open(context.Context(nil), "", Version{}, JournalID{}, []SyncMark(nil))
+	}
 	_ = func() error { return Restamp(context.Context(nil), "", JournalID{}, InstallationID{}) }
 	_ = func(j *Journal) error { return j.Close() }
 
@@ -124,6 +126,9 @@ var (
 		Reason: LossCorrupt, Offloaded: false, AtOpen: false}
 	_ = []LossReason{LossCorrupt, LossStale, LossFailedWindow}
 	_ = TagConflict{File: FileID{}, Tags: [2]ShareTag{}}
+	_ = SyncMark{Stream: 0, Segment: 0, Through: 0, Offset: 0, Sequence: 0}
+	_ = SegmentRange{Segment: SegmentID(0), Off: 0, Len: 0}
+	_ = UnreadableRangesError{Ranges: []SegmentRange(nil), Format: false, Identity: JournalID{}}
 )
 
 // TestHandleHasNoSetSyncPolicy pins an absence the compile-time block above

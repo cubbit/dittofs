@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"strings"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/platform"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/recovery"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
@@ -218,6 +218,11 @@ func namesIdentity(fs storage.FS, id JournalID) bool {
 // and every version on disk, so none issued before a crash whose record was
 // lost is issued again.
 //
+// marks are the per-stream sync marks the caller recorded durably and hands
+// Open, which recovery checks the scanned tails against. Without them a tail
+// the device lost reads as torn, and an append lands after records no sync
+// proved. A caller that recorded none passes nil.
+//
 // Open requires WithClock. Without it, Open fails with ErrNoClock and opens
 // nothing.
 //
@@ -231,7 +236,7 @@ func namesIdentity(fs storage.FS, id JournalID) bool {
 // refusal altogether — a WriteAt that waits for a spare, or an Open that
 // returns only once the pool has made its first ones — is the later change
 // that removes it.
-func Open(ctx context.Context, dir string, floor Version, expect JournalID, opts ...Option) (*Journal, error) {
+func Open(ctx context.Context, dir string, floor Version, expect JournalID, marks []SyncMark, opts ...Option) (*Journal, error) {
 	cfg, err := resolveConfig(dir, opts)
 	if err != nil {
 		return nil, err
@@ -269,27 +274,16 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, opts
 		return nil, fmt.Errorf("%w: %s holds a segment and no format file", ErrUnidentified, dir)
 	}
 
-	f, err := cfg.Storage.Open(format.FormatFileName)
-	if err != nil {
-		return nil, err
-	}
-	// One byte past the format's size is read as well, so a file holding a
-	// whole format file and anything after it is handed to the decoder whole:
-	// the decoder judges length strictly, and a read that stopped at the
-	// format's own size would take a longer file as the valid prefix it
-	// holds and cast the trailing bytes away.
-	b := make([]byte, format.FormatFileSize+1)
-	n, rerr := f.ReadAt(b, 0)
-	if err := f.Close(); err != nil {
-		return nil, err
-	}
-	// A file shorter than a format file is damaged like one whose bytes do
-	// not verify: the decoder judges its length, so a short read is handed
-	// to it rather than answered as an error of the storage's own.
-	if rerr != nil && !errors.Is(rerr, io.EOF) {
-		return nil, rerr
-	}
-	ff, err := format.DecodeFormatFile(b[:n])
+	// The format file is read through the same retry bound every read at
+	// open gets: a read the device cannot complete is tried again, never
+	// judged on the bytes it did not return. The attempts open the file
+	// inside the bound, so a failed open fails like a failed read.
+	ff, err := recovery.ReadFormat(ctx, recovery.Deps{
+		FS:     cfg.Storage,
+		Clock:  cfg.Clock,
+		Tracer: cfg.Tracer,
+		Log:    cfg.Logger,
+	}, expect)
 	switch {
 	case err == nil:
 	case errors.Is(err, format.ErrUnknownVersion):
@@ -304,14 +298,28 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, opts
 		return nil, &IdentityError{Found: ff.Identity, Installation: ff.Installation, Segments: hasSegment}
 	}
 	if hasSegment {
+		// The attach pass runs over the directory: its bounded reads, the
+		// .spare.tmp unlinks and the classes it sorts the segments into. A
+		// read the device never completed refuses the open on its ranges;
+		// a pass that ran answers ErrNotImplemented below.
+		if _, err := recovery.Run(ctx, recovery.Deps{
+			FS:     cfg.Storage,
+			Clock:  cfg.Clock,
+			Tracer: cfg.Tracer,
+			Log:    cfg.Logger,
+		}, floor, expect, marks); err != nil {
+			return nil, err
+		}
 		// decision: a directory holding a segment is refused with
-		// ErrNotImplemented, not recovered: rebuilding the state on disk is
-		// the one piece of a recovering open this implementation does not
-		// have yet. Every reopen of a journal that has run meets this,
-		// because the spare pool leaves its finished spares as segment
-		// files, so no journal that has served can be opened again here.
-		// The refusal keeps the directory as it found it, so the recovery
-		// that exists later takes it whole.
+		// ErrNotImplemented, not recovered: the attach pass above is the
+		// one step of a recovering open this implementation has, and the
+		// recovery after it — the rebuild, the marks, the tail's proof, the
+		// spares and the emptying — is not built. Every reopen of a journal
+		// that has run meets this, because the spare pool leaves its
+		// finished spares as segment files, so no journal that has served
+		// can be opened again here. The refusal keeps the directory as the
+		// attach pass left it, so the recovery that exists later takes it
+		// whole.
 		return nil, fmt.Errorf("%w: %s holds segments; recovering them is not built", ErrNotImplemented, dir)
 	}
 
