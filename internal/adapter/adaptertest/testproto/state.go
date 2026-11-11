@@ -41,17 +41,18 @@ func newRegistry() *registry { return &registry{m: map[uint32]*session{}} }
 // the release of the keep cs took for it.
 func (g *registry) join(id uint32, cs *connState, expires time.Time, release func()) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	s := g.m[id]
 	if s == nil {
 		s = &session{trees: map[uint32]bool{}, conns: map[*connState]func(){}}
 		g.m[id] = s
 	}
 	s.expires = expires
-	if old := s.conns[cs]; old != nil {
+	old := s.conns[cs]
+	s.conns[cs] = release
+	g.mu.Unlock()
+	if old != nil {
 		old()
 	}
-	s.conns[cs] = release
 }
 
 // look reports whether cs carries session id, when its credential ends, and
@@ -149,6 +150,9 @@ func (p *Protocol) session(_ context.Context, r *core.Request, req *sessionReq) 
 		return nil, errNoSessionID
 	}
 	r.Conn.Established()
+	if s.conn.p.bare {
+		return &empty{}, nil // Bare carries no session: it has no OnClose to drop one
+	}
 	var release func()
 	if req.keep {
 		release = r.Conn.Keep()
@@ -225,6 +229,11 @@ func decodeTarget(b []byte, _ core.Version, req *targetReq) (int, error) {
 
 // notify sends a message of its own on the connection, ahead of the reply to
 // the request its target names.
+//
+// ponytail: the message is reserved under no client's key, as the replay
+// cache's copy is, and is left to Conn.Send on every path, an error included.
+// Release it here on an error once core states that a refused Send leaves the
+// message with its caller.
 func (p *Protocol) notify(ctx context.Context, r *core.Request, req *targetReq) (*empty, error) {
 	s, err := stateOf(r)
 	if err != nil {
@@ -272,9 +281,13 @@ func decodeCompound(b []byte, _ core.Version) (core.Invocation, int, error) {
 	if len(b) < 4 {
 		return core.Invocation{}, 0, errMember
 	}
+	count := binary.BigEndian.Uint32(b)
+	if count > maxBody {
+		return core.Invocation{}, 0, errMember // more members than a record has bytes
+	}
 
 	return core.Invocation{
-		Count:   int(binary.BigEndian.Uint32(b)),
+		Count:   int(count),
 		Bound:   func() int { return 0 },
 		Resolve: func(*core.Request) error { return nil },
 		Call:    func(context.Context, *core.Request) error { return nil },
@@ -293,24 +306,31 @@ func readOp(b []byte) (uint32, int, error) {
 
 // memberRows is rows as a compound's members decode them: each member's
 // arguments follow a 4-byte length, after the code readOp took.
+//
+// Negotiate is left out: a connection negotiates in a request of its own, as
+// the Router gives only that one the highest version it may pick.
 func memberRows(rows []*core.Op) []*core.Op {
-	out := make([]*core.Op, len(rows))
-	for i, row := range rows {
+	var out []*core.Op
+	for _, row := range rows {
+		if row.Code == OpNegotiate {
+			continue
+		}
 		m := *row
 		whole := row.Decode
 		m.Decode = func(b []byte, v core.Version) (core.Invocation, int, error) {
 			if len(b) < 4 {
 				return core.Invocation{}, 0, errMember
 			}
-			n := int(binary.BigEndian.Uint32(b))
-			if n > len(b)-4 {
+			length := binary.BigEndian.Uint32(b)
+			if uint64(length) > uint64(len(b)-4) {
 				return core.Invocation{}, 0, errMember
 			}
+			n := int(length)
 			inv, _, err := whole(b[4:4+n], v)
 
 			return inv, 4 + n, err
 		}
-		out[i] = &m
+		out = append(out, &m)
 	}
 
 	return out

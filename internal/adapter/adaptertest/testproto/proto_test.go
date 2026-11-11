@@ -19,7 +19,7 @@ var _ settings.Settings = Settings{}
 // row is version v's row for code, decoded from args as the pipeline would.
 func row(t *testing.T, v core.Version, code uint32, args string) (*core.Op, core.Invocation) {
 	t.Helper()
-	for _, op := range New(adapter.Deps{}).ops(v) {
+	for _, op := range New(adapter.Deps{}).ops() {
 		if op.Code != code {
 			continue
 		}
@@ -74,7 +74,7 @@ func TestEchoAnswersItsPayloadUnderItsOwnRole(t *testing.T) {
 // A request refused before its handler ran still encodes: every row's encoder
 // takes a nil reply.
 func TestEveryRowEncodesWithNoReply(t *testing.T) {
-	for _, op := range New(adapter.Deps{}).ops(2) {
+	for _, op := range New(adapter.Deps{}).ops() {
 		inv, _, err := op.Decode(make([]byte, 9), 2)
 		if err != nil {
 			t.Fatalf("%s: %v", op.Name, err)
@@ -103,6 +103,9 @@ func TestPutFHNamesItsHandleAndSetsTheCurrentOne(t *testing.T) {
 	}
 	if !bytes.Equal(s.fh, vfs.Handle("handle-bytes")) {
 		t.Errorf("the current filehandle is %q after PutFH", s.fh)
+	}
+	if r.Level&core.NeedsFH == 0 {
+		t.Errorf("the request's level is %#x after PutFH: the members after it in a compound have no current filehandle", r.Level)
 	}
 }
 
@@ -140,60 +143,61 @@ func TestPanicPanics(t *testing.T) {
 // The rows: each code once, served in both versions, with the preconditions
 // the pipeline checks for it.
 func TestRows(t *testing.T) {
+	both, second := core.Range{First: 1, Last: 2}, core.Range{First: 2, Last: 2}
 	want := map[uint32]struct {
+		versions  core.Range
 		needs     core.Needs
+		role      core.Role
+		expired   bool
 		cacheable bool
 	}{
-		OpNegotiate: {core.NeedsNothing, false},
-		OpPutFH:     {core.NeedsTree, false},
-		OpEcho:      {core.NeedsNothing, false},
-		OpCreate:    {core.NeedsTree | core.NeedsFH, true},
-		OpPanic:     {core.NeedsNothing, false},
-		OpSession:   {core.NeedsNegotiated, false},
-		OpLogoff:    {core.NeedsSession, false},
-		OpTree:      {core.NeedsSession, false},
-		OpNotify:    {core.NeedsNothing, false},
-		OpViolate:   {core.NeedsNothing, false},
+		OpNegotiate: {both, core.NeedsNothing, core.RoleNone, false, false},
+		OpSession:   {both, core.NeedsNegotiated, core.RoleNone, true, false},
+		OpLogoff:    {both, core.NeedsSession, core.RoleRelease, true, false},
+		OpTree:      {both, core.NeedsSession, core.RoleNone, false, false},
+		OpPutFH:     {both, core.NeedsTree, core.RoleContext, false, false},
+		OpEcho:      {both, core.NeedsNothing, core.RoleNone, false, false},
+		OpCreate:    {both, core.NeedsTree | core.NeedsFH, core.RoleNone, false, true},
+		OpPanic:     {both, core.NeedsNothing, core.RoleNone, false, false},
+		OpPark:      {second, core.NeedsTree | core.NeedsFH, core.RoleNone, false, false},
+		OpNotify:    {both, core.NeedsNothing, core.RoleNone, false, false},
+		OpViolate:   {both, core.NeedsNothing, core.RoleNone, false, false},
 	}
-	for _, v := range []core.Version{1, 2} {
-		seen := map[uint32]bool{}
-		for _, op := range New(adapter.Deps{}).ops(v) {
-			w, ok := want[op.Code]
-			switch {
-			case !ok:
-				continue
-			case seen[op.Code]:
-				t.Errorf("version %d: operation %d has two rows", v, op.Code)
-			case op.Needs != w.needs || op.Cacheable != w.cacheable:
-				t.Errorf("version %d, %s: needs %#x cacheable %v; want %#x, %v", v, op.Name, op.Needs, op.Cacheable, w.needs, w.cacheable)
-			case v < op.Versions.First || v > op.Versions.Last:
-				t.Errorf("version %d's table holds %s, served in %v", v, op.Name, op.Versions)
-			}
-			seen[op.Code] = true
+	seen := map[uint32]bool{}
+	for _, op := range New(adapter.Deps{}).ops() {
+		w, ok := want[op.Code]
+		switch {
+		case !ok:
+			t.Errorf("a row for operation %d, %s, which the table of rows does not list", op.Code, op.Name)
+		case seen[op.Code]:
+			t.Errorf("operation %d has two rows", op.Code)
+		case op.Versions != w.versions || op.Needs != w.needs || op.Role != w.role || op.Expired != w.expired || op.Cacheable != w.cacheable:
+			t.Errorf("%s: versions %v needs %#x role %d expired %v cacheable %v; want %+v", op.Name, op.Versions, op.Needs, op.Role, op.Expired, op.Cacheable, w)
 		}
-		if len(seen) != len(want) {
-			t.Errorf("version %d has %d of the %d rows both versions serve", v, len(seen), len(want))
-		}
+		seen[op.Code] = true
+	}
+	if len(seen) != len(want) {
+		t.Errorf("%d of the %d rows", len(seen), len(want))
+	}
+	if seen[OpCancel] || seen[OpCompound] {
+		t.Error("Cancel is never routed, and the compound row is the first version's alone, over its members")
 	}
 
-	// Park is version 2's alone, and Session and Logoff run on an expired
-	// credential, Logoff as a release.
-	byCode := func(v core.Version) map[uint32]*core.Op {
-		m := map[uint32]*core.Op{}
-		for _, op := range New(adapter.Deps{}).ops(v) {
-			m[op.Code] = op
+	// A row served in the second version alone sits in both tables, so the
+	// first refuses it by its Versions column; the compound row has none of
+	// the preconditions, and no member negotiates.
+	c := compound(nil)
+	if c.Versions != (core.Range{First: 1, Last: 1}) || c.Needs != core.NeedsNothing || c.Role != core.RoleNone || c.Expired || c.Cacheable {
+		t.Errorf("the compound row: %+v", c)
+	}
+	members := memberRows(New(adapter.Deps{}).ops())
+	if len(members) != len(want)-1 {
+		t.Errorf("%d member rows, want every row but Negotiate's", len(members))
+	}
+	for _, m := range members {
+		if m.Code == OpNegotiate {
+			t.Error("a compound's members can negotiate")
 		}
-		return m
-	}
-	v1, v2 := byCode(1), byCode(2)
-	if v1[OpPark] != nil || v2[OpPark] == nil || v2[OpPark].Versions != (core.Range{First: 2, Last: 2}) || v2[OpPark].Needs != core.NeedsTree|core.NeedsFH {
-		t.Errorf("Park: version 1 has it: %v; version 2's row: %+v", v1[OpPark] != nil, v2[OpPark])
-	}
-	if !v2[OpSession].Expired || !v2[OpLogoff].Expired || v2[OpLogoff].Role != core.RoleRelease || v2[OpEcho].Expired {
-		t.Errorf("the expired-credential columns: Session %v, Logoff %v with role %d, Echo %v", v2[OpSession].Expired, v2[OpLogoff].Expired, v2[OpLogoff].Role, v2[OpEcho].Expired)
-	}
-	if v1[OpCancel] != nil || v2[OpCancel] != nil {
-		t.Error("Cancel has a row: it is never routed")
 	}
 }
 

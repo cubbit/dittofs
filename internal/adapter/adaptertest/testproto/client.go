@@ -19,7 +19,7 @@ type Msg struct {
 	Session uint32 // all ones: inherited from the member before
 	Tree    uint32
 	Credits uint16 // charged by this message
-	Seq     uint32
+	Seq     uint32 // a request repeating a session's sequence is answered from the replay cache once a reply under it was stored
 	Related bool
 	Pend    bool       // HoldCodec.Pends answers true for this member
 	Role    core.Role  // OpEcho: its per-request role
@@ -34,7 +34,7 @@ type Msg struct {
 
 // Reply is one reply message, as a test reads it.
 type Reply struct {
-	ID      uint64
+	ID      uint64 // the request's; with the top bit set on the interim and final replies to a held or parked request
 	Status  core.Status
 	Interim bool
 	Credits uint16 // granted by this reply

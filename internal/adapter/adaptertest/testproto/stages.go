@@ -102,7 +102,11 @@ const creditTarget = 64
 var errOverdraw = errors.New("testproto: a message that charges more credits than the connection holds")
 
 // flow is the connection's credits: one to start with, charged by each
-// request and granted back by each reply.
+// request and granted back by each reply. It follows the client's balance on
+// every path that admits a request. A reply to a request refused before Admit,
+// one with a bad checksum, grants credits that were never charged here, and a
+// Cancel's credits are charged by its client and never here, so there the two
+// counts part.
 type flow struct {
 	mu      sync.Mutex
 	balance int
@@ -127,6 +131,14 @@ func (f *flow) Admit(_ context.Context, h core.Header) (func(), error) {
 	return func() {}, nil
 }
 
+// charge takes n credits, as many as the connection holds: those of a message
+// its client sent and charged, and Admit never saw.
+func (f *flow) charge(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.balance = max(f.balance-n, 0)
+}
+
 // grant adds n credits, as many as the target leaves room for, and answers
 // how many it added.
 func (f *flow) grant(n uint16) uint16 {
@@ -138,6 +150,19 @@ func (f *flow) grant(n uint16) uint16 {
 	return uint16(g)
 }
 
+// asHeader is h as testproto's header: a request's, or the one Final
+// returned for it.
+func asHeader(h core.Header) (*header, bool) {
+	switch h := h.(type) {
+	case *header:
+		return h, true
+	case *final:
+		return &h.header, true
+	}
+
+	return nil, false
+}
+
 // keyOf is the key a held or parked request is known by: its message ID with
 // the top bit set, so it is never 0.
 func keyOf(h *header) uint64 { return h.id() | 1<<63 }
@@ -146,7 +171,7 @@ func keyOf(h *header) uint64 { return h.id() | 1<<63 }
 type hold struct{ flow *flow }
 
 func (hold) Key(h core.Header) uint64 {
-	hd, ok := h.(*header)
+	hd, ok := asHeader(h)
 	if !ok {
 		return 1 << 63
 	}
@@ -170,11 +195,16 @@ func (s hold) Interim(h core.Header, grant bool, after []core.Header, out *resou
 	if grant {
 		want = int(hd.credits())
 	}
+	charged := 0
 	for _, a := range after {
 		if ah, ok := a.(*header); ok {
-			want += int(ah.credits())
+			charged += int(ah.credits())
 		}
 	}
+	// The members after do not run, so Admit never charged what their client
+	// did: charge it here, then grant it back with the rest.
+	s.flow.charge(charged)
+	want += charged
 	granted := s.flow.grant(uint16(min(want, creditTarget)))
 
 	at := len(out.B)
@@ -221,7 +251,7 @@ func (hold) Cancels(h core.Header) (uint64, bool) {
 
 // Pends answers the message's pend flag.
 func (hold) Pends(h core.Header, _ error) bool {
-	hd, ok := h.(*header)
+	hd, ok := asHeader(h)
 
 	return ok && hd.flags()&flagPend != 0
 }
@@ -232,13 +262,16 @@ type replayKey struct{ session, seq uint32 }
 // replay answers a request it has cached the reply of.
 type replay struct {
 	pool *resources.BufPool // over the reply budget; nil: no budgets were given
+	flow *flow              // the connection's credits; nil: grants are not counted
 	mu   sync.Mutex
 	m    map[replayKey][]byte
 }
 
 // Lookup returns a fresh copy of the reply cached for h's session and
 // sequence, in a buffer reserved from the reply budget under ctx; or nil, nil
-// when none is cached.
+// when none is cached. The copy grants afresh, what the replayed request
+// charged and at least one, through the connection's credits: the grant the
+// stored reply carried was counted when that reply was encoded.
 //
 // ponytail: the copy is reserved under no client's key, since a stage is
 // handed no client address, so a client replaying many requests takes no turn
@@ -262,13 +295,16 @@ func (r *replay) Lookup(ctx context.Context, h core.Header) (*resources.Buf, err
 		return nil, err
 	}
 	buf.B = append(buf.B[:0], cached...)
+	if r.flow != nil && len(buf.B) >= headerLen {
+		binary.BigEndian.PutUint16(buf.B[offCredits:], r.flow.grant(max(hd.credits(), 1)))
+	}
 
 	return buf, nil
 }
 
 // Store keeps its own copy of reply, which the caller then wraps in place.
 func (r *replay) Store(h core.Header, reply *resources.Buf) {
-	hd, ok := h.(*header)
+	hd, ok := asHeader(h)
 	if !ok {
 		return
 	}

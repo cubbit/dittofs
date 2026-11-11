@@ -51,6 +51,10 @@ func TestUnwrapOpensAChainAndResolvesAnInheritedSession(t *testing.T) {
 	if got := string(arguments(body, 0, hs[0])); got != "a" {
 		t.Errorf("the Create's name reads %q after Unwrap, want \"a\"", got)
 	}
+	four := bytes.Clone(nameVector[lengthLen:])
+	if named, err := unwrapAll(t, four); err != nil || string(arguments(four, 0, named[0])) != "name" {
+		t.Errorf("the four-byte name reads %q after Unwrap, %v", four[headerLen:], err)
+	}
 	if got := arguments(body, 41, hs[1]); !bytes.Equal(got, []byte{0}) {
 		t.Errorf("the Echo's role byte reads % x after Unwrap, want 00", got)
 	}
@@ -64,13 +68,14 @@ func TestUnwrapOpensAChainAndResolvesAnInheritedSession(t *testing.T) {
 	}
 }
 
-// A message with any one byte changed is refused, but for the bytes Unwrap
-// does not read as the message's own: none.
+// A message with any one bit of a byte changed is refused. A session
+// rewritten to 0 is not: under session 0 a message is not sealed, and reads
+// as it was sent.
 func TestUnwrapRefusesAChangedByte(t *testing.T) {
 	sealed := Append(nil, Msg{Op: OpCreate, Version: 2, ID: 9, Session: 5, Tree: 1, Credits: 1, Name: "name"})[lengthLen:]
 	for i := range sealed {
-		if i < 4 || (i >= offSession && i < offSession+4) {
-			continue // next and the session decide which message and key are read, not what is summed alone
+		if i < 4 {
+			continue // next decides which message is read, and a changed one is refused by Decode
 		}
 		body := bytes.Clone(sealed)
 		body[i] ^= 0x01
@@ -94,6 +99,9 @@ func TestUnwrapChecksARelatedMemberUnderThePreviousSession(t *testing.T) {
 	}
 	if _, err := (security{}).Unwrap(second, rec, nil); !errors.Is(err, errNoPrev) {
 		t.Errorf("an inheriting member with no member before it: Unwrap = %v, want a refusal", err)
+	}
+	if _, err := (security{}).Unwrap(second, rec, second); !errors.Is(err, errNoPrev) {
+		t.Errorf("an inheriting member after one whose session was never resolved: Unwrap = %v, want a refusal", err)
 	}
 
 	// Under another session's member before it, the checksum no longer holds.
@@ -152,6 +160,23 @@ func TestWrapSealsAReplyOnce(t *testing.T) {
 	}
 	if replies, err := openReplies(twice.B); err == nil && string(replies[0].Body) == "reply-body" {
 		t.Error("a reply wrapped twice still opens to its body")
+	}
+
+	// A chain of two replies is sealed in one pass, each under its session.
+	chain := reply(t, bytes.Clone(request), "first-body")
+	if err := (headerCodec{}).Chain(chain, 0); err != nil {
+		t.Fatal(err)
+	}
+	second := reply(t, bytes.Clone(request), "second-body")
+	chain.B = append(chain.B, second.B...)
+	if err := (security{}).Wrap(nil, chain); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(chain.B, []byte("first-body")) || bytes.Contains(chain.B, []byte("second-body")) {
+		t.Error("a wrapped chain carries a body in clear")
+	}
+	if replies, err := openReplies(chain.B); err != nil || len(replies) != 2 || string(replies[0].Body) != "first-body" || string(replies[1].Body) != "second-body" {
+		t.Errorf("the wrapped chain opens to %+v, %v", replies, err)
 	}
 
 	plain := reply(t, bytes.Clone(echoVector[lengthLen:]), "reply-body")
@@ -261,26 +286,47 @@ func TestInterimGrants(t *testing.T) {
 		}
 		return hs
 	}
+	// The request is a sealed, related, pending member with a member after
+	// it, so its header carries a next, flags and a checksum the interim must
+	// not copy.
+	chain := Append(nil, Msg{Op: OpEcho, Version: 2, Session: 5}, Msg{Op: OpCreate, Version: 2, ID: 6, Session: inherited, Credits: 5, Related: true, Pend: true}, Msg{Op: OpEcho, Version: 2, Session: inherited, Related: true})[lengthLen:]
+	hs, err := unwrapAll(t, chain)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []struct {
-		name  string
-		grant bool
-		after []core.Header
-		want  uint16
+		name    string
+		balance int // the connection's credits before
+		grant   bool
+		after   []core.Header
+		want    uint16 // granted on the wire
+		left    int    // the connection's credits after
 	}{
-		{"with grant", true, nil, 5},
-		{"without grant", false, nil, 1},
-		{"with the members after", false, after(2, 3), 6},
-		{"past the target", true, after(40, 40), creditTarget},
+		{"with grant", 10, true, nil, 5, 15},
+		{"without grant", 10, false, nil, 1, 11},
+		{"with the members after, which their client charged", 10, false, after(2, 3), 6, 11},
+		{"with grant and members after", 10, true, after(2, 3), 10, 15},
+		{"a sum past the target", 0, true, after(40, 40), creditTarget, creditTarget},
+		{"a sum past 16 bits", 0, true, after(65535, 1), creditTarget, creditTarget},
+		{"near the target", 62, true, nil, 2, creditTarget},
 	} {
-		s := hold{flow: &flow{}}
+		f := &flow{balance: c.balance}
+		s := hold{flow: f}
 		out := &resources.Buf{B: []byte("before")}
-		if err := s.Interim(headerOf(t, req), c.grant, c.after, out); err != nil {
+		if err := s.Interim(hs[1], c.grant, c.after, out); err != nil {
 			t.Fatal(err)
 		}
 		got := decodeAll(t, out.B[len("before"):])
-		if len(got) != 1 || got[0].credits != c.want || got[0].flags != flagReply|flagInterim || got[0].id != 6|1<<63 || got[0].op != OpCreate {
-			t.Errorf("%s: the interim is %+v; want %d credits, the reply and interim flags, and the key as its ID", c.name, got, c.want)
+		want := fields{0, flagReply | flagInterim, 2, c.want, OpCreate, 6 | 1<<63, 5, 0, 0, 0, 0, ""}
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("%s: the interim is\n got %+v\nwant %+v", c.name, got, want)
 		}
+		if f.balance != c.left {
+			t.Errorf("%s: the connection holds %d credits after, want %d", c.name, f.balance, c.left)
+		}
+	}
+	if _ = req; hs[1].credits() != 5 || hs[1].id() != 6 {
+		t.Error("Interim changed the request's own header")
 	}
 }
 
@@ -305,6 +351,27 @@ func TestFinalGrantsWhatTheInterimWithheld(t *testing.T) {
 	if req.credits() != 5 || req.id() != 6 {
 		t.Error("Final changed the request's own header")
 	}
+
+	// The final reply's grant reaches the connection's credits, and the
+	// other stages read Final's header as the request's: the same key, the
+	// same pend flag, the same cache slot.
+	f := &flow{balance: 10}
+	counted := &resources.Buf{}
+	fin := s.Final(req, true)
+	if err := (headerCodec{flow: f}).Encode(fin, StatusOK, counted); err != nil {
+		t.Fatal(err)
+	}
+	if f.balance != 14 {
+		t.Errorf("after a final reply granting 4 the connection holds %d credits, want 14", f.balance)
+	}
+	if s.Key(fin) != s.Key(req) || !s.Pends(fin, nil) {
+		t.Errorf("Final's header has key %#x and pends %v; the request's has %#x and pends", s.Key(fin), s.Pends(fin, nil), s.Key(req))
+	}
+	r := &replay{m: map[replayKey][]byte{}}
+	r.Store(fin, counted)
+	if len(r.m) != 1 {
+		t.Error("a reply stored under Final's header was dropped")
+	}
 	free := headerOf(t, Msg{Op: OpCreate, Version: 2, ID: 6})
 	out := &resources.Buf{}
 	if err := (headerCodec{}).Encode(s.Final(free, true), StatusOK, out); err != nil {
@@ -323,7 +390,7 @@ func TestCancelsAndPends(t *testing.T) {
 	if _, ok := s.Cancels(headerOf(t, Msg{Op: OpEcho, Version: 2, ID: 9})); ok {
 		t.Error("Cancels names a request for an Echo")
 	}
-	if !s.Pends(headerOf(t, Msg{Op: OpCreate, Version: 2, Pend: true}), nil) || s.Pends(headerOf(t, Msg{Op: OpCreate, Version: 2}), nil) {
+	if !s.Pends(headerOf(t, Msg{Op: OpCreate, Version: 2, Pend: true}), nil) || s.Pends(headerOf(t, Msg{Op: OpCreate, Version: 2, Related: true}), nil) {
 		t.Error("Pends does not follow the message's pend flag")
 	}
 }
@@ -332,14 +399,14 @@ func TestCancelsAndPends(t *testing.T) {
 // nothing for a request it has not seen.
 func TestReplayStoresItsOwnCopyPerSessionAndSequence(t *testing.T) {
 	r := &replay{m: map[replayKey][]byte{}}
-	req := headerOf(t, Msg{Op: OpCreate, Version: 1, Seq: 7})
+	req := headerOf(t, Msg{Op: OpCreate, Version: 1, Seq: 7, Session: 3})
 	rep := &resources.Buf{B: []byte("the reply")}
 	r.Store(req, rep)
 	rep.B[0] = 'X'
-	if got := r.m[replayKey{0, 7}]; string(got) != "the reply" {
+	if got := r.m[replayKey{3, 7}]; string(got) != "the reply" {
 		t.Errorf("the cache holds %q after the caller changed its reply, want its own copy", got)
 	}
-	for _, other := range []Msg{{Op: OpCreate, Version: 1, Seq: 8}, {Op: OpCreate, Version: 1, Seq: 7, Session: 2}} {
+	for _, other := range []Msg{{Op: OpCreate, Version: 1, Seq: 8, Session: 3}, {Op: OpCreate, Version: 1, Seq: 7, Session: 2}, {Op: OpCreate, Version: 1, Seq: 7}} {
 		if buf, err := r.Lookup(t.Context(), headerOf(t, other)); buf != nil || err != nil {
 			t.Errorf("Lookup of sequence %d under session %d = %v, %v; want nothing", other.Seq, other.Session, buf, err)
 		}

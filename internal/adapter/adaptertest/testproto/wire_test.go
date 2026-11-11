@@ -71,6 +71,26 @@ var chainVector = []byte{
 	0x05, // role 0, XORed with the key's 0x05
 }
 
+// nameVector is one Create of "name" under session 5: four bytes of
+// arguments, so each byte of the key 05 00 07 df seals one.
+var nameVector = []byte{
+	0x00, 0x00, 0x00, 0x2c, // the body's length: 44
+	0x00, 0x00, 0x00, 0x00, // next: the last
+	0x00,       // flags
+	0x02,       // version
+	0x00, 0x01, // credits
+	0x00, 0x00, 0x00, 0x07, // operation: Create
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, // message ID
+	0x00, 0x00, 0x00, 0x05, // session
+	0x00, 0x00, 0x00, 0x01, // tree
+	0x00, 0x00, 0x00, 0x00, // sequence
+	0x00, 0x00, 0x00, 0x00, // status
+	0x05, 0x00, 0x09, 0xe8, // checksum: 0x209 of bytes, plus 5 times 0x01000193
+	0x6b, 0x61, 0x6a, 0xba, // "name", 6e 61 6d 65, XORed with 05 00 07 df
+}
+
+var nameMsgs = []Msg{{Op: OpCreate, Version: 2, ID: 9, Session: 5, Tree: 1, Credits: 1, Name: "name"}}
+
 var chainMsgs = []Msg{
 	{Op: OpCreate, Version: 2, ID: 0x0102030405060708, Session: 5, Tree: 9, Credits: 2, Seq: 3, Name: "a"},
 	{Op: OpEcho, Version: 2, ID: 0x0102030405060709, Session: inherited, Tree: 9, Related: true, Pend: true},
@@ -188,6 +208,7 @@ func TestAppendEncodesToTheVectors(t *testing.T) {
 	}{
 		{"echo", echoMsgs, echoVector},
 		{"chain", chainMsgs, chainVector},
+		{"name", nameMsgs, nameVector},
 	} {
 		if got := Append(nil, c.msgs...); !bytes.Equal(got, c.vector) {
 			t.Errorf("%s:\n got % x\nwant % x", c.name, got, c.vector)
@@ -352,6 +373,14 @@ func TestClientWritesTheRecordAndKeepsTheBalance(t *testing.T) {
 	}
 	if got := c.Balance(); got != 3 {
 		t.Errorf("after grants of 3 and 1 the balance is %d, want 3", got)
+	}
+
+	// Every message of a record is charged, not the first alone.
+	if err := c.Send(Msg{Op: OpEcho, Version: 2, Credits: 1}, Msg{Op: OpEcho, Version: 2, Credits: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Balance(); got != 0 {
+		t.Errorf("after charging 1 and 2 in one record the balance is %d, want 0", got)
 	}
 
 	if _, err := peer.Write([]byte{0x00, 0x10, 0x00, 0x01}); err != nil {

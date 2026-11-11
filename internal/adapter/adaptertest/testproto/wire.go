@@ -21,12 +21,17 @@
 //	12      8     message ID
 //	20      4     session, all ones for the session of the member before
 //	24      4     tree
-//	28      4     sequence
+//	28      4     sequence: with the session, the key of the replay cache
 //	32      4     status, 0 in a request
 //	36      4     checksum
 //
 // A next that is not 0 points past its own message's header and leaves room
 // for a whole header before the body's end.
+//
+// A reply grants the credits its request charged, and at least one, as far as
+// the connection's 64 leave room. The interim and final replies to a held or
+// parked request carry its message ID with the top bit set. A reply never
+// carries an all-ones session: it carries the one its request resolved to.
 //
 // Under a session s other than 0, a message is sealed. Its arguments are
 // XORed with the session's key, byte i of them with byte i mod 4 of s times

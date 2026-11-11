@@ -111,9 +111,10 @@ func TestConformanceEchoEndToEnd(t *testing.T) {
 	stop()
 }
 
-// A reply the cache stored is handed back clear, in a fresh buffer each time:
-// wrapping the caller's reply in place, or a copy Lookup returned, changes
-// neither the cache's copy nor the next Lookup's.
+// A reply the cache stored is handed back clear, in a fresh buffer each time,
+// granting afresh through the connection's credits: wrapping the caller's
+// reply in place, or a copy Lookup returned, changes neither the cache's copy
+// nor the next Lookup's.
 func TestConformanceReplayLookupCopies(t *testing.T) {
 	budgets := &resources.Budgets{
 		Receive:    resources.NewWaitBudget("receive", 8<<20),
@@ -142,6 +143,17 @@ func TestConformanceReplayLookupCopies(t *testing.T) {
 	if err := st.Security.Wrap(h, reply); err != nil {
 		t.Fatal(err)
 	}
+
+	// Fill the connection's credits, so a copy that grants afresh grants
+	// none, where the stored reply granted one.
+	scratch := &resources.Buf{}
+	for range creditTarget {
+		scratch.B = scratch.B[:0]
+		if err := st.Header.Encode(h, StatusOK, scratch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clear[offCredits], clear[offCredits+1] = 0, 0
 
 	first, err := st.Replay.Lookup(t.Context(), h)
 	if err != nil {

@@ -37,8 +37,15 @@ func TestASessionLivesWhileAConnectionCarriesIt(t *testing.T) {
 		t.Error("a connection that never set the session up carries it")
 	}
 
-	g.leave(a)
+	// The connection joining again replaces its keep, releasing the first once.
+	g.join(5, a, ends, func() { released = append(released, "a again") })
 	if len(released) != 1 || released[0] != "a" {
+		t.Fatalf("keeps released when the connection joined again: %v, want the first one", released)
+	}
+	released = nil
+
+	g.leave(a)
+	if len(released) != 1 || released[0] != "a again" {
 		t.Errorf("keeps released at the first connection's close: %v, want its own", released)
 	}
 	if carried, _, _ := g.look(5, a, 9); carried {
@@ -128,6 +135,54 @@ func TestTheRequestsLevelFollowsTheSessionAndTree(t *testing.T) {
 		t.Errorf("a member that is not related has level %#x", got)
 	}
 
+	// Logoff and Tree, through their rows, act on the session and tree the
+	// header names.
+	call := func(code uint32) core.Invocation {
+		t.Helper()
+		for _, op := range p.ops() {
+			if op.Code == code {
+				inv, _, err := op.Decode(nil, 2)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return inv
+			}
+		}
+		t.Fatalf("no row for operation %d", code)
+		return core.Invocation{}
+	}
+	treeInv := call(OpTree)
+	tr, _ := level(Msg{Op: OpTree, Session: 5, Tree: 12})
+	if err := treeInv.Call(t.Context(), tr); err != nil {
+		t.Fatal(err)
+	}
+	if _, got := level(Msg{Op: OpEcho, Session: 5, Tree: 12}); got != core.NeedsTree {
+		t.Errorf("after a Tree of tree 12 the level under it is %d", got)
+	}
+	if _, got := level(Msg{Op: OpEcho, Session: 5, Tree: 13}); got != core.NeedsSession {
+		t.Errorf("a Tree of tree 12 connected tree 13: level %d", got)
+	}
+
+	// Bare carries no session, whatever the registry holds.
+	bare := p.Bare().NewConn(nil).Router.(*router)
+	bare.cs.version.Store(1)
+	p.reg.join(5, bare.cs, ends, nil)
+	br, err := bare.request(headerOf(t, Msg{Op: OpEcho, Version: 1, Session: 5, Tree: 9}), nil)
+	if err != nil || br.Level != core.NeedsNegotiated {
+		t.Errorf("on Bare the level under a session is %d, %v; want negotiated", br.Level, err)
+	}
+	p.reg.leave(bare.cs)
+
+	logoffInv := call(OpLogoff)
+	lr, _ := level(Msg{Op: OpLogoff, Session: 5, Tree: 9})
+	if err := logoffInv.Call(t.Context(), lr); err != nil {
+		t.Fatal(err)
+	}
+	if _, got := level(Msg{Op: OpEcho, Session: 5, Tree: 9}); got != core.NeedsNegotiated {
+		t.Errorf("after a Logoff the level under the old session is %d", got)
+	}
+	p.reg.join(5, rt.cs, ends, nil)
+
 	// The connection's close drops its sessions.
 	st.OnClose(t.Context())
 	if _, got := level(Msg{Op: OpEcho, Session: 5, Tree: 9}); got != core.NeedsNegotiated {
@@ -166,6 +221,15 @@ func TestSessionDecodesItsKeepAndExpiry(t *testing.T) {
 	}
 	if _, err := decodeSession(args[:8], 2, &req); err == nil {
 		t.Error("a Session with 8 bytes of arguments was decoded")
+	}
+
+	var target targetReq
+	notify := Append(nil, Msg{Op: OpNotify, Version: 2, Target: 0x0102030405060708})[lengthLen+headerLen:]
+	if n, err := decodeTarget(notify, 2, &target); err != nil || n != 8 || target.target != 0x0102030405060708 {
+		t.Errorf("a Notify's target decodes to %#x in %d bytes, %v", target.target, n, err)
+	}
+	if _, err := decodeTarget(notify[:7], 2, &target); err == nil {
+		t.Error("a Notify with 7 bytes of arguments was decoded")
 	}
 }
 
@@ -206,7 +270,7 @@ func TestTheCompoundRowAndItsMembers(t *testing.T) {
 	}
 
 	members := map[uint32]*core.Op{}
-	for _, m := range memberRows(p.ops(1)) {
+	for _, m := range memberRows(p.ops()) {
 		members[m.Code] = m
 	}
 	rest := args[n:]
@@ -240,6 +304,12 @@ func TestTheCompoundRowAndItsMembers(t *testing.T) {
 	if _, _, err := c.Decode(args[:3], 1); !errors.Is(err, errMember) {
 		t.Errorf("a compound with 3 bytes of arguments: %v", err)
 	}
+	if _, _, err := c.Decode([]byte{0x00, 0x10, 0x00, 0x01}, 1); !errors.Is(err, errMember) {
+		t.Errorf("a compound counting more members than a record has bytes: %v", err)
+	}
+	if _, _, err := members[OpPutFH].Decode([]byte{0xff, 0xff, 0xff, 0xff, 'x'}, 1); !errors.Is(err, errMember) {
+		t.Errorf("a member whose length is past every record: %v", err)
+	}
 	if _, _, err := readOp(args[4:7]); !errors.Is(err, errMember) {
 		t.Errorf("ReadOp of a code that runs past the record: %v", err)
 	}
@@ -271,7 +341,7 @@ var exempt = map[string]string{
 // listed with why.
 //
 // ponytail: the check matches names, so core.X counts wherever it is written
-// and a method of another type with the same name counts as Conn's or
+// and a called method of another type with the same name counts as Conn's or
 // Request's. Resolve the uses with go/types if a gap is ever found hidden
 // that way.
 func TestTestprotoReferencesEveryCoreSymbol(t *testing.T) {
@@ -340,14 +410,16 @@ func TestTestprotoReferencesEveryCoreSymbol(t *testing.T) {
 	used := map[string]bool{}
 	for _, f := range parse(".") {
 		ast.Inspect(f, func(n ast.Node) bool {
-			sel, ok := n.(*ast.SelectorExpr)
-			if !ok {
-				return true
+			switch n := n.(type) {
+			case *ast.SelectorExpr:
+				if pkg, ok := n.X.(*ast.Ident); ok && pkg.Name == "core" {
+					used[n.Sel.Name] = true
+				}
+			case *ast.CallExpr: // a method counts only where it is called, not where a field of its name is read
+				if sel, ok := n.Fun.(*ast.SelectorExpr); ok {
+					used["."+sel.Sel.Name] = true
+				}
 			}
-			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "core" {
-				used[sel.Sel.Name] = true
-			}
-			used["."+sel.Sel.Name] = true
 			return true
 		})
 	}
