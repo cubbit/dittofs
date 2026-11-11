@@ -522,11 +522,13 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// split. That piece's header is outside the charge: its share-limit
 	// overshoot is at most one record header per write whose room was
 	// spent by something outside the admission, in the fail-open
-	// direction, bounded, and closes with the reserved-roll replacement
-	// (#3950) that also closes the unreserved roll such a piece makes.
-	// The premise holding the bound is the stream's own split: a stream
-	// that cut a payload anywhere but an empty segment's edge could draw
-	// more than one extra piece, and the overshoot would exceed one
+	// direction and bounded. A reserved write's piece takes a replacement
+	// spare instead of meeting the pool's refusal, but its header is still
+	// outside this charge; the overshoot closes with the room a stream
+	// promises between a take and an append, which no interleaving caller
+	// can. The premise holding the bound is the stream's own split: a
+	// stream that cut a payload anywhere but an empty segment's edge could
+	// draw more than one extra piece, and the overshoot would exceed one
 	// header.
 	bytes := recordSplit(r.Payload, roomNow, c.cfg.SegmentCap)
 	// The room this grant can claim is what the stream names less what
@@ -554,7 +556,7 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 		// room left, the ledger claims no window an earlier grant holds.
 		// The spare count and the journal-maximum seats below keep no
 		// slack either: the piece a displaced write draws beyond them is
-		// the unreserved roll of the window above (#3950).
+		// the unreserved roll of the window above.
 		roomPart = min64(bytes+format.CatalogEntrySize, max(roomLeft, 0))
 	case roomLeft > 0:
 		roomPart = roomLeft
@@ -629,8 +631,9 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// is granted (RFC 1 §6, §9.2). The limit can be passed by at most one
 	// record header per write whose room was spent by something outside
 	// the admission and which therefore drew a piece beyond its split:
-	// fail-open, bounded, and closed with the reserved-roll replacement
-	// (#3950). Overturned by a stream that can promise the room it
+	// fail-open and bounded. A reserved write's piece takes a replacement
+	// spare rather than a refusal, but its header is still outside this
+	// charge. Overturned by a stream that can promise the room it
 	// measured, which no interleaving caller can.
 	if r.ShareLimit > 0 {
 		if held := c.shareTally[r.Tag] + c.reservedTagged[r.Tag] + bytes; held > r.ShareLimit {
@@ -1010,6 +1013,11 @@ func (g *Grant) releaseEntries() {
 // Hold returns the pool's hold the grant carries, nil when the write fit
 // its stream's room.
 func (g *Grant) Hold() *segment.Hold { return g.hold }
+
+// Drawn reports whether the grant was drawn from a reservation rather than
+// taken by the admission: a drawn grant's write appends against a hold that
+// carries the spares its rolls take, and no limit of the journal refuses it.
+func (g *Grant) Drawn() bool { return g.reservation != nil }
 
 // releaseReservation returns to the counters what a grant — a failed take,
 // or a released one — still holds: bytes of the share's reservation, and

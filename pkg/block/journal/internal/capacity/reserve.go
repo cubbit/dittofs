@@ -369,6 +369,17 @@ func WriteCharge(payload, segCap int64) int64 {
 	return recordSplit(payload, 0, segCap) + segment.RecordBytes(0)
 }
 
+// RollsFor returns the pieces one write of payload bytes appends on a stream
+// with no room: one per empty segment's payload plus the tail. The rolls that
+// write makes are one per piece past the first, so this less one is the rolls
+// its own bytes account for; a stream that held no segment rolls once more
+// onto its first, which the caller adds. A reserved write that rolls more often
+// than that rolled because the stream's other writers filled its segment
+// (RFC 1 §6).
+func RollsFor(payload, segCap int64) int {
+	return sparesBeyondRoom(payload, 0, segCap)
+}
+
 // Release returns what the reservation still holds: its bytes, footer entries,
 // index entries, versions and spares. It is idempotent — a second Release does
 // nothing.

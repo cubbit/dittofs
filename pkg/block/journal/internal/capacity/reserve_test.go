@@ -46,6 +46,33 @@ func TestPiecesFor(t *testing.T) {
 	}
 }
 
+// TestRollsFor pins the rolls a write's own bytes account for: one per empty
+// segment's payload plus the tail, which is the pieces a roomless stream draws
+// and so the spares its split takes. A stream that already holds a segment
+// rolls once more onto its first spare, which the caller adds.
+func TestRollsFor(t *testing.T) {
+	cap := int64(64 << 10)
+	empty := segment.EmptyRoom(cap)
+	tests := []struct {
+		name  string
+		bytes int64
+		want  int
+	}{
+		{"one byte", 1, 1},
+		{"one empty segment", empty, 1},
+		{"one empty segment and a byte", empty + 1, 2},
+		{"three empty segments", 3 * empty, 3},
+		{"nothing asked", 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RollsFor(tt.bytes, cap); got != tt.want {
+				t.Fatalf("RollsFor(%d, %d) = %d rolls, want %d", tt.bytes, cap, got, tt.want)
+			}
+		})
+	}
+}
+
 // reserve calls Reserve and fails the test on any error.
 func (r *rig) reserve(t *testing.T, rq ReserveRequest) *Reservation {
 	t.Helper()

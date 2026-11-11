@@ -83,6 +83,11 @@ type coreOptions struct {
 	// afterAppend runs in WriteAt right after a record is appended and before
 	// it is published, with the file's append domain held.
 	afterAppend func()
+	// beforeAppend runs in appendAndPublish right after the write's grant is
+	// taken and before its first record is appended, with the file's append
+	// domain held. It is the window a take's room grant and the append that
+	// spends it are apart in.
+	beforeAppend func()
 	// beforeResolve runs in ReadAt after the as-of is read and the file's
 	// append domain released, before the span is resolved.
 	beforeResolve func()
@@ -163,6 +168,11 @@ type Core struct {
 	// New with no options. It is a field of the core and not of Deps so that no
 	// production wiring can set it.
 	afterAppend func()
+
+	// beforeAppend is a test seam that holds a write in the gap between its
+	// grant and its first append, the window a take's room grant is spent in.
+	// It is nil outside tests, for the same reason afterAppend is.
+	beforeAppend func()
 
 	// beforeResolve is a test seam that holds a read between reading its
 	// as-of and resolving its span. It is nil outside tests, for the same
@@ -246,7 +256,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)
