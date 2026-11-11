@@ -260,7 +260,7 @@ Only what the RFCs leave to the code.
   What moves is the composition without its two doubles the testing rule bans: `recJournal`,
   which records each `Share` call's floor and every handle's `Close` for tests to read (a
   recording fake), and `noHolds`, a nil-embedded `engine.CloneHold` (a stub). The exported
-  `NewUnit(t, UnitOptions)` takes the `Deps` changes, a fault wrapper over the in-memory
+  `NewUnit(t, UnitOptions)` takes the `Deps` changes, a wrapper over the in-memory
   journal and one over the in-memory `kv.KV` (each nil for none), and composes the real
   `openstate.Table` as `rebuild_test.go`'s `withOpenState` does. The engine's own tests keep
   their wrapper through the journal option. Neither double moves; whether `recJournal`
@@ -404,9 +404,11 @@ regression it names (after "catches").
 - **Acceptance criteria:** `suite.Run` runs every case it holds over the composition with the
   fault-injecting `kv.KV` and the journal's crash seam below it; a restart and a crash
   rebuild the three pieces in RFC 17 §2.5's order.
-- **Tests:** `suite.Run` under `-race`, whose cases catch what each states; a write
-  acknowledged and committed through the service, its existence still pending, then `Crash`
-  and a new composition: the bytes read back through the new service (catches a start that
+- **Tests:** `suite.Run` under `-race`, whose cases catch what each states; an append past
+  the file's committed size, acknowledged and committed through the service, with the store's
+  File record still at the old size (read from the fixture's store, the clock not advanced
+  past `existence_age`), then `Crash` and a new composition: the bytes read back through the
+  new service, to the new size (catches a compose hook not re-run at `Crash`, or a start that
   skips the engine's re-application of existence, serving the file short; the read runs once
   both pieces have started, so it cannot catch them started in the wrong order, which the
   fixture's start enforces and no row pins yet); after the
