@@ -44,7 +44,9 @@ type PendingOp struct {
 	// Over is, for an OpWrite, the runs where it overlaps an earlier
 	// write of the file pending in the same commit, which an overwrite record
 	// at its version covers: content committed before the commit is found by
-	// the store itself (RFC 8 §5.1).
+	// the store itself (RFC 8 §5.1). A replay after a crash takes them from the
+	// journal's Since, as Change.Over, since the earlier write may have left
+	// the journal's index by then (RFC 1 §3.10).
 	Over []entity.Extent
 	// Lost is, for an OpWrite, the runs of Extent the journal dropped after
 	// they were synced, in offset order and disjoint: they exist and

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -164,6 +165,7 @@ type replayStep struct {
 	extent  journal.Extent
 	mtime   int64           // the write's modification time in nanoseconds, 0 when none is known
 	lost    []entity.Extent // the runs of the write the journal lost after its sync
+	over    []entity.Extent // the runs where the held pieces superseded another write above applied
 	clone   *journal.CloneSpec
 }
 
@@ -205,8 +207,17 @@ func stepsOf(changes []journal.Change) []replayStep {
 					Offset: c.Extent.Off,
 					Length: c.Extent.Len,
 				})
-			} else if s.mtime == 0 {
-				s.mtime = c.Mtime
+			} else {
+				if s.mtime == 0 {
+					s.mtime = c.Mtime
+				}
+
+				for _, o := range c.Over {
+					s.over = append(s.over, entity.Extent{
+						Offset: o.Off,
+						Length: o.Len,
+					})
+				}
 			}
 		default:
 			steps = append(steps, replayStep{
@@ -220,6 +231,7 @@ func stepsOf(changes []journal.Change) []replayStep {
 
 	for i := range steps {
 		steps[i].lost = entity.MergeExtents(steps[i].lost)
+		steps[i].over = entity.MergeExtents(steps[i].over)
 	}
 
 	return steps
@@ -246,7 +258,8 @@ type replayer struct {
 	size   int64 // the size the file has once everything applied so far is committed
 	now    time.Time
 	batch  []pendingOp
-	mtimes []time.Time // the modification time each operation of batch sets, zero for none
+	mtimes []time.Time       // the modification time each operation of batch sets, zero for none
+	overs  [][]entity.Extent // the runs each operation of batch superseded, as Since yields them
 }
 
 // run applies steps in order and commits what is left. A clone marker
@@ -341,6 +354,7 @@ func (r *replayer) stageWrite(s replayStep) {
 		at:      r.now,
 		lost:    s.lost,
 	})
+	r.overs = append(r.overs, s.over)
 
 	var mtime time.Time
 
@@ -364,6 +378,7 @@ func (r *replayer) stageGrow(s replayStep) {
 		grow:    true,
 	})
 	r.mtimes = append(r.mtimes, r.now)
+	r.overs = append(r.overs, nil)
 	r.size = s.extent.Off
 }
 
@@ -372,12 +387,15 @@ func (r *replayer) stageGrow(s replayStep) {
 // journal through the version of the batch's newest operation, never above it,
 // and empties the batch (RFC 8 §2.5 step 3, E19).
 //
-// decision: a write's overwritten runs are computed from the replay's own
-// writes, as the group commit computes them, not taken from the journal. A
-// write that another write above applied superseded, and that already left
-// the journal's index, is not seen, though RFC 1 §3.10 and RFC 8 §2.5 step 3
-// and §5.1 have Since yield the runs as Change.Over. Overturned once the
-// journal's Change carries Over.
+// decision: a write's overwritten runs are the Over the journal's Since
+// yields for its pieces, since a write that another write above applied
+// superseded may have left the journal's index by the crash, and the batch
+// would not see it (RFC 1 §3.10, RFC 8 §2.5 step 3). A step that holds a lost
+// run adds the runs computed from the batch, as the group commit computes
+// them: a loss carries no Over of its own, and what the lost bytes superseded
+// is no piece's. RFC 8 §5.1 does not say whether a loss's runs are passed;
+// passing them keeps the record of the older write. Overturned if the journal
+// yields the runs of a loss.
 func (r *replayer) commit(ctx context.Context) error {
 	if len(r.batch) == 0 {
 		return nil
@@ -388,8 +406,16 @@ func (r *replayer) commit(ctx context.Context) error {
 	for i, op := range r.batch {
 		ops[i] = storeOp(op, r.mtimes[i])
 
-		if op.kind == opWrite {
-			ops[i].Over = superseded(r.batch, i)
+		if op.kind != opWrite {
+			continue
+		}
+
+		ops[i].Over = r.overs[i]
+
+		if len(op.lost) > 0 {
+			ops[i].Over = entity.MergeExtents(
+				append(slices.Clone(r.overs[i]), superseded(r.batch, i)...),
+			)
 		}
 	}
 
@@ -418,6 +444,7 @@ func (r *replayer) commit(ctx context.Context) error {
 
 	r.batch = nil
 	r.mtimes = nil
+	r.overs = nil
 
 	return nil
 }

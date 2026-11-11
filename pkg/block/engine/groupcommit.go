@@ -158,8 +158,10 @@ func (e *Engine) pending(c captured) kvstore.PendingExistence {
 // ops, its file's entry, merged and in offset order: the runs whose older
 // bytes it supersedes. They are computed from the writes the engine holds,
 // never asked of the journal, whose index the older write may have left by
-// the commit (RFC 8 §5.1). Every existence commit that passes pending writes
-// takes its Over from here.
+// the commit (RFC 8 §5.1). The group commit and a removal's first transaction
+// take their Over from here, and so do the replay's lost steps and the writes
+// a clone's rebuild re-applies; the replay's other writes take it from the
+// journal's Since.
 func superseded(ops []pendingOp, i int) []entity.Extent {
 	x := entity.Extent{Offset: ops[i].extent.Off, Length: ops[i].extent.Len}
 	var runs []entity.Extent
