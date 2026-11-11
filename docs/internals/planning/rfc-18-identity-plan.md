@@ -602,9 +602,10 @@ func (s *Server) kerberos(ctx context.Context, st *State, step SignInStep) (Sign
 	}
 	return SignInResult{
 		Identity: proved(ProofTicket, t.CName, p, pac.SIDs, pac.DenyOnly, t.EndTime),
-		// Session is the authenticator's subkey, kept whole: SMB takes 16 or 32
-		// bytes of it. The AP-REP carries no subkey (O3).
-		Keys: Keys{Session: auth.Subkey, APRep: s.krb.APRep(t, auth /* no subkey */)},
+		// Session is the authenticator's subkey, else the ticket's session key
+		// (RFC 4121 §2), kept whole: SMB takes 16 or 32 bytes of it. The AP-REP
+		// carries no subkey (O3).
+		Keys: Keys{Session: subkeyOr(auth.Subkey, t.DecryptedEncPart.Key), APRep: s.krb.APRep(t, auth /* no subkey */)},
 	}, nil
 }
 ```
@@ -836,6 +837,8 @@ half for Kerberos, §3.8's expiry, and §4.2 steps 1, 2 and 4.
 - Kerberos names mapped by RFC 18 §4.2 (step 3 is epic 6's).
 - Machine principals minted on first sign-in (RFC 18 §2.4).
 - Expiry, and the release calls past it (RFC 18 §3.8).
+- `Keys.Session` as RFC 4121 §2's context key, with a test for an AP-REQ whose authenticator holds
+  no subkey: the session key is the ticket's.
 
 ### Epic 6 — The directory
 
@@ -966,9 +969,9 @@ This epic waits for an SMB adapter serving through the node (S3).
   - its sign-in tests replace its scripted `SignIn` with `vfstest.Memory`'s, as RFC 18 §10's "Who
     stands in for what" and RFC 20 §4.4 say, once this plan's S2 lands;
   - `Keys` stays RFC 18 §3.1's: `Keys.Session` is the context key RFC 4121 §2 names, the AP-REP's
-    acceptor subkey (`Keys.Subkey`) when one is sent, else the authenticator's subkey, kept whole:
-    SMB signs and runs AES-128 on its first 16 bytes and AES-256 on all 32 (MS-SMB2 3.3.5.5.3's
-    `FullSessionKey`);
+    acceptor subkey (`Keys.Subkey`) when one is sent, else the authenticator's subkey when it holds
+    one, else the ticket's session key, kept whole: SMB signs and runs AES-128 on its first 16
+    bytes and AES-256 on all 32 (MS-SMB2 3.3.5.5.3's `FullSessionKey`);
   - two gaps that need an RFC 22 amendment there: the CHALLENGE's AV pairs (§4.1), `MsvAvTimestamp`
     among them and `MsvAvNbComputerName` equal to `identity.netbios_name` (A2), and the seam that
     hands `gss` those names, since `vfs.Principals` and `config.SMB` carry none; and `lsarpc`'s
