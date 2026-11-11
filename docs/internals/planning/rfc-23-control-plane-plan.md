@@ -4,8 +4,9 @@
 are in scope as follows:
 
 - **Only the parts RFC 23 cannot work without:**
-  - [RFC 13](../rfcs/rfc-13-configuration.md): the host's bootstrap (§2.2), the validators of the
-    settings in scope (§6), and the sealing of secrets (§7).
+  - [RFC 13](../rfcs/rfc-13-configuration.md): the validators of the settings in scope (§6). The
+    bootstrap (§2.2), the settings library and sealed secrets (§7) are the RFC 13
+    configuration-lifecycle plan's, which this plan consumes (O11).
   - [RFC 16](../rfcs/rfc-16-metadata-store.md): the records RFC 23 adds and the fields it needs (§3,
     §4.2), and a share's removal steps (§2.3.2), which the store today stops after the mark.
   - [RFC 18 §8.1](../rfcs/rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface): the API's
@@ -58,7 +59,7 @@ database or configuration refuses and names it. No migration tool.
 
 - output path: `docs/internals/planning/rfc-23-control-plane-plan.md`;
 - dashboards: none;
-- the bootstrap file keeps its path, with a flag to name another (D6).
+- the bootstrap file keeps its path, with a flag to name another (D6, the RFC 13 plan's).
 
 **RFC amendments in this pull request.** The user agreed to four, all on draft RFCs:
 
@@ -99,11 +100,11 @@ What replaces what:
 | `pkg/health`'s `share.go` and `cache.go` | `pkg/health`, with RFC 25's registry and watchdog beside the `Checker`, `Report` and `wrap.go` helpers the stores implement | those three deleted in epic 1 |
 | `pkg/snapshot` (only v1 calls it) | none | deleted in epic 1 |
 | `pkg/identity/**` (v1 resolver, cache, link store, LDAP provider) and `pkg/auth/sid/mapper.go` | RFC 18's `pkg/identity` and RID counter (RFC 18 plan) | deleted in epic 1, whole: the LDAP provider imports the root files; the RFC 18 plan lifts what it reuses from history. `internal/auth/netlogon` stays, without importers, for the RFC 18 plan to move |
-| `pkg/config`'s v1 sections | `pkg/bootstrap`, the host's bootstrap only (RFC 13 plan) | stripped in epic 1; renamed by the RFC 13 plan |
-| key `database.*`, the `controlplane.db` file | none | a start refuses them |
-| keys `kerberos.*`, `ldap.*`, `identity.machine_sid`, `DITTOFS_KERBEROS_*`, `DITTOFS_LDAP_*` | `identity.*` settings and `Secret` records (RFC 18 plan) | a start refuses them |
-| keys `controlplane.jwt.*`, `DITTOFS_CONTROLPLANE_SECRET`, `admin.*`, `DITTOFS_ADMIN_INITIAL_PASSWORD` | the installation's signing-key `Secret`; the initialisation step's password reference | a start refuses them |
-| keys `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*`, `blockstore.*` (except the journal path) | settings records (RFC 13 Appendix B) | a start refuses them, naming the setting that replaced each |
+| `pkg/config`'s v1 sections | `pkg/bootstrap`, the host's bootstrap only (RFC 13 plan) | stripped in epic 1; renamed and finished by the RFC 13 plan |
+| key `database.*`, the `controlplane.db` file | none | refused by the RFC 13 plan's loader; the database file by epic 3's start |
+| keys `kerberos.*`, `ldap.*`, `identity.machine_sid`, `DITTOFS_KERBEROS_*`, `DITTOFS_LDAP_*` | `identity.*` settings and `Secret` records (RFC 18 plan) | refused by the RFC 13 plan's loader |
+| keys `controlplane.jwt.*`, `DITTOFS_CONTROLPLANE_SECRET`, `admin.*`, `DITTOFS_ADMIN_INITIAL_PASSWORD` | the installation's signing-key `Secret`; the initialisation step's password reference | refused by the RFC 13 plan's loader |
+| keys `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*`, `blockstore.*` (except the journal path) | settings records (RFC 13 Appendix B) | refused by the RFC 13 plan's loader, naming the setting that replaced each |
 
 v1 is about 45,000 lines of non-test Go. The code that imports it outside the deleted trees is
 `pkg/config`, the harness (`test/harness/fixture`, `test/harness/run` through it, and
@@ -173,8 +174,8 @@ epic named under that epic's **Done when:** line. The multi-node rows, CP15, and
 background field" row, which starts a re-home, are deferred (§6 O2). Scenarios from other sources,
 each landing in the epic named:
 
-- a start on a host whose bootstrap names a v1 key, or whose data directory holds v1's database, is
-  refused and names it (#3119, route B) — epic 3;
+- a start on a host whose data directory holds v1's database is refused and names it (#3119, route
+  B) — epic 3; a v1 key in the bootstrap is the RFC 13 plan's;
 - a second `dfs init` on an initialised installation is refused (RFC 16 §3.2) — epic 5;
 - a share whose binding fails to attach is reported refused, and never answered `201` with a failure
   in the log (RFC 23 Appendix B, row §2.1, §2.3) — epic 7;
@@ -249,7 +250,6 @@ registers no suite and no group, and changes no `lint-go` tag.
    which states the property). For this RFC:
    - request bodies, including JSON merge patches;
    - the listing cursor;
-   - the bootstrap file;
    - the codecs of every record the store gains.
 
    Headers compared byte for byte, and the access token that `golang-jwt` parses, are not decoders
@@ -260,7 +260,8 @@ registers no suite and no group, and changes no `lint-go` tag.
    - the API: the `api_` series and one span per call (RFC 23 §11, "Spans");
    - accounts: `api_auth_failures_total`, `api_sign_ins_total`.
 
-   Conditions go in RFC 25 §3.9's registry: `config_generation_behind`. `adapter_refused` is the
+   Conditions go in RFC 25 §3.9's registry: `config_generation_behind`, raised by the node from the
+   positions it reconciles and the RFC 13 plan's `config_generation_lag_seconds`. `adapter_refused` is the
    adapters' own, raised where RFC 20's plan's epic 7 wires them into the node.
    `namespace_unclaimed` is not raised while every namespace answers held (§4.3 above). No exception
    applies: RFC 23 restricts no dependency.
@@ -315,16 +316,16 @@ registers no suite and no group, and changes no `lint-go` tag.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | Delete v1, declare the surface | v1 deleted, cells and harness fixed; the node's, wire types', client's and kvstore's surfaces; the new `cmd/dfs` skeleton; architecture tests | 11 | 15 | team | every epic |
-| E2 | Store records | the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; sealed secrets; expiry | 9 | 22 | C | E5; partly E3, E4 |
-| E3 | The node | bootstrap, `dfs start`, composition, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven | 11 | 26.5 | A | E6 (partly), E7 |
+| E2 | Store records | the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry | 8 | 20 | C | E5; partly E3, E4 |
+| E3 | The node | `dfs start` on the RFC 13 plan's bootstrap, composition, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven | 10 | 25 | A | E6 (partly), E7 |
 | E4 | The management API | server, route table, write path, preconditions, idempotency, problems, reads, resources, operations, audit read, identity's routes | 12 | 31 | B | E6 (partly), E7 |
 | E5 | Accounts and sign-in | on RFC 18 §8.1's interface (O11): `dfs init`, `dfs reset-admin`, tokens, sessions, roles, throttling, first password, signing key | 7 | 16.5 | C | E6 (partly), E7 |
 | E6 | The CLI | the client on the wire types, the rebuilt `dfsctl`, generated reference | 6 | 12.5 | A | E7 |
 | E7 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides | 5 | 12.5 | team | E8 |
 | E8 🔀 | E2E green | the e2e rows, the cells taken off in epic 1 back on | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **61** | **136** | | |
+| | **Total** | | **59** | **132.5** | | |
 
-**Plan estimate: 61 subtasks, 136 man-days, not counting epic 8.**
+**Plan estimate: 59 subtasks, 132.5 man-days, not counting epic 8.**
 
 The skill's estimate for RFC 23's 1,806 lines is 5 middle epics (`round(1806 / 400)`), and this plan
 has 5.
@@ -421,11 +422,10 @@ internal/node/nodetest/       in-process node harness (KV, clock, 127.0.0.1:0)  
 pkg/node/apiv1/               wire types, standard library only                      E1
 pkg/apiclient/                client on pkg/node/apiv1 (same path as v1's)           E1 surface, E6
 cmd/dfsctl/                   CLI: the noun-verb tree, bodies rebuilt                E6
-pkg/bootstrap/                the host's bootstrap only (RFC 13 plan)                E1 strip
 pkg/health/                   + RFC 25's registry and watchdog, the parts used       E3
 pkg/metadata/entity/          + RFC 16's records for RFC 23, and its User fields     E2
 pkg/metadata/kvstore/         + those records, expect on every write, A3's entry     E1 surface, E2
-                              point, a share's removal steps, sealed secrets
+                              point, a share's removal steps
 ```
 
 ### 4.2 Decisions
@@ -464,14 +464,11 @@ and resource commands carry only their spec's fields.
 - **Prior art (from memory).** `git config`, `kubectl set`.
 - **Applied by** epics 4 and 6.
 
-**D6. The bootstrap keeps its path,** `~/.config/dittofs/config.yaml` and `DITTOFS_*` through
-`pkg/config`'s existing viper loader. It holds only RFC 13 §2.2's facts, with A1's narrowing.
-- **Refusing v1 keys.** The existing renamed-keys table becomes the list of v1 keys a start refuses,
-  each naming the record that replaced it.
-- **Another path.** `--config <path>` on every `dfs` command, or `DITTOFS_CONFIG`, names another
-  file, so a test points each node at its own under `t.TempDir()`.
+**D6. The bootstrap is the RFC 13 plan's** (its D7): the path `~/.config/dittofs/config.yaml`,
+`--config` and `DITTOFS_CONFIG`, the refused v1 keys and the node identity's `node-id` files, in
+`pkg/bootstrap`. This plan's epics read it through that package.
 - **Prior art (from memory).** etcd and PostgreSQL keep a host file of the same scope.
-- **Applied by** epics 1 and 3.
+- **Applied by** epics 3 and 5, as consumers.
 
 **D7. The CLI keeps today's noun-verb tree** and resolves names to IDs. `--wait` is opt-in, as RFC
 23 §7 says. Output is `-o table|json|yaml`, and the reference is regenerated by `cmd/gendocs`.
@@ -493,13 +490,11 @@ decision.
 - **Prior art.** None found.
 - **Applied by** epic 1; epic 8 removes the filter's entries as RFC 20's ledger has it.
 
-**D10. Secrets are sealed with the existing key provider**
-(`pkg/block/middleware/encryption/keyprovider`, AES-256-GCM, key IDs, retired keys). The provider's
-key ID fills RFC 16's `Secret.KeyID`; `Secret.Version` stays the rotation counter. The wrapping
-key's location is the provider's configuration, a bootstrap fact (RFC 13 §2.2, §7). The RFC 13
-configuration-lifecycle plan takes this over, with envelope sealing (O11).
+**D10. Secrets are the RFC 13 plan's** (its D4 to D6): `pkg/secrets` seals each version as an
+envelope under its role's key through `pkg/keyprovider`, fills RFC 16's `Secret.KeyID`, and keeps
+`Secret.Version` the rotation counter. This plan's epics write and resolve secrets through it.
 - **Prior art (from memory).** Vault's barrier seals with AES-GCM under a key-encryption key.
-- **Applied by** epic 2.
+- **Applied by** epics 3 to 5, as consumers.
 
 **D11. `New` builds the node-level services; reconcile builds every per-record instance**, as RFC 23
 §2.1 and §2.3 say. This is the user's reading of them, recorded so the epics keep to it: a remote
@@ -590,8 +585,8 @@ declarations; RFC 23 §4.1, §4.6 and §4.7's shapes and codes, as declarations;
 **Expected content:**
 - Delete `pkg/controlplane/**`, `internal/controlplane/**`, `pkg/snapshot`, v1's `cmd/dfs`, and
   `pkg/health`'s `share.go` and `cache.go` (the stores call `wrap.go`'s helpers).
-- Strip `pkg/config` to the bootstrap loader, keeping its viper loading and turning the
-  renamed-keys table into the refused v1 keys (D6).
+- Strip `pkg/config` of v1's server sections, leaving the loader the RFC 13 plan renames to
+  `pkg/bootstrap` (D6).
 - Make the harness build without v1:
   - drop `test/harness/fixture`'s v1 server start, so `dt` compiles;
   - update `test/harness/plan`'s registry test for the cells taken off;
@@ -602,12 +597,12 @@ declarations; RFC 23 §4.1, §4.6 and §4.7's shapes and codes, as declarations;
   without the deferred ones).
 - Declare the node's surface (RFC 23 §2.1) with stub bodies.
 - Declare the kvstore view's methods with `expect` (RFC 16 §3) and A3's entry point.
-- Write the new `cmd/dfs` with `init`, `start` and `reset-admin` over the stubs, and `--config`.
+- Write the new `cmd/dfs` with `init`, `start` and `reset-admin` over the stubs.
 - Write the architecture tests (§1.3).
 
 ### Epic 2 — Store records
 
-**Epic 2 estimate: 9 subtasks, 22 man-days.**
+**Epic 2 estimate: 8 subtasks, 20 man-days.**
 
 The metadata store gains every record and field RFC 16 declares for RFC 23, the one transaction an
 API write commits in, and a share's removal steps past the mark.
@@ -616,7 +611,6 @@ API write commits in, and a share's removal steps past the mark.
 - RFC 16 §2.3 and §4.2, the records for RFC 23 and their keys;
 - RFC 16 §2.3.2, the removal's steps, store side;
 - RFC 16 §3, `ControlPlane` with `expect` and A3;
-- RFC 13 §7, sealing and versions;
 - RFC 23 §3.1's last paragraph;
 - RFC 23 §4.5's record and its expiry;
 - RFC 23 §4.6's record and its retention;
@@ -641,11 +635,10 @@ API write commits in, and a share's removal steps past the mark.
 - A share's removal steps after the mark, in bounded batches, each resumable from the removal's
   record (RFC 16 §2.3.2).
 - The sweeper (§4.3 above).
-- Secret sealing (D10) and the versioned `Secret` writes RFC 13 §7 rotates.
 
 ### Epic 3 — The node
 
-**Epic 3 estimate: 11 subtasks, 26.5 man-days.**
+**Epic 3 estimate: 10 subtasks, 25 man-days.**
 
 `node.New` composes every component that exists, and the node starts, reconciles, reports and
 stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
@@ -666,8 +659,8 @@ stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 - the §1.4 scenario assigned to epic 3 passes.
 
 **Expected content:**
-- The bootstrap: RFC 13 §2.2's facts with A1's narrowing, the node identity read from the file
-  `dfs init` writes (A2), and `--config` (D6).
+- The bootstrap and the node identity read through the RFC 13 plan's `pkg/bootstrap` (D6), and a
+  v1 database file in the data directory refused at start.
 - `node.New`: every node-level service of RFC 23 §2.1's table that exists on `feat/storage-v2`, each
   built empty from its own `Deps` (D11).
 - The remote registry and the adapter factories that reconcile acquires instances through (D11).
@@ -757,7 +750,7 @@ call against their current record.
 - `dfs init`:
   - the installation, through `kvstore.Init`;
   - the journals recorded;
-  - the node identity generated and written (A2);
+  - the node identity, generated and written through the RFC 13 plan's `pkg/bootstrap` (A2);
   - the bootstrap administrator with its first password (RFC 23 §5.4).
 - `dfs reset-admin`, the break-glass reset (RFC 23 §5.4).
 - Sign-in, access tokens (D3), refresh rotation with reuse revocation, and sign-out.
@@ -890,10 +883,11 @@ took off and runs RFC 23's e2e rows.
 - **O9. Client eviction.** RFC 20's plan's ledger hands v1's `DELETE /api/v1/clients/{id}` to RFC
   23 "when RFC 23 decides". RFC 23 defines no eviction call: the connection listing is read-only
   (RFC 23 §4.2). Until an RFC adds one, an operator disables the account (RFC 23 §3.5).
-- **O11. RFC 18 §8.1 is the RFC 18 plan's.** `APISignIn`, `NewHashes` and their package are built
-  there, with the sealed hash set; epic 5 consumes them. The RFC 13 configuration-lifecycle plan
-  likewise takes the bootstrap, settings and secrets pieces this plan places in epics 1 to 4; this
-  plan is revised to consume both once they merge.
+- **O11. Two pieces are other plans'.** RFC 18 §8.1 (`APISignIn`, `NewHashes`, the two secret
+  references on a user) is the RFC 18 plan's, and epic 5 consumes it. The configuration lifecycle
+  is the RFC 13 plan's: `pkg/bootstrap` with the refused keys and the node identity, `pkg/settings`
+  with its write check, classes and series, and `pkg/secrets`. Epics 1 to 5 keep only the strip of
+  `pkg/config`, the node, the API's routes and `dfs init`, and consume the rest.
 - **O10. Estimates least certain.**
   - Epic 4 depends on how many RFC 13 validators the in-scope settings need.
   - Epic 3 depends on how far today's GC and identity fit RFC 23 §2.1's table.
@@ -931,9 +925,9 @@ took off and runs RFC 23's e2e rows.
 | RFC 23 §13 | O3, O5, O6; items 2 and 3 not planned |
 | RFC 23 Appendix A | — (non-normative) |
 | RFC 23 Appendix B | E1 |
-| RFC 13 §2.2 | E3 (with A1, A2), E5 (identity generated) |
+| RFC 13 §2.2 | the RFC 13 plan; E3, E5 consume it (A1, A2) |
 | RFC 13 §6 | E4 |
-| RFC 13 §7 | E2 (sealing), E5 (signing key) |
+| RFC 13 §7 | the RFC 13 plan; E5 (the signing key, a consumer) |
 | RFC 16 §2.3, §3, §4.2 | E1 (signatures, A3), E2 |
 | RFC 16 §2.3.2 | E2 (steps), E3 (driving) |
 | RFC 16 §3.2 | E5 (`Init`) |
