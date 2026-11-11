@@ -50,12 +50,12 @@ const unitLimit = 1 << 62
 
 // unitConfig is what a test asks of newUnitWith.
 type unitConfig struct {
-	deps      []func(*engine.Deps)              // each changes the engine's Deps before New
-	unbound   bool                              // leaves the share unbound: the test binds what it needs
-	unstarted bool                              // leaves the engine unstarted, and so the share unbound
-	wrap      func(engine.Handle) engine.Handle // hands the engine every handle the fake journal opens through it
-	kv        func(kv.KV) kv.KV                 // wraps the store's kv.KV
-	block     uint64                            // the versions one raise covers, when not the default
+	deps       []func(*engine.Deps)              // each changes the engine's Deps before New
+	unbound    bool                              // leaves the share unbound: the test binds what it needs
+	unstarted  bool                              // leaves the engine unstarted, and so the share unbound
+	wrap       func(engine.Handle) engine.Handle // hands the engine every handle the fake journal opens through it
+	kv         func(kv.KV) kv.KV                 // wraps the store's kv.KV
+	storeClock func() time.Time                  // the store's clock; nil is time.Now
 }
 
 // newUnit is the unit with its share bound, each of deps changing the
@@ -89,7 +89,7 @@ func newUnitWith(t *testing.T, c unitConfig) *unit {
 	u.ev = &events{}
 	u.rec.ev = u.ev
 	u.fs = kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
-		db := memKV(tb)
+		db := memKVAt(tb, c.storeClock)
 		if c.kv != nil {
 			return c.kv(db)
 		}
@@ -136,10 +136,6 @@ func newUnitWith(t *testing.T, c unitConfig) *unit {
 
 	u.e = e
 
-	if c.block != 0 {
-		e.SetBlockForTest(c.block)
-	}
-
 	if c.unstarted {
 		u.share = enginetest.ShareOf(t, u.fs.Store, u.fs.Share.ID, 1<<30)
 		return u
@@ -168,7 +164,13 @@ func newUnitWith(t *testing.T, c unitConfig) *unit {
 
 // memKV is a fresh in-memory kv.KV, closed when the test ends.
 func memKV(tb testing.TB) kv.KV {
-	db, err := badgerkv.Open(badgerkv.Options{})
+	return memKVAt(tb, nil)
+}
+
+// memKVAt is memKV with the store's clock, which stamps its versions; nil is
+// time.Now.
+func memKVAt(tb testing.TB, clock func() time.Time) kv.KV {
+	db, err := badgerkv.Open(badgerkv.Options{Clock: clock})
 	if err != nil {
 		tb.Fatal(err)
 	}
