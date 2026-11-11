@@ -1204,6 +1204,32 @@ follows the journal's, not this part's (§6 point 7).
   conformance row runs over it, so a drift the suite misses shows as a row that is green on
   unit tests and red in the suite.
 
+### 6.1 Deferral ledger
+
+What this part knowingly does not build. Each row indexes the section that defers it.
+
+| Deferred | Why | Owner | Trigger |
+| --- | --- | --- | --- |
+| Offload: RFC 8 §3 policy, §6 offload, §7.2 to §7.4, §7.7, §7.8, §8.3, §11.4; the carver, syncer, remote block store, work scheduler, fill and speculator (header, §1.1) | every byte stays in the journal | RFC 8 second part plan | planned once this part is under way |
+| `Carver`, `Syncer`, `Refs` and `Gate` in `Deps`; start steps 6 and 7, so restart re-offers nothing (§1.1) | no code here calls them | RFC 8 second part plan | with the code that calls them |
+| The root's "every share has a remote" check (§1.1) | no root composes this part | RFC 23's plan (#4050), not yet placed there | stage 4 |
+| The cut (`PrepareCut`, `CommitCut`) and the stamp after a group commit; clone's snapshot cases (§1.1, §7) | snapshots | RFC 12 | snapshots are built |
+| Clone's adoption of carved refs (§1.1, epic 8) | this part writes no carved ref | RFC 8 second part plan | offload |
+| Eviction, pacing, the pressure flag; RFC 8 §10.1, §10.2.1, §10.4 (§1.1, epic 7) | nothing is released without offload | RFC 8 second part plan | offload |
+| Repack run from the eviction loop, not only at a refusal (epic 7's `ponytail:`) | repack runs only when a write is refused | RFC 8 second part plan | offload adds the eviction loop, or refusals show repack time on the write path |
+| Removal phase 2 and its prune on the shared work scheduler (epic 5's `ponytail:`; §6 point 5) | one loop per journal stands in | RFC 8 second part plan | offload adds the first work that needs fairness between shares |
+| Offload health, put and get health, `stranded_export_failed` with the salvage export of stranded tags, `PreWarm`, `WaitOffloaded` (§1.1, §1.4, §6 point 7) | need offload | RFC 8 second part plan | offload |
+| Scenario rows, or parts of rows, needing offload, eviction, fills, pacing, the scheduler, snapshots, a cluster or RFC 26; the operator's acknowledgement that serves a journal-gone share again (§1.4) | this part cannot pass them | RFC 8 second part plan; RFC 12, the cluster stage, RFC 26 | with each owner |
+| RFC 1 §5.4's read-only journal state (§1.4) | the journal has no read-only state | journal plan, its E6 | that epic builds it |
+| The engine's side of the read-only journal: `journal_sync_failed`'s read-only half, §11.2's journal-sync row, `ErrReadOnly`, `journal_read_only`, the reopen, and the test of C11's undo of a pending `Delete` (§1.4, epics 5 and 7) | needs RFC 1 §5.4's state; epic 7 leaves it out (its §1.2) | unowned | the journal's read-only state lands |
+| §1.1's remaining second-part items: §4.1's `Dirty` event, §2.3's flow, key scope and budgets | need offload | RFC 8 second part plan (budgets with RFC 24) | offload |
+| GC, RFC 8 §10.5 (§7) | out | RFC 9 | GC is built |
+| §12.2 retried mutation, the route envelope (§1.1, §7) | single node | RFC 15 §4.3, the cluster stage | the cluster stage |
+| The engine-cost benchmark and allocations-per-op assertions (§1.5 rule 4) | RFC 8 §15.4 defers it | unowned | a profile of E10's B5, B7 or B9 shows engine time on the request path |
+| RFC 8 §15.4's B1 to B4, B6 and B8: offload throughput, small files, pacing, cold reads, one large file, cold sequential reads (E10 adapts only B5, B7 and B9) | need offload and eviction | RFC 8 second part plan | offload |
+| RFC 25's metrics registry, watchdog and health source (§1.5 rule 3, §6 point 14) | exist on no branch; the engine reports through `Stats` | RFC 25; RFC 23's plan (#4050) adapts `Stats`, not yet placed there | someone builds them |
+| `CloneClose` reporting an orphan for a source whose release waits for a start, lifting T8.6's ceiling (§6 point 11) | needs open state's `Releasing` | unowned | the RFC 14 plan takes up `Releasing` |
+
 ## 7. RFC coverage
 
 | RFC section | Epic(s) |

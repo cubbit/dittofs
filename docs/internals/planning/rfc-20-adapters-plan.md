@@ -331,7 +331,7 @@ security and translation areas (§4.3–§4.4, §4.9–§4.10, most of §5) are 
 22; the sidecar runner joins the lifecycle it follows; the two scaffolds are one epic because
 they are built the same way and each is too small alone. There is no integration epic before the
 node exists: the conditions, alert rules, config loader and docs it would hold have no consumer
-until epic 7 or the cutover, and are ledger rows.
+until epic 7, which builds the first two, or later, and the other two are ledger rows.
 
 Legend: ⛔ blocks every epic after it; 🔀 waits for or opens a synchronisation point.
 
@@ -361,7 +361,7 @@ flowchart TD
   E5 -. "WithHold, read by the clone wait" .-> P11(["RFC 17 plan piece 11"]):::sync
   P12(["RFC 17 plan piece 12"]):::sync -. "memory.New, Faults" .-> E2
   E6 --> E8["E8 E2E green"]
-  E7 -. "node-level ledger rows" .-> E8
+  E7 -. "node-level wiring" .-> E8
   classDef blocker stroke:#c0392b,stroke-width:3px
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
@@ -396,7 +396,7 @@ flowchart TD
 | E4, E5 | E6's `New`, via S3 | a scaffold is done only when "not supported" goes through the real pipeline; `protocol/` is built before, against the frozen surface |
 | 🔀 S4 | E7 | no node to wire into |
 | E6 | E8 | `unit/adapter-allocs` runs every gate, the scaffolds' included |
-| E7 | E8, partly | the ledger's node-level rows close in E7 |
+| E7 | E8, partly | the node-level wiring is built in E7 |
 
 ### 3.4 Splitting the work
 
@@ -811,9 +811,9 @@ Waits for RFC 23's `internal/node`. Then: `node.New` builds each enabled adapter
 generation by `Reconfigure` or by stop, `New` and start, drives the sidecar runner (its `Sync`
 before a `Reconfigure` that removes an address and after every `Reconfigure`, RFC 20 §3.5), reports
 `Health` and `Connections()` to the control plane's client list, and checks every budget at zero
-after the adapters stop. It also takes the ledger rows that need a node: `core`'s conditions in
+after the adapters stop. It also builds what needs a node: `core`'s conditions in
 RFC 25 §3.9's registry and the alert rules for `adapter_unmapped_errors_total` and
-`adapter_handler_panics_total` (RFC 25 §7). RFC 23's plan (#4050) leaves these rows to this epic
+`adapter_handler_panics_total` (RFC 25 §7). RFC 23's plan (#4050) leaves these to this epic
 (its D12), and adds one: the node rebuilds an adapter when its `port` setting changes (its O7).
 The adapters' settings are split three ways. The field `settings.Adapter.Port` is epic 2's (#4000,
 D20). The one settings table, with the adapters' section, and `Check`, wired into the node's
@@ -879,9 +879,10 @@ RFC sections: §6.10's codec and pipeline rows.
 
 Every part of RFC 20 this plan does not build, and everything develop serves that epic 1 stops
 `feat/storage-v2` serving. The cutover (#3119 stage 7) is done when every row is closed: that is
-feature parity with develop. A row moves only to another owner, never off the ledger.
+feature parity with develop. A row leaves only by moving to another owner or by a recorded
+decision to drop it (its issue closed as not planned).
 
-| Deferred | Why not here | Owner | Comes back when |
+| Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
 | NFSv3 procedures; NFSv4.0, 4.1 and 4.2 operations; the `ops/` tables | handlers are RFC 21's | RFC 21 plan | its handler epics |
 | MOUNT, NLM, NSM, `SM_NOTIFY`; NLM and NSM over UDP (RFC 20 §11 q3, which drops MOUNT over UDP) | auxiliary programs are RFC 21's | RFC 21 plan | its auxiliary-services epic |
@@ -908,7 +909,6 @@ feature parity with develop. A row moves only to another owner, never off the le
 | the authenticator: keytab, PAC, NTLMv2, NETLOGON, LDAP, consolidated as `internal/identity` | RFC 18's | RFC 18's plan (#4058) | before RFC 22's sign-in epic |
 | RFC 24's turns, `Reclaim`, `ShareCap`, `Detect`, `Split` | no consumer here | RFC 24 plan | when the node budgets memory |
 | RFC 24 §10's `memory_pool_reserved_bytes`, `memory_pool_ceiling_bytes`, `memory_pool_wait_seconds` and `memory_pool_refusals_total`, and the count of releases past zero (§2.7); §8's M1, which settles the 8 KiB overhead, B1 with waiters queued and at 8 and 64 cores, B2 and B3 | `NewBudget` takes no registry and only tests build budgets on the branch; the benchmarks are the reference box's | the two gauges: epic 7, registered by the node over `Reserved`; the rest: RFC 24 plan | S4 for the gauges; with the turns for the rest |
-| `node.New` wiring; conditions in RFC 25 §3.9's registry; alert rules | need `internal/node` | epic 7 | S4 |
 | the settings table's adapters' section and `Check`, wired into reconcile and the settings routes | need `internal/node` and `pkg/settings` | RFC 13's plan (#4059), epic 5 | that epic |
 | concrete sidecars: mDNS, WS-Discovery (`pkg/discovery`), port mapper, rpcbind registration | need serving protocols | cutover | stage 7 |
 | `/api/v1/adapters`, `dfsctl adapter` and the settings watcher (deleted in T1.2) | built on the Runtime | RFC 23's plan (#4050): the adapter and settings routes in its epic 4, the `adapter` and `setting` commands in its epic 6; the watcher becomes reconcile on `settings.Diff`, RFC 13's plan's epic 5 (#4059) | those epics |
@@ -922,15 +922,15 @@ feature parity with develop. A row moves only to another owner, never off the le
 | suites skipped on the branch by `tests.yml`'s V2 filter, `integration/kerberos` added to it and its fixed step removed in T1.3; the e2e build tags | nothing to mount | cutover | each green against v2; the V2 filter deleted once the adapters run on `vfs.Service`, as its own comment says |
 | `test/harness/fixture`'s five real-protocol tests (`TestRealSMB`, `TestRealMount`, `TestRealSMBMount`, `TestRealClients`, `TestRealKerberos`), skipped by `needsServedProtocol` inside a suite that still runs | nothing to mount | cutover | each green against v2; `needsServedProtocol` deleted |
 | `test/required-tests.json` pins for the adapters' authorization gates | the v1 tests are deleted | RFC 21/22 plans | each gate's test re-written |
-| `vfs.WithRequestID` (RFC 17 §4.7), set from the protocol's retry identity | its one reader is the gateway, which RFC 17's plan leaves to the cluster stage (D2) | RFC 17 cluster stage, in core's pipeline (RFC 20 §6.4), from each protocol's retry identity | when the gateway is built |
+| `vfs.WithRequestID` (RFC 17 §4.7), set from the protocol's retry identity | its one reader is the gateway, which RFC 17's plan leaves to the cluster stage (D2) | the cluster stage, in core's pipeline (RFC 20 §6.4), from each protocol's retry identity | when the gateway is built |
 | docs: architecture's adapter section, the configuration guide's adapter keys, the user guides | describe v1 | cutover | stage 7 |
 | `k8s/dittofs-operator`, which drives the adapter and settings API through its own client | breaks against the branch once T1.2 deletes that API | RFC 30's plan (RFC 23's plan, #4050, O4) | that plan |
 | `dfsctl share mount`'s discovery of a non-default port (`ListAdapterPorts`); it uses each protocol's default port | its route is deleted in T1.2 | RFC 23's plan (#4050, D12) | its epic 6 |
 | the packages deleted in T1.1 for having no importer: `pkg/discovery/mdns` and `wsd`; `pkg/auth`, `pkg/auth/kerberos`, `pkg/identity/kerberos`, `internal/auth/kerberos`; `internal/mfsymlink` | nothing imports them once v1 is gone | discovery: cutover; Kerberos and `pkg/auth`: RFC 18's plan (#4058); `mfsymlink`: RFC 22 plan | each lifted from develop's history by its consumer |
 | `pkg/apiclient`'s adapter and netgroup methods, kept for the e2e helpers `lint-go` vets; their routes answer 404 | compiled tests still call them | RFC 23's plan (#4050): its epic 1 deletes `pkg/apiclient`'s v1 bodies, these included, since its rule 7 does not keep them, and fixes or removes the e2e code that calls them; its epic 6 rewrites `pkg/apiclient` on `pkg/node/apiv1` | its epic 1, which overrides D5 of `rfc-20-adapters-epic1.md` for these methods; its epic 6 |
 | `metrics.Registry` an alias of `pkg/metrics`' `Metrics` (T1.6), not RFC 25 §8.2's registry | the registry is not built | RFC 25 | when the registry is built |
-| `vfs.Grace{Until}`, the typed `ErrGrace` carrying the shard's grace end, which an `ErrorRow.Hold` reads to bound a hold (RFC 17 §4.3) | named in RFC 17 by T1.9; not yet in `pkg/vfs` | RFC 17 plan: the type in `pkg/vfs`, returned by `*vfs.Filesystem` | before E5's T5.5 |
-| `vfs.Shares.MoveTarget`, which says whether a draining request's share has a gateway to move to (`ErrMoved`) or none (`ErrDraining`), asked per request (RFC 20 §3.1) | named in RFC 17 by T1.9; not yet in `pkg/vfs` | RFC 17 plan: the method in `pkg/vfs`, `*vfs.Filesystem` (so `memory.New`) and `vfstest.Null`, answering none | before E4's T4.5 calls it; a real target once RFC 15's topology exists |
+| `vfs.Grace{Until}`, the typed `ErrGrace` carrying the shard's grace end, which an `ErrorRow.Hold` reads to bound a hold (RFC 17 §4.3) | named in RFC 17 by T1.9; not yet in `pkg/vfs`, and no piece of the RFC 17 plan builds it | unowned: the type in `pkg/vfs`, returned by `*vfs.Filesystem` | E5's T5.5 starts, which needs it |
+| `vfs.Shares.MoveTarget`, which says whether a draining request's share has a gateway to move to (`ErrMoved`) or none (`ErrDraining`), asked per request (RFC 20 §3.1) | named in RFC 17 by T1.9; not yet in `pkg/vfs`, and no piece of the RFC 17 plan builds it | unowned: the method in `pkg/vfs`, `*vfs.Filesystem` (so `memory.New`) and `vfstest.Null`, answering none | E4's T4.5 starts, which calls it; a real target once RFC 15's topology exists |
 
 ## 7. RFC coverage
 

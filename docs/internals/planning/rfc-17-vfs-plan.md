@@ -456,7 +456,7 @@ which are the node's, a removal's or a cut's.
    |---|---|
    | D4's resolver (admission's step 4) | `Principals.SharePolicy`; `Grant` returns `(ShareAccess, error)`, not RFC 16's `(ShareAccess, bool, error)` |
    | piece 6 streams | `Files.Streams` (RFC 7) |
-   | the stage that carries `develop`'s shares into this store | the upgrade mapping, with a case per mapping: `require_kerberos` to `MinProof` Ticket, else `allow_auth_sys` to None, else Secret; `min_kerberos_level` krb5i and krb5p to Integrity and Privacy, and to none on a share whose mapped `MinProof` admits AUTH_SYS (None or Claimed), so a `require_kerberos` krb5p share stored with `allow_auth_sys`, as `develop` stores it by default, keeps Privacy; SMB's guest flag set where the adapter-wide guest setting is on and the share has `allow_auth_sys`; SMB's encrypt flag set by `encrypt_data` or a mapped Privacy; both minimums binding SMB on the share as today (RFC 16 §2.3) |
+   | a migration of `develop`'s shares into this store, if one is ever built (§6's ledger) | the upgrade mapping, with a case per mapping: `require_kerberos` to `MinProof` Ticket, else `allow_auth_sys` to None, else Secret; `min_kerberos_level` krb5i and krb5p to Integrity and Privacy, and to none on a share whose mapped `MinProof` admits AUTH_SYS (None or Claimed), so a `require_kerberos` krb5p share stored with `allow_auth_sys`, as `develop` stores it by default, keeps Privacy; SMB's guest flag set where the adapter-wide guest setting is on and the share has `allow_auth_sys`; SMB's encrypt flag set by `encrypt_data` or a mapped Privacy; both minimums binding SMB on the share as today (RFC 16 §2.3) |
    | piece 3 `StatFS` | `Capacity.Info`; `Usage` has a different signature |
    | piece 7 `Start`, V17 and V35's restarts | a shard number per share, drawn from `IDS‖shard` at the share's creation (RFC 16 §2.3.1, #3551); the per-shard incarnation and grace instance are in (`Store.RaiseIncarnations` and `Shard`, #3463), and only the start's call to them is piece 7's (RFC 14 §4.4, §11.2) |
    | piece 7, a removal resumed at start | a read view listing the shares being removed: `Shares` lists by name, and the mark deletes the name row |
@@ -468,6 +468,25 @@ which are the node's, a removal's or a cut's.
    filesystem's mapping of open state's errors is not total (#3414 maps `ErrCreateInUse` as
    `StateError` `CreateInUse`).
 
-## 6. What sets the pace
+## 6. What sets the pace, and what is deferred
 
 What blocks what is the Needs column of plan §3.
+
+### 6.1 Deferral ledger
+
+What this plan knowingly does not build. Each row indexes the section that defers it.
+
+| Deferred | Why | Owner | Trigger |
+| --- | --- | --- | --- |
+| `Gateway`, `Serve`, `Router`, `Transport`, `Peers` and the multi-node tier; V4, V11 and V41 (D2, plan §3) | single node only; §9 puts them in their own cluster slice | the cluster stage | the cluster stage |
+| Moving the adapters onto `vfs.Service`, and RFC 20's shared pipeline (D2) | stage 5's | RFC 20, 21 and 22 plans | stage 5 |
+| pNFS layouts (§10.2) and compound batching (§10.1) (D2) | left out with the cluster | unowned | layouts: a pNFS RFC lands; batching: §8's benchmark through the gateway shows compound round trips limiting a cluster (RFC 17 §10) |
+| RFC 18's resolver behind `Deps.Identity`, with its cache and directories; `Deps.Auth`, `Deps.Names`; `SignIn`, `Spell` and `Find`, stubs answering `ErrAccess` (D4's `ponytail:`, piece 3) | one resolver until RFC 18 lands | RFC 18 plan (#4058) | RFC 18 lands |
+| `Deps.Metrics` as RFC 25's `metrics.Registry`, not a `prometheus.Registerer` (D7's `ponytail:`) | the registry does not exist | RFC 25 | the registry is built |
+| Caching admission's steps 1–4; §8's cache-key case and cached-against-uncached comparison; V9's and V12's cached cases (piece 3's `ponytail:`) | uncached, so no cache key to get wrong | unowned | §8's uncached admission benchmark (next row) shows steps 1–4 costing more than a cache lookup would |
+| §8's benchmarks: per operation, service overhead, contention, uncached admission, recall latency (D6) | the plan builds none, and no registered suite runs `go test -bench` | RFC 29 harness | a registered suite runs `go test -bench` |
+| RFC 16 §2.3.2's full removal driver, replacing piece 3's stand-in (piece 3's `ponytail:`) | no node exists | RFC 23's plan (#4050), its epic 3 | that epic drives a removal |
+| `Snapshots` beyond an empty list; §6's §5.9 row for an `Incomplete` source (piece 3, plan §3) | RFC 12's store view does not exist | RFC 12 | its snapshot view exists |
+| The integration tier against the real engine; V19, V20 and V25 completed (D6, plan §3) | needs the engine | RFC 8 plan | stage 3 |
+| §8's nightly fuzz targets beyond their seeds (D6) | no registered suite runs `go test -fuzz` | RFC 29 harness | a suite runs `-fuzz` |
+| The upgrade mapping of `develop`'s shares into this store (plan §5 Q3) | storage v2 serves new installations only, so no stage carries `develop`'s shares over; the mapping is part of the migration the RFC 1 plan's ledger holds as unowned (its §6.1, "A migration tool from v1") | unowned (its own RFC, none yet) | demand for one |
