@@ -3431,8 +3431,8 @@ tests, per change, without waiting for the nightly run.
 **Suites.** §7's codec, stage, core, handler, boundary and in-process layers,
 the translation tables and their fuzz seeds run in `unit`, and §6.10's codec and
 pipeline allocation gates per change in a non-race cell of their own. A test of
-those layers that waits on a stub runs red in a suite of its own, under its own
-build tag, as a known failure
+those layers that waits on a stub runs red in a suite of its own,
+`adapter-conformance`, under its own build tag, as a known failure
 ([RFC 29 §4.7](rfc-29-test-harness.md#4.7%20Grading%3A%20known%20failures%2C%20expected%20skips%2C%20quarantine%2C%20retries)),
 until the change that fills the stub removes its entry; it fails on an
 assertion or an error, never a crash ([RFC 29 §4.6](rfc-29-test-harness.md#4.6%20Results)). The conformance layer is
