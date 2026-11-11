@@ -34,7 +34,9 @@ type binding struct {
 	primary     primary       // the verifier's other inputs from the shard's primary
 	gc          *groupCommit  // the group commit of j
 	removed     bool
-	seq         uint64 // the order bindings were made in, which Close undoes in reverse
+	gate        gate
+	files       []entity.FileID // the files Drop took off the loops and has not settled
+	seq         uint64          // the order bindings were made in, which Close undoes in reverse
 }
 
 // bindings is the share table, read on every content call without a lock. A
@@ -60,7 +62,22 @@ func (e *Engine) bindingOf(s entity.ShareID) (*binding, error) {
 	switch {
 	case b == nil:
 		return nil, &vfserr.Delay{Cause: vfserr.DelayFrozen}
-	case b.removed:
+	case b.removed || b.gate.isShut():
+		return nil, errRemoved
+	}
+
+	return b, nil
+}
+
+// enter is bindingOf plus the registration of one unit of work on the share's
+// gate, with the same answers: the share's calls leave it by b.gate.leave.
+func (e *Engine) enter(s entity.ShareID) (*binding, error) {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return nil, err
+	}
+
+	if !b.gate.enter() {
 		return nil, errRemoved
 	}
 
@@ -105,7 +122,7 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 		e.mu.Unlock()
 
 		return &vfserr.Delay{Cause: vfserr.DelayConflict}
-	case b != nil && b.removed:
+	case b != nil && (b.removed || b.gate.isShut()):
 		e.mu.Unlock()
 
 		return errRemoved

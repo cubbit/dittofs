@@ -289,40 +289,6 @@ func (e *Engine) start(ctx context.Context, shares []Share) (opened, error) {
 	return o, nil
 }
 
-// Unbind admits nothing new for the share and joins what it has in flight.
-// While Start runs it answers ErrDelay.
-func (e *Engine) Unbind(ctx context.Context, id entity.ShareID, keepHolds bool) error {
-	if err := e.whileStarting(); err != nil {
-		return err
-	}
-
-	return errUnbuilt
-}
-
-// Drop closes the share's handles and forgets its tag in every journal.
-// While Start runs it answers ErrDelay.
-func (e *Engine) Drop(ctx context.Context, id entity.ShareID) error {
-	if err := e.whileStarting(); err != nil {
-		return err
-	}
-
-	return errUnbuilt
-}
-
-// whileStarting is ErrDelay with DelayFrozen while Start runs, the shares not
-// attached yet (RFC 17 §4.3), and nil otherwise.
-func (e *Engine) whileStarting() error {
-	e.mu.Lock()
-
-	defer e.mu.Unlock()
-
-	if e.starting {
-		return &vfserr.Delay{Cause: vfserr.DelayFrozen}
-	}
-
-	return nil
-}
-
 // Stats reports the engine's counters, its journals' figures and its
 // conditions: before Start, none. The figures and a read-only journal's
 // condition are read from the journal's own Stats on each call, so they are

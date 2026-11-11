@@ -97,7 +97,10 @@ var held []storage.File
 //   - "The rename is atomic, but a crash before SyncDir may undo it": the
 //     atomicity is the kernel's rename; the crash half is as above.
 //   - ReadAtDirect's "bypassing the page cache, so it observes what reached
-//     the device": not provided yet, the read goes through the page cache.
+//     the device": the read is provided and reads past the cache, but a
+//     comparison of bytes cannot prove it — a cached read returns the same
+//     ones. platform's own tests do: the residency of the cache itself on
+//     Linux, and the calls the read is made of on macOS and Windows.
 //   - File's "A file allocated and never synced comes back short or
 //     unallocated": a crash. The seam's own tests check it on the seam; on
 //     the operating system it takes a power cut.

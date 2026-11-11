@@ -69,10 +69,10 @@ func (c call) String() string {
 
 // recorder is a table that logs every call and makes it. An error queued for
 // an op is returned by its next call instead: open, fsync, fdatasync,
-// fallocate and pwrite then do not run, and close runs, as Linux releases the
-// descriptor even when close reports an error. A short count queued for
-// pwrite makes its next call write only that many bytes, and a count of 0
-// makes it write nothing and report no error.
+// fallocate, pwrite and pread then do not run, and close runs, as Linux
+// releases the descriptor even when close reports an error. A short count
+// queued for pwrite makes its next call write only that many bytes, and a
+// count of 0 makes it write nothing and report no error.
 type recorder struct {
 	mu    sync.Mutex
 	log   []call
@@ -250,11 +250,11 @@ func (r *recorder) table() calls {
 			}
 			c.dev, c.ino = fdIdentity(fd)
 
-			n, err := unix.Pread(fd, p, off)
-			c.written = max(n, 0)
-			_ = r.add(c)
+			if err := r.add(c); err != nil {
+				return -1, err
+			}
 
-			return n, err
+			return unix.Pread(fd, p, off)
 		},
 	}
 }

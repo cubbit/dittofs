@@ -24,7 +24,15 @@ func (c calls) setNoCache(fd uintptr, arg int) error {
 	}, int(fd))
 }
 
-// readDirect reads into p the len(p) bytes at off past the page cache, by a
+// directOp names the call a direct read's errors are reported as, and
+// errNegativeOffset is the error ReadAtDirect names for a negative offset:
+// ReadAt refuses one with an error of its own, and this one names EINVAL so
+// errors.Is can match it, where pread would answer its own, unnamed one.
+const directOp = "pread"
+
+var errNegativeOffset error = unix.EINVAL
+
+// readDirectLocked reads into p the len(p) bytes at off past the page cache, by a
 // pread on the file's own descriptor with F_NOCACHE set around it, over the
 // aligned window directRead builds.
 //
@@ -32,8 +40,10 @@ func (c calls) setNoCache(fd uintptr, arg int) error {
 // holds — and it is set per open file description, not per read, so it is
 // set around each read and cleared again, and a concurrent cached ReadAt of
 // the same file shares the no-cache behaviour for the window's duration.
-// Upgrade to a read channel a concurrent cached read cannot share — the
-// Linux reopen with O_DIRECT, at the cost of a second descriptor per file —
+// Upgrade to a second descriptor per file, with F_NOCACHE set on it alone,
+// which would only stop a concurrent cached read from sharing the setting —
+// it stops nothing else, since the read stays advisory and macOS has no
+// strict bypass (no O_DIRECT), so a page the cache holds can still answer —
 // when a tail check needs the proof an advisory F_NOCACHE cannot give, or
 // when RFC 28 settles whether macOS may refuse F_NOCACHE outright.
 //
@@ -44,34 +54,7 @@ func (c calls) setNoCache(fd uintptr, arg int) error {
 // of the clear after a good read fails the read too: F_NOCACHE stays set on
 // the file's descriptor, so returning success would leave every later cached
 // read of the file bypassing the cache unasked.
-func (f *file) readDirect(p []byte, off int64) (int, error) {
-	if off < 0 {
-		// ReadAt names EINVAL for a negative offset; pread would answer its
-		// own, unnamed one.
-		return 0, &fs.PathError{
-			Op:   "pread",
-			Path: f.f.Name(),
-			Err:  unix.EINVAL,
-		}
-	}
-
-	f.directMu.Lock()
-	defer f.directMu.Unlock()
-
-	if f.directFD == directClosed {
-		// The closed check runs before the nothing-to-read one, so a closed
-		// file answers fs.ErrClosed even for a p of length 0, as ReadAt does.
-		return 0, &fs.PathError{
-			Op:   "pread",
-			Path: f.f.Name(),
-			Err:  fs.ErrClosed,
-		}
-	}
-
-	if len(p) == 0 {
-		return 0, nil
-	}
-
+func (f *file) readDirectLocked(p []byte, off int64) (int, error) {
 	// The whole read — F_NOCACHE's set, the preads, the clear — runs under
 	// directMu, so a Close cannot release the descriptor under it and two
 	// reads never interleave their windows on the one descriptor. A cached
@@ -107,7 +90,15 @@ func (f *file) readDirect(p []byte, off int64) (int, error) {
 		}()
 
 		n, rerr = directRead(p, off, directAlign, func(buf []byte, off int64) (int, error) {
-			return f.calls.pread(int(fd), buf, off)
+			// As Linux's pread does: a read interrupted by a signal is made
+			// again, since the golang.org/x/sys call is raw and repeats
+			// nothing.
+			n, err := f.calls.pread(int(fd), buf, off)
+			for errors.Is(err, unix.EINTR) {
+				n, err = f.calls.pread(int(fd), buf, off)
+			}
+
+			return n, err
 		})
 	}); err != nil {
 		// As in Sync: Control itself fails only on a closed file. The

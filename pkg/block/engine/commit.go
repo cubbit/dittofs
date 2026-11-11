@@ -28,10 +28,12 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 	if off < 0 || n < 0 || n > math.MaxInt64-off {
 		return vfserr.Verifier{}, 0, vfserr.ErrInvalid
 	}
-	b, err := e.bindingOf(s)
+
+	b, err := e.enter(s)
 	if err != nil {
 		return vfserr.Verifier{}, 0, err
 	}
+	defer b.gate.leave()
 	if err := e.fenceGate(b); err != nil {
 		return vfserr.Verifier{}, 0, err
 	}

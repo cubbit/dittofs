@@ -8,7 +8,16 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// readDirect reads into p the len(p) bytes at off past the page cache, by
+// directOp names the call a direct read's errors are reported as, and
+// errNegativeOffset is the error ReadAtDirect names for a negative offset:
+// ReadAt refuses one with an error of its own, and this one names
+// ERROR_INVALID_PARAMETER so errors.Is can match it, where ReadFile would
+// answer its own, unnamed one.
+const directOp = "ReadFile"
+
+var errNegativeOffset error = windows.ERROR_INVALID_PARAMETER
+
+// readDirectLocked reads into p the len(p) bytes at off past the page cache, by
 // ReadFile on a second handle of the file opened with FILE_FLAG_NO_BUFFERING,
 // over the aligned window directRead builds. The handle is opened lazily by
 // the file's first direct read, asks for read access alone — a reader asks
@@ -22,36 +31,10 @@ import (
 // decision: a filesystem that refuses the open or a read of the direct handle
 // is handed back as itself, never widened and never worked around with the
 // cached read, which would hand the tail check after a crash a proof it does
-// not have. The refusal is a ceiling: a journal on a filesystem refusing the
-// direct read cannot reopen after a crash that left an unproven tail.
-func (f *file) readDirect(p []byte, off int64) (int, error) {
-	if off < 0 {
-		// ReadAt names EINVAL for a negative offset; ReadFile would answer
-		// its own, unnamed one.
-		return 0, &fs.PathError{
-			Op:   "ReadFile",
-			Path: f.f.Name(),
-			Err:  windows.ERROR_INVALID_PARAMETER,
-		}
-	}
-
-	f.directMu.Lock()
-	defer f.directMu.Unlock()
-
-	// The closed check runs before the nothing-to-read one, so a closed file
-	// answers fs.ErrClosed even for a p of length 0, as ReadAt does.
-	if f.directFD == directClosed {
-		return 0, &fs.PathError{
-			Op:   "ReadFile",
-			Path: f.f.Name(),
-			Err:  fs.ErrClosed,
-		}
-	}
-
-	if len(p) == 0 {
-		return 0, nil
-	}
-
+// not have. What the refusal means for the journal is not decided here — the
+// open's tail check decides it, against the refusal ReadAtDirect returns (see
+// ReadAtDirect's own decision).
+func (f *file) readDirectLocked(p []byte, off int64) (int, error) {
 	if f.directFD == directUnopened {
 		if err := f.openDirectLocked(); err != nil {
 			return 0, err
@@ -118,8 +101,10 @@ func (f *file) readDirect(p []byte, off int64) (int, error) {
 // file already holds (Linux reopens through /proc/self/fd, which Windows has
 // no counterpart of), so a segment renamed while its direct handle is
 // unopened has its next direct read open the file now carrying the name — a
-// different segment, if one was created under the old one. The cheaper
-// upgrade is windows.GetFinalPathNameByHandle, already in
+// different segment, if one was created under the old one.
+//
+// Upgrade when a direct read is made on a segment after a spare rename or a
+// recycle. The cheaper upgrade is windows.GetFinalPathNameByHandle, already in
 // golang.org/x/sys/windows: resolving the path through the handle the file
 // holds survives the rename with no new kernel call wrapped here, since the
 // handle follows the file, not the name. ReOpenFile, which reopens by the
