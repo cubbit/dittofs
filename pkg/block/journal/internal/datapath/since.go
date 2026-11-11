@@ -149,6 +149,9 @@ func (r *sinceRead) write(ch index.Change, bp *[]byte) (mtime int64, replaced []
 	if err != nil {
 		return 0, nil, err
 	}
+	if r.c.afterCorrupt != nil {
+		r.c.afterCorrupt()
+	}
 	if out.Kind == durability.CorruptUseCopy {
 		at := index.RecordAt{Segment: out.Copy.Segment, Offset: uint32(out.Copy.Off)}
 		_, _, mtime, verdict, err = r.c.readRecord(r.ctx, r.st, r.id, at, g.pieces, bp)

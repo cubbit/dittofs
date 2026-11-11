@@ -84,7 +84,7 @@ type coreOptions struct {
 	// beforeRead runs in ReadAt after the span is resolved and the index
 	// released, before the first record is read from storage.
 	beforeRead func()
-	// afterCorrupt runs in ReadAt after Corrupt answered a record that did not
+	// afterCorrupt runs in ReadAt and Since after Corrupt answered a record that did not
 	// verify and before the read goes on from that answer.
 	afterCorrupt func()
 	// extentLimit overrides the index's entry bound a test core builds with,
@@ -162,7 +162,7 @@ type Core struct {
 	// afterAppend is.
 	beforeRead func()
 
-	// afterCorrupt is a test seam that holds a read between Corrupt's answer
+	// afterCorrupt is a test seam that holds a read or a Since between Corrupt's answer
 	// and the read of a copy it named. It is nil outside tests, for the same
 	// reason afterAppend is.
 	afterCorrupt func()

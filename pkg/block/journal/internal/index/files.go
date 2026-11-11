@@ -486,9 +486,10 @@ func (f *file) settle(fs *files, s *fileShard, id core.FileID) {
 	raise(&fs.buckets[bucketOf(id)], f.change.Counter)
 	f.change = core.Version{}
 	// Free the empty tree and its scratch for the tag-only life, keeping the
-	// accounting: a cut in a later update happens to this same set. An empty
+	// accounting and the dirty-time table: a cut in a later update happens to
+	// this same set, and a dirty write after it must still be timed. An empty
 	// tree holds no bytes, so its byte counters are already zero.
-	f.held = heldSet{acct: f.held.acct}
+	f.held = heldSet{acct: f.held.acct, times: f.held.times}
 	if len(f.segs) > 0 || f.retained.len() > 0 {
 		return
 	}

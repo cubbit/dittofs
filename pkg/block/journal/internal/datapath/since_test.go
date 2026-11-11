@@ -11,6 +11,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
@@ -386,5 +388,42 @@ func TestSinceReportsLossAnotherReadDropped(t *testing.T) {
 	}
 	if b := briefs(got); len(b) != 2 || b[0].Kind != core.ChangeWrite || b[1] != want[0] {
 		t.Fatalf("paused Since = %+v, want the first write then the loss %+v", b, want[0])
+	}
+}
+
+// TestSinceReadsMtimeFromAVerifiedCopy: a record that does not verify but has
+// a copy that does is yielded with the copy's modification time.
+func TestSinceReadsMtimeFromAVerifiedCopy(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	orig, _ := writeWithCopy(t, c, seam, s, f, pattern(4<<10, 12))
+	flip(t, seam, orig.Record.Segment, payloadStart(orig.Record)+100)
+
+	want := []brief{{core.ChangeWrite, ex(0, 4<<10), orig.Version, 1}}
+	if got := briefs(sinceAll(t, c, s, f, core.Version{})); !slices.Equal(got, want) {
+		t.Fatalf("Since = %+v, want %+v (the extent with the copy's mtime)", got, want)
+	}
+}
+
+// TestSinceCopyThatFailsToVerifyYieldsMtimeZero: Corrupt names a copy, the copy
+// does not verify when Since reads it, and the extent is yielded with an
+// Mtime of 0 rather than dropped.
+func TestSinceCopyThatFailsToVerifyYieldsMtimeZero(t *testing.T) {
+	var cp segment.Location
+	var seam *kit.Seam
+	var c *Core
+	c, seam = newTestCore(t, func(o *coreOptions) {
+		o.afterCorrupt = func() { flip(t, seam, cp.Segment, cp.Off+format.RecordHeaderSize+8+100) }
+	})
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	var orig index.Placed
+	orig, cp = writeWithCopy(t, c, seam, s, f, pattern(4<<10, 13))
+	flip(t, seam, orig.Record.Segment, payloadStart(orig.Record)+100)
+
+	want := []brief{{core.ChangeWrite, ex(0, 4<<10), orig.Version, 0}}
+	if got := briefs(sinceAll(t, c, s, f, core.Version{})); !slices.Equal(got, want) {
+		t.Fatalf("Since = %+v, want %+v (the extent with mtime 0)", got, want)
 	}
 }
