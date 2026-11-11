@@ -1088,6 +1088,10 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 		if !bytes.Equal(buf, sentinels(size)) {
 			t.Fatalf("the refused ReadAt wrote into the caller's buffer")
 		}
+		// An empty read still names the file, so it is refused too: the tag
+		// check comes before the zero-length answer.
+		_, _, _, _, err = bh.ReadAt(t.Context(), fid, 0, nil)
+		wantOtherShare(t, err, "ReadAt of an empty buffer", fid, b, a)
 
 		wp := distinct(9, size)
 		_, err = bh.WriteAt(t.Context(), fid, 0, wp, 0)
@@ -1281,6 +1285,7 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 				call func() error
 			}{
 				{"ReadAt", func() error { _, _, _, _, err := h.ReadAt(t.Context(), gid, 0, sentinels(size)); return err }},
+				{"ReadAt of an empty buffer", func() error { _, _, _, _, err := h.ReadAt(t.Context(), gid, 0, nil); return err }},
 				{"WriteAt", func() error { _, err := h.WriteAt(t.Context(), gid, 0, distinct(2, size), 0); return err }},
 				{"Fill", func() error { return h.Fill(t.Context(), gid, 0, sentinels(size), w, draw(t, g)) }},
 				{"Truncate", func() error { _, err := h.Truncate(t.Context(), gid, size); return err }},

@@ -57,7 +57,11 @@ func newTestCore(t *testing.T, opts ...func(*coreOptions)) (*Core, *kit.Seam) {
 // is built over, closed when the test ends, with its spares awaited.
 func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 	t.Helper()
-	seam, err := kit.NewSeam(t.TempDir())
+	dir := t.TempDir()
+	if o.dir != "" {
+		dir = o.dir
+	}
+	seam, err := kit.NewSeam(dir)
 	if err != nil {
 		t.Fatalf("the seam could not be made: %v", err)
 	}
@@ -69,7 +73,7 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 	c, err := newCore(Deps{
 		FS:          seam.FS(),
 		Clock:       kit.NewStopwatchClock(),
-		Dir:         t.TempDir(),
+		Dir:         dir,
 		Identity:    testIdentity,
 		Streams:     testStreams,
 		SegmentCap:  segCap,

@@ -232,6 +232,26 @@ func TestRFC1C_FileIsItsSharesShare(t *testing.T) {
 		}
 	})
 
+	t.Run("read_refused_through_other_share", func(t *testing.T) {
+		// The check comes before the zero-length answer, so an empty read of
+		// another share's file is refused as a full one is, and neither
+		// touches the caller's buffer.
+		c, _ := newTestCore(t)
+		a, b := twoHandles(t, c)
+		f := testFile(26)
+		if _, err := c.WriteAt(context.Background(), a, f, 0, []byte("aaaa"), 1); err != nil {
+			t.Fatalf("A's WriteAt of F: %v", err)
+		}
+		p := sentinels(4)
+		n, missing, held, _, err := c.ReadAt(context.Background(), b, f, 0, p)
+		wantOtherShare(t, err, f, tagB, tagA)
+		if n != 0 || missing != nil || held != nil || string(p) != string(sentinels(4)) {
+			t.Fatalf("the refused read = %d bytes, missing %v, held %v, p %q: it served or touched something", n, missing, held, p)
+		}
+		_, _, _, _, err = c.ReadAt(context.Background(), b, f, 0, nil)
+		wantOtherShare(t, err, f, tagB, tagA)
+	})
+
 	t.Run("resolved_by_handle_alone", func(t *testing.T) {
 		c, _ := newTestCore(t)
 		a, b := twoHandles(t, c)

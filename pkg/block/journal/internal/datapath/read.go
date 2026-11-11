@@ -23,9 +23,12 @@ import (
 // untouched, never zero-filled.
 //
 // A cancelled ctx is refused first and changes nothing; a handle whose close
-// began is refused next, with core.ErrClosed. A negative off, or an off whose
-// end overflows, is refused with core.ErrInvalidExtent. A zero-length p serves
-// nothing, reports nothing missing and does no resolve.
+// began is refused next, with core.ErrClosed. The file's tag is checked
+// before the read's own shape is looked at — a read of another share's file is
+// refused with core.ErrOtherShare, naming both tags, claiming nothing. A
+// negative off, or an off whose end overflows, is refused with
+// core.ErrInvalidExtent. A zero-length p serves nothing, reports nothing
+// missing and does no resolve.
 //
 // asOf is read with the file's append domain held, and the span resolved after
 // it is released (see readAsOf). Each distinct record the span names is read
@@ -52,6 +55,13 @@ func (c *Core) ReadAt(ctx context.Context, s *Share, id core.FileID, off int64, 
 		return 0, nil, nil, core.Version{}, err
 	}
 	defer exit()
+	// The check, like every file-naming call's, claims nothing, so a read may
+	// run it, and it refuses a call naming a file another share owns before
+	// the read's own shape is looked at — the bytes under a refused read are
+	// never served, appended, changed or offered.
+	if err := c.checkTag(s, id); err != nil {
+		return 0, nil, nil, core.Version{}, err
+	}
 	// The offset is checked before the zero-length shortcut, unlike WriteAt's:
 	// an empty read still answers with asOf, so it is refused for an offset no
 	// read may name rather than answered.
