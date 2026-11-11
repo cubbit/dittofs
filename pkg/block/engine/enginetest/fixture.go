@@ -48,6 +48,10 @@ var fixtureStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // under.
 var fixtureInstall = journal.InstallationID{'e', 'n', 'g', 'i', 'n', 'e'}
 
+// fixtureSettings keeps each open's spare pool at 4 segments (2 content, 1
+// headroom, 1 reserve) instead of the defaults' 18 of 256 MiB each.
+var fixtureSettings = journal.Settings{Streams: 2, SpareTarget: 2}
+
 // fixtureNode is the node the fixture's engine runs as.
 var fixtureNode = entity.NodeID{'n', 'o', 'd', 'e'}
 
@@ -615,7 +619,8 @@ func (f *Fixture) start() {
 		Devices: []string{f.Dir},
 		Open: func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
 			j, err := journal.Open(ctx, dir, floor, expect,
-				journal.WithClock(f.Clock), journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS()))
+				journal.WithClock(f.Clock), journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS()),
+				journal.WithSettings(fixtureSettings))
 			if err != nil {
 				return nil, err
 			}
