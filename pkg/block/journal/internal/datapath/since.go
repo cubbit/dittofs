@@ -34,8 +34,9 @@ import (
 // copy it names that verifies stands in, and one that does not verify either
 // leaves the extent yielded with an Mtime of 0; a dropped record's extent is
 // not yielded, and when the drop was of a synced record the loss it left is
-// yielded in its place. A segment retired since the copy was taken yields the
-// extent with an Mtime of 0.
+// yielded in its place. A segment retired since the copy was taken sends the
+// read once to the record the index now names for the extent, as a repack
+// leaves it; when there is none the record is taken as dropped.
 //
 // decision: the changes are those of the copy taken at the start. A drop of an
 // unsynced record puts what it superseded back in the index, and that write is
@@ -86,12 +87,12 @@ func (c *Core) Since(ctx context.Context, s *Share, id core.FileID, from core.Ve
 				}
 				continue
 			}
-			mtime, replaced, err := sr.write(ch, bp)
+			mtime, replaced, dropped, err := sr.write(ch, bp, false)
 			if err != nil {
 				yield(core.Change{}, err)
 				return
 			}
-			if replaced != nil {
+			if dropped {
 				for _, l := range replaced {
 					if !yield(l, nil) {
 						return
@@ -123,33 +124,33 @@ type sinceRead struct {
 }
 
 // write reads ch's record and returns the modification time to yield with
-// its extent. When the record was dropped it returns replaced instead, the
-// losses to yield in place of the extent, which is empty for an unsynced drop
-// and non-nil only to say "the extent is not yielded".
-func (r *sinceRead) write(ch index.Change, bp *[]byte) (mtime int64, replaced []core.Change, err error) {
+// its extent. When the record was dropped, dropped is true and replaced holds
+// the losses to yield in place of the extent, none for an unsynced drop.
+// again allows one re-resolve of a record whose segment was retired.
+func (r *sinceRead) write(ch index.Change, bp *[]byte, again bool) (mtime int64, replaced []core.Change, dropped bool, err error) {
 	if r.dropped[ch.Record] {
-		return 0, []core.Change{}, nil
+		return 0, nil, true, nil
 	}
 	pc := index.Placed{Extent: ch.Extent, Record: ch.Record, Skip: ch.Skip, Version: ch.Version, Seq: ch.Seq}
 	g := recordPieces{at: ch.Record, pieces: []index.Placed{pc}}
 	_, h, mtime, verdict, err := r.c.readRecord(r.ctx, r.st, r.id, ch.Record, g.pieces, bp)
 	switch {
 	case segmentGone(err):
-		return 0, nil, nil
+		return r.resolveAgain(ch, bp, again)
 	case err != nil:
-		return 0, nil, err
+		return 0, nil, false, err
 	case verdict == recordVerifies:
-		return mtime, nil, nil
+		return mtime, nil, false, nil
 	}
 	// decision: an index entry with sequence number 0 is damage the open
 	// should have refused or an index bug, and no header can match 0. Since
 	// returns an error and drops nothing, as a read does.
 	if ch.Seq == 0 {
-		return 0, nil, fmt.Errorf("journal: index entry of file %v at %+v carries no sequence number", r.id, ch.Record)
+		return 0, nil, false, fmt.Errorf("journal: index entry of file %v at %+v carries no sequence number", r.id, ch.Record)
 	}
 	out, err := r.c.dur.Corrupt(r.ctx, r.corruption(g, h, verdict))
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false, err
 	}
 	if r.c.afterCorrupt != nil {
 		r.c.afterCorrupt()
@@ -158,29 +159,58 @@ func (r *sinceRead) write(ch index.Change, bp *[]byte) (mtime int64, replaced []
 		at := index.RecordAt{Segment: out.Copy.Segment, Offset: uint32(out.Copy.Off)}
 		_, _, mtime, verdict, err = r.c.readRecord(r.ctx, r.st, r.id, at, g.pieces, bp)
 		switch {
-		case segmentGone(err), err == nil && verdict != recordVerifies:
+		case segmentGone(err):
+			return r.resolveAgain(ch, bp, again)
+		case err == nil && verdict != recordVerifies:
 			// decision: a copy that does not verify here is not handed to
 			// Corrupt again, as in a read, and its extent is yielded with an
 			// Mtime of 0, which verifies nothing; the next read of it finds
 			// the copy bad. Overturned if Since must drop what it cannot verify.
-			return 0, nil, nil
+			return 0, nil, false, nil
 		case err != nil:
-			return 0, nil, err
+			return 0, nil, false, err
 		}
-		return mtime, nil, nil
+		return mtime, nil, false, nil
 	}
 	r.dropped[ch.Record] = true
-	replaced = []core.Change{}
-	// The marker of a synced loss is visible once Corrupt returns, whoever
-	// dropped the record, so the losses to yield in its place are the markers
-	// at its version that the copy did not hold: an unsynced drop leaves none.
-	for _, m := range r.c.index.Since(r.id, r.from) {
-		k := lossKey{m.Version, m.Extent}
-		if m.Kind == core.ChangeLoss && m.Version == ch.Version && !r.seen[k] {
-			r.seen[k] = true
-			replaced = append(replaced, core.Change{Kind: core.ChangeLoss, Extent: m.Extent, Version: m.Version})
+	return 0, r.lossesAt(ch.Version), true, nil
+}
+
+// resolveAgain handles a record whose segment was retired after the copy was
+// taken. When the index names the same record, by sequence number, at another
+// place, as a repack leaves it, the write is read from there, once. Otherwise
+// the record is taken as dropped: the losses at its version are yielded in its
+// place, none when it was superseded or dropped unsynced.
+//
+// decision: a record whose segment is gone and that the index still names at
+// the same place, or names nowhere, is treated as dropped, not yielded with an
+// unverified Mtime of 0, which the format reserves for a suspended write.
+// Overturned if a retirement can leave the index naming a segment it removed
+// for content still held.
+func (r *sinceRead) resolveAgain(ch index.Change, bp *[]byte, again bool) (int64, []core.Change, bool, error) {
+	if !again {
+		if cur, ok := r.c.index.Lookup(r.id, ch.Extent.Off); ok && cur.Seq == ch.Seq && cur.Record != ch.Record && cur.Extent.Off <= ch.Extent.Off {
+			ch.Record, ch.Skip = cur.Record, cur.Skip+uint32(ch.Extent.Off-cur.Extent.Off)
+			return r.write(ch, bp, true)
 		}
 	}
-	slices.SortFunc(replaced, func(a, b core.Change) int { return cmp.Compare(a.Extent.Off, b.Extent.Off) })
-	return 0, replaced, nil
+	r.dropped[ch.Record] = true
+	return 0, r.lossesAt(ch.Version), true, nil
+}
+
+// lossesAt returns the loss markers of the file at version v that the copy
+// did not hold and this iteration has not yielded, in offset order. The marker
+// of a synced loss is visible once Corrupt returns, whoever dropped the
+// record, so these are the losses to yield in place of a dropped write.
+func (r *sinceRead) lossesAt(v core.Version) []core.Change {
+	var out []core.Change
+	for _, m := range r.c.index.Since(r.id, r.from) {
+		k := lossKey{m.Version, m.Extent}
+		if m.Kind == core.ChangeLoss && m.Version == v && !r.seen[k] {
+			r.seen[k] = true
+			out = append(out, core.Change{Kind: core.ChangeLoss, Extent: m.Extent, Version: m.Version})
+		}
+	}
+	slices.SortFunc(out, func(a, b core.Change) int { return cmp.Compare(a.Extent.Off, b.Extent.Off) })
+	return out
 }

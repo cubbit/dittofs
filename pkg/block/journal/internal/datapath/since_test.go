@@ -427,3 +427,112 @@ func TestSinceCopyThatFailsToVerifyYieldsMtimeZero(t *testing.T) {
 		t.Fatalf("Since = %+v, want %+v (the extent with mtime 0)", got, want)
 	}
 }
+
+// pauseSince starts Since of f and holds its consumer inside the first yield.
+// The returned func releases it and returns everything Since yielded.
+func pauseSince(t *testing.T, c *Core, s *Share, f core.FileID) func() []core.Change {
+	t.Helper()
+	inYield, release, done := make(chan struct{}), make(chan struct{}), make(chan []core.Change, 1)
+	go func() {
+		var got []core.Change
+		for ch, err := range c.Since(context.Background(), s, f, core.Version{}) {
+			if err != nil {
+				t.Errorf("Since: %v", err)
+				break
+			}
+			if len(got) == 0 {
+				close(inYield)
+				<-release
+			}
+			got = append(got, ch)
+		}
+		done <- got
+	}()
+	<-inYield
+	return func() []core.Change {
+		close(release)
+		select {
+		case got := <-done:
+			return got
+		case <-time.After(30 * time.Second):
+			t.Fatal("the paused Since never finished")
+			return nil
+		}
+	}
+}
+
+// retiredSinceFile writes an earlier record, which Since yields first, then
+// the sealed record at 0 of f, and returns the sealed record's placement.
+func retiredSinceFile(t *testing.T, c *Core, s *Share, f core.FileID, data []byte) index.Placed {
+	t.Helper()
+	mustWrite(t, c, s, f, 1<<20, pattern(4<<10, 9))
+	return sealedRecord(t, c, s, f, data)
+}
+
+// TestSinceRepointedRecordKeepsItsMtime retires the segment of a record that
+// the Since copy still names, after a repack copied the record elsewhere and
+// repointed the index: Since reads the copy and yields the write with the
+// mtime it was given.
+func TestSinceRepointedRecordKeepsItsMtime(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	data := pattern(4<<10, 21)
+	orig := retiredSinceFile(t, c, s, f, data)
+	resume := pauseSince(t, c, s, f)
+
+	hdr := headerAt(t, seam, orig.Record)
+	unlock := c.domains.Lock(f)
+	pl, err := c.Streams().For(f).Append(format.RecordHeader{
+		Kind: format.KindWrite, File: f, Extent: hdr.Extent, Seq: hdr.Seq, Version: hdr.Version, Tag: hdr.Tag,
+	}, format.RecordBody{Payload: data, MTime: 1})
+	unlock()
+	if err != nil || pl.Loc.Segment == orig.Record.Segment {
+		t.Fatalf("Append of the copy: %+v %v", pl, err)
+	}
+	moved, hd, err := c.Index().RepointRecord(f, orig.Record, index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)})
+	c.Account(hd)
+	if err != nil || moved != 1 {
+		t.Fatalf("RepointRecord = %d, %v", moved, err)
+	}
+	retire(t, c, seam, orig.Record.Segment)
+
+	var got *core.Change
+	all := resume()
+	for i := range all {
+		if all[i].Kind == core.ChangeWrite && all[i].Version == orig.Version {
+			got = &all[i]
+		}
+	}
+	if got == nil || got.Mtime != 1 {
+		t.Fatalf("Since = %+v, want the repointed write yielded with Mtime 1", all)
+	}
+}
+
+// TestSinceReportsLossOfDroppedThenRetiredRecord drops a synced record by a
+// read after Since copied the changes, then retires its segment: Since finds
+// the segment gone and still yields the loss, which a Settle at that version
+// would otherwise erase unreported.
+func TestSinceReportsLossOfDroppedThenRetiredRecord(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	data := pattern(4<<10, 21)
+	orig := retiredSinceFile(t, c, s, f, data)
+	flip(t, seam, orig.Record.Segment, payloadStart(orig.Record)+10)
+	resume := pauseSince(t, c, s, f)
+
+	readUntouched(t, c, s, f, 0, 4<<10, []core.Extent{ex(0, 4<<10)})
+	retire(t, c, seam, orig.Record.Segment)
+
+	want := brief{core.ChangeLoss, ex(0, 4<<10), orig.Version, 0}
+	all := resume()
+	if !slices.Contains(briefs(all), want) {
+		t.Fatalf("Since = %+v, want it to yield the loss %+v", briefs(all), want)
+	}
+	for _, ch := range all {
+		if ch.Kind == core.ChangeWrite && ch.Version == orig.Version {
+			t.Fatalf("Since yielded the dropped write %+v", ch)
+		}
+	}
+}
