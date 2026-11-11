@@ -816,7 +816,8 @@ controller.
 
 > decision: only the PAC's server signature is verified; the KDC signature is
 > not sent to a domain controller. A forged PAC needs the service key, which the
-> keytab's seal protects. Overturned if the keytab is ever readable without its
+> keytab's seal protects, and which an offline join's closing rotation takes from
+> whoever created the account. Overturned if the keytab is ever readable without its
 > wrapping key, or a deployment requires KDC-signature checks.
 
 ### 3.5 NTLMv2
@@ -885,7 +886,9 @@ An **offline join** takes instead a computer account an administrator created,
 with its password. It verifies the password against a domain controller,
 refuses an account whose `msDS-SupportedEncryptionTypes` lacks either AES bit,
 and reports which service names the account holds, so an operator knows which
-names still need an imported key (§3.3), before storing the password. Either
+names still need an imported key (§3.3), before storing the password; it then
+rotates the password (below), because whoever created the account knows it and
+could derive the computer account's service key and forge a PAC with it. Either
 join writes the account's name as `identity.netbios_name`, which a joined
 installation refuses to change. Domain controllers are found from the domain's
 DNS service records, with fail-over between them, unless the directory record
@@ -1985,7 +1988,7 @@ RFC 16's conformance suite's, not repeated here.
 | AES only | 1 | Tickets for a keytab name under RC4 and under DES: both `ErrLogonFailure`; under AES128 and AES256: accepted. | an RC4 ticket forged from an NT hash |
 | derived keytab | 1 | Joined to the in-memory domain controller, rotate the machine password, then restart identity over the same store: tickets under the previous and the new key version number are both accepted until the retention passes, then the previous one is refused. Stop a rotation between sealing and setting, and resume it: the password is set once and the channel signs in. A ticket under the new number that arrives before the rotation confirms it, and one under the old number from a second controller that has not replicated the change: both accepted. Import a key for a `cifs/` name the computer account holds: refused. | a rotation breaking Kerberos; a password only the controller knows; a ticket refused while its number is unconfirmed |
 | online join | 1 | Stop an online join between sealing the password and creating the account, and resume it: the account is created once, with the sealed password, and the channel signs in. Join again under the same name: refused, naming the account, its password unchanged; with a takeover asked: joined, the password sealed before it is set. | a password only the controller knows; a second installation breaking the first |
-| offline join | 1 | Offline-join an account whose `msDS-SupportedEncryptionTypes` lacks AES: refused. One that advertises it: joined, with the service names it holds reported. | a join whose tickets are all refused |
+| offline join | 1 | Offline-join an account whose `msDS-SupportedEncryptionTypes` lacks AES: refused. One that advertises it: joined, with the service names it holds reported, and the password the administrator handed over rotated: once the retention passes, a ticket under a key derived from it is refused. | a join whose tickets are all refused; a service key its creator still knows |
 | machine account health | 1 | Fail the secure channel to every domain controller: `machine_account_unhealthy` raised; restore one: cleared. Fail a rotation, then restore the channel: raised until a rotation completes. | a failed rotation hidden by a reconnect |
 | NetBIOS name while joined | 1 | On a joined installation, a settings change to `identity.netbios_name`: refused at validation, the name unchanged. | a CHALLENGE naming an account the installation does not hold |
 | keytab rollover | 1 | During a rollover, tickets under the old and the new key version are both accepted; past the retention, an old-version ticket is refused. | a rotation failing tickets, or a retired key accepted forever |
