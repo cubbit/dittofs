@@ -180,21 +180,39 @@ func TestRemovalsLeaveTheirMarkers(t *testing.T) {
 // each appends nothing and draws no version.
 func TestRemovalsRefuseShapesAndDrawNoVersion(t *testing.T) {
 	ctx := context.Background()
-	for name, call := range map[string]func(*Core, *Share, core.FileID) (core.Version, error){
-		"zero-length deallocate": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
-			return c.Deallocate(ctx, s, f, core.Extent{Off: 4, Len: 0})
+	for name, tc := range map[string]struct {
+		call func(*Core, *Share, core.FileID) (core.Version, error)
+		want error
+	}{
+		"zero-length deallocate": {
+			call: func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+				return c.Deallocate(ctx, s, f, core.Extent{Off: 4, Len: 0})
+			},
+			want: core.ErrZeroLength,
 		},
-		"zero-length clone target": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
-			return c.CloneTarget(ctx, s, f, core.CloneSpec{DstOff: 4, Len: 0})
+		"zero-length clone target": {
+			call: func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+				return c.CloneTarget(ctx, s, f, core.CloneSpec{DstOff: 4, Len: 0})
+			},
+			want: core.ErrZeroLength,
 		},
-		"negative truncate": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
-			return c.Truncate(ctx, s, f, -1)
+		"negative truncate": {
+			call: func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+				return c.Truncate(ctx, s, f, -1)
+			},
+			want: core.ErrInvalidExtent,
 		},
-		"deallocate offset overflow": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
-			return c.Deallocate(ctx, s, f, core.Extent{Off: 4, Len: 1<<63 - 1})
+		"deallocate offset overflow": {
+			call: func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+				return c.Deallocate(ctx, s, f, core.Extent{Off: 4, Len: 1<<63 - 1})
+			},
+			want: core.ErrInvalidExtent,
 		},
-		"clone target offset overflow": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
-			return c.CloneTarget(ctx, s, f, core.CloneSpec{DstOff: 4, Len: 1<<63 - 1})
+		"clone target offset overflow": {
+			call: func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+				return c.CloneTarget(ctx, s, f, core.CloneSpec{DstOff: 4, Len: 1<<63 - 1})
+			},
+			want: core.ErrInvalidExtent,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -203,13 +221,8 @@ func TestRemovalsRefuseShapesAndDrawNoVersion(t *testing.T) {
 			f := testFile(1)
 			next := c.counters.NextVersion()
 			writes := seam.Calls(kit.OpWrite)
-			v, err := call(c, s, f)
-			var want error
-			if name == "zero-length deallocate" || name == "zero-length clone target" {
-				want = core.ErrZeroLength
-			} else {
-				want = core.ErrInvalidExtent
-			}
+			v, err := tc.call(c, s, f)
+			want := tc.want
 			if !errors.Is(err, want) {
 				t.Fatalf("%s = %v, want %v", name, err, want)
 			}
@@ -262,6 +275,16 @@ func TestRemovalsRefuseAnotherSharesFile(t *testing.T) {
 	}
 }
 
+// crashLosingUnsynced crashes the seam with no option, so every write no sync
+// covered is lost: the bytes read back are the durable image alone.
+func crashLosingUnsynced(t *testing.T, seam *kit.Seam) {
+	t.Helper()
+	crashedSeams.Store(seam, true)
+	if err := seam.Crash(); err != nil {
+		t.Fatalf("Crash: %v", err)
+	}
+}
+
 // TestRemovalIsDurableOnReturn checks each removal's record is durable once
 // the call returns: a crash at the seam right after it leaves the record in
 // the segment's durable image.
@@ -298,6 +321,235 @@ func TestRemovalIsDurableOnReturn(t *testing.T) {
 			loc := segment.Location{Segment: rec[0].Header.Segment, Off: rec[0].Header.Offset, Len: rec[0].Header.Size()}
 			if !c.Durability().Durable(loc) {
 				t.Fatalf("the %s record %+v is not durable on return", name, loc)
+			}
+		})
+	}
+}
+
+// TestRemovalSurvivesACrashRightAfterItReturns crashes the seam with nothing
+// kept right after a removal returns and reads the removal record back out of
+// the durable image: a removal that returned before its record was synced
+// loses it here.
+func TestRemovalSurvivesACrashRightAfterItReturns(t *testing.T) {
+	for name, call := range map[string]func(*Core, *Share, core.FileID) (core.Version, error){
+		"truncate": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+			return c.Truncate(context.Background(), s, f, 0)
+		},
+		"deallocate": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+			return c.Deallocate(context.Background(), s, f, core.Extent{Off: 0, Len: 8})
+		},
+		"delete": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+			return c.Delete(context.Background(), s, f)
+		},
+		"clone target": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+			return c.CloneTarget(context.Background(), s, f, core.CloneSpec{DstOff: 0, Len: 8})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, seam := newTestCore(t)
+			s := mustShare(t, c, 1)
+			f := testFile(1)
+			v, err := call(c, s, f)
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			crashLosingUnsynced(t, seam)
+			var found bool
+			for _, r := range removalRecords(t, seam) {
+				if r.Header.File == f && r.Header.Version == v {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("the %s record at version %v is not on disk after a crash", name, v)
+			}
+		})
+	}
+}
+
+// TestRemovalAfterATimerFailedWindowLeavesItsMarkForSync fails the sync bound's
+// own sync of a file, then truncates the file: the truncate's record is in a
+// new segment and returns nil, never the window's SyncError, and the file's
+// next Sync still reports the failure it was owed.
+func TestRemovalAfterATimerFailedWindowLeavesItsMarkForSync(t *testing.T) {
+	clk := kit.NewStopwatchClock()
+	c, seam := newTestCore(t, func(o *coreOptions) { o.clock = clk })
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	mustWrite(t, c, s, f, 0, make([]byte, 4096))
+	seg := format.SegmentName(recordOf(t, c, f, 0).Record.Segment)
+	// The failed segment's pages do not read back either, so its window
+	// cannot re-append the write and fails it, which marks the file.
+	if err := seam.Schedule(
+		kit.Failing(kit.OpSync, seg, 1, errors.New("sync boom")),
+		kit.Failing(kit.OpRead, seg, 0, errors.New("read boom")),
+	); err != nil {
+		t.Fatalf("the seam refused the failing sync and read rules: %v", err)
+	}
+	eventually(t, "the sync bound's timer to arm", func() bool { return clk.Pending() > 0 })
+	clk.Advance(core.SyncBound)
+	eventually(t, "the timer's sync to fail", func() bool { return c.Durability().Stats().SyncFailures == 1 })
+	// The window's failure lands once its record is dropped, which leaves the
+	// file owed. The failed segment reads back again then, so the scan below
+	// sees it.
+	eventually(t, "the failed window's write to be dropped", func() bool {
+		_, ok := c.Index().Lookup(f, 0)
+		return !ok
+	})
+	if err := seam.Schedule(); err != nil {
+		t.Fatalf("the seam refused to clear its rules: %v", err)
+	}
+
+	v, err := c.Truncate(context.Background(), s, f, 2048)
+	if err != nil {
+		t.Fatalf("the truncate after a failed window = %v, want the old window's failure left for Sync", err)
+	}
+	if rec := removalOf(t, seam, format.KindTruncate); rec.Header.Version != v {
+		t.Fatalf("the record on disk carries %v, the call returned %v", rec.Header.Version, v)
+	}
+	if err := c.Durability().Sync(context.Background(), f); !errors.Is(err, core.ErrSyncFailed) {
+		t.Fatalf("Sync after the truncate = %v, want the failed window's SyncError", err)
+	}
+}
+
+// TestRemovalInAFailedWindowIsReappended checks a truncate whose record is in a
+// segment whose sync failed survives it: the record is re-appended to a new
+// segment, the wait follows it and returns nil, and no loss is recorded.
+func TestRemovalInAFailedWindowIsReappended(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	mustWrite(t, c, s, f, 0, make([]byte, 4096))
+	seg := recordOf(t, c, f, 0).Record.Segment
+
+	hold := seam.HoldFirst(t, kit.OpSync, format.SegmentName(seg))
+	done := make(chan struct {
+		v   core.Version
+		err error
+	}, 1)
+	go func() {
+		v, err := c.Truncate(context.Background(), s, f, 2048)
+		done <- struct {
+			v   core.Version
+			err error
+		}{v, err}
+	}()
+	eventually(t, "the removal's sync to reach storage", func() bool { return hold.Waiting() > 0 })
+	// The rule is consulted after the hold, so it fails the held sync.
+	if err := seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(seg), 1, errors.New("sync boom"))); err != nil {
+		t.Fatalf("the seam refused the failing sync rule: %v", err)
+	}
+	gen := c.Durability().Generation()
+	hold.Release()
+
+	got := within(t, done, "the removal whose segment's sync failed")
+	if got.err != nil {
+		t.Fatalf("the removal = %v, want nil once its record was re-appended", got.err)
+	}
+	var reappended bool
+	for _, r := range removalRecords(t, seam) {
+		if r.Header.Kind == format.KindTruncate && r.Header.File == f && r.Header.Segment != seg && r.Header.Version == got.v {
+			reappended = true
+		}
+	}
+	if !reappended {
+		t.Fatalf("the truncate's record is not on disk in a segment after the failed one %d", seg)
+	}
+	for _, r := range readRecords(t, seam) {
+		if r.Header.Kind == format.KindLoss {
+			t.Fatalf("a loss record was written for a re-appended removal: %+v", r.Header)
+		}
+	}
+	if g := c.Durability().Generation(); g != gen {
+		t.Fatalf("the loss generation moved from %d to %d: a re-append raises none", gen, g)
+	}
+}
+
+// TestRemovalWaitingWhenTheJournalTurnsReadOnly checks a removal parked in its
+// durability wait returns ErrJournalReadOnly, never a *SyncError and never a
+// hang, once the journal turns read-only, and still names the version it drew.
+func TestRemovalWaitingWhenTheJournalTurnsReadOnly(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	// Every sync is held, so the record waits whichever sync reaches it.
+	hold := seam.Hold(t, kit.OpSync, "*")
+	done := make(chan struct {
+		v   core.Version
+		err error
+	}, 1)
+	go func() {
+		v, err := c.Truncate(context.Background(), s, f, 0)
+		done <- struct {
+			v   core.Version
+			err error
+		}{v, err}
+	}()
+	eventually(t, "the removal's wait to reach its sync", func() bool { return hold.Waiting() > 0 })
+	c.Durability().Enter(syscall.EROFS)
+	hold.Release()
+	got := within(t, done, "the removal waiting when the journal turned read-only")
+
+	if !errors.Is(got.err, core.ErrJournalReadOnly) {
+		t.Fatalf("the removal = %v, want ErrJournalReadOnly", got.err)
+	}
+	var se *core.SyncError
+	if errors.As(got.err, &se) {
+		t.Fatalf("the removal returned %v, a *core.SyncError", got.err)
+	}
+	if rec := removalOf(t, seam, format.KindTruncate); got.v == (core.Version{}) || rec.Header.Version != got.v {
+		t.Fatalf("the removal returned %v, want the record's version %v", got.v, rec.Header.Version)
+	}
+}
+
+// TestRemovalsAreInTheLedger checks each removal's record is in the durability
+// ledger while it is unsynced, named by the place the record landed at.
+func TestRemovalsAreInTheLedger(t *testing.T) {
+	for name, call := range map[string]func(*Core, *Share, core.FileID) (core.Version, error){
+		"truncate": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+			return c.Truncate(context.Background(), s, f, 0)
+		},
+		"deallocate": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+			return c.Deallocate(context.Background(), s, f, core.Extent{Off: 0, Len: 8})
+		},
+		"delete": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+			return c.Delete(context.Background(), s, f)
+		},
+		"clone target": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+			return c.CloneTarget(context.Background(), s, f, core.CloneSpec{DstOff: 0, Len: 8})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, seam := newTestCore(t)
+			s := mustShare(t, c, 1)
+			f := testFile(1)
+			// Every sync is held, so the removal's own record cannot be
+			// completed by a sync the hold did not stop.
+			hold := seam.Hold(t, kit.OpSync, "*")
+			done := make(chan struct {
+				v   core.Version
+				err error
+			}, 1)
+			go func() {
+				v, err := call(c, s, f)
+				done <- struct {
+					v   core.Version
+					err error
+				}{v, err}
+			}()
+			eventually(t, "the removal's sync to reach storage", func() bool { return hold.Waiting() > 0 })
+			rec := removalRecords(t, seam)
+			if len(rec) != 1 {
+				t.Fatalf("%s left %d removal records on disk, want 1", name, len(rec))
+			}
+			at := index.RecordAt{Segment: rec[0].Header.Segment, Offset: uint32(rec[0].Header.Offset)}
+			w, ok := c.Durability().Tracked(f, at)
+			if !ok || w.Kind != rec[0].Header.Kind || w.Version != rec[0].Header.Version {
+				t.Fatalf("%s: the ledger holds %+v, %v, want the record at %+v", name, w, ok, at)
+			}
+			hold.Release()
+			if got := within(t, done, "the removal after its sync was released"); got.err != nil {
+				t.Fatalf("%s: %v", name, got.err)
 			}
 		})
 	}
@@ -461,14 +713,14 @@ func TestRemovalReleasesTheFileAppendDomainBeforeItsWait(t *testing.T) {
 	}
 }
 
-// TestRemovalOfOneFileDoesNotWaitOnAnotherFilesRecordWrite holds file B's
-// record write at storage and checks a removal of file A returns meanwhile:
-// a removal takes its own file's append domain and no lock another file's
-// I/O holds. An offload pass runs its callback with no journal lock held and
-// its uploads under the file's storage guard, so the lock a removal must not
-// wait on is the one of the file another's I/O holds; offload is not wired in
-// this package yet, so the held record write stands in for it.
-func TestRemovalOfOneFileDoesNotWaitOnAnotherFilesRecordWrite(t *testing.T) {
+// TestRemovalOfOneFileTakesNoLockAnotherFilesIOHolds holds file B's record
+// write at storage and checks a removal of file A returns meanwhile: a removal
+// takes its own file's append domain and no lock another file's I/O holds. An
+// offload pass runs its callback with no journal lock held and its uploads
+// under the file's storage guard, so the lock a removal must not wait on is
+// the one of the file another's I/O holds; offload is not wired in this
+// package yet, so the held record write stands in for it.
+func TestRemovalOfOneFileTakesNoLockAnotherFilesIOHolds(t *testing.T) {
 	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
 	b := testFile(2)

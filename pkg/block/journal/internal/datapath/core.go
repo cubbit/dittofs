@@ -106,6 +106,9 @@ type coreOptions struct {
 	// noLimit keeps the test helper's generous version limit off the core, so
 	// a test can hold a fresh core that issues nothing until it sets one.
 	noLimit bool
+	// clock replaces the helper's stopwatch clock, so a test can advance the
+	// sync bound's timer.
+	clock core.Clock
 }
 
 // Core is the journal's assembled write and read paths: the placement index,

@@ -70,9 +70,13 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 	if o.segmentCap != 0 {
 		segCap = o.segmentCap
 	}
+	clock := o.clock
+	if clock == nil {
+		clock = kit.NewStopwatchClock()
+	}
 	c, err := newCore(Deps{
 		FS:          seam.FS(),
-		Clock:       kit.NewStopwatchClock(),
+		Clock:       clock,
 		Dir:         dir,
 		Identity:    testIdentity,
 		Streams:     testStreams,
