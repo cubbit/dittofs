@@ -1628,8 +1628,9 @@ func TestTake_DrawsTheVersionInsideItsSection(t *testing.T) {
 	}
 }
 
-// TestReserve_ZeroGapFillBesideAReservationIsRefused checks the C1 gate's
-// narrowness: a fill that adds no entry is admitted at an exactly-full index
+// TestReserve_ZeroGapFillBesideAReservationIsRefused checks the held-entry
+// gate's narrowness: a fill that adds no entry is admitted at an exactly-full
+// index
 // (TestTake_ZeroGapFillAtFullIndex), but beside an open reservation holding
 // entries it is refused naming the index. The refusal is deliberate — the fill
 // cannot prove it will not grow a piece its version's arrival splits — and
@@ -1656,5 +1657,52 @@ func TestReserve_ZeroGapFillBesideAReservationIsRefused(t *testing.T) {
 	var ns *core.NoSpaceError
 	if !errors.As(err, &ns) || ns.Limit != core.LimitIndex {
 		t.Fatalf("a zero-gap fill beside the reservation = %v, want a NoSpaceError naming the index", err)
+	}
+}
+
+// TestTake_HoldsPendingEntries pins that an admitted plain take holds the
+// entries its pieces will publish as pending, so a reservation taken before it
+// publishes reads them spent: the datapath tests pin the effect, this pins the
+// counter move at its source.
+func TestTake_HoldsPendingEntries(t *testing.T) {
+	r := newRig(t, std())
+	q := req() // a payload the room covers: one piece, one entry
+	g := r.grant(t, q)
+	if got := r.c.pendingEntries; got != 1 {
+		t.Fatalf("after the take, pendingEntries = %d, want the one entry its piece publishes", got)
+	}
+	// Every piece the index admits hands one entry over.
+	g.Claimed(1)
+	if got := r.c.pendingEntries; got != 0 {
+		t.Fatalf("after the publish claimed the piece, pendingEntries = %d, want 0", got)
+	}
+	g.Release()
+	if got := r.c.pendingEntries; got != 0 {
+		t.Fatalf("after release, pendingEntries = %d, want 0", got)
+	}
+}
+
+// TestTake_HoldsEveryRollingPiecesEntry pins the multi-piece half: a write whose
+// split the room only partly covers publishes one entry per piece, and Take
+// holds them all as pending, so a reservation taken while it is in flight
+// cannot count on any of them.
+func TestTake_HoldsEveryRollingPiecesEntry(t *testing.T) {
+	r := newRig(t, std())
+	// A partly covered write: its head in the room, its tail in the next
+	// segment, so two pieces where the pre-check names one.
+	room := r.room()
+	if room <= 0 || room >= 2*segment.EmptyRoom(testCap) {
+		t.Fatalf("precondition: the room is %d, want a partly filled segment", room)
+	}
+	q := req()
+	q.Payload = room + 4096 // head fills the room, tail rolls
+	q.Extent = core.Extent{Len: q.Payload}
+	g := r.grant(t, q)
+	if got := r.c.pendingEntries; got < 2 {
+		t.Fatalf("the partly covered take holds %d pending entries, want one per piece (at least 2)", got)
+	}
+	g.Release()
+	if got := r.c.pendingEntries; got != 0 {
+		t.Fatalf("after release, pendingEntries = %d, want 0", got)
 	}
 }

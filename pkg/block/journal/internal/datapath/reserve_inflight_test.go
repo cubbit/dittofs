@@ -159,3 +159,72 @@ func TestReserveAhead_ReservedWriteAppendsInVersionOrder(t *testing.T) {
 		t.Fatalf("the reserved write's range holds version %d (found %v), want its own %d", rv.Version.Counter, ok, got.v.Counter)
 	}
 }
+
+// TestReserveAhead_RollingPlainHoldsEveryPiece pins the second half of C1: a
+// plain write that rolls publishes one entry per piece, not the one the
+// pre-check counts, and every one of those must be held as pending while it is
+// in flight. One multi-segment plain write is parked between its grant and its
+// append with nothing held and nothing pending before it, so its count comes
+// from the pre-check alone unless Take counts the pieces; a reservation taken
+// while it is parked and then granted must still let its own write publish,
+// never refuse it LimitIndex part-way.
+func TestReserveAhead_RollingPlainHoldsEveryPiece(t *testing.T) {
+	cost := capacity.WriteCharge(1, testSegmentCap)
+	pieces, spares := capacity.PiecesFor(cost, 1, testSegmentCap)
+	parked := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var once sync.Once
+	c, _ := newTestCore(t, func(o *coreOptions) {
+		// The bound is the reservation's pieces plus one: the room the single
+		// plain write must not be able to spend from outside its own pending
+		// count.
+		o.extentLimit = int64(pieces) + 1
+		o.contentSpares = spares + 8
+		o.beforeAppend = func() {
+			once.Do(func() { parked <- struct{}{}; <-release })
+		}
+	})
+	s := mustShare(t, c, 1)
+
+	// One plain write of three and a half segments, parked after its grant and
+	// before its first append: nothing is held or pending when it takes it.
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.WriteAt(context.Background(), s, testFile(60), 0, make([]byte, 3*testSegmentCap+testSegmentCap/2), 1)
+		done <- err
+	}()
+	<-parked
+
+	// The pending figure already holds every piece the write will publish, not
+	// the one the pre-check counts: a reservation taken here must size against
+	// all of them.
+	if got := c.PendingEntries(); got < 2 {
+		close(release)
+		if err := <-done; err != nil {
+			t.Logf("the plain write while the count is short: %v", err)
+		}
+		t.Fatalf("the parked plain write holds %d pending entries, want the pieces its split will publish (more than one)", got)
+	}
+	r, err := c.Reserve(context.Background(), s, cost, 1)
+	if err != nil {
+		close(release)
+		if werr := <-done; werr != nil {
+			t.Logf("the plain write worth a refused Reserve: %v", werr)
+		}
+		var ns *core.NoSpaceError
+		if !errors.As(err, &ns) || ns.Limit != core.LimitIndex {
+			t.Fatalf("Reserve beside the parked rolling write = %v, want the reservation or a refusal naming the index", err)
+		}
+		return
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("the plain rolling write: %v", err)
+	}
+	// The plain write's every piece is the index's now; the reservation's own
+	// write must still publish its entry, never be refused part-way.
+	if _, err := c.WriteReserved(context.Background(), s, r, testFile(9), 0, []byte("r"), 1); err != nil {
+		t.Fatalf("the reserved write after a granted Reserve = %v, want it published: the rolling plain write held every piece", err)
+	}
+	r.Release()
+}

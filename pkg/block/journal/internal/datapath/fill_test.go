@@ -545,25 +545,25 @@ func TestFillsPastTheIndexBoundAdmitOnePerEntry(t *testing.T) {
 		go func() { errs <- c.Fill(context.Background(), s, f, 0, ff(4096), ver(0), ver(1)) }()
 	}
 	// Exactly one fill is admitted and appends, reaching the hold; the other is
-	// refused at Take before any append. Release once one append waits.
-	eventually(t, "the admitted fill's append to reach storage", func() bool { return hold.Waiting() >= 1 })
+	// refused at Take before any append, so its error arrives while the hold is
+	// still held. Receive it first — the admitted fill cannot return until the
+	// hold releases — then let the admitted fill go.
+	var refused error
+	select {
+	case err := <-errs:
+		refused = err
+	case <-time.After(5 * time.Second):
+		t.Fatal("neither fill returned or reached storage: want one refused at Take")
+	}
+	var ns *core.NoSpaceError
+	if !errors.As(refused, &ns) || ns.Limit != core.LimitIndex {
+		hold.Release()
+		t.Fatalf("the fill refused first = %v, want a NoSpaceError naming the index from Take", refused)
+	}
 	hold.Release()
 
-	var ok, bounded int
-	for range files {
-		err := <-errs
-		var ns *core.NoSpaceError
-		switch {
-		case err == nil:
-			ok++
-		case errors.As(err, &ns) && ns.Limit == core.LimitIndex:
-			bounded++
-		default:
-			t.Fatalf("Fill = %v, want nil or a refusal naming the index", err)
-		}
-	}
-	if ok != 1 || bounded != 1 {
-		t.Fatalf("%d fills committed and %d were refused by the bound, want 1 and 1", ok, bounded)
+	if err := <-errs; err != nil {
+		t.Fatalf("the admitted fill = %v, want nil", err)
 	}
 	// The admitted fill appended one record and holds its one entry; the refused
 	// one appended nothing, so it claims no file and holds no entry.

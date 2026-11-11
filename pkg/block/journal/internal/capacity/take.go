@@ -582,44 +582,50 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// The pieces the write will publish: one record per segment its split can
 	// reach. A write that rolls publishes one index entry per piece, never one
 	// for the whole extent — pieces never join at run time — so a plain
-	// write's real adds are the pre-check's count plus one per extra piece,
-	// and each of those can eat an entry a reservation holds or another plain
-	// grant admitted and has not published yet.
+	// write's real adds are the pre-check's count plus one per extra piece, and
+	// each of those must be held as pending: otherwise a Reserve taken while
+	// the write is in flight counts on entries its later pieces will take. The
+	// publish count mirrors the three ways the split above names: a write the
+	// room covers publishes one piece; one the room only partly covers
+	// publishes its head there and one more per segment past it; a roomless one
+	// publishes one per spare, the first included. Only the partly covered case
+	// adds the room's own piece back — sparesBeyondRoom leaves it out there, and
+	// already counts it when the stream has no room at all. adds of zero — a
+	// fill or a net-zero write — publishes nothing, so this adds nothing for it.
 	//
-	// decision: the entries are held back only while a reservation or another
-	// plain grant in flight holds some, so a journal with neither keeps the
-	// pre-check's own figure exactly — a zero-gap fill at a full index stays
-	// admitted as the pre-check admits it, for it adds nothing and holds
-	// nothing. Beside a non-zero held figure, a zero-gap fill is refused naming
-	// the index although it adds nothing: the check names adds (zero) against
-	// the room the held entries leave, and a fill cannot prove its gap will not
-	// grow a piece the write's supersede would split. The refusal fails closed
-	// and closes when the pre-check reports the entries a fill's real pieces
-	// add. The figure fails closed too: the pieces are the split the room the
-	// section read names, and a write whose room something else spent draws one
-	// piece beyond it, refused at its publish rather than admitted past the
-	// bound here.
-	if c.heldEntries > 0 || c.pendingEntries > 0 {
-		// The publish count mirrors the three ways the split above names: a
-		// write the room covers publishes one piece; one the room only partly
-		// covers publishes its head there and one more per segment past it; a
-		// roomless one publishes one per spare, the first included. Only the
-		// partly covered case adds the room's own piece back —
-		// sparesBeyondRoom leaves it out there, and already counts it when the
-		// stream has no room at all. adds of zero — a fill or a net-zero write —
-		// publishes nothing, so this adds nothing for it.
-		if adds > 0 {
-			var published int64
-			switch {
-			case r.Payload <= max(roomLeft, 0):
-				published = 1
-			case roomLeft > 0:
-				published = 1 + int64(sparesBeyondRoom(r.Payload, roomLeft, c.cfg.SegmentCap))
-			default:
-				published = int64(max(sparesBeyondRoom(r.Payload, 0, c.cfg.SegmentCap), 1))
-			}
-			adds += published - 1
+	// decision: the pieces are counted whenever the write adds an entry, with
+	// nothing held or pending too, so pendingEntries holds every piece the
+	// write will publish. A write whose split the room merely partly covers is
+	// charged one more entry than the pre-check names, and a multi-piece write
+	// near the bound is therefore refused at Take where an earlier admission
+	// let it pass and refused it at publish: the stricter, consistent refusal,
+	// and it fails closed.
+	if adds > 0 {
+		var published int64
+		switch {
+		case r.Payload <= max(roomLeft, 0):
+			published = 1
+		case roomLeft > 0:
+			published = 1 + int64(sparesBeyondRoom(r.Payload, roomLeft, c.cfg.SegmentCap))
+		default:
+			published = int64(max(sparesBeyondRoom(r.Payload, 0, c.cfg.SegmentCap), 1))
 		}
+		adds += published - 1
+	}
+	// decision: the pieces are counted from the split the room the section read
+	// names, so one piece of a plain write can still be unpredicted: a write
+	// whose room something else spent between this take and its append — the
+	// idle sealer sealing the active segment, a durability re-append or loss
+	// record that never passed the admission, another same-stream writer whose
+	// own grant reserved the room — appends one piece beyond the split. That
+	// piece's entry is admitted by the index against its own count alone, which
+	// cannot see the held or pending entries, so it can eat a reservation's
+	// entry. The ceiling is that one unpredicted piece per such write, the same
+	// window the byte accounting names at the share limit, and it closes
+	// nothing else: an index that cannot reserve against held entries cannot be
+	// made to. Overturned by the index exposing a reserve against the held and
+	// pending figures, or by a stream promising the room it measured.
+	if c.heldEntries > 0 || c.pendingEntries > 0 {
 		// The entries open reservations hold, and those other plain grants have
 		// admitted but not yet published, are not the write's to spend: the
 		// pre-check sized the write's own entries against the index's count,

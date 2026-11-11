@@ -789,6 +789,41 @@ func TestCountersReturnToRest(t *testing.T) {
 	g.Release()  // the write failed before publishing the rest
 	rest(t, r, "a partial publish")
 
+	// A fill's take: it publishes one entry per gap piece too, so its pending
+	// entries go back at release as a write's do.
+	r = newRig(t, std())
+	q = req()
+	q.Fill = true
+	g = r.grant(t, q)
+	g.Release()
+	rest(t, r, "a fill released unused")
+
+	// A take the pool refuses after it held its entries: the refused-Hold path
+	// gives the pending entries back, since no grant is built to release them.
+	r = newRig(t, rigOpts{spares: 2, unprimed: true}) // a roomless ask needs spares
+	r.failHolds(&core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}, 1)
+	q = req()
+	_, err := r.c.Take(context.Background(), q)
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) || ns.Limit != core.LimitSpare {
+		t.Fatalf("the take beside a refused hold = %v, want a refusal naming the spare", err)
+	}
+	rest(t, r, "a take the pool refused")
+
+	// A drawn grant published in part and then released: the entry it claimed
+	// is the index's, the rest go back to the reservation, and the reservation's
+	// release returns what it still holds.
+	r = newRig(t, std())
+	rs2 := r.reserve(t, ReserveRequest{Tag: tag1, Bytes: 2 * WriteCharge(1, testCap), Writes: 2})
+	gd2, err := rs2.Draw(1)
+	if err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	gd2.Claimed(1) // one piece published
+	gd2.Release()  // the write failed before publishing the rest
+	rs2.Release()
+	rest(t, r, "a drawn grant published in part")
+
 	// A reservation released with its undrawn figures: bytes, entries, versions
 	// and its journal-side ask return whole.
 	r = newRig(t, std())
