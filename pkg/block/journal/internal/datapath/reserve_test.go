@@ -31,7 +31,7 @@ func TestReserveAhead_WritePastTheShareLimit(t *testing.T) {
 	c, _ := newTestCore(t)
 	s := mustShare(t, c, 1)
 	const payload = 4096
-	cost := recordBytes(payload) // one write's record bytes
+	cost := capacity.WriteCharge(payload, testSegmentCap) // one write's record bytes
 
 	// A warm-up record, so the share has a settled figure beside the limit.
 	if _, err := c.WriteAt(context.Background(), s, testFile(9), 0, []byte("w"), 1); err != nil {
@@ -71,7 +71,7 @@ func TestReserveAhead_WritePastTheShareLimit(t *testing.T) {
 func TestReserveAhead_ReleaseReturnsTheUnused(t *testing.T) {
 	c, _ := newTestCore(t)
 	s := mustShare(t, c, 1)
-	r := reserve(t, c, s, 10*recordBytes(4096), 10)
+	r := reserve(t, c, s, 10*capacity.WriteCharge(4096, testSegmentCap), 10)
 	if held := c.pool.Counters().Held; held == 0 {
 		t.Fatal("the reservation holds no spare")
 	}
@@ -79,10 +79,12 @@ func TestReserveAhead_ReleaseReturnsTheUnused(t *testing.T) {
 		t.Fatalf("the reservation's first write: %v", err)
 	}
 	spent := c.ReservedBytes()
-	if spent <= 0 || spent >= 10*recordBytes(4096) {
-		t.Fatalf("ReservedBytes after one of ten writes = %d, want between 0 and %d", spent, 10*recordBytes(4096))
+	if spent <= 0 || spent >= 10*capacity.WriteCharge(4096, testSegmentCap) {
+		t.Fatalf("ReservedBytes after one of ten writes = %d, want between 0 and %d", spent, 10*capacity.WriteCharge(4096, testSegmentCap))
 	}
-	if got, want := r.Remaining(), 9*recordBytes(4096); got != want {
+	// The draw charged the write its worst case; the append landed in room and
+	// spent less, and the unlanded charge came back to the reservation.
+	if got, want := r.Remaining(), 9*capacity.WriteCharge(4096, testSegmentCap)+capacity.WriteCharge(4096, testSegmentCap)-recordBytes(4096); got != want {
 		t.Fatalf("Remaining after one of ten writes = %d, want %d", got, want)
 	}
 	r.Release()
@@ -94,30 +96,46 @@ func TestReserveAhead_ReleaseReturnsTheUnused(t *testing.T) {
 	})
 	// The reservation's journal-side ask is given back whole: a second
 	// reservation of the same size is taken.
-	reserve(t, c, s, 10*recordBytes(4096), 10).Release()
+	reserve(t, c, s, 10*capacity.WriteCharge(4096, testSegmentCap), 10).Release()
 }
 
 // TestReserveAhead_PastTheIndexBound checks ten thousand small reserved writes
-// all land while a plain write is refused naming the index: the reservation
-// holds every index entry, and its own draws spend them without the bound
-// consulting itself again.
+// all land beside a writer holding the index one entry below ExtentLimit: the
+// reservation holds every entry, a plain write of any size is refused naming
+// the index, and the reservation's own draws spend the held entries without the
+// bound consulting itself again.
 func TestReserveAhead_PastTheIndexBound(t *testing.T) {
 	const writes = 10_000
-	cost := int64(writes) * recordBytes(1) // one-byte writes, their record bytes the reservation's figure
+	cost := int64(writes) * capacity.WriteCharge(1, testSegmentCap) // one-byte writes, their record bytes the reservation's figure
 	pieces, spares := capacity.PiecesFor(cost, writes, testSegmentCap)
 	c, _ := newTestCore(t, func(o *coreOptions) {
-		o.extentLimit = int64(pieces)
+		// The bound is the reservation's count plus two: the one entry the
+		// plain writer holds and the one its next write names, so ExtentLimit
+		// sits one above what the writer holds — the brief's hard case.
+		o.extentLimit = int64(pieces) + 1
 		// The pool readies the spares the ask rolls into, as a production
-		// pool at its target would.
-		o.contentSpares = spares
+		// pool at its target would, and one for the plain writer's piece.
+		o.contentSpares = spares + 1
 	})
 	s := mustShare(t, c, 1)
 
+	// A plain writer takes an entry before the reservation does, as a writer
+	// landing just before it would.
+	held := testFile(100)
+	if _, err := c.WriteAt(context.Background(), s, held, 0, []byte("h"), 1); err != nil {
+		t.Fatalf("the plain writer's warm write: %v", err)
+	}
+
 	r := reserve(t, c, s, cost, writes)
 	defer r.Release()
+	// The writer holds one entry and the reservation holds the rest: what is
+	// left is what the reservation holds, and no more.
+	if left := c.Index().EntriesLeft(); left != int64(pieces) {
+		t.Fatalf("EntriesLeft beside the reservation = %d, want the reservation's %d and nothing more", left, pieces)
+	}
 
-	// The index's bound is the reservation's: a plain write adds one entry and
-	// is refused, one entry short of what the reservation holds.
+	// The bound sits one entry above what the writer holds: the reservation's
+	// every entry is held, so a plain write naming its own is refused.
 	_, err := c.WriteAt(context.Background(), s, testFile(2), 0, []byte("p"), 1)
 	_ = refused(t, err, core.LimitIndex)
 
@@ -141,7 +159,7 @@ func TestReserveAhead_BelowHalfTheHeadroom(t *testing.T) {
 	s := mustShare(t, c, 1)
 	// The reservation is taken with the journal below its limit: an ask names
 	// room in segments not yet allocated, and the maximum holds none at it.
-	r := reserve(t, c, s, recordBytes(1), 1)
+	r := reserve(t, c, s, capacity.WriteCharge(1, testSegmentCap), 1)
 	defer r.Release()
 
 	// The warm write fills the journal, and eleven headroom draws put its
@@ -173,7 +191,7 @@ func TestReserveAhead_BelowHalfTheHeadroom(t *testing.T) {
 func TestReserveAhead_ExhaustedRefusesBeforeWriting(t *testing.T) {
 	c, _ := newTestCore(t)
 	s := mustShare(t, c, 1)
-	r := reserve(t, c, s, recordBytes(4096), 1)
+	r := reserve(t, c, s, capacity.WriteCharge(4096, testSegmentCap), 1)
 	defer r.Release()
 
 	versionsBefore := c.counters.NextVersion()
@@ -202,7 +220,7 @@ func TestReserveAhead_ReservedAndPlainWriters(t *testing.T) {
 	s := mustShare(t, c, 1)
 	const writes = 16
 	awaitSettledSpares(t, c, 2*testStreams)
-	r := reserve(t, c, s, writes*recordBytes(4096), writes)
+	r := reserve(t, c, s, writes*capacity.WriteCharge(4096, testSegmentCap), writes)
 	defer r.Release()
 
 	var reserved, plain atomic.Int64
@@ -242,3 +260,239 @@ func isRefusal(err error) bool { return errors.As(err, new(*core.NoSpaceError)) 
 
 // isExhausted reports whether err is a spent reservation's refusal.
 func isExhausted(err error) bool { return errors.Is(err, core.ErrReservationExhausted) }
+
+// TestReserveAhead_EntriesHeldUntilPublish checks a plain overwrite that would
+// eat the entries a reservation holds is refused naming the index while a
+// reserved write sits between its draw and its publish: the entries stay in the
+// reservation's held figure until the publish claims them, so no plain write
+// passes the bound's check in that window and leaves the reserved write to meet
+// it at its publish, after its version is drawn and its record written.
+func TestReserveAhead_EntriesHeldUntilPublish(t *testing.T) {
+	const payload = 4096
+	cost := capacity.WriteCharge(payload, testSegmentCap)
+	pieces, spares := capacity.PiecesFor(cost, 1, testSegmentCap)
+
+	// The reserved write is parked in the window between its draw and its
+	// publish: the seam runs there, with the file's append domain held. It is
+	// armed only once the warm write below has landed, so that write does not
+	// park in it.
+	var armed atomic.Bool
+	parked, release := make(chan struct{}), make(chan struct{})
+	c, _ := newTestCore(t, func(o *coreOptions) {
+		o.extentLimit = int64(pieces) + 1
+		o.contentSpares = spares + 1
+		o.afterAppend = func() {
+			if !armed.Load() {
+				return
+			}
+			select {
+			case <-parked:
+			default:
+				close(parked)
+				<-release
+			}
+		}
+	})
+	s := mustShare(t, c, 1)
+
+	// One entry of slack is held by a piece the plain overwrite would
+	// supersede and retain: its adds eat the reservation's entries.
+	shared := testFile(1)
+	if _, err := c.WriteAt(context.Background(), s, shared, 0, make([]byte, payload), 1); err != nil {
+		t.Fatalf("the warm write: %v", err)
+	}
+
+	r := reserve(t, c, s, cost, 1)
+	defer r.Release()
+	armed.Store(true)
+
+	errs := make(chan error, 1)
+	go func() {
+		_, err := c.WriteReserved(context.Background(), s, r, testFile(2), 0, make([]byte, payload), 1)
+		errs <- err
+	}()
+	<-parked
+
+	// In the window: the plain overwrite is refused naming the index, and the
+	// entries it would eat are still the reservation's.
+	_, err := c.WriteAt(context.Background(), s, shared, 0, make([]byte, payload), 1)
+	_ = refused(t, err, core.LimitIndex)
+	close(release)
+	if err := <-errs; err != nil {
+		t.Fatalf("the reserved write beside the refused overwrite: %v", err)
+	}
+}
+
+// TestReserveAhead_ConcurrentIndexBound runs a reserved writer and a plain
+// writer that overwrites beside it under -race, with the index bound held by
+// the reservation: every reserved write lands, every plain write that would eat
+// a held entry is refused naming the index, and the count never passes the
+// bound.
+func TestReserveAhead_ConcurrentIndexBound(t *testing.T) {
+	const writes = 32
+	const payload = 512
+	cost := capacity.WriteCharge(payload, testSegmentCap)
+	pieces, spares := capacity.PiecesFor(int64(writes)*cost, writes, testSegmentCap)
+	c, _ := newTestCore(t, func(o *coreOptions) {
+		// One entry of slack beside the reservation's own, for the warm piece
+		// the plain writer keeps overwriting, and one spare more than the ask
+		// rolls into, since the warm write takes one before the reservation.
+		o.extentLimit = int64(pieces) + 1
+		o.contentSpares = spares + 1
+	})
+	s := mustShare(t, c, 1)
+
+	shared := testFile(1)
+	if _, err := c.WriteAt(context.Background(), s, shared, 0, make([]byte, payload), 1); err != nil {
+		t.Fatalf("the warm write: %v", err)
+	}
+	limit := int64(pieces) + 1
+
+	r := reserve(t, c, s, int64(writes)*cost, writes)
+	defer r.Release()
+
+	var reserved, plainRefused atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < writes; i++ {
+			if _, err := c.WriteReserved(context.Background(), s, r, core.NewFileID([16]byte{byte(i + 1), 0x9}), 0, make([]byte, payload), 1); err != nil {
+				t.Errorf("reserved write %d: %v", i, err)
+				return
+			}
+			reserved.Add(1)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < writes; i++ {
+			_, err := c.WriteAt(context.Background(), s, shared, 0, make([]byte, payload), 1)
+			var ns *core.NoSpaceError
+			if errors.As(err, &ns) && ns.Limit == core.LimitIndex {
+				plainRefused.Add(1)
+			}
+		}
+	}()
+	wg.Wait()
+
+	if got := reserved.Load(); got != writes {
+		t.Fatalf("reserved writers landed %d of %d", got, writes)
+	}
+	if plainRefused.Load() == 0 {
+		t.Fatal("no plain overwrite was refused the entries the reservation holds")
+	}
+	if got := c.Index().EntriesLeft(); got < 0 {
+		t.Fatalf("after both writers, EntriesLeft = %d, want the count at or below the bound", got)
+	}
+	if got := int64(pieces) + 1 - c.Index().EntriesLeft(); got > limit {
+		t.Fatalf("the index count = %d, want at most the bound %d", got, limit)
+	}
+}
+
+// TestDrawRespectsHeldVersions checks a version drawn outside a reservation is
+// refused naming the version limit once only the versions a reservation holds
+// are left.
+func TestDrawRespectsHeldVersions(t *testing.T) {
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, 1)
+	if err := c.SetVersionLimit(core.Version{Counter: 3}); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+	// One write drawn from the counter first, then the reservation holds the
+	// two left.
+	r := reserve(t, c, s, 2*capacity.WriteCharge(1, testSegmentCap), 2)
+	defer r.Release()
+
+	if v, err := c.Draw(); err == nil {
+		t.Fatalf("Draw beside the reservation = %v, want the version limit's refusal", v)
+	}
+	// The reservation's own writes still draw their versions.
+	for i := 0; i < 2; i++ {
+		if _, err := c.WriteReserved(context.Background(), s, r, core.NewFileID([16]byte{byte(i + 1), 0x5}), 0, []byte("v"), 1); err != nil {
+			t.Fatalf("reserved write %d: %v", i+1, err)
+		}
+	}
+}
+
+// TestReserveAhead_StraddleCannotEatHeldEntries checks a plain overwrite whose
+// own entries would eat the ones a reservation holds is refused naming the
+// index while the bound still shows room for the reservation and one entry
+// more: a write that supersedes held pieces retains them, so its real adds are
+// more than the one entry an empty file's write costs, and the check reads
+// them.
+func TestReserveAhead_StraddleCannotEatHeldEntries(t *testing.T) {
+	const payload = 4096
+	cost := capacity.WriteCharge(payload, testSegmentCap)
+	pieces, spares := capacity.PiecesFor(cost, 1, testSegmentCap)
+
+	// The bound holds the two warm pieces, the reservation's own entries, and
+	// one entry of slack — visible room beside the held figure, which the
+	// overwrite's real adds would still eat.
+	c, _ := newTestCore(t, func(o *coreOptions) {
+		o.extentLimit = int64(pieces) + 3
+		o.contentSpares = spares + 1
+	})
+	s := mustShare(t, c, 1)
+
+	// Two adjacent pieces on one file, so an overwrite across their boundary
+	// supersedes both and adds an entry for each.
+	shared := testFile(1)
+	for i := 0; i < 2; i++ {
+		if _, err := c.WriteAt(context.Background(), s, shared, int64(i)*payload, make([]byte, payload), 1); err != nil {
+			t.Fatalf("warm write %d: %v", i, err)
+		}
+	}
+	if left := c.Index().EntriesLeft(); left != int64(pieces)+1 {
+		t.Fatalf("EntriesLeft after the warm writes = %d, want the reservation's %d and one more", left, pieces)
+	}
+
+	r := reserve(t, c, s, cost, 1)
+	defer r.Release()
+	if left := c.Index().EntriesLeft(); left != int64(pieces)+1 {
+		t.Fatalf("EntriesLeft beside the reservation = %d, want the bound's %d and one more", left, pieces)
+	}
+
+	// The overwrite spans both pieces at off 1 for len 2*payload-2: it
+	// supersedes both and retains both, three adds against one entry of slack.
+	_, err := c.WriteAt(context.Background(), s, shared, 1, make([]byte, 2*payload-2), 1)
+	_ = refused(t, err, core.LimitIndex)
+}
+
+// TestReserveAhead_StraddleWithinTheReservation checks a reserved write that
+// straddles a partly filled segment lands without a limit's refusal, and the
+// share's figure counts both records it really appended: the reservation
+// charges the write's worst case, so the straddle's extra record is inside what
+// it holds and the share's tally takes both pieces' bytes.
+func TestReserveAhead_StraddleWithinTheReservation(t *testing.T) {
+	const payload = 4096
+	cost := capacity.WriteCharge(payload, testSegmentCap)
+	_, spares := capacity.PiecesFor(cost, 1, testSegmentCap)
+	c, _ := newTestCore(t, func(o *coreOptions) { o.contentSpares = spares + 1 })
+	s := mustShare(t, c, 1)
+
+	// A warm write of everything but the last few bytes of the segment leaves
+	// a room smaller than the reserved write's payload: its split straddles.
+	warm := roomAfter(4048)
+	if _, err := c.WriteAt(context.Background(), s, testFile(9), 0, make([]byte, warm), 1); err != nil {
+		t.Fatalf("the warm write: %v", err)
+	}
+	room := c.Streams().For(testFile(9)).Room()
+	if room <= 0 || room >= payload {
+		t.Fatalf("the stream's room = %d, want the straddle's gap between 1 and %d", room, payload)
+	}
+
+	r := reserve(t, c, s, cost, 1)
+	defer r.Release()
+	before, _ := c.set.ShareBytesAndRetired(1)
+	if _, err := c.WriteReserved(context.Background(), s, r, testFile(1), 0, make([]byte, payload), 1); err != nil {
+		t.Fatalf("the straddling reserved write: %v", err)
+	}
+	// The share counts the head's record and the tail's, each with its own
+	// header and body: exactly the two records the straddle appended.
+	after, _ := c.set.ShareBytesAndRetired(1)
+	want := recordBytes(room) + recordBytes(payload-room)
+	if got := after - before; got != want {
+		t.Fatalf("the share's settled bytes rose by %d, want the head and tail's %d", got, want)
+	}
+}

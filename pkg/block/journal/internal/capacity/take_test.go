@@ -165,7 +165,7 @@ func newRig(t *testing.T, o rigOpts) *rig {
 
 	c := Config{
 		Admit: d.Admit,
-		CheckIndex: func(f core.FileID, e core.Extent) error {
+		CheckIndex: func(f core.FileID, e core.Extent) (int64, error) {
 			r.checks.Add(1)
 			return r.idx.CheckWrite(f, e)
 		},
@@ -616,7 +616,8 @@ func TestTake_NamedRefusalFields(t *testing.T) {
 	o.indexBound = 1
 	r = newRig(t, o)
 	r.fillIndex(t)
-	want := asNoSpace(r.idx.CheckWrite(req().File, req().Extent))
+	_, cerr := r.idx.CheckWrite(req().File, req().Extent)
+	want := asNoSpace(cerr)
 	if want == nil || want.Limit != core.LimitIndex {
 		t.Fatalf("the full index answered %v, want a refusal naming the index", want)
 	}

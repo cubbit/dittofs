@@ -40,15 +40,18 @@ type Config struct {
 	// consulting no limit and reserving nothing.
 	Admit func() error
 
-	// CheckIndex predicts the index entries a write would add against the
-	// index's bound without reserving; its refusal is returned untouched.
-	CheckIndex func(file core.FileID, e core.Extent) error
+	// CheckIndex predicts the index entries a write would add and its
+	// refusal against the index's bound, without reserving: its error is
+	// returned untouched as the check made it. Take reads the count it
+	// returns to refuse a write whose own entries would eat the ones open
+	// reservations hold.
+	CheckIndex func(file core.FileID, e core.Extent) (int64, error)
 
-	// CheckFillIndex predicts the index entries a fill of an extent would
-	// add against the index's bound without reserving; its refusal is
-	// returned untouched. Take runs it in CheckIndex's place for a request
-	// whose Fill flag is set.
-	CheckFillIndex func(file core.FileID, e core.Extent) error
+	// CheckFillIndex predicts the index entries a fill of an extent would add
+	// and its refusal against the index's bound, without reserving: its error
+	// is returned untouched, and its count is read as CheckIndex's is. Take
+	// runs it in CheckIndex's place for a request whose Fill flag is set.
+	CheckFillIndex func(file core.FileID, e core.Extent) (int64, error)
 
 	// VersionsLeft reports how many versions remain below the version
 	// limit; zero means the next draw is refused.
@@ -57,7 +60,9 @@ type Config struct {
 	// DrawVersion issues the version one write carries, or refuses with the
 	// counter's named NoSpaceError. The wiring accepts the counters' own
 	// Draw. It takes no lock of this domain — the counter is one atomic
-	// swap — so the section may call it, as it calls VersionsLeft.
+	// swap — so the section may call it, as it calls VersionsLeft. A draw
+	// outside a reservation asks DrawVersionHeld, so it cannot spend a
+	// version a reservation holds.
 	DrawVersion func() (core.Version, error)
 
 	// EntriesLeft reports how many placement index entries remain below the
@@ -310,6 +315,12 @@ type Grant struct {
 	// returns its unlanded bytes to the reservation rather than to the pool.
 	reservation *Reservation
 
+	// heldEntries is the index entries a drawn grant still has to hand over:
+	// the reservation's held figure keeps them until the publish claims them,
+	// so a plain write cannot pass the bound's check and eat them in the
+	// window between the draw and the publish.
+	heldEntries int64
+
 	// released reports the first Release, making the later ones no-ops.
 	released bool
 }
@@ -468,7 +479,8 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	if r.Fill {
 		check = c.cfg.CheckFillIndex
 	}
-	if err := check(r.File, r.Extent); err != nil {
+	adds, err := check(r.File, r.Extent)
+	if err != nil {
 		c.mu.Unlock()
 		if ns := asNoSpace(err); ns != nil {
 			return nil, c.refuse(ctx, *ns)
@@ -477,19 +489,26 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	}
 	// The entries open reservations hold are not the write's to spend: the
 	// pre-check above sized the write's own entries against the index's
-	// count, and this leaves the held ones beside it.
+	// count, and this leaves the held ones beside it. The check reads both
+	// the count the write would add and the figure the held entries leave, so
+	// a write that covers a held piece — a plain overwrite that supersedes
+	// and splits, up to two entries where a plain write names one — is
+	// refused where it alone would have fitted and would have spent entries a
+	// reservation holds. A write that adds nothing is admitted, exactly-full
+	// included, as the pre-check admits it.
 	//
-	// decision: the check applies only while a reservation holds entries,
-	// because a call that adds none — a fill whose every part is already
-	// held, or a write that is net-zero on the count — is admitted by the
-	// bound at any count, exactly-full included, and an unconditional check
-	// would refuse it where the pre-check did not. A zero-gap fill beside an
-	// open reservation is refused here even though it adds nothing; that
-	// fails closed, and closes when a pre-check reports the entries its
-	// call would add.
-	if c.heldEntries > 0 {
-		if left := c.cfg.EntriesLeft(); left <= c.heldEntries {
-			missing := c.heldEntries - left + 1
+	// decision: the held figure is left to the pre-check's count and adds
+	// rather than tested alone, because a check that only compared the
+	// entries left against the held ones refused a zero-gap fill at a full
+	// index where the pre-check admitted it. The bound is checked twice —
+	// the pre-check's own test names the write's entries against the whole
+	// count, and this names them against the room the held entries leave —
+	// and the stricter refusal answers. Overturned by a pre-check that
+	// reports a write's entries without the bound it tests, which would leave
+	// the held figure unread.
+	if c.heldEntries > 0 && adds > 0 {
+		if left := c.cfg.EntriesLeft(); left-c.heldEntries < adds {
+			missing := adds - (left - c.heldEntries)
 			c.mu.Unlock()
 			return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitIndex, Missing: missing, Unit: core.UnitEntries})
 		}
@@ -857,20 +876,78 @@ func (g *Grant) Release() {
 // consulted again while it holds. The pieces' index entries stay spent, for a
 // write that failed part-way may have published some of them.
 func (g *Grant) releaseDrawn() {
-	if g.left <= 0 || g.reservation == nil {
+	if g.reservation == nil {
 		return
 	}
 	g.c.mu.Lock()
-	back := g.left
-	g.left = 0
-	g.reservation.leftBytes += back
+	// The bytes go back to the reservation's figure while it is open — its
+	// Release returns them — or straight to the counters once it has released,
+	// which returned only what its writes had not drawn and takes no more: a
+	// grant released after its reservation must not leak its own charge.
+	if back := g.left; back > 0 {
+		g.left = 0
+		if g.reservation.released {
+			g.c.reserved -= back
+			g.c.reservedTagged[g.tag] -= back
+		} else {
+			g.reservation.leftBytes += back
+		}
+	}
 	g.c.mu.Unlock()
+	// The entries the write never published go back after the bytes: a write
+	// that failed part-way handed over the entries it did publish through
+	// Claimed, so what is left here is the pieces it never appended.
+	g.releaseEntries()
 }
 
 // Version returns the version drawn for the write when a reservation drew it,
 // and the zero version for an admitted write's grant, whose write draws its
 // own.
 func (g *Grant) Version() core.Version { return g.version }
+
+// Claimed hands over the index entries one piece of the write's split has just
+// reserved in the index, releasing them from the reservation's held figure so a
+// plain write beside it sees them spent only once the bound holds the piece.
+// It is a no-op for an admitted write's grant, whose entries the admission
+// already left to the index.
+func (g *Grant) Claimed(entries int64) {
+	if entries <= 0 || g.heldEntries <= 0 {
+		return
+	}
+	if entries > g.heldEntries {
+		entries = g.heldEntries
+	}
+	g.c.mu.Lock()
+	g.heldEntries -= entries
+	g.c.heldEntries -= entries
+	g.c.mu.Unlock()
+}
+
+// releaseEntries hands a drawn grant's unclaimed entries back to its
+// reservation, so a later write of the reservation may draw them: a write that
+// never published its pieces never reserved them in the index either. A write
+// that failed part-way calls Claimed for the pieces it did publish, so what it
+// hands back here is only what it never published.
+func (g *Grant) releaseEntries() {
+	if g.heldEntries <= 0 || g.reservation == nil {
+		return
+	}
+	g.c.mu.Lock()
+	back := g.heldEntries
+	g.heldEntries = 0
+	// The held figure counts what the reservation may still spend — its own
+	// leftEntries beside every drawn grant's unclaimed heldEntries — so an
+	// entry handed back to an open reservation stays held and only moves to
+	// leftEntries; the reservation's Release returns it. A reservation already
+	// released returned what its writes had not drawn and took no more, so the
+	// entry goes straight back to the bound here.
+	if g.reservation.released {
+		g.c.heldEntries -= back
+	} else {
+		g.reservation.leftEntries += back
+	}
+	g.c.mu.Unlock()
+}
 
 // Hold returns the pool's hold the grant carries, nil when the write fit
 // its stream's room.
@@ -919,6 +996,23 @@ func (c *Capacity) ReservedBytes() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.reserved
+}
+
+// DrawVersion issues the version a caller outside a reservation carries — a
+// change stored elsewhere, a truncate's own record — and refuses with a
+// NoSpaceError naming the version limit when nothing is left beside the
+// versions open reservations hold: those are not the caller's to spend, as
+// Take's own version check leaves them. The check and the draw are one
+// section, so a reservation's draw racing it cannot pass between them.
+func (c *Capacity) DrawVersion(ctx context.Context) (core.Version, error) {
+	c.mu.Lock()
+	if left := c.cfg.VersionsLeft(); left <= c.heldVersions {
+		c.mu.Unlock()
+		return core.Version{}, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitVersion, Missing: 1, Unit: core.UnitVersions})
+	}
+	v, err := c.cfg.DrawVersion()
+	c.mu.Unlock()
+	return v, err
 }
 
 // RefusedCount returns the reservation_refused counter: how many

@@ -18,7 +18,9 @@ import (
 type ReserveRequest struct {
 	// Tag is the share the reservation's writes run as.
 	Tag core.ShareTag
-	// Stream is the append stream they will land on.
+	// Stream is the append stream they will land on. A reservation's writes
+	// land on their files' own streams, so Draw consults no stream and does no
+	// per-stream room grant; the field is carried for a caller that names one.
 	Stream int
 	// Bytes is the record bytes the writes will append in all.
 	Bytes int64
@@ -261,11 +263,12 @@ func (r *Reservation) Remaining() int64 {
 // every draw with core.ErrClosed, and a write of no bytes is a caller bug,
 // core.ErrInvalidExtent.
 //
-// decision: the record bytes are the write's worst-case split — the one it
-// makes into a stream with no room, every piece after the first in a segment
-// of its own — because a reservation's writes name their streams only as they
-// land. The figure is never below what a write in room appends, so it
-// over-draws by at most one record header per write and fails closed.
+// decision: the record bytes are WriteCharge, the write's worst case over
+// every room its stream can have, because a reservation's writes name their
+// streams only as they land. The figure is never below what the write appends
+// into any room, so the grant's Wrote never clamps it and the share's limit
+// never undercounts what the write really spent. A caller sizes n with the
+// same figure.
 func (r *Reservation) Draw(payload int64) (*Grant, error) {
 	if payload <= 0 {
 		return nil, core.ErrInvalidExtent
@@ -276,7 +279,7 @@ func (r *Reservation) Draw(payload int64) (*Grant, error) {
 		r.c.mu.Unlock()
 		return nil, core.ErrClosed
 	}
-	bytes := recordSplit(payload, 0, r.c.cfg.SegmentCap)
+	bytes := WriteCharge(payload, r.c.cfg.SegmentCap)
 	// The pieces are the write's head plus one per cap its own bytes cross.
 	// Their sum over the reservation's writes is at most 2 x writes plus one
 	// per cap the whole ask can cross, the count Reserve took: a write's
@@ -313,7 +316,13 @@ func (r *Reservation) Draw(payload int64) (*Grant, error) {
 	r.leftBytes -= bytes
 	r.leftEntries -= int64(pieces)
 	r.leftVersions--
-	r.c.heldEntries -= int64(pieces)
+	// decision: the entries and the version stay in the reservation's held
+	// figures until the write has claimed them — heldEntries until the publish
+	// has reserved the piece, heldVersions until this draw, which is the
+	// version's own claim. Releasing them here would open a window a plain
+	// write's index check could pass, then eat them, and the reserved write
+	// would meet the bound at its publish after drawing its version and
+	// writing its record.
 	r.c.heldVersions--
 	r.c.mu.Unlock()
 
@@ -326,8 +335,25 @@ func (r *Reservation) Draw(payload int64) (*Grant, error) {
 	// room.
 	return &Grant{
 		c: r.c, tag: r.tag, bytes: bytes, left: bytes,
-		hold: r.hold, version: v, reservation: r,
+		hold: r.hold, version: v, reservation: r, heldEntries: int64(pieces),
 	}, nil
+}
+
+// WriteCharge is the record bytes one write of payload bytes can append into
+// any room its stream has, and the figure a caller sizes a reservation's n by:
+// the roomless split — one record per segment the write can fill — plus the one
+// record a split that straddles a partly filled segment appends beyond it. A
+// write wholly in room appends one record and one into a roomless stream the
+// roomless split; between the two, its head in the room left and its tail in
+// the next segment are two records where the roomless split names one for the
+// whole.
+func WriteCharge(payload, segCap int64) int64 {
+	if payload <= 0 {
+		return 0
+	}
+	// The extra is one record of no payload: its header, the write kind's
+	// fixed body bytes and the padding to the record grid.
+	return recordSplit(payload, 0, segCap) + segment.RecordBytes(0)
 }
 
 // Release returns what the reservation still holds: its bytes, footer entries,
@@ -342,14 +368,33 @@ func (r *Reservation) Draw(payload int64) (*Grant, error) {
 // failed part-way may have published its pieces — so a shortfall there
 // refuses the reservation's next write rather than admitting it past a bound.
 func (r *Reservation) Release() {
+	// The whole release runs under the capacity mutex, so a write's draw and
+	// the gives-back a drawn grant makes on its way out are ordered against
+	// it: a grant released after this one gives its unlanded figures straight
+	// to the counters, and one released before it gave them to leftBytes and
+	// leftEntries, which this call returns whole. The pool's hold is closed
+	// outside the section, for the pool's lock is of this same domain.
 	if r.released {
 		return
 	}
+	r.c.mu.Lock()
+	if r.released {
+		r.c.mu.Unlock()
+		return
+	}
 	r.released = true
-	r.c.releaseAsk(r.tag, r.leftBytes, r.bytesAsk, r.leftEntries, r.leftVersions)
-	if r.hold != nil {
-		r.hold.Close()
-		r.hold = nil
+	bytes, entries, versions := r.leftBytes, r.leftEntries, r.leftVersions
+	r.leftBytes, r.leftEntries, r.leftVersions = 0, 0, 0
+	r.c.reserved -= bytes
+	r.c.reservedTagged[r.tag] -= bytes
+	r.c.reservedAsk -= r.bytesAsk
+	r.c.heldEntries -= entries
+	r.c.heldVersions -= versions
+	hold := r.hold
+	r.hold = nil
+	r.c.mu.Unlock()
+	if hold != nil {
+		hold.Close()
 	}
 }
 

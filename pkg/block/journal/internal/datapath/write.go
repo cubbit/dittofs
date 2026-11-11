@@ -101,7 +101,10 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	// file's.
 	if err := c.checkTag(s, id); err != nil {
 		// A grant the caller drew is the caller's until this loop takes it:
-		// refused here before the defer, it returns to its reservation.
+		// refused here before the defer, it returns to its reservation. The
+		// version it drew and the entries it holds are spent, which fails
+		// closed — a later write of the reservation can draw fewer, never
+		// more, than it took.
 		if drawn != nil {
 			drawn.Release()
 		}

@@ -413,23 +413,16 @@ func TestReserve_OrderOfRefusals(t *testing.T) {
 	_ = r.refusedReserve(t, rqOver, core.LimitShare)
 }
 
-// TestReservationDrawsFitTheReservation checks writes of unequal sizes whose
-// record bytes sum to the reservation's ask every draw succeed, and a further
-// draw is refused: the arithmetic Draw sizes by and the one Reserve charged
-// agree.
+// TestReservationDrawsFitTheReservation checks writes of unequal sizes every
+// draw succeed when the ask covers each one's worst case, and a further draw is
+// refused: the arithmetic Draw sizes by and the one Reserve charged agree.
 func TestReservationDrawsFitTheReservation(t *testing.T) {
 	r := newRig(t, std())
-	// Payloads of multiples of 8, so a write's record bytes are its header,
-	// body and payload with no padding: RecordBytes(p) = 104 + p.
 	const writes = 8
 	sizes := []int64{4096, 8, 16384, 24, 512, 64, 8192, 16}
-	var total, ask int64
+	var ask int64
 	for _, p := range sizes {
-		if got, want := recordSplit(p, 0, testCap), int64(104)+p; got != want {
-			t.Fatalf("recordSplit(%d, 0, %d) = %d, want %d", p, testCap, got, want)
-		}
-		total += p
-		ask += recordSplit(p, 0, testCap)
+		ask += WriteCharge(p, testCap)
 	}
 	_, spares := PiecesFor(ask, writes, testCap)
 	r.awaitReady(t, spares)
@@ -453,5 +446,102 @@ func TestReservationDrawsFitTheReservation(t *testing.T) {
 	}
 	if _, err := rs.Draw(8); !errors.Is(err, core.ErrReservationExhausted) {
 		t.Fatalf("the draw past the reservation = %v, want ErrReservationExhausted", err)
+	}
+}
+
+// TestReservationReleaseRacesADraw releases a reservation under a grant an
+// in-flight write still holds, and checks nothing leaks: the counters come back
+// to zero, the held figures do, and a second release is a no-op.
+func TestReservationReleaseRacesADraw(t *testing.T) {
+	r := newRig(t, std())
+	rs := r.reserve(t, rq())
+
+	g, err := rs.Draw(1024)
+	if err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	g.Claimed(1)
+	g.Wrote(1024)
+	rs.Release()
+	g.Release()
+	rs.Release() // idempotent
+
+	if got := r.c.ReservedBytes(); got != 0 {
+		t.Fatalf("ReservedBytes = %d after the release, want 0", got)
+	}
+	if got := r.c.reservedAsk; got != 0 {
+		t.Fatalf("the journal-side ask = %d after the release, want 0", got)
+	}
+	if got := r.c.heldEntries; got != 0 {
+		t.Fatalf("heldEntries = %d after the release, want 0", got)
+	}
+	if got := r.c.heldVersions; got != 0 {
+		t.Fatalf("heldVersions = %d after the release, want 0", got)
+	}
+	if got := r.pool.Counters().Held; got != 0 {
+		t.Fatalf("the pool holds %d spares after the release, want 0", got)
+	}
+}
+
+// TestDrawChargesTheStraddle checks a draw charges a write more than its
+// roomless split, so a record that straddles a partly filled segment is inside
+// the grant and Wrote hands the share's tally every byte it really appended:
+// the tally rises by the two records the straddle cost, not by the shorter
+// roomless figure a clamp would leave.
+func TestDrawChargesTheStraddle(t *testing.T) {
+	r := newRig(t, std())
+	rs := r.reserve(t, ReserveRequest{Tag: tag1, Bytes: 4304, Writes: 1})
+	defer rs.Release()
+
+	g, err := rs.Draw(4096)
+	if err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	if want := int64(4304); g.bytes != want {
+		t.Fatalf("the draw charged %d record bytes, want the write's worst case %d", g.bytes, want)
+	}
+	// The write straddles: a head in a small room and the tail beyond it, the
+	// two records adding up to more than the roomless split but less than the
+	// grant.
+	head, tail := segment.RecordBytes(64), segment.RecordBytes(4096-64)
+	if head+tail > g.bytes {
+		t.Fatalf("the straddle costs %d, more than the grant's %d", head+tail, g.bytes)
+	}
+	before := r.c.shareTally[tag1]
+	g.Wrote(head)
+	g.Wrote(tail)
+	if got, want := r.c.shareTally[tag1]-before, head+tail; got != want {
+		t.Fatalf("the share's tally rose by %d, want the straddle's %d", got, want)
+	}
+}
+
+// TestReservationDrawsUnclaimedEntriesStayHeld checks a drawn entry a write
+// never published stays held while the reservation is open, and its Release
+// returns it: the bound never gains room a released grant's unclaimed entry
+// would otherwise free.
+func TestReservationDrawsUnclaimedEntriesStayHeld(t *testing.T) {
+	r := newRig(t, std())
+	pieces, _ := PiecesFor(4304, 1, testCap)
+	rs := r.reserve(t, ReserveRequest{Tag: tag1, Bytes: 4304, Writes: 1})
+	if held := r.c.heldEntries; held != int64(pieces) {
+		t.Fatalf("heldEntries = %d after the reservation, want its %d", held, pieces)
+	}
+
+	g, err := rs.Draw(1024)
+	if err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	// The write appends and publishes one piece and leaves the rest: the grant
+	// returns its unclaimed entries to the reservation, which still holds them.
+	g.Claimed(1)
+	g.Wrote(1024)
+	g.Release()
+	if held, left := r.c.heldEntries, rs.leftEntries; held != left || held == 0 {
+		t.Fatalf("after the grant returned its entries, heldEntries = %d and leftEntries = %d, want both the unclaimed figure", held, left)
+	}
+
+	rs.Release()
+	if held := r.c.heldEntries; held != 0 {
+		t.Fatalf("after Release, heldEntries = %d, want 0", held)
 	}
 }
