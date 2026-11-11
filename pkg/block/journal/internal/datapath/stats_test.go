@@ -388,6 +388,14 @@ func TestUnreclaimedFollowsReleasesAndRetires(t *testing.T) {
 	wantUnreclaimed(t, c, "after dropping 4096 bytes of share 1", 1, 4096)
 	wantUnreclaimed(t, c, "after dropping 4096 bytes of share 1", 2, 0)
 
+	// A release of its own size in share 2 moves share 2's figure by that
+	// size and leaves share 1's where it was.
+	if _, err := c.Deallocate(ctx, s2, g, core.Extent{Off: 0, Len: 1000}); err != nil {
+		t.Fatalf("Deallocate in share 2: %v", err)
+	}
+	wantUnreclaimed(t, c, "after dropping 1000 bytes of share 2", 2, 1000)
+	wantUnreclaimed(t, c, "after dropping 1000 bytes of share 2", 1, 4096)
+
 	seg := recordOf(t, c, f, 0).Record.Segment
 	// Drop the rest of f, so the segment backs nothing, then retire it with
 	// the unlink held back.
