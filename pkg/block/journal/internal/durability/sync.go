@@ -52,8 +52,9 @@ type Config struct {
 	// MarkLoss returned (once per marker left, only when MarkLoss succeeded),
 	// and the ones a lift or a failed window made. Nil discards the deltas.
 	// Lose calls it on the caller's goroutine holding none of the layer's
-	// locks and no file append domain; a lift or a failed window calls it with
-	// the changed file's append domain held. It must therefore not wait on a
+	// locks and no file append domain; a lift, a failed window and the
+	// synchronous loss marker of a corrupt drop call it with the changed file's
+	// append domain held. It must therefore not wait on a
 	// Sync or take a file's append domain.
 	Account func(index.HeldDelta)
 

@@ -147,7 +147,7 @@ func (r *reading) serve(placed []index.Placed, again bool) error {
 func (r *reading) serveRecord(g recordPieces, again bool) error {
 	bp := recordBufs.Get().(*[]byte)
 	defer recordBufs.Put(bp)
-	payload, h, verdict, err := r.c.readRecord(r.ctx, r.st, r.id, g.at, g.pieces, bp)
+	payload, h, _, verdict, err := r.c.readRecord(r.ctx, r.st, r.id, g.at, g.pieces, bp)
 	switch {
 	case segmentGone(err):
 		return r.resolveAgain(g, again)
@@ -201,7 +201,7 @@ func (r *reading) serveRecord(g recordPieces, again bool) error {
 	// copy that fails after its repoint must be dropped by the read that found
 	// it.
 	at := index.RecordAt{Segment: out.Copy.Segment, Offset: uint32(out.Copy.Off)}
-	payload, _, verdict, err = r.c.readRecord(r.ctx, r.st, r.id, at, g.pieces, bp)
+	payload, _, _, verdict, err = r.c.readRecord(r.ctx, r.st, r.id, at, g.pieces, bp)
 	switch {
 	case segmentGone(err):
 		r.miss(g.pieces)

@@ -161,6 +161,9 @@ type file struct {
 	rival    core.ShareTag
 
 	held heldSet
+	// dirtyAt are the write times of the versions holding dirty bytes, fed
+	// by both sets.
+	dirtyAt dirtyTimes
 	// nranges is the number of drop ranges over all of the file's segments,
 	// maintained by recorded and segmentGone.
 	nranges int
@@ -186,7 +189,9 @@ type file struct {
 // newFile returns an entry whose held and retained sets feed acct, keeping a
 // file created by files.update accounted from its first piece.
 func newFile(acct *segments) *file {
-	return &file{held: heldSet{acct: acct}, retained: retainedSet{acct: acct}}
+	f := &file{held: heldSet{acct: acct}, retained: retainedSet{acct: acct}}
+	f.held.times, f.retained.times = &f.dirtyAt, &f.dirtyAt
+	return f
 }
 
 // entries returns the number of entries of the file the count is of: held
@@ -481,9 +486,10 @@ func (f *file) settle(fs *files, s *fileShard, id core.FileID) {
 	raise(&fs.buckets[bucketOf(id)], f.change.Counter)
 	f.change = core.Version{}
 	// Free the empty tree and its scratch for the tag-only life, keeping the
-	// accounting: a cut in a later update happens to this same set. An empty
+	// accounting and the dirty-time table: a cut in a later update happens to
+	// this same set, and a dirty write after it must still be timed. An empty
 	// tree holds no bytes, so its byte counters are already zero.
-	f.held = heldSet{acct: f.held.acct}
+	f.held = heldSet{acct: f.held.acct, times: f.held.times}
 	if len(f.segs) > 0 || f.retained.len() > 0 {
 		return
 	}
@@ -687,3 +693,35 @@ func (fs *files) mayOutrank(id core.FileID, seg core.SegmentID, e core.Extent, n
 // dropRangeCount returns the number of drop ranges over every file and
 // segment.
 func (fs *files) dropRangeCount() int64 { return fs.dropRanges.Load() }
+
+// list returns the files tagged tag that hold a piece or an unsettled marker,
+// in no order. A shard's lock is released before any file's is taken, so it
+// is never held while waiting on a file.
+//
+// decision: a file holding no piece and no marker is not listed, whatever
+// else its entry keeps (segment records, retained extents, a tag): since
+// yields only pieces and markers, and an entry holding neither has had its
+// superseded runs cleared with the held set, so none can be waiting on a
+// settle. Overturned by an entry that keeps such runs without a piece or a
+// marker.
+func (fs *files) list(tag core.ShareTag) []core.FileID {
+	var out []core.FileID
+	for i := range fs.shards {
+		s := &fs.shards[i]
+		s.mu.Lock()
+		ids := make([]core.FileID, 0, len(s.m))
+		fl := make([]*file, 0, len(s.m))
+		for id, f := range s.m {
+			ids, fl = append(ids, id), append(fl, f)
+		}
+		s.mu.Unlock()
+		for j, f := range fl {
+			f.mu.RLock()
+			if !f.gone && f.tagged && f.tag == tag && (f.held.len() > 0 || len(f.markers) > 0) {
+				out = append(out, ids[j])
+			}
+			f.mu.RUnlock()
+		}
+	}
+	return out
+}
