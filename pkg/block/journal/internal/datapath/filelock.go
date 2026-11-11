@@ -99,9 +99,6 @@ func (t *fileLocks) Lock(id core.FileID) (unlock func()) {
 		// is used concurrently the moment it is published, and a lock
 		// whose Init was skipped keeps rank 0 and is never recorded.
 		e.mu.Init(lockorder.FileAppend, t.rec.Load())
-		// Init at creation, under the shard's leaf: the entry's mutex is
-		// used concurrently the moment it is published, and a lock whose
-		// Init was skipped keeps rank 0 and is never recorded.
 		s.m[id] = e
 	}
 	e.refs++
