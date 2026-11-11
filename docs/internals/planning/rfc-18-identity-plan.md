@@ -823,6 +823,24 @@ This epic waits for an SMB adapter serving through the node (S3).
   hardening, and on the Kerberos client its named pipe needs. Epic 6 depends on real AD's group
   nesting.
 
+### 6.1 Deferral ledger
+
+What the plan knowingly does not build. Each row cites the section that defers it.
+
+| Deferred | Why | Owner | Trigger | Issue |
+| --- | --- | --- | --- | --- |
+| `AUTH_SYS` and `AUTH_NONE` (RFC 18 §3.2) | NFS is v1.1 (header, O2) | RFC 21 plan | RFC 21's plan | — |
+| uid and gid mapping and the mints a claimed uid triggers (RFC 18 §4.3, §5.5); until then a `Claimed` proof answers `ErrAccess` | header, O2, §4.3's `ponytail:` | RFC 21 plan | RFC 21's plan | — |
+| NFSv4 owner strings (RFC 18 §4.5) and `FuzzOwnerString` | header, §1.4, O2 | RFC 21 plan | RFC 21's plan | — |
+| `ManageGIDs` | header, O2 | RFC 21 plan | RFC 21's plan | — |
+| RFC 18 §10's NFS rows and NFS halves | §1.4, O2 | RFC 21 plan | RFC 21's plan | — |
+| OpenID Connect's `TokenVerifier` (RFC 18 §8.2) and §10's token rows | header, §1.4, O2; RFC 23's plan (#4050) defers it too | unowned | OpenID Connect sign-in planned | — |
+| RFC 25's `logon` stream; attempts are log lines | §4.3's `ponytail:`, O2 | RFC 25 | RFC 25 §4's sink built | — |
+| Caches charged to RFC 24's connection-state pool, not fixed counts | §4.3's `ponytail:` | RFC 24 plan | RFC 24's plan lands | — |
+| A machine password's rotation waiting on every node; one machine account, several nodes (RFC 18 §12 item 2) | §4.3's `ponytail:`, O6 | unowned | a second node | — |
+| Epic 9's subtasks and estimate | §2, epic 9 | this plan's epic 9 | S3 | — |
+| "roles grant nothing" | §1.4: RFC 23 §12's row | RFC 23 plan (#4050) | its epic that runs RFC 23 §12 | — |
+
 ## 7. RFC coverage
 
 | RFC section | Epic(s) |
