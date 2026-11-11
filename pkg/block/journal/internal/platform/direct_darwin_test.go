@@ -454,6 +454,8 @@ func TestReadAtDirectFailedClearAtEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// countFnocache returns the calls of fcntl with F_NOCACHE and arg of log.
 func countFnocache(log []call, arg int) int {
 	n := 0
 	for _, c := range log {
@@ -488,5 +490,64 @@ func TestReadAtDirectCloseCallsNothing(t *testing.T) {
 
 	if log := r.take(); len(log) != 0 {
 		t.Fatalf("Close made %v; want no calls through the table", log)
+	}
+}
+
+// TestReadAtDirectFailedReadAndClear checks a read that fails on its own and
+// whose F_NOCACHE clear then fails keeps both errors, the read's first: the
+// clear's failure no longer swallows a failed read's, which the caller would
+// read as a clean refusal of the cache and lose the read's own reason. The
+// clear's error alone still outranks even the read's io.EOF, as
+// TestReadAtDirectFailedClearAtEnd checks.
+func TestReadAtDirectFailedReadAndClear(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	dir := t.TempDir()
+	r := &recorder{}
+	f := directCheckFile(t, newOS(dir, r.table()), r, "a", []byte("record"))
+
+	// The read's own failure first, then the clear's: the fault on pread
+	// fires at its only call, the one on fcntl at its second, the clear the
+	// read ends with.
+	r.failNext("pread", syscall.EIO)
+	r.failNth("fcntl", 2, syscall.EIO)
+
+	p := make([]byte, 6)
+	n, err := f.ReadAtDirect(p, 0)
+
+	if n != 0 {
+		t.Fatalf("ReadAtDirect of a failed read: read %d bytes, want 0", n)
+	}
+
+	if !hasPathError(err, syscall.EIO) {
+		t.Fatalf("ReadAtDirect of a failed read: %v; want the read's EIO kept", err)
+	}
+
+	j, ok := err.(interface{ Unwrap() []error })
+	if !ok || len(j.Unwrap()) != 2 {
+		t.Fatalf(
+			"ReadAtDirect of a failed read: %v (%T); want both the read's and the clear's errors joined",
+			err,
+			err,
+		)
+	}
+
+	for _, e := range j.Unwrap() {
+		pe, ok := e.(*fs.PathError)
+		if !ok || !errors.Is(pe.Err, syscall.EIO) || pe.Path != filepath.Join(dir, "a") {
+			t.Fatalf("ReadAtDirect of a failed read: %v; want each error an *fs.PathError of EIO naming the file", err)
+		}
+	}
+
+	if pe := j.Unwrap()[0].(*fs.PathError); pe.Op != "pread" {
+		t.Fatalf("ReadAtDirect of a failed read: %v; want the read's error first", err)
+	}
+
+	if pe := j.Unwrap()[1].(*fs.PathError); pe.Op != "fcntl" {
+		t.Fatalf("ReadAtDirect of a failed read: %v; want the clear's error second", err)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

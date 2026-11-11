@@ -267,10 +267,13 @@ func (r *recorder) table() calls {
 			c := on("pread", fd)
 			c.off, c.asked = off, len(p)
 
-			n, err := unix.Pread(fd, p, off)
-			_ = r.add(c)
+			if err := r.add(c); err != nil {
+				// A queued fault answers as the read's own call would: no
+				// byte read, the error returned.
+				return -1, err
+			}
 
-			return n, err
+			return unix.Pread(fd, p, off)
 		},
 	}
 }

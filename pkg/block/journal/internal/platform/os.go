@@ -107,10 +107,11 @@ func (f *file) ReadAt(p []byte, off int64) (int, error) {
 // io.EOF when fewer than len(p) remain.
 //
 // decision: a filesystem's refusal of the direct read is returned as itself,
-// never fallen back to the page cache it exists to bypass. The refusal is a
-// ceiling: a direct read is what proves the end of a journal after a crash,
-// so on a filesystem that refuses it a journal cannot reopen after a crash
-// that left an unproven tail.
+// never fallen back to the page cache it exists to bypass. What a refusal
+// means for the journal is the open's tail check's to decide, and it may
+// fail the open: a direct read is what proves the end of a journal after a
+// crash, and a verified record whose direct re-read refuses is re-appended
+// from its first copy, so no refusal is widened or worked around here.
 func (f *file) ReadAtDirect(p []byte, off int64) (int, error) {
 	return f.readDirect(p, off)
 }

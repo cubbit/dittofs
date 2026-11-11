@@ -8,9 +8,20 @@ import (
 
 // directAlign is the alignment every argument of the platforms' direct reads
 // carries: the offset, the buffer's address and the buffer's length are
-// multiples of it. 4096 is the direct alignment every supported filesystem
-// accepts: it covers every page size the platforms run on, and no supported
-// filesystem's block size exceeds it.
+// multiples of it. 4096 satisfies what O_DIRECT and FILE_FLAG_NO_BUFFERING
+// ask of it — a multiple of the device's logical sector size — on every
+// supported platform: no sector size a storage device reports there exceeds
+// it.
+//
+// ponytail: the alignment is the constant 4096 rather than the device's own
+// requirement, read where the kernel names it — statx's STATX_DIOALIGN on
+// Linux (the statx entry is already in the table), the
+// FILE_STORAGE_INFO of the volume's file system on Windows — so a device
+// whose logical sectors exceed 4096, which the platforms refuse a direct
+// read on (EINVAL on Linux, ERROR_INVALID_PARAMETER on Windows), is
+// answered by that refusal as it is, and a journal on it cannot reopen
+// after a crash that left an unproven tail. Read the requirement and
+// request the alignment per device when such a device has to be supported.
 const directAlign int64 = 4096
 
 // directRead reads into p the len(p) bytes at off, calling raw over the aligned
@@ -46,6 +57,11 @@ func directRead(p []byte, off int64, align int64, raw func(buf []byte, off int64
 	read := 0
 	for read < len(buf) {
 		n, err := raw(buf[read:], start+int64(read))
+
+		// A raw shaped like a plain pread answers -1 with its error, so the
+		// count is clamped before it is added: a good aligned call followed by
+		// a failing one must not lose a byte to the failed call's answer.
+		n = max(n, 0)
 		read += n
 
 		if err == nil && n == 0 {
@@ -64,6 +80,18 @@ func directRead(p []byte, off int64, align int64, raw func(buf []byte, off int64
 			// as the end of the file — a raw answers more only past the file's
 			// end — which also keeps ReadAt's contract: the bytes asked for
 			// past it come back cut short with io.EOF.
+			//
+			// decision: an unaligned short count is read as the end of the
+			// file, which holds because a direct read into an aligned window
+			// on a local block filesystem returns a count off the alignment
+			// only at the file's end. A filesystem that returns one mid-file —
+			// a network filesystem, or a FUSE mount with direct_io — would
+			// make this rule read the file as shorter than it is, so a short
+			// read of an unread record would answer io.EOF and the open's tail
+			// check would drop the record silently, as it drops the tail past
+			// the end. Withdraw the rule, by resuming the window from the next
+			// aligned window start instead of ending it, when a filesystem the
+			// journal runs on is known to answer one mid-file.
 			err = io.EOF
 		}
 

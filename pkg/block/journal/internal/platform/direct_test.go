@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"unsafe"
 
@@ -252,4 +253,51 @@ func TestDirectReadPreadRaw(t *testing.T) {
 
 		return f.ReadAt(buf, off)
 	})
+}
+
+// TestDirectReadPreadErrorRaw checks directRead over a raw shaped like a raw
+// pread(2) that answers -1 with its error, as x/sys's Pread does on a failing
+// call: a good aligned call answered by a short aligned one, then a failing
+// one, keeps the bytes the good calls read — the failed call's -1 is clamped
+// to 0 rather than counted, which would drop read to the byte before the
+// window's end — and the error itself is returned with them.
+func TestDirectReadPreadErrorRaw(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	want := directBytes()
+	f := directFile(t, want)
+	t.Cleanup(func() {
+		_ = f.Close()
+	})
+
+	calls := 0
+	p := make([]byte, 2*4096)
+	n, err := directRead(p, 0, directAlign, func(buf []byte, off int64) (int, error) {
+		calls++
+
+		if calls == 1 {
+			// The first aligned block, answered short of the window: a legal
+			// raw answer at the alignment, which the loop resumes from.
+			return f.ReadAt(buf[:4096], off)
+		}
+
+		// The resumed call fails as a plain pread answers failure.
+		return -1, syscall.EIO
+	})
+
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("directRead over a raw answering -1 with EIO: %d, %v; want the error", n, err)
+	}
+
+	if want := 4096; n != want {
+		t.Fatalf(
+			"directRead over a raw answering -1 with EIO: read %d bytes, want the %d the good call read",
+			n,
+			want,
+		)
+	}
+
+	if !bytes.Equal(p[:n], want[:n]) {
+		t.Fatalf("directRead over a raw answering -1 with EIO: got %v, want the file's bytes", p[:n])
+	}
 }

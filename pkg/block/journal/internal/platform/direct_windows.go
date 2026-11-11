@@ -118,10 +118,14 @@ func (f *file) readDirect(p []byte, off int64) (int, error) {
 // file already holds (Linux reopens through /proc/self/fd, which Windows has
 // no counterpart of), so a segment renamed while its direct handle is
 // unopened has its next direct read open the file now carrying the name — a
-// different segment, if one was created under the old one. ReOpenFile, which
-// reopens by the handle and survives the rename, is not in
-// golang.org/x/sys/windows. Ask for it, or wrap its LazyProc here, when a
-// direct read of a renamed segment answers the wrong bytes.
+// different segment, if one was created under the old one. The cheaper
+// upgrade is windows.GetFinalPathNameByHandle, already in
+// golang.org/x/sys/windows: resolving the path through the handle the file
+// holds survives the rename with no new kernel call wrapped here, since the
+// handle follows the file, not the name. ReOpenFile, which reopens by the
+// handle itself, is not in x/sys; ask for it, or wrap its LazyProc here, only
+// if even the resolved name's own window — a rename after the resolution —
+// bites.
 func (f *file) openDirectLocked() error {
 	name, err := windows.UTF16PtrFromString(f.f.Name())
 	if err != nil {

@@ -123,6 +123,14 @@ func (f *file) readDirect(p []byte, off int64) (int, error) {
 	switch {
 	case serr != nil:
 		return 0, &fs.PathError{Op: "fcntl", Path: f.f.Name(), Err: serr}
+	case cerr != nil && rerr != nil && !errors.Is(rerr, io.EOF):
+		// The read failed and so did its clear: both are kept, each wrapped
+		// as the file's own errors wrap it, the read's first — the clear's
+		// failure no longer swallows the read's alone.
+		return n, errors.Join(
+			&fs.PathError{Op: "pread", Path: f.f.Name(), Err: rerr},
+			&fs.PathError{Op: "fcntl", Path: f.f.Name(), Err: cerr},
+		)
 	case cerr != nil:
 		// The clear's failure outranks even the read's io.EOF: F_NOCACHE
 		// stays set on the file's descriptor, so an answer of a clean

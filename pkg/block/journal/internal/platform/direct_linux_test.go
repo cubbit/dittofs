@@ -9,6 +9,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"unsafe"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 	"golang.org/x/sys/unix"
@@ -277,5 +278,171 @@ func TestReadAtDirectCloseError(t *testing.T) {
 	r.failNext("close", unix.EIO)
 	if err := f.Close(); err == nil {
 		t.Fatal("Close with a failed close of the direct descriptor: no error")
+	}
+}
+
+// fsName names the filesystem type magic is, for the message of the test
+// whose precondition the filesystem can refuse to hold.
+func fsName(magic int64) string {
+	for _, fs := range []struct {
+		magic int64
+		name  string
+	}{
+		{unix.TMPFS_MAGIC, "tmpfs"},
+		{unix.OVERLAYFS_SUPER_MAGIC, "overlayfs"},
+		{unix.EXT4_SUPER_MAGIC, "ext4"},
+		{unix.XFS_SUPER_MAGIC, "xfs"},
+		{unix.BTRFS_SUPER_MAGIC, "btrfs"},
+	} {
+		if fs.magic == magic {
+			return fs.name
+		}
+	}
+
+	return "an unknown filesystem"
+}
+
+// residentPages reports, through mincore on a mapping of the file open on fd,
+// how many of its first length bytes' pages the page cache holds.
+func residentPages(t *testing.T, fd int, length int) int {
+	t.Helper()
+
+	front, err := unix.Mmap(fd, 0, length, unix.PROT_READ, unix.MAP_SHARED)
+	if err != nil {
+		t.Fatalf("mmap of the file's first %d bytes: %v", length, err)
+	}
+
+	defer unix.Munmap(front)
+
+	vec := make([]byte, (length+unix.Getpagesize()-1)/unix.Getpagesize())
+
+	// mincore(2) answers through the vec one byte per page, whose lowest
+	// bit is set when the page is resident. It is not in x/sys, so it is
+	// made by its own number, as the syscall it is: no result is read from
+	// it but the residency of the pages the mapping names.
+	r1, _, errno := unix.Syscall(
+		unix.SYS_MINCORE,
+		uintptr(unsafe.Pointer(&front[0])),
+		uintptr(length),
+		uintptr(unsafe.Pointer(&vec[0])),
+	)
+
+	if errno != 0 {
+		t.Fatalf("mincore of the file's first %d bytes: %v", length, errno)
+	}
+
+	_ = r1
+
+	resident := 0
+	for _, b := range vec {
+		if b&1 != 0 {
+			resident++
+		}
+	}
+
+	return resident
+}
+
+// TestReadAtDirectReadsPastTheCache proves ReadAtDirect reads past the page
+// cache, which no comparison of bytes can: a multi-block file is written and
+// synced, its clean pages are dropped with FADV_DONTNEED, and residency
+// through mincore shows no page left before the direct read — and still none
+// after it, where a read through the cache would have brought them in —
+// while the plain ReadAt made afterwards does make them resident, so a probe
+// that cannot see residency fails rather than passing empty. The calls are
+// made on the file's own descriptor, inside its Control callback where a
+// Close cannot release it; a filesystem that will not drop the pages a
+// journal's directory can sit on — a tmpfs, which has no page cache to drop
+// these pages into — fails the test naming the filesystem, never skips.
+func TestReadAtDirectReadsPastTheCache(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	length := 2 * 4096
+	o := NewOS(t.TempDir())
+	f := directCheckFile(t, o, nil, "a", bytes.Repeat([]byte("A"), length))
+
+	var residentBefore, residentAfter int
+
+	rc, err := f.f.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rc.Control(func(fd uintptr) {
+		// The precondition: a filesystem whose pages FADV_DONTNEED cannot
+		// drop — tmpfs keeps them until the file is removed, since it has
+		// no backing device to evict them to — would leave the read with
+		// nothing to prove, so it fails the test naming itself.
+		if err := unix.Fadvise(int(fd), 0, 0, unix.FADV_DONTNEED); err != nil {
+			var sfs unix.Statfs_t
+
+			if err2 := unix.Fstatfs(int(fd), &sfs); err2 != nil {
+				t.Fatalf("fadvise: %v; its directory does not stat either: %v", err, err2)
+			}
+
+			t.Fatalf("FADV_DONTNEED on %s: %v", fsName(sfs.Type), err)
+		}
+
+		residentBefore = residentPages(t, int(fd), length)
+
+		direct := make([]byte, 4096)
+		if n, err := f.ReadAtDirect(direct, 0); n != 4096 || err != nil {
+			t.Fatalf("ReadAtDirect: %d, %v; want 4096 and no error", n, err)
+		}
+
+		residentAfter = residentPages(t, int(fd), length)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if residentBefore != 0 {
+		var sfs unix.Statfs_t
+
+		if err := unix.Statfs(filepath.Join(o.dir, "a"), &sfs); err != nil {
+			t.Fatal(err)
+		}
+
+		t.Fatalf(
+			"%s kept %d of the file's %d pages resident after FADV_DONTNEED; the read past the cache cannot be proven on it",
+			fsName(sfs.Type),
+			residentBefore,
+			(length+unix.Getpagesize()-1)/unix.Getpagesize(),
+		)
+	}
+
+	if residentAfter != 0 {
+		t.Fatalf(
+			"ReadAtDirect left %d page(s) resident; a read through the page cache would, one past it does not",
+			residentAfter,
+		)
+	}
+
+	// The probe can fail: a plain ReadAt brings the pages in, so a residency
+	// check that answered nothing would catch this read too.
+	if n, err := f.f.ReadAt(make([]byte, 4096), 0); n != 4096 || err != nil {
+		t.Fatalf("ReadAt of the file's first block: %d, %v", n, err)
+	}
+
+	rc, err = f.f.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var residentCached int
+
+	if err := rc.Control(func(fd uintptr) {
+		residentCached = residentPages(t, int(fd), length)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if residentCached == 0 {
+		t.Fatal(
+			"a plain ReadAt left no page resident, so this test's residency probe sees nothing a cached read brings in",
+		)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
