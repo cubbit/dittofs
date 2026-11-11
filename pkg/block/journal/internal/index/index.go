@@ -165,6 +165,10 @@ func (ix *Index) Since(id core.FileID, from core.Version) []Change { return ix.f
 // persisted; a file with no entry is left alone.
 func (ix *Index) Settle(id core.FileID, v core.Version) { ix.fs.settleRemovals(id, v) }
 
+// Files returns the files owned by tag that hold a piece or an unsettled
+// removal or loss marker, in no order.
+func (ix *Index) Files(tag core.ShareTag) []core.FileID { return ix.fs.list(tag) }
+
 // Span returns the pieces of id held inside e, clipped to it, and the exact
 // gaps between them, both in offset order. A file with no entry has nothing
 // held, so a non-empty e comes back wholly missing. Neighbouring pieces of one

@@ -692,3 +692,33 @@ func (fs *files) mayOutrank(id core.FileID, seg core.SegmentID, e core.Extent, n
 // dropRangeCount returns the number of drop ranges over every file and
 // segment.
 func (fs *files) dropRangeCount() int64 { return fs.dropRanges.Load() }
+
+// list returns the files tagged tag that hold a piece or an unsettled marker,
+// in no order. A shard's lock is released before any file's is taken, so it
+// is never held while waiting on a file.
+//
+// decision: a file kept only by drop-range or superseded-run bookkeeping is
+// not listed, since the changes since yields for a file are its held pieces
+// and markers alone and a listed file exists to be asked for them. Overturned
+// by a caller that must find such a file to settle it.
+func (fs *files) list(tag core.ShareTag) []core.FileID {
+	var out []core.FileID
+	for i := range fs.shards {
+		s := &fs.shards[i]
+		s.mu.Lock()
+		ids := make([]core.FileID, 0, len(s.m))
+		fl := make([]*file, 0, len(s.m))
+		for id, f := range s.m {
+			ids, fl = append(ids, id), append(fl, f)
+		}
+		s.mu.Unlock()
+		for j, f := range fl {
+			f.mu.RLock()
+			if !f.gone && f.tagged && f.tag == tag && (f.held.len() > 0 || len(f.markers) > 0) {
+				out = append(out, ids[j])
+			}
+			f.mu.RUnlock()
+		}
+	}
+	return out
+}

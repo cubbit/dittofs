@@ -227,24 +227,27 @@ func (h *Handle) Since(ctx context.Context, id FileID, from Version) iter.Seq2[C
 // below v, and drops those removal markers. It appends nothing and is not
 // persisted: recovery rebuilds the markers, and the caller settles again.
 // Settling before the removal is recorded is the caller's error.
-func (h *Handle) Settle(id FileID, v Version) {}
+func (h *Handle) Settle(id FileID, v Version) { h.j.core.Settle(h.s, id, v) }
 
 // Extents returns the extents of file id the journal holds, in offset order.
 // It says what the journal holds, not what exists: a caller answering where
 // data or holes lie combines it with metadata, or it reports evicted content
 // as a hole.
 func (h *Handle) Extents(id FileID) ([]Extent, error) {
-	return nil, ErrNotImplemented
+	return h.j.core.Extents(h.s, id)
 }
 
 // Files yields the share's files that hold an extent, an unsettled removal
 // marker or an unsettled synced loss.
-//
-// decision: the stub yields nothing because the signature has no error to
-// carry ErrNotImplemented. An empty result reads as "no files", so no caller
-// may depend on it until the index lands.
 func (h *Handle) Files() iter.Seq[FileID] {
-	return func(func(FileID) bool) {}
+	ids := h.j.core.Files(h.s)
+	return func(yield func(FileID) bool) {
+		for _, id := range ids {
+			if !yield(id) {
+				return
+			}
+		}
+	}
 }
 
 // DirtyFiles yields the share's files holding an extent whose offloaded bit is
