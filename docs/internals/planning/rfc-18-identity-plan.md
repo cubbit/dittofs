@@ -453,7 +453,9 @@ deletes both (RFC 13 §7). This is the user's decision.
 matched by key version number, and AP-REQ decryption. Its PAC check is turned off
 (`service.DecodePAC(false)`): v8.4.4's `ProcessPACInfoBuffers` always ends in a check that fails a
 PAC with no logon-information buffer, which RFC 18 §3.4 accepts. So this plan decodes the PAC with
-`gokrb5`'s types and verifies the server checksum itself over the decoded buffers, compares
+`gokrb5`'s types and verifies the server checksum itself over the raw PAC bytes with both
+signature fields zeroed (MS-PAC 2.8.4), never over a re-encoding, uses the first buffer of each
+type and ignores later ones (MS-PAC 2.4), compares
 `PAC_CLIENT_INFO` with the ticket, and builds test PACs; the ticket and full-PAC checksums need the
 KDC's key and stay unchecked, as RFC 18 §3.4's decision says.
 - **Prior art (from memory).** Samba and sssd run on MIT or Heimdal; `gokrb5` is the Go equivalent.
@@ -832,7 +834,9 @@ half for Kerberos, §3.8's expiry, and §4.2 steps 1, 2 and 4.
 - AES only: DES and RC4 tickets refused (A4).
 - AP-REQ verification on `gokrb5` with its PAC check off, the PAC's server checksum verified here
   (D4), and the clock skew and the replay cache lifted from `develop`.
-- PAC verification, `PAC_CLIENT_INFO` compared with the ticket, binding to the record, SID filtering,
+- PAC verification, the server checksum over the raw bytes (D4), `FuzzPAC` seeded with a PAC that
+  repeats its logon-information, client-information and signature buffers, `PAC_CLIENT_INFO`
+  compared with the ticket, binding to the record, SID filtering,
   and deny-only SIDs carried apart (RFC 18 §3.4).
 - Kerberos names mapped by RFC 18 §4.2 (step 3 is epic 6's).
 - Machine principals minted on first sign-in (RFC 18 §2.4).

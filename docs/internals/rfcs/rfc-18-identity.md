@@ -783,7 +783,10 @@ user's SID, its group SIDs and their attributes, signed by the domain
 controller.
 
 - The PAC's server signature **MUST** verify under the service key before any
-  SID in it is used. A PAC that does not verify **MUST** fail the sign-in. A
+  SID in it is used, computed over the PAC's bytes as received with both
+  signature fields zeroed (MS-PAC 2.8.4), never over a re-encoding, so no byte
+  the decoder skips goes unsigned. Of a buffer type that appears more than once,
+  only the first is used (MS-PAC 2.4). A PAC that does not verify **MUST** fail the sign-in. A
   ticket without a PAC is accepted, its groups then read from the store and the
   directory (§2.5); so is a PAC whose server signature verifies but which holds
   no logon-information buffer, which is treated as no PAC.
@@ -1971,7 +1974,7 @@ RFC 16's conformance suite's, not repeated here.
 | in-flight disable | 1 | Block bob's record read with a fault wrapper around the store. Disable bob and apply the new `State`. Release the read: nothing cached under the new `State`, and bob's next call misses and is refused. | a stale resolution stamped with the new generation |
 | group cap | 1 | A principal in 1 025 groups: refused, never resolved with fewer. A nested group whose read fails mid-closure: the call fails. A membership cycle: resolved. | truncated group lists; a cycle read as a failure |
 | owner strings | 2 | Over `sec=krb5`, `chown` to `alice@corp.example` and to `alice@other.example`: success, then `NFS4ERR_BADOWNER`. Over `AUTH_SYS`, `GETATTR`: numeric owners. A file owned by a deleted user: `nobody@…`, and over SMB `S-1-0-0`. | names mapped by guesswork |
-| PAC | 1 | A ticket whose PAC server signature is corrupted: refused. A ticket with no PAC, and one with a PAC holding no logon-information buffer, for a user in a store group: accepted, the group applies. A PAC carrying a SID of the installation's own domain for a local group with a share grant: that SID dropped, the grant not given. | an unverified or unfiltered PAC trusted; every modern KDC refused |
+| PAC | 1 | A ticket whose PAC server signature is corrupted: refused. A PAC changed only in padding between buffers, which the decoder skips: refused. A ticket with no PAC, and one with a PAC holding no logon-information buffer, for a user in a store group: accepted, the group applies. A PAC carrying a SID of the installation's own domain for a local group with a share grant: that SID dropped, the grant not given. | an unverified or unfiltered PAC trusted; every modern KDC refused |
 | PAC bound to the record | 1 | Mint directory user bob; delete bob in the directory, create a new bob with a new SID, and sign the new bob in with a PAC: refused or minted anew, never the old principal. A local alice and a directory alice in a keytab realm: refused. A PAC whose client name differs from the ticket's: refused. | a reused name bound to the old person |
 | deny-only SIDs | 2 | A test PAC marks `Finance` deny-only. A file's ACL allows `Finance` read: refused. Another allows alice and denies `Finance` read: refused. A share whose only grant names `Finance`: the share refuses alice. | a deny-only SID dropped, or treated as a group |
 | deny-only lookup error | 1 | Inject a store error on the `sid` index while mapping a PAC's deny-only SID: the call fails, never resolved without the deny. | a deny dropped by an error |
@@ -2015,7 +2018,8 @@ RFC 16's conformance suite's, not repeated here.
 **Fuzz.** `FuzzPAC`, `FuzzAPReq`, `FuzzSID` and `FuzzOwnerString` never panic,
 never allocate past the input's size times a constant, and decode∘encode is the
 identity on what decodes; `FuzzPAC` includes PACs with no logon-information
-buffer. The NTLM message decoder is RFC 20's. **Unit.** Resolution's five steps
+buffer, and PACs repeating a logon-information, client-information or signature
+buffer, of which only the first is decoded. The NTLM message decoder is RFC 20's. **Unit.** Resolution's five steps
 run as one table-driven test over (proof kind × squash × grant × no file
 spelling) against the in-memory metadata store; `NewHashes` is a pure function with a table of
 its own.
