@@ -10,6 +10,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
 // checkNamed reports a sample of Stats that breaks a documented inequality.
@@ -431,4 +432,78 @@ func TestRFC1D_StatsReservedCoversARecordNotYetCounted(t *testing.T) {
 	if !sampled {
 		t.Fatal("the beforeWrote seam never ran")
 	}
+}
+
+// TestRFC1D_UnreclaimedNeverNegative samples Stats while writers overwrite and
+// drop extents in two shares: every sample's per-share and total figures are
+// at least zero and the total is the sum of the shares. The clamp is what
+// holds that while a write races the read.
+func TestRFC1D_UnreclaimedNeverNegative(t *testing.T) {
+	var c *Core
+	var check func(when string, st Stats)
+	c, _ = newTestCore(t, func(o *coreOptions) { o.afterAppend = func() { check("after append", c.Stats()) } })
+	shares := []*Share{mustShare(t, c, 1), mustShare(t, c, 2)}
+	ctx := context.Background()
+	check = func(when string, st Stats) {
+		var sum int64
+		for tag, ss := range st.Shares {
+			if ss.UnreclaimedBytes < 0 {
+				t.Errorf("%s: share %d UnreclaimedBytes = %d, want >= 0", when, tag, ss.UnreclaimedBytes)
+			}
+			sum += ss.UnreclaimedBytes
+		}
+		if st.UnreclaimedBytes < 0 || st.UnreclaimedBytes != sum {
+			t.Errorf("%s: UnreclaimedBytes = %d, want >= 0 and the shares' sum %d", when, st.UnreclaimedBytes, sum)
+		}
+	}
+	// A segment retired while the index still holds extents in it leaves the
+	// set behind held: the figure the sampler sees must not go below zero.
+	lost := testFile(9)
+	mustWrite(t, c, shares[0], lost, 0, make([]byte, 4096))
+	seg := recordOf(t, c, lost, 0).Record.Segment
+	if _, err := c.Streams().For(lost).Seal(false); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	mustWrite(t, c, shares[1], sameStreamFile(c, lost), 0, make([]byte, 4096))
+	syncFiles(t, c, lost)
+	if _, err := c.Retirer().Retire(seg, segment.NotHeld); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	stop := make(chan struct{})
+	var sampler sync.WaitGroup
+	sampler.Add(1)
+	go func() {
+		defer sampler.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			check("tight loop", c.Stats())
+		}
+	}()
+	var workers sync.WaitGroup
+	for w := byte(1); w <= 4; w++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			f, s := testFile(w), shares[int(w)%2]
+			for i := 0; i < 60; i++ {
+				if _, err := c.WriteAt(ctx, s, f, int64(i%5)*4096, make([]byte, 4096), 1); err != nil {
+					t.Errorf("WriteAt: %v", err)
+					return
+				}
+				if i%3 == 0 {
+					if _, err := c.Deallocate(ctx, s, f, core.Extent{Off: int64(i%4) * 4096, Len: 4096}); err != nil {
+						t.Errorf("Deallocate: %v", err)
+						return
+					}
+				}
+			}
+		}()
+	}
+	workers.Wait()
+	close(stop)
+	sampler.Wait()
 }
