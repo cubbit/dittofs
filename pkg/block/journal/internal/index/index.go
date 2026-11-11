@@ -165,6 +165,25 @@ func (ix *Index) CloneTarget(tag core.ShareTag, id core.FileID, spec core.CloneS
 	return ix.fs.removal(tag, id, core.ChangeCloneTarget, core.Extent{Off: spec.DstOff, Len: spec.Len}, v, seq, at, &spec)
 }
 
+// ApplyRemoval applies the removal of kind k that a record already in its
+// segment carries, exactly as Truncate, Deallocate, Delete and CloneTarget
+// apply theirs, but without asking the removal allowance: it notes the
+// record at at under seq, claims id for tag and leaves the marker over e, and
+// returns the change it made to the held state. e is the extent the removal
+// covers as a rebuild notes it, which is not what a truncate's or a delete's
+// header names: both reach to the end of the file, and e is that range. spec
+// is the clone target's, kept by its marker, and nil for every other kind. A
+// zero-length deallocate or clone target is refused with ErrZeroLength as
+// those are, and a file another share owns with the claim's OtherShareError.
+//
+// It is the call for a removal whose admission was checked before its record
+// was appended, where the append then found the allowance gone: the record
+// is on disk, so a refusal left here would be applied by a rebuild while the
+// caller was told it was not. See the decision at files.applyRemoval.
+func (ix *Index) ApplyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec) (HeldDelta, error) {
+	return ix.fs.applyRemoval(tag, id, k, e, v, seq, at, spec, false)
+}
+
 // Lookup returns the held piece of id that covers off, and false when none
 // does or the file has no entry. It takes the file's lock shared and creates
 // no entry.

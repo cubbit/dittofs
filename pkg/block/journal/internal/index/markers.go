@@ -283,6 +283,25 @@ const removalAdds = 2
 // index refusal. It runs again inside the update, as a write's claim does, only
 // so a rival the update finds is refused by its claim rather than applied.
 func (fs *files) removal(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec) (HeldDelta, error) {
+	return fs.applyRemoval(tag, id, k, e, v, seq, at, spec, true)
+}
+
+// applyRemoval is removal with the removal allowance as a switch: admitted
+// false applies the removal without asking the bound. It is the call for a
+// record already in its segment — a removal whose append succeeded before
+// its admission was asked, or one whose admission another file's reservation
+// overtook in between — because a removal refused there is on disk all the
+// same, and the journal has told nobody: recovery would apply it while the
+// caller was told it did not happen.
+//
+// decision: a removal applied past the bound overruns the allowance by at
+// most the entries it adds, as a loss does, and the commit's true delta keeps
+// the count exact so the next admitted operation sees it. The alternative —
+// leaving the record unapplied — fails open on a removal, which resurrects
+// content the caller removed. Overturned by a bound that must hold against
+// the records already written, which only reserving the bound before the
+// append can give.
+func (fs *files) applyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec, admitted bool) (HeldDelta, error) {
 	// The tag check runs first, as every journal call's does, before the
 	// zero-length refusal and before anything is admitted or noted.
 	var err error
@@ -298,9 +317,12 @@ func (fs *files) removal(tag core.ShareTag, id core.FileID, k core.ChangeKind, e
 			return HeldDelta{}, core.ErrZeroLength
 		}
 	}
-	adm, err := fs.admitRemoval(id, e, removalAdds)
-	if err != nil {
-		return HeldDelta{}, err
+	var adm int64
+	if admitted {
+		adm, err = fs.admitRemoval(id, e, removalAdds)
+		if err != nil {
+			return HeldDelta{}, err
+		}
 	}
 	return fs.commit(id, adm, func(f *file) error {
 		if err := f.recorded(at.Segment, e, Numbers{Version: v, Seq: seq}, tag, id); err != nil {

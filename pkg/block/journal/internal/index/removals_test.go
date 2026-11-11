@@ -459,3 +459,39 @@ func TestRemovalNotesTheRecordAndClaimsTheFile(t *testing.T) {
 		t.Fatalf("refusals = %d after a tag refusal, want %d", got, refused)
 	}
 }
+
+// TestApplyRemovalAppliesPastTheCeiling: a removal whose record is already in
+// its segment is applied at the count its own admission would refuse, leaves
+// its marker, and counts no index refusal. A removal left unapplied there is
+// one a rebuild applies while the caller was told it did not happen.
+func TestApplyRemovalAppliesPastTheCeiling(t *testing.T) {
+	const limit = 80
+	const ceiling = limit + limit/8
+	ix := New(limit)
+	id := testFile
+	publish(t, ix, testTag, id, write(0, 3*4096, rec(1, 0), 1), 1)
+	padTo(t, ix, ceiling)
+	refused := ix.Refused()
+
+	hd, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(4096, 4096), ver(2), 9, rec(3, 0), nil)
+	if err != nil {
+		t.Fatalf("ApplyRemoval at the ceiling = %v, want no error", err)
+	}
+	if hd.HeldBytes != -4096 {
+		t.Fatalf("delta HeldBytes = %d, want -4096", hd.HeldBytes)
+	}
+	if got := ix.Refused(); got != refused {
+		t.Fatalf("refusals = %d after an applied-past removal, want %d", got, refused)
+	}
+	m := markerOf(t, ix, id, core.ChangeDeallocate)
+	if m.Extent != ext(4096, 4096) || m.Version != ver(2) {
+		t.Fatalf("marker = %+v, want extent (4096, 4096) at v2", m)
+	}
+	for _, en := range ix.FileEntries(id) {
+		if en.Kind == EntryHeld {
+			if lo, hi := max(en.Extent.Off, 4096), min(extentEnd(en.Extent), 8192); lo < hi {
+				t.Fatalf("held entry %+v still covers the removed range", en)
+			}
+		}
+	}
+}
