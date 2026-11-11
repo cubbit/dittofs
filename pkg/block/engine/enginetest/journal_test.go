@@ -59,6 +59,9 @@ func shareTwice(t *testing.T, j engine.Journal) {
 	if _, err := j.Share(1, 0, journal.Version{Epoch: 1, Counter: refused}); !errors.Is(err, journal.ErrUnknownFormat) {
 		t.Errorf("Share with a floor of epoch 1 = %v, want ErrUnknownFormat", err)
 	}
+	if _, err := j.Share(1, -1, journal.Version{}); !errors.Is(err, journal.ErrInvalidSetting) {
+		t.Errorf("Share with a negative limit = %v, want ErrInvalidSetting", err)
+	}
 
 	h, err := j.Share(1, 1, journal.Version{})
 	if err != nil {
@@ -80,8 +83,8 @@ func shareTwice(t *testing.T, j engine.Journal) {
 	if err != nil {
 		t.Fatalf("a write through the first caller's handle under the second Share's limit: %v", err)
 	}
-	if v.Counter <= floor || v.Counter >= refused {
-		t.Errorf("a write after the second Share is at %d, want above its floor %d and below the refused floor %d", v.Counter, floor, refused)
+	if v.Counter != floor+1 {
+		t.Errorf("a write after the second Share is at %d, want %d", v.Counter, floor+1)
 	}
 
 	if err := again.Close(); err != nil {
