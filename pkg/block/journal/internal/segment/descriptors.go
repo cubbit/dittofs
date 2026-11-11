@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
@@ -64,6 +65,17 @@ type Descriptors struct {
 	budget     *core.DescriptorBudget
 	unregister func()
 
+	// rec is the lock-order recorder a reference's guard holds report to:
+	// each storage guard hold is recorded with the entry it holds, on the
+	// acquisition the reference is built by and the release that returns
+	// it, and Close's drain wait with the one exclusive hold it takes. The
+	// zero value records nothing; the reference and the drain work as they
+	// always did.
+	rec atomic.Pointer[lockorder.Recorder]
+
+	// decision: mu is a leaf — never held across a storage call or a wait,
+	// never while another lock is (R69); the reference drain above stands
+	// for the storage guard domain.
 	mu      sync.Mutex
 	entries map[core.SegmentID]*descEntry
 	idle    list.List // LRU of idle descriptors: front is the most recently used
@@ -188,6 +200,41 @@ func NewDescriptors(fs storage.FS, name func(core.SegmentID) string, budget *cor
 	return c
 }
 
+// SetRecorder installs the lock-order recorder the cache's guard holds report
+// to. It runs before the cache is shared — before any acquire can race a
+// release — and a nil recorder leaves the cache recording nothing.
+func (c *Descriptors) SetRecorder(rec *lockorder.Recorder) {
+	c.rec.Store(rec)
+}
+
+// guardAcquire records a storage guard reference hold of e: the segment's
+// descriptor is held open and its bytes cannot be freed or moved until the
+// matching release. The hold is shared — a reference never waits on another
+// — so it is recorded as a reference, exempt from the same-domain rule
+// against other guard references the way a reader's nested hold is, while
+// every other rule binds it. Nil-safe: a cache with no recorder records
+// nothing.
+func (c *Descriptors) guardAcquire(e *descEntry) {
+	c.rec.Load().AcquireRef(e)
+}
+
+// guardRelease ends the hold guardAcquire recorded.
+func (c *Descriptors) guardRelease(e *descEntry) {
+	c.rec.Load().ReleaseRef(e)
+}
+
+// drainAcquire records the exclusive storage guard hold Close's drain wait
+// takes: the one guard form that waits for holders, so the one checked
+// against every hold — references included, which no reference ever is.
+func (c *Descriptors) drainAcquire(e *descEntry) {
+	c.rec.Load().Acquire(lockorder.StorageGuard, e)
+}
+
+// drainRelease ends the hold drainAcquire recorded.
+func (c *Descriptors) drainRelease(e *descEntry) {
+	c.rec.Load().Release(lockorder.StorageGuard, e)
+}
+
 // Acquire returns a reference to segment id's open descriptor, opening the
 // file on a miss. The descriptor is opened outside the cache's mutex, and a
 // concurrent Acquire of the same segment waits on the open rather than
@@ -217,6 +264,7 @@ func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
 		e.refs++
 		c.totalRefs++
 		c.mu.Unlock()
+		c.guardAcquire(e)
 		return Ref{c: c, e: e}, nil
 	}
 
@@ -308,6 +356,7 @@ func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
 	}
 	c.mu.Unlock()
 	close(op.done)
+	c.guardAcquire(e)
 	return Ref{c: c, e: e}, nil
 }
 
@@ -343,6 +392,7 @@ func (c *Descriptors) refAfterOpen(e *descEntry, op *openCall) (Ref, error) {
 	// is caught above — the reclaim cannot, because it takes only a
 	// descriptor no reference holds, and this waiter's has been held since
 	// before the wait.
+	c.guardAcquire(e)
 	return Ref{c: c, e: e}, nil
 }
 
@@ -505,6 +555,7 @@ func (r Ref) Release() {
 		c.lastRefLocked(e)
 	}
 	c.mu.Unlock()
+	c.guardRelease(e)
 }
 
 // idlePushFront moves the entry to the front of the idle list, the most
@@ -648,12 +699,22 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 	// close, and returning without waiting would free storage while the last
 	// reader's call, or an open still in flight, holds the descriptor.
 	//
+	// The wait is the drain's one exclusive storage guard hold: it is
+	// recorded under this same hold of the mutex that set gone, so a
+	// reader's release cannot land between the two and leave the wait
+	// unrecorded, and it ends with the wait. A Close that finds no
+	// references takes no hold, for it waits for nothing.
+	//
 	// The wait loops: the last Release wakes every waiter, and whichever
 	// locks first detaches the file and holds a reference across its close.
 	// A waiter that locks after it finds that reference and waits again, so
 	// no Close returns while another holder is still closing the segment's
 	// file. The loop is bounded: the entry is gone, so no reader can take a
 	// new reference, and the references it can still wait on are closes.
+	waiting := e.refs > 0
+	if waiting {
+		c.drainAcquire(e)
+	}
 	for e.refs > 0 {
 		if e.drained == nil {
 			e.drained = make(chan struct{})
@@ -662,6 +723,9 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 		c.mu.Unlock()
 		<-drained
 		c.mu.Lock()
+	}
+	if waiting {
+		c.drainRelease(e)
 	}
 
 	// The descriptor, if the cache still holds it, is closed outside the
