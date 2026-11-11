@@ -303,6 +303,15 @@ func (c *Capacity) SetRecorder(rec *lockorder.Recorder) {
 	c.mu.Init(lockorder.Capacity, rec)
 }
 
+// SetTakeHook installs the test seam that runs inside the decision section,
+// under the admission's mutex and after the counters' read. It is the one
+// place a test can observe what the calling goroutine holds while Take
+// decides; set per instance — never a package variable — and nil in
+// production, where it changes no behaviour.
+func (c *Capacity) SetTakeHook(h func()) {
+	c.hook = h
+}
+
 // Grant is one admitted write's reservation: the record bytes held against
 // the share's limit and the journal's maximum, the room granted on its
 // stream, and the content spares held for the bytes beyond that room. It is
