@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -258,8 +257,7 @@ type replayer struct {
 	size   int64 // the size the file has once everything applied so far is committed
 	now    time.Time
 	batch  []pendingOp
-	mtimes []time.Time       // the modification time each operation of batch sets, zero for none
-	overs  [][]entity.Extent // the runs each operation of batch superseded, as Since yields them
+	mtimes []time.Time // the modification time each operation of batch sets, zero for none
 }
 
 // run applies steps in order and commits what is left. A clone marker
@@ -353,8 +351,8 @@ func (r *replayer) stageWrite(s replayStep) {
 		extent:  s.extent,
 		at:      r.now,
 		lost:    s.lost,
+		over:    s.over,
 	})
-	r.overs = append(r.overs, s.over)
 
 	var mtime time.Time
 
@@ -378,7 +376,6 @@ func (r *replayer) stageGrow(s replayStep) {
 		grow:    true,
 	})
 	r.mtimes = append(r.mtimes, r.now)
-	r.overs = append(r.overs, nil)
 	r.size = s.extent.Off
 }
 
@@ -388,14 +385,14 @@ func (r *replayer) stageGrow(s replayStep) {
 // and empties the batch (RFC 8 §2.5 step 3, E19).
 //
 // decision: a write's overwritten runs are the Over the journal's Since
-// yields for its pieces, since a write that another write above applied
+// yields for its pieces, united with the runs the batch's earlier writes give,
+// as the group commit computes them. A write that another write above applied
 // superseded may have left the journal's index by the crash, and the batch
-// would not see it (RFC 1 §3.10, RFC 8 §2.5 step 3). A step that holds a lost
-// run adds the runs computed from the batch, as the group commit computes
-// them: a loss carries no Over of its own, and what the lost bytes superseded
-// is no piece's. RFC 8 §5.1 does not say whether a loss's runs are passed;
-// passing them keeps the record of the older write. Overturned if the journal
-// yields the runs of a loss.
+// would not see it (RFC 1 §3.10, RFC 8 §2.5 step 3); a loss carries no Over of
+// its own, so what the lost bytes superseded comes from the batch. RFC 8 §5.1
+// does not say whether the batch's runs are passed too; each is a true
+// supersession of a pending write, so the union is never wrong. Overturned if
+// the journal yields the runs of a loss.
 func (r *replayer) commit(ctx context.Context) error {
 	if len(r.batch) == 0 {
 		return nil
@@ -410,13 +407,7 @@ func (r *replayer) commit(ctx context.Context) error {
 			continue
 		}
 
-		ops[i].Over = r.overs[i]
-
-		if len(op.lost) > 0 {
-			ops[i].Over = entity.MergeExtents(
-				append(slices.Clone(r.overs[i]), superseded(r.batch, i)...),
-			)
-		}
+		ops[i].Over = superseded(r.batch, i)
 	}
 
 	if err := r.sync(ctx); err != nil {
@@ -444,7 +435,6 @@ func (r *replayer) commit(ctx context.Context) error {
 
 	r.batch = nil
 	r.mtimes = nil
-	r.overs = nil
 
 	return nil
 }

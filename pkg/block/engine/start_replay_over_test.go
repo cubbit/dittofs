@@ -41,8 +41,8 @@ func (r *rig) wantOverwrites(t *testing.T, f entity.FileID, off, n int64, want [
 
 		if g.Extent != w.Extent || g.Class != entity.Uncarved || g.Overwrite != w.Overwrite {
 			t.Errorf(
-				"span %d = %v class %v overwrite %v, want %v uncarved overwrite %v",
-				i, g.Extent, g.Class, g.Overwrite, w.Extent, w.Overwrite,
+				"span %d = %v class %v overwrite v%d, want %v uncarved overwrite v%d",
+				i, g.Extent, g.Class, g.Overwrite.Counter(), w.Extent, w.Overwrite.Counter(),
 			)
 		}
 	}
@@ -250,9 +250,9 @@ func TestStartCommitsALossInTheMiddleOfAWriteWithItsOver(t *testing.T) {
 	})
 }
 
-// A write over the range of a write the journal lost takes its Over from the
-// journal alone: the journal names no run for it, so it commits none, while
-// the loss step keeps the run it superseded.
+// A write over the range of a write the journal lost commits the runs of the
+// writes the batch holds there, since the journal names none for it, and the
+// loss step keeps the run it superseded.
 func TestStartCommitsAWriteAfterALossWithTheJournalsOver(t *testing.T) {
 	r := newRig(t)
 	_, f := r.newFile(t, "a")
@@ -291,6 +291,7 @@ func TestStartCommitsAWriteAfterALossWithTheJournalsOver(t *testing.T) {
 			Extent:  entity.Extent{Offset: 4096, Length: 4096},
 			Mtime:   otherMtime,
 			Ctime:   restartAt,
+			Over:    []entity.Extent{{Offset: 4096, Length: 4096}},
 		},
 	})
 }
