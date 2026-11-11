@@ -398,7 +398,7 @@ func New(cfg Config) (*Node, error) {
 	n.syncer = syncer.New(syncer.Deps{Remote: n.remote, ...})
 	n.open   = openstate.New(openstate.Deps{Records: n.meta.OpenRecords(), ...}) // built before the engine, which holds it through an adapter; its Sink, the filesystem, is handed to its Start (§2.2 step 5)
 	n.engine = engine.New(engine.Deps{
-		Node: cfg.Bootstrap.Node, Devices: cfg.Bootstrap.Devices, Open: journal.Open, Syncer: n.syncer, // the engine opens its journals at Start
+		Node: cfg.Bootstrap.Node /* the host's file, else the identity the initialisation step wrote */, Devices: cfg.Bootstrap.Devices, Open: journal.Open, Syncer: n.syncer, // the engine opens its journals at Start
 		Existence: n.meta.Existence(), Content: n.meta.Content(), Lifecycle: n.meta.Lifecycle(),
 		Holds: cloneHolds{n.open}, ...}) // the root's adapter: engine.CloneHold onto CloneOpen, CloneClose and Recovery.Served, their errors mapped as RFC 8 §2.6 says, so the engine imports no open state
 	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock, n.wd.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
@@ -889,8 +889,10 @@ with nothing of it dropped, and the result says so.
 An adapter is configured by its own record, at installation scope per adapter
 ([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)): every key is
 `adapters.<protocol>.<field>`, the common timeouts included, so each adapter
-carries its own copy; its listen addresses are bootstrap facts of
-each host ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)), not records. The resource is
+carries its own copy, its listen addresses included: `adapters.<protocol>.listen`,
+with a node override where one host must bind elsewhere
+([RFC 20 §3.6](rfc-20-adapters.md#3.6%20Changing%20settings%20while%20serving)). Only the API's and the metrics
+listener's addresses are bootstrap facts ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)). The resource is
 `/adapters/{protocol}`, with `enabled` and the protocol's settings:
 
 - **enable** moves the adapter from configured to serving on every node
@@ -1067,7 +1069,9 @@ keys on the same value.
 **One request is one transaction.** A write validates with the components'
 validators ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)), then commits its records, the generation they
 raise, its audit record (§6) and its idempotency record (§4.5) in one
-transaction, or none of them. A write that starts long work commits its first
+transaction, or none of them. The one transaction is `ControlPlane.Write`'s
+([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)): the handler's writes run in it, and
+`Write` adds the audit and idempotency records before it commits. A write that starts long work commits its first
 step that way and returns an operation (§4.6). A write **MUST NOT** answer
 success before its transaction commits, and **MUST NOT** depend on any call to
 a running component.
@@ -1393,7 +1397,7 @@ second store.
 ### 5.4 The bootstrap administrator and the first password
 
 - **Created once, by initialisation.** The explicit initialisation step
-  ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)) creates one account, `admin`, with role `admin`. A start
+  ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)) creates one account, `admin`, with role `admin`, and, unless the host's file names one, generates the node's identity and writes it beside its journals. A start
   never creates one, so an installation whose accounts were all deleted is not
   repaired by restarting it (below).
 - **It is not a file user.** `admin` **MUST NOT** be given uid 0, any other uid,

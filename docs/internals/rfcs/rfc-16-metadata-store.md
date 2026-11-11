@@ -1270,6 +1270,42 @@ type ControlPlane interface {
 	// node writes its own through the Node view.
 	PutOperation(ctx context.Context, op Operation, expect uint64) error
 	AdvanceCursor(ctx context.Context, c AuditCursor, holder NodeID, holderEpoch uint64) error
+
+	// Write is the management API's one transaction (RFC 23 §4.3): fn makes
+	// the request's writes through tx, which carries this view's Put*, Set*
+	// and Delete* without their ctx, each checking its expect as above; Write
+	// then writes meta's AuditRecord and, when meta names a key, its
+	// IdempotencyRecord, and commits all of them or none. A transaction
+	// conflict retries fn from the start, so fn holds no state between calls;
+	// an expect that does not match returns ErrGenerationMismatch through fn
+	// and is not retried. The methods above stay, each one Write with no
+	// audit, for callers that are not the API.
+	Write(ctx context.Context, meta WriteMeta, fn func(tx ControlPlaneTx) error) error
+}
+
+// WriteMeta is what Write records beside the change: the audit record's
+// fields RFC 23 §6 lists, and the request's idempotency key and digest, if any.
+type WriteMeta struct {
+	Audit       *AuditRecord       // nil only for a caller that is not the API
+	Idempotency *IdempotencyRecord // nil for a call RFC 23 §4.5 exempts
+}
+
+// ControlPlaneTx carries ControlPlane's writes, each without its ctx,
+// inside Write's transaction.
+type ControlPlaneTx interface {
+	PutUser(u User, expect uint64, a Alloc) error
+	PutGroup(g Group, expect uint64, a Alloc) error
+	PutShare(s Share, expect uint64) error
+	SetShareState(share ShareID, from, to ShareState) error
+	SetGrant(g ShareGrant, expect uint64) error
+	DeleteGrant(share ShareID, p Principal, expect uint64) error
+	PutExportPolicy(p ExportPolicy, expect uint64) error
+	SetQuota(share ShareID, q Quota, expect uint64) error
+	PutNetgroup(n Netgroup, expect uint64) error
+	DeleteNetgroup(name string, expect uint64) error
+	PutSetting(s Setting, expect uint64) error
+	PutOperation(op Operation, expect uint64) error
+	// and the view's other writes, the same way
 }
 ```
 

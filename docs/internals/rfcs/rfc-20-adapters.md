@@ -1106,20 +1106,23 @@ the node applies it by `Sync`, with the serving adapters or with none (§3.5,
 > policy on every message would put a service read on the request path. A
 > tree connected before the change keeps its flag until it disconnects.
 
-**Listen addresses are not adapter settings.** A host's listen addresses are
-bootstrap facts ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
+**Listen addresses are an adapter setting; taken-over addresses are not.** An
+adapter's listen addresses are its `listen` setting, at installation scope with
+a node override, restart-class
+([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)):
+a change builds a new adapter and swaps it in
+([RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)).
 `Reconfigure` still adds and removes listeners, for two callers only: a
 namespace move's release of an address
 ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)),
 and a floating-address takeover, which adds the address the node took over.
-The node hands them to the adapter in `config.Adapter.Addrs`, from the host's
-bootstrap and the addresses it took over, never from the settings record, and
-the adapter binds each of its listeners on each of them (§4.7's `Listener`).
+The node hands those to the adapter in `config.Adapter.Addrs`, never from the
+settings record, and the adapter binds each of its listeners on each `listen`
+port at each of them as well (§4.7's `Listener`).
 
-> decision: `Addrs` is supplied by the node and is live, though RFC 13 marks a
-> host's listen addresses restart-only: a takeover must add an address to a
-> serving adapter, and a restart would drop every connection on the others.
-> The restart-only mark stays for the bootstrap file; the node, not the
+> decision: `Addrs` is supplied by the node and is live, though `listen` is
+> restart-class: a takeover must add an address to a serving adapter, and a
+> restart would drop every connection on the others. The node, not the
 > operator, changes `Addrs` while serving. Withdraw it if a bind on a live
 > adapter is found to disturb the connections already accepted.
 
@@ -1132,6 +1135,7 @@ package config // pkg/adapter/config: a leaf
 // Adapter is what every adapter reads; core reads only this. Each adapter
 // record carries its own copy, under adapters.<protocol>.
 type Adapter struct {
+	Listen             []netip.AddrPort `json:"listen"`            // restart-class (above); NFS 0.0.0.0:12049, SMB 0.0.0.0:445
 	Addrs              []netip.Addr  `json:"-"`                   // supplied by the node, live (below); a record naming it is refused as an unknown field
 	DrainTimeout       time.Duration `json:"drain_timeout"`       // 90 s; at least the break deadline plus the request deadline, 65 s
 	IdleTimeout        time.Duration `json:"idle_timeout"`        // 15 min
@@ -2356,8 +2360,10 @@ func Errors() []error
 // tests run the real pipeline on the test-only protocol (§7).
 
 // NewServer returns the adapter New hands back: each listener bound on each
-// of the settings' Addrs, all or none at Start (§3.1); Reconfigure binds them
-// on an added address the same way (§3.6). s is the protocol's whole shape,
+// of the settings' Listen addresses and on each of Addrs, all or none at Start
+// (§3.1); Reconfigure binds them on an added address the same way (§3.6). A
+// changed Listen never reaches Reconfigure: it is restart-class, and the node
+// builds a new adapter (§3.6). s is the protocol's whole shape,
 // which New was given; core reads its Adapter.
 func NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)
 
