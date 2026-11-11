@@ -136,11 +136,11 @@ func (f *Fixture) FailNextSync() {
 	}
 }
 
-// FailNextWindow makes the journal's next fsync fail and every segment in the
-// journal's directory serve its durable image to a read, so the window's
-// read-back does not verify and the window fails with loss records instead
-// of being re-appended. The stale reads last for the fixture's life; segments
-// created after the call read as written.
+// FailNextWindow makes the journal's next fsync of a segment fail and every
+// segment in the journal's directory serve its durable image to a read, so
+// the window's read-back does not verify and the window fails with loss
+// records instead of being re-appended. The stale reads last for the
+// fixture's life; segments created after the call read as written.
 func (f *Fixture) FailNextWindow() {
 	f.t.Helper()
 	f.FailNextSync()
@@ -822,6 +822,9 @@ type fencedExistence struct {
 // close, whose last group commit waits for every pending file, ends rather
 // than retrying until a stop bound that runs on the fixture's clock.
 func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+	// decision: a crashed process's existence commit answers done, not
+	// refused, so the old engine's close ends; nothing reaches the store.
+	// Withdraw it if a row reads an answer the crashed engine gave.
 	if x.crashed.Load() {
 		return nil, nil
 	}
@@ -855,7 +858,7 @@ func (x fencedExistence) Clone(ctx context.Context, op kvstore.CloneOp, pending 
 }
 
 // fencedContent is the store's content view, refusing its changes once
-// crashed is set, as fencedExistence does.
+// crashed is set, as fencedExistence's Remove and Clone do.
 type fencedContent struct {
 	engine.Content
 	crashed *atomic.Bool
