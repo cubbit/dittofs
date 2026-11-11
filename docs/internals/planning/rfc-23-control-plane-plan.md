@@ -929,6 +929,40 @@ entries and runs RFC 23's e2e rows.
   with its write check, classes and series, and `pkg/secrets`. Epics 1 to 5 keep only the strip of
   `pkg/config`, the node, the API's routes and `dfs init`, and consume the rest.
 
+### 6.1 Deferral ledger
+
+What this plan knowingly does not build. Each row indexes the section that defers it.
+
+| Deferred | Why | Owner | Trigger | Issue |
+| --- | --- | --- | --- | --- |
+| The cluster rows: RFC 23 §4.6's claim takeover, §8's **(cluster)** rules, §9's schema gate, CP15, §12's multi-node tier, the two-node half of "§5.3 revocation" (header, O2, §1.4) | single node only | RFC 15 | RFC 15 leaves `deferred` | — |
+| The runner's claim and its lapse-takeover (§4.3's `ponytail:`) | one node resumes every unended operation | RFC 15, with the cluster rows | a second node | — |
+| A rotation's wait for every node to hold the new version (§4.3's `ponytail:`) | "every node" is this node | RFC 15, with the cluster rows | a second node | — |
+| OpenID Connect sign-in (RFC 23 §5.5) and `dfsctl login --oidc` (header, O2, §7) | needs RFC 18 §8.2's `VerifyToken` | unowned; the RFC 18 plan (#4058) defers it too | a plan takes RFC 18 §8.2 | — |
+| The provisioning file (RFC 23 §3.6) and `reload-provisioning` (header, O2) | needs RFC 13 §2.4's loader | unowned; the RFC 13 plan (#4059) defers it too | a plan takes RFC 13 §2.4 | — |
+| `rehome`, `accept-copy` and the move resource; the "§4.4 background field" row (header, O2, §1.4) | RFC 27 has no implementation | RFC 27's plan | that plan adds the verbs as route-table rows and runner kinds | — |
+| A new namespace's first claim (RFC 23 §3.2, §4.6); every namespace answers held (O2, §4.3's `ponytail:`) | RFC 27's `Claim` does not exist | RFC 27's plan | `Claim` exists | — |
+| `rebuild-index`, `rebuild-reverse-index` (header, O2) | RFC 9 has no implementation | RFC 9's plan | that plan adds the verbs | — |
+| The snapshot resource (header, O2) | RFC 12 has no implementation | RFC 12's plan | that plan adds the resource | — |
+| The backup resource and `declare-lost` (header, O2) | RFC 26 and RFC 13 §2.5 have no implementation | RFC 26's plan | that plan adds the resource | — |
+| `acknowledge-unreadable` (header, O2) | RFC 28 §3.3 has no implementation | RFC 28's plan | that plan adds the verb | — |
+| `drain` (header, O2) | RFC 30 §5.2 has no implementation | RFC 30's plan | that plan adds the verb | — |
+| `decommission` (header, O2) | a single node has nothing to decommission | RFC 15 | a second node | — |
+| `raise-format` (header, O2) | each format has one version | unowned; the RFC 13 plan (#4059) defers it too | a format gains a second version | — |
+| The event streams and `AuditCursor` (RFC 23 §6) (header, O2, §7) | needs RFC 25 §4's spool | RFC 25's plan | the spool exists | — |
+| A remote store's credential rotation and changed endpoint (RFC 23 §3.3), refused (O2, §7) | needs the capability check and the claim (the RFC 13 plan's D9) | RFC 4 and RFC 27 for the pieces; this plan for the operation | both pieces exist | — |
+| The alert rules for rule 3's conditions (RFC 25 §7) (O2, §7) | the repository has no alert rules | RFC 25's plan | that plan | — |
+| The health registry beyond this plan's conditions, and the watchdog beyond the node's loops (§4.3's `ponytail:`) | only what this plan raises | RFC 25's plan | that plan | — |
+| The node's adapter rows (D12) | RFC 20's plan's epic 7 | RFC 20's plan, epic 7 | S2 | — |
+| The Kubernetes operator on the new wire shapes (O4, D9) | its cell is off until then | RFC 30's plan | that plan | — |
+| An MCP server for the API, as `dfsctl mcp` (O8) | the user deferred it | unowned | the API's surface settles after epic 6 | — |
+| Client eviction, v1's `DELETE /api/v1/clients/{id}` (O9) | RFC 23 defines no eviction call | unowned | an RFC adds one | — |
+| Lifecycles of the identity resolver's directory connections, the pools and the event sink (O3, RFC 23 §13 item 4) | the owning RFCs have not stated them | RFC 18, RFC 24 and RFC 25 | each RFC states its lifecycle | — |
+| Audit volume at scale, summarising a reload's records (RFC 23 §13 item 2, §7) | unmeasured, and no reload exists | unowned | the provisioning file lands | — |
+| Server-sent changes, a watch (RFC 23 §13 item 3, §7) | open in the RFC | unowned | the operator moves onto the new wire shapes | — |
+| Signalling parked long polls instead of a per-second re-read (§4.3's `ponytail:`) | one read per parked poll per second | unowned | parked polls near RFC 23 §4.3's bound show in a profile | — |
+| Per-kind sweep schedules (§4.3's `ponytail:`) | one pass per kind per interval | unowned | a profile shows the sweep | — |
+
 ## 7. RFC coverage
 
 | RFC section | Epic(s) |
