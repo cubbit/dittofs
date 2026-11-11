@@ -833,7 +833,9 @@ func (c *Descriptors) Shutdown() error {
 
 	// References remain: wait for them with no mutex held, signalled by the
 	// Release that brings the cache's total to zero. None is held: the wait
-	// ends at once.
+	// ends at once. The wait is deliberately unrecorded by the lock-order
+	// recorder: it takes no reference itself and holds no lock while it
+	// parks, so it is not the drain wait Close(id) records.
 	//
 	// The wait loops rather than answering one signal, because a signal
 	// does not mean the total stays zero: a reclaim the budget makes while
