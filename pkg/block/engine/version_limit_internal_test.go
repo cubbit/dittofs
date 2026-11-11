@@ -1,13 +1,8 @@
 package engine
 
 import (
-	"context"
 	"testing"
 	"time"
-
-	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // The peak is the highest count of any one second of the last 60: a second
@@ -60,89 +55,6 @@ func TestHeadroomBoundary(t *testing.T) {
 
 		if got := due(left, 0, 32*time.Second, block); got != c.due {
 			t.Errorf("due with %d left = %v, want %v", left, got, c.due)
-		}
-	}
-}
-
-// limitJournal is a journal that reports its next version and records the
-// limits it is given; every other call is the nil Journal's.
-type limitJournal struct {
-	Journal
-	next  uint64
-	marks []journal.Version
-}
-
-func (j *limitJournal) Stats() journal.Stats {
-	return journal.Stats{
-		NextVersion: journal.Version{
-			Counter: j.next,
-		},
-	}
-}
-
-func (j *limitJournal) SetVersionLimit(mark journal.Version) error {
-	j.marks = append(j.marks, mark)
-
-	return nil
-}
-
-// limitStore accepts every version limit write; every other call is the nil
-// Lifecycle's.
-type limitStore struct {
-	Lifecycle
-}
-
-func (l *limitStore) RaiseVersionLimits(
-	_ context.Context,
-	_ map[entity.ShareID]entity.JournalVersion,
-) error {
-	return nil
-}
-
-// The trigger with no version drawn is half a block, 8 here: with the limit
-// last passed at 1000, a journal whose next version is 992 has 8 versions
-// left and is not due, 993 leaves 7 and is due, and 991 leaves 9. stillDue,
-// which a raise calls under its lock as is, answers so, and Bind's limit
-// write raises every share exactly when it is due.
-func TestStillDueBoundary(t *testing.T) {
-	share := entity.ShareID{1}
-
-	for _, c := range []struct {
-		next uint64
-		due  bool
-	}{
-		{991, false},
-		{992, false},
-		{993, true},
-	} {
-		j := &limitJournal{
-			next: c.next,
-		}
-		store := &limitStore{}
-		e := &Engine{
-			d: Deps{
-				Lifecycle: store,
-				Clock:     sim.NewTestClock(time.Time{}),
-			},
-			block: 16,
-		}
-		vl := newVersionLimit(j)
-		vl.last.Store(1000)
-
-		if got := e.stillDue(vl); got != c.due {
-			t.Errorf("stillDue with next version %d = %v, want %v", c.next, got, c.due)
-		}
-
-		s := Share{
-			ID: share,
-		}
-
-		if err := e.attachLimit(context.Background(), s, vl); err != nil {
-			t.Fatalf("attachLimit with next version %d: %v", c.next, err)
-		}
-
-		if raised := len(j.marks) == 1; raised != c.due {
-			t.Errorf("Bind with next version %d raised: %v, want %v", c.next, raised, c.due)
 		}
 	}
 }

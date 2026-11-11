@@ -139,14 +139,18 @@ var _ engine.Handle = (*FakeHandle)(nil)
 // Share attaches tag with limit, raising the version counter above floor. A
 // tag whose handle is open gets that handle back, its limit replaced by
 // limit, so one Close closes it for every caller, as the journal's Share does.
+// Tag 0 and a negative limit are refused with ErrInvalidSetting, and a floor
+// with a non-zero epoch with ErrUnknownFormat, raising nothing.
 func (j *FakeJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version) (engine.Handle, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	switch {
 	case j.closed:
 		return nil, journal.ErrClosed
-	case limit < 0:
+	case tag == 0 || limit < 0:
 		return nil, journal.ErrInvalidSetting
+	case floor.Epoch != 0:
+		return nil, journal.ErrUnknownFormat
 	}
 	j.last = max(j.last, floor.Counter)
 	for _, h := range j.handles {
