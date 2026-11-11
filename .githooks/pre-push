@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pre-push hook for DittoFS. Runs unit tests on packages that changed
-# since the push base (origin/develop by default) so CI doesn't burn
-# time on a trivially-broken branch.
+# Pre-push hook for DittoFS. Runs the `unit` suite, narrowed to the packages
+# the branch changed, and go test on the operator's changed packages, so CI
+# doesn't burn time on a trivially-broken branch. dt runs the suite exactly as
+# test/suites.yaml defines it, the way CI does (CLAUDE.md, "By kind").
+# --changed widens to every package when a changed file sits in no package
+# (a script, a doc: any test may read it), more than a push wants to wait for,
+# so the hook picks the changed Go packages itself and passes --packages.
 #
 # Skip entirely: git push --no-verify, or DITTOFS_SKIP_PREPUSH=1.
-# DITTOFS_PREPUSH_TIMEOUT sets go test's -timeout (default 10m): the engine
-# and runtime packages alone take minutes under -race, and the changed
-# packages run in parallel.
 
 if [ -n "${DITTOFS_SKIP_PREPUSH:-}" ]; then
     exit 0
@@ -23,21 +24,18 @@ if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
 fi
 
 CHANGED_GO=$(git diff --name-only "$BASE_REF"...HEAD -- '*.go' 2>/dev/null || true)
-if [ -z "$CHANGED_GO" ]; then
-    exit 0
-fi
+[ -n "$CHANGED_GO" ] || exit 0
 
 # Map changed files → unique package dirs. A directory named testdata, or
-# starting with _ or ., is dropped: ./... never matches one, so CI never
-# builds it, but go test builds any directory named on its command line,
-# and fixtures there are not meant to compile.
+# starting with _ or ., is dropped: go never builds one, and its fixtures
+# are not meant to compile.
 PKGS=$(echo "$CHANGED_GO" | xargs -n1 dirname | grep -Ev '(^|/)(testdata|[._][^/]+)(/|$)' | sort -u | sed 's|^|./|' || true)
-if [ -z "$PKGS" ]; then
-    exit 0
-fi
+[ -n "$PKGS" ] || exit 0
 
-# The operator is a separate Go module; root-relative package paths cannot
-# be tested from the main module.
+# The operator is a separate Go module, so its packages are listed and tested
+# from its own directory. Its dt suite doesn't take {packages}: it would run
+# make test and lint whole, which regenerates and formats the working tree, so
+# the hook runs go test on the operator's changed packages instead.
 OPERATOR_DIR="k8s/dittofs-operator"
 ROOT_PKGS=""
 OPERATOR_PKGS=""
@@ -50,26 +48,49 @@ while IFS= read -r pkg; do
 done <<< "$PKGS"
 
 # Git exports GIT_DIR and its siblings to a hook; a test that runs git in a
-# repository of its own would otherwise commit into this one.
+# repository of its own would otherwise commit into this one. dt passes the
+# environment through, so this still guards it.
 # shellcheck disable=SC2046  # one variable name per word
 unset $(git rev-parse --local-env-vars)
 
-test_packages() {
-    local module="$1" packages="$2"
-    # Go decides what is left to test: a package the branch deletes, or one
-    # whose files all need a build tag (e2e, kerberos), has no files to build
-    # and is dropped. One with errors stays, so go test reports them.
-    # shellcheck disable=SC2086  # intentional word-splitting
-    packages=$(cd "$module" && go list -e -f '{{if or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles .InvalidGoFiles}}{{.ImportPath}}{{end}}' $packages)
-    [ -n "$packages" ] || return 0
-
-    # shellcheck disable=SC2086  # intentional word-splitting
-    if ! (cd "$module" && go test -short -race -timeout="${DITTOFS_PREPUSH_TIMEOUT:-10m}" $packages); then
-        echo "" >&2
-        echo "pre-push: tests failed on changed packages in $module. 'git push --no-verify' skips." >&2
-        exit 1
-    fi
+fail() {
+    echo "" >&2
+    echo "pre-push: $1 failed. 'git push --no-verify' skips." >&2
+    exit 1
 }
 
-test_packages . "$ROOT_PKGS"
-test_packages "$OPERATOR_DIR" "$OPERATOR_PKGS"
+# Go decides what is left to test. A package the branch deletes, or one whose
+# files all need a build tag (e2e, kerberos), has nothing to build and is
+# dropped. One with test files is tested; one without is only built, since dt
+# reports a run with no tests as not run. One with errors is built, so go
+# reports them.
+# list MODULE TEMPLATE-CONDITION PACKAGES...
+list() {
+    local module="$1" cond="$2"
+    shift 2
+    [ $# -gt 0 ] || return 0
+    (cd "$module" && go list -e -f "{{if $cond}}{{.ImportPath}}{{end}}" "$@")
+}
+HAS_TESTS='or .TestGoFiles .XTestGoFiles'
+BUILDS_ONLY='and (not (or .TestGoFiles .XTestGoFiles)) (or .GoFiles .CgoFiles .InvalidGoFiles)'
+
+# shellcheck disable=SC2086  # intentional word-splitting
+ROOT_TEST=$(list . "$HAS_TESTS" $ROOT_PKGS)
+# shellcheck disable=SC2086
+ROOT_BUILD=$(list . "$BUILDS_ONLY" $ROOT_PKGS)
+# shellcheck disable=SC2086
+OPERATOR_GO=$(list "$OPERATOR_DIR" "or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles .InvalidGoFiles" $OPERATOR_PKGS)
+
+if [ -n "$ROOT_BUILD" ]; then
+    # shellcheck disable=SC2086
+    go build $ROOT_BUILD || fail "go build"
+fi
+# --packages takes one comma-separated value; several words would read as the
+# suite's TEST patterns and the run would refuse them.
+if [ -n "$ROOT_TEST" ]; then
+    test/harness/bin/dt run unit --packages "$(paste -sd, - <<< "$ROOT_TEST")" || fail unit
+fi
+if [ -n "$OPERATOR_GO" ]; then
+    # shellcheck disable=SC2086
+    (cd "$OPERATOR_DIR" && go test -short -race $OPERATOR_GO) || fail operator
+fi
