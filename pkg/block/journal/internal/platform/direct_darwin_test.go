@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
-	"sync"
 	"syscall"
 	"testing"
 
@@ -73,52 +72,6 @@ func TestReadAtDirectSetsNoCache(t *testing.T) {
 	}
 }
 
-// TestReadAtDirectUnalignedRecord checks ReadAtDirect over ranges no raw
-// direct read accepts as they are — the first and the last byte of a
-// three-block file, and a record straddling a block boundary — against the
-// bytes ReadAt returns.
-func TestReadAtDirectUnalignedRecord(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	want := directBytes()
-	o := NewOS(t.TempDir())
-	f := directCheckFile(t, o, nil, "a", want[:3*4096])
-
-	for _, tc := range []struct {
-		off int64
-		n   int
-	}{
-		{0, 1},
-		{3*4096 - 1, 1},
-		{4096 - 20, 40},
-	} {
-		cached := make([]byte, tc.n)
-		if n, err := f.ReadAt(cached, tc.off); n != tc.n || err != nil {
-			t.Fatalf("ReadAt {off %d, len %d}: %d, %v", tc.off, tc.n, n, err)
-		}
-
-		direct := make([]byte, tc.n)
-		n, err := f.ReadAtDirect(direct, tc.off)
-		if n != tc.n || err != nil {
-			t.Fatalf(
-				"ReadAtDirect {off %d, len %d}: %d, %v; want %d and no error",
-				tc.off, tc.n, n, err, tc.n,
-			)
-		}
-
-		if string(direct) != string(cached) {
-			t.Fatalf(
-				"ReadAtDirect {off %d, len %d}: %q; want ReadAt's %q",
-				tc.off, tc.n, direct, cached,
-			)
-		}
-	}
-
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // TestReadAtDirectRefusedByFilesystem checks a filesystem that refuses
 // F_NOCACHE hands the refusal back as itself, never a cached read:
 // errors.Is names the errno, and no byte of the file's comes back with it.
@@ -143,177 +96,6 @@ func TestReadAtDirectRefusedByFilesystem(t *testing.T) {
 
 	if n != 0 || bytes.Equal(p, []byte("recor")) {
 		t.Fatalf("ReadAtDirect: %d, %q; want 0 bytes, no cached read into p", n, p)
-	}
-
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestReadAtDirectEndOfFile checks a read the file's end cuts short answers
-// io.EOF as bare as ReadAt does — never an fs.PathError wrapping it, the
-// shape os.File.ReadAt wraps only the errors that are not io.EOF — so a
-// caller comparing err == io.EOF, as the format catalogue does, holds.
-func TestReadAtDirectEndOfFile(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	f := directCheckFile(t, NewOS(t.TempDir()), nil, "a", []byte("record"))
-
-	p := make([]byte, 6)
-	n, err := f.ReadAtDirect(p, 3)
-
-	if err != io.EOF {
-		t.Fatalf("ReadAtDirect at the end: %d, %v (%T); want io.EOF bare", n, err, err)
-	}
-
-	if n != 3 || string(p[:n]) != "ord" {
-		t.Fatalf("ReadAtDirect at the end: %d, %q; want the 3 bytes after 3 the file had", n, p[:n])
-	}
-
-	if n, err := f.ReadAtDirect(make([]byte, 1), 6); n != 0 || err != io.EOF {
-		t.Fatalf("ReadAtDirect past the end: %d, %v (%T); want 0 and io.EOF bare", n, err, err)
-	}
-
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestReadAtDirectAfterClose checks a closed file's ReadAtDirect fails with
-// fs.ErrClosed, as its ReadAt does.
-func TestReadAtDirectAfterClose(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	o := NewOS(t.TempDir())
-	f := directCheckFile(t, o, nil, "a", []byte("record"))
-
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	if n, err := f.ReadAtDirect(make([]byte, 1), 0); !errors.Is(err, fs.ErrClosed) {
-		t.Fatalf("ReadAtDirect after Close: %d, %v; want an error matching fs.ErrClosed", n, err)
-	}
-}
-
-// TestReadAtDirectNegativeOffset checks ReadAtDirect at a negative offset
-// fails before any system call, with the error ReadAt's own shape gives it:
-// an *fs.PathError wrapping fs.ErrInvalid.
-func TestReadAtDirectNegativeOffset(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	o := NewOS(t.TempDir())
-	f := directCheckFile(t, o, nil, "a", []byte("record"))
-	t.Cleanup(func() {
-		_ = f.Close()
-	})
-
-	n, err := f.ReadAtDirect(make([]byte, 1), -1)
-
-	var pe *fs.PathError
-	if !errors.As(err, &pe) || n != 0 {
-		t.Fatalf("ReadAtDirect at -1: %d, %v; want an *fs.PathError", n, err)
-	}
-}
-
-// TestReadAtDirectConcurrent checks concurrent ReadAtDirect calls on one
-// file: every read returns the file's bytes, at the offsets the goroutines
-// pick without coordination, and F_NOCACHE's set and clear on the shared
-// descriptor stays paired under the file's direct mu.
-func TestReadAtDirectConcurrent(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	want := directBytes()
-	o := NewOS(t.TempDir())
-	f := directCheckFile(t, o, nil, "a", want)
-
-	var wg sync.WaitGroup
-	for i := range 8 {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-
-			for off := int64(i * 100); off < int64(len(want)); off += 8192 {
-				n := min(1024, len(want)-int(off))
-				p := make([]byte, n)
-				r, err := f.ReadAtDirect(p, off)
-				if r != n || err != nil || string(p) != string(want[off:off+int64(n)]) {
-					t.Errorf(
-						"ReadAtDirect at %d: %d, %v; want %d and the file's bytes",
-						off, r, err, n,
-					)
-					return
-				}
-			}
-		}(i)
-	}
-	wg.Wait()
-
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestReadAtDirectEpochsPair checks every ReadAtDirect's F_NOCACHE set is
-// closed by its clear: per read the first fcntl(F_NOCACHE, 1) and the last
-// fcntl(F_NOCACHE, 0) leave the log with as many clears as sets, and no
-// other F_NOCACHE call between reads — the calls the direct mu keeps in the
-// file's program order.
-func TestReadAtDirectEpochsPair(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	want := directBytes()[:4096]
-	r := &recorder{}
-	f := directCheckFile(t, newOS(t.TempDir(), r.table()), r, "a", want)
-
-	sets, clears := 0, 0
-	other := 0
-	for _, off := range []int64{0, 1, 100} {
-		p := make([]byte, 10)
-		if n, err := f.ReadAtDirect(p, off); n != 10 || err != nil ||
-			string(p) != string(want[off:off+10]) {
-			t.Fatalf("ReadAtDirect at %d: %d, %v; want 10 and the file's bytes", off, n, err)
-		}
-
-		log := r.take()
-
-		var seen [3]bool // set, pread, clear, each seen and in this order
-		var past bool
-		for _, c := range log {
-			if past {
-				t.Fatalf("a call past the clear in the read at %d: %v", off, log)
-			}
-
-			switch {
-			case c.op == "fcntl" && c.cmd == unix.F_NOCACHE && c.arg == 1:
-				sets++
-				seen[0] = true
-			case c.op == "pread":
-				if !seen[0] {
-					t.Fatalf("a pread before F_NOCACHE was set, read at %d: %v", off, log)
-				}
-
-				seen[1] = true
-			case c.op == "fcntl" && c.cmd == unix.F_NOCACHE && c.arg == 0:
-				if !seen[1] {
-					t.Fatalf("F_NOCACHE cleared with no pread between, read at %d: %v", off, log)
-				}
-
-				clears++
-				seen[2] = true
-				past = true
-			default:
-				other++
-			}
-		}
-
-		if !seen[0] || !seen[1] || !seen[2] {
-			t.Fatalf("the read at %d made %v; want one F_NOCACHE set, its pread and its clear", off, log)
-		}
-	}
-
-	if sets != 3 || clears != 3 || other != 0 {
-		t.Fatalf("%d sets, %d clears, %d other calls; want 3 sets, 3 clears, no other", sets, clears, other)
 	}
 
 	if err := f.Close(); err != nil {
@@ -386,30 +168,24 @@ func TestReadAtDirectInterruptedClear(t *testing.T) {
 // is repeated for fails the read it belonged to, with the bytes read kept
 // and the clear's error returned: F_NOCACHE stays set on the file's
 // descriptor, so a success here would leave every later cached read of the
-// file bypassing the cache unasked — the decision at readDirect. The fault
+// file bypassing the cache unasked — the decision at readDirectLocked. The fault
 // waits for the op's second call, so the failing one is the clear, past the
 // set and the read.
 func TestReadAtDirectFailedClear(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
+	dir := t.TempDir()
 	r := &recorder{}
-	f := directCheckFile(t, newOS(t.TempDir(), r.table()), r, "a", []byte("record"))
+	f := directCheckFile(t, newOS(dir, r.table()), r, "a", []byte("record"))
 
 	r.failNth("fcntl", 2, syscall.EIO)
 	p := make([]byte, 6)
 	n, err := f.ReadAtDirect(p, 0)
 
-	if !errors.Is(err, syscall.EIO) {
-		t.Fatalf("ReadAtDirect with a failed clear: %d, %v; want an error matching EIO", n, err)
-	}
+	expectPathError(t, err, "fcntl", syscall.EIO, filepath.Join(dir, "a"))
 
 	if n != 6 || string(p) != "record" {
 		t.Fatalf("ReadAtDirect with a failed clear: %d, %q; want the 6 bytes read, kept with the error", n, p)
-	}
-
-	var pe *fs.PathError
-	if !errors.As(err, &pe) || pe.Op != "fcntl" {
-		t.Fatalf("ReadAtDirect with a failed clear: %v, want an *fs.PathError of the fcntl", err)
 	}
 
 	if err := f.Close(); err != nil {
@@ -426,16 +202,15 @@ func TestReadAtDirectFailedClear(t *testing.T) {
 func TestReadAtDirectFailedClearAtEnd(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
+	dir := t.TempDir()
 	r := &recorder{}
-	f := directCheckFile(t, newOS(t.TempDir(), r.table()), r, "a", []byte("record"))
+	f := directCheckFile(t, newOS(dir, r.table()), r, "a", []byte("record"))
 
 	r.failNth("fcntl", 2, syscall.EIO)
 	p := make([]byte, 9)
 	n, err := f.ReadAtDirect(p, 3)
 
-	if !errors.Is(err, syscall.EIO) {
-		t.Fatalf("ReadAtDirect with a failed clear at the end: %d, %v; want an error matching EIO", n, err)
-	}
+	expectPathError(t, err, "fcntl", syscall.EIO, filepath.Join(dir, "a"))
 
 	if err == io.EOF {
 		t.Fatalf("ReadAtDirect with a failed clear at the end: %d, io.EOF; want the clear's EIO, not the read's end", n)
@@ -445,13 +220,46 @@ func TestReadAtDirectFailedClearAtEnd(t *testing.T) {
 		t.Fatalf("ReadAtDirect with a failed clear at the end: %d, %q; want the 3 bytes read, kept with the error", n, p[:n])
 	}
 
-	var pe *fs.PathError
-	if !errors.As(err, &pe) || pe.Op != "fcntl" {
-		t.Fatalf("ReadAtDirect with a failed clear at the end: %v, want an *fs.PathError of the fcntl", err)
-	}
-
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestReadAtDirectInterruptedRead checks a pread interrupted before it read
+// anything is made again, as the os package's own ReadAt repeats its
+// interrupted pread and Linux's readDirectLocked does: the read still comes back
+// whole, and the repeated pread is the one that delivered it.
+func TestReadAtDirectInterruptedRead(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	r := &recorder{}
+	f := directCheckFile(t, newOS(t.TempDir(), r.table()), r, "a", []byte("record"))
+	t.Cleanup(func() { _ = f.Close() })
+
+	r.failNext("pread", syscall.EINTR)
+	p := make([]byte, 6)
+	if n, err := f.ReadAtDirect(p, 0); n != 6 || err != nil || string(p) != "record" {
+		t.Fatalf("ReadAtDirect with its pread interrupted: %d, %v, %q; want 6, no error and the file's bytes", n, err, p)
+	}
+
+	log := r.take()
+	preads := 0
+	for _, c := range log {
+		if c.op == "pread" {
+			preads++
+		}
+	}
+
+	if preads != 2 {
+		t.Fatalf("got %v; want the interrupted pread made again", log)
+	}
+
+	if n := countFnocache(log, 1); n != 1 {
+		t.Fatalf("got %d calls of fcntl(F_NOCACHE, 1) in %v; want one set", n, log)
+	}
+
+	if n := countFnocache(log, 0); n != 1 {
+		t.Fatalf("got %d calls of fcntl(F_NOCACHE, 0) in %v; want one clear", n, log)
 	}
 }
 

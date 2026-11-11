@@ -2,6 +2,7 @@ package platform
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"strconv"
 
@@ -17,7 +18,15 @@ const directOpenFlags = unix.O_RDONLY | unix.O_CLOEXEC | unix.O_DIRECT
 // one symlink per descriptor.
 const procSelfFD = "/proc/self/fd/"
 
-// readDirect reads into p the len(p) bytes at off past the page cache, by
+// directOp names the call a direct read's errors are reported as, and
+// errNegativeOffset is the error ReadAtDirect names for a negative offset:
+// ReadAt refuses one with an error of its own, and this one names EINVAL so
+// errors.Is can match it, where pread would answer its own, unnamed one.
+const directOp = "pread"
+
+var errNegativeOffset error = unix.EINVAL
+
+// readDirectLocked reads into p the len(p) bytes at off past the page cache, by
 // pread on a descriptor of the file reopened with O_DIRECT, over the aligned
 // window directRead builds.
 //
@@ -27,35 +36,17 @@ const procSelfFD = "/proc/self/fd/"
 // every other read and write the file makes cached, so an ordinary ReadAt
 // keeps io.ReaderAt's and the journal's own reads still coalesce in the cache;
 // and it survives a rename of the segment, which a path would not. A
-// filesystem that refuses the reopen — EINVAL of O_DIRECT, which tmpfs
-// answered before the kernel learned to accept it — is handed back as itself,
-// never widened and never worked around with the cached read, which would
-// hand the tail check after a crash a proof it does not have. The direct mu
-// closes the last gap: an open of /proc/self/fd/N whose N a concurrent Close
-// released could open the next open's file, so the open, the read and the
-// close all run under it, which Close also takes.
-func (f *file) readDirect(p []byte, off int64) (int, error) {
-	if off < 0 {
-		// ReadAt names EINVAL for a negative offset; pread would answer its
-		// own, unnamed one.
-		return 0, &fs.PathError{
-			Op:   "pread",
-			Path: f.f.Name(),
-			Err:  unix.EINVAL,
-		}
-	}
-
-	f.directMu.Lock()
-	defer f.directMu.Unlock()
-
-	if f.directFD == directClosed {
-		return 0, &fs.PathError{
-			Op:   "pread",
-			Path: f.f.Name(),
-			Err:  fs.ErrClosed,
-		}
-	}
-
+// filesystem that refuses the reopen is handed back as itself, never widened
+// and never worked around with the cached read, which would hand the tail
+// check after a crash a proof it does not have. EINVAL of O_DIRECT, which
+// tmpfs answered before the kernel learned to accept it, is one refusal;
+// another is ENOENT, which FUSE and virtiofs — Docker Desktop's mounts
+// included — answer the /proc/self/fd reopen of an unlinked file with, naming
+// the original path rather than the fd: nothing reads an unlinked file today.
+// The direct mu closes the last gap: an open of /proc/self/fd/N whose N a
+// concurrent Close released could open the next open's file, so the open, the
+// read and the close all run under it, which Close also takes.
+func (f *file) readDirectLocked(p []byte, off int64) (int, error) {
 	if f.directFD == directUnopened {
 		if err := f.openDirectLocked(); err != nil {
 			return 0, err
@@ -64,7 +55,7 @@ func (f *file) readDirect(p []byte, off int64) (int, error) {
 
 	fd := f.directFD
 
-	return directRead(p, off, directAlign, func(buf []byte, off int64) (int, error) {
+	n, err := directRead(p, off, directAlign, func(buf []byte, off int64) (int, error) {
 		n, err := f.calls.pread(fd, buf, off)
 		for errors.Is(err, unix.EINTR) {
 			n, err = f.calls.pread(fd, buf, off)
@@ -72,6 +63,16 @@ func (f *file) readDirect(p []byte, off int64) (int, error) {
 
 		return n, err
 	})
+
+	if err != nil && err != io.EOF {
+		// As darwin and windows do, and the os package's own ReadAt: an error
+		// of the read names the file it failed on. The bare io.EOF, ReadAt's
+		// own answer for a short read at the end, is returned as the caller
+		// compares it.
+		err = &fs.PathError{Op: "pread", Path: f.f.Name(), Err: err}
+	}
+
+	return n, err
 }
 
 // openDirectLocked opens the file's direct descriptor and caches it in f. The
