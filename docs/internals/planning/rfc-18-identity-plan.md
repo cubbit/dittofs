@@ -253,8 +253,8 @@ proof"; the NFS halves of "disable takes effect" and "no file spelling"; and `Fu
    disable is proven by the next call refused, not by the generation raised.
 6. **Known failures shrink** (`CLAUDE.md`, "Writing tests", "By kind"). No suite RFC 18 names keeps
    a `known.yaml`, so no test lands red. Should a later epic register a cell with one, a red test
-   that turns green leaves its suite's `known.yaml` in the same change, as "Design principles" in
-   `.claude/skills/rfc-to-epic-plan/SKILL.md` says.
+   that turns green leaves its suite's `known.yaml` in the same change, since RFC 29 §4.7 fails a run
+   whose known failure passes.
 7. **v2 ignores v1.** Nothing imports v1's identity code once RFC 23's control-plane epic 1 has deleted its
    importers. What v2 keeps is moved with `git mv` where it is still on the branch
    (`internal/auth/netlogon`, `internal/vfs/admit`'s resolver) or lifted from `develop`'s history
