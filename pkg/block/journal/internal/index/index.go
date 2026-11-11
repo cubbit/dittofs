@@ -221,3 +221,28 @@ func (ix *Index) AsOf(id core.FileID) core.Version { return ix.fs.asOf(id) }
 func (ix *Index) RaiseFloor(floor core.Version) {
 	ix.fs.raiseBuckets(min(floor.Counter, maxVersion))
 }
+
+// MayOutrank reports whether a removal, release or loss record of id in seg,
+// covering e with pair n, may still outrank a record of the file in another
+// segment: a range of another segment overlaps e with a lowest pair below n.
+// False means the record outranks nothing on disk and the removal it stands
+// for may be dropped once its marker, if it left one, is settled. It takes
+// the file's lock shared and creates no entry. Reclamation's drop test is
+// the caller.
+func (ix *Index) MayOutrank(id core.FileID, seg core.SegmentID, e core.Extent, n Numbers) bool {
+	return ix.fs.mayOutrank(id, seg, e, n)
+}
+
+// MarkerSettled reports whether every removal marker of id not yet settled
+// sits above v: a removal at or below v still holding its marker reports
+// false — it waits for Settle to cover it, and a removal that arrived after
+// the last settle moves the answer back to false by leaving its marker. It
+// takes the file's lock shared and creates no entry. A file with no marker,
+// including one with no entry at all, has nothing unsettled at any v.
+func (ix *Index) MarkerSettled(id core.FileID, v core.Version) bool {
+	settled := true
+	ix.fs.view(id, func(f *file) {
+		settled = f.firstAbove(v) == 0
+	})
+	return settled
+}
