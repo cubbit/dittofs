@@ -536,6 +536,10 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: '"$RUNNER_TEMP/dt" run unit/journal-plant --tier "$TIER" --ci --retry "$RETRY"'
 
+      - name: Run unit/adapter-allocs
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: '"$RUNNER_TEMP/dt" run unit/adapter-allocs --tier "$TIER" --ci --retry "$RETRY"'
+
       # On feat/storage-v2 nothing else links the commands: the data-path
       # suites that build them are skipped there.
       - name: Build the commands
