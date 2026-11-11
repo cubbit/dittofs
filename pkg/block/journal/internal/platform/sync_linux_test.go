@@ -241,6 +241,21 @@ func (r *recorder) table() calls {
 
 			return n, err
 		},
+		pread: func(fd int, p []byte, off int64) (int, error) {
+			c := call{
+				op:    "pread",
+				fd:    fd,
+				off:   off,
+				asked: len(p),
+			}
+			c.dev, c.ino = fdIdentity(fd)
+
+			n, err := unix.Pread(fd, p, off)
+			c.written = max(n, 0)
+			_ = r.add(c)
+
+			return n, err
+		},
 	}
 }
 
