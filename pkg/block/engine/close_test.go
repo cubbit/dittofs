@@ -248,18 +248,19 @@ func TestCloseRefusesEveryCallFromItsFirstStep(t *testing.T) {
 	cloneErr := u.e.Clone(ctx, s, f, s, f, vfserr.Extent{Len: 1})
 
 	for name, err := range map[string]error{
-		"Write":      writeErr,
-		"Read":       readErr,
-		"Truncate":   u.e.Truncate(ctx, s, f, 0),
-		"Deallocate": u.e.Deallocate(ctx, s, f, 0, 1),
-		"Delete":     deleteErr,
-		"Commit":     commitErr,
-		"Clone":      cloneErr,
-		"Draw":       drawErr,
-		"Overlay":    overlayErr,
-		"Allocation": allocationErr,
-		"Bind new":   u.e.Bind(ctx, c),
-		"Bind state": u.e.Bind(ctx, u.share),
+		"Write":           writeErr,
+		"Read":            readErr,
+		"Truncate":        u.e.Truncate(ctx, s, f, 0),
+		"Deallocate":      u.e.Deallocate(ctx, s, f, 0, 1),
+		"Delete":          deleteErr,
+		"Commit":          commitErr,
+		"CommitExistence": u.e.CommitExistence(ctx, s, f),
+		"Clone":           cloneErr,
+		"Draw":            drawErr,
+		"Overlay":         overlayErr,
+		"Allocation":      allocationErr,
+		"Bind new":        u.e.Bind(ctx, c),
+		"Bind state":      u.e.Bind(ctx, u.share),
 	} {
 		if !unavailable(err) {
 			t.Errorf("%s while Close waits = %v, want ErrUnavailable", name, err)

@@ -1098,7 +1098,9 @@ func (e *Engine) settle(g *groupCommit, c captured, ok bool, retry time.Time) (d
 // marks f due at once and waits until a batch covers every operation f held
 // when called, which a batch already in flight that captured fewer does not,
 // or until ctx ends. An operation the group commit does not capture, a
-// removal's, is waited for until ctx ends.
+// removal's, is waited for until ctx ends. Over a read-only journal, which no
+// batch syncs, f holding operations answers at once as journalErr does (RFC 8
+// §11.2); f holding none answers nil, a read-only journal or not.
 func (e *Engine) commitNow(ctx context.Context, b *binding, f entity.FileID) error {
 	fe := e.files.lockOf(f)
 	if fe == nil {
@@ -1110,6 +1112,9 @@ func (e *Engine) commitNow(ctx context.Context, b *binding, f entity.FileID) err
 	}
 	target := fe.ops[len(fe.ops)-1].version
 	e.files.unlock(f, fe)
+	if ro := b.j.Stats().ReadOnly; ro.ReadOnly {
+		return e.journalErr(readOnly(ro))
+	}
 	return e.commitThrough(ctx, b, f, target)
 }
 

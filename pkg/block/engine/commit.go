@@ -84,7 +84,8 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 // and the file's cause, never the context's error; a share with no binding
 // answers a Delay with DelayFrozen. While the self-fence holds it answers as
 // Commit does, at once, rather than wait out its deadline on a store that
-// commits nothing.
+// commits nothing; so does a read-only journal when f holds pending
+// operations: ErrReadOnly for EROFS, else ErrDelay with DelayJournal.
 func (e *Engine) CommitExistence(ctx context.Context, s entity.ShareID, f entity.FileID) error {
 	b, err := e.bindingOf(s)
 	if err != nil {
