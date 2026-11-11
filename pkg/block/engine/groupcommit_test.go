@@ -173,7 +173,7 @@ func TestMarksOfAFailedCallAreNotRecorded(t *testing.T) {
 	on.Store(true)
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
-	if err := u.e.CommitNow(ctx, u.share.ID, f); err == nil {
+	if err := u.e.CommitExistence(ctx, u.share.ID, f); err == nil {
 		t.Fatal("a commit under a conflict succeeded")
 	}
 	if got := u.j.RecordedMarks(); got != nil {
@@ -195,7 +195,7 @@ func TestASuspendedWriteCommitsItsChangeTimeAlone(t *testing.T) {
 	if _, err := u.e.Write(t.Context(), u.share.ID, f, 3, []byte("two"), engine.WriteOpts{Suspend: entity.TimeModify, Done: func() {}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
@@ -232,7 +232,7 @@ func TestABatchInFlight(t *testing.T) {
 	captured, release := heldBatch(h)
 	defer release()
 	first := make(chan error, 1)
-	go func() { first <- u.e.CommitNow(context.Background(), u.share.ID, f) }()
+	go func() { first <- u.e.CommitExistence(context.Background(), u.share.ID, f) }()
 	<-captured
 
 	if o, pending, err := u.e.Overlay(t.Context(), u.share.ID, f); err != nil || !pending || o.Size != 3 {
@@ -245,7 +245,7 @@ func TestABatchInFlight(t *testing.T) {
 	second := make(chan error, 1)
 	var leftAfterSecond atomic.Int32
 	go func() {
-		err := u.e.CommitNow(context.Background(), u.share.ID, f)
+		err := u.e.CommitExistence(context.Background(), u.share.ID, f)
 		leftAfterSecond.Store(int32(len(u.e.Pending(f))))
 		second <- err
 	}()
@@ -295,7 +295,7 @@ func TestAWriteRacingTheEntrysDropIsNotOrphaned(t *testing.T) {
 		wrote <- err
 	}()
 	<-lookedUp
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if u.e.HasEntry(f) {
@@ -308,7 +308,7 @@ func TestAWriteRacingTheEntrysDropIsNotOrphaned(t *testing.T) {
 	if o, pending, _ := u.e.Overlay(t.Context(), u.share.ID, f); !pending || o.Size != 6 {
 		t.Fatalf("Overlay after the racing write: %+v, pending %v; want size 6", o, pending)
 	}
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if n := dones.Load(); n != 1 || u.e.HasEntry(f) {
@@ -331,7 +331,7 @@ func TestADropBetweenTakeAndCapture(t *testing.T) {
 			time.Sleep(20 * time.Millisecond) // the drop runs while the batch holds its files
 		})
 	})
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-dropped; err != nil {
@@ -377,7 +377,7 @@ func TestCloseCancelsAStalledBatch(t *testing.T) {
 	}))
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("abc"))
-	go func() { _ = u.e.CommitNow(context.Background(), u.share.ID, f) }()
+	go func() { _ = u.e.CommitExistence(context.Background(), u.share.ID, f) }()
 	<-entered
 	closed := make(chan struct{})
 	go func() { u.e.CloseGroupCommits(); close(closed) }()
@@ -410,7 +410,7 @@ func TestCommitAllWaitsForTheBatchInFlight(t *testing.T) {
 	u.write(t, f, 0, []byte("abc"))
 	captured, release := heldBatch(h)
 	defer release()
-	go func() { _ = u.e.CommitNow(context.Background(), u.share.ID, f) }()
+	go func() { _ = u.e.CommitExistence(context.Background(), u.share.ID, f) }()
 	<-captured
 	all := make(chan error, 1)
 	go func() { all <- u.e.CommitAll(context.Background(), u.rec) }()
@@ -457,7 +457,7 @@ func TestACommitSettlesTheJournal(t *testing.T) {
 	newest := u.e.Pending(f)[1].Version
 	var once sync.Once
 	jh.sync.set(func([]journal.FileID) { once.Do(func() { u.write(t, f, 6, []byte("late")) }) })
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if p := u.e.Pending(f); len(p) != 1 {
@@ -496,14 +496,14 @@ func TestAFailingFileFailsNoOther(t *testing.T) {
 		defer wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
-		errs[2] = u.e.CommitNow(ctx, u.share.ID, d)
+		errs[2] = u.e.CommitExistence(ctx, u.share.ID, d)
 	}()
 	wg.Wait()
 	if errs[0] != nil || errs[1] != nil {
 		t.Errorf("the other files' Commits: %v, %v; want both answered", errs[0], errs[1])
 	}
-	if !errors.Is(errs[2], context.DeadlineExceeded) {
-		t.Errorf("the failing file's commit: %v, want its deadline", errs[2])
+	if !errors.Is(errs[2], vfserr.ErrDelay) {
+		t.Errorf("the failing file's commit: %v, want ErrDelay at its deadline", errs[2])
 	}
 	if !u.e.Failing(u.rec, d) || u.e.Failing(u.rec, a) {
 		t.Errorf("existence_commit_failing names d %v and a %v; want d alone", u.e.Failing(u.rec, d), u.e.Failing(u.rec, a))
@@ -550,7 +550,7 @@ func TestAConflictAtTheDeadlineIsDelayConflict(t *testing.T) {
 	}
 	c.on.Store(false)
 	u.clock.Advance(time.Second) // past the backoff
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if u.e.Failing(u.rec, f) {
@@ -640,7 +640,7 @@ func TestAConflictTheStoreKeepsRetryingHoldsNoBatch(t *testing.T) {
 	u.clock.Advance(time.Minute) // past the backoff
 	ctx, cancel = context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
-	if err := u.e.CommitNow(ctx, u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(ctx, u.share.ID, f); err != nil {
 		t.Errorf("after the conflict cleared: %v; the group commit is still held", err)
 	}
 }
@@ -700,7 +700,7 @@ func TestAFailingFileLeftAnotherWayIsCleared(t *testing.T) {
 			u.write(t, dir.ID, 0, []byte("not content"))
 			ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 			defer cancel()
-			_ = u.e.CommitNow(ctx, u.share.ID, dir.ID)
+			_ = u.e.CommitExistence(ctx, u.share.ID, dir.ID)
 			if !u.e.Failing(u.rec, dir.ID) {
 				t.Fatal("the directory's commit is not named failing")
 			}
@@ -801,11 +801,11 @@ func TestAMovedOpenGenerationStopsTheMarks(t *testing.T) {
 	u.write(t, a, 0, []byte("a"))
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
-	if err := u.e.CommitNow(ctx, u.share.ID, a); err != nil {
+	if err := u.e.CommitExistence(ctx, u.share.ID, a); err != nil {
 		t.Fatalf("the batch beside the refused marks: %v", err)
 	}
 	u.write(t, b, 0, []byte("b"))
-	if err := u.e.CommitNow(ctx, u.share.ID, b); err != nil {
+	if err := u.e.CommitExistence(ctx, u.share.ID, b); err != nil {
 		t.Fatal(err)
 	}
 	u.write(t, a, 1, []byte("tail"))
@@ -835,7 +835,7 @@ func TestMarksNotWrittenAreRetriedAlone(t *testing.T) {
 	u.write(t, a, 0, []byte("a"))
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
-	if err := u.e.CommitNow(ctx, u.share.ID, a); err != nil {
+	if err := u.e.CommitExistence(ctx, u.share.ID, a); err != nil {
 		t.Fatalf("the batch beside the refused marks: %v", err)
 	}
 	if n := x.calls.Load(); n != 1 {
@@ -1050,7 +1050,7 @@ func TestTheGroupCommitsStoreCallsCarryTheRetryingOwnerMark(t *testing.T) {
 	u := newUnit(t, onCommit(x.commit), onOverwrites(x.overwrites))
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("committed"))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	u.write(t, f, 0, []byte("over"))
@@ -1092,7 +1092,7 @@ func TestABatchPassesEachWritesSupersededRuns(t *testing.T) {
 	u.write(t, f, 0, make([]byte, 8)) // [0, 8)
 	u.write(t, f, 2, make([]byte, 4)) // [2, 6): supersedes [2, 6)
 	u.write(t, f, 5, make([]byte, 5)) // [5, 10): supersedes [5, 8) of the first and [5, 6) of the second
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()

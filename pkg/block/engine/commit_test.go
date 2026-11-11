@@ -14,6 +14,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -109,7 +110,7 @@ func committedFile(t *testing.T, u *unit, name string, n int) entity.FileID {
 	t.Helper()
 	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, name, kvstore.Regular(0o644))
 	u.write(t, made.ID, 0, make([]byte, n))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, made.ID); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, made.ID); err != nil {
 		t.Fatal(err)
 	}
 	return made.ID
@@ -450,7 +451,7 @@ func TestACallRacingAFilesFirstWriteFindsNothingPending(t *testing.T) {
 		call func(u *unit, f entity.FileID)
 	}{
 		{"Commit", func(u *unit, f entity.FileID) { _, _, _ = u.e.Commit(context.Background(), u.share.ID, f, 0, 0) }},
-		{"commitNow", func(u *unit, f entity.FileID) { _ = u.e.CommitNow(context.Background(), u.share.ID, f) }},
+		{"commitNow", func(u *unit, f entity.FileID) { _ = u.e.CommitExistence(context.Background(), u.share.ID, f) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			u := newUnit(t)
@@ -498,7 +499,7 @@ func TestACommitOverAnOverwriteReadsTheStoreOnce(t *testing.T) {
 	u := newUnit(t, onCommit(m.commit), onOverwrites(x.overwrites))
 	f := u.create(t, "a")
 	u.write(t, f, 0, []byte("committed"))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	m.on.Store(true)
@@ -529,5 +530,91 @@ func TestACommitWhoseOverwritesReadStallsAnswersErrDelay(t *testing.T) {
 	var d *vfserr.Delay
 	if !errors.As(err, &d) {
 		t.Errorf("a Commit under a stalled store: %v, want ErrDelay", err)
+	}
+}
+
+// CommitExistence commits a staged write's existence at once, not at the
+// group commit's age: the store's File holds the write's size and charge, and
+// the write's Done has run. Called again with nothing pending, it touches no
+// store and runs no Done a second time.
+func TestCommitExistenceCommitsThePendingWriteOnce(t *testing.T) {
+	u, counts := countedUnit(t, unitConfig{}, newUnitWith)
+	res := enginetest.NewReservations(t)
+	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
+	o, answered := res.Opts()
+	_, err := u.e.Write(t.Context(), u.share.ID, made.ID, 0, []byte("four"), o)
+	answered(err)
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, made.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Size != 4 || got.Charged != 4 {
+		t.Errorf("committed size %d, charged %d; want the write's 4 and 4", got.Size, got.Charged)
+	}
+	if n := res.Outstanding(); n != 0 {
+		t.Errorf("%d writes without their Done after CommitExistence", n)
+	}
+	counts.Take()
+	counts.TakeUpdates()
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, made.ID); err != nil {
+		t.Fatal(err)
+	}
+	untouched(t, counts, "a CommitExistence with nothing pending")
+	if n := res.Outstanding(); n != 0 {
+		t.Errorf("%d writes outstanding after the second CommitExistence, want 0", n)
+	}
+}
+
+// A share with no binding answers CommitExistence as every content method
+// does: a Delay with DelayFrozen, its binding still to come.
+func TestCommitExistenceOnAnUnboundShareIsFrozen(t *testing.T) {
+	u := newUnitWith(t, unitConfig{unbound: true})
+	err := u.e.CommitExistence(t.Context(), u.share.ID, entity.NewFileID())
+	var d *vfserr.Delay
+	if !errors.As(err, &d) || d.Cause != vfserr.DelayFrozen {
+		t.Errorf("CommitExistence on an unbound share: %v, want ErrDelay(DelayFrozen)", err)
+	}
+}
+
+// A CommitExistence the caller's deadline ends while the store fails every
+// commit answers ErrDelay, never the context's error, which the filesystem
+// would not answer as a delay.
+func TestCommitExistenceAtItsDeadlineIsADelay(t *testing.T) {
+	db := &failingKV{}
+	db.left.Store(-1)
+	u := newUnitOver(t, func(k kv.KV) kv.KV { db.KV = k; return db })
+	f := u.create(t, "a")
+	u.write(t, f, 0, []byte("four"))
+	db.left.Store(0)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	err := u.e.CommitExistence(ctx, u.share.ID, f)
+	if errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, vfserr.ErrDelay) {
+		t.Errorf("CommitExistence at its deadline: %v, want ErrDelay and not the context's error", err)
+	}
+}
+
+// At its deadline CommitExistence answers the file's own cause: a file whose
+// existence commit conflicts answers DelayConflict, not a fixed DelayCommit.
+func TestCommitExistenceAtItsDeadlineAnswersTheFilesCause(t *testing.T) {
+	c := &conflicting{}
+	u := newUnit(t, onCommit(c.commit))
+	f := u.create(t, "a")
+	c.on.Store(true)
+	u.write(t, f, 0, []byte("four"))
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	err := u.e.CommitExistence(ctx, u.share.ID, f)
+	if !errors.Is(err, &vfserr.Delay{Cause: vfserr.DelayConflict}) {
+		t.Errorf("CommitExistence under a conflict: %v, want ErrDelay(DelayConflict)", err)
+	}
+	// Lifted and past the file's backoff, so the store's close finds it done.
+	c.on.Store(false)
+	u.clock.Advance(time.Second)
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
 	}
 }

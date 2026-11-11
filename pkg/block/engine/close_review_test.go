@@ -231,7 +231,7 @@ func TestCloseCutsABatchInItsStoreCommitOnAReadOnlyJournal(t *testing.T) {
 	go func() {
 		defer close(finished)
 
-		_ = u.e.CommitNow(context.Background(), u.share.ID, f)
+		_ = u.e.CommitExistence(context.Background(), u.share.ID, f)
 	}()
 
 	t.Cleanup(func() { <-finished })

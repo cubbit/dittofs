@@ -203,11 +203,12 @@ func (f *fence) subject() string { return hex.EncodeToString(f.node[:]) }
 // gate is a write's or a stability point's answer while the fence holds:
 // ErrDelay with DelayCommit, else nil.
 //
-// decision: only Write and Commit read the gate. Truncate, Deallocate,
-// Delete and Clone each issue their own write transaction, which a stalled
-// or erroring store fails at the caller's deadline, and Draw and the reads
-// make none, so none of them is refused up front. Gate them too if a fenced
-// node is seen to admit one that then holds a caller past its deadline.
+// decision: only Write, Commit and CommitExistence read the gate. Truncate,
+// Deallocate, Delete and Clone each issue their own write transaction, which
+// a stalled or erroring store fails at the caller's deadline, and Draw and
+// the reads make none, so none of them is refused up front. Gate them too if
+// a fenced node is seen to admit one that then holds a caller past its
+// deadline.
 func (f *fence) gate() error {
 	if f.holds() {
 		return &vfserr.Delay{Cause: vfserr.DelayCommit}
@@ -215,13 +216,13 @@ func (f *fence) gate() error {
 	return nil
 }
 
-// fenceGate is Write's and Commit's answer on b while the fence holds. The
-// self-fence answers after every refusal of a write that never reaches the
-// store: b's journal turned read-only answers as journalErr does (RFC 8
-// §11.2), and so would any capacity refusal of the journal the RFC places
-// before it. Those are read only once the gate refuses, so a call on an
-// unfenced node pays nothing for them; checks for them go here, not ahead of
-// the gate. A share's own refusal, from bindingOf, comes before this.
+// fenceGate is Write's, Commit's and CommitExistence's answer on b while the
+// fence holds. The self-fence answers after every refusal of a write that
+// never reaches the store: b's journal turned read-only answers as journalErr
+// does (RFC 8 §11.2), and so would any capacity refusal of the journal the
+// RFC places before it. Those are read only once the gate refuses, so a call
+// on an unfenced node pays nothing for them; checks for them go here, not
+// ahead of the gate. A share's own refusal, from bindingOf, comes before this.
 func (e *Engine) fenceGate(b *binding) error {
 	err := e.fence.gate()
 	if err == nil {

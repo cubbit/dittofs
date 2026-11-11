@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -138,17 +139,73 @@ func TestAWriteToAReadOnlyJournal(t *testing.T) {
 	}
 }
 
+// CommitExistence on a file with a write staged before the journal turned
+// read-only answers at once, by the error that entered the state: ErrReadOnly
+// for EROFS, retry-later naming the journal otherwise, never a wait the group
+// commit, which syncs nothing, cannot end. A file with nothing pending
+// answers nil.
+func TestCommitExistenceOverAReadOnlyJournal(t *testing.T) {
+	for _, c := range []struct {
+		cause error
+		want  error
+	}{
+		{fmt.Errorf("write segment: %w", syscall.EROFS), vfserr.ErrReadOnly},
+		{syscall.EIO, &vfserr.Delay{Cause: vfserr.DelayJournal}},
+	} {
+		t.Run(c.cause.Error(), func(t *testing.T) {
+			u := newUnit(t)
+			f := u.create(t, "a")
+			clean := u.create(t, "b")
+			u.write(t, f, 0, fill(4, 'a'))
+			u.j.ReadOnly(c.cause)
+			// A wait for the group commit would end at this deadline with
+			// DelayCommit, the answer this refuses.
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			if err := u.e.CommitExistence(ctx, u.share.ID, f); !errors.Is(err, c.want) {
+				t.Errorf("CommitExistence: %v, want %v", err, c.want)
+			}
+			if err := u.e.CommitExistence(t.Context(), u.share.ID, clean); err != nil {
+				t.Errorf("CommitExistence of a file with nothing pending: %v, want nil", err)
+			}
+		})
+		// The journal turns read-only while the call waits: the batch it
+		// drove fails its sync, and the call answers then, not at its
+		// deadline.
+		t.Run(c.cause.Error()+" while waiting", func(t *testing.T) {
+			hook := &armed{}
+			u := newUnitWith(t, unitConfig{wrap: func(h engine.Handle) engine.Handle { return afterSync{h, hook} }})
+			f := u.create(t, "a")
+			u.write(t, f, 0, fill(4, 'a'))
+			hook.set(func() { u.j.ReadOnly(c.cause) })
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			if err := u.e.CommitExistence(ctx, u.share.ID, f); !errors.Is(err, c.want) {
+				t.Errorf("CommitExistence: %v, want %v", err, c.want)
+			}
+		})
+	}
+}
+
 // The group commit commits nothing over a read-only journal, though the
-// journal's Sync, with nothing left unsynced, answers nil: the write stays
-// pending and the committed size is unchanged.
+// journal's Sync, with nothing left unsynced, answers nil: the write falling
+// due stays pending, back on the due set, and the committed size is
+// unchanged.
 func TestTheGroupCommitCommitsNothingOverAReadOnlyJournal(t *testing.T) {
 	u := newUnit(t)
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(4, 'a'))
 	u.j.ReadOnly(syscall.EIO)
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
-	defer cancel()
-	_ = u.e.CommitNow(ctx, u.share.ID, f)
+	taken := make(chan struct{})
+	var once sync.Once
+	u.e.OnTake(func() { once.Do(func() { close(taken) }) })
+	eventually(t, "the group commit's timer is set", func() bool { return u.clock.Pending() > 0 })
+	u.clock.Advance(time.Second)
+	<-taken
+	eventually(t, "the batch settles f", func() bool { return u.e.Due(u.rec, f) || !u.e.HasEntry(f) })
 	if n := u.size(t, f); n != 0 {
 		t.Errorf("size %d, want 0: the write committed", n)
 	}
@@ -230,7 +287,7 @@ func TestTheGroupCommitReadsTheStateAfterTheSync(t *testing.T) {
 	hook.set(func() { u.j.ReadOnly(syscall.EIO) })
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
-	_ = u.e.CommitNow(ctx, u.share.ID, f)
+	_ = u.e.CommitExistence(ctx, u.share.ID, f)
 	if n := u.size(t, f); n != 0 {
 		t.Errorf("size %d, want 0: the write committed", n)
 	}

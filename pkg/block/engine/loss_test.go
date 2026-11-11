@@ -57,7 +57,7 @@ func TestALossBeforeTheBatchsSyncCommitsTheWriteLost(t *testing.T) {
 	u.write(t, f, 0, []byte("lost"))
 	var once sync.Once
 	jh.sync.set(func([]journal.FileID) { once.Do(func() { u.lose(f, 0, 4) }) })
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
@@ -83,7 +83,7 @@ func TestALossPublishedAfterItsGenerationIsDrained(t *testing.T) {
 	publish := u.j.LoseLater(journal.NewFileID(f), journal.Extent{Len: 4}, journal.LossCorrupt)
 	_ = u.e.LossSeq(u.share.ID, f) // a drain between the raise and the event
 	publish()
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
@@ -180,7 +180,7 @@ func TestAConcurrentDrainWaitsForTheMarks(t *testing.T) {
 	var once sync.Once
 	u.e.OnDrain(func() {
 		once.Do(func() {
-			go func() { committed <- u.e.CommitNow(context.Background(), u.share.ID, f) }()
+			go func() { committed <- u.e.CommitExistence(context.Background(), u.share.ID, f) }()
 			time.Sleep(50 * time.Millisecond) // the batch's sync and drain run meanwhile
 		})
 	})
@@ -206,7 +206,7 @@ func TestALossMarksOnlyItsRecordsWrite(t *testing.T) {
 	u.write(t, f, 0, make([]byte, 8))
 	u.write(t, f, 0, []byte("newe"))
 	u.lose(f, 0, 4)
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
@@ -252,7 +252,7 @@ func TestAPartialLossMarksOnlyItsRuns(t *testing.T) {
 			if !c.early {
 				lose()
 			}
-			if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+			if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 				t.Fatal(err)
 			}
 			got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
@@ -299,7 +299,7 @@ func TestALossBeforeTheWritesInsertCommitsItLost(t *testing.T) {
 	if _, err := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("lost"), engine.WriteOpts{Done: func() { dones.Add(1) }}); err != nil {
 		t.Fatal(err)
 	}
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
@@ -328,7 +328,7 @@ func TestALostDeviceLogsEachFailingFileCleared(t *testing.T) {
 	u.write(t, f, 0, []byte("over"))
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
-	_ = u.e.CommitNow(ctx, u.share.ID, f)
+	_ = u.e.CommitExistence(ctx, u.share.ID, f)
 	if !u.e.Failing(u.rec, f) {
 		t.Fatal("existence_commit_failing does not name the failing file")
 	}
@@ -356,7 +356,7 @@ func TestAnUnsyncedCorruptLossDropsTheWrite(t *testing.T) {
 			h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 			f := made.ID
 			u.write(t, f, 0, []byte("held"))
-			if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+			if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 				t.Fatal(err)
 			}
 			before, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
@@ -387,7 +387,7 @@ func TestAnUnsyncedCorruptLossDropsTheWrite(t *testing.T) {
 			if cv == v || seq != 1 {
 				t.Errorf("Commit answered verifier %x, sequence %d; want other than the write's %x, and 1", cv, seq, v)
 			}
-			if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+			if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 				t.Fatal(err)
 			}
 			got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
@@ -419,13 +419,13 @@ func TestAPartialUnsyncedCorruptLossLosesItsRun(t *testing.T) {
 	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
 	f := made.ID
 	u.write(t, f, 0, []byte("aaaaaaaa"))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	u.write(t, f, 0, []byte("bbbbbbbbcccc"))
 	u.j.LoseUnsynced(journal.NewFileID(f), journal.Extent{Off: 8, Len: 4})
 	u.e.LossSeq(u.share.ID, f) // drains the loss
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
@@ -492,7 +492,7 @@ func TestUnsyncedCorruptPiecesAroundALaterWriteDropTheWrite(t *testing.T) {
 			if !tc.early {
 				lose()
 			}
-			if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+			if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 				t.Fatal(err)
 			}
 			if n := dones.Load(); n != 1 {

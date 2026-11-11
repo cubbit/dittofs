@@ -99,7 +99,7 @@ func (u *fenceUnit) commitInBackground(t *testing.T, f entity.FileID) <-chan err
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	var wg sync.WaitGroup
-	wg.Go(func() { done <- u.e.CommitNow(ctx, u.share.ID, f) })
+	wg.Go(func() { done <- u.e.CommitExistence(ctx, u.share.ID, f) })
 	t.Cleanup(func() { cancel(); wg.Wait() })
 	return done
 }
@@ -419,6 +419,9 @@ func TestSelfFenceAnswersAfterAReadOnlyJournal(t *testing.T) {
 			}
 			if _, _, err := u.e.Commit(t.Context(), u.share.ID, a, 0, 1); !c.want(err) {
 				t.Errorf("Commit: %v", err)
+			}
+			if err := u.e.CommitExistence(t.Context(), u.share.ID, a); !c.want(err) {
+				t.Errorf("CommitExistence: %v", err)
 			}
 			frozen := &vfserr.Delay{Cause: vfserr.DelayFrozen}
 			if _, err := u.e.Write(t.Context(), entity.ShareID{0xff}, a, 0, []byte("x"), engine.WriteOpts{Done: func() {}}); !errors.Is(err, frozen) {
