@@ -3,6 +3,7 @@ package index
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
@@ -166,6 +167,70 @@ type heldSet struct {
 	bytes, dirty int64
 	scratch      []Piece // the pieces cut is changing
 	work         []Piece // the pieces a mark, fill or repoint will put, or a removal will cut
+	// over are the runs where one write superseded another, kept beside the
+	// tree rather than in its entries so an entry stays 40 bytes, and so a run
+	// outlives the superseded piece, which is gone from the tree by then. They
+	// are in no order.
+	//
+	// ponytail: a slice, scanned whole by a chain walk and by a settle, and
+	// holding a run per overlap of a write until a settle at that write's
+	// version, so a file rewritten many times with no settle between grows by
+	// a run a rewrite. The runs are not counted against the extent bound.
+	// Upgrade to runs indexed by superseding version, merged where one write
+	// superseded adjacent pieces of one version, when a profile of a hot
+	// rewritten file shows the scans or the memory.
+	//
+	// decision: the runs end with the file's entry. An entry whose held set is
+	// empty and which has no marker is dropped, and its runs go with it: no
+	// write is left to report them, and what a release took out was offloaded,
+	// so metadata holds it. Revisit if a release can leave a write whose
+	// existence, with its Over, metadata has not recorded.
+	over []overRun
+}
+
+// overRun is one run where the write of version by superseded the write of
+// version was. A run names its direct superseder only (see overOf for why a
+// chain needs no walk), so a failed window drops the failed write's runs and
+// no others'.
+type overRun struct {
+	extent  core.Extent
+	by, was core.Version
+}
+
+// noteOver records, before e is overwritten by the write of version by, one
+// run for each held piece in e written at a lower version. A piece at or above
+// by is not superseded by it: a rebuild applies records in version order, so
+// that happens only when the same write is put again.
+func (s *heldSet) noteOver(e core.Extent, by core.Version) {
+	s.visit(e, func(p Piece) bool {
+		if p.Version.Compare(by) < 0 {
+			q := clip(p, e).Extent
+			// Pieces of one write split only by their offloaded bit are one run, so
+			// the runs do not depend on where the bit happened to split them.
+			if n := len(s.over); n > 0 {
+				if last := &s.over[n-1]; last.by == by && last.was == p.Version && extentEnd(last.extent) == q.Off {
+					last.extent.Len += q.Len
+					return true
+				}
+			}
+			s.over = append(s.over, overRun{extent: q, by: by, was: p.Version})
+		}
+		return true
+	})
+}
+
+// dropOver forgets the runs of writes at or below v: the caller's statement
+// that metadata has recorded those writes with their Over.
+func (s *heldSet) dropOver(v core.Version) {
+	s.over = slices.DeleteFunc(s.over, func(r overRun) bool { return r.by.Compare(v) <= 0 })
+}
+
+// dropOverBy forgets the runs of the write of version by lying inside e, which
+// a failed window does for each record it fails.
+func (s *heldSet) dropOverBy(by core.Version, e core.Extent) {
+	s.over = slices.DeleteFunc(s.over, func(r overRun) bool {
+		return r.by == by && r.extent.Off >= e.Off && extentEnd(r.extent) <= extentEnd(e)
+	})
 }
 
 // len returns the number of entries.
@@ -278,6 +343,7 @@ func (s *heldSet) insert(p Placed) {
 	if p.Extent.Len <= 0 {
 		return
 	}
+	s.noteOver(p.Extent, p.Version)
 	s.put(Piece{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version, Seq: p.Seq})
 }
 

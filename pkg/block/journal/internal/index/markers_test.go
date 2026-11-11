@@ -274,7 +274,7 @@ func TestTruncateEdgeCases(t *testing.T) {
 			{Kind: core.ChangeWrite, Extent: ext(0, 8), Version: ver(2), Record: a},
 			{Kind: core.ChangeTruncate, Extent: ext(math.MaxInt64, 0), Version: ver(3)},
 		}
-		if got := fs.since(id, core.Version{}, nil); !slices.Equal(got, want) {
+		if got := fs.since(id, core.Version{}, nil); !sameChanges(got, want) {
 			t.Fatalf("since:\n got  %+v\n want %+v", got, want)
 		}
 	})
@@ -554,7 +554,7 @@ func TestLossMarkerIsYieldedBySinceUntilSettled(t *testing.T) {
 	for _, ch := range got {
 		if ch.Kind == core.ChangeLoss {
 			found = true
-			if ch != want {
+			if !sameChanges([]Change{ch}, []Change{want}) {
 				t.Fatalf("loss change = %+v, want %+v", ch, want)
 			}
 		}

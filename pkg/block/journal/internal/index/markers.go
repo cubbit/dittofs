@@ -331,6 +331,7 @@ func (f *file) fill(p Placed) {
 // and is not persisted.
 func (f *file) settleRemovals(v core.Version) {
 	f.markers = slices.Delete(f.markers, 0, f.firstAbove(v))
+	f.held.dropOver(v)
 }
 
 // settleRemovals settles id's markers at or below v. It claims nothing, and

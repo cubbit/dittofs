@@ -58,11 +58,11 @@ func TestRemovalsSurviveToSince(t *testing.T) {
 	}
 	// Held content at from is not yielded either: a write metadata already
 	// applied would be committed again.
-	if got, want := fs.since(a, ver(2), nil), cases[0].want[1:]; !slices.Equal(got, want) {
+	if got, want := fs.since(a, ver(2), nil), cases[0].want[1:]; !sameChanges(got, want) {
 		t.Fatalf("since(a, 2):\n got  %+v\n want %+v", got, want)
 	}
 	for _, tc := range cases {
-		if got := fs.since(tc.id, core.Version{}, nil); !slices.Equal(got, tc.want) {
+		if got := fs.since(tc.id, core.Version{}, nil); !sameChanges(got, tc.want) {
 			t.Fatalf("since(%v, 0):\n got  %+v\n want %+v", tc.id, got, tc.want)
 		}
 		for _, ch := range fs.since(tc.id, tc.removal, nil) {
@@ -112,7 +112,7 @@ func TestSinceIsInVersionOrder(t *testing.T) {
 		{Kind: core.ChangeWrite, Extent: ext(8, 4), Version: ver(3), Record: r3},
 		{Kind: core.ChangeWrite, Extent: ext(0, 4), Version: ver(4), Record: r2},
 	}
-	if got := fs.since(id, core.Version{}, nil); !slices.Equal(got, want) {
+	if got := fs.since(id, core.Version{}, nil); !sameChanges(got, want) {
 		t.Fatalf("since:\n got  %+v\n want %+v", got, want)
 	}
 }
@@ -157,7 +157,7 @@ func TestSinceHidesTheOffloadedBit(t *testing.T) {
 		return nil
 	})
 	want := []Change{{Kind: core.ChangeWrite, Extent: ext(0, 16), Version: ver(2), Record: r}}
-	if got := fs.since(id, core.Version{}, nil); !slices.Equal(got, want) {
+	if got := fs.since(id, core.Version{}, nil); !sameChanges(got, want) {
 		t.Fatalf("since:\n got  %+v\n want %+v", got, want)
 	}
 }

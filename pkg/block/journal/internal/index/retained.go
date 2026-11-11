@@ -262,6 +262,7 @@ var whole = core.Extent{Off: 0, Len: math.MaxInt64}
 // retainCut stops holding e, and retains each piece it held there as
 // superseded by the record of version by. A gap retains nothing.
 func (f *file) retainCut(e core.Extent, by core.Version) {
+	f.held.noteOver(e, by)
 	f.held.visit(e, func(p Piece) bool {
 		f.retained.add(Retained{Piece: clip(p, e), By: by})
 		return true
@@ -348,6 +349,7 @@ func (f *file) failWindow(window []WindowRecord, out []Retained) ([]Retained, []
 	var back, gaps []Retained
 	var covers []Cover
 	for _, w := range order {
+		f.held.dropOverBy(w.Version, w.Extent)
 		was = was[:0]
 		f.held.visit(whole, func(p Piece) bool {
 			if p.Record == w.Record {

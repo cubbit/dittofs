@@ -3,7 +3,6 @@ package index
 import (
 	"errors"
 	"math"
-	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -114,7 +113,7 @@ func TestRemovalTruncateNarrowsAndLeavesAMarker(t *testing.T) {
 		{Kind: core.ChangeWrite, Extent: ext(0, 4), Version: ver(2), Record: rec(1, 0)},
 		{Kind: core.ChangeTruncate, Extent: ext(4, math.MaxInt64-4), Version: ver(3)},
 	}
-	if got := ix.fs.since(id, core.Version{}, nil); !slices.Equal(got, wantChanges) {
+	if got := ix.fs.since(id, core.Version{}, nil); !sameChanges(got, wantChanges) {
 		t.Fatalf("since:\n got  %+v\n want %+v", got, wantChanges)
 	}
 }
