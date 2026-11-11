@@ -3,11 +3,13 @@ package platform
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
+	"unsafe"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
@@ -114,6 +116,90 @@ func TestDirectRead(t *testing.T) {
 	})
 
 	checkDirectRead(t, want, f.ReadAt)
+}
+
+// TestDirectReadShortRaw checks directRead over a raw that reports a short,
+// error-free read mid-window: a wrapper over the real file's ReadAt, capped at
+// limit bytes per call, which also asserts raw's own contract — an aligned
+// offset, buffer address and length for every call of a window, the arguments
+// no raw accepts any other way. A cap of 4096 is a multiple of the alignment,
+// so a short read is resumed where it stopped and every case reads whole; a
+// cap of 1000 is not, so the count lands off the alignment and the window must
+// end at the bytes the raw gave, mapped as the end of the file a short pread
+// answers.
+func TestDirectReadShortRaw(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	want := directBytes()
+	f := directFile(t, want)
+	t.Cleanup(func() {
+		_ = f.Close()
+	})
+
+	for _, limit := range []int{4096, 1000} {
+		t.Run(fmt.Sprintf("cap%d", limit), func(t *testing.T) {
+			raw := func(buf []byte, off int64) (int, error) {
+				if off >= 0 && (off%directAlign != 0 || int64(len(buf))%directAlign != 0 ||
+					uintptr(unsafe.Pointer(unsafe.SliceData(buf)))&uintptr(directAlign-1) != 0) {
+					t.Errorf(
+						"raw called at %d for %d bytes: not window-aligned",
+						off, len(buf),
+					)
+				}
+
+				if len(buf) > limit {
+					buf = buf[:limit]
+				}
+
+				return f.ReadAt(buf, off)
+			}
+
+			if limit == int(directAlign) {
+				checkDirectRead(t, want, raw)
+				return
+			}
+
+			// A cap off the alignment ends the first window block at the
+			// bytes the raw gave: the byte at 999 answers, the byte at 1000 is
+			// past what the raw delivered, and every read crossing it is
+			// cut short with io.EOF.
+			for _, tc := range []struct {
+				off int64
+				n   int
+
+				wantN int    // the bytes read
+				want  string // "nil" or "eof"
+			}{
+				{off: 0, n: 1, wantN: 1, want: "nil"},
+				{off: 999, n: 1, wantN: 1, want: "nil"},
+				{off: 1000, n: 1, wantN: 0, want: "eof"},
+				{off: 1, n: 4095, wantN: 999, want: "eof"},
+				{off: 0, n: 2000, wantN: 1000, want: "eof"},
+				{off: 4097, n: 1, wantN: 1, want: "nil"},
+				{off: 8196, n: 1, wantN: 1, want: "nil"},
+			} {
+				p := make([]byte, tc.n)
+				n, err := directRead(p, tc.off, directAlign, raw)
+
+				if n != tc.wantN {
+					t.Errorf("{off %d, len %d}: got n %d, want %d", tc.off, tc.n, n, tc.wantN)
+					continue
+				}
+
+				if tc.want == "nil" && err != nil {
+					t.Errorf("{off %d, len %d}: got %v, want no error", tc.off, tc.n, err)
+				} else if tc.want == "eof" && !errors.Is(err, io.EOF) {
+					t.Errorf("{off %d, len %d}: got %v, want io.EOF", tc.off, tc.n, err)
+				}
+
+				if !bytes.Equal(p[:n], want[tc.off:tc.off+int64(n)]) {
+					t.Errorf(
+						"{off %d, len %d}: got %v, want the file's bytes %v",
+						tc.off, tc.n, p[:n], want[tc.off:tc.off+int64(n)],
+					)
+				}
+			}
+		})
+	}
 }
 
 // TestDirectReadPreadRaw checks directRead over a raw shaped like a raw

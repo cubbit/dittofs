@@ -56,6 +56,17 @@ func directRead(p []byte, off int64, align int64, raw func(buf []byte, off int64
 			err = io.EOF
 		}
 
+		if err == nil && int64(read)%align != 0 {
+			// A short, error-free read left the window's remainder off the
+			// alignment, so the next call could not carry raw's aligned
+			// arguments: its offset, buffer and length are multiples of align,
+			// which is why the window exists. The count ends the window, read
+			// as the end of the file — a raw answers more only past the file's
+			// end — which also keeps ReadAt's contract: the bytes asked for
+			// past it come back cut short with io.EOF.
+			err = io.EOF
+		}
+
 		if err != nil {
 			n, _ = cutShort(p, buf, skip, read)
 

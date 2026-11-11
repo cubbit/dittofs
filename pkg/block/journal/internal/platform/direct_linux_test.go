@@ -47,10 +47,8 @@ func directCheckFile(t *testing.T, o *OS, r *recorder, name string, b []byte) *f
 // descriptor is the file's own, and a read on it returning the file's synced
 // bytes. It does not ask a direct read to diverge from the page cache over
 // another descriptor's buffered write: that write is written back before the
-// direct read runs, so both reads answer the same.
-
-// The test's bytes are one window wide, so the table's log is one pread
-// alone after the open.
+// direct read runs, so both reads answer the same. The test's bytes are one
+// window wide, so the table's log is one pread alone after the open.
 func TestReadAtDirectDescriptorIsDirect(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
