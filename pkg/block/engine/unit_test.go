@@ -55,6 +55,7 @@ type unitConfig struct {
 	unstarted bool                              // leaves the engine unstarted, and so the share unbound
 	wrap      func(engine.Handle) engine.Handle // hands the engine every handle the fake journal opens through it
 	kv        func(kv.KV) kv.KV                 // wraps the store's kv.KV
+	block     uint64                            // the versions one raise covers, when not the default
 }
 
 // newUnit is the unit with its share bound, each of deps changing the
@@ -134,6 +135,10 @@ func newUnitWith(t *testing.T, c unitConfig) *unit {
 	}
 
 	u.e = e
+
+	if c.block != 0 {
+		e.SetBlockForTest(c.block)
+	}
 
 	if c.unstarted {
 		u.share = enginetest.ShareOf(t, u.fs.Store, u.fs.Share.ID, 1<<30)
