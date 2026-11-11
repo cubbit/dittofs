@@ -12,9 +12,10 @@ const SegmentHeaderSize = 48
 // not seeded, so another journal's segment verifies and is told apart by the
 // identity it names rather than reported as damage.
 //
-// decision: Bytes writes format version 1 and stream number 0, because no check
-// plants a segment that needs another value. Make either a field when one does.
+// decision: Bytes writes stream number 0, because no check plants a segment
+// that needs another value. Make it a field when one does.
 type SegmentHeader struct {
+	Version     uint16 // the format version; 0 means 1, as the journal's headers write
 	Identity    [16]byte
 	ID          uint64 // the segment's id, the one in its file name
 	Predecessor uint64 // the id of the segment its stream sealed before it, or 0 for none
@@ -22,9 +23,12 @@ type SegmentHeader struct {
 
 // Bytes returns the header's 48 bytes.
 func (h SegmentHeader) Bytes() []byte {
+	if h.Version == 0 {
+		h.Version = 1
+	}
 	b := make([]byte, SegmentHeaderSize)
 	copy(b[0:4], "DJH1")
-	binary.LittleEndian.PutUint16(b[4:6], 1)
+	binary.LittleEndian.PutUint16(b[4:6], h.Version)
 	copy(b[8:24], h.Identity[:])
 	binary.LittleEndian.PutUint64(b[24:32], h.ID)
 	binary.LittleEndian.PutUint64(b[32:40], h.Predecessor)

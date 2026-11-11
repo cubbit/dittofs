@@ -2,9 +2,8 @@ package journal
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
-	"hash/crc32"
+	"maps"
 	"slices"
 	"strings"
 	"syscall"
@@ -136,24 +135,6 @@ func TestOpen_SegmentHeaderRetryThenRefusal(t *testing.T) {
 	}
 }
 
-// plantVersionTwoHeader writes a segment whose header verifies by checksum,
-// names the journal's identity, and names format version 2 — a newer format
-// than the binary reads and than the directory's format file names — as a
-// writer of a later version would have left it.
-func plantVersionTwoHeader(t *testing.T, s seamDir, id JournalID, seg SegmentID) {
-	t.Helper()
-
-	b := make([]byte, format.SegmentHeaderSize)
-	copy(b, "DJH1")
-	binary.LittleEndian.PutUint16(b[4:6], 2)
-	copy(b[8:24], id[:])
-	binary.LittleEndian.PutUint64(b[24:32], uint64(seg))
-	// The checksum over the bytes before it, so the decoder reads the
-	// header whole and refuses the version alone, not a damaged checksum.
-	binary.LittleEndian.PutUint32(b[44:48], crc32.Checksum(b[:44], crc32.MakeTable(crc32.Castagnoli)))
-	s.plantSegment(t, format.SegmentName(seg), b)
-}
-
 // TestOpen_NewerHeaderVersionFailsTheOpen pins that a segment header of a
 // newer format version — a version above the binary's and, with only one
 // format version in existence, above the format file's too, which is the
@@ -168,7 +149,10 @@ func TestOpen_NewerHeaderVersionFailsTheOpen(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	seg := format.SegmentName(1)
-	plantVersionTwoHeader(t, s, id, 1)
+	// A header that verifies by checksum, names the journal's identity and
+	// names format version 2 — a newer format than the binary reads — as a
+	// writer of a later version would have left it.
+	s.plantSegment(t, seg, raw.SegmentHeader{Version: 2, Identity: id, ID: 1}.Bytes())
 	before, derr := s.seam.Durable(seg)
 	if derr != nil {
 		t.Fatalf("read the planted segment: %v", derr)
@@ -188,6 +172,63 @@ func TestOpen_NewerHeaderVersionFailsTheOpen(t *testing.T) {
 	// no read, so the retry bound is never spent on it.
 	if got := s.seam.CallsFor(kit.OpRead, seg); got != 1 {
 		t.Errorf("Open: header reads got %d, want 1, the single read a verifying header takes", got)
+	}
+}
+
+// TestOpen_IdentityRefusalLeavesTheDirectoryPinned fails an Open that attaches
+// before the identity check answers: a wrong or zero expect is refused with
+// an IdentityError having run no phase, so the `.spare.tmp` the attach pass
+// would unlink is still in the directory, and every file's bytes are the
+// ones it held before the open. The criterion is the attachment's criterion
+// — a refused open leaves the directory byte-for-byte unchanged — held at
+// the one boundary that guards it, where moving recovery before the check
+// would make a refused open erase files.
+func TestOpen_IdentityRefusalLeavesTheDirectoryPinned(t *testing.T) {
+	for name, expect := range map[string]JournalID{
+		"a wrong expect": func() JournalID {
+			var wrong JournalID
+			wrong[0] = 0xa5
+			return wrong
+		}(),
+		"expect zero": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newSeam(t)
+			id, err := s.init(t)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			own := format.SegmentName(2)
+			s.plantSegment(t, own, raw.SegmentHeader{Identity: id, ID: 2}.Bytes())
+			spare := format.SpareName(9)
+			s.plantSegment(t, spare, nil)
+
+			before := map[string][]byte{}
+			for _, name := range s.listSeam(t) {
+				b, err := s.seam.Durable(name)
+				if err != nil {
+					t.Fatalf("read %s: %v", name, err)
+				}
+				before[name] = b
+			}
+
+			_, err = Open(context.Background(), s.dir, Version{}, expect, nil, openOptsDir(s, kit.NewStopwatchClock())...)
+			var ie *IdentityError
+			if !errors.As(err, &ie) {
+				t.Fatalf("Open over a directory with %s got err %v, want an IdentityError", name, err)
+			}
+
+			if got := s.listSeam(t); !slices.Equal(got, slices.Sorted(maps.Keys(before))) {
+				t.Fatalf("Open: %s: after the refusal the directory holds %v, want %v: the attach pass may not run before the identity check",
+					name, got, slices.Sorted(maps.Keys(before)))
+			}
+			for fileName, want := range before {
+				if got, derr := s.seam.Durable(fileName); derr != nil || !slices.Equal(got, want) {
+					t.Errorf("Open: %s: the refusal changed %s: got %x (err %v), want the bytes %x it held",
+						name, fileName, got, derr, want)
+				}
+			}
+		})
 	}
 }
 
