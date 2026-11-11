@@ -12,9 +12,6 @@ func (c *Core) Settle(s *Share, id core.FileID, v core.Version) {
 		return
 	}
 	defer exit()
-	if c.checkTag(s, id) != nil {
-		return
-	}
 	c.index.SettleFor(s.Tag, id, v)
 }
 

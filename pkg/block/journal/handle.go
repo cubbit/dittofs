@@ -3,6 +3,7 @@ package journal
 import (
 	"context"
 	"iter"
+	"slices"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -225,10 +226,12 @@ func (h *Handle) Since(ctx context.Context, id FileID, from Version) iter.Seq2[C
 	return h.j.core.Since(ctx, h.s, id, from)
 }
 
-// Settle states that metadata has recorded every removal of file id at or
-// below v, and drops those removal markers. It appends nothing and is not
-// persisted: recovery rebuilds the markers, and the caller settles again.
-// Settling before the removal is recorded is the caller's error.
+// Settle states that metadata has recorded every removal and every synced loss
+// of file id at or below v, and drops those markers and the superseded runs
+// kept for them, so a write's Over at or below v is dropped too. It never drops
+// a held extent, appends nothing and is not persisted: recovery rebuilds the
+// markers, and the caller settles again. Settling before the change is
+// recorded is the caller's error.
 func (h *Handle) Settle(id FileID, v Version) { h.j.core.Settle(h.s, id, v) }
 
 // Extents returns the extents of file id the journal holds, in offset order.
@@ -243,14 +246,7 @@ func (h *Handle) Extents(id FileID) ([]Extent, error) {
 // Files yields the share's files that hold an extent, an unsettled removal
 // marker or an unsettled synced loss.
 func (h *Handle) Files() iter.Seq[FileID] {
-	ids := h.j.core.Files(h.s)
-	return func(yield func(FileID) bool) {
-		for _, id := range ids {
-			if !yield(id) {
-				return
-			}
-		}
-	}
+	return slices.Values(h.j.core.Files(h.s))
 }
 
 // DirtyFiles yields the share's files holding an extent whose offloaded bit is

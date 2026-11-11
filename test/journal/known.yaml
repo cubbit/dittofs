@@ -148,7 +148,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Truncate, Deallocate, Delete, Since, Settle and recovery of removal markers.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Sync and recovery of removal markers.'
   issue: '#3814'
   message: 'stub: Sync'
 

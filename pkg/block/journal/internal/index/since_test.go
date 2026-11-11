@@ -224,3 +224,37 @@ func TestSinceReadsAConsistentView(t *testing.T) {
 	close(done)
 	wg.Wait()
 }
+
+// TestSinceMergesPiecesOfOneRecordOnlyWhenTheirSkipsContinue checks that two
+// adjacent pieces of one record are one change when the second's skip follows
+// the first's length, and two when it does not: a merged change carries the
+// first skip, and a skip that does not continue would make the caller verify
+// the record against bytes it never held.
+func TestSinceMergesPiecesOfOneRecordOnlyWhenTheirSkipsContinue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		skip uint32
+		want []Change
+	}{
+		{"continuing", 4, []Change{{Kind: core.ChangeWrite, Extent: ext(0, 8), Version: ver(2), Record: rec(1, 0), Seq: 3}}},
+		{"not continuing", 16, []Change{
+			{Kind: core.ChangeWrite, Extent: ext(0, 4), Version: ver(2), Record: rec(1, 0), Seq: 3},
+			{Kind: core.ChangeWrite, Extent: ext(4, 4), Version: ver(2), Record: rec(1, 0), Seq: 3, Skip: 16},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var fs files
+			id := fid(1)
+			change(t, &fs, id, func(f *file) error {
+				a, b := write(0, 4, rec(1, 0), 2), write(4, 4, rec(1, 0), 2)
+				a.Seq, b.Seq, b.Skip = 3, 3, tc.skip
+				f.write(a)
+				f.write(b)
+				return nil
+			})
+			if got := fs.since(id, core.Version{}, nil); !sameChanges(got, tc.want) {
+				t.Fatalf("since:\n got  %+v\n want %+v", got, tc.want)
+			}
+		})
+	}
+}

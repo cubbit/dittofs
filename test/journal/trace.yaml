@@ -41,7 +41,7 @@ rfc1 / 9.4 / A / "`Since` yields `Over` after the superseded write left the inde
   reason: 'the reopen leg: each held write keeps its Over, rebuilt from the records it superseded, once recovery lands'
 rfc1 / 9.4 / A / "`Settle` drops by version, never content":
   owner: epic 8
-  reason: 'Settle over held extents, both markers and synced loss records needs the data path''s Settle over the real journal'
+  reason: 'Settle is built and its datapath tests hold held extents, markers and synced losses; the check over the real journal needs Sync and recovery'
 rfc1 / 9.4 / A / "no resurrection":
   tests: [TestRFC1A_NoResurrection]
 rfc1 / 9.4 / A / "removal outlives its segment":
