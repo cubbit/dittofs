@@ -992,6 +992,12 @@ func (e *Engine) raiseLoop(vl *versionLimit) {
 		defer f()
 	}
 
+	// Every way out of the loop wakes the calls waiting for it, one that
+	// the engine's close cancels included. The state is idle before each
+	// exit, so a woken call finds no raise in flight. A wake with nothing
+	// changed is harmless.
+	defer vl.notify()
+
 	if c := e.raising.count; c != nil {
 		defer c.Add(-1)
 	}
@@ -1044,9 +1050,6 @@ func (e *Engine) raiseLoop(vl *versionLimit) {
 
 			return
 		}
-
-		// A failed attempt wakes the calls waiting for it; the retry follows.
-		vl.notify()
 
 		e.d.Logger.Warn("version limit raise failed; retrying", "wait", wait, "err", err)
 

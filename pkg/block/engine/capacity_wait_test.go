@@ -662,3 +662,71 @@ func startCall(t *testing.T, s *starter, call func() error) *waiter {
 
 	return w
 }
+
+// A raise the engine stops wakes the write waiting for it: the write answers
+// retry-later and does not outlive the stop. The raise fails, then the stop
+// ends it in its retry wait, which leaves with no commit and no refusal.
+func TestVersionRefusalWokenByAStoppedRaise(t *testing.T) {
+	s, g := atLimit(t, func(s *starter) {
+		s.lc.failRaises(errors.New("store down"))
+	})
+
+	w := startWrite(t, s, t.Context())
+
+	w.mustPark(t)
+	w.notDone(t)
+
+	s.e.StopRaisesForTest()
+	g.open()
+	s.e.JoinRaisesForTest()
+
+	if err := await(w.done); !isDelay(err, vfserr.DelayCommit) {
+		t.Errorf("a write waiting for a stopped raise: %v, want ErrDelay(DelayCommit)", err)
+	}
+}
+
+// A raise that runs again, because a wake came while it ran, serves the write
+// waiting for it when its first limit commits, not when the raise ends. The
+// second pass is held at the raise lock the test queued for, so only the
+// commit can have woken the write.
+func TestVersionRefusalServedByTheFirstCommitOfARaise(t *testing.T) {
+	s, g := atLimit(t)
+	ctx, cancel := context.WithCancel(t.Context())
+
+	defer cancel()
+
+	w := startWrite(t, s, ctx)
+
+	w.mustPark(t)
+
+	// The raise is in the gate: this wake makes it run once more.
+	s.e.WakeRaiseForTest(s.one.ID)
+
+	held := make(chan func(), 1)
+
+	go func() {
+		free, err := s.e.HoldRaiseLockForTest(ctx, s.one.ID)
+		if err != nil {
+			t.Error(err)
+			free = func() {}
+		}
+
+		held <- free
+	}()
+
+	waiting := s.e.VersionLimitWatch(s.one.ID)
+
+	g.open()
+
+	free := <-held
+
+	defer free()
+
+	// The lock is the test's, so the second pass has not run: the commit
+	// closed this channel, and the write is served with the raise unfinished.
+	<-waiting
+
+	if err := await(w.done); err != nil {
+		t.Errorf("the write after the first commit: %v, want served", err)
+	}
+}
