@@ -179,10 +179,15 @@ func TestRecordedCoreFixture(t *testing.T) {
 		t.Fatalf("removal wait checks before any removal = %d, want 0", got)
 	}
 
-	// One removal's wait consults the check exactly once, so the fixture's
-	// later tests cannot pass on a dropped assertion. The wait runs with
-	// the append domain released, so the removal records no violation.
-	if _, err := c.Delete(context.Background(), shares[0], fid(70)); err != nil {
+	// One real removal — a file written, then deleted — consults the wait's
+	// check exactly once, so the fixture's later tests cannot pass on a
+	// dropped assertion. The wait runs with the append domain released, so
+	// the removal records no violation.
+	doomed := fid(70)
+	if _, err := c.WriteAt(context.Background(), shares[0], doomed, 0, []byte("doomed"), 1); err != nil {
+		t.Fatalf("WriteAt of the doomed file: %v", err)
+	}
+	if _, err := c.Delete(context.Background(), shares[0], doomed); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if got := rec.Checks("removal wait"); got != 1 {
@@ -193,61 +198,116 @@ func TestRecordedCoreFixture(t *testing.T) {
 	}
 
 	// The probes hold a rank by hand, through the recorder's own entry
-	// point, and then reach the locks the core wired: the capacity
-	// admission, the headroom and the file append table each must report
-	// what the order forbids, exactly once and with the rank they hold.
-	before := len(rec.Violations())
-	rec.Acquire(lockorder.SegmentAppend, probeLock{})
-	c.cap.ReservedBytes()
-	c.headroom.Draws()
-	rec.Release(lockorder.SegmentAppend, probeLock{})
-	vs := rec.Violations()
-	if len(vs) != before+2 {
-		t.Fatalf("violations after the capacity probes = %d, want %d: %+v", len(vs), before+2, vs[before:])
-	}
-	for _, v := range vs[before:] {
-		if v.Kind != lockorder.OutOfOrder || v.Rank != lockorder.Capacity {
-			t.Fatalf("probe violation = %s of %s, want out of order of capacity", v.Kind, v.Rank)
-		}
-		// A held storage guard is a reference — a pin an earlier append
-		// left on this goroutine's books until the streams close — so it
-		// is allowed beside the probe's own hold.
-		if got := withoutPins(v.Held); len(got) != 1 || got[0] != lockorder.SegmentAppend {
-			t.Fatalf("probe violation held = %v, want [segment append]", v.Held)
-		}
-	}
+	// point, then drive one real entry point of each component; each must
+	// report exactly the out-of-order acquisitions the wired lock makes,
+	// so a dropped SetRecorder on any of them fails here.
+	expectOutOfOrder(t, rec, lockorder.SegmentAppend, "pool",
+		[]lockorder.Rank{lockorder.Capacity}, func() { c.pool.ReadyContent() })
+	expectOutOfOrder(t, rec, lockorder.SegmentAppend, "set",
+		[]lockorder.Rank{lockorder.Capacity}, func() { c.set.Counters() })
+	// A view of a written file takes the shard's file map lock, releases
+	// it, then the file's index lock: two acquisitions out of order, the
+	// map's first.
+	expectOutOfOrder(t, rec, lockorder.SegmentAppend, "index",
+		[]lockorder.Rank{lockorder.FileMap, lockorder.FileIndex}, func() {
+			c.index.Span(fid(40), core.Extent{Off: 0, Len: 1024})
+		})
+	expectOutOfOrder(t, rec, lockorder.SegmentAppend, "capacity admission",
+		[]lockorder.Rank{lockorder.Capacity}, func() { c.cap.ReservedBytes() })
+	expectOutOfOrder(t, rec, lockorder.SegmentAppend, "headroom",
+		[]lockorder.Rank{lockorder.Capacity}, func() { c.headroom.Draws() })
+	expectOutOfOrder(t, rec, lockorder.Capacity, "file append table",
+		[]lockorder.Rank{lockorder.FileAppend}, func() {
+			unlock := c.domains.Lock(fid(99))
+			unlock()
+		})
 
-	before = len(rec.Violations())
-	rec.Acquire(lockorder.Capacity, probeLock{})
-	unlock := c.domains.Lock(fid(99))
-	unlock()
-	rec.Release(lockorder.Capacity, probeLock{})
-	vs = rec.Violations()
-	if len(vs) != before+1 {
-		t.Fatalf("violations after the file append probe = %d, want %d: %+v", len(vs), before+1, vs[before:])
+	// The stream probe holds a plain storage guard — the one rank ordered
+	// above the segment append a probe can hold — then reads a stream's
+	// room, which takes its append lock alone.
+	expectOutOfOrder(t, rec, lockorder.StorageGuard, "streams",
+		[]lockorder.Rank{lockorder.SegmentAppend}, func() { c.streams.Stream(0).Room() })
+
+	// The descriptor cache's guard is a pin, which orders nothing and
+	// breaks no rule: its wiring is proven by the pin appearing on this
+	// goroutine's books across a reference's lifetime and leaving with it.
+	pins := countRank(rec.Held(), lockorder.StorageGuard)
+	placed, _ := c.index.Span(fid(40), core.Extent{Off: 0, Len: 1024})
+	if len(placed) == 0 {
+		t.Fatalf("the fixture's written file holds no placed record")
 	}
-	v := vs[len(vs)-1]
-	if v.Kind != lockorder.OutOfOrder || v.Rank != lockorder.FileAppend {
-		t.Fatalf("probe violation = %s of %s, want out of order of file append", v.Kind, v.Rank)
+	ref, err := c.cache.Acquire(placed[0].Record.Segment)
+	if err != nil {
+		t.Fatalf("Acquire of the fixture's segment: %v", err)
 	}
-	if got := withoutPins(v.Held); len(got) != 1 || got[0] != lockorder.Capacity {
-		t.Fatalf("probe violation held = %v, want [capacity]", v.Held)
+	// The release is deferred the moment the reference exists, so a failed
+	// assertion below cannot leak it into the cleanup's Close, whose
+	// Shutdown waits for every reference.
+	defer ref.Release()
+	if got := countRank(rec.Held(), lockorder.StorageGuard); got != pins+1 {
+		t.Fatalf("cache wiring: storage guard holds while the reference is held = %d, want %d", got, pins+1)
+	}
+	ref.Release()
+	if got := countRank(rec.Held(), lockorder.StorageGuard); got != pins {
+		t.Fatalf("cache wiring: storage guard holds after the reference released = %d, want %d", got, pins)
 	}
 }
 
-// withoutPins keeps the ranks of a violation's held set, the storage guard
-// pins aside: a pin is a hold that orders nothing, so a probe's expectation
-// names only the ranks that do.
-func withoutPins(held []lockorder.Rank) []lockorder.Rank {
-	var out []lockorder.Rank
-	for _, r := range held {
-		if r != lockorder.StorageGuard {
-			out = append(out, r)
+// expectOutOfOrder drives one component's probe: it holds the rank held by
+// hand on a fresh goroutine — the recorder keeps each goroutine's books
+// apart, so a probe there is free of the pins the fixture's own appends left
+// on the test goroutine's — runs drive, one real entry point of the
+// component, and asserts the recorder reports exactly one out-of-order
+// acquisition for each rank in want, in order, each against the probe's own
+// hold. A component whose SetRecorder wiring was dropped keeps its locks
+// unranked, records nothing, and fails the count.
+func expectOutOfOrder(t *testing.T, rec *lockorder.Recorder, held lockorder.Rank, component string, want []lockorder.Rank, drive func()) {
+	t.Helper()
+	before := len(rec.Violations())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rec.Acquire(held, probeLock{component: component})
+		drive()
+		rec.Release(held, probeLock{component: component})
+	}()
+	<-done
+	vs := rec.Violations()
+	if len(vs) != before+len(want) {
+		t.Fatalf("%s probe: violations = %d, want %d: %+v", component, len(vs), before+len(want), vs[before:])
+	}
+	for i, v := range vs[before:] {
+		if v.Kind != lockorder.OutOfOrder || v.Rank != want[i] {
+			t.Fatalf("%s probe: violation %d = %s of %s, want out of order of %s", component, i, v.Kind, v.Rank, want[i])
+		}
+		if held == lockorder.StorageGuard {
+			// What must not appear beside the probe's own guard hold
+			// is any rank of another domain.
+			for _, r := range v.Held {
+				if r != lockorder.StorageGuard {
+					t.Fatalf("%s probe: violation %d held = %v, want storage guard holds only", component, i, v.Held)
+				}
+			}
+			continue
+		}
+		if len(v.Held) != 1 || v.Held[0] != held {
+			t.Fatalf("%s probe: violation %d held = %v, want [%s]", component, i, v.Held, held)
 		}
 	}
-	return out
+}
+
+// countRank counts how many of the goroutine's held locks are of rank r.
+func countRank(held []lockorder.Rank, r lockorder.Rank) int {
+	n := 0
+	for _, h := range held {
+		if h == r {
+			n++
+		}
+	}
+	return n
 }
 
 // probeLock names the probe's hold books: the recorder's entry point takes
-// any identity, and an empty struct never collides with a real lock's.
-type probeLock struct{}
+// any identity, and one struct per component never collides with a real
+// lock's.
+type probeLock struct{ component string }

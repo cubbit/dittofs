@@ -194,12 +194,14 @@ func (c *Core) remove(ctx context.Context, s *Share, id core.FileID, spec remova
 	if err != nil {
 		return core.Version{}, err
 	}
-	// decision: the wait's precondition, asserted here, is free in
-	// production — the recorder's consult on a nil one is a load and a
-	// return, allocates nothing and never runs — so the assertion costs
-	// nothing where the removal actually waits, and with a recorder
-	// installed it is the one check that proves the wait is not entered
-	// with the file append domain held.
+	// decision: the wait below must not run with the file append domain
+	// held, so this assertion is on every removal. With no recorder
+	// installed — production — the call still runs and returns at the nil
+	// check, so it costs one branch and no allocation. Its ceiling: it
+	// sees only this goroutine's own holds, so it cannot see another
+	// goroutine holding the domain, which the wait's own blocking makes
+	// moot — this call's domain still held would deadlock on the worker
+	// it waits for.
 	c.rec.AssertNotHeld(lockorder.FileAppend, "removal wait")
 	// decision: the wait runs with the append domain released and returns its
 	// own refusal as it is — a read-only journal's, which matches
