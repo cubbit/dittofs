@@ -22,22 +22,32 @@ func New(extentLimit int64) *Index {
 // sequence number is seq. It takes the file's lock exclusively. A refusal
 // holds nothing.
 func (ix *Index) WriteRetain(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq) (HeldDelta, error) {
+	hd, _, err := ix.WriteRetainClaim(tag, id, p, seq)
+	return hd, err
+}
+
+// WriteRetainClaim is WriteRetain reporting the index entries its admission
+// reserved for the piece: the figure a caller holding the bound back for a
+// reservation hands over once the piece is published. A refused publish
+// reserves nothing and answers no entry.
+func (ix *Index) WriteRetainClaim(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq) (HeldDelta, int64, error) {
 	var err error
 	if ix.fs.view(id, func(f *file) { err = f.check(tag, id) }) && err != nil {
-		return HeldDelta{}, err
+		return HeldDelta{}, 0, err
 	}
 	p.Seq = seq
 	adm, err := ix.fs.admitWrite(id, p.Extent, true)
 	if err != nil {
-		return HeldDelta{}, err
+		return HeldDelta{}, 0, err
 	}
-	return ix.fs.commit(id, adm, func(f *file) error {
+	hd, err := ix.fs.commit(id, adm, func(f *file) error {
 		if err := f.recorded(p.Record.Segment, p.Extent, Numbers{Version: p.Version, Seq: seq}, tag, id); err != nil {
 			return err
 		}
 		f.writeRetain(p)
 		return nil
 	})
+	return hd, adm, err
 }
 
 // CheckWrite predicts a content write of e on id against the index's bound

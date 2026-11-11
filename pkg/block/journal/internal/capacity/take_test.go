@@ -1590,3 +1590,40 @@ func TestTake_OneReadySpareRefusesNeedOfTwo(t *testing.T) {
 		t.Fatalf("the refused take left the pool owing %d holds, want the %d it found", got, before)
 	}
 }
+
+// TestTake_DrawsTheVersionInsideItsSection checks a plain write's version is
+// drawn inside the admission's own section, where its check and draw are one
+// step: a reservation's draw parked in that same section cannot pass between a
+// plain write's check and its draw and take the version it was admitted on.
+func TestTake_DrawsTheVersionInsideItsSection(t *testing.T) {
+	r := newRig(t, std())
+	if err := r.ctr.SetVersionLimit(core.Version{Counter: 4}); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+	// A reservation holds one version, leaving one free.
+	rs := r.reserve(t, ReserveRequest{Tag: tag1, Bytes: 4304, Writes: 1})
+	defer rs.Release()
+
+	// The draw must run under the capacity mutex: a caller that draws outside
+	// it can pair its check with another draw's.
+	drew := false
+	r.c.cfg.DrawVersion = func() (core.Version, error) {
+		if r.c.mu.TryLock() {
+			r.c.mu.Unlock()
+			t.Error("the version was drawn outside the admission's section")
+		}
+		drew = true
+		return core.Version{Counter: 1}, nil
+	}
+	g, err := r.c.Take(context.Background(), req())
+	if err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	defer g.Release()
+	if !drew {
+		t.Fatal("Take admitted a write without drawing its version")
+	}
+	if g.Version().Counter == 0 {
+		t.Fatal("the grant carries no version")
+	}
+}

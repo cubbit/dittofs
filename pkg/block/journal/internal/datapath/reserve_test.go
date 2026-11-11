@@ -496,3 +496,148 @@ func TestReserveAhead_StraddleWithinTheReservation(t *testing.T) {
 		t.Fatalf("the share's settled bytes rose by %d, want the head and tail's %d", got, want)
 	}
 }
+
+// TestReserveAhead_EntriesHandedOverAsPublished checks the production path
+// alone — reserved writes through Core.WriteReserved, no hand calls to the
+// grant — hands the reservation's held entries over exactly as the index claims
+// them: after a piece is published under an open reservation, heldEntries has
+// fallen by the entries the index admitted, a plain write that fits what the
+// reservation leaves is admitted, and the reservation's remaining entries still
+// refuse a plain write that would eat them.
+func TestReserveAhead_EntriesHandedOverAsPublished(t *testing.T) {
+	const writes = 4
+	cost := capacity.WriteCharge(1, testSegmentCap)
+	pieces, spares := capacity.PiecesFor(int64(writes)*cost, writes, testSegmentCap)
+	c, _ := newTestCore(t, func(o *coreOptions) {
+		// The bound holds the reservation's entries and one: a plain write fits
+		// once the held figure has fallen, and not before.
+		o.extentLimit = int64(pieces) + 1
+		o.contentSpares = spares + 1
+	})
+	s := mustShare(t, c, 1)
+
+	r := reserve(t, c, s, int64(writes)*cost, writes)
+	defer r.Release()
+	if got := c.HeldEntries(); got != int64(pieces) {
+		t.Fatalf("HeldEntries after the reservation = %d, want its %d", got, pieces)
+	}
+
+	// One one-byte reserved write publishes one piece against a fresh file: the
+	// index admits one entry, and the held figure falls by exactly that.
+	used := int64(pieces) + 1 - c.Index().EntriesLeft()
+	if _, err := c.WriteReserved(context.Background(), s, r, testFile(1), 0, []byte("r"), 1); err != nil {
+		t.Fatalf("the reserved write: %v", err)
+	}
+	claimed := int64(pieces) + 1 - c.Index().EntriesLeft() - used
+	if claimed != 1 {
+		t.Fatalf("the index claimed %d entries for the piece, want one", claimed)
+	}
+	if got, want := c.HeldEntries(), int64(pieces)-claimed; got != want {
+		t.Fatalf("HeldEntries after one published piece = %d, want %d (the index claimed %d)", got, want, claimed)
+	}
+
+	// A plain write fits the one entry the bound's slack holds: the held figure
+	// fell, so it is not refused for entries the reservation already published.
+	if _, err := c.WriteAt(context.Background(), s, testFile(20), 0, []byte("p"), 1); err != nil {
+		t.Fatalf("the plain write beside a partly published reservation: %v", err)
+	}
+
+	// A second plain write is refused naming the index: the reservation still
+	// holds what its later writes need.
+	_, err := c.WriteAt(context.Background(), s, testFile(21), 0, []byte("q"), 1)
+	_ = refused(t, err, core.LimitIndex)
+}
+
+// TestReserveAhead_RollingWriteCannotEatHeldEntries checks a plain write whose
+// split rolls publishes one index entry per piece: beside a reservation with one
+// entry of slack it is refused naming the index, and with no reservation it is
+// admitted. A pre-check that counted the whole extent as one placement would
+// admit it and spend a held entry.
+func TestReserveAhead_RollingWriteCannotEatHeldEntries(t *testing.T) {
+	// A payload of two pieces against an empty stream, its split past one cap.
+	room := emptyRoomOf(testSegmentCap)
+	payload := make([]byte, room+room/2)
+	pieces, spares := capacity.PiecesFor(capacity.WriteCharge(int64(len(payload)), testSegmentCap), 1, testSegmentCap)
+
+	// No reservation: the write is admitted, its pieces publishing their own
+	// entries against the bound's room.
+	noRes := func(o *coreOptions) {
+		o.extentLimit = 1 << 20
+		o.contentSpares = max(spares, 2) + 1
+	}
+	c, _ := newTestCore(t, noRes)
+	s := mustShare(t, c, 1)
+	if _, err := c.WriteAt(context.Background(), s, testFile(1), 0, payload, 1); err != nil {
+		t.Fatalf("the rolling write with no reservation: %v", err)
+	}
+
+	// Beside a reservation with exactly one entry of slack over its own held
+	// entries: the rolling write's second entry would eat one of them.
+	files := make([]core.FileID, 0)
+	_ = files
+	c2, _ := newTestCore(t, func(o *coreOptions) {
+		o.extentLimit = int64(pieces) + 1
+		// Enough spares for the reservation's own pieces and the plain
+		// write's, so only the index bound can refuse it.
+		o.contentSpares = spares + 4
+	})
+	s2 := mustShare(t, c2, 1)
+	r := reserve(t, c2, s2, capacity.WriteCharge(int64(len(payload)), testSegmentCap), 1)
+	defer r.Release()
+
+	_, err := c2.WriteAt(context.Background(), s2, testFile(2), 0, payload, 1)
+	_ = refused(t, err, core.LimitIndex)
+}
+
+// TestReserveAhead_PlainWritersCannotSpendAHeldVersion runs two plain writers at
+// the version counter's last free version beside a reservation holding one:
+// exactly one is admitted, the other refused naming the version limit, the
+// held version survives, and the reservation's own write draws it under -race.
+func TestReserveAhead_PlainWritersCannotSpendAHeldVersion(t *testing.T) {
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, 1)
+	r := reserve(t, c, s, capacity.WriteCharge(1, testSegmentCap), 1)
+	defer r.Release()
+
+	// The limit is the version the reservation holds plus one: one version is
+	// left beside it, and no more.
+	// Tighten the limit so exactly one version is left free: the reservation
+	// holds one, and two plain writers race for the free one.
+	if err := c.SetVersionLimit(core.Version{Counter: c.counters.NextVersion().Counter + 2}); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+	if left := c.counters.VersionsLeft(); left != 2 {
+		t.Fatalf("VersionsLeft beside the reservation = %d, want two: one held and one free", left)
+	}
+
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := c.WriteAt(context.Background(), s, core.NewFileID([16]byte{byte(10 + i), 0x4}), 0, []byte("p"), 1)
+			results <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	var passed, refusedN int
+	for err := range results {
+		if err == nil {
+			passed++
+			continue
+		}
+		refusedN++
+		_ = refused(t, err, core.LimitVersion)
+	}
+	if passed != 1 || refusedN != 1 {
+		t.Fatalf("two plain writers at one free version: %d passed and %d refused, want one each", passed, refusedN)
+	}
+
+	// The held version survived: the reservation's write draws it.
+	if _, err := c.WriteReserved(context.Background(), s, r, testFile(3), 0, []byte("r"), 1); err != nil {
+		t.Fatalf("the reserved write after two plain writers: %v", err)
+	}
+}

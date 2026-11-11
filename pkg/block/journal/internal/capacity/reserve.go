@@ -116,6 +116,19 @@ func (c *Capacity) Reserve(ctx context.Context, r ReserveRequest) (*Reservation,
 		return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitJournal, Missing: math.MaxInt64, Unit: core.UnitBytes})
 	}
 	footer := int64(pieces) * format.CatalogEntrySize
+	// The index entries are the RFC's one per piece. A write through the
+	// reservation onto ranges that already hold content can add more — an
+	// overwrite that supersedes and splits a piece takes up to three where this
+	// counts one — and that excess is outside the reservation: it is refused
+	// LimitIndex at its publish rather than held here.
+	//
+	// ponytail: a reserved write that overwrites held content can publish more
+	// entries than it drew, and is refused LimitIndex at publish even though
+	// the reservation holds room. A clone's destination is fresh ranges, one
+	// entry a piece, so it is safe; the excess needs a reserved write over
+	// content the journal already holds. Upgrade to counting the retain and
+	// split entries — CheckWrite's write-retain adds, per piece — when a
+	// reservation ever overwrites held ranges.
 	idx := int64(pieces)
 	versions := uint64(r.Writes)
 
@@ -374,9 +387,6 @@ func (r *Reservation) Release() {
 	// to the counters, and one released before it gave them to leftBytes and
 	// leftEntries, which this call returns whole. The pool's hold is closed
 	// outside the section, for the pool's lock is of this same domain.
-	if r.released {
-		return
-	}
 	r.c.mu.Lock()
 	if r.released {
 		r.c.mu.Unlock()

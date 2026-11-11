@@ -415,6 +415,12 @@ func (c *Core) FillRefused() uint64 { return c.fillRefused.Load() }
 // are still landing.
 func (c *Core) ReservedBytes() int64 { return c.cap.ReservedBytes() }
 
+// HeldEntries returns the placement index entries open reservations hold and no
+// publish has claimed yet. It is a read of the admission's own counter, for the
+// tests that check a reservation's entries are handed over as the index claims
+// them.
+func (c *Core) HeldEntries() int64 { return c.cap.HeldEntries() }
+
 // ReservationRefused returns the reservation_refused counter: how many
 // reservations the journal's admission has refused, by every limit it names,
 // since the core was built.

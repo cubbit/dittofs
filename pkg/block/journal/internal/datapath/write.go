@@ -117,7 +117,6 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	// journal's maximum, the index's bound, the version limit, the headroom's
 	// half rule and the spares its pieces need, in one decision.
 	grant := drawn
-	var v core.Version
 	if grant == nil {
 		g, err := c.cap.Take(ctx, capacity.Request{
 			Tag:        s.Tag,
@@ -131,15 +130,13 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			return core.Version{}, 0, err
 		}
 		grant = g
-		v, err = c.counters.Draw()
-		if err != nil {
-			grant.Release()
-			return core.Version{}, 0, err
-		}
-	} else {
-		v = grant.Version()
 	}
 	defer grant.Release()
+	// The version the write carries: the one the admission drew in its own
+	// section, where its check and draw were one step, or the one a
+	// reservation drew for its write — never a draw here, which a plain
+	// writer could pair with another's and spend a held version.
+	v := grant.Version()
 	var roll segment.Roll
 	if hold := grant.Hold(); hold != nil {
 		roll = segment.Roll{Hold: hold}
@@ -224,7 +221,7 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		// what is left here is the window no pre-check closes, and a
 		// refusal in it is overturn evidence for a bound the admission
 		// reserves as its own.
-		hd, err := c.index.WriteRetain(s.Tag, id, index.Placed{
+		hd, claimed, err := c.index.WriteRetainClaim(s.Tag, id, index.Placed{
 			Extent:  core.Extent{Off: off + done, Len: pl.N},
 			Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
 			Version: v,
@@ -234,6 +231,12 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			return core.Version{}, done, err
 		}
 		c.Account(hd)
+		// The piece's index entry is the bound's now: a reservation's held
+		// figure hands over what the index admitted, so a plain write beside
+		// this one finds it spent only once the index holds it — the safe
+		// order, for the count and the held figure never both miss it. An
+		// admitted write's grant hands nothing over.
+		grant.Claimed(claimed)
 		// decision: the index exports no write that skips retaining what it
 		// supersedes, so a piece whose record a sync already covered lifts
 		// here, straight after the publish, rather than leaving the content

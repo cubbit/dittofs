@@ -449,10 +449,11 @@ func TestReservationDrawsFitTheReservation(t *testing.T) {
 	}
 }
 
-// TestReservationReleaseRacesADraw releases a reservation under a grant an
-// in-flight write still holds, and checks nothing leaks: the counters come back
-// to zero, the held figures do, and a second release is a no-op.
-func TestReservationReleaseRacesADraw(t *testing.T) {
+// TestReservationReleaseThenGrantReleaseReturnsEveryCounter releases a
+// reservation, then the grant a write still held, and checks nothing leaks:
+// the counters come back to zero, the held figures do, and a second release is
+// a no-op.
+func TestReservationReleaseThenGrantReleaseReturnsEveryCounter(t *testing.T) {
 	r := newRig(t, std())
 	rs := r.reserve(t, rq())
 
@@ -460,6 +461,8 @@ func TestReservationReleaseRacesADraw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Draw: %v", err)
 	}
+	// The production loop hands over what the index admitted for the piece
+	// it published; one piece is one entry here.
 	g.Claimed(1)
 	g.Wrote(1024)
 	rs.Release()
@@ -518,7 +521,9 @@ func TestDrawChargesTheStraddle(t *testing.T) {
 // TestReservationDrawsUnclaimedEntriesStayHeld checks a drawn entry a write
 // never published stays held while the reservation is open, and its Release
 // returns it: the bound never gains room a released grant's unclaimed entry
-// would otherwise free.
+// would otherwise free. It drives the hand-over directly, as the append loop
+// does per piece; the production path is TestReserveAhead_EntriesHandedOverAsPublished
+// in datapath.
 func TestReservationDrawsUnclaimedEntriesStayHeld(t *testing.T) {
 	r := newRig(t, std())
 	pieces, _ := PiecesFor(4304, 1, testCap)
