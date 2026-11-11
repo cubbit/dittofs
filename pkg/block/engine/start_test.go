@@ -59,6 +59,8 @@ type starter struct {
 	gate    *gate // holds the next Open at it, once
 	fresh   bool  // each Open after the first answers a new fake journal
 	opened  bool  // Open answered a journal once
+
+	journalClosed bool // the test closed the journal itself, so the engine's Close reports it
 }
 
 // openCall is one call of Deps.Open.

@@ -471,7 +471,7 @@ func (e *Engine) VersionLimitWatch(s entity.ShareID) <-chan struct{} {
 
 // OnRefused sets f to run when a refused call is about to wait for the raise.
 func (e *Engine) OnRefused(f func()) {
-	e.waits.refused.Store(&f)
+	e.seams.refused.Store(&f)
 }
 
 // NotifyVersionLimitForTest wakes the calls waiting for share s's journal's
@@ -827,11 +827,6 @@ func (e *Engine) EnqueueKind(
 		},
 		end: end,
 	})
-}
-
-// StopRaisesForTest cancels the context every raise runs under, as Close does.
-func (e *Engine) StopRaisesForTest() {
-	e.raising.cancel()
 }
 
 // WakeRaiseForTest starts share s's journal's raise, or marks it to run once

@@ -94,9 +94,14 @@ type waiter struct {
 }
 
 // startWrite starts a write of a new file of s's first share under ctx, with
-// the hook that tells when it is waiting.
+// the hook that tells when it is waiting. The file is created first unless
+// the test names one, so a served write's existence commits at Close.
 func startWrite(t *testing.T, s *starter, ctx context.Context, file ...entity.FileID) *waiter {
 	t.Helper()
+
+	if len(file) == 0 {
+		file = []entity.FileID{createFile(t, s, entity.NewFileID().String())}
+	}
 
 	w := armWaiter(s)
 
@@ -300,7 +305,7 @@ func TestVersionRefusalServedOnceTheRaiseCommits(t *testing.T) {
 			cancel()
 		})
 
-		w.write(s, ctx)
+		w.write(s, ctx, createFile(t, s, "a"))
 
 		if err := await(w.done); err != nil {
 			t.Errorf("the write after a raise that committed first: %v, want served", err)
@@ -477,6 +482,8 @@ func TestClosedJournalUnderARefusalIsUnavailable(t *testing.T) {
 	if err := s.j.Close(); err != nil {
 		t.Fatal(err)
 	}
+
+	s.journalClosed = true
 
 	commitRaise(t, s, g, cancel)
 
@@ -663,9 +670,10 @@ func startCall(t *testing.T, s *starter, call func() error) *waiter {
 	return w
 }
 
-// A raise the engine stops wakes the write waiting for it: the write answers
-// retry-later and does not outlive the stop. The raise fails, then the stop
-// ends it in its retry wait, which leaves with no commit and no refusal.
+// A raise that Close cancels wakes the write waiting for it, so the write
+// does not outlive Close. The gate opens only once Close has
+// cancelled the raise and waits for it, so the raise fails and then leaves
+// through its cancelled retry wait, with no commit and no refusal.
 func TestVersionRefusalWokenByAStoppedRaise(t *testing.T) {
 	s, g := atLimit(t, func(s *starter) {
 		s.lc.failRaises(errors.New("store down"))
@@ -676,12 +684,34 @@ func TestVersionRefusalWokenByAStoppedRaise(t *testing.T) {
 	w.mustPark(t)
 	w.notDone(t)
 
-	s.e.StopRaisesForTest()
-	g.open()
-	s.e.JoinRaisesForTest()
+	joining := make(chan struct{})
 
-	if err := await(w.done); !isDelay(err, vfserr.DelayCommit) {
-		t.Errorf("a write waiting for a stopped raise: %v, want ErrDelay(DelayCommit)", err)
+	var once sync.Once
+
+	s.e.OnJoining(func(what string) {
+		if what == "a version limit raise" {
+			once.Do(func() { close(joining) })
+		}
+	})
+
+	closed := make(chan error, 1)
+
+	go func() {
+		closed <- s.e.Close(t.Context())
+	}()
+
+	<-joining
+	g.open()
+
+	if err := await(closed); err != nil {
+		t.Errorf("Close with a write waiting for the raise: %v, want nil", err)
+	}
+
+	// The woken write either finds no raise in flight, or runs its journal
+	// call again after Close closed the journal: both end it.
+	err := await(w.done)
+	if !isDelay(err, vfserr.DelayCommit) && !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Errorf("a write waiting for a stopped raise: %v, want ErrDelay(DelayCommit) or ErrUnavailable", err)
 	}
 }
 
@@ -690,12 +720,16 @@ func TestVersionRefusalWokenByAStoppedRaise(t *testing.T) {
 // second pass is held at the raise lock the test queued for, so only the
 // commit can have woken the write.
 func TestVersionRefusalServedByTheFirstCommitOfARaise(t *testing.T) {
-	s, g := atLimit(t)
+	var f entity.FileID
+
+	s, g := atLimit(t, func(s *starter) {
+		f = createFile(t, s, "a")
+	})
 	ctx, cancel := context.WithCancel(t.Context())
 
 	defer cancel()
 
-	w := startWrite(t, s, ctx)
+	w := startWrite(t, s, ctx, f)
 
 	w.mustPark(t)
 
