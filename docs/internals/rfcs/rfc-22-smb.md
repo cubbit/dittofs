@@ -844,7 +844,7 @@ Its response carries the share's `ExportPolicy.SMB`:
   clustered (`SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY`,
   `SMB2_SHARE_CAP_CLUSTER`, 3.0 and later); persistent handles are granted
   ([§6.4](#6.4%20Durable%20and%20persistent%20handles)); Witness is served
-  ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)).
+  **(cluster)** ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)).
 - **Hidden.** Nothing on the wire; the share is omitted from enumeration
   ([§5.2](#5.2%20IPC%24%20and%20the%20RPC%20services)).
 - **Access-based enumeration.** The share answers `TREE_CONNECT` with
@@ -2141,9 +2141,11 @@ Example: while alice-pc holds `profiles/alice/ODFC_alice.vhdx` open, renaming
 
 Witness (MS-SWN) tells a client of a continuously available share which server
 addresses are up, and to move before a node is drained, so it reconnects at
-once instead of after a timeout. Every gateway node serves it over RPC on
-TCP, through the endpoint mapper, for continuously available shares
-([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)):
+once instead of after a timeout. **(cluster)** Every gateway node serves it
+over RPC on TCP, through the endpoint mapper, for continuously available shares
+([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)); the single node
+serves none
+([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)):
 
 - `WitnessrGetInterfaceList` lists every gateway node's floating addresses,
   each marked available or not;
@@ -2470,8 +2472,7 @@ status. It is
 `ErrGrace`. A moved `DelayFrozen` is not held: the moved share's trees end (§6.3). The adapter chooses the row below
 from that cause, never from the operation it was answering: a write delayed by
 a freeze is held for the freeze's bound, not as capacity, and so never ends
-`STATUS_DISK_FULL`. An `ErrDelay` with no cause is held as a break is, up to
-`recall_timeout`.
+`STATUS_DISK_FULL`.
 
 | Service error | SMB answer |
 | --- | --- |
@@ -2735,7 +2736,7 @@ name, a SID, a principal or a client address
 | §7 locks | smbtorture `smb2.lock`; an SMB lock refuses an NFSv3 write across it. Client A holds an RW lease and a local lock; client B sends `LOCK` over the range: assert A's lease is broken and its lock reaches the server before B is answered. Repeat with A holding an R lease; assert it is broken to none before B is granted. A `LOCK` of three `FAIL_IMMEDIATELY` elements whose third conflicts: assert `STATUS_LOCK_NOT_GRANTED` and none of the three held. An unlock of three ranges whose second is not held: assert `STATUS_RANGE_NOT_LOCKED`, the first unlocked and the third still held. A `LOCK` of two elements without `FAIL_IMMEDIATELY`: assert `STATUS_INVALID_PARAMETER`. | locks held in the adapter, a lock request that does not break read or write caching, or a failed multi-element `LOCK` leaving earlier ranges held |
 | §7 waiting locks | Client B waits on client A's lock; A holds it 5 minutes, then releases: assert B's lock granted and its request completed. B waits again; send `CANCEL` racing A's unlock, 10^3 times: assert each request is either `STATUS_CANCELLED` with no lock held by B afterwards, or success with the lock held. | a waiting lock answered on a timer, or a cancel answered before `CancelLock` |
 | §6.3 handle before sharing, NFS | Client A opens with deny-write under an RWH lease and closes its handle locally; an NFSv4 client opens for write and an NFSv3 client writes. Assert each is told to retry while A's handle caching is broken, then succeeds. | an NFS request refused by a deny mode only a handle cache held |
-| §8 notify | smbtorture `smb2.notify`; overflow returns `STATUS_NOTIFY_ENUM_DIR`; a change made over NFS is reported, except a regular file's through no open made by name ([RFC 17 §3.5](rfc-17-vfs.md#3.5%20What%20each%20method%20calls)'s decision). With a subtree below the watched directory placed in its own shard, a create in that subtree completes a recursive watch `STATUS_NOTIFY_ENUM_DIR`; create a new shard below the directory after registration and assert a create in it does the same. On a `posix` share, over NFS, create `a:b` and a non-UTF-8 name in the watched directory: assert the first reported as `a` U+F022 `b` and the second not reported. | a recursive watch that sees only its own primary's changes, or a notification naming a file as no listing does |
+| §8 notify | smbtorture `smb2.notify`; overflow returns `STATUS_NOTIFY_ENUM_DIR`; a change made over NFS is reported, except a regular file's through no open made by name ([RFC 17 §3.5](rfc-17-vfs.md#3.5%20What%20each%20method%20calls)'s decision). **(cluster)** With a subtree below the watched directory placed in its own shard, a create in that subtree completes a recursive watch `STATUS_NOTIFY_ENUM_DIR`; create a new shard below the directory after registration and assert a create in it does the same. On a `posix` share, over NFS, create `a:b` and a non-UTF-8 name in the watched directory: assert the first reported as `a` U+F022 `b` and the second not reported. | a recursive watch that sees only its own primary's changes, or a notification naming a file as no listing does |
 | §9 info classes | smbtorture `smb2.getinfo`, `smb2.setinfo`, `smb2.dir`, `smb2.streams`, with `smb2.streams.io` a known failure because a named stream is not deleted on its own ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)), and `smb2.streams.names`, `smb2.streams.rename`, `smb2.streams.rename2` and `smb2.streams.basefile-rename-with-open-stream` known failures until a named stream can be renamed and a rename of a base file with an open stream is refused as Windows does; MS-FSA test cases for the classes of Appendix E.1. | |
 | §12.1 stream delete and rename | `CREATE` a named stream asking `DELETE` with `FILE_DELETE_ON_CLOSE`: assert `STATUS_NOT_SUPPORTED`. Through an open of an existing stream holding `DELETE`, set the disposition with `FileDispositionInformation`, then with `FileDispositionInformationEx`, then clear it: assert each `STATUS_NOT_SUPPORTED`; close the open and assert the stream and its base file are still there. Through a stream's open holding `DELETE`, rename it to `:other:$DATA`, and through the base file's open holding `DELETE`, rename it to `:other`: assert each `STATUS_NOT_SUPPORTED` and nothing renamed; through a stream's open without `DELETE`, rename it, and through the base file's open without `DELETE`, rename it to an existing stream's name: assert each `STATUS_ACCESS_DENIED`. | a stream delete answered `STATUS_INVALID_PARAMETER`, or taken as the base file's delete; a stream rename sent to `Rename` as a `base:stream` entry, or without `DELETE` answered `STATUS_OBJECT_NAME_COLLISION` |
 | §9.3 timestamps | smbtorture `smb2.timestamps`; −1 on one open, write through it and through a second open on another node: only the second moves `LastWriteTime`. −1 on `ChangeTime` too, write through the first open, and assert an NFSv3 `GETATTR` shows `ctime` moved. | suspension in adapter memory, or a frozen NFS ctime |
@@ -2785,7 +2786,8 @@ compression ([§3.2](#3.2%20Algorithms%2C%20and%20what%20is%20not%20offered)).
 ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)).
 Every step that needs a second node — a channel bound at another `protocol`
 node (§4.2), a lost gateway node (§4.3), a reconnect or replay through
-another node (§6.4, §6.5), a write through a second node (§9.3), and the
+another node (§6.4, §6.5), a write through a second node (§9.3), a
+recursive watch whose subtree is another shard's (§8), Witness (§14), and the
 profile-container run's gateway node failure (§2) — is **(cluster)** and
 outside the first release's conformance; on the single node a restart of
 the node stands for the primary's loss.
@@ -2819,7 +2821,7 @@ shown without the `dittofs_` prefix the exporter adds.
 | durable reconnects, by result | `smb_reconnects_total{kind, result}` | counter |
 | channel binds refused for another node | `smb_bind_refused_total` | counter |
 | names hidden from SMB in listings | `smb_names_hidden_total` | counter |
-| Witness registrations per node | `smb_witness_registrations` | gauge |
+| Witness registrations per node **(cluster)** | `smb_witness_registrations` | gauge |
 | requests and bytes held pending, the hold pool in use, requests refused past their floor (§3.3) | RFC 20 §10.1's `adapter_held_requests`, `adapter_held_bytes`, `adapter_hold_pool_bytes`, `adapter_hold_refusals_total{protocol="smb"}` | gauges, counter |
 | deferred unlinks refused at the last close (§13) | RFC 17 §7's `vfs_deferred_unlink_refusals_total` | counter |
 
