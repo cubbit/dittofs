@@ -592,22 +592,6 @@ func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n, overhead int64)
 	return nil
 }
 
-// TagOverhead returns a copy of the non-payload bytes of the records held per
-// share tag: each record's whole size less its payload. Taken under the set's
-// lock from the maintained map — no walk of the set.
-func (s *Set) TagOverhead() map[core.ShareTag]int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return maps.Clone(s.over)
-}
-
-// TagBytes returns a copy of the record bytes held per share tag, taken under
-// the set's lock from the maintained map — no walk of the set.
-func (s *Set) TagBytes() map[core.ShareTag]int64 {
-	b, _ := s.TagFigures()
-	return b
-}
-
 // TagFigures returns copies of the record bytes and the non-payload bytes held
 // per share tag, both taken in one hold of the set's lock, so a record
 // charged between two reads cannot show in one map and not the other.
@@ -997,26 +981,8 @@ func (s *Set) Check() error {
 			overs[tag] += n
 		}
 	}
-	overMatch := len(overs) == len(s.over)
-	if overMatch {
-		for tag, n := range overs {
-			if s.over[tag] != n {
-				overMatch = false
-				break
-			}
-		}
-	}
-
 	spares := int64(len(s.spares))
-	tagsMatch := len(held) == len(s.tags)
-	if tagsMatch {
-		for tag, n := range held {
-			if s.tags[tag] != n {
-				tagsMatch = false
-				break
-			}
-		}
-	}
+	tagsMatch, overMatch := maps.Equal(held, s.tags), maps.Equal(overs, s.over)
 	if s.c.UsedBytes == sum &&
 		s.c.Segments == segments &&
 		s.c.Sealed == sealed &&

@@ -1431,10 +1431,11 @@ func overheadSet(t *testing.T) (s *Set, id core.SegmentID, tag core.ShareTag) {
 
 func TestSetOverheadCharges(t *testing.T) {
 	s, _, tag := overheadSet(t)
-	if got := s.TagOverhead()[tag]; got != 196 {
+	b, o := s.TagFigures()
+	if got := o[tag]; got != 196 {
 		t.Fatalf("TagOverhead[tag] = %d, want 196", got)
 	}
-	if got := s.TagBytes()[tag]; got != 4096+96+100 {
+	if got := b[tag]; got != 4096+96+100 {
 		t.Fatalf("TagBytes[tag] = %d, want %d", got, 4096+96+100)
 	}
 	if err := s.Check(); err != nil {
@@ -1447,7 +1448,7 @@ func TestSetOverheadFoldsBackOnRetire(t *testing.T) {
 	if _, err := s.Retire(id); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
-	if got := s.TagOverhead(); len(got) != 0 {
+	if _, got := s.TagFigures(); len(got) != 0 {
 		t.Fatalf("TagOverhead after Retire = %v, want empty", got)
 	}
 	if err := s.Check(); err != nil {
@@ -1460,7 +1461,7 @@ func TestSetOverheadFoldsBackOnRecycle(t *testing.T) {
 	if err := s.Recycle(id, 2); err != nil {
 		t.Fatalf("Recycle: %v", err)
 	}
-	if got := s.TagOverhead(); len(got) != 0 {
+	if _, got := s.TagFigures(); len(got) != 0 {
 		t.Fatalf("TagOverhead after Recycle = %v, want empty", got)
 	}
 	if err := s.Check(); err != nil {
@@ -1488,19 +1489,21 @@ func TestSetOverheadRefusesOutOfRange(t *testing.T) {
 			t.Fatalf("%s: AddRecord err = %v, want ErrBadSize", name, err)
 		}
 	}
-	if got := s.TagOverhead()[tag]; got != 196 {
+	b, o := s.TagFigures()
+	if got := o[tag]; got != 196 {
 		t.Fatalf("TagOverhead[tag] = %d after refusals, want 196", got)
 	}
-	if got := s.TagBytes()[tag]; got != 4096+96+100 {
+	if got := b[tag]; got != 4096+96+100 {
 		t.Fatalf("TagBytes[tag] = %d after refusals, want %d", got, 4096+96+100)
 	}
 }
 
 func TestSetOverheadReturnsACopy(t *testing.T) {
 	s, _, tag := overheadSet(t)
-	s.TagOverhead()[tag] = 1
-	if got := s.TagOverhead()[tag]; got != 196 {
-		t.Fatalf("TagOverhead[tag] = %d after mutating a returned map, want 196", got)
+	_, o := s.TagFigures()
+	o[tag] = 1
+	if _, o2 := s.TagFigures(); o2[tag] != 196 {
+		t.Fatalf("TagOverhead[tag] = %d after mutating a returned map, want 196", o2[tag])
 	}
 }
 
@@ -1519,7 +1522,7 @@ func TestSetOverheadZeroLeavesNoKey(t *testing.T) {
 	if err := s.AddRecord(act, tag, 64, 0); err != nil {
 		t.Fatalf("AddRecord: %v", err)
 	}
-	if got := s.TagOverhead(); len(got) != 0 {
+	if _, got := s.TagFigures(); len(got) != 0 {
 		t.Fatalf("TagOverhead = %v after an overhead-0 record, want no key", got)
 	}
 	if err := s.Check(); err != nil {
@@ -1527,14 +1530,11 @@ func TestSetOverheadZeroLeavesNoKey(t *testing.T) {
 	}
 }
 
-func TestSetTagFiguresMatchTheGettersAndAreCopies(t *testing.T) {
+func TestSetTagFiguresAreCopies(t *testing.T) {
 	s, _, tag := overheadSet(t)
 	b, o := s.TagFigures()
 	if b[tag] != 4096+96+100 || o[tag] != 196 {
 		t.Fatalf("TagFigures = %v, %v, want bytes %d and overhead 196", b, o, 4096+96+100)
-	}
-	if !maps.Equal(b, s.TagBytes()) || !maps.Equal(o, s.TagOverhead()) {
-		t.Fatalf("TagFigures = %v, %v differs from TagBytes %v, TagOverhead %v", b, o, s.TagBytes(), s.TagOverhead())
 	}
 	b[tag], o[tag] = 1, 1
 	if b2, o2 := s.TagFigures(); b2[tag] != 4096+96+100 || o2[tag] != 196 {
