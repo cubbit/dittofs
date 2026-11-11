@@ -383,6 +383,12 @@ func (e *Engine) SetAfterRegister(h func()) {
 	e.afterRegister = func() error { h(); return ErrStopped }
 }
 
+// OnRegistered makes h run once a clone's registrations are installed, before
+// it enters its shares' gates, and lets the clone run on.
+func (e *Engine) OnRegistered(h func()) {
+	e.afterRegister = func() error { h(); return nil }
+}
+
 // SetCloneMarkerHook makes h run for each clone marker start step 3 finds,
 // standing in for the clone's rebuild.
 func (e *Engine) SetCloneMarkerHook(h cloneMarkerFunc) {

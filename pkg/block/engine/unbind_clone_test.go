@@ -245,3 +245,45 @@ func TestCloseEndsAnUnbindWaitingForARebuiltClone(t *testing.T) {
 		t.Fatalf("Unbind once Close began = %v, want ErrUnavailable", err)
 	}
 }
+
+// A clone onto a share whose Unbind began after the clone's call entered,
+// once both registrations are installed, is refused with ErrStale at its
+// shares' gates: both registrations are undone and nothing reaches the
+// journal or the store, and the Unbind, which waited for the call, then
+// returns (catches a refusal there that leaves the registrations in place,
+// or that lets the clone run on).
+func TestACloneWhoseSharesUnbindBeganAfterItsEntryChangesNothing(t *testing.T) {
+	u := clonedUnit(t)
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	dst := u.create(t, "dst")
+	joined := joins(u.e)
+	var unbound <-chan error
+	u.e.OnRegistered(func() {
+		unbound = u.unbinding(t)
+		waitsForTheClone(t, joined, unbound) // the gate is shut, the call's entry still counted
+	})
+
+	err := u.e.Clone(t.Context(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: mib})
+	if !isStale(err) {
+		t.Errorf("a clone whose share's Unbind began after its entry = %v, want exactly ErrStale", err)
+	}
+
+	s, _ := u.e.Registrations(src)
+	_, d := u.e.Registrations(dst)
+
+	if s != 0 || d != 0 {
+		t.Errorf("the refused clone left %d source and %d destination registrations, want none", s, d)
+	}
+
+	if err := u.answered(t, "Unbind", unbound); err != nil {
+		t.Fatalf("Unbind once the refused clone's call answered = %v, want nil", err)
+	}
+
+	if m := u.cloneMarkers(dst); len(m) != 0 {
+		t.Errorf("the refused clone left %d clone markers in the journal, want none", len(m))
+	}
+
+	if _, ok := u.cloneRecord(t, src, dst); ok {
+		t.Error("the refused clone left the source's clone-kind open record in the store")
+	}
+}
