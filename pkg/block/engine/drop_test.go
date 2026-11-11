@@ -597,8 +597,20 @@ func TestDropTakesTheSharesFilesOffTheDueSetAndNoLaterBatchCapturesOne(t *testin
 	u.writesOver(t, enginetest.NewReservations(t), mine, 1)
 	u.dropped(t)
 
-	u.clock.Advance(2 * time.Second)
-	<-batch
+	// The group commit arms its timer on its own goroutine, so one Advance can
+	// land before the timer exists and never fire it: step the clock until a
+	// batch runs, bounded so a group commit that never runs fails here.
+	deadline := time.After(10 * time.Second)
+	for ran := false; !ran; {
+		u.clock.Advance(time.Second)
+		select {
+		case <-batch:
+			ran = true
+		case <-time.After(time.Millisecond):
+		case <-deadline:
+			t.Fatal("no group commit ran after 10 s of stepping the clock")
+		}
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
