@@ -391,7 +391,8 @@ func copyCopiesInOrder(t *testing.T, s Subject) {
 }
 
 // A copy or clone with any invalid extent is refused before it copies
-// anything, its valid extents included.
+// anything, its valid extents included, as is one whose source extent ends
+// past the source's size.
 func aRefusedCopyChangesNothing(t *testing.T, s Subject) {
 	src, dst := s.File(t), s.File(t)
 	s.write(t, src, 0, "abcdefgh")
@@ -404,6 +405,17 @@ func aRefusedCopyChangesNothing(t *testing.T, s Subject) {
 		t.Errorf("a clone overlapping itself within one file = %v, want ErrInvalid", err)
 	}
 	s.wantRead(t, src, 0, 8, "abcdefgh")
+
+	short := s.File(t)
+	s.write(t, short, 0, "abcd")
+	past := vfs.Extent{SrcOff: 4, DstOff: 0, Len: 5}
+	if err := s.Content.Clone(t.Context(), s.Share, short, s.Share, dst, past); !errors.Is(err, vfs.ErrInvalid) {
+		t.Errorf("a clone ending past the source's size = %v, want ErrInvalid", err)
+	}
+	if n, err := s.Content.Copy(t.Context(), s.Share, short, s.Share, dst, []vfs.Extent{past}); n != 0 || !errors.Is(err, vfs.ErrInvalid) {
+		t.Errorf("a copy ending past the source's size = %d, %v; want 0, ErrInvalid", n, err)
+	}
+	s.wantRead(t, dst, 0, 8, "")
 }
 
 // With nothing lost, every Write and Commit of the share answers one
@@ -478,10 +490,11 @@ func aLossChangesTheVerifier(t *testing.T, s Subject) {
 // DelayFrozen, a copy or clone with either side unbound included, a refused
 // write calls no Done, and LossSeq answers 0.
 func anUnboundShareIsFrozen(t *testing.T, s Subject) {
-	f := s.File(t)
+	f, g := s.File(t), s.File(t)
 	s.write(t, f, 0, "abcd")
 	if s.Lose != nil {
-		s.Lose(t, f) // so a LossSeq that ignored the share would answer above 0
+		s.write(t, g, 0, "g")
+		s.Lose(t, g) // so a LossSeq that ignored the share would answer above 0
 	}
 	u := entity.NewShareID()
 	ctx := t.Context()
@@ -521,7 +534,7 @@ func anUnboundShareIsFrozen(t *testing.T, s Subject) {
 	if n := dones.Load(); n != 0 {
 		t.Errorf("a write refused for its share had its Done called %d times", n)
 	}
-	if seq := s.Content.LossSeq(u, f); seq != 0 {
+	if seq := s.Content.LossSeq(u, g); seq != 0 {
 		t.Errorf("LossSeq on an unbound share = %d, want 0", seq)
 	}
 	s.wantRead(t, f, 0, 8, "abcd")

@@ -313,7 +313,9 @@ func (m *Memory) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 }
 
 // Copy copies xs in order, all at once: Memory has no chunk to fail part-way
-// and no deadline to meet, so it answers every byte or none.
+// and no deadline to meet. An extent whose source ends past the source's size
+// stops it, as the engine's does: ErrInvalid if it is the first, else the
+// bytes of the extents before it.
 func (m *Memory) Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfs.Extent) (int64, error) {
 	for _, x := range xs {
 		if invalid(x, src == dst) {
@@ -332,14 +334,15 @@ func (m *Memory) Copy(ctx context.Context, srcShare entity.ShareID, src entity.F
 	from, to := m.file(src), m.file(dst)
 	var n int64
 	for _, x := range xs {
-		to.grow(x.DstOff + x.Len)
-		b, data := to.b[x.DstOff:x.DstOff+x.Len], to.data[x.DstOff:x.DstOff+x.Len]
-		clear(b) // what lies past the source's end reads as hole
-		clear(data)
-		if x.SrcOff < int64(len(from.b)) {
-			copy(b, from.b[x.SrcOff:])
-			copy(data, from.data[x.SrcOff:])
+		if x.SrcOff+x.Len > int64(len(from.b)) {
+			if n > 0 {
+				return n, nil
+			}
+			return 0, vfs.ErrInvalid
 		}
+		to.grow(x.DstOff + x.Len)
+		copy(to.b[x.DstOff:], from.b[x.SrcOff:x.SrcOff+x.Len])
+		copy(to.data[x.DstOff:], from.data[x.SrcOff:x.SrcOff+x.Len])
 		m.stage(j, to, op{size: x.DstOff + x.Len, mtime: true})
 		n += x.Len
 	}
