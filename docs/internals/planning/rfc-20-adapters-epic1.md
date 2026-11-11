@@ -319,11 +319,11 @@ which epic owns the rest.
   deleted `dfsctl` commands go (`GraceStatus`, `ForceEndGrace`, `ListClients`,
   `DisconnectClient`, `ListSessions`, `ForceDestroySession`, and those with no caller today).
   `dfsctl share mount` stops calling `ListAdapterPorts` and uses each protocol's default port.
-- **D6, no restart machinery.** Every adapter setting is live, and RFC 13 Appendix B records
-  each one's class, so `pkg/adapter/settings` has no restart tag, comparison or sentinel. A
-  `decision:` marker at `Reconfigure` says the first restart-only setting brings a sentinel
-  error and a one-field comparison there, and names the evidence (a setting a connection
-  accepted after `Reconfigure` cannot pick up).
+- **D6, no restart machinery.** Every adapter setting is live but `port`, and RFC 13 Appendix B
+  records each one's class, so `pkg/adapter/settings` has no restart tag. Since amended: `port`
+  is restart-class (RFC 20 §3.6), and the node applies it by building a new adapter, so
+  `Reconfigure` refuses a changed `port` with a sentinel error and a one-field comparison
+  (epic 2's D20, T4.6) and no other restart machinery exists.
 - **D7, the allocation cell lands with its first gate.** The `unit/adapter-allocs` cell and
   its fixed `dt run` step in the unit job would run nothing at S1. They land with E3's
   `BufPool` gate, the first test the cell runs. A cell with nothing behind it would be a
@@ -484,7 +484,8 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
 - **Deliverables:** one pull request to `feat/storage-v2` amending RFC 20
   (and RFC 24, RFC 13 and RFC 23 where named), settling each point the frozen surface cannot
   be written without:
-  - D6's statement that every adapter setting is live, and no restart machinery;
+  - D6's statement that every adapter setting is live but `port`, with no other restart
+    machinery;
   - D15's `settings.Settings`, `Common`, `Validate`, `Conn.Settings`, and
     `Reconfigure`'s and `NewServer`'s new parameter;
   - D16's per-request service call for the drain's target, and the pipeline's drain with no argument;
