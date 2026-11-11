@@ -37,6 +37,7 @@ import (
 	"sync"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 )
 
 // State is where a segment of the set stands. Spares are not in the set:
@@ -129,7 +130,7 @@ type Counters struct {
 // not the ledger itself, and fails only if the lock recorder of record ever
 // finds a leaf held above it.
 type Set struct {
-	mu     sync.Mutex
+	mu     lockorder.Mutex
 	cap    int64
 	log    *slog.Logger
 	segs   map[core.SegmentID]*entry
@@ -279,6 +280,16 @@ func (s *Set) retireSeen(id core.SegmentID) {
 		return
 	}
 	s.onRetire(id)
+}
+
+// SetRecorder installs the lock-order recorder the ledger's mutex reports to,
+// with its capacity rank: the pool's mutex and the capacity admission's are
+// of the same domain, so no two of them are ever held at once and none of
+// them is taken while a stream's append lock is. It runs before the set is
+// shared — before any call the mutex serialises races another — and a nil
+// recorder leaves the mutex a plain one.
+func (s *Set) SetRecorder(rec *lockorder.Recorder) {
+	s.mu.Init(lockorder.Capacity, rec)
 }
 
 // ownsLocked reports whether the id is already in the set or among the

@@ -13,6 +13,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 )
 
 // ErrSegmentFull is returned by Append when the record does not fit even an
@@ -290,7 +291,7 @@ type Stream struct {
 	// reservation and its completion only — never across I/O, and nothing
 	// else is acquired under it, so no set call and no storage call sit
 	// inside it.
-	appendMu sync.Mutex
+	appendMu lockorder.Mutex
 	next     int64 // the first free record slot of the active segment
 	count    int64 // records reserved in the active segment
 	// entries are the catalog entries of the segment's records, kept in
@@ -439,6 +440,15 @@ func NewStream(no uint32, identity core.JournalID, set *Set, pool *Pool, cache *
 	s := &Stream{no: no, identity: identity, set: set, pool: pool, cache: cache, sink: sink, failedAt: -1}
 	s.drained = sync.NewCond(&s.appendMu)
 	return s
+}
+
+// SetRecorder installs the lock-order recorder the stream's append lock
+// reports to, with its segment append rank: the drain condition hangs off the
+// same lock and needs nothing of its own. It runs before the stream is shared
+// — before the lock is used concurrently — and a nil recorder leaves the
+// lock a plain one. The stream's cache and pool are the caller's to record.
+func (s *Stream) SetRecorder(rec *lockorder.Recorder) {
+	s.appendMu.Init(lockorder.SegmentAppend, rec)
 }
 
 // Roll says which spares the roll an append may need can take.

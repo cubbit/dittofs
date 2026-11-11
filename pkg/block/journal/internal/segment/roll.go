@@ -5,6 +5,7 @@ import (
 	"math"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 )
 
 // Streams is the journal's append streams: Len of them, the stream of a file
@@ -46,6 +47,15 @@ func NewStreams(n int, identity core.JournalID, set *Set, pool *Pool, cache *Des
 		ss.s[i] = NewStream(uint32(i), identity, set, pool, cache, sink(uint32(i)))
 	}
 	return ss
+}
+
+// SetRecorder installs the lock-order recorder on every stream's append lock.
+// It runs before the streams are shared — before any append takes a lock —
+// and a nil recorder leaves every lock a plain one.
+func (ss *Streams) SetRecorder(rec *lockorder.Recorder) {
+	for _, s := range ss.s {
+		s.SetRecorder(rec)
+	}
 }
 
 // For returns the stream the file's appends belong to: the hash of its
