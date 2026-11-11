@@ -104,7 +104,7 @@ func (r *rig) listing() []string {
 // and the caller's logger, here discarded as the journal's own default is.
 func (r *rig) run(ctx context.Context) (Attached, []core.SegmentRange) {
 	r.t.Helper()
-	rd := newReader(ctx, r.seam.FS(), r.clk)
+	rd := newReader(ctx, r.seam.FS(), r.clk, nil)
 	att, err := attach(ctx, r.seam.FS(), rd, journalID, nil)
 	if err != nil {
 		r.t.Fatalf("attach: %v", err)
@@ -195,10 +195,15 @@ func TestAttachIgnoresFormatTmp(t *testing.T) {
 	r.writeFormat()
 	r.write(format.FormatTmpName, []byte("half a format file"))
 
-	r.run(context.Background())
+	att, _ := r.run(context.Background())
 
 	if !slices.Contains(r.listing(), format.FormatTmpName) {
 		t.Errorf("attach: format.tmp was unlinked; directory holds %v", r.listing())
+	}
+	// The name is one of the journal's own, so it is never reported among
+	// the unrecognised: it is the open's, not here, that decides it.
+	if slices.Contains(att.Unrecognised, format.FormatTmpName) {
+		t.Errorf("attach: format.tmp was reported unrecognised: got %v, want it absent", att.Unrecognised)
 	}
 }
 
@@ -249,7 +254,7 @@ func TestAttachUnknownHeaderVersion(t *testing.T) {
 	r.writeFormat()
 	r.write(format.SegmentName(4), versionTwoSegmentHeader())
 
-	rd := newReader(context.Background(), r.seam.FS(), r.clk)
+	rd := newReader(context.Background(), r.seam.FS(), r.clk, nil)
 	_, err := attach(context.Background(), r.seam.FS(), rd, journalID, nil)
 	if !errors.Is(err, core.ErrUnknownFormat) {
 		t.Errorf("attach: a segment of an unknown version got err %v, want ErrUnknownFormat", err)
@@ -277,7 +282,12 @@ func TestAttachZeroHeaderSlot(t *testing.T) {
 			r.writeFormat()
 			r.write(format.SegmentName(6), tc.b)
 
-			att, _ := r.run(context.Background())
+			rd := newReader(context.Background(), r.seam.FS(), r.clk, nil)
+			att, err := attach(context.Background(), r.seam.FS(), rd, journalID, nil)
+			if err != nil {
+				t.Fatalf("attach: %v", err)
+			}
+			ranges, unreadFormat := rd.Unreadable()
 
 			if want := []core.SegmentID{6}; !slices.Equal(att.ZeroHeader, want) {
 				t.Errorf("attach: zero-header segments got %v, want %v", att.ZeroHeader, want)
@@ -288,6 +298,16 @@ func TestAttachZeroHeaderSlot(t *testing.T) {
 			}
 			if att.MaxID != 6 {
 				t.Errorf("attach: MaxID got %d, want 6, the zero-slot segment's id", att.MaxID)
+			}
+			// A file that holds none of its header is its length, not a
+			// device fault: the short read ended in io.EOF, one read,
+			// and nothing is collected as unreadable.
+			if len(ranges) != 0 || unreadFormat {
+				t.Errorf("attach: nothing a short or empty file holds was collected as unreadable: ranges %v, format %t, want none",
+					ranges, unreadFormat)
+			}
+			if calls := r.seam.CallsFor(kit.OpRead, format.SegmentName(6)); calls != 1 {
+				t.Errorf("attach: header reads got %d, want 1: a read that ends at the file's end is never retried", calls)
 			}
 		})
 	}
@@ -360,7 +380,7 @@ func TestAttachHeaderReadFailsAllAttempts(t *testing.T) {
 	r.writeSeg(13, journalID)
 	r.failReads(format.SegmentName(12), 0) // every read
 
-	rd := newReader(context.Background(), r.seam.FS(), r.clk)
+	rd := newReader(context.Background(), r.seam.FS(), r.clk, nil)
 	att, err := attach(context.Background(), r.seam.FS(), rd, journalID, nil)
 	if err != nil {
 		t.Fatalf("attach: a failed header read failed the pass itself: %v", err)
@@ -398,7 +418,7 @@ func TestAttachCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	rd := newReader(ctx, r.seam.FS(), r.clk)
+	rd := newReader(ctx, r.seam.FS(), r.clk, nil)
 	_, err := attach(ctx, r.seam.FS(), rd, journalID, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("attach: a cancelled context got err %v, want context.Canceled", err)
@@ -428,7 +448,7 @@ func TestAttachCancelledMidPass(t *testing.T) {
 
 	held := r.seam.HoldFirst(t, kit.OpOpen, format.SegmentName(13))
 	done := make(chan error, 1)
-	rd := newReader(ctx, r.seam.FS(), r.clk)
+	rd := newReader(ctx, r.seam.FS(), r.clk, nil)
 	go func() {
 		_, err := attach(ctx, r.seam.FS(), rd, journalID, nil)
 		done <- err
@@ -465,7 +485,7 @@ func TestReaderFormatUnreadable(t *testing.T) {
 	r.writeFormat()
 	r.failReads(format.FormatFileName, 0)
 
-	rd := newReader(context.Background(), r.seam.FS(), r.clk)
+	rd := newReader(context.Background(), r.seam.FS(), r.clk, nil)
 	b := make([]byte, format.FormatFileSize)
 	if _, err := rd.ReadAt(format.FormatFileName, b, 0); err == nil {
 		t.Fatalf("reader: a format file no read completes returned nil, want the storage's error")
@@ -537,7 +557,7 @@ func TestAttachCancelPropagatesThroughAFailingSegmentRead(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	held := r.seam.HoldFirst(t, kit.OpRead, format.SegmentName(12))
 	done := make(chan error, 1)
-	rd := newReader(ctx, r.seam.FS(), r.clk)
+	rd := newReader(ctx, r.seam.FS(), r.clk, nil)
 	go func() {
 		_, err := attach(ctx, r.seam.FS(), rd, journalID, nil)
 		done <- err

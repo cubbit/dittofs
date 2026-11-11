@@ -242,9 +242,9 @@ func (e *Engine) noteReadOnly(ro bool, cause error) {
 //
 // decision: any EIO a read returns is ErrIO. The RFC names the journal's
 // ErrUnreadable, a read its bounded retry could not complete (RFC 8 §12.1,
-// RFC 17 §4.3); the journal exports no such error yet, and a read it fails on
-// the device ends in EIO. Match ErrUnreadable here once the journal exports
-// it.
+// RFC 17 §4.3); the journal declares the error but no read of the running
+// journal returns it yet, and a read that fails on the device ends in EIO.
+// Match ErrUnreadable here once the journal's reads return it.
 func (e *Engine) journalReadErr(err error) error {
 	if errors.Is(err, syscall.EIO) {
 		e.d.Logger.Error("journal device read failed", "err", err)

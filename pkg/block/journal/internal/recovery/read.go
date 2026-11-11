@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -24,6 +25,7 @@ type reader struct {
 	ctx context.Context
 	fs  storage.FS
 	clk core.Clock
+	log *slog.Logger
 
 	// unread holds each segment range no bounded read completed, and
 	// formatUnread says the format file's read never completed.
@@ -31,9 +33,23 @@ type reader struct {
 	formatUnread bool
 }
 
-// newReader returns the open's reader over fs, running under ctx and on clk.
-func newReader(ctx context.Context, fs storage.FS, clk core.Clock) *reader {
-	return &reader{ctx: ctx, fs: fs, clk: clk}
+// newReader returns the open's reader over fs, running under ctx and on
+// clk. log takes the open's logger; nil discards.
+func newReader(ctx context.Context, fs storage.FS, clk core.Clock, log *slog.Logger) *reader {
+	return &reader{ctx: ctx, fs: fs, clk: clk, log: log}
+}
+
+// warnUnreadable warns of the error that exhausted the read of name, the
+// last one the bound made, before the range is collected: a refusal the
+// open raises on a read its own logs never name gives an operator nothing
+// to steer a repair by. The warning names the file and the error, never a
+// verdict — the collected range is the open's to answer with.
+func (r *reader) warnUnreadable(name string, err error) {
+	if r.log == nil {
+		return
+	}
+	r.log.Warn("journal open: a read its bound could not complete",
+		"name", name, "err", err)
 }
 
 // ReadAt reads len(buf) bytes of the file name at offset off. A read that
@@ -94,6 +110,7 @@ func (r *reader) ReadAt(name string, buf []byte, off int64) (n int, err error) {
 	// holes it would have to serve — and no byte of it is classed,
 	// truncated or reported as lost. Withdrawn when an unread record can
 	// be held instead of refused.
+	r.warnUnreadable(name, err)
 	if kind, id := format.ClassifyName(name); kind == format.NameFormat {
 		r.formatUnread = true
 	} else {

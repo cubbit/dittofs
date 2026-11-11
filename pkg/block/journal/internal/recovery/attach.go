@@ -5,12 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
+
+// errNotExist is fs.ErrNotExist held under a name the attach pass's own
+// fs parameter does not shadow.
+var errNotExist = fs.ErrNotExist
 
 // SegmentInfo is one own or foreign segment the attach pass found: its
 // header as it verified, and the id in its file name. The two may differ —
@@ -103,7 +108,10 @@ func attach(ctx context.Context, fs storage.FS, rd *reader, id core.JournalID, l
 			if sid > att.MaxID {
 				att.MaxID = sid
 			}
-			if err := fs.Remove(name); err != nil {
+			if err := fs.Remove(name); err != nil && !errors.Is(err, errNotExist) {
+				// A name already gone is the unlink done: nothing but a
+				// concurrent hand may take it, and the open's own rules
+				// leave no window for one.
 				return Attached{}, err
 			}
 		case format.NameSegment:
@@ -141,8 +149,11 @@ func attach(ctx context.Context, fs storage.FS, rd *reader, id core.JournalID, l
 // missing from the answer. A header of a version the pass cannot open
 // fails the pass; anything else is a class the later phases decide.
 func (att *Attached) attachSegment(rd *reader, name string, sid core.SegmentID, id core.JournalID) error {
+	// The bytes the read actually returned, and only those, are handed to
+	// the decoder: a short file is judged on its own length, never on the
+	// zeros a full-size buffer pads it with.
 	b := make([]byte, format.SegmentHeaderSize)
-	_, rerr := rd.ReadAt(name, b, 0)
+	n, rerr := rd.ReadAt(name, b, 0)
 	if rerr != nil && !errors.Is(rerr, io.EOF) {
 		if errors.Is(rerr, context.Canceled) || errors.Is(rerr, context.DeadlineExceeded) {
 			// The open's own cancellation cut the read: no attempt
@@ -153,6 +164,7 @@ func (att *Attached) attachSegment(rd *reader, name string, sid core.SegmentID, 
 		}
 		return nil // no bounded read completed; refused at the open, on rd's range
 	}
+	b = b[:n]
 	if !anyHeaderByte(b) {
 		att.ZeroHeader = append(att.ZeroHeader, sid)
 		return nil

@@ -346,8 +346,17 @@ type UnreadableRangesError struct {
 }
 
 func (e *UnreadableRangesError) Error() string {
+	// A zero identity is "no one identity the verifying headers agreed on",
+	// not a journal identity to print: the refusal names the ranges or the
+	// file, and the identity only where one is named.
 	if e.Format {
+		if e.Identity == (JournalID{}) {
+			return "journal: format file is unreadable"
+		}
 		return fmt.Sprintf("journal: format file of identity %x is unreadable", e.Identity)
+	}
+	if e.Identity == (JournalID{}) {
+		return fmt.Sprintf("journal: %d unreadable range(s)", len(e.Ranges))
 	}
 	return fmt.Sprintf("journal: %d unreadable range(s) in identity %x", len(e.Ranges), e.Identity)
 }
