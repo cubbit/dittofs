@@ -601,10 +601,11 @@ func TestChecks_CountsByLabel(t *testing.T) {
 }
 
 // TestRecorder_GuardRefs records the rules a storage guard reference breaks
-// and the one it may not: two refs of any segments held by one goroutine are
-// exempt from the same-domain rule — a reference never waits on another
-// reference — while the drain wait's plain guard acquisition stays checked
-// against every ref, and every other rule binds a ref as it binds any hold.
+// and the ones a held pin does not reach: a reference is a pin — it never
+// waits on anything — so while it is held it orders nothing the same
+// goroutine takes later; the rules bind only the reference's own acquisition
+// and the drain wait, which must hold no lock at all and must not wait for
+// its own segment's pin.
 func TestRecorder_GuardRefs(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -612,6 +613,34 @@ func TestRecorder_GuardRefs(t *testing.T) {
 		wantKinds []lockorder.Kind
 		wantRank  lockorder.Rank
 	}{
+		{
+			name: "a held pin orders nothing later",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.AcquireRef(new(int))
+				// Everything a caller holds a pin across — a lower
+				// file's append lock, the ledger's, the index's, the
+				// segment's — is free: the pin never blocks, so none
+				// of these are reported. Ranked in the order itself
+				// so only the pin's exclusion is what the row checks.
+				for _, rank := range []lockorder.Rank{
+					lockorder.FileAppend,
+					lockorder.Capacity,
+					lockorder.FileIndex,
+					lockorder.SegmentAppend,
+				} {
+					rec.Acquire(rank, new(int))
+				}
+				if got, want := rec.Held(), []lockorder.Rank{
+					lockorder.StorageGuard,
+					lockorder.FileAppend,
+					lockorder.Capacity,
+					lockorder.FileIndex,
+					lockorder.SegmentAppend,
+				}; !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() under the pin = %v, want %v: the pin sits on the books, released cross-goroutine or not", got, want)
+				}
+			},
+		},
 		{
 			name: "two refs of two segments",
 			drive: func(t *testing.T, rec *lockorder.Recorder) {
@@ -649,22 +678,58 @@ func TestRecorder_GuardRefs(t *testing.T) {
 			wantRank:  lockorder.StorageGuard,
 		},
 		{
-			name: "ref then the drain wait's plain guard",
+			name: "the drain wait over its own segment's held ref",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				seg := new(int)
+				rec.AcquireRef(seg)
+				rec.Acquire(lockorder.StorageGuard, seg)
+			},
+			// The wait is taken while the caller holds a reference of the
+			// very segment it drains: a certain self-deadlock, reported in
+			// both orders.
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			name: "the drain wait over another segment's held ref",
 			drive: func(t *testing.T, rec *lockorder.Recorder) {
 				rec.AcquireRef(new(int))
 				rec.Acquire(lockorder.StorageGuard, new(int))
+			},
+			// A pin of another segment never blocks the wait, so it is not
+			// reported: the ceiling the recorder's decision marker names.
+		},
+		{
+			name: "the drain wait's plain guard then its own segment's ref",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				seg := new(int)
+				rec.Acquire(lockorder.StorageGuard, seg)
+				rec.AcquireRef(seg)
 			},
 			wantKinds: []lockorder.Kind{lockorder.SameDomain},
 			wantRank:  lockorder.StorageGuard,
 		},
 		{
-			name: "the drain wait's plain guard then a ref",
+			name: "the drain wait holding a ranked lock",
 			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(lockorder.Capacity, rec)
+				m.Lock()
 				rec.Acquire(lockorder.StorageGuard, new(int))
-				rec.AcquireRef(new(int))
 			},
-			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			// Reclamation takes the guard holding no other lock: the
+			// drain wait under capacity is its own rule.
+			wantKinds: []lockorder.Kind{lockorder.GuardWaitUnderLock},
 			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			name: "the drain wait holding nothing but another segment's ref",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.AcquireRef(new(int))
+				rec.Acquire(lockorder.StorageGuard, new(int))
+			},
+			// Doubly covered: the pin neither orders nor counts as a lock
+			// the wait must not hold.
 		},
 		{
 			name: "two refs under file index",
@@ -673,10 +738,9 @@ func TestRecorder_GuardRefs(t *testing.T) {
 				rec.AcquireRef(new(int))
 				rec.AcquireRef(new(int))
 			},
-			// The exemption reaches only the same-domain rule: the first
-			// ref is reported for the index and the second is too — the
-			// nested-ref exemption never covers a rule a plain hold
-			// breaks. The priority order keeps one report per ref.
+			// The pin exemption reaches only the ordering comparisons: a
+			// reference taken under the file index is reported for the
+			// index whatever else the goroutine holds — one report per ref.
 			wantKinds: []lockorder.Kind{lockorder.GuardUnderIndex, lockorder.GuardUnderIndex},
 			wantRank:  lockorder.StorageGuard,
 		},
