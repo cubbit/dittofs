@@ -778,7 +778,9 @@ sections are declared.
 **Expected content:**
 - `internal/node/settings.go`, the one table, with the adapters' section and every other section
   declared by then (the `identity.*` section is RFC 18's plan's).
-- RFC 23's reconcile on `settings.Diff` and `Get` (RFC 23 §2.3).
+- RFC 23's reconcile on `settings.Diff` and `Get` (RFC 23 §2.3). What reconcile does with an
+  adapter's change, `Reconfigure` or the rebuild a changed `port` takes, is RFC 20's plan's epic 7
+  (#4050's D12, O7).
 - RFC 23's settings routes on `Check`, and its secret writes on `pkg/secrets`.
 - D3's Appendix B test.
 
