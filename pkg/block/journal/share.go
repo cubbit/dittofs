@@ -79,7 +79,10 @@ func (j *Journal) Forget(ctx context.Context, tag ShareTag) error {
 // Strand is kept in memory only: the caller names every unclaimed tag again at
 // every start, before serving. It appends nothing.
 func (j *Journal) Strand(tag ShareTag) error {
-	return ErrNotImplemented
+	if j.core == nil {
+		return ErrNotImplemented
+	}
+	return j.core.Strand(tag)
 }
 
 // Draw issues the next content version and appends nothing, for a change the
