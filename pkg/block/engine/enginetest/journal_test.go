@@ -22,11 +22,12 @@ func TestRefusalAnswersNil(t *testing.T) {
 	}
 }
 
-// RFC 1 §9.4: the fake answers Share as the journal does. Tag 0 and a floor
-// of another epoch are refused and raise nothing. A Share of a tag whose
-// handle is open returns that handle, its limit replaced and the counter
-// raised above the new floor, so one Close closes it for both callers; a
-// Share after that Close makes a new handle.
+// RFC 1 §9.4: the fake answers Share as the journal does. Tag 0, a negative
+// limit and a floor of another epoch are refused and raise nothing. A Share
+// of a tag whose handle is open returns that handle, its limit replaced, the
+// counter raised above the new floor and a file it holds nothing of read as
+// of that floor (§3.4), so one Close closes it for both callers; a Share
+// after that Close makes a new handle.
 func TestShareAgreesWithTheJournal(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -78,6 +79,10 @@ func shareTwice(t *testing.T, j engine.Journal) {
 	}
 	if again != h {
 		t.Fatal("a second Share of an open tag returned a new handle")
+	}
+	none := journal.NewFileID([16]byte{'n'})
+	if _, _, _, asOf, err := h.ReadAt(ctx, none, 0, make([]byte, 1)); err != nil || asOf.Compare(journal.Version{Counter: floor}) != 0 {
+		t.Errorf("a read of a file the journal holds nothing of = %v, %v; want as of the second Share's floor %d", asOf, err, floor)
 	}
 	v, err := h.WriteAt(ctx, id, 0, p, 7)
 	if err != nil {

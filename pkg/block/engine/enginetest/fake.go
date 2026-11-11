@@ -39,6 +39,7 @@ const fakeStream uint32 = 3
 type FakeJournal struct {
 	mu            sync.Mutex
 	last          uint64 // the counter of the last version issued
+	floor         uint64 // the highest floor Share raised to: the asOf of a file with no records
 	limit         uint64 // no version is issued at or above it; zero until set
 	files         map[journal.FileID]*fakeFile
 	held          map[journal.ShareTag]int64 // held bytes per tag
@@ -136,11 +137,13 @@ type FakeHandle struct {
 
 var _ engine.Handle = (*FakeHandle)(nil)
 
-// Share attaches tag with limit, raising the version counter above floor. A
-// tag whose handle is open gets that handle back, its limit replaced by
-// limit, so one Close closes it for every caller, as the journal's Share does.
-// Tag 0 and a negative limit are refused with ErrInvalidSetting, and a floor
-// with a non-zero epoch with ErrUnknownFormat, raising nothing.
+// Share attaches tag with limit, raising the version counter above floor and
+// the asOf of a file with no records to floor, as the journal raises its floor
+// buckets (RFC 1 §3.4). A tag whose handle is open gets that handle back, its
+// limit replaced by limit, so one Close closes it for every caller, as the
+// journal's Share does. Tag 0 and a negative limit are refused with
+// ErrInvalidSetting, and a floor with a non-zero epoch with ErrUnknownFormat,
+// raising nothing.
 func (j *FakeJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version) (engine.Handle, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -153,6 +156,7 @@ func (j *FakeJournal) Share(tag journal.ShareTag, limit int64, floor journal.Ver
 		return nil, journal.ErrUnknownFormat
 	}
 	j.last = max(j.last, floor.Counter)
+	j.floor = max(j.floor, floor.Counter)
 	for _, h := range j.handles {
 		if h.tag == tag && !h.closed {
 			h.limit = limit
@@ -444,14 +448,20 @@ func (j *FakeJournal) cut(f *fakeFile, from, to int64) (newest journal.Version, 
 // file returns id's file for h's tag, or refuses a file of another tag. A
 // file with no records belongs to no tag: claim gives it to h's tag, as a
 // write or a removal does by leaving a record; without claim it is answered
-// empty and stays unclaimed. j.mu is held.
+// empty, as of the floor, and stays unclaimed. j.mu is held.
+//
+// ponytail: the journal keeps a floor per bucket of files, set at open and
+// raised when a file's entry is dropped as well as by Share, and a file not
+// changed since open reads as of its bucket. The fake keeps one floor, raised
+// by Share only. Model the rest once a test depends on the asOf of a file read
+// after a Reopen or after another file's entry is dropped.
 func (h *FakeHandle) file(id journal.FileID, claim bool) (*fakeFile, error) {
 	if h.closed {
 		return nil, journal.ErrClosed
 	}
 	f := h.j.files[id]
 	if f == nil {
-		f = &fakeFile{tag: h.tag}
+		f = &fakeFile{tag: h.tag, asOf: journal.Version{Counter: h.j.floor}}
 		if claim {
 			h.j.files[id] = f
 		}
