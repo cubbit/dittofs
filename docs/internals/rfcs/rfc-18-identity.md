@@ -760,7 +760,10 @@ account's salt — each tagged with the account's key version number
 (`msDS-KeyVersionNumber`), because a ticket names its key by that number, not
 by the `Secret`'s version. A derived key follows its password's version: it is
 applied with it, and kept after it stops being current for the retention
-above. Every other service name a node answers on — `nfs/<host>`, another host
+above. A ticket for one of these names whose key version number no held key
+carries is tried against each held derived key of its encryption type, the
+current one first, so a ticket issued before the rotation has confirmed its
+number, or by a domain controller whose number lags, still verifies. Every other service name a node answers on — `nfs/<host>`, another host
 name, or a name registered on a separate service account — keeps an imported
 keytab `Secret`, rotated in the order above. An imported key for a name the
 computer account holds is refused, so no name has two keys.
@@ -887,9 +890,14 @@ rotation are reported in the node's status, and raise §9.2's
 **The machine password rotates** on a schedule shorter than the domain's
 maximum machine-password age, in [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)'s
 order, as an imported keytab does (§3.3): the new password is sealed as a new
-`Secret` version first; once every node reports it applied, it is set at the
-domain controller; then the account's key version number is read and recorded
-with it, for the keys derived from it. Until the domain controller takes the
+`Secret` version first, tagged with the key version number it will take, the
+account's current one plus one, read from the domain controller the rotation
+will set it at; once every node reports it applied, it is set at that domain
+controller; then that controller's number is read again, and the tag confirmed
+or corrected. `msDS-KeyVersionNumber` is computed by each domain controller
+from its own copy of the account, so one that has not yet replicated the
+change answers the old number, and the rotation reads only the one it wrote
+to. Until the domain controller takes the
 new password, the secure channel signs in with the previous one. Each step is
 recorded as RFC 23 §4.6 requires, and a resumed rotation sets the password
 only if the domain controller does not already accept the sealed version, so a
@@ -1968,7 +1976,7 @@ RFC 16's conformance suite's, not repeated here.
 | expiry | 2 | Over `sec=krb5`, keep a context open past its ticket's `Expires`: the next request is refused with the expired-credential answer. | a context served past its ticket |
 | replay | 1 | The same AP-REQ twice: the second refused, outcome `replay`. | no replay cache |
 | AES only | 1 | Tickets for a keytab name under RC4 and under DES: both `ErrLogonFailure`; under AES128 and AES256: accepted. | an RC4 ticket forged from an NT hash |
-| derived keytab | 1 | Joined to the in-memory domain controller, rotate the machine password, then restart identity over the same store: tickets under the previous and the new key version number are both accepted until the retention passes, then the previous one is refused. Stop a rotation between sealing and setting, and resume it: the password is set once and the channel signs in. Import a key for a `cifs/` name the computer account holds: refused. | a rotation breaking Kerberos; a password only the controller knows |
+| derived keytab | 1 | Joined to the in-memory domain controller, rotate the machine password, then restart identity over the same store: tickets under the previous and the new key version number are both accepted until the retention passes, then the previous one is refused. Stop a rotation between sealing and setting, and resume it: the password is set once and the channel signs in. A ticket under the new number that arrives before the rotation confirms it, and one under the old number from a second controller that has not replicated the change: both accepted. Import a key for a `cifs/` name the computer account holds: refused. | a rotation breaking Kerberos; a password only the controller knows; a ticket refused while its number is unconfirmed |
 | offline join | 1 | Offline-join an account whose `msDS-SupportedEncryptionTypes` lacks AES: refused. One that advertises it: joined, with the service names it holds reported. | a join whose tickets are all refused |
 | machine account health | 1 | Fail the secure channel to every domain controller: `machine_account_unhealthy` raised; restore one: cleared. Fail a rotation, then restore the channel: raised until a rotation completes. | a failed rotation hidden by a reconnect |
 | NetBIOS name while joined | 1 | On a joined installation, a settings change to `identity.netbios_name`: refused at validation, the name unchanged. | a CHALLENGE naming an account the installation does not hold |

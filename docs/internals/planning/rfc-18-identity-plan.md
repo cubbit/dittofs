@@ -660,10 +660,11 @@ var join = runner.Steps{ // online; the offline join verifies an existing accoun
 }
 var rotate = runner.Steps{
 	waitPreviousApplied, // every node reports the previous version (§4.3: this node)
-	sealPassword,        // seal first...
+	sealPassword,        // seal first, tagged with one DC's kvno plus one...
 	waitApplied,
-	setAtDC,             // ...then set, skipped if the DC already accepts the sealed version
-	recordKVNO,          // derived keys follow it, the previous kept for the retention (A3)
+	setAtDC,             // ...then set at that DC, skipped if it already accepts the sealed version
+	confirmKVNO,         // the same DC's kvno confirms or corrects the tag (RFC 18 §3.5)
+	prunePrevious,       // once the retention passes; until then the previous keys still verify (A3)
 }
 // Node status: machine_account_unhealthy while the channel fails to every DC
 // (cleared by a channel set up) or the last rotation failed (cleared only by a
