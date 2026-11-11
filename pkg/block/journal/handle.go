@@ -212,10 +212,11 @@ func (h *Handle) CloneTarget(ctx context.Context, id FileID, spec CloneSpec) (Ve
 // superseded another write above from. A record that does not verify goes to
 // the corruption rule: its extent is yielded when a copy serves it, and when
 // the record is dropped a synced one is yielded as a loss in its place. A
-// segment retired meanwhile sends the read once to the record the index now
-// names for the extent, and when there is none the record counts as dropped.
-// A cancelled ctx ends the iteration with its error; an I/O error ends it with
-// that error.
+// segment retired meanwhile sends the read on to the record the index now
+// names for each piece of the extent, a bounded number of times, and leaves out
+// a piece the index no longer holds; a record that keeps moving ends the
+// iteration with an error rather than being skipped. A cancelled ctx ends the
+// iteration with its error; an I/O error ends it with that error.
 //
 // decision: Since has no unread-file state to refuse on: the journal records
 // none yet, so ErrUnreadable cannot be yielded, and a file whose records do

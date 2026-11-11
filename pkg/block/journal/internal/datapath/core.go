@@ -92,6 +92,9 @@ type coreOptions struct {
 	// afterCorrupt runs in ReadAt and Since after Corrupt answered a record that did not
 	// verify and before the read goes on from that answer.
 	afterCorrupt func()
+	// afterRetarget runs in Since after a record whose segment was retired was
+	// sent to the record the index now names, before that record is read.
+	afterRetarget func()
 	// extentLimit overrides the index's entry bound a test core builds with,
 	// keeping Deps at the figure the production wiring passes.
 	extentLimit int64
@@ -172,6 +175,11 @@ type Core struct {
 	// reason afterAppend is.
 	afterCorrupt func()
 
+	// afterRetarget is a test seam that holds a Since between sending a record
+	// to the one the index now names and reading it. It is nil outside tests,
+	// for the same reason afterAppend is.
+	afterRetarget func()
+
 	// registry is the open handles, replaced whole under registryMu and read
 	// through the pointer alone. See shares.go.
 	registry   atomic.Pointer[[]*Share]
@@ -234,7 +242,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)

@@ -536,3 +536,103 @@ func TestSinceReportsLossOfDroppedThenRetiredRecord(t *testing.T) {
 		}
 	}
 }
+
+// moveRecord appends a copy of the record at r, whose payload is data, to the
+// stream's next segment, as a repack does, repoints the index to it and returns
+// its place. The stream's current segment is sealed first, so the copy never
+// shares a segment with a record that stays.
+func moveRecord(t *testing.T, c *Core, seam *kit.Seam, f core.FileID, r index.RecordAt, data []byte) index.RecordAt {
+	t.Helper()
+	hdr := headerAt(t, seam, r)
+	if _, err := c.Streams().For(f).Seal(true); err != nil {
+		t.Errorf("Seal: %v", err)
+		return r
+	}
+	unlock := c.domains.Lock(f)
+	pl, err := c.Streams().For(f).Append(format.RecordHeader{
+		Kind: format.KindWrite, File: f, Extent: hdr.Extent, Seq: hdr.Seq, Version: hdr.Version, Tag: hdr.Tag,
+	}, format.RecordBody{Payload: data, MTime: 1})
+	unlock()
+	if err != nil || pl.Loc.Segment == r.Segment {
+		t.Errorf("Append of the copy: %+v %v", pl, err)
+		return r
+	}
+	to := index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}
+	moved, hd, err := c.Index().RepointRecord(f, r, to)
+	c.Account(hd)
+	if err != nil || moved == 0 {
+		t.Errorf("RepointRecord = %d, %v", moved, err)
+	}
+	return to
+}
+
+// TestSinceFollowsARecordThroughTwoRepacks moves the record a second time,
+// and retires the place it was first moved to, after Since sent its read to
+// that place: the extent is still yielded with its mtime, from the third place.
+func TestSinceFollowsARecordThroughTwoRepacks(t *testing.T) {
+	var c *Core
+	var seam *kit.Seam
+	var first index.RecordAt
+	data := pattern(4<<10, 21)
+	fired := make(chan struct{})
+	c, seam = newTestCore(t, func(o *coreOptions) {
+		o.afterRetarget = func() {
+			select {
+			case <-fired:
+				return
+			default:
+			}
+			close(fired)
+			moveRecord(t, c, seam, testFile(1), first, data)
+			retire(t, c, seam, first.Segment)
+		}
+	})
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	orig := retiredSinceFile(t, c, s, f, data)
+	resume := pauseSince(t, c, s, f)
+
+	first = moveRecord(t, c, seam, f, orig.Record, data)
+	retire(t, c, seam, orig.Record.Segment)
+
+	want := brief{core.ChangeWrite, ex(0, 4<<10), orig.Version, 1}
+	all := resume()
+	select {
+	case <-fired:
+	default:
+		t.Fatal("Since never followed the record to its second place")
+	}
+	if !slices.Contains(briefs(all), want) {
+		t.Fatalf("Since = %+v, want it to yield %+v from the record's third place", briefs(all), want)
+	}
+}
+
+// TestSinceRetargetsAPieceAfterAnotherWasSuperseded splits one record into two
+// pieces, supersedes the first, and moves the record, retiring its segment,
+// after Since copied the changes: the second piece is still yielded with its
+// mtime.
+func TestSinceRetargetsAPieceAfterAnotherWasSuperseded(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	data := pattern(12<<10, 7)
+	mustWrite(t, c, s, f, 1<<20, pattern(4<<10, 9))
+	vr := mustWrite(t, c, s, f, 0, data)
+	syncFiles(t, c, f)
+	r := recordOf(t, c, f, 0).Record
+	if _, err := c.Streams().For(f).Seal(true); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, c, s, f, 4<<10, pattern(4<<10, 3)) // splits the record into two pieces
+	syncFiles(t, c, f)
+	resume := pauseSince(t, c, s, f)
+
+	mustWrite(t, c, s, f, 0, pattern(4<<10, 4)) // supersedes the first piece
+	moveRecord(t, c, seam, f, r, data)
+	retire(t, c, seam, r.Segment)
+
+	want := brief{core.ChangeWrite, ex(8<<10, 4<<10), vr, 1}
+	if all := resume(); !slices.Contains(briefs(all), want) {
+		t.Fatalf("Since = %+v, want it to yield the second piece %+v", briefs(all), want)
+	}
+}

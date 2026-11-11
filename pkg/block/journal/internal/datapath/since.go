@@ -3,6 +3,7 @@ package datapath
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"slices"
@@ -35,8 +36,10 @@ import (
 // leaves the extent yielded with an Mtime of 0; a dropped record's extent is
 // not yielded, and when the drop was of a synced record the loss it left is
 // yielded in its place. A segment retired since the copy was taken sends the
-// read once to the record the index now names for the extent, as a repack
-// leaves it; when there is none the record is taken as dropped.
+// read on, a bounded number of times, to the record the index now names for
+// each piece of the extent, as a repack leaves it; a piece the index no longer
+// holds is left out, and a record that keeps moving or whose retired segment
+// the index still names ends the iteration with errRecordMoving.
 //
 // decision: the changes are those of the copy taken at the start. A drop of an
 // unsynced record puts what it superseded back in the index, and that write is
@@ -87,22 +90,15 @@ func (c *Core) Since(ctx context.Context, s *Share, id core.FileID, from core.Ve
 				}
 				continue
 			}
-			mtime, replaced, dropped, err := sr.write(ch, bp, false)
+			items, err := sr.write(ch, bp, 0)
 			if err != nil {
 				yield(core.Change{}, err)
 				return
 			}
-			if dropped {
-				for _, l := range replaced {
-					if !yield(l, nil) {
-						return
-					}
+			for _, it := range items {
+				if !yield(it, nil) {
+					return
 				}
-				continue
-			}
-			out.Mtime = mtime
-			if !yield(out, nil) {
-				return
 			}
 		}
 	}
@@ -123,34 +119,42 @@ type sinceRead struct {
 	seen    map[lossKey]bool        // loss markers the copy held or this iteration yielded in a write's place
 }
 
-// write reads ch's record and returns the modification time to yield with
-// its extent. When the record was dropped, dropped is true and replaced holds
-// the losses to yield in place of the extent, none for an unsynced drop.
-// again allows one re-resolve of a record whose segment was retired.
-func (r *sinceRead) write(ch index.Change, bp *[]byte, again bool) (mtime int64, replaced []core.Change, dropped bool, err error) {
+// maxRetargets bounds how many times one change is sent on to the record the
+// index names for it after the record it read was retired.
+const maxRetargets = 8
+
+// errRecordMoving ends a Since whose record kept moving or whose retired
+// segment the index still names, rather than leave a held extent unreported.
+var errRecordMoving = errors.New("journal: a record's segment was retired while the index still names it")
+
+// write reads ch's record and returns what to yield for it: the write with its
+// modification time, one write per piece when the record moved and the extent
+// is now held in pieces, or the losses of a dropped record, none for an
+// unsynced drop. depth counts the retargets so far.
+func (r *sinceRead) write(ch index.Change, bp *[]byte, depth int) ([]core.Change, error) {
 	if r.dropped[ch.Record] {
-		return 0, nil, true, nil
+		return nil, nil
 	}
 	pc := index.Placed{Extent: ch.Extent, Record: ch.Record, Skip: ch.Skip, Version: ch.Version, Seq: ch.Seq}
 	g := recordPieces{at: ch.Record, pieces: []index.Placed{pc}}
 	_, h, mtime, verdict, err := r.c.readRecord(r.ctx, r.st, r.id, ch.Record, g.pieces, bp)
 	switch {
 	case segmentGone(err):
-		return r.resolveAgain(ch, bp, again)
+		return r.retarget(ch, bp, depth, err)
 	case err != nil:
-		return 0, nil, false, err
+		return nil, err
 	case verdict == recordVerifies:
-		return mtime, nil, false, nil
+		return []core.Change{r.written(ch, mtime)}, nil
 	}
 	// decision: an index entry with sequence number 0 is damage the open
 	// should have refused or an index bug, and no header can match 0. Since
 	// returns an error and drops nothing, as a read does.
 	if ch.Seq == 0 {
-		return 0, nil, false, fmt.Errorf("journal: index entry of file %v at %+v carries no sequence number", r.id, ch.Record)
+		return nil, fmt.Errorf("journal: index entry of file %v at %+v carries no sequence number", r.id, ch.Record)
 	}
 	out, err := r.c.dur.Corrupt(r.ctx, r.corruption(g, h, verdict))
 	if err != nil {
-		return 0, nil, false, err
+		return nil, err
 	}
 	if r.c.afterCorrupt != nil {
 		r.c.afterCorrupt()
@@ -160,42 +164,87 @@ func (r *sinceRead) write(ch index.Change, bp *[]byte, again bool) (mtime int64,
 		_, _, mtime, verdict, err = r.c.readRecord(r.ctx, r.st, r.id, at, g.pieces, bp)
 		switch {
 		case segmentGone(err):
-			return r.resolveAgain(ch, bp, again)
+			return r.retarget(ch, bp, depth, err)
 		case err == nil && verdict != recordVerifies:
 			// decision: a copy that does not verify here is not handed to
 			// Corrupt again, as in a read, and its extent is yielded with an
 			// Mtime of 0, which verifies nothing; the next read of it finds
 			// the copy bad. Overturned if Since must drop what it cannot verify.
-			return 0, nil, false, nil
+			return []core.Change{r.written(ch, 0)}, nil
 		case err != nil:
-			return 0, nil, false, err
+			return nil, err
 		}
-		return mtime, nil, false, nil
+		return []core.Change{r.written(ch, mtime)}, nil
 	}
 	r.dropped[ch.Record] = true
-	return 0, r.lossesAt(ch.Version), true, nil
+	return r.lossesAt(ch.Version), nil
 }
 
-// resolveAgain handles a record whose segment was retired after the copy was
-// taken. When the index names the same record, by sequence number, at another
-// place, as a repack leaves it, the write is read from there, once. Otherwise
-// the record is taken as dropped: the losses at its version are yielded in its
-// place, none when it was superseded or dropped unsynced.
+// written is the change a verified write yields.
+func (r *sinceRead) written(ch index.Change, mtime int64) core.Change {
+	return core.Change{Kind: core.ChangeWrite, Extent: ch.Extent, Version: ch.Version, Mtime: mtime, Over: ch.Over}
+}
+
+// retarget handles a record whose segment was retired after the copy was
+// taken. Each piece of ch's extent that the index still names with ch's
+// sequence number, at another record, is read from there as a change of its
+// own, as a repack leaves it. A piece the index no longer holds for that record
+// was superseded or removed, and is left out, as are the others of the same
+// original record, which are looked up on their own. The losses at ch's version
+// that the copy did not hold are yielded too, none unless another read dropped
+// the record.
 //
-// decision: a record whose segment is gone and that the index still names at
-// the same place, or names nowhere, is treated as dropped, not yielded with an
-// unverified Mtime of 0, which the format reserves for a suspended write.
-// Overturned if a retirement can leave the index naming a segment it removed
-// for content still held.
-func (r *sinceRead) resolveAgain(ch index.Change, bp *[]byte, again bool) (int64, []core.Change, bool, error) {
-	if !again {
-		if cur, ok := r.c.index.Lookup(r.id, ch.Extent.Off); ok && cur.Seq == ch.Seq && cur.Record != ch.Record && cur.Extent.Off <= ch.Extent.Off {
-			ch.Record, ch.Skip = cur.Record, cur.Skip+uint32(ch.Extent.Off-cur.Extent.Off)
-			return r.write(ch, bp, true)
+// decision: nothing is marked dropped for a lookup that missed. A record split
+// into pieces can lose one to a newer write and have another moved by a repack,
+// so a miss says only that this change's extent is gone; only Corrupt dropping
+// the record marks it. Each retarget follows an index that only moves records
+// forward, so a change settles in a few steps, and maxRetargets caps a ping-pong
+// that never does.
+//
+// decision: a piece the index still names at the very record whose segment is
+// gone ends the Since with errRecordMoving instead of being skipped: a held
+// extent must never be omitted without an error. So does a change retargeted
+// maxRetargets times. Overturned by a retirement that may leave the index
+// naming a segment it removed for content that is still held, which would need
+// the iteration to wait for the repoint.
+func (r *sinceRead) retarget(ch index.Change, bp *[]byte, depth int, gone error) ([]core.Change, error) {
+	if depth >= maxRetargets {
+		return nil, fmt.Errorf("journal: the record of file %v at %+v moved %d times during one Since: %w", r.id, ch.Record, depth, errRecordMoving)
+	}
+	var out []core.Change
+	placed, _ := r.c.index.Span(r.id, ch.Extent)
+	for _, pc := range placed {
+		if pc.Seq != ch.Seq || pc.Version != ch.Version {
+			continue
+		}
+		if pc.Record == ch.Record {
+			return nil, fmt.Errorf("journal: the record of file %v at %+v is gone but still held: %w: %w", r.id, ch.Record, errRecordMoving, gone)
+		}
+		sub := ch
+		sub.Extent, sub.Record, sub.Skip = pc.Extent, pc.Record, pc.Skip
+		sub.Over = clipTo(ch.Over, pc.Extent)
+		if r.c.afterRetarget != nil {
+			r.c.afterRetarget()
+		}
+		items, err := r.write(sub, bp, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+	}
+	return append(out, r.lossesAt(ch.Version)...), nil
+}
+
+// clipTo returns the parts of runs inside e.
+func clipTo(runs []core.Extent, e core.Extent) []core.Extent {
+	var out []core.Extent
+	for _, r := range runs {
+		lo, hi := max(r.Off, e.Off), min(r.Off+r.Len, e.Off+e.Len)
+		if lo < hi {
+			out = append(out, core.Extent{Off: lo, Len: hi - lo})
 		}
 	}
-	r.dropped[ch.Record] = true
-	return 0, r.lossesAt(ch.Version), true, nil
+	return out
 }
 
 // lossesAt returns the loss markers of the file at version v that the copy
