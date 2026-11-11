@@ -39,7 +39,7 @@ scope:
 
 **Programme.** #3119, route B, on `feat/storage-v2`, and the v1.0 MVP issue #4053. RFC 22's plan
 (#3911, its §6.2 item 1) and RFC 20's plan (its risk 10) name the authenticator as having no owner;
-this plan is that owner. RFC 18 has no v1.0 roadmap epic yet (§6 O1).
+this plan is that owner. Roadmap epic #4078.
 
 **Divergence from the planning skill.** There is no test-foundations epic, by the user's standing
 decision for these plans. The leak check (`pkg/block/journal/journaltest/prof`, `internal/prof` once
@@ -732,8 +732,7 @@ This epic waits for an SMB adapter serving through the node (S3).
 
 ## 6. Risks and open points
 
-- **O1. RFC 18 has no v1.0 roadmap epic.** Its epic issues need one before they can be placed (the
-  skill's issue step). It sits beside #3984 (RFC 13) and #3985 (RFC 23).
+- **O1. The roadmap epic** is #4078, beside #3984 (RFC 13) and #3985 (RFC 23); this plan's epic issues go under it.
 - **O2. The deferred scope.** Each item waits for something:
   - the NFS side (`AUTH_SYS`, uid and gid mapping, owner strings, `ManageGIDs`, the mints a claimed
     uid triggers) waits for RFC 21's plan, with the RFC 18 §10 rows §1.4 lists;
