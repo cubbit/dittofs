@@ -71,6 +71,7 @@ type Options struct {
 	Parallel int       // --parallel: how many cells run at once; below 2, one after another
 	Base     string    // --base: the ref {base} stands for; empty leaves it to the event (see base)
 	Changed  bool      // --changed: {packages} of patterns holds only the packages changed since the base
+	Packages []string  // --packages: runs only these packages, in place of a suite's patterns and of --changed's
 }
 
 // minute is a variable so the tests can shorten a cell's limit.
@@ -367,7 +368,9 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		lists["test-args"] = []string{""} // until each test's, from its line, fills it
 	}
 	unchanged := false // --changed left {packages} empty
-	if p := c.Unit.Packages; p != nil {
+	if pkgs := o.Packages; len(pkgs) > 0 && takesPackages(c.Unit) && c.Unit.Packages != nil && c.Unit.Packages.Tag == "" {
+		lists["packages"] = pkgs
+	} else if p := c.Unit.Packages; p != nil {
 		pkgs := p.Patterns
 		var err error
 		switch {
