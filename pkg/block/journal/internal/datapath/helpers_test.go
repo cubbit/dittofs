@@ -117,7 +117,7 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 func awaitSpares(t *testing.T, c *Core, maxBytes int64) {
 	t.Helper()
 	want := int64(2 * testStreams)
-	if n := c.pool.Target(); n > 0 {
+	if n := c.contentTarget; n > 0 {
 		want = int64(n)
 	}
 	if maxBytes > 0 && maxBytes < want*testSegmentCap {

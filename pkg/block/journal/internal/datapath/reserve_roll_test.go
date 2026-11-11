@@ -236,6 +236,10 @@ func TestReserveAhead_CopyBesideARollingWriter(t *testing.T) {
 		t.Fatalf("the reservation owes the pool %d spares, want its copies' rolls held", heldBefore)
 	}
 
+	// spareOnOther counts the other writer's spare refusals. Each is already
+	// known to be a spare's — the loop fails the test for any other — so the
+	// count is asserted only to be consistent: it never exceeds the writes it
+	// makes.
 	var copyRefused, spareOnOther atomic.Int64
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -283,8 +287,13 @@ func TestReserveAhead_CopyBesideARollingWriter(t *testing.T) {
 	// Any spare refusal the fixture's other writers met fell on them, never on
 	// a reserved write: the copy's writes above are checked to have landed, and
 	// the other writer's loop fails the test for any refusal that is not a
-	// spare's. How often they interleave is the scheduler's, so no assertion
-	// counts the refusals — a run where the copy and the other writer seldom
+	// spare's. The count is read so it is not dead: it is at most the other
+	// writer's writes, one refusal per write.
+	if got := spareOnOther.Load(); got > int64(copyWrites) {
+		t.Fatalf("the other writer met %d spare refusals over %d writes, want at most one each", got, copyWrites)
+	}
+	// How often they interleave is the scheduler's, so no assertion counts the
+	// refusals — a run where the copy and the other writer seldom
 	// meet is still valid, and one where they meet must refuse the unreserved
 	// write alone.
 	// The hold is back at the reservation's remaining need: every spare the

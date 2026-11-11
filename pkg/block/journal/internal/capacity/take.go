@@ -213,6 +213,17 @@ type Capacity struct {
 	// against what the index has left after these.
 	heldEntries int64
 
+	// pendingEntries is the index entries admitted plain grants hold and have
+	// not yet handed to the index by publishing a piece. A plain Take reserves
+	// the entries its pieces will publish here, in its own section, so a
+	// reservation taken beside a plain write still in flight sees them spent:
+	// without it the write's own admission could pass and its publish then eat
+	// the entries the reservation counted as free. Grant.Claimed hands them
+	// over piece by piece as the index admits the publishes, and Release
+	// returns what a failed or shortened write never published. Take and
+	// Reserve both size against heldEntries + pendingEntries.
+	pendingEntries int64
+
 	// heldVersions is the versions open reservations hold and no write of
 	// theirs has drawn yet, counted beside VersionsLeft the same way.
 	heldVersions uint64
@@ -314,10 +325,11 @@ type Grant struct {
 	// returns its unlanded bytes to the reservation rather than to the pool.
 	reservation *Reservation
 
-	// heldEntries is the index entries a drawn grant still has to hand over:
-	// the reservation's held figure keeps them until the publish claims them,
-	// so a plain write cannot pass the bound's check and eat them in the
-	// window between the draw and the publish.
+	// heldEntries is the index entries a grant still has to hand to the index
+	// as it publishes pieces: for a drawn grant the reservation's held figure
+	// keeps them until the publish claims them; for an admitted grant the
+	// pendingEntries its Take reserved. Either way a plain write beside it sees
+	// them spent only once the index holds the piece.
 	heldEntries int64
 
 	// released reports the first Release, making the later ones no-ops.
@@ -365,10 +377,12 @@ type Grant struct {
 // Hold runs after it, and the reservation counters are this package's
 // own.
 //
-// decision: a later reservation taken ahead over several writes — the
-// ahead-call the interface offers — is the same holding this one is: one
-// grant whose pieces draw on it, released whole. No separate shape is
-// needed for it here.
+// decision: Reserve takes a reservation ahead of several writes as its own
+// type, not as this one grant: one grant is one write, drawn in the write's own
+// section, while a reservation holds its bytes, entries, versions and spares
+// across many draws and returns what they do not use at Release. The two share
+// this package's counters, which is why Take and Reserve size against the same
+// held and pending figures.
 func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// The read-only check consults no limit, so it needs no counter and
 	// runs before the section: a read-only journal answers at once,
@@ -569,51 +583,74 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// reach. A write that rolls publishes one index entry per piece, never one
 	// for the whole extent — pieces never join at run time — so a plain
 	// write's real adds are the pre-check's count plus one per extra piece,
-	// and each of those can eat a held entry.
+	// and each of those can eat an entry a reservation holds or another plain
+	// grant admitted and has not published yet.
 	//
-	// decision: the extra pieces are counted only while a reservation holds
-	// entries (heldEntries > 0), so a journal with no reservation keeps the
-	// pre-check's own figure exactly — a zero-gap fill or a net-zero write at
-	// a full index stays admitted as the pre-check admits it. A write that
-	// adds nothing publishes no entry and adds no piece. The figure fails
-	// closed: the pieces are the split the room the section read names, and a
-	// write whose room something else spent draws one piece beyond it, refused
-	// at its publish rather than admitted past the bound here.
-	if c.heldEntries > 0 && adds > 0 {
+	// decision: the entries are held back only while a reservation or another
+	// plain grant in flight holds some, so a journal with neither keeps the
+	// pre-check's own figure exactly — a zero-gap fill at a full index stays
+	// admitted as the pre-check admits it, for it adds nothing and holds
+	// nothing. Beside a non-zero held figure, a zero-gap fill is refused naming
+	// the index although it adds nothing: the check names adds (zero) against
+	// the room the held entries leave, and a fill cannot prove its gap will not
+	// grow a piece the write's supersede would split. The refusal fails closed
+	// and closes when the pre-check reports the entries a fill's real pieces
+	// add. The figure fails closed too: the pieces are the split the room the
+	// section read names, and a write whose room something else spent draws one
+	// piece beyond it, refused at its publish rather than admitted past the
+	// bound here.
+	if c.heldEntries > 0 || c.pendingEntries > 0 {
 		// The publish count mirrors the three ways the split above names: a
 		// write the room covers publishes one piece; one the room only partly
 		// covers publishes its head there and one more per segment past it; a
 		// roomless one publishes one per spare, the first included. Only the
 		// partly covered case adds the room's own piece back —
 		// sparesBeyondRoom leaves it out there, and already counts it when the
-		// stream has no room at all.
-		var published int64
-		switch {
-		case r.Payload <= max(roomLeft, 0):
-			published = 1
-		case roomLeft > 0:
-			published = 1 + int64(sparesBeyondRoom(r.Payload, roomLeft, c.cfg.SegmentCap))
-		default:
-			published = int64(max(sparesBeyondRoom(r.Payload, 0, c.cfg.SegmentCap), 1))
+		// stream has no room at all. adds of zero — a fill or a net-zero write —
+		// publishes nothing, so this adds nothing for it.
+		if adds > 0 {
+			var published int64
+			switch {
+			case r.Payload <= max(roomLeft, 0):
+				published = 1
+			case roomLeft > 0:
+				published = 1 + int64(sparesBeyondRoom(r.Payload, roomLeft, c.cfg.SegmentCap))
+			default:
+				published = int64(max(sparesBeyondRoom(r.Payload, 0, c.cfg.SegmentCap), 1))
+			}
+			adds += published - 1
 		}
-		adds += published - 1
-		// The entries open reservations hold are not the write's to spend: the
+		// The entries open reservations hold, and those other plain grants have
+		// admitted but not yet published, are not the write's to spend: the
 		// pre-check sized the write's own entries against the index's count,
-		// and this names them, the extra pieces included, against the room the
-		// held entries leave. A write that covers a held piece — an overwrite
-		// that supersedes and splits, up to two entries where a plain write
-		// names one — is refused where it alone would have fitted and would
-		// have spent entries a reservation holds.
+		// and this names them, the extra pieces included, against the room
+		// those leave. A write that covers a held piece — an overwrite that
+		// supersedes and splits, up to two entries where a plain write names
+		// one — is refused where it alone would have fitted and would have
+		// spent entries a reservation holds.
 		//
-		// decision: the held figure is left to the pre-check's count and adds
-		// rather than tested alone, because a check that only compared the
-		// entries left against the held ones refused a zero-gap fill at a full
-		// index where the pre-check admitted it. The bound is checked twice —
-		// the pre-check's own test names the write's entries against the whole
-		// count, and this names them against the room the held entries leave —
-		// and the stricter refusal answers.
-		if left := c.cfg.EntriesLeft(); left-c.heldEntries < adds {
-			missing := adds - (left - c.heldEntries)
+		// decision: a write that adds nothing — a zero-gap fill or a net-zero
+		// write — is refused naming the index while a reservation or another
+		// plain grant holds entries, although it publishes nothing. A fill
+		// cannot prove its gap will not grow a piece its supersede splits, and
+		// a write that spends none of the held entries but might grow one is
+		// refused rather than admitted past a bound it cannot yet see. The
+		// refusal fails closed and closes when the pre-check reports the
+		// entries a fill's real pieces add. A write that adds something names
+		// its adds against the room the held and pending entries leave, after
+		// the pre-check's own test named them against the whole count; the
+		// stricter refusal answers.
+		left := c.cfg.EntriesLeft() - c.heldEntries - c.pendingEntries
+		if adds == 0 {
+			missing := int64(1)
+			if left < 0 {
+				missing = 1 - left
+			}
+			c.mu.Unlock()
+			return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitIndex, Missing: missing, Unit: core.UnitEntries})
+		}
+		if left < adds {
+			missing := adds - left
 			c.mu.Unlock()
 			return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitIndex, Missing: missing, Unit: core.UnitEntries})
 		}
@@ -709,10 +746,10 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	}
 
 	// The reservation moves, all after the last refusal point in the
-	// section: the room, the bytes, the tag, the seats. The hook is the
-	// test seam between the counters' read and this move — the parking
-	// spot that shows a second caller cannot pass a read the first caller
-	// has not yet reserved under.
+	// section: the room, the bytes, the tag, the seats and the entries this
+	// write will publish. The hook is the test seam between the counters'
+	// read and this move — the parking spot that shows a second caller cannot
+	// pass a read the first caller has not yet reserved under.
 	if h := c.hook; h != nil {
 		h()
 	}
@@ -720,6 +757,13 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	c.reserved += bytes
 	c.reservedTagged[r.Tag] += bytes
 	c.pendingSeats += seats
+	// The entries this write's pieces will publish are held from now: a
+	// reservation taken before this write publishes sees them spent, so its own
+	// write can never be refused LimitIndex by a plain write's late publish. A
+	// write that adds nothing holds nothing.
+	if adds > 0 {
+		c.pendingEntries += adds
+	}
 	c.mu.Unlock()
 
 	// The spares the bytes need, held after the section released. A granted
@@ -737,6 +781,16 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 		c.clearSeats(seats)
 		if err != nil {
 			c.releaseReservation(r.Tag, r.Stream, roomPart, bytes)
+			// The entries this take admitted are refused with it: they never
+			// reach a grant, so this is the only place to give them back.
+			if adds > 0 {
+				c.mu.Lock()
+				c.pendingEntries -= adds
+				if c.pendingEntries < 0 {
+					c.pendingEntries = 0
+				}
+				c.mu.Unlock()
+			}
 			if ns := asNoSpace(err); ns != nil {
 				// Counted and spanned for the caller; the error it returns
 				// is this same refusal, which the line below answers with.
@@ -747,12 +801,13 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 		return &Grant{
 			c: c, tag: r.Tag, stream: r.Stream, bytes: bytes, left: bytes,
 			roomPart: roomPart, spares: sparesN, hold: hold, version: v,
+			heldEntries: adds,
 		}, nil
 	}
 
 	return &Grant{
 		c: c, tag: r.Tag, stream: r.Stream, bytes: bytes, left: bytes,
-		roomPart: roomPart, version: v,
+		roomPart: roomPart, version: v, heldEntries: adds,
 	}, nil
 }
 
@@ -937,6 +992,9 @@ func (g *Grant) Release() {
 		g.hold.Close()
 		g.hold = nil
 	}
+	// The entries this write's pieces never published go back to the pending
+	// figure: they are free again for a reservation or another plain write.
+	g.releaseEntries()
 }
 
 // releaseDrawn gives a drawn grant's unlanded bytes back to its reservation, so
@@ -972,16 +1030,17 @@ func (g *Grant) releaseDrawn() {
 	g.releaseEntries()
 }
 
-// Version returns the version drawn for the write when a reservation drew it,
-// and the zero version for an admitted write's grant, whose write draws its
-// own.
+// Version returns the version the write carries: the one Take drew in its own
+// section for an admitted write, or the one a reservation drew for its write.
+// It is never zero for a write that appends.
 func (g *Grant) Version() core.Version { return g.version }
 
 // Claimed hands over the index entries one piece of the write's split has just
-// reserved in the index, releasing them from the reservation's held figure so a
-// plain write beside it sees them spent only once the bound holds the piece. It
-// is a no-op for an admitted write's grant, whose entries the admission already
-// left to the index.
+// reserved in the index. For a drawn grant it releases them from the
+// reservation's held figure, so a plain write beside it sees them spent once the
+// bound holds the piece; for an admitted grant it releases them from
+// pendingEntries, the same figure holding what the write's own pieces reserved
+// and have not yet published.
 //
 // It reads and moves the grant's own heldEntries with no lock of the grant's,
 // so one goroutine at a time must call it — the write that holds the grant,
@@ -995,22 +1054,44 @@ func (g *Grant) Claimed(entries int64) {
 	}
 	g.c.mu.Lock()
 	g.heldEntries -= entries
-	g.c.heldEntries -= entries
+	// The entry leaves the figure that holds it: a drawn grant's from the
+	// reservation's held entries, an admitted grant's from the pending ones.
+	// They are different counters, and a plain write must never lower a
+	// reservation's.
+	if g.reservation == nil {
+		g.c.pendingEntries -= entries
+		if g.c.pendingEntries < 0 {
+			g.c.pendingEntries = 0
+		}
+	} else {
+		g.c.heldEntries -= entries
+	}
 	g.c.mu.Unlock()
 }
 
-// releaseEntries hands a drawn grant's unclaimed entries back to its
-// reservation, so a later write of the reservation may draw them: a write that
-// never published its pieces never reserved them in the index either. A write
-// that failed part-way calls Claimed for the pieces it did publish, so what it
-// hands back here is only what it never published.
+// releaseEntries hands a grant's unclaimed entries back: to its reservation for
+// a drawn grant, so a later write of the reservation may draw them — a write
+// that never published its pieces never reserved them in the index either — or
+// straight to pendingEntries for an admitted grant, whose pieces' entries it no
+// longer holds. A write that failed part-way calls Claimed for the pieces it did
+// publish, so what it hands back here is only what it never published.
 func (g *Grant) releaseEntries() {
-	if g.heldEntries <= 0 || g.reservation == nil {
+	if g.heldEntries <= 0 {
 		return
 	}
 	g.c.mu.Lock()
 	back := g.heldEntries
 	g.heldEntries = 0
+	if g.reservation == nil {
+		// An admitted grant's entries go back to the pending figure a
+		// reservation or another plain write now finds free again.
+		g.c.pendingEntries -= back
+		if g.c.pendingEntries < 0 {
+			g.c.pendingEntries = 0
+		}
+		g.c.mu.Unlock()
+		return
+	}
 	// The held figure counts what the reservation may still spend — its own
 	// leftEntries beside every drawn grant's unclaimed heldEntries — so an
 	// entry handed back to an open reservation stays held and only moves to
@@ -1025,8 +1106,9 @@ func (g *Grant) releaseEntries() {
 	g.c.mu.Unlock()
 }
 
-// Hold returns the pool's hold the grant carries, nil when the write fit
-// its stream's room.
+// Hold returns the pool's hold the grant carries: nil for a grant whose write
+// needs no spare beyond its stream's room, and never nil for a drawn grant,
+// which borrows its reservation's hold.
 func (g *Grant) Hold() *segment.Hold { return g.hold }
 
 // Drawn reports whether the grant was drawn from a reservation rather than
@@ -1096,6 +1178,10 @@ func (c *Capacity) ReservedBytes() int64 {
 // versions open reservations hold: those are not the caller's to spend, as
 // Take's own version check leaves them. The check and the draw are one
 // section, so a reservation's draw racing it cannot pass between them.
+//
+// A refusal here counts reservation_refused (and opens a reserve_refused span)
+// like Take's own, so that metric is every refusal Take or this call returned
+// by a limit, not Take's alone.
 func (c *Capacity) DrawVersion(ctx context.Context) (core.Version, error) {
 	c.mu.Lock()
 	if left := c.cfg.VersionsLeft(); left <= c.heldVersions {
@@ -1113,6 +1199,14 @@ func (c *Capacity) HeldEntries() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.heldEntries
+}
+
+// PendingEntries returns the index entries admitted plain grants hold and have
+// not yet handed to the index: the figure a test reads to check nothing leaks.
+func (c *Capacity) PendingEntries() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pendingEntries
 }
 
 // RefusedCount returns the reservation_refused counter: how many

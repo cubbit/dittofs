@@ -727,3 +727,77 @@ func TestDrawClampedStraddleKeepsTheShareTallyExact(t *testing.T) {
 		t.Fatalf("after retiring the head's segment the tally = %d, the set counts %d; want them equal", got, want)
 	}
 }
+
+// TestCountersReturnToRest checks every counter a take or draw can move —
+// reserved bytes, held and pending entries, held versions, seats and the room
+// granted — comes back to zero after each path that ends a grant without the
+// write publishing everything: a refused take, a take released unused, a
+// partial publish that fails on a later piece, and a reservation released with
+// its undrawn figures.
+func TestCountersReturnToRest(t *testing.T) {
+	rest := func(t *testing.T, r *rig, what string) {
+		t.Helper()
+		if got := r.c.reserved; got != 0 {
+			t.Fatalf("%s: reserved = %d, want 0", what, got)
+		}
+		if got := r.c.heldEntries; got != 0 {
+			t.Fatalf("%s: heldEntries = %d, want 0", what, got)
+		}
+		if got := r.c.pendingEntries; got != 0 {
+			t.Fatalf("%s: pendingEntries = %d, want 0", what, got)
+		}
+		if got := r.c.heldVersions; got != 0 {
+			t.Fatalf("%s: heldVersions = %d, want 0", what, got)
+		}
+		if got := r.c.pendingSeats; got != 0 {
+			t.Fatalf("%s: pendingSeats = %d, want 0", what, got)
+		}
+		if got := r.c.reservedAsk; got != 0 {
+			t.Fatalf("%s: reservedAsk = %d, want 0", what, got)
+		}
+		for stream, room := range r.c.grantedRoom {
+			if room != 0 {
+				t.Fatalf("%s: grantedRoom[%d] = %d, want 0", what, stream, room)
+			}
+		}
+	}
+
+	// A refused take holds nothing: the share limit refuses the write whole.
+	o := std()
+	o.spares = 0
+	r := newRig(t, o)
+	q := req()
+	q.ShareLimit = 1
+	_ = r.refusedWrite(t, q, core.LimitShare)
+	rest(t, r, "a refused take")
+
+	// A take released unused holds nothing: its pending entries go back.
+	r = newRig(t, std())
+	g := r.grant(t, req())
+	g.Release()
+	rest(t, r, "a take released unused")
+
+	// A write published in part and then failed: the entry its first piece
+	// claimed is the index's, and the entry it never published comes back to
+	// pendingEntries, which Release then clears.
+	r = newRig(t, std())
+	g = r.grant(t, req())
+	if g.heldEntries < 1 {
+		t.Fatalf("the take holds %d entries, want at least the entry its piece publishes", g.heldEntries)
+	}
+	g.Claimed(1) // the first piece published
+	g.Release()  // the write failed before publishing the rest
+	rest(t, r, "a partial publish")
+
+	// A reservation released with its undrawn figures: bytes, entries, versions
+	// and its journal-side ask return whole.
+	r = newRig(t, std())
+	rs := r.reserve(t, ReserveRequest{Tag: tag1, Bytes: 4 * WriteCharge(1, testCap), Writes: 4})
+	gd, err := rs.Draw(1)
+	if err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	gd.Release()
+	rs.Release()
+	rest(t, r, "a reservation released")
+}

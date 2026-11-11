@@ -138,21 +138,22 @@ type coreOptions struct {
 // mutex is the dirty-file list's leaf, held only for a map operation. Revisit
 // if a core-wide invariant ever needs a mutex that outlives one.
 type Core struct {
-	index      *index.Index
-	dirtyFiles dirtyList
-	clock      core.Clock // the injected clock, read for the write time a dirty write carries
-	counters   *index.Counters
-	set        *segment.Set
-	pool       *segment.Pool
-	cache      *segment.Descriptors
-	streams    *segment.Streams
-	dur        *durability.Durability
-	domains    durability.Domains
-	cap        *capacity.Capacity
-	headroom   *capacity.Headroom
-	segCap     int64               // the set's segment cap, what the streams roll at and the admission sizes by
-	retirer    *segment.Retirer    // the retirement executor
-	sealer     *segment.IdleSealer // the idle sealer; nil when Deps.IdleSealBytes is zero
+	index         *index.Index
+	dirtyFiles    dirtyList
+	clock         core.Clock // the injected clock, read for the write time a dirty write carries
+	counters      *index.Counters
+	set           *segment.Set
+	pool          *segment.Pool
+	cache         *segment.Descriptors
+	streams       *segment.Streams
+	dur           *durability.Durability
+	domains       durability.Domains
+	cap           *capacity.Capacity
+	headroom      *capacity.Headroom
+	segCap        int64               // the set's segment cap, what the streams roll at and the admission sizes by
+	contentTarget int                 // the content spare target the pool was built with, for the test helper's wait
+	retirer       *segment.Retirer    // the retirement executor
+	sealer        *segment.IdleSealer // the idle sealer; nil when Deps.IdleSealBytes is zero
 
 	held, dirty, retained atomic.Int64
 	writtenBytes          atomic.Uint64
@@ -328,6 +329,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		sealReserve := int64(deps.Streams) * (format.SealMarkerSize + format.CatalogEntrySize + format.TrailerSize)
 		targets.Headroom = int((int64(headroomRecords)*capacity.RecordCharge + sealReserve + state.Set.Cap() - 1) / state.Set.Cap())
 	}
+	c.contentTarget = targets.Content
 	c.pool = segment.NewPool(maker, targets, d.Admit, deps.Log)
 	c.cache = segment.NewDescriptors(fs, format.SegmentName, budget)
 
@@ -435,6 +437,10 @@ func (c *Core) HeldEntries() int64 { return c.cap.HeldEntries() }
 // reservations the journal's admission has refused, by every limit it names,
 // since the core was built.
 func (c *Core) ReservationRefused() uint64 { return c.cap.RefusedCount() }
+
+// PendingEntries returns the index entries admitted plain grants hold and have
+// not yet published, the counter a test checks returns to rest.
+func (c *Core) PendingEntries() int64 { return c.cap.PendingEntries() }
 
 // PoolCounters returns the spare pool's counts, read from the pool's own
 // maintained figures: the tests that check a reservation's spares are held

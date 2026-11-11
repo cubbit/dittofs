@@ -258,8 +258,19 @@ func TestReserveAhead_ReservedAndPlainWriters(t *testing.T) {
 	if got := reserved.Load(); got != writes {
 		t.Fatalf("reserved writers landed %d of %d", got, writes)
 	}
-	if got := c.ReservedBytes(); got < 0 {
-		t.Fatalf("ReservedBytes = %d after both writers", got)
+	// Exact figures, not inequalities a clamped read cannot fail. Every write's
+	// grant is released by now, so nothing outside the reservation is reserved
+	// or pending: ReservedBytes is exactly what its writes have not landed, and
+	// the entries held back are exactly its own undrawn ones — a plain writer
+	// leaked no pending entry and no earlier write left a held one behind.
+	if got, want := c.ReservedBytes(), r.Remaining(); got != want {
+		t.Fatalf("after both writers, ReservedBytes = %d, want the reservation's %d undrawn", got, want)
+	}
+	if got := c.PendingEntries(); got != 0 {
+		t.Fatalf("after both writers, plain grants still hold %d pending entries, want 0", got)
+	}
+	if got, want := c.HeldEntries(), r.EntriesLeft(); got != want {
+		t.Fatalf("after both writers, HeldEntries = %d, want the reservation's %d undrawn", got, want)
 	}
 }
 
@@ -390,11 +401,25 @@ func TestReserveAhead_ConcurrentIndexBound(t *testing.T) {
 	if plainRefused.Load() == 0 {
 		t.Fatal("no plain overwrite was refused the entries the reservation holds")
 	}
-	if got := c.Index().EntriesLeft(); got < 0 {
-		t.Fatalf("after both writers, EntriesLeft = %d, want the count at or below the bound", got)
+	// Exact figures, not inequalities a clamped read cannot fail: after both
+	// writers, ReservedBytes is exactly what the reservation has not drawn, its
+	// held entries are exactly its undrawn ones, and the index count is the
+	// warm piece plus the reserved pieces published — the figures the counters
+	// must land on once every write's grant is released.
+	if got, want := c.ReservedBytes(), r.Remaining(); got != want {
+		t.Fatalf("after both writers, ReservedBytes = %d, want the reservation's %d undrawn", got, want)
 	}
-	if got := int64(pieces) + 1 - c.Index().EntriesLeft(); got > limit {
-		t.Fatalf("the index count = %d, want at most the bound %d", got, limit)
+	if got, want := c.HeldEntries(), r.EntriesLeft(); got != want {
+		t.Fatalf("after both writers, HeldEntries = %d, want the reservation's %d undrawn", got, want)
+	}
+	published := int64(pieces) + 1 - c.Index().EntriesLeft()
+	if published > limit {
+		t.Fatalf("the index count = %d, over the bound %d", published, limit)
+	}
+	// The warm piece is one entry; each reserved write published its own one,
+	// since a 512-byte write fits its stream's room in a single piece.
+	if want := int64(1) + int64(writes); published != want {
+		t.Fatalf("the index holds %d entries, want the warm piece and the %d reserved writes'", published, writes)
 	}
 }
 

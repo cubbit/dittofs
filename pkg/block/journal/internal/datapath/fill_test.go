@@ -521,24 +521,32 @@ func TestFillAdmittedByTheFillIndexCheck(t *testing.T) {
 	}
 }
 
-// Two fills of different files pass Take's read-only index check at limit-1 and
-// both reach storage; only one commits. The other is refused at publish naming
-// the index, leaves its record noted and its file claimed, and holds nothing.
+// Two fills of different files, at limit-1, each past the bound for the entry
+// it would add: with the entries every admitted grant now holds, only one is
+// admitted and the other is refused at Take naming the index, before it appends
+// anything or touches storage — the window where both used to reach storage and
+// one committed is closed by the plain grant's pending entries. The refused one
+// leaves no record, claims no file and holds nothing.
+//
+// decision: this checks the stronger outcome the pending-entry fix gives, not
+// the publish refusal the admission alone left open; a fill still refused at
+// publish is covered by TestFillRefusedAtPublishClaimsTheFile (stale at
+// publish), and the bound's publish refusal by index's own checks.
 func TestFillsPastTheIndexBoundAdmitOnePerEntry(t *testing.T) {
 	c, seam := newTestCore(t, func(o *coreOptions) { o.extentLimit = 2 })
 	s := mustShare(t, c, 1)
 	mustWrite(t, c, s, testFile(80), 0, []byte("x")) // one entry of the two
 	hold := seam.Hold(t, kit.OpWrite, "*")
 
-	// Both appends must reach the seam: on one stream the second would wait
-	// behind the first's append.
 	a, b := racePairPicker(t, c)()
 	files := []core.FileID{a, b}
 	errs := make(chan error, len(files))
 	for _, f := range files {
 		go func() { errs <- c.Fill(context.Background(), s, f, 0, ff(4096), ver(0), ver(1)) }()
 	}
-	eventually(t, "both fills' appends to reach storage", func() bool { return hold.Waiting() >= 2 })
+	// Exactly one fill is admitted and appends, reaching the hold; the other is
+	// refused at Take before any append. Release once one append waits.
+	eventually(t, "the admitted fill's append to reach storage", func() bool { return hold.Waiting() >= 1 })
 	hold.Release()
 
 	var ok, bounded int
@@ -557,14 +565,22 @@ func TestFillsPastTheIndexBoundAdmitOnePerEntry(t *testing.T) {
 	if ok != 1 || bounded != 1 {
 		t.Fatalf("%d fills committed and %d were refused by the bound, want 1 and 1", ok, bounded)
 	}
-	held := 0
+	// The admitted fill appended one record and holds its one entry; the refused
+	// one appended nothing, so it claims no file and holds no entry.
+	held, claimed := 0, 0
 	for _, f := range files {
-		if tag, ok := c.Index().Owner(f); !ok || tag != s.Tag {
-			t.Fatalf("Owner of %v = %v, %v, want the share that appended the record", f, tag, ok)
+		if tag, ok := c.Index().Owner(f); ok {
+			if tag != s.Tag {
+				t.Fatalf("Owner of %v = %v, want the share", f, tag)
+			}
+			claimed++
 		}
 		held += len(c.Index().FileEntries(f))
 	}
-	if held != 1 {
-		t.Fatalf("the two files hold %d entries, want 1: the refused fill held its record", held)
+	if held != 1 || claimed != 1 {
+		t.Fatalf("the two files hold %d entries and %d are claimed, want 1 and 1: the refused fill appends and holds nothing", held, claimed)
+	}
+	if n := len(fillRecords(t, seam)); n != 1 {
+		t.Fatalf("%d fill records on disk, want the one admitted fill's", n)
 	}
 }

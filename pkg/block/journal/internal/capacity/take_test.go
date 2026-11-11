@@ -1627,3 +1627,34 @@ func TestTake_DrawsTheVersionInsideItsSection(t *testing.T) {
 		t.Fatal("the grant carries no version")
 	}
 }
+
+// TestReserve_ZeroGapFillBesideAReservationIsRefused checks the C1 gate's
+// narrowness: a fill that adds no entry is admitted at an exactly-full index
+// (TestTake_ZeroGapFillAtFullIndex), but beside an open reservation holding
+// entries it is refused naming the index. The refusal is deliberate — the fill
+// cannot prove it will not grow a piece its version's arrival splits — and
+// fails closed: it is the one write that adds nothing yet is refused while the
+// figure holding entries is non-zero.
+func TestReserve_ZeroGapFillBesideAReservationIsRefused(t *testing.T) {
+	// The bound leaves room for the reservation's pieces beside the one piece
+	// the fill covers whole, so the refusal is the held entries' alone.
+	pieces, _ := PiecesFor(2*WriteCharge(1, testCap), 2, testCap)
+	o := std()
+	o.indexBound = int64(pieces) + 2
+	r := newRig(t, o)
+	id := core.NewFileID([16]byte{1, 0xf})
+	p := index.Placed{Extent: core.Extent{Len: 4096}, Record: index.RecordAt{Segment: 1}, Version: core.Version{Counter: 1}}
+	if _, err := r.idx.WriteRetain(tag1, id, p, 1); err != nil {
+		t.Fatalf("WriteRetain: %v", err)
+	}
+	rs := r.reserve(t, ReserveRequest{Tag: tag1, Bytes: 2 * WriteCharge(1, testCap), Writes: 2})
+	defer rs.Release()
+
+	q := req()
+	q.File, q.Fill = id, true
+	_, err := r.c.Take(context.Background(), q)
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) || ns.Limit != core.LimitIndex {
+		t.Fatalf("a zero-gap fill beside the reservation = %v, want a NoSpaceError naming the index", err)
+	}
+}

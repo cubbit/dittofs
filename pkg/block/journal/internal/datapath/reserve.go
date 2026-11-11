@@ -75,14 +75,12 @@ func (c *Core) WriteReserved(ctx context.Context, s *Share, r *capacity.Reservat
 	if s.Tag != r.Tag() {
 		return core.Version{}, core.ErrInvalidSetting
 	}
-	// The draw is the admission's stand-in: a refusal here is the reservation
-	// spent, returned before the append domain is taken, so nothing of the
-	// write ran.
-	grant, err := r.Draw(int64(len(p)))
-	if err != nil {
-		return core.Version{}, err
-	}
-	v, n, err := c.appendAndPublish(ctx, s, id, off, p, mtime, grant)
+	// The append loop draws this write's version from the reservation, under
+	// the file's append domain, exactly where a plain write's Take draws its
+	// own: the versions of one file are appended in the order they were
+	// assigned, so a reserved write parked before the domain can never carry an
+	// older version than a plain write that took the domain first.
+	v, n, err := c.appendAndPublish(ctx, s, id, off, p, mtime, r)
 	c.writtenBytes.Add(uint64(n))
 	return v, err
 }

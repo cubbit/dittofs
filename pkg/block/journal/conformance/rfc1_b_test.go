@@ -582,8 +582,8 @@ func reserve(t *testing.T, h *journal.Handle, n int64, writes int) *journal.Rese
 // fixture's 64 MiB journal maximum. The rolling leg is scaled the way the
 // datapath's scenario check scales it — 16 copy writes of one segment's room
 // (the fixture's 1 MiB segments, less one record's headroom) beside 16 more
-// appends, rather than the epic's 1 GiB copy in 1 MiB writes beside 10 GiB —
-// so the fixture rolls segments without writing the epic's volume. It is a
+// appends, rather than a 1 GiB copy in 1 MiB writes beside 10 GiB — so the
+// fixture rolls segments without writing that volume. It is a
 // scenario, not a pin: the pool refills in the fixture, so it would pass were
 // a reserved roll's replacement never made. The exact replacement is pinned
 // deterministically in internal/datapath's
@@ -618,7 +618,7 @@ func TestRFC1B_ReserveAhead(t *testing.T) {
 		_, err = a.Reserve(1<<20, 1)
 		refusal(t, err, "a reservation past the share's limit", journal.LimitShare, journal.UnitBytes)
 
-		// ReservedBytes is T8.13's gauge: Stats is a stub until then, and this
+		// ReservedBytes is the share-statistics gauge: Stats is a stub until it lands, and this
 		// leg stops here with the reservation still open on purpose.
 		if got := f.J.Stats().Shares[limitedA].ReservedBytes; got <= 0 {
 			t.Fatalf("the share's ReservedBytes = %d with half a reservation unused, want it counted", got)
@@ -688,7 +688,7 @@ func TestRFC1B_ReserveAhead(t *testing.T) {
 	t.Run("DroppedByARestart", func(t *testing.T) {
 		f := open(t)
 		reserve(t, f.Share(1), 1<<20, 1)
-		// ReservedBytes is T8.13's gauge: Stats is a stub until then, and the
+		// ReservedBytes is the journal gauge: Stats is a stub until it lands, and the
 		// restart below stops at the same fixture refusal every reopen meets.
 		if got := f.J.Stats().ReservedBytes; got <= 0 {
 			t.Fatalf("ReservedBytes = %d with a reservation open, want it counted", got)

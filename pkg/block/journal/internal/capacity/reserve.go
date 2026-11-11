@@ -68,7 +68,11 @@ func PiecesFor(bytes int64, writes int, segCap int64) (pieces, spares int) {
 // version limit, and the spares the bytes roll into from the pool. A caller
 // that holds a reservation is refused by none of those limits while it holds
 // enough, so an operation that must not fail part-way — a clone's copies —
-// finds every refusal before it changes anything.
+// finds every refusal before it changes anything. The spares are the one
+// exception: a roll after a replacement can still meet the pool's `spare`
+// refusal while the maker refills, and a version limit lowered below the
+// reservation's held versions refuses the draw too; both are stated at
+// Hold.Take and Reservation.Draw.
 //
 // A refusal is a *core.NoSpaceError naming the limit that refused, in Take's
 // order: the read-only sentinel, then the headroom threshold, the version
@@ -156,10 +160,10 @@ func (c *Capacity) Reserve(ctx context.Context, r ReserveRequest) (*Reservation,
 		c.mu.Unlock()
 		return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitVersion, Missing: int64(missing), Unit: core.UnitVersions})
 	}
-	// Index bound: the entries open reservations hold are not this ask's
-	// either.
-	if left := c.cfg.EntriesLeft(); left < c.heldEntries+idx {
-		missing := c.heldEntries + idx - left
+	// Index bound: the entries open reservations hold, and those admitted plain
+	// grants hold until their pieces publish, are not this ask's either.
+	if left := c.cfg.EntriesLeft(); left < c.heldEntries+c.pendingEntries+idx {
+		missing := c.heldEntries + c.pendingEntries + idx - left
 		c.mu.Unlock()
 		return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitIndex, Missing: missing, Unit: core.UnitEntries})
 	}
@@ -174,10 +178,13 @@ func (c *Capacity) Reserve(ctx context.Context, r ReserveRequest) (*Reservation,
 		}
 	}
 	// Journal maximum: the ask's bytes and footer entries beside what
-	// reservations already hold and the footprint, for a reservation names
-	// room in segments not yet allocated.
+	// reservations already hold, what admitted takes have seated and no hold
+	// has settled, and the footprint, for a reservation names room in segments
+	// not yet allocated. The seats are the whole segments Take reserved for the
+	// spares it still needs (pendingSeats), each at its cap, so the two agree:
+	// a reservation cannot claim room a take in flight has already seated.
 	if c.cfg.MaxBytes > 0 {
-		if held := footSnap + c.reservedAsk + r.Bytes + footer; held > c.cfg.MaxBytes {
+		if held := footSnap + c.reservedAsk + int64(c.pendingSeats)*c.cfg.SegmentCap + r.Bytes + footer; held > c.cfg.MaxBytes {
 			missing := held - c.cfg.MaxBytes
 			c.mu.Unlock()
 			return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitJournal, Missing: missing, Unit: core.UnitBytes})
@@ -270,14 +277,26 @@ func (r *Reservation) Remaining() int64 {
 	return r.leftBytes
 }
 
+// EntriesLeft returns the index entries the reservation's writes have not drawn
+// yet but still hold, for a test that asserts the held figure is exactly what
+// the publishes have not claimed.
+func (r *Reservation) EntriesLeft() int64 {
+	r.c.mu.Lock()
+	defer r.c.mu.Unlock()
+	return r.leftEntries
+}
+
 // Draw returns a Grant for one write of payload bytes, drawn from what the
 // reservation holds: the record bytes the write's split will append, the
 // index entries those pieces need, one of its versions, and the spares of its
 // hold, which its pieces roll onto ahead of every unreserved write. The
 // version is drawn here and returned by the grant, so the write that takes it
-// appends under it. No limit of the journal and no headroom rule is consulted:
-// the reservation took them all, and while it holds enough the write is
-// refused by none.
+// appends under it; the caller draws under the file's append domain, where the
+// plain path's Take draws, so versions of one file are appended in order. No
+// limit of the journal and no headroom rule is consulted at the draw: the
+// reservation took them all, and while it holds enough the write is refused by
+// none. The spares are not so held: a roll after a replacement can still meet
+// the pool's `spare` refusal while the maker refills, as Hold.Take states.
 //
 // A reservation that no longer holds enough is refused with
 // core.ErrReservationExhausted before any version is drawn and any counter
@@ -285,6 +304,15 @@ func (r *Reservation) Remaining() int64 {
 // spent — so the refusal is not a NoSpaceError. A released reservation refuses
 // every draw with core.ErrClosed, and a write of no bytes is a caller bug,
 // core.ErrInvalidExtent.
+//
+// decision: a version limit lowered below the versions an open reservation
+// holds — SetVersionLimit, or a floor raise through Share — can leave
+// VersionsLeft fewer than heldVersions, so this draw is refused LimitVersion
+// part-way, after some of the reservation's writes landed. It fails closed: the
+// counter never issues a version above its limit, and a reservation is taken
+// again below the new one. Overturned by a lowering that refuses while a
+// reservation holds versions above the new limit, when the caller can wait for
+// it to drain.
 //
 // decision: a write draws its worst-case charge, WriteCharge, while the
 // reservation holds that much, and what it holds otherwise, as long as the
