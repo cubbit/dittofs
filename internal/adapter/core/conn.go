@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"errors"
 	"fmt"
 
@@ -48,14 +47,4 @@ func (c *Conn) Settings() settings.Settings {
 // logged and counted.
 func (c *Conn) Close(err error) {
 	panic("not implemented")
-}
-
-// Dispatcher is what a connection hands each framed record to. The pipeline
-// is the one implementation; a connection's own tests supply a stub.
-type Dispatcher interface {
-	Dispatch(ctx context.Context, c *Conn, rec *resources.Buf)
-	// Drain switches to draining: from now on only the requests a drain
-	// serves run, and each other one gets ErrMoved or ErrDraining, decided
-	// per request by asking the service about the handle it names.
-	Drain()
 }

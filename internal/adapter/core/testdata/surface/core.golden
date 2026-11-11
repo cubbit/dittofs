@@ -61,12 +61,6 @@ type Call func(ctx context.Context, r *Request) error
 
 type Conn struct{}
 
-type Dispatcher interface {
-	Dispatch(ctx context.Context, c *Conn, rec *resources.Buf)
-
-	Drain()
-}
-
 type ErrorRow struct {
 	Err      error
 	Ops      []uint32
