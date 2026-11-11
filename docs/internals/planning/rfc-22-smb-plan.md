@@ -1,9 +1,9 @@
 # RFC 22 - SMB adapter v2: implementation plan
 
-**Scope:** [RFC 22, SMB](../rfcs/rfc-22-smb.md), the whole RFC (`status: draft`, not deferred)
-but Witness, which waits for the cluster stage (§6.2, point 13): what the SMB adapter serves on
-RFC 20's `core`, from `NEGOTIATE` to Previous Versions, with its translations, its tests and its
-benchmarks. It builds on [RFC 20's plan](rfc-20-adapters-plan.md):
+**Scope:** [RFC 22, SMB](../rfcs/rfc-22-smb.md), the whole RFC (`status: draft`, not deferred) but
+Witness, which amendment A1 marks (cluster) and which waits for the cluster stage (§6.2, point 13):
+what the SMB adapter serves on RFC 20's `core`, from `NEGOTIATE` to Previous Versions, with its
+translations, its tests and its benchmarks. It builds on [RFC 20's plan](rfc-20-adapters-plan.md):
 that plan's epic 1 deletes v1 and fixes `core`'s surface, and its epic 6 builds the SMB scaffold
 (`smb/wire`'s framer and header codec, `smb/protocol`'s router, `New`), which this plan extends and
 does not plan again. This plan deletes nothing. Related RFCs, with how far each is in scope:
@@ -11,15 +11,15 @@ does not plan again. This plan deletes nothing. Related RFCs, with how far each 
 - [RFC 20](../rfcs/rfc-20-adapters.md), the adapter core: **constraints**, except every row of
   RFC 20's plan's deferral ledger (its §6.2) owned by the RFC 21/22 plans or naming RFC 22, for SMB:
   SMB's `Security` stage and `HoldCodec`; `gss` as SMB drives it; `translate`; the error-table rows
-  and the totality test; handler tests on `vfstest.Record`; operation codecs with golden vectors and
-  0-allocation gates; the import test's call sites and file sizes; the scripted client; the
-  cross-protocol and end-to-end rows; the wire tests against Samba; the benchmarks; the
-  `required-tests.json` pins. §6.4 maps each row to its epic.
+  and the totality test; handler tests on `vfstest.Memory` and `vfstest.Faults`; operation codecs
+  with golden vectors and 0-allocation gates; the import test's call sites and file sizes; the
+  scripted client; the cross-protocol and end-to-end rows; the wire tests against Samba; the
+  benchmarks; the `required-tests.json` pins. §6.4 maps each row to its epic.
 - [RFC 18](../rfcs/rfc-18-identity.md), identity, and [RFC 19](../rfcs/rfc-19-authorization.md),
   authorization: **SMB's parts only**: NTLM and Kerberos session setup, SMB's SID and identity
   translation, and the share and ACL checks SMB calls. The shared pieces, the authenticator behind
-  `SignIn` and the resolution behind `Spell` and `Find`, are **constraints**, and their missing
-  owner is an open point (§6.2). `gss`, which NFS will share, is built here only as far as SMB's
+  `SignIn` and the resolution behind `Spell` and `Find`, are **constraints**, owned by RFC 18's
+  plan (#4058) (§6.2, point 1). `gss`, which NFS will share, is built here only as far as SMB's
   session setup drives it, because RFC 20's plan's ledger gives it to this plan until it has an RFC
   of its own; it is one epic, so it can move whole, and its owner is an open point too (§6.2).
 - [RFC 14](../rfcs/rfc-14-open-state.md), open state: **SMB's wire side only**: lease and oplock
@@ -28,8 +28,8 @@ does not plan again. This plan deletes nothing. Related RFCs, with how far each 
 - [RFC 17](../rfcs/rfc-17-vfs.md), [RFC 24](../rfcs/rfc-24-resources.md),
   [RFC 13](../rfcs/rfc-13-configuration.md), [RFC 25](../rfcs/rfc-25-observability.md) and
   [RFC 29](../rfcs/rfc-29-test-harness.md): as RFC 20's plan treats them: constraints, or the rules
-  every epic follows (§1.5 rules 3 to 5). `pkg/vfs`, `vfstest.Record` and `vfstest.Null` exist on
-  `feat/storage-v2`.
+  every epic follows (§1.5 rules 3 to 5). `pkg/vfs` and `vfstest.Null` exist on
+  `feat/storage-v2`; `vfstest.Memory` and `vfstest.Faults` are RFC 17's plan's piece 12 (§3.3).
 - [RFC 21](../rfcs/rfc-21-nfs.md), NFS: **out**. [RFC 15](../rfcs/rfc-15-topology.md) and
   [RFC 27](../rfcs/rfc-27-namespace-migration.md): **out** beyond what RFC 20's plan covers.
 - RFC 0, 1, 5, 6, 7, 8, 12 and 16: **constraints only**, reached through the service.
@@ -48,12 +48,26 @@ so no name carries a version.
 state (an adapter holds none durably, RFC 20 A2), and the cutover, programme stage 7, wires the
 adapters into `dfs` and turns the protocol suites back on.
 **Estimates** are human man-days on the shared scale of `rfc-to-epic-plan`, kept as they are
-although the code is written by an agent; a scale for agent-written work was proposed in #3524.
+although the code is written by an agent; a scale for agent-written work was proposed in #3524's
+review and declined there.
 **Defaults used from Step 0:** dashboards none (#9); output path the default (#10). Where v2 lives
 is RFC 20's plan §4's layout, its differences flagged in §6.2. The target branch is
 `feat/storage-v2`; the plan document itself lands on `develop` and is cherry-picked, as the other
 planning documents are. External dependencies: RFC 20's plan's S1, S2 and S3, its epic 6's SMB half,
-and its S4 (`internal/node`) for anything node-level (§3.2).
+and its S4 (`internal/node`) for anything node-level; RFC 17's plan's piece 12 for E2; RFC 18's
+plan (#4058), its S2 and E5 to E7, for sign-in (§3.2).
+
+**RFC amendments in this pull request.** The user agreed to both:
+- **A1. RFC 22: Witness and a watch across shards are (cluster).** Witness is marked **(cluster)**
+  where RFC 22 states it: §5.1's continuously available flag, §14's serving sentence (linking
+  RFC 0 §1.4's single-node profile) and §19's gauge; it joins §18's "Where each check runs" list of
+  (cluster) steps, and so does the half of §18's §8 row on a recursive watch whose subtree is
+  another shard's, marked (cluster) in the row. §16.5 drops its sentence on an `ErrDelay` with no
+  cause, a case RFC 17 §4.3 rules out. Plan gaps 3 and 8; §6.2, point 13.
+- **A2. RFC 20 §4.3: `FreeState` after a revoked answer is not a second call.** In a protocol with
+  no operation that frees a reference, a handler whose call returns `ErrState` (`Revoked`) calls
+  `FreeState` once for that reference (RFC 14 §5.3), and RFC 20 §7.2's record leaves it out. Plan
+  gap 14.
 
 ## 1. Introduction
 
@@ -68,8 +82,8 @@ and its S4 (`internal/node`) for anything node-level (§3.2).
 | Codecs | split between `smbenc`, `header` and handlers | `smb/wire`, pure, one file per command, golden vectors and fuzz targets |
 | Durable and lease state | in the adapter's session tables | RFC 14's records at the file's primary; the adapter keeps only a connection's state |
 | Dialects | 2.0.2 among them | 2.1, 3.0, 3.0.2, 3.1.1; SMB1 and 2.0.2 refused (RFC 22 §3.1) |
-| Witness | not served | deferred to the cluster stage with RFC 22 §18's (cluster) rows (§6.2, point 13) |
-| Tests | handlers on real stores | handlers on `vfstest.Record`; stages on specification vectors; loopback through `core`; the composed node; smbtorture, WPTS, Windows; wire diffs against Samba |
+| Witness | not served | (cluster) by amendment A1, deferred to the cluster stage (§6.2, point 13) |
+| Tests | handlers on real stores | handlers on `vfstest.Memory`, errors injected through `vfstest.Faults`; stages on specification vectors; loopback through `core`; the composed node; smbtorture, WPTS, Windows; wire diffs against Samba |
 
 **Dependency limits.** What SMB's packages may import is RFC 20 §2.3's list, which its §7.1 import
 test enforces: `pkg/vfs`, `pkg/adapter`, `pkg/adapter/config`, `pkg/resources`, `pkg/metrics`,
@@ -80,25 +94,26 @@ and `Find`. `smb/dcerpc` imports no SMB package (RFC 20 §3.1).
 **What v2 serves at the end of the plan.** Everything RFC 22 specifies on one node, the first
 release's profile (RFC 22 §18, "Where each check runs"). The rows RFC 22 marks **(cluster)** are
 built where they are adapter code, and tested only once a second node exists. Witness (RFC 22 §14),
-which pays off only with a second node, is not built here (§6.2, point 13).
+(cluster) by amendment A1, is the exception: it is not built here (§6.2, point 13).
 
 ### 1.2 How the plan is organised
 
 Epic 1 fixes what several epics of SMB share before any is built: the request state handlers read,
 the handler set and its tables, the callbacks value, and the settings RFC 22 adds to `config.SMB`.
-Epic 2 builds what the tests stand on: the SMB handler harness on `vfstest.Record`, golden files cut
-from Samba captures, and the import test's last two rules. Twelve middle epics follow on three
-tracks: track A the connection, sessions and RFC 14's wire side; track B authentication, trees, the
-RPC services, security descriptors and the wire tests; track C the data path, metadata and names,
-locks and notification, and control codes. The integration with the node waits for S7. The last
-epic burns the SMB suites down and runs the end-to-end, Windows and benchmark rows.
+Epic 2 builds what the tests stand on: the SMB handler harness on `vfstest.Memory` and
+`vfstest.Faults`, golden files cut from Samba captures, and the import test's last two rules. Twelve
+middle epics follow on three tracks: track A the connection, sessions and RFC 14's wire side;
+track B authentication, trees, the RPC services, security descriptors and the wire tests; track C
+the data path, metadata and names, locks and notification, and control codes. The integration with
+the node waits for S7. The last epic burns the SMB suites down and runs the end-to-end, Windows and
+benchmark rows.
 
 ### 1.3 What epic 1 must deliver
 
 - **`config.SMB`'s RFC 22 fields** (RFC 13 Appendix B), those RFC 20's epic 1 does not already
   add: `smb_pending_deadline` and `smb_pending_cap`, validated as RFC 13 says where the adapter can
-  check it (the deadline above the 35 s break deadline), and marked live as RFC 13 marks them. How a
-  live change reaches a serving adapter is an open point (plan gap 7).
+  check it (the deadline above the 35 s break deadline), and marked live as RFC 13 marks them; a
+  live change reaches a serving adapter through `Reconfigure` (RFC 20 §3.6; plan gap 7, settled).
 - **`smb/protocol`'s request state** (RFC 20 §4.7's `Request.State`, §4.9's `Caps`): the session,
   the tree, `Caps`, the session's `FileId` table and the chain's current open, as handlers read
   them, with stub bodies. Every handler epic, on three tracks, reads it.
@@ -132,7 +147,7 @@ v2 once `dfs` serves SMB, each v2 failure an entry `status: fail`, `fix: planned
 before then (`epic-breakdown` Step 6.3, under #3615).
 
 **The catalogue, by source.** Every row lands in the epic that creates what it imports, on
-`vfstest.Record` where the adapter's half can fail alone, and again on the composed node or a real
+`vfstest.Memory` where the adapter's half can fail alone, and again on the composed node or a real
 client in epic 16:
 
 - RFC 22 §18's rows and §16.6's table, each mapped in §7 to its subtasks; §18's acceptance rows for
@@ -142,9 +157,10 @@ client in epic 16:
   RFC 20's plan T8.2 asks.
 - RFC 20 §7.4's and §7.5's SMB rows: drain under `tar` on SMB 3.1.1, slow client, reconnect after
   a restart, cancel, order, Kerberos and AD.
-- RFC 18 §10's Tier 2 rows through SMB (no map to guest, re-authentication, binding, deny-only SIDs,
-  anonymous lookup, disable takes effect) and RFC 19 §9's SMB rows (maximal access, generic rights,
-  the owner fold, round trips, the SACL, access-based enumeration).
+- RFC 18 §10's Tier 2 SMB rows: not here; RFC 18's plan (#4058), its E9, runs them over this
+  plan's E5, E6 and E7 on S5.
+- RFC 19 §9's SMB rows (maximal access, generic rights, the owner fold, round trips, the SACL,
+  access-based enumeration).
 - RFC 14's plan's L52 cases that are SMB session steps, which that plan hands to stage 5.
 - The protocol suites' own lists: smbtorture's `smb2.*` and `rpc.*` tests and WPTS's MS-SMB2 and
   MS-FSA cases, with `develop`'s `known.yaml` as v1's baseline for parity.
@@ -153,7 +169,8 @@ client in epic 16:
   client).
 
 **What the catalogue leaves out.** RFC 22's **(cluster)** steps, outside the first release's
-conformance (RFC 22 §18); Witness's row, deferred with them (§6.2, point 13); the namespace-move
+conformance (RFC 22 §18), Witness's row and a watch across shards among them (amendment A1; §6.2,
+point 13); the namespace-move
 rows of §6.3, which need RFC 27's move (out of scope); and the rows needing a Windows runner until
 one is provisioned (§6.2, point 8).
 
@@ -202,14 +219,14 @@ scripted client with sessions (epic 5), the epics that create the packages they 
 >   release only by moving under the roadmap epic of the other release.
 
 1. **Independent unit tests, under `-race`.** Each epic carries its own unit tests. It may use
-   another epic's implementation once that has landed, `vfstest.Record` and `vfstest.Null`, the SMB
-   handler harness and its golden files, `gsstest`'s initiators, and RFC 20's `testproto` and leak
-   checks. A handler is tested on `vfstest.Record` (RFC 20 §7.2): its mutating call pinned with its
-   arguments, read-only calls by name, and the reply for each scripted answer, each error included.
-   A stage is tested without a socket, on specification vectors. A loopback row runs over real TCP
-   through `core`. Test at the layer that consumes a value (`CLAUDE.md`, "Verifying a change"): a
-   credit grant on the reply the client reads, a share flag on the `TREE_CONNECT` reply, a name on
-   the listing that shows it.
+   another epic's implementation once that has landed, `vfstest.Memory`, `vfstest.Faults` and
+   `vfstest.Null`, the SMB handler harness and its golden files, `gsstest`'s initiators, and
+   RFC 20's `testproto` and leak checks. A handler is tested as RFC 20 §7.2 says: on
+   `vfstest.Memory`, each error an injected one through `vfstest.Faults`, the one-call rule read
+   from `vfstest.Memory`'s record of mutating calls. A stage is tested without a socket, on
+   specification vectors. A loopback row runs over real TCP through `core`. Test at the layer that
+   consumes a value (`CLAUDE.md`, "Verifying a change"): a credit grant on the reply the client
+   reads, a share flag on the `TREE_CONNECT` reply, a name on the listing that shows it.
 2. **Fuzz tests where relevant.** Go native fuzzing on every decoder of bytes a peer sent: each
    command's request, the transform header, negotiate and create contexts (`DHnQ`, `DH2Q`, `DH2C`,
    `RqLs`, `AppInstanceId`), access and share masks, `LOCK` elements, security descriptors, the
@@ -244,10 +261,11 @@ scripted client with sessions (epic 5), the epics that create the packages they 
    thing does: MS-SMB2's, MS-FSCC's and MS-DTYP's published examples and Samba captures for bytes,
    never vectors made by the codec under test (RFC 20 §5.4); real TCP over loopback for sockets; the
    composed node for a fault below the server; smbtorture, WPTS, the Linux kernel client and Windows
-   for what a client does. `vfstest.Record` stands in only for the service's answer to a handler.
-   RFC 22 §18's "What must not stand in" holds: a single node fails no cross-node row, a client that
-   never lets a break time out fails no break row, and a failover test that flushes first fails no
-   durability row.
+   for what a client does. `vfstest.Memory` stands in only for the service behind a handler or
+   `gss`, sign-in included, and `vfstest.Faults` only for an error it answers (RFC 20 §4.4, §7.2;
+   RFC 18 §10's "Who stands in for what"). RFC 22 §18's "What must not stand in" holds: a single
+   node fails no cross-node row, a client that never lets a break time out fails no break row, and a
+   failover test that flushes first fails no durability row.
 8. **Translate, never decide.** A handler makes at most one mutating service call and branches on
    no file attribute, mode or ACL to decide whether an operation is allowed (RFC 20 §4.3, A5); a
    precondition its row carries is the pipeline's (A15). Every mapping of RFC 22 §16 is a pure
@@ -292,24 +310,24 @@ rows of RFC 20's deferral ledger.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | SMB surface | `config.SMB`'s RFC 22 fields; `smb/protocol`'s request state; `smb/ops`' handler set, table and `ioctl/` table; the callbacks value | 4 | 4 | team | all |
-| E2 ⛔ | Test foundations | the SMB handler harness on `vfstest.Record`; golden files cut from Samba captures; the import test's call-site and file-size rules | 3 | 6 | team | E3 to E14 |
+| E2 ⛔ | Test foundations | the SMB handler harness on `vfstest.Memory` and `vfstest.Faults`; golden files cut from Samba captures; the import test's call-site and file-size rules | 3 | 6 | team | E3 to E14 |
 | E3 | Negotiation and the connection's stages | `NEGOTIATE`, `Caps`, signing, encryption, preauthentication, credits, the message-ID window, `HoldCodec`, the error table and its totality test, `ECHO`, `CANCEL` | 9 | 24 | A | E5 |
 | E4 | Authentication mechanisms | `gss`: `Exchanges`, NTLM, Kerberos, SPNEGO, `Identity`, `gsstest` | 6 | 15.5 | B | E5 |
-| E5 🔀 | Sessions | `SESSION_SETUP`, `LOGOFF`, the session registry, the client record, re-authentication, expiry, multichannel, `PreviousSessionId`, the scripted client | 8 | 20 | A | E9, E14 (partly) |
-| E6 | Trees, IPC$ and the RPC services | `TREE_CONNECT`, share flags, keyless confinement, DCE/RPC, named pipes, srvsvc, wkssvc, lsarpc | 5 | 13 | B | E9, E11 (partly); E16 |
+| E5 🔀 | Sessions | `SESSION_SETUP`, `LOGOFF`, the session registry, the client record, re-authentication, expiry, multichannel, `PreviousSessionId`, the scripted client | 8 | 15 | A | E9, E14 (partly) |
+| E6 | Trees, IPC$ and the RPC services | `TREE_CONNECT`, share flags, keyless confinement, DCE/RPC, named pipes, srvsvc, wkssvc, lsarpc | 5 | 18 | B | E9, E11 (partly); E16 |
 | E7 | Opens and the data path | `CREATE`, `CLOSE`, `READ`, `WRITE`, `FLUSH`, `FileId`s, path resolution, access translation, `Adapter` bytes | 8 | 21 | C | E8; E6, E9, E11 to E13 (partly) |
-| E8 | File information, directories and names | information classes, `QUERY_INFO`, `SET_INFO`, `QUERY_DIRECTORY`, rename and link, the name mapping, streams, reparse points | 8 | 22 | C | E11 to E13 (partly), E16 |
+| E8 | File information, directories and names | information classes, `QUERY_INFO`, `SET_INFO`, `QUERY_DIRECTORY`, rename and link, the name mapping, streams, reparse points | 8 | 21.5 | C | E11 to E13 (partly), E16 |
 | E9 | Leases, breaks and held requests | caching requests, break callbacks and acknowledgements, `Revoked`, holds by cause | 6 | 18 | A | E10; E11 (partly) |
 | E10 | Durable and persistent handles, and replay | durability on `CREATE`, reconnect, replay, app instance takeover | 5 | 13 | A | E16 |
-| E11 | Byte-range locks and change notification | `LOCK`, waiting locks, `CHANGE_NOTIFY` | 5 | 12.5 | C | E16 |
+| E11 | Byte-range locks and change notification | `LOCK`, waiting locks, `CHANGE_NOTIFY` | 5 | 14 | C | E16 |
 | E12 | Security descriptors and quotas | the descriptor codec, `translate`'s descriptor functions, principals by SID, security and quota classes | 5 | 12.5 | B | E16 |
-| E13 | Control codes and Previous Versions | the `ioctl/` codes of Appendix F, server-side copy, snapshots | 5 | 11.5 | C | E16 |
+| E13 | Control codes and Previous Versions | the `ioctl/` codes of Appendix F, server-side copy, snapshots | 5 | 12 | C | E16 |
 | E14 🔀 | Wire tests against Samba | the differential runner, SMB scripts per area, the divergence list | 4 | 13 | B | E16 |
 | E15 🔀 | Integration with the node | settings, the durable-handles listing, the SMB suites turned on | none | planned after S7 | team | E16 (partly) |
 | E16 🔀 | E2E green | in-process rows, suites burned down, e2e, Windows and system rows, cross-protocol rows, benchmarks, pins | 7 | 21 | team | none |
-| | **Total** | | **88** | **227** | | |
+| | **Total** | | **88** | **228.5** | | |
 
-**Plan estimate: 88 subtasks, 227 man-days, not counting epic 15.**
+**Plan estimate: 88 subtasks, 228.5 man-days, not counting epic 15.**
 
 Nor T16.3, the SMB suites' burn-down, which is planned after E15 as E15 is (§6.2, point 12).
 
@@ -330,6 +348,7 @@ flowchart TD
   R1(["RFC 20 S1 core surface frozen"]):::sync --> E1["E1 SMB surface ⛔"]:::blocker --> S1(["S1 SMB surface frozen"]):::sync
   S1 --> E2["E2 Test foundations ⛔"]:::blocker
   R2(["RFC 20 S2 and T6.1"]):::sync --> E2
+  P12(["RFC 17 plan piece 12: vfstest.Memory, Faults"]):::sync --> E2
   E2 --> S2(["S2 SMB test foundations in CI"]):::sync
   subgraph A["Track A"]
     E3["E3 Negotiation and stages"] --> E5["E5 Sessions 🔀"]:::sync
@@ -367,8 +386,10 @@ flowchart TD
   S4 -. "loopback rows" .-> E11
   S5(["S5 composed in-process node"]):::sync -. "DittoFS side" .-> E14
   S5 -. "in-process rows" .-> E16["E16 E2E green 🔀"]:::sync
-  S6a(["S6a local sign-in, RFC 18"]):::sync -. "authenticated sessions" .-> E16
-  S6b(["S6b directory sign-in, RFC 18"]):::sync -. "AD rows" .-> E16
+  S6a(["S6a local sign-in: RFC 18 plan S2, E5"]):::sync -. "authenticated sessions" .-> E16
+  S6a -. "NTLM sign-in" .-> S4
+  S6a -. "rows where SignIn, Spell or Find succeeds" .-> E4 & E5 & E6 & E12
+  S6b(["S6b directory sign-in: RFC 18 plan E5 to E7"]):::sync -. "AD rows" .-> E16
   S7(["S7 the node serves SMB: RFC 20 S4, E7, stage 7"]):::sync --> E15["E15 Integration with the node 🔀"]:::sync
   E15 -. "suites on" .-> E16
   E6 & E8 & E10 & E11 & E12 & E13 & E14 --> E16
@@ -384,28 +405,30 @@ holds its S4 and its epic 7.
 - **S1 SMB surface frozen** (after E1, which starts at RFC 20's S1, when `core`'s §4.7 surface and
   `Bind`'s body exist). The request state, the handler set and its tables, the callbacks value and
   `config.SMB`'s fields compile with stub bodies. Unblocks E2.
-- **S2 SMB test foundations in CI** (after E2, which needs RFC 20's S2, the import test in CI, and
-  its T6.1, `smb/wire`'s framer and header codec). The handler harness runs a row on
-  `vfstest.Record`, golden files load from the capture corpus, and the import test reports its two
-  new seeded violations. Unblocks every middle epic but those that wait on another epic.
+- **S2 SMB test foundations in CI** (after E2, which needs RFC 20's S2, the import test in CI, its
+  T6.1, `smb/wire`'s framer and header codec, and RFC 17's plan's piece 12, `vfstest.Memory` and
+  `vfstest.Faults`). The handler harness runs a row on `vfstest.Memory`, golden files load from the
+  capture corpus, and the import test reports its two new seeded violations. Unblocks every middle
+  epic but those that wait on another epic.
 - **🔀 S3 SMB scaffold on core** (outside: RFC 20's S3 with its T6.3). An SMB connection runs
   through `core`'s pipeline over loopback, every command answered not supported. Unblocks E3's
   loopback rows and, with E3, E4 and E5, S4.
-- **🔀 S4 a session over loopback** (after E3, E4 and E5, and S3). The scripted client negotiates
-  each dialect, sets up a session through `gsstest`'s initiators against a scripted `SignIn`, and
-  signs and seals. Unblocks the loopback rows of E6 and E11; those of E9 and E10 follow E5 on
-  track A.
+- **🔀 S4 a session over loopback** (after E3, E4 and E5, S3, and S6a's NTLM half). The scripted
+  client negotiates each dialect, sets up a session through `gsstest`'s initiators against
+  `vfstest.Memory`'s `SignIn`, and signs and seals. Unblocks the loopback rows of E6 and E11;
+  those of E9 and E10 follow E5 on track A.
 - **🔀 S5 composed in-process node** (outside, owner open, §6.2). The real service, open state,
   engine and store, in memory, without `internal/node`, with SMB on a loopback port. Unblocks E14's
   DittoFS side and E16's in-process rows. If no owner is found by S4, a subtask in E2 builds the
   composed single-node harness.
-- **🔀 S6a local sign-in** (outside: an RFC 18 plan, none yet, §6.2 point 1). NTLMv2 against a local
-  NT hash and Kerberos against a keytab (RFC 18 §3.3, §3.5's local source), with `Spell` and `Find`
-  from RFC 18 §11's slice 4. Until it lands, `SignIn`, `Spell` and `Find` answer `ErrAccess` on
-  `feat/storage-v2`. Unblocks T16.1, T16.2, and the lsarpc and descriptor rows on the composed node.
-- **🔀 S6b directory sign-in** (outside: the same plan). NETLOGON pass-through, the PAC, LDAP
-  (RFC 18 §3.4, §3.5's pass-through source, §5), with the directory's `Spell` and `Find` from
-  RFC 18 §11's slice 6. Unblocks T16.4's Kerberos and AD row and T16.5.
+- **🔀 S6a local sign-in** (outside: RFC 18's plan (#4058), its S2 plus E5; §6.2 point 1). NTLMv2
+  against a local NT hash with `Spell` and `Find` (its S2), and Kerberos against an imported keytab
+  (its E5). Until each lands, `SignIn`, `Spell` and `Find` answer `ErrAccess`, `vfstest.Memory`'s
+  included. Unblocks S4's signed session, the rows where they succeed (NTLM, `Spell` and `Find` at
+  its S2: T4.2, T4.5, T5.3, T5.8, T6.5, T12.2, T12.3; Kerberos at its E5: T4.3), T16.1 and T16.2.
+  Codec and vector rows, and every `SignIn` error injected through `vfstest.Faults`, do not wait.
+- **🔀 S6b directory sign-in** (outside: RFC 18's plan (#4058), its E5's PAC, E6's directory and
+  E7's pass-through). Unblocks T16.4's Kerberos and AD row and T16.5.
 - **🔀 S7 the node serves SMB** (outside: RFC 20's S4, its epic 7, and programme stage 7's start
   path). `node.New` builds, starts and reconfigures the SMB adapter and `dfs` serves it. Unblocks
   E15.
@@ -417,6 +440,7 @@ holds its S4 and its epic 7.
 | 🔀 RFC 20 S1 | E1 | `core`'s surface and `Bind` are what E1's types plug into |
 | ⛔ E1 | E2, and through it every epic | the request state and handler set every handler epic writes against |
 | 🔀 RFC 20 S2 and T6.1 | E2 | the import test E2 extends, and `smb/wire`'s header the harness decodes |
+| 🔀 RFC 17's plan's piece 12 | E2 | `vfstest.Memory` and `vfstest.Faults`, which every handler test runs on (RFC 20 §7.2) |
 | ⛔ E2 | E3, E4, E6, E7, E12, E13 and E14, through S2 | the harness every handler test runs on, and the import test from the first SMB package |
 | E3 | E5; S4 | a session needs a negotiated connection, its signing keys and credits |
 | E4 | E5; S4 | T5.3 drives every mechanism and `Identity`, and T5.8 signs in through `gsstest`; E4 starts at S2, so it ends inside E3 |
@@ -428,7 +452,7 @@ holds its S4 and its epic 7.
 | 🔀 S3 | E3, partly; S4 | E3's loopback rows and the first session need SMB on `core` |
 | 🔀 S4 | E6 and E11, partly | their loopback rows need a session |
 | 🔀 S5 | E14 and E16, partly | the DittoFS side of a wire test and every in-process row need the composed node |
-| 🔀 S6a | E16, partly | an authenticated session on the real service needs the authenticator |
+| 🔀 S6a | S4; E4, E5, E6, E12 and E16, partly | a `SignIn` that succeeds, and `Spell` and `Find` that answer, on `vfstest.Memory` and on the composed node: NTLM and names at RFC 18's plan's S2, Kerberos at its E5 |
 | 🔀 S6b | E16, partly | a domain user's session needs pass-through, the PAC and the directory |
 | 🔀 S7 | E15 | no node to wire into, no `dfs` serving SMB |
 | 🔀 E15 | E16, partly | the SMB suites run only once `dfs` serves SMB and the V2 filter lets them |
@@ -439,19 +463,19 @@ holds its S4 and its epic 7.
 - **Track A: E3, E5, E9, E10.** The connection and its security, then sessions, then RFC 14's wire
   side: leases, breaks, holds, durable handles and replay. It starts at S2 with `NEGOTIATE` and the
   stages on specification vectors, runs its first loopback rows at S3, and its session setup waits
-  for E4, which track B starts at S2 and finishes inside E3. E9 needs E7's `CREATE` and E6's
-  `TREE_CONNECT`, which tracks C and B finish well before. At 75 man-days this is the longest track
-  and the workload's critical path.
+  for E4, which track B starts at S2 and finishes inside E3, and its signed session (S4) for
+  RFC 18's plan's S2 (S6a). E9 needs E7's `CREATE` and E6's `TREE_CONNECT`, which tracks C and B
+  finish well before. At 70 man-days this is the longest track and the workload's critical path.
 - **Track B: E4, E6, E12, E14.** Authentication, then trees and the RPC services, then security
   descriptors, then the wire tests. E4 comes first because E5 needs it; in E6, `TREE_CONNECT` comes
   first because every file request needs a tree. E14's runner and scripts are built against Samba
-  alone and its DittoFS side waits for S5. At 54 man-days the track ends about 21 man-days before
+  alone and its DittoFS side waits for S5. At 59 man-days the track ends about 11 man-days before
   track A; it then takes E16's in-process rows (T16.1, T16.2) as S5 and their epics allow.
 - **Track C: E7, E8, E13, E11.** The data path, then file information and names, then control codes
   and Previous Versions, then locks and notification, all on the open E7 resolves. E13 goes before
-  E11 because E11 waits partly on E9 (track A, about man-day 62) and E13 on nothing outside the
-  track: E11 then starts about man-day 54 instead of 43. Within E8, `QUERY_INFO` and `SET_INFO`, the
-  end of file included, come before directories, reparse points and streams. At 67 man-days.
+  E11 because E11 waits partly on E9 (track A, about man-day 57) and E13 on nothing outside the
+  track: E11 then starts about man-day 54.5 instead of 42.5. Within E8, `QUERY_INFO` and `SET_INFO`,
+  the end of file included, come before directories, reparse points and streams. At 68.5 man-days.
 - **The team.** E1 and E2 before the tracks; E15 at S7; E16 after the tracks.
 - **The FSLogix workload.** One VHDX of 10 to 30 GB per user, held open through one handle all
   session, overwritten at random in 64 KiB pieces, and truncated at sign-out. It can first run at
@@ -475,7 +499,7 @@ pkg/adapter/
   smb/                        RFC 20's E1 and E6: New
 internal/adapter/
   gss/                        E4: Exchanges, the NTLM, Kerberos and SPNEGO mechanisms, Identity (RFC 20 §4.4)
-    gsstest/                  E4: initiators, a test keytab, a test acceptor behind a fake SignIn
+    gsstest/                  E4: initiators and a test keytab; tests accept through gss on vfstest.Memory
   translate/                  E7 (access masks), E8 (attributes, times, Fit), E12 (descriptors)
   adaptertest/
     golden/                   E2: golden files cut from reference captures
@@ -536,12 +560,13 @@ What every SMB test stands on (§1.4). No red suite is registered: `unit` holds 
 and the SMB protocol suites are off on the branch until the cutover.
 
 RFC sections: RFC 20 §5.4 (golden vectors from specifications and captures), §7.1 (entry call
-sites, file sizes), §7.2 (handlers on a recording service).
+sites, file sizes), §7.2 (handlers on `vfstest.Memory` and `vfstest.Faults`).
 
 - T2.1 The SMB handler harness: golden request bytes through a row (`Decode`, `Resolve`, `Role`,
-  `Call`, `Encode`) with a built request state, against `vfstest.Record`; the mutating call pinned,
-  the reply bytes compared, an error mapped through a given table; its own test proving a second
-  mutating call and a wrong byte each fail it.
+  `Call`, `Encode`) with a built request state, against `vfstest.Memory`, errors injected through
+  `vfstest.Faults`; the one-call rule read from `vfstest.Memory`'s record, the reply bytes
+  compared, an error mapped through a given table; its own test proving a second mutating call and
+  a wrong byte each fail it.
 - T2.2 Reference captures: a script recording Samba per command area into `test/pcap-corpus/smb`,
   against the AD domain controller and Samba member of `test/smbfuzz`'s fixture rather than a
   second fixture, and `adaptertest/golden`, which cuts captured messages into golden files.
@@ -607,7 +632,8 @@ SPNEGO and NTLM mechanism code is lifted from `develop`'s history (RFC 20 Append
 `gss`, keeping the mechanism code). RFC 4121's per-message tokens are not here: RFC 20's plan's
 ledger gives them to RFC 21's plan or `gss`'s own RFC (§6.2, point 2). Nothing in E4 imports an
 SMB package, so the epic can move whole. Tested in process, with no KDC, no domain controller and
-no network.
+no network, against `vfstest.Memory`'s `SignIn` (RFC 20 §4.4): codec and vector rows run from S2,
+and the rows where `SignIn` succeeds wait for S6a (§3.2).
 
 RFC sections: RFC 20 §4.4 (the package, its pieces table for SMB, its tests); RFC 18 §3.3's,
 §3.5's and §3.6's wire halves (an AP-REQ passed to `SignIn` with the client's address, the NTLM
@@ -619,23 +645,23 @@ messages' bytes kept for the MIC, anonymous and guest set up as anonymous).
   `NTLMAuthenticate` with the three messages' bytes as sent; NTLMv1 and LM refused; the session key
   from `SignIn`'s `Keys`.
 - T4.3 Kerberos: the AP-REQ handed to `SignIn` with the connection's address, the AP-REP and subkey
-  from `Keys`; `gsstest`'s initiator minting tickets from a test keytab, and a test acceptor behind a
-  fake `SignIn`.
+  from `Keys`; `gsstest`'s initiator minting tickets from a test keytab, accepted through
+  `vfstest.Memory`'s `SignIn`.
 - T4.4 SPNEGO: the negotiation tokens, Kerberos offered first and NTLM as fallback, the
   mechanism-list MIC.
 - T4.5 `Identity`: from a context, `Secret` or `Ticket` with the protection the protocol sets per
   request, expiry from the evidence; every `SignIn` error the logon failure, never a guest session;
   the anonymous and guest path with proof `None` and no key.
 - T4.6 `gsstest`: initiators for each mechanism, and RFC 20 §4.4's mechanism tests (Kerberos
-  without a KDC, NTLM against a fake `SignIn`, SPNEGO with fallback and the MIC), in process; the
-  SMB handshake over loopback is T5.8's.
+  without a KDC, NTLM against `vfstest.Memory`'s `SignIn`, SPNEGO with fallback and the MIC), in
+  process; the SMB handshake over loopback is T5.8's.
 
 ### Epic 5 - Sessions 🔀
 
-**Epic 5 estimate: 8 subtasks, 20 man-days.**
+**Epic 5 estimate: 8 subtasks, 15 man-days.**
 
 A session on a connection and across channels, from sign-in to logoff, and the client record behind
-it. Opens S4: the first session over loopback.
+it. Opens S4: the first session over loopback, once S6a's NTLM half holds (§3.2).
 
 RFC sections: §4.1 (session setup, keyless sessions, re-authentication, expiry, the NTLM bytes),
 §4.2, §4.3's `PreviousSessionId` and per-session disconnect, §4.4's client record, §16.1; §16.4's
@@ -667,11 +693,11 @@ client rows; Appendix G's `SESSION_SETUP` and `LOGOFF`; RFC 20 §3.2's cleanup p
 
 ### Epic 6 - Trees, IPC$ and the RPC services
 
-**Epic 6 estimate: 5 subtasks, 13 man-days.**
+**Epic 6 estimate: 5 subtasks, 18 man-days.**
 
 How a session reaches a share, and the RPC services that are not shares: `IPC$`'s named pipes and
-DCE/RPC. `TREE_CONNECT` comes first: every file request needs a tree. Witness (RFC 22 §14) is
-deferred to the cluster stage (§6.2, point 13).
+DCE/RPC. `TREE_CONNECT` comes first: every file request needs a tree. Witness (RFC 22 §14),
+(cluster) by amendment A1, is deferred to the cluster stage (§6.2, point 13).
 
 RFC sections: §4.1's keyless confinement at `TREE_CONNECT`, §5.1, §5.2, Appendix C; §3.3's
 parked pipe `READ`; Appendix F's pipe codes; Appendix G's `TREE_CONNECT`, `TREE_DISCONNECT` and RPC
@@ -712,7 +738,8 @@ Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4
 - T7.2 `FileId`s: the persistent half from the open's `OpenID` and shard, through `pkg/vfs`'s codec;
   the volatile half in the session's table, never reissued while held (RFC 20 §2.2); a related
   member's current open; a `FileId` answered `STATUS_FILE_CLOSED` for `ErrState` (`Revoked`), then
-  freed with `FreeState` (RFC 22 §16.5's row; RFC 14 §5.3).
+  freed with `FreeState` in the handler (RFC 22 §16.5's row; RFC 14 §5.3; plan gap 14, amendment
+  A2).
 - T7.3 Path resolution: a `CREATE`'s or rename target's components looked up from the tree's root,
   the last one opened (plan gap 6).
 - T7.4 Access translation in `translate`: generic rights to `FILE_GENERIC_*`, `ShareAccess` to the
@@ -721,7 +748,7 @@ Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4
 - T7.5 `CREATE`: one `Open` with disposition, access, deny mode, directory, name and the options of
   Appendix D; open by file ID and shared virtual disks refused; a stream's delete refused before the
   call; the reply's `MaximalAccess` and `QFid`; §16.5's read-only narrowing (`ErrReadOnly`, T3.8's
-  row); §18's generic-rights and delete-through-the-parent rows on `vfstest.Record`. E7 owns the
+  row); §18's generic-rights and delete-through-the-parent rows on `vfstest.Memory`. E7 owns the
   dispatch from the `CREATE`, `READ` and `WRITE` rows to a pipe on `IPC$` or a file; E6 supplies the
   pipe endpoints (T6.3).
 - T7.6 `READ` and `WRITE`: payloads as slices of pooled buffers, replies gathered; stability by
@@ -732,7 +759,7 @@ Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4
 
 ### Epic 8 - File information, directories and names
 
-**Epic 8 estimate: 8 subtasks, 22 man-days.**
+**Epic 8 estimate: 8 subtasks, 21.5 man-days.**
 
 What Windows reads and sets about a file and a volume, how a directory lists, and how a stored name
 looks on Windows. `QUERY_INFO` and `SET_INFO` come first, the end of file included, since the
@@ -761,7 +788,7 @@ Appendix F's reparse codes; RFC 20 §4.9's `Fit`, §6.10's `QUERY_INFO` gate.
   `STATUS_STOPPED_ON_SYMLINK` with its error response, the reparse codes (plan gap 11), other tags
   refused.
 - T8.8 Streams: `FileStreamInformation`, stream names folded by the share's upcase table; on
-  `vfstest.Record`, the §18 rows §7 gives E8 (§9's classes and times, §12, §13, §16.3's read-only
+  `vfstest.Memory`, the §18 rows §7 gives E8 (§9's classes and times, §12, §13, §16.3's read-only
   attribute); §9.1's file ids are T13.5's.
 
 ### Epic 9 - Leases, breaks and held requests
@@ -791,9 +818,9 @@ bounds by cause; Appendix D's `RqLs`; Appendix G's `OPLOCK_BREAK`; RFC 20 §3.3'
 - T9.5 Holds by cause, SMB's rows and their tests: each held row's `Hold` and status as RFC 22
   §16.5 bounds them (`smb_pending_deadline`, `smb_pending_cap`, a freeze's `Until` plus 35 s,
   grace's `Until` plus 35 s, a read below its `MinimumCount`, `DelayResources` at once, a moved
-  share not held), each `Hold` a closure over the live settings (plan gap 7); the clone-wait row
+  share not held), each `Hold` a closure over the live settings (RFC 20 §3.6); the clone-wait row
   `core` passes as `WithHold`; a `WRITE` under a break as a flush; §18's delay-cause, freeze, grace
-  and full-journal rows on `vfstest.Record` with a fake clock. `core`'s side is RFC 20's plan's
+  and full-journal rows on `vfstest.Memory` with an injected clock. `core`'s side is RFC 20's plan's
   T1.7, T5.5 and T5.7.
 - T9.6 §18's lease and break rows over loopback: handle caching broken before a sharing violation,
   a timed-out break downgrading, credits under a hold, the multi-session host through a freeze, and
@@ -830,7 +857,7 @@ RFC 20 §4.7's `Keep`, §6.4.
 
 ### Epic 11 - Byte-range locks and change notification
 
-**Epic 11 estimate: 5 subtasks, 12.5 man-days.**
+**Epic 11 estimate: 5 subtasks, 14 man-days.**
 
 Requests that wait for something the client does not control: a lock someone else holds, a change
 in a directory. Both park in `core` and end by a callback, a cancel or a close.
@@ -850,10 +877,10 @@ RFC sections: §6.5's lock sequences, §7, §8, §16.4's lock and watch rows; Ap
 - T11.4 `CHANGE_NOTIFY`: one watch per open, its filter and recursion; changes buffered per open up
   to the request's buffer, then `STATUS_NOTIFY_ENUM_DIR`; parked with a small-class reply; names
   through §12.3's mapping; cleanup on close and on a removed share; a cancel unwatches.
-- T11.5 §18's §7 and §8 rows on `vfstest.Record` and over loopback, the 10^3 cancel race included,
+- T11.5 §18's §7 and §8 rows on `vfstest.Memory` and over loopback, the 10^3 cancel race included,
   and the rows whose last epic is E11 (§7): §4.1's re-authentication and expired session, §16.5's
   chains and share removal, a moved share's lock and notify on `Revoked`, and §6.5's lock-sequence
-  replay on `vfstest.Record`, its open scripted persistent.
+  replay on `vfstest.Memory`, its persistent open made through the service.
 
 ### Epic 12 - Security descriptors and quotas
 
@@ -875,11 +902,11 @@ classes; RFC 19 §2, §3.4, §3.5, §4.4, §5.1, §5.2; RFC 18 §4.4.
   the open; the owner and group refusals; the auto-inherit request; the SACL behind
   `ACCESS_SYSTEM_SECURITY`; `SecD` on `CREATE`.
 - T12.5 The quota class by SID through `Quota`, and `FsControl`; §18's §11 rows on
-  `vfstest.Record`.
+  `vfstest.Memory`.
 
 ### Epic 13 - Control codes and Previous Versions
 
-**Epic 13 estimate: 5 subtasks, 11.5 man-days.**
+**Epic 13 estimate: 5 subtasks, 12 man-days.**
 
 The control codes that act on a file's data, each one service call, and the snapshot views
 Explorer's Previous Versions tab lists.
@@ -897,7 +924,7 @@ RFC 17 §5.2, §5.9; RFC 12 §2.5, §2.10.
 - T13.4 Previous Versions: snapshots visible at the handle's path through `Snapshots`, newest first;
   `@GMT` tokens in paths and the timewarp context; write access refused; each snapshot's own volume
   serial and IDs.
-- T13.5 §18's §10, §15 and §9.1 file-id rows on `vfstest.Record`.
+- T13.5 §18's §10, §15 and §9.1 file-id rows on `vfstest.Memory`.
 
 ### Epic 14 - Wire tests against Samba 🔀
 
@@ -927,7 +954,7 @@ RFC sections: RFC 20 §8, Appendix C; RFC 22 §18's wire-test paragraph (the SMB
 
 Waits for the node to build, start and reconfigure the SMB adapter (RFC 20's epic 7, after its S4)
 and for `dfs` to serve it (programme stage 7). Then: RFC 13's SMB settings reaching `config.SMB` at
-`New` and, as RFC 20 comes to allow, while serving (plan gap 7); the durable-handles listing, the
+`New` and, through `Reconfigure`, while serving (RFC 20 §3.6); the durable-handles listing, the
 row RFC 20's ledger gives this plan, once an RFC defines it (plan gap 13); `smbtorture`,
 `smbtorture/kerberos`, `wpts`, `clients/windows` and the SMB rows of `e2e` and `e2e/cross-protocol`
 out of the V2 filter, their `known.yaml` rewritten for v2 with each entry naming this plan's epic
@@ -950,15 +977,15 @@ rows; T16.7's pipeline micro-benchmark needs only S4; the rest needs E15, and T1
 AD row and T16.5 need S6b.
 
 RFC sections: §2 (the profile-container row), §16.6's cross-protocol and end-to-end rows, §18's
-suites; RFC 20 §6.10's pipeline micro-benchmark and end-to-end benchmark, §7.4, §7.5; RFC 18 §10's
-and RFC 19 §9's SMB rows.
+suites; RFC 20 §6.10's pipeline micro-benchmark and end-to-end benchmark, §7.4, §7.5; RFC 19 §9's
+SMB rows.
 
 - T16.1 In-process rows on the composed node: holds and capacity (full journal and a share's
   journal limit, freeze, grace, delay causes, a remote outage on reads, share removal, credits under
   a hold, the multi-session host through a freeze, the share cap on a profile share, a 4 GiB
   copychunk under writes), and, once S6a holds, the rows whose answer is the service's (ticket
   addresses, the fence and budget, access-based enumeration, the read-only attribute, a refused
-  deferred unlink, a recursive watch across shards).
+  deferred unlink).
 - T16.2 In-process rows, durability: stability, a loss reaching `FLUSH`, a durable and a persistent
   open across a restart, a session after a restart, §16.6's persistent state and a lock-sequence
   replay across a restart, and the workload's I/O at 30 GB with its
@@ -987,8 +1014,9 @@ and RFC 19 §9's SMB rows.
 ### 6.1 RFC gaps
 
 Each is a finding for an RFC, raised on [#3615](https://github.com/cubbit/dittofs/issues/3615)
-for a pull request to the RFC named; none is settled here. A gap the RFCs have since settled keeps
-its number, with what settled it.
+for a pull request to the RFC named. The exceptions are the amendments in this pull request: A1
+settles gap 3's first-release half and gap 8's wording, A2 settles gap 14. A gap the RFCs have since
+settled keeps its number, with what settled it.
 
 1. **How `core` learns what SMB holds, and for how long** (RFC 20 §4.6, §4.7; RFC 22 §16.5).
    Settled by #3906 (its decision D26), which #3961 brought to `develop`: RFC 20 §4.7's `ErrorRow`
@@ -1001,25 +1029,25 @@ its number, with what settled it.
    `smb_names_hidden_total` count what only SMB's packages see, as `smb_witness_registrations` will
    once Witness is built. Options: a recorder `core` hands a protocol, or the series recast as rows
    `core` derives. Epics 5, 8, 9 and 10.
-3. **Witness in the first release, and its transport** (RFC 22 §5.2, §14, §18; RFC 20 §3.1's
-   decision, §2.3, §2.5). RFC 22 §14 has every gateway node serve Witness, and §18 does not mark its
-   row (cluster), though it pays off only with a second node; this plan defers it (§6.2, point 13),
-   and the amendment marking it (cluster) is proposed for RFC 22. Its transport is settled with it:
-   RFC 20 serves DCE/RPC over `IPC$` only, never on its own TCP port through an endpoint mapper;
-   RFC 22 serves Witness over RPC on TCP through the endpoint mapper. Also unnamed: the listener
-   (the mapper's port and the port it hands out), its place in the layout, and where the adapter
-   learns every gateway node's floating addresses and a drain's target without importing topology.
-   The cluster stage.
-4. **A break before its cause's reply** (RFC 17 §3.2; RFC 20 §3.3, §4.7's `Send`, §6.2). `Send`
-   takes `before`, the key of the request whose reply the break must precede, but `RecallGrant`
-   names no causing request. On one node it needs none if `sent` means the break is queued on the
-   session's writer before the causing call returns: the writer's queue keeps order (RFC 20 §6.2),
-   so the break goes out before the reply with `before` 0. RFC 20 §3.3 says the callback returns
-   once the message is queued; RFC 17 §3.2 says only "sent: whether it sent". Proposed resolution:
-   a one-line RFC 17 §3.2 clarification that `sent` means queued on a live channel's writer before
-   the call that started the recall returns. What stays open is a break on another channel of the
-   session than the causing request's, or from another node (cluster); `Send`'s `before` has no SMB
-   use on one node and can wait for the cluster. Epic 9.
+3. **Witness's transport** (RFC 22 §5.2, §14, §18; RFC 20 §3.1's decision, §2.3, §2.5). Amendment
+   A1 marks Witness (cluster) in RFC 22, so the first release serves none (§6.2, point 13). What
+   waits for the cluster stage: RFC 20 serves DCE/RPC over `IPC$` only, and its §3.1 decision names
+   the path for a TCP transport, a new `Protocol` over the same `dcerpc` package; RFC 22 serves
+   Witness over RPC on TCP through the endpoint mapper. Also unnamed: the listener (the mapper's
+   port and the port it hands out), its place in the layout, and where the adapter learns every
+   gateway node's floating addresses and a drain's target without importing topology. The cluster
+   stage.
+4. **A break before its cause's reply** (RFC 17 §3.2; RFC 14 §5.4, §11.1; RFC 20 §3.3, §4.7's
+   `Send`, §6.2). `Send` takes `before`, the key of the request whose reply the break must precede,
+   but `RecallGrant` names no causing request, on one node or from a primary. The gap is a request
+   that breaks a grant and is answered at once. `sent` already means queued (RFC 20 §3.3), but the
+   callback does not run inside the causing call: RFC 14 §11.1's `Sink` is an outbox whose methods
+   only queue and return, and §5.4's decision answers the conflicting request whether or not its
+   recalls were sent, so on one channel the reply can reach the writer first. Options for the RFC
+   pull request (RFC 17 §3.2 with RFC 14 §11.1): (a) `RecallGrant`, or the outbox entry, carries the
+   causing request's key, which the adapter passes as `Send`'s `before` (RFC 20 §4.7); (b) a
+   same-node break raised by a call is delivered before that call returns, an exception to RFC 14
+   §11.1 and §5.4's decision. Epic 9.
 5. **The server GUID** (RFC 22 §3.1). `NEGOTIATE` answers a `ServerGuid`, which clients compare
    across channels and reconnects; RFC 22 names no source: per node or per installation, stable
    across a restart or not. Epic 3.
@@ -1032,14 +1060,15 @@ its number, with what settled it.
    adapter can tell each case from the request it decoded, but an RFC 20 §4.5 row sees only the
    error, the operation and the version, and §4.5 sends an answer that turns on more to two kinds
    the service tells apart. The finding is §4.5's key. Epics 3, 7, 8 and 9.
-7. **Live SMB settings** (RFC 13 Appendix B; RFC 20 §3.4, §3.6). RFC 13 marks
-   `smb_pending_deadline` and `smb_pending_cap` live; RFC 20 hands `config.SMB` only to `New`, and
-   `Reconfigure` takes `config.Adapter`. Epics 1, 9 and 15.
+7. **Live SMB settings** (RFC 13 Appendix B; RFC 20 §3.4, §3.6). Settled by #3961: `Reconfigure`
+   takes `config.Settings`, which `config.SMB` implements, and every adapter setting is live
+   (RFC 20 §3.6), so `smb_pending_deadline` and `smb_pending_cap` reach a serving adapter as RFC 13
+   marks them. Epics 1, 9 and 15.
 8. **A causeless `ErrDelay` before a chain's last member** (RFC 22 §16.5; RFC 17 §4.3). Settled:
    RFC 22 §16.5's chain paragraph pends only a `CREATE` held on a lease or oplock break
    (`HoldCodec.Pends(h, err)`), and RFC 17 §4.3 has every `Delay` name a cause, so none without
-   one reaches the table. §16.5's sentence on an `ErrDelay` with no cause covers a case RFC 17
-   rules out, a wording point for RFC 22. Epic 3.
+   one reaches the table. Amendment A1 deletes §16.5's sentence on an `ErrDelay` with no cause, a
+   case RFC 17 rules out. Epic 3.
 9. **The end of grace** (RFC 22 §6.3, §16.5; RFC 17 §4.3). Settled by #3906 (D26): RFC 17 §4.3's
    `ErrGrace` is typed `*Grace{Until}`, so a grace row's `Hold` reads the end from the error. The
    type reaches `pkg/vfs` through RFC 20's plan's ledger row, RFC 17's plan's. Epic 9.
@@ -1056,32 +1085,38 @@ its number, with what settled it.
     RFC 20's plan gives `/durable-handles` to this plan, but RFC 23 defines no endpoint or record
     for it. Either RFC 23 adds one over RFC 14's durable opens, or the row is dropped there by
     decision, as client eviction is. Epic 15.
+14. **`FreeState` after a revoked answer** (RFC 20 §4.3, §7.2; RFC 22 §16.5's `ErrState` (`Revoked`)
+    row; RFC 14 §5.3; RFC 21 §5.1). RFC 22 §16.5 and RFC 14 §5.3 have the adapter call `FreeState`
+    once it has answered a reference revoked, but RFC 20 §4.3 allows one mutating call per handler
+    and §7.2's record fails a second: a `WRITE` or `SET_INFO` on a revoked `FileId` would leave its
+    own call and `FreeState`. RFC 21 §5.1's NFSv4.0 stateid has the same case, so the rule is
+    RFC 20's, shared with RFC 21's plan. Settled by amendment A2. Epic 7.
 
 ### 6.2 Programme and ownership
 
 Pending a decision on [#3119](https://github.com/cubbit/dittofs/issues/3119) unless another
 thread is named.
 
-1. **The authenticator behind `SignIn`** (S6a, S6b; RFC 18 §2.6, §3, §11; RFC 20's plan, risk 10).
-   No plan builds RFC 18's identity server, and on `feat/storage-v2` `SignIn`, `Spell` and `Find`
-   answer `ErrAccess` until it lands (`internal/vfs/shares.go`). It gates every authenticated
-   session on the real service: the workload with its lease and handle, AD sign-in, lsarpc and
-   descriptors over the composed node. It belongs to an RFC 18 plan: RFC 18 §2.6 puts the
-   authenticator in the identity server, and §11's slice 5 builds it on slices 1 to 4; `Spell` and
-   `Find` come from slices 4 and 6. S6a, the local half, is the smaller first ask of that plan.
-   Neither this plan nor an interim builds it: its code is `internal/identity`, which no adapter
-   package may import (RFC 20 §2.3), and an interim over `develop`'s code would bring back the
-   five-domain NTLM retry slice 5 deletes.
+1. **The authenticator behind `SignIn`** (S6a, S6b; RFC 18 §2.6, §3; RFC 20's plan, risk 10).
+   RFC 18's plan (#4058) builds RFC 18's identity server: its S2 has `SignIn`, `Spell` and `Find`
+   call identity, and its E5 to E7 add Kerberos, the PAC, the directory and pass-through. Until each
+   lands they answer `ErrAccess`, on `feat/storage-v2` and in `vfstest.Memory` alike. They gate S4's
+   signed session, the rows of E4, E5, E6 and E12 where sign-in or a name succeeds, and every
+   authenticated session on the real service: the workload with its lease and handle, AD sign-in,
+   lsarpc and descriptors over the composed node. This plan does not build the authenticator, nor
+   its SMB half: its code is `internal/identity`, which no adapter package may import (RFC 20
+   §2.3). #4058 has not merged; the S and E numbers cited here are checked again when it does.
 2. **`gss`'s owner** (RFC 20 §4.4; RFC 20's plan's ledger and risk 5). The ledger gives `gss`'s
    mechanisms, `Exchanges`, `Identity` and `gsstest` to this plan (E4) until it has an RFC of its
    own, and RFC 4121's per-message tokens, which no SMB code calls, to RFC 21's plan or that RFC;
    the RPCSEC_GSS context table has its own row, RFC 21's plan's. E4 is an epic of its own, tested
-   behind a fake `SignIn` and importing no SMB package, so it can move whole. Options: keep it here,
-   its own RFC, or shared with RFC 21's plan.
+   against `vfstest.Memory`'s `SignIn` and importing no SMB package, so it can move whole. Options:
+   keep it here, its own RFC, or shared with RFC 21's plan.
 3. **The composed in-process node** (S5; RFC 20 §7's in-process layer; RFC 18 §10's Tier 2; RFC 22
    §18's suites paragraph). Nothing on `feat/storage-v2` composes the real service, open state, the
    engine and the store in memory without `internal/node`, and no plan builds it; E14 and E16 need
-   it, and RFC 22 §18's suites paragraph runs its fault rows in `unit` through it. Options: the
+   it, so does RFC 18's plan's E9 (#4058) for RFC 18 §10's Tier 2 SMB rows, and RFC 22 §18's suites
+   paragraph runs its fault rows in `unit` through it. Options: the
    node's owner or the harness; if neither takes it by S4, a subtask in E2 here builds it.
 4. **The node and the cutover** (S7; RFC 20's plan, risk 3). E15 waits for RFC 20's S4 and epic 7
    and for stage 7; until then no real client reaches SMB through `dfs`.
@@ -1099,7 +1134,7 @@ thread is named.
    The rows that need one are parked until one does.
 9. **Copy, clone and snapshots below the service.** `Copy` and `Clone` answer unbuilt until RFC 17's
    plan's piece 11, which waits for the engine; `Snapshots` answers an empty list until RFC 12's
-   store view. E13's rows beyond `vfstest.Record` wait for them.
+   store view. E13's rows that need them wait for them.
 10. **Namespace moves** (RFC 27, out of scope). RFC 22 §18's move rows need a move between
     installations, parked until RFC 27 is built.
 11. **Layout beyond RFC 20's** (RFC 20 §2.5; RFC 20's plan, §4). `adaptertest/smbclient/` for the
@@ -1108,11 +1143,19 @@ thread is named.
 12. **The burn-down's size.** v2's failures in the SMB suites are known only once E15 turns them
     on, so T16.3 is planned after E15 and counted in no total; a first guess of 8 man-days is likely
     low for three suites burned down from zero. Estimated after E15.
-13. **Witness** (RFC 22 §14; plan gap 3). Witness pays off only with a second node: `CLIENT_MOVE`
-    needs a target node, `RESOURCE_CHANGE` a floating address, and RFC 22 Appendix A has Windows
-    Server run it on clusters. It and its listener are deferred with RFC 22 §18's (cluster) rows,
-    owner the cluster stage, plan gap 3 settled then; until then `rpc.witness` is a `known.yaml`
-    entry with its reason, as the other (cluster) rows are.
+13. **Witness** (RFC 22 §14; amendment A1; plan gap 3). Witness pays off only with a second node:
+    `CLIENT_MOVE` needs a target node, `RESOURCE_CHANGE` a floating address, and RFC 22 Appendix A
+    has Windows Server run it on clusters. Amendment A1 marks it (cluster) in RFC 22, so it and its
+    listener wait with RFC 22 §18's other (cluster) steps, owner the cluster stage, plan gap 3
+    settled then; until then `rpc.witness` is a `known.yaml` entry with its reason, as the other
+    (cluster) rows are.
+14. **What RFC 18's plan asks of this one** (#4058's O3), and where each belongs. The test double:
+    sign-in runs on `vfstest.Memory` (rule 7). SPNEGO's mechanism-list MIC is `gss`'s (RFC 20
+    §4.4), and an anonymous or guest session holds no key (RFC 18 §3.6; RFC 22 §4.1). Whether an
+    AP-REP subkey is sent is an RFC 18 §3.1 question: its `Keys` carries `Subkey` and `APRep`, and
+    T4.3 follows it until RFC 18 §3.1 changes. The CHALLENGE's computer and domain names and the
+    seam that hands them to `gss` (RFC 22 §4.1), and lsarpc's opnums 6, 15 and 130 (RFC 22 §5.2),
+    are RFC 22 gaps, raised on #3615 as §6.1's are.
 
 ### 6.3 Risks
 
@@ -1120,11 +1163,12 @@ thread is named.
    needs all four plus S5 and S6a outside this plan; its run with Windows needs S6b and S7 too.
 2. **S1 freezes RFC 20 §4.7 before SMB exercises it.** `testproto` proves the surface's mechanisms,
    not SMB's holds by cause or a break's order. Gap 1 is settled; plan gap 4's resolution is an
-   RFC 17 clarification that leaves §4.7 as it is, and plan gap 6 is an RFC 20 §4.5 change,
-   cheapest before RFC 20's S1.
-3. **Points outside the plan with no owner.** S5, S6a and S6b have none yet; if they come late,
-   E14's DittoFS side and E16's in-process rows wait, and track B, which ends first, has nothing to
-   fill with but E16's rows.
+   RFC 17 and RFC 14 change that leaves RFC 20 §4.7 as it is, and plan gap 6 is an RFC 20 §4.5
+   change, cheapest before RFC 20's S1.
+3. **Points outside the plan.** S5 has no owner yet; S6a and S6b are RFC 18's plan's (#4058),
+   which has not merged. If its S2 comes after E5, S4 and track A's loopback rows wait for it; if
+   S5, S6a or S6b come late, E14's DittoFS side and E16's in-process rows wait, and track B, which
+   ends first, has nothing to fill with but E16's rows.
 4. **Lifted code.** The Kerberos, SPNEGO and NTLM mechanism code comes from `develop`'s history
    (RFC 20 Appendix B); it is re-tested against the specifications' vectors, since v1's tests ran
    on real stores.
@@ -1141,7 +1185,7 @@ thread is named.
 | `gss`: RFC 4121 per-message tokens | not here: RFC 21's plan, or `gss`'s own RFC (§6.2, point 2) |
 | `translate` | E7 (access masks), E8 (attributes, times, `Fit`), E12 (descriptors) |
 | the error-table rows and the totality test | E3 |
-| handler tests on `vfstest.Record`, the one-call rule per handler | E2 (harness), every handler epic |
+| handler tests on `vfstest.Memory` and `vfstest.Faults`, the one-call rule read per handler from `vfstest.Memory`'s record | E2 (harness), every handler epic |
 | operation codecs, golden vectors, 0-allocation gates | each command's epic; the gates in E7 and E8 |
 | the import test's entry call sites and 800-line allowlist | E2 |
 | the scripted client and a shared golden helper | E5 (client), E2 (helper) |
@@ -1149,7 +1193,7 @@ thread is named.
 | end-to-end rows (RFC 20 §7.5) | E16 |
 | wire tests against Samba (RFC 20 §8) | E14 |
 | the end-to-end benchmark, nightly tracking, a soak | E16 |
-| the authenticator | not here: RFC 18 (§6.2, point 1) |
+| the authenticator | not here: RFC 18's plan (#4058), its S2 and E5 to E7 (§6.2, point 1) |
 | the `/durable-handles` listing | E15, once an RFC defines it (plan gap 13) |
 | `test/required-tests.json` pins for SMB's authorization gates | E16 |
 | SMB's suites skipped by the V2 filter | E15 (turned on), E16 (green) |
@@ -1180,16 +1224,16 @@ thread is named.
 | §11 (security descriptors) | E12 |
 | §12.1 to §12.4 (names), Appendix B | E8 (stream paths at `CREATE`: E7) |
 | §13 (rename and delete with open handles) | E8 |
-| §14 (Witness) | deferred to the cluster stage (§6.2, point 13; plan gap 3) |
+| §14 (Witness) | (cluster) by amendment A1, the cluster stage (§6.2, point 13; plan gap 3) |
 | §15 (Previous Versions) | E13 |
 | §16.1 (identity) | E5 |
 | §16.2 (request identity) | E10 (replays matched against the open); the request ID minted for a forwarded call: RFC 20's plan's ledger row for `vfs.WithRequestID`, owner the RFC 17 cluster stage |
 | §16.3 (namespace) | E8 (attributes, times, short names, names, delete pending), E7 (rights, open by ID), E12 (principals by SID) |
 | §16.4 (open state) | E5 (client rows), E7 (open rows, `Adapter` bytes), E9 (grant rows), E10 (durable rows), E11 (lock and watch rows) |
-| §16.5 (errors) | E3 (the table, chains, `core`'s refusals, drain roles), E7 (`FreeState` after `ErrState` (`Revoked`), the read-only narrowing), E9 (holds by cause) |
+| §16.5 (errors) | E3 (the table, chains, `core`'s refusals, drain roles), E7 (`FreeState` after `ErrState` (`Revoked`), plan gap 14; the read-only narrowing), E9 (holds by cause) |
 | §16.6 (testing) | each epic's vectors, properties and fuzz targets; its table row by row below |
 | §16.7, §19 (monitoring, observability) | rule 3; §19's recorder: plan gap 2 |
-| §17 (invariants) | S1, S11, S27's credits: E3; S2, S20: E5; S19: E6; S3, S10's stability, S22, S28's open: E7; S7, S8, S15's IDs and change time, S17, S30: E8; S5, S6, S12, S13, S23, S26, S27's holds: E9; S4, S14, S25's replay, S29: E10 (a moved open's timeout: §6.2, point 10); S16, S21, S25's names: E11; S15's SACL, S28's handle: E12; S18, S24: E13; S9: rule 8 and E7 |
+| §17 (invariants) | S1, S11, S27's credits: E3; S2, S20: E5; S19: E6; S3, S10's stability, S22, S28's open: E7; S7, S8, S15's IDs and change time, S17, S30: E8; S5, S6, S12, S13, S23, S26, S27's holds: E9; S4, S14, S25's replay, S29: E10 (a moved open's timeout: §6.2, point 10); S21, S25's names: E11; S16, (cluster): the cluster stage; S15's SACL, S28's handle: E12; S18, S24: E13; S9: rule 8 and E7 |
 | §18 (conformance) | row by row below; E14 (wire tests) |
 | §20 (open questions) | not planned |
 | Appendix A (prior art) | non-normative |
@@ -1231,7 +1275,7 @@ each check runs").
 | §7 locks | T11.5, T16.3, T16.6 (the NFSv3 write) |
 | §7 waiting locks | T11.5 |
 | §6.3 handle before sharing, NFS | T16.6 |
-| §8 notify | T11.5, T16.1 (a recursive watch across shards), T16.3, T16.6 (changes and names over NFS) |
+| §8 notify | T11.5, T16.3, T16.6 (changes and names over NFS); the subtree in another shard (cluster) |
 | §9 info classes | T8.8, T16.3 (`smbtorture` and MS-FSA's cases in `wpts`) |
 | §12.1 stream delete and rename | T8.8 |
 | §9.3 timestamps | T8.8, T16.3, T16.6 (the NFSv3 `ctime`); the second node (cluster) |
@@ -1244,7 +1288,7 @@ each check runs").
 | §12.3 names | T8.8, T16.6 |
 | §12.4 symlink targets | T8.8, T16.6 |
 | §13 rename | T8.8, T16.3, T16.6 |
-| §14 Witness | deferred (§6.2, point 13) |
+| §14 Witness | (cluster) by amendment A1 (§6.2, point 13) |
 | §15 snapshots | T13.5, T16.3, T16.5 (Explorer) |
 | §3.1 capabilities | T3.9, T16.5 (a Windows client's persistent handle) |
 | §4.3 per-session disconnect | T10.5 |
@@ -1286,13 +1330,13 @@ each check runs").
 | RFC 20 §4.9 (`translate`, `Caps`) | E1, E3, E7, E8, E12 |
 | RFC 20 §5 (codecs), §6.10 (SMB codec gates) | each command's epic; gates in E7, E8 |
 | RFC 20 §6.10's pipeline micro-benchmark and end-to-end benchmark, §7.4, §7.5 | E16 |
-| RFC 20 §7.1 (call sites, file sizes), §7.2 (handlers on `vfstest.Record`) | E2 |
+| RFC 20 §7.1 (call sites, file sizes), §7.2 (handlers on `vfstest.Memory` and `vfstest.Faults`) | E2 |
 | RFC 20 §8, Appendix C (wire tests) | E14 |
 | RFC 20 §10 | rule 3 |
 | RFC 18 §3.3, §3.5, §3.6 (wire halves) | E4 |
 | RFC 18 §3.8 (re-authentication) | E5 |
 | RFC 18 §4.4, §4.6 (SIDs, names) | E6, E12 |
-| RFC 18 §10's SMB rows | E16 |
+| RFC 18 §10's Tier 2 SMB rows | not here: RFC 18's plan (#4058), its E9 |
 | RFC 19 §2.4, §3.4 (rights, maximal access) | E7 |
 | RFC 19 §3.5, §4.4, §5.1, §5.2 (privilege, inheritance, the translation) | E12 |
 | RFC 19 §9's SMB rows | E16 |
