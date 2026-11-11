@@ -195,12 +195,12 @@ func TestReserveAhead_UnreservedRollRefusedWhileASpareIsHeld(t *testing.T) {
 // inside the reservation its caller took; and any `spare` refusal falls on an
 // unreserved write.
 //
-// The fixture is the epic's 1 GiB copy in 1 MiB writes beside 10 GiB of other
-// appends, scaled to keep the same number of rolls at a test's size: a 128 KiB
-// copy in sixteen writes of one segment's room, beside 512 KiB of other
-// appends, over 8 KiB segments. The copy crosses sixteen caps where the epic's
-// crosses 1024, so the fixture rolls a segment every few writes rather than
-// every few megabytes.
+// The fixture is a 1 GiB copy in 1 MiB writes beside 10 GiB of other appends,
+// scaled to keep the same number of rolls at a test's size: a 128 KiB copy in
+// sixteen writes of one segment's room, beside 512 KiB of other appends, over
+// 8 KiB segments. The copy crosses sixteen caps where that copy crosses 1024,
+// so the fixture rolls a segment every few writes rather than every few
+// megabytes.
 func TestReserveAhead_CopyBesideARollingWriter(t *testing.T) {
 	const segCap = int64(8 << 10)
 	// The reserved copy: sixteen writes of one segment's payload, which rolls
