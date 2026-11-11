@@ -72,6 +72,7 @@ type Engine struct {
 	pendingApplied  atomic.Int64                                    // engine_pending_existence_ops: operations committed
 	readOnlyLogged  atomic.Bool                                     // the journal's turn read-only was logged: see noteReadOnly
 	hooks           struct{ taken, drained atomic.Pointer[func()] } // a test's seams: after a batch's take and a drain's read of the ring
+	beforeTake      atomic.Pointer[func()]                          // a test's seam: run before each take of a group commit's loop
 	afterRegister   func()                                          // a test's hook: run once a clone's registrations are installed, the clone then stopping
 	fakeCloneDone   atomic.Bool                                     // a test's stand-in for the joins of a running clone: set, a clone runs past its registrations
 

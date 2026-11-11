@@ -302,6 +302,15 @@ func (e *Engine) ClearOps(f entity.FileID) {
 	e.files.unlock(f, fe)
 }
 
+// CommitThrough is commitThrough on share s's file f, through version v.
+func (e *Engine) CommitThrough(ctx context.Context, s entity.ShareID, f entity.FileID, v journal.Version) error {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return err
+	}
+	return e.commitThrough(ctx, b, f, v)
+}
+
 // WaitBatch is waitBatch on f.
 func (e *Engine) WaitBatch(ctx context.Context, f entity.FileID) error { return e.waitBatch(ctx, f) }
 
@@ -310,6 +319,17 @@ func (e *Engine) OnLookup(f func()) { e.files.afterLookup = f }
 
 // OnTake runs f after each batch's take, before its capture.
 func (e *Engine) OnTake(f func()) { e.hooks.taken.Store(&f) }
+
+// OnLoop runs f in each pass of a group commit's loop, before its take.
+func (e *Engine) OnLoop(f func()) { e.beforeTake.Store(&f) }
+
+// DueNow reports whether f is on journal j's due set, asked for now.
+func (e *Engine) DueNow(j Journal, f entity.FileID) bool {
+	g := e.groupCommitFor(j)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.due[f] != nil && g.due[f].now
+}
 
 // Due reports whether f is on journal j's due set.
 func (e *Engine) Due(j Journal, f entity.FileID) bool {
