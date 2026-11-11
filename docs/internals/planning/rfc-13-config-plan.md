@@ -403,7 +403,8 @@ a secret reference imports only it.
 
 **D7. The bootstrap file keeps its path,** `~/.config/dittofs/config.yaml`, with `--config` naming
 another, through the existing viper loader, renamed into `pkg/bootstrap`. An unknown key (the
-loader's `mapstructure` decoder with `ErrorUnused`), a v1 key (`checkRenamedKeys`), or a `DITTOFS_*`
+decode's `Metadata.Unused`, refused after the v1 keys among them are named, since `ErrorUnused`
+fails before `Unused` is filled), a v1 key (`checkRenamedKeys`), or a `DITTOFS_*`
 name that is no bootstrap key refuses the start. The last is a new scan of the environment, since
 viper reads only the names bound from the struct and ignores the rest. This is the
 user's decision; RFC 23's plan's D6 points here.
@@ -698,8 +699,8 @@ part: the old binary refuses after a raise, which the test writes through kvstor
 the §1.4 scenario assigned to epic 2 passes.
 
 **Expected content:**
-- `Load` on the renamed loader: the default path and `--config`, unknown keys refused by
-  `ErrorUnused` (D7).
+- `Load` on the renamed loader: the default path and `--config`, unknown keys refused from
+  `Metadata.Unused` once the v1 keys among them are named (D7).
 - The refused v1 keys, through `checkRenamedKeys` and its table (§1.1's list), and the scan of the
   environment that refuses their `DITTOFS_*` forms and any other non-bootstrap name (D7).
 - The roles flag on `Bootstrap`, and `Load` refusing a value other than both roles (RFC 13 §2.2,
