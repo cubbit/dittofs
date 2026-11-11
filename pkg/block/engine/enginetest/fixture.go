@@ -127,11 +127,11 @@ func (f *Fixture) HoldNextClone() (entered <-chan struct{}, release func()) {
 // for release.
 type gate struct{ entered, release chan struct{} }
 
-// FailNextSync makes the journal's next fsync fail, so the sync window it
-// belongs to fails.
+// FailNextSync makes the journal's next fsync of a segment fail, so the sync
+// window it belongs to fails. A spare's sync as it is made is not one.
 func (f *Fixture) FailNextSync() {
 	f.t.Helper()
-	if err := f.Seam.Schedule(kit.Failing(kit.OpSync, "*", 1, errors.New("fixture: an injected sync failure"))); err != nil {
+	if err := f.Seam.Schedule(kit.Failing(kit.OpSync, "*.seg", 1, errors.New("fixture: an injected sync failure"))); err != nil {
 		f.t.Fatalf("fixture: schedule a sync failure: %v", err)
 	}
 }
