@@ -30,6 +30,9 @@ type Conflict struct {
 // and a caller taking the list run beside each other without waiting on any
 // file.
 type conflictSet struct {
+	// decision: mu is a leaf mutex outside the six lock domains: it is the
+	// last lock taken, held only for a map access, and released before any
+	// other lock is acquired.
 	mu sync.Mutex
 	m  map[core.FileID][2]core.ShareTag
 }

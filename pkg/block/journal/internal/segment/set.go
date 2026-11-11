@@ -128,7 +128,7 @@ type Counters struct {
 // mutex, nothing acquired while holding it, and never held across anything
 // but map and counter work. Overturning this splits the counting by domain,
 // not the ledger itself, and fails only if the lock recorder of record ever
-// finds a leaf held above it.
+// finds a plain lock held above it.
 type Set struct {
 	mu     lockorder.Mutex
 	cap    int64
