@@ -1345,3 +1345,15 @@ that epic, and epic 12 does not wait for it.
   65,536 headroom records, 4,096 floor buckets, 30 s / 16 MiB idle seal) are implemented
   as named constants with their RFC `decision:` notes, to be settled by measurement in
   epic 12.
+
+### 6.1 Deferral ledger
+
+What this plan knowingly does not build. Each row indexes the section that defers it.
+
+| Deferred | Why | Owner | Trigger |
+| --- | --- | --- | --- |
+| A migration tool from v1 (E10, "No upgrade from v1"; §6) | storage v2 serves new installations only; a migration spans the metadata store, the remote tier, GC, backups and configuration, not only the journal | unowned (its own RFC, none yet) | demand for one |
+| System scenarios that need a special host: `errors=remount-ro` on ext4, XFS speculative preallocation, disk hot-removal mid-write (§6) | nothing in this plan provisions such hosts | unowned | a host that provides them exists |
+| Background scrub (§6) | declined on a single node: content is verified only when read (RFC 28 §5) | RFC 10 §16, for a replica | replication |
+| Cluster-only items: RFC 10 replication, a non-zero epoch, the `generation` field, extension kinds 128+ (§6) | out of scope; the format reserves them and the tests assert they are refused | RFC 10 | the cluster stage |
+| Salvage's sealing and recovery import (E11; §6) | RFC 5's master key and RFC 26's recovery import may not exist; E11 builds the export path and its failure condition and records what is stubbed | RFC 5, RFC 26 | when each lands |

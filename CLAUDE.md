@@ -421,6 +421,20 @@ asked for exactly the exemption above; #2523 shipped it without stating the reas
 anywhere, and nobody noticed, because an issue thread is not a thing anyone reads while
 changing the line.
 
+### Deferral ledgers
+
+The same ledger, kept by a plan. Every implementation plan in `docs/internals/planning/` ends
+§6 with a table, `| Deferred | Why | Owner | Trigger |`: what the plan knowingly does
+not build, why, who owns it later, and the event that brings it back. The owner is an RFC,
+another plan (or one of its epics) or a programme stage, or `unowned` when none is yet; never
+the plan itself or one of its epics, since what the plan builds is not a row. A row leaves only
+by moving to another owner or by a recorded decision to drop it. When the plan's issues are
+made (`epic-breakdown/issues.md` 6.6), each row becomes an issue labelled `deferred` and with
+the RFC's label, under the deferring RFC's roadmap epic and so due in its release; a later
+release only when the row's Trigger says `post-v1` or the user decides, never on an agent's
+judgement. The issue links its row, never the other way round, and closes through `Closes #<n>`
+in the pull request that finishes the work, never by an agent unasked. A deferral that is not a row is lost.
+
 ## Commits & PRs
 
 - Opening a PR (base, title and description, assignee, auto-merge, stacking) follows

@@ -441,8 +441,8 @@ Ported test scenarios, rewritten to RFC 14's semantics (a recall answers `ErrDel
 `pkg/metadata/lock`'s lock and split tests (owners), lease key and epoch tests, progressive-break
 and late-ack tests (recall deadline), cross-protocol tests, and reconnect-matching tests.
 
-Of §13.3's benchmarks, heap per state (RFC 24 M6) is built (#3456); the rest follow once the
-service can drive them.
+Of §13.3's benchmarks, heap per state (RFC 24 M6) is built (#3456); the rest wait for a
+registered suite that runs `go test -bench` (§6.1).
 
 ## 5. Open questions
 
@@ -459,7 +459,25 @@ service can drive them.
    record after a restart until it renews. Leaked records, never state; closing it needs a store
    call listing a node's client records, which RFC 14 §11.1 lacks.
 
-## 6. What sets the pace
+## 6. What sets the pace, and what is deferred
 
 What blocks what: `develop`'s RFCs on `feat/storage-v2`; each piece after the one before it,
 carrying its store PR.
+
+### 6.1 Deferral ledger
+
+What this plan knowingly does not build. Each row indexes the section that defers it.
+
+| Deferred | Why | Owner | Trigger |
+| --- | --- | --- | --- |
+| RFC 24's `Budget` as a dependency, so a node-wide limit refuses before a per-client cap; L24's pool case (D1's `ponytail:`, piece 6) | its pool does not exist on `feat/storage-v2`; `DelayResources` is answered at RFC 14's fixed caps alone | RFC 24 plan | RFC 24's pool exists |
+| Every "(cluster)" rule: one lease owner per client (§4.1), handover and batch moves (§10) with `Recovery.ReleaseShard`, layouts (§2.6), state lost to a takeover, L8 (D2, plan §3) | single node first; the seams are the service's | the cluster stage | the cluster stage |
+| A deadline heap (D4) | a 10 s sweep fires each deadline up to one interval late | unowned | the upgrade `sweepEvery`'s `ponytail:` names |
+| Deadlock detection; smbtorture's open-brlock-deadlock stays a known failure (D3) | RFC 14 §2.10 decides against it | RFC 14 | RFC 14 §2.10 revisited |
+| Deleting `pkg/metadata/lock` (D3) | it serves today's server until the adapters move | stage 5 | stage 5 |
+| L1 and L20, the service's; L9, the engine's; L29's restart case (plan §3) | rows of other layers; L9 needs eviction | RFC 17 plan (L1, L20, L29), RFC 8 second part plan (L9) | stage 2; offload |
+| L52's SMB session cases (piece 8) | they are SMB session steps | RFC 22 plan | the SMB adapter, stage 5 |
+| Model fuzzing: L56, L57 and L3b run as `-race` loops and a direct case (plan §4, piece 6) | model fuzzing comes after stage 1 | unowned | after stage 1 |
+| §13.3's benchmarks other than heap per state (plan §4) | their targets are fixed by a first after-merge run, and no registered suite runs `go test -bench` | RFC 29 harness | a registered suite runs `go test -bench` |
+| Concrete types for the seven views (plan §5 Q2) | §11.3 declares them as interfaces | RFC 14 edit, with RFC 17 plan's first area | RFC 14 §11.3 edited |
+| Dropping an NFSv4 client record that lists no shard after a restart (plan §5 Q4) | needs a store call listing a node's client records, which RFC 14 §11.1 lacks | RFC 14 §11.1 edit | the store gains that call |

@@ -390,6 +390,21 @@ Header: scope (the RFC + related RFCs with their in-scope level), tracks (A, B,
                                    **Expected content:** an unnumbered outline, one line
                                    per piece, with no subtask ids (Step 2)
 ## 6. Risks and open points
+### 6.x Deferral ledger         — table: Deferred | Why | Owner | Trigger, one row per
+                                   thing the plan knowingly does not build, citing the plan
+                                   section that defers it; Owner is the RFC, another plan
+                                   (or one of its epics) or the programme stage that takes
+                                   it, never this plan or its epics, since what the plan
+                                   builds is not a row; Trigger is an event someone can
+                                   observe that brings it back, the deferring text's own
+                                   when it has one, and says `post-v1` when the item is
+                                   due after the RFC's own release; no issue column, since
+                                   a row's issue links the row (`epic-breakdown/issues.md`
+                                   6.6) and the plan records no progress; a row
+                                   nobody takes says `unowned` and still names its
+                                   Trigger; a row leaves only by moving to another owner
+                                   or by a recorded decision to drop it; a non-goal is not
+                                   a row
 ## 7. RFC coverage              — table: RFC section → epic(s); related-RFC sections too
 ```
 
@@ -625,6 +640,9 @@ use `epic-breakdown` in the document they are reading:
   line, the §2 total row and every epic's §2 row; every epic without a figure is "planned after Sx" and named
   in the plan estimate line.
 - Nothing in the plan tracks progress: no status, no checkboxes, no placeholders.
+- Every deferral in the plan is a row of §6's deferral ledger: search the plan for "defer",
+  "later", "out of scope", "planned after" and each `ponytail:` upgrade, and give each hit
+  that leaves work to someone else a row.
 - §1.5 opens with its instruction, verbatim.
 
 ## GitHub issues, on request
@@ -636,6 +654,7 @@ there: a **roadmap epic** for the RFC and a release (Step 6.2), and **epic issue
 merged plan**, one per epic that has none, before its epic document exists (Step 6.3), so
 the epics can be placed under a roadmap epic and E2's `known.yaml` entries can name them.
 The roadmap epic comes first: without one, stop and ask for it.
+A third request, the **deferral ledger's issues** for a merged plan, is `issues.md` 6.6.
 
 Then report the output path, the epic count against the estimate, the plan estimate line
 (subtasks and man-days), the epics whose man-days are least certain, and the open points,
