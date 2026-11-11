@@ -16,19 +16,142 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
 
-// The tests in this file run in a testing/synctest bubble over a stub store,
-// so a Close that waits without end is reported at once as a deadlock, and no
-// real time passes. They cover the joins that, left unbounded, can only be
-// seen as a Close that never returns.
+// The tests in this file run in a testing/synctest bubble, so a Close that
+// waits without end is reported at once as a deadlock, and no real time
+// passes. They cover the joins that, left unbounded, can only be seen as a
+// Close that never returns.
+//
+// The store is the real one on an in-memory kv.KV, opened before the bubble
+// so its goroutines are outside it: their tickers neither keep the bubble
+// from going idle nor advance its clock. Its transactions run outside the
+// bubble too, through outsideKV, since a badger commit signals the caller
+// from badger's own goroutine, on a channel and a WaitGroup the caller made,
+// which the runtime refuses across a bubble's edge.
 
 // bubbleDevice is the one journal device of a bubble.
 const bubbleDevice = "bubble"
 
-// bubble is the engine composed inside a bubble: the fake journal and a stub
-// store, with no real store and so no goroutine outside the bubble.
+// bubbleNode is the node of a bubble, and bubbleJournal the identity its
+// store records for bubbleDevice.
+var (
+	bubbleNode    = entity.NodeID{1}
+	bubbleJournal = [16]byte{'B'}
+)
+
+// bubbleFS opens the store on an in-memory kv.KV, wrapped by faults, with
+// bubbleJournal recorded for the bubble's device. Call it outside
+// synctest.Test.
+func bubbleFS(t *testing.T) (*kvstoretest.FS, *kvtest.FaultKV) {
+	t.Helper()
+
+	var faults *kvtest.FaultKV
+
+	fs := kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
+		faults = kvtest.NewFaultKV(memKV(tb))
+
+		return newOutsideKV(tb, faults)
+	})
+
+	err := fs.Store.RecordJournal(t.Context(), bubbleJournal, bubbleNode, entity.JournalDir(bubbleDevice))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return fs, faults
+}
+
+// outsideKV runs each transaction of another kv.KV on a goroutine outside any
+// bubble. A caller in a bubble waits on channels made outside it, so it is
+// not durably blocked: the bubble neither advances its clock nor reports a
+// deadlock while a transaction is in flight, and the transaction finishes in
+// real time.
+type outsideKV struct {
+	inner kv.KV
+	calls chan func()     // run by the goroutine newOutsideKV starts
+	reply chan chan error // a free list of reply channels made outside
+}
+
+// outsideCalls is how many transactions an outsideKV runs at once.
+const outsideCalls = 64
+
+// newOutsideKV starts the goroutine that runs inner's transactions. Call it
+// outside synctest.Test; the goroutine ends when the test does.
+func newOutsideKV(tb testing.TB, inner kv.KV) *outsideKV {
+	o := &outsideKV{
+		inner: inner,
+		calls: make(chan func()),
+		reply: make(chan chan error, outsideCalls),
+	}
+
+	for range outsideCalls {
+		o.reply <- make(chan error, 1)
+	}
+
+	stop := make(chan struct{})
+
+	go func() {
+		for {
+			select {
+			case call := <-o.calls:
+				go call()
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	tb.Cleanup(func() { close(stop) })
+
+	return o
+}
+
+// run runs call outside the bubble and returns its error.
+func (o *outsideKV) run(call func() error) error {
+	r := <-o.reply
+	o.calls <- func() { r <- call() }
+	err := <-r
+	o.reply <- r
+
+	return err
+}
+
+func (o *outsideKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	return o.run(func() error { return o.inner.Update(ctx, fn) })
+}
+
+func (o *outsideKV) View(ctx context.Context, fn func(kv.Reader) error) error {
+	return o.run(func() error { return o.inner.View(ctx, fn) })
+}
+
+func (o *outsideKV) Limits() kv.TxnLimits { return o.inner.Limits() }
+
+func (o *outsideKV) Close() error { return o.inner.Close() }
+
+// failUpdates makes every store update through faults answer errInjected.
+func failUpdates(t *testing.T, faults *kvtest.FaultKV) {
+	t.Helper()
+
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{
+		Op:     kvtest.OpUpdate,
+		Key:    "*",
+		Action: sim.FaultAction{Err: errInjected},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	faults.SetFault(sched)
+}
+
+// bubble is the engine composed inside a bubble: the fake journal and the
+// store bubbleFS opened.
 type bubble struct {
 	e     *engine.Engine
 	rec   *recJournal
@@ -40,26 +163,28 @@ type bubble struct {
 	openFn func(context.Context) (engine.Journal, error)
 }
 
-// newBubble builds the engine over store. Every handle the fake journal opens
+// newBubble builds the engine over fs's store. Every handle the fake journal opens
 // goes through wrap when it is set.
 func newBubble(
 	t *testing.T,
-	store *engine.StubStore,
+	fs *kvstoretest.FS,
 	wrap func(engine.Handle) engine.Handle,
 ) *bubble {
 	t.Helper()
 
-	b := buildBubble(t, store, wrap)
+	b := buildBubble(t, fs, wrap)
 	b.e.SetJournalsForTest(b.rec)
 
 	return b
 }
 
-// buildBubble is the engine of a bubble before Start, with no journal open.
+// buildBubble is the engine of a bubble over fs's store before Start, with
+// no journal open. Each edit changes the engine's Deps before it is built.
 func buildBubble(
 	t *testing.T,
-	store *engine.StubStore,
+	fs *kvstoretest.FS,
 	wrap func(engine.Handle) engine.Handle,
+	edits ...func(*engine.Deps),
 ) *bubble {
 	t.Helper()
 
@@ -73,13 +198,13 @@ func buildBubble(
 		ev:          b.ev,
 	}
 
-	e, err := engine.New(engine.Deps{
-		Node:      entity.NodeID{1},
+	d := engine.Deps{
+		Node:      bubbleNode,
 		Devices:   []string{bubbleDevice},
 		Open:      b.open,
-		Existence: store,
-		Content:   store,
-		Lifecycle: store,
+		Existence: fs.Store.Existence(),
+		Content:   fs.Store.Content(),
+		Lifecycle: fs.Store.Lifecycle(),
 		Holds:     noHolds{},
 		Clock:     b.clock,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -87,7 +212,13 @@ func buildBubble(
 			return ctx, func(error) {
 			}
 		},
-	})
+	}
+
+	for _, edit := range edits {
+		edit(&d)
+	}
+
+	e, err := engine.New(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,30 +250,30 @@ func (b *bubble) open(
 	return b.rec, nil
 }
 
-// bubbleShare is a share the stub store needs no record of.
-func bubbleShare(tag journal.ShareTag) engine.Share {
-	return engine.Share{
-		ID:    entity.NewShareID(),
-		Tag:   tag,
-		State: engine.Serving,
-		Limit: 1 << 30,
-	}
+// bubbleShare is the store's share.
+func bubbleShare(t *testing.T, fs *kvstoretest.FS) engine.Share {
+	t.Helper()
+
+	return enginetest.ShareOf(t, fs.Store, fs.Share.ID, 1<<30)
 }
 
 // A Bind that failed after it opened its handle, whose handle never finishes
 // closing, is reported by a Close that has given up at the stop bound: it
 // names the share, and leaves the handle and the journal open.
 func TestAFailedBindsHandleCloseNeverReleasedIsReportedAtTheBound(t *testing.T) {
+	fs, faults := bubbleFS(t)
+	s := bubbleShare(t, fs)
+
+	// Every store update fails, so the raise at attach does.
+	failUpdates(t, faults)
+
 	synctest.Test(t, func(t *testing.T) {
-		store := engine.NewStubStore()
-		store.RaiseErr = errInjected
 		hc := &heldClose{entered: make(chan struct{}), release: make(chan struct{})}
-		b := newBubble(t, store, func(h engine.Handle) engine.Handle {
+		b := newBubble(t, fs, func(h engine.Handle) engine.Handle {
 			hc.Handle = h
 
 			return hc
 		})
-		s := bubbleShare(7)
 		bound := make(chan error, 1)
 
 		go func() {
@@ -175,13 +306,13 @@ func TestAFailedBindsHandleCloseNeverReleasedIsReportedAtTheBound(t *testing.T) 
 	})
 }
 
-// heldLoop is a bubble with one share bound and a removal item held in its
-// batch on the share's journal loop.
-func heldLoop(t *testing.T) (*bubble, engine.Share, *loopHold) {
+// heldLoop is a bubble over fs with its share bound and a removal item held
+// in its batch on the share's journal loop.
+func heldLoop(t *testing.T, fs *kvstoretest.FS) (*bubble, engine.Share, *loopHold) {
 	t.Helper()
 
-	b := newBubble(t, engine.NewStubStore(), nil)
-	s := bubbleShare(7)
+	b := newBubble(t, fs, nil)
+	s := bubbleShare(t, fs)
 	h := newLoopHold()
 
 	if err := b.e.Bind(context.Background(), s); err != nil {
@@ -202,8 +333,10 @@ func heldLoop(t *testing.T) (*bubble, engine.Share, *loopHold) {
 // joins the loop again: the handle closes only after the loop's goroutine
 // ended.
 func TestACloseHeldInARemovalBatchPastTheContextDeadlineLeavesEverythingOpen(t *testing.T) {
+	fs, _ := bubbleFS(t)
+
 	synctest.Test(t, func(t *testing.T) {
-		b, s, h := heldLoop(t)
+		b, s, h := heldLoop(t, fs)
 
 		var joins atomic.Int32
 
@@ -250,8 +383,10 @@ func TestACloseHeldInARemovalBatchPastTheContextDeadlineLeavesEverythingOpen(t *
 // Without a deadline the stop bound is 30 s of the engine's clock.
 func TestACloseWithNoDeadlineGivesUpAtThirtySecondsOfTheTestClock(t *testing.T) {
 	t.Run("29 s is still waiting", func(t *testing.T) {
+		fs, _ := bubbleFS(t)
+
 		synctest.Test(t, func(t *testing.T) {
-			b, s, h := heldLoop(t)
+			b, s, h := heldLoop(t, fs)
 			closed := closing(b.e, context.Background())
 
 			synctest.Wait()
@@ -273,8 +408,10 @@ func TestACloseWithNoDeadlineGivesUpAtThirtySecondsOfTheTestClock(t *testing.T) 
 	})
 
 	t.Run("30 s is the bound", func(t *testing.T) {
+		fs, _ := bubbleFS(t)
+
 		synctest.Test(t, func(t *testing.T) {
-			b, _, h := heldLoop(t)
+			b, _, h := heldLoop(t, fs)
 			closed := closing(b.e, context.Background())
 
 			synctest.Wait()
@@ -297,16 +434,17 @@ func TestACloseWithNoDeadlineGivesUpAtThirtySecondsOfTheTestClock(t *testing.T) 
 // The last group commit leaves out a file whose removal was cut short, and
 // never waits for its guard: nothing releases it once the loop is stopped.
 func TestACloseNeverWaitsOnAGuardOfACutShortFile(t *testing.T) {
+	fs, _ := bubbleFS(t)
+	s := bubbleShare(t, fs)
+	_, made := fs.Create(t, fs.Admin, fs.Root, "a", kvstore.Regular(0o644))
+	f := made.ID
+
 	synctest.Test(t, func(t *testing.T) {
-		store := engine.NewStubStore()
-		b := newBubble(t, store, nil)
-		s := bubbleShare(7)
+		b := newBubble(t, fs, nil)
 
 		if err := b.e.Bind(context.Background(), s); err != nil {
 			t.Fatal(err)
 		}
-
-		f := entity.NewFileID()
 		opts := engine.WriteOpts{Done: func() {}}
 
 		if _, err := b.e.Write(context.Background(), s.ID, f, 0, []byte("x"), opts); err != nil {
@@ -319,8 +457,13 @@ func TestACloseNeverWaitsOnAGuardOfACutShortFile(t *testing.T) {
 			t.Errorf("Close = %v, want nil", err)
 		}
 
-		if n := store.Commits.Load(); n != 0 {
-			t.Errorf("%d existence commits, want none: the guarded file was committed", n)
+		n, err := fs.Store.Existence().Size(context.Background(), s.ID, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if n != 0 {
+			t.Errorf("size %d after Close, want 0: the guarded file was committed", n)
 		}
 
 		b.e.CloseGroupCommits()
