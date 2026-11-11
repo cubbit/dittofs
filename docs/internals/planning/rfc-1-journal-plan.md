@@ -441,6 +441,97 @@ The package was named `journalv2` while v1 existed; #3645 deleted v1 and renamed
 `journal`. Metric and span names, log fields and attribute keys always said `journal`. v1 and v2 never share a binary, so no version
 label is needed either (epic 1, D1).
 
+### 4.1 Code sketch
+
+This sketch is illustrative: signatures come from RFC 1 §3 or from `pkg/block/journal` on
+`feat/storage-v2`, and the epic documents decide the final names.
+
+Epic 11's composition root opens one journal per device at start, then attaches a handle
+per share. `pkg/clock` and the `marks` argument are planned (epic 11, epic 7a T7.1).
+
+```go
+func openDevice(ctx context.Context, dev Device, shares []ShareRecord) (*journal.Journal, map[ShareID]*journal.Handle, error) {
+    // The floor is the largest VersionFloor and VersionLimit over the device's shares (epic 11).
+    floor := maxFloor(shares)
+    j, err := journal.Open(ctx, dev.Dir, floor, dev.JournalID, // marks []SyncMark: planned, epic 7a T7.1
+        journal.WithClock(clock.System{}),      // required: no clock is ErrNoClock (epic 1, D5)
+        journal.WithSettings(dev.Settings),     // MaxBytes, Streams, ExtentLimit, HeadroomRecords, ...
+        journal.WithDescriptorBudget(budget),   // one budget shared by every journal of the node
+        journal.WithTracer(otelTracer),         // adapted to OpenTelemetry by epic 11
+        journal.WithLogger(log.With("journal", dev.Name)),
+    )
+    if err != nil {
+        return nil, nil, err // ErrNoJournal, IdentityError, ErrUnidentified: the start check (epic 10)
+    }
+    handles := map[ShareID]*journal.Handle{}
+    for _, s := range shares {
+        // Each share attaches with the larger of its own floor and limit (RFC 1 §4.3).
+        h, err := j.Share(s.Tag, s.Limit, max(s.VersionFloor, s.VersionLimit))
+        if err != nil {
+            j.Close()
+            return nil, nil, err
+        }
+        handles[s.ID] = h
+    }
+    // Raise every share's durable limit first, then SetVersionLimit with the smallest (epic 11).
+    return j, handles, j.SetVersionLimit(raiseLimits(ctx, shares, j.Stats().NextVersion))
+}
+```
+
+A device is created once, by the initialisation step (epic 10). `Init` needs no clock.
+
+```go
+id, err := journal.Init(ctx, dev.Dir, installID)
+// The caller records id as dev.JournalID, the expect of every later Open.
+```
+
+The write path. `WriteAt` appends its record and returns; `Sync` is the durable ack, and
+one sync covers every writer waiting on the stream (RFC 1 §5.2, group commit, epic 6).
+
+```go
+v, err := h.WriteAt(ctx, id, off, p, mtime) // capacity checked before any byte (RFC 1 §6)
+// A stable write is the engine's Write, then its Commit, which calls Sync and
+// waits for what RFC 8 §5.1 lists (RFC 8 §4.1).
+err = h.Sync(ctx, id) // a SyncError names the files a failed window lost (RFC 1 §5.3)
+```
+
+A read returns the exact missing extents. How the engine resolves and fills them is RFC 8 §7.1
+and §7.3's (RFC 1 §3.2, §3.4; epic 8).
+
+```go
+n, missing, held, asOf, err := h.ReadAt(ctx, id, off, p)
+// per missing extent the engine decides; a fill it makes: h.Fill(ctx, id, m.Off, buf, asOf, v)
+```
+
+The offload pass, then eviction (RFC 1 §3.3, §3.5, §7.2; epics 9a and 9b). `report` is
+called only after the metadata commit (epic 11).
+
+```go
+err := h.Offload(ctx, id, through, limit, widen,
+    func(ctx context.Context, o journal.Offer, report func([]journal.Extent) error) error {
+        extents, err := e.carver.Upload(ctx, o.Offered, o.Dirty) // syncer and remote tier
+        if err != nil {
+            return err // nothing reported, the extents stay dirty
+        }
+        if err := e.store.CommitContent(ctx, o.ID, extents); err != nil {
+            return err
+        }
+        return report(extents) // marks offloaded only what committed
+    })
+// Eviction under pressure: release offloaded extents, then reclaim their segments.
+_ = h.Release(ctx, id, cold)
+freed, err := j.Repack(ctx, budget, journal.RepackScope{})
+```
+
+Shutdown and removal follow RFC 16 §2.3.2: a removed share's handle closes, then the
+journal forgets it; the journal closes last.
+
+```go
+h.Close()
+j.Forget(ctx, removedTag)
+j.Close() // joins background work (RFC 1 §8.7)
+```
+
 ---
 
 ## 5. The epics in detail
