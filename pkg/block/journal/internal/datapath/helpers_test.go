@@ -74,8 +74,12 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 	if clock == nil {
 		clock = kit.NewStopwatchClock()
 	}
+	fs := seam.FS()
+	if o.wrapFS != nil {
+		fs = o.wrapFS(fs)
+	}
 	c, err := newCore(Deps{
-		FS:          seam.FS(),
+		FS:          fs,
 		Clock:       clock,
 		Dir:         dir,
 		Identity:    testIdentity,

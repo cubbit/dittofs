@@ -2,9 +2,9 @@ package capacity
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 )
 
 // RecordCharge is what one record without bytes costs the headroom: the
@@ -114,7 +114,13 @@ type Headroom struct {
 	cfg     HeadroomConfig
 	reserve int // the open reserve, in records, fixed at construction
 
-	mu sync.Mutex
+	// decision: mu is the capacity domain, rank capacity in the lock order.
+	// Nothing is acquired under it besides what a caller held: the at-limit
+	// read, the below-half read and every admission hold no other lock
+	// across it, and the check and the move in Drawn and Refund are the
+	// section alone. It is not a leaf: a recorded wrong order under it
+	// must be reported, not exempted.
+	mu lockorder.Mutex
 	// drawn is the record bytes the headroom has admitted and no Refund
 	// has returned; guarded by mu.
 	//
@@ -141,6 +147,16 @@ func NewHeadroom(cfg HeadroomConfig) *Headroom {
 		cfg:     cfg,
 		reserve: OpenReserveRecords(cfg.Records),
 	}
+}
+
+// SetRecorder installs the lock-order recorder the admission table's mutex
+// reports to, with its capacity rank: the admission's mutex and the pool's
+// are of the same domain, so no two of them are held at once. It runs
+// before the Headroom is shared — before any concurrent Admit, Drawn or
+// Refund — and a nil recorder leaves the mutex a plain one, so production
+// behaviour is unchanged.
+func (h *Headroom) SetRecorder(rec *lockorder.Recorder) {
+	h.mu.Init(lockorder.Capacity, rec)
 }
 
 // Draw reports whether the caller appends the record it asked about. Pair

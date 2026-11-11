@@ -8,6 +8,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
@@ -193,6 +194,13 @@ func (c *Core) remove(ctx context.Context, s *Share, id core.FileID, spec remova
 	if err != nil {
 		return core.Version{}, err
 	}
+	// decision: the wait's precondition, asserted here, is free in
+	// production — the recorder's consult on a nil one is a load and a
+	// return, allocates nothing and never runs — so the assertion costs
+	// nothing where the removal actually waits, and with a recorder
+	// installed it is the one check that proves the wait is not entered
+	// with the file append domain held.
+	c.rec.AssertNotHeld(lockorder.FileAppend, "removal wait")
 	// decision: the wait runs with the append domain released and returns its
 	// own refusal as it is — a read-only journal's, which matches
 	// core.ErrJournalReadOnly and is never a *core.SyncError. A failed wait
