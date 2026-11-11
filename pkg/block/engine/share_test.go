@@ -278,9 +278,11 @@ func TestBindPassesTheLargerOfFloorAndLimit(t *testing.T) {
 
 // Bind writes the share's version limit at the journal's: the first share's
 // Bind, which raises the limit Start set, and a second's, which raises
-// nothing.
+// nothing. The store's clock stands still, so the second share's floor sits a
+// few nanoseconds above the first's however long the Binds take.
 func TestBindWritesTheShareLimitAtTheJournals(t *testing.T) {
-	u := newUnit(t)
+	frozen := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	u := newUnitWith(t, unitConfig{storeClock: func() time.Time { return frozen }})
 	b := enginetest.AddShare(t, u.fs.Store, "b", 0)
 
 	if err := u.e.Bind(t.Context(), b); err != nil {
