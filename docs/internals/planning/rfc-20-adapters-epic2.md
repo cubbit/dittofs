@@ -12,7 +12,7 @@ stub bodies and a working `Bind`), `pkg/adapter`'s `Deps`, `pkg/resources`' `Bud
 `BufPool`, and `pkg/vfs`' `Service` and error set; **the Serving/Addrs surface change**, which lands in
 this document's own pull request, in a commit ahead of it: RFC 20 §3.4, §3.5 and §4.7 amended, `adapter.Socket`, `Serving.Listeners map[Socket][]netip.AddrPort`,
 `Adapter.Addrs()`, `core.Listener.Services` and the `(*Server).Addrs()` stub, with both golden files (D19),
-and `config.Adapter.Port` with its golden file and RFC 20 §3.6 amended (D20). T2.3 also
+and `settings.Adapter.Port` with its golden file and RFC 20 §3.6 amended (D20). T2.3 also
 needs `vfstest.Memory` (§9).
 **Blocks:** E3, which turns the budget and replay specifications green and registers `BufPool`'s
 gate in the allocation cell this epic creates; E4 and E5, whose tests run `core` on `testproto`
@@ -118,13 +118,13 @@ names the epic that owns the rest.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | Every adapter package's non-test files import only the standard library, `pkg/vfs` (and its packages but `vfstest`), `pkg/adapter`, `pkg/adapter/config`, `pkg/resources`, `pkg/metrics`, `internal/tlsconfig`, their own adapter's packages and `core`, the tracing API `Deps.Tracer` names, and wire-format libraries that do no file I/O | MUST | RFC 20 §2.3, §7.1, §9 A1 | T2.3 |
+| R1 | Every adapter package's non-test files import only the standard library, `pkg/vfs` (and its packages but `vfstest`), `pkg/adapter`, `pkg/adapter/settings`, `pkg/resources`, `pkg/metrics`, `internal/tlsconfig`, their own adapter's packages and `core`, the tracing API `Deps.Tracer` names, and wire-format libraries that do no file I/O | MUST | RFC 20 §2.3, §7.1, §9 A1 | T2.3 |
 | R2 | They never import a metadata store, the open-state tables, the content engine, the topology or routing code, `pkg/identity` or `internal/identity`, the configuration store, the health package, or another adapter: NFS's packages never import SMB's, nor SMB's NFS's | MUST NOT | §2.3, §7.1, A1 | T2.3 |
 | R3 | The rule is enforced by a test that reads the import graph and fails naming the package and the forbidden import | MUST | §2.3, §7.1 | T2.3 |
 | R4 | The test is seeded with deliberate violations in its own test data and must report them, so a check that silently matches nothing is caught | MUST | §7.1; rule 8 | T2.3 |
 | R5 | No package under `pkg/` but `pkg/adapter/nfs` and `pkg/adapter/smb` imports anything under `internal/adapter/`, and each of the two imports only its own protocol's | MUST | §2.5, §7.1 | T2.3 |
 | R6 | No implementation package imports a constructor package | MUST | §2.5, §7.1 | T2.3 |
-| R7 | `pkg/adapter` imports nothing of the core but `pkg/vfs`, `pkg/metrics`, `pkg/resources` and `pkg/adapter/config`; `pkg/adapter/config` is a leaf | invariant | §2.5 | T2.3 |
+| R7 | `pkg/adapter` imports nothing of the core but `pkg/vfs`, `pkg/metrics`, `pkg/resources` and `pkg/adapter/settings`; `pkg/adapter/settings` is a leaf | invariant | §2.5 | T2.3 |
 | R8 | A `wire` package imports nothing but the standard library and `pkg/resources` | MUST | §2.5, §7.1 | T2.3 |
 | R9 | The test starts with no allowlist: nothing is grandfathered in | invariant | §7.1 | T2.3 |
 | R10 | `core`'s non-test files import no protocol, and its tests no protocol but `testproto`: never NFS's or SMB's | invariant | §2.5 (layout), §7; rule 1 | T2.3 |
@@ -298,7 +298,7 @@ names the epic that owns the rest.
   every adapter cell but `unit/adapter-allocs` runs with it, so `CheckLeaks` promises no heap
   coverage.
 - **D14, E1's two import-shape tests fold into the import test.** `pkg/adapter`'s
-  `TestImportsOnlyTheContractsItNames` and `pkg/adapter/config`'s
+  `TestImportsOnlyTheContractsItNames` and `pkg/adapter/settings`'s
   `TestImportsOnlyTheStandardLibrary` stood in for this test until it landed; R7 now holds both
   rules, each with its seed, so they are deleted rather than kept as a second copy that can drift.
   `pkg/resources`' `TestImportsOnlyStdlibAndMetrics` stays: its rule is RFC 24 §2.8's.
@@ -326,7 +326,7 @@ names the epic that owns the rest.
   - `adapter.Adapter.Addrs()`, `core.Listener.Services` and `adapter.Serving` (D19): E4's tests, the end-to-end specification,
     the node's sidecar report and every sidecar read them, so a changed shape is an RFC amendment
     and an edit of each; the epic's owner settled them before any body exists;
-  - `config.Adapter.Port` (D20): `testproto.Settings` embeds `config.Adapter`, and the node's
+  - `settings.Adapter.Port` (D20): `testproto.Settings` embeds `settings.Adapter`, and the node's
     loader, `New` and `Reconfigure` all read the field, so it is added before any of them.
   What is deferred is additive and in one place: the import test's entry-method, 800-line and
   `translate` clauses are new cases and seeds (RFC 21 and 22); a golden-vector helper is E6's,
@@ -343,7 +343,7 @@ names the epic that owns the rest.
 - **D19, a typed key for what is bound; the epic's owner chose this.** A test on `127.0.0.1:0` must learn
   the port the system chose, and a sidecar must advertise every address the adapter is bound
   to. The earlier `Serving.Listeners map[string]netip.AddrPort` lost addresses: one service
-  binds every entry of `config.Adapter.Addrs`, NLM and NSM listen on both TCP and UDP under one
+  binds every entry of `settings.Adapter.Addrs`, NLM and NSM listen on both TCP and UDP under one
   service name, and since `Addrs` is live, rebuilding the map from listener order would race a
   `Reconfigure`. So the surface keys by service and network and holds every address:
   `adapter.Socket{Service, Network}`, `Serving.Listeners map[Socket][]netip.AddrPort`,
@@ -366,9 +366,9 @@ names the epic that owns the rest.
 - **D20, the port is a setting, and its field lands now.** RFC 23's plan (its A1) makes an
   adapter's port the `adapters.<protocol>.port` setting, at installation scope with a node
   override and restart-class, while the listen addresses stay the host's, in
-  `config.Adapter.Addrs`. RFC 20 §3.6 states it: `Port uint16 json:"port"`, defaulting to the
+  `settings.Adapter.Addrs`. RFC 20 §3.6 states it: `Port uint16 json:"port"`, defaulting to the
   protocol's port (2049 for NFS, 445 for SMB) and 0 letting the system pick. RFC 23's plan
-  places the field with the node's config loader in epic 7 (its O7), but `config.Adapter` is
+  places the field with the node's config loader in epic 7 (its O7), but `settings.Adapter` is
   surface frozen at S1 and `testproto.Settings` embeds it, so the field, its defaults and the
   golden file land with the Serving/Addrs surface change, in this document's pull request.
   The behaviour waits for the bodies: `Reconfigure` refusing a changed `Port` with a sentinel
@@ -402,7 +402,7 @@ pkg/block/journal/journaltest/prof/  T2.4  moved out; its importers updated
 pkg/block/engine/imports_test.go   T2.4  allowlist entry for internal/prof
 pkg/metadata/kv/kvtest/fault_test.go  T2.4  imports internal/prof
 pkg/adapter/adapter_test.go        T2.3  import-shape test removed (D14)
-pkg/adapter/config/config_test.go  T2.3  import-shape test removed (D14)
+pkg/adapter/settings/settings_test.go  T2.3  import-shape test removed (D14)
 pkg/adapter/nfs/nfs_test.go        T2.3  vfstest.Memory for internal/vfs (D15)
 pkg/adapter/smb/smb_test.go        T2.3  vfstest.Memory for internal/vfs (D15)
 test/adapter/known.yaml            T2.4  the red specifications (D11)
@@ -442,10 +442,10 @@ func (p *Protocol) Bare() core.Protocol // the same frames, Header and Router on
 
 // Settings is testproto's shape; its Router reads it from Conn.Settings() at a Negotiate.
 type Settings struct {
-	config.Adapter
+	settings.Adapter
 	MaxVersion core.Version // the highest version Negotiate picks; 0: both
 }
-// Validate refuses a MaxVersion past 2 and checks nothing else: config's checks of
+// Validate refuses a MaxVersion past 2 and checks nothing else: settings' checks of
 // the common part are unexported, which a decision: marker states.
 func (s Settings) Validate() error
 
@@ -600,7 +600,7 @@ func (c *Client) Balance() int
   - `unit/adapter-allocs` in `test/suites.yaml`, its command `go test` over
     `./internal/adapter/adaptertest/testproto/`, and its fixed `dt run` step in the unit job (D12).
   - `conformance_test.go`: `TestConformanceEchoEndToEnd`, `testproto`'s tables built first (D11),
-    then a `core.NewServer` on `testproto` and a `Settings` of `config.DefaultNFS().Adapter`'s
+    then a `core.NewServer` on `testproto` and a `Settings` of `settings.DefaultNFS().Adapter`'s
     timeouts over `127.0.0.1:0`, its listener's `Services` `{"testproto"}`, started, dialled at `Addrs()[adapter.Socket{Service: "testproto", Network: "tcp"}][0]`,
     one `Echo` sent by the client and its reply read, `CheckLeaks` clean after `Stop`; its
     `known.yaml` entry (`message: 'testproto: tables: not implemented'`, `issue: "#3966"`, its
@@ -732,7 +732,7 @@ func (c *Client) Balance() int
     `pkg/identity` (R2), one importing `golang.org/x/sync/errgroup` (R1), a `wire` file importing
     `os` (R8), a `pkg/` package importing `core` (R5), `pkg/adapter/nfs` importing
     `internal/adapter/smb` (R5), an implementation importing `pkg/adapter/nfs` (R6),
-    `pkg/adapter` importing `internal/adapter/core` and `pkg/adapter/config` importing
+    `pkg/adapter` importing `internal/adapter/core` and `pkg/adapter/settings` importing
     `pkg/vfs` (R7), an adapter test importing `internal/vfs` (R11), a non-test file importing
     `testproto`, an adapter non-test file importing `pkg/vfs/vfstest` and one importing
     `internal/prof` (R12), and a directory at `internal/adapter/common` (R13); and one seed per
@@ -795,7 +795,7 @@ A suggestion only: one pull request per subtask works as well.
   - no operation that waits a given time or answers `ErrDelay` itself, and no test hook that
     completes a request: delays, holds and parks wait on `vfstest.Faults` (D5, D6);
   - `core.Dispatcher` is deleted here, not by E4 (D18); the Serving/Addrs surface change lands
-    in this document's pull request, ahead of it (D19), and so does `config.Adapter.Port`,
+    in this document's pull request, ahead of it (D19), and so does `settings.Adapter.Port`,
     which RFC 23's plan placed in E7 (D20);
   - the journal's profiler moves to `internal/prof` and is the leak check's goroutine half (D13);
   - a red suite is registered, `adapter-conformance`, against "registers no red suite";

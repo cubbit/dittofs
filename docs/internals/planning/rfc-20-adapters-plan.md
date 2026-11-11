@@ -61,7 +61,7 @@ branch is `feat/storage-v2`, on which RFC 17's plan has merged; the plan documen
 **Dependency limits.** What an adapter may import is RFC 20 §2.3's list, which its §7.1 import
 test enforces; this plan does not restate it. Liveness reaches an adapter as `Deps.Watch`, which
 the node adapts to RFC 25's watchdog.
-`pkg/adapter`, `pkg/adapter/config` and `pkg/resources` import nothing under `internal/`; only the
+`pkg/adapter`, `pkg/adapter/settings` and `pkg/resources` import nothing under `internal/`; only the
 two constructor packages, `pkg/adapter/nfs` and `pkg/adapter/smb`, import `internal/adapter/`.
 
 **What v2 serves at the end of the plan.** Nothing a client can mount. Each protocol accepts
@@ -108,7 +108,7 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   `TestAnUnmappedClaimedRootIsPrivileged`), so `required-tests.sh` neither loses its subject nor
   fails on an empty manifest. A build tag on `lint-go`'s `go vet -tags=` line stays while any file
   behind it compiles; a tag whose files are all deleted leaves the line.
-- **`pkg/adapter`** (RFC 20 §3.4, §3.5): `Adapter` (`Reconfigure` taking `config.Settings`),
+- **`pkg/adapter`** (RFC 20 §3.4, §3.5): `Adapter` (`Reconfigure` taking `settings.Settings`),
   `State` (with `String`), `Health` (`State`, `Conditions`, and `Ready()` derived), `ConnInfo`
   (`Protocol`, `Remote`, `Session`, `Since`), `Sidecar`, `Serving`, `Loop`, `Deps` (`Budgets`;
   `Watch` returning a `Loop`, RFC 20 §3.7; only `VFS` and `Budgets` required).
@@ -120,7 +120,7 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   validating and every field carrying its key, `New` refusing invalid settings, and for `core` `Bind`, whose body
   lands in T1.7: the `Invocation` its `Decode` returns hands `Bound`, `Resolve`, `Role`,
   `Call` and `Encode` the request it decoded.
-- **`pkg/adapter/config`** (RFC 20 §3.6, RFC 13): `Adapter`, and `NFS` and `SMB` embedding it;
+- **`pkg/adapter/settings`** (RFC 20 §3.6, RFC 13): `Adapter`, and `NFS` and `SMB` embedding it;
   `TLS`; `Settings{Validate() error; Common() Adapter}`; `DefaultNFS` and `DefaultSMB`; every
   key `adapters.<protocol>.<field>` from a `json` tag; no restart machinery, since every
   adapter setting is live but `Port`, restart-class, which epic 2 adds to the frozen shape
@@ -295,7 +295,7 @@ and 5.
    nothing else would catch that change. The import test proves it can by reporting each of its seeded
    violations, one per rule; the budget leak check by its red specifications, a reservation kept on each budget and one held under `CheckLeaks`, which E3 turns green.
 9. **A symbol is exported only if RFC 20's interface uses it.** `pkg/adapter`,
-   `pkg/adapter/config`, `pkg/resources` and the two `New` are the public surface. `core`'s
+   `pkg/adapter/settings`, `pkg/resources` and the two `New` are the public surface. `core`'s
    exported symbols are those RFC 20 §4.7 names, frozen at S1; everything else in `core` is
    unexported. A symbol §4.7 does not name is added to §4.7 first, by a pull request to the RFC.
 10. **Each subtask creates only what it declares.** No empty package and no stub without a
@@ -312,7 +312,7 @@ its entries come and go; the skipped suites come back through the ledger); a rea
 
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
-| E1 ⛔ | Delete v1, fix the surface | v1 and the Runtime's adapter half deleted, suites off, required tests repinned; RFC 20 and 24 amended; `pkg/adapter`, `pkg/adapter/config`, `pkg/resources`, `core`'s §4.7 surface | 9 | 15.5 | team | all |
+| E1 ⛔ | Delete v1, fix the surface | v1 and the Runtime's adapter half deleted, suites off, required tests repinned; RFC 20 and 24 amended; `pkg/adapter`, `pkg/adapter/settings`, `pkg/resources`, `core`'s §4.7 surface | 9 | 15.5 | team | all |
 | E2 ⛔ | Test foundations | `testproto` and its stateful half, the import test, the leak checks, the red suite | 4 | 10.5 | team | E3–E6 |
 | E3 | Budgets and buffers | `pkg/resources`: `Budget`, `Reservation`, `Buf`, `BufPool` | 3 | 5.5 | A | E4, E5 (partly) |
 | E4 | Connections and lifecycle | `Server` states, accept, limits, `Conn` reader and writer, drain, `Reconfigure`, health, TCP; the sidecar runner | 9 | 20 | B | E5 (partly), E6 via 🔀 S3 |
@@ -367,7 +367,7 @@ flowchart TD
 ### 3.2 Synchronisation points
 
 - **S1 surface frozen** (after E1). v1 is gone, the branch builds, the protocol suites are off,
-  `required-tests.sh` passes on its new pins. `pkg/adapter`, `pkg/adapter/config`,
+  `required-tests.sh` passes on its new pins. `pkg/adapter`, `pkg/adapter/settings`,
   `pkg/resources` and `core`'s §4.7 surface compile with stub bodies; what SMB needs from
   `core` is in that surface, and `testproto`'s stateful half proves it by S3.
   Unblocks E2, and through it every middle epic.
@@ -424,7 +424,7 @@ pkg/
   adapter/                    E1
     adapter.go                Adapter, State, Health, ConnInfo, Sidecar, Serving, Socket, Loop
     deps.go                   Deps
-    config/                   Adapter, NFS, SMB, TLS, Settings, DefaultNFS, DefaultSMB
+    settings/                 Adapter, NFS, SMB, TLS, Settings, DefaultNFS, DefaultSMB
     nfs/  smb/                New: E1 stub, E6 body
 internal/
   adapter/
@@ -480,7 +480,7 @@ deleted).
   1.25 man-days.
 - T1.4 `pkg/adapter`: the contract and `Deps`, `Watch` returning a `Loop`; `State`, `Health`
   with `Ready()`, `ConnInfo` as RFC 20 §3.4 states them. 0.75 man-days.
-- T1.5 `pkg/adapter/config`: the three settings shapes, `NFS` and `SMB` embedding `Adapter`;
+- T1.5 `pkg/adapter/settings`: the three settings shapes, `NFS` and `SMB` embedding `Adapter`;
   `TLS`; `VersionRange` for NFS's `Versions` and SMB's `Dialects`; `Settings` with the `Validate`
   and `Common` methods; `DefaultNFS` and `DefaultSMB`;
   every field's key a `json` tag; `Addrs` supplied by the node and live.
@@ -716,7 +716,7 @@ generation by `Reconfigure` or by stop, `New` and start, drives the sidecar runn
 before a `Reconfigure` that removes an address and after every `Reconfigure`, RFC 20 §3.5), reports
 `Health` and `Connections()` to the control plane's client list, and checks every budget at zero
 after the adapters stop. It also takes the ledger rows that need a node: the config loader for
-`pkg/adapter/config`, `core`'s conditions in RFC 25 §3.9's registry and the alert rules for
+`pkg/adapter/settings`, `core`'s conditions in RFC 25 §3.9's registry and the alert rules for
 `adapter_unmapped_errors_total` and `adapter_handler_panics_total` (RFC 25 §7).
 
 RFC sections: §3.4's "built by `node.New`", §3.6's sequence, §3.7's conditions, §10.1's alerting
@@ -806,9 +806,9 @@ feature parity with develop. A row moves only to another owner, never off the le
 | end-to-end benchmark and nightly benchmark tracking (§6.10); a `core` soak under real traffic | need a mountable protocol | RFC 21/22 plans | their E2E green |
 | the authenticator: keytab, PAC, NTLMv2, NETLOGON, LDAP, consolidated as `internal/identity` | RFC 18's | an RFC 18 plan, which does not exist yet (risk 10) | before RFC 22's sign-in epic |
 | RFC 24's turns, `Reclaim`, `ShareCap`, `Detect`, `Split` | no consumer here | RFC 24 plan | when the node budgets memory |
-| `node.New` wiring; config loader for `pkg/adapter/config`; conditions in RFC 25 §3.9's registry; alert rules | need `internal/node` | epic 7 | S4 |
+| `node.New` wiring; config loader for `pkg/adapter/settings`; conditions in RFC 25 §3.9's registry; alert rules | need `internal/node` | epic 7 | S4 |
 | concrete sidecars: mDNS, WS-Discovery (`pkg/discovery`), port mapper, rpcbind registration | need serving protocols | cutover | stage 7 |
-| `/api/v1/adapters`, the settings watcher, `dfsctl adapter` (deleted in T1.2); the persisted `NFSAdapterSettings` and `SMBAdapterSettings` rows and the share adapter config, mapped onto `pkg/adapter/config` | built on the Runtime | cutover, on `pkg/adapter` | stage 7 |
+| `/api/v1/adapters`, the settings watcher, `dfsctl adapter` (deleted in T1.2); the persisted `NFSAdapterSettings` and `SMBAdapterSettings` rows and the share adapter config, mapped onto `pkg/adapter/settings` | built on the Runtime | cutover, on `pkg/adapter` | stage 7 |
 | the `/clients` and `/mounts` listings and their registries (deleted in T1.2: nothing can add a record), the `/durable-handles` listing, empty once T1.1 deletes its producers; `dfsctl client` (deleted in T1.2) | read v1's connection and handle state | RFC 23 §4.2 (connections, mounts), RFC 22 plan (durable handles) | with their records |
 | `dittofs_client_connections_active{protocol}` (deleted in T1.2 with the client registry that fed it) | its feed, v1's connection registry, is deleted | epic 5 | T5.9, as RFC 20 §10.1's `adapter_connections{protocol, state}` |
 | netgroup CRUD under `/api/v1/adapters/{type}/netgroups` (deleted in T1.2) | a control-plane record (RFC 23 §3.5) | RFC 23 | with RFC 23's records |

@@ -8,13 +8,13 @@ import (
 
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/adapter"
-	"github.com/cubbit/dittofs/pkg/adapter/config"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/adapter/smb"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
 
-func valid() config.SMB {
-	s := config.DefaultSMB()
+func valid() settings.SMB {
+	s := settings.DefaultSMB()
 	s.Addrs = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
 	return s
 }

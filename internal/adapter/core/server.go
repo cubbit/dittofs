@@ -8,7 +8,7 @@ import (
 	"net/netip"
 
 	"github.com/cubbit/dittofs/pkg/adapter"
-	"github.com/cubbit/dittofs/pkg/adapter/config"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 )
 
 // Server is one adapter: its listeners, connections, drain and health, for
@@ -38,7 +38,7 @@ type Listener struct {
 // given; core reads its Adapter. It refuses a listener naming no service, an
 // empty one or one twice, and two listeners naming the same Socket or the
 // same network and nonzero port.
-func NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error) {
+func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, error) {
 	return nil, fmt.Errorf("core: new server: %w", errors.ErrUnsupported)
 }
 
@@ -50,7 +50,7 @@ func (s *Server) Start(ctx context.Context) error {
 // Reconfigure applies next, the server's own protocol's shape, to connections
 // set up after it returns; the other protocol's, or any other type, is
 // refused.
-func (s *Server) Reconfigure(ctx context.Context, next config.Settings) error {
+func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error {
 	return fmt.Errorf("core: reconfigure: %w", errors.ErrUnsupported)
 }
 

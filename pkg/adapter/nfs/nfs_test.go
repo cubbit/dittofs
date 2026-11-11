@@ -18,13 +18,13 @@ import (
 
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/adapter"
-	"github.com/cubbit/dittofs/pkg/adapter/config"
 	"github.com/cubbit/dittofs/pkg/adapter/nfs"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
 
-func valid() config.NFS {
-	s := config.DefaultNFS()
+func valid() settings.NFS {
+	s := settings.DefaultNFS()
 	s.Addrs = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
 	return s
 }
@@ -124,9 +124,9 @@ func TestNewLoadsTheTLSFiles(t *testing.T) {
 	cert, key := selfSigned(t, dir)
 	garbage, missing := filepath.Join(dir, "garbage"), filepath.Join(dir, "missing")
 	write(t, garbage, []byte("not a certificate"))
-	tlsOn := func(cert, key, ca string) config.NFS {
+	tlsOn := func(cert, key, ca string) settings.NFS {
 		s := valid()
-		s.TLS = config.TLS{Mode: "require", CertFile: cert, KeyFile: key, ClientCA: ca}
+		s.TLS = settings.TLS{Mode: "require", CertFile: cert, KeyFile: key, ClientCA: ca}
 		return s
 	}
 	if _, err := nfs.New(deps(), tlsOn(cert, key, cert)); !errors.Is(err, errors.ErrUnsupported) {
@@ -134,7 +134,7 @@ func TestNewLoadsTheTLSFiles(t *testing.T) {
 	}
 	for _, c := range []struct {
 		name, file string
-		s          config.NFS
+		s          settings.NFS
 	}{
 		{"missing cert", missing, tlsOn(missing, key, "")},
 		{"garbage cert", garbage, tlsOn(garbage, key, "")},

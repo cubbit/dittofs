@@ -336,7 +336,7 @@ packages **MUST** import only:
 - the adapter's own codecs, session and connection code;
 - `core`, the shared adapter code of this RFC — listeners, connections, drain,
   pipeline, middleware (§2.5);
-- `pkg/adapter` and `pkg/adapter/config`, the contract, `Deps` and the
+- `pkg/adapter` and `pkg/adapter/settings`, the contract, `Deps` and the
   settings (§2.5, §3.4);
 - `pkg/resources`, RFC 24's budgets and pooled buffers, shared by every
   component (§6.8), and `pkg/metrics`, the registry `Deps` carries (§10);
@@ -485,7 +485,7 @@ flowchart TB
 - **`pkg/adapter/`** holds the adapter's public surface, as `pkg/vfs` holds
   the service's: the contract the node drives (`Adapter`, `State`, `Health`,
   `ConnInfo`, `Sidecar`, `Serving`) and `Deps`, in `pkg/adapter`; the
-  settings shapes, in the leaf `pkg/adapter/config`; and one constructor per
+  settings shapes, in the leaf `pkg/adapter/settings`; and one constructor per
   protocol, `pkg/adapter/nfs.New` and `pkg/adapter/smb.New`, each a call into
   its implementation. Both the node and `core` import the contract, and it
   imports nothing of the core but `pkg/vfs`, `pkg/metrics` and
@@ -497,7 +497,7 @@ flowchart TB
   `pkg/adapter/nfs` and `pkg/adapter/smb` import a protocol's implementation,
   and no other package under `pkg/` imports anything under
   `internal/adapter/`; the implementation imports `pkg/adapter` and
-  `pkg/adapter/config`, never a constructor package.
+  `pkg/adapter/settings`, never a constructor package.
 
 The import test of §7.1 checks both directions.
 
@@ -508,7 +508,7 @@ pkg/resources/              RFC 24's budgets and pooled buffers, shared by every
 pkg/adapter/                the public surface, as pkg/vfs is the service's:
   adapter.go                the contract the node drives: Adapter, State, Health, ConnInfo, Sidecar, Serving, Socket, Loop (§3.4, §3.5)
   deps.go                   Deps (§3.4)
-  config/                   the settings shapes, their defaults and Settings (§3.6): a leaf
+  settings/                 the settings shapes, their defaults and Settings (§3.6): a leaf
   nfs/  smb/                New: one public constructor each, a call into the implementation
 internal/adapter/
   core/                     one package, a file per concern; imports no protocol:
@@ -883,10 +883,10 @@ type Adapter interface {
 
 	// Reconfigure adds and removes listeners and applies live settings to
 	// connections set up after it returns (§3.1). s is the adapter's own
-	// protocol's shape, config.NFS or config.SMB; the other protocol's is
+	// protocol's shape, settings.NFS or settings.SMB; the other protocol's is
 	// refused with an error (§3.6). Every adapter setting is live but `port`,
 	// which never reaches Reconfigure: the node builds a new adapter (§3.6).
-	Reconfigure(ctx context.Context, s config.Settings) error
+	Reconfigure(ctx context.Context, s settings.Settings) error
 
 	// Stop moves serving to draining to stopped. ctx's deadline is the drain
 	// deadline; requests still running at it are abandoned (§3.1). A request
@@ -986,14 +986,14 @@ stages and operation tables, and opens nothing; it returns the contract, and
 the `*core.Server` behind it stays internal:
 
 ```go
-func nfs.New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) // pkg/adapter/nfs; configured
-func smb.New(d adapter.Deps, s config.SMB) (adapter.Adapter, error) // pkg/adapter/smb
+func nfs.New(d adapter.Deps, s settings.NFS) (adapter.Adapter, error) // pkg/adapter/nfs; configured
+func smb.New(d adapter.Deps, s settings.SMB) (adapter.Adapter, error) // pkg/adapter/smb
 ```
 
 `New` fails on a setting the adapter cannot apply, so the failure is at
 configured, not at the first request (§3.1). Settings arrive in exactly two
 places: `New`, which takes its protocol's shape, and `Reconfigure`, which takes
-`config.Settings`, which `config.NFS` and `config.SMB` implement (§3.6).
+`settings.Settings`, which `settings.NFS` and `settings.SMB` implement (§3.6).
 
 
 ### 3.5 Sidecars
@@ -1147,7 +1147,7 @@ the protocol's `New` binds each listener it would put on its default port on
 namespace move's release of an address
 ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)),
 and a floating-address takeover, which adds the address the node took over.
-The node hands them to the adapter in `config.Adapter.Addrs`, from the host's
+The node hands them to the adapter in `settings.Adapter.Addrs`, from the host's
 bootstrap and the addresses it took over, never from the settings record, and
 the adapter binds each of its listeners on each of them (§4.7's `Listener`).
 
@@ -1162,7 +1162,7 @@ the adapter binds each of its listeners on each of them (§4.7's `Listener`).
 adapter reads:
 
 ```go
-package config // pkg/adapter/config: a leaf
+package settings // pkg/adapter/settings: a leaf
 
 // Adapter is what every adapter reads; core reads only this. Each adapter
 // record carries its own copy, under adapters.<protocol>.
@@ -1237,7 +1237,7 @@ type Settings interface {
   `adapters.nfs.tls.mode`, `adapters.smb.pending_timeout` — and the least
   configuration is `adapters: {nfs: {enabled: true}, smb: {enabled: true}}`.
 - **Defaults are code**, in `DefaultNFS` and `DefaultSMB`: the loader runs
-  `s := config.DefaultNFS(); decode(&s)`.
+  `s := settings.DefaultNFS(); decode(&s)`.
 - **`Validate` is the component's own**, run by `New`, by `Reconfigure` and by
   the control plane, which has none of its own
   ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)). It reads no file,
@@ -1259,13 +1259,13 @@ type Settings interface {
 
 ```go
 type Server struct {
-	settings atomic.Pointer[config.Settings] // the protocol's whole shape, as New or the last Reconfigure gave it
+	settings atomic.Pointer[settings.Settings] // the protocol's whole shape, as New or the last Reconfigure gave it
 	// …
 }
 
-func (s *Server) Reconfigure(ctx context.Context, next config.Settings) error {
+func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error {
 	if !sameProtocol(*s.settings.Load(), next) {
-		return errOtherProtocol // config.SMB handed to the NFS adapter, or the reverse
+		return errOtherProtocol // settings.SMB handed to the NFS adapter, or the reverse
 	}
 	if err := next.Validate(); err != nil {
 		return err // refused; what is running is unchanged
@@ -2279,7 +2279,7 @@ func (c *Conn) Keep() (release func())
 
 // Settings is the settings snapshot this connection loaded at accept, the
 // protocol's whole shape (§3.6); NewConn reads its own from it.
-func (c *Conn) Settings() config.Settings
+func (c *Conn) Settings() settings.Settings
 
 // Close ends the connection for a protocol violation the protocol finds: an
 // SMB message that fails decryption, a second NEGOTIATE (MS-SMB2 3.3.5.2.1.1,
@@ -2398,7 +2398,7 @@ func Errors() []error
 // which New was given; core reads its Adapter. It refuses a listener naming
 // no service, an empty one or one twice, and two listeners naming the same
 // Socket or the same network and nonzero port.
-func NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)
+func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, error)
 
 // Listener is one protocol on one port, bound on each of the settings' Addrs.
 // Addrs reports it under one Socket per service it names, on its network,
@@ -2502,7 +2502,7 @@ negotiated.
 
 ```go
 // nfs.go: New composes; it names no operation
-func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) {
+func New(d adapter.Deps, s settings.NFS) (adapter.Adapter, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
@@ -3194,7 +3194,7 @@ These boundary checks run per change:
 
 A test walks the import graph of every adapter package and fails, naming the
 package and the import, on anything §2.3 forbids: any core package but
-`pkg/vfs`, `pkg/adapter`, `pkg/adapter/config`, `pkg/resources`,
+`pkg/vfs`, `pkg/adapter`, `pkg/adapter/settings`, `pkg/resources`,
 `pkg/metrics` and `internal/tlsconfig`, both identity packages included — `pkg/identity` and
 `internal/identity` — since an adapter takes identity types only as `pkg/vfs`
 aliases. It is seeded with one

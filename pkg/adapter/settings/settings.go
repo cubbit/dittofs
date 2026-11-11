@@ -1,4 +1,4 @@
-// Package config holds the adapters' settings shapes: what every adapter
+// Package settings holds the adapters' settings shapes: what every adapter
 // reads, and what only NFS or only SMB reads. It is a leaf, importing only the
 // standard library, so the node, the control plane and every adapter can take
 // it.
@@ -12,7 +12,7 @@
 // restart-only mark and no comparison of two shapes. The node applies a
 // changed Port by building a new adapter and never hands it to Reconfigure,
 // which refuses one with a sentinel error and a one-field comparison.
-package config
+package settings
 
 import (
 	"errors"
@@ -158,7 +158,7 @@ var (
 type refusals []error
 
 func (r *refusals) refuse(field, format string, args ...any) {
-	*r = append(*r, fmt.Errorf("config: %s: "+format, append([]any{field}, args...)...))
+	*r = append(*r, fmt.Errorf("settings: %s: "+format, append([]any{field}, args...)...))
 }
 
 // Validate checks every field against its rule, shapes and ranges only,
