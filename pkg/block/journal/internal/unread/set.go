@@ -44,6 +44,13 @@ type Ref struct {
 // Upgrade to a sharded map if a profile shows the mutex once ReadAt calls
 // it, and to state held across a restart once unread records are held at
 // open.
+//
+// ponytail: Try marks a range after its read returns, so a mark landing
+// after Retired(seg) of the same segment re-creates the entry and leaves
+// the segment suspect for good; the set relies on its caller never retiring
+// a segment while a read of it is in flight. Upgrade to a mark conditional
+// on the segment still being live once a caller exists that retires one
+// concurrently with reads.
 type Set struct {
 	mu      sync.Mutex
 	entries map[core.SegmentID]map[int64]Ref
@@ -145,17 +152,6 @@ func (s *Set) SuspectSegments() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.suspect
-}
-
-// entry returns the Kind the set holds for ref's (Segment, Off), and whether
-// it holds one. It is the in-package read the set's own tests take of the
-// Kind a mark kept, which no exported view serves yet: Ranges answers bytes
-// only, and the range reader the epic adds is what reaches the Kind.
-func (s *Set) entry(ref Ref) (Kind, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	held, ok := s.entries[ref.Segment][ref.Off]
-	return held.Kind, ok
 }
 
 // mark records ref as unread. Marking a range twice counts it once.
