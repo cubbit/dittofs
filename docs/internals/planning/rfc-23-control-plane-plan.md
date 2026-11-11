@@ -533,11 +533,16 @@ serves only the API. The adapter and sidecar rows are RFC 20's plan's epic 7 (D1
 **D12. The node's adapter rows are RFC 20's plan's epic 7, not this plan's.** RFC 20's plan gives
 its epic 7, planned after this plan's S2, the work of putting adapters into the node:
 - building each enabled adapter through its protocol's `New`;
-- applying a settings generation by `Reconfigure`, or by stop, `New` and start;
+- applying a settings generation by `Reconfigure`, or, for a changed `port`, by `New`, then the old
+  adapter's `Stop` and the new one's `Start` (O7);
 - building each `Serving` from `Adapter.Addrs()` and calling the sidecars' `Sync` in RFC 20 §3.5's
   order;
 - reporting `Health` and `Connections()`;
-- the loader and validator of `pkg/adapter/settings`, and `core`'s conditions and alert rules.
+- `core`'s conditions and alert rules.
+
+`pkg/adapter/settings` itself, with `Port`, is RFC 20's epic 2 (#4000, its D20). Its section in the
+one settings table, and that table's `Check` wired into reconcile and the routes, are the RFC 13
+plan's epic 5 (#4059).
 
 This plan's node leaves that slot to it: reconcile calls the adapter rows that epic 7 writes. This
 plan also takes over the rows of RFC 20's plan's deferral ledger that name RFC 23:
@@ -936,7 +941,7 @@ error to a status.
   with RFC 27's `Claim` (O2).
 - Remote stores and namespaces: bound fields, and a change of endpoint or credential refused as the
   RFC 13 plan's D9 says, until the claim exists (O2).
-- Adapters, with `port` as a setting (A1), validated by `pkg/adapter/settings`'s validator, and the
+- Adapters, with `port` as a setting (A1), validated through the RFC 13 plan's `Check`, and the
   generic settings resource (D5).
 - Users, groups, grants, netgroups and quotas (RFC 23 §3.5), a user's or group's delete answered as an
   operation.
