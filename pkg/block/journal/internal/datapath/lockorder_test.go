@@ -367,27 +367,36 @@ func TestRecorder_RemovalDuringHeldCallback(t *testing.T) {
 // for the test's own write — the count proves the probe ran, so the test
 // neither hangs on a hook that never fired nor passes vacuously.
 func TestRecorder_TakeRunsUnderAppendOnly(t *testing.T) {
-	var probe *lockorder.Recorder
-	var took atomic.Int64
+	// The hook is installed after the core is built — the fixture builds
+	// and starts the core in one piece, so this is the earliest a test can
+	// reach it — and no other Take runs in this fixture while it is
+	// installed: the fixture's own publishes have finished before this
+	// point and the test's write is the only admission that follows, so
+	// the once-only fire count below answers it alone.
+	var took atomic.Bool
 	heldInside := make(chan []lockorder.Rank, 1)
 	c, rec, shares := newRecordedCore(t)
 	s := shares[0]
 	f := streamFileID(c, c.streams.IndexFor(fid(1)))
 	c.cap.SetTakeHook(func() {
-		if probe != nil && took.CompareAndSwap(0, 1) {
-			heldInside <- probe.Held()
+		if took.CompareAndSwap(false, true) {
+			heldInside <- rec.Held()
 		}
 	})
-	probe = rec
-	if _, err := c.WriteAt(context.Background(), s, f, 0, []byte("admitted"), 1); err != nil {
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := c.WriteAt(context.Background(), s, f, 0, []byte("admitted"), 1)
+		wrote <- err
+	}()
+	if err := recordedJoin(t, c, "the write under the take hook", wrote); err != nil {
 		t.Fatalf("WriteAt under the take hook: %v", err)
 	}
 	held := recordedJoin(t, c, "the admission's decision-section report", heldInside)
 	if got, want := withoutPins(held), []lockorder.Rank{lockorder.FileAppend, lockorder.Capacity}; !slices.Equal(got, want) {
 		t.Fatalf("ranks held inside the admission's decision section = %v, want %v: the admission ran under a lock besides the write's own append domain", got, want)
 	}
-	if got := took.Load(); got != 1 {
-		t.Fatalf("the take hook fired %d times, want 1: the probe never ran", got)
+	if !took.Load() {
+		t.Fatal("the take hook never fired: the probe did not run")
 	}
 	assertNoRecordedViolations(t, rec, "the recorded admission")
 }
@@ -426,51 +435,99 @@ func TestRecorder_RefusedWriteHoldsNothing(t *testing.T) {
 	stopTheReads := func() { stopOnce.Do(func() { close(stopReads) }) }
 	t.Cleanup(stopTheReads)
 
-	// The reader loops over the same file while the refusals run: every
-	// read must answer, which it could not were a refusal holding a lock
-	// the read needs — the file's index or append domain among them.
+	// The reader loops over the same file, counting every read it
+	// completed: the refusals hold no lock the read needs — the file's
+	// index or append domain among them — so reads keep answering beside
+	// them. Its end closes readerDone however it returns, so an error
+	// inside the loop fails the join promptly and not at the watchdog.
+	var reads atomic.Int64
 	readerDone := make(chan struct{})
 	go func() {
+		defer close(readerDone)
 		for {
 			select {
 			case <-stopReads:
-				close(readerDone)
 				return
 			default:
 			}
-			_, _, _, _, err := c.ReadAt(context.Background(), limited, f, 0, make([]byte, 4))
-			if err != nil {
+			if err := func() error {
+				_, _, _, _, err := c.ReadAt(context.Background(), limited, f, 0, make([]byte, 4))
+				if err != nil {
+					return err
+				}
+				reads.Add(1)
+				return nil
+			}(); err != nil {
 				t.Errorf("ReadAt beside the refused writes: %v", err)
 				return
 			}
 		}
 	}()
 
+	// The reader must have completed at least one read before the first
+	// refusal: the test's promise is about the refusals' behaviour, not
+	// about a reader that never ran.
+	waitForReads := func(stage string, atLeast int64) {
+		t.Helper()
+		// The wait polls the counter on a short tick and bounds the total
+		// by the watchdog: a reader parked on a lock a refusal holds would
+		// sit between ticks until the bound, then dump every stack.
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for deadline := time.Now().Add(recordedWatchdog); ; {
+			select {
+			case <-readerDone:
+				t.Fatalf("the reader returned at %s after %d completed reads, want >= %d", stage, reads.Load(), atLeast)
+			case <-tick.C:
+				if reads.Load() >= atLeast {
+					return
+				}
+				if time.Now().After(deadline) {
+					recordedDump(t, "a read beside the refused writes at "+stage)
+					abandonRecorded(t, c)
+					t.Fatalf("no read completed at %s within %s: a refusal the run never reached was holding a lock the read needs", stage, recordedWatchdog)
+				}
+			}
+		}
+	}
+	waitForReads("the first refusal", 1)
+
 	// Several refused writes, each in turn: every one must answer naming
 	// the share, and the goroutine it ran on must hold nothing but pins
 	// once it has. Each refusal runs on its own goroutine behind the
 	// watchdog, so a regression answers as a stack dump, not as the run
-	// waiting out the suite's timeout.
+	// waiting out the suite's timeout. A write that is not refused fails
+	// with its own answer: the typed result carries the error through, so
+	// an unexpected success is an assertion failure and not a crash.
 	for attempt := 1; attempt <= 3; attempt++ {
-		refused := make(chan []any, 1)
+		refused := make(chan refusal, 1)
 		go func() {
 			_, err := c.WriteAt(context.Background(), limited, f, int64(attempt)*each, make([]byte, each), 1)
-			refused <- []any{err, withoutPins(rec.Held())}
+			refused <- refusal{err: err, held: withoutPins(rec.Held())}
 		}()
 		out := recordedJoin(t, c, "the refused write", refused)
-		err := out[0].(error)
-		held := out[1].([]lockorder.Rank)
 		var ns *core.NoSpaceError
-		if !errors.As(err, &ns) || ns.Limit != core.LimitShare {
-			t.Fatalf("refused write %d = %v, want a NoSpaceError naming the share's limit", attempt, err)
+		if !errors.As(out.err, &ns) || ns.Limit != core.LimitShare {
+			t.Fatalf("refused write %d got error %v, want a NoSpaceError naming the share's limit", attempt, out.err)
 		}
-		if len(held) != 0 {
-			t.Fatalf("refused write %d's goroutine holds ranks %v after its refusal, want only the stream's pins", attempt, held)
+		if len(out.held) != 0 {
+			t.Fatalf("refused write %d's goroutine holds ranks %v after its refusal, want only the stream's pins", attempt, out.held)
 		}
 	}
+	// At least one further read must complete past the last refusal
+	// before the reader is stopped: the refusals left nothing behind them.
+	waitForReads("the joined refusals", reads.Load()+1)
 	stopTheReads()
 	recordedAwait(t, c, "the reader beside the refused writes", readerDone)
 	assertNoRecordedViolations(t, rec, "the recorded refusals")
+}
+
+// refusal is one refused write's answer: the error it returned and the
+// ranks its goroutine still held, typed so an unexpected success carries a
+// nil error to the assertion instead of crashing the run.
+type refusal struct {
+	err  error
+	held []lockorder.Rank
 }
 
 // TestRecorder_FileMapHeldOnlyAcrossALookup checks, on the data path, that
@@ -501,7 +558,10 @@ func TestRecorder_FileMapHeldOnlyAcrossALookup(t *testing.T) {
 		stream := c.streams.IndexFor(fid(1))
 		fresh := streamFileID(c, stream)
 		doomed := otherFreshFileOn(c, stream, fresh)
-		seededFiles(t, c, s, fresh, doomed)
+		// Only the doomed file is seeded: the probe's own write to fresh
+		// creates that file's entry under the held rank, which is the
+		// map-add acquisition this half exists to see.
+		seededFiles(t, c, s, doomed)
 		before := len(rec.Violations())
 		done := make(chan struct{})
 		go func() {
@@ -622,8 +682,13 @@ func TestRFC1B_NoDeadlockRecorded(t *testing.T) {
 	// a NoSpace refusal is a completed answer, not a hollow call. Fills
 	// refused for staleness are counted apart from the ones that landed.
 	var did struct {
-		writes, reads, fills, removals atomic.Int64
-		refusedFills                   atomic.Int64
+		writes, reads, fills  atomic.Int64
+		truncates, deallocs   atomic.Int64
+		deletes, refusedFills atomic.Int64
+	}
+	// landed removals of every kind, for the wait-count assertion below.
+	landedRemovals := func() int64 {
+		return did.truncates.Load() + did.deallocs.Load() + did.deletes.Load()
 	}
 	reportErr := func(name string, err error) {
 		if err == nil {
@@ -729,28 +794,34 @@ func TestRFC1B_NoDeadlockRecorded(t *testing.T) {
 			}
 		}
 	})
-	// The removals cycle truncate, deallocate and delete over the files.
-	// Their records draw on the reserved headroom, which no content write
-	// of this run touches, so a refused removal would name a real state;
-	// none should be, and one that is lands in reportErr like any other
-	// surprise.
+	// The removals cycle truncate, deallocate and delete over the files,
+	// each kind counted in its own landed counter: the run passes only
+	// when every kind actually changed something, so a remover whose dice
+	// never picked one kind cannot pass hollow. Their records draw on the
+	// reserved headroom, which no content write of this run touches, so
+	// a refused removal would name a real state; none should be, and one
+	// that is lands in reportErr like any other surprise.
 	worker("remover", func(r *rand.Rand) {
 		i := int(r.IntN(4))
 		s, f := shareOf(i), files[i]
 		var err error
+		var landed *atomic.Int64
 		switch r.IntN(3) {
 		case 0:
 			_, err = c.Truncate(ctx, s, f, int64(r.IntN(8))*chunk)
+			landed = &did.truncates
 		case 1:
 			_, err = c.Deallocate(ctx, s, f, core.Extent{Off: int64(r.IntN(8)) * chunk, Len: chunk})
+			landed = &did.deallocs
 		default:
 			_, err = c.Delete(ctx, s, f)
+			landed = &did.deletes
 		}
 		if err != nil {
 			reportErr("removal", err)
 			return
 		}
-		did.removals.Add(1)
+		landed.Add(1)
 	})
 
 	close(start)
@@ -771,10 +842,12 @@ func TestRFC1B_NoDeadlockRecorded(t *testing.T) {
 	// landed: a run whose every call found nothing to do, or whose filler
 	// never got past a racing writer, cannot pass.
 	for kind, n := range map[string]int64{
-		"a landed write":   did.writes.Load(),
-		"a completed read": did.reads.Load(),
-		"a landed fill":    did.fills.Load(),
-		"a landed removal": did.removals.Load(),
+		"a landed write":      did.writes.Load(),
+		"a completed read":    did.reads.Load(),
+		"a landed fill":       did.fills.Load(),
+		"a landed truncate":   did.truncates.Load(),
+		"a landed deallocate": did.deallocs.Load(),
+		"a landed delete":     did.deletes.Load(),
 	} {
 		if n <= 0 {
 			t.Errorf("no %s completed in the run of %d rounds per worker: the run would pass hollow", kind, rounds)
@@ -782,8 +855,8 @@ func TestRFC1B_NoDeadlockRecorded(t *testing.T) {
 	}
 	// Every landed removal reaches the recorded wait, and nothing else in
 	// the run runs a removal, so the assertion's count answers them.
-	if got := int64(rec.Checks("removal wait")); got < did.removals.Load() {
-		t.Fatalf("removal wait checks = %d, want >= the %d removals that landed: a removal never reached its wait's assertion", got, did.removals.Load())
+	if got, want := int64(rec.Checks("removal wait")), landedRemovals(); got < want {
+		t.Fatalf("removal wait checks = %d, want >= the %d removals that landed: a removal never reached its wait's assertion", got, want)
 	}
 	assertNoRecordedViolations(t, rec, "the recorded no-deadlock run")
 	// The test goroutine's own books: it seeded the files, so this is the
