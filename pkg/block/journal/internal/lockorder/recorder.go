@@ -217,23 +217,24 @@ func orderingHeld(held []heldLock) []heldLock {
 // guard under index; acquire under map; the drain wait's wait-under-lock;
 // out of order.
 //
-// decision: a held reference is a pin — it never waits on anything — so it
-// is excluded from the held set that orders the same goroutine's later
-// acquisitions, and no rule but its own acquisition and the drain wait's own
-// checks ever sees it. The reference's acquisition itself is still checked
-// against every hold — a ref taken under the file index or the file map is
-// reported like any acquisition — and the drain wait, the one guarded form
-// that blocks, is checked to hold no lock at all, and against a reference of
-// its own segment, which is the certain self-deadlock: a drain wait while
-// holding one waits for the caller itself. A reference of a different
-// segment held across the drain's wait is not reported — a pin never blocks
-// the drain, so holding one costs the wait nothing but the drain's own
-// length, which is the ceiling of that exemption: withdraw it if a reference
-// ever comes to bind the wait itself. Withdraw the whole exclusion if a pin
-// ever waits on a lock.
+// decision: a held reference is a pin — it never waits on another
+// reference — so it is excluded from the held set that orders the same
+// goroutine's later acquisitions, and no rule that compares that set ever
+// sees it. Two checks still reach pins, both because a drain wait waits:
+// the drain wait — a plain StorageGuard acquisition, which by definition is
+// the reclamation path's exclusive hold; a future shared-read use of the
+// rank would need its own entry point — reports against every guard
+// reference the goroutine holds, of its own segment or any other, and a
+// reference taken while a plain guard hold is on the books reports too, in
+// both directions. The two-segment cycle is the reason: one goroutine
+// pinning S1 while it drains S2, and another the mirror, is a real
+// deadlock no same-segment check catches. Production retirers hold no
+// pins, so the pair costs test choreography alone. Withdraw the ordering
+// exclusion if a pin ever waits on a lock.
 func (r *Recorder) recordAcquisition(heldNow []heldLock, rank Rank, isRef bool, refID any) {
+	// broke names a rule that fired: OutOfOrder is itself the zero Kind, so
+	// the kind alone cannot say one did.
 	kind, broke := Kind(0), false
-
 	// order is the held set the acquisition is checked against: every hold,
 	// for the reference being taken now — a pin held beside a pin is
 	// nothing, but a ref taken under a lock is reported — and the
@@ -243,36 +244,33 @@ func (r *Recorder) recordAcquisition(heldNow []heldLock, rank Rank, isRef bool, 
 		order = orderingHeld(heldNow)
 	}
 
-	if !broke {
-		for _, h := range heldNow {
-			if h.rank != rank {
-				continue
-			}
-			if heldRef, isHeldRef := h.id.(refIdentity); isHeldRef {
-				// decision: a reference beside another reference is never
-				// reported, of one segment or two: references are pins,
-				// shared holds that never wait on anything. A drain wait
-				// that finds its own segment's reference still held is the
-				// certain self-deadlock — the wait would block on the pin
-				// of the caller itself — and is the one reported pair.
-				// Another segment's pin never blocks the drain, the ceiling
-				// the wait's own marker above names. Withdraw the exemption
-				// if a reference acquire ever blocks on another reference.
-				if isRef || rank != StorageGuard || heldRef.e != refID {
-					continue
-				}
-			} else if isRef {
-				// A reference taken while a plain guard hold is on the
-				// books is the self-deadlock's second order: the drain of
-				// the segment the reference pins. Any other guard hold is
-				// another segment's drain, which a pin does not block.
-				if h.id != refID {
-					continue
-				}
-			}
-			kind, broke = SameDomain, true
-			break
+	for _, h := range heldNow {
+		if h.rank != rank {
+			continue
 		}
+		_, heldIsRef := h.id.(refIdentity)
+		switch {
+		case isRef && heldIsRef:
+			// decision: a reference beside another reference is never
+			// reported, of one segment or two: references are pins,
+			// shared holds that never wait on another reference.
+			// Withdraw the exemption if a reference acquire ever blocks
+			// on another reference.
+			continue
+		case isRef && !heldIsRef, !isRef && heldIsRef:
+			// decision: a plain guard hold beside a guard reference is
+			// reported in both orders — its own segment or any other —
+			// for the wait the plain hold parks in can be the other side
+			// of the two-segment cycle the marker above names, and
+			// reclamation holds nothing across the wait, so no
+			// legitimate drain ever sees a pin. A future shared-read use
+			// of the plain rank would need its own entry point.
+		default:
+			// Two plain holds of one rank: the ordinary same-domain
+			// violation.
+		}
+		kind, broke = SameDomain, true
+		break
 	}
 	if !broke && rank == StorageGuard {
 		for _, h := range order {
