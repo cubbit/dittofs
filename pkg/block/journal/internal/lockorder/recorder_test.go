@@ -696,8 +696,22 @@ func TestRecorder_GuardRefs(t *testing.T) {
 				rec.AcquireRef(new(int))
 				rec.Acquire(lockorder.StorageGuard, new(int))
 			},
-			// A pin of another segment never blocks the wait, so it is not
-			// reported: the ceiling the recorder's decision marker names.
+			// The wait is reported against every guard reference, of its
+			// own segment or any other: the two-segment cycle is a real
+			// deadlock, and reclamation holds nothing across the wait.
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			name: "the drain wait's plain guard then another segment's ref",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.Acquire(lockorder.StorageGuard, new(int))
+				rec.AcquireRef(new(int))
+			},
+			// The cycle's second order: a reference taken while a plain
+			// guard hold is on the books.
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.StorageGuard,
 		},
 		{
 			name: "the drain wait's plain guard then its own segment's ref",
@@ -721,15 +735,6 @@ func TestRecorder_GuardRefs(t *testing.T) {
 			// drain wait under capacity is its own rule.
 			wantKinds: []lockorder.Kind{lockorder.GuardWaitUnderLock},
 			wantRank:  lockorder.StorageGuard,
-		},
-		{
-			name: "the drain wait holding nothing but another segment's ref",
-			drive: func(t *testing.T, rec *lockorder.Recorder) {
-				rec.AcquireRef(new(int))
-				rec.Acquire(lockorder.StorageGuard, new(int))
-			},
-			// Doubly covered: the pin neither orders nor counts as a lock
-			// the wait must not hold.
 		},
 		{
 			name: "two refs under file index",
@@ -792,5 +797,47 @@ func TestRecorder_GuardRefReleasedOnOtherGoroutine(t *testing.T) {
 	wg.Wait()
 	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
 		t.Errorf("violation kinds = %v, want none", got)
+	}
+}
+
+// TestRecorder_GuardRefsCrossSegmentCycle drives both sides of the
+// two-segment cycle the drain wait's rule exists for: goroutine A pins
+// segment 1 and drains segment 2 while goroutine B pins segment 2 and drains
+// segment 1 — the pair that deadlocks for real, each wait held across the
+// other's segment. Each side is staged to report, so a recorder that
+// narrowed the wait to its own segment's ref fails here.
+func TestRecorder_GuardRefsCrossSegmentCycle(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	s1, s2 := new(int), new(int)
+
+	aPinned, bPinned := make(chan struct{}), make(chan struct{})
+	aDone, bDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(aDone)
+		rec.AcquireRef(s1)
+		close(aPinned)
+		<-bPinned
+		rec.Acquire(lockorder.StorageGuard, s2)
+	}()
+	go func() {
+		defer close(bDone)
+		rec.AcquireRef(s2)
+		close(bPinned)
+		<-aPinned
+		rec.Acquire(lockorder.StorageGuard, s1)
+	}()
+	<-aPinned
+	<-bPinned
+	<-aDone
+	<-bDone
+
+	vs := rec.Violations()
+	if len(vs) != 2 {
+		t.Fatalf("the cross-segment cycle recorded %d violations, want 2 (a drain wait against a held pin on each side): %+v", len(vs), vs)
+	}
+	for i, v := range vs {
+		if v.Kind != lockorder.SameDomain || v.Rank != lockorder.StorageGuard {
+			t.Errorf("the cycle's violation %d = %s of %s over %v, want same domain of storage guard", i, v.Kind, v.Rank, v.Held)
+		}
 	}
 }
