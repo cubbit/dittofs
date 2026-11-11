@@ -11,35 +11,35 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // refusedBubble is a bubble whose engine was started over a journal that
 // refused its directory as unsuitable, with one share it names.
-func refusedBubble(t *testing.T, store *engine.StubStore) (*bubble, engine.Share) {
+func refusedBubble(t *testing.T, fs *kvstoretest.FS) (*bubble, engine.Share) {
 	t.Helper()
 
-	return refusedBubbleWrapping(t, store, nil)
+	return refusedBubbleWrapping(t, fs, nil)
 }
 
 // refusedBubbleWrapping is refusedBubble with every handle the fake journal
 // opens passed through wrap, when it is set.
 func refusedBubbleWrapping(
 	t *testing.T,
-	store *engine.StubStore,
+	fs *kvstoretest.FS,
 	wrap func(engine.Handle) engine.Handle,
 ) (*bubble, engine.Share) {
 	t.Helper()
 
-	b := buildBubble(t, store, wrap)
+	b := buildBubble(t, fs, wrap)
 	b.openFn = func(context.Context) (engine.Journal, error) {
 		return nil, unsuitable()
 	}
 
-	s := bubbleShare(7)
-	s.Shard = entity.ShardID(1)
+	s := bubbleShare(t, fs)
 
 	if err := b.e.Start(context.Background(), []engine.Share{s}); err != nil {
 		t.Fatalf("Start = %v, want nil", err)
@@ -54,8 +54,10 @@ func refusedBubbleWrapping(
 // The retry fires at the 30th second, not before and not after: a timer of 20 s
 // attaches the share at 29 s, and one of 40 s has not attached it at 30 s.
 func TestTheRetryFiresAtThe30thSecond(t *testing.T) {
+	fs, _ := bubbleFS(t)
+
 	synctest.Test(t, func(t *testing.T) {
-		b, s := refusedBubble(t, engine.NewStubStore())
+		b, s := refusedBubble(t, fs)
 		b.openFn = nil
 
 		b.clock.Advance(retryEvery - time.Second)
@@ -81,8 +83,10 @@ func TestTheRetryFiresAtThe30thSecond(t *testing.T) {
 // A retry that Close overtook opens nothing: the 30 s that follow leave the
 // share unattached and the journal unopened.
 func TestCloseStopsTheRetryOfAnUnsuitableJournal(t *testing.T) {
+	fs, _ := bubbleFS(t)
+
 	synctest.Test(t, func(t *testing.T) {
-		b, s := refusedBubble(t, engine.NewStubStore())
+		b, s := refusedBubble(t, fs)
 		b.openFn = nil
 		closed := closing(b.e, context.Background())
 
@@ -116,15 +120,19 @@ func TestCloseStopsTheRetryOfAnUnsuitableJournal(t *testing.T) {
 // A Start that fails after the open was refused leaves no retry behind: no
 // timer is armed and the 30 s that follow open nothing.
 func TestAFailedStartLeavesNoRetryOfAnUnsuitableJournal(t *testing.T) {
+	fs, _ := bubbleFS(t)
+	s := bubbleShare(t, fs)
+
 	synctest.Test(t, func(t *testing.T) {
-		store := engine.NewStubStore()
-		store.RaiseErr = errInjected
-		b := buildBubble(t, store, nil)
+		// The raise at start is the one store call after a refused open, and
+		// over no served shard the store runs no transaction a kv fault could
+		// fail: the raise itself answers the error.
+		b := buildBubble(t, fs, nil, func(d *engine.Deps) {
+			d.Lifecycle = &raiseScript{Lifecycle: d.Lifecycle, answers: []error{errInjected}}
+		})
 		b.openFn = func(context.Context) (engine.Journal, error) {
 			return nil, unsuitable()
 		}
-		s := bubbleShare(7)
-		s.Shard = entity.ShardID(1)
 
 		if err := b.e.Start(context.Background(), []engine.Share{s}); !errors.Is(err, errInjected) {
 			t.Fatalf("Start = %v, want the raise's error", err)
@@ -168,8 +176,10 @@ func heldOpen(b *bubble) (entered <-chan struct{}, release chan<- struct{}) {
 // Open returns, the retry sees the closed state, closes what it opened and
 // publishes nothing, and Close, which joined it, returns.
 func TestCloseOvertakesALateAttach(t *testing.T) {
+	fs, _ := bubbleFS(t)
+
 	synctest.Test(t, func(t *testing.T) {
-		b, s := refusedBubble(t, engine.NewStubStore())
+		b, s := refusedBubble(t, fs)
 		entered, release := heldOpen(b)
 
 		b.clock.Advance(retryEvery)
@@ -214,8 +224,10 @@ func TestCloseOvertakesALateAttach(t *testing.T) {
 // A retried open that never returns does not hold Close past the stop bound:
 // Close reports it, and leaves the journal the retry may yet open to it.
 func TestCloseGivesUpOnARetriedOpenThatNeverReturns(t *testing.T) {
+	fs, _ := bubbleFS(t)
+
 	synctest.Test(t, func(t *testing.T) {
-		b, _ := refusedBubble(t, engine.NewStubStore())
+		b, _ := refusedBubble(t, fs)
 		entered, release := heldOpen(b)
 
 		b.clock.Advance(retryEvery)
@@ -271,9 +283,11 @@ func TestARetriedOpenThatFindsTheJournalLostEndsTheRetry(t *testing.T) {
 		"foreign": journal.ErrIdentityMismatch,
 	} {
 		t.Run(name, func(t *testing.T) {
+			fs, _ := bubbleFS(t)
+			spare := enginetest.AddShare(t, fs.Store, "spare", 1<<30)
+
 			synctest.Test(t, func(t *testing.T) {
-				b, s := refusedBubble(t, engine.NewStubStore())
-				spare := bubbleShare(8)
+				b, s := refusedBubble(t, fs)
 				b.openFn = func(context.Context) (engine.Journal, error) {
 					return nil, cause
 				}
@@ -337,6 +351,8 @@ func bubbleCondition(st engine.Stats, name string) (engine.Condition, bool) {
 // lifecycle mutex: while the handle's close is held, the mutex is free (RFC 8
 // §2.3: never held across I/O).
 func TestALateAttachThatCloseOvertookClosesWithoutTheLifecycleMutex(t *testing.T) {
+	fs, _ := bubbleFS(t)
+
 	synctest.Test(t, func(t *testing.T) {
 		hc := &heldClose{entered: make(chan struct{}), release: make(chan struct{})}
 		wrap := func(h engine.Handle) engine.Handle {
@@ -344,7 +360,7 @@ func TestALateAttachThatCloseOvertookClosesWithoutTheLifecycleMutex(t *testing.T
 
 			return hc
 		}
-		b, _ := refusedBubbleWrapping(t, engine.NewStubStore(), wrap)
+		b, _ := refusedBubbleWrapping(t, fs, wrap)
 		entered, release := heldOpen(b)
 
 		b.clock.Advance(retryEvery)
@@ -384,8 +400,10 @@ func TestALateAttachThatCloseOvertookClosesWithoutTheLifecycleMutex(t *testing.T
 // error that comes after the stop is the Close's, not the journal's, so Stats
 // and journal_unsuitable still name the unsuitable storage, and Close returns.
 func TestAnOpenThatFailsAfterCloseBeganLeavesTheCauseAsItWas(t *testing.T) {
+	fs, _ := bubbleFS(t)
+
 	synctest.Test(t, func(t *testing.T) {
-		b, s := refusedBubble(t, engine.NewStubStore())
+		b, s := refusedBubble(t, fs)
 		entered := make(chan struct{})
 		release := make(chan struct{})
 		b.openFn = func(context.Context) (engine.Journal, error) {
@@ -425,16 +443,19 @@ func TestAnOpenThatFailsAfterCloseBeganLeavesTheCauseAsItWas(t *testing.T) {
 	})
 }
 
-// A Close that meets the retry's timer already fired opens nothing: the retry
-// sees the closed state before it opens the directory, whichever of the timer
-// and the cancelled context it wakes on. The bubble makes the order the same
-// each time, so a few runs are enough; a retry that opened would leave the journal
-// it opened, and closed, in the events.
+// A Close that meets the retry's timer already fired leaves nothing open and
+// attaches nothing. The retry either sees the closed state before it opens the
+// directory, opening nothing, or, with more than one CPU, gets past that check
+// first and is overtaken: its handle and journal are closed, in that order,
+// as TestALateAttachThatCloseOvertook pins. A bubble fixes the order only on
+// one CPU, so the row accepts either outcome and no other.
 func TestACloseThatMeetsTheFiredRetryTimerOpensNothing(t *testing.T) {
 	for i := range 3 {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			fs, _ := bubbleFS(t)
+
 			synctest.Test(t, func(t *testing.T) {
-				b, s := refusedBubble(t, engine.NewStubStore())
+				b, s := refusedBubble(t, fs)
 				b.openFn = nil
 
 				b.clock.Advance(retryEvery)
@@ -443,8 +464,9 @@ func TestACloseThatMeetsTheFiredRetryTimerOpensNothing(t *testing.T) {
 					t.Fatalf("Close = %v", err)
 				}
 
-				if got := b.ev.list(); len(got) != 0 {
-					t.Errorf("events %v after Close, want none: the retry opened the journal", got)
+				overtaken := []string{handleClose(s), "journal close"}
+				if got := b.ev.list(); len(got) != 0 && !slices.Equal(got, overtaken) {
+					t.Errorf("events %v after Close, want none, or %v when the retry was overtaken", got, overtaken)
 				}
 
 				if got := b.e.Stats().Shares[s.ID].Refused; got == nil {
