@@ -555,6 +555,10 @@ func (p *Pool) Kick() {
 	p.mu.Unlock()
 }
 
+// Target returns the pool's content spare target: the ready spares it keeps
+// for rolls while no hold is open.
+func (p *Pool) Target() int { return p.t.Content }
+
 // ReadyContent returns the content spares an unreserved take can still reach:
 // the ready ones less the spares owed to open holds, zero when the difference
 // is empty. It takes the pool's lock briefly and makes no I/O, so it costs

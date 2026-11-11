@@ -412,3 +412,46 @@ func TestReserve_OrderOfRefusals(t *testing.T) {
 	rqOver.ShareLimit = 1
 	_ = r.refusedReserve(t, rqOver, core.LimitShare)
 }
+
+// TestReservationDrawsFitTheReservation checks writes of unequal sizes whose
+// record bytes sum to the reservation's ask every draw succeed, and a further
+// draw is refused: the arithmetic Draw sizes by and the one Reserve charged
+// agree.
+func TestReservationDrawsFitTheReservation(t *testing.T) {
+	r := newRig(t, std())
+	// Payloads of multiples of 8, so a write's record bytes are its header,
+	// body and payload with no padding: RecordBytes(p) = 104 + p.
+	const writes = 8
+	sizes := []int64{4096, 8, 16384, 24, 512, 64, 8192, 16}
+	var total, ask int64
+	for _, p := range sizes {
+		if got, want := recordSplit(p, 0, testCap), int64(104)+p; got != want {
+			t.Fatalf("recordSplit(%d, 0, %d) = %d, want %d", p, testCap, got, want)
+		}
+		total += p
+		ask += recordSplit(p, 0, testCap)
+	}
+	_, spares := PiecesFor(ask, writes, testCap)
+	r.awaitReady(t, spares)
+
+	rs := r.reserve(t, ReserveRequest{Tag: tag1, Bytes: ask, Writes: writes})
+	defer rs.Release()
+	for i, p := range sizes {
+		g, err := rs.Draw(p)
+		if err != nil {
+			t.Fatalf("Draw %d (%d payload bytes) = %v", i+1, p, err)
+		}
+		// The write lands every byte its grant covers, as a real append
+		// hands each piece over, and the grant returns nothing.
+		g.Wrote(g.bytes)
+		g.Release()
+	}
+	// The reservation is spent to the byte: what it charged each write is what
+	// the draw charges it, in both directions.
+	if got := rs.Remaining(); got != 0 {
+		t.Fatalf("after every write, Remaining = %d, want the ask spent whole", got)
+	}
+	if _, err := rs.Draw(8); !errors.Is(err, core.ErrReservationExhausted) {
+		t.Fatalf("the draw past the reservation = %v, want ErrReservationExhausted", err)
+	}
+}

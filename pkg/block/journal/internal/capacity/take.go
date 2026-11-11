@@ -54,6 +54,12 @@ type Config struct {
 	// limit; zero means the next draw is refused.
 	VersionsLeft func() uint64
 
+	// DrawVersion issues the version one write carries, or refuses with the
+	// counter's named NoSpaceError. The wiring accepts the counters' own
+	// Draw. It takes no lock of this domain — the counter is one atomic
+	// swap — so the section may call it, as it calls VersionsLeft.
+	DrawVersion func() (core.Version, error)
+
 	// EntriesLeft reports how many placement index entries remain below the
 	// index's bound; zero means the next entry is refused. It takes no lock:
 	// the index reads its count and limit as two atomic loads.
@@ -247,7 +253,7 @@ type Capacity struct {
 // panics here.
 func New(cfg Config) *Capacity {
 	if cfg.Admit == nil || cfg.CheckIndex == nil || cfg.CheckFillIndex == nil ||
-		cfg.VersionsLeft == nil || cfg.EntriesLeft == nil ||
+		cfg.VersionsLeft == nil || cfg.DrawVersion == nil || cfg.EntriesLeft == nil ||
 		cfg.Footprint == nil || cfg.ShareFigures == nil || cfg.Room == nil ||
 		cfg.ReadySpares == nil || cfg.Hold == nil || cfg.BelowHalf == nil {
 		panic("capacity: the admission needs every injected fact")
@@ -293,6 +299,16 @@ type Grant struct {
 	// hold is the pool's hold for the spares, nil when the write fit the
 	// room.
 	hold *segment.Hold
+
+	// version is the version drawn for the write, when a reservation drew
+	// it; the zero version for a grant the admission gave, whose write draws
+	// its own.
+	version core.Version
+
+	// reservation is the reservation the grant was drawn from, nil for an
+	// admitted write's grant: a drawn grant borrows its reservation's hold and
+	// returns its unlanded bytes to the reservation rather than to the pool.
+	reservation *Reservation
 
 	// released reports the first Release, making the later ones no-ops.
 	released bool
@@ -812,18 +828,49 @@ func (g *Grant) Wrote(n int64) {
 // Release returns what the grant still holds: the record bytes its pieces
 // never wrote, the room its stream never appended and the spares the write
 // never took. The share's ledger of the grant's real bytes returns with
-// them. It is idempotent — a second Release does nothing.
+// them. A grant drawn from a reservation returns its unlanded bytes to the
+// reservation instead, and leaves the reservation's hold open: the spares are
+// the reservation's, and its later writes draw on them. It is idempotent — a
+// second Release does nothing.
 func (g *Grant) Release() {
 	if g.released {
 		return
 	}
 	g.released = true
+	if g.reservation != nil {
+		g.releaseDrawn()
+		return
+	}
 	g.c.releaseReservation(g.tag, g.stream, g.roomPart, g.left)
 	if g.hold != nil {
 		g.hold.Close()
 		g.hold = nil
 	}
 }
+
+// releaseDrawn gives a drawn grant's unlanded bytes back to its reservation,
+// so a later write of the reservation may draw them. They stay in the share's
+// reserved figure throughout — a byte the write never wrote is still a byte
+// the reservation holds — and the reservation's Release returns them. The
+// journal's maximum keeps the reservation's whole ask until then, which fails
+// closed: the room is in the spares the reservation holds, and no limit is
+// consulted again while it holds. The pieces' index entries stay spent, for a
+// write that failed part-way may have published some of them.
+func (g *Grant) releaseDrawn() {
+	if g.left <= 0 || g.reservation == nil {
+		return
+	}
+	g.c.mu.Lock()
+	back := g.left
+	g.left = 0
+	g.reservation.leftBytes += back
+	g.c.mu.Unlock()
+}
+
+// Version returns the version drawn for the write when a reservation drew it,
+// and the zero version for an admitted write's grant, whose write draws its
+// own.
+func (g *Grant) Version() core.Version { return g.version }
 
 // Hold returns the pool's hold the grant carries, nil when the write fit
 // its stream's room.

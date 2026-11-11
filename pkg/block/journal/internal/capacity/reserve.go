@@ -2,6 +2,7 @@ package capacity
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -193,9 +194,10 @@ func (c *Capacity) Reserve(ctx context.Context, r ReserveRequest) (*Reservation,
 		return nil, err
 	}
 	return &Reservation{
-		c: c, tag: r.Tag, stream: r.Stream,
+		c: c, tag: r.Tag,
 		bytes: r.Bytes, bytesAsk: r.Bytes + footer,
 		entries: idx, versions: versions, hold: hold,
+		leftBytes: r.Bytes, leftEntries: idx, leftVersions: versions,
 	}, nil
 }
 
@@ -205,35 +207,146 @@ func (c *Capacity) Reserve(ctx context.Context, r ReserveRequest) (*Reservation,
 // bytes roll into. It is not safe from two goroutines at once; the caller
 // that reserved owns it.
 type Reservation struct {
-	c      *Capacity
-	tag    core.ShareTag
-	stream int
+	c   *Capacity
+	tag core.ShareTag
 
 	// bytes is the record bytes the ask named, and bytesAsk is those bytes
-	// with the footer entry of every piece: the two figures the reservation
-	// gives back when it releases.
+	// with the footer entry of every piece: the journal-side figure the open
+	// reservation charges until its Release, for its pieces land in spares it
+	// already holds. entries and versions are the index entries and versions
+	// it holds.
 	bytes    int64
 	bytesAsk int64
-	// entries and versions are the index entries and versions the
-	// reservation holds.
 	entries  int64
 	versions uint64
 	// hold is the pool's hold on the spares the bytes roll into.
 	hold *segment.Hold
 
+	// leftBytes, leftEntries and leftVersions are what the reservation's
+	// writes have not drawn yet: Release returns these and no more, Draw
+	// refuses a write they cannot cover, and a drawn grant's unlanded bytes
+	// come back to leftBytes.
+	leftBytes    int64
+	leftEntries  int64
+	leftVersions uint64
+
 	// released reports the first Release, making the later ones no-ops.
 	released bool
 }
 
+// Tag returns the share the reservation's writes run as.
+func (r *Reservation) Tag() core.ShareTag { return r.tag }
+
+// Remaining returns the record bytes the reservation's writes have not drawn
+// yet.
+func (r *Reservation) Remaining() int64 {
+	r.c.mu.Lock()
+	defer r.c.mu.Unlock()
+	return r.leftBytes
+}
+
+// Draw returns a Grant for one write of payload bytes, drawn from what the
+// reservation holds: the record bytes the write's split will append, the
+// index entries those pieces need, one of its versions, and the spares of its
+// hold, which its pieces roll onto ahead of every unreserved write. The
+// version is drawn here and returned by the grant, so the write that takes it
+// appends under it. No limit of the journal and no headroom rule is consulted:
+// the reservation took them all, and while it holds enough the write is
+// refused by none.
+//
+// A reservation that no longer holds enough is refused with
+// core.ErrReservationExhausted before any version is drawn and any counter
+// moves: no limit refused the write — the reservation a caller took for it is
+// spent — so the refusal is not a NoSpaceError. A released reservation refuses
+// every draw with core.ErrClosed, and a write of no bytes is a caller bug,
+// core.ErrInvalidExtent.
+//
+// decision: the record bytes are the write's worst-case split — the one it
+// makes into a stream with no room, every piece after the first in a segment
+// of its own — because a reservation's writes name their streams only as they
+// land. The figure is never below what a write in room appends, so it
+// over-draws by at most one record header per write and fails closed.
+func (r *Reservation) Draw(payload int64) (*Grant, error) {
+	if payload <= 0 {
+		return nil, core.ErrInvalidExtent
+	}
+
+	r.c.mu.Lock()
+	if r.released {
+		r.c.mu.Unlock()
+		return nil, core.ErrClosed
+	}
+	bytes := recordSplit(payload, 0, r.c.cfg.SegmentCap)
+	// The pieces are the write's head plus one per cap its own bytes cross.
+	// Their sum over the reservation's writes is at most 2 x writes plus one
+	// per cap the whole ask can cross, the count Reserve took: a write's
+	// share is its own bytes over the cap, rounded up and added to its head,
+	// and the rounding's one per write rides inside the second piece each
+	// write was counted. So a reservation's entries last its every write.
+	pieces := 1
+	if bytes > 0 {
+		pieces += int((bytes + r.c.cfg.SegmentCap - 1) / r.c.cfg.SegmentCap)
+	}
+	switch {
+	case bytes > r.leftBytes:
+		missing := bytes - r.leftBytes
+		r.c.mu.Unlock()
+		return nil, fmt.Errorf("%w: %d record bytes missing of the reservation's %d", core.ErrReservationExhausted, missing, r.bytes)
+	case int64(pieces) > r.leftEntries:
+		missing := int64(pieces) - r.leftEntries
+		r.c.mu.Unlock()
+		return nil, fmt.Errorf("%w: %d index entries missing of the reservation's %d", core.ErrReservationExhausted, missing, r.entries)
+	case r.leftVersions < 1:
+		r.c.mu.Unlock()
+		return nil, fmt.Errorf("%w: the reservation's %d versions are drawn", core.ErrReservationExhausted, r.versions)
+	}
+	// decision: the version is drawn under the section, so the check that the
+	// reservation still holds one and the draw of it are one step. Drawn
+	// later, a plain write passing Take between the two could take the version
+	// the reservation holds, and the reserved write would meet the version
+	// limit the reservation exists to keep it clear of.
+	v, err := r.c.cfg.DrawVersion()
+	if err != nil {
+		r.c.mu.Unlock()
+		return nil, err
+	}
+	r.leftBytes -= bytes
+	r.leftEntries -= int64(pieces)
+	r.leftVersions--
+	r.c.heldEntries -= int64(pieces)
+	r.c.heldVersions--
+	r.c.mu.Unlock()
+
+	// decision: the grant borrows the reservation's hold rather than closing
+	// it when the write returns, because the spares it carries belong to the
+	// reservation and serve its later writes: a write that rolls hands one
+	// over, and the rest stay held until Release. It names no stream and holds
+	// no room: a reservation's writes land on their files' own streams, and
+	// its ask was charged to the journal's maximum rather than to a stream's
+	// room.
+	return &Grant{
+		c: r.c, tag: r.tag, bytes: bytes, left: bytes,
+		hold: r.hold, version: v, reservation: r,
+	}, nil
+}
+
 // Release returns what the reservation still holds: its bytes, footer entries,
-// index entries, versions and spares. It is idempotent — a second Release
-// does nothing.
+// index entries, versions and spares. It is idempotent — a second Release does
+// nothing.
+//
+// decision: the journal's maximum keeps the reservation's whole ask until
+// this call, not only what its writes have not drawn: the room the ask names
+// is in the spares the reservation holds, so no byte of it returns to the
+// maximum before the hold does, and a plain write cannot claim it. It fails
+// closed. The entries and versions a write drew stay spent — a write that
+// failed part-way may have published its pieces — so a shortfall there
+// refuses the reservation's next write rather than admitting it past a bound.
 func (r *Reservation) Release() {
 	if r.released {
 		return
 	}
 	r.released = true
-	r.c.releaseAsk(r.tag, r.bytes, r.bytesAsk, r.entries, r.versions)
+	r.c.releaseAsk(r.tag, r.leftBytes, r.bytesAsk, r.leftEntries, r.leftVersions)
 	if r.hold != nil {
 		r.hold.Close()
 		r.hold = nil

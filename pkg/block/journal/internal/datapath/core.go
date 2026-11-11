@@ -105,6 +105,10 @@ type coreOptions struct {
 	// builds, keeping Deps at the figure it carries — zero meaning none, the
 	// same reading Deps.HeadroomRecords itself carries.
 	headroomRecords int
+	// contentSpares overrides the pool's content target, so a test can hold a
+	// reservation wider than the target's few spares; zero keeps the test
+	// helper's own target.
+	contentSpares int
 	// segmentCap replaces the test helper's segment size, so a test can write
 	// a record larger than the default segment holds.
 	segmentCap int64
@@ -305,6 +309,9 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// Withdraw once a zero HeadroomRecords can reach this from a caller
 	// that names a setting, rather than only a wiring that names none.
 	targets := deps.Targets
+	if o.contentSpares != 0 {
+		targets.Content = o.contentSpares
+	}
 	if headroomRecords > 0 {
 		// Each open stream also needs its seal marker, one footer entry and the
 		// trailer, which a segment cannot seal without.
@@ -344,6 +351,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		CheckIndex:     state.Index.CheckWrite,
 		CheckFillIndex: state.Index.CheckFillIndexBound,
 		VersionsLeft:   state.Counters.VersionsLeft,
+		DrawVersion:    state.Counters.Draw,
 		EntriesLeft:    state.Index.EntriesLeft,
 		Footprint:      func() (used int64) { return state.Set.Counters().UsedBytes },
 		ShareFigures:   state.Set.ShareBytesAndRetired,

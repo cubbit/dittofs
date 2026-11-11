@@ -76,14 +76,18 @@ func (c *Core) WriteAt(ctx context.Context, s *Share, id core.FileID, off int64,
 	if off < 0 || off > math.MaxInt64-int64(len(p)) {
 		return core.Version{}, core.ErrInvalidExtent
 	}
-	v, n, err := c.appendAndPublish(ctx, s, id, off, p, mtime)
+	v, n, err := c.appendAndPublish(ctx, s, id, off, p, mtime, nil)
 	c.writtenBytes.Add(uint64(n))
 	return v, err
 }
 
 // appendAndPublish does WriteAt's work under the file's append domain and
-// returns the version drawn and the payload bytes published.
-func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, off int64, p []byte, mtime int64) (core.Version, int64, error) {
+// returns the version the write carries and the payload bytes published. It is
+// the one append loop both paths share: an admitted write passes a nil drawn
+// grant and the capacity admission takes its grant above, while a write drawn
+// from a reservation passes the grant Draw returned — the admission's every
+// limit is already held by the reservation, so none runs here.
+func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, off int64, p []byte, mtime int64, drawn *capacity.Grant) (core.Version, int64, error) {
 	unlock := c.domains.Lock(id)
 	defer unlock()
 
@@ -96,31 +100,43 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	// it before the admission runs, so the admission names no lock of the
 	// file's.
 	if err := c.checkTag(s, id); err != nil {
+		// A grant the caller drew is the caller's until this loop takes it:
+		// refused here before the defer, it returns to its reservation.
+		if drawn != nil {
+			drawn.Release()
+		}
 		return core.Version{}, 0, err
 	}
 	stream := c.streams.For(id)
-	// The reservation first: the write's payload, its record bytes drawn
-	// by the take from the room the stream names — against the share's
-	// limit, the journal's maximum, the index's bound, the version limit,
-	// the headroom's half rule and the spares its pieces need, in one
-	// decision.
-	grant, err := c.cap.Take(ctx, capacity.Request{
-		Tag:        s.Tag,
-		File:       id,
-		Stream:     c.streams.IndexFor(id),
-		Extent:     core.Extent{Off: off, Len: int64(len(p))},
-		Payload:    int64(len(p)),
-		ShareLimit: s.Limit(),
-	})
-	if err != nil {
-		return core.Version{}, 0, err
+	// The write's grant: the one a reservation drew for it, which names the
+	// version the write carries, or, for an admitted write, one the take
+	// draws from the room the stream names — against the share's limit, the
+	// journal's maximum, the index's bound, the version limit, the headroom's
+	// half rule and the spares its pieces need, in one decision.
+	grant := drawn
+	var v core.Version
+	if grant == nil {
+		g, err := c.cap.Take(ctx, capacity.Request{
+			Tag:        s.Tag,
+			File:       id,
+			Stream:     c.streams.IndexFor(id),
+			Extent:     core.Extent{Off: off, Len: int64(len(p))},
+			Payload:    int64(len(p)),
+			ShareLimit: s.Limit(),
+		})
+		if err != nil {
+			return core.Version{}, 0, err
+		}
+		grant = g
+		v, err = c.counters.Draw()
+		if err != nil {
+			grant.Release()
+			return core.Version{}, 0, err
+		}
+	} else {
+		v = grant.Version()
 	}
 	defer grant.Release()
-
-	v, err := c.counters.Draw()
-	if err != nil {
-		return core.Version{}, 0, err
-	}
 	var roll segment.Roll
 	if hold := grant.Hold(); hold != nil {
 		roll = segment.Roll{Hold: hold}
