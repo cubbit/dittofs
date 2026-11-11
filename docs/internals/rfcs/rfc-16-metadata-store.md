@@ -1283,7 +1283,9 @@ type ControlPlane interface {
 	// conflict retries fn from the start, so fn holds no state between calls;
 	// an expect that does not match returns ErrGenerationMismatch through fn
 	// and is not retried. The methods above stay, each one Write with no
-	// audit, for callers that are not the API.
+	// audit, for the callers RFC 23 §6 does not audit: the node's own
+	// node-status write, and a deletion's batches after its audited mark. The
+	// operation runner's state changes go through Write, each with its audit.
 	Write(ctx context.Context, meta WriteMeta, fn func(tx ControlPlaneTx) error) error
 }
 
@@ -1295,8 +1297,17 @@ type WriteMeta struct {
 }
 
 // ControlPlaneTx carries ControlPlane's writes, each without its ctx,
-// inside Write's transaction.
+// inside Write's transaction, and tracked reads, so a write validated
+// against a related setting (RFC 13 §6) conflicts with a concurrent change
+// of it. A deletion's tx form is its first transaction, the mark; its
+// batches run after, as the method above says.
 type ControlPlaneTx interface {
+	Setting(scope SettingScope, key string) (Setting, bool, error) // tracked read
+	User(p Principal) (User, bool, error)                           // tracked read
+	Share(id ShareID) (Share, bool, error)                          // tracked read
+	DeleteUser(p Principal, expect uint64) error                    // the mark
+	DeleteGroup(p Principal, expect uint64) error                   // the mark
+	DeleteShare(share ShareID, snapshots SnapshotDisposition, expect uint64) error // the mark
 	PutUser(u User, expect uint64, a Alloc) error
 	PutGroup(g Group, expect uint64, a Alloc) error
 	PutShare(s Share, expect uint64) error

@@ -96,10 +96,10 @@ What replaces what:
 | `pkg/apiclient` | `pkg/apiclient`, rewritten on `pkg/node/apiv1` | bodies deleted in epic 1 |
 | `cmd/dfs` (`start` composes v1) | `cmd/dfs`: `init`, `start`, `reset-admin` over `node.New` | rewritten from nothing in epic 1 |
 | `cmd/dfsctl` command bodies | the same tree, rebuilt | bodies deleted in epic 1 |
-| `pkg/health`'s `share.go`, `cache.go`, `wrap.go` | `pkg/health`, with RFC 25's registry and watchdog beside the `Checker` and `Report` the stores implement | those three deleted in epic 1 |
+| `pkg/health`'s `share.go` and `cache.go` | `pkg/health`, with RFC 25's registry and watchdog beside the `Checker`, `Report` and `wrap.go` helpers the stores implement | those three deleted in epic 1 |
 | `pkg/snapshot` (only v1 calls it) | none | deleted in epic 1 |
-| `pkg/identity`'s root files (v1 resolver, cache, link store) and `pkg/auth/sid/mapper.go` | RFC 18's `pkg/identity` and RID counter (RFC 18 plan) | deleted in epic 1; `pkg/identity/ldap` and `internal/auth/netlogon` stay, without importers, for the RFC 18 plan to move |
-| `pkg/config`'s v1 sections | `pkg/config`, the host's bootstrap only, loaded as today | stripped in epic 1 |
+| `pkg/identity/**` (v1 resolver, cache, link store, LDAP provider) and `pkg/auth/sid/mapper.go` | RFC 18's `pkg/identity` and RID counter (RFC 18 plan) | deleted in epic 1, whole: the LDAP provider imports the root files; the RFC 18 plan lifts what it reuses from history. `internal/auth/netlogon` stays, without importers, for the RFC 18 plan to move |
+| `pkg/config`'s v1 sections | `pkg/bootstrap`, the host's bootstrap only (RFC 13 plan) | stripped in epic 1; renamed by the RFC 13 plan |
 | key `database.*`, the `controlplane.db` file | none | a start refuses them |
 | keys `kerberos.*`, `ldap.*`, `identity.machine_sid`, `DITTOFS_KERBEROS_*`, `DITTOFS_LDAP_*` | `identity.*` settings and `Secret` records (RFC 18 plan) | a start refuses them |
 | keys `controlplane.jwt.*`, `DITTOFS_CONTROLPLANE_SECRET`, `admin.*`, `DITTOFS_ADMIN_INITIAL_PASSWORD` | the installation's signing-key `Secret`; the initialisation step's password reference | a start refuses them |
@@ -317,14 +317,14 @@ registers no suite and no group, and changes no `lint-go` tag.
 | E1 ⛔ | Delete v1, declare the surface | v1 deleted, cells and harness fixed; the node's, wire types', client's and kvstore's surfaces; the new `cmd/dfs` skeleton; architecture tests | 11 | 15 | team | every epic |
 | E2 | Store records | the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; sealed secrets; expiry | 9 | 22 | C | E5; partly E3, E4 |
 | E3 | The node | bootstrap, `dfs start`, composition, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven | 11 | 26.5 | A | E6 (partly), E7 |
-| E4 | The management API | server, route table, write path, preconditions, idempotency, problems, reads, resources, operations, audit read | 11 | 29 | B | E6 (partly), E7 |
+| E4 | The management API | server, route table, write path, preconditions, idempotency, problems, reads, resources, operations, audit read, identity's routes | 12 | 31 | B | E6 (partly), E7 |
 | E5 | Accounts and sign-in | on RFC 18 §8.1's interface (O11): `dfs init`, `dfs reset-admin`, tokens, sessions, roles, throttling, first password, signing key | 7 | 16.5 | C | E6 (partly), E7 |
 | E6 | The CLI | the client on the wire types, the rebuilt `dfsctl`, generated reference | 6 | 12.5 | A | E7 |
 | E7 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides | 5 | 12.5 | team | E8 |
 | E8 🔀 | E2E green | the e2e rows, the cells taken off in epic 1 back on | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **60** | **134** | | |
+| | **Total** | | **61** | **136** | | |
 
-**Plan estimate: 60 subtasks, 134 man-days, not counting epic 8.**
+**Plan estimate: 61 subtasks, 136 man-days, not counting epic 8.**
 
 The skill's estimate for RFC 23's 1,806 lines is 5 middle epics (`round(1806 / 400)`), and this plan
 has 5.
@@ -421,7 +421,7 @@ internal/node/nodetest/       in-process node harness (KV, clock, 127.0.0.1:0)  
 pkg/node/apiv1/               wire types, standard library only                      E1
 pkg/apiclient/                client on pkg/node/apiv1 (same path as v1's)           E1 surface, E6
 cmd/dfsctl/                   CLI: the noun-verb tree, bodies rebuilt                E6
-pkg/config/                   the host's bootstrap only                              E1 strip, E3
+pkg/bootstrap/                the host's bootstrap only (RFC 13 plan)                E1 strip
 pkg/health/                   + RFC 25's registry and watchdog, the parts used       E3
 pkg/metadata/entity/          + RFC 16's records for RFC 23, and its User fields     E2
 pkg/metadata/kvstore/         + those records, expect on every write, A3's entry     E1 surface, E2
@@ -484,37 +484,28 @@ one.
 - **Prior art (from memory).** TrueNAS's job manager runs beside its middleware's API.
 - **Applied by** epic 3.
 
-**D9. v1 is deleted in epic 1, and its cells leave `feat/storage-v2` with it.** That covers the e2e,
-POSIX, SMB-conformance, cross-protocol, Kerberos, operator and `ad-dc` cells that start v1's server.
-`develop` serves v1 until the programme's cutover merge. This is the user's decision.
+**D9. v1 is deleted in epic 1; the cells that start its server are already off.** On
+`feat/storage-v2`, the plan job's filter skips the e2e, POSIX, SMB-conformance, cross-protocol,
+Kerberos and `ad-dc` suites (#3714), so `test/suites.yaml` keeps develop's entries and every RFC's
+suites paragraph still names a registered suite. The `operator` cell runs envtest in its own module
+and starts no v1 server. `develop` serves v1 until the programme's cutover merge. This is the user's
+decision.
 - **Prior art.** None found.
-- **Applied by** epic 1, and undone by epic 8.
+- **Applied by** epic 1; epic 8 removes the filter's entries as RFC 20's ledger has it.
 
 **D10. Secrets are sealed with the existing key provider**
-(`pkg/block/middleware/encryption/keyprovider`, AES-256-GCM, key IDs, retired keys). A sealed
-record stores the provider's key ID as its version. The wrapping key's location is the provider's
-configuration, a bootstrap fact (RFC 13 §2.2, §7).
+(`pkg/block/middleware/encryption/keyprovider`, AES-256-GCM, key IDs, retired keys). The provider's
+key ID fills RFC 16's `Secret.KeyID`; `Secret.Version` stays the rotation counter. The wrapping
+key's location is the provider's configuration, a bootstrap fact (RFC 13 §2.2, §7). The RFC 13
+configuration-lifecycle plan takes this over, with envelope sealing (O11).
 - **Prior art (from memory).** Vault's barrier seals with AES-GCM under a key-encryption key.
 - **Applied by** epic 2.
 
-**D11. `New` builds the node-level services; reconcile builds every per-record instance.** This is
-the user's decision. `New` is mechanical: it reads no record and builds each node-level service
-empty, from the bootstrap alone. Those services are the store, the remote registry, the syncer, open
-state, the engine with one journal per device, GC, identity, the filesystem and the API. Reconcile
-then creates, from the records and through a factory keyed by the record, every instance that exists
-only because a record says so:
-- a remote client per store configuration, acquired by the first storage binding that needs it and
-  released by the last;
-- a storage binding per share, through the engine;
-- a namespace in GC;
-- an adapter and its sidecars, only while its record enables it, drained and stopped when the record
-  disables it, and built anew when it is enabled again.
-
-  The adapter and sidecar rows are RFC 20's plan's epic 7 (D12).
-
-A node with no enabled adapter serves only the API.
-- **Why.** RFC 23 §2.1 and RFC 8 §2.3 draw the line there: one engine per node, a share is a binding,
-  and adding one never restarts the engine.
+**D11. `New` builds the node-level services; reconcile builds every per-record instance**, as RFC 23
+§2.1 and §2.3 say. This is the user's reading of them, recorded so the epics keep to it: a remote
+client exists only while a storage binding needs it, a share is an engine binding, a namespace is
+added to GC, and an adapter exists only while its record enables it; a node with no enabled adapter
+serves only the API. The adapter and sidecar rows are RFC 20's plan's epic 7 (D12).
 - **Prior art (from memory).** Kubernetes' kubelet builds its managers once and its pods by
   reconcile.
 - **Applied by** epic 3.
@@ -598,14 +589,13 @@ declarations; RFC 23 §4.1, §4.6 and §4.7's shapes and codes, as declarations;
 
 **Expected content:**
 - Delete `pkg/controlplane/**`, `internal/controlplane/**`, `pkg/snapshot`, v1's `cmd/dfs`, and
-  `pkg/health`'s `share.go`, `cache.go` and `wrap.go`.
+  `pkg/health`'s `share.go` and `cache.go` (the stores call `wrap.go`'s helpers).
 - Strip `pkg/config` to the bootstrap loader, keeping its viper loading and turning the
   renamed-keys table into the refused v1 keys (D6).
 - Make the harness build without v1:
   - drop `test/harness/fixture`'s v1 server start, so `dt` compiles;
   - update `test/harness/plan`'s registry test for the cells taken off;
   - delete or move off `test/integration/ad-dc`'s v1 client use.
-- Take D9's cells off in `test/suites.yaml`, and regenerate `docs/internals/testing.md`.
 - Delete `pkg/apiclient`'s and `cmd/dfsctl`'s v1 bodies, keeping what rule 7 lists.
 - Write `pkg/node/apiv1`: the resource envelope, page, problem, operation, progress, the closed
   `OpKind` and code sets, and the spec and status types of every in-scope resource (RFC 23 §3.1,
@@ -698,7 +688,7 @@ stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 
 ### Epic 4 — The management API
 
-**Epic 4 estimate: 11 subtasks, 29 man-days.**
+**Epic 4 estimate: 12 subtasks, 31 man-days.**
 
 The API server answers every in-scope resource and action, writes only records, and maps every
 error to a status.
@@ -737,6 +727,10 @@ error to a status.
   generic settings resource (D5).
 - Users, groups, grants, netgroups and quotas (RFC 23 §3.5), a user's or group's delete answered as an
   operation.
+- The routes the RFC 18 plan's identity needs: a user's `krb` spelling (a Kerberos-name link), a grant
+  naming an AD user or group by name or SID (resolved through identity's `Find`, minting), the
+  directory-test action, the domain join (online and offline) and rotation actions, and the join
+  status on the node resource.
 - Operations (read, `?wait=`), nodes and their connections, and the audit read.
 - The validators of RFC 13 §6 for the settings these resources write.
 
@@ -811,7 +805,7 @@ these RFC 23 §12 rows pass, in their single-node part:
 | Row | What it needs together |
 | --- | --- |
 | "§2.1 API writes only records" | API and node |
-| "§2.2 order" | API and node |
+| "§2.2 order" | API and node; its "no adapter listened before the first reconcile" clause runs in epic 8, once an adapter exists |
 | "§2.3 reconcile" | API and node |
 | "§2.4 applied" | API and node status |
 | "§2.5 health" | API and node |
