@@ -31,7 +31,7 @@ journal v2 team, Davide (`didimelli`) and Vitor (`viquitorreis`), coordinated by
 #3119's stage list and the journal plan's epic 11 still give all of stage 3 to the journal
 v2 team (§6, point 1). Stage 3 replaces nothing that a later stage deletes: today's engine
 keeps serving `develop` until the cutover (stage 7), and this part is composed by no root
-before stage 4.
+before `node.New`, which RFC 23's plan's epic 3 (#4050) builds.
 **Naming:** **v1** was the engine before this plan, `pkg/block/engine` until #3645 deleted it on `feat/storage-v2`, over one journal per
 share and payload-keyed chunk rows. **v2** is the engine RFC 8 describes, built here, first as
 `pkg/block/enginev2`, as #3543 agreed (point 7). #3645 deleted v1 and
@@ -81,7 +81,7 @@ ships in a release. It sets no offloaded bit, because its journal interface hold
 
 | RFC 8 | In this part | Left to the second part, and what stands in |
 | --- | --- | --- |
-| §2.1, §2.6 composition | `Deps` holding only what this part calls | `Carver`, `Syncer`, `Refs`, `Gate` join `Deps` with the code that calls them; the root's "every share has a remote" check is the root's (stage 4) |
+| §2.1, §2.6 composition | `Deps` holding only what this part calls | `Carver`, `Syncer`, `Refs`, `Gate` join `Deps` with the code that calls them; the root's "every share has a remote" check is the root's (`node.New`, RFC 23's plan's epic 3, #4050) |
 | §2.3 bindings | the share table, a handle per journal, settings, state; `Bind`, `Unbind`, `Drop` | no flow, no key scope, no budgets beyond the journal's per-share limit |
 | §2.5 start | steps 1 to 5 and 8; stop steps 1, 2, 4, 5 | no work queue (step 6), no reseed or eviction (step 7); restart re-offers nothing |
 | §3 policy, §6 offload, §7.2 to §7.4, §7.7, §7.8 | none | all of it |
@@ -1160,8 +1160,8 @@ follows the journal's, not this part's (§6 point 7).
     takes no open. RFC 8 §8.1 already says a release reads and writes no open state, and that
     the one open the engine holds is a clone's, through `Deps.Holds`.
 14. **RFC 25's metrics registry, watchdog and health source** exist on no branch. Until
-    someone builds them, the engine reports through `Stats` (rule 3), and stage 4's root
-    adapts it.
+    someone builds them, the engine reports through `Stats` (rule 3), and the root, `node.New`
+    (RFC 23's plan's epic 3, #4050), adapts it.
 15. **How a delayed `Delete` hands back its retry (C11).** T5.4's stall and T8.2's
     registered extent both answer a release that the service finishes or runs again later.
     The retry stays between the engine and the service, off the error value: a
