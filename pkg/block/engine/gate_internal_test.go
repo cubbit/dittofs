@@ -46,7 +46,7 @@ func TestTheLastLeaveBeforeWaitIsNotLost(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		if err := g.wait(ctx); err != nil {
+		if err := g.wait(ctx, nil); err != nil {
 			t.Errorf("wait on an idle gate = %v, want nil", err)
 		}
 	})
@@ -65,7 +65,7 @@ func TestWaitReturnsOnlyWhenEveryUnitIsWithdrawn(t *testing.T) {
 		done := make(chan error, 1)
 
 		go func() {
-			done <- g.wait(context.Background())
+			done <- g.wait(context.Background(), nil)
 		}()
 
 		synctest.Wait()
@@ -108,7 +108,7 @@ func TestAWaitEndsWithItsContextAndALaterWaitJoinsAgain(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		if err := g.wait(ctx); err != context.Canceled {
+		if err := g.wait(ctx, nil); err != context.Canceled {
 			t.Errorf("wait under a cancelled context = %v, want context.Canceled", err)
 		}
 
@@ -123,7 +123,7 @@ func TestAWaitEndsWithItsContextAndALaterWaitJoinsAgain(t *testing.T) {
 		done := make(chan error, 1)
 
 		go func() {
-			done <- g.wait(context.Background())
+			done <- g.wait(context.Background(), nil)
 		}()
 
 		synctest.Wait()
@@ -141,7 +141,7 @@ func TestAWaitEndsWithItsContextAndALaterWaitJoinsAgain(t *testing.T) {
 			t.Errorf("the second wait = %v, want nil", err)
 		}
 
-		if err := g.wait(context.Background()); err != nil {
+		if err := g.wait(context.Background(), nil); err != nil {
 			t.Errorf("a third wait on an idle gate = %v, want nil", err)
 		}
 	})
@@ -184,13 +184,13 @@ func TestLeaveOnceWithdrawsEachGateOnce(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := x.wait(ctx); err != context.Canceled {
+	if err := x.wait(ctx, nil); err != context.Canceled {
 		t.Errorf("wait with the other unit still entered = %v, want context.Canceled", err)
 	}
 
 	x.leave()
 
-	if err := x.wait(context.Background()); err != nil {
+	if err := x.wait(context.Background(), nil); err != nil {
 		t.Errorf("wait after that unit left = %v, want nil", err)
 	}
 }
@@ -239,7 +239,7 @@ func TestNoUnitIsAdmittedOnceTheWaitReturns(t *testing.T) {
 		started.Wait()
 		g.shut()
 
-		if err := g.wait(context.Background()); err != nil {
+		if err := g.wait(context.Background(), nil); err != nil {
 			t.Fatalf("round %d: wait = %v", round, err)
 		}
 
@@ -278,7 +278,7 @@ func TestASecondCallOfAReleaseLeavesAnotherUnitCounted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := g.wait(ctx); err != context.Canceled {
+	if err := g.wait(ctx, nil); err != context.Canceled {
 		t.Errorf("wait with the other unit still inside = %v, want context.Canceled", err)
 	}
 }

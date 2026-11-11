@@ -343,7 +343,11 @@ func TestACloneIsRebuiltFromItsRemoval(t *testing.T) {
 	}
 	m.run()
 	m.cloneDone(t, m.src, m.dst)
-	m.until(t, "the clone's removal item done", func() bool { return m.e.RemovalsPending() == 0 })
+	// The pending count drops as the loop takes the item, before it releases
+	// the hold; the loop parked again with nothing pending is the item done.
+	m.until(t, "the clone's removal item done", func() bool {
+		return m.e.RemovalsPending() == 0 && m.e.LoopParked(m.one.ID)
+	})
 	if recs, err := m.fs.Store.Opens().Of(ctx, m.one.ID, m.src); err != nil {
 		t.Fatal(err)
 	} else if slices.ContainsFunc(recs, func(o entity.OpenRecord) bool { return o.Kind == entity.OpenCloneSource }) {

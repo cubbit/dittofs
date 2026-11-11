@@ -480,10 +480,10 @@ func phase2Result(advanced bool, err error) (runResult, answer) {
 // clonePhase2 is clone c's item once its phase 1 committed, r the clone's
 // removal of the destination extent: phase2's item, its run preceded by the
 // hold on the source and followed by the clone's end, its registrations
-// dropped and its done signal raised, then the hold's release. Hold and
-// Release are each bounded by the conflict bound, and a failed one is
-// retried counted, as a phase 2 run is. The loop runs it with no entry lock
-// or guard held.
+// dropped and its done signal raised, then the hold's release, and only then
+// its leave of both shares' gates. Hold and Release are each bounded by the
+// conflict bound, and a failed one is retried counted, as a phase 2 run is.
+// The loop runs it with no entry lock or guard held.
 func (e *Engine) clonePhase2(c *cloneRun, r *removal) *loopItem {
 	it := e.phase2(r)
 	p2 := it.run
@@ -556,8 +556,10 @@ func (e *Engine) clonePhase2(c *cloneRun, r *removal) *loopItem {
 			// which TestASourceUnlinkedBeforeTheHoldIsReleasedAfterTheClone
 			// checks over the real table. Keep the registrations until the
 			// Release instead if a source is seen released while the clone's
-			// open is still held.
-			e.endClone(c, nil)
+			// open is still held. The clone leaves both shares' gates only
+			// after the Release, so an Unbind of the source's share returns
+			// with the source released.
+			e.settleClone(c, nil)
 		}
 		if held {
 			if err := release(ctx); err != nil {
@@ -566,6 +568,7 @@ func (e *Engine) clonePhase2(c *cloneRun, r *removal) *loopItem {
 			}
 			held = false
 		}
+		c.leave()
 		return itemDone
 	}
 	it.end = func() {
@@ -587,9 +590,10 @@ func (e *Engine) clonePhase2(c *cloneRun, r *removal) *loopItem {
 				e.d.Logger.Warn("a clone's release of its source at its loop's end failed", "src", c.src, "dst", c.dst, "err", err)
 			}
 		}
-		if !p2done { // a clone done already ended, its Release alone left
-			e.endClone(c, errLoopEnded)
+		if !p2done { // a clone done already settled, its Release alone left
+			e.settleClone(c, errLoopEnded)
 		}
+		c.leave()
 	}
 	return it
 }
