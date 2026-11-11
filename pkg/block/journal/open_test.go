@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/platform/platformtest"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // openSegmentCap is the segment size the opens here pass, small enough that a

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // rowOf returns the damaged row of seg in the report, and whether it has one.

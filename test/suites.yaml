@@ -95,7 +95,7 @@ suites:
       # The journal index's allocation and memory checks and the profiler's heap checks, which
       # skip under -race.
       journal-index:
-        cmd: go test -timeout=5m ./pkg/block/journal/internal/index/ ./pkg/block/journal/journaltest/prof/
+        cmd: go test -timeout=5m ./pkg/block/journal/internal/index/ ./internal/prof/
       # The index built with a bug planted in its split, which the model fuzz must find. The
       # planted build breaks the package's other tests by design, so only this test runs.
       journal-plant:
