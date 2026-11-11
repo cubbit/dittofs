@@ -68,10 +68,11 @@ type Stats struct {
 // after them is returned as read, so for that one read the RFC 1 section 3.7
 // guarantee DirtyBytes <= HeldBytes does not hold: that signals an accounting
 // bug rather than hanging a commit path. A reservation is released only after
-// its record is counted in its share's UsedBytes, so ReservedBytes and ReservedByTag are read before
-// the set's figures: a record in flight is then counted in at least one of
-// them. UsedBytes comes from the set, which allocation raises before a record
-// is reserved in it. Any other pair may differ by one operation in flight.
+// its record is counted in its share's UsedBytes, so ReservedBytes and
+// ReservedByTag are read before the set's figures: a record in flight is then
+// counted in at least one of them. UsedBytes comes from the set, which
+// allocation raises before a record is reserved in it. Any other pair may
+// differ by one operation in flight.
 //
 // decision: UnreclaimedBytes is zero, for the journal and every share. The
 // index has no per-record backing hook, so the figure cannot be kept without
