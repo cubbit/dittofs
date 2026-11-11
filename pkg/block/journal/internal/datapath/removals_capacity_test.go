@@ -80,13 +80,14 @@ func TestUnheldRemovalRefusedAtTheExhaustedHeadroom(t *testing.T) {
 	}
 }
 
-// TestRemovalOfHeldContentAdmittedAtTheExhaustedHeadroom checks that a
-// truncate, a deallocate and a delete of content the journal holds are admitted
-// at an exhausted headroom and leave their markers: a removal of held content
-// frees space, so only a removal of content the journal does not hold may be
-// refused naming the headroom. Neither the share's limit nor the journal's
-// maximum may refuse one either.
-func TestRemovalOfHeldContentAdmittedAtTheExhaustedHeadroom(t *testing.T) {
+// TestHeldRemovalRefusedAtTheExhaustedHeadroom checks that a truncate, a
+// deallocate and a delete of content the journal holds are refused at an
+// exhausted headroom naming the headroom — never the share's limit or the
+// journal's maximum — drawing no version and appending nothing. The epic's
+// criterion spares held content the share's limit and the journal's maximum,
+// not the headroom: a removal admitted with no draw would be bounded by
+// nothing and would eat the open reserve.
+func TestHeldRemovalRefusedAtTheExhaustedHeadroom(t *testing.T) {
 	ctx := context.Background()
 	for name, call := range map[string]func(*Core, *Share, core.FileID) (core.Version, error){
 		"truncate": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
@@ -100,24 +101,19 @@ func TestRemovalOfHeldContentAdmittedAtTheExhaustedHeadroom(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			c, s, f := removalAtTheLimit(t)
+			c, seam, s, f := atTheLimit(t)
 			drainHeadroom(t, c, s)
-			// The file the warm write filled still holds content, so the
-			// removal frees space and is admitted.
-			v, err := call(c, s, f)
-			if err != nil {
-				t.Fatalf("%s of held content at an exhausted headroom = %v, want it admitted", name, err)
+			next, writes := c.counters.NextVersion(), seam.Calls(kit.OpWrite)
+			_, err := call(c, s, f)
+			ns := refused(t, err, core.LimitHeadroom)
+			if ns.Limit == core.LimitShare || ns.Limit == core.LimitJournal {
+				t.Fatalf("%s of held content was refused naming %s, want the headroom", name, ns.Limit)
 			}
-			if v == (core.Version{}) {
-				t.Fatalf("%s of held content drew no version", name)
+			if got := c.counters.NextVersion(); got != next {
+				t.Fatalf("%s drew a version on a headroom refusal: next is %v, was %v", name, got, next)
 			}
-			want := map[string]core.ChangeKind{
-				"truncate":   core.ChangeTruncate,
-				"deallocate": core.ChangeDeallocate,
-				"delete":     core.ChangeDelete,
-			}[name]
-			if m := markerOfKind(t, c, f, want); m.Version != v {
-				t.Fatalf("%s marker = %+v, want it at the returned version %v", name, m, v)
+			if got := seam.Calls(kit.OpWrite); got != writes {
+				t.Fatalf("%s appended %d records on a headroom refusal", name, got-writes)
 			}
 		})
 	}
@@ -126,13 +122,15 @@ func TestRemovalOfHeldContentAdmittedAtTheExhaustedHeadroom(t *testing.T) {
 // TestCloneTargetRefusedBelowHalfTheHeadroom checks a clone target, which
 // frees nothing, is refused naming the headroom once less than half of it
 // remains — over content the journal holds as over content it does not — while
-// a deallocate that frees space is admitted.
+// a removal of a class that draws on the rest is admitted there.
 func TestCloneTargetRefusedBelowHalfTheHeadroom(t *testing.T) {
 	ctx := context.Background()
 	c, s, f := removalAtTheLimit(t)
+	// The deallocates cut held content, which below half still draws on what
+	// remains: they bring the headroom under half without being refused.
 	for i := 0; i < 11; i++ {
 		if _, err := c.Deallocate(ctx, s, f, core.Extent{Off: 2 * int64(i), Len: 1}); err != nil {
-			t.Fatalf("deallocate %d of nothing held: %v", i+1, err)
+			t.Fatalf("deallocate %d below half the headroom: %v", i+1, err)
 		}
 	}
 	if !c.headroom.BelowHalf() {
@@ -141,8 +139,8 @@ func TestCloneTargetRefusedBelowHalfTheHeadroom(t *testing.T) {
 	next := c.counters.NextVersion()
 	_, err := c.CloneTarget(ctx, s, testFile(2), core.CloneSpec{DstOff: 0, Len: 8})
 	_ = refused(t, err, core.LimitHeadroom)
-	// Over content the journal holds too: a clone target frees nothing, so it
-	// keeps the refusal the removals that free space are spared.
+	// Over content the journal holds too: a clone target frees nothing, so the
+	// below-half rule refuses it wherever its destination lies.
 	_, err = c.CloneTarget(ctx, s, f, core.CloneSpec{DstOff: 0, Len: 8})
 	_ = refused(t, err, core.LimitHeadroom)
 	if got := c.counters.NextVersion(); got != next {

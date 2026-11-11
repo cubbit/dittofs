@@ -499,3 +499,29 @@ func TestApplyRemovalAppliesPastTheCeiling(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyRemovalRefusesAnotherSharesTag: the post-append apply checks the
+// file's tag as every index call does, so a removal through another share's
+// tag is refused with the claim's OtherShareError and changes nothing — no
+// marker, no held state, no drop range and no count. A record that reaches
+// the apply under the wrong tag is a fault, and it must not be applied.
+func TestApplyRemovalRefusesAnotherSharesTag(t *testing.T) {
+	ix := New(1 << 20)
+	id := testFile
+	publish(t, ix, testTag, id, write(0, 8, rec(1, 0), 2), 2)
+	before := ix.FileEntries(id)
+	ranges, count := ix.fs.dropRangeCount(), ix.fs.extentCount()
+
+	if _, err := ix.ApplyRemoval(testTag+1, id, core.ChangeDeallocate, ext(0, 4), ver(3), 9, rec(2, 0), nil); !errors.Is(err, core.ErrOtherShare) {
+		t.Fatalf("ApplyRemoval through another share = %v, want OtherShareError", err)
+	}
+	if got := ix.FileEntries(id); !entriesEqual(got, before) {
+		t.Fatalf("the refused removal changed the file:\n got%s\n want%s", fmtEntries(got), fmtEntries(before))
+	}
+	if got := ix.fs.dropRangeCount(); got != ranges {
+		t.Fatalf("drop ranges = %d after a tag refusal, want %d", got, ranges)
+	}
+	if got := ix.fs.extentCount(); got != count {
+		t.Fatalf("entry count = %d after a tag refusal, want %d", got, count)
+	}
+}

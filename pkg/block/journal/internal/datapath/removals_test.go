@@ -7,6 +7,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -209,6 +210,12 @@ func TestRemovalsRefuseShapesAndDrawNoVersion(t *testing.T) {
 		"deallocate offset overflow": {
 			call: func(c *Core, s *Share, f core.FileID) (core.Version, error) {
 				return c.Deallocate(ctx, s, f, core.Extent{Off: 4, Len: 1<<63 - 1})
+			},
+			want: core.ErrInvalidExtent,
+		},
+		"deallocate negative offset": {
+			call: func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+				return c.Deallocate(ctx, s, f, core.Extent{Off: -4, Len: 8})
 			},
 			want: core.ErrInvalidExtent,
 		},
@@ -500,7 +507,9 @@ func TestRemovalInAFailedWindowIsReappended(t *testing.T) {
 
 // TestRemovalWaitingWhenTheJournalTurnsReadOnly checks a removal parked in its
 // durability wait returns ErrJournalReadOnly, never a *SyncError and never a
-// hang, once the journal turns read-only, and still names the version it drew.
+// hang, once the journal turns read-only, and returns no version: a read-only
+// journal undoes the unsynced header-only record, so the removal did not
+// happen.
 func TestRemovalWaitingWhenTheJournalTurnsReadOnly(t *testing.T) {
 	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
@@ -530,8 +539,11 @@ func TestRemovalWaitingWhenTheJournalTurnsReadOnly(t *testing.T) {
 	if errors.As(got.err, &se) {
 		t.Fatalf("the removal returned %v, a *core.SyncError", got.err)
 	}
-	if rec := removalOf(t, seam, format.KindTruncate); got.v == (core.Version{}) || rec.Header.Version != got.v {
-		t.Fatalf("the removal returned %v, want the record's version %v", got.v, rec.Header.Version)
+	if got.v != (core.Version{}) {
+		t.Fatalf("the removal returned version %v beside a read-only refusal, want none", got.v)
+	}
+	if rec := removalOf(t, seam, format.KindTruncate); rec.Header.Version == (core.Version{}) {
+		t.Fatal("the truncate appended no record")
 	}
 }
 
@@ -596,7 +608,9 @@ func TestRemovalReturnsItsVersionWhenCancelledAfterTheAppend(t *testing.T) {
 	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
 	f := testFile(1)
-	hold := seam.HoldFirst(t, kit.OpSync, "*")
+	// Every sync is held, so the record's own sync cannot complete behind the
+	// removal's back.
+	hold := seam.Hold(t, kit.OpSync, "*")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -611,8 +625,30 @@ func TestRemovalReturnsItsVersionWhenCancelledAfterTheAppend(t *testing.T) {
 			err error
 		}{v, err}
 	}()
-	eventually(t, "the removal's wait to reach its sync", func() bool { return hold.Waiting() > 0 })
+	// The removal has published its marker, so it is at or past its append and
+	// heading into the wait.
+	eventually(t, "the removal's marker to be published", func() bool {
+		for _, e := range c.Index().FileEntries(f) {
+			if e.Kind == index.EntryMarker && e.Removal == core.ChangeTruncate {
+				return true
+			}
+		}
+		return false
+	})
 	cancel()
+	// The bounded wait is the assertion, not a sleep before one: the removal
+	// must not return while its sync is held, whatever the context says, so a
+	// wait that consulted the context would answer here and fail. The window
+	// is generous because the mutant answers at once; the call under test
+	// never does, and pays the window once.
+	select {
+	case got := <-done:
+		t.Fatalf("the removal returned (%v, %v) after the ctx was cancelled but while its sync was still held", got.v, got.err)
+	case <-time.After(250 * time.Millisecond):
+	}
+	if hold.Waiting() < 1 {
+		t.Fatal("no call waits on the held sync: the removal left its durability wait instead")
+	}
 	hold.Release()
 	got := within(t, done, "the removal whose ctx was cancelled during its wait")
 	if got.err != nil {
@@ -824,5 +860,35 @@ func TestRemovalDropsOffloadedContent(t *testing.T) {
 	}
 	if !offloadedAt(t, c, f, 8192) {
 		t.Fatal("the piece outside the removal lost its offloaded bit")
+	}
+}
+
+// TestRemovalAccountsTheDroppedBytes checks a removal's held-state delta
+// reaches the core's counters: the bytes a truncate and a delete drop leave
+// held and dirty, so Stats reads the file smaller than before and the change
+// is not lost between the index and the accounting.
+func TestRemovalAccountsTheDroppedBytes(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	mustWrite(t, c, s, f, 0, make([]byte, 4096))
+	mustWrite(t, c, s, f, 8192, make([]byte, 4096))
+
+	h0, d0, _ := c.heldBytes()
+	if h0 != 8192 || d0 != 8192 {
+		t.Fatalf("held/dirty after two writes = %d/%d, want 8192/8192", h0, d0)
+	}
+	if _, err := c.Truncate(ctx, s, f, 4096); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+	if h, d, _ := c.heldBytes(); h != 4096 || d != 4096 {
+		t.Fatalf("held/dirty after a truncate to 4096 = %d/%d, want 4096/4096", h, d)
+	}
+	if _, err := c.Delete(ctx, s, f); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if h, d, _ := c.heldBytes(); h != 0 || d != 0 {
+		t.Fatalf("held/dirty after a delete = %d/%d, want 0/0", h, d)
 	}
 }
