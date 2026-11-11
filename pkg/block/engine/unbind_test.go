@@ -210,19 +210,12 @@ func TestUnbindEndsWithItsContextAndFreesTheLifecycleEntry(t *testing.T) {
 	}
 }
 
-// Close waits for an Unbind in progress: it closes nothing under it.
+// Close waits for an Unbind in progress: it closes nothing under it. The
+// Unbind is held in its join of a removal batch, which a Close that begins
+// does not end, unlike its wait for the share's work.
 func TestCloseWaitsForAnUnbindAndADropInProgress(t *testing.T) {
-	t.Run("an Unbind in its call join", func(t *testing.T) {
-		c := holdAWrite(t)
-		u := c.u
-		joined := joins(u.e)
-		unbound := u.unbinding(t)
-
-		select {
-		case <-joined:
-		case err := <-unbound:
-			t.Fatalf("Unbind = %v with a call in flight, want it to wait", err)
-		}
+	t.Run("an Unbind in its removal batch join", func(t *testing.T) {
+		u, held, unbound := unbindHeldByAnItem(t)
 
 		past, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
 		defer cancel()
@@ -236,7 +229,7 @@ func TestCloseWaitsForAnUnbindAndADropInProgress(t *testing.T) {
 			t.Errorf("events %v while Unbind waits, want none", got)
 		}
 
-		c.release()
+		close(held.release)
 
 		if err := <-unbound; err != nil {
 			t.Fatalf("Unbind = %v, want nil", err)

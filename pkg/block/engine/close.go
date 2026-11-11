@@ -143,7 +143,10 @@ func (e *Engine) Close(ctx context.Context) error {
 
 	r := &closeRun{done: make(chan struct{})}
 	e.closing = r
-	e.closed.Store(true)
+
+	if !e.closed.Swap(true) {
+		close(e.stopping)
+	}
 	e.mu.Unlock()
 
 	r.err = e.stop(e.newBound(ctx), r)

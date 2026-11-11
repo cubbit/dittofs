@@ -16,15 +16,11 @@ import (
 // done (step 4). Both of its registrations are installed before Start
 // publishes the share table, so no call reaches either extent before the
 // clone is done, and its work is posted to the destination journal's loop
-// once Start has published it.
-//
-// decision: a rebuilt clone runs in a served engine although nothing joins a
-// running clone at Unbind yet, which keeps a live Clone behind a test's
-// stand-in: refusing Start instead would leave every file of the share
-// unserved. Close joins it, its wait for the source's shard included, and a
-// rebuilt clone ends at its loop's end, leaving the marker or the removal
-// record for the next start, as a live clone's retry does. Withdraw it with
-// that stand-in, once Unbind joins the running clones.
+// once Start has published it. It counts as work of both shares until it
+// ends, so an Unbind of either waits for it, its wait for the source's shard
+// included, which only Close cancels. A rebuilt clone ends at its loop's end,
+// leaving the marker or the removal record for the next start, as a live
+// clone's retry does.
 
 // errSourceNotServed fails a Start that finds a clone to rebuild whose
 // source share it does not serve: the destination may not be served before
@@ -52,6 +48,8 @@ func (e *Engine) rebuildRun(o *opened, db *binding, dst entity.FileID, spec jour
 		done: make(chan struct{}),
 	}
 
+	c.enterShares() // the bindings are this start's: no Unbind has shut either gate
+
 	// Nothing is served yet, so no write is admitted to wait out and no
 	// registration of a live clone can overlap.
 	for _, x := range []struct {
@@ -65,6 +63,7 @@ func (e *Engine) rebuildRun(o *opened, db *binding, dst entity.FileID, spec jour
 	o.undoRebuilds = append(o.undoRebuilds, func() {
 		e.unregister(c.dst, c.rd)
 		e.unregister(c.src, c.rs)
+		c.leave()
 	})
 
 	return c, nil
@@ -233,9 +232,10 @@ func (e *Engine) rebuildRemoval(o *opened, b *binding, f entity.FileID, u kvstor
 // rebuilt clone's source shard, then posts it, its phase 2, to the
 // destination journal's loop, so the loop never holds the wait. The wait runs
 // in rounds of the loop's backoff; after five it is removal_stalled for the
-// destination, cleared once the shard is served. The loop's end ends the
-// clone, leaving its removal for the next start, and Close joins the
-// goroutine (e.cloning), so no end runs after Close returned.
+// destination, cleared once the shard is served. An Unbind of either share
+// waits it out; the loop's end ends the clone, leaving its removal for the
+// next start, and Close joins the goroutine (e.cloning), so no end runs after
+// Close returned.
 func (e *Engine) awaitServed(c *cloneRun, it *loopItem) {
 	l := c.db.gc.removals
 
