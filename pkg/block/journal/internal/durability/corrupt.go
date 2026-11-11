@@ -274,7 +274,7 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 		// pieces had, which the raise above already followed.
 		l := base
 		l.Extent, l.Offloaded = c.Extent, !dirty
-		l.Marked = len(marked) > 0 && !slices.ContainsFunc(held, func(p index.Piece) bool { return !marked[p.Extent] })
+		l.Marked = !slices.ContainsFunc(held, func(p index.Piece) bool { return !marked[p.Extent] })
 		job.losses = append(job.losses, l)
 	}
 	if len(job.losses) == 0 {
