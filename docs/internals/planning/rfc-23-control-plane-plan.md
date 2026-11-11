@@ -512,7 +512,7 @@ its epic 7, planned after this plan's S2, the work of putting adapters into the 
 - building each `Serving` from `Adapter.Addrs()` and calling the sidecars' `Sync` in RFC 20 §3.5's
   order;
 - reporting `Health` and `Connections()`;
-- the loader and validator of `pkg/adapter/config`, and `core`'s conditions and alert rules.
+- the loader and validator of `pkg/adapter/settings`, and `core`'s conditions and alert rules.
 
 This plan's node leaves that slot to it: reconcile calls the adapter rows that epic 7 writes. This
 plan also takes over the rows of RFC 20's plan's deferral ledger that name RFC 23:
@@ -716,7 +716,7 @@ error to a status.
   with RFC 27's `Claim` (O2).
 - Remote stores and namespaces: bound fields, a proven endpoint, and the credential rotation started
   as an operation (RFC 23 §3.3).
-- Adapters, with `port` as a setting (A1), validated by `pkg/adapter/config`'s validator, and the
+- Adapters, with `port` as a setting (A1), validated by `pkg/adapter/settings`'s validator, and the
   generic settings resource (D5).
 - Users, groups, grants, netgroups and quotas (RFC 23 §3.5), a user's or group's delete answered as an
   operation.
@@ -871,10 +871,11 @@ took off and runs RFC 23's e2e rows.
   reconciled kinds carry one, as RFC 16 §3 has it.
 - **O6. The cost of a full reconcile** (RFC 23 §13 item 5) is unmeasured. Epic 3 reconciles as the
   RFC says, and measures it at 10⁴ shares in a benchmark.
-- **O7. A1 reaches into RFC 20's code.** `pkg/adapter/config.Adapter` gains `Port`, and each
+- **O7. A1 reaches into RFC 20's code.** `pkg/adapter/settings.Adapter` gains `Port`, and each
   protocol's `New` binds on it the listeners it puts on its default port today (RFC 20 §3.6, §4.8).
-  The field, the `New` change and `Reconfigure`'s refusal of a changed `port` (a sentinel error,
-  RFC 20 §3.6) belong to RFC 20's plan's epic 7, beside its config loader. R37 of
+  The field is frozen surface, so it lands in RFC 20's epic 2 (#4000, its D20, as
+  `settings.Adapter.Port`); `Reconfigure`'s refusal of a changed `port` is its T4.6, binding on it
+  its T6.3 and T6.4, and the node's rebuild on a change RFC 20's plan's epic 7. R37 of
   `rfc-20-adapters-epic1.md` stays true: addresses still come from the host.
 - **O8. An MCP server for the API.** It was asked about while this plan was written, and the user
   deferred it. An MCP server is one more client of the API, like the CLI, and needs nothing on the
