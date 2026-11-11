@@ -250,12 +250,26 @@ func (e *Engine) attachLate(ctx context.Context, shares []Share) bool {
 // the retry is over.
 func (e *Engine) retryRefused(o *opened) bool {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 
 	e.health = o.stats
 	e.unsuitable = o.unsuitable
 
-	return !o.unsuitable
+	e.mu.Unlock()
+
+	if o.unsuitable {
+		return false
+	}
+
+	// The retry ends here, as a refused Start leaves its shares: each share
+	// is logged at Warn, so an operator sees why the timer stopped.
+	for id, sh := range o.stats.Shares {
+		e.d.Logger.Warn(
+			"share refused by the retried open, which is not retried again",
+			"share", id, "device", sh.Device, "err", sh.Refused,
+		)
+	}
+
+	return true
 }
 
 // retryFailed records err, which stopped a retried open or its late attach,
@@ -424,7 +438,7 @@ func unsuitableCondition(dir string, id journal.JournalID, cause error) *Conditi
 			Name:  dir,
 		},
 		Cause:  cause,
-		Detail: "the device's shares are not attached; the open is retried every 30 s",
+		Detail: fmt.Sprintf("the device's shares are not attached; the open is retried every %v", unsuitableRetry),
 	}
 }
 

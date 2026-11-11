@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -321,6 +322,59 @@ func TestAnUnsuitableJournalIsRetriedEvery30Seconds(t *testing.T) {
 	}
 }
 
+// A retried open that finds no journal recorded for the device ends the
+// retry: the content is intact and a later start records it, so the shares
+// stay refused and no condition is raised (RFC 8 §2.5).
+func TestARetriedOpenThatFindsNoJournalRecordedEndsTheRetry(t *testing.T) {
+	s := newStarter(t, noRecord(), withOpens(unsuitable(), journal.ErrIdentityMismatch))
+	s.closeAtEnd(t)
+
+	if err := s.start(t); err != nil {
+		t.Fatal(err)
+	}
+
+	s.retry(t, retryEvery)
+
+	eventually(t, "the retry ends refused as not recorded", func() bool {
+		got := s.refused(s.one.ID)
+
+		return got != nil && !errors.Is(got, journal.ErrUnsuitableStorage)
+	})
+
+	// Start logged the unsuitable refusal of each share; the retry that
+	// ends logs each again, so an operator sees why the timer stopped.
+	var ended int
+
+	for _, r := range s.logs.warnings() {
+		if strings.Contains(r.Message, "not retried again") {
+			ended++
+		}
+	}
+
+	if ended != 2 {
+		t.Errorf("%d warnings of the retry's end, want one for each of the two shares", ended)
+	}
+
+	for range 2 {
+		for _, id := range []entity.ShareID{s.one.ID, s.two.ID} {
+			got := s.refused(id)
+			if !errors.Is(got, engine.ErrNotRecorded) {
+				t.Errorf("share %v refused with %v, want it refused as not recorded", id, got)
+			}
+		}
+
+		if got := s.e.Stats().Journals[startDevice].Conditions; len(got) != 0 {
+			t.Errorf("conditions %+v, want none: no journal is recorded, so none is lost", got)
+		}
+
+		if got := s.clock.Pending(); got != 0 {
+			t.Errorf("%d timers pending after the retry ended, want none", got)
+		}
+
+		s.clock.Advance(retryEvery)
+	}
+}
+
 // A retried open that succeeds attaches the shares as Bind does: step 1 for
 // the journal, each share's handle, the shard's incarnation raised in the
 // start form (a new grace instance, as the restart lost the shard's open
@@ -355,6 +409,71 @@ func TestARetriedOpenAttachesTheSharesAndClearsTheCondition(t *testing.T) {
 			before.Incarnation+1, before.Incarnation+1,
 			before.Incarnation, before.GraceInstance,
 		)
+	}
+}
+
+// A late attach leaves the engine as a Start that opened the journal leaves
+// it: a share Start never bound is bound after it, with no refusal left
+// over from the retry (RFC 8 §2.5).
+func TestABindAfterTheLateAttachSucceeds(t *testing.T) {
+	s := newStarter(t, withOpens(unsuitable()), withSpare())
+	s.closeAtEnd(t)
+
+	if err := s.start(t); err != nil {
+		t.Fatal(err)
+	}
+
+	s.retry(t, retryEvery)
+	s.attached(t)
+
+	if err := s.e.Bind(t.Context(), s.spare); err != nil {
+		t.Errorf("Bind after the late attach = %v, want nil", err)
+	}
+}
+
+// A retried open that Close overtook, after it rebuilt a clone, takes the
+// rebuild back: the clone's registrations on both files and the guard of its
+// destination are gone once Close returns.
+func TestCloseTakesBackTheCloneALateAttachRebuilt(t *testing.T) {
+	m := newMarkerCrash(t, 0, withOpens(unsuitable()))
+	g := newGate(t)
+
+	m.begin(t)
+
+	m.starter.gate = g
+
+	// The clock also drives open state's timers, so the retry's is not the
+	// only one pending: advance until the retried open arrives.
+	m.until(t, "the retried open reaches Open", func() bool {
+		select {
+		case <-g.entered:
+			return true
+		default:
+			return false
+		}
+	})
+
+	// The rig holds a removal loop of its own, which Close would wait for.
+	m.run()
+
+	closed := closing(m.e, t.Context())
+
+	g.open()
+
+	if err := <-closed; err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+
+	if src, dst := m.e.Registrations(m.src); src != 0 || dst != 0 {
+		t.Errorf("source file holds %d source and %d destination registrations after Close, want none", src, dst)
+	}
+
+	if src, dst := m.e.Registrations(m.dst); src != 0 || dst != 0 {
+		t.Errorf("destination file holds %d source and %d destination registrations after Close, want none", src, dst)
+	}
+
+	if m.e.GuardHeld(m.dst) {
+		t.Error("the destination's guard is held after Close")
 	}
 }
 

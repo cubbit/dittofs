@@ -51,6 +51,33 @@ func refusedBubbleWrapping(
 	return b, s
 }
 
+// The retry fires at the 30th second, not before and not after: a timer of 20 s
+// attaches the share at 29 s, and one of 40 s has not attached it at 30 s.
+func TestTheRetryFiresAtThe30thSecond(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b, s := refusedBubble(t, engine.NewStubStore())
+		b.openFn = nil
+
+		b.clock.Advance(retryEvery - time.Second)
+		synctest.Wait()
+
+		if b.e.Stats().Shares[s.ID].Refused == nil {
+			t.Error("attached before 30 s")
+		}
+
+		b.clock.Advance(time.Second)
+		synctest.Wait()
+
+		if err := b.e.Stats().Shares[s.ID].Refused; err != nil {
+			t.Errorf("not attached at 30 s: %v", err)
+		}
+
+		if err := b.e.Close(context.Background()); err != nil {
+			t.Errorf("Close = %v", err)
+		}
+	})
+}
+
 // A retry that Close overtook opens nothing: the 30 s that follow leave the
 // share unattached and the journal unopened.
 func TestCloseStopsTheRetryOfAnUnsuitableJournal(t *testing.T) {
@@ -284,43 +311,6 @@ func TestARetriedOpenThatFindsTheJournalLostEndsTheRetry(t *testing.T) {
 			})
 		})
 	}
-}
-
-// A retried open that finds no journal recorded for the device ends the
-// retry: the content is intact and a later start records it, so the shares
-// stay refused and no condition is raised (RFC 8 §2.5).
-func TestARetriedOpenThatFindsNoJournalRecordedEndsTheRetry(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		store := engine.NewStubStore()
-		b, s := refusedBubble(t, store)
-		store.Unrecorded = true
-		b.openFn = func(context.Context) (engine.Journal, error) {
-			return nil, journal.ErrIdentityMismatch
-		}
-
-		b.clock.Advance(retryEvery)
-		synctest.Wait()
-
-		for range 2 {
-			st := b.e.Stats()
-
-			got := st.Shares[s.ID].Refused
-			if got == nil || errors.Is(got, journal.ErrUnsuitableStorage) {
-				t.Errorf("share refused with %v, want it refused as not recorded", got)
-			}
-
-			if got := st.Journals[bubbleDevice].Conditions; len(got) != 0 {
-				t.Errorf("conditions %+v, want none: no journal is recorded, so none is lost", got)
-			}
-
-			if got := b.clock.Pending(); got != 0 {
-				t.Errorf("%d timers pending after the retry ended, want none", got)
-			}
-
-			b.clock.Advance(retryEvery)
-			synctest.Wait()
-		}
-	})
 }
 
 // bubbleCondition is the condition named name that st raises for the bubble's
