@@ -117,8 +117,9 @@ func NewRecorder() *Recorder {
 // goroutine waiting out another holder puts its hold on the books before
 // it owns the lock, which the per-identity holder set keeps apart from
 // the holder's own. The rules are checked in a fixed priority — same
-// domain, guard under index, acquire under map, out of order — and only
-// the highest priority one is recorded. A rank of 0 is never recorded.
+// domain, guard under index, acquire under map, guard wait under lock, out
+// of order — and only the highest priority one is recorded. A rank of 0 is never
+// recorded.
 func (r *Recorder) Acquire(rank Rank, id any) {
 	if r == nil || rank == 0 {
 		return
@@ -133,10 +134,13 @@ func (r *Recorder) Acquire(rank Rank, id any) {
 	// readers share. Every other same-rank acquisition, a Mutex locked
 	// twice or a reader taking its own guard exclusively, is a certain
 	// self-deadlock and is reported: an exclusive identity is a pointer,
-	// which never equals a readIdentity. The exemption's ceiling: a
-	// recursive RLock can still deadlock against a writer waiting
-	// between the two holds and is not reported; withdraw the exemption
-	// if such a pattern ever appears.
+	// which never equals a readIdentity. The exemption's ceiling: it
+	// returns before any rule runs, so a recursive RLock can still
+	// deadlock against a writer waiting between the two holds and is not
+	// reported, and the nested RLock of an instance taken while the file
+	// map is held (RLock, file map, RLock) is not reported as an
+	// acquisition under the map; withdraw the exemption if such a pattern
+	// ever appears.
 	if _, isRead := id.(readIdentity); isRead {
 		for _, h := range heldNow {
 			if h.id == id && h.rank == rank {
@@ -165,8 +169,7 @@ func (r *Recorder) Acquire(rank Rank, id any) {
 // file index or the file map it is reported like any hold), and the drain
 // wait — a plain StorageGuard acquisition — is checked both against the
 // locks the goroutine holds (it must hold none) and against a reference
-// of its own segment (a certain self-deadlock). A rank of 0 is never
-// recorded, like Acquire.
+// of its own segment (a certain self-deadlock).
 func (r *Recorder) AcquireRef(id any) {
 	if r == nil {
 		return
@@ -353,6 +356,17 @@ func (r *Recorder) Release(_ Rank, id any) {
 	// attempts are recorded while another holder still owns the lock —
 	// a release from a goroutine that holds no hold of it names no
 	// single holder, so it is ignored rather than guess.
+	//
+	// decision: an ambiguous cross-goroutine release fails closed: it
+	// removes nothing, so the original holder's hold stays on the books
+	// and its goroutine can later be reported for a lock it no longer
+	// holds, or a later acquisition reported against it. The ceiling is
+	// an identity held by several goroutines at once whose hold is then
+	// released by a goroutine that holds none of it: a guard reference of
+	// an entry other readers also pin, released by a goroutine that did not
+	// acquire it. Withdraw it if a ranked lock or a reference is ever
+	// handed to another goroutine to release while others hold the same
+	// identity.
 	if holders := r.holder[id]; len(holders) == 1 {
 		for holderGid := range holders {
 			if hs, ok := r.byGoroutine[holderGid]; ok {

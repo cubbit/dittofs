@@ -96,6 +96,45 @@ func TestRecorder_Reports(t *testing.T) {
 			wantKinds: []lockorder.Kind{lockorder.AcquireUnderMap, lockorder.GuardUnderIndex},
 		},
 		{
+			// A successful TryLock is an acquisition: the order rules bind
+			// it, and its Unlock releases the caller's own hold.
+			name: "try-lock of file append under capacity",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var capMu, faMu lockorder.Mutex
+				capMu.Init(lockorder.Capacity, rec)
+				faMu.Init(lockorder.FileAppend, rec)
+				capMu.Lock()
+				if !faMu.TryLock() {
+					t.Fatal("TryLock of a free mutex = false, want true")
+				}
+				if got, want := rec.Held(), []lockorder.Rank{lockorder.Capacity, lockorder.FileAppend}; !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() after the successful TryLock = %v, want %v", got, want)
+				}
+				faMu.Unlock()
+				if got, want := rec.Held(), []lockorder.Rank{lockorder.Capacity}; !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() after the Unlock = %v, want %v", got, want)
+				}
+			},
+			wantKinds: []lockorder.Kind{lockorder.OutOfOrder},
+			wantRank:  lockorder.FileAppend,
+		},
+		{
+			// A failed TryLock takes no lock: it records no same-domain
+			// violation and adds nothing to the books.
+			name: "failed try-lock records nothing",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(lockorder.FileAppend, rec)
+				m.Lock()
+				if m.TryLock() {
+					t.Fatal("TryLock of a held mutex = true, want false")
+				}
+				if got, want := rec.Held(), []lockorder.Rank{lockorder.FileAppend}; !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() after the failed TryLock = %v, want %v", got, want)
+				}
+			},
+		},
+		{
 			name: "capacity then file append",
 			drive: func(t *testing.T, rec *lockorder.Recorder) {
 				var capMu, faMu lockorder.Mutex
@@ -640,6 +679,31 @@ func TestRecorder_GuardRefs(t *testing.T) {
 					t.Errorf("Held() under the pin = %v, want %v: the pin sits on the books, released cross-goroutine or not", got, want)
 				}
 			},
+		},
+		{
+			// The pin is not what an out-of-order acquisition is checked
+			// against, and it must not hide one: a real inversion with a pin
+			// held is reported as out of order — the zero Kind.
+			name: "a held pin beside a real out-of-order acquisition",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.AcquireRef(new(int))
+				rec.Acquire(lockorder.SegmentAppend, new(int))
+				rec.Acquire(lockorder.Capacity, new(int))
+			},
+			wantKinds: []lockorder.Kind{lockorder.OutOfOrder},
+			wantRank:  lockorder.Capacity,
+		},
+		{
+			// Same domain outranks the wait-under-lock rule: a drain wait
+			// taken over a pin and a ranked lock reports the pin, not the lock.
+			name: "a held pin and a ranked lock, then a drain wait",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.AcquireRef(new(int))
+				rec.Acquire(lockorder.Capacity, new(int))
+				rec.Acquire(lockorder.StorageGuard, new(int))
+			},
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.StorageGuard,
 		},
 		{
 			name: "two refs of two segments",

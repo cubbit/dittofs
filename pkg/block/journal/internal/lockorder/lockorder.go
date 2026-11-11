@@ -91,9 +91,11 @@ func (m *Mutex) Init(rank Rank, rec *Recorder) {
 }
 
 func (m *Mutex) Lock() {
-	// ponytail: a load on every lock. Upgrade is a build tag that compiles
-	// the recorder out of production, once a profile of the 64-file benchmark
-	// shows the load.
+	// ponytail: a load on every lock, and on every Unlock a load plus, with
+	// a recorder installed, a deferred Release call that keeps Unlock out of
+	// the inliner's reach. Upgrade is a build tag that compiles the recorder
+	// out of production, once a profile of the 64-file benchmark shows the
+	// load or the call.
 	if r := m.rec.Load(); r != nil {
 		r.Acquire(m.rank, m)
 	}
@@ -107,10 +109,20 @@ func (m *Mutex) Unlock() {
 	m.mu.Unlock()
 }
 
-// TryLock is the underlying mutex's, unrecorded: a probe of held-ness is not
-// an acquisition the order rules bind, so a caller that holds nothing when it
-// fails answers the recorder nothing either.
-func (m *Mutex) TryLock() bool { return m.mu.TryLock() }
+// TryLock is the underlying mutex's. A failed attempt records nothing: it
+// takes no lock and waits for none. A successful one is an acquisition like
+// Lock's, recorded once the lock is held, so the Unlock that follows
+// releases a hold of the caller's own rather than another goroutine's
+// recorded attempt.
+func (m *Mutex) TryLock() bool {
+	if !m.mu.TryLock() {
+		return false
+	}
+	if r := m.rec.Load(); r != nil {
+		r.Acquire(m.rank, m)
+	}
+	return true
+}
 
 // RWMutex is the same arrangement over sync.RWMutex, for the storage
 // guard: readers hold it shared, an unlink or a recycle exclusively. A
