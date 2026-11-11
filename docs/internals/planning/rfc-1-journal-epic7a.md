@@ -290,7 +290,7 @@ each refusal.
 | 5 Public and internals, `-race` | all | the internal `recovery` package is tested directly, and the public `Open` once the checkpoint after T7.12 enables it. The concurrent rebuild runs under `-race` (T7.2). A value this epic rebuilds is checked where it is consumed: `ReadAt`, `Since`, `Files`, `DirtyFiles`, `Stats` and the refusals of E8, not the builder's state |
 | 6 Known failures | T7.12, T7.13, T7.15 | each conformance test leaves `known.yaml` in the change that turns it green. Before T7.12 the public `Open` answers `ErrNotImplemented`, so the rows of R69–R75 are run through `recovery.Run` in their subtask and leave the list in T7.12, or in T7.13 where an ended segment is emptied; T7.15 only re-points the entries this epic does not turn green to the epic that will |
 | 7 v2 ignores v1 | all | the import test forbade v1's journal until it was deleted. Nothing of v1's journal is read; the open never looks for v1 state (that is E10's start check) |
-| 8 Real storage | T7.4, T7.7, T7.9, T7.10, T7.11, T7.12, T7.13, T7.15 | every torn, crash, unlink and damage check runs on E3's `platform.OS` through E2's crash-simulating seam, never an in-memory filesystem. Direct reads (T7.8) are checked on a real file whose page cache holds bytes the device does not |
+| 8 Real storage | T7.4, T7.7, T7.9, T7.10, T7.11, T7.12, T7.13, T7.15 | every torn, crash, unlink and damage check runs on E3's `platform.OS` through E2's crash-simulating seam, never an in-memory filesystem. Direct reads (T7.8) are checked on a real file, by the pages its read leaves in the cache |
 | 9 Comment markers | T7.1, T7.2, T7.3, T7.4, T7.5, T7.7, T7.8, T7.10, T7.11, T7.12, T7.13 | the RFC's markers at their code sites: RFC 28 §3.3's two `ponytail:` notes on the failed slot and the forward search (T7.4), its `decision:` on emptying an ended segment whole (T7.13), its `ponytail:` on a segment's absence taken as its retirement (T7.10), and its two `decision:` notes on a failed read (T7.1); RFC 1 §6's `decision:` on the open reserve (T7.12) and its `ponytail:` on a loss record's bytes in a copy (T7.13). This epic's D2 (T7.1), D3 (T7.3), D4 (T7.11), D6 (T7.5), D8 (T7.2), D11 (T7.8), D12 (T7.7), D13 (T7.10), D14 (T7.2, T7.4) and D15 (T7.1, T7.2) at theirs |
 | 10 A test must be able to fail | all | §6 names, per test, the change that would make it fail |
 | 11 Exported only if RFC 1 §3 uses it | T7.1, T7.2, T7.10, T7.14 | the S1 surface lacks five names RFC 1 §3 declares for the open: `Open`'s `marks` argument and `SyncMark` (T7.1), `SegmentRange`, `*UnreadableRangesError` and `ErrUnreadable` (T7.1, T7.2), and `Stats.SyncMarks` (T7.14). This epic adds them as RFC 1 §3 writes them (§9). `Stats.Recovery`, `RejectedSegments`, `DamagedSegments`, `TagConflicts`, `TornTails` and `ScanResyncs` exist since S1. The `recovery` package is internal |
@@ -502,12 +502,14 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
   directory as it found it, and one after that point leaves only states a later open recovers
   (R11). The phases run in this order: attach, rebuild, marks (raise and withhold), tail proof,
   marks (lost-tail check), spares, re-append, assembly, cut and seal, emptying.
-- **D11, a direct read the filesystem refuses fails the open.** `O_DIRECT` is refused by some
-  filesystems and `F_NOCACHE` is advisory (E3's open point P12). Until RFC 28 says otherwise, a
-  direct read that fails with the platform's refusal fails the open naming the rule, as the
-  platform checks do, rather than falling back to the page cache and trusting what R47 exists not
-  to trust. A `decision:` marker at `ReadAtDirect` names the ceiling: a journal on such a
-  filesystem cannot reopen after a crash that left an unproven tail.
+- **D11, a direct read the filesystem refuses is returned as itself, and the open's tail check
+  decides what it means.** `O_DIRECT` is refused by some filesystems and `F_NOCACHE` is advisory
+  (E3's open point P12). `ReadAtDirect` returns the platform's refusal as it is, never falling
+  back to the page cache and trusting what R47 exists not to trust. What the open makes of it is
+  T7.9's, by RFC 28 §3.3 and D15: a verified record whose direct re-read fails is re-appended
+  from its first copy (R49), and a failed re-read of an unnamed seal marker refuses the open. A
+  `decision:` marker at `ReadAtDirect` names the rule, and is withdrawn if RFC 28 allows a cached
+  fallback on a filesystem known to refuse.
 - **D12, the allocation check of a re-adopted spare queries Linux only.** RFC 28 §3.1 checks
   "where the platform reports it". On Linux the open asks `FIEMAP` for unwritten or missing
   extents; on macOS and Windows it checks the size alone. A `ponytail:` marker names the gap and
@@ -899,18 +901,21 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
 - **Deliverables:** `ReadAtDirect` in `internal/platform`: `O_DIRECT` with aligned buffers on
   Linux, `F_NOCACHE` on macOS, `FILE_FLAG_NO_BUFFERING` with sector-aligned buffers on Windows;
   E3's `ponytail:` on `ReadAtDirect` is removed. A refusal by the filesystem is returned as itself
-  and fails the open (D11, with its `decision:` marker). The seam's `ReadAtDirect` returns the
-  bytes the device holds, not those the simulated cache holds.
+  with no fallback to the page cache, and the open's tail check decides what it means (D11, with
+  its `decision:` marker). The seam's `ReadAtDirect` returns the bytes the device holds, not those
+  the simulated cache holds.
 - **Acceptance criteria:**
-  - On Linux, a direct read of a range whose page cache was changed under the file (through a
-    second descriptor written and not synced, then the device copy checked) returns the device's
-    bytes.
+  - On Linux, a direct read of a synced range whose clean pages were dropped leaves no page of it
+    resident (`mincore`), where a read through the cache brings them back. A read whose cache was
+    changed under the file through a second descriptor cannot show the difference: an `O_DIRECT`
+    read first writes back that inode's dirty pages.
   - An unaligned record is read through an aligned window and returned exactly.
-  - On a filesystem that refuses `O_DIRECT`, the open fails naming it.
-- **Tests:** the device-versus-cache read on Linux (catches a read that still goes through the
-  cache); the alignment cases at the first and last byte of a segment (catches an off-by-one in
-  the window); macOS and Windows builds compile and run the alignment test where a runner exists
-  (E3's open point P22).
+  - On a filesystem that refuses `O_DIRECT`, `ReadAtDirect` returns the refusal as itself and
+    reads nothing through the cache; T7.9 decides what the open makes of it.
+- **Tests:** the residency read on Linux (catches a read that still goes through the cache), and
+  the refusal answered by a fault on the `open` the `O_DIRECT` descriptor makes; the alignment
+  cases at the first and last byte of a segment (catches an off-by-one in the window); macOS and
+  Windows builds compile and run the alignment test where a runner exists (E3's open point P22).
 
 ### T7.9 The unproven tail and the unnamed seal marker
 
@@ -1246,8 +1251,9 @@ A suggestion only: one pull request per subtask works as well.
 - **Holds before E7b.** D6 refuses an open that finds a hold, unhold or stamp record. If E9b's
   holds ship before E7b, every journal that took a hold stops reopening. **Decides:** the owners
   of E7b and E9b, by ordering them. **Blocks:** nothing here.
-- **A direct read the filesystem refuses** (E3's P12). D11 fails the open until RFC 28 says
-  whether to refuse, fall back or count. **Decides:** RFC 28's owner. **Blocks:** nothing; D11
-  stands meanwhile.
+- **A filesystem that refuses every direct read** (E3's P12). D11 returns the refusal as itself,
+  so such a filesystem leaves every seal unproven and every tail unverifiable. Whether the open
+  should refuse, fall back to the page cache or count it wants settling with T7.9. **Decides:**
+  RFC 28's owner. **Blocks:** nothing; D11 stands meanwhile.
 - **Runners for macOS and Windows** (E3's P22). T7.8's per-OS bodies compile everywhere and are
   exercised only on Linux in CI until a runner exists. **Decides:** CI owner. **Blocks:** nothing.
