@@ -1185,6 +1185,8 @@ func TestACoveredCallerKeepsALaterAskForTheSameFile(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Errorf("after 5 s the later caller still waits: the covered caller dropped its ask, so f waits for its existence age")
 		cancel()
-		<-later
+		if err := <-later; err != nil {
+			t.Logf("the later caller, ended by its context: %v", err)
+		}
 	}
 }
