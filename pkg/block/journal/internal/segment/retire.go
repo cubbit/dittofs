@@ -122,6 +122,8 @@ type Retirer struct {
 	cfg RetirerConfig
 	log *slog.Logger
 
+	// decision: mu is a leaf mutex outside the six lock domains; the type's
+	// decision gives why nothing is held across it.
 	mu      sync.Mutex
 	freedB  uint64 // freed_bytes; guarded by mu
 	queue   []core.SegmentID

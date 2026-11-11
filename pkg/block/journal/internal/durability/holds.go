@@ -23,7 +23,7 @@ import (
 // record and the release, are each one step: a second read on the segment
 // never sees the record of the first without the claim behind it. The order
 // is st.mu, then the Set's mutex, and it cannot invert: the Set's mutex is the
-// capacity domain's leaf, which takes nothing while held, and the retirer
+// capacity-ranked lock, which takes nothing while held, and the retirer
 // calls ClaimRetirement and Release with no lock of its own held and never
 // reaches st.mu. Overturned if the Set ever calls out under its mutex, or if a
 // retirer must read the hold under a lock it holds over the Set.

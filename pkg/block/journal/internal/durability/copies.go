@@ -75,8 +75,9 @@ type ownedCopy struct {
 // and would never remove the entry. The set is asked
 // under copyMu: a segment the set still holds is removed from it before
 // Retired is called, so that Retired's drop takes copyMu after this call and
-// removes the entry. copyMu is held only across the set's mutex, a leaf
-// that takes nothing while held. It holds no other lock of this layer.
+// removes the entry. copyMu is held only across the set's mutex, the
+// capacity-ranked lock, which takes nothing while held. It holds no other lock
+// of this layer.
 //
 // decision: the set is asked rather than a record of retired segments kept,
 // which every segment's retirement would grow for the life of the journal,
