@@ -405,9 +405,11 @@ regression it names (after "catches").
   fault-injecting `kv.KV` and the journal's crash seam below it; a restart and a crash
   rebuild the three pieces in RFC 17 §2.5's order.
 - **Tests:** `suite.Run` under `-race`, whose cases catch what each states; a write
-  acknowledged and committed through the service, then `Crash` and a new composition: the
-  bytes read back through the new service (catches a composition whose restart starts the
-  filesystem before the engine has re-applied existence, serving the file short); after the
+  acknowledged and committed through the service, its existence still pending, then `Crash`
+  and a new composition: the bytes read back through the new service (catches a start that
+  skips the engine's re-application of existence, serving the file short; the read runs once
+  both pieces have started, so it cannot catch them started in the wrong order, which the
+  fixture's start enforces and no row pins yet); after the
   filesystem's `Stop`, a direct engine `Read` of the same file still answers and the open-state
   table still serves, and only the fixture's stop closes them (catches a filesystem closing
   what it was handed, R6); a write through the service to the fixture's second share, which no
