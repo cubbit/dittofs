@@ -209,9 +209,11 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 	// drop (the post-commit apply error of FailWindow, close to unreachable)
 	// the marker stays while the record may still be held, so Since can report
 	// a loss for content that still reads; the same path already queued a
-	// worker loss for it, with Marked set so it leaves no second marker. (b) If the lift fails and FailWindow puts the retained older content back
-	// into held after the marker, the marker cut only what was held when it
-	// was placed, so the last synced older version could be served for a
+	// worker loss for it, with Marked set only when every held extent has its
+	// marker, so it leaves no second marker and no extent is left without one.
+	// (b) If the lift fails and FailWindow puts the retained older content
+	// back into held after the marker, the marker cut only what was held when
+	// it was placed, so the last synced older version could be served for a
 	// synced-lost extent. Overturned by a failed-lift or refused-drop rate
 	// that matters.
 	marked := map[core.Extent]bool{}
@@ -272,7 +274,7 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 		// pieces had, which the raise above already followed.
 		l := base
 		l.Extent, l.Offloaded = c.Extent, !dirty
-		l.Marked = len(marked) > 0
+		l.Marked = len(marked) > 0 && !slices.ContainsFunc(held, func(p index.Piece) bool { return !marked[p.Extent] })
 		job.losses = append(job.losses, l)
 	}
 	if len(job.losses) == 0 {
