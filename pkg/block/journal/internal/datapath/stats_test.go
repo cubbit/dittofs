@@ -261,7 +261,7 @@ func TestStatsSharesAreAttachedOrHoldingRecords(t *testing.T) {
 var statsUnserved = map[string]string{
 	"Shares.UnreclaimedEndedBytes": "no Repack seals yet, so no segment is ended with unreclaimed bytes; zero until it does",
 	"Shares.UnreclaimedBytes":      "the index has no per-record backing hook, so it is kept at zero",
-	"Shares.ReservedBytes":         "a reservation is open only inside a write, and no seam stands inside it; the capacity tests drive it",
+	"Shares.ReservedBytes":         "a reservation is open only inside a write, which only the beforeWrote seam stands inside; TestRFC1D_StatsReservedCoversARecordNotYetCounted drives it, outside these scenarios",
 	"UnreclaimedBytes":             "the index has no per-record backing hook, so it is kept at zero",
 	"Counters.OfferedBytes":        "offload is not built yet",
 	"Counters.MarkedBytes":         "offload is not built yet",
@@ -278,7 +278,7 @@ var statsUnserved = map[string]string{
 	"Counters.SpareRefusals":       "needs a roll with no spare ready; the pool's tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
 	"Counters.SegmentReopens":      "needs a closed descriptor reopened; the descriptor tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
 	"RepackReserveBytes":           "the test core's pool targets no repack reserve",
-	"ReservedBytes":                "a reservation is open only inside a write, and no seam stands inside it; the capacity tests drive it",
+	"ReservedBytes":                "a reservation is open only inside a write, which only the beforeWrote seam stands inside; TestRFC1D_StatsReservedCoversARecordNotYetCounted drives it, outside these scenarios",
 }
 
 // TestStatsEveryFieldIsServedOrNamed checks a field of Stats, ShareStats or
