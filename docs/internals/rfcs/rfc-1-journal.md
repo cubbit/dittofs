@@ -581,10 +581,10 @@ for any file of the share, imported records included) and its version limit
 ([§4.3](#4.3%20Versions), [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). A share this journal did not serve when
 it opened — moved here, recovered onto this device, cloned or restored into it —
 can carry versions from another journal far above this one's counter. `Share`
-**MUST** raise the journal's version counter above that floor before it returns
-the handle, so no write through it can be assigned a version below a version its
+**MUST** raise the journal's version counter above that floor, and its floor
+buckets to it ([§3.4](#3.4%20Fill)), before it returns the handle, so no write through it can be assigned a version below a version its
 files already hold ([§4.3](#4.3%20Versions)). `Share` of a tag whose handle is already open raises
-the counter the same way, replaces the handle's journal limit (the capacity
+both the same way, replaces the handle's journal limit (the capacity
 `limit` argument, [§6](#6.%20Capacity)) with the one passed, and returns that handle, one handle
 whose one `Close` closes it for every caller, so the engine's `Bind` can take
 over a handle its metadata reconcile opened ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). Without it a new write would lose precedence to the
@@ -3160,7 +3160,7 @@ holding it converts disk latency into index contention.
 | `Forget`'s record, then its drop | repack copies and fills of that tag | a copy of the tag appended after the forget record carries a higher sequence number, so a crash would bring it back as held; a copy whose held check ran before the forget is abandoned, never appended after it ([§3](#3.%20Interface)) |
 | a repack copy's held check, then its append | `WriteAt`, removals and `Release` on that file | a copy appended over newer state would reinstate superseded content ([§7.2](#7.2%20Repack)) |
 | an acknowledgement's drop of a file's extents, then its loss records ([§3.3](#3.3%20Offload)) | repack copies of that file | a copy appended after the loss record keeps the version under a higher sequence number, so the loss record does not outrank it and a restart holds the dropped content again; a copy whose held check ran before the drop is abandoned, never appended after it |
-| drawing a write's or a removal's version, then applying it to the index | a read of that file taking its `asOf` | a file with no entry reports its floor bucket as `asOf`, and so may one with an entry not changed since open, and so does one whose entry a `Fill` created; another file in the same bucket can draw a higher version and raise the bucket while this change is still in flight; the read's `asOf` is then above a change it did not see, so a fill from that read is accepted over the change, and the engine can report a loss for bytes the journal still holds ([§3.4](#3.4%20Fill), [RFC 8 §7.1](rfc-8-engine.md#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)) |
+| drawing a write's or a removal's version, then applying it to the index | a read of that file taking its `asOf` | a file with no entry reports its floor bucket as `asOf`, and so may one with an entry not changed since open, and so does one whose entry a `Fill` created; another file in the same bucket can draw a higher version and raise the bucket while this change is still in flight, as can a share's attach, which raises every bucket ([§3.4](#3.4%20Fill)); the read's `asOf` is then above a change it did not see, so a fill from that read is accepted over the change, and the engine can report a loss for bytes the journal still holds ([§3.4](#3.4%20Fill), [RFC 8 §7.1](rfc-8-engine.md#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)) |
 
 Publishing an extent **MUST** be the last step of a write, after its record is
 written, so a read never finds an index entry pointing at bytes not yet in the

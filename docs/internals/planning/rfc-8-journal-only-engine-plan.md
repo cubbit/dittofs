@@ -700,8 +700,9 @@ owned: RFC 8 §4.1 (the verifier), §5.1, §5.2, §11.3. Counters: `engine_stabi
   the generation is above the last applied, every file raised on missed events or a lost
   device; `LossSeq`; `Done`, with nothing charged, for every uncommitted write of a journal
   whose device is lost whole. A loss drained between a write's `WriteAt` and its insert is
-  kept per file and checked by the insert, so the write is committed as `OpLost`, or for a
-  failed window dropped (T4.6), never committed as written.
+  kept per file and checked by the insert, so the run it names is committed lost, or the
+  write is dropped, as a failed window (T4.6) or an unsynced corrupt record covering it
+  whole drops it, never committed as written.
 - T4.6 A failed window reported once per file, the next `Commit` succeeding. The report is
   per file and fed by every `Sync` the engine makes, the capacity sync's included (T7.1),
   so a `SyncError` that a sync other than `Commit`'s takes still fails that file's next
