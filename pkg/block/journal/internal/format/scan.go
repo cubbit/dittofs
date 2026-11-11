@@ -130,16 +130,59 @@ type slot struct {
 // On every error return the Scan holds everything attached and every range
 // closed before the failing offset, and End is that offset.
 func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment core.SegmentID) (Scan, error) {
+	return scan(r, size, identity, segment, false)
+}
+
+// ScanSegmentHeaders walks one segment by its record headers alone, the
+// same walk ScanSegment makes over them save the one place it differs — the
+// body, in scanner.examineRecord — headed for recovery's rebuild: it takes a
+// record that fits from its verifying header, and the payload bytes it has
+// no reason to check are a read the open on a fresh tail would otherwise
+// multiply by that tail's own size.
+//
+// A record attaches with its full header — the same fields ScanSegment
+// attaches — and every field its body carries zero (Payload nil): the kinds
+// 15 and 16 attach by their headers like all other kinds, and nothing about
+// the loss, clone-target, hold and reconciled bodies RecordBody carries is
+// decoded here; recovery reads the bodies it needs at their offsets, where
+// each is verified whole before it is used (VerifyRecordBody is the only
+// path that hands a record's bytes out). Refused is always empty: a record
+// whose header verifies is never refused, for its body's content is a read
+// this walk never made. Everything else — resynchronisation over a header
+// that does not verify, the ranges tiling [SegmentHeaderSize, End), the
+// seal marker stop, the stop an unknown kind or a non-zero epoch makes, and
+// a failed read returned as itself with the offset it failed at — behaves
+// exactly as ScanSegment's, so the caller judges records by their headers
+// alone over the same Scan.
+//
+// decision: the bodies are skipped because the two checksums are separate —
+// the header verifies on its own, so a scan can trust a record's boundaries
+// without reading its payload (RFC 28 §2.3), and each live payload is
+// verified whole where it is handed out instead: recovery's own body reads,
+// which re-read and verify each record they use. Overturned the day the
+// format rules that a scan verifies every live payload at open; until then,
+// a header-only walk that re-read its bodies would pay exactly the body I/O
+// this function exists to skip.
+func ScanSegmentHeaders(r io.ReaderAt, size int64, identity core.JournalID, segment core.SegmentID) (Scan, error) {
+	return scan(r, size, identity, segment, true)
+}
+
+// scan is the one walk both entry points share; headerOnly names the one
+// stub a ScanSegmentHeaders walk skips — the record body, in
+// scanner.examineRecord (and the refills scanner.read narrows to a slot's
+// own bytes so no read reaches a body).
+func scan(r io.ReaderAt, size int64, identity core.JournalID, segment core.SegmentID, headerOnly bool) (Scan, error) {
 	if size < SegmentHeaderSize {
 		return Scan{}, fmt.Errorf("%w: %d bytes, too short for the first record slot at %d", ErrDamaged, size, SegmentHeaderSize)
 	}
 
 	sc := scanner{
-		r:        r,
-		size:     size,
-		identity: identity,
-		segment:  segment,
-		window:   make([]byte, min(scanWindow, size)),
+		r:          r,
+		size:       size,
+		identity:   identity,
+		segment:    segment,
+		window:     make([]byte, min(scanWindow, size)),
+		headerOnly: headerOnly,
 	}
 	sc.End = SegmentHeaderSize
 	off := int64(SegmentHeaderSize)
@@ -233,6 +276,11 @@ type scanner struct {
 	have        int64 // the bytes the window holds
 	narrowUntil int64 // below it a wide refill failed; each slot's own bytes alone
 	body        []byte
+	// headerOnly names the walk's one stub: when true, the record body is
+	// never read (examineRecord) and each slot is refilled by its own bytes
+	// alone (read), so no read reaches a body. The window's fetch of
+	// already-held bytes keeps serving the search's zero-telling.
+	headerOnly bool
 
 	Scan
 }
@@ -317,13 +365,18 @@ func (sc *scanner) examineRecord(b []byte, off int64) slot {
 	}
 
 	// The body, whole: one checksum covers it all, so no part of a record
-	// that does not verify is ever read as content.
+	// that does not verify is ever read as content. A header-only walk
+	// stops here, its record already safe in hand — with no refused slot
+	// either, for its header verifies whatever the body holds.
 	//
 	// ponytail: the body is read by its own readFull even when the window
 	// already holds it, so every record body costs its bytes a second read
 	// and an open's fallback scan of a newest segment pays about twice its
 	// content I/O. Copy the bytes the window holds and readFull only the
 	// remainder when an open's recovery time shows the double read.
+	if sc.headerOnly {
+		return slot{outcome: slotRecord, record: ScannedRecord{Header: h}}
+	}
 	bs := h.BodySize()
 	if int64(cap(sc.body)) < bs {
 		// bs fits the segment by the overrun check above, so it is the
@@ -463,7 +516,15 @@ func (sc *scanner) read(off, n int64) ([]byte, error) {
 		return sc.window[off-sc.cur : off-sc.cur+n], nil
 	}
 	want := min(int64(scanWindow), sc.size-off)
-	if off < sc.narrowUntil {
+	// A header-only walk refills each slot's own bytes alone, never wide:
+	// a wide refill would run ahead through the bodies of records the walk
+	// has no reason to check, and narrowUntil cannot stop it, for it
+	// narrows only after a refill has already failed. A ScanSegment walk
+	// keeps the wide window, whose one read of each byte it crosses is the
+	// cheaper walk there.
+	if sc.headerOnly {
+		want = n
+	} else if off < sc.narrowUntil {
 		// Every caller asks only the bytes its own slot holds, min(96,
 		// size-off) or fewer, so a healthy refill always serves them;
 		// under narrow, the slot's own bytes are all the scan reads.
