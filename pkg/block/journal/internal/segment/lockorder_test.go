@@ -462,6 +462,69 @@ func TestGuardRecorded(t *testing.T) {
 	}
 }
 
+// TestCloseRecordsDrainWithoutReaders checks Close(id) records its drain
+// whether or not a reader holds the segment: a retirer that calls Close while
+// it holds a ranked lock is reported on every run, not only on the runs where
+// a reader is in the way.
+func TestCloseRecordsDrainWithoutReaders(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	cases := []struct {
+		name string
+		held lockorder.Rank // 0 holds nothing
+		want []lockorder.Kind
+	}{
+		{"nothing held", 0, nil},
+		{"capacity held", lockorder.Capacity, []lockorder.Kind{lockorder.GuardWaitUnderLock}},
+		{"file index held", lockorder.FileIndex, []lockorder.Kind{lockorder.GuardUnderIndex}},
+	}
+	for _, tc := range cases {
+		for _, acquired := range []bool{false, true} {
+			name := tc.name + ", segment never acquired"
+			if acquired {
+				name = tc.name + ", segment acquired and released"
+			}
+			t.Run(name, func(t *testing.T) {
+				seam, _, m := maker(t, 0, noMax)
+				c := segment.NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(4))
+				rec := lockorder.NewRecorder()
+				c.SetRecorder(rec)
+				id, err := m.Make()
+				if err != nil {
+					t.Fatalf("Make: %v", err)
+				}
+				if acquired {
+					ref, err := c.Acquire(id)
+					if err != nil {
+						t.Fatalf("Acquire: %v", err)
+					}
+					ref.Release()
+				}
+				if tc.held != 0 {
+					rec.Acquire(tc.held, "probe")
+				}
+				err = c.Close(id)
+				if tc.held != 0 {
+					rec.Release(tc.held, "probe")
+				}
+				if err != nil {
+					t.Fatalf("Close with no reference outstanding: %v", err)
+				}
+				var got []lockorder.Kind
+				for _, v := range rec.Violations() {
+					got = append(got, v.Kind)
+				}
+				if !slices.Equal(got, tc.want) {
+					t.Fatalf("violations recorded by Close = %v, want %v", got, tc.want)
+				}
+				if held := rec.Held(); len(held) != 0 {
+					t.Fatalf("Held() after Close = %v, want none", held)
+				}
+			})
+		}
+	}
+}
+
 // TestPoolCondUnderRecorder runs the pool's settle condition under the
 // recorder with the pool's mutex ranked: a WaitSpares that parks on a fill
 // the seam holds is woken by the refill's settle and answers the fill it
