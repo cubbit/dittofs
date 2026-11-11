@@ -1,6 +1,7 @@
 package reclaim
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -54,7 +55,7 @@ func TestSetDeferred_UntilTheDeferralEnds(t *testing.T) {
 	if got := tr.Held(f.seg); !got {
 		t.Fatalf("Held after a settle of the file = %v, want true: the deferral is not the marker's to release", got)
 	}
-	tr.CopiesDone([]core.FileID{id})
+	tr.Retest(id)
 	if got := tr.Held(f.seg); !got {
 		t.Fatalf("Held after a copies-done of the file = %v, want true: the deferral is not the copies' to release", got)
 	}
@@ -421,16 +422,11 @@ func TestRegisterForget_RetiredBetweenSnapshotAndRegister(t *testing.T) {
 	}
 }
 
-// TestRegisterForget_RetireRacesRegister: the ordering the race closes:
-// the snapshot enters the registry before the retirement's prune or the
-// registration's re-check can miss it. A retirement running after the
-// insert prunes the snapshot itself; one that already ran is answered by
-// the member check. Both orders are driven once, deterministically, by
-// running the retirement between RegisterForget's insert and its re-check —
-// which is what the lock order guarantees: the insert and the re-check sit
-// inside one holder of rm, so the retirement either runs wholly before the
-// registration (the member check catches it) or wholly after it (the
-// retirement's prune does).
+// TestRegisterForget_RetireRacesRegister drives the two sequential orders of
+// a retirement and a registration, each once: a retirement running after the
+// registration prunes the snapshot itself; one that ran before it is answered
+// by the member check. The concurrent race between a registration and a
+// re-test is TestRegisterForget_ConcurrentRetestKeepsLiveSnapshot's.
 func TestRegisterForget_RetireRacesRegister(t *testing.T) {
 	f := newFixture(t)
 	tr := New(f.ix, nil)
@@ -642,10 +638,10 @@ func TestRegisterForget_SnapshotPrunedToEmptyDropsItself(t *testing.T) {
 	forget.Seg = seg
 	tr.RegisterForget(forget, []core.SegmentID{one, two})
 	if got := tr.droppableLocked(forget); !got {
-		t.Fatalf("got %v, want true", got)
+		t.Fatalf("droppableLocked of a forget whose snapshot drained at registration = %v, want true", got)
 	}
-	if got := tr.recs[core.FileID{}]; got[forget] != 0 {
-		t.Fatalf("got %v, want 0", got[forget])
+	if got := tr.recs[core.FileID{}][forget]; got != 0 {
+		t.Fatalf("registrations of the drained forget left in the registry = %d, want 0", got)
 	}
 	if len(fired) != 1 || fired[0] != seg {
 		t.Fatalf("the candidate fired %v, want [%d]: the re-check-drained snapshot leaves the re-test the one crossing", fired, seg)
@@ -687,5 +683,90 @@ func TestSegmentRetired_DoubledForgetSnapshotEmptied(t *testing.T) {
 	// releases crossed the line.
 	if len(fired) != 1 || fired[0] != seg {
 		t.Fatalf("the candidate fired %v, want [%d]: one crossing for the two registrations", fired, seg)
+	}
+}
+
+// TestRegisterForget_ConcurrentRetestKeepsLiveSnapshot: a forget record
+// registered with a live snapshot is never dropped by a re-test of the zero
+// file racing its registration. The registration and the snapshot enter
+// under one hold of rm, so a re-test sees both or neither; with the two
+// split, the re-test can see the record with no snapshot, answer it
+// droppable and release it, leaving the snapshot behind with nothing
+// registered — Held of the record's segment false while a snapshot segment
+// still holds the tag's records. Three racing re-tests each run: another
+// empty-snapshot registration, the open's close, and the retirement of a
+// segment holding another forget record. Each runs against the registration
+// released at one barrier; the race is a window of a few instructions, so
+// several racers share each round.
+func TestRegisterForget_ConcurrentRetestKeepsLiveSnapshot(t *testing.T) {
+	const rounds, racers = 1500, 4
+	f := newFixture(t)
+	snapSeg, other, third := f.takeIn(t), f.takeIn(t), f.takeIn(t)
+	a := forgetAt(20)
+	a.Seg = f.seg
+	b := forgetAt(21)
+	b.Seg = f.seg
+	c := forgetAt(22)
+	c.Seg = other
+
+	races := map[string]func(tr *Tracker, i int){
+		"RegisterForget": func(tr *Tracker, i int) {
+			r := b
+			r.Seq = core.Seq(100 + i)
+			r.Pair.Seq = r.Seq
+			tr.RegisterForget(r, nil)
+		},
+		"OpenDone": func(tr *Tracker, _ int) { tr.OpenDone() },
+		"SegmentRetired": func(tr *Tracker, _ int) {
+			tr.SegmentRetired(other, nil)
+		},
+	}
+	for name, race := range races {
+		t.Run(name, func(t *testing.T) {
+			for round := range rounds {
+				tr := New(f.ix, nil)
+				if name == "SegmentRetired" {
+					// The forget record c lives in other, its snapshot a
+					// segment that stays: retiring other drops c and
+					// re-tests the zero file its record was registered under.
+					tr.RegisterForget(c, []core.SegmentID{third})
+				}
+				start := make(chan struct{})
+				var wg sync.WaitGroup
+				wg.Add(1 + racers)
+				go func() {
+					defer wg.Done()
+					<-start
+					tr.RegisterForget(a, []core.SegmentID{snapSeg})
+				}()
+				for i := range racers {
+					go func() {
+						defer wg.Done()
+						<-start
+						race(tr, i)
+					}()
+				}
+				close(start)
+				wg.Wait()
+
+				if got := tr.recs[core.FileID{}][a]; got != 1 {
+					t.Fatalf("round %d: registrations of the forget record with a live snapshot = %d, want 1: a racing re-test dropped it", round, got)
+				}
+				if got := len(tr.forgets[a]); got != 1 {
+					t.Fatalf("round %d: snapshot segments kept for the forget record = %d, want 1", round, got)
+				}
+				if got := tr.Held(f.seg); !got {
+					t.Fatalf("round %d: Held of the forget record's segment = %v, want true while its snapshot segment lives", round, got)
+				}
+				// The snapshot segment retiring is the record's release.
+				tr.SegmentRetired(snapSeg, nil)
+				if got := tr.recs[core.FileID{}][a]; got != 0 {
+					t.Fatalf("round %d: registrations left after the snapshot segment retired = %d, want 0", round, got)
+				}
+				if got := tr.Held(f.seg); got {
+					t.Fatalf("round %d: Held after the snapshot segment retired = %v, want false", round, got)
+				}
+			}
+		})
 	}
 }

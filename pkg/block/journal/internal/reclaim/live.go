@@ -249,12 +249,25 @@ func (t *Tracker) Held(seg core.SegmentID) bool {
 // not be handed Held as its only gate — a segment holding an unregistered
 // record answers not held and would be retired under it.
 func (t *Tracker) Register(rec Rec) {
+	t.count(rec)
+	t.rm.Lock()
+	t.addLocked(rec)
+	t.rm.Unlock()
+}
+
+// count raises rec's segment count and files table: the half of a
+// registration that precedes its registry entry.
+func (t *Tracker) count(rec Rec) {
 	st := t.entry(rec.Seg)
 	st.mu.Lock()
 	st.files[rec.File] = struct{}{}
 	st.live.Add(1)
 	st.mu.Unlock()
-	t.rm.Lock()
+}
+
+// addLocked inserts one registration of rec into the file's registry. The
+// caller holds rm.
+func (t *Tracker) addLocked(rec Rec) {
 	if t.recs == nil {
 		t.recs = make(map[core.FileID]map[Rec]int)
 	}
@@ -262,7 +275,6 @@ func (t *Tracker) Register(rec Rec) {
 		t.recs[rec.File] = make(map[Rec]int)
 	}
 	t.recs[rec.File][rec]++
-	t.rm.Unlock()
 }
 
 // Unregister stops counting rec's record live in its segment — one
@@ -418,11 +430,12 @@ func (t *Tracker) entryIfLive(seg core.SegmentID) *segState {
 // forget's barrier has placed every record in flight — remains in the set.
 // A segment of the snapshot already retired before this call — between the
 // caller's snapshot and here — is pruned the same way a later retirement
-// prunes it, so the order closes the race without a second registry: the
-// snapshot enters the tracker's table first, then each of its segments is
-// re-checked against the member check, and one already gone leaves now;
-// a retirement that runs after the insert finds the snapshot there and
-// prunes it itself. An empty remaining snapshot names a barrier that
+// prunes it, so one hold of rm closes both races without a second registry:
+// the registration and the snapshot enter the tracker's tables under it, so
+// no re-test of the zero file can see the record without its snapshot and
+// drop it, then each segment is re-checked against the member check and one
+// already gone leaves now; a retirement that runs after the hold finds the
+// snapshot there and prunes it itself. An empty remaining snapshot names a barrier that
 // released everything below the forget: the record is droppable the moment
 // it is registered, and the registration itself carries the re-test that
 // drops it — the zero file a forget record registers under is one no later
@@ -443,12 +456,14 @@ func (t *Tracker) entryIfLive(seg core.SegmentID) *segState {
 // overturns it. The upgrade is a scan of the snapshot's segments for
 // records of the tag at each retirement.
 func (t *Tracker) RegisterForget(rec Rec, segs []core.SegmentID) {
-	t.Register(rec)
 	if len(segs) == 0 {
+		t.Register(rec)
 		t.retest(rec.File)
 		return
 	}
+	t.count(rec)
 	t.rm.Lock()
+	t.addLocked(rec)
 	if t.forgets == nil {
 		t.forgets = make(map[Rec]map[core.SegmentID]struct{})
 	}
