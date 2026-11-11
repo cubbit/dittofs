@@ -525,6 +525,167 @@ Each carries a `ponytail:` marker at the code site, beside RFC 18's own:
   - *Upgrade path:* the wait on node status, with the cluster rows; RFC 18 §12 item 2 measured then.
   - *Epic:* 7.
 
+### 4.4 Code sketch
+
+The sketch is illustrative: its signatures come from the cited RFC 18 sections or from `pkg/vfs` on
+`feat/storage-v2`, and the epic documents decide the final names.
+
+**Composition.** The node builds one server and hands each consumer its interface (RFC 18 §2.6);
+the adapters see none of them.
+
+```go
+// internal/node: RFC 23 §2.1 builds, §2.2 starts and stops.
+ids, err := identity.New(identity.Deps{Principals: st, Records: st, Mint: st, Secrets: secrets,
+	Logons: logLines, Clock: clk, Metrics: reg, Logger: log}) // Logons: §4.3's log-line sink
+fs := vfs.New(vfs.Deps{ /* existing fields */
+	Identity: ids, // Resolver, admission's step 4 (E3)
+	Auth:     ids, // Authenticator behind vfs.Service.SignIn (E4, E5)
+	Names:    ids, // Identities behind vfs.Service.Spell and Find (E6)
+})
+api := api.New(api.Deps{SignIn: ids /* APISignIn, §8.1 */})
+ids.Apply(stateFromRecords(ctx, st)) // first State before Start (§2.6)
+ids.Start(ctx)                       // dials no directory yet
+// reconcile, once a second: ids.Apply(State{Generation: pgen, ...}) (§7.2)
+// stop: fs and api first, then ids.Stop(ctx) (§2.6)
+smb := smbadapter.New(fs) // reaches identity only through vfs.Service (RFC 20 §4.4)
+```
+
+**`SignIn` dispatch** (RFC 18 §3.1). The throttle runs before any credential check, and binding to a
+principal before the result leaves.
+
+```go
+func (s *Server) SignIn(ctx context.Context, step SignInStep) (SignInResult, error) {
+	st := s.state.Load() // one State for the whole call (§2.6)
+	if s.throttle.Blocked(step.name(), step.Client) { // §3.1, before the credential (E4)
+		return s.logon(step, SignInResult{}, ErrLogonFailure)
+	}
+	var r SignInResult
+	var err error
+	switch {
+	case step.NTLM != nil && !st.ntlmOn():
+		err = ErrLogonFailure // §3.5
+	case step.NTLM != nil:
+		switch st.route(step.NTLM.Domain) { // §3.5's table, against identity.netbios_name (A2)
+		case local:
+			r, err = s.ntlmLocal(ctx, st, step) // NT hash Secret, MIC, constant time (E4)
+		case passThrough:
+			r, err = s.netlogon.SamLogonEx(ctx, step) // secure channel, maps by user SID (E7)
+		default:
+			err = ErrLogonFailure
+		}
+	case step.Kerberos != nil:
+		r, err = s.kerberos(ctx, st, step)
+	default:
+		err = ErrInvalid
+	}
+	// r.Identity.Evidence.Principal is bound here or err is set (§3.1); a
+	// re-authentication with step.Context set replaces the context's evidence (§3.8).
+	return s.logon(step, r, err) // one log line per attempt, no credential (§4.3)
+}
+
+func (s *Server) kerberos(ctx context.Context, st *State, step SignInStep) (SignInResult, error) {
+	// st.keys: imported keytab versions plus keys derived from the machine
+	// password for the computer account's names, by kvno (A3, E7); AES only (A4).
+	t, auth, err := s.krb.Verify(step.Kerberos, st.keys, step.Service) // gokrb5, PAC check off (D4)
+	if err != nil {
+		return SignInResult{}, err // skew, replay cache, DES or RC4: ErrLogonFailure
+	}
+	pac, err := pac.Verify(t, st.keys) // server checksum, PAC_CLIENT_INFO (D4, E5)
+	if err != nil {
+		return SignInResult{}, ErrLogonFailure
+	}
+	p, err := s.mapKrb(ctx, st, t.CName, pac) // §4.2 steps 1, 2, 4 (E5); step 3 the directory's (E6)
+	if err != nil {
+		return SignInResult{}, err
+	}
+	return SignInResult{
+		Identity: proved(ProofTicket, t.CName, p, pac.SIDs, pac.DenyOnly, t.EndTime),
+		// Session is the authenticator's subkey, kept whole: SMB takes 16 or 32
+		// bytes of it. The AP-REP carries no subkey (O3).
+		Keys: Keys{Session: auth.Subkey, APRep: s.krb.APRep(t, auth /* no subkey */)},
+	}, nil
+}
+```
+
+**Resolution per share** (RFC 18 §6.1, D2). Admission owns the one caller cache (§7.1); identity
+keeps none.
+
+```go
+// internal/vfs admission, step 4 (RFC 17 §4.9).
+key := callerKey{id.Key(), share, pol.Version, pol.GrantsVersion, s.identityGen(), clientIfRuled}
+c, err := s.callers.Do(key, func() (*Caller, error) { // single flight per key (§7.1)
+	return s.deps.Identity.Resolve(ctx, id, pol, readOnly)
+})
+
+func (s *Server) Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, ro bool) (*Caller, error) {
+	st := s.state.Load() // read before any store read; stamps Built (§7.2)
+	c := &Caller{Built: st.Generation}
+	m, err := s.mapProof(ctx, st, id) // 1. map: evidence's bound principal; Claimed is
+	if err != nil {                   //    ErrAccess (§4.3); Secret with NTLM off refused (§3.5)
+		return nil, err
+	}
+	c.Mapped, c.Principal = m, squash(p, m, id.Proof) // 2. squash (§6.2)
+	c.Groups, c.DenyOnly, c.Fresh, err = s.groups(ctx, st, c.Principal, id.Evidence) // 3. (§6.3)
+	if err != nil {
+		return nil, err // incomplete closure: ErrUnavailable
+	}
+	c.Access, c.ReadOnly = grant(p, c, ro) // 4. (§6.4)
+	c.Authenticated, c.Admin, c.Privileged = flags(id, c, p) // 5. (§6.5)
+	return c, nil
+}
+// A cached Caller whose Built is below the current Generation is neither stored
+// nor served, so a PGEN raise reaches every node within a second (§7.2).
+```
+
+**Directory and machine account** (RFC 18 §3.5, §5; A3, D8). `Find` reads the directory through its
+cache; join and rotation are steps of RFC 23's runner, whose routes A5 in #4050 adds (§6 O5).
+
+```go
+func (s *Server) Find(ctx context.Context, sp Spelling, o FindOpts) (metadata.Principal, error) {
+	if !s.directoryOwns(sp) { // a SID of the directory's domain asks the directory first (§4.4)
+		return s.principals.BySpelling(ctx, sp)
+	}
+	e, err := s.dircache.Get(ctx, sp) // TTL, single flight, stale grace; errors never "not found" (§5.2–§5.4)
+	if err != nil || !o.Mint {
+		return metadata.Principal{}, orUnknown(err)
+	}
+	return s.mint.Directory(ctx, e) // minted once, in its own transaction (§5.1, E6)
+}
+
+// Runner kinds (D8, E7). Each step is recorded; a resumed run starts at the first unrecorded one.
+var join = runner.Steps{ // online; the offline join verifies an existing account instead
+	createComputer,  // cifs/ and host/ names, msDS-SupportedEncryptionTypes 0x18 (A4)
+	sealPassword,    // a Secret version (RFC 13 §7)
+	writeNetBIOS,    // identity.netbios_name (A2)
+}
+var rotate = runner.Steps{
+	waitPreviousApplied, // every node reports the previous version (§4.3: this node)
+	sealPassword,        // seal first...
+	waitApplied,
+	setAtDC,             // ...then set, skipped if the DC already accepts the sealed version
+	recordKVNO,          // derived keys follow it, the previous kept for the retention (A3)
+}
+// Node status: machine_account_unhealthy while the channel fails to every DC
+// (cleared by a channel set up) or the last rotation failed (cleared only by a
+// rotation completed) (RFC 18 §9.2, A3).
+```
+
+**The API sign-in interface** (RFC 18 §8.1). The API calls identity directly; a password set
+writes both references in one record write (A5, D3).
+
+```go
+p, err := ids.VerifyPassword(ctx, name, password) // ErrLogonFailure alike for every refusal
+u, err := ids.Account(ctx, p)                     // per call, under the generation (§7.2)
+
+// A password set (RFC 23 §3.5).
+h, err := identity.NewHashes(u, password, st.NTLM) // pure: argon2id hash, NT hash only while NTLM is on
+u.Password, _ = secrets.Seal(ctx, storage, u.Password, h.Password) // SecretRef under storage (A5)
+if h.NTHash != nil {
+	u.NTHash, _ = secrets.Seal(ctx, protocol, u.NTHash, h.NTHash) // SecretRef under protocol (A5)
+}
+err = store.PutUserIf(ctx, u, st.NTLM) // conditional on the ntlm revision still current (§3.5)
+```
+
 ## 5. The epics in detail
 
 ### Epic 1 — The contract and the server's surface ⛔
