@@ -19,15 +19,28 @@ import (
 // names, the segment carrying it, the extent it covers, the (version,
 // sequence) pair the drop test compares records by, the record's own
 // sequence number, and — for a loss record — the sequence number of the
-// record it names, zero for every other kind.
+// record it names, zero for every other kind, whether the record the loss
+// dropped was synced when it was dropped, and whether it was dropped because
+// metadata holds newer content under it (superseded): the flags that decide
+// which rule the drop test applies to a loss — a synced loss leaves a
+// removal marker, a superseded one does not, and an unsynced loss reaches
+// only the record it names.
+//
+// A Rec names one record wherever its copies sit: the file, the extent and
+// the pair identify it, so two Rec values of one kind with the same three
+// are one record in two places. The pair alone would too — the journal
+// issues one pair once — but the file and the extent make the re-test
+// registries answer by key without reading the record back.
 type Rec struct {
-	Kind  format.Kind
-	File  core.FileID
-	Seg   core.SegmentID
-	Ext   core.Extent
-	Pair  index.Numbers
-	Seq   core.Seq
-	Named core.Seq
+	Kind       format.Kind
+	File       core.FileID
+	Seg        core.SegmentID
+	Ext        core.Extent
+	Pair       index.Numbers
+	Seq        core.Seq
+	Named      core.Seq
+	Synced     bool
+	Superseded bool
 }
 
 // Tracker is one journal's segment liveness: per segment, beside the bytes
@@ -38,6 +51,19 @@ type Rec struct {
 type Tracker struct {
 	ix        *index.Index
 	candidate func(core.SegmentID)
+
+	// rm guards the re-test registry below. It is taken by the events, by
+	// Droppable and by the registrations and releases that touch the
+	// registry, never by a Held.
+	rm sync.Mutex
+	// recs is one entry per file that holds registered records, every record
+	// registered live under the file, keyed by the whole Rec and counted: a
+	// record's entry leaves only when its last registration is released, so
+	// the re-test walks exactly the records of the file nothing has released
+	// yet. It is the registry the unsynced-loss rule reads too — a loss
+	// reaches only the record it names, whose registrations sit here under
+	// the sequence number the loss carries.
+	recs map[core.FileID]map[Rec]int
 
 	// mu serialises creating states: a leaf lock, held only while the state
 	// table is copied, never across the index or a candidate call.
@@ -82,19 +108,51 @@ func (t *Tracker) Held(seg core.SegmentID) bool {
 // file is kept under the segment whatever the record goes on to hold, so a
 // segment that leaves the set can still name the files its records touched.
 // Register never makes a segment less held, so it never fires the candidate.
+//
+// decision: the record is counted live unconditionally, even where the drop
+// test would already answer droppable. The drops belong to the re-test
+// events, the one place liveness changes: a record registered already
+// droppable — a marker settled before its registration reaches the tracker,
+// a caller registering straight from an index a settle already covered —
+// drops at the next event of its file or at its segment's retirement,
+// exactly like one that turned droppable later. Unregister stays paired
+// one-to-one with whatever registered, without asking the drop test, so a
+// release never races a re-test over one count.
+//
+// Every registration also enters the file's re-test registry, keyed by the
+// whole record with a count of its live registrations — the one table the
+// events and Droppable consult. The segment's count is raised before the
+// registry entry is inserted: a release or re-test racing the register in
+// that window takes only what the registry already holds, so it cannot
+// spend this registration's count, and a Held read in it errs on the held
+// side — the safe direction, a segment kept a moment past its last record.
 func (t *Tracker) Register(rec Rec) {
 	st := t.entry(rec.Seg)
 	st.mu.Lock()
 	st.files[rec.File] = struct{}{}
 	st.live.Add(1)
 	st.mu.Unlock()
+	t.rm.Lock()
+	if t.recs == nil {
+		t.recs = make(map[core.FileID]map[Rec]int)
+	}
+	if t.recs[rec.File] == nil {
+		t.recs[rec.File] = make(map[Rec]int)
+	}
+	t.recs[rec.File][rec]++
+	t.rm.Unlock()
 }
 
-// Unregister stops counting rec's record live in its segment — by count, so
-// each registered record must be released once; a release of what nothing
-// counted changes nothing. When the release leaves the segment holding
-// nothing, the candidate fires once with the segment's id, after every lock
-// of the tracker's is released.
+// Unregister stops counting rec's record live in its segment — one
+// registration taken from the file's registry, and the count lowered only
+// for one the registry held: a record already dropped by a re-test or by
+// its segment's retirement releases nothing a second time, so a caller
+// whose paired release arrives after a re-test cannot take another
+// record's count. A release of what nothing counted changes nothing, and
+// one of a record carried in two places releases that one registration
+// only. When the release leaves the segment holding nothing, the candidate
+// fires once with the segment's id, after every lock of the tracker's is
+// released.
 //
 // The tracker's own releases are the only thing that fires the candidate;
 // nothing here watches the index. A segment that goes not held by its bytes
@@ -105,6 +163,47 @@ func (t *Tracker) Register(rec Rec) {
 // a fact: it claims the segment and re-checks Held under the claim before
 // retiring anything.
 func (t *Tracker) Unregister(rec Rec) {
+	t.rm.Lock()
+	held := t.take(rec)
+	t.rm.Unlock()
+	if !held {
+		return
+	}
+	t.releaseCount(rec)
+}
+
+// take removes one registration of rec from its file's registry, reporting
+// whether one was there: the registry is the authority a release answers
+// by, so only a record the registry holds may lower a segment's count. The
+// caller holds rm.
+func (t *Tracker) take(rec Rec) bool {
+	rs, ok := t.recs[rec.File]
+	if !ok {
+		return false
+	}
+	n, ok := rs[rec]
+	if !ok || n <= 0 {
+		return false
+	}
+	if n > 1 {
+		rs[rec] = n - 1
+		return true
+	}
+	delete(rs, rec)
+	if len(rs) == 0 {
+		delete(t.recs, rec.File)
+	}
+	return true
+}
+
+// releaseCount lowers the segment's live count for one registration the
+// registry has given up — the caller has taken it — with the transition
+// logic every release shares: the candidate fires exactly once for the
+// held-to-not-held crossing, whichever concurrent release is the one that
+// crosses it. The count never goes below zero: a release with no count left
+// is a pairing the registries did not make, and changing nothing is safer
+// than taking a count that is not this record's.
+func (t *Tracker) releaseCount(rec Rec) {
 	st := t.stateOf(rec.Seg)
 	if st == nil {
 		return
@@ -199,7 +298,8 @@ type segState struct {
 	// are.
 	ended atomic.Bool
 	// files are the files the segment's registered records named. Entries
-	// are never removed: a record going not live leaves the file's records
-	// of this segment nameable, which a later re-test asks for.
+	// are never removed until the segment's retirement empties the table:
+	// a retired segment's file names answer from them, which a
+	// SegmentRetired whose caller carried no list asks for.
 	files map[core.FileID]struct{}
 }

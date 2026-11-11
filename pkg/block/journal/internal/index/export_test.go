@@ -6,6 +6,7 @@ import (
 	"iter"
 	"maps"
 	"slices"
+	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
@@ -464,4 +465,24 @@ func checkDeltaSums(fs *files, last core.SegmentID, sum heldTotals, byTag map[co
 		return fmt.Errorf("index: the deltas' dirty-file list is %v, the read-out's is %v", dirtyFiles, onList)
 	}
 	return nil
+}
+
+// TestSettleExport: the exported Settle drives the marker drop, so a
+// settled marker is a state a caller outside this package can build. One
+// loss builds a marker; the export drops it; the settled query answers
+// true at the loss's own version, where before the settle it answered
+// false.
+func TestSettleExport(t *testing.T) {
+	ix := New(1 << 20)
+	id := fid(5)
+	if _, err := ix.Lose(id, core.Extent{Off: 0, Len: 4096}, core.Version{Counter: 4}); err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+	if got := ix.MarkerSettled(id, core.Version{Counter: 4}); got {
+		t.Fatalf("MarkerSettled before the settle = %v, want false: the marker the loss left waits", got)
+	}
+	ix.Settle(id, core.Version{Counter: 4})
+	if got := ix.MarkerSettled(id, core.Version{Counter: 4}); !got {
+		t.Fatalf("MarkerSettled after the settle = %v, want true: the export dropped the marker", got)
+	}
 }

@@ -148,6 +148,30 @@ func newRebuilder(fs *files, ctr *Counters) *rebuilder {
 	return b
 }
 
+// Rebuilder is the exported handle over the recovery rebuild: the records
+// recovery finds on disk, fed in any order and applied to the index at
+// Finish with their marker and drop-range state built whole, which is how
+// the journal's open will plant the state a reclamation tracker answers
+// over. Index.Rebuilder makes one.
+type Rebuilder struct{ b *rebuilder }
+
+// Rebuilder returns a builder that rebuilds into ix, observing its records'
+// numbers in ctr — the counters the journal owns beside its index.
+func (ix *Index) Rebuilder(ctr *Counters) *Rebuilder {
+	return &Rebuilder{b: newRebuilder(&ix.fs, ctr)}
+}
+
+// Feed buffers one record found on disk, as the unexported builder does.
+func (r *Rebuilder) Feed(rec Record) error { return r.b.Feed(rec) }
+
+// Retain buffers one retained piece the caller computed, as the unexported
+// builder does.
+func (r *Rebuilder) Retain(id core.FileID, p Retained) error { return r.b.Retain(id, p) }
+
+// Finish applies everything fed, in the precedence of the records, and ends
+// the builder, as the unexported builder does.
+func (r *Rebuilder) Finish(floor core.Version) error { return r.b.Finish(floor) }
+
 // Feed buffers one record found on disk. A header that verified but names
 // an impossible shape — an extent its kind cannot carry, an unknown kind, a
 // spec that disagrees with its extent — is damage or another writer, so it

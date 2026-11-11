@@ -246,3 +246,40 @@ func (ix *Index) MarkerSettled(id core.FileID, v core.Version) bool {
 	})
 	return settled
 }
+
+// Settle settles id's removal markers at or below v: the caller's statement
+// that metadata has recorded every removal of the file up to v, which drops
+// those markers. It is the step the journal's own Settle call carries, and
+// the tracker's MarkerSettled event relays; it appends nothing and is not
+// persisted — recovery rebuilds every marker and the caller settles again.
+func (ix *Index) Settle(id core.FileID, v core.Version) {
+	ix.fs.settleRemovals(id, v)
+}
+
+// SegmentGone notes that seg — unlinked or recycled — no longer holds a
+// record of id, dropping the file's drop ranges naming it, so no drop query
+// is answered against the retired segment's records again. It claims
+// nothing: a file the index has no entry for is left alone rather than
+// given one to drop nothing from. Call it only once the unlink or recycle
+// is durable, once per file its records named: the tracker's SegmentRetired
+// relays it for each file its own registry knows the segment named, the
+// journal's own retirement carrying it where it knows the segment's bytes
+// through RetiredBytes instead.
+func (ix *Index) SegmentGone(id core.FileID, seg core.SegmentID) {
+	if !ix.fs.view(id, func(*file) {}) {
+		return
+	}
+	_, _ = ix.fs.update(id, func(f *file) error {
+		f.segmentGone(seg)
+		return nil
+	})
+}
+
+// RetireSegment withdraws seg's per-segment byte counters, so a segment
+// gone from the journal answers SegmentBytes zero however its last content
+// left. Retirement is idempotent, so the journal's own retirement — which
+// walks the files through SegmentGone itself — relays into the same call
+// the tracker's SegmentRetired makes, and whichever lands first wins.
+func (ix *Index) RetireSegment(seg core.SegmentID) {
+	_, _ = ix.fs.retireSegment(seg)
+}
