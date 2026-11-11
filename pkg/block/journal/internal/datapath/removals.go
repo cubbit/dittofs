@@ -241,7 +241,9 @@ func (c *Core) appendRemoval(s *Share, id core.FileID, spec removal) (core.Versi
 		c.headroom.Refund(draw)
 		return core.Version{}, segment.Location{}, err
 	}
-	v, err := c.counters.Draw()
+	// Drawn through the capacity so a version a reservation holds is not
+	// spent here; the file's append domain is already held.
+	v, err := c.cap.DrawVersion(context.Background())
 	if err != nil {
 		c.headroom.Refund(draw)
 		return core.Version{}, segment.Location{}, err

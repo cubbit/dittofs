@@ -795,3 +795,35 @@ func sameStreamAs(t *testing.T, c *Core, anchor, avoid core.FileID) core.FileID 
 	t.Fatalf("no file id on stream %d of anchor %v", want, anchor)
 	return core.FileID{}
 }
+
+// TestReserveAhead_RemovalCannotSpendAHeldVersion checks a truncate at the
+// version counter's last free version, beside a reservation holding it, is
+// refused naming the version limit like a plain write, and that the held
+// version is still the reservation's own to draw.
+func TestReserveAhead_RemovalCannotSpendAHeldVersion(t *testing.T) {
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	if _, err := c.WriteAt(context.Background(), s, f, 0, make([]byte, 4096), 1); err != nil {
+		t.Fatalf("the file's write: %v", err)
+	}
+	r := reserve(t, c, s, capacity.WriteCharge(1, testSegmentCap), 1)
+	defer r.Release()
+
+	// One version left, and the reservation holds it.
+	if err := c.SetVersionLimit(core.Version{Counter: c.counters.NextVersion().Counter + 1}); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+	if left := c.counters.VersionsLeft(); left != 1 {
+		t.Fatalf("VersionsLeft = %d, want the one the reservation holds", left)
+	}
+
+	_, err := c.Truncate(context.Background(), s, f, 0)
+	ns := refused(t, err, core.LimitVersion)
+	if ns.Unit != core.UnitVersions {
+		t.Fatalf("the removal's refusal is in %s, want versions", ns.Unit)
+	}
+	if _, err := c.WriteReserved(context.Background(), s, r, testFile(3), 0, []byte("r"), 1); err != nil {
+		t.Fatalf("the reserved write after the refused removal: %v", err)
+	}
+}
