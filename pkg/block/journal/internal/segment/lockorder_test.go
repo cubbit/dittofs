@@ -15,7 +15,11 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
-// watchdog fails the test with every goroutine's stack when the run does not
+// watchdog reports every goroutine's stack from another goroutine, so it can
+// only fail the test, not stop it: it covers the calls a test makes without a
+// bounded wait of its own — a close, a cleanup — while every wait the test
+// makes itself goes through awaitRecorded, which stops the test where it
+// stands. It fails the test with every goroutine's stack when the run does not
 // return within one generous bound, so a deadlock in the recorded run is
 // diagnosed from the dump rather than from the binary's own timeout: the bound
 // is the backstop, never the synchronisation.
@@ -33,6 +37,57 @@ func watchdog(t *testing.T, bound time.Duration) {
 			t.Errorf("the recorded run did not return within %v; the goroutine stacks follow:\n%s", bound, buf[:n])
 		}
 	}()
+}
+
+// awaitRecorded waits for one value on ch, failing the test with every
+// goroutine's stack when nothing arrives within the one generous bound that
+// watchdog shares: the failure comes from the test's own goroutine, so a hang
+// stops the test where it is instead of waiting on for the binary's timeout.
+func awaitRecorded[T any](t *testing.T, what string, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(recordedBound):
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		t.Fatalf("%s did not finish within %v; the goroutine stacks follow:\n%s", what, recordedBound, buf[:n])
+		var zero T
+		return zero
+	}
+}
+
+// recordedBound is the one backstop every recorded wait shares.
+const recordedBound = 60 * time.Second
+
+// awaitGone polls the real condition, Close(id) having started on the
+// segment, with a short pause between polls and the one backstop.
+func awaitGone(t *testing.T, c *segment.Descriptors, id core.SegmentID) {
+	t.Helper()
+	deadline := time.Now().Add(recordedBound)
+	for !segment.EntryGone(c, id) {
+		if time.Now().After(deadline) {
+			t.Errorf("Close of segment %d never started within %v", id, recordedBound)
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// awaitReadyContent polls the pool's ready content spares, the real condition
+// a roll needs, until n are ready, with a short pause between polls and the
+// one backstop. A roll finds a spare only if the background refill has made
+// one, and no reservation holds one for these appends, so each append waits
+// for the spares its rolls can take. It reports whether they were ready.
+func awaitReadyContent(p *segment.Pool, n int) bool {
+	deadline := time.Now().Add(recordedBound)
+	for p.ReadyContent() < n {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return true
 }
 
 // recordedRounds is the record count each stream of the recorded run appends:
@@ -107,6 +162,11 @@ func assertNoViolations(t *testing.T, rec *lockorder.Recorder, where string) {
 		reportedViolations.Lock()
 		if reportedViolations.seen[rec] == nil {
 			reportedViolations.seen[rec] = make(map[string]struct{})
+			t.Cleanup(func() {
+				reportedViolations.Lock()
+				delete(reportedViolations.seen, rec)
+				reportedViolations.Unlock()
+			})
 		}
 		reported := reportedViolations.seen[rec]
 		reportedViolations.Unlock()
@@ -134,7 +194,7 @@ func assertNoViolations(t *testing.T, rec *lockorder.Recorder, where string) {
 
 // recordedLaunch runs fn on n goroutines and joins them, on the WaitGroup and
 // not on a clock.
-func recordedLaunch(n int, fn func(i int)) {
+func recordedLaunch(t *testing.T, n int, fn func(i int)) {
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := range n {
@@ -143,7 +203,12 @@ func recordedLaunch(n int, fn func(i int)) {
 			fn(i)
 		}()
 	}
-	wg.Wait()
+	joined := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(joined)
+	}()
+	awaitRecorded(t, "the launched goroutines", joined)
 }
 
 // TestStreamsUnderRecorder runs the layer's whole concurrent fan under the
@@ -216,10 +281,17 @@ func TestStreamsUnderRecorder(t *testing.T) {
 	// map is mutex-guarded, for the two appenders fill it together.
 	var distMu sync.Mutex
 	distinct := make(map[core.SegmentID]struct{})
-	recordedLaunch(2, func(i int) {
+	recordedLaunch(t, 2, func(i int) {
 		s := e.ss.Stream(i)
 		fid := streamFileID(i)
 		for v := range recordedRounds {
+			// Both appenders may roll on one pass, so two spares are
+			// ready before the append; the pool's refill is what makes
+			// them.
+			if !awaitReadyContent(e.pool, 2) {
+				t.Errorf("stream %d's append %d: the pool never readied two content spares", i, v)
+				return
+			}
 			h, body := streamWriteHeader(fid, int64(v)*int64(len(recordedPayload)), recordedPayload, core.ShareTag(i+1), core.Version{Counter: uint64(v + 1)})
 			p, err := s.Append(h, body)
 			if err != nil {
@@ -237,7 +309,12 @@ func TestStreamsUnderRecorder(t *testing.T) {
 		assertNoViolations(t, e.rec, "the appender")
 	})
 	close(stop)
-	readers.Wait()
+	readersDone := make(chan struct{})
+	go func() {
+		readers.Wait()
+		close(readersDone)
+	}()
+	awaitRecorded(t, "the readers", readersDone)
 	close(locs)
 	if len(distinct) < 4 {
 		t.Fatalf("the run's appends landed in %d distinct segments, want at least 4 (two rolls per stream at least)", len(distinct))
@@ -284,11 +361,9 @@ func TestStreamsUnderRecorder(t *testing.T) {
 		ref.Release()
 		assertNoViolations(t, e.rec, "the retirer's reader")
 	}()
-	<-armed
+	awaitRecorded(t, "the reader's hold", armed)
 	go func() {
-		for !segment.EntryGone(e.cache, active) {
-			runtime.Gosched()
-		}
+		awaitGone(t, e.cache, active)
 		close(release)
 	}()
 	// The retirement runs on a goroutine that holds no pin: the test
@@ -301,7 +376,7 @@ func TestStreamsUnderRecorder(t *testing.T) {
 		retired <- err
 		assertNoViolations(t, e.rec, "the retirer")
 	}()
-	if err := <-retired; err != nil {
+	if err := awaitRecorded(t, "the retirement", retired); err != nil {
 		t.Fatalf("Retire of the sealed segment %d: %v", active, err)
 	}
 
@@ -437,11 +512,9 @@ func TestGuardRecorded(t *testing.T) {
 			t.Errorf("the holding reader's goroutine holds ranks %v after its release, want none", held)
 		}
 	}()
-	<-armed
+	awaitRecorded(t, "the holding reader", armed)
 	go func() {
-		for !segment.EntryGone(c2, id2) {
-			runtime.Gosched()
-		}
+		awaitGone(t, c2, id2)
 		close(release)
 	}()
 	probe.Acquire(lockorder.FileIndex, "probe")
@@ -646,6 +719,11 @@ func TestStreamRollsTwiceUnderRecorder(t *testing.T) {
 	distinct := make(map[core.SegmentID]struct{})
 	reported := 0
 	for v := range 32 {
+		// No reservation holds a spare for these appends: each waits for
+		// the one its roll can take.
+		if !awaitReadyContent(e.pool, 1) {
+			t.Fatalf("append %d: the pool never readied a content spare", v)
+		}
 		h, body := streamWriteHeader(streamFileID(0), int64(v)*int64(segCap), payload, core.ShareTag(1), core.Version{Counter: uint64(v + 1)})
 		p, err := s.Append(h, body)
 		if err != nil {

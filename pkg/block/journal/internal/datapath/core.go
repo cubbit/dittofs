@@ -110,6 +110,9 @@ type coreOptions struct {
 	// afterRetarget runs in Since after a record whose segment was retired was
 	// sent to the record the index now names, before that record is read.
 	afterRetarget func()
+	// takeHook is installed on the admission's decision section before any
+	// goroutine of the core starts; nil in production.
+	takeHook func()
 	// extentLimit overrides the index's entry bound a test core builds with,
 	// keeping Deps at the figure the production wiring passes.
 	extentLimit int64
@@ -511,6 +514,9 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		c.streams.SetRecorder(c.rec)
 		c.headroom.SetRecorder(c.rec)
 		c.cap.SetRecorder(c.rec)
+	}
+	if o.takeHook != nil {
+		c.cap.SetTakeHook(o.takeHook)
 	}
 
 	// The retirement executor over the pieces the core owns, gated on Admit

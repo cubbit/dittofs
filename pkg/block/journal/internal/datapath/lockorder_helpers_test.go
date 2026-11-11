@@ -224,22 +224,22 @@ func TestRecordedCoreFixture(t *testing.T) {
 	// point, then drive one real entry point of each component; each must
 	// report exactly the out-of-order acquisitions the wired lock makes,
 	// so a dropped SetRecorder on any of them fails here.
-	expectOutOfOrder(t, rec, lockorder.SegmentAppend, "pool",
+	expectOutOfOrder(t, c, rec, lockorder.SegmentAppend, "pool",
 		[]lockorder.Rank{lockorder.Capacity}, func() { c.pool.ReadyContent() })
-	expectOutOfOrder(t, rec, lockorder.SegmentAppend, "set",
+	expectOutOfOrder(t, c, rec, lockorder.SegmentAppend, "set",
 		[]lockorder.Rank{lockorder.Capacity}, func() { c.set.Counters() })
 	// A view of a written file takes the shard's file map lock, releases
 	// it, then the file's index lock: two acquisitions out of order, the
 	// map's first.
-	expectOutOfOrder(t, rec, lockorder.SegmentAppend, "index",
+	expectOutOfOrder(t, c, rec, lockorder.SegmentAppend, "index",
 		[]lockorder.Rank{lockorder.FileMap, lockorder.FileIndex}, func() {
 			c.index.Span(fid(40), core.Extent{Off: 0, Len: 1024})
 		})
-	expectOutOfOrder(t, rec, lockorder.SegmentAppend, "capacity admission",
+	expectOutOfOrder(t, c, rec, lockorder.SegmentAppend, "capacity admission",
 		[]lockorder.Rank{lockorder.Capacity}, func() { c.cap.ReservedBytes() })
-	expectOutOfOrder(t, rec, lockorder.SegmentAppend, "headroom",
+	expectOutOfOrder(t, c, rec, lockorder.SegmentAppend, "headroom",
 		[]lockorder.Rank{lockorder.Capacity}, func() { c.headroom.Draws() })
-	expectOutOfOrder(t, rec, lockorder.Capacity, "file append table",
+	expectOutOfOrder(t, c, rec, lockorder.Capacity, "file append table",
 		[]lockorder.Rank{lockorder.FileAppend}, func() {
 			unlock := c.domains.Lock(fid(99))
 			unlock()
@@ -250,7 +250,7 @@ func TestRecordedCoreFixture(t *testing.T) {
 	// room, which takes that stream's append lock alone. One probe per
 	// stream, so a stream whose lock was left unranked fails its own.
 	for i := 0; i < c.streams.Len(); i++ {
-		expectOutOfOrder(t, rec, lockorder.StorageGuard, fmt.Sprintf("stream %d", i),
+		expectOutOfOrder(t, c, rec, lockorder.StorageGuard, fmt.Sprintf("stream %d", i),
 			[]lockorder.Rank{lockorder.SegmentAppend}, func() { c.streams.Stream(i).Room() })
 	}
 
@@ -296,7 +296,7 @@ func TestRecordedCoreFixture(t *testing.T) {
 // acquisition for each rank in want, in order, each against the probe's own
 // hold. A component whose SetRecorder wiring was dropped keeps its locks
 // unranked, records nothing, and fails the count.
-func expectOutOfOrder(t *testing.T, rec *lockorder.Recorder, held lockorder.Rank, component string, want []lockorder.Rank, drive func()) {
+func expectOutOfOrder(t *testing.T, c *Core, rec *lockorder.Recorder, held lockorder.Rank, component string, want []lockorder.Rank, drive func()) {
 	t.Helper()
 	before := len(rec.Violations())
 	done := make(chan struct{})
@@ -306,7 +306,7 @@ func expectOutOfOrder(t *testing.T, rec *lockorder.Recorder, held lockorder.Rank
 		drive()
 		rec.Release(held, probeLock{component: component})
 	}()
-	<-done
+	recordedAwait(t, c, component+" probe", done)
 	vs := rec.Violations()
 	if len(vs) != before+len(want) {
 		t.Fatalf("%s probe: violations = %d, want %d: %+v", component, len(vs), before+len(want), vs[before:])
