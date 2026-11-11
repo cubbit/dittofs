@@ -1385,7 +1385,12 @@ type Handler[Req, Rep any] func(ctx context.Context, r *core.Request, req *Req) 
   ([RFC 22 §7](rfc-22-smb.md#7.%20Byte-range%20locks)). A handler whose
   `Park` is refused withdraws the waiter its call registered (`CancelLock`,
   `Unwatch`, §4.7): that undoes its own call and changes no file, so it is not
-  a second call.
+  a second call. In a protocol with no operation that frees a reference
+  (NFSv4.0, SMB), a handler whose call returns `ErrState` (`Revoked`) then
+  calls `FreeState` once for that reference
+  ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)):
+  that frees state the service already ended and changes no file, so it is not
+  a second call either, and §7.2's record leaves it out.
 - It **MAY** make further read-only calls only to fill fields the reply
   carries, and only where the service's mutating call does not already return
   them. Every mutating call returns the `WCC` of each object it changed —
