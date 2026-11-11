@@ -76,6 +76,9 @@ type coreOptions struct {
 	wrapDomains func(durability.Domains) durability.Domains
 	// accountSpy is told every non-zero delta Account applied.
 	accountSpy func(index.HeldDelta)
+	// stepSpy runs in Account between its three counter updates, told how many
+	// have been applied.
+	stepSpy func(step int)
 	// tracer is the Tracer the core's Deps carry; nil means no tracing.
 	tracer core.Tracer
 	// state is the State newCore continues from; the zero State builds fresh.
@@ -164,6 +167,12 @@ type Core struct {
 	fillRefused           atomic.Uint64
 	tracer                core.Tracer
 	accountSpy            func(index.HeldDelta)
+
+	// stepSpy is a test seam that stands between Account's counter updates, so
+	// a test can read the counters with one applied and the next not.
+	//
+	// decision: it is nil outside tests, for the same reason afterAppend is.
+	stepSpy func(step int)
 
 	// afterAppend is a test seam that holds a write in the gap between its
 	// append and its publish.
@@ -260,7 +269,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)
