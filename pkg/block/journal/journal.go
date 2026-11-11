@@ -77,12 +77,22 @@ func (j *Journal) Close() error {
 		// closes, owns nothing to shut down.
 		return ErrClosed
 	}
-	// Every handle's open reservations are released before the core goes: a
-	// reservation is in memory and named by no record, so nothing of it can be
-	// recovered, and its bytes, entries, versions and spares would otherwise
-	// stay held by a journal that is closing. Each handle's closing flag is set
-	// first, so a Reserve racing this close cannot register a reservation
+	// Every handle's share is drained, then its open reservations are
+	// released, before the core goes: a reservation is in memory and named by
+	// no record, so nothing of it can be recovered, and its bytes, entries,
+	// versions and spares would otherwise stay held by a journal that is
+	// closing. The drain comes first, so a reserved write in flight lands whole
+	// against a hold still open and Release never runs beside the goroutine
+	// that owns the reservation. Each handle's closing flag is set before its
+	// drain, so a Reserve racing this close cannot register a reservation
 	// nothing releases.
+	//
+	// decision: a share this drained is closed, and the handle's own Close
+	// afterwards answers nil once, as it did when the journal's Close left the
+	// share open, and ErrClosed after that: drained marks the handle for it. A
+	// share whose Close was already running when this one drained it answers
+	// ErrClosed from its own, as a second Close does. Overturned by a contract
+	// that has Handle.Close answer ErrClosed once its journal has closed.
 	j.handlesMu.Lock()
 	open := make([]*Handle, 0, len(j.handles))
 	for _, h := range j.handles {
@@ -91,6 +101,9 @@ func (j *Journal) Close() error {
 	j.handlesMu.Unlock()
 	for _, h := range open {
 		h.closing.Store(true)
+		if h.s.Close() == nil {
+			h.drained.Store(true)
+		}
 	}
 	for _, h := range open {
 		h.releaseAll()

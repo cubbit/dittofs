@@ -5,6 +5,9 @@ import (
 	"errors"
 	"runtime"
 	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // reserveAhead calls Reserve until a spare the pool makes off the write path
@@ -202,5 +205,67 @@ func TestReservation_WriteBeyondTheAskIsExhausted(t *testing.T) {
 	var ns *NoSpaceError
 	if errors.As(err, &ns) {
 		t.Fatalf("the refusal is a NoSpaceError (%v), want none: no limit was met", ns)
+	}
+}
+
+// TestJournalClose_DrainsAReservedWriteBeforeReleasing checks that closing the
+// journal waits for a reserved write in flight before it releases the
+// reservation: the write, held at storage across a roll, lands whole, and only
+// then are its bytes returned. A later Close of the handle answers as it does
+// when the journal's Close did not drain it: nil once, then ErrClosed.
+func TestJournalClose_DrainsAReservedWriteBeforeReleasing(t *testing.T) {
+	j, seam := newSeamedJournal(t)
+	withLimit(t, j)
+	h, err := j.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+	const payload = 96 << 10 // past one 64 KiB segment, so the write rolls
+	r := reserveAhead(t, h, 2*payload, 1)
+	// The pool makes spares beside the hold off the write path; the hold below
+	// waits until it has, so the first write it stops is the reserved one's.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if c := j.core.PoolCounters(); c.Spares >= 4+c.Held {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the pool never made up its target beside the hold: %+v", j.core.PoolCounters())
+		}
+	}
+
+	hold := seam.HoldFirst(t, kit.OpWrite, "*")
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := r.WriteAt(context.Background(), fileOf(1), 0, make([]byte, payload), 1)
+		wrote <- err
+	}()
+	<-hold.Reached()
+
+	closed := make(chan error, 1)
+	go func() { closed <- j.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Journal.Close returned %v while a reserved write was in flight", err)
+	case <-time.After(50 * time.Millisecond): // a bounded wait is the assertion: nothing to signal that a Close stays blocked
+	}
+	if got := j.core.ReservedBytes(); got == 0 {
+		t.Fatal("the reservation was released while its write was in flight, want it held until the write returned")
+	}
+
+	hold.Release()
+	if err := <-wrote; err != nil {
+		t.Fatalf("the reserved write across the journal's Close = %v, want it to land whole", err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatalf("Journal.Close = %v", err)
+	}
+	if got := j.core.ReservedBytes(); got != 0 {
+		t.Fatalf("after Close, ReservedBytes = %d, want the reservation released", got)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("the handle's Close after the journal's = %v, want nil as before", err)
+	}
+	if err := h.Close(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("the handle's second Close = %v, want ErrClosed", err)
 	}
 }
