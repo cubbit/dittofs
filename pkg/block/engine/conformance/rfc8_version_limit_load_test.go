@@ -111,13 +111,21 @@ func (r *loadRun) stallAtTheRaise(t *testing.T, rate, trigger uint64, d time.Dur
 		t.Fatalf("the first version: %v", err)
 	}
 
-	for n := uint64(1); r.headroom(t) > trigger; n++ {
+	// The store is read once a clock second: between two reads every draw
+	// takes exactly one version off what is left.
+	left := r.headroom(t)
+
+	for n := uint64(1); left > trigger; n++ {
 		if err := r.draw(); err != nil {
-			t.Fatalf("draw with %d versions left: %v", r.headroom(t), err)
+			t.Fatalf("draw with %d versions left: %v", left, err)
 		}
+
+		left--
 
 		if n%rate == 0 {
 			r.f.Clock.Advance(time.Second)
+
+			left = r.headroom(t)
 		}
 	}
 

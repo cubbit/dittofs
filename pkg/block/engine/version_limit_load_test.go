@@ -27,8 +27,8 @@ const (
 	// fenceSeconds is the self-fence's bound, in the clock's seconds.
 	fenceSeconds = 30
 
-	// loadCallBound is the real-time backstop of a call: a call that a refusal
-	// does not cancel fails the test instead of hanging it.
+	// loadCallBound is the real-time backstop of a clock second's calls: a call
+	// that a refusal does not cancel fails the test instead of hanging it.
 	loadCallBound = 30 * time.Second
 )
 
@@ -88,7 +88,10 @@ func newLoadUnit(t *testing.T, block uint64) *loadUnit {
 	})
 	lu.file = lu.create(t, "a")
 
-	lu.e.SetBlockForTest(block)
+	// The shipped block is loadBlock's: only a row of another block sets one.
+	if block != loadBlock {
+		lu.e.SetBlockForTest(block)
+	}
 	lu.e.TrackRaisesForTest()
 	lu.e.SetConflictBound(time.Hour)
 
@@ -135,7 +138,9 @@ func newLoadUnit(t *testing.T, block uint64) *loadUnit {
 	return lu
 }
 
-// renew gives the next call a fresh context.
+// renew gives the next calls a fresh context: one after each failed call and
+// one after each clock second, so a slow run (-race) never spends the bound of
+// a second on the seconds before it.
 func (lu *loadUnit) renew() {
 	ctx, cancel := context.WithTimeout(context.Background(), loadCallBound)
 
@@ -235,6 +240,7 @@ func (lu *loadUnit) draws(t *testing.T, rate, n, ceiling uint64) {
 
 		if i%rate == 0 {
 			lu.clock.Advance(time.Second)
+			lu.renew() // each clock second gets a fresh wall bound
 		}
 
 		if s := lu.e.RaisesStarted(); s != started {
@@ -298,6 +304,7 @@ func (lu *loadUnit) align(
 			inSecond = 0
 
 			lu.clock.Advance(time.Second)
+			lu.renew() // each clock second gets a fresh wall bound
 		}
 
 		if s := lu.e.RaisesStarted(); s != started {
@@ -391,6 +398,7 @@ func (lu *loadUnit) run(t *testing.T, v0, rate, last uint64) loadEvent {
 		}
 
 		lu.clock.Advance(time.Second)
+		lu.renew() // each clock second gets a fresh wall bound
 	}
 }
 
@@ -436,11 +444,11 @@ func TestSustainedLoadIsNotRefusedBeforeTheFence(t *testing.T) {
 	sustained(t, loadBlock, 300_000)
 }
 
-// A design that raises only below half a block, with no rate term, and a block
-// of 2^20 would refuse the writes of 280 000 versions a second about 2 s after
-// the stall: the real trigger holds 8 960 000 versions, which the fence's 30 s
-// do not spend.
-func TestHalfBlockOnlyDesignFailsSustainedLoad(t *testing.T) {
+// At a block of 2^20 the rate term alone keeps 280 000 versions a second
+// acknowledged until the fence. A design that raises only below half a block,
+// with no rate term, refuses them about 2 s after the stall and fails here
+// (RFC 8 §15.2's negative case).
+func TestSustainedLoadAtABlockOf2To20(t *testing.T) {
 	sustained(t, 1<<20, 280_000)
 }
 
@@ -478,6 +486,7 @@ func TestARateStepIsDueOnTheNextDraw(t *testing.T) {
 			inSecond = 0
 
 			lu.clock.Advance(time.Second)
+			lu.renew() // each clock second gets a fresh wall bound
 		}
 	}
 
