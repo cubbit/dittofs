@@ -249,27 +249,25 @@ func (e *Engine) attachLate(ctx context.Context, shares []Share) bool {
 // raises nothing, as its content is intact (RFC 8 §2.5). It reports whether
 // the retry is over.
 func (e *Engine) retryRefused(o *opened) bool {
+	// The retry ends here, as a refused Start leaves its shares: each share
+	// is logged at Warn, so an operator sees why the timer stopped. The lines
+	// come before the publish below, which is the event a caller waits on.
+	if !o.unsuitable {
+		for id, sh := range o.stats.Shares {
+			e.d.Logger.Warn(
+				"share refused by the retried open, which is not retried again",
+				"share", id, "device", sh.Device, "err", sh.Refused,
+			)
+		}
+	}
+
 	e.mu.Lock()
+	defer e.mu.Unlock()
 
 	e.health = o.stats
 	e.unsuitable = o.unsuitable
 
-	e.mu.Unlock()
-
-	if o.unsuitable {
-		return false
-	}
-
-	// The retry ends here, as a refused Start leaves its shares: each share
-	// is logged at Warn, so an operator sees why the timer stopped.
-	for id, sh := range o.stats.Shares {
-		e.d.Logger.Warn(
-			"share refused by the retried open, which is not retried again",
-			"share", id, "device", sh.Device, "err", sh.Refused,
-		)
-	}
-
-	return true
+	return !o.unsuitable
 }
 
 // retryFailed records err, which stopped a retried open or its late attach,

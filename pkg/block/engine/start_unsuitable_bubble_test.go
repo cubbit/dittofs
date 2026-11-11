@@ -96,7 +96,11 @@ func TestCloseStopsTheRetryOfAnUnsuitableJournal(t *testing.T) {
 		default:
 			// A retry left waiting for its timer would hold Close: let it go.
 			b.clock.Advance(retryEvery)
-			<-closed
+
+			if err := <-closed; err != nil {
+				t.Errorf("Close = %v after the timer, want nil", err)
+			}
+
 			t.Fatal("Close waits for the retry's timer: it did not cancel the retry")
 		}
 
@@ -245,7 +249,11 @@ func TestCloseGivesUpOnARetriedOpenThatNeverReturns(t *testing.T) {
 			}
 		default:
 			close(release)
-			<-closed
+
+			if err := <-closed; err != nil {
+				t.Errorf("Close = %v after the release, want nil", err)
+			}
+
 			t.Fatal("Close did not give up on the retried open at the stop bound")
 		}
 
