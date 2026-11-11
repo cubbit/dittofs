@@ -689,8 +689,8 @@ generation by `Reconfigure` or by stop, `New` and start, drives the sidecar runn
 after the adapters stop. It also takes the ledger rows that need a node: the config loader for
 `pkg/adapter/config`, `core`'s conditions in RFC 25 §3.9's registry and the alert rules for
 `adapter_unmapped_errors_total` and `adapter_handler_panics_total` (RFC 25 §7). RFC 23's plan
-(#4050) leaves these rows to this epic (its D12), and adds one: the adapter's `port` setting, with
-`config.Adapter.Port`, `New` binding on it and `Reconfigure` refusing a changed port (its O7).
+(#4050) leaves these rows to this epic (its D12), and adds one: the node rebuilds an adapter when
+its `port` setting changes (its O7). The field itself is epic 2's (#4000, D20).
 
 RFC sections: §3.4's "built by `node.New`", §3.6's sequence, §3.7's conditions, §10.1's alerting
 sentences; RFC 23 §2.2, §2.3; RFC 24 §2.7; RFC 25 §3.9, §7.
