@@ -596,3 +596,25 @@ func TestCommitExistenceAtItsDeadlineIsADelay(t *testing.T) {
 		t.Errorf("CommitExistence at its deadline: %v, want ErrDelay and not the context's error", err)
 	}
 }
+
+// At its deadline CommitExistence answers the file's own cause: a file whose
+// existence commit conflicts answers DelayConflict, not a fixed DelayCommit.
+func TestCommitExistenceAtItsDeadlineAnswersTheFilesCause(t *testing.T) {
+	c := &conflicting{}
+	u := newUnit(t, onCommit(c.commit))
+	f := u.create(t, "a")
+	c.on.Store(true)
+	u.write(t, f, 0, []byte("four"))
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	err := u.e.CommitExistence(ctx, u.share.ID, f)
+	if !errors.Is(err, &vfserr.Delay{Cause: vfserr.DelayConflict}) {
+		t.Errorf("CommitExistence under a conflict: %v, want ErrDelay(DelayConflict)", err)
+	}
+	// Lifted and past the file's backoff, so the store's close finds it done.
+	c.on.Store(false)
+	u.clock.Advance(time.Second)
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
+		t.Fatal(err)
+	}
+}
