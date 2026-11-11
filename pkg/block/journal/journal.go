@@ -89,10 +89,12 @@ func (j *Journal) Close() error {
 	//
 	// decision: a share this drained is closed, and the handle's own Close
 	// afterwards answers nil once, as it did when the journal's Close left the
-	// share open, and ErrClosed after that: drained marks the handle for it. A
-	// share whose Close was already running when this one drained it answers
-	// ErrClosed from its own, as a second Close does. Overturned by a contract
-	// that has Handle.Close answer ErrClosed once its journal has closed.
+	// share open, and ErrClosed after that: the claim below marks the handle for
+	// it, made before the drain so a Close racing this one answers by who won,
+	// never by when the drain finished. A handle whose own Close claimed it first
+	// is waited for here and answers as a first Close does. Overturned by a
+	// contract that has Handle.Close answer ErrClosed once its journal has
+	// closed.
 	j.handlesMu.Lock()
 	open := make([]*Handle, 0, len(j.handles))
 	for _, h := range j.handles {
@@ -101,9 +103,8 @@ func (j *Journal) Close() error {
 	j.handlesMu.Unlock()
 	for _, h := range open {
 		h.closing.Store(true)
-		if h.s.Close() == nil {
-			h.drained.Store(true)
-		}
+		h.closer.CompareAndSwap(0, 2)
+		_ = h.s.Close()
 	}
 	for _, h := range open {
 		h.releaseAll()

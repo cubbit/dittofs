@@ -30,10 +30,13 @@ type Handle struct {
 	// close would never release. It is read by Reserve after it records one.
 	closing atomic.Bool
 
-	// drained is set when the journal's Close drained the share and released
-	// the reservations, so the first Close of the handle after it has nothing
-	// left to drain and answers nil, as a first Close does.
-	drained atomic.Bool
+	// closer is who claimed the close first: 0 nobody, 1 the handle's own Close,
+	// 2 the journal's. The claim is made before the share is drained, so a
+	// Close racing the journal's reads the winner whatever the drain's timing.
+	// reported is set by the first Close of a handle the journal closed, which
+	// answers nil as a first Close does; the later ones answer ErrClosed.
+	closer   atomic.Int32
+	reported atomic.Bool
 
 	// resMu guards res, the handle's open reservations, so Close returns what
 	// each still holds. It is a leaf, taken with no lock domain held and never
@@ -71,10 +74,17 @@ func (h *Handle) Close() error {
 	// left the share already cannot add a reservation after the release below
 	// walks them: it records its own, sees the flag and releases it.
 	h.closing.Store(true)
-	if h.drained.CompareAndSwap(true, false) {
-		return nil
+	won := h.closer.CompareAndSwap(0, 1)
+	err := h.s.Close()
+	if !won {
+		// Another close claimed the handle: the journal's answers this first
+		// Close nil once, after the drain this call just waited for.
+		if h.closer.Load() == 2 && h.reported.CompareAndSwap(false, true) {
+			return nil
+		}
+		return ErrClosed
 	}
-	if err := h.s.Close(); err != nil {
+	if err != nil {
 		return err
 	}
 	h.releaseAll()
