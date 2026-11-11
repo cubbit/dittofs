@@ -33,9 +33,9 @@ const (
 	StatusCancelled                  // a parked or held request its client cancelled
 )
 
-// holdFor is how long version 2 holds a request the service answered
+// HoldFor is how long version 2 holds a request the service answered
 // ErrDelay before it answers StatusDelay.
-const holdFor = 10 * time.Second
+const HoldFor = 10 * time.Second
 
 // Settings is testproto's shape; its Router reads it from Conn.Settings() at
 // a Negotiate.
@@ -97,7 +97,10 @@ func New(d adapter.Deps) *Protocol {
 // Bare is the same frames with the Header and Router stages only, on version
 // 1: what core's defaults for every other stage are tested on.
 func (p *Protocol) Bare() core.Protocol {
-	return &Protocol{d: p.d, bare: true, reg: p.reg, pool: p.pool, tables: p.tables}
+	q := *p
+	q.bare = true
+
+	return &q
 }
 
 // Framer finds a record's length.
@@ -112,13 +115,14 @@ func (p *Protocol) NewConn(c *core.Conn) core.Stages {
 		return core.Stages{Header: headerCodec{}, Router: &router{cs}}
 	}
 	credits := newFlow()
+	cs.replay = &replay{pool: p.pool, flow: credits, m: map[replayKey][]byte{}}
 
 	return core.Stages{
 		Header:     headerCodec{flow: credits},
 		Router:     &router{cs},
 		Security:   security{},
 		Flow:       credits,
-		Replay:     &replay{pool: p.pool, flow: credits, m: map[replayKey][]byte{}},
+		Replay:     cs.replay,
 		Hold:       hold{flow: credits},
 		MaxPending: 8,
 		OnClose:    func(context.Context) { p.reg.leave(cs) },
@@ -130,6 +134,7 @@ type connState struct {
 	p       *Protocol
 	c       *core.Conn
 	version atomic.Uint32 // the version Negotiate picked; 0 before one
+	replay  *replay       // the connection's replay cache; nil on Bare
 }
 
 // state is one request's, as Request.State: a related member shares the one
@@ -167,6 +172,11 @@ func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, err
 	v := h.Version()
 	if v < 1 || v > 2 || (rt.cs.p.bare && v != 1) {
 		return nil, fmt.Errorf("testproto: version %d: %w", v, core.ErrVersion)
+	}
+	// A connection keeps what it negotiated: a request in a version above it
+	// is refused, one below it is served by that version's table.
+	if n := rt.cs.version.Load(); n != 0 && uint32(v) > n {
+		return nil, fmt.Errorf("testproto: version %d on a connection that negotiated %d: %w", v, n, core.ErrVersion)
 	}
 	var s *state
 	if prev != nil && h.Related() {
@@ -235,7 +245,7 @@ func errorRows(holds bool) []core.ErrorRow {
 	// Withdraw it if core gains a hold that no service error can cause.
 	delay := core.ErrorRow{Err: vfs.ErrDelay, Status: StatusDelay}
 	if holds {
-		delay.Hold = func(_ error, start time.Time) time.Time { return start.Add(holdFor) }
+		delay.Hold = func(_ error, start time.Time) time.Time { return start.Add(HoldFor) }
 	}
 
 	return []core.ErrorRow{

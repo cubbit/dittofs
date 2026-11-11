@@ -21,7 +21,7 @@
 //	12      8     message ID
 //	20      4     session, all ones for the session of the member before
 //	24      4     tree
-//	28      4     sequence: with the session, the key of the replay cache
+//	28      4     sequence: with the session, the key of the replay cache; 0: not sequenced, never cached
 //	32      4     status, 0 in a request
 //	36      4     checksum
 //
@@ -238,16 +238,11 @@ func (headerCodec) Decode(rec *resources.Buf, off int) (core.Header, error) {
 // The grant stops at the connection's credit target. Its checksum is left
 // zero for Security.Wrap.
 func (c headerCodec) Encode(h core.Header, s core.Status, out *resources.Buf) error {
-	var req *header
-	exact := false
-	switch h := h.(type) {
-	case *header:
-		req = h
-	case *final:
-		req, exact = &h.header, true
-	default:
+	req, ok := asHeader(h)
+	if !ok {
 		return fmt.Errorf("testproto: encode a reply to a %T header", h)
 	}
+	_, exact := h.(*final)
 	at := len(out.B)
 	out.B = append(out.B, req[:]...)
 	rep := (*header)(out.B[at : at+headerLen])

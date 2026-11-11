@@ -13,6 +13,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
@@ -173,6 +174,8 @@ func TestTheRequestsLevelFollowsTheSessionAndTree(t *testing.T) {
 	}
 	p.reg.leave(bare.cs)
 
+	rt.cs.replay.Store(headerOf(t, Msg{Op: OpCreate, Version: 2, Session: 5, Seq: 1}), &resources.Buf{B: []byte("five")})
+	rt.cs.replay.Store(headerOf(t, Msg{Op: OpCreate, Version: 2, Session: 6, Seq: 1}), &resources.Buf{B: []byte("six")})
 	logoffInv := call(OpLogoff)
 	lr, _ := level(Msg{Op: OpLogoff, Session: 5, Tree: 9})
 	if err := logoffInv.Call(t.Context(), lr); err != nil {
@@ -181,7 +184,24 @@ func TestTheRequestsLevelFollowsTheSessionAndTree(t *testing.T) {
 	if _, got := level(Msg{Op: OpEcho, Session: 5, Tree: 9}); got != core.NeedsNegotiated {
 		t.Errorf("after a Logoff the level under the old session is %d", got)
 	}
+	if n := len(rt.cs.replay.m); n != 1 {
+		t.Errorf("after a Logoff of session 5 the connection's replay cache holds %d replies, want session 6's one", n)
+	}
 	p.reg.join(5, rt.cs, ends, nil)
+
+	// A connection keeps what it negotiated: a version above it is refused,
+	// one below it is served.
+	one := p.NewConn(nil).Router.(*router)
+	one.cs.version.Store(1)
+	if _, err := one.request(headerOf(t, Msg{Op: OpEcho, Version: 2}), nil); !errors.Is(err, core.ErrVersion) {
+		t.Errorf("a version-2 request on a connection that negotiated 1: %v, want ErrVersion", err)
+	}
+	if _, err := one.request(headerOf(t, Msg{Op: OpEcho, Version: 1}), nil); err != nil {
+		t.Errorf("a version-1 request on a connection that negotiated 1: %v", err)
+	}
+	if r, err := rt.request(headerOf(t, Msg{Op: OpEcho, Version: 1}), nil); err != nil || r.Version != 1 {
+		t.Errorf("a version-1 request on a connection that negotiated 2: %v", err)
+	}
 
 	// The connection's close drops its sessions.
 	st.OnClose(t.Context())

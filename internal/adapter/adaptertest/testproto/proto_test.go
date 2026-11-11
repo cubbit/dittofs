@@ -202,7 +202,7 @@ func TestRows(t *testing.T) {
 }
 
 // Every refusal of core's has a row, the two drain errors answer nothing, and
-// only the table that holds holds, for holdFor from the hold's start.
+// only the table that holds holds, for HoldFor from the hold's start.
 func TestErrorRows(t *testing.T) {
 	for _, holds := range []bool{false, true} {
 		rows := errorRows(holds)
@@ -245,8 +245,8 @@ func TestErrorRows(t *testing.T) {
 		}
 		if r := find(vfs.ErrDelay); holds && r != nil && r.Hold != nil {
 			start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-			if got := r.Hold(vfs.ErrDelay, start); !got.Equal(start.Add(holdFor)) {
-				t.Errorf("the hold ends at %v, want %v after its start", got, holdFor)
+			if got := r.Hold(vfs.ErrDelay, start); !got.Equal(start.Add(HoldFor)) {
+				t.Errorf("the hold ends at %v, want %v after its start", got, HoldFor)
 			}
 		}
 		if find(vfs.ErrNotFound) != nil {

@@ -334,7 +334,7 @@ func TestInterimGrants(t *testing.T) {
 // credits only when its interim withheld them.
 func TestFinalGrantsWhatTheInterimWithheld(t *testing.T) {
 	var s hold
-	req := headerOf(t, Msg{Op: OpCreate, Version: 2, ID: 6, Credits: 5, Pend: true})
+	req := headerOf(t, Msg{Op: OpCreate, Version: 2, ID: 6, Seq: 4, Credits: 5, Pend: true})
 	for _, c := range []struct {
 		grant bool
 		want  uint16
@@ -406,6 +406,25 @@ func TestReplayStoresItsOwnCopyPerSessionAndSequence(t *testing.T) {
 	if got := r.m[replayKey{3, 7}]; string(got) != "the reply" {
 		t.Errorf("the cache holds %q after the caller changed its reply, want its own copy", got)
 	}
+	// Sequence 0 is not sequenced: its reply is never cached, and a request
+	// carrying it is never answered from the cache, whatever the cache holds.
+	r.Store(headerOf(t, Msg{Op: OpCreate, Version: 1, Session: 3}), rep)
+	if len(r.m) != 1 {
+		t.Errorf("the cache holds %d replies after a store under sequence 0, want the one from before", len(r.m))
+	}
+	r.m[replayKey{3, 0}] = []byte("planted")
+	if buf, err := r.Lookup(t.Context(), headerOf(t, Msg{Op: OpEcho, Version: 1, Session: 3})); buf != nil || err != nil {
+		t.Errorf("Lookup of an unsequenced request = %v, %v; want nothing", buf, err)
+	}
+	delete(r.m, replayKey{3, 0})
+
+	// A session's entries go when the session ends here; another's stay.
+	r.Store(headerOf(t, Msg{Op: OpCreate, Version: 1, Seq: 7, Session: 9}), rep)
+	r.forget(9)
+	if _, kept := r.m[replayKey{3, 7}]; len(r.m) != 1 || !kept {
+		t.Errorf("after forgetting session 9 the cache holds %d replies, want session 3's one", len(r.m))
+	}
+
 	for _, other := range []Msg{{Op: OpCreate, Version: 1, Seq: 8, Session: 3}, {Op: OpCreate, Version: 1, Seq: 7, Session: 2}, {Op: OpCreate, Version: 1, Seq: 7}} {
 		if buf, err := r.Lookup(t.Context(), headerOf(t, other)); buf != nil || err != nil {
 			t.Errorf("Lookup of sequence %d under session %d = %v, %v; want nothing", other.Seq, other.Session, buf, err)

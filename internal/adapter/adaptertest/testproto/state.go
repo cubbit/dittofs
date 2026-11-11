@@ -1,6 +1,7 @@
 package testproto
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -169,6 +170,9 @@ func (p *Protocol) logoff(_ context.Context, r *core.Request, _ *empty) (*empty,
 		return nil, err
 	}
 	p.reg.end(s.sid)
+	if s.conn.replay != nil {
+		s.conn.replay.forget(s.sid)
+	}
 
 	return &empty{}, nil
 }
@@ -205,7 +209,9 @@ func (p *Protocol) park(ctx context.Context, r *core.Request, req *nameReq) (*em
 		cancel()
 		return nil, err
 	}
-	call, dir, name := r.Call, s.fh, req.name
+	// The name lies in the request's record, which core may release once the
+	// handler returns; the call outlives it.
+	call, dir, name := r.Call, s.fh, bytes.Clone(req.name)
 	go func() {
 		defer cancel()
 		_, err := p.d.VFS.Create(callCtx, call, dir, name, vfs.CreateArgs{})
@@ -246,7 +252,8 @@ func (p *Protocol) notify(ctx context.Context, r *core.Request, req *targetReq) 
 	if err != nil {
 		return nil, err
 	}
-	msg.B = append(msg.B[:0], make([]byte, headerLen)...)
+	var zero header
+	msg.B = append(msg.B[:0], zero[:]...)
 	h := (*header)(msg.B[:headerLen])
 	h[offFlags] = flagReply
 	h[offVersion] = uint8(r.Version)

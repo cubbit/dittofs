@@ -18,8 +18,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 )
 
-// Every test named TestConformance here is a specification a later epic
-// builds to. Each fails today on the stub it names and is listed in
+// Every test named TestConformance here is a specification the change that
+// fills its stub builds to. Each fails today on the stub it names and is listed in
 // test/adapter/known.yaml until the change that fills the stub. It fails on an
 // assertion or a returned error, never a panic: a step that reaches a stub
 // that panics runs in the test's goroutine and recovers.
@@ -62,6 +62,7 @@ func TestConformanceEchoEndToEnd(t *testing.T) {
 	adaptertest.CheckLeaks(t, budgets)
 
 	set := Settings{Adapter: settings.DefaultNFS().Adapter}
+	set.Port = 0 // the listener's: one the system picks
 	set.Addrs = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
 	srv, err := core.NewServer(deps, set, core.Listener{Services: []string{"testproto"}, Network: "tcp", Protocol: p})
 	if err != nil {

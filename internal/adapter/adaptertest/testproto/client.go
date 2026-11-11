@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
@@ -19,7 +20,7 @@ type Msg struct {
 	Session uint32 // all ones: inherited from the member before
 	Tree    uint32
 	Credits uint16 // charged by this message
-	Seq     uint32 // a request repeating a session's sequence is answered from the replay cache once a reply under it was stored
+	Seq     uint32 // 0: not sequenced, never cached; a request repeating a session's sequence is answered from the replay cache once a reply under it was stored
 	Related bool
 	Pend    bool       // HoldCodec.Pends answers true for this member
 	Role    core.Role  // OpEcho: its per-request role
@@ -27,7 +28,7 @@ type Msg struct {
 	Expires time.Time  // OpSession: the credential's end
 	Handle  vfs.Handle // OpPutFH
 	Name    string     // OpCreate, OpPark
-	Target  uint64     // OpNotify, OpCancel: the message ID of the request it names; a Cancel's own ID
+	Target  uint64     // OpNotify, OpCancel: the message ID of the request it names; a Cancel carries it as its own ID, and its ID is ignored
 	Payload []byte     // OpEcho
 	Members []Msg      // OpCompound
 }
@@ -135,13 +136,16 @@ func appendArguments(b []byte, m Msg) []byte {
 // balance its replies grant.
 type Client struct {
 	c       net.Conn
-	balance int
+	balance atomic.Int64 // one goroutine may Send while another is in Recv
 }
 
 // NewClient returns a client over c with the one credit a connection opens
 // with.
 func NewClient(c net.Conn) *Client {
-	return &Client{c: c, balance: 1}
+	cl := &Client{c: c}
+	cl.balance.Store(1)
+
+	return cl
 }
 
 // Send writes msgs as one record and charges their credits.
@@ -150,7 +154,7 @@ func (c *Client) Send(msgs ...Msg) error {
 		return fmt.Errorf("testproto: send: %w", err)
 	}
 	for _, m := range msgs {
-		c.balance -= int(m.Credits)
+		c.balance.Add(-int64(m.Credits))
 	}
 
 	return nil
@@ -174,7 +178,7 @@ func (c *Client) Recv() ([]Reply, error) {
 
 	replies, err := openReplies(body)
 	for _, r := range replies {
-		c.balance += int(r.Credits)
+		c.balance.Add(int64(r.Credits))
 	}
 
 	return replies, err
@@ -212,4 +216,4 @@ func openReplies(body []byte) ([]Reply, error) {
 // Balance is the credits every Reply received granted, interims included, less
 // the credits every Msg sent charged; it starts at 1, the credit a connection
 // opens with.
-func (c *Client) Balance() int { return c.balance }
+func (c *Client) Balance() int { return int(c.balance.Load()) }

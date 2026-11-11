@@ -183,9 +183,10 @@ func (hold) Key(h core.Header) uint64 {
 // else one, and the credits of every header in after, the sum stopping at the
 // credit target.
 //
-// ponytail: the credits of chain members answered before h are not added
-// here, since each of those members' own replies grants them. Add them here
-// if core comes to answer such a member with no reply of its own.
+// decision: the credits of chain members answered before h are not added
+// here, though HoldCodec's contract names them: each of those members' own
+// replies grants them, so adding them here would grant them twice. Withdraw
+// it if core answers such a member with no reply of its own.
 func (s hold) Interim(h core.Header, grant bool, after []core.Header, out *resources.Buf) error {
 	hd, ok := h.(*header)
 	if !ok {
@@ -259,7 +260,16 @@ func (hold) Pends(h core.Header, _ error) bool {
 // replayKey names a cached reply: its session and sequence.
 type replayKey struct{ session, seq uint32 }
 
-// replay answers a request it has cached the reply of.
+// replay answers a request it has cached the reply of. Sequence 0 is not
+// sequenced: such a request is never a retransmission, and its reply is never
+// cached.
+//
+// decision: the cache is the connection's, though a session spans
+// connections: a retransmission on another connection of its session misses
+// it and runs again. core's tests retransmit on the connection the request
+// came on, which is what the pipeline's replay step is proven on. Withdraw
+// it, and keep the entries with the session in the registry, if a core test
+// retransmits across connections.
 type replay struct {
 	pool *resources.BufPool // over the reply budget; nil: no budgets were given
 	flow *flow              // the connection's credits; nil: grants are not counted
@@ -280,6 +290,9 @@ func (r *replay) Lookup(ctx context.Context, h core.Header) (*resources.Buf, err
 	hd, ok := h.(*header)
 	if !ok {
 		return nil, errors.New("testproto: a replay lookup for a header of another protocol")
+	}
+	if hd.seq() == 0 {
+		return nil, nil
 	}
 	r.mu.Lock()
 	cached, found := r.m[replayKey{hd.session(), hd.seq()}]
@@ -305,10 +318,22 @@ func (r *replay) Lookup(ctx context.Context, h core.Header) (*resources.Buf, err
 // Store keeps its own copy of reply, which the caller then wraps in place.
 func (r *replay) Store(h core.Header, reply *resources.Buf) {
 	hd, ok := asHeader(h)
-	if !ok {
+	if !ok || hd.seq() == 0 {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.m[replayKey{hd.session(), hd.seq()}] = bytes.Clone(reply.B)
+}
+
+// forget drops every reply cached under session: a later session of the same
+// ID starts with none.
+func (r *replay) forget(session uint32) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k := range r.m {
+		if k.session == session {
+			delete(r.m, k)
+		}
+	}
 }

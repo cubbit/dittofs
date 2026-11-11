@@ -11,6 +11,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/internal/prof"
+	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
 
@@ -375,12 +376,33 @@ func TestClientWritesTheRecordAndKeepsTheBalance(t *testing.T) {
 		t.Errorf("after grants of 3 and 1 the balance is %d, want 3", got)
 	}
 
+	// One goroutine may send while another receives: a Cancel goes out while
+	// the reply it races is read.
+	sent := make(chan error, 1)
+	go func() { sent <- c.Send(Msg{Op: OpEcho, Version: 2, Credits: 0}) }()
+	if _, err := peer.Write(replyVector); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Recv(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-sent; err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Balance(); got != 7 {
+		t.Errorf("after a second grant of 3 and 1 the balance is %d, want 7", got)
+	}
+	drain := make([]byte, lengthLen+headerLen+1)
+	if _, err := io.ReadFull(peer, drain); err != nil {
+		t.Fatal(err)
+	}
+
 	// Every message of a record is charged, not the first alone.
 	if err := c.Send(Msg{Op: OpEcho, Version: 2, Credits: 1}, Msg{Op: OpEcho, Version: 2, Credits: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if got := c.Balance(); got != 0 {
-		t.Errorf("after charging 1 and 2 in one record the balance is %d, want 0", got)
+	if got := c.Balance(); got != 4 {
+		t.Errorf("after charging 1 and 2 in one record the balance is %d, want 4", got)
 	}
 
 	if _, err := peer.Write([]byte{0x00, 0x10, 0x00, 0x01}); err != nil {
@@ -444,6 +466,12 @@ func FuzzFrame(f *testing.F) {
 		if n < len(body) {
 			body = body[:n]
 		}
+		// Everything else that reads bytes off the wire, each on its own
+		// copy since it opens what it reads in place: no input may panic it.
+		_, _ = openReplies(bytes.Clone(body))
+		fuzzUnwrap(bytes.Clone(body))
+		fuzzCompound(t, body)
+
 		rec := &resources.Buf{B: body}
 		out := &resources.Buf{}
 		for off, steps := 0, 0; ; steps++ {
@@ -489,5 +517,65 @@ func TestACancelCarriesItsTargetsID(t *testing.T) {
 	got := decodeAll(t, Append(nil, Msg{Op: OpCancel, Version: 2, ID: 1, Target: 77})[lengthLen:])
 	if len(got) != 1 || got[0].id != 77 || got[0].op != OpCancel || got[0].args != "" {
 		t.Errorf("a Cancel of message 77 encodes to %+v", got)
+	}
+}
+
+// fuzzUnwrap decodes and unwraps every member of body's chain, as the
+// pipeline does, stopping at the first refusal.
+func fuzzUnwrap(body []byte) {
+	rec := &resources.Buf{B: body}
+	var prev core.Header
+	for off, steps := 0, 0; steps <= len(body)/headerLen; steps++ {
+		h, err := headerCodec{}.Decode(rec, off)
+		if err != nil {
+			return
+		}
+		var before core.Header
+		if h.Related() {
+			before = prev
+		}
+		u, err := security{}.Unwrap(h, rec, before)
+		if err != nil {
+			return
+		}
+		prev = u
+		if off = h.Next(); off == 0 {
+			return
+		}
+	}
+}
+
+// fuzzCompound reads body as a compound's arguments: the count, then each
+// member's code, length and arguments, every read inside body.
+func fuzzCompound(t *testing.T, body []byte) {
+	inv, n, err := decodeCompound(body, 1)
+	if err != nil {
+		return
+	}
+	if n > len(body) {
+		t.Fatalf("the compound's Decode took %d of %d bytes", n, len(body))
+	}
+	members := map[uint32]*core.Op{}
+	for _, m := range memberRows(New(adapter.Deps{}).ops()) {
+		members[m.Code] = m
+	}
+	rest := body[n:]
+	for i := 0; i < inv.Count && len(rest) > 0; i++ {
+		code, took, err := readOp(rest)
+		if err != nil {
+			return
+		}
+		m := members[code]
+		if m == nil {
+			return
+		}
+		_, used, err := m.Decode(rest[took:], 1)
+		if err != nil {
+			return
+		}
+		if took+used > len(rest) {
+			t.Fatalf("a member took %d of the %d bytes left", took+used, len(rest))
+		}
+		rest = rest[took+used:]
 	}
 }
