@@ -84,12 +84,15 @@ func (s *StubStore) RaiseAtAttach(context.Context, entity.ShardID) (uint64, erro
 	return 1, nil
 }
 
+// stubJournalID is the identity the stub records for every device.
+var stubJournalID = [16]byte{'S'}
+
 func (s *StubStore) JournalID(context.Context, entity.NodeID, entity.JournalDir) ([16]byte, error) {
-	return [16]byte{}, s.unused("JournalID")
+	return stubJournalID, nil
 }
 
 func (s *StubStore) Tags(context.Context) (map[entity.ShareID]entity.TagRecord, error) {
-	return nil, s.unused("Tags")
+	return map[entity.ShareID]entity.TagRecord{}, nil
 }
 
 func (s *StubStore) Covering(
@@ -122,8 +125,7 @@ func (s *StubStore) UnfinishedRemovals(
 	entity.ShareID,
 	uint64,
 ) iter.Seq2[kvstore.UnfinishedRemoval, error] {
-	return func(yield func(kvstore.UnfinishedRemoval, error) bool) {
-		yield(kvstore.UnfinishedRemoval{}, s.unused("UnfinishedRemovals"))
+	return func(func(kvstore.UnfinishedRemoval, error) bool) {
 	}
 }
 

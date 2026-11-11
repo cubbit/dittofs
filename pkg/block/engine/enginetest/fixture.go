@@ -91,6 +91,11 @@ type Fixture struct {
 	// stalled holds every existence commit until its context ends, as a
 	// store that commits nothing does; Stall sets it.
 	stalled atomic.Bool
+
+	// refuse makes the engine's Open answer as a journal does for a
+	// directory the platform profile refuses.
+	refuse atomic.Bool
+
 	// cloneGate, once set by HoldNextClone, holds the next clone's phase 1.
 	cloneGate atomic.Pointer[gate]
 	handles   sync.Map // journal.ShareTag → the handle the running engine opened on it
@@ -510,6 +515,14 @@ func (f *Fixture) Restart() {
 	f.start()
 }
 
+// RefuseOpens makes every Open of the engine, those of a process started
+// later included, answer the refusal a journal gives for a directory the
+// platform profile refuses, naming the rule and the directory (RFC 1 §3), or
+// stops doing so. The journal's own check is not run.
+func (f *Fixture) RefuseOpens(on bool) {
+	f.refuse.Store(on)
+}
+
 // RestartAfter stops the process cleanly, runs change over the stopped
 // journal directory and store, and starts a new process over them.
 func (f *Fixture) RestartAfter(change func()) {
@@ -646,6 +659,12 @@ func (f *Fixture) start() {
 		Node:    f.Node,
 		Devices: []string{f.Dir},
 		Open: func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
+			if f.refuse.Load() {
+				return nil, fmt.Errorf(
+					"journal: directory %s refused: mount has no barriers: %w",
+					dir, journal.ErrUnsuitableStorage,
+				)
+			}
 			j, err := journal.Open(ctx, dir, floor, expect,
 				journal.WithClock(f.Clock), journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS()),
 				journal.WithSettings(fixtureSettings))
