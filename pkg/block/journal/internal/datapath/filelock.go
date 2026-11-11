@@ -2,8 +2,10 @@ package datapath
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 )
 
 // fileLockShards is the number of shards of the table. It is a power of two so
@@ -28,11 +30,16 @@ const fileLockShards = 64
 // bounded by the files in flight rather than the files ever written.
 type fileLocks struct {
 	shards [fileLockShards]fileLockShard
+
+	// rec is the recorder entries created later Init their mutex with, so a
+	// lock made after SetRecorder joins the same account.
+	rec atomic.Pointer[lockorder.Recorder]
 }
 
 type fileLockShard struct {
-	// mu covers only finding or creating an entry and releasing one; it is
-	// never held while an entry's mutex is held or waited on.
+	// decision: mu is a leaf. It covers only finding or creating an entry
+	// and releasing one, is never held while an entry's mutex is held or
+	// waited on, and takes no lock itself.
 	mu sync.Mutex
 	m  map[core.FileID]*fileLockEntry
 }
@@ -40,7 +47,9 @@ type fileLockShard struct {
 // fileLockEntry is one file's domain. refs counts holders and waiters and is
 // guarded by the owning shard's mu.
 type fileLockEntry struct {
-	mu   sync.Mutex
+	// decision: mu is the file append domain, rank file append, the one
+	// domain held across a record's I/O and its publish.
+	mu   lockorder.Mutex
 	refs int
 }
 
@@ -50,6 +59,17 @@ func newFileLocks() *fileLocks {
 		t.shards[i].m = make(map[core.FileID]*fileLockEntry)
 	}
 	return t
+}
+
+// SetRecorder installs the lock-order recorder the entries' mutexes report
+// to, with their file append rank. Entries are created lazily, so each new
+// one reads the stored recorder and Inits with it at creation — a rank of 0,
+// an entry whose Init was skipped, is never recorded, which is why the
+// entry's Init is not optional. It runs before the table is shared — before
+// any concurrent Lock — and a nil recorder leaves every entry a plain mutex,
+// so production behaviour is unchanged.
+func (t *fileLocks) SetRecorder(rec *lockorder.Recorder) {
+	t.rec.Store(rec)
 }
 
 // shardOf picks id's shard from an FNV-1a hash of its bytes.
@@ -75,6 +95,13 @@ func (t *fileLocks) Lock(id core.FileID) (unlock func()) {
 	e, ok := s.m[id]
 	if !ok {
 		e = &fileLockEntry{}
+		// Init at creation, under the shard's leaf: the entry's mutex
+		// is used concurrently the moment it is published, and a lock
+		// whose Init was skipped keeps rank 0 and is never recorded.
+		e.mu.Init(lockorder.FileAppend, t.rec.Load())
+		// Init at creation, under the shard's leaf: the entry's mutex is
+		// used concurrently the moment it is published, and a lock whose
+		// Init was skipped keeps rank 0 and is never recorded.
 		s.m[id] = e
 	}
 	e.refs++

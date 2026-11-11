@@ -17,10 +17,10 @@ import (
 	"errors"
 	"maps"
 	"math"
-	"sync"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
@@ -169,8 +169,10 @@ type Request struct {
 type Capacity struct {
 	cfg Config
 
-	// mu is the capacity domain: it guards every field below.
-	mu sync.Mutex
+	// decision: mu is the capacity domain, rank capacity in the lock order —
+	// the one domain held while no other lock of it exists — and it guards
+	// every field below.
+	mu lockorder.Mutex
 
 	// reserved is the record bytes open grants hold and their records have
 	// not yet filled — the ReservedBytes gauge (RFC 1 §3.7).
@@ -288,6 +290,17 @@ func New(cfg Config) *Capacity {
 		retiredSeen:    make(map[core.ShareTag]int64),
 		grantedRoom:    make(map[int]int64),
 	}
+}
+
+// SetRecorder installs the lock-order recorder the admission's mutex reports
+// to, with its capacity rank. Every injected fact that takes a lock was
+// snapshotted before the decision section, so no nested call reaches another
+// lock of this domain: with a recorder installed, a nested one would be
+// recorded as a same-domain hold. It runs before the Capacity is shared —
+// before any concurrent Take, Wrote or Release — and a nil recorder leaves
+// the mutex a plain one, so production behaviour is unchanged.
+func (c *Capacity) SetRecorder(rec *lockorder.Recorder) {
+	c.mu.Init(lockorder.Capacity, rec)
 }
 
 // Grant is one admitted write's reservation: the record bytes held against
