@@ -160,9 +160,11 @@ func (h *Handle) Fill(ctx context.Context, id FileID, off int64, p []byte, asOf 
 // Its record draws on the reserved headroom and is never refused by the
 // share's limit or the journal's maximum. It is refused by a NoSpaceError
 // naming LimitHeadroom, when the headroom is exhausted and the removal frees
-// nothing held, or LimitVersion. It takes the file append domain.
+// nothing held, or LimitVersion. A negative size is refused with
+// ErrInvalidExtent before anything is drawn or appended. It takes the file
+// append domain.
 func (h *Handle) Truncate(ctx context.Context, id FileID, size int64) (Version, error) {
-	return Version{}, ErrNotImplemented
+	return h.j.core.Truncate(ctx, h.s, id, size)
 }
 
 // Deallocate stops holding extent e of file id, whatever its offloaded bit. It
@@ -174,7 +176,7 @@ func (h *Handle) Truncate(ctx context.Context, id FileID, size int64) (Version, 
 // by a NoSpaceError naming LimitIndex when splitting a held extent would pass
 // the index's cap on what removals add. It takes the file append domain.
 func (h *Handle) Deallocate(ctx context.Context, id FileID, e Extent) (Version, error) {
-	return Version{}, ErrNotImplemented
+	return h.j.core.Deallocate(ctx, h.s, id, e)
 }
 
 // Delete stops holding every extent of file id. It draws a new version, leaves
@@ -182,7 +184,7 @@ func (h *Handle) Deallocate(ctx context.Context, id FileID, e Extent) (Version, 
 // draws on the headroom and is refused as Truncate is. It takes the file
 // append domain.
 func (h *Handle) Delete(ctx context.Context, id FileID) (Version, error) {
-	return Version{}, ErrNotImplemented
+	return h.j.core.Delete(ctx, h.s, id)
 }
 
 // CloneTarget stops holding (spec.DstOff, spec.Len) of file id as Deallocate
@@ -195,7 +197,7 @@ func (h *Handle) Delete(ctx context.Context, id FileID) (Version, error) {
 // LimitHeadroom once less than half the headroom remains. It takes the file
 // append domain.
 func (h *Handle) CloneTarget(ctx context.Context, id FileID, spec CloneSpec) (Version, error) {
-	return Version{}, ErrNotImplemented
+	return h.j.core.CloneTarget(ctx, h.s, id, spec)
 }
 
 // Since yields every held extent of file id, every unsettled removal marker
