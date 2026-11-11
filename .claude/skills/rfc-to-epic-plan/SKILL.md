@@ -271,8 +271,8 @@ principles", since neither document holds a copy.
   own with it.
 - **Without agents.** A run that cannot launch agents (a subagent, or a session with no
   agent tool) does each agent pass below itself, one after another, says in its report that
-  they were not independent, and lists them as to-dos to run independently before the pull
-  request leaves draft.
+  they were not independent, opens the pull request as a draft, and lists the passes as
+  to-dos to run independently before it leaves draft.
 - **Design the surface twice.** An independent architect agent, if one is available (for
   example `feature-dev:code-architect`), otherwise the fallback above, proposes the target
   tree and the exported surface independently of the agent writing the document; reconcile
