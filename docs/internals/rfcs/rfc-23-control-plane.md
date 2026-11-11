@@ -1418,28 +1418,35 @@ second store.
   `admin`'s, an operation (§4.6), as RFC 13 §7 rotates a secret: the next key
   signs once every node holds it, and the old one verifies until the last token
   it signed has expired. No secret route writes it (§5.2).
-- **Throttling.** Once 5 attempts have been counted for an account, or from
-  one source address, each further attempt waits twice
-  as long as the last, from 1 s up to 5 min, and one that comes sooner is
-  answered `429` with `Retry-After`. The counts are kept
-  in the store, so the bound is 5 per account and per source
-  installation-wide, not per node. An attempt is counted before its password is
-  checked, in one transaction that reads both counts and raises them, so
-  concurrent guesses cannot all pass at the same count; the wait is decided on
-  the counts as read, so the fifth attempt is checked and the sixth waits; a
-  write that fails refuses the attempt. An attempt answered `429` is counted
-  too, and its password is never checked. A success then resets the account's count and takes
-  back its own raise of the source's, and a failure is audited (§6). An account's count is keyed by its principal, so
-  spellings of one name share it, and a name that resolves to no account
-  counts against its source only. A source's count is forgotten 24 h after its
-  last failure.
+- **Throttling.** Three counts are kept: one per account and source address
+  together, one per source address, and one per account across all sources.
+  Once 5 attempts have been counted for an account from one source, or 5 from
+  one source for any accounts, each further attempt there waits twice as long
+  as the last, from 1 s up to 5 min, and one that comes sooner is answered
+  `429` with `Retry-After`; the account's own count applies the same wait only
+  from 100 failures, so guesses spread over many sources stay bounded
+  ([NIST SP 800-63B §5.2.2](https://pages.nist.gov/800-63-3/sp800-63b.html#throttle)).
+  The counts are kept in the store, so each bound holds installation-wide, not
+  per node. An attempt is counted before its password is checked, in one
+  transaction that reads the counts and raises them, so concurrent guesses
+  cannot all pass at the same count; the wait is decided on the counts as
+  read, so the fifth attempt is checked and the sixth waits; a write that fails
+  refuses the attempt. An attempt answered `429` raises its pair's and its
+  source's counts, never the account's, and its password is never checked. A
+  success resets the account's count and its pair's, and takes back its own
+  raise of the source's; a failure is audited (§6). An account is keyed by its
+  principal, so spellings of one name share it, and a name that resolves to no
+  account counts against its source only. A pair's and a source's counts are
+  forgotten 24 h after their last failure.
 
-  > decision: an attempt answered `429` raises the counts, so a guesser who keeps
-  > trying a name holds that account at the 5 min wait for as long as it
-  > tries, its owner included; the wait bounds guessing, not availability.
-  > The break-glass reset clears `admin`'s (§5.4). Revisit if a held-out
-  > account is reported, and then key the account's wait by account and
-  > source together.
+  > decision: the fast wait is keyed by account and source together, as
+  > identity providers' smart lockout separates familiar and unfamiliar
+  > locations, so a guesser on one address cannot hold an account's owner on
+  > another. Only the 100-failure account count reaches across sources: a
+  > guesser spread over enough addresses to reach it can still hold the
+  > account, and the break-glass reset clears `admin`'s (§5.4). Revisit if
+  > that is reported: the upgrade is a source the account has signed in from
+  > before, exempt from the account-wide count.
 - **Transport.** The API **MUST** be served over TLS on every address but
   loopback. Its certificate and key are bootstrap facts of the host.
 
@@ -1755,6 +1762,7 @@ builds a node any other way, and an architecture test fails on a caller of
 | §5.1 roles grant nothing | With the bootstrap admin and every role, mount every share over every flavour: assert every mount refused. Read the admin's record: no uid, gid, SID, Kerberos name or grant. | an API role leaking into file access ([RFC 18 §10](rfc-18-identity.md#10.%20Conformance)) |
 | §5.2 roles | Read the route list from the router and compare it with §4.1's resources and Actions table; a route in neither fails the check. For every route, call it as `viewer`, `operator` and `admin`; assert the table of §5.2, `404` where the caller may not read. As an operator, give yourself `admin`: refused. As an operator, write the password secret of an admin account, and the signing key, through every secret-bearing route: refused, and neither changed. Demote the last admin: `409` `last_admin`. | a route missing its check; privileged credentials replaced through a secret write |
 | §5.3 revocation | Sign in on two nodes; disable the account; assert every call on both is refused within 1 s, with the access token unexpired. Reuse an already-rotated refresh token: assert the session is revoked. | a token outliving its account |
+| §5.3 throttling | Fail 5 sign-ins for one account from one address: assert the sixth from it answers `429`, a sign-in for that account from a second address is checked, and 5 concurrent attempts past the bound pass no more than the counts allow. Fail 100 across 25 addresses: assert the next from a new address waits. Sign in correctly: assert the account's and the pair's counts reset. | one count per account, so a guesser on one address locks out the owner on another |
 | §5.5 OpenID Connect | Against a test issuer, run `login --oidc` with no browser: assert a session whose tokens are the API's, and no ID token stored. Map a claim value to `operator` for an account whose own role is `viewer`: assert `operator` rights, and `viewer` only in a session whose token lacks the value. Set `api.password_sign_in` to `viewer`: assert an `operator`'s password sign-in refused `403`, and the last unlinked `admin` still signs in by password. As `operator`, write `api.oidc_role_map`: refused. | an ID token used as the session; a role carried in a token; an operator raising its own role |
 | §5.4 first password | Initialise without a password; assert it is printed by the step and appears in no log. Sign in: every call but the password change is `403`. Change it without the current password: refused. | a first-login token setting a password alone |
 | §6 audit | Run every mutating route once, applied and refused. Assert one audit record each, with generations before and after, and no secret value; fault the commit of one change and assert neither the change nor its record exists. | a change with no record |

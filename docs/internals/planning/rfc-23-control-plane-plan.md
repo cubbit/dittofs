@@ -790,7 +790,7 @@ func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
 	var wait time.Duration
 	// RFC 23 §5.3: count before verifying, reads tracked, so a burst cannot pass at one count
 	if err := h.store.Write(r.Context(), metadata.WriteMeta{}, func(tx metadata.ControlPlaneTx) error {
-		wait = h.reserveAttempt(tx, acct, src) // reads both SignInFailures and raises them
+		wait = h.reserveAttempt(tx, acct, src) // reads the three SignInFailures and raises them
 		return nil
 	}); err != nil {
 		h.problem(w, err) // fail closed: an attempt not counted is not checked
@@ -910,7 +910,7 @@ API write commits in, and a share's removal steps past the mark.
   starts on them.
 - `Position` on the reconciled kinds, and the principals-generation counter.
 - The `Operation`, `IdempotencyRecord`, `Session`, `APIToken`, `SignInFailures` and `AuditRecord` records, with their
-  codecs and fuzz targets; `SignInFailures` keyed by principal or by source (RFC 16 §4.2). `AuditCursor` waits for the event streams (§6 O2).
+  codecs and fuzz targets; `SignInFailures` keyed by principal, by source and by the two together (RFC 16 §4.2). `AuditCursor` waits for the event streams (§6 O2).
 - `Node` and `NodeStatus` records, the latter including the secret versions a node holds (RFC 23
   §2.4).
 - A share's removal steps after the mark, in bounded batches, each resumable from the removal's
@@ -1055,14 +1055,15 @@ call against their current record.
     `pkg/bootstrap` (A2), then the journal recorded under that identity;
   - the bootstrap administrator with its first password (RFC 23 §5.4).
 - `dfs reset-admin`, the break-glass reset (RFC 23 §5.4), which also clears the account's
-  `SignInFailures`, so an attacker spread over many sources cannot keep `admin` locked out past it.
+  `SignInFailures`, so an attacker spread over enough sources to reach the account-wide count cannot
+  keep `admin` locked out past it.
 - Sign-in, access tokens (D3), refresh rotation with reuse revocation, and sign-out.
 - API tokens for service accounts, with their maximum lifetime.
 - The per-call account check and the role table of RFC 23 §5.2, including `404` for what the caller
   may not read and `last_admin`. The harness gains a signed-in caller of each role.
 - Throttling (RFC 23 §5.3): each attempt counted in one `Write` before the password is checked,
-  a `429` included, the wait decided on the counts as read, by principal and by source, an unknown
-  name by source only; a benchmark of a refused sign-in's
+  the wait decided on the counts as read, by principal and source together, by source, and by
+  principal from 100 failures, an unknown name by source only; a benchmark of a refused sign-in's
   two commits (§4.3 above).
 - The first password's must-change and the password change; a changed password hash's old version
   pruned at once, since nothing needs it (the RFC 13 plan's §4.3 rule: its rotation's owner
@@ -1125,6 +1126,7 @@ these RFC 23 §12 rows pass, in their single-node part:
 | "§4.7 error table" | every component's errors |
 | "§5.2 roles" | API and accounts |
 | "§5.3 revocation" | API and accounts |
+| "§5.3 throttling" | API and accounts |
 | "§5.4 first password" | `dfs init` and sign-in |
 | "§6 audit" | API and accounts |
 | "§7 CLI" | the CLI's whole suite |
