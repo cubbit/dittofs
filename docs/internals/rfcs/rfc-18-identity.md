@@ -700,6 +700,16 @@ and inside SMB's SPNEGO ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
 - **Service names.** The installation accepts tickets for the service names its
   keytab holds — `nfs/<host>`, `cifs/<host>` and `host/<host>` — for every host
   name a node answers on. A ticket for any other name **MUST** be refused.
+- **Encryption types are AES only.** The keytab holds AES128 and AES256 keys
+  (`aes128-cts-hmac-sha1-96`, `aes256-cts-hmac-sha1-96`), a join sets the
+  computer account's `msDS-SupportedEncryptionTypes` to `0x18`, and a ticket
+  under DES or RC4 **MUST** be refused `ErrLogonFailure`.
+
+> decision: AES only. DES is broken and RC4's key is the NT hash, so a domain
+> still issuing RC4 tickets lets an NT hash forge them; current Active Directory
+> releases are removing RC4 from their defaults. Revisit if a deployment's
+> clients are shown unable to request AES tickets.
+
 - **The keytab is a secret**: each key a `Secret` of kind keytab
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), loaded only through
   `Apply`. A key rotates in this order: the new version is added to the keytab
@@ -831,12 +841,36 @@ again stores a hash only at a user's next password set.
 > Kerberos everywhere turns it off. Revisit the default once local users are
 > shown to be rare.
 
+**On a joined installation the keytab is the machine password's.** A join
+registers `cifs/` and `host/` service names, for the short name and the fully
+qualified one, on the computer account, so a ticket for them is encrypted
+under that account's key. Identity therefore derives the keytab from the
+machine password — the AES keys under the computer account's salt — and the
+keytab `Secret` is versioned with the password: one rotation, domain controller
+first and then a new `Secret` version, changes both, and the previous version
+keeps verifying tickets issued under it for the retention above. A keytab is
+imported as its own `Secret` only on an installation that is not joined.
+
+> decision: a joined installation derives its keytab rather than holding a
+> second copy, because the keytab's key and the machine password are one key
+> once the service names are on the computer account; rotating them apart
+> breaks every Kerberos sign-in at the first rotation. Samba keeps its keytab
+> in step with the machine password the same way. Overturned if the service
+> names are ever registered on a separate service account.
+
 **The machine account.** Pass-through needs the installation joined to the
 directory's domain as a computer account. Joining is an operation
 ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)) that
 creates the computer object, sets its service names, and stores its password as
-a `Secret`. Domain controllers are found from the domain's DNS service records,
-with fail-over between them. The password rotates on a schedule shorter than the
+a `Secret`; an **offline join** takes instead a computer account an
+administrator created, with its password, and verifies it against a domain
+controller before storing it. Either writes the account's name as
+`identity.netbios_name`, which a joined installation refuses to change. Domain
+controllers are found from the domain's DNS service records, with fail-over
+between them, unless the directory record names a domain controller address
+(and optionally a DNS server), which is then used alone. The join's state, the
+secure channel's health and the last rotation are reported in the node's
+status and raise `machine_account_unhealthy` when the channel fails. The password rotates on a schedule shorter than the
 domain's maximum machine-password age, always domain controller first, then a
 new `Secret` version
 ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)); a rotation **MUST NOT**
@@ -1853,6 +1887,7 @@ alice's still signs in as alice.
 | Condition | Scope | Raised |
 | --- | --- | --- |
 | `directory_unreachable` | installation | degraded while lookups are served stale within the grace; unhealthy once one is refused past it; cleared by the first query the directory answers |
+| `machine_account_unhealthy` | node | unhealthy while the secure channel to every domain controller fails, or the machine password's last rotation failed; cleared by the next channel set up or rotation completed |
 
 No metric label or span attribute carries an issuer's subject, an address or a
 user name. Caller-cache hits and misses are admission's
@@ -1964,6 +1999,14 @@ the roles row RFC 23's; the forwarded-identity row's cluster half has no suite
 yet.
 
 ## 11. Migration
+
+> decision: the programme builds identity for new installations only (route B of
+> the storage rewrite), so no installation carries v1's uid-derived SIDs or its
+> resolver into v2, and the slices below, written for an in-place migration, are
+> superseded: v2 starts with the stored RIDs of §4.4 and the resolution of §6,
+> and v1's code is deleted rather than shadowed. Revisit only if an installation
+> must be upgraded in place, and then by an export and import, not by these
+> slices.
 
 Each slice ships alone, behind the one before it, and deletes what it replaces.
 

@@ -408,7 +408,8 @@ type User struct {
 	Email      string      // optional, never defaulted, never a spelling: no PX‖ row, no lookup by it (RFC 18 §2.2)
 	Primary    Principal   // the group a new file gets (RFC 7 §2.4, RFC 18); zero, or a group deleted or being deleted: none, and a new file's group is then its creator's own principal
 	Disabled   bool
-	Secret     SecretRef   // by reference, never the credential itself (RFC 13)
+	Password   SecretRef   // the password hash, sealed under the storage wrapping key; zero for an account with no password (RFC 13 §7, RFC 18 §8.1)
+	NTHash     SecretRef   // the NT hash, sealed under the protocol wrapping key; zero while identity.ntlm is off, for a directory principal and for an API-only account (RFC 18 §3.5)
 	// Role, NotBefore and MustChange are the management API's (RFC 23 §5):
 	// they grant nothing on files. A user with no Role has no API role of its
 	// own; an OpenID Connect sign-in may still give its session one from the
