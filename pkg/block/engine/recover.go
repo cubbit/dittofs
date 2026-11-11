@@ -965,11 +965,6 @@ func (vl *versionLimit) again() bool {
 		}
 
 		if vl.state.CompareAndSwap(raiseRunning, raiseIdle) {
-			// The raise ends here, whether it committed or found the trigger
-			// no longer held: a call waiting for it is woken after the state
-			// is idle, so it finds no raise in flight when it asks.
-			vl.notify()
-
 			return false
 		}
 	}

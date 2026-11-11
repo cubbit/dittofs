@@ -694,6 +694,8 @@ func TestVersionRefusalWokenByAStoppedRaise(t *testing.T) {
 		}
 	})
 
+	// Taken while the raise is still held, so the wake is not missed.
+	waiting := s.e.VersionLimitWatch(s.one.ID)
 	closed := make(chan error, 1)
 
 	go func() {
@@ -705,6 +707,13 @@ func TestVersionRefusalWokenByAStoppedRaise(t *testing.T) {
 
 	if err := await(closed); err != nil {
 		t.Errorf("Close with a write waiting for the raise: %v, want nil", err)
+	}
+
+	// Close has joined the raise, so every exit of it has run by now.
+	select {
+	case <-waiting:
+	default:
+		t.Fatal("the raise Close stopped did not wake the write waiting for it")
 	}
 
 	// The woken write either finds no raise in flight, or runs its journal
@@ -756,9 +765,13 @@ func TestVersionRefusalServedByTheFirstCommitOfARaise(t *testing.T) {
 
 	defer free()
 
-	// The lock is the test's, so the second pass has not run: the commit
-	// closed this channel, and the write is served with the raise unfinished.
-	<-waiting
+	// The test holds the lock, so the first pass has returned and the second
+	// has not run: only the commit can have closed this channel.
+	select {
+	case <-waiting:
+	default:
+		t.Fatal("the first commit did not wake the write")
+	}
 
 	if err := await(w.done); err != nil {
 		t.Errorf("the write after the first commit: %v, want served", err)
