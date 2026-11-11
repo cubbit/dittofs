@@ -388,8 +388,13 @@ func TestUnreclaimedFollowsReleasesAndRetires(t *testing.T) {
 	wantUnreclaimed(t, c, "after dropping 4096 bytes of share 1", 1, 4096)
 	wantUnreclaimed(t, c, "after dropping 4096 bytes of share 1", 2, 0)
 
-	// Retire the segment holding them, the unlink held back.
 	seg := recordOf(t, c, f, 0).Record.Segment
+	// Drop the rest of f, so the segment backs nothing, then retire it with
+	// the unlink held back.
+	if _, err := c.Deallocate(ctx, s1, f, core.Extent{Off: 0, Len: 3 * 4096}); err != nil {
+		t.Fatalf("Deallocate the rest: %v", err)
+	}
+	wantUnreclaimed(t, c, "after dropping all 12288 bytes of share 1", 1, 3*4096)
 	if _, err := c.Streams().For(f).Seal(false); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -407,11 +412,17 @@ func TestUnreclaimedFollowsReleasesAndRetires(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("Retire did not reach its unlink")
 	}
-	wantUnreclaimed(t, c, "while the unlink is held", 1, 4096)
+	wantUnreclaimed(t, c, "while the unlink is held", 1, 3*4096)
 	rm.Release()
 	mv.Release()
 	if err := <-done; err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 	wantUnreclaimed(t, c, "after the unlink", 1, 0)
+	// The zero is the figure itself, not the clamp's: the retire folds the
+	// segment's bytes and overhead back out of the set exactly.
+	used, over := c.set.TagFigures()
+	if raw := unreclaimedRaw(used[1], over[1], c.shareFigures()[1]); raw != 0 {
+		t.Fatalf("after the unlink: share 1's figure before the clamp = %d, want 0 (bytes %d, overhead %d)", raw, used[1], over[1])
+	}
 }

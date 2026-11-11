@@ -74,13 +74,16 @@ type Stats struct {
 // allocation raises before a record is reserved in it. Any other pair may
 // differ by one operation in flight.
 //
-// decision: UnreclaimedBytes is clamped at zero per share, and may be off by
-// one operation in flight. It is the record bytes the set holds for a share
-// less the share's held and retained bytes and the record overhead, and those
-// come from two sources read at two instants. A write racing the read leaves
-// held behind the set; a release followed by a retire leaves the set behind
-// held. Neither read order is safe both ways, so the difference is clamped
-// rather than ordered. Held and retained are read first, then the set.
+// decision: UnreclaimedBytes is clamped at zero per share. It is the record
+// bytes the set holds for a share less the share's held and retained bytes and
+// the record overhead. Held and retained are read first, then the set's bytes
+// and overhead together in one lock hold. A write in flight inflates the
+// figure by its payload, the set being charged before held rises; that is not
+// negative. The clamp's remaining job is a release followed by a retire: held
+// falls at publish and the set falls later, at the retire, so a reader that
+// read held first can see the set below it once retirement is wired. Nothing
+// retires a segment the index still holds yet, so production cannot reach
+// that case; the clamp is the guard for when it can.
 //
 // ponytail: the figure ignores footer entries, segment headers and trailers,
 // which the set does not count, and a dead record's header and padding stay
@@ -137,7 +140,7 @@ func (c *Core) Stats() Stats {
 	// One entry per tag with an open handle or a record on disk, tag 0 (the
 	// journal's own records) excepted.
 	figs := c.shareFigures()
-	used, over := c.set.TagBytes(), c.set.TagOverhead()
+	used, over := c.set.TagFigures()
 	s.Shares = make(map[core.ShareTag]ShareStats)
 	if p := c.registry.Load(); p != nil {
 		for _, h := range *p {
@@ -166,5 +169,10 @@ func (c *Core) Stats() Stats {
 // extent and no live record: its record bytes less its held and retained
 // payload and the non-payload bytes of its records, never below zero.
 func unreclaimed(tagBytes, overhead int64, f shareHeld) int64 {
-	return max(0, tagBytes-f.Held-f.Retained-overhead)
+	return max(0, unreclaimedRaw(tagBytes, overhead, f))
+}
+
+// unreclaimedRaw is the figure before the clamp.
+func unreclaimedRaw(tagBytes, overhead int64, f shareHeld) int64 {
+	return tagBytes - f.Held - f.Retained - overhead
 }

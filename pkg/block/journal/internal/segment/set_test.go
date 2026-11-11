@@ -1524,3 +1524,18 @@ func TestSetOverheadZeroLeavesNoKey(t *testing.T) {
 		t.Fatalf("Check: %v", err)
 	}
 }
+
+func TestSetTagFiguresMatchTheGettersAndAreCopies(t *testing.T) {
+	s, _, tag := overheadSet(t)
+	b, o := s.TagFigures()
+	if b[tag] != 4096+96+100 || o[tag] != 196 {
+		t.Fatalf("TagFigures = %v, %v, want bytes %d and overhead 196", b, o, 4096+96+100)
+	}
+	if !maps.Equal(b, s.TagBytes()) || !maps.Equal(o, s.TagOverhead()) {
+		t.Fatalf("TagFigures = %v, %v differs from TagBytes %v, TagOverhead %v", b, o, s.TagBytes(), s.TagOverhead())
+	}
+	b[tag], o[tag] = 1, 1
+	if b2, o2 := s.TagFigures(); b2[tag] != 4096+96+100 || o2[tag] != 196 {
+		t.Fatalf("TagFigures after a caller changed its copies = %v, %v", b2, o2)
+	}
+}
