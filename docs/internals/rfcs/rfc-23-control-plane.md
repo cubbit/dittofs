@@ -889,10 +889,10 @@ with nothing of it dropped, and the result says so.
 An adapter is configured by its own record, at installation scope per adapter
 ([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)): every key is
 `adapters.<protocol>.<field>`, the common timeouts included, so each adapter
-carries its own copy, its listen addresses included: `adapters.<protocol>.listen`,
-with a node override where one host must bind elsewhere
-([RFC 20 §3.6](rfc-20-adapters.md#3.6%20Changing%20settings%20while%20serving)). Only the API's and the metrics
-listener's addresses are bootstrap facts ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)). The resource is
+carries its own copy, its port included: `adapters.<protocol>.port`, with a
+node override where one host must bind elsewhere
+([RFC 20 §3.6](rfc-20-adapters.md#3.6%20Changing%20settings%20while%20serving)). Its listen addresses are bootstrap
+facts of each host ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)), not records. The resource is
 `/adapters/{protocol}`, with `enabled` and the protocol's settings:
 
 - **enable** moves the adapter from configured to serving on every node
