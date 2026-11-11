@@ -125,14 +125,10 @@ type Stats struct {
 	// them sealed. Both are gauges.
 	Segments, Sealed int
 
-	// Spares is the number of spare segments the pool holds, made or recycled
-	// and taken by no stream yet, each counted in UsedBytes at the segment cap.
-	// Kind: gauge.
-	//
-	// decision: it counts every spare the pool holds, whatever its class. RFC 1
-	// section 3.7 counts only the content class and leaves the headroom, the
-	// repack reserve and the reconcile spare out. Overturned when the pool
-	// reports the content class apart from the others.
+	// Spares is the number of content spare segments the pool holds, made or
+	// recycled and taken by no stream yet, each counted in UsedBytes at the
+	// segment cap. The headroom, repack reserve and reconcile spares are not
+	// counted here. Kind: gauge.
 	Spares int
 
 	// UnreclaimedBytes is the storage in segments not yet unlinked that backs

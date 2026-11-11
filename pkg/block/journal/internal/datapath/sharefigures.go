@@ -28,8 +28,7 @@ type shareLedger struct {
 
 // apply adds d's byte changes to its share. The three figures change under one
 // hold of the mutex and a reader takes it too, so no order among them shows.
-// Tag 0 marks the journal's own
-// records and is not a share, so it is not kept.
+// Tag 0 marks the journal's own records and is not a share, so it is not kept.
 func (l *shareLedger) apply(d index.HeldDelta) {
 	if d.Tag == 0 {
 		return
