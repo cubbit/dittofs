@@ -15,11 +15,14 @@
 # only subtasks above it; one naming itself or a later subtask is reported. The field runs to
 # the next `**Field:**`, bullet, blank line or heading, so it may wrap; it is `none` (or
 # `nothing`), or ids written out one by one (T7.2, T7.3): a range (T7.2–T7.4, T7.2 to T7.4)
-# is reported, since the ids are what tools extract. A dependency on T4.3 when §6 holds only
-# T4.3a and T4.3b stands for both parts. An id with no heading here (another epic's, or the
-# other part's of a split epic) is not checked.
+# is reported, since the ids are what tools extract. The list ends at its first sentence end
+# (a `.` before a space or the line's end) or `;`, and what follows is prose that is not
+# read, so `S1. First, since T2.1 reads it` depends on S1 alone. A dependency on T4.3 when
+# §6 holds only T4.3a and T4.3b stands for both parts. An id with no heading here (another
+# epic's, or the other part's of a split epic) is not checked.
 function dep_scan(text,   tok, ends, i) {
   if (sub(/\*\*[A-Z][A-Za-z ]*:\*\*.*/, "", text)) indep = 0
+  if (match(text, /\.( |$)|;/)) { text = substr(text, 1, RSTART - 1); indep = 0 }
   if (text ~ /^[ .]*([Nn]one|[Nn]othing)([^A-Za-z]|$)/) { indep = 0; return }
   while (match(text, /T[0-9]+\.[0-9]+[a-z]?( *(–|-|to) *T?[0-9]+\.[0-9]+[a-z]?)?/)) {
     tok = substr(text, RSTART, RLENGTH); text = substr(text, RSTART + RLENGTH)
