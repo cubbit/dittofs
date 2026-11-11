@@ -1,4 +1,4 @@
-package config
+package settings
 
 import (
 	"encoding/json"
@@ -22,9 +22,11 @@ func TestDefaultsAreRFC13s(t *testing.T) {
 		HandshakeTimeout: 30 * time.Second,
 		ReadTimeout:      30 * time.Second,
 	}
-	wantNFS := NFS{Adapter: common, TLS: TLS{Mode: "off"}, Versions: VersionRange{Min: "3", Max: "4.2"}}
+	nfsCommon, smbCommon := common, common
+	nfsCommon.Port, smbCommon.Port = 12049, 12445
+	wantNFS := NFS{Adapter: nfsCommon, TLS: TLS{Mode: "off"}, Versions: VersionRange{Min: "3", Max: "4.2"}}
 	wantSMB := SMB{
-		Adapter:        common,
+		Adapter:        smbCommon,
 		Dialects:       VersionRange{Min: "2.1", Max: "3.1.1"},
 		PendingTimeout: 10 * time.Minute,
 		RecallTimeout:  60 * time.Second,
@@ -122,7 +124,7 @@ func TestValidateRefusesNamingTheField(t *testing.T) {
 		{"smb dialects inverted", "Dialects.Max", smb(func(s *SMB) { s.Dialects.Min, s.Dialects.Max = "3.1.1", "3.0" })},
 	} {
 		err := c.s.Validate()
-		if err == nil || !strings.Contains(err.Error(), "config: "+c.field+": ") {
+		if err == nil || !strings.Contains(err.Error(), "settings: "+c.field+": ") {
 			t.Errorf("%s: Validate: %v, want an error naming %s", c.name, err, c.field)
 		}
 	}
@@ -214,7 +216,7 @@ func TestDrainTimeoutFloor(t *testing.T) {
 	}
 }
 
-// pkg/adapter/config is a leaf: it imports only the standard library.
+// pkg/adapter/settings is a leaf: it imports only the standard library.
 func TestImportsOnlyTheStandardLibrary(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -231,7 +233,7 @@ func TestImportsOnlyTheStandardLibrary(t *testing.T) {
 		for _, imp := range file.Imports {
 			p, _ := strconv.Unquote(imp.Path.Value)
 			if strings.Contains(strings.Split(p, "/")[0], ".") {
-				t.Errorf("%s imports %s; pkg/adapter/config imports only the standard library", f, p)
+				t.Errorf("%s imports %s; pkg/adapter/settings imports only the standard library", f, p)
 			}
 		}
 	}

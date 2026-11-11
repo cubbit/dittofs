@@ -8,13 +8,13 @@ import (
 
 	"github.com/cubbit/dittofs/internal/tlsconfig"
 	"github.com/cubbit/dittofs/pkg/adapter"
-	"github.com/cubbit/dittofs/pkg/adapter/config"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 )
 
 // New builds the NFS adapter, configured: it validates s, refuses Deps
 // missing a required field, naming every one missing, and loads the TLS
 // files, refusing what it cannot apply, and opens nothing.
-func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) {
+func New(d adapter.Deps, s settings.NFS) (adapter.Adapter, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}

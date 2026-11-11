@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cubbit/dittofs/pkg/adapter/config"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
 
@@ -37,7 +37,7 @@ func (c *Conn) Keep() (release func()) {
 
 // Settings is the settings snapshot this connection loaded at accept, the
 // protocol's whole shape; NewConn reads its own from it.
-func (c *Conn) Settings() config.Settings {
+func (c *Conn) Settings() settings.Settings {
 	panic("not implemented")
 }
 
