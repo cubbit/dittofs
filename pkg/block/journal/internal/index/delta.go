@@ -1,6 +1,7 @@
 package index
 
 import (
+	"cmp"
 	"slices"
 	"time"
 
@@ -52,7 +53,9 @@ type HeldDelta struct {
 	// OldestDirty is the write time of the file's oldest content whose
 	// offloaded bit is unset, held or retained, as the update left it: a
 	// state, not a change. It is zero when the file holds none, and zero for
-	// content whose write time is unknown.
+	// content whose write time is unknown. Times are kept in buckets of one
+	// second, so it can overstate the oldest write's age by under a second and
+	// never understates it.
 	//
 	// decision: content a rebuild restores carries no write time, so a file
 	// rebuilt dirty reports the zero time until recovery supplies the times.
@@ -61,49 +64,70 @@ type HeldDelta struct {
 	OldestDirty time.Time
 }
 
-// dirtyTimes keeps, for one file, the write time of each version that still
-// has a byte with an unset offloaded bit, held or retained, in ascending
-// version order. A write's time is monotone in its version, so the head is
-// the oldest dirty write. A version's entry is dropped by oldest once its last
-// dirty byte has left; it is not dropped at the moment the count reaches zero,
-// because an edit takes a piece out and puts its parts back within one call.
+// dirtySpan is the width of one dirty-time bucket: a write opens a new bucket
+// only when its time is at least this long after the newest bucket's.
+const dirtySpan = time.Second
+
+// dirtyTimes keeps, for one file, the dirty bytes still held or retained
+// (offloaded bit unset) in buckets of write time, in ascending version order.
+// A write's time is monotone in its version, so a version belongs to the last
+// bucket whose first counter is at or below it, and the head bucket holds the
+// oldest dirty write. A bucket's at is the earliest write time in it.
 //
-// ponytail: a sorted slice, O(versions with dirty bytes) to find, insert and
-// prune per update. Upgrade to a time stored in the held entry only if the
-// 40-byte entry bound moves, or to a heap if a file with many dirty versions
-// shows this in a profile.
-type dirtyTimes struct{ vers []verDirty }
+// The head is pruned only by oldest, once its last dirty byte has left, and
+// never at the moment a count reaches zero, because an edit takes a piece out
+// and puts its parts back within one call. An emptied bucket in the middle is
+// left, as it costs nothing but its slot.
+//
+// decision: a version's time is that of its bucket, so oldest can overstate the
+// age of the oldest dirty write by under dirtySpan and never understates it:
+// the bucket's time is at or before every write in it. Overturned by a reader
+// that needs the exact time of one write.
+//
+// ponytail: the table holds one bucket per dirtySpan of dirty backlog, so its
+// memory is bounded by the seconds a file stays dirty, not by its versions,
+// and an update costs a binary search over those buckets. Upgrade to an exact
+// per-piece time stored in the held entry if the 40-byte entry bound ever
+// widens, or finer buckets if a reader needs sub-second ages.
+type dirtyTimes struct{ vers []dirtyBucket }
 
-type verDirty struct {
-	counter uint64
-	at      time.Time
-	bytes   int64
+type dirtyBucket struct {
+	first uint64 // the lowest counter that opened this bucket
+	at    time.Time
+	bytes int64
 }
 
-// decision: find keys on the counter alone, which names a version because the
-// epoch is always zero in this format: a record with another epoch is refused
-// on encode and decode. Key on the whole version if an epoch is ever raised.
-func (d *dirtyTimes) find(counter uint64) (int, bool) {
-	return slices.BinarySearchFunc(d.vers, counter, func(e verDirty, c uint64) int {
-		switch {
-		case e.counter < c:
-			return -1
-		case e.counter > c:
-			return 1
-		}
-		return 0
-	})
+// decision: buckets key on the counter alone, which names a version because
+// the epoch is always zero in this format: a record with another epoch is
+// refused on encode and decode. Key on the whole version if an epoch is ever
+// raised.
+//
+// floor returns the bucket counter belongs to: the last one whose first is at
+// or below it, or the first when counter is older than all, so an older
+// version re-held by a failed window folds into the oldest bucket. The table
+// must not be empty.
+func (d *dirtyTimes) floor(counter uint64) int {
+	i, _ := slices.BinarySearchFunc(d.vers, counter, func(b dirtyBucket, c uint64) int { return cmp.Compare(b.first, c) })
+	// i is the first bucket not below counter; an exact match is its floor.
+	if i < len(d.vers) && d.vers[i].first == counter {
+		return i
+	}
+	return max(i-1, 0)
 }
 
-// note records at as version counter's write time, keeping an earlier known one.
+// note records at as version counter's write time: it opens a bucket when at
+// lies a span or more past the newest bucket's time, and otherwise leaves the
+// version in the bucket it falls in, filling in a time that bucket lacks.
 func (d *dirtyTimes) note(counter uint64, at time.Time) {
 	if d == nil {
 		return
 	}
-	i, ok := d.find(counter)
-	if !ok {
-		d.vers = slices.Insert(d.vers, i, verDirty{counter: counter, at: at})
-	} else if d.vers[i].at.IsZero() {
+	n := len(d.vers)
+	if n == 0 || (counter > d.vers[n-1].first && at.Sub(d.vers[n-1].at) >= dirtySpan) {
+		d.vers = append(d.vers, dirtyBucket{first: counter, at: at})
+		return
+	}
+	if i := d.floor(counter); d.vers[i].at.IsZero() {
 		d.vers[i].at = at
 	}
 }
@@ -113,19 +137,24 @@ func (d *dirtyTimes) add(counter uint64, n int64) {
 	if d == nil {
 		return
 	}
-	i, ok := d.find(counter)
-	if !ok {
-		d.vers = slices.Insert(d.vers, i, verDirty{counter: counter})
+	if len(d.vers) == 0 {
+		d.vers = append(d.vers, dirtyBucket{first: counter})
 	}
-	d.vers[i].bytes += n
+	d.vers[d.floor(counter)].bytes += n
 }
 
-// oldest prunes the versions with no dirty byte and returns the head's time.
+// oldest prunes the head buckets with no dirty byte and returns the new head's
+// time, zero when none is left. It is amortised O(1) per bucket opened.
 func (d *dirtyTimes) oldest() time.Time {
-	d.vers = slices.DeleteFunc(d.vers, func(e verDirty) bool { return e.bytes <= 0 })
-	if len(d.vers) == 0 {
+	k := 0
+	for k < len(d.vers) && d.vers[k].bytes <= 0 {
+		k++
+	}
+	if k == len(d.vers) {
+		d.vers = d.vers[:0]
 		return time.Time{}
 	}
+	d.vers = d.vers[k:]
 	return d.vers[0].at
 }
 
