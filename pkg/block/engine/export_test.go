@@ -547,6 +547,18 @@ func (e *Engine) HoldRemovalLoop(j Journal) (run func()) {
 	}
 }
 
+// LifecycleMutexFree reports whether the lifecycle mutex is free now, for a
+// test that holds a call in I/O and asserts the mutex is not held across it.
+func (e *Engine) LifecycleMutexFree() bool {
+	if !e.mu.TryLock() {
+		return false
+	}
+
+	e.mu.Unlock()
+
+	return true
+}
+
 // CloseGroupCommits stops every journal's group commit and its removal loop
 // and joins their goroutines, without the rest of Close: a batch in flight
 // has its context cancelled, and no batch starts after it.

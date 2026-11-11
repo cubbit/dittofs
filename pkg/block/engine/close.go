@@ -183,6 +183,10 @@ func (e *Engine) stop(b *stopBound, r *closeRun) error {
 		return err
 	}
 
+	if err := e.stopRetries(b); err != nil {
+		return err
+	}
+
 	r.final = true
 
 	return e.closeAll()
@@ -261,6 +265,27 @@ func (e *Engine) stopRaise(b *stopBound) error {
 
 	if !b.join(raised, "a version limit raise") {
 		return stuck("a version limit raise")
+	}
+
+	return nil
+}
+
+// stopRetries cancels the retried open of a journal refused at Start and
+// joins it (RFC 8 §2.5 step 3). A retry that is inside Open when it is
+// cancelled sees the closed state when Open returns and closes what it
+// opened, so nothing it opened is left for the step that closes the journals.
+func (e *Engine) stopRetries(b *stopBound) error {
+	e.retrying.cancel()
+
+	retried := make(chan struct{})
+
+	go func() {
+		e.retrying.wg.Wait()
+		close(retried)
+	}()
+
+	if !b.join(retried, "a retried open") {
+		return stuck("a retried open")
 	}
 
 	return nil

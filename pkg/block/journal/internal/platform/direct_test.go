@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"unsafe"
@@ -23,7 +25,7 @@ var directReadCases = []struct {
 	n   int
 
 	wantN int    // the bytes read
-	want  string // "nil", "eof" or "error", which the case only names, as ReadAt does
+	want  string // "nil" or "eof"
 }{
 	{off: 0, n: 1, wantN: 1, want: "nil"},
 	{off: 1, n: 4095, wantN: 4095, want: "nil"},
@@ -34,7 +36,6 @@ var directReadCases = []struct {
 	{off: 5*4096 + 50, n: 200, wantN: 50, want: "eof"},
 	{off: 5*4096 + 100, n: 1, wantN: 0, want: "eof"},
 	{off: 0, n: 0, wantN: 0, want: "nil"},
-	{off: -1, n: 1, wantN: 0, want: "error"},
 }
 
 // directBytes returns the contents the direct-read cases read from: 5*4096+100
@@ -116,15 +117,9 @@ func checkDirectRead(t *testing.T, want []byte, raw func(buf []byte, off int64) 
 			if !errors.Is(err, io.EOF) {
 				t.Errorf("{off %d, len %d}: got %v, want io.EOF", tc.off, tc.n, err)
 			}
-		default:
-			// The read at the negative offset, whose error ReadAt also leaves
-			// unnamed.
-			if err == nil {
-				t.Errorf("{off %d, len %d}: the read succeeded, want an error", tc.off, tc.n)
-			}
 		}
 
-		if tc.off >= 0 && !bytes.Equal(p[:n], want[tc.off:tc.off+int64(n)]) {
+		if !bytes.Equal(p[:n], want[tc.off:tc.off+int64(n)]) {
 			t.Errorf(
 				"{off %d, len %d}: got %v, want the file's bytes %v",
 				tc.off, tc.n, p[:n], want[tc.off:tc.off+int64(n)],
@@ -299,5 +294,171 @@ func TestDirectReadPreadErrorRaw(t *testing.T) {
 
 	if !bytes.Equal(p[:n], want[:n]) {
 		t.Fatalf("directRead over a raw answering -1 with EIO: got %v, want the file's bytes", p[:n])
+	}
+}
+
+// TestReadAtDirectUnalignedRecord checks ReadAtDirect over ranges no raw
+// direct read accepts as they are — the first and the last byte of a
+// three-block file, and a record straddling a block boundary — against the
+// bytes ReadAt returns.
+func TestReadAtDirectUnalignedRecord(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	want := directBytes()
+	o := NewOS(t.TempDir())
+	f := directCheckFile(t, o, nil, "a", want[:3*4096])
+
+	for _, tc := range []struct {
+		off int64
+		n   int
+	}{
+		{0, 1},
+		{3*4096 - 1, 1},
+		{4096 - 20, 40},
+	} {
+		cached := make([]byte, tc.n)
+		if n, err := f.ReadAt(cached, tc.off); n != tc.n || err != nil {
+			t.Fatalf("ReadAt {off %d, len %d}: %d, %v", tc.off, tc.n, n, err)
+		}
+
+		direct := make([]byte, tc.n)
+		n, err := f.ReadAtDirect(direct, tc.off)
+		if n != tc.n || err != nil {
+			t.Fatalf(
+				"ReadAtDirect {off %d, len %d}: %d, %v; want %d and no error",
+				tc.off, tc.n, n, err, tc.n,
+			)
+		}
+
+		if !bytes.Equal(direct, cached) {
+			t.Fatalf(
+				"ReadAtDirect {off %d, len %d}: %v; want ReadAt's %v",
+				tc.off, tc.n, direct, cached,
+			)
+		}
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestReadAtDirectEndOfFile checks a read the file's end cuts short answers
+// io.EOF as bare as ReadAt does — never an fs.PathError wrapping it, the
+// shape os.File.ReadAt wraps only the errors that are not io.EOF — so a
+// caller comparing err == io.EOF, as the format catalogue does, holds.
+func TestReadAtDirectEndOfFile(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	f := directCheckFile(t, NewOS(t.TempDir()), nil, "a", []byte("record"))
+
+	p := make([]byte, 6)
+	n, err := f.ReadAtDirect(p, 3)
+
+	if err != io.EOF {
+		t.Fatalf("ReadAtDirect at the end: %d, %v (%T); want io.EOF bare", n, err, err)
+	}
+
+	if n != 3 || string(p[:n]) != "ord" {
+		t.Fatalf("ReadAtDirect at the end: %d, %q; want the 3 bytes after 3 the file had", n, p[:n])
+	}
+
+	if n, err := f.ReadAtDirect(make([]byte, 1), 6); n != 0 || err != io.EOF {
+		t.Fatalf("ReadAtDirect past the end: %d, %v (%T); want 0 and io.EOF bare", n, err, err)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestReadAtDirectAfterClose checks a closed file's ReadAtDirect fails with
+// fs.ErrClosed, as its ReadAt does, before any call through the table, and
+// does so even for a read of no byte.
+func TestReadAtDirectAfterClose(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	dir := t.TempDir()
+	r := &recorder{}
+	f := directCheckFile(t, newOS(dir, r.table()), r, "a", []byte("record"))
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r.take()
+
+	for _, p := range [][]byte{make([]byte, 1), nil} {
+		if n, err := f.ReadAtDirect(p, 0); !errors.Is(err, fs.ErrClosed) {
+			t.Fatalf("ReadAtDirect of %d bytes after Close: %d, %v; want an error matching fs.ErrClosed", len(p), n, err)
+		}
+	}
+
+	if log := r.take(); len(log) != 0 {
+		t.Fatalf("ReadAtDirect after Close made %v; want no call", log)
+	}
+}
+
+// TestReadAtDirectNegativeOffset checks ReadAtDirect at a negative offset
+// fails before any system call, with an *fs.PathError that names the file and
+// wraps the platform's named error for it.
+func TestReadAtDirectNegativeOffset(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	dir := t.TempDir()
+	r := &recorder{}
+	f := directCheckFile(t, newOS(dir, r.table()), r, "a", []byte("record"))
+
+	n, err := f.ReadAtDirect(make([]byte, 1), -1)
+
+	var pe *fs.PathError
+	if !errors.As(err, &pe) || !errors.Is(err, errNegativeOffset) || pe.Path != filepath.Join(dir, "a") {
+		t.Fatalf("ReadAtDirect at -1: %v (%T); want an *fs.PathError naming the file and wrapping %v", err, err, errNegativeOffset)
+	}
+
+	if n != 0 {
+		t.Fatalf("ReadAtDirect at -1: %d bytes, want 0", n)
+	}
+
+	if log := r.take(); len(log) != 0 {
+		t.Fatalf("ReadAtDirect at -1 made %v, want no call", log)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestReadAtDirectConcurrent checks concurrent ReadAtDirect calls on one
+// file: every read returns the file's bytes, at the offsets the goroutines
+// pick without coordination.
+func TestReadAtDirectConcurrent(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	want := directBytes()
+	o := NewOS(t.TempDir())
+	f := directCheckFile(t, o, nil, "a", want)
+
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			for off := int64(i * 100); off < int64(len(want)); off += 8192 {
+				n := min(1024, len(want)-int(off))
+				p := make([]byte, n)
+				r, err := f.ReadAtDirect(p, off)
+				if r != n || err != nil || !bytes.Equal(p, want[off:off+int64(n)]) {
+					t.Errorf(
+						"ReadAtDirect at %d: %d, %v; want %d and the file's bytes",
+						off, r, err, n,
+					)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

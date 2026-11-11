@@ -2,11 +2,8 @@ package platform
 
 import (
 	"bytes"
-	"errors"
 	"io"
-	"io/fs"
 	"path/filepath"
-	"sync"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -102,52 +99,6 @@ func TestReadAtDirectHandleIsNoBuffering(t *testing.T) {
 	}
 }
 
-// TestReadAtDirectUnalignedRecord checks ReadAtDirect over ranges no raw
-// direct read accepts as they are — the first and the last byte of a
-// three-block file, and a record straddling a block boundary — against the
-// bytes ReadAt returns.
-func TestReadAtDirectUnalignedRecord(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	want := directBytes()
-	o := NewOS(t.TempDir())
-	f := directCheckFile(t, o, nil, "a", want[:3*4096])
-
-	for _, tc := range []struct {
-		off int64
-		n   int
-	}{
-		{0, 1},
-		{3*4096 - 1, 1},
-		{4096 - 20, 40},
-	} {
-		cached := make([]byte, tc.n)
-		if n, err := f.ReadAt(cached, tc.off); n != tc.n || err != nil {
-			t.Fatalf("ReadAt {off %d, len %d}: %d, %v", tc.off, tc.n, n, err)
-		}
-
-		direct := make([]byte, tc.n)
-		n, err := f.ReadAtDirect(direct, tc.off)
-		if n != tc.n || err != nil {
-			t.Fatalf(
-				"ReadAtDirect {off %d, len %d}: %d, %v; want %d and no error",
-				tc.off, tc.n, n, err, tc.n,
-			)
-		}
-
-		if !bytes.Equal(direct, cached) {
-			t.Fatalf(
-				"ReadAtDirect {off %d, len %d}: %v; want ReadAt's %v",
-				tc.off, tc.n, direct, cached,
-			)
-		}
-	}
-
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // TestReadAtDirectRefusedByFilesystem checks a filesystem that refuses the
 // direct open hands the refusal back as itself — never a cached read, which
 // would hand the tail check after a crash a proof it does not have: the error
@@ -197,39 +148,8 @@ func TestReadAtDirectRefusedByFilesystem(t *testing.T) {
 	}
 }
 
-// TestReadAtDirectEndOfFile checks a read the file's end cuts short answers
-// io.EOF as bare as ReadAt does — never an fs.PathError wrapping it, the
-// shape ReadAt wraps only the errors that are not io.EOF — so a caller
-// comparing err == io.EOF, as the format catalogue does, holds. Both reads
-// sit inside the file's first block, whose one readFile call of the window
-// returns a partial count with no error and ends it off the alignment.
-func TestReadAtDirectEndOfFile(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	f := directCheckFile(t, NewOS(t.TempDir()), nil, "a", []byte("record"))
-
-	p := make([]byte, 6)
-	n, err := f.ReadAtDirect(p, 3)
-
-	if err != io.EOF {
-		t.Fatalf("ReadAtDirect at the end: %d, %v (%T); want io.EOF bare", n, err, err)
-	}
-
-	if n != 3 || string(p[:n]) != "ord" {
-		t.Fatalf("ReadAtDirect at the end: %d, %q; want the 3 bytes after 3 the file had", n, p[:n])
-	}
-
-	if n, err := f.ReadAtDirect(make([]byte, 1), 6); n != 0 || err != io.EOF {
-		t.Fatalf("ReadAtDirect past the end: %d, %v (%T); want 0 and io.EOF bare", n, err, err)
-	}
-
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // TestReadAtDirectHandleEOFAtBlockEnd is the EOF case the mapping in
-// readDirect's raw exists for, which every shorter file never reaches: a
+// readDirectLocked's raw exists for, which every shorter file never reaches: a
 // file whole blocks long, asked for a byte more than it holds, whose window
 // spans a second block that starts at the file's end — where ReadFile can
 // answer ERROR_HANDLE_EOF with no byte, the refusal the raw maps to io.EOF.
@@ -239,7 +159,7 @@ func TestReadAtDirectEndOfFile(t *testing.T) {
 // as a partial count of a wider window. The read answers io.EOF bare with
 // the 4096 bytes the file had, and the table's log holds the second readFile
 // call at 4096 whose queued refusal it was. Delete the ERROR_HANDLE_EOF
-// branch in readDirect and its error reaches the caller wrapped in an
+// branch in readDirectLocked and its error reaches the caller wrapped in an
 // *fs.PathError instead of io.EOF, and the test fails on its bare-io.EOF
 // assertion.
 func TestReadAtDirectHandleEOFAtBlockEnd(t *testing.T) {
@@ -281,90 +201,6 @@ func TestReadAtDirectHandleEOFAtBlockEnd(t *testing.T) {
 			log[2],
 		)
 	}
-
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestReadAtDirectAfterClose checks a closed file's ReadAtDirect fails with
-// fs.ErrClosed, as its ReadAt does, before any call through the table.
-func TestReadAtDirectAfterClose(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	dir := t.TempDir()
-	r := &recorder{}
-	f := directCheckFile(t, newOS(dir, r.table()), r, "a", []byte("record"))
-
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	if n, err := f.ReadAtDirect(make([]byte, 1), 0); !errors.Is(err, fs.ErrClosed) {
-		t.Fatalf("ReadAtDirect after Close: %d, %v; want an error matching fs.ErrClosed", n, err)
-	}
-
-	if log := r.take(); len(log) != 0 {
-		t.Fatalf("ReadAtDirect after Close made %v; want no call", log)
-	}
-}
-
-// TestReadAtDirectNegativeOffset checks ReadAtDirect at a negative offset
-// fails before any system call, with the error ReadAt's own shape gives it.
-func TestReadAtDirectNegativeOffset(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	dir := t.TempDir()
-	r := &recorder{}
-	f := directCheckFile(t, newOS(dir, r.table()), r, "a", []byte("record"))
-
-	n, err := f.ReadAtDirect(make([]byte, 1), -1)
-
-	expectPathError(t, err, windows.ERROR_INVALID_PARAMETER, filepath.Join(dir, "a"))
-
-	if n != 0 {
-		t.Fatalf("ReadAtDirect at -1: %d bytes, want 0", n)
-	}
-
-	if log := r.take(); len(log) != 0 {
-		t.Fatalf("ReadAtDirect at -1 made %v, want no call", log)
-	}
-
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestReadAtDirectConcurrent checks concurrent ReadAtDirect calls on one
-// file, every read returning the file's bytes, at the offsets the goroutines
-// pick without coordination, over the one handle directMu opens once for the
-// file: without the mu the reads would race the open, or the window of one
-// would read past a Close's release of the handle.
-func TestReadAtDirectConcurrent(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	want := directBytes()
-	o := NewOS(t.TempDir())
-	f := directCheckFile(t, o, nil, "a", want)
-
-	var wg sync.WaitGroup
-	for i := range 8 {
-		wg.Go(func() {
-			for off := int64(i * 100); off < int64(len(want)); off += 8192 {
-				n := min(1024, len(want)-int(off))
-				p := make([]byte, n)
-				r, err := f.ReadAtDirect(p, off)
-				if r != n || err != nil || !bytes.Equal(p, want[off:off+int64(n)]) {
-					t.Errorf(
-						"ReadAtDirect at %d: %d, %v; want %d and the file's bytes",
-						off, r, err, n,
-					)
-					return
-				}
-			}
-		})
-	}
-	wg.Wait()
 
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
