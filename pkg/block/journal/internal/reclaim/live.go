@@ -47,8 +47,9 @@ type Rec struct {
 // the index counts, the records registered live, a deferred-loss flag and a
 // count of ended holds — the things that keep a segment held with no
 // content. It is safe for concurrent use: Held reads atomics alone and takes
-// no lock; every update takes the registry lock rm, and the ones that move a
-// segment's counters also lock the one segment they name.
+// no lock; registrations, releases and re-tests take the registry lock rm, the
+// ended-hold events take hm, and whatever moves a segment's counters also
+// locks the one segment it names.
 type Tracker struct {
 	ix        *index.Index
 	candidate func(core.SegmentID)

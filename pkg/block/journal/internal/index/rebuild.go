@@ -153,6 +153,15 @@ func newRebuilder(fs *files, ctr *Counters) *rebuilder {
 // Finish with their marker and drop-range state built whole, which is how
 // the journal's open will plant the state a reclamation tracker answers
 // over. Index.Rebuilder makes one.
+//
+// decision: the handle is exported for the open's rebuild, and until that
+// lands only the reclaim tests reach it. It is kept because it is the only
+// exported path that builds state the way recovery does — records fed, then
+// Finish building every marker and drop range whole, header-only truncates
+// and releases at a chosen pair included — where ApplyRemoval, WriteRetain
+// and Lose build the running journal's state one call at a time. Overturned
+// when the open's rebuild calls it (the tests then stop being its only
+// callers) or when the drop-test tests can plant their markers some other way.
 type Rebuilder struct{ b *rebuilder }
 
 // Rebuilder returns a builder that rebuilds into ix, observing its records'
