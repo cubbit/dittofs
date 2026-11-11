@@ -79,7 +79,7 @@ two `New`); `pkg/resources`' signatures; `core`'s §4.7 surface with stub bodies
   change without an RFC amendment.
 - **S2**, `testproto` and the import test in CI, after E2.
 - **S3**, `core` serves `testproto` end to end, after E4 and E5.
-- **S4**, `internal/node` exists (RFC 23), outside this programme's epics.
+- **S4**, `internal/node` exists: RFC 23's plan's S2 (#4050), outside this programme's epics.
 - **The deferral ledger**: the list of everything RFC 20 or develop's v1 provides that the
   branch does not serve yet, each row naming the owner that brings it back.
 - **The cutover**: the programme stage that wires v2 adapters into `dfs` and turns the
@@ -809,7 +809,7 @@ cannot build apart.
   `export_auth_policy.go` and `share_permission.go` the reference. Owner: RFC 18's and RFC 19's
   plans.
 - Netgroups can still be attached to a share's NFS config (D4 keeps the route) but no longer
-  managed, since T1.2 deletes their routes and commands. Owner: RFC 23, with its records.
+  managed, since T1.2 deletes their routes and commands. Owner: RFC 23's plan (#4050, D12).
 - The `require_kerberos` boot refusal (D25). Owner: RFC 21's plan, with the NFS adapter.
 - The NFS lock grace period setting, which the start path no longer applies, though D4 keeps
   the row that holds it. Owner: RFC 21's plan.

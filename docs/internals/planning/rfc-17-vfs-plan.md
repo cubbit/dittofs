@@ -53,7 +53,8 @@ is the contract to agree with the journal v2 team before either side builds agai
 
 **D4. Identity through a minimal real resolver in `internal/vfs/admit` (settled on #3526).**
 - There is one resolver until RFC 18 lands, so `Deps` has no `Identity` field yet; §2.3 keeps
-  `Deps.Identity` as the target RFC 18 brings.
+  `Deps.Identity` as the target RFC 18 brings. RFC 18's plan (#4058) adds the field in its epic 1
+  and moves this resolver into identity in its epic 3.
 - It lives in `internal/vfs/admit`, since resolving the caller is admission's step 4 (§4.9), over
   `Principals.SharePolicy`, `ByProtocolID` (a `Claimed` caller's uid), `Groups`, `Grant` and
   `User` (refusing a disabled or deleted principal, RFC 18 §6.1), filling
@@ -67,7 +68,8 @@ is the contract to agree with the journal v2 team before either side builds agai
   // uncached; RFC 18's resolver replaces it, behind Deps.Identity, adding the
   // cache and directories.
   ```
-- `Deps.Auth` and `Deps.Names` wait for RFC 18 with the `Principals` area (piece 3).
+- `Deps.Auth` and `Deps.Names` wait for RFC 18 with the `Principals` area (piece 3): RFC 18's
+  plan (#4058) adds them in its epic 1 and fills them in its epics 3 and 4 (its S2).
 
 **D5. Packages as §2.4 lays them out.** `pkg/vfs` is the contract (types, errors, ID codecs,
 `Service`, `Callbacks`, `Events`) plus `vfstest` (`Memory`, `Faults`, `Callbacks`, `Null`) and its
@@ -210,7 +212,7 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
      [`Spell`](../rfcs/rfc-17-vfs.md#3.1%20Operations), `Find`) are stubs, since nothing calls
      them before stage 5 and nothing is under them yet: `Snapshots` answers an empty list
      until RFC 12's store view exists, and the three `Principals` calls answer `ErrAccess` until
-     RFC 18 lands, with `Deps.Auth` and `Deps.Names`.
+     RFC 18 lands, with `Deps.Auth` and `Deps.Names` (RFC 18's plan, #4058, S2).
    - §4.9 allows admission's steps 1–4 to be cached; stage 2 does not, so it has no cache key to
      get wrong:
 
@@ -344,7 +346,8 @@ which are the node's, a removal's or a cut's.
 
 1. **The engine contract (plan §4):** is `Content` frozen against E11 of #3152 before piece 2?
 2. ~~**D4:** when does RFC 18's resolver land to replace the minimal one?~~ Settled on #3526:
-   the minimal one stays in `internal/vfs/admit`, uncached, until RFC 18 lands.
+   the minimal one stays in `internal/vfs/admit`, uncached, until RFC 18 lands; RFC 18's plan
+   (#4058) replaces it in its epic 3.
 3. **Gaps below the filesystem** (§10.4): the store calls the filesystem needs that `feat/storage-v2`
    lacks. All are store work, and so ours. Quota records already have a read view,
    `Capacity.Quota` (`pkg/metadata/kvstore/quota.go`), and #3532 landed `ShareIndex`,

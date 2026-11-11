@@ -60,7 +60,8 @@ planned separately with the same skill afterwards.
   `dcerpc` seam: their RFC 21/22 epics, or cutover for sidecars.
 - Feature parity with develop, and re-enabling today's suites: those plans, then cutover (#3119
   stage 7).
-- Wiring adapters into `cmd/dfs` and `node.New`: cutover.
+- Wiring adapters into `cmd/dfs` and `node.New`: cutover. RFC 23's plan (#4050) builds
+  `internal/node`, and leaves the adapter rows to the adapters plan's epic 7 (its D12).
 
 ## Anti-goals
 
@@ -284,7 +285,7 @@ The skill derives the test set from RFC 20's obligations, and each is a `dt` sui
 | 14 (open state) | constraints only: `Callbacks`, `Adapter` bytes format rules |
 | 18 (identity) | constraints only: `gss` is deferred |
 | 21, 22 (protocols) | constraints only: the scaffold's stage shapes |
-| 23 (node) | only the `pkg/adapter` contract it drives; `internal/node` and `node.New` are cutover's |
+| 23 (node) | only the `pkg/adapter` contract it drives; `internal/node` and `node.New` are RFC 23's plan's (#4050) |
 | 24 (resources) | in scope for its minimal slice: `Budget`, `Reservation`, `Pools`, `Buf`, `BufPool` in `pkg/resources`; the plan amends RFC 24 §2.8 to put `Buf` there |
 | 25 (observability) | §10's metrics, spans and logs, through `pkg/metrics` |
 | 29 (harness) | in scope: every suite registered in `test/suites.yaml` |

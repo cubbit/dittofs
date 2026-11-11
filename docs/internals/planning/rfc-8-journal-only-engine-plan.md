@@ -1031,7 +1031,7 @@ excluded. Spans: a clone's batches as root spans.
 **Epic 9 estimate: 5 subtasks, 11.5 man-days.**
 
 The programme puts the engine under `*vfs.Filesystem` at RFC 17 §8's integration tier now,
-and into `node.New` at stage 4, so this epic composes the two and nothing else: no root, no
+and into `node.New` in RFC 23's plan's epic 3 (#4050), so this epic composes the two and nothing else: no root, no
 configuration keys, no API or CLI. Observability is wired with what exists (rule 3): `Deps`
 from a logger and a recording `Tracer` the fixture builds, the counters and conditions read
 through `Stats`. RFC 8 names no alert rule this part can raise. Sections
