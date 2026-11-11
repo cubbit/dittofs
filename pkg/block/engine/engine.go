@@ -84,24 +84,20 @@ type Engine struct {
 	// version, in place of the rebuild. Nothing above the marker is applied.
 	cloneMarker cloneMarkerFunc
 
-	// seams are a test's hooks in Close: each fires when that wait has to
-	// wait, and is nil in production.
+	// seams are a test's hooks: each fires when that wait has to wait, and is
+	// nil in production. refused cannot be a wrapper: it marks the engine's
+	// own decision to block, taken after the journal call returned, and there
+	// is no dependency call to wrap there.
 	seams struct {
 		joining  atomic.Pointer[func(what string)] // a join of Close, with what it waits for
 		draining atomic.Pointer[func()]            // Close's wait for the lifecycle calls
+		refused  atomic.Pointer[func()]            // a refused call about to wait for the raise
 	}
 	// refusals is engine_write_refusals_total, the writes answered as refused.
 	refusals atomic.Int64
 	// unknownLimits holds the limits with no row of the refusal table that
 	// were logged, so each is logged once.
 	unknownLimits sync.Map
-	// waits is a test's seam on a refused call that waits for the raise of the
-	// version limit: refused runs when the call is about to block. It cannot be a
-	// wrapper: it marks the engine's own decision to block, taken after the
-	// journal call returned, and there is no dependency call to wrap there.
-	waits struct {
-		refused atomic.Pointer[func()]
-	}
 
 	// unsuitable is set while the journal's shares wait for a retried open
 	// (RFC 8 §2.5): a Bind, Unbind or Drop that names a share the journal

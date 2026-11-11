@@ -242,7 +242,7 @@ func (e *Engine) awaitRaise(ctx context.Context, changed <-chan struct{}) bool {
 	select {
 	case <-changed:
 	default:
-		if h := e.waits.refused.Load(); h != nil {
+		if h := e.seams.refused.Load(); h != nil {
 			(*h)()
 		}
 

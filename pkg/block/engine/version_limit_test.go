@@ -49,7 +49,10 @@ func newRaiser(t *testing.T, age time.Duration, opts ...starterOption) *starter 
 
 		defer cancel()
 
-		if err := s.e.Close(ctx); err != nil {
+		// A journal the test closed itself is reported by the engine's Close
+		// as unavailable: that is the answer, not a failure.
+		err := s.e.Close(ctx)
+		if err != nil && !(s.journalClosed && errors.Is(err, vfserr.ErrUnavailable)) {
 			t.Errorf("close the engine: %v", err)
 		}
 	})
