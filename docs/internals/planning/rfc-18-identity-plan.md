@@ -813,10 +813,10 @@ This epic waits for an SMB adapter serving through the node (S3).
 - **O5. Routes from RFC 23 (#4050).** RFC 23's amendment A5 in #4050 adds them, and that plan's
   epic 4 builds them: the directory test, the online join, the offline join and the machine
   password's rotation as RFC 23 §4.1 actions, each run as an operation with its own `OpKind`; the
-  join's state in the directory record's status; and a grant by name or SID as two calls, a resolve
-  action that mints the principal in its own transaction, then `PUT /shares/{id}/grants/{principal}`
-  by ID (RFC 23 §4.3). Linking a Kerberos name to a user (its `krb` spelling, RFC 18 §4.2) is still
-  asked of that plan.
+  join's state on the installation's status, the secure channel's health a node condition; and a
+  grant by name or SID as two calls, `resolve-principal`, which mints the principal in its own
+  transaction, then `PUT /shares/{id}/grants/{principal}` by ID (RFC 23 §3.5, §4.3). A user's `krb`
+  spelling (RFC 18 §4.2) is a field of the user, written by RFC 23 §3.5's edit, in the same epic.
 - **O6. One machine account, several nodes** (RFC 18 §12 item 2) is unmeasured, and matters only
   with a second node (§4.3 above).
 - **O7. Estimates least certain.** Epic 7 depends on how much of v1's secure channel survives the
