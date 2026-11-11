@@ -8,7 +8,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
-// TestRecordGoldens pins each of the 14 record goldens three ways: the
+// TestRecordGoldens pins each of the 16 record goldens three ways: the
 // encoder's bytes equal the hand-written hex file, which equals raw's bytes
 // — raw is the independent account — and the decoder returns exactly the
 // header and body the file holds. The kind byte is checked against the
@@ -22,8 +22,8 @@ import (
 // header checksum they are covered by.
 func TestRecordGoldens(t *testing.T) {
 	goldens := recordGoldens(t)
-	if len(goldens) != 14 {
-		t.Fatalf("%d goldens, want one per kind, 14", len(goldens))
+	if len(goldens) != 16 {
+		t.Fatalf("%d goldens, want one per kind, 16", len(goldens))
 	}
 
 	for name, want := range goldens {
@@ -84,7 +84,7 @@ func TestRecordGoldens(t *testing.T) {
 // recordBodiesEqual compares two bodies including their payload bytes, which
 // == cannot: a slice's value is not its contents.
 func recordBodiesEqual(a, b RecordBody) bool {
-	if a.MTime != b.MTime || a.Loss != b.Loss || a.Clone != b.Clone || a.Cut != b.Cut {
+	if a.MTime != b.MTime || a.Loss != b.Loss || a.Clone != b.Clone || a.Cut != b.Cut || a.Reconciled != b.Reconciled {
 		return false
 	}
 	return slices.Equal(a.Payload, b.Payload)
@@ -113,6 +113,8 @@ func TestRecordGoldenKindNames(t *testing.T) {
 		{"unhold", KindUnhold},
 		{"stamp", KindStamp},
 		{"forget", KindForget},
+		{"reconcile", KindReconcile},
+		{"reconciled", KindReconciled},
 	} {
 		if _, ok := goldens[want.name]; !ok {
 			t.Errorf("no golden named record_%s for kind %d", want.name, uint8(want.kind))
@@ -136,16 +138,18 @@ func wantRecordAt(t *testing.T, name string) wantRecord {
 	return want
 }
 
-// TestRecordHeaderFileIsZeroForUnholdAndForget pins the kinds table's
-// zero-field columns against the goldens: unhold and forget carry neither a
-// FileID nor a version, delete, hold, unhold, stamp and forget carry a
-// zero offset and length. Every other golden's FileID is non-zero, refused
-// as damage when it is not.
-func TestRecordHeaderFileIsZeroForUnholdAndForget(t *testing.T) {
+// TestRecordGoldensCarryTheFieldsTheKindsTableZeroes pins the kinds table's
+// zero-field columns against the goldens: unhold, forget, reconcile and
+// reconciled carry neither a FileID nor a version, delete, hold, unhold,
+// stamp, forget, reconcile and reconciled carry a zero offset and length,
+// and the journal's own reconcile and reconciled carry tag zero. Every other
+// golden's FileID is non-zero, refused as damage when it is not.
+func TestRecordGoldensCarryTheFieldsTheKindsTableZeroes(t *testing.T) {
 	for name, want := range recordGoldens(t) {
-		zeroFile := name == "unhold" || name == "forget"
-		zeroExtent := name == "delete" || name == "hold" || name == "unhold" || name == "stamp" || name == "forget"
+		zeroFile := name == "unhold" || name == "forget" || name == "reconcile" || name == "reconciled"
+		zeroExtent := zeroFile || name == "delete" || name == "hold" || name == "stamp"
 		zeroVersion := zeroFile
+		zeroTag := name == "reconcile" || name == "reconciled"
 
 		if zeroFile != (want.h.File == (core.FileID{})) {
 			t.Errorf("record_%s: FileID zero is %t, want %t", name, want.h.File == (core.FileID{}), zeroFile)
@@ -155,6 +159,9 @@ func TestRecordHeaderFileIsZeroForUnholdAndForget(t *testing.T) {
 		}
 		if zeroExtent != (want.h.Extent == (core.Extent{})) {
 			t.Errorf("record_%s: extent zero is %t, want %t", name, want.h.Extent == (core.Extent{}), zeroExtent)
+		}
+		if zeroTag != (want.h.Tag == 0) {
+			t.Errorf("record_%s: share tag zero is %t, want %t", name, want.h.Tag == 0, zeroTag)
 		}
 	}
 }

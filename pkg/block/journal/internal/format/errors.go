@@ -29,7 +29,7 @@ var (
 
 	// ErrUnknownKind is matched by a decode error when the record header
 	// verifies at its place but its kind is not one this format version
-	// defines: 0, which is never a kind, or 15 and above, reserved for
+	// defines: 0, which is never a kind, or 17 and above, reserved for
 	// later core kinds and extensions. The caller must not step over the
 	// record by its length — an unknown kind may be a removal.
 	ErrUnknownKind = errors.New("format: unknown kind")

@@ -28,7 +28,7 @@ import (
 //     own slot.
 //
 // In raw mode the mutation bytes are the segment whole. In planted mode
-// plan derives a segment — records of the kinds 1–14 with zero gaps among
+// plan derives a segment — records of the kinds 1–16 with zero gaps among
 // them, an optional seal marker, an old life's bytes in the tail, trailing
 // zeros — and mutate names the bytes to flip; the planted scan is held to
 // the rules its planting makes too: an untouched planted record attaches at
@@ -54,7 +54,7 @@ func FuzzScan(f *testing.F) {
 	// old-life letters are the grammar's own, not record kinds — a seed
 	// spelling them with kind letters plants nothing it claims to.
 	for _, plan := range [][]byte{
-		{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+		{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 		{1, 0, 3},
 		{1, 2, fuzzMarkerLetter},
 		{1, 0, fuzzMarkerLetter, 2},
@@ -98,12 +98,12 @@ func scanWhole(seg []byte, identity core.JournalID, segment core.SegmentID) (Sca
 }
 
 // The planting grammar's own letters. A plan's byte is a letter: 0 a zero
-// gap of one record's width, 1–14 a record of that kind, fuzzMarkerLetter
+// gap of one record's width, 1–16 a record of that kind, fuzzMarkerLetter
 // a seal marker pasted at the next slot, and fuzzOldLifeLetter an old
 // life's whole bytes in the tail. Anything else ends the plan's letters.
 const (
 	fuzzFirstKind     = 1
-	fuzzLastKind      = 14
+	fuzzLastKind      = 16
 	fuzzMarkerLetter  = 253
 	fuzzOldLifeLetter = 252
 	fuzzMaxPayload    = 96
@@ -240,6 +240,17 @@ func fuzzKindBody(kind Kind, off int64) (RecordHeader, RecordBody) {
 		h.Version = core.Version{}
 		h.Extent = core.Extent{}
 		body = RecordBody{}
+
+	// The kinds table gives the journal's own two kinds a zero file,
+	// version, extent and tag, so a planted one carries them zeroed.
+	case KindReconcile, KindReconciled:
+		h.File = core.FileID{}
+		h.Version = core.Version{}
+		h.Extent = core.Extent{}
+		h.Tag = 0
+		if kind == KindReconciled {
+			body = RecordBody{Reconciled: testReconciled}
+		}
 	case KindTruncate:
 		h.Extent = core.Extent{Off: testRecordFileOffset, Len: 0}
 	case KindDeallocate, KindRelease, KindOffloaded, KindUnmark:

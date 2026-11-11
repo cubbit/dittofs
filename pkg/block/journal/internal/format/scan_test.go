@@ -702,7 +702,7 @@ func TestScanStopsAtAKindOrEpochItCannotRead(t *testing.T) {
 
 	t.Run("unknown kind on the walk", func(t *testing.T) {
 		seg, offs := cases()
-		for _, kind := range []byte{15, 128} {
+		for _, kind := range []byte{17, 128} {
 			s := slices.Clone(seg) // a fresh copy each pass, the offsets unchanged
 			s[offs[1]+4] = kind
 			rechecksumRecord(s[offs[1]:offs[1]+96], testIdentity)
@@ -730,7 +730,7 @@ func TestScanStopsAtAKindOrEpochItCannotRead(t *testing.T) {
 		// at the first record's own offset, then the unknown kind's, and
 		// stops there — with the bad range before it reported.
 		binary.LittleEndian.PutUint64(seg[offs[0] : offs[0]+96][40:48], 4<<20)
-		seg[offs[1]+4] = 15
+		seg[offs[1]+4] = 17
 		rechecksumRecord(seg[offs[1]:offs[1]+96], testIdentity)
 
 		got, err := ScanSegment(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)

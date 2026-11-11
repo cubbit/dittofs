@@ -287,7 +287,7 @@ func FuzzRecord(f *testing.F) {
 	// Kinds this format version does not define: 0, the first reserved
 	// value and the first extension's, rechecksummed so only the kind
 	// rule can refuse them.
-	for _, kind := range []byte{0, 15, 128} {
+	for _, kind := range []byte{0, 17, 128} {
 		b := slices.Clone(readGolden(f, "record_release"))
 		b[4] = kind
 		rechecksumRecord(b, testIdentity)
