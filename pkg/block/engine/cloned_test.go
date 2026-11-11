@@ -594,45 +594,53 @@ func TestARefusedClonePinsItsGuardAndNothingElse(t *testing.T) {
 }
 
 // gatedCommit is the store's existence view holding its commits while on.
+// The held commit reads, once it returns, whether the clone's phase 1 was in
+// the store by then.
 type gatedCommit struct {
-	on               atomic.Bool
-	entered, open    chan struct{}
-	commitReturned   atomic.Bool
-	cloneAfterCommit atomic.Bool
-	cloned           atomic.Bool
+	on            atomic.Bool
+	entered, open chan struct{}
+	cloned        func() bool // the clone's phase 1 is in the store
+	overtaken     atomic.Bool // cloned answered true when the held commit returned
 }
 
 func (x *gatedCommit) commit(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
-	if x.on.CompareAndSwap(true, false) {
-		close(x.entered)
-		<-x.open
-		defer x.commitReturned.Store(true)
+	if !x.on.CompareAndSwap(true, false) {
+		return next.Commit(ctx, p, marks)
 	}
-	return next.Commit(ctx, p, marks)
-}
-
-func (x *gatedCommit) clone(ctx context.Context, next engine.Existence, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
-	x.cloneAfterCommit.Store(x.commitReturned.Load())
-	x.cloned.Store(true)
-	return next.Clone(ctx, op, pending)
+	close(x.entered)
+	<-x.open
+	failed, err := next.Commit(ctx, p, marks)
+	x.overtaken.Store(x.cloned())
+	return failed, err
 }
 
 // A batch held between its capture and its existence commit on the
 // destination is waited out: the clone's phase 1 starts only once it
-// returns.
+// returns. Until phase 1, the store holds the destination's first byte as
+// nothing, or as the hole the batch's write past the end leaves; phase 1
+// makes it the clone's, or answers a lookup there delayed.
 func TestACloneWaitsOutABatchInFlight(t *testing.T) {
-	x := &gatedCommit{entered: make(chan struct{}), open: make(chan struct{})}
-	u := clonedUnit(t, onCommit(x.commit), onClone(x.clone))
+	var u *unit
+	var dst entity.FileID
+	x := &gatedCommit{entered: make(chan struct{}), open: make(chan struct{}), cloned: func() bool {
+		for sp, err := range u.fs.Store.Content().Covering(context.Background(), u.share.ID, dst, 0, 1) {
+			return err != nil || sp.Class != entity.Hole
+		}
+		return false
+	}}
+	u = clonedUnit(t, onCommit(x.commit))
 	src := u.committedFile(t, "src", fill(mib, 's'))
-	dst := u.create(t, "dst")
+	dst = u.create(t, "dst")
 	u.write(t, dst, 4*mib, fill(10, 'w'))
 	x.on.Store(true)
 	committed := make(chan error, 1)
 	go func() { committed <- u.e.CommitExistence(context.Background(), u.share.ID, dst) }()
 	<-x.entered
 	errc := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
+	// A bounded wait is the assertion: a phase 1 that does not wait out the
+	// batch runs within it, and nothing signals one that waits.
 	time.Sleep(50 * time.Millisecond)
-	if x.cloned.Load() {
+	if x.cloned() {
 		t.Error("the clone's phase 1 ran while a batch on the destination was in flight")
 	}
 	close(x.open)
@@ -642,8 +650,11 @@ func TestACloneWaitsOutABatchInFlight(t *testing.T) {
 	if err := <-errc; err != nil {
 		t.Fatalf("the clone: %v", err)
 	}
-	if !x.cloneAfterCommit.Load() {
+	if x.overtaken.Load() {
 		t.Error("the clone's phase 1 overtook the batch in flight")
+	}
+	if !x.cloned() {
+		t.Error("the clone's phase 1 is not in the store once the clone answered")
 	}
 }
 
