@@ -309,7 +309,9 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
     `Memory`. Estimate: 8 man-days (the `Content` suite and in-memory `Content` 2.5, `Faults` 1.5,
     `Memory` and its wrapper 1.5, `Callbacks` 0.5, the test migration and deletions 2).
     Done when: the `Content` suite passes over the in-memory `Content`, `suite.Run` passes over
-    `Memory`, and no Go file names `Record`, `RecordingCallbacks` or `fakeContent`.
+    `Memory`, no Go file names `Record`, `RecordingCallbacks` or `fakeContent`, and a `Faults`
+    test holds a call until it releases it, the call returning only after the release, with no
+    timed wait.
 
 ## 4. The engine contract
 
