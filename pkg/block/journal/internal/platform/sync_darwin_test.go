@@ -27,6 +27,10 @@ type call struct {
 	store unix.Fstore_t // fcntlFstore: the structure as the call received it
 	size  int64         // ftruncate: the size asked for
 
+	// pread: the offset and the bytes asked for.
+	off   int64
+	asked int
+
 	// Every call but open and close: the file the descriptor referred to at
 	// the call, so a call on a stale or wrong descriptor is seen.
 	dev, ino uint64
@@ -51,6 +55,15 @@ func (c call) String() string {
 		)
 	case "ftruncate":
 		return fmt.Sprintf("ftruncate(%d, %d) on dev %d ino %d", c.fd, c.size, c.dev, c.ino)
+	case "pread":
+		return fmt.Sprintf(
+			"pread(%d, %d bytes, %d) on dev %d ino %d",
+			c.fd,
+			c.asked,
+			c.off,
+			c.dev,
+			c.ino,
+		)
 	default:
 		return fmt.Sprintf("%s(%d) on dev %d ino %d", c.op, c.fd, c.dev, c.ino)
 	}
@@ -59,11 +72,14 @@ func (c call) String() string {
 // recorder is a table that logs every call and makes it. An error queued for
 // an op is returned by its next call instead: that call then does not run,
 // except close, which runs, as the descriptor is released even when close
-// reports an error.
+// reports an error. A queue registered for the op's Nth call fires only
+// there, so a fault can target a call past the first.
 type recorder struct {
-	mu   sync.Mutex
-	log  []call
-	fail map[string][]error // per op, what its next calls return, oldest first
+	mu    sync.Mutex
+	log   []call
+	fail  map[string][]error         // per op, what its next calls return, oldest first
+	failN map[string]map[int][]error // per op, per call number, what its calls return
+	n     map[string]int             // per op, the calls made so far
 }
 
 // failNext makes the next calls of op return errs, one each, in order.
@@ -76,6 +92,26 @@ func (r *recorder) failNext(op string, errs ...error) {
 	}
 
 	r.fail[op] = append(r.fail[op], errs...)
+}
+
+// failNth makes op's nth call after this registration return errs, one
+// each, in order: the rule counts the calls made from its own registration,
+// so a call number written against it stays put through changes to the calls
+// before it. An error fires at its number only — one error, one call.
+func (r *recorder) failNth(op string, nth int, errs ...error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.failN == nil {
+		r.failN = map[string]map[int][]error{}
+		r.n = map[string]int{}
+	}
+
+	if r.failN[op] == nil {
+		r.failN[op] = map[int][]error{}
+	}
+
+	r.failN[op][r.n[op]+nth] = append(r.failN[op][r.n[op]+nth], errs...)
 }
 
 // take returns the calls logged since the last take.
@@ -97,12 +133,26 @@ func (r *recorder) queued(op string) bool {
 	return len(r.fail[op]) > 0
 }
 
-// add logs c and returns the error queued for its op, if any.
+// add logs c and returns the error queued for its op, if any: the queue
+// registered for the call's number first — counted as failNth counts, from
+// its registration — then the failNext queue for the next call.
 func (r *recorder) add(c call) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.log = append(r.log, c)
+	if r.n == nil {
+		r.n = map[string]int{}
+	}
+
+	r.n[c.op]++
+	n := r.n[c.op]
+
+	if q := r.failN[c.op][n]; len(q) > 0 {
+		r.failN[c.op][n] = q[1:]
+
+		return q[0]
+	}
 
 	if q := r.fail[c.op]; len(q) > 0 {
 		r.fail[c.op] = q[1:]
@@ -212,6 +262,18 @@ func (r *recorder) table() calls {
 			}
 
 			return err
+		},
+		pread: func(fd int, p []byte, off int64) (int, error) {
+			c := on("pread", fd)
+			c.off, c.asked = off, len(p)
+
+			if err := r.add(c); err != nil {
+				// A queued fault answers as the read's own call would: no
+				// byte read, the error returned.
+				return -1, err
+			}
+
+			return unix.Pread(fd, p, off)
 		},
 	}
 }

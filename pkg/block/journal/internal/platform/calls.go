@@ -17,6 +17,7 @@ type calls struct {
 	close          func(fd int) error
 	fallocate      func(fd int, mode uint32, off int64, n int64) error
 	pwrite         func(fd int, p []byte, off int64) (n int, err error)
+	pread          func(fd int, p []byte, off int64) (n int, err error)
 	fstatfs        func(fd int, buf *unix.Statfs_t) error
 	fstat          func(fd int, stat *unix.Stat_t) error
 	statx          func(dirfd int, path string, flags int, mask int, stat *unix.Statx_t) error
@@ -33,6 +34,7 @@ var realTable = calls{
 	close:          unix.Close,
 	fallocate:      unix.Fallocate,
 	pwrite:         unix.Pwrite,
+	pread:          unix.Pread,
 	fstatfs:        unix.Fstatfs,
 	fstat:          unix.Fstat,
 	statx:          unix.Statx,

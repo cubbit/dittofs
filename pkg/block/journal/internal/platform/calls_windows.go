@@ -35,6 +35,12 @@ type calls struct {
 		done *uint32,
 		overlapped *windows.Overlapped,
 	) error
+	readFile func(
+		handle windows.Handle,
+		p []byte,
+		done *uint32,
+		overlapped *windows.Overlapped,
+	) error
 }
 
 // realTable is the table NewOS gives every OS.
@@ -45,4 +51,5 @@ var realTable = calls{
 	getFileInformationByHandle: windows.GetFileInformationByHandle,
 	setFileInformationByHandle: windows.SetFileInformationByHandle,
 	writeFile:                  windows.WriteFile,
+	readFile:                   windows.ReadFile,
 }

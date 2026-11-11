@@ -3,8 +3,10 @@
 package platform
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
@@ -63,16 +65,36 @@ type file struct {
 	f     *os.File
 	name  string
 	calls calls
+
+	// directMu guards the state of the direct read a ReadAtDirect makes: it
+	// holds the descriptor's lazy opening, the read itself and Close's closing
+	// of it, so a Close cannot release the descriptor under a read, and a
+	// read cannot open one over a Close in flight.
+	directMu sync.Mutex
+	// directFD is the descriptor the platform's direct read reads through,
+	// where it needs one of its own; directUnopened before it is opened,
+	// directClosed after Close.
+	directFD int
 }
+
+const (
+	// directUnopened marks a file whose ReadAtDirect has not opened its direct
+	// descriptor yet.
+	directUnopened = -1
+	// directClosed marks a file whose Close ran: every ReadAtDirect after it
+	// fails with fs.ErrClosed.
+	directClosed = -2
+)
 
 var _ storage.File = (*file)(nil)
 
 // newFile wraps f, opened under name, as a file of o.
 func (o *OS) newFile(f *os.File, name string) *file {
 	return &file{
-		f:     f,
-		name:  name,
-		calls: o.calls,
+		f:        f,
+		name:     name,
+		calls:    o.calls,
+		directFD: directUnopened,
 	}
 }
 
@@ -80,15 +102,37 @@ func (f *file) ReadAt(p []byte, off int64) (int, error) {
 	return f.f.ReadAt(p, off)
 }
 
-// ponytail: reads through the page cache; O_DIRECT, F_NOCACHE and
-// FILE_FLAG_NO_BUFFERING arrive with the open-time tail check, the first
-// caller that must not trust the cache.
+// ReadAtDirect calls the platform's own direct read. It keeps the
+// storage.File contract of ReadAt: the bytes the file gives at off, with
+// io.EOF when fewer than len(p) remain.
+//
+// decision: a filesystem's refusal of the direct read is returned as itself,
+// never fallen back to the page cache it exists to bypass. What a refusal
+// means for the journal is the open's tail check's to decide, and it may
+// fail the open: a direct read is what proves the end of a journal after a
+// crash, and a verified record whose direct re-read refuses is re-appended
+// from its first copy, so no refusal is widened or worked around here.
 func (f *file) ReadAtDirect(p []byte, off int64) (int, error) {
-	return f.ReadAt(p, off)
+	return f.readDirect(p, off)
 }
 
+// Close releases the file and the direct descriptor its ReadAtDirect opened.
+// The descriptor is marked closed only after it is closed, so the marker never
+// hides a descriptor still open. Both happen under directMu, so a ReadAtDirect
+// holding it finishes first.
 func (f *file) Close() error {
-	return f.f.Close()
+	f.directMu.Lock()
+	defer f.directMu.Unlock()
+
+	err := f.f.Close()
+	derr := f.closeDirectLocked()
+	f.directFD = directClosed
+
+	if derr != nil {
+		return errors.Join(err, derr)
+	}
+
+	return err
 }
 
 func (f *file) Name() string {
