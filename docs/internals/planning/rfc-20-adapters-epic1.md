@@ -792,7 +792,10 @@ cannot build apart.
   D12), its epic 6.
 - The packages D3 deletes: discovery (the cutover's sidecars), Kerberos and `pkg/auth` (RFC
   18's plan), `internal/mfsymlink` (RFC 22's plan), each lifted from develop's history.
-- `pkg/apiclient`'s adapter and netgroup methods kept for e2e helpers (D5). Owner: the cutover.
+- `pkg/apiclient`'s adapter and netgroup methods kept for e2e helpers (D5). Owner: RFC 23's
+  plan (#4050): its epic 1 deletes `pkg/apiclient`'s v1 bodies, these included, since its rule 7
+  does not keep them, and fixes or removes the e2e code that calls them; its epic 6 rewrites
+  `pkg/apiclient` on `pkg/node/apiv1`. Its epic 1 therefore overrides D5 for these methods.
 - `metrics.Registry` an alias of the branch's `Metrics` rather than RFC 25's registry (D10).
   Owner: RFC 25.
 - `vfs.Grace{Until}` (D26), named in RFC 17 by T1.9. Owner: RFC 17's plan, before E5's T5.5.

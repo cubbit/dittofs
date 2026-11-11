@@ -692,9 +692,8 @@ RFC 25 §3.9's registry and the alert rules for `adapter_unmapped_errors_total` 
 (its D12), and adds one: the node rebuilds an adapter when its `port` setting changes (its O7).
 The adapters' settings are split three ways. The field `settings.Adapter.Port` is epic 2's (#4000,
 D20). The one settings table, with the adapters' section, and `Check`, wired into the node's
-reconcile and into the settings routes, are RFC 13's plan's epic 5 (#4059), though #4050's D12
-still lists the loader and validator here. This epic writes what reconcile calls for an adapter:
-`Reconfigure`, or stop, `New` and start.
+reconcile and into the settings routes, are RFC 13's plan's epic 5 (#4059). This epic writes
+what reconcile calls for an adapter: `Reconfigure`, or stop, `New` and start.
 
 RFC sections: §3.4's "built by `node.New`", §3.6's sequence, §3.7's conditions, §10.1's alerting
 sentences; RFC 23 §2.2, §2.3; RFC 24 §2.7; RFC 25 §3.9, §7.
@@ -784,7 +783,8 @@ feature parity with develop. A row moves only to another owner, never off the le
 | `node.New` wiring; conditions in RFC 25 §3.9's registry; alert rules | need `internal/node` | epic 7 | S4 |
 | the settings table's adapters' section and `Check`, wired into reconcile and the settings routes | need `internal/node` and `pkg/settings` | RFC 13's plan (#4059), epic 5 | that epic |
 | concrete sidecars: mDNS, WS-Discovery (`pkg/discovery`), port mapper, rpcbind registration | need serving protocols | cutover | stage 7 |
-| `/api/v1/adapters`, the settings watcher, `dfsctl adapter` (deleted in T1.2); the persisted `NFSAdapterSettings` and `SMBAdapterSettings` rows and the share adapter config, mapped onto `pkg/adapter/config` | built on the Runtime | cutover, on `pkg/adapter` | stage 7 |
+| `/api/v1/adapters`, `dfsctl adapter` and the settings watcher (deleted in T1.2) | built on the Runtime | RFC 23's plan (#4050): the adapter and settings routes in its epic 4, the `adapter` and `setting` commands in its epic 6; the watcher becomes reconcile on `settings.Diff`, RFC 13's plan's epic 5 (#4059) | those epics |
+| the persisted `NFSAdapterSettings` and `SMBAdapterSettings` rows and the share adapter config (D4 of `rfc-20-adapters-epic1.md`), never mapped onto `pkg/adapter/settings` | RFC 23's plan has no migration tool and refuses a v1 database at start (#4050, its transition policy and epic 3) | unowned: dropped with v1's database by #4050's fresh-installs-only policy | none; a fresh install writes v2's settings records |
 | the `/clients` and `/mounts` listings and their registries (deleted in T1.2: nothing can add a record), the `/durable-handles` listing, empty once T1.1 deletes its producers; `dfsctl client` (deleted in T1.2) | read v1's connection and handle state | RFC 23's plan (#4050, D12), RFC 22 plan (durable handles) | with their records |
 | netgroup CRUD under `/api/v1/adapters/{type}/netgroups` (deleted in T1.2) | a control-plane record (RFC 23 §3.5) | RFC 23's plan (#4050, D12) | with RFC 23's records |
 | client eviction: `DELETE /api/v1/clients/{id}`, `dfsctl client evict` (`Runtime.DisconnectClient` → `ForceCloseClientConnection`, deleted in T1.2) | RFC 23 §4.2 makes v2's connection listing read-only, so nothing brings it back | an RFC adding an eviction call; until then the account is disabled (RFC 23's plan, #4050, O9) | that RFC |
@@ -797,7 +797,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | `k8s/dittofs-operator`, which drives the adapter and settings API through its own client | breaks against the branch once T1.2 deletes that API | RFC 30's plan (RFC 23's plan, #4050, O4) | that plan |
 | `dfsctl share mount`'s discovery of a non-default port (`ListAdapterPorts`); it uses each protocol's default port | its route is deleted in T1.2 | RFC 23's plan (#4050, D12) | its epic 6 |
 | the packages deleted in T1.1 for having no importer: `pkg/discovery/mdns` and `wsd`; `pkg/auth`, `pkg/auth/kerberos`, `pkg/identity/kerberos`, `internal/auth/kerberos`; `internal/mfsymlink` | nothing imports them once v1 is gone | discovery: cutover; Kerberos and `pkg/auth`: RFC 18's plan (#4058); `mfsymlink`: RFC 22 plan | each lifted from develop's history by its consumer |
-| `pkg/apiclient`'s adapter and netgroup methods, kept for the e2e helpers `lint-go` vets; their routes answer 404 | compiled tests still call them | cutover | with their routes |
+| `pkg/apiclient`'s adapter and netgroup methods, kept for the e2e helpers `lint-go` vets; their routes answer 404 | compiled tests still call them | RFC 23's plan (#4050): its epic 1 deletes `pkg/apiclient`'s v1 bodies, these included, since its rule 7 does not keep them, and fixes or removes the e2e code that calls them; its epic 6 rewrites `pkg/apiclient` on `pkg/node/apiv1` | its epic 1, which overrides D5 of `rfc-20-adapters-epic1.md` for these methods; its epic 6 |
 | `metrics.Registry` an alias of `pkg/metrics`' `Metrics` (T1.6), not RFC 25 §8.2's registry | the registry is not built | RFC 25 | when the registry is built |
 | `vfs.Grace{Until}`, the typed `ErrGrace` carrying the shard's grace end, which an `ErrorRow.Hold` reads to bound a hold (RFC 17 §4.3) | named in RFC 17 by T1.9; not yet in `pkg/vfs` | RFC 17 plan: the type in `pkg/vfs`, returned by `*vfs.Filesystem` | before E5's T5.5 |
 | `vfs.Shares.MoveTarget`, which says whether a draining request's share has a gateway to move to (`ErrMoved`) or none (`ErrDraining`), asked per request (RFC 20 §3.1) | named in RFC 17 by T1.9; not yet in `pkg/vfs` | RFC 17 plan: the method in `pkg/vfs`, `*vfs.Filesystem` (so `vfstest.Memory`) and `vfstest.Null`, answering none | before E4's T4.5 calls it; a real target once RFC 15's topology exists |
