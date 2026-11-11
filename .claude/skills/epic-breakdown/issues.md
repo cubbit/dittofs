@@ -37,8 +37,20 @@ Do all of these first. Each one stops the step rather than letting it create hal
    `gh api` calls use `repos/$R/…`. **An empty lookup is not evidence**: that last command
    must list the roadmap epics the programme already has. If it prints `[]`, stop and report
    it rather than conclude that nothing exists.
-2. **Check the token's `project` scope** with `gh auth status`. If `project` is missing, stop
-   and ask the user to run `gh auth refresh -s project`, before any issue exists.
+2. **Check the token's `project` scope, and find the board.** Run `gh auth status`; if
+   `project` is missing, stop and ask the user to run `gh auth refresh -s project`. Then look
+   up the repo's project board (for example the cubbit "DittoFS" project) by title rather
+   than by number, and its `Estimate` field, never hard-coding an id:
+   ```bash
+   owner=${R%%/*}
+   num=$(gh project list --owner "$owner" --format json \
+     --jq '.projects[] | select(.title == "<project title>") | .number')
+   project=$(gh project view "$num" --owner "$owner" --format json --jq .id)
+   field=$(gh project field-list "$num" --owner "$owner" --format json \
+     --jq '.fields[] | select(.name == "Estimate") | .id')
+   ```
+   An account outside the org gets an empty list with no error. Stop and ask if `num` is not
+   exactly one number (no board, or more than one, matches) or `field` is empty.
 3. **Find what exists, before deciding what to create:** the RFC's roadmap epics (6.2), the
    epic issue (`gh issue list -R "$R" --state all --label epic --label rfc-<n>-epic-<k>`;
    both labels must match, since a text search for "epic <k>" returns other epics), and its
@@ -184,19 +196,10 @@ subtasks come long after the epic issue.
   ```
   Moving an issue that already has a parent (6.4's match under another part's epic issue)
   needs `-F replace_parent=true` on the same call; without it the API refuses the child.
-- **Every issue joins the repo's project board** (for example the cubbit "DittoFS"
-  project). Find it with `gh project list --owner <org>`, by title rather than by number,
-  and stop and ask if no board, or more than one, matches, or if it has no `Estimate`
-  field. Only subtask issues get `Estimate`, their man-days from §6:
+- **Every issue joins the repo's project board** that 6.1 found (for example the cubbit
+  "DittoFS" project). Only subtask issues get `Estimate`, their man-days from §6:
   a figure on the epic or the roadmap epic too would count it twice in the project's sums.
-  Look every id up by name, never hard-coding a number:
   ```bash
-  owner=${R%%/*}
-  num=$(gh project list --owner "$owner" --format json \
-    --jq '.projects[] | select(.title == "<project title>") | .number')
-  project=$(gh project view "$num" --owner "$owner" --format json --jq .id)
-  field=$(gh project field-list "$num" --owner "$owner" --format json \
-    --jq '.fields[] | select(.name == "Estimate") | .id')
   item=$(gh project item-add "$num" --owner "$owner" --url <issue-url> --format json --jq .id)
   gh project item-edit --project-id "$project" --id "$item" --field-id "$field" --number <man-days>
   ```
