@@ -1320,7 +1320,7 @@ Each **MUST** be durable on return, and **MUST NOT** require the affected
 storage to be reclaimed first — reclamation is asynchronous ([§7](#7.%20Reclamation%20mechanisms)). Their
 records draw on the reserved headroom of [§6](#6.%20Capacity), and are never refused by the
 journal's own limit. Three refusals can reach them: the exhausted headroom of
-[§6](#6.%20Capacity), which only removals of content the journal does not hold can reach, and
+[§6](#6.%20Capacity), which any of them can reach, held content or not, since each draws on it, and
 the version limit ([§4.3](#4.3%20Versions)), since each draws a version; and a release,
 deallocate or clone target that would split a held extent can meet the index's
 cap on what removals add ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)). A clone target record meets a fourth: it frees nothing, so below
