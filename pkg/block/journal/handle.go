@@ -4,6 +4,8 @@ import (
 	"context"
 	"iter"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -22,6 +24,17 @@ import (
 type Handle struct {
 	j *Journal
 	s *datapath.Share
+
+	// closing is set by the first Close, before it drains the calls in flight,
+	// so a Reserve that already left the share cannot add a reservation the
+	// close would never release. It is read by Reserve after it records one.
+	closing atomic.Bool
+
+	// resMu guards res, the handle's open reservations, so Close returns what
+	// each still holds. It is a leaf, taken with no lock domain held and never
+	// across one.
+	resMu sync.Mutex
+	res   map[*Reservation]struct{}
 }
 
 // What a Change reports; see ChangeKind.
@@ -44,17 +57,69 @@ const (
 
 // Close ends the handle. New calls through it fail with ErrClosed, and Close
 // returns once every call already in flight on it has returned. The handle's
-// extents stay held. A second or concurrent Close, such as another owner's of
-// a handle Share returned twice, also waits for those calls and then returns
-// ErrClosed.
+// extents stay held, and the reservations still open through it are released,
+// so none of their bytes, entries, versions or spares outlives the handle. A
+// second or concurrent Close, such as another owner's of a handle Share
+// returned twice, also waits for those calls and then returns ErrClosed.
 func (h *Handle) Close() error {
+	// The closing flag is set before the share is drained, so a Reserve that
+	// left the share already cannot add a reservation after the release below
+	// walks them: it records its own, sees the flag and releases it.
+	h.closing.Store(true)
 	if err := h.s.Close(); err != nil {
 		return err
 	}
+	h.releaseAll()
 	h.j.handlesMu.Lock()
 	delete(h.j.handles, h.s)
 	h.j.handlesMu.Unlock()
 	return nil
+}
+
+// releaseAll releases every reservation the handle still holds open.
+func (h *Handle) releaseAll() {
+	h.resMu.Lock()
+	open := make([]*Reservation, 0, len(h.res))
+	for r := range h.res {
+		open = append(open, r)
+	}
+	clear(h.res)
+	h.resMu.Unlock()
+	for _, r := range open {
+		r.r.Release()
+	}
+}
+
+// release returns whether it released r, which it registers under the handle
+// for Close to find. It answers false for a reservation already released by
+// its own Close, by this handle's or by the journal's.
+func (h *Handle) release(r *Reservation) bool {
+	h.resMu.Lock()
+	if _, open := h.res[r]; !open {
+		h.resMu.Unlock()
+		return false
+	}
+	delete(h.res, r)
+	h.resMu.Unlock()
+	r.r.Release()
+	return true
+}
+
+// track records r as one of the handle's open reservations. It answers false,
+// releasing r, when the handle's close has begun: the reservation was taken
+// through the share before it closed, and Close's releaseAll has either
+// already run or runs before it finds this one.
+func (h *Handle) track(r *Reservation) bool {
+	h.resMu.Lock()
+	defer h.resMu.Unlock()
+	if h.closing.Load() {
+		return false
+	}
+	if h.res == nil {
+		h.res = make(map[*Reservation]struct{})
+	}
+	h.res[r] = struct{}{}
+	return true
 }
 
 // Reserve takes, at once, everything needed by the given number of writes
@@ -69,8 +134,33 @@ func (h *Handle) Close() error {
 // LimitVersion or LimitSpare, returned at once, without waiting and without
 // I/O. Reserve takes the capacity domain. A reservation is kept in memory: a
 // restart drops it.
+//
+// An ask of no bytes or no writes names no operation that could exist, so it
+// is refused with ErrInvalidExtent, holding nothing. A handle whose close began
+// refuses Reserve with ErrClosed, and one in flight holds that close back; a
+// reservation open through the handle when it closes is released, and its later
+// calls fail with ErrClosed.
 func (h *Handle) Reserve(n int64, writes int) (*Reservation, error) {
-	return nil, ErrNotImplemented
+	// decision: a zero Handle, built by a test over a zero Journal, refuses
+	// Reserve with ErrNotImplemented instead of panicking on the core it does
+	// not have. That is Share's guard one method over, and holds for the same
+	// reason: no caller holds a zero value past building it, and the engine's
+	// tests build one to see a refusal answer a nil reservation. Overturned by
+	// any caller that calls Reserve on a zero value for another reason, or by
+	// Open making zero values unreachable, when the guard can go.
+	if h.j == nil || h.j.core == nil || h.s == nil {
+		return nil, ErrNotImplemented
+	}
+	r, err := h.j.core.Reserve(context.Background(), h.s, n, writes)
+	if err != nil {
+		return nil, err
+	}
+	res := &Reservation{h: h, r: r}
+	if !h.track(res) {
+		r.Release()
+		return nil, ErrClosed
+	}
+	return res, nil
 }
 
 // WriteAt stages p at offset off of file id, with mtime, the modification time

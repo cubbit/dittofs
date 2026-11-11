@@ -436,6 +436,11 @@ func (c *Core) HeldEntries() int64 { return c.cap.HeldEntries() }
 // since the core was built.
 func (c *Core) ReservationRefused() uint64 { return c.cap.RefusedCount() }
 
+// PoolCounters returns the spare pool's counts, read from the pool's own
+// maintained figures: the tests that check a reservation's spares are held
+// and returned read them here.
+func (c *Core) PoolCounters() segment.PoolCounters { return c.pool.Counters() }
+
 // Retired lowers the share's figure by the retirements its segments have
 // freed since the figure last took them into account, and is what a write
 // through the retired segment's share waits on: a retry after the

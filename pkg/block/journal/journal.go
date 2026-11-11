@@ -77,5 +77,18 @@ func (j *Journal) Close() error {
 		// closes, owns nothing to shut down.
 		return ErrClosed
 	}
+	// Every handle's open reservations are released before the core goes: a
+	// reservation is in memory and named by no record, so nothing of it can be
+	// recovered, and its bytes, entries, versions and spares would otherwise
+	// stay held by a journal that is closing.
+	j.handlesMu.Lock()
+	open := make([]*Handle, 0, len(j.handles))
+	for _, h := range j.handles {
+		open = append(open, h)
+	}
+	j.handlesMu.Unlock()
+	for _, h := range open {
+		h.releaseAll()
+	}
 	return j.core.Close()
 }

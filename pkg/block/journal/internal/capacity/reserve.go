@@ -286,12 +286,24 @@ func (r *Reservation) Remaining() int64 {
 // every draw with core.ErrClosed, and a write of no bytes is a caller bug,
 // core.ErrInvalidExtent.
 //
-// decision: the record bytes are WriteCharge, the write's worst case over
-// every room its stream can have, because a reservation's writes name their
-// streams only as they land. The figure is never below what the write appends
-// into any room, so the grant's Wrote never clamps it and the share's limit
-// never undercounts what the write really spent. A caller sizes n with the
-// same figure.
+// decision: a write draws its worst-case charge, WriteCharge, while the
+// reservation holds that much, and what it holds otherwise, as long as the
+// roomless split still fits. A reservation's writes name their streams only as
+// they land, so the room a write finds is unknown when it draws, and the
+// ceiling is the only figure the grant can never exceed. Charging it and
+// returning the unlanded part once the record lands is what lets a caller size
+// n by the writes' own record bytes — the figure RFC 1 §6's n names — and still
+// have every write draw: the bytes a write's charge over-covered come back to
+// the reservation from its landing, so the last write finds them. Only a write
+// whose roomless split the reservation no longer holds is refused, the ask
+// never having covered the writes it named.
+//
+// ponytail: a write that straddles a partly filled segment appends up to one
+// record header beyond its roomless split, past what the reservation still
+// holds once a caller sized n exactly. The grant's Wrote clamps it, so the
+// share's tally undercounts by at most that header — it fails open. Upgrade to
+// charging the room the append will find, which a reservation cannot know
+// before its writes land.
 func (r *Reservation) Draw(payload int64) (*Grant, error) {
 	if payload <= 0 {
 		return nil, core.ErrInvalidExtent
@@ -303,28 +315,39 @@ func (r *Reservation) Draw(payload int64) (*Grant, error) {
 		return nil, core.ErrClosed
 	}
 	bytes := WriteCharge(payload, r.c.cfg.SegmentCap)
-	// The pieces are the write's head plus one per cap its own bytes cross.
-	// Their sum over the reservation's writes is at most 2 x writes plus one
-	// per cap the whole ask can cross, the count Reserve took: a write's
-	// share is its own bytes over the cap, rounded up and added to its head,
-	// and the rounding's one per write rides inside the second piece each
-	// write was counted. So a reservation's entries last its every write.
+	if base := recordSplit(payload, 0, r.c.cfg.SegmentCap); base > r.leftBytes {
+		// The write's least record bytes — the split of a stream with no room —
+		// are what the ask named for it; short of them the reservation never
+		// covered this write.
+		missing := base - r.leftBytes
+		r.c.mu.Unlock()
+		return nil, fmt.Errorf("%w: %d record bytes missing of the reservation's %d", core.ErrReservationExhausted, missing, r.bytes)
+	}
+	if r.leftVersions < 1 {
+		r.c.mu.Unlock()
+		return nil, fmt.Errorf("%w: the reservation's %d versions are drawn", core.ErrReservationExhausted, r.versions)
+	}
+	// The pieces are the write's head plus one per cap its bytes cross, drawn
+	// from the ceiling rather than from what is left: a write clamped to the
+	// bytes left still appends its own split, and its publish reserves one
+	// entry per piece. Their sum over the reservation's writes is at most 2 x
+	// writes plus one per cap the whole ask can cross, the count Reserve took:
+	// a write's share is its own bytes over the cap, rounded up and added to
+	// its head, and the rounding's one per write rides inside the second piece
+	// each write was counted. So a reservation's entries last its every write.
 	pieces := 1
 	if bytes > 0 {
 		pieces += int((bytes + r.c.cfg.SegmentCap - 1) / r.c.cfg.SegmentCap)
 	}
-	switch {
-	case bytes > r.leftBytes:
-		missing := bytes - r.leftBytes
-		r.c.mu.Unlock()
-		return nil, fmt.Errorf("%w: %d record bytes missing of the reservation's %d", core.ErrReservationExhausted, missing, r.bytes)
-	case int64(pieces) > r.leftEntries:
+	if int64(pieces) > r.leftEntries {
 		missing := int64(pieces) - r.leftEntries
 		r.c.mu.Unlock()
 		return nil, fmt.Errorf("%w: %d index entries missing of the reservation's %d", core.ErrReservationExhausted, missing, r.entries)
-	case r.leftVersions < 1:
-		r.c.mu.Unlock()
-		return nil, fmt.Errorf("%w: the reservation's %d versions are drawn", core.ErrReservationExhausted, r.versions)
+	}
+	if bytes > r.leftBytes {
+		// The reservation's last writes may find less than a ceiling's worth:
+		// they take what is left, and their unlanded bytes come back to it.
+		bytes = r.leftBytes
 	}
 	// decision: the version is drawn under the section, so the check that the
 	// reservation still holds one and the draw of it are one step. Drawn
@@ -363,13 +386,14 @@ func (r *Reservation) Draw(payload int64) (*Grant, error) {
 }
 
 // WriteCharge is the record bytes one write of payload bytes can append into
-// any room its stream has, and the figure a caller sizes a reservation's n by:
-// the roomless split — one record per segment the write can fill — plus the one
-// record a split that straddles a partly filled segment appends beyond it. A
-// write wholly in room appends one record and one into a roomless stream the
-// roomless split; between the two, its head in the room left and its tail in
-// the next segment are two records where the roomless split names one for the
-// whole.
+// any room its stream has: the roomless split — one record per segment the
+// write can fill — plus the one record a split that straddles a partly filled
+// segment appends beyond it. A write wholly in room appends one record and one
+// into a roomless stream the roomless split; between the two, its head in the
+// room left and its tail in the next segment are two records where the roomless
+// split names one for the whole. A caller sizes a reservation's n by this
+// figure to cover every room its writes can find, or by the writes' own record
+// bytes where they are expected in room; Draw covers both.
 func WriteCharge(payload, segCap int64) int64 {
 	if payload <= 0 {
 		return 0

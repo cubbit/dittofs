@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -548,5 +549,108 @@ func TestReservationDrawsUnclaimedEntriesStayHeld(t *testing.T) {
 	rs.Release()
 	if held := r.c.heldEntries; held != 0 {
 		t.Fatalf("after Release, heldEntries = %d, want 0", held)
+	}
+}
+
+// TestReservationSizedByRecordBytesSpendsItsLastWrite checks a reservation the
+// caller sized by the record bytes its writes append in room — the figure
+// RFC 1 §6's n names — lets every one of them draw: the last write finds less
+// than its worst-case charge and draws it, since what remains still covers the
+// write's own split. A reservation sized by the writes' own record bytes is
+// what a clone's copies are sized by, and its last write must not be refused.
+func TestReservationSizedByRecordBytesSpendsItsLastWrite(t *testing.T) {
+	r := newRig(t, std())
+	const writes = 4
+	const payload = 1
+	// The caller's n: each write's record cost where its stream has room.
+	n := int64(writes) * segment.RecordBytes(payload)
+	rs := r.reserve(t, ReserveRequest{Tag: tag1, Bytes: n, Writes: writes})
+	defer rs.Release()
+
+	for i := range writes {
+		g, err := rs.Draw(payload)
+		if err != nil {
+			t.Fatalf("Draw %d of %d = %v, want the write drawn: a reservation sized by its writes' record bytes covers them", i+1, writes, err)
+		}
+		// The write lands exactly its record, as one in room does.
+		g.Wrote(segment.RecordBytes(payload))
+		g.Release()
+	}
+	if got := rs.Remaining(); got != 0 {
+		t.Fatalf("after every write, Remaining = %d, want the reservation spent", got)
+	}
+	if _, err := rs.Draw(payload); !errors.Is(err, core.ErrReservationExhausted) {
+		t.Fatalf("the draw past the reservation = %v, want ErrReservationExhausted", err)
+	}
+}
+
+// piecesOfWrite returns the pieces a write of payload bytes appends when its
+// first record finds room payload bytes of room and every later one its own
+// empty segment: the head the room holds, then one piece per empty segment's
+// payload, the last holding the tail. It is the split the stream runs, retold
+// here from the format's own figures so it agrees with no code under test.
+func piecesOfWrite(payload, room, cap int64) int {
+	empty := segment.EmptyRoom(cap)
+	rest, pieces := payload, 0
+	for rest > 0 {
+		n := min(rest, empty)
+		if pieces == 0 && room > 0 && n > room {
+			n = room
+		}
+		pieces++
+		rest -= n
+	}
+	return pieces
+}
+
+// TestPieceCountCoversEveryWrite checks R84's count against the split a write
+// really makes: a write of any size up to three caps, starting at any offset
+// mod the cap, appends no more pieces than PiecesFor counts for one write — so
+// the footer entries and index entries a reservation takes cover every piece
+// its write publishes, and none is refused part-way by an under-reserved
+// count.
+func TestPieceCountCoversEveryWrite(t *testing.T) {
+	const cap = int64(4 << 10)
+	pieces, _ := PiecesFor(3*cap, 1, cap)
+	// Every offset a record can start at in a segment, from an empty one to
+	// one whose tail holds nothing: the room the write's head finds is the
+	// stream's own figure for that offset.
+	for next := int64(format.SegmentHeaderSize); next <= cap; next += 8 {
+		room := segment.WriteRoom(cap, next, 0)
+		for size := int64(1); size <= 3*cap; size++ {
+			want, _ := PiecesFor(size, 1, cap)
+			if got := piecesOfWrite(size, room, cap); got > want {
+				t.Fatalf("a %d-byte write starting at offset %d appends %d pieces, over the %d PiecesFor counts for one write of up to three caps",
+					size, next, got, want)
+			}
+		}
+	}
+	if pieces < 2 {
+		t.Fatalf("PiecesFor counts %d pieces for a write of three caps, want at least its head and its tail", pieces)
+	}
+}
+
+// TestReservationRefusesAWritePastItsVersions checks a reservation of fewer
+// writes refuses a further write that its remaining bytes could cover but its
+// versions cannot, naming the version shortfall and drawing no byte: a caller
+// that reserved for one write cannot draw two.
+func TestReservationRefusesAWritePastItsVersions(t *testing.T) {
+	r := newRig(t, std())
+	rs := r.reserve(t, ReserveRequest{Tag: tag1, Bytes: 4 * WriteCharge(1, testCap), Writes: 1})
+	defer rs.Release()
+
+	g, err := rs.Draw(1)
+	if err != nil {
+		t.Fatalf("the reservation's one write: %v", err)
+	}
+	// The grant returns its unlanded bytes, so the second draw is short of a
+	// version, not of bytes.
+	g.Release()
+	if got := rs.Remaining(); got < recordSplit(1, 0, testCap) {
+		t.Fatalf("Remaining = %d after the one write returned its bytes, want at least a write's records", got)
+	}
+	_, err = rs.Draw(1)
+	if !errors.Is(err, core.ErrReservationExhausted) || !strings.Contains(err.Error(), "versions") {
+		t.Fatalf("the write past the reservation's one version = %v, want ErrReservationExhausted naming the versions", err)
 	}
 }
