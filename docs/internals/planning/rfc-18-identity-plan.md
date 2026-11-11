@@ -748,7 +748,8 @@ password and NT hash are derived, sealed and checked.
   for a proof of `Secret` or above (RFC 18 §4.1, §4.6).
 - `NewHashes` and the two sealed secrets (D3, A5).
 - `VerifyPassword` and `Account` (RFC 18 §8.1).
-- NTLM-off's deletion of every NT hash, as a runner kind (D8).
+- NTLM-off's deletion of every NT hash, as a runner kind (D8), and a password set's pruning of the
+  previous NT hash version through #4059's `Prune`.
 
 ### Epic 3 — Resolution
 
@@ -822,7 +823,8 @@ half for Kerberos, §3.8's expiry, and §4.2 steps 1, 2 and 4.
 
 **Expected content:**
 - A test-PAC builder signing with the test realm's keys (D4).
-- The keytab through `Apply`, its key versions as `gokrb5` holds them, and its rollover (RFC 18 §3.3).
+- The keytab through `Apply`, its key versions as `gokrb5` holds them, and its rollover (RFC 18 §3.3),
+  whose last step prunes the previous version through #4059's `Prune` once the retention passes.
 - AES only: DES and RC4 tickets refused (A4).
 - AP-REQ verification on `gokrb5` with its PAC check off, the PAC's server checksum verified here
   (D4), and the clock skew and the replay cache lifted from `develop`.
@@ -891,7 +893,9 @@ the keytab derived from it.
 - The keys of the names the computer account holds derived from the machine password, tagged with
   its key version number, beside the imported keytab epic 5 loads for every other name (RFC 18
   §3.3).
-- The password rotation as a resumable runner kind, in RFC 13 §7's order (RFC 18 §3.5, §4.3 above).
+- The password rotation as a resumable runner kind, in RFC 13 §7's order (RFC 18 §3.5, §4.3 above),
+  whose last step prunes the previous password version through #4059's `Prune` once RFC 18 §3.3's
+  retention passes.
 - The join's state and the channel's health in node status, and the `machine_account_unhealthy`
   condition with its two causes.
 - The in-memory domain controller and its conformance suite.
@@ -1041,7 +1045,7 @@ What the plan knowingly does not build. Each row cites the section that defers i
 | RFC 18 Appendix A | — (non-normative) |
 | RFC 18 Appendix B | rule 7 (fail-open fixes) |
 | RFC 16 §2.3 (`User`, root's fixed ID, `Machine`), §3 (`Minter`), `IDS‖kind` | E2 |
-| RFC 16 `SEC‖id‖version`, RFC 13 §7 (a keytab's retention) | E5, E7 (#4059 implements it) |
+| RFC 16 `SEC‖id‖version`, RFC 13 §7 (a keytab's retention) | E2, E5, E7 (each prunes its rotation's previous version through #4059's `Prune`: E2 an NT hash's at the password set that replaced it, E5 a keytab's and E7 a machine password's once RFC 18 §3.3's retention passes); the password hash and the signing key are RFC 23's plan's epic 5's |
 | RFC 25 §3.9 (`machine_account_unhealthy`) | E7, E8 (alert rule) |
 | RFC 17 §4.9 (caller cache) | E3 |
 | RFC 13 Appendix B (`identity.*`) | E8 (declared through #4059's `pkg/settings`); A2, A3 |

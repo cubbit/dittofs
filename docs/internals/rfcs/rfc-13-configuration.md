@@ -753,7 +753,8 @@ type SecretProvider interface {
   ([§8](#8.%20Observability)). Only once every such node reports the new version does the
   provider delete the old one — except a keytab's and a machine password's,
   kept, a restart included, for [RFC 18 §3.3](rfc-18-identity.md#3.3%20Kerberos)'s retention after the change at
-  the KDC, so a ticket issued under the old key still verifies — and the control plane report that the old
+  the KDC, so a ticket issued under the old key still verifies, and the management API's signing key's, kept
+  until the last access token it signed has expired ([RFC 23 §5.3](rfc-23-control-plane.md#5.3%20Sign-in%2C%20tokens%20and%20sessions)) — and the control plane report that the old
   credential may be revoked at its service; revoking it earlier fails the nodes
   that still hold it. The new value is proven as [§5.2](#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change) proves a new
   credential before it is used.
