@@ -644,7 +644,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   - A segment of version 2, or of a version above the `format` file's, fails the open.
   - A context cancelled before any phase returns the context's error with nothing changed but the
     `.spare.tmp` unlinks.
-- **Tests:** the rows of R69 (`TestRFC28C_ForeignSegment`, `TestRFC28C_ForeignHeaderIsForeignNotDamaged`, `TestDamage_UnnamedFileLeftAlone`, `TestRFC28C_UnidentifiedDirectory`, `TestRFC28C_JournalGone`, `TestRFC28C_InterruptedInit`, `TestRFC28C_KindValuesRefused`, and the first half of the "`format` rebuilt" row); a cancel injected at each phase boundary (catches a phase that
+- **Tests:** the rows of R69 (`TestRFC28C_ForeignSegment`, `TestRFC28C_ForeignHeaderIsForeignNotDamaged`, `TestDamage_UnnamedFileLeftAlone`, `TestRFC28C_JournalGone`, `TestRFC28C_InterruptedInit`, `TestRFC28C_KindValuesRefused`, and the first half of the "`format` rebuilt" row); a cancel injected at each phase boundary (catches a phase that
   ignores the context); a `.spare.tmp` with the highest id in the directory, then a spare made
   after open (catches an allocator seeded only from `.seg` names, R6); a file named
   `00000000000000000042.seg.bak` and one named `notes.txt` left in place (catches a classifier
@@ -797,7 +797,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
     loss record names it, and nothing is reported damaged.
   - A record failed by a read-only journal and found whole at the next open in the process is not
     held, gets an unsynced loss record, and neither `LossGeneration` nor `Losses` moves.
-- **Tests:** the rows of R72 (`TestRFC1C_LossSurvivesRestart`, `TestRFC1C_ForgetLeavesNothingToSettle`, `TestRFC28C_BadCopyDoesNotMaskAGoodOne`, and the reopen halves of "removals survive to `Since`" and "a partly superseded record is still checked"); the synced loss at `Since` across a clean exit (catches a loss rebuilt as settled, so the engine never commits the lost write's existence, R12); the repaired-bytes case (catches a loss applied by position rather
+- **Tests:** the rows of R72 (`TestRFC1C_LossSurvivesRestart`, `TestRFC28C_BadCopyDoesNotMaskAGoodOne`, the reopen half of `TestRFC1C_ForgetLeavesNothingToSettle`, which E9a's T9.10 turns green, and the reopen halves of "removals survive to `Since`" and "a partly superseded record is still checked"); the synced loss at `Since` across a clean exit (catches a loss rebuilt as settled, so the engine never commits the lost write's existence, R12); the repaired-bytes case (catches a loss applied by position rather
   than by sequence number); the synced-versus-unsynced pair (catches a loss keyed on "at or
   below", RFC 1 §3.8); the `superseded` half (catches a loss applied over the whole record, R24);
   the read-only drop with the registry's list (catches a reopen that serves a write its `Sync`
@@ -847,7 +847,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   - After `Forget(T)` and a reopen, the forget record stays live until the last segment that held
     a record of `T` below it is retired, and not after; a segment holding only settled, outranked
     removals reports not held without a read.
-- **Tests:** the rows of R73 (`TestRFC1C_EpochHalfIsZero`, `TestRFC1C_CloneTargetSurvivesCrash`, `TestRFC1C_UnclaimedTagReported`, `TestRFC28A_WriteCarriesItsMtime`); `Inspect().File` and `All` against the model after a reopen, offloaded bits included (catches a read-out left as a stub, which fails every row that reads the index through it, R68); a reopen under a lower `ExtentLimit` (catches an open refused for it, R23); the before-and-after comparison of `Stats`, `Files` and
+- **Tests:** the rows of R73 (`TestRFC1C_EpochHalfIsZero`, `TestRFC1C_CloneTargetSurvivesCrash`, `TestRFC28A_WriteCarriesItsMtime`, and the reopen half of `TestRFC1C_UnclaimedTagReported`, which E9a's T9.10 turns green); `Inspect().File` and `All` against the model after a reopen, offloaded bits included (catches a read-out left as a stub, which fails every row that reads the index through it, R68); a reopen under a lower `ExtentLimit` (catches an open refused for it, R23); the before-and-after comparison of `Stats`, `Files` and
   `DirtyFiles` (catches a derived value not rebuilt, R31, tested at its consumer); RFC 1 §9.4's
   "a failed number is never issued again" (catches a number taken from the disk alone, which gives
   a new write a failed number and a later reopen drops it after its `Sync` succeeded, R30); the floor case
@@ -1165,7 +1165,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   - A flipped bit in the catalog entry or the trailer is read by scan with the same index and no
     byte changed; one in the `format` file refuses the open and writes nothing to it.
   - `known.yaml` names no test this epic turned green, and the runner passes.
-- **Tests:** `TestDamage_LostWrites`, `TestDamage_TornWrites`, `TestDamage_ReorderedWrites`,
+- **Tests:** `TestDamage_LostWrites` but the four legs E9a's T9.12 lists, `TestDamage_TornWrites`, `TestDamage_ReorderedWrites`,
   `TestDamage_BitFlip/catalog_entry`, `/trailer` and `/format` and the model's crash seeds (each catches a recovery that comes back
   describing something other than what is on disk); the seam-order assertions (catch an ordering
   bug a fault would excuse).
