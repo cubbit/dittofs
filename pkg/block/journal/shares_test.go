@@ -253,6 +253,31 @@ func TestHandleClose_PublicRefusesAndWaits(t *testing.T) {
 	writeReady(t, fresh, fileOf(1), "again")
 }
 
+func TestJournalStrand(t *testing.T) {
+	var zero Journal
+	if err := zero.Strand(1); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("the zero Journal's Strand = %v, want ErrNotImplemented", err)
+	}
+
+	j := newTestJournal(t)
+	if err := j.Strand(1); err != nil {
+		t.Fatalf("Strand: %v", err)
+	}
+	if err := j.Strand(1); err != nil {
+		t.Fatalf("second Strand of the same tag = %v, want nil", err)
+	}
+	if err := j.Strand(0); !errors.Is(err, ErrInvalidSetting) {
+		t.Errorf("tag 0: Strand = %v, want ErrInvalidSetting", err)
+	}
+
+	if err := j.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := j.Strand(2); !errors.Is(err, ErrClosed) {
+		t.Errorf("Strand after Close = %v, want ErrClosed", err)
+	}
+}
+
 func TestJournalDraw_PublicLimitSurface(t *testing.T) {
 	j := newTestJournal(t)
 	h, err := j.Share(1, 0, Version{})
