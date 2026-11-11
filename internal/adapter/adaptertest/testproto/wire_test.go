@@ -39,9 +39,9 @@ var echoVector = []byte{
 
 var echoMsgs = []Msg{{Op: OpEcho, Version: 1, ID: 7, Credits: 1, Role: core.RoleContext, Payload: []byte("hi")}}
 
-// chainVector is two messages under session 5: a Create of "a" in tree 9,
-// charging 2 credits at sequence 3, then a related, pending Echo that inherits
-// the session.
+// chainVector is two messages under session 5, whose key is 05 00 07 df: a
+// Create of "a" in tree 9, charging 2 credits at sequence 3, then a related,
+// pending Echo that inherits the session.
 var chainVector = []byte{
 	0x00, 0x00, 0x00, 0x52, // the body's length: 82
 	0x00, 0x00, 0x00, 0x29, // next: 41
@@ -54,8 +54,8 @@ var chainVector = []byte{
 	0x00, 0x00, 0x00, 0x09, // tree
 	0x00, 0x00, 0x00, 0x03, // sequence
 	0x00, 0x00, 0x00, 0x00, // status
-	0x05, 0x00, 0x08, 0xa9, // checksum: 0xa4 of bytes, plus 5 times 0x01000193
-	0x61, // "a"
+	0x05, 0x00, 0x08, 0xac, // checksum: 0xcd of bytes, plus 5 times 0x01000193
+	0x64, // "a", 0x61, XORed with the key's 0x05
 
 	0x00, 0x00, 0x00, 0x00, // next: the last
 	0x03,       // flags: related, pend
@@ -67,8 +67,8 @@ var chainVector = []byte{
 	0x00, 0x00, 0x00, 0x09, // tree
 	0x00, 0x00, 0x00, 0x00, // sequence
 	0x00, 0x00, 0x00, 0x00, // status
-	0x05, 0x00, 0x0c, 0x14, // checksum: 0x435 of bytes, plus 5 times 0x01000193
-	0x00, // role
+	0x05, 0x00, 0x0c, 0x19, // checksum: 0x43a of bytes, plus 5 times 0x01000193
+	0x05, // role 0, XORed with the key's 0x05
 }
 
 var chainMsgs = []Msg{
@@ -154,8 +154,8 @@ func TestVectorsDecodeToTheirFields(t *testing.T) {
 			{0, 0, 1, 1, OpEcho, 7, 0, 0, 0, 0, 0, "\x01hi"},
 		}},
 		{"chain", chainVector, []fields{
-			{41, 0, 2, 2, OpCreate, 0x0102030405060708, 5, 9, 3, 0, 0x050008a9, "a"},
-			{0, flagRelated | flagPend, 2, 0, OpEcho, 0x0102030405060709, inherited, 9, 0, 0, 0x05000c14, "\x00"},
+			{41, 0, 2, 2, OpCreate, 0x0102030405060708, 5, 9, 3, 0, 0x050008ac, "d"},
+			{0, flagRelated | flagPend, 2, 0, OpEcho, 0x0102030405060709, inherited, 9, 0, 0, 0x05000c19, "\x05"},
 		}},
 		{"replies", replyVector, []fields{
 			{40, flagReply | flagInterim, 2, 3, OpEcho, 7, 0, 0, 0, 0, 0, ""},
@@ -452,4 +452,13 @@ func FuzzFrame(f *testing.F) {
 			off = next
 		}
 	})
+}
+
+// A Cancel names its target by carrying the target's message ID as its own,
+// and has no arguments.
+func TestACancelCarriesItsTargetsID(t *testing.T) {
+	got := decodeAll(t, Append(nil, Msg{Op: OpCancel, Version: 2, ID: 1, Target: 77})[lengthLen:])
+	if len(got) != 1 || got[0].id != 77 || got[0].op != OpCancel || got[0].args != "" {
+		t.Errorf("a Cancel of message 77 encodes to %+v", got)
+	}
 }

@@ -28,10 +28,13 @@
 // A next that is not 0 points past its own message's header and leaves room
 // for a whole header before the body's end.
 //
-// The checksum of a message under session s is the sum of its bytes, header
-// and arguments, with the checksum field read as zero, plus s times
-// 0x01000193, modulo 2^32. A member whose session field is all ones is summed
-// under the session it inherits. Under session 0 the field is 0.
+// Under a session s other than 0, a message is sealed. Its arguments are
+// XORed with the session's key, byte i of them with byte i mod 4 of s times
+// 0x01000193, big-endian. Its checksum is then the sum of its bytes as sent,
+// header and arguments, with the checksum field read as zero, plus s times
+// 0x01000193, modulo 2^32. A member whose session field is all ones is sealed
+// under the session it inherits. Under session 0 nothing is XORed and the
+// field is 0.
 //
 // The arguments, by operation:
 //
@@ -41,10 +44,10 @@
 //	Create    the name
 //	Park      the name
 //	Notify    target (8 bytes), the message ID of the request it names
-//	Cancel    target (8 bytes)
 //	Compound  count (4 bytes), then per member: operation (4), length (4), arguments
 //
-// Every other operation has none. A reply's arguments are its body.
+// Every other operation has none. A Cancel names its target by carrying the
+// target's message ID as its own. A reply's arguments are its body.
 package testproto
 
 import (
@@ -106,9 +109,10 @@ const (
 )
 
 var (
-	errTooLong = errors.New("testproto: a record past the 1 MiB cap")
-	errShort   = errors.New("testproto: a header that runs past the record")
-	errNext    = errors.New("testproto: a next offset that points backwards or past the record")
+	errChecksum = errors.New("testproto: a message whose checksum does not match")
+	errTooLong  = errors.New("testproto: a record past the 1 MiB cap")
+	errShort    = errors.New("testproto: a header that runs past the record")
+	errNext     = errors.New("testproto: a next offset that points backwards or past the record")
 )
 
 // framer finds a record's length from its 4-byte prefix.
@@ -190,6 +194,15 @@ func checksum(msg []byte, session uint32) uint32 {
 	}
 
 	return sum
+}
+
+// xorKey XORs b in place with session's key, as the format states.
+func xorKey(b []byte, session uint32) {
+	var key [4]byte
+	binary.BigEndian.PutUint32(key[:], session*sumKey)
+	for i := range b {
+		b[i] ^= key[i&3]
+	}
 }
 
 // headerCodec decodes a request's header and encodes its reply's.

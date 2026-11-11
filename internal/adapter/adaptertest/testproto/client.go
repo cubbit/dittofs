@@ -27,7 +27,7 @@ type Msg struct {
 	Expires time.Time  // OpSession: the credential's end
 	Handle  vfs.Handle // OpPutFH
 	Name    string     // OpCreate, OpPark
-	Target  uint64     // OpNotify, OpCancel: the message ID of the request it names
+	Target  uint64     // OpNotify, OpCancel: the message ID of the request it names; a Cancel's own ID
 	Payload []byte     // OpEcho
 	Members []Msg      // OpCompound
 }
@@ -57,6 +57,9 @@ func Append(b []byte, msgs ...Msg) []byte {
 		if m.Session != inherited {
 			session = m.Session
 		}
+		if session != 0 {
+			xorKey(b[at+headerLen:], session)
+		}
 		binary.BigEndian.PutUint32(b[at+offChecksum:], checksum(b[at:], session))
 	}
 	binary.BigEndian.PutUint32(b[start:], uint32(len(b)-body))
@@ -76,8 +79,12 @@ func appendHeader(b []byte, m Msg) []byte {
 	b = binary.BigEndian.AppendUint32(b, 0)
 	b = append(b, flags, uint8(m.Version))
 	b = binary.BigEndian.AppendUint16(b, m.Credits)
+	id := m.ID
+	if m.Op == OpCancel {
+		id = m.Target
+	}
 	b = binary.BigEndian.AppendUint32(b, m.Op)
-	b = binary.BigEndian.AppendUint64(b, m.ID)
+	b = binary.BigEndian.AppendUint64(b, id)
 	b = binary.BigEndian.AppendUint32(b, m.Session)
 	b = binary.BigEndian.AppendUint32(b, m.Tree)
 	b = binary.BigEndian.AppendUint32(b, m.Seq)
@@ -108,7 +115,7 @@ func appendArguments(b []byte, m Msg) []byte {
 		b = append(b, m.Payload...)
 	case OpCreate, OpPark:
 		b = append(b, m.Name...)
-	case OpNotify, OpCancel:
+	case OpNotify:
 		b = binary.BigEndian.AppendUint64(b, m.Target)
 	case OpCompound:
 		b = binary.BigEndian.AppendUint32(b, uint32(len(m.Members)))
@@ -165,20 +172,37 @@ func (c *Client) Recv() ([]Reply, error) {
 		return nil, fmt.Errorf("testproto: receive: %w", err)
 	}
 
+	replies, err := openReplies(body)
+	for _, r := range replies {
+		c.balance += int(r.Credits)
+	}
+
+	return replies, err
+}
+
+// openReplies reads a record's replies, checking and opening each one sealed
+// under a session.
+func openReplies(body []byte) ([]Reply, error) {
 	var replies []Reply
 	for off := 0; ; {
 		h, err := headerAt(body, off)
 		if err != nil {
-			return nil, err
+			return replies, err
+		}
+		args := arguments(body, off, h)
+		if s := h.session(); s != 0 && s != inherited {
+			if checksum(body[off:off+headerLen+len(args)], s) != h.checksum() {
+				return replies, fmt.Errorf("%w: the reply to message %d", errChecksum, h.id())
+			}
+			xorKey(args, s)
 		}
 		replies = append(replies, Reply{
 			ID:      h.id(),
 			Status:  core.Status(h.status()),
 			Interim: h.flags()&flagInterim != 0,
 			Credits: h.credits(),
-			Body:    arguments(body, off, h),
+			Body:    args,
 		})
-		c.balance += int(h.credits())
 		if off = h.Next(); off == 0 {
 			return replies, nil
 		}
