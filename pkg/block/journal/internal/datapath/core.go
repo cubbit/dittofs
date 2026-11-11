@@ -150,6 +150,7 @@ type Core struct {
 	domains       durability.Domains
 	cap           *capacity.Capacity
 	headroom      *capacity.Headroom
+	maxBytes      int64               // the configured maximum local footprint, zero when unbounded
 	segCap        int64               // the set's segment cap, what the streams roll at and the admission sizes by
 	contentTarget int                 // the content spare target the pool was built with, for the test helper's wait
 	retirer       *segment.Retirer    // the retirement executor
@@ -298,6 +299,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	if maxBytes == 0 {
 		maxBytes = o.maxBytes
 	}
+	c.maxBytes = maxBytes
 	headroomRecords := deps.HeadroomRecords
 	if o.headroomRecords != 0 {
 		headroomRecords = o.headroomRecords
@@ -403,6 +405,22 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 
 // Index returns the placement index.
 func (c *Core) Index() *index.Index { return c.index }
+
+// Set returns the segment set.
+func (c *Core) Set() *segment.Set { return c.set }
+
+// Pool returns the spare pool.
+func (c *Core) Pool() *segment.Pool { return c.pool }
+
+// Descriptors returns the segment descriptor cache.
+func (c *Core) Descriptors() *segment.Descriptors { return c.cache }
+
+// Headroom returns the headroom reserve.
+func (c *Core) Headroom() *capacity.Headroom { return c.headroom }
+
+// MaxBytes returns the journal's configured maximum local footprint, zero
+// meaning unbounded.
+func (c *Core) MaxBytes() int64 { return c.maxBytes }
 
 // Durability returns the durability layer.
 func (c *Core) Durability() *durability.Durability { return c.dur }

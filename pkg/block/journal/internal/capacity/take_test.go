@@ -1719,3 +1719,26 @@ func TestTake_HoldsEveryRollingPiecesEntry(t *testing.T) {
 		t.Fatalf("after release, pendingEntries = %d, want 0", got)
 	}
 }
+
+// TestGettersReservedByTag: ReservedByTag reads the bytes a grant holds under
+// its tag while it is open, and nothing once it is released.
+func TestGettersReservedByTag(t *testing.T) {
+	r := newRig(t, std())
+	r.seed(t, 0)
+	if got := r.c.ReservedByTag()[tag1]; got != 0 {
+		t.Fatalf("ReservedByTag[tag1] before any Take = %d, want 0", got)
+	}
+	g := r.grant(t, req())
+	got := r.c.ReservedByTag()
+	if got[tag1] <= 0 || got[tag1] != r.c.ReservedBytes() {
+		t.Fatalf("ReservedByTag[tag1] mid-write = %d, want the held %d", got[tag1], r.c.ReservedBytes())
+	}
+	got[tag1] = -1
+	if r.c.ReservedByTag()[tag1] == -1 {
+		t.Fatal("ReservedByTag shares its map with the capacity, want a copy")
+	}
+	g.Release()
+	if got := r.c.ReservedByTag()[tag1]; got != 0 {
+		t.Fatalf("ReservedByTag[tag1] after Release = %d, want 0", got)
+	}
+}

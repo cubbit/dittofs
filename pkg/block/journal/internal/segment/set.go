@@ -577,6 +577,14 @@ func (s *Set) AddRecord(id core.SegmentID, tag core.ShareTag, n int64) error {
 	return nil
 }
 
+// TagBytes returns a copy of the record bytes held per share tag, taken under
+// the set's lock from the maintained map — no walk of the set.
+func (s *Set) TagBytes() map[core.ShareTag]int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.tags)
+}
+
 // ShareBytes returns the record bytes of the share's tag still held in
 // segments of the set — one map read, no walk of the set.
 func (s *Set) ShareBytes(tag core.ShareTag) int64 {

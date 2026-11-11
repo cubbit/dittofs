@@ -306,3 +306,14 @@ func (ix *Index) SegmentGone(id core.FileID, seg core.SegmentID) {
 func (ix *Index) RetireSegment(seg core.SegmentID) {
 	_, _ = ix.fs.retireSegment(seg)
 }
+
+// ExtentCount returns the number of entries of the placement index, one
+// atomic read.
+func (ix *Index) ExtentCount() int64 { return ix.fs.extentCount() }
+
+// ExtentLimit returns the configured bound on ExtentCount.
+func (ix *Index) ExtentLimit() int64 { return ix.fs.limit.Load() }
+
+// DropRanges returns the number of drop ranges over every file and segment,
+// one atomic read.
+func (ix *Index) DropRanges() int { return int(ix.fs.dropRangeCount()) }
