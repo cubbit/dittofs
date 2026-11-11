@@ -484,7 +484,7 @@ flowchart TB
   specific is in `pkg/` but `pkg/adapter` below.
 - **`pkg/adapter/`** holds the adapter's public surface, as `pkg/vfs` holds
   the service's: the contract the node drives (`Adapter`, `State`, `Health`,
-  `ConnInfo`, `Sidecar`, `Serving`) and `Deps`, in `pkg/adapter`; the
+  `ConnInfo`, `Sidecar`, `Serving`, `Socket`) and `Deps`, in `pkg/adapter`; the
   settings shapes, in the leaf `pkg/adapter/settings`; and one constructor per
   protocol, `pkg/adapter/nfs.New` and `pkg/adapter/smb.New`, each a call into
   its implementation. Both the node and `core` import the contract, and it
@@ -3579,6 +3579,9 @@ connection, not once per request
 3. **NLM and NSM over UDP.** Served today, and needed by clients that send lock
    requests only over UDP; [RFC 21 §2.2](rfc-21-nfs.md#2.2%20TCP%20only) forbids
    it. Parity keeps it until RFC 21 decides which clients lose locking.
+   MOUNT over UDP is not kept: RFC 21 §2.2 serves MOUNT over TCP only. A
+   client that defaults to UDP falls back to TCP when the port mapper offers
+   only TCP; one told `mountproto=udp` fails to mount.
 
 ## Appendix A — prior art
 
