@@ -28,6 +28,9 @@ type fixture struct {
 	set  *segment.Set
 	seam *kit.Seam
 	seg  core.SegmentID
+	// last is the largest segment id a Maker drew over the seam, so a
+	// later spare draws above it instead of over its name.
+	last core.SegmentID
 }
 
 // newFixture makes one spare over the seam and takes it into the set as the
@@ -47,7 +50,7 @@ func newFixture(t *testing.T) *fixture {
 	if err := set.Take(seg); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
-	return &fixture{ix: index.New(1 << 20), set: set, seam: seam, seg: seg}
+	return &fixture{ix: index.New(1 << 20), set: set, seam: seam, seg: seg, last: seg}
 }
 
 // write seeds one held extent of id inside the fixture's segment, at offset

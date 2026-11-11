@@ -1,8 +1,8 @@
 // Package reclaim tracks which journal segments still hold something, so
 // reclamation asks Held and never reads a segment to learn it: beside the
 // index's per-segment byte counters, the tracker counts the live header-only
-// records a segment carries and the flags that hold a segment with no
-// content, and answers from those counters alone.
+// records a segment carries, the deferred losses and ended holds that keep
+// a segment with no content, and answers from those counters alone.
 package reclaim
 
 import (
@@ -44,13 +44,22 @@ type Rec struct {
 }
 
 // Tracker is one journal's segment liveness: per segment, beside the bytes
-// the index counts, the records registered live and two flags — a deferred
-// loss and an ended hold — that keep a segment held with no content. It is
-// safe for concurrent use: Held reads atomics alone and takes no lock, and
-// each update locks only the one segment it names.
+// the index counts, the records registered live, a deferred-loss flag and a
+// count of ended holds — the things that keep a segment held with no
+// content. It is safe for concurrent use: Held reads atomics alone and takes
+// no lock, and each update locks only the one segment it names.
 type Tracker struct {
 	ix        *index.Index
 	candidate func(core.SegmentID)
+
+	// member answers whether id is still a segment of the set, the one
+	// check a snapshot's segments are re-checked against: a retirement
+	// that ran between the caller's snapshot and the registration lost its
+	// SegmentRetired — before the tracker held the snapshot — so the
+	// re-check catches it instead. It is set once, beside the tracker's
+	// construction, before events run; nil treats every snapshot segment
+	// as present and leaves the snapshot the caller's word alone.
+	member func(core.SegmentID) bool
 
 	// rm guards the re-test registry below. It is taken by the events, by
 	// Droppable and by the registrations and releases that touch the
@@ -64,6 +73,14 @@ type Tracker struct {
 	// reaches only the record it names, whose registrations sit here under
 	// the sequence number the loss carries.
 	recs map[core.FileID]map[Rec]int
+	// forgets is each live forget record's snapshot, keyed by the whole Rec
+	// like recs: the segments that held records of the record's share tag
+	// when the forget was appended — the only ones that can hold a record
+	// of the tag below it. Guarded by rm, so the drop test asks for it
+	// with the lock the re-test already holds; an entry leaves when the
+	// record's registration does, and a retired segment leaves every
+	// snapshot that names it.
+	forgets map[Rec]map[core.SegmentID]struct{}
 
 	// mu serialises creating states: a leaf lock, held only while the state
 	// table is copied, never across the index or a candidate call.
@@ -72,7 +89,6 @@ type Tracker struct {
 	// in. A segment's retirement removes its entry, so the table tracks the
 	// live segments, but the removal is not this table's own: it is the
 	// retired-segment step that takes the entry out.
-	//
 	// ponytail: a copy-on-write map: the first record of a segment copies
 	// the whole table, O(S) for the S live segments, once per segment
 	// created — a table copy per new segment, fine while a journal holds a
@@ -82,6 +98,28 @@ type Tracker struct {
 	// upgrade to a sharded map or a persistent structure once segment
 	// creation shows in a profile.
 	m atomic.Pointer[map[core.SegmentID]*segState]
+
+	// hm guards the ended holds below. It is taken by HoldEnded,
+	// MarksRecorded and SealObserved only — nothing that holds it calls
+	// back into the tracker — so it joins no cycle and sits beside the
+	// processing of the states, whose locks the releases take only after
+	// hm is back down.
+	hm sync.Mutex
+	// holds is the ended holds registered on each copies' segment, one
+	// entry per HoldEnded that names it: a hold ends at the proof its
+	// registration named — the seal of its copies' segment, seen through
+	// SealObserved, or a recorded mark past the last copy, handed through
+	// MarksRecorded — and the segment a hold keeps waits for its own
+	// proof, untouched by the releases of another hold's copies.
+	holds map[core.SegmentID][]endedHold
+}
+
+// endedHold is one hold registered on an ended segment: the segment the
+// hold keeps, and the position of its last copy, the point a recorded mark
+// must pass to prove the copies.
+type endedHold struct {
+	seg  core.SegmentID
+	last int64
 }
 
 // New returns a tracker that answers Held from ix's per-segment bytes,
@@ -95,10 +133,30 @@ func New(ix *index.Index, candidate func(core.SegmentID)) *Tracker {
 	return &Tracker{ix: ix, candidate: candidate}
 }
 
+// SetMember names the tracker's answer for whether a segment is still in
+// the set, consulted by the forget registration to re-check a caller's
+// snapshot against the registry the retirements keep: the production value
+// answers from the segment ledger, a segment being a member exactly while
+// it is. It must be set beside the tracker's construction, before events
+// run; a tracker left without one treats every snapshot segment as
+// present.
+func (t *Tracker) SetMember(member func(core.SegmentID) bool) { t.member = member }
+
+// inSet answers the member check, or true when none was set: without one
+// nothing may be assumed gone, so a snapshot is taken as it was given.
+func (t *Tracker) inSet(seg core.SegmentID) bool {
+	if t.member == nil {
+		return true
+	}
+	return t.member(seg)
+}
+
 // Held reports whether seg still holds anything: bytes of held or retained
-// extents, a live header-only record, a deferred loss, or an ended hold. It
-// reads the index's counters and the tracker's atomics, taking no lock,
-// allocating nothing and never reading the segment.
+// extents, a live header-only record, a deferred loss, or an ended hold. No
+// byte the index counts and no registration the tracker keeps, and the two
+// flags a segment carries beside them, are ever released by anything but the
+// events below. Held reads the index's counters and the tracker's atomics,
+// taking no lock, allocating nothing and never reading the segment.
 func (t *Tracker) Held(seg core.SegmentID) bool {
 	return t.isHeld(seg, t.stateOf(seg))
 }
@@ -165,6 +223,9 @@ func (t *Tracker) Register(rec Rec) {
 func (t *Tracker) Unregister(rec Rec) {
 	t.rm.Lock()
 	held := t.take(rec)
+	if held {
+		t.forgetTaken(rec)
+	}
 	t.rm.Unlock()
 	if !held {
 		return
@@ -208,22 +269,257 @@ func (t *Tracker) releaseCount(rec Rec) {
 	if st == nil {
 		return
 	}
+	t.lowerCount(rec.Seg, st, &st.live)
+}
+
+// lowerCount takes one unit from the counter n of seg's state — a released
+// registration, a released ended hold — with the transition logic every
+// release shares: the candidate fires exactly once for the held-to-not-held
+// crossing, whichever concurrent release is the one that crosses it. The
+// two isHeld reads span the change under the state's lock, so two releases
+// of one segment's last registrations still answer one candidacy. The count
+// never goes below zero: a release with no count left is a pairing the
+// registries did not make, and changing nothing is safer than taking a
+// count that is not this release's. The caller has found the state.
+func (t *Tracker) lowerCount(seg core.SegmentID, st *segState, n *atomic.Int64) {
 	st.mu.Lock()
-	if st.live.Load() <= 0 {
+	if n.Load() <= 0 {
 		st.mu.Unlock()
 		return
 	}
-	// The two reads together span this release, under the state's lock, so
-	// two releases of one segment's last records still answer one
-	// candidacy: whichever release crosses the line is the one that sees
-	// the pair straddle it.
-	wasHeld := t.isHeld(rec.Seg, st)
-	st.live.Add(-1)
-	held := t.isHeld(rec.Seg, st)
+	wasHeld := t.isHeld(seg, st)
+	n.Add(-1)
+	held := t.isHeld(seg, st)
 	st.mu.Unlock()
 	if wasHeld && !held && t.candidate != nil {
-		t.candidate(rec.Seg)
+		t.candidate(seg)
 	}
+}
+
+// SetDeferred counts on the segment one record loss whose dropped record it
+// holds: raised when a deferral starts — the record is owed to the copy
+// that retires this segment, so the segment stays held while one stands —
+// and lowered when a deferral ends, once the copy that writes the loss
+// record has it durable. The registry of deferred losses lives with the
+// durability layer, which counts per segment the losses it deferred and
+// the segments holding their dropped records: it must call SetDeferred
+// once per deferral that starts, and once per deferral that ends, on the
+// segment holding the dropped record. No such registry exists yet, so
+// nothing moves the count; it and Held's read of it are in place for the
+// day one does. The count clamps at zero: an end without a start, or a
+// repeated end, lowers nothing. The last end on a segment holding nothing
+// else crosses to not held and fires the candidate, exactly as any release
+// does.
+//
+// A segment named here is not re-created for the set's word alone: with a
+// member check set, a segment the set no longer holds answers nothing, for
+// the same reason a retirement releases before it forgets — without one,
+// the caller must not name a segment already retired.
+func (t *Tracker) SetDeferred(seg core.SegmentID, on bool) {
+	st := t.entryIfLive(seg)
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	wasHeld := t.isHeld(seg, st)
+	if on {
+		st.deferred.Add(1)
+	} else if st.deferred.Load() > 0 {
+		st.deferred.Add(-1)
+	}
+	held := t.isHeld(seg, st)
+	st.mu.Unlock()
+	if wasHeld && !held && t.candidate != nil {
+		t.candidate(seg)
+	}
+}
+
+// entryIfLive returns the segment's state, making one only when the
+// segment can still hold one: with a member check set, a segment the set
+// no longer names has no state to make, so a call late on a retired
+// segment resurrects nothing and lowers no count. A tracker without a
+// membercheck has only the caller's word, and serves it.
+func (t *Tracker) entryIfLive(seg core.SegmentID) *segState {
+	if !t.inSet(seg) {
+		return nil
+	}
+	return t.entry(seg)
+}
+
+// RegisterForget counts rec's record live in its segment beside what every
+// registration keeps: a forget record ends what its share tag held below it,
+// so it stays live while any of segs — the segments holding records of the
+// tag when the forget was appended, the snapshot its caller takes once the
+// forget's barrier has placed every record in flight — remains in the set.
+// A segment of the snapshot already retired before this call — between the
+// caller's snapshot and here — is pruned the same way a later retirement
+// prunes it, so the order closes the race without a second registry: the
+// snapshot enters the tracker's table first, then each of its segments is
+// re-checked against the member check, and one already gone leaves now;
+// a retirement that runs after the insert finds the snapshot there and
+// prunes it itself. An empty remaining snapshot names a barrier that
+// released everything below the forget: the record is droppable the moment
+// it is registered and drops at the next event of its file. A segment
+// pruned by the re-check or by a retirement is gone from the set for good —
+// a retired id is never drawn again — so a snapshot never names one twice.
+//
+// decision: the snapshot is the whole rule and no per-record scan runs: at
+// the forget, only the segments whose record bytes of the tag are non-zero
+// can hold a record of the tag below the forget's sequence number, because
+// every later record of the tag is appended above it, and the barrier has
+// already placed every record the tag had in flight — a carry under the old
+// sequence number counts in its new segment, in the snapshot too. The
+// snapshot is exact only while nothing appends a record of the tag below
+// the forget's sequence number once the barrier has passed; a carry outside
+// the file append domain, or a re-append of a failed window naming the tag,
+// overturns it. The upgrade is a scan of the snapshot's segments for
+// records of the tag at each retirement.
+func (t *Tracker) RegisterForget(rec Rec, segs []core.SegmentID) {
+	t.Register(rec)
+	if len(segs) == 0 {
+		return
+	}
+	t.rm.Lock()
+	if t.forgets == nil {
+		t.forgets = make(map[Rec]map[core.SegmentID]struct{})
+	}
+	snap := make(map[core.SegmentID]struct{}, len(segs))
+	for _, s := range segs {
+		snap[s] = struct{}{}
+	}
+	t.forgets[rec] = snap
+	// The re-check runs under the registry's own lock, so a SegmentRetired
+	// pruning this snapshot waits it out and finds what is left; one that
+	// already ran is answered here by the member check.
+	for s := range snap {
+		if !t.inSet(s) {
+			delete(snap, s)
+		}
+	}
+	if len(snap) == 0 {
+		delete(t.forgets, rec)
+	}
+	t.rm.Unlock()
+}
+
+// forgetTaken drops a forget record's snapshot once the registry has given
+// up its registration, so the snapshot exists only while the record counts
+// live. The caller holds rm.
+func (t *Tracker) forgetTaken(rec Rec) {
+	if rec.Kind == format.KindForget {
+		delete(t.forgets, rec)
+	}
+}
+
+// HoldEnded registers one hold on an ended segment: the copies of its
+// still-held records were re-appended into copies, and the ended segment
+// stays held until something proves them — a recorded mark of the copies'
+// segment past last, handed through MarksRecorded, that segment's seal, seen
+// through SealObserved, or its retirement, whose release of the holds
+// citing it SegmentRetired carries. The hold is not the window
+// resolution's, the caller's releases or the copies' sync to release, and
+// it ends without touching the segment's records. The registration belongs
+// before the copies sync — the path's own ordering, the condition that
+// overturns this rule — so the seal it waits for is a seal to come: a
+// registration late on a copies segment already sealed missed its seal
+// event and is released only by a mark, or by the copies' retirement. A
+// segment named here is not re-created for the set's word alone, as
+// SetDeferred's ruling names.
+//
+// decision: the hold ends only at the proof named here, and a mark reaching
+// exactly the last copy proves the copies but not that they are recorded —
+// through must pass last. An ended segment whose records no path
+// re-appended holds nothing on this account, which is safe only while no
+// path re-appends the records of an ended segment without registering the
+// hold: the re-append path must call HoldEnded before its copies sync, and
+// it owns the seal bound — the copies' segment is sealed within thirty
+// seconds of the copies syncing, so the hold cannot outlast its proof. That
+// path's arrival overturns this reasoning. SegmentRetired's release of the
+// holds citing a copies segment is safe only while a retired segment's
+// still-held records were carried durably first — a segment is retired
+// once nothing holds it, and a hold ends with the seg its copies proved;
+// overturned if a retirement can ever run without that durable carry.
+func (t *Tracker) HoldEnded(seg, copies core.SegmentID, last int64) {
+	st := t.entryIfLive(seg)
+	if st == nil {
+		return
+	}
+	// The count rises before the registry entry is inserted, so a
+	// concurrent release in that window finds the registration absent and
+	// lowers nothing, and a Held read in it errs on the held side — the
+	// safe direction, a segment kept past its proof's arrival.
+	st.holds.Add(1)
+	t.hm.Lock()
+	defer t.hm.Unlock()
+	if t.holds == nil {
+		t.holds = make(map[core.SegmentID][]endedHold)
+	}
+	t.holds[copies] = append(t.holds[copies], endedHold{seg: seg, last: last})
+}
+
+// MarksRecorded hands the tracker a recorded mark of the copies' segment,
+// covering the segment's recorded marks through the position through: a
+// mark past its hold's last copy proves that hold's copies, so each such
+// hold is released, and the holds whose last copy sits above through stand.
+// A mark short of a hold's last copy, or reaching exactly it, releases
+// nothing — the copies' sync alone proves none of them.
+func (t *Tracker) MarksRecorded(copies core.SegmentID, through int64) {
+	t.hm.Lock()
+	hs := t.holds[copies]
+	if len(hs) == 0 {
+		t.hm.Unlock()
+		return
+	}
+	var rel []endedHold
+	n := 0
+	for _, h := range hs {
+		if through > h.last {
+			rel = append(rel, h)
+			continue
+		}
+		hs[n] = h
+		n++
+	}
+	if n == 0 {
+		delete(t.holds, copies)
+	} else {
+		t.holds[copies] = hs[:n]
+	}
+	t.hm.Unlock()
+	for _, h := range rel {
+		t.releaseHold(h)
+	}
+}
+
+// SealObserved reports that a segment of the set was sealed, and releases
+// every hold naming it as its copies: a seal closes the segment to further
+// appends and proves its records, so the ended segments that copied their
+// records into it hold nothing on this account any more. It is the call
+// the wiring hands the set's seal observer — set.OnSeal(tracker.SealObserved)
+// — and it runs wherever its caller does: the observer's delivery holds
+// its lock across the whole callback, so the candidate it fires must claim
+// without mutating the set, which a candidate is asked to do anyway: it is
+// a prompt, and the retirement that answers it is the caller's own.
+// A seal of a segment no hold names releases nothing.
+func (t *Tracker) SealObserved(seg core.SegmentID) {
+	t.hm.Lock()
+	hs := t.holds[seg]
+	delete(t.holds, seg)
+	t.hm.Unlock()
+	for _, h := range hs {
+		t.releaseHold(h)
+	}
+}
+
+// releaseHold takes one ended hold from the segment it kept — the caller
+// has taken the registration out of the holds table — through the same
+// count-lowering transition every release shares.
+func (t *Tracker) releaseHold(h endedHold) {
+	st := t.stateOf(h.seg)
+	if st == nil {
+		return
+	}
+	t.lowerCount(h.seg, st, &st.holds)
 }
 
 // isHeld reports whether seg holds anything once its state is known: the
@@ -247,7 +543,7 @@ func (t *Tracker) isHeld(seg core.SegmentID, st *segState) bool {
 	if b.Held > 0 || b.Retained > 0 {
 		return true
 	}
-	return st != nil && (st.live.Load() > 0 || st.deferred.Load() || st.ended.Load())
+	return st != nil && (st.live.Load() > 0 || st.deferred.Load() > 0 || st.holds.Load() > 0)
 }
 
 // stateOf returns the segment's state, or nil when none was made yet.
@@ -288,15 +584,19 @@ type segState struct {
 	mu sync.Mutex
 	// live counts the records registered and not yet released.
 	live atomic.Int64
-	// deferred says the segment holds a record whose loss an open still
-	// defers. Nothing sets it while no deferred-loss registry exists, so
-	// it reads false; Held consults it for the day one does.
-	deferred atomic.Bool
-	// ended says the segment was ended by a failure whose re-appended
-	// copies nothing on disk proves yet. Nothing sets it while ended holds
-	// are untracked, so it reads false; Held consults it for the day they
-	// are.
-	ended atomic.Bool
+	// deferred counts the record losses whose record a segment holds and
+	// the durability layer still defers — one per loss that started, taken
+	// back per loss that ended. SetDeferred raises and lowers it, and the
+	// registry of deferred losses reaches the tracker through that call
+	// alone. No such registry exists yet, so nothing moves it and it reads
+	// zero; Held consults it for the day one does.
+	deferred atomic.Int64
+	// Holds is the count of ended holds registered on the segment — one per
+	// HoldEnded — each released at the proof its registration named, a mark
+	// past the last copy or the copies' segment's seal. Nothing sets it
+	// while no path re-appends an ended segment's records, so it reads
+	// zero; Held consults it for the day one does.
+	holds atomic.Int64
 	// files are the files the segment's registered records named. Entries
 	// are never removed until the segment's retirement empties the table:
 	// a retired segment's file names answer from them, which a
