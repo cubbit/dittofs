@@ -33,8 +33,8 @@ func (c *Core) Account(d index.HeldDelta) {
 	}
 	c.dirtyFiles.apply(d)
 	c.shares.apply(d)
-	// Held is raised before dirty and dirty lowered before held, so a reader
-	// of the counters never sees dirty bytes exceed held bytes.
+	// Held is raised before dirty and dirty lowered before held, so dirty
+	// never exceeds held at any instant; a reader of both re-reads (see Stats).
 	c.held.Add(max(d.HeldBytes, 0))
 	if c.stepSpy != nil {
 		c.stepSpy(1)

@@ -83,9 +83,9 @@ func statsFrom(c datapath.Stats) Stats {
 //
 // decision: Stats carries no SuspectSegments, SyncMarks or HeadroomSparesShort,
 // and Counters no descriptor_overruns or descriptor_open_failures, though RFC 1
-// sections 3.7 and 3.9 list them: no maintained source exists for any of them,
-// and a statistic only a walk can produce is omitted. Overturned for each as
-// its source lands.
+// sections 3.7 and 3.9 list them: nothing maintains a source for any of them
+// yet. A zero would claim nothing is suspect or short, so each is left out
+// until its source lands, which overturns this for that field.
 type Stats struct {
 	// MaxBytes is the configured capacity. Kind: gauge.
 	MaxBytes int64
@@ -246,9 +246,8 @@ type ShareStats struct {
 // counter: it only rises, and restarts at zero on open. Each answers something
 // only the journal knows.
 //
-// decision: the descriptor_overruns and descriptor_open_failures counters of
-// RFC 1 section 3.9 are not carried: nothing maintains them yet. Overturned
-// when the descriptor cache counts them.
+// The descriptor counters of RFC 1 section 3.9 are left out for the reason
+// Stats gives.
 type Counters struct {
 	// WrittenBytes is the client bytes accepted by WriteAt.
 	WrittenBytes uint64
