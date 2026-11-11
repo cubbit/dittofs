@@ -307,7 +307,8 @@ func (c *Capacity) SetRecorder(rec *lockorder.Recorder) {
 // under the admission's mutex and after the counters' read. It is the one
 // place a test can observe what the calling goroutine holds while Take
 // decides; set per instance — never a package variable — and nil in
-// production, where it changes no behaviour.
+// production, where it changes no behaviour. It must be called before the
+// Capacity is shared, before any concurrent Take.
 func (c *Capacity) SetTakeHook(h func()) {
 	c.hook = h
 }
