@@ -626,7 +626,7 @@ type Provider struct {
 }
 
 func (p *Provider) Seal(ctx context.Context, role Role, ref metadata.SecretRef, value []byte) (metadata.SecretRef, error) {
-	cur, err := p.latest(ctx, ref) // RFC 16 §3 reads a named version only: the epic settles how the latest is found
+	cur, err := p.cp.Secret(ctx, ref, 0) // version 0: the current one (RFC 16 §3, #4050)
 	if err != nil && !errors.Is(err, metadata.ErrNotFound) {
 		return ref, err
 	}
@@ -642,7 +642,7 @@ func (p *Provider) Seal(ctx context.Context, role Role, ref metadata.SecretRef, 
 }
 
 func (p *Provider) Resolve(ctx context.Context, role Role, ref metadata.SecretRef) ([]byte, error) {
-	s, err := p.latest(ctx, ref)
+	s, err := p.cp.Secret(ctx, ref, 0)
 	if err != nil {
 		return nil, err
 	}
