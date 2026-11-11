@@ -230,9 +230,11 @@ func TestTryWindowStopsRetries(t *testing.T) {
 	}
 }
 
-// TestTryContextDoneMarksNothing checks that a context that ends the retries
-// marks nothing — it says nothing about the device.
-func TestTryContextDoneMarksNothing(t *testing.T) {
+// TestTryContextCutAfterAFailedAttemptMarks checks that a context ending the
+// retries after an attempt has failed still marks the range — its bytes were
+// read by no attempt, whatever ended them — while the caller answers with
+// its own cancellation, not an unreadable verdict.
+func TestTryContextCutAfterAFailedAttemptMarks(t *testing.T) {
 	r := newRig(t)
 	r.write(recordFile, []byte("record bytes"))
 	r.failReads(recordFile, 0) // every read
@@ -256,14 +258,45 @@ func TestTryContextDoneMarksNothing(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("Try: a read the cancellation cut got err %v, want context.Canceled", err)
 		}
+		if errors.Is(err, core.ErrUnreadable) {
+			t.Errorf("Try: the cancellation was wrapped in ErrUnreadable (%v), want the context's error bare", err)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatalf("Try: a read the cancellation cut did not return")
 	}
+	if got := s.Unread(ref); !got {
+		t.Errorf("Unread(ref) after an attempt failed and the context cut the retries = %v, want true", got)
+	}
+	if got := s.SuspectSegments(); got != 1 {
+		t.Errorf("SuspectSegments() after an attempt failed and the context cut the retries = %d, want 1", got)
+	}
+}
+
+// TestTryContextDoneBeforeAnyAttemptMarksNothing checks that a context
+// already ended when Try is called reads nothing and marks nothing: no
+// attempt of it ever failed.
+func TestTryContextDoneBeforeAnyAttemptMarksNothing(t *testing.T) {
+	r := newRig(t)
+	r.write(recordFile, []byte("record bytes"))
+	ref := Ref{Segment: 7, Off: 0, Len: 12, Kind: Content}
+	s := New(r.clk)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := s.Try(ctx, ref, r.read(ref, recordFile))
+
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Try: a context ended before any attempt got err %v, want context.Canceled", err)
+	}
+	if calls := r.seam.CallsFor(kit.OpRead, recordFile); calls != 0 {
+		t.Errorf("Try: a context ended before any attempt made %d reads, want 0", calls)
+	}
 	if got := s.Unread(ref); got {
-		t.Errorf("Unread(ref) after a read the cancellation cut = %v, want false", got)
+		t.Errorf("Unread(ref) after a context ended before any attempt = %v, want false", got)
 	}
 	if got := s.SuspectSegments(); got != 0 {
-		t.Errorf("SuspectSegments() after a read the cancellation cut = %d, want 0", got)
+		t.Errorf("SuspectSegments() after a context ended before any attempt = %d, want 0", got)
 	}
 }
 
