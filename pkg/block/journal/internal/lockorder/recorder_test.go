@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 )
@@ -21,6 +22,9 @@ func kinds(vs []lockorder.Violation) []lockorder.Kind {
 	return out
 }
 
+// The exclusive-lock checks wait for events that must happen; the backstop
+// constant is declared in lockorder_test.go.
+
 func TestRanks_Order(t *testing.T) {
 	order := []lockorder.Rank{
 		lockorder.FileAppend,
@@ -35,6 +39,9 @@ func TestRanks_Order(t *testing.T) {
 			t.Errorf("rank %s (%d) does not come before %s (%d) in the total order",
 				order[i-1], order[i-1], order[i], order[i])
 		}
+	}
+	if got, want := lockorder.Rank(0).String(), "unranked"; got != want {
+		t.Errorf("Rank(0).String() = %q, want %q", got, want)
 	}
 	names := map[lockorder.Rank]string{
 		lockorder.FileAppend:    "file append",
@@ -59,12 +66,12 @@ func TestRecorder_Reports(t *testing.T) {
 		wantRank  lockorder.Rank
 	}{
 		{
-			// Nesting all six is in order, so no OutOfOrder and no
-			// SameDomain — but the RFC's two absolute prohibitions still
-			// hold over the order itself, so a full nest reports the
-			// segment append taken under the file map and the storage
-			// guard taken under the file index. No real run nests them;
-			// the row pins what a full nest costs against the rules.
+			// Nesting all six is in order, so no out-of-order and no
+			// same-domain violation — but the file map permits nothing
+			// acquired under it and the file index must be gone before
+			// the storage guard, so the full nest still reports the
+			// segment append taken under the map and the storage guard
+			// taken under the index.
 			name: "all six in order, released in reverse",
 			drive: func(t *testing.T, rec *lockorder.Recorder) {
 				var mus [6]lockorder.Mutex
@@ -115,8 +122,6 @@ func TestRecorder_Reports(t *testing.T) {
 		{
 			name: "two file-index read locks",
 			drive: func(t *testing.T, rec *lockorder.Recorder) {
-				// Two distinct read locks of one domain: a re-entrant RLock
-				// of one guard is shared readers, which is exempt.
 				var first, second lockorder.RWMutex
 				first.Init(lockorder.FileIndex, rec)
 				second.Init(lockorder.FileIndex, rec)
@@ -125,6 +130,69 @@ func TestRecorder_Reports(t *testing.T) {
 			},
 			wantKinds: []lockorder.Kind{lockorder.SameDomain},
 			wantRank:  lockorder.FileIndex,
+		},
+		{
+			name: "one mutex locked twice by one goroutine",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(lockorder.FileAppend, rec)
+				m.Lock()
+				// The second Lock self-deadlocks once its attempt is
+				// recorded, which is why the attempt is recorded
+				// before the wait. Drive the recorder side of that
+				// attempt — the same call Lock makes before it
+				// blocks, on the identity it holds — and the release
+				// the deadlocked lock never reaches.
+				rec.Acquire(lockorder.FileAppend, &m)
+			},
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.FileAppend,
+		},
+		{
+			name: "read lock then write lock on one rw mutex",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var rw lockorder.RWMutex
+				rw.Init(lockorder.StorageGuard, rec)
+				rw.RLock()
+				// A reader taking its own guard exclusively
+				// self-deadlocks once the write attempt is recorded.
+				// Drive the recorder side of that attempt — the same
+				// call Lock makes before it blocks, on the identity
+				// the write hold records itself under.
+				rec.Acquire(lockorder.StorageGuard, &rw)
+			},
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			name: "nested read locks of one rw mutex",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var rw lockorder.RWMutex
+				rw.Init(lockorder.StorageGuard, rec)
+				rw.RLock()
+				rw.RLock() // readers share: the one re-entrant hold allowed
+				if got, want := rec.Held(), []lockorder.Rank{lockorder.StorageGuard, lockorder.StorageGuard}; !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() while both read holds are nested = %v, want %v: one release must balance one hold", got, want)
+				}
+				rw.RUnlock()
+				rw.RUnlock()
+			},
+		},
+		{
+			name: "rank zero is never recorded",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(0, rec)
+				m.Lock()
+				var rw lockorder.RWMutex
+				rw.Init(0, rec)
+				rw.RLock()
+				if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() while two rank-zero locks are held = %v, want none: an unranked lock is never recorded", got)
+				}
+				rw.RUnlock()
+				m.Unlock()
+			},
 		},
 		{
 			name: "storage guard under file index",
@@ -211,7 +279,7 @@ func TestRecorder_Reports(t *testing.T) {
 				var m lockorder.Mutex
 				m.Init(lockorder.FileAppend, rec)
 				m.Lock()
-				rec.IO("read") // the lock does real work before its release
+				rec.IO("read") // the hold does real work before its release
 				m.Unlock()
 				rec.AssertNotHeld(lockorder.FileAppend, "removal wait")
 			},
@@ -226,7 +294,7 @@ func TestRecorder_Reports(t *testing.T) {
 				rec.Release(lockorder.Capacity, b)
 				rec.Release(lockorder.FileIndex, c)
 				rec.Release(lockorder.FileAppend, a)
-				if got := rec.Held(); got != nil {
+				if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
 					t.Errorf("Held() after non-LIFO releases = %v, want none", got)
 				}
 			},
@@ -286,10 +354,10 @@ func TestRecorder_PerGoroutine(t *testing.T) {
 		close(bDone)
 	}()
 	wg.Wait()
-	if got := rec.Held(); got != nil {
-		t.Errorf("main goroutine Held() = %v, want none", got)
+	if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("main goroutine Held() after both = %v, want none", got)
 	}
-	if got := kinds(rec.Violations()); got != nil {
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
 		t.Errorf("violation kinds = %v, want none", got)
 	}
 }
@@ -308,7 +376,7 @@ func TestRecorder_UnlockOnOtherGoroutine(t *testing.T) {
 		m.Lock()
 		close(locked)
 		<-unlocked
-		if got := rec.Held(); got != nil {
+		if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
 			t.Errorf("goroutine A Held() after B's unlock = %v, want none", got)
 		}
 	}()
@@ -319,7 +387,7 @@ func TestRecorder_UnlockOnOtherGoroutine(t *testing.T) {
 		close(unlocked)
 	}()
 	wg.Wait()
-	if got := kinds(rec.Violations()); got != nil {
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
 		t.Errorf("violation kinds = %v, want none", got)
 	}
 }
@@ -333,11 +401,186 @@ func TestRecorder_InstalledLate(t *testing.T) {
 	m.Init(lockorder.FileAppend, rec)
 	m.Unlock()
 
-	if got := kinds(rec.Violations()); got != nil {
-		t.Errorf("violation kinds = %v, want none: the recorder never saw the held lock", got)
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none: the recorder never saw the held lock, so the release names a hold it cannot find", got)
 	}
-	if got := rec.Held(); got != nil {
+	if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
 		t.Errorf("Held() after unlock = %v, want none", got)
+	}
+}
+
+// TestRecorder_ContendedMutex walks a contended handover of one Mutex from
+// goroutine A to goroutine B: B's attempt is recorded while A still holds,
+// then B acquires, and each releases in turn. The books must end empty
+// whichever side of the handover crossed whose.
+func TestRecorder_ContendedMutex(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	var m lockorder.Mutex
+	m.Init(lockorder.FileAppend, rec)
+
+	bHeld := make(chan []lockorder.Rank)
+	bDone := make(chan struct{})
+	bRelease := make(chan struct{})
+	m.Lock()    // A holds first, so B's attempt is recorded under A's hold
+	go func() { // B: contends with A for the lock
+		defer close(bDone)
+		defer m.Unlock()
+		m.Lock() // records its attempt, waits out A, then acquires
+		bHeld <- rec.Held()
+		<-bRelease
+	}()
+	m.Unlock() // the handover: A releases under B's recorded attempt
+	gotB := <-bHeld
+	if want := []lockorder.Rank{lockorder.FileAppend}; !reflect.DeepEqual(gotB, want) {
+		t.Errorf("B's Held() while it holds the lock = %v, want %v: the handover lost B's hold", gotB, want)
+	}
+	if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("A's Held() after its own release = %v, want none: the handover left A's hold behind", got)
+	}
+	close(bRelease)
+	<-bDone
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none: contended hands-over of one mutex break no rule", got)
+	}
+}
+
+// TestRecorder_ContendedAttemptUnderHold pins the bookkeeping crossing a
+// contended handover makes, deterministically: a mutex gives no window to
+// observe that the attempt is recorded and B still waits, so the low-level
+// pair — the exact calls Lock and Unlock make, on the identity the mutex
+// records itself under — drives the crossing in a fixed order. B's attempt
+// is on the books while A holds; A releases; B releases.
+func TestRecorder_ContendedAttemptUnderHold(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	m := new(int) // stands in for the lock identity the mutex passes
+
+	aHeld := make(chan struct{})
+	aRelease := make(chan struct{})
+	bAttempted := make(chan struct{})
+	aHeldAfter, bHeldAfter := make(chan []lockorder.Rank, 1), make(chan []lockorder.Rank, 1)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { // A: holds, then releases under B's recorded attempt
+		defer wg.Done()
+		rec.Acquire(lockorder.FileAppend, m)
+		close(aHeld)
+		<-aRelease
+		rec.Release(lockorder.FileAppend, m)
+		aHeldAfter <- rec.Held()
+	}()
+	go func() { // B: attempt recorded while A holds, then released
+		defer wg.Done()
+		<-aHeld
+		rec.Acquire(lockorder.FileAppend, m)
+		close(bAttempted)
+		rec.Release(lockorder.FileAppend, m)
+		bHeldAfter <- rec.Held()
+	}()
+
+	<-aHeld
+	<-bAttempted // the crossing exists on the books now
+	close(aRelease)
+	wg.Wait()
+	if got, want := <-aHeldAfter, ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("A's Held() after its release = %v, want none: B's attempt must not make A's hold stick", got)
+	}
+	if got, want := <-bHeldAfter, ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("B's Held() after its release = %v, want none", got)
+	}
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none: an attempt that waits out another holder breaks no rule", got)
+	}
+}
+
+// TestRecorder_SharedReadLocks walks two goroutines holding one RWMutex as
+// readers at the same time — the sharing the guard exists for — with each
+// releasing in turn. One reader's release must not remove the other's hold,
+// and a third goroutine's callback assertion must find nothing held once
+// both are out.
+func TestRecorder_SharedReadLocks(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	var rw lockorder.RWMutex
+	rw.Init(lockorder.StorageGuard, rec)
+
+	// The rendezvous completes only with both readers inside the guard
+	// together, which is sharing itself. Each reader answers a request
+	// for its Held() with a send, so every step of the test waits on an
+	// event rather than an ordering.
+	r1In, r2In := make(chan struct{}), make(chan struct{})
+	held := func() (chan []lockorder.Rank, chan struct{}) {
+		return make(chan []lockorder.Rank), make(chan struct{})
+	}
+	r1Held, r1Leave := held()
+	r2Held, r2Leave := held()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		rw.RLock()
+		close(r1In)
+		r1Held <- rec.Held()
+		<-r1Leave
+		rw.RUnlock()
+		r1Held <- rec.Held()
+	}()
+	go func() {
+		defer wg.Done()
+		rw.RLock()
+		close(r2In)
+		r2Held <- rec.Held()
+		r2Held <- rec.Held() // still holding while reader one is gone
+		<-r2Leave
+		rw.RUnlock()
+	}()
+
+	for i, in := range []<-chan struct{}{r1In, r2In} {
+		select {
+		case <-in:
+		case <-time.After(backstop):
+			t.Fatalf("reader %d never entered the guard within the backstop: the guard does not share between readers", i+1)
+		}
+	}
+
+	guard := []lockorder.Rank{lockorder.StorageGuard}
+	if got := <-r1Held; !reflect.DeepEqual(got, guard) {
+		t.Errorf("reader one's Held() while it shares the guard = %v, want %v", got, guard)
+	}
+	if got := <-r2Held; !reflect.DeepEqual(got, guard) {
+		t.Errorf("reader two's Held() while it shares the guard = %v, want %v", got, guard)
+	}
+
+	// Reader one leaves and reports empty; reader two, still inside,
+	// must keep its own hold.
+	close(r1Leave)
+	if got, want := <-r1Held, ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("reader one's Held() after its release = %v, want none", got)
+	}
+	if got := <-r2Held; !reflect.DeepEqual(got, guard) {
+		t.Errorf("reader two's Held() after reader one left = %v, want %v: one reader's release must not drop the other's hold", got, guard)
+	}
+
+	// Reader two leaves; the books must end empty and a goroutine that
+	// holds nothing passes the callback assertion.
+	close(r2Leave)
+	wg.Wait()
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none: readers sharing one guard break no rule", got)
+	}
+	third := make(chan struct{})
+	go func() { // a goroutine that holds nothing runs the offload assertion
+		rec.AssertNoneHeld("offload")
+		close(third)
+	}()
+	select {
+	case <-third:
+	case <-time.After(backstop):
+		t.Fatal("the third goroutine's assertion never ran within the backstop")
+	}
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none: nothing was held at the assertion from the third goroutine", got)
+	}
+	if got, want := rec.Checks("offload"), 1; got != want {
+		t.Errorf("Checks(%q) = %d, want %d", "offload", got, want)
 	}
 }
 
