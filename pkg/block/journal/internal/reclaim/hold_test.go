@@ -2,6 +2,7 @@ package reclaim
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -808,5 +809,51 @@ func TestRetiredSegment_NeitherDeferralNorHoldResurrectsIt(t *testing.T) {
 	}
 	if got := len(fired); got != 0 {
 		t.Fatalf("the candidate fired %v for a retired segment, want no firing", fired)
+	}
+}
+
+// TestRegisterForget_ConcurrentRetirementOfSnapshotSegment: a snapshot segment
+// retiring while its forget record registers leaves nothing behind either
+// way the two interleave. The retirement either runs after the registration
+// and prunes the snapshot itself, or its member answer is already false when
+// the registration re-checks it; were the snapshot inserted before the
+// registration, the retirement could empty it before the record existed and
+// leave the record pinned with no snapshot and no later re-test.
+func TestRegisterForget_ConcurrentRetirementOfSnapshotSegment(t *testing.T) {
+	const rounds = 8000
+	f := newFixture(t)
+	snapSeg := f.takeIn(t)
+	a := forgetAt(20)
+	a.Seg = f.seg
+	for round := range rounds {
+		tr := New(f.ix, nil)
+		var gone atomic.Bool
+		tr.SetMember(func(seg core.SegmentID) bool { return seg != snapSeg || !gone.Load() })
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			tr.RegisterForget(a, []core.SegmentID{snapSeg})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			gone.Store(true)
+			tr.SegmentRetired(snapSeg, nil)
+		}()
+		close(start)
+		wg.Wait()
+
+		if got := tr.recs[core.FileID{}][a]; got != 0 {
+			t.Fatalf("round %d: registrations of the forget record after its snapshot segment retired = %d, want 0", round, got)
+		}
+		if got := len(tr.forgets[a]); got != 0 {
+			t.Fatalf("round %d: snapshot segments left for the forget record = %d, want 0", round, got)
+		}
+		if got := tr.Held(a.Seg); got {
+			t.Fatalf("round %d: Held of the forget record's segment = %v, want false once its snapshot segment retired", round, got)
+		}
 	}
 }
