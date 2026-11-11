@@ -699,7 +699,7 @@ func TestRetest_ConcurrentReleaseOnce(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		tr.CopiesDone([]core.FileID{id})
+		tr.Retest(id)
 	}()
 	go func() {
 		defer wg.Done()
@@ -803,5 +803,107 @@ func TestRetest_DuplicatedFileListReleasedOnce(t *testing.T) {
 	}
 	if got := len(fired); got != 1 || fired[0] != f.seg {
 		t.Fatalf("the candidate fired %d times with %v, want one firing with %d", got, fired, f.seg)
+	}
+}
+
+// TestDroppable_DeleteCoversTheWholeFile: a delete record's header names the
+// extent 0,0, but a delete covers the whole file, so a settled delete is not
+// droppable while a lower-pair write of the file sits in another segment,
+// wherever in the file that write lies, and is droppable once nothing of the
+// file remains below it.
+func TestDroppable_DeleteCoversTheWholeFile(t *testing.T) {
+	f := newFixture(t)
+	id := fid(8)
+	lower, hi := f.seg, f.takeIn(t)
+	p := newPlant(f)
+	p.write(t, id, lower, core.Extent{Off: 1 << 20, Len: 1 << 20}, 0, 3, 1)
+	p.finish(t)
+	tr := New(f.ix, nil)
+
+	del := Rec{
+		Kind: format.KindDelete, File: id, Seg: hi,
+		Pair: index.Numbers{Version: ver(5), Seq: 6}, Seq: 6,
+	} // Ext is the zero extent, as a delete's header spells it
+	if got := tr.Droppable(del); got {
+		t.Fatalf("Droppable of a delete beside a lower-pair write at [1MiB,2MiB) of another segment = %v, want false: a delete covers the whole file, not its header's extent", got)
+	}
+
+	tr.SegmentRetired(lower, []core.FileID{id})
+	if got := tr.Droppable(del); !got {
+		t.Fatalf("Droppable of the delete once the lower-pair write's segment retired = %v, want true", got)
+	}
+}
+
+// TestDroppable_SupersededLossNeedsNoSettle: a synced loss dropped because
+// metadata holds newer content under it left no marker, so it is droppable
+// without a settle, while another loss of the file at the same version that
+// was not superseded waits for the file's unsettled marker, and the marker's
+// own record is unaffected: the re-test releases the superseded loss alone.
+func TestDroppable_SupersededLossNeedsNoSettle(t *testing.T) {
+	f := newFixture(t)
+	id := fid(9)
+	lossSeg, truncSeg, plainSeg := f.seg, f.takeIn(t), f.takeIn(t)
+	p := newPlant(f)
+	p.truncate(t, id, truncSeg, 8192, 0, 4, 5)
+	p.finish(t)
+	tr := New(f.ix, nil)
+
+	pair := index.Numbers{Version: ver(6), Seq: 7}
+	ext := core.Extent{Off: 0, Len: 4096}
+	super := Rec{Kind: format.KindLoss, File: id, Seg: lossSeg, Ext: ext, Pair: pair, Seq: 7, Named: 2, Synced: true, Superseded: true}
+	plain := super
+	plain.Seg, plain.Superseded = plainSeg, false
+	trunc := Rec{
+		Kind: format.KindTruncate, File: id, Seg: truncSeg,
+		Ext:  core.Extent{Off: 8192},
+		Pair: index.Numbers{Version: ver(4), Seq: 5}, Seq: 5,
+	}
+	for _, r := range []Rec{super, plain, trunc} {
+		tr.Register(r)
+	}
+
+	if got := tr.Droppable(super); !got {
+		t.Fatalf("Droppable of a superseded synced loss beside an unsettled marker = %v, want true: it left no marker", got)
+	}
+	if got := tr.Droppable(plain); got {
+		t.Fatalf("Droppable of a synced loss, not superseded, beside an unsettled marker = %v, want false: it waits for the settle", got)
+	}
+	if got := tr.Droppable(trunc); got {
+		t.Fatalf("Droppable of the truncate whose marker is unsettled = %v, want false", got)
+	}
+
+	tr.Retest(id)
+	if got := tr.Held(lossSeg); got {
+		t.Fatalf("Held of the superseded loss's segment after the re-test = %v, want false", got)
+	}
+	if got := tr.Held(plainSeg); !got {
+		t.Fatalf("Held of the plain loss's segment after the re-test = %v, want true: its marker is unsettled", got)
+	}
+	if got := tr.Held(truncSeg); !got {
+		t.Fatalf("Held of the truncate's segment after the re-test = %v, want true: its marker is unsettled", got)
+	}
+}
+
+// TestSegmentRetired_WithdrawsTheSegmentsBytes: a retirement relays to the
+// index, so a segment holding extents of a file the tracker's registry never
+// heard of — no record of it was registered, so no per-file SegmentGone can
+// name it — answers not held afterwards, and the index counts nothing in it.
+func TestSegmentRetired_WithdrawsTheSegmentsBytes(t *testing.T) {
+	f := newFixture(t)
+	tr := New(f.ix, nil)
+	f.write(t, fid(4), 0, 4096, 0, 3, 1)
+	if got := f.ix.SegmentBytes(f.seg).Held; got != 4096 {
+		t.Fatalf("held bytes of the segment before its retirement = %d, want 4096", got)
+	}
+	if got := tr.Held(f.seg); !got {
+		t.Fatalf("Held before the retirement = %v, want true", got)
+	}
+
+	tr.SegmentRetired(f.seg, nil)
+	if got := f.ix.SegmentBytes(f.seg); got != (index.SegmentBytes{}) {
+		t.Fatalf("the index's counters of the retired segment = %+v, want zero: the retirement relays to the index", got)
+	}
+	if got := tr.Held(f.seg); got {
+		t.Fatalf("Held after the retirement = %v, want false", got)
 	}
 }

@@ -770,3 +770,43 @@ func TestRegisterForget_ConcurrentRetestKeepsLiveSnapshot(t *testing.T) {
 		})
 	}
 }
+
+// TestRetiredSegment_NeitherDeferralNorHoldResurrectsIt: with the set wired as
+// the member check, a SetDeferred or HoldEnded late on a retired segment
+// creates no state for it, so Held of the retired segment stays false and no
+// hold is registered under it.
+func TestRetiredSegment_NeitherDeferralNorHoldResurrectsIt(t *testing.T) {
+	f := newFixture(t)
+	var fired []core.SegmentID
+	tr := New(f.ix, func(seg core.SegmentID) { fired = append(fired, seg) })
+	tr.SetMember(func(seg core.SegmentID) bool {
+		_, err := f.set.State(seg)
+		return err == nil
+	})
+	retired, copies := f.takeIn(t), f.takeIn(t)
+	if err := f.set.Seal(retired, true); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if _, err := f.set.Retire(retired); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	tr.SegmentRetired(retired, nil)
+
+	tr.SetDeferred(retired, true)
+	if got := tr.Held(retired); got {
+		t.Fatalf("Held of a retired segment after SetDeferred = %v, want false", got)
+	}
+	tr.HoldEnded(retired, copies, 100)
+	if got := tr.Held(retired); got {
+		t.Fatalf("Held of a retired segment after HoldEnded = %v, want false", got)
+	}
+	if got := tr.stateOf(retired); got != nil {
+		t.Fatalf("state made for a retired segment = %+v, want none", got)
+	}
+	if got := len(tr.holds[copies]); got != 0 {
+		t.Fatalf("holds registered under the copies' segment for a retired one = %d, want 0", got)
+	}
+	if got := len(fired); got != 0 {
+		t.Fatalf("the candidate fired %v for a retired segment, want no firing", fired)
+	}
+}
