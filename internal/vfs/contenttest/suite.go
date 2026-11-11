@@ -19,8 +19,11 @@ import (
 type Subject struct {
 	Content Content
 	Share   entity.ShareID                   // a share bound to Content
-	File    func(t *testing.T) entity.FileID // a new, empty file of Share
+	File    func(t *testing.T) entity.FileID // a new, empty file of Share with no name or open left, so Delete can release it
 	Clock   *sim.TestClock                   // the clock Content reads
+	// Other is a second share bound to Content. Zero: the case naming a
+	// file through it is skipped, naming it.
+	Other entity.ShareID
 	// Lose loses file f's content written so far, as a failed sync window
 	// does. nil: the cases that need a loss are skipped, naming it.
 	Lose func(t *testing.T, f entity.FileID)
@@ -37,6 +40,13 @@ type Subject struct {
 // a failing chunk, clone_max_len, two write namespaces (ErrCross), a share
 // being removed (ErrStale), and the Done of a write a loss drops. Each belongs
 // to the engine's own tests until Memory gains the capability.
+//
+// Nor does any case assert when a file's pending existence commits: the
+// engine commits it at a shrinking truncate, a deallocate and a clone, on
+// source and destination (RFC 8 §8.1), calling its writes' Dones and leaving
+// its Overlay not pending, where Memory keeps them pending until
+// CommitExistence or Delete, having no File record to hold the size. Assert
+// it once Memory commits through the store's Existence.
 func Run(t *testing.T, newSubject func(t *testing.T) Subject) {
 	cases := []struct {
 		name string
@@ -58,6 +68,7 @@ func Run(t *testing.T, newSubject func(t *testing.T) Subject) {
 		{"TheVerifierIsStableWhileNothingIsLost", theVerifierIsStable},
 		{"ALossChangesTheVerifierAndRaisesTheLossSequence", aLossChangesTheVerifier},
 		{"AnUnboundShareIsFrozen", anUnboundShareIsFrozen},
+		{"AFileOfAnotherShareIsCorrupt", aFileOfAnotherShareIsCorrupt},
 		{"BadRangesAreInvalid", badRangesAreInvalid},
 		{"FilesWrittenConcurrentlyKeepTheirOwnBytes", filesWrittenConcurrently},
 	}
@@ -203,13 +214,17 @@ func overlayReflectsAWrite(t *testing.T, s Subject) {
 	}
 }
 
-// A pending truncate sets the size exactly, and a write after it raises the
-// size only past it.
+// A pending truncate sets the size exactly, a growing one moving both times,
+// and a write after it raises the size only past it.
 func overlayReplaysInVersionOrder(t *testing.T, s Subject) {
 	f := s.File(t)
 	s.write(t, f, 0, "abcd")
+	s.Clock.Advance(time.Second)
 	if err := s.Content.Truncate(t.Context(), s.Share, f, 16); err != nil {
 		t.Fatal(err)
+	}
+	if o, _ := s.overlay(t, f); !o.Mtime.Equal(s.Clock.Now()) || !o.Ctime.Equal(s.Clock.Now()) {
+		t.Errorf("after a growing truncate, Overlay mtime %v, ctime %v; want both %v", o.Mtime, o.Ctime, s.Clock.Now())
 	}
 	for _, w := range []struct {
 		off  int64
@@ -240,7 +255,8 @@ func aSuspendedModifyTimeIsLeftAlone(t *testing.T, s Subject) {
 
 // A write's Done is called once, by the existence commit, never while the
 // write is pending; the commit leaves nothing pending and the bytes in place.
-// A write of no byte, which stages nothing, has its Done called too.
+// A write of no byte stages nothing, growing no file, and has its Done
+// called too.
 func doneIsCalledOnceByTheExistenceCommit(t *testing.T, s Subject) {
 	f := s.File(t)
 	var calls atomic.Int32
@@ -265,9 +281,13 @@ func doneIsCalledOnceByTheExistenceCommit(t *testing.T, s Subject) {
 	s.wantRead(t, f, 0, 8, "abcd")
 
 	var empty atomic.Int32
-	if _, err := s.Content.Write(t.Context(), s.Share, f, 4, nil, engine.WriteOpts{Done: func() { empty.Add(1) }}); err != nil {
+	if _, err := s.Content.Write(t.Context(), s.Share, f, 100, nil, engine.WriteOpts{Done: func() { empty.Add(1) }}); err != nil {
 		t.Fatal(err)
 	}
+	if _, pending := s.overlay(t, f); pending {
+		t.Errorf("a write of no byte left the Overlay pending")
+	}
+	s.wantRead(t, f, 0, 128, "abcd")
 	if err := s.Content.CommitExistence(t.Context(), s.Share, f); err != nil {
 		t.Fatal(err)
 	}
@@ -317,6 +337,9 @@ func allocationReportsHolesAndData(t *testing.T, s Subject) {
 	s.write(t, f, 0, "\x00\x00")
 	s.wantRuns(t, f, run{0, 2, false}, run{2, 6, true}, run{9, 1, false})
 	// Past the end of file nothing is data.
+	//
+	// decision: RFC 8 does not say whether that is an empty span or a hole,
+	// so either passes. Tighten once RFC 8 rules it.
 	sp, err := s.Content.Allocation(t.Context(), s.Share, f, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -331,7 +354,7 @@ func allocationReportsHolesAndData(t *testing.T, s Subject) {
 //
 // decision: what Read and Overlay answer for a released file is not in RFC 8
 // §12.1, so either nothing or ErrStale passes; the filesystem calls neither
-// on a file it released.
+// on a file it released. Tighten once RFC 8 rules it.
 func deleteLeavesNothing(t *testing.T, s Subject) {
 	f := s.File(t)
 	var calls atomic.Int32
@@ -364,18 +387,24 @@ func deleteLeavesNothing(t *testing.T, s Subject) {
 	}
 }
 
-// A clone makes the destination extent the source's, its holes holes, the
-// destination growing to the extent's end, and leaves the source alone.
+// A clone makes the destination extent the source's, its holes holes over
+// the data they replace, and leaves the rest of the destination and the
+// source alone; within one file it moves between extents that only touch.
 func cloneCopiesTheExtent(t *testing.T, s Subject) {
 	src, dst := s.File(t), s.File(t)
 	s.write(t, src, 0, "abcd")
 	s.write(t, src, 8, "ef")
+	s.write(t, dst, 0, "XXXXXXXXXXXXXXXX")
 	if err := s.Content.Clone(t.Context(), s.Share, src, s.Share, dst, vfs.Extent{SrcOff: 0, DstOff: 2, Len: 10}); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
-	s.wantRead(t, dst, 0, 32, "\x00\x00abcd\x00\x00\x00\x00ef")
-	s.wantRuns(t, dst, run{0, 2, true}, run{2, 4, false}, run{6, 4, true}, run{10, 2, false})
+	s.wantRead(t, dst, 0, 32, "XXabcd\x00\x00\x00\x00efXXXX")
+	s.wantRuns(t, dst, run{0, 6, false}, run{6, 4, true}, run{10, 6, false})
 	s.wantRead(t, src, 0, 32, "abcd\x00\x00\x00\x00ef")
+	if err := s.Content.Clone(t.Context(), s.Share, src, s.Share, src, vfs.Extent{SrcOff: 0, DstOff: 4, Len: 4}); err != nil {
+		t.Fatalf("a clone between touching extents of one file: %v", err)
+	}
+	s.wantRead(t, src, 0, 32, "abcdabcdef")
 }
 
 // A copy runs its extents in order, a later one overwriting an earlier one's
@@ -481,6 +510,9 @@ func aLossChangesTheVerifier(t *testing.T, s Subject) {
 	if w := s.write(t, f, 0, "abcd"); w != got {
 		t.Errorf("the write after the loss answered verifier %x, want %x, the Commit's", w, got)
 	}
+	if w := s.write(t, g, 1, "h"); w != got {
+		t.Errorf("a write to another file after the loss answered verifier %x, want %x, the Commit's", w, got)
+	}
 	if again, seq2 := s.commit(t, f); again != got || seq2 != seq {
 		t.Errorf("a second Commit with no new loss = %x, %d; want %x, %d", again, seq2, got, seq)
 	}
@@ -536,6 +568,23 @@ func anUnboundShareIsFrozen(t *testing.T, s Subject) {
 	}
 	if seq := s.Content.LossSeq(u, g); seq != 0 {
 		t.Errorf("LossSeq on an unbound share = %d, want 0", seq)
+	}
+	s.wantRead(t, f, 0, 8, "abcd")
+}
+
+// A file written through one share and named through another bound share is
+// corrupt, to a write and a read alike, and the write changes nothing.
+func aFileOfAnotherShareIsCorrupt(t *testing.T, s Subject) {
+	if s.Other == (entity.ShareID{}) {
+		t.Skip("the Content under test has no second bound share")
+	}
+	f := s.File(t)
+	s.write(t, f, 0, "abcd")
+	if _, err := s.Content.Write(t.Context(), s.Other, f, 0, []byte("x"), engine.WriteOpts{Done: func() {}}); !errors.Is(err, vfs.ErrCorrupt) {
+		t.Errorf("a write through another share = %v, want ErrCorrupt", err)
+	}
+	if _, err := s.Content.Read(t.Context(), s.Other, f, 0, make([]byte, 4)); !errors.Is(err, vfs.ErrCorrupt) {
+		t.Errorf("a read through another share = %v, want ErrCorrupt", err)
 	}
 	s.wantRead(t, f, 0, 8, "abcd")
 }

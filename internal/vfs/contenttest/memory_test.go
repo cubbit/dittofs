@@ -21,11 +21,13 @@ func TestMemory(t *testing.T) {
 	contenttest.Run(t, func(t *testing.T) contenttest.Subject {
 		clock := sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 		m := contenttest.New(clock)
-		share := entity.NewShareID()
+		share, other := entity.NewShareID(), entity.NewShareID()
 		m.Bind(share)
+		m.Bind(other)
 		return contenttest.Subject{
 			Content: m,
 			Share:   share,
+			Other:   other,
 			File:    func(*testing.T) entity.FileID { return entity.NewFileID() },
 			Clock:   clock,
 			Lose:    func(_ *testing.T, f entity.FileID) { m.Lose(share, f) },

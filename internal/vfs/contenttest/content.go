@@ -19,8 +19,9 @@ import (
 // decision: the interface is declared twice, here and in internal/vfs, so
 // that this package imports nothing of internal/vfs and the filesystem's own
 // tests, in package vfs, can run over Memory. The two are held identical by
-// assignments both ways in this package's tests; drop this copy if the
-// filesystem's tests ever move out of package vfs.
+// assignments both ways in this package's tests, so a drift fails go vet and
+// the tests rather than go build; drop this copy if the filesystem's tests
+// ever move out of package vfs.
 type Content interface {
 	Draw(ctx context.Context, s entity.ShareID, f entity.FileID) (entity.JournalVersion, error)
 	Write(ctx context.Context, s entity.ShareID, f entity.FileID, off int64, p []byte, o engine.WriteOpts) (vfs.Verifier, error)

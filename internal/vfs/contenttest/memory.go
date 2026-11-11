@@ -3,6 +3,7 @@ package contenttest
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -18,7 +19,8 @@ type Clock interface{ Now() time.Time }
 // Memory is Content held in memory: every write is durable once staged, so a
 // Commit only answers, and nothing is lost but by Lose. A file's operations
 // stay pending, in its Overlay and holding their writes' Dones, until
-// CommitExistence or Delete commits them. A share answers only once bound.
+// CommitExistence or Delete commits them. A share answers only once bound,
+// and a file only through the share it was first named with.
 //
 // ponytail: one lock serves every share and file, and a file's bytes are held
 // whole, a sparse file costing its size. Split the lock per file, or keep
@@ -28,6 +30,7 @@ type Memory struct {
 	mu     sync.Mutex
 	shares map[entity.ShareID]*journal
 	files  map[entity.FileID]*file
+	owners map[entity.FileID]entity.ShareID // the share each file was first named with
 }
 
 var _ Content = (*Memory)(nil)
@@ -59,7 +62,7 @@ type op struct {
 
 // New is a Memory with no share bound, reading clock.
 func New(clock Clock) *Memory {
-	return &Memory{clock: clock, shares: map[entity.ShareID]*journal{}, files: map[entity.FileID]*file{}}
+	return &Memory{clock: clock, shares: map[entity.ShareID]*journal{}, files: map[entity.FileID]*file{}, owners: map[entity.FileID]entity.ShareID{}}
 }
 
 // Bind makes s served: before it, every call naming s answers a Delay with
@@ -88,13 +91,26 @@ func (m *Memory) Lose(s entity.ShareID, f entity.FileID) {
 	}
 }
 
-// bound is s's journal, or the Delay of a share with no binding. The caller
-// holds mu.
-func (m *Memory) bound(s entity.ShareID) (*journal, error) {
-	if j := m.shares[s]; j != nil {
-		return j, nil
+// bound is s's journal for a call naming f: the Delay of a share with no
+// binding, or ErrCorrupt for a file first named through another share, as
+// the engine answers a file another share's journal holds. The caller holds
+// mu.
+//
+// decision: any call naming f through a bound share makes it that share's,
+// where the engine's journal claims a file only at a write or removal. A
+// test naming one file through two shares is wrong whichever call does it;
+// claim at a write or removal only if a test ever needs a draw or read
+// through one share before another writes.
+func (m *Memory) bound(s entity.ShareID, f entity.FileID) (*journal, error) {
+	j := m.shares[s]
+	if j == nil {
+		return nil, &vfs.Delay{Cause: vfs.DelayFrozen}
 	}
-	return nil, &vfs.Delay{Cause: vfs.DelayFrozen}
+	if was, ok := m.owners[f]; ok && was != s {
+		return nil, fmt.Errorf("contenttest: file %v is share %v's, named through %v: %w", f, was, s, vfs.ErrCorrupt)
+	}
+	m.owners[f] = s
+	return j, nil
 }
 
 // file is f's content, created empty. The caller holds mu.
@@ -143,7 +159,7 @@ func (fl *file) grow(n int64) {
 func (m *Memory) Draw(ctx context.Context, s entity.ShareID, f entity.FileID) (entity.JournalVersion, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	j, err := m.bound(s)
+	j, err := m.bound(s, f)
 	if err != nil {
 		return entity.JournalVersion{}, err
 	}
@@ -155,7 +171,7 @@ func (m *Memory) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 		return vfs.Verifier{}, vfs.ErrInvalid
 	}
 	m.mu.Lock()
-	j, err := m.bound(s)
+	j, err := m.bound(s, f)
 	if err != nil {
 		m.mu.Unlock()
 		return vfs.Verifier{}, err
@@ -186,7 +202,7 @@ func (m *Memory) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	j, err := m.bound(s)
+	j, err := m.bound(s, f)
 	if err != nil {
 		return vfs.Verifier{}, 0, err
 	}
@@ -202,7 +218,7 @@ func (m *Memory) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 // Memory reads attributes after an existence commit.
 func (m *Memory) CommitExistence(ctx context.Context, s entity.ShareID, f entity.FileID) error {
 	m.mu.Lock()
-	if _, err := m.bound(s); err != nil {
+	if _, err := m.bound(s, f); err != nil {
 		m.mu.Unlock()
 		return err
 	}
@@ -226,7 +242,7 @@ func finish(ops []op) {
 func (m *Memory) LossSeq(s entity.ShareID, f entity.FileID) uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, err := m.bound(s); err != nil {
+	if _, err := m.bound(s, f); err != nil {
 		return 0
 	}
 	return m.file(f).loss
@@ -238,7 +254,7 @@ func (m *Memory) Read(ctx context.Context, s entity.ShareID, f entity.FileID, of
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, err := m.bound(s); err != nil {
+	if _, err := m.bound(s, f); err != nil {
 		return 0, err
 	}
 	b := m.file(f).b
@@ -254,7 +270,7 @@ func (m *Memory) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	j, err := m.bound(s)
+	j, err := m.bound(s, f)
 	if err != nil {
 		return err
 	}
@@ -273,7 +289,7 @@ func (m *Memory) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	j, err := m.bound(s)
+	j, err := m.bound(s, f)
 	if err != nil {
 		return err
 	}
@@ -293,7 +309,7 @@ func (m *Memory) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 // clone running past its call.
 func (m *Memory) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) (<-chan error, error) {
 	m.mu.Lock()
-	if _, err := m.bound(s); err != nil {
+	if _, err := m.bound(s, f); err != nil {
 		m.mu.Unlock()
 		return nil, err
 	}
@@ -302,6 +318,7 @@ func (m *Memory) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 		ops = fl.ops
 	}
 	delete(m.files, f)
+	delete(m.owners, f)
 	m.mu.Unlock()
 	finish(ops)
 	return nil, nil
@@ -324,10 +341,10 @@ func (m *Memory) Copy(ctx context.Context, srcShare entity.ShareID, src entity.F
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, err := m.bound(srcShare); err != nil {
+	if _, err := m.bound(srcShare, src); err != nil {
 		return 0, err
 	}
-	j, err := m.bound(dstShare)
+	j, err := m.bound(dstShare, dst)
 	if err != nil {
 		return 0, err
 	}
@@ -363,7 +380,7 @@ func invalid(x vfs.Extent, oneFile bool) bool {
 func (m *Memory) Overlay(ctx context.Context, s entity.ShareID, f entity.FileID) (engine.Overlay, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, err := m.bound(s); err != nil {
+	if _, err := m.bound(s, f); err != nil {
 		return engine.Overlay{}, false, err
 	}
 	var o engine.Overlay
@@ -394,7 +411,7 @@ func (m *Memory) Allocation(ctx context.Context, s entity.ShareID, f entity.File
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, err := m.bound(s); err != nil {
+	if _, err := m.bound(s, f); err != nil {
 		return entity.Span{}, err
 	}
 	data := m.file(f).data
