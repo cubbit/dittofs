@@ -311,7 +311,8 @@ which epic owns the rest.
   NETLOGON cases stay. Each package is a ledger row (§9), and D1's recorded commit covers them.
 - **D4, the persisted adapter rows stay.** `NFSAdapterSettings`, `SMBAdapterSettings`,
   `AdapterConfig` and `ShareAdapterConfig` keep their models and store methods: deleting them
-  needs a schema migration, and the cutover maps them onto `pkg/adapter/config`. Only their
+  needs a schema migration. Nothing maps them onto `pkg/adapter/settings`: v2 starts fresh and
+  refuses a v1 database (§9). Only their
   routes, the settings watcher and `EnsureDefaultAdapters`' call in the start path go.
 - **D5, `pkg/apiclient` keeps what compiled tests still call.** The `e2e` build tag is vetted
   by `lint-go`, and e2e helpers call the adapter and netgroup client methods. Those methods
