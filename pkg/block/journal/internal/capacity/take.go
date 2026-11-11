@@ -1019,6 +1019,17 @@ func (g *Grant) Hold() *segment.Hold { return g.hold }
 // carries the spares its rolls take, and no limit of the journal refuses it.
 func (g *Grant) Drawn() bool { return g.reservation != nil }
 
+// NeedsSpares returns the spares the grant's reservation still needs for the
+// bytes its writes have not drawn — the figure a reserved roll's replacement is
+// measured against — and zero for an admitted write's grant, which holds no
+// reservation's spares.
+func (g *Grant) NeedsSpares() int {
+	if g.reservation == nil {
+		return 0
+	}
+	return g.reservation.NeedsSpares()
+}
+
 // releaseReservation returns to the counters what a grant — a failed take,
 // or a released one — still holds: bytes of the share's reservation, and
 // room of the stream's grant. The caller has already decided the figures;

@@ -63,9 +63,10 @@ type Placed struct {
 	// with the rest in the next segment. Kinds with no payload place 0.
 	N int64
 	// Rolled reports that this call rolled the stream onto another segment
-	// before appending, so the record landed in a segment the stream did not
-	// hold when the call began. A caller under a reservation reads it to tell
-	// a roll its own bytes forced from one another writer's fill forced.
+	// before its record landed, so the record went into a segment the stream
+	// did not hold when the call began. A caller reads it to know a roll
+	// happened, not why: the stream cannot tell a roll its own record's width
+	// forced from one the segment's fill, a seal or another writer left it.
 	Rolled bool
 }
 
@@ -1302,16 +1303,6 @@ func (s *Stream) Room() int64 {
 	// entry, the remainder is floored to the record's 8-byte grid, and the
 	// record costs its header and the write kind's own body bytes.
 	return WriteRoom(s.set.cap, s.next, s.count)
-}
-
-// HasSegment reports whether the stream holds a segment, active or not. A
-// stream holding none takes its first segment as a roll of its own; one that
-// already holds a segment rolls its first record onto a new segment for a
-// reason other than this record's width.
-func (s *Stream) HasSegment() bool {
-	s.appendMu.Lock()
-	defer s.appendMu.Unlock()
-	return s.id != 0
 }
 
 // WriteRoom is the payload bytes one more write record takes in a segment of

@@ -441,6 +441,14 @@ func (h *Hold) Replace() {
 	h.p.Kick()
 }
 
+// Left returns the spares the hold still owes the reservation: what a roll of
+// its own may take from it, and the figure a replacement is measured against.
+func (h *Hold) Left() int {
+	h.p.mu.Lock()
+	defer h.p.mu.Unlock()
+	return h.left
+}
+
 // Close returns the hold's left spares to unreserved takes. It is idempotent,
 // and safe after the pool's Stop, which leaves them accounted and on disk
 // for the next open to re-adopt.

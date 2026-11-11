@@ -18,18 +18,17 @@ import (
 // TestReserveAhead_InterleavedRollTakesItsReplacementSpare checks R85's first
 // half: a reserved write whose own payload fits any segment rolls anyway,
 // because another writer filled the segment it held, and the roll takes a
-// replacement spare back from the pool. The pool's held figure is read from its
-// state, not counted at the call: after the write the reservation owes what it
-// owed before it, the spare the interleaved roll spent replaced.
+// replacement spare back from the pool while the reservation's remaining bytes
+// still need one. The pool's held figure is read from its state, not counted at
+// the call: after the write the hold is back at the reservation's remaining
+// need, the spare the interleaved roll spent replaced.
 func TestReserveAhead_InterleavedRollTakesItsReplacementSpare(t *testing.T) {
 	const payload = 4096
 	cost := capacity.WriteCharge(payload, testSegmentCap)
-	_, spares := capacity.PiecesFor(cost, 1, testSegmentCap)
-	c, _ := newTestCore(t, func(o *coreOptions) {
-		// The pool holds the reservation's spares beside the target, so the
-		// fill and the reserved write both have a spare to roll onto.
-		o.contentSpares = spares + 1
-	})
+	// Two writes: the second leaves bytes undrawn, so the reservation still
+	// needs a spare after the first and the interleaved roll is replaced.
+	_, spares := capacity.PiecesFor(2*cost, 2, testSegmentCap)
+	c, _ := newTestCore(t, func(o *coreOptions) { o.contentSpares = spares + 1 })
 	s := mustShare(t, c, 1)
 
 	// Two files on one stream: the other writer's, and the reservation's.
@@ -47,18 +46,15 @@ func TestReserveAhead_InterleavedRollTakesItsReplacementSpare(t *testing.T) {
 		t.Fatalf("the other writer leaves a room of %d, want less than a record's overhead", room)
 	}
 
-	r := reserve(t, c, s, cost, 1)
+	r := reserve(t, c, s, 2*cost, 2)
 	defer r.Release()
-	heldBefore := c.pool.Counters().Held
-	if heldBefore < 1 {
-		t.Fatalf("the reservation owes the pool %d spares, want at least its one roll", heldBefore)
-	}
-
 	if _, err := c.WriteReserved(context.Background(), s, r, reservedFile, 0, make([]byte, payload), 1); err != nil {
 		t.Fatalf("the reserved write beside the fill: %v", err)
 	}
-	if got := c.pool.Counters().Held; got != heldBefore {
-		t.Fatalf("the pool owes %d spares after the interleaved roll, want the %d it owed before: the roll took no replacement", got, heldBefore)
+	// The hold owes exactly what the reservation still needs: the interleaved
+	// roll's spare was replaced.
+	if held, need := c.pool.Counters().Held, int64(r.NeedsSpares()); held != need {
+		t.Fatalf("the pool owes %d spares after the interleaved roll, want the reservation's remaining need of %d: the roll took no replacement", held, need)
 	}
 }
 
@@ -236,9 +232,8 @@ func TestReserveAhead_CopyBesideARollingWriter(t *testing.T) {
 
 	r := reserve(t, c, s, cost, copyWrites)
 	defer r.Release()
-	beforeHeld := c.pool.Counters().Held
-	if beforeHeld < 1 {
-		t.Fatalf("the reservation owes the pool %d spares, want its copies' rolls held", beforeHeld)
+	if heldBefore := c.pool.Counters().Held; heldBefore < 1 {
+		t.Fatalf("the reservation owes the pool %d spares, want its copies' rolls held", heldBefore)
 	}
 
 	var copyRefused, spareOnOther atomic.Int64
@@ -291,12 +286,11 @@ func TestReserveAhead_CopyBesideARollingWriter(t *testing.T) {
 	if got := spareOnOther.Load(); got == 0 {
 		t.Fatalf("no unreserved roll was refused a spare; the fixture never interleaved the copy's segments")
 	}
-	// Each of the copy's writes spends at most one spare of its own — its
-	// first piece rolls the previous write's segment — and every further roll
-	// is another writer's, replaced. The pool can therefore owe one fewer than
-	// it did before, never the whole copy's worth.
-	if got := c.pool.Counters().Held; got < beforeHeld-copyWrites {
-		t.Fatalf("the pool owes %d spares after the copy, want at least %d: an interleaved roll took no replacement", got, beforeHeld-copyWrites)
+	// The hold is back at the reservation's remaining need: every spare the
+	// copy's interleaved rolls spent was replaced, and no roll of its own took
+	// a replacement it did not need.
+	if held, need := c.pool.Counters().Held, int64(r.NeedsSpares()); held != need {
+		t.Fatalf("the pool owes %d spares after the copy, want its remaining need of %d: a roll was replaced wrongly or not at all", held, need)
 	}
 	// Every piece the copy published is inside the reservation's draw: the
 	// index holds one entry a piece and no piece of it was refused.
@@ -322,4 +316,133 @@ func onStream(t *testing.T, c *Core, stream int, f core.FileID) core.FileID {
 	}
 	t.Fatalf("no file id on stream %d", stream)
 	return core.FileID{}
+}
+
+// TestReserveAhead_OwnStraddlesReplaceNothing checks a reserved copy of small
+// writes alone on its stream: each write straddles the tail its predecessor
+// left, so each rolls once across a cap the reservation already sized a spare
+// for. None of those rolls is another writer's, so the pool's held figure
+// falls by exactly the spares the copy took and never rises again — a
+// replacement on any of them would inflate it for the reservation's life and
+// starve unreserved content takes.
+func TestReserveAhead_OwnStraddlesReplaceNothing(t *testing.T) {
+	const writes = 6
+	// Each write is half an empty segment's room, so a second write on the
+	// same stream straddles the tail the first left and rolls.
+	each := emptyRoomOf(testSegmentCap) / 2
+	cost := int64(writes) * capacity.WriteCharge(each, testSegmentCap)
+	_, spares := capacity.PiecesFor(cost, writes, testSegmentCap)
+	c, _ := newTestCore(t, func(o *coreOptions) { o.contentSpares = spares })
+	s := mustShare(t, c, 1)
+
+	r := reserve(t, c, s, cost, writes)
+	defer r.Release()
+	heldBefore := c.pool.Counters().Held
+	if heldBefore < 1 {
+		t.Fatalf("the reservation owes the pool %d spares, want its rolls held", heldBefore)
+	}
+
+	// Every write lands on one file of one stream, so write k+1 meets the tail
+	// write k left and rolls across it.
+	f := testFile(1)
+	for i := 0; i < writes; i++ {
+		if _, err := c.WriteReserved(context.Background(), s, r, f, int64(i)*each, make([]byte, each), 1); err != nil {
+			t.Fatalf("reserved write %d of %d: %v", i+1, writes, err)
+		}
+	}
+	heldAfter := c.pool.Counters().Held
+
+	// The copy spent what its own rolls took, and no replacement put it back:
+	// the hold owes what it still needs for the bytes it never drew.
+	if want := r.NeedsSpares(); int64(want) != heldAfter {
+		t.Fatalf("the pool owes %d spares after the copy's own straddles, want its remaining need of %d: a roll of its own was replaced", heldAfter, want)
+	}
+	if heldAfter >= heldBefore {
+		t.Fatalf("the pool owes %d spares after the copy, want fewer than the %d it owed before: a roll of its own was replaced", heldAfter, heldBefore)
+	}
+}
+
+// TestReserveAhead_ReplacementBeatsACompetingUnreservedTake checks R85 end to
+// end: a reserved copy stays whole although a writer fills its stream between
+// every pair of its writes, so each of its rolls is interleaved and spends a
+// spare the reservation counted for a roll of its own. The replacement restores
+// the hold to the reservation's remaining need from the pool's ready spares, so
+// the copy never meets the pool's refusal; the unreserved writer competing for
+// the pool's last ready spare is refused in its place.
+func TestReserveAhead_ReplacementBeatsACompetingUnreservedTake(t *testing.T) {
+	const writes = 6
+	payload := int64(4096)
+	cost := capacity.WriteCharge(payload, testSegmentCap)
+	_, spares := capacity.PiecesFor(int64(writes)*cost, writes, testSegmentCap)
+	// The pool readies twice what the reservation takes: the reservation's own
+	// spares and enough for the refills the interleaved rolls need, since its
+	// hold alone does not budget a roll a writer forced.
+	c, _ := newTestCore(t, func(o *coreOptions) { o.contentSpares = 2 * spares })
+	s := mustShare(t, c, 1)
+
+	// Two files on one stream: the other writer's and the copy's.
+	anchor := testFile(9)
+	copyFile := sameStreamAs(t, c, anchor, testFile(1))
+
+	r := reserve(t, c, s, int64(writes)*cost, writes)
+	defer r.Release()
+	// The reservation's hold is the smaller half of what the copy's rolls take:
+	// the interleaved rolls draw it down, and every replacement is drawn from
+	// the ready spares beyond it.
+	if held, ready := c.pool.Counters().Held, c.pool.Counters().Spares; held != int64(spares) || ready <= held {
+		t.Fatalf("the pool holds %d of %d ready spares, want the reservation's %d and room beyond", held, ready, spares)
+	}
+
+	// Each of the copy's writes meets a segment the other writer filled: the
+	// writer's record takes the stream's remaining room, appended with no
+	// admission so it spends no spare, and the copy's next record rolls with
+	// nothing of its own having filled the segment.
+	for i := 0; i < writes; i++ {
+		room := c.Streams().For(anchor).Room()
+		unlock := c.domains.Lock(anchor)
+		seq, _ := c.counters.NextSeq()
+		_, err := c.Streams().For(anchor).Append(format.RecordHeader{
+			Kind: format.KindWrite, File: anchor, Extent: core.Extent{Len: room},
+			Seq: seq, Tag: 2,
+		}, format.RecordBody{Payload: make([]byte, room), MTime: 1})
+		unlock()
+		if err != nil {
+			t.Fatalf("the other writer's fill %d: %v", i+1, err)
+		}
+		if _, err := c.WriteReserved(context.Background(), s, r, copyFile, int64(i)*payload, make([]byte, payload), 1); err != nil {
+			t.Fatalf("reserved write %d of %d beside a competing writer: %v", i+1, writes, err)
+		}
+	}
+	// The reservation's hold held the copy whole: every roll another writer
+	// forced was replaced, so the hold never fell below what the copy's bytes
+	// still needed.
+	if held, need := c.pool.Counters().Held, int64(r.NeedsSpares()); held < need {
+		t.Fatalf("the pool owes %d spares after the copy, want its remaining need of %d: an interleaved roll took no replacement", held, need)
+	}
+
+	// The pool's ready spares beyond the hold were what served the replacements.
+	// With the maker gated and every ready spare held, an unreserved write on a
+	// stream holding no segment needs one and is refused `spare`, while the
+	// reservation's hold offers one for its own remaining bytes.
+	c.pool.Kick()
+	for c.pool.ReadyContent() > 0 {
+		extra, err := c.pool.Hold(1)
+		if err != nil {
+			t.Fatalf("draining a ready spare into a hold: %v", err)
+		}
+		defer extra.Close()
+	}
+	competing := core.FileID{}
+	for i := 0; i < 256; i++ {
+		f := core.NewFileID([16]byte{byte(i), 0xd4})
+		if c.Streams().IndexFor(f) != c.Streams().IndexFor(anchor) {
+			competing = f
+			break
+		}
+	}
+	_, err := c.WriteAt(context.Background(), s, competing, 0, make([]byte, payload), 1)
+	if err == nil {
+		t.Fatal("the unreserved write was admitted over the reservation's hold")
+	}
+	_ = refused(t, err, core.LimitSpare)
 }

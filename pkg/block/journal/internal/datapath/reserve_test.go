@@ -513,7 +513,12 @@ func TestReserveAhead_EntriesHandedOverAsPublished(t *testing.T) {
 		// below publishes one piece, so it fits once the held figure has
 		// fallen, and not before.
 		o.extentLimit = int64(pieces) + 1
-		o.contentSpares = spares + 1
+		// The pool readies the reservation's spares and one the plain write's
+		// roll takes, beside the one the reservation's own first roll takes: its
+		// hold falls to one below what its remaining bytes need, and the
+		// replacement that restores it holds one spare the plain write's slot
+		// still assumes.
+		o.contentSpares = spares + 2
 	})
 	s := mustShare(t, c, 1)
 

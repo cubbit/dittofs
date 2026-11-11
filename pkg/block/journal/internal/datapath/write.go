@@ -35,13 +35,16 @@ import (
 // behind. Its grant covers the pieces the split it sized drew: they take
 // their spares from the grant's hold, and the unused part returns when the
 // write does. A reserved write whose segment the stream's other writers filled
-// rolls anyway, and takes a replacement spare back from the pool for it (RFC 1
-// §6), so no reserved write meets the no-spare refusal while the pool can be
-// refilled; an unreserved write has no reservation to replenish, and one piece
-// more than its split can still roll — the room another appender spent between
-// the take and its append, a window neither its charge nor its hold covers —
-// and that one rolls unreserved; see the decision at the loop below for its
-// ceiling and what closes it.
+// rolls anyway; while its hold has fallen below what the reservation's remaining
+// bytes need, the roll takes a replacement spare back from the pool (RFC 1 §6),
+// so a reserved write meets no no-spare refusal while the pool can be refilled.
+// An unreserved write has no reservation to replenish, and one piece more than
+// its split can still roll — the room another appender spent between the take
+// and its append, a window neither its charge nor its hold covers — and that one
+// rolls unreserved; see the decision at the loop below for its ceiling and what
+// closes it. The ceiling even for a reserved write is a spare the pool cannot
+// make: a full device's ENOSPC still refuses it part-way, as RFC 1 §6's own
+// ponytail records.
 //
 // The version is drawn, and the record appended and published, with the
 // file's append domain held, so the versions of one file are appended in the
@@ -144,36 +147,19 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	if hold := grant.Hold(); hold != nil {
 		roll = segment.Roll{Hold: hold}
 	}
-	// rolls is how many rolls this call made. own is how many of them the
-	// write's own bytes account for: the pieces its payload splits into on
-	// empty segments, less the first, plus the roll onto the stream's own
-	// first segment, which only a stream holding none makes. A reserved write
-	// that rolls past own rolled because the stream's other writes filled the
-	// segment it held, and each such roll takes one of the reservation's
-	// spares back (RFC 1 §6): the roll is theirs to replace, so the
-	// reservation takes one from the pool ahead of every unreserved write
-	// rather than meeting the pool's no-spare refusal. An admitted write's own
-	// grant is not a reservation, and its hold is closed with the grant; only
-	// a drawn grant replaces.
-	own := 0
-	if grant.Drawn() {
-		own = capacity.RollsFor(int64(len(p)), c.segCap) - 1
-		if !stream.HasSegment() {
-			// The roll onto a stream's first segment is the write's own: it
-			// takes a spare the reservation holds, as its roomless split
-			// sized. A stream that already holds a segment and rolls its
-			// first record found that segment full or sealed, which this
-			// write did not do to it.
-			own++
-		}
-		if own < 0 {
-			own = 0
-		}
-	}
+	// A reserved write's roll is replaced only while the reservation's hold has
+	// fallen behind what its still-undrawn bytes need. A hold at or above that
+	// figure already has what its own rolls took, so a further replacement
+	// would inflate it — and a copy of small writes alone on one stream
+	// straddles its own tails, every roll of which the reservation already
+	// sized. Measured from the remaining need, a replacement happens exactly
+	// when interleaving took a spare the reservation will still need, and
+	// never for a roll its own bytes account for (RFC 1 §6). An admitted
+	// write's hold is not a reservation's and closes with its grant: only a
+	// drawn grant replaces.
 	if c.beforeAppend != nil {
 		c.beforeAppend()
 	}
-	rolls := 0
 	var done int64
 	for done < int64(len(p)) {
 		seq, err := c.counters.NextSeq()
@@ -211,10 +197,13 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			// published. The direction fails closed — the write that drew the
 			// piece is refused rather than admitted past a limit — and the
 			// window stays open for the unreserved write alone: a reserved
-			// write's interleaved roll takes a replacement spare back instead
-			// (the Replace below), so only the unreserved piece's displaced
-			// room is left, and closing it needs the room a stream promises
-			// between a take and an append, which no interleaving caller can.
+			// write's interleaved roll is replaced while its hold is short of
+			// what the reservation still needs (the Replace below), so only the
+			// unreserved piece's displaced room is left, and closing it needs
+			// the room a stream promises between a take and an append, which no
+			// interleaving caller can. The reserved path's own ceiling is a
+			// spare the pool cannot make: a full device's ENOSPC still refuses
+			// a reserved write here, as RFC 1 §6's ponytail records.
 			// The remaining cases after that are failures of the medium
 			// itself, which no reservation can predict. Overturned by
 			// returning the version with the error, if the caller can then
@@ -232,21 +221,18 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		// so ReservedBytes never covers a record the share already
 		// counts and never misses one still landing.
 		grant.Wrote(pl.Loc.Len)
-		// A reserved write's roll past what its own bytes account for took a
-		// spare of the reservation's hold: the roll another writer's bytes
-		// forced is theirs, so the reservation takes the spare back ahead of
-		// every unreserved write (RFC 1 §6). The replacement raises the hold
-		// without refusing, so a pool that cannot serve it makes up the
-		// demand instead, and no reserved write meets the no-spare refusal. An
-		// admitted write's hold is its own and closes with its grant, and the
-		// pool owes nothing for its roll; only a drawn grant replaces.
-		if pl.Rolled && grant.Drawn() && rolls >= own {
-			if h := grant.Hold(); h != nil {
+		// A reserved write's roll is the reservation's to replace while its
+		// hold has fallen behind what its remaining bytes need: the roll took
+		// a spare interleaving consumed, and the reservation takes one back
+		// ahead of every unreserved write (RFC 1 §6). The replacement raises
+		// the hold without refusing, so a pool that cannot serve it makes up
+		// the demand instead. At or above that need the hold already has its
+		// own rolls' spares, and a plain write's grant holds none of the
+		// reservation's: it never replaces.
+		if pl.Rolled && grant.Drawn() {
+			if h := grant.Hold(); h != nil && h.Left() < grant.NeedsSpares() {
 				h.Replace()
 			}
-		}
-		if pl.Rolled {
-			rolls++
 		}
 		if c.afterAppend != nil {
 			c.afterAppend()

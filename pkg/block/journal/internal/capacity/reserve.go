@@ -369,15 +369,28 @@ func WriteCharge(payload, segCap int64) int64 {
 	return recordSplit(payload, 0, segCap) + segment.RecordBytes(0)
 }
 
-// RollsFor returns the pieces one write of payload bytes appends on a stream
-// with no room: one per empty segment's payload plus the tail. The rolls that
-// write makes are one per piece past the first, so this less one is the rolls
-// its own bytes account for; a stream that held no segment rolls once more
-// onto its first, which the caller adds. A reserved write that rolls more often
-// than that rolled because the stream's other writers filled its segment
-// (RFC 1 §6).
-func RollsFor(payload, segCap int64) int {
-	return sparesBeyondRoom(payload, 0, segCap)
+// NeedsSpares returns the spares the reservation's still-undrawn bytes need: the
+// PiecesFor figure of what its writes have not drawn yet. A hold offering fewer
+// than this is short of what the reservation's own rolls will take, so a
+// reserved roll's spare must be replaced; one offering this many or more has
+// what it took interleaving already given back, and a further replacement would
+// inflate it.
+//
+// decision: the figure is measured from the bytes left rather than from each
+// write's own split, because a write's own split cannot tell a roll its bytes
+// forced from one another writer forced on a stream it shares: a copy of small
+// writes alone on one stream straddles its own tails, and every such roll is
+// already sized into the reservation's spares (RFC 1 §6, "one per cap they can
+// cross plus one"). Measured from the need, a replacement happens exactly when
+// the hold has fallen behind it, never for a roll the reservation counted.
+func (r *Reservation) NeedsSpares() int {
+	r.c.mu.Lock()
+	left := r.leftBytes
+	r.c.mu.Unlock()
+	// Only PiecesFor's spare count is read here, and a single write's cost is
+	// the caps the bytes can cross plus one.
+	_, spares := PiecesFor(left, 1, r.c.cfg.SegmentCap)
+	return spares
 }
 
 // Release returns what the reservation still holds: its bytes, footer entries,
