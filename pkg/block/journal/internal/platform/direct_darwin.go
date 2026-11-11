@@ -24,7 +24,15 @@ func (c calls) setNoCache(fd uintptr, arg int) error {
 	}, int(fd))
 }
 
-// readDirect reads into p the len(p) bytes at off past the page cache, by a
+// directOp names the call a direct read's errors are reported as, and
+// errNegativeOffset is the error ReadAtDirect names for a negative offset:
+// ReadAt refuses one with an error of its own, and this one names EINVAL so
+// errors.Is can match it, where pread would answer its own, unnamed one.
+const directOp = "pread"
+
+var errNegativeOffset error = unix.EINVAL
+
+// readDirectLocked reads into p the len(p) bytes at off past the page cache, by a
 // pread on the file's own descriptor with F_NOCACHE set around it, over the
 // aligned window directRead builds.
 //
@@ -46,35 +54,7 @@ func (c calls) setNoCache(fd uintptr, arg int) error {
 // of the clear after a good read fails the read too: F_NOCACHE stays set on
 // the file's descriptor, so returning success would leave every later cached
 // read of the file bypassing the cache unasked.
-func (f *file) readDirect(p []byte, off int64) (int, error) {
-	if off < 0 {
-		// ReadAt refuses a negative offset with an error of its own; this one
-		// names EINVAL so errors.Is can match it, where pread would answer
-		// its own, unnamed one.
-		return 0, &fs.PathError{
-			Op:   "pread",
-			Path: f.f.Name(),
-			Err:  unix.EINVAL,
-		}
-	}
-
-	f.directMu.Lock()
-	defer f.directMu.Unlock()
-
-	if f.directFD == directClosed {
-		// The closed check runs before the nothing-to-read one, so a closed
-		// file answers fs.ErrClosed even for a p of length 0, as ReadAt does.
-		return 0, &fs.PathError{
-			Op:   "pread",
-			Path: f.f.Name(),
-			Err:  fs.ErrClosed,
-		}
-	}
-
-	if len(p) == 0 {
-		return 0, nil
-	}
-
+func (f *file) readDirectLocked(p []byte, off int64) (int, error) {
 	// The whole read — F_NOCACHE's set, the preads, the clear — runs under
 	// directMu, so a Close cannot release the descriptor under it and two
 	// reads never interleave their windows on the one descriptor. A cached

@@ -8,7 +8,16 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// readDirect reads into p the len(p) bytes at off past the page cache, by
+// directOp names the call a direct read's errors are reported as, and
+// errNegativeOffset is the error ReadAtDirect names for a negative offset:
+// ReadAt refuses one with an error of its own, and this one names
+// ERROR_INVALID_PARAMETER so errors.Is can match it, where ReadFile would
+// answer its own, unnamed one.
+const directOp = "ReadFile"
+
+var errNegativeOffset error = windows.ERROR_INVALID_PARAMETER
+
+// readDirectLocked reads into p the len(p) bytes at off past the page cache, by
 // ReadFile on a second handle of the file opened with FILE_FLAG_NO_BUFFERING,
 // over the aligned window directRead builds. The handle is opened lazily by
 // the file's first direct read, asks for read access alone — a reader asks
@@ -25,35 +34,7 @@ import (
 // not have. What the refusal means for the journal is not decided here — the
 // open's tail check decides it, against the refusal ReadAtDirect returns (see
 // ReadAtDirect's own decision).
-func (f *file) readDirect(p []byte, off int64) (int, error) {
-	if off < 0 {
-		// ReadAt refuses a negative offset with an error of its own; this one
-		// names ERROR_INVALID_PARAMETER so errors.Is can match it, where
-		// ReadFile would answer its own, unnamed one.
-		return 0, &fs.PathError{
-			Op:   "ReadFile",
-			Path: f.f.Name(),
-			Err:  windows.ERROR_INVALID_PARAMETER,
-		}
-	}
-
-	f.directMu.Lock()
-	defer f.directMu.Unlock()
-
-	// The closed check runs before the nothing-to-read one, so a closed file
-	// answers fs.ErrClosed even for a p of length 0, as ReadAt does.
-	if f.directFD == directClosed {
-		return 0, &fs.PathError{
-			Op:   "ReadFile",
-			Path: f.f.Name(),
-			Err:  fs.ErrClosed,
-		}
-	}
-
-	if len(p) == 0 {
-		return 0, nil
-	}
-
+func (f *file) readDirectLocked(p []byte, off int64) (int, error) {
 	if f.directFD == directUnopened {
 		if err := f.openDirectLocked(); err != nil {
 			return 0, err

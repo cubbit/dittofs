@@ -4,6 +4,7 @@ package platform
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -102,7 +103,8 @@ func (f *file) ReadAt(p []byte, off int64) (int, error) {
 	return f.f.ReadAt(p, off)
 }
 
-// ReadAtDirect calls the platform's own direct read. It keeps the
+// ReadAtDirect refuses what ReadAt refuses before the platform's own direct read
+// (readDirectLocked, run under directMu) is called. It keeps the
 // storage.File contract of ReadAt: the bytes the file gives at off, with
 // io.EOF when fewer than len(p) remain.
 //
@@ -115,7 +117,26 @@ func (f *file) ReadAt(p []byte, off int64) (int, error) {
 // Withdraw it if RFC 28 allows a cached fallback on a filesystem known to
 // refuse the direct read.
 func (f *file) ReadAtDirect(p []byte, off int64) (int, error) {
-	return f.readDirect(p, off)
+	if off < 0 {
+		return 0, &fs.PathError{Op: directOp, Path: f.f.Name(), Err: errNegativeOffset}
+	}
+
+	f.directMu.Lock()
+	defer f.directMu.Unlock()
+
+	// The closed check runs before the nothing-to-read one, so a closed file
+	// answers fs.ErrClosed even for a p of length 0, as ReadAt does.
+	if f.directFD == directClosed {
+		return 0, &fs.PathError{Op: directOp, Path: f.f.Name(), Err: fs.ErrClosed}
+	}
+
+	// Before the platform opens anything, so a filesystem refusing the open
+	// never fails a read that asks for no byte.
+	if len(p) == 0 {
+		return 0, nil
+	}
+
+	return f.readDirectLocked(p, off)
 }
 
 // Close releases the file and the direct descriptor its ReadAtDirect opened.

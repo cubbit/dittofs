@@ -29,20 +29,14 @@ const directAlign int64 = 4096
 // multiples of align, at an offset that is a multiple of align too, and raw is
 // repeated while it reads part of the window and reports no error, since a
 // short read of a direct read is legal. It keeps the storage.File contract of
-// ReadAt: a len(p) of 0 reads nothing, and a read that finds fewer than len(p)
+// ReadAt: a len(p) of 0 reads nothing, a negative off is the caller's to refuse
+// (ReadAtDirect does, before it gets here), and a read that finds fewer than len(p)
 // bytes returns what it found with io.EOF. The window's buffer is
 // over-allocated and sliced at its first aligned address, since a Go
 // allocation comes back at an arbitrary address.
 func directRead(p []byte, off int64, align int64, raw func(buf []byte, off int64) (int, error)) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
-	}
-
-	if off < 0 {
-		// ReadAt reports no error in particular for a negative offset, and raw
-		// answers ReadAt's, wrapped as the platform's caller pairs it.
-		_, err := raw(nil, off)
-		return 0, err
 	}
 
 	start := off &^ (align - 1)

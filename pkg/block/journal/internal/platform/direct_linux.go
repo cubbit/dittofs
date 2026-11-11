@@ -18,7 +18,15 @@ const directOpenFlags = unix.O_RDONLY | unix.O_CLOEXEC | unix.O_DIRECT
 // one symlink per descriptor.
 const procSelfFD = "/proc/self/fd/"
 
-// readDirect reads into p the len(p) bytes at off past the page cache, by
+// directOp names the call a direct read's errors are reported as, and
+// errNegativeOffset is the error ReadAtDirect names for a negative offset:
+// ReadAt refuses one with an error of its own, and this one names EINVAL so
+// errors.Is can match it, where pread would answer its own, unnamed one.
+const directOp = "pread"
+
+var errNegativeOffset error = unix.EINVAL
+
+// readDirectLocked reads into p the len(p) bytes at off past the page cache, by
 // pread on a descriptor of the file reopened with O_DIRECT, over the aligned
 // window directRead builds.
 //
@@ -38,37 +46,7 @@ const procSelfFD = "/proc/self/fd/"
 // The direct mu closes the last gap: an open of /proc/self/fd/N whose N a
 // concurrent Close released could open the next open's file, so the open, the
 // read and the close all run under it, which Close also takes.
-func (f *file) readDirect(p []byte, off int64) (int, error) {
-	if off < 0 {
-		// ReadAt refuses a negative offset with an error of its own; this one
-		// names EINVAL so errors.Is can match it, where pread would answer
-		// its own, unnamed one.
-		return 0, &fs.PathError{
-			Op:   "pread",
-			Path: f.f.Name(),
-			Err:  unix.EINVAL,
-		}
-	}
-
-	f.directMu.Lock()
-	defer f.directMu.Unlock()
-
-	if f.directFD == directClosed {
-		// The closed check runs before the nothing-to-read one, so a closed
-		// file answers fs.ErrClosed even for a p of length 0, as ReadAt does.
-		return 0, &fs.PathError{
-			Op:   "pread",
-			Path: f.f.Name(),
-			Err:  fs.ErrClosed,
-		}
-	}
-
-	if len(p) == 0 {
-		// Before the descriptor is opened, so a filesystem refusing the open
-		// never fails a read that asks for no byte.
-		return 0, nil
-	}
-
+func (f *file) readDirectLocked(p []byte, off int64) (int, error) {
 	if f.directFD == directUnopened {
 		if err := f.openDirectLocked(); err != nil {
 			return 0, err
