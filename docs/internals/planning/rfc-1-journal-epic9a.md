@@ -380,12 +380,12 @@ epic leaves.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R64 | Removal outlives its segment: a delete's segment, alone selected, and a settled delete whose counted unlinks are not yet durable, both leave the file absent after a crash | test row | RFC 1 §9.4 A | T9.6, T9.7, T9.12 |
+| R64 | Removal outlives its segment: a delete's segment, alone selected, and a settled delete whose counted unlinks are not yet durable, both leave the file absent after a crash; its conformance test calls `MarkOffloaded` or `Release`, so it stays listed for E9b and this epic tests the row at journal level | test row | RFC 1 §9.4 A | T9.6, T9.7, T9.12 |
 | R65 | Crash mid-repack: between copy and unlink, recovery selects the copies, every held extent reads, and no extent is duplicated | test row | RFC 1 §9.4 A | T9.7, T9.12 |
 | R66 | Copy loses to a newer write: synced, no copy is appended; unsynced, the copy is appended as retained and a failed window serves the old bytes, before and after reopen | test row | RFC 1 §9.4 A | T9.5, T9.12 |
-| R67 | Repack under read: a read during a repack copy and unlink sees the old or the new location, never neither | test row | RFC 1 §9.4 A | T9.7, T9.12 |
-| R68 | A recycled segment keeps its new records, and a failed append in a recycled segment makes it a candidate only once resolved, unlinked after its synced records are carried | test row | RFC 1 §9.4 A | T9.4, T9.7, T9.12 |
-| R69 | Background joined: a store closed with a repack in flight stops it before any segment is closed | test row | RFC 1 §9.4 B | T9.7, T9.12 |
+| R67 | Repack under read: a read during a repack copy and unlink sees the old or the new location, never neither; its conformance test calls `MarkOffloaded` or `Release`, so it stays listed for E9b and this epic tests the row at journal level | test row | RFC 1 §9.4 A | T9.7, T9.12 |
+| R68 | A recycled segment keeps its new records, and a failed append in a recycled segment makes it a candidate only once resolved, unlinked after its synced records are carried; its conformance test calls `MarkOffloaded` or `Release`, so it stays listed for E9b and this epic tests the row at journal level | test row | RFC 1 §9.4 A | T9.4, T9.7, T9.12 |
+| R69 | Background joined: a store closed with a repack in flight stops it before any segment is closed; its conformance test calls `MarkOffloaded` or `Release`, so it stays listed for E9b and this epic tests the row at journal level | test row | RFC 1 §9.4 B | T9.7, T9.12 |
 | R70 | Forget leaves nothing to settle, and a later attach of the tag holds new writes | test row | RFC 1 §9.4 C | T9.10, T9.12 |
 | R71 | An unclaimed tag is reported in `Stats().Shares` with its held and dirty bytes, and no longer after `Forget` | test row | RFC 1 §9.4 C | T9.10, T9.12 |
 | R72 | Segment reclaimable: once a corrupt record's extents are dropped, repack can select the segment and its storage is recovered | test row | RFC 28 §4.2 B | T9.4, T9.12 |
@@ -834,7 +834,7 @@ copy, and a split would leave a copy path no test can drive.
     target syncs, and a crash before then finds the dropped record still on disk.
 - **Tests:** the planted case of a settled truncate and a retained version in one segment
   (R34, `TestRFC1A_DropsDecidedAfterCopies`' journal-level form, whose conformance form needs a
-  hold); the held directory sync of `TestRFC1A_RemovalOutlivesItsSegment`, both halves (R16,
+  hold); the held directory sync of `TestRFC1A_RemovalOutlivesItsSegment`'s shape, both halves (R16,
   R64); a carried removal's numbers read back through E3's codec (R33); an unsettled truncate
   carried and reopened (`TestRFC1A_RemovalRecordsCarriedForward`'s second half); a deferred
   loss planted through E6's registry with the headroom drawn to zero, the target's sync held at
@@ -871,15 +871,15 @@ copy, and a split would leave a copy path no test can drive.
   - `Repack` with a done context appends nothing; one cancelled between units returns after the
     unit in flight.
   - Close with a pass in flight stops it before any segment closes.
-- **Tests:** the seam's sync held across a unit (R36); `TestRFC1A_RepackUnderRead` and a
+- **Tests:** the seam's sync held across a unit (R36); `TestRFC1A_RepackUnderRead`'s shape and a
   reader looping over the repointed extents under `-race` (R37, R40, R67); the held directory
   sync of `TestRFC1B_FreedMeansFreed`'s repack half (R38); E2's crash-simulating seam at each
   sync point of a unit, `TestRFC1A_CrashMidRepack` and `TestDamage_LostWrites/repack_copy` and
   `/repack_unlink` (R36, R65); a reader loop against a pass with a bounded deadline (R48,
   `TestRFC1B_ReclaimNotStarved`'s shape with overwrites); a read of another file never waiting
-  on a held unlink (R49); a done and a cancelled context (R51); `TestRFC1B_BackgroundJoined`
+  on a held unlink (R49); a done and a cancelled context (R51); `TestRFC1B_BackgroundJoined`'s shape
   (R50, R69); `repacked_bytes` and the span through `Stats` and a recording tracer (R39); a
-  recycled segment's failed append carried and retired (`TestRFC1A_RecycledSegmentKeepsNewRecords`,
+  recycled segment's failed append carried and retired (`TestRFC1A_RecycledSegmentKeepsNewRecords`'s shape,
   R68); a `testing.F` target interleaving passes with writes and removals against the reference
   model.
 - **Rules:** a `decision:` at the abandon on a failed copy window (D8).
@@ -974,7 +974,7 @@ copy, and a split would leave a copy path no test can drive.
   - With a done context, nothing is appended.
   - A tag not attached at reopen is kept and served once attached.
 - **Tests:** `TestRFC1C_ForgetLeavesNothingToSettle` (R52, R53, R54, R70);
-  `TestRFC1C_UnclaimedTagReported` (R71); `TestRFC1C_FileIsItsSharesShare`'s forget steps (R57,
+  `TestRFC1C_UnclaimedTagReported` (R71); `TestRFC1C_FileIsItsSharesShare`'s forget steps at journal level (R57,
   owned with epic 8); the cancelled-call row's `Forget` part (R59); a second forget and an empty
   tag with the seam's write log (R55); a sync failure at the seam on the forget record (D11); a
   forget racing a pass and a `Fill` of the tag's files, comparing sequence numbers (R56); a tag
@@ -1008,15 +1008,18 @@ copy, and a split would leave a copy path no test can drive.
   `test/journal/known.yaml` in the change of the subtask that makes it pass (T9.5 for
   `TestRFC1A_CopyLosesToNewerWrite`, T9.7 for the repack rows, T9.10 for the forget rows), which
   this subtask only checks: `TestRFC1A_CopyLosesToNewerWrite`,
-  `TestRFC1A_CrashMidRepack`, `TestRFC1A_RemovalOutlivesItsSegment`, `TestRFC1A_RepackUnderRead`,
-  `TestRFC1A_RecycledSegmentKeepsNewRecords`, `TestRFC1B_BackgroundJoined`,
-  `TestRFC1C_ForgetLeavesNothingToSettle`, `TestRFC1C_UnclaimedTagReported`,
-  `TestRFC28B_SegmentReclaimable`, `TestRFC28C_RetiredSegmentsAreRecycled` (with epic 5),
-  `TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead` (with epic 7a),
-  `TestDamage_LostWrites/repack_copy` and `/repack_unlink`, and the repack half of the row "an
+  `TestRFC1A_CrashMidRepack`, `TestRFC1C_ForgetLeavesNothingToSettle`,
+  `TestRFC1C_UnclaimedTagReported`, `TestRFC28B_SegmentReclaimable`,
+  `TestDamage_LostWrites/repack_copy`, `/repack_unlink`, `/recycle_rename`, `/open_spare_zeroing`,
+  `/open_tmp_unlink` and `/failed_unlink`, `TestDamage_BitFlip/segment_header` and
+  `/seal_marker` (whose `ownedSegment` reads T9.9's `Inspector.Segments`), and the repack half of the row "an
   ended segment outlives its copies' proof" once the write path that re-appends an ended
-  segment's records exists (§9). Every other row now listed under
-  epic 9 whose body needs `Offload`, `report`, `MarkOffloaded`, `Release` or a hold has its
+  segment's records exists (§9). The rows that call `MarkOffloaded` or `Release` before they
+  reopen or repack (`TestRFC1A_RemovalOutlivesItsSegment`, `TestRFC1A_RepackUnderRead`,
+  `TestRFC1A_RecycledSegmentKeepsNewRecords`, `TestRFC1B_BackgroundJoined`,
+  `TestRFC28C_RetiredSegmentsAreRecycled`, `TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead`
+  among them) are not turned green here: this epic tests their shape at journal level. Every other
+  row now listed under epic 9 whose body needs `Offload`, `report`, `MarkOffloaded`, `Release` or a hold has its
   `reason` rewritten to name the call it waits for and its `issue` pointed at epic 9b's. The
   model run with repack and forget enabled in its operation mix.
 - **Acceptance criteria:**
