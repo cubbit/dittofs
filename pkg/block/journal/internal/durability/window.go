@@ -286,3 +286,30 @@ func (d *Durability) resolve(st *stream, w *window) {
 		d.resolved(st.no, w.seg)
 	}
 }
+
+// WindowOpen reports whether a failed window of seg is still unresolved, or
+// resolved but withheld by a hold whose end will announce it: the condition
+// under which the segment's resolved announcement has not been made. It reads
+// each stream's state under that stream's lock, makes no index call and does
+// no I/O. The streams are read one after another, not as one snapshot; a
+// segment belongs to one stream, so the answer for seg is not torn by it.
+func (d *Durability) WindowOpen(seg core.SegmentID) bool {
+	d.mu.Lock()
+	streams := make([]*stream, 0, len(d.made))
+	for _, st := range d.made {
+		streams = append(streams, st)
+	}
+	d.mu.Unlock()
+	for _, st := range streams {
+		st.mu.Lock()
+		open := st.pendingLocked(seg)
+		if h := st.holds[seg]; h != nil && h.withheld {
+			open = true
+		}
+		st.mu.Unlock()
+		if open {
+			return true
+		}
+	}
+	return false
+}
