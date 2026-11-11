@@ -111,7 +111,7 @@ suites:
   # against the real journal and fail until the engine and the journal calls they need land.
   engine-conformance:
     format: go-json
-    cmd: go test -race -tags=engine_conformance -timeout=30m ./pkg/block/engine/conformance/...
+    cmd: go test -race -tags=engine_conformance -timeout=30m ./pkg/block/engine/conformance/... ./internal/vfs/integration/...
     known: test/engine/known.yaml
     tier: pr
   integration:
