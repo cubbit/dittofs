@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -656,5 +657,80 @@ func TestSinceFollowsARecordCorruptDroppedAfterItMoved(t *testing.T) {
 	want := brief{core.ChangeWrite, ex(0, 4<<10), orig.Version, 1}
 	if all := resume(); !slices.Contains(briefs(all), want) {
 		t.Fatalf("Since = %+v, want it to yield %+v from the record's new place", briefs(all), want)
+	}
+}
+
+// TestSinceFollowsTheSecondPieceOfADroppedMovedRecord holds one record in two
+// pieces, moves it and damages its old place after Since copied the changes:
+// Corrupt drops the old place, the first piece finds the extent gone from it,
+// and the second piece is still followed to the record's new place.
+func TestSinceFollowsTheSecondPieceOfADroppedMovedRecord(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	data := pattern(8<<10, 21)
+	orig := retiredSinceFile(t, c, s, f, data)
+	mustWrite(t, c, s, f, 2<<10, pattern(2<<10, 5)) // leaves the record in [0,2K) and [4K,8K)
+	syncFiles(t, c, f)
+	resume := pauseSince(t, c, s, f)
+
+	moveRecord(t, c, seam, f, orig.Record, data)
+	flip(t, seam, orig.Record.Segment, payloadStart(orig.Record)+10)
+
+	all := briefs(resume())
+	for _, want := range []brief{
+		{core.ChangeWrite, ex(0, 2<<10), orig.Version, 1},
+		{core.ChangeWrite, ex(4<<10, 4<<10), orig.Version, 1},
+	} {
+		if !slices.Contains(all, want) {
+			t.Fatalf("Since = %+v, want it to yield %+v from the record's new place", all, want)
+		}
+	}
+}
+
+// TestSinceRetargetsTheCopyAfterTheHoldEnds damages the record Since reads, so
+// Corrupt names a verified copy, and retires the copy's segment once Corrupt's
+// hold on it ends and before Since reads the copy: the copy's read finds its
+// segment gone and follows the index to the record's new place.
+func TestSinceRetargetsTheCopyAfterTheHoldEnds(t *testing.T) {
+	var c *Core
+	var seam *kit.Seam
+	var cp segment.Location
+	var fired atomic.Bool
+	c, seam = newTestCore(t, func(o *coreOptions) {
+		o.afterCorrupt = func() {
+			if !fired.CompareAndSwap(false, true) {
+				return
+			}
+			eventually(t, "the hold on the copy's segment ends", func() bool {
+				if c.set.Claim(cp.Segment) {
+					c.set.Release(cp.Segment)
+					return true
+				}
+				return false
+			})
+			retire(t, c, seam, cp.Segment)
+		}
+	})
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	data := pattern(4<<10, 13)
+	mustWrite(t, c, s, f, 1<<20, pattern(4<<10, 9))
+	var orig index.Placed
+	orig, cp = writeWithCopy(t, c, seam, s, f, data)
+	if _, err := c.Streams().For(f).Seal(true); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, c, s, f, 1<<30, []byte{1})
+	syncFiles(t, c, f)
+	flip(t, seam, orig.Record.Segment, payloadStart(orig.Record)+10)
+
+	want := brief{core.ChangeWrite, ex(0, 4<<10), orig.Version, 1}
+	all := briefs(sinceAll(t, c, s, f, core.Version{}))
+	if !fired.Load() {
+		t.Fatal("Corrupt never named the copy")
+	}
+	if !slices.Contains(all, want) {
+		t.Fatalf("Since = %+v, want it to yield %+v from the copy's new place", all, want)
 	}
 }

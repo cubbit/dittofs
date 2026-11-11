@@ -165,11 +165,14 @@ func (r *sinceRead) write(ch index.Change, bp *[]byte, depth int) ([]core.Change
 		_, _, mtime, verdict, err = r.c.readRecord(r.ctx, r.st, r.id, at, g.pieces, bp)
 		switch {
 		case segmentGone(err):
-			// decision: defence only. Corrupt's copy hold keeps the copy's
-			// segment claimed, so Retire refuses it and this is unreachable; it
-			// fails safe, as retarget ends the Since with errRecordMoving rather
-			// than skip. Overturned by a retirer that can take a claimed
-			// segment, or a copy served without the hold.
+			// decision: reached once Corrupt's hold on the copy's segment
+			// ends, which it does when the worker has re-appended the record
+			// and the new place completed; the segment can then be retired
+			// before this re-read, and the read follows the index. While a
+			// repack or retirement still holds the claim the index names the
+			// copy, and retarget ends the Since with errRecordMoving, which
+			// fails safe. Overturned by a retirement that can take the
+			// segment while the hold stands.
 			return r.retarget(ch, bp, depth, err)
 		case err == nil && verdict != recordVerifies:
 			// decision: a copy that does not verify here is not handed to
