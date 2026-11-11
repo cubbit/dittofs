@@ -79,10 +79,18 @@ type fakeFile struct {
 	tag     journal.ShareTag
 	pieces  []piece
 	changes []journal.Change // markers and losses
+	over    []overRun        // where each write superseded held bytes, kept for Since
 	settled journal.Version  // Settle's newest version: changes at or below it are hidden until a reopen
 	asOf    journal.Version
 	rec     record       // its newest record
 	pending []superseded // bytes whose superseding record is not synced yet
+}
+
+// overRun is one run where the write of version by superseded bytes the write
+// of version was held.
+type overRun struct {
+	extent  journal.Extent
+	by, was journal.Version
 }
 
 // unsettled is the file's markers and losses that Settle has not covered.
@@ -496,6 +504,55 @@ func (h *FakeHandle) file(id journal.FileID, claim bool) (*fakeFile, error) {
 	return f, nil
 }
 
+// noteOver records, before e is overwritten by the write of version by, one
+// run for each held piece it overlaps, as the journal does when a write
+// supersedes held bytes (RFC 1 §3.10). A removal records none.
+func (f *fakeFile) noteOver(e journal.Extent, by journal.Version) {
+	for _, p := range f.pieces {
+		lo, hi := max(p.off, e.Off), min(p.end(), e.Off+e.Len)
+		if lo < hi {
+			f.over = append(f.over, overRun{
+				extent: journal.Extent{Off: lo, Len: hi - lo},
+				by:     by,
+				was:    p.v,
+			})
+		}
+	}
+}
+
+// overOf is the runs of the piece p's write that superseded a write above
+// from, clipped to p, in offset order and merged where they touch. Settle
+// hides the runs of writes at or below the version it covered, until a
+// reopen, as it drops them in the journal (RFC 1 §3.10).
+func (f *fakeFile) overOf(p piece, from journal.Version) []journal.Extent {
+	var out []journal.Extent
+
+	for _, r := range f.over {
+		lo, hi := max(r.extent.Off, p.off), min(r.extent.Off+r.extent.Len, p.end())
+		if r.by != p.v || lo >= hi || r.was.Compare(from) <= 0 || r.by.Compare(f.settled) <= 0 {
+			continue
+		}
+
+		out = append(out, journal.Extent{Off: lo, Len: hi - lo})
+	}
+
+	slices.SortFunc(out, func(a, b journal.Extent) int {
+		return cmp.Compare(a.Off, b.Off)
+	})
+
+	var merged []journal.Extent
+	for _, e := range out {
+		if n := len(merged); n > 0 && e.Off <= merged[n-1].Off+merged[n-1].Len {
+			merged[n-1].Len = max(merged[n-1].Off+merged[n-1].Len, e.Off+e.Len) - merged[n-1].Off
+			continue
+		}
+
+		merged = append(merged, e)
+	}
+
+	return merged
+}
+
 // WriteAt holds p at off under a new version, refused by the share's limit
 // on held bytes or the version limit. A zero-length p holds nothing and
 // answers the zero version, as the journal does.
@@ -575,6 +632,8 @@ func (h *FakeHandle) writeAt(
 	if err != nil {
 		return journal.Version{}, err
 	}
+
+	f.noteOver(journal.Extent{Off: off, Len: int64(len(p))}, v)
 	j.cut(f, off, off+int64(len(p)))
 	j.appendRecord(f, int64(len(p)))
 
@@ -830,7 +889,8 @@ func (h *FakeHandle) Delete(_ context.Context, id journal.FileID) (journal.Versi
 }
 
 // Since yields every held piece, unsettled marker and synced loss of the
-// file above from, in version order.
+// file above from, in version order, each write with the runs where it
+// superseded another write above from.
 func (h *FakeHandle) Since(_ context.Context, id journal.FileID, from journal.Version) iter.Seq2[journal.Change, error] {
 	j := h.j
 	j.mu.Lock()
@@ -838,7 +898,13 @@ func (h *FakeHandle) Since(_ context.Context, id journal.FileID, from journal.Ve
 	var out []journal.Change
 	if err == nil {
 		for _, p := range f.pieces {
-			out = append(out, journal.Change{Kind: journal.ChangeWrite, Extent: journal.Extent{Off: p.off, Len: int64(len(p.b))}, Version: p.v, Mtime: p.mtime})
+			out = append(out, journal.Change{
+				Kind:    journal.ChangeWrite,
+				Extent:  journal.Extent{Off: p.off, Len: int64(len(p.b))},
+				Version: p.v,
+				Mtime:   p.mtime,
+				Over:    f.overOf(p, from),
+			})
 		}
 		out = append(out, f.unsettled()...)
 	}
