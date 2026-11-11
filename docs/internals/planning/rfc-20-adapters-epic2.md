@@ -141,7 +141,7 @@ names the epic that owns the rest.
 | R16 | It is driven over a plain connection: a client writes its records to any `net.Conn` and keeps the credit balance the replies grant | MUST | §7; owner decision | T2.1 |
 | R17 | `NewConn` runs at accept and returns the connection's stages, `Header` and `Router` always set; the `Hold` stage is set where a table `Holds` and nil elsewhere | MUST | §4.7 | T2.1, T2.2 |
 | R18 | `HoldCodec.Key` never returns 0 | MUST | §4.7 | T2.2 |
-| R19 | `HoldCodec.Interim` grants credits as RFC 20 §4.6 and §4.7 state, the credits of the chain members answered before it and of a `NoReply` row's `after` headers included | MUST | §4.6, §4.7 | T2.2 |
+| R19 | `HoldCodec.Interim` grants credits as RFC 20 §4.6 and §4.7 state, those of a `NoReply` row's `after` headers included; a chain member answered before it is granted its credits by its own reply, so the interim does not add them | MUST | §4.6, §4.7 | T2.2 |
 | R20 | `Security.Unwrap` resolves the IDs a related member inherits from `prev` before it checks the member, so the check never runs against an unresolved ID; `Wrap` transforms the reply in place | MUST | §4.7 | T2.2 |
 | R21 | `ReplayCache`'s `Lookup` returns a fresh copy of a cached reply, charged to a reply reservation of its size under `ctx`; `Store` keeps its own clear copy | MUST | §4.7 | T2.2 (green with E3) |
 | R22 | The protocol owns its sessions: one registry per `Protocol`, handed to each connection's stages at `NewConn`; a connection's `OnClose` drops its references to the sessions it carried | MUST | §4.7 ("Sessions span connections") | T2.2 |
@@ -468,7 +468,7 @@ const (
 	OpPark                        // version 2: Request.Park, then a Create of Msg.Name (D6)
 	OpNotify                      // Conn.Send ahead of the reply keyed by Msg.Target
 	OpViolate                     // Conn.Close
-	OpCancel                      // never routed: HoldCodec.Cancels names the request keyed by Msg.Target
+	OpCancel                      // never routed: HoldCodec.Cancels names the request keyed by Msg.Target, which the Cancel carries as its message ID; its Msg.ID is ignored
 	OpCompound                    // version 1: the compound row, its members Msg.Members
 )
 
@@ -490,6 +490,9 @@ const (
 	StatusCancelled                  // a parked or held request its client cancelled (E5 T5.5, T5.11)
 )
 
+// HoldFor is how long version 2 holds a request the service answered ErrDelay (E5 T5.5).
+const HoldFor = 10 * time.Second
+
 type Msg struct {
 	Op      uint32
 	Version core.Version
@@ -497,7 +500,7 @@ type Msg struct {
 	Session uint32 // all ones: inherited from the member before
 	Tree    uint32
 	Credits uint16 // charged by this message
-	Seq     uint32
+	Seq     uint32 // 0: not sequenced, never answered from or stored in the replay cache
 	Related bool
 	Pend    bool       // HoldCodec.Pends answers true for this member
 	Role    core.Role  // OpEcho: its per-request role
@@ -674,7 +677,7 @@ func (c *Client) Balance() int
     references; `Session`, `Logoff` and `Tree` setting `Request.Level` and `Request.State` through
     the `Router`, from `prev` for a related member; `Park` (D6), `Notify`, `Violate`; the
     compound row of version 1, its `Decode` reading a count and building the `Invocation`
-    directly, `Members` the version-1 table with its `ReadOp`; `Stages.MaxPending` of 8;
+    directly, `Members` the version-1 table less `Negotiate`, with its `ReadOp`; `Stages.MaxPending` of 8;
     the `decision:` of D6.
   - `core.Dispatcher` deleted from `conn.go`, with its declaration in `core.golden` (D18).
   - `conformance_test.go`: `TestConformanceReplayLookupCopies` and its `known.yaml` entry
