@@ -838,8 +838,9 @@ RFC sections: §6.10's codec and pipeline rows.
    a stand-in, and the sidecar runner's trivial real sidecar is part of T4.9. `vfstest.Memory`
    and `Faults` are RFC 17 plan piece 12's, estimated there.
 10. **The first milestone needs two pieces.** An SMB mount with AD sign-in needs `gss` (risk 5)
-   and the authenticator behind `SignIn` (keytab, PAC, NTLMv2, NETLOGON, LDAP), which goes to
-   RFC 18's plan (#4058).
+   and the authenticator behind `SignIn` (keytab, PAC, NTLMv2, NETLOGON, LDAP), which RFC 18's
+   plan (#4058) builds: its S2 for NTLM, its E5 to E7 for Kerberos, the PAC, the directory and
+   pass-through. The RFC 22 plan builds no half of it (its §6.2, point 1).
 
 ### 6.2 Deferral ledger
 
@@ -871,7 +872,7 @@ decision to drop it (its issue closed as not planned).
 | end-to-end rows (§7.5): drain under `tar`, slow client, reconnect, cancel, order, Kerberos and AD, TLS | need kernel clients | RFC 21/22 plans | their e2e epics |
 | wire tests against Samba and knfsd (§8) | need handlers | RFC 21/22 plans | their wire-test epics |
 | end-to-end benchmark and nightly benchmark tracking (§6.10); a `core` soak under real traffic | need a mountable protocol | RFC 21/22 plans | their E2E green |
-| the authenticator: keytab, PAC, NTLMv2, NETLOGON, LDAP, consolidated as `internal/identity` | RFC 18's | RFC 18's plan (#4058) | before RFC 22's sign-in epic |
+| the authenticator: keytab, PAC, NTLMv2, NETLOGON, LDAP, consolidated as `internal/identity` | RFC 18's | RFC 18's plan (#4058), its S2 and E5 to E7 (risk 10) | before RFC 22's sign-in epic |
 | RFC 24's turns, `Reclaim`, `ShareCap`, `Detect`, `Split` | no consumer here | RFC 24 plan | when the node budgets memory |
 | the settings table's adapters' section and `Check`, wired into reconcile and the settings routes | need `internal/node` and `pkg/settings` | RFC 13's plan (#4059), epic 5 | that epic |
 | concrete sidecars: mDNS, WS-Discovery (`pkg/discovery`), port mapper, rpcbind registration | need serving protocols | cutover | stage 7 |
