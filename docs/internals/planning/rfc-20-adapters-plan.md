@@ -491,28 +491,14 @@ for {
 	n, err := fr.BodyLen(hdr) // past the cap: close
 	rec, err := pool.Get(ctx, remote, n) // Budgets.Receive: waits for room, never refuses
 	readInto(rec, conn)
-	go dispatcher.Dispatch(ctx, c, rec) // worker; replies go through the one writer (§6.2)
+	dispatcher.Dispatch(ctx, c, rec) // on the reader: returns once the request is admitted
 }
 
-// internal/adapter/core/pipeline.go (planned, E5): one request.
-h, err := stages.Header.Decode(rec, 0)
-h, err = stages.Security.Unwrap(h, rec, nil)
-release, err := stages.Flow.Admit(ctx, h) // the reader waits here, never a refusal
-defer release()
-if cached, _ := stages.Replay.Lookup(ctx, h); cached != nil {
-	return send(cached)
-}
-table, req, err := stages.Router.Route(h, nil) // version's table; req.Call carries the identity
-op := table.Ops[h.Op()]                        // absent: ErrNotSupported
-inv, _, err := op.Decode(body(rec, h), req.Version)
-err = inv.Resolve(req)            // wire IDs to service values
-err = mw(inv.Call)(ctx, req)      // middleware, then the handler: the one service call
-st, reply := table.Errors.Map(err, op, req.Version) // a held error loops back here (§4.6)
-out, _ := replyPool.Get(ctx, remote, inv.Bound()) // Budgets.Reply
-stages.Header.Encode(h, st, out)
-inv.Encode(out, req.Version)
-stages.Security.Wrap(h, out)
-c.Send(h, out, 0)
+// internal/adapter/core/pipeline.go (planned, E5): one request runs RFC 20 §4.7's
+// pipeline, in its order; T5.1 builds it from there. Dispatch runs it up to Admit
+// on the reader, so the reader blocks in Admit (§6.9) and the connection is not
+// read until a request completes (§4.1); the rest runs on a goroutine per admitted
+// request, its final reply on the writer's queue (§6.2), not through Conn.Send.
 ```
 
 A handler is decode, one `vfs.Service` call, translate, encode. `core.Bind` joins the four into

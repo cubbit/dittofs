@@ -515,31 +515,18 @@ The write path. `WriteAt` appends its record and returns; `Sync` is the durable 
 one sync covers every writer waiting on the stream (RFC 1 §5.2, group commit, epic 6).
 
 ```go
-func (e *Engine) Write(ctx context.Context, h *journal.Handle, id journal.FileID, off int64, p []byte, mtime int64, stable bool) (journal.Version, error) {
-    v, err := h.WriteAt(ctx, id, off, p, mtime) // capacity checked before any byte (RFC 1 §6)
-    if err != nil {
-        return 0, mapNoSpace(err) // NoSpaceError{limit} → retry-later or no-space (RFC 8 §10.2)
-    }
-    if stable {
-        // A stable write is acked only once Sync returns (RFC 8 §5.1).
-        // Otherwise the stream's own timer syncs it within journal.SyncBound.
-        if err := h.Sync(ctx, id); err != nil {
-            return 0, err // a SyncError names the files a failed window lost (RFC 1 §5.3)
-        }
-    }
-    return v, nil
-}
+v, err := h.WriteAt(ctx, id, off, p, mtime) // capacity checked before any byte (RFC 1 §6)
+// A stable write is the engine's Write, then its Commit, which calls Sync and
+// waits for what RFC 8 §5.1 lists (RFC 8 §4.1).
+err = h.Sync(ctx, id) // a SyncError names the files a failed window lost (RFC 1 §5.3)
 ```
 
-A read returns the exact missing extents, which the engine fetches and fills (RFC 1 §3.2,
-§3.4; epic 8).
+A read returns the exact missing extents. How the engine resolves and fills them is RFC 8 §7.1
+and §7.3's (RFC 1 §3.2, §3.4; epic 8).
 
 ```go
 n, missing, held, asOf, err := h.ReadAt(ctx, id, off, p)
-for _, m := range missing {
-    buf, v := e.remote.Get(ctx, id, m) // the remote tier, not the journal
-    _ = h.Fill(ctx, id, m.Off, buf, asOf, v) // a stale fill is refused, never served
-}
+// per missing extent the engine decides; a fill it makes: h.Fill(ctx, id, m.Off, buf, asOf, v)
 ```
 
 The offload pass, then eviction (RFC 1 §3.3, §3.5, §7.2; epics 9a and 9b). `report` is

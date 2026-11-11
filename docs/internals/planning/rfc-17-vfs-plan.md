@@ -190,6 +190,7 @@ func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 		return vfs.WriteResult{}, err
 	}
 	defer release()
+	add, err := fs.charges(ctx, f, off, int64(len(src))) // what the write charges once committed
 	res, err := fs.reserve(ctx, a, charged(f), entity.Usage{Bytes: add}) // piece 9
 	// stage takes f's accept lock, reads Before, runs the engine call, reads After.
 	wcc, err := fs.stage(ctx, c, a, ref.Handle, f, off, true, func() error {
@@ -199,8 +200,11 @@ func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 	unlock()
 	fs.entryChanged(ctx, a, &ref, f, written(wcc)) // Watches.Changed, piece 10 (D7)
 	if stable(a, ref, st) {
-		cv, _, err := fs.engine.Commit(ctx, f.Share, f.ID, off, int64(len(src)))
-		if err == nil && cv != v {
+		cv, _, cerr := fs.engine.Commit(ctx, f.Share, f.ID, off, int64(len(src)))
+		if cerr != nil {
+			return vfs.WriteResult{}, cerr
+		}
+		if cv != v {
 			return vfs.WriteResult{}, &vfs.Delay{Cause: vfs.DelayCommit} // the client resends
 		}
 	}
@@ -218,24 +222,13 @@ func (fs *Filesystem) Unlink(ctx context.Context, c vfs.Call, dir vfs.Target, na
 	// delete through the parent: dir.H is the via of D8, with the sticky rule
 	err = fs.authz.Decide(ctx, a.caller, op, h, dir.H, name, entity.Delete)
 	err = fs.checks.CheckChange(ctx, a.who(), keyOf(f), dir.Open, openstate.ChangeRemove)
-	// open: a deferred unlink, run at the last close (piece 7); else the store's
-	// Namespace change, then the engine's Delete of the content.
+	// the store's Namespace change, then the content's release, which an open
+	// defers to its last close (§5.4).
 }
 ```
 
-One caller, an adapter handler in stage 5: decode, one `vfs.Service` call, translate, encode.
-The names on the adapter side are RFC 20's and planned:
-
-```go
-func write3(ctx context.Context, svc vfs.Service, c vfs.Call, req *xdr.Reader, out *xdr.Writer) error {
-	args, err := decodeWrite3(req)                 // XDR only
-	if err != nil {
-		return encodeStatus(out, nfs3errInval)
-	}
-	r, err := svc.Write(ctx, c, vfs.Anonymous(args.Handle), args.Off, args.Data, stability(args.How))
-	return encodeWrite3(out, nfs3Status(err), r)   // nfs3Status maps every error in vfs.Errors()
-}
-```
+One caller, an adapter handler in stage 5: one `vfs.Service` call per row, in RFC 20 §4.3's shape
+and bound as §4.7 binds `WRITE`; the RFC 20 plan's §4.1 sketches one.
 
 ## 3. Pieces, in build order
 

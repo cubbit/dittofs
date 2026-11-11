@@ -195,8 +195,9 @@ err = open.Start(ctx, fs, fs.Admission) // raises the node epoch, arms the sweep
 err = eng.Start(ctx, shares)
 err = fs.Start(ctx) // serves every shard, below, before any adapter serves
 
-// Shutdown runs backwards: drain the service, close the engine, then stop the table.
+// Shutdown runs backwards (§11.2, RFC 23 §2.2).
 fs.Drain(ctx)
+fs.Stop() // joins the recalls still running
 eng.Close(ctx)
 open.Stop() // later calls answer ErrStopped
 ```
@@ -206,7 +207,10 @@ A restart serves each shard under a raised grace instance before anything there 
 
 ```go
 func (fs *Filesystem) serve(ctx context.Context, shares []entity.Share) error {
-	fs.meta.Lifecycle().RaiseAtStart(ctx, shardsOf(shares)) // one transaction
+	// A stand-in until the node's start transactions raise it (D5, RFC 14 §4.4).
+	if _, err := fs.meta.Lifecycle().RaiseAtStart(ctx, shardsOf(shares)); err != nil {
+		return err
+	}
 	for _, sh := range shares {
 		rec, _ := fs.meta.Shard(ctx, sh.Shard)
 		// Installs the shard's persistent opens, then enters grace: only clients
@@ -253,8 +257,7 @@ func (fs *Filesystem) RecallGrant(g openstate.CachingGrant) {
 }
 // The client's DELEGRETURN or break acknowledgement, via the adapter:
 err := open.Grants().AckRecall(ctx, who, g.ID, openstate.GrantNone)
-// No answer by the deadline (35 s SMB, one lease NFS): the sweep revokes the
-// grant and raises Sink.Revoked{Reason: RevokedGrant} (§5.3).
+// No answer by the deadline: the sweep cuts the grant to none or revokes it, as §5.3 says.
 ```
 
 A lock that conflicts either fails at once or, for a callback waiter, is granted later through
