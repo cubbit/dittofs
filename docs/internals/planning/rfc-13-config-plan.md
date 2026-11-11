@@ -217,8 +217,8 @@ Out of scope, each named in O1:
    sealed secret is proven by the other role's key failing to open it.
 6. **Known failures shrink** (`CLAUDE.md`, "Writing tests", "By kind"). No suite RFC 13 names keeps
    a `known.yaml`, so no test lands red. Should a later epic register a cell with one, a red test
-   that turns green leaves its suite's `known.yaml` in the same change, as "Design principles" in
-   `.claude/skills/rfc-to-epic-plan/SKILL.md` says.
+   that turns green leaves its suite's `known.yaml` in the same change, since RFC 29 §4.7 fails a run
+   whose known failure passes.
 7. **v2 ignores v1.** Nothing imports v1's server configuration, which RFC 23's plan's epic 1 strips
    first. What stays is kept in place and named:
    - `pkg/config`'s viper loading, its path search, its decode hooks and its `mapstructure` decoder
