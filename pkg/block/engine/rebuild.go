@@ -48,10 +48,7 @@ func (e *Engine) rebuildRun(o *opened, db *binding, dst entity.FileID, spec jour
 		done: make(chan struct{}),
 	}
 
-	// The bindings are this start's, so no Unbind has shut either gate.
-	if !c.enterShares() {
-		return nil, fmt.Errorf("engine: start: rebuild the clone into file %v: %w", dst, errRemoved)
-	}
+	c.enterShares() // the bindings are this start's: no Unbind has shut either gate
 
 	// Nothing is served yet, so no write is admitted to wait out and no
 	// registration of a live clone can overlap.

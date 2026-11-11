@@ -19,11 +19,12 @@ type heldPhase1 struct {
 	entered chan struct{}
 	hold    chan struct{}
 	once    sync.Once
-	letOnce sync.Once
+	let     func()
 }
 
 func newHeldPhase1(t *testing.T) *heldPhase1 {
 	h := &heldPhase1{entered: make(chan struct{}), hold: make(chan struct{})}
+	h.let = sync.OnceFunc(func() { close(h.hold) })
 	t.Cleanup(h.let)
 	return h
 }
@@ -33,9 +34,8 @@ func (h *heldPhase1) clone(ctx context.Context, next engine.Existence, op kvstor
 	return next.Clone(ctx, op, pending)
 }
 
-func (h *heldPhase1) let() { h.letOnce.Do(func() { close(h.hold) }) }
-
-// within waits for ch's answer, failing the test if none comes in time.
+// within waits for ch's answer, failing the test if none comes in time, for
+// a rig, which has no unit's answered.
 func within(t *testing.T, what string, ch <-chan error) error {
 	t.Helper()
 	select {
@@ -80,7 +80,7 @@ func (u *unit) startCloneHeld(t *testing.T, h *heldPhase1, src entity.FileID, ds
 		t.Fatal("the clone never reached its phase 1")
 	}
 	cancel()
-	if err := within(t, "the clone's call", answer); !isDelay(err, vfserr.DelayClone) {
+	if err := u.answered(t, "the clone's call", answer); !isDelay(err, vfserr.DelayClone) {
 		t.Fatalf("the clone's call at its context's end = %v, want DelayClone", err)
 	}
 }
@@ -109,7 +109,7 @@ func TestUnbindOfTheDestinationsShareWaitsForItsLiveClone(t *testing.T) {
 
 	h.let()
 
-	if err := within(t, "Unbind", unbound); err != nil {
+	if err := u.answered(t, "Unbind", unbound); err != nil {
 		t.Fatalf("Unbind once the clone is done = %v, want nil", err)
 	}
 
@@ -145,7 +145,34 @@ func TestUnbindOfTheSourcesShareWaitsForTheClone(t *testing.T) {
 
 	h.let()
 
-	if err := within(t, "Unbind", unbound); err != nil {
+	if err := u.answered(t, "Unbind", unbound); err != nil {
+		t.Fatalf("Unbind once the clone ended = %v, want nil", err)
+	}
+}
+
+// An Unbind of the destination's share waits for a clone from another share
+// until the clone ends, here at its phase 1, the destination being a file the
+// store does not hold (catches a clone counted on its source's share alone,
+// whose Unbind of the destination's share returns while the clone still
+// writes the destination).
+func TestUnbindOfTheDestinationsShareAcrossSharesWaitsForTheClone(t *testing.T) {
+	h := newHeldPhase1(t)
+	u := clonedUnit(t, onClone(h.clone))
+	u.e.SetConflictBound(time.Minute)
+	other := u.bindShare(t, "other", entity.NamespaceID{})
+	src := u.committedFile(t, "src", fill(mib, 's'))
+	u.startCloneHeld(t, h, src, other, entity.NewFileID())
+
+	joined := joins(u.e)
+	unbound := make(chan error, 1)
+
+	go func() { unbound <- u.e.Unbind(t.Context(), other, false) }()
+
+	waitsForTheClone(t, joined, unbound)
+
+	h.let()
+
+	if err := u.answered(t, "Unbind", unbound); err != nil {
 		t.Fatalf("Unbind once the clone ended = %v, want nil", err)
 	}
 
