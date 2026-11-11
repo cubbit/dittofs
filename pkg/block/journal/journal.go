@@ -23,6 +23,17 @@ type Journal struct {
 	// lock domain is held when they do. Share holds it across the core's
 	// attach, which takes only the core's registry mutex and short, I/O-free
 	// locks of its own; Close takes it only after the core's Close returned.
+	//
+	// decision: handlesMu is outside the six lock domains and unranked, so
+	// the lock-order recorder never sees it; the scan that names every
+	// lock's domain covers five internal directories, and this file is not
+	// among them. It is
+	// not a leaf in the sense of holding nothing else: Share holds it across
+	// the core's attach, so the core's registry mutex and the locks that
+	// attach takes nest under it, and nothing the core takes is ever held
+	// while this mutex is acquired. Withdraw the exemption if a path ever
+	// takes handlesMu while it holds a ranked lock, or if the core's attach
+	// ever calls back into the journal's Share or Handle.Close.
 	handlesMu sync.Mutex
 	// handles is the one *Handle of each open *datapath.Share, so a second
 	// Share of an open tag returns the handle the first one did.
