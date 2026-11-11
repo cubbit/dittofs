@@ -294,6 +294,7 @@ func TestStatsClearsRemovalStalledOnAdvance(t *testing.T) {
 	// passed on the clock left still.
 	before := u.e.Stats().RemovalRuns
 	fault(removalSet(2, 0, errInjected))
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
 	u.clock.Advance(time.Second)
 	eventually(t, "an advanced run and a failed one after it", func() bool {
 		st := u.e.Stats().RemovalRuns

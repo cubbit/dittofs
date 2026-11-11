@@ -390,12 +390,15 @@ func TestSelfFenceCountsAnAdvancedPhase2AsACommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "a failed phase 2 run", func() bool { return runs()["error"] > 0 })
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
 	u.clock.Advance(20 * time.Second)
 	eventually(t, "a second failed phase 2 run", func() bool { return runs()["error"] > 1 })
 	// The next run, a second on, commits its first batch and fails its second.
 	u.fault(t, removalSet(2, 0, errInjected))
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
 	u.clock.Advance(time.Second)
 	eventually(t, "an advanced phase 2 run", func() bool { return runs()["advanced"] == 1 })
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
 	u.clock.Advance(29 * time.Second)
 	if c, ok := u.nodeFenced(); ok {
 		t.Fatalf("fenced 29 s after a phase 2 run committed a batch, 50 s after the truncate: %v", c)

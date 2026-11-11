@@ -82,6 +82,7 @@ type removalLoop struct {
 	dropped map[entity.ShareID]bool  // shares dropped: an item of one, running or enqueued, is ended
 	waits   map[*loopItem]bool       // items waiting outside the loop, removal_stalled: see waiting
 	steps   atomic.Int64             // items run, for a test to wait on a run
+	parked  atomic.Bool              // waiting with its timer armed, for a test to step the clock past it
 	runs    [runResults]atomic.Int64 // engine_removal_runs_total by result
 	wake    chan struct{}
 	stop    chan struct{}
@@ -125,16 +126,23 @@ func (l *removalLoop) run() {
 			l.step(it)
 			continue
 		}
+		select {
+		case <-l.wake: // an enqueue since next looked: look again before arming a timer
+			continue
+		default:
+		}
 		var timer <-chan struct{}
 		if wait >= 0 {
 			timer = l.e.d.Clock.After(wait)
 		}
+		l.parked.Store(true)
 		select {
 		case <-l.wake:
 		case <-timer:
 		case <-l.stop:
 			return
 		}
+		l.parked.Store(false)
 	}
 }
 

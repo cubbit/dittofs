@@ -248,7 +248,9 @@ func TestAFailedPruneIsCountedAndRetried(t *testing.T) {
 	if got := runs(); got["advanced"] != 1 || got["error"] != 1 || got["done"] != 0 {
 		t.Fatalf("after two runs whose prunes failed: runs %v, want 1 advanced, 1 error and none done", got)
 	}
-	u.until(t, "f's removal is pruned", func() bool { return u.unpruned(t, f) == 0 })
+	u.until(t, "f's removal is pruned and its run counted", func() bool {
+		return u.unpruned(t, f) == 0 && runs()["done"] > 0
+	})
 	if got := runs(); got["error"] != 1 || got["done"] != 1 {
 		t.Errorf("after the retry pruned: runs %v, want 1 error and 1 done", got)
 	}

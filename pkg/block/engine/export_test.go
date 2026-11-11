@@ -378,6 +378,17 @@ func (e *Engine) LoopSteps(s entity.ShareID) int64 {
 	return b.gc.removals.steps.Load()
 }
 
+// LoopParked reports whether the share's journal's removal loop waits with
+// every queued item's backoff armed on the clock, so one Advance past it runs
+// the first due.
+func (e *Engine) LoopParked(s entity.ShareID) bool {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return false
+	}
+	return b.gc.removals.parked.Load()
+}
+
 // Registrations is the count of f's source and destination registrations.
 func (e *Engine) Registrations(f entity.FileID) (src, dst int) {
 	fe := e.files.lockOf(f)
