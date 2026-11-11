@@ -130,6 +130,11 @@ func (h *Handle) track(r *Reservation) bool {
 // segments its bytes roll into. The reservation
 // holds them until its Close.
 //
+// n is record bytes: what the writes append — each record's header, body,
+// padding and payload — not the payload bytes alone. A caller that sizes n by
+// the payload it copies is short of each write's record overhead, and its last
+// write is refused ErrReservationExhausted rather than the ask covering it.
+//
 // A refusal is a NoSpaceError naming LimitShare, LimitJournal, LimitIndex,
 // LimitVersion or LimitSpare, returned at once, without waiting and without
 // I/O. Reserve takes the capacity domain. A reservation is kept in memory: a

@@ -577,16 +577,16 @@ func reserve(t *testing.T, h *journal.Handle, n int64, writes int) *journal.Rese
 // one is refused naming it; and that a reserved write succeeds with the
 // headroom below half.
 //
-// The copy is 4 MiB in 1 MiB writes beside 32 MiB of other writes, not 1 GiB
-// beside 10 GiB: the fixture's journal holds 64 MiB, and the spare pool must
-// hold what the reservation takes. The rolling leg is scaled the way the
-// datapath's scenario check scales it — 16 copies of one segment's room over
-// 1 MiB segments beside 16 more appends, each write crossing a cap where the
-// epic's 1 MiB copy crosses a 1 MiB cap — so the fixture rolls segments
-// without appending the epic's 10 GiB. It is a scenario, not a pin: the pool
-// refills in the fixture, so it would pass were a reserved roll's replacement
-// never made. The exact replacement is pinned deterministically in
-// internal/datapath's TestReserveAhead_ReplacementBeatsACompetingUnreservedTake.
+// The share-limit leg reserves 1 MiB for 4 writes of 128 KiB, a quarter of
+// the fixture's 64 MiB maximum. The rolling leg is scaled the way the
+// datapath's scenario check scales it — 16 copy writes of one segment's room
+// (the fixture's 1 MiB segments, less one record's headroom) beside 16 more
+// appends, rather than the epic's 1 GiB copy in 1 MiB writes beside 10 GiB —
+// so the fixture rolls segments without writing the epic's volume. It is a
+// scenario, not a pin: the pool refills in the fixture, so it would pass were
+// a reserved roll's replacement never made. The exact replacement is pinned
+// deterministically in internal/datapath's
+// TestReserveAhead_ReplacementBeatsACompetingUnreservedTake.
 func TestRFC1B_ReserveAhead(t *testing.T) {
 	const piece, chunk = 128 << 10, 256 << 10
 	open := func(t *testing.T) *journaltest.Fixture {

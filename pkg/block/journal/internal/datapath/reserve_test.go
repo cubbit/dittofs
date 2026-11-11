@@ -163,10 +163,18 @@ func TestReserveAhead_BelowHalfTheHeadroom(t *testing.T) {
 	defer r.Release()
 
 	// The warm write fills the journal, and eleven headroom draws put its
-	// drawing side below half.
+	// drawing side below half. The headroom draws only while the journal is at
+	// its limit, and the footprint counts the pool's spares: the warm write
+	// rolls into a spare the maker refills on its own goroutine, so the draws
+	// below are admitted only once the refill has landed and the footprint is
+	// again past the maximum. Waiting on the limit itself — not a sleep — is
+	// what makes every admission draw.
 	if _, err := c.WriteAt(context.Background(), s, testFile(1), 0, make([]byte, roomAfter(0)+1), 1); err != nil {
 		t.Fatalf("the warm write: %v", err)
 	}
+	waitIn(t, 5*time.Second, "the journal to reach its limit with the pool refilled", func() bool {
+		return c.set.Counters().UsedBytes+testSegmentCap > 6*testSegmentCap
+	})
 	for i := 0; i < 11; i++ {
 		mustAdmit(t, c, capacity.Release)
 	}

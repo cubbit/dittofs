@@ -556,8 +556,14 @@ func TestReservationDrawsUnclaimedEntriesStayHeld(t *testing.T) {
 // caller sized by the record bytes its writes append in room — the figure
 // RFC 1 §6's n names — lets every one of them draw: the last write finds less
 // than its worst-case charge and draws it, since what remains still covers the
-// write's own split. A reservation sized by the writes' own record bytes is
-// what a clone's copies are sized by, and its last write must not be refused.
+// write's own split, and it must not be refused.
+//
+// decision: a caller sizing n by the payload bytes it copies is short of each
+// write's record overhead, so its last write is refused core.ErrReservationExhausted.
+// The engine's clone sizes n that way (the source bytes it reads), while RFC 1
+// §6 names n as record bytes; that mismatch is open — RFC 8 §9.1 step 1 says
+// "the source bytes" — and is raised with the RFC authors. The engine's tests
+// stay green because they run over a fake journal that takes n as payload.
 func TestReservationSizedByRecordBytesSpendsItsLastWrite(t *testing.T) {
 	r := newRig(t, std())
 	const writes = 4
@@ -652,5 +658,70 @@ func TestReservationRefusesAWritePastItsVersions(t *testing.T) {
 	_, err = rs.Draw(1)
 	if !errors.Is(err, core.ErrReservationExhausted) || !strings.Contains(err.Error(), "versions") {
 		t.Fatalf("the write past the reservation's one version = %v, want ErrReservationExhausted naming the versions", err)
+	}
+}
+
+// TestDrawClampedStraddleKeepsTheShareTallyExact checks a reserved write that
+// straddles a partly filled segment on the reservation's last byte appends more
+// than the reservation still holds: the grant clamps what leaves the
+// reservation, but the share's tally takes the record bytes the segment really
+// counts, so a retirement reconciles it to nothing rather than leaving it
+// permanently low.
+func TestDrawClampedStraddleKeepsTheShareTallyExact(t *testing.T) {
+	// A stream whose active segment leaves a tail too small for the write's
+	// first record to fill whole: the write's head takes the tail and its tail
+	// rolls into the next segment, so the write appends two records.
+	const payload = 4096
+	o := std()
+	o.room = 2048 // a tail the write's head fills and its other 2048 bytes roll past
+	r := newRig(t, o)
+	head := r.room()
+	if head <= 0 || head >= payload {
+		t.Fatalf("precondition: the stream's room is %d, want a partly filled segment under the %d-byte write", head, payload)
+	}
+	straddle := segment.RecordBytes(head) + segment.RecordBytes(payload-head)
+	// A reservation of the write's roomless split: less than the straddle
+	// costs, so the grant's own charge is under what the records append and
+	// Wrote clamps.
+	rs := r.reserve(t, ReserveRequest{Tag: tag1, Bytes: segment.RecordBytes(payload), Writes: 1})
+	defer rs.Release()
+
+	g, err := rs.Draw(payload)
+	if err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	if g.bytes >= straddle {
+		t.Fatalf("the draw charged %d record bytes, want fewer than the straddle's %d, so the grant clamps", g.bytes, straddle)
+	}
+	// Append the straddle piece by piece, as the datapath's loop does, keeping
+	// the segment each piece landed in.
+	var segs []core.SegmentID
+	for done := int64(0); done < payload; {
+		pl := r.append(t, segment.Roll{Hold: g.Hold()}, tag1, payload-done)
+		g.Wrote(segment.RecordBytes(pl.N))
+		done += pl.N
+		segs = append(segs, pl.Loc.Segment)
+	}
+	g.Release()
+
+	// The share's tally is the record bytes the set counts for the tag: the
+	// whole straddle, not the clamped charge.
+	if got, want := r.c.shareTally[tag1], r.set.ShareBytes(tag1); got != want {
+		t.Fatalf("the share's tally = %d, the set counts %d for the tag; want them equal after a clamped straddle", got, want)
+	}
+	if got := r.set.ShareBytes(tag1); got != straddle {
+		t.Fatalf("the set counts %d record bytes for the tag, want the straddle's %d", got, straddle)
+	}
+	// Retiring the segment the write's head filled lowers the tally by the
+	// head's record bytes with the set's own figure, so the two still agree:
+	// the clamped header left nothing behind that a retirement cannot clear.
+	if len(segs) < 2 || segs[0] == segs[1] {
+		t.Fatalf("the straddle landed in %v, want two segments", segs)
+	}
+	r.seal(t)
+	r.retire(t, segs[0])
+	r.c.Retired(tag1)
+	if got, want := r.c.shareTally[tag1], r.set.ShareBytes(tag1); got != want {
+		t.Fatalf("after retiring the head's segment the tally = %d, the set counts %d; want them equal", got, want)
 	}
 }

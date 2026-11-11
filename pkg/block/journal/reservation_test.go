@@ -49,12 +49,16 @@ func TestHandleReserve_RefusesACallerBug(t *testing.T) {
 		{"no writes", 4096, 0},
 		{"negative writes", 4096, -1},
 	} {
+		refused := j.core.ReservationRefused()
 		r, err := h.Reserve(tt.n, tt.writes)
 		if !errors.Is(err, ErrInvalidExtent) {
 			t.Fatalf("%s: Reserve(%d, %d) = %v, want ErrInvalidExtent", tt.name, tt.n, tt.writes, err)
 		}
 		if r != nil {
 			t.Fatalf("%s: Reserve(%d, %d) answered a reservation beside its refusal", tt.name, tt.n, tt.writes)
+		}
+		if got := j.core.ReservationRefused(); got != refused {
+			t.Fatalf("%s: after the refusal, ReservationRefused rose from %d to %d, want it unchanged: a caller bug consults no limit", tt.name, refused, got)
 		}
 		if got := j.core.ReservedBytes(); got != 0 {
 			t.Fatalf("%s: after the refusal, ReservedBytes = %d, want 0", tt.name, got)
@@ -89,6 +93,9 @@ func TestHandleClose_ReleasesOpenReservations(t *testing.T) {
 		t.Fatal("ReservedBytes is 0 with a reservation open, want it counted")
 	}
 	held := j.core.HeldEntries()
+	if held == 0 {
+		t.Fatal("the reservation holds no index entry with half its ask unused, want the entries it took")
+	}
 
 	if err := h.Close(); err != nil {
 		t.Fatalf("Close the handle: %v", err)
@@ -96,8 +103,8 @@ func TestHandleClose_ReleasesOpenReservations(t *testing.T) {
 	if got := j.core.ReservedBytes(); got != 0 {
 		t.Fatalf("after the handle closed, ReservedBytes = %d, want the reservation's ask released", got)
 	}
-	if got := j.core.HeldEntries(); got >= held {
-		t.Fatalf("after the handle closed, the reservation holds %d index entries, want fewer than its %d", got, held)
+	if got := j.core.HeldEntries(); got != 0 {
+		t.Fatalf("after the handle closed, %d index entries are still held, want exactly 0 of the %d the reservation took", got, held)
 	}
 	if _, err := r.WriteAt(context.Background(), fileOf(2), 0, []byte("late"), 1); !errors.Is(err, ErrClosed) {
 		t.Fatalf("a reserved write after the handle closed = %v, want ErrClosed", err)

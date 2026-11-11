@@ -865,24 +865,39 @@ func (c *Capacity) RetiredEverySeeded() {
 // once written, so the tally takes its bytes here — the move that makes the
 // share's figure whole for a record landing beside a concurrent take — and
 // the reservation gives them up, which keeps ReservedBytes never covering
-// a record the share already counts. n past what the grant still holds is
-// clamped, so a caller that reports more than it asked for cannot drive the
-// gauge negative.
+// a record the share already counts. What leaves the reservation and the
+// gauge is clamped to what the grant still holds, so a caller that reports
+// more than it asked for cannot drive a figure negative; the share's tally
+// always takes the whole n, because that is what the segment counted and
+// what a retirement later lowers.
+//
+// decision: the tally takes the true n, past the grant's own charge, so the
+// share's figure matches the record bytes the set holds and Retired
+// reconciles it to nothing. A reserved write that straddles a partly filled
+// segment on a reservation sized by the writes' own record bytes appends at
+// most one record header beyond what the reservation holds, so the share may
+// exceed its limit by at most that header per such write, transiently: the
+// next plain write is refused against the true figure, and the over-run
+// closes when a retirement frees the segment. Counting the clamped part
+// alone would instead leave the tally permanently low by that header, the
+// share's limit failing open by the sum. Overturned by a Reserve sized to
+// hold each write's n plus RecordBytes(0), when the clamp never fires, or by
+// an exact-size signal the write can pass.
 func (g *Grant) Wrote(n int64) {
 	if g.released || n <= 0 {
 		return
 	}
-	if n > g.left {
-		n = g.left
-	}
+	left := min(n, g.left)
 	// Wrote hands the landed record bytes to the share's figure and
 	// takes them from the reservation: the tally owns them now, and the
 	// share's ledger holds only what the pieces have not landed yet,
-	// which Release returns whole.
+	// which Release returns whole. The tally takes the whole n — the bytes
+	// the segment counted — while the reservation and the gauge give up only
+	// what the grant held.
 	g.c.mu.Lock()
-	g.left -= n
-	g.c.reserved -= n
-	g.c.reservedTagged[g.tag] -= n
+	g.left -= left
+	g.c.reserved -= left
+	g.c.reservedTagged[g.tag] -= left
 	g.c.shareTally[g.tag] += n
 	// The room the landing consumed — the record's bytes and the footer
 	// entry it also takes from Room, the two the claim covers — leaves the
