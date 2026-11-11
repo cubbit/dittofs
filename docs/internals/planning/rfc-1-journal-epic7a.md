@@ -509,7 +509,8 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
   T7.9's, by RFC 28 §3.3 and D15: a verified record whose direct re-read fails is re-appended
   from its first copy (R49), and a failed re-read of an unnamed seal marker refuses the open. A
   `decision:` marker at `ReadAtDirect` names the rule, and is withdrawn if RFC 28 allows a cached
-  fallback on a filesystem known to refuse.
+  fallback on a filesystem known to refuse. Its ceiling: on such a filesystem every reopen
+  re-appends its unproven tail, and an unnamed seal marker refuses the open.
 - **D12, the allocation check of a re-adopted spare queries Linux only.** RFC 28 §3.1 checks
   "where the platform reports it". On Linux the open asks `FIEMAP` for unwritten or missing
   extents; on macOS and Windows it checks the size alone. A `ponytail:` marker names the gap and
@@ -906,14 +907,14 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   the simulated cache holds.
 - **Acceptance criteria:**
   - On Linux, a direct read of a synced range whose clean pages were dropped leaves no page of it
-    resident (`mincore`), where a read through the cache brings them back. A read whose cache was
-    changed under the file through a second descriptor cannot show the difference: an `O_DIRECT`
-    read first writes back that inode's dirty pages.
+    resident (`mincore`), where a read through the cache brings them back (a cache changed under
+    the file can't be told apart: `O_DIRECT` first writes back dirty pages).
   - An unaligned record is read through an aligned window and returned exactly.
   - On a filesystem that refuses `O_DIRECT`, `ReadAtDirect` returns the refusal as itself and
     reads nothing through the cache; T7.9 decides what the open makes of it.
 - **Tests:** the residency read on Linux (catches a read that still goes through the cache), and
-  the refusal answered by a fault on the `open` the `O_DIRECT` descriptor makes; the alignment
+  the refusal (`open` of the `O_DIRECT` descriptor on Linux, `fcntl(F_NOCACHE)` on macOS)
+  returned as itself; the alignment
   cases at the first and last byte of a segment (catches an off-by-one in the window); macOS and
   Windows builds compile and run the alignment test where a runner exists (E3's open point P22).
 
@@ -938,7 +939,9 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   directory's failed list is neither proven nor handed over: T7.5 has withheld it. `Journal.Close` seals
   nothing, so every reopen runs this phase over each stream's newest segment; its cost is one
   sync and one direct read of the writes past the last proven sync point per stream (RFC 28
-  §3.1). Nothing is appended here.
+  §3.1). A direct re-read that fails, a filesystem's refusal included (D11), is no proof: a record
+  that verified at its first read is lost by the device and handed to T7.11 from its first copy
+  (R49), and an unnamed seal marker's refuses the open (D15). Nothing is appended here.
 - **Acceptance criteria:**
   - A and B written and not synced, the process killed with the seam keeping them as a dead
     process's cache would: the open syncs once, re-reads both past the cache, and both read back
@@ -951,7 +954,12 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
     the reopen's sync succeeding without writing it: the marker is read from the device, the
     segment is not taken as sealed, and its tail is proven.
   - A sealed segment whose marker a successor names is not re-read.
-- **Tests:** the in-place half of R75's "unproven tail verified at open" (`TestRFC28A_UnprovenTailVerifiedAtOpen`) and the reopen-in-place half of "a seal marker only the cache holds" (added here, §9); the torn payload (catches a first read skipped, which would refuse the open on a torn write every retry meets); the device-only damage (catches an open that trusts what verified through the cache); the cached marker after a sync that wrote nothing (catches a marker proven by a cache read after the sync, R48); a named predecessor's marker (catches a re-read nothing requires).
+  - With the seam refusing every direct read: A and B, verified through the cache, are handed to
+    T7.11 from their first copies and read back; a seal marker no successor names fails the open
+    naming its range, and nothing is written.
+- **Tests:** the in-place half of R75's "unproven tail verified at open" (`TestRFC28A_UnprovenTailVerifiedAtOpen`) and the reopen-in-place half of "a seal marker only the cache holds" (added here, §9); the torn payload (catches a first read skipped, which would refuse the open on a torn write every retry meets); the device-only damage (catches an open that trusts what verified through the cache); the cached marker after a sync that wrote nothing (catches a marker proven by a cache read after the sync, R48); a named predecessor's marker (catches a re-read nothing requires); the seam refusing every direct
+read (catches a refusal taken as torn, which would drop a record the device may hold, or as a
+proof, which would trust the cache).
 
 ### T7.10 Sync marks at open
 
@@ -1252,8 +1260,9 @@ A suggestion only: one pull request per subtask works as well.
   holds ship before E7b, every journal that took a hold stops reopening. **Decides:** the owners
   of E7b and E9b, by ordering them. **Blocks:** nothing here.
 - **A filesystem that refuses every direct read** (E3's P12). D11 returns the refusal as itself,
-  so such a filesystem leaves every seal unproven and every tail unverifiable. Whether the open
-  should refuse, fall back to the page cache or count it wants settling with T7.9. **Decides:**
-  RFC 28's owner. **Blocks:** nothing; D11 stands meanwhile.
+  so on such a filesystem every reopen re-appends its whole unproven tail (R49), and an open that
+  meets a seal marker no successor names is refused (D15). Whether the open should refuse such a
+  filesystem up front, fall back to the page cache or count the refusals is RFC 28's to settle,
+  with T7.9. **Decides:** RFC 28's owner. **Blocks:** nothing; D11 stands meanwhile.
 - **Runners for macOS and Windows** (E3's P22). T7.8's per-OS bodies compile everywhere and are
   exercised only on Linux in CI until a runner exists. **Decides:** CI owner. **Blocks:** nothing.
