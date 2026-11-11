@@ -346,18 +346,27 @@ func (e *Engine) phase2(r *removal) *loopItem {
 		if err == nil {
 			err = e.d.Content.PruneRemovals(ctx, share, r.f, v)
 		}
-		res, a := runError, itemRetry
-		switch {
-		case err == nil:
-			res, a = runDone, itemDone
-		case advanced:
-			res, a = runAdvanced, itemAdvanced
-		case errors.Is(err, kvstore.ErrConflict):
-			res = runConflict
-		}
+		res, a := phase2Result(advanced, err)
 		r.b.gc.removals.runs[res].Add(1)
 		return a
 	}}
+}
+
+// phase2Result is a phase-2 run's result and its answer, from whether its
+// Resume advanced and the run's error, Resume's or the prune's after it:
+// done once both succeed, advanced when Resume moved the cursor whatever its
+// error, conflict for a store conflict from either, and error otherwise.
+func phase2Result(advanced bool, err error) (runResult, answer) {
+	switch {
+	case err == nil:
+		return runDone, itemDone
+	case advanced:
+		return runAdvanced, itemAdvanced
+	case errors.Is(err, kvstore.ErrConflict):
+		return runConflict, itemRetry
+	default:
+		return runError, itemRetry
+	}
 }
 
 // clonePhase2 is clone c's item once its phase 1 committed, r the clone's

@@ -227,6 +227,33 @@ func TestAnAdvancingPhase2IsNotStalled(t *testing.T) {
 	}
 }
 
+// A phase 2 run whose prune fails is counted by Resume's answer: advanced
+// when its Resume moved the cursor, so it runs again at once, and an error
+// when it found nothing left, so it is retried after the backoff, the retry
+// pruning the removal and counted done.
+func TestAFailedPruneIsCountedAndRetried(t *testing.T) {
+	u, faults := newCutUnit(t)
+	f := u.create(t, "f")
+	u.holed(t, f, 2)
+	s, err := sim.NewSchedule(1, nil, sim.Rule{Op: kvtest.OpDelete, Key: "F‖*‖rm‖*", Count: 2, Action: sim.FaultAction{Err: errInjected}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	faults.SetFault(s)
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
+		t.Fatal(err)
+	}
+	runs := func() map[string]int64 { return u.e.Stats().RemovalRuns }
+	eventually(t, "phase 2's first two runs", func() bool { return runs()["done"]+runs()["error"] > 0 })
+	if got := runs(); got["advanced"] != 1 || got["error"] != 1 || got["done"] != 0 {
+		t.Fatalf("after two runs whose prunes failed: runs %v, want 1 advanced, 1 error and none done", got)
+	}
+	u.until(t, "f's removal is pruned", func() bool { return u.unpruned(t, f) == 0 })
+	if got := runs(); got["error"] != 1 || got["done"] != 1 {
+		t.Errorf("after the retry pruned: runs %v, want 1 error and 1 done", got)
+	}
+}
+
 // refused has the store refuse every removal as invalid, as it refuses an
 // operation it cannot apply.
 func refused(ctx context.Context, next engine.Existence, s entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
