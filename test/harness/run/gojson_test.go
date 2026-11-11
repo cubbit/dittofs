@@ -460,6 +460,27 @@ func TestChangedWithoutTheBase(t *testing.T) {
 	}
 }
 
+// --packages runs exactly the packages it's given, in place of the patterns
+// and of --changed's selection, and it narrows only a cell whose every
+// command takes {packages}.
+func TestPackagesOverrideNarrows(t *testing.T) {
+	// a change exists, so --changed would pick pkg/a: --packages must win over it.
+	if o, _ := changedRun(t, true, "", Options{Changed: true, Base: "base", Packages: []string{"./pkg/b"}}); o.Result != report.Passed || !slices.Equal(ran(o), []string{"example.com/m/pkg/b.TestB"}) {
+		t.Errorf("--packages over --changed: %+v", o)
+	}
+	if o, _ := changedRun(t, false, "", Options{Base: "base", Packages: []string{"./pkg/..."}}); o.Result != report.Passed || !slices.Equal(ran(o), []string{"example.com/m/pkg/a.TestA", "example.com/m/pkg/b.TestB"}) {
+		t.Errorf("--packages without a change: %+v", o)
+	}
+	// an option with a command of its own doesn't take {packages}: --packages is ignored there, not an error.
+	if o, _ := changedRun(t, false, "own", Options{Base: "base", Packages: []string{"./pkg/a"}}); o.Result != report.Passed || !slices.Equal(ran(o), []string{"example.com/m/pkg/b.TestB"}) {
+		t.Errorf("own command keeps its packages: %+v", o)
+	}
+	// --changed with nothing changed passes as \"no change to check\"; with --packages, the given ones run regardless.
+	if o, _ := changedRun(t, false, "", Options{Changed: true, Base: "base", Packages: []string{"./pkg/a"}}); o.Result != report.Passed || !slices.Equal(ran(o), []string{"example.com/m/pkg/a.TestA"}) {
+		t.Errorf("--packages without a change: %+v", o)
+	}
+}
+
 // fakeSudo puts a sudo on the PATH that drops -n, resets the environment as
 // sudo does, marks it, and runs the rest as the user, so the root path runs
 // without real sudo. As root, dt takes the plain path, so there's nothing to

@@ -1058,6 +1058,7 @@ dt plan --tier T [--base REF] [--shard I/N]    the cells a tier runs, each with 
    [--estimate [--ci] [--last N]]              and the tier's runner-minutes, from dt history
 dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exit status below
    [--tier T] [--only A,B] [--skip A,B] [--parallel N] [--base REF] [--changed]
+                                                [--packages P,...] overrides both: only these packages, in every cell that takes {packages}
 dt run --tier T --place P                      the cells of tier T that dt plan gives place P (the dedicated host)
 dt report [RUN] [--format text|md|json]        show a run; CI appends --format md to the job summary
 dt report [RUN...] --failures                  only the new failures; --post CELL,... posts them, given a tier
@@ -1192,6 +1193,7 @@ workflow's.
 | `--results DIR` | where results go (default `test/harness/results/`, gitignored) |
 | `--base REF` | the ref `{base}` stands for in the commands that use it, instead of the base dt finds (`origin/develop` here, the event's in CI); a ref that names no commit in the checkout stops the run before any cell starts |
 | `--changed` | where a cell's `packages` gives patterns and each of its commands takes `{packages}`, `{packages}` holds only the packages they match with a file committed since `{base}` (`git diff BASE...HEAD`; edits not committed don't count): a Go file counts for its own directory's package, and any other file, or one under a directory Go doesn't build (`testdata`, or a name that begins with `.` or `_`), for the nearest package above it, as an embedded file does. A package outside the patterns, one the change deletes or one whose files all need a build tag isn't tested; every package is, with no `{base}`, with `go.mod`, `go.sum` or `go.work` changed, or with a changed file that no package is above, since any test may read it, as `cmd/dt`'s read its scripts and `cmd/gendocs`'s walk `docs/`. With none changed, the commands are skipped and the cell passes, as without `{base}` (§4.8); a diff that fails leaves it not run. A change to a package doesn't test the packages that import it: the merge queue's full run does, and the push's after it |
+| `--packages` | holds only the packages given, in every cell whose `packages` gives patterns and each of whose commands takes `{packages}`, whatever `--changed` and `{base}` would have picked: a caller that picks its own packages — the pre-push hook — never pays the widening to every package that a changed file in no package brings. A cell that doesn't take `{packages}` keeps its own commands. A package that fails to build fails the cell, as a pattern's does |
 
 | Exit status | Meaning |
 |---|---|
