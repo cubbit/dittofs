@@ -838,7 +838,6 @@ What the plan knowingly does not build. Each row cites the section that defers i
 | RFC 25's `logon` stream; attempts are log lines | §4.3's `ponytail:`, O2 | RFC 25 | RFC 25 §4's sink built | — |
 | Caches charged to RFC 24's connection-state pool, not fixed counts | §4.3's `ponytail:` | RFC 24 plan | RFC 24's plan lands | — |
 | A machine password's rotation waiting on every node; one machine account, several nodes (RFC 18 §12 item 2) | §4.3's `ponytail:`, O6 | unowned | a second node | — |
-| Epic 9's subtasks and estimate | §2, epic 9 | this plan's epic 9 | S3 | — |
 | "roles grant nothing" | §1.4: RFC 23 §12's row | RFC 23 plan (#4050) | its epic that runs RFC 23 §12 | — |
 
 ## 7. RFC coverage
