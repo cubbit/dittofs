@@ -604,7 +604,7 @@
   fix: planned
   category: feature
   reason: 'The check stops on a stub call. Needs MarkOffloaded and release; and UnreclaimedBytes, which Stats deliberately leaves zero because the index has no per-record backing hook yet, so the check stays red after them until epic 4 supplies one.'
-  issue: '#3379'
+  issue: '#4093'
   message: 'stub: MarkOffloaded'
 
 - test: TestRFC28A_CorruptDirty
