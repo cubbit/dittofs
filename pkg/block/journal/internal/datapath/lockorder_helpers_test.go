@@ -125,11 +125,22 @@ func (f recFile) Name() string { return f.f.Name() }
 // shape of streams or shares fails here, not in whatever test built on it.
 func newRecordedCore(t *testing.T) (*Core, *lockorder.Recorder, []*Share) {
 	t.Helper()
+	return newRecordedCoreOpts(t)
+}
+
+// newRecordedCoreOpts is newRecordedCore with further test options applied,
+// so a test can park a call at one of the core's seams and still have the
+// recorder and its FS wrapper wired. An option that hooks an operation the
+// fixture's own publishes run — the afterAppend seam among them — must arm
+// itself for the test's own call alone, for the fixture writes before the
+// test starts.
+func newRecordedCoreOpts(t *testing.T, opts ...func(*coreOptions)) (*Core, *lockorder.Recorder, []*Share) {
+	t.Helper()
 	rec := lockorder.NewRecorder()
-	c, _ := newTestCore(t,
+	c, _ := newTestCore(t, append([]func(*coreOptions){
 		withRecorder(rec),
 		func(o *coreOptions) { o.wrapFS = func(fs storage.FS) storage.FS { return recFS{rec: rec, fs: fs} } },
-	)
+	}, opts...)...)
 	shares := []*Share{mustShare(t, c, 1), mustShare(t, c, 2)}
 	if got := c.Streams().Len(); got != testStreams {
 		t.Fatalf("the fixture's streams = %d, want %d", got, testStreams)
@@ -155,6 +166,17 @@ func fileOnOtherStream(c *Core, f core.FileID) core.FileID {
 	for n := uint64(1); ; n++ {
 		id := fid(n)
 		if c.streams.IndexFor(id) != fid0 {
+			return id
+		}
+	}
+}
+
+// streamFileID picks a fresh file id the core's streams place on stream n,
+// beyond the ids the fixture published: it searches from a base no fixture
+// file uses, so the id names a file no entry holds yet.
+func streamFileID(c *Core, n int) core.FileID {
+	for k := uint64(1000); ; k++ {
+		if id := fid(k); c.streams.IndexFor(id) == n {
 			return id
 		}
 	}
@@ -324,3 +346,17 @@ func countRank(held []lockorder.Rank, r lockorder.Rank) int {
 // any identity, and one struct per component never collides with a real
 // lock's.
 type probeLock struct{ component string }
+
+// withoutPins returns the held ranks with the storage guard reference pins a
+// stream's appender leaves on the writing goroutine's books taken out: a pin
+// is a shared hold that never waits on anything and orders nothing, so an
+// assertion on a goroutine that appended wants its locks, not its pins.
+func withoutPins(held []lockorder.Rank) []lockorder.Rank {
+	out := held[:0:0]
+	for _, h := range held {
+		if h != lockorder.StorageGuard {
+			out = append(out, h)
+		}
+	}
+	return out
+}
