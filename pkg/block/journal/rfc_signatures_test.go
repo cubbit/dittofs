@@ -104,7 +104,7 @@ var (
 		OpenDescriptors: 0, DescriptorLimit: 0, DamagedSegments: 0,
 		LastSyncError: (*SyncFailure)(nil), SyncDuration: Histogram{},
 		RemovalMarkers: 0, VersionLimit: Version{}, VersionsLeft: 0, NextVersion: Version{},
-		ExtentLimit: 0, Counters: Counters{}, RejectedSegments: 0,
+		ExtentLimit: 0, Counters: Counters{}, RejectedSegments: 0, SuspectSegments: 0,
 		Recovery: RecoveryStats{}, Losses: []LossEvent(nil), LossGeneration: 0,
 		TagConflicts: []TagConflict(nil), Shares: map[ShareTag]ShareStats(nil),
 		ReadOnly: ReadOnlyState{},

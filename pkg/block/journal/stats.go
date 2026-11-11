@@ -121,6 +121,10 @@ type Stats struct {
 	// gauge.
 	RejectedSegments int
 
+	// SuspectSegments is the number of segments holding a record no read could
+	// read. Kind: gauge.
+	SuspectSegments int
+
 	// Recovery is how the last open rebuilt the journal. Kind: value.
 	Recovery RecoveryStats
 
