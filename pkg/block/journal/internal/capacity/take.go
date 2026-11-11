@@ -581,14 +581,18 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 		// The publish count mirrors the three ways the split above names: a
 		// write the room covers publishes one piece; one the room only partly
 		// covers publishes its head there and one more per segment past it; a
-		// roomless one publishes one per spare. sparesBeyondRoom leaves the
-		// room's own piece out, so it is added back here.
+		// roomless one publishes one per spare, the first included. Only the
+		// partly covered case adds the room's own piece back —
+		// sparesBeyondRoom leaves it out there, and already counts it when the
+		// stream has no room at all.
 		var published int64
 		switch {
 		case r.Payload <= max(roomLeft, 0):
 			published = 1
+		case roomLeft > 0:
+			published = 1 + int64(sparesBeyondRoom(r.Payload, roomLeft, c.cfg.SegmentCap))
 		default:
-			published = 1 + int64(sparesBeyondRoom(r.Payload, max(roomLeft, 0), c.cfg.SegmentCap))
+			published = int64(max(sparesBeyondRoom(r.Payload, 0, c.cfg.SegmentCap), 1))
 		}
 		adds += published - 1
 		// The entries open reservations hold are not the write's to spend: the

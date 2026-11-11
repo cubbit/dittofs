@@ -509,10 +509,10 @@ func TestReserveAhead_EntriesHandedOverAsPublished(t *testing.T) {
 	cost := capacity.WriteCharge(1, testSegmentCap)
 	pieces, spares := capacity.PiecesFor(int64(writes)*cost, writes, testSegmentCap)
 	c, _ := newTestCore(t, func(o *coreOptions) {
-		// The bound holds the reservation's entries and two: the room a
-		// stream's tail leaves makes the plain write below publish two pieces,
-		// so it fits once the held figure has fallen, and not before.
-		o.extentLimit = int64(pieces) + 2
+		// The bound holds the reservation's entries and one: the plain write
+		// below publishes one piece, so it fits once the held figure has
+		// fallen, and not before.
+		o.extentLimit = int64(pieces) + 1
 		o.contentSpares = spares + 1
 	})
 	s := mustShare(t, c, 1)
@@ -539,6 +539,9 @@ func TestReserveAhead_EntriesHandedOverAsPublished(t *testing.T) {
 
 	// A plain write fits the one entry the bound's slack holds: the held figure
 	// fell, so it is not refused for entries the reservation already published.
+	if room := c.Streams().For(testFile(20)).Room(); room != 0 {
+		t.Fatalf("the plain write's stream has a room of %d, want a fresh stream's 0", room)
+	}
 	if _, err := c.WriteAt(context.Background(), s, testFile(20), 0, []byte("p"), 1); err != nil {
 		t.Fatalf("the plain write beside a partly published reservation: %v", err)
 	}
@@ -667,7 +670,10 @@ func TestReserveAhead_StraddleBesideAReservationCannotEatAHeldEntry(t *testing.T
 	if room := c.Streams().For(testFile(9)).Room(); room <= 0 || room >= int64(len(payload)) {
 		t.Fatalf("the warm write leaves a room of %d, want between 1 and %d", room, len(payload))
 	}
-	if _, err := c.WriteAt(context.Background(), s, testFile(1), 0, payload, 1); err != nil {
+	// The straddling write lands on the warm write's stream, so its split meets
+	// the room left rather than a fresh stream's none.
+	straddler := sameStreamAs(t, c, testFile(9), testFile(1))
+	if _, err := c.WriteAt(context.Background(), s, straddler, 0, payload, 1); err != nil {
 		t.Fatalf("the straddling write with no reservation: %v", err)
 	}
 
@@ -688,10 +694,65 @@ func TestReserveAhead_StraddleBesideAReservationCannotEatAHeldEntry(t *testing.T
 	r := reserve(t, c2, s2, cost, 1)
 	defer r.Release()
 
+	straddler2 := sameStreamAs(t, c2, testFile(9), testFile(2))
 	before, _ := c2.set.ShareBytesAndRetired(1)
-	_, err := c2.WriteAt(context.Background(), s2, testFile(2), 0, payload, 1)
+	_, err := c2.WriteAt(context.Background(), s2, straddler2, 0, payload, 1)
 	_ = refused(t, err, core.LimitIndex)
 	if after, _ := c2.set.ShareBytesAndRetired(1); after != before {
 		t.Fatalf("the refused straddling write appended a record: the share's bytes rose from %d to %d", before, after)
 	}
+}
+
+// TestReserveAhead_RoomlessWriteCountsItsSparesAlone checks a plain write that
+// splits into two pieces on a stream with no room is refused naming the index
+// only when its two entries would eat a held one, and admitted when the
+// reservation leaves exactly those two: a roomless stream's pieces are the
+// spares alone, the first piece included, not one more.
+func TestReserveAhead_RoomlessWriteCountsItsSparesAlone(t *testing.T) {
+	// Two pieces on a roomless stream: each takes a whole empty segment.
+	payload := make([]byte, 2*emptyRoomOf(testSegmentCap))
+	pieces, spares := capacity.PiecesFor(capacity.WriteCharge(int64(len(payload)), testSegmentCap), 1, testSegmentCap)
+
+	// The bound leaves the reservation's entries and two beyond: the write's own
+	// two entries fit, so it is admitted.
+	c, _ := newTestCore(t, func(o *coreOptions) {
+		o.extentLimit = int64(pieces) + 2
+		o.contentSpares = spares + 3
+	})
+	s := mustShare(t, c, 1)
+	if got := c.Streams().For(testFile(1)).Room(); got != 0 {
+		t.Fatalf("the stream's room = %d, want a roomless stream's 0", got)
+	}
+	r := reserve(t, c, s, capacity.WriteCharge(int64(len(payload)), testSegmentCap), 1)
+	defer r.Release()
+	if _, err := c.WriteAt(context.Background(), s, testFile(1), 0, payload, 1); err != nil {
+		t.Fatalf("the roomless two-piece write beside the reservation = %v, want it admitted", err)
+	}
+
+	// One entry less of slack: the write's second entry would eat a held one,
+	// so it is refused naming the index.
+	c2, _ := newTestCore(t, func(o *coreOptions) {
+		o.extentLimit = int64(pieces) + 1
+		o.contentSpares = spares + 3
+	})
+	s2 := mustShare(t, c2, 1)
+	r2 := reserve(t, c2, s2, capacity.WriteCharge(int64(len(payload)), testSegmentCap), 1)
+	defer r2.Release()
+	_, err := c2.WriteAt(context.Background(), s2, testFile(1), 0, payload, 1)
+	_ = refused(t, err, core.LimitIndex)
+}
+
+// sameStreamAs returns a file id other than avoid that hashes to the same append
+// stream as anchor, so a test's second write lands on the stream its first did.
+func sameStreamAs(t *testing.T, c *Core, anchor, avoid core.FileID) core.FileID {
+	t.Helper()
+	want := c.Streams().IndexFor(anchor)
+	for i := 0; i < 256; i++ {
+		f := core.NewFileID([16]byte{byte(i), 0xee})
+		if f != avoid && c.Streams().IndexFor(f) == want {
+			return f
+		}
+	}
+	t.Fatalf("no file id on stream %d of anchor %v", want, anchor)
+	return core.FileID{}
 }
