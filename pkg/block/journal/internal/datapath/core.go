@@ -121,6 +121,7 @@ type coreOptions struct {
 // a core-wide invariant ever needs a mutex of its own.
 type Core struct {
 	index    *index.Index
+	clock    core.Clock // the injected clock, read for the write time a dirty write carries
 	counters *index.Counters
 	set      *segment.Set
 	pool     *segment.Pool
@@ -226,7 +227,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)

@@ -209,6 +209,7 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			Extent:  core.Extent{Off: off + done, Len: pl.N},
 			Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
 			Version: v,
+			At:      c.clock.Now(),
 		}, seq)
 		if err != nil {
 			return core.Version{}, done, err

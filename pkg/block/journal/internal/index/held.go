@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
@@ -30,6 +31,9 @@ type Placed struct {
 	Version core.Version
 	// Seq is the sequence number of the record holding the bytes.
 	Seq core.Seq
+	// At is the time the write was made, the clock's reading when it was
+	// published. It is read only by a client write; reads and fills leave it zero.
+	At time.Time
 }
 
 // Piece is one held extent as the index keeps it: its placement and its
@@ -159,7 +163,10 @@ type heldSet struct {
 	// adds to its record's segment, and every piece cut subtracts. Nil keeps
 	// the set unaccounted, as the standalone sets of tests are.
 	acct *segments
-	tree btree[held]
+	// times, when set, is told of each dirty byte that enters or leaves, by
+	// version. Nil keeps the set untimed, as the standalone sets of tests are.
+	times *dirtyTimes
+	tree  btree[held]
 	// bytes is the sum of the held lengths and dirty the part of it whose
 	// offloaded bit is unset. They are kept by put and cut, the only places
 	// bytes enter or leave the tree, whether or not the set is accounted, and
@@ -344,6 +351,7 @@ func (s *heldSet) insert(p Placed) {
 		return
 	}
 	s.noteOver(p.Extent, p.Version)
+	s.times.note(p.Version.Counter, p.At)
 	s.put(Piece{Extent: p.Extent, Record: p.Record, Skip: p.Skip, Version: p.Version, Seq: p.Seq})
 }
 
@@ -515,6 +523,7 @@ func (s *heldSet) put(p Piece) {
 		s.bytes += p.Extent.Len
 		if !p.Offloaded {
 			s.dirty += p.Extent.Len
+			s.times.add(p.Version.Counter, p.Extent.Len)
 		}
 		if s.acct != nil {
 			s.acct.add(p.Record.Segment, p.Extent.Len, 0)
@@ -564,6 +573,7 @@ func (s *heldSet) cut(e core.Extent) {
 			s.bytes -= n
 			if !p.Offloaded {
 				s.dirty -= n
+				s.times.add(p.Version.Counter, -n)
 			}
 			if s.acct != nil {
 				s.acct.add(p.Record.Segment, -n, 0)

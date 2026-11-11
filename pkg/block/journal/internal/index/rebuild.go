@@ -497,6 +497,10 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 		e := core.Extent{Off: r.off, Len: r.n}
 		switch r.kind {
 		case RecWrite:
+			// decision: a rebuilt write carries no write time, so its dirty
+			// bytes report the zero time until recovery fills the times in
+			// from the records. Overturned by a reader of the oldest dirty
+			// time that runs before recovery has done so.
 			f.write(Placed{Extent: e, Record: RecordAt{Segment: r.seg, Offset: r.at}, Version: r.numbers.Version, Seq: r.numbers.Seq})
 		case RecFill:
 			// decision: a fill replays as a plain put. A fill record

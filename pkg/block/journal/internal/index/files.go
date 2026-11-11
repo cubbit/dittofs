@@ -161,6 +161,9 @@ type file struct {
 	rival    core.ShareTag
 
 	held heldSet
+	// dirtyAt are the write times of the versions holding dirty bytes, fed
+	// by both sets.
+	dirtyAt dirtyTimes
 	// nranges is the number of drop ranges over all of the file's segments,
 	// maintained by recorded and segmentGone.
 	nranges int
@@ -186,7 +189,9 @@ type file struct {
 // newFile returns an entry whose held and retained sets feed acct, keeping a
 // file created by files.update accounted from its first piece.
 func newFile(acct *segments) *file {
-	return &file{held: heldSet{acct: acct}, retained: retainedSet{acct: acct}}
+	f := &file{held: heldSet{acct: acct}, retained: retainedSet{acct: acct}}
+	f.held.times, f.retained.times = &f.dirtyAt, &f.dirtyAt
+	return f
 }
 
 // entries returns the number of entries of the file the count is of: held

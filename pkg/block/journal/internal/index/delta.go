@@ -1,6 +1,11 @@
 package index
 
-import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+import (
+	"slices"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+)
 
 // Transition is how one update moved its file across the line between
 // holding a byte whose offloaded bit is unset, held or retained, and not:
@@ -44,6 +49,81 @@ type HeldDelta struct {
 	DirtyBytes    int64 // change in held bytes whose offloaded bit is unset
 	RetainedBytes int64 // change in the sum of retained extent lengths
 	Dirty         Transition
+	// OldestDirty is the write time of the file's oldest content whose
+	// offloaded bit is unset, held or retained, as the update left it: a
+	// state, not a change. It is zero when the file holds none, and zero for
+	// content whose write time is unknown.
+	//
+	// decision: content a rebuild restores carries no write time, so a file
+	// rebuilt dirty reports the zero time until recovery supplies the times.
+	// Overturned if the dirty-file list is read for ageing before recovery
+	// fills them in.
+	OldestDirty time.Time
+}
+
+// dirtyTimes keeps, for one file, the write time of each version that still
+// has a byte with an unset offloaded bit, held or retained, in ascending
+// version order. A write's time is monotone in its version, so the head is
+// the oldest dirty write. A version's entry is dropped by prune once its last
+// dirty byte has left; it is not dropped at the moment the count reaches zero,
+// because an edit takes a piece out and puts its parts back within one call.
+//
+// ponytail: a sorted slice, O(versions with dirty bytes) to find, insert and
+// prune per update. Upgrade to a time stored in the held entry only if the
+// 40-byte entry bound moves, or to a heap if a file with many dirty versions
+// shows this in a profile.
+type dirtyTimes struct{ vers []verDirty }
+
+type verDirty struct {
+	counter uint64
+	at      time.Time
+	bytes   int64
+}
+
+func (d *dirtyTimes) find(counter uint64) (int, bool) {
+	return slices.BinarySearchFunc(d.vers, counter, func(e verDirty, c uint64) int {
+		switch {
+		case e.counter < c:
+			return -1
+		case e.counter > c:
+			return 1
+		}
+		return 0
+	})
+}
+
+// note records at as version counter's write time, keeping an earlier known one.
+func (d *dirtyTimes) note(counter uint64, at time.Time) {
+	if d == nil {
+		return
+	}
+	i, ok := d.find(counter)
+	if !ok {
+		d.vers = slices.Insert(d.vers, i, verDirty{counter: counter, at: at})
+	} else if d.vers[i].at.IsZero() {
+		d.vers[i].at = at
+	}
+}
+
+// add counts n dirty bytes of version counter, negative when they leave.
+func (d *dirtyTimes) add(counter uint64, n int64) {
+	if d == nil {
+		return
+	}
+	i, ok := d.find(counter)
+	if !ok {
+		d.vers = slices.Insert(d.vers, i, verDirty{counter: counter})
+	}
+	d.vers[i].bytes += n
+}
+
+// oldest prunes the versions with no dirty byte and returns the head's time.
+func (d *dirtyTimes) oldest() time.Time {
+	d.vers = slices.DeleteFunc(d.vers, func(e verDirty) bool { return e.bytes <= 0 })
+	if len(d.vers) == 0 {
+		return time.Time{}
+	}
+	return d.vers[0].at
 }
 
 // heldTotals is one file's four per-set counters, read under its lock.
@@ -67,6 +147,7 @@ func (f *file) delta(id core.FileID, was heldTotals) HeldDelta {
 		HeldBytes:     now.held - was.held,
 		DirtyBytes:    now.dirty - was.dirty,
 		RetainedBytes: now.retained - was.retained,
+		OldestDirty:   f.dirtyAt.oldest(),
 	}
 	switch {
 	case !was.isDirty() && now.isDirty():

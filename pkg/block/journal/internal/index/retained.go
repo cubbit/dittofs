@@ -71,6 +71,9 @@ type retainedSet struct {
 	// subtracts, wherever the edit sends it next. Nil keeps the set
 	// unaccounted, as the standalone sets of tests are.
 	acct *segments
+	// times is the file's dirty-time table, told of each dirty byte kept or
+	// removed. Nil keeps the set untimed.
+	times *dirtyTimes
 	// bytes is the sum of the retained lengths and dirty the part of it whose
 	// offloaded bit is unset, kept by add and edit whether or not the set is
 	// accounted, and read only under the file's lock.
@@ -117,6 +120,7 @@ func (s *retainedSet) add(r Retained) {
 	s.bytes += r.Extent.Len
 	if !r.Offloaded {
 		s.dirty += r.Extent.Len
+		s.times.add(r.Version.Counter, r.Extent.Len)
 	}
 	if s.acct != nil {
 		s.acct.add(r.Record.Segment, 0, r.Extent.Len)
@@ -211,6 +215,7 @@ func (s *retainedSet) edit(e core.Extent, match func(Retained) bool, fn func(Ret
 		s.bytes -= r.Extent.Len
 		if !r.Offloaded {
 			s.dirty -= r.Extent.Len
+			s.times.add(r.Version.Counter, -r.Extent.Len)
 		}
 		if s.acct != nil {
 			s.gone = append(s.gone, goneLen{r.Record.Segment, r.Extent.Len})
