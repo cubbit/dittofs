@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -172,8 +173,10 @@ func holdOnce(j *enginetest.FakeJournal) (entered <-chan struct{}, release func(
 // that is not what it freed, and passes everything else to the journal.
 type repackFault struct {
 	engine.Journal
-	err  error
-	lies bool
+	err    error
+	lies   bool
+	healed atomic.Bool  // Repack no longer fails with err
+	calls  atomic.Int64 // Repack calls made
 }
 
 func (r *repackFault) Repack(
@@ -181,7 +184,9 @@ func (r *repackFault) Repack(
 	budget int64,
 	scope journal.RepackScope,
 ) (int64, error) {
-	if r.err != nil {
+	r.calls.Add(1)
+
+	if r.err != nil && !r.healed.Load() {
 		return 0, r.err
 	}
 
@@ -195,6 +200,11 @@ func (r *repackFault) Repack(
 
 // faultyRepack makes the unit's journal a repackFault.
 func faultyRepack(err error, lies bool) func(*engine.Deps) {
+	return trackedRepack(err, lies, new(*repackFault))
+}
+
+// trackedRepack is faultyRepack that also hands the journal it made to *out.
+func trackedRepack(err error, lies bool, out **repackFault) func(*engine.Deps) {
 	return func(d *engine.Deps) {
 		open := d.Open
 
@@ -206,7 +216,9 @@ func faultyRepack(err error, lies bool) func(*engine.Deps) {
 		) (engine.Journal, error) {
 			j, err2 := open(ctx, dir, floor, id)
 
-			return &repackFault{Journal: j, err: err, lies: lies}, err2
+			*out = &repackFault{Journal: j, err: err, lies: lies}
+
+			return *out, err2
 		}
 	}
 }
@@ -418,22 +430,24 @@ func TestAHeadroomRefusalWithAnUnresolvedFailedSegmentIsDelay(t *testing.T) {
 	}
 }
 
-// syncHold is a handle whose first Sync waits until released or its context
-// ends, after telling entered it arrived: a delay over the fake's Sync.
-type syncHold struct {
+// repackSyncHold is a handle whose first Sync waits until released, or fails with its
+// context's error when that ends, after telling entered it arrived: a delay
+// over the fake's Sync.
+type repackSyncHold struct {
 	engine.Handle
 	entered chan struct{}
 	release chan struct{}
 	once    atomic.Bool
 }
 
-func (h *syncHold) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
+func (h *repackSyncHold) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
 	if h.once.CompareAndSwap(false, true) {
 		close(h.entered)
 
 		select {
 		case <-h.release:
 		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
 
@@ -444,7 +458,7 @@ func (h *syncHold) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.Sy
 // with nothing left to free is no space at once, not retry-later for as long
 // as the other refusal stays in relief.
 func TestAnIndexRefusalBesideARefusalInItsSyncIsNoSpace(t *testing.T) {
-	hold := &syncHold{entered: make(chan struct{}), release: make(chan struct{})}
+	hold := &repackSyncHold{entered: make(chan struct{}), release: make(chan struct{})}
 	wrap := func(h engine.Handle) engine.Handle {
 		hold.Handle = h
 
@@ -457,7 +471,8 @@ func TestAnIndexRefusalBesideARefusalInItsSyncIsNoSpace(t *testing.T) {
 	g := u.create(t, "g")
 	u.write(t, f, 0, []byte("x"))
 
-	t.Cleanup(func() { close(hold.release) })
+	release := sync.OnceFunc(func() { close(hold.release) })
+	t.Cleanup(release)
 
 	if err := u.j.Refuse(enginetest.CallWriteAt, refusalErr(journal.LimitShare)); err != nil {
 		t.Fatal(err)
@@ -492,8 +507,7 @@ func TestAnIndexRefusalBesideARefusalInItsSyncIsNoSpace(t *testing.T) {
 		t.Errorf("the answer %q does not name the index limit", err)
 	}
 
-	close(hold.release)
-	hold.release = make(chan struct{})
+	release()
 
 	if err := within(t, "the first refusal's answer", first); err == nil {
 		t.Error("the first refusal was served, want its answer by what is left")
@@ -700,6 +714,58 @@ func TestAFailingStepIsLoggedOncePerMinute(t *testing.T) {
 	}
 }
 
+// A step that succeeds ends the failing stretch with one Info line, so a later
+// failure logs a fresh Error instead of staying quiet as a summary.
+func TestAStepThatRecoversAndFailsAgainLogsAFreshError(t *testing.T) {
+	var logged lockedBuffer
+
+	var fault *repackFault
+
+	s := newSegUnit(t, 100, 0, func(d *engine.Deps) {
+		d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
+	}, trackedRepack(errors.New("repack: input/output error"), false, &fault))
+	s.j.AddFailed(s.a.Tag, 5, true)
+	s.refuse(t, journal.LimitShare)
+
+	count := func(level, msg string) int {
+		n := 0
+
+		for _, l := range strings.Split(logged.String(), "\n") {
+			if strings.Contains(l, msg) && strings.Contains(l, "level="+level) {
+				n++
+			}
+		}
+
+		return n
+	}
+
+	_ = s.put(t.Context(), s.a, entity.NewFileID(), 0, 1, 'x')
+
+	if got := count("ERROR", "capacity step failed"); got != 1 {
+		t.Fatalf("%d Error lines for the first failure, want 1", got)
+	}
+
+	fault.healed.Store(true)
+
+	_ = s.put(t.Context(), s.a, entity.NewFileID(), 0, 1, 'x')
+
+	if got := count("INFO", "capacity step recovered"); got != 1 {
+		t.Errorf("%d recovered lines after a step that succeeded, want 1", got)
+	}
+
+	fault.healed.Store(false)
+
+	_ = s.put(t.Context(), s.a, entity.NewFileID(), 0, 1, 'x')
+
+	if got := count("ERROR", "capacity step failed"); got != 2 {
+		t.Errorf("%d Error lines after a second failure, want 2: the reset is lost", got)
+	}
+
+	if got := count("INFO", "capacity step recovered"); got != 1 {
+		t.Errorf("%d recovered lines in all, want 1", got)
+	}
+}
+
 // A deadline already passed on the engine's clock answers retry-later at once
 // with nothing repacked.
 func TestAPassedDeadlineRepacksNothing(t *testing.T) {
@@ -751,6 +817,58 @@ func TestAnEndedContextRepacksAndSealsNothing(t *testing.T) {
 			before.UnreclaimedBytes, after.UnreclaimedBytes,
 			before.UnreclaimedEndedBytes, after.UnreclaimedEndedBytes,
 			before.Counters.FreedBytes, after.Counters.FreedBytes)
+	}
+}
+
+// A caller whose context ends while the last step's scope sync is held does not
+// repack after it: the sync fails with the context's error, and the one Repack
+// call is the first step's.
+func TestAContextEndedInTheScopeSyncRepacksNoMore(t *testing.T) {
+	hold := &repackSyncHold{entered: make(chan struct{}), release: make(chan struct{})}
+	wrap := func(h engine.Handle) engine.Handle {
+		hold.Handle = h
+
+		return hold
+	}
+
+	var fault *repackFault
+
+	u := newUnitWith(t, unitConfig{
+		wrap: wrap,
+		deps: []func(*engine.Deps){trackedRepack(nil, false, &fault)},
+	})
+	u.j.SegmentCap(segBytes, 0)
+
+	f := u.create(t, "f")
+	u.write(t, f, 0, []byte("x"))
+
+	release := sync.OnceFunc(func() { close(hold.release) })
+	t.Cleanup(release)
+
+	if err := u.j.Refuse(enginetest.CallWriteAt, refusalErr(journal.LimitShare)); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(bounded(t))
+	defer cancel()
+
+	got := make(chan error, 1)
+
+	go func() {
+		_, err := u.e.Write(ctx, u.share.ID, f, 0, []byte("y"), engine.WriteOpts{Done: func() {}})
+		got <- err
+	}()
+
+	within(t, "the refusal reaching its scope sync", hold.entered)
+	cancel()
+
+	err := within(t, "the cancelled write's answer", got)
+	if !isDelay(err, vfserr.DelayCapacity) {
+		t.Errorf("a context ended in the scope sync: %v, want ErrDelay(DelayCapacity)", err)
+	}
+
+	if n := fault.calls.Load(); n != 1 {
+		t.Errorf("%d Repack calls, want 1: the first step's, none after the ended sync", n)
 	}
 }
 

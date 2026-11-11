@@ -26,8 +26,8 @@ const (
 )
 
 // capState is what a journal keeps for its refusals: the passes running on
-// it, whether its repack path is failing, the latest refusal's note and
-// whether it named the headroom. It lives on the journal's group commit.
+// it, whether its repack path is failing and whether the latest refusal named
+// the headroom. It lives on the journal's group commit.
 type capState struct {
 	// passes counts the Repack calls in flight on this journal.
 	//
@@ -41,11 +41,10 @@ type capState struct {
 	failing  atomic.Bool
 	headroom atomic.Bool // the latest refusal that raised journal_full named the headroom
 	lines    refusalLimiter
-	note     atomic.Pointer[refusalNote]
 }
 
-// refusalNote is what the latest journal_full refusal lacked and the journal's
-// figures then, which the clear on room compares against.
+// refusalNote is what a journal_full refusal lacked and the journal's figures
+// then, for the condition's detail.
 type refusalNote struct {
 	missing  int64
 	unit     journal.Unit
@@ -277,7 +276,6 @@ func (e *Engine) raiseFull(b *binding, r refusal, err error) {
 		n.missing, n.unit = ns.Missing, ns.Unit
 	}
 
-	b.gc.cap.note.Store(n)
 	b.gc.cap.headroom.Store(r.limit == journal.LimitHeadroom && !r.device)
 
 	e.conds.raise(condKey{conditionJournalFull, b.gc}, Condition{
