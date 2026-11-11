@@ -350,3 +350,70 @@ func TestTryKeepsHeaderOnlyKind(t *testing.T) {
 		t.Errorf("Ranges(%d) after a failed Try = %v, want %v with its length", ref.Segment, got, want)
 	}
 }
+
+// TestTryCancelDuringLastAttemptReturnsAttemptFailure checks the case the
+// bound decides: a marked range's one permitted attempt, cancelled inside
+// the read and failing it, answers with the attempt's own failure wrapped
+// in ErrUnreadable — the bound spent the attempt, not the context — and
+// the range stays marked.
+func TestTryCancelDuringLastAttemptReturnsAttemptFailure(t *testing.T) {
+	r := newRig(t)
+	r.write(recordFile, []byte("record bytes"))
+	r.failReads(recordFile, 0) // every read
+	ref := Ref{Segment: 7, Off: 0, Len: 12, Kind: Content}
+	s := New(r.clk)
+	s.mark(ref) // the range is unread, so its next access gets one attempt
+
+	ctx, cancel := context.WithCancel(context.Background())
+	held := r.seam.HoldFirst(t, kit.OpRead, recordFile)
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.Try(ctx, ref, r.read(ref, recordFile))
+		done <- err
+	}()
+
+	<-held.Reached() // the one permitted attempt is held under it
+	cancel()         // the context ends during the attempt's own read
+	held.Release()   // and the read then fails with EIO
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, core.ErrUnreadable) {
+			t.Errorf("Try: a cancelled one-attempt read got err %v, want one matching ErrUnreadable, the attempt's failure", err)
+		}
+		if errors.Is(err, context.Canceled) {
+			t.Errorf("Try: a cancelled one-attempt read got %v, want the attempt's failure, not the context's", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Try: a cancelled one-attempt read did not return")
+	}
+	if got := s.Unread(ref); !got {
+		t.Errorf("Unread(ref) after a cancelled one-attempt read = %v, want true", got)
+	}
+}
+
+// TestTryForeignDeadlineExceededMarks checks that a deadline the read names
+// is a device answer, not the end of Try's own retries: a live context
+// whose read returns context.DeadlineExceeded does not answer Try with the
+// context's error but marks the range and wraps ErrUnreadable around it.
+func TestTryForeignDeadlineExceededMarks(t *testing.T) {
+	s := New(kit.NewStopwatchClock())
+	ref := Ref{Segment: 7, Off: 0, Len: 12, Kind: Content}
+
+	_, err := s.Try(context.Background(), ref, func() ([]byte, error) {
+		return nil, context.DeadlineExceeded // a deadline that was not Try's
+	})
+
+	if !errors.Is(err, core.ErrUnreadable) {
+		t.Errorf("Try: a read naming a foreign deadline got err %v, want one matching ErrUnreadable", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Try: the device fault was dropped from %v, want the deadline still matched", err)
+	}
+	if got := s.Unread(ref); !got {
+		t.Errorf("Unread(ref) after a read naming a foreign deadline = %v, want true", got)
+	}
+	if got := s.SuspectSegments(); got != 1 {
+		t.Errorf("SuspectSegments() after a read naming a foreign deadline = %d, want 1", got)
+	}
+}

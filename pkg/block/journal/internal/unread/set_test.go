@@ -131,11 +131,12 @@ func TestGaugeMatchesDistinctSegmentsConcurrently(t *testing.T) {
 	}
 }
 
+// TestSuspectSegmentsAllocatesNothing guards against an allocating read: a
+// locked int fetch the gauge stops being would show up as a per-call
+// allocation on every poller. It cannot catch a walk — ranging a map
+// allocates nothing — so the maintained-value rule is covered by the
+// distinct-segments test above instead.
 func TestSuspectSegmentsAllocatesNothing(t *testing.T) {
-	if raceEnabled {
-		t.Skip("race build changes allocation counts too much for a comparison")
-	}
-
 	s := New(kit.NewStopwatchClock())
 	for seg := 0; seg < 100; seg++ {
 		for off := int64(0); off < 1000; off++ {

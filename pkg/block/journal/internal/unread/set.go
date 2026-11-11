@@ -1,6 +1,5 @@
-// Package unread tracks the record bodies and headers Open met unread while
-// attaching segment tails, so a later ReadAt that needs one knows to fetch it
-// from the block store rather than the segment file.
+// Package unread holds the journal's records whose bytes no read attempt
+// returned, and the segments they make suspect.
 package unread
 
 import (
@@ -14,9 +13,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/readretry"
 )
 
-// Kind distinguishes a record body from its header, which stay unread for
-// different reasons: a body waits for its block, a header for a second read
-// or a torn tail the open already rejected.
+// Kind distinguishes a record's body from a header the journal can hold
+// alone: a body waits for its block, while a header-only record — a removal,
+// an offloaded one or a loss — never had bytes to read.
 type Kind uint8
 
 const (
@@ -36,8 +35,8 @@ type Ref struct {
 	Kind    Kind
 }
 
-// Set holds the unread ranges one open met, keyed by the segment and file
-// offset each starts at.
+// Set holds the journal's records whose bytes no read attempt returned,
+// keyed by the segment and file offset each record's range starts at.
 //
 // ponytail: in-memory only, so a restart forgets what was unread and the
 // open meets it again by reading; one map under one mutex, O(1) per access.
@@ -47,10 +46,16 @@ type Ref struct {
 //
 // ponytail: Try marks a range after its read returns, so a mark landing
 // after Retired(seg) of the same segment re-creates the entry and leaves
-// the segment suspect for good; the set relies on its caller never retiring
-// a segment while a read of it is in flight. Upgrade to a mark conditional
-// on the segment still being live once a caller exists that retires one
-// concurrently with reads.
+// the segment suspect for good, and the same ordering leaves a stale mark
+// after a concurrent success: two Trys on a marked range, one reading bytes
+// and clearing it while the other still in its read fails and marks it
+// again, leave the range unread and its segment suspect after a read
+// returned bytes, until the next access clears it. The set relies on its
+// caller never retiring a segment while a read of it is in flight and on
+// the next access following a concurrent failure. Upgrade to a mark
+// conditional on the segment still being live and on nothing having
+// cleared the range since the read started, once a caller exists that
+// retires or races on one.
 type Set struct {
 	mu      sync.Mutex
 	entries map[core.SegmentID]map[int64]Ref
@@ -78,10 +83,13 @@ func New(clk core.Clock) *Set {
 // whose bytes no attempt read is unread whatever ended them, so one whose
 // read failed before the context did is marked — while nothing is marked of
 // a context that ended before any attempt started, since no read ever
-// failed. The context's own error is returned either way, never wrapped in
-// ErrUnreadable: the caller answers at its deadline with its own
-// cancellation. A read ending in nil has said everything — bytes or none —
-// and the range is cleared whatever it was before.
+// failed. The context's error is returned when it is what ended the
+// retries, bare, so the caller answers at its deadline with its own
+// cancellation; a context ending during the last permitted attempt returns
+// that attempt's failure, wrapped in ErrUnreadable, as the bound does: the
+// attempt, not the context, was what spent it. A read ending in nil has
+// said everything — bytes or none — and the range is cleared whatever it
+// was before.
 func (s *Set) Try(ctx context.Context, ref Ref, read func() ([]byte, error)) ([]byte, error) {
 	attempts := readretry.Attempts
 	if s.Unread(ref) {
@@ -96,7 +104,7 @@ func (s *Set) Try(ctx context.Context, ref Ref, read func() ([]byte, error)) ([]
 	case err == nil:
 		s.clear(ref)
 		return b, nil
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	case ctx.Err() != nil && errors.Is(err, ctx.Err()):
 		if tried > 0 {
 			s.mark(ref)
 		}
