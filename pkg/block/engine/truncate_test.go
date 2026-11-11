@@ -101,7 +101,7 @@ func TestATruncateDownWaitsOutAnAdmittedWrite(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	got := make([]byte, 8)
@@ -124,7 +124,7 @@ func TestATruncateDecidesOverAnAdmittedWrite(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
-	if err := u.e.CommitNow(ctx, u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(ctx, u.share.ID, f); err != nil {
 		t.Fatalf("the commit after the truncate: %v", err)
 	}
 	if n := u.size(t, f); n != 5 {

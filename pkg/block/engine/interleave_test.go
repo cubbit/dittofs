@@ -21,7 +21,7 @@ func TestAReadBetweenATruncateAndItsInsertIsNeverLost(t *testing.T) {
 	u, h := newHookedUnit(t)
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	type result struct {
@@ -96,7 +96,7 @@ func TestRemovalsInterleavedWithWritesReadTheirOrder(t *testing.T) {
 			}
 		default:
 			cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			err := u.e.CommitNow(cctx, u.share.ID, f)
+			err := u.e.CommitExistence(cctx, u.share.ID, f)
 			cancel()
 			if err != nil {
 				t.Fatalf("op %d: commit: %v", i, err)

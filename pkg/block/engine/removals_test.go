@@ -76,7 +76,7 @@ func TestARemovalRunsItsPhase2AndIsPruned(t *testing.T) {
 	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x })
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
@@ -97,7 +97,7 @@ func TestAFailingRemovalWedgesNoOther(t *testing.T) {
 	f, g := u.create(t, "f"), u.create(t, "g")
 	for _, id := range []entity.FileID{f, g} {
 		u.write(t, id, 0, fill(16, 'a'))
-		if err := u.e.CommitNow(t.Context(), u.share.ID, id); err != nil {
+		if err := u.e.CommitExistence(t.Context(), u.share.ID, id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -142,7 +142,7 @@ func TestAStalledPhase2HoldsNoOther(t *testing.T) {
 	g := u.create(t, "g")
 	for _, id := range []entity.FileID{f, g} {
 		u.write(t, id, 0, fill(16, 'a'))
-		if err := u.e.CommitNow(t.Context(), u.share.ID, id); err != nil {
+		if err := u.e.CommitExistence(t.Context(), u.share.ID, id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -181,7 +181,7 @@ func TestAnAdvancingPhase2IsNotStalled(t *testing.T) {
 	x.f = f
 	x.cut.Store(8)
 	u.write(t, f, 0, fill(16, 'a'))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
@@ -216,7 +216,7 @@ func TestARefusedPhase1EndsAndReleasesTheGuard(t *testing.T) {
 	}))
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err == nil {
@@ -248,7 +248,7 @@ func TestARefusedPhase1SettlesItsMarker(t *testing.T) {
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
 	written := u.e.Pending(f)[0].Version
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err == nil {
@@ -328,7 +328,7 @@ func (u *unit) endedTruncate(t *testing.T, h *hookedHandle, lose bool) (f entity
 		mu.Unlock()
 	}
 	u.write(t, f, 0, fill(16, 'a'))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	u.write(t, f, 16, fill(16, 'b'))

@@ -302,15 +302,6 @@ func (e *Engine) ClearOps(f entity.FileID) {
 	e.files.unlock(f, fe)
 }
 
-// CommitNow is commitNow on share s's file f.
-func (e *Engine) CommitNow(ctx context.Context, s entity.ShareID, f entity.FileID) error {
-	b, err := e.bindingOf(s)
-	if err != nil {
-		return err
-	}
-	return e.commitNow(ctx, b, f)
-}
-
 // CommitThrough is commitThrough on share s's file f, through version v.
 func (e *Engine) CommitThrough(ctx context.Context, s entity.ShareID, f entity.FileID, v journal.Version) error {
 	b, err := e.bindingOf(s)

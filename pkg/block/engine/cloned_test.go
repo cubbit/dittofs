@@ -48,7 +48,7 @@ func (u *unit) committedFile(t *testing.T, name string, p []byte) entity.FileID 
 	t.Helper()
 	f := u.create(t, name)
 	u.write(t, f, 0, p)
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -309,7 +309,7 @@ func TestTheGuardKeepsACloneOutOfEveryBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	u.clock.Advance(time.Second) // the destination is due
-	if err := u.e.CommitNow(t.Context(), u.share.ID, other); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, other); err != nil {
 		t.Fatalf("another file's commit while the clone holds the destination: %v", err)
 	}
 	if applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, other); applied.IsZero() {
@@ -385,7 +385,7 @@ func TestAWriteOutsideTheExtentDuringACloneSurvives(t *testing.T) {
 	if err != nil || size != 3*mib+10 {
 		t.Errorf("the destination's committed size: %d, %v; want %d", size, err, 3*mib+10)
 	}
-	if err := u.e.CommitNow(t.Context(), u.share.ID, dst); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, dst); err != nil {
 		t.Fatal(err)
 	}
 	if again, _ := u.fs.Store.Existence().Size(t.Context(), u.share.ID, dst); again != size {
@@ -582,7 +582,7 @@ func TestARefusedClonePinsItsGuardAndNothingElse(t *testing.T) {
 	u.until(t, "removal_stalled for the destination", func() bool { return u.e.RemovalStalled(dst) })
 	other := u.create(t, "other")
 	u.write(t, other, 0, fill(10, 'o'))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, other); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, other); err != nil {
 		t.Errorf("another file's commit behind the pinned guard: %v", err)
 	}
 	if applied, _ := u.fs.Store.Existence().Applied(t.Context(), u.share.ID, dst); !applied.IsZero() {
@@ -628,7 +628,7 @@ func TestACloneWaitsOutABatchInFlight(t *testing.T) {
 	u.write(t, dst, 4*mib, fill(10, 'w'))
 	x.on.Store(true)
 	committed := make(chan error, 1)
-	go func() { committed <- u.e.CommitNow(context.Background(), u.share.ID, dst) }()
+	go func() { committed <- u.e.CommitExistence(context.Background(), u.share.ID, dst) }()
 	<-x.entered
 	errc := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
 	time.Sleep(50 * time.Millisecond)
@@ -797,7 +797,7 @@ func TestAWriteInFlightDuringPhase1IsClaimed(t *testing.T) {
 	if err := <-errc; err != nil {
 		t.Fatal(err)
 	}
-	if err := u.e.CommitNow(t.Context(), u.share.ID, dst); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, dst); err != nil {
 		t.Fatal(err)
 	}
 	if size, _ := u.fs.Store.Existence().Size(t.Context(), u.share.ID, dst); size != 3*mib+10 {
