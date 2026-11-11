@@ -94,9 +94,10 @@ func (r *recorder) failNext(op string, errs ...error) {
 	r.fail[op] = append(r.fail[op], errs...)
 }
 
-// failNth makes op's calls from the nth one on return errs, one each, in
-// order — the first call goes through, so a fault can wait for the op to be
-// under way before it fires.
+// failNth makes op's nth call after this registration return errs, one
+// each, in order: the rule counts the calls made from its own registration,
+// so a call number written against it stays put through changes to the calls
+// before it. An error fires at its number only — one error, one call.
 func (r *recorder) failNth(op string, nth int, errs ...error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -110,7 +111,7 @@ func (r *recorder) failNth(op string, nth int, errs ...error) {
 		r.failN[op] = map[int][]error{}
 	}
 
-	r.failN[op][nth] = append(r.failN[op][nth], errs...)
+	r.failN[op][r.n[op]+nth] = append(r.failN[op][r.n[op]+nth], errs...)
 }
 
 // take returns the calls logged since the last take.
@@ -132,9 +133,9 @@ func (r *recorder) queued(op string) bool {
 	return len(r.fail[op]) > 0
 }
 
-// add logs c and returns the error queued for its op, if any: the next
-// call's own queues first, then the queue registered for the call's number,
-// if this is that call.
+// add logs c and returns the error queued for its op, if any: the queue
+// registered for the call's number first — counted as failNth counts, from
+// its registration — then the failNext queue for the next call.
 func (r *recorder) add(c call) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

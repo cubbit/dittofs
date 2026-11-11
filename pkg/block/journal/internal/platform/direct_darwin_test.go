@@ -417,7 +417,43 @@ func TestReadAtDirectFailedClear(t *testing.T) {
 	}
 }
 
-// countFnocache returns the calls of fcntl with F_NOCACHE and arg of log.
+// TestReadAtDirectFailedClearAtEnd checks the failure the read's own io.EOF
+// does not mask: a read the file's end cuts short, whose clear then fails,
+// still fails the read with the clear's error — F_NOCACHE stays set on the
+// shared descriptor, so an io.EOF returned instead would leave the caller
+// reading a normal short read off a file whose every later cached read
+// bypasses the cache unasked.
+func TestReadAtDirectFailedClearAtEnd(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	r := &recorder{}
+	f := directCheckFile(t, newOS(t.TempDir(), r.table()), r, "a", []byte("record"))
+
+	r.failNth("fcntl", 2, syscall.EIO)
+	p := make([]byte, 9)
+	n, err := f.ReadAtDirect(p, 3)
+
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("ReadAtDirect with a failed clear at the end: %d, %v; want an error matching EIO", n, err)
+	}
+
+	if err == io.EOF {
+		t.Fatalf("ReadAtDirect with a failed clear at the end: %d, io.EOF; want the clear's EIO, not the read's end", n)
+	}
+
+	if n != 3 || string(p[:n]) != "ord" {
+		t.Fatalf("ReadAtDirect with a failed clear at the end: %d, %q; want the 3 bytes read, kept with the error", n, p[:n])
+	}
+
+	var pe *fs.PathError
+	if !errors.As(err, &pe) || pe.Op != "fcntl" {
+		t.Fatalf("ReadAtDirect with a failed clear at the end: %v, want an *fs.PathError of the fcntl", err)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
 func countFnocache(log []call, arg int) int {
 	n := 0
 	for _, c := range log {
