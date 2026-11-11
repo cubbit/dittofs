@@ -22,6 +22,11 @@ func checkNamed(t *testing.T, when string, s Stats) {
 	if s.ReservedBytes < 0 {
 		t.Errorf("%s: ReservedBytes = %d, want >= 0", when, s.ReservedBytes)
 	}
+	for tag, ss := range s.Shares {
+		if ss.HeldBytes+ss.UnreclaimedBytes > ss.UsedBytes {
+			t.Errorf("%s: share %d HeldBytes %d + UnreclaimedBytes %d > UsedBytes %d", when, tag, ss.HeldBytes, ss.UnreclaimedBytes, ss.UsedBytes)
+		}
+	}
 }
 
 // TestRFC1D_NamedInequalitiesHold samples Stats in a tight loop while writers,
