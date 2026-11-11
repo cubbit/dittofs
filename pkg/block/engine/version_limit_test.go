@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"runtime"
 	"slices"
@@ -694,6 +695,47 @@ func TestRaiseFromLimitWhenRateTermAboveBlock(t *testing.T) {
 
 	if second := limit(s); first != l0+testBlock || second != first+testBlock {
 		t.Errorf("raised to %d then %d from %d, want one block each", first, second, l0)
+	}
+}
+
+// The trigger with no version drawn is half a block, 2048 here: a Bind whose
+// Share leaves 2048 versions below the limit last passed raises nothing,
+// and one that leaves 2047 raises the journal's limit by one block. The
+// share's stored limit is the floor its Share raises the counter above.
+func TestBindRaisesExactlyWhenDue(t *testing.T) {
+	for _, c := range []struct {
+		left uint64 // the versions the Bind's Share leaves below the limit
+		due  bool
+	}{
+		{2049, false},
+		{2048, false},
+		{2047, true},
+	} {
+		t.Run(fmt.Sprint(c.left), func(t *testing.T) {
+			s := newRaiser(t, time.Second, withSpare())
+			l0 := limit(s)
+			// The Share issues next above the floor: l0-1-floor are left.
+			setLimit(t, s, s.spare.ID, l0-1-c.left)
+
+			if err := s.e.Bind(t.Context(), s.spare); err != nil {
+				t.Fatalf("Bind = %v", err)
+			}
+
+			s.e.WaitRaises(t)
+
+			want := l0
+			if c.due {
+				want = l0 + testBlock
+			}
+
+			if got := limit(s); got != want {
+				t.Errorf("with %d versions left the journal's limit is %d after the Bind, want %d", c.left, got, want)
+			}
+
+			if got := left(s); got != want-l0+c.left {
+				t.Errorf("after the Bind %d versions are left, want %d", got, want-l0+c.left)
+			}
+		})
 	}
 }
 
