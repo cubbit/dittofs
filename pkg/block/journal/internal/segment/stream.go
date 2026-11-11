@@ -438,6 +438,11 @@ type Roll struct {
 	// Repack marks a repack copy: its roll takes a repack-reserve spare,
 	// never a content one (R23).
 	Repack bool
+	// Whole marks a record that must land in one piece: when what remains
+	// of the active segment cannot hold it, the roll comes first and the
+	// record is placed whole in the next segment, never split. A payload
+	// larger than an empty segment's room is refused with ErrSegmentFull.
+	Whole bool
 }
 
 // ErrBadRoll is returned by AppendRoll for roll options that do not fit the
@@ -747,7 +752,7 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		// where it was.
 		emptyRoom := ((s.set.cap - format.SegmentHeaderSize - sealRoom(1)) &^ 7) -
 			(int64(format.RecordHeaderSize) + format.RecordHeader{Kind: h.Kind}.BodySize())
-		if emptyRoom < 0 || len(body.Payload) > 0 && emptyRoom < 1 {
+		if emptyRoom < 0 || len(body.Payload) > 0 && emptyRoom < 1 || r.Whole && int64(len(body.Payload)) > emptyRoom {
 			s.appendMu.Unlock()
 			return Placed{}, ErrSegmentFull
 		}
@@ -789,7 +794,7 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 				// modification time, and nothing for a fill.
 				overhead := int64(format.RecordHeaderSize) + format.RecordHeader{Kind: h.Kind}.BodySize()
 				fit := ((s.set.cap - s.next - sealRoom(s.count+1)) &^ 7) - overhead
-				if hasPayload && fit >= 1 {
+				if hasPayload && fit >= 1 && !r.Whole {
 					// The whole record does not fit, so the payload
 					// cannot either: the record's own padded size is a
 					// multiple of 8 no smaller than the room the fit was

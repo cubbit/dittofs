@@ -150,7 +150,15 @@ func (d *Durability) appendAgain(st *stream, h format.RecordHeader, body format.
 		Version: h.Version,
 		Tag:     h.Tag,
 	}
-	p, err := st.s.Append(nh, body)
+	// decision: a re-append lands whole, because it is the same record in a
+	// new place under its original sequence number, and one old record must
+	// map to one new record for the repoint, the ledger and the copy table.
+	// A segment with too little room is sealed early, with that room unused,
+	// and the record goes to the next one. The ceiling is a part-full segment
+	// sealed per re-append that does not fit; overturned by a measurement
+	// showing that waste matters, which would call for splitting with a
+	// repoint per piece.
+	p, err := st.s.AppendRoll(nh, body, segment.Roll{Whole: true})
 	if err != nil {
 		return segment.Placed{}, err
 	}

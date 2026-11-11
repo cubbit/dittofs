@@ -2219,3 +2219,98 @@ func TestRollAWriteLargerThanASegmentIsSplitAndItsRestRolls(t *testing.T) {
 		t.Fatalf("the first segment's state after the split = %v, %v, want Sealed", state, err)
 	}
 }
+
+// TestRollAWholeRecordThatDoesNotFitRollsInsteadOfSplitting checks the whole
+// roll option: a record the active segment has too little room for is placed
+// entire in the next segment, with N equal to its payload, where the plain
+// append would have placed a prefix and left the rest to the caller. The
+// segment it left is sealed.
+func TestRollAWholeRecordThatDoesNotFitRollsInsteadOfSplitting(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := rollPin(t, 4096, segment.Targets{Content: 3}, nil).withStream(t, 1)
+	awaitCounters(t, "the content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares >= 2 })
+	se := e.stream(t)
+
+	first := streamTestBody(1000, 0x11)
+	h1, b1 := streamWriteHeader(streamFileID(1), 0, first, 7, core.Version{Counter: 1})
+	p1, err := e.s.AppendRoll(h1, b1, segment.Roll{})
+	if err != nil {
+		t.Fatalf("the first write: %v", err)
+	}
+
+	whole := streamTestBody(3000, 0x22)
+	h2, b2 := streamWriteHeader(streamFileID(2), 0, whole, 7, core.Version{Counter: 2})
+	p2, err := e.s.AppendRoll(h2, b2, segment.Roll{Whole: true})
+	if err != nil {
+		t.Fatalf("the whole record: %v", err)
+	}
+	if p2.N != int64(len(whole)) {
+		t.Fatalf("the whole record placed %d of %d payload bytes, want all of them", p2.N, len(whole))
+	}
+	if p2.Loc.Segment == p1.Loc.Segment {
+		t.Fatalf("the whole record landed in the part-full segment %d, want a rolled-to one", p1.Loc.Segment)
+	}
+	if _, b := streamReadRecord(t, se, p2.Loc); !bytes.Equal(b.Payload, whole) {
+		t.Fatalf("the whole record reads back %d bytes unequal to the %d written", len(b.Payload), len(whole))
+	}
+	if state, err := e.set.State(p1.Loc.Segment); err != nil || state != segment.Sealed {
+		t.Fatalf("the segment the whole record left = %v, %v, want Sealed", state, err)
+	}
+}
+
+// TestRollAWholeRecordThatFitsExactlyDoesNotRoll checks the whole option rolls
+// only when it must: the largest payload the room holds is placed in the same
+// segment, which stays open.
+func TestRollAWholeRecordThatFitsExactlyDoesNotRoll(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := rollPin(t, 4096, segment.Targets{Content: 3}, nil).withStream(t, 1)
+	awaitCounters(t, "the content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares >= 2 })
+
+	first := streamTestBody(1000, 0x11)
+	h1, b1 := streamWriteHeader(streamFileID(1), 0, first, 7, core.Version{Counter: 1})
+	p1, err := e.s.AppendRoll(h1, b1, segment.Roll{})
+	if err != nil {
+		t.Fatalf("the first write: %v", err)
+	}
+
+	// The room left past the first record, the seal's reserve for two
+	// records and the second record's own overhead.
+	overhead := int64(format.RecordHeaderSize) + 8
+	exact := ((4096 - (p1.Loc.Off + p1.Loc.Len) -
+		(format.SealMarkerSize + 2*format.CatalogEntrySize + format.TrailerSize)) &^ 7) - overhead
+	payload := streamTestBody(int(exact), 0x22)
+	h2, b2 := streamWriteHeader(streamFileID(2), 0, payload, 7, core.Version{Counter: 2})
+	p2, err := e.s.AppendRoll(h2, b2, segment.Roll{Whole: true})
+	if err != nil {
+		t.Fatalf("the exact-fit record: %v", err)
+	}
+	if p2.N != exact || p2.Loc.Segment != p1.Loc.Segment {
+		t.Fatalf("the exact-fit record placed %d of %d in segment %d, want all of it in %d", p2.N, exact, p2.Loc.Segment, p1.Loc.Segment)
+	}
+	if state, err := e.set.State(p1.Loc.Segment); err != nil || state == segment.Sealed {
+		t.Fatalf("the segment after an exact fit = %v, %v, want it still open", state, err)
+	}
+}
+
+// TestRollAWholeRecordLargerThanAnEmptySegmentIsRefused checks that the whole
+// option does not roll forever for a record no segment holds: it answers
+// ErrSegmentFull and takes no spare.
+func TestRollAWholeRecordLargerThanAnEmptySegmentIsRefused(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e := rollPin(t, 4096, segment.Targets{Content: 2}, nil).withStream(t, 1)
+	awaitCounters(t, "the content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	h, b := streamWriteHeader(streamFileID(1), 0, streamTestBody(9000, 0x33), 7, core.Version{Counter: 1})
+	if _, err := e.s.AppendRoll(h, b, segment.Roll{Whole: true}); !errors.Is(err, segment.ErrSegmentFull) {
+		t.Fatalf("the whole record larger than a segment = %v, want ErrSegmentFull", err)
+	}
+	if c := e.pool.Counters(); c.Spares != 2 {
+		t.Fatalf("the refusal left %d spares, want 2: nothing may roll", c.Spares)
+	}
+}
