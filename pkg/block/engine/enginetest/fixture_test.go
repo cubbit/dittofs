@@ -19,11 +19,12 @@ func TestACrashedProcessChangesNothingInTheStore(t *testing.T) {
 	crashed.Store(true)
 	x, c := fencedExistence{crashed: crashed}, fencedContent{crashed: crashed}
 	ctx := t.Context()
-	if failed, err := x.Commit(ctx, nil, nil); err != nil || len(failed) != 0 {
-		t.Errorf("Commit after the crash: %v, %v; want done, with nothing written", failed, err)
-	}
 	var share entity.ShareID
 	var file entity.FileID
+	pending := []kvstore.PendingExistence{{Share: share, File: file}}
+	if failed, err := x.Commit(ctx, pending, nil); err != nil || len(failed) != 0 {
+		t.Errorf("Commit after the crash: %v, %v; want done, with nothing written", failed, err)
+	}
 	if err := x.Remove(ctx, share, file, 0, kvstore.RemoveOp{}, nil); !errors.Is(err, errCrashed) {
 		t.Errorf("Remove after the crash: %v, want errCrashed", err)
 	}

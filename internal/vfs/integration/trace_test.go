@@ -26,7 +26,7 @@ func TestAStableWriteSyncsUnderTheCallersSpan(t *testing.T) {
 	_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(h), 0, []byte("stable"), vfs.FileSync)
 	end(err)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("the first write: %v", err)
 	}
 	caller := ended(c.Spans(), "vfs.write")
 	if caller == nil {
@@ -48,7 +48,7 @@ func TestAStableOverwriteRecordsItsExistenceCommit(t *testing.T) {
 	ctx := t.Context()
 	h, id := c.File("f")
 	if _, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(h), 0, []byte("before"), vfs.Unstable); err != nil {
-		t.Fatal(err)
+		t.Fatalf("the first write: %v", err)
 	}
 	if err := c.E.CommitExistence(ctx, c.Share.ID, id); err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func TestAFailingCommitIsAConditionUntilItLands(t *testing.T) {
 	ctx := t.Context()
 	h, id := c.File("f")
 	if _, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(h), 0, []byte("before"), vfs.Unstable); err != nil {
-		t.Fatal(err)
+		t.Fatalf("the first write: %v", err)
 	}
 	if err := c.E.CommitExistence(ctx, c.Share.ID, id); err != nil {
 		t.Fatal(err)
