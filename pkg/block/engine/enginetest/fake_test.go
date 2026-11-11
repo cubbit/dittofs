@@ -533,3 +533,98 @@ func TestFakeFailsOnlyWhatTheJournalCan(t *testing.T) {
 		t.Errorf("checked %d forbidden pairs, want 73", forbidden)
 	}
 }
+
+// overs is the Over of each change Since yields, in order.
+func overs(cs []journal.Change) [][]journal.Extent {
+	var out [][]journal.Extent
+	for _, c := range cs {
+		out = append(out, c.Over)
+	}
+
+	return out
+}
+
+// sameOvers reports whether the two lists of runs are equal.
+func sameOvers(got, want [][]journal.Extent) bool {
+	return slices.EqualFunc(got, want, slices.Equal)
+}
+
+// Since yields, for each held piece of a write, the runs where the write
+// superseded another write above from, clipped to the piece, in offset order
+// and merged where they touch (RFC 1 §3.10).
+func TestFakeSinceYieldsTheRunsAWriteSuperseded(t *testing.T) {
+	_, h := fake(t, 0)
+	v1 := write(t, h, fileA, 0, "aaaaaaaa") // [0, 8)
+	v2 := write(t, h, fileA, 4, "bbbbbbbb") // [4, 12) over [4, 8) of v1
+	v3 := write(t, h, fileA, 2, "cccc")     // [2, 6) over [2, 4) of v1 and [4, 6) of v2
+	got := changes(t, h, fileA, journal.Version{})
+
+	want := []struct {
+		e    journal.Extent
+		v    journal.Version
+		over []journal.Extent
+	}{
+		{ext(0, 2), v1, nil},
+		{ext(6, 6), v2, []journal.Extent{ext(6, 2)}},
+		{ext(2, 4), v3, []journal.Extent{ext(2, 4)}},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Since = %+v, want %d writes", got, len(want))
+	}
+
+	for i, w := range want {
+		if got[i].Extent != w.e || got[i].Version != w.v || !slices.Equal(got[i].Over, w.over) {
+			t.Errorf("change %d = %v at %v Over %v, want %v at %v Over %v",
+				i, got[i].Extent, got[i].Version, got[i].Over, w.e, w.v, w.over)
+		}
+	}
+	// A write at or below from is not superseded above from: v2's run over v1
+	// goes once from is v1, and so does v3's run over v1, leaving its run over v2.
+	later := changes(t, h, fileA, v1)
+	if len(later) != 2 || later[0].Version != v2 || later[1].Version != v3 {
+		t.Fatalf("Since(%v) = %+v, want the pieces of v2 and v3", v1, later)
+	}
+
+	if got, want := overs(later), [][]journal.Extent{nil, {ext(4, 2)}}; !sameOvers(got, want) {
+		t.Errorf("Since(%v) Over = %v, want %v", v1, got, want)
+	}
+}
+
+// Settle at or above a write's version hides its Over until a reopen, which
+// brings it back as recovery rebuilds it (RFC 1 §3.10).
+func TestFakeSettleHidesOverUntilAReopen(t *testing.T) {
+	j, h := fake(t, 0)
+	v1 := write(t, h, fileA, 0, "aaaaaaaa")
+	v2 := write(t, h, fileA, 4, "bbbbbbbb")
+
+	want := [][]journal.Extent{nil, {ext(4, 4)}}
+	if got := overs(changes(t, h, fileA, journal.Version{})); !sameOvers(got, want) {
+		t.Fatalf("Over before Settle = %v, want %v", got, want)
+	}
+
+	// A settle below the write's version keeps its Over: the journal drops it
+	// at or above the write's own version, not the superseded one's.
+	h.Settle(fileA, v1)
+
+	if got := overs(changes(t, h, fileA, journal.Version{})); !sameOvers(got, want) {
+		t.Errorf("Over after Settle(%v) = %v, want %v", v1, got, want)
+	}
+
+	h.Settle(fileA, v2)
+
+	none := [][]journal.Extent{nil, nil}
+	if got := overs(changes(t, h, fileA, journal.Version{})); !sameOvers(got, none) {
+		t.Errorf("Over after Settle(%v) = %v, want none", v2, got)
+	}
+
+	j.Reopen()
+
+	h, err := j.Share(1, 0, journal.Version{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := overs(changes(t, h, fileA, journal.Version{})); !sameOvers(got, want) {
+		t.Errorf("Over after Reopen = %v, want %v", got, want)
+	}
+}

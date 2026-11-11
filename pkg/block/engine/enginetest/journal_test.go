@@ -2,6 +2,7 @@ package enginetest
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
@@ -110,3 +111,79 @@ func shareTwice(t *testing.T, j engine.Journal) {
 		t.Fatal(err)
 	}
 }
+
+// seen is what Since yields for one held piece of a write, without its
+// version, which the fake and the journal number differently.
+type seen struct {
+	e    journal.Extent
+	over []journal.Extent
+}
+
+func piecesOf(cs []journal.Change) []seen {
+	var out []seen
+	for _, c := range cs {
+		out = append(out, seen{c.Extent, c.Over})
+	}
+
+	return out
+}
+
+// RFC 1 §3.10: the fake yields the same pieces and Over as the journal for
+// the same writes, before and after a Settle, so the fake's own tests of Over
+// hold it to the journal. The journal cannot reopen on its segments yet, so
+// the reopen stays with the fake's own test.
+func TestSinceYieldsOverAsTheJournalDoes(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		open func(t *testing.T) engine.Handle
+	}{
+		{"fake", func(t *testing.T) engine.Handle {
+			_, h := fake(t, 0)
+
+			return h
+		}},
+		{"journal", func(t *testing.T) engine.Handle {
+			h, err := wrapJournal(journaltest.New(t).J, func(journal.ShareTag, engine.Handle) {}).
+				Share(1, 0, journal.Version{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			return h
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := c.open(t)
+			v1 := write(t, h, fileA, 0, "aaaaaaaa")
+			write(t, h, fileA, 4, "bbbbbbbb")
+			v3 := write(t, h, fileA, 2, "cccc")
+
+			// The runs are those of the fake's own test, for the same three writes.
+			all := []seen{
+				{ext(0, 2), nil},
+				{ext(6, 6), []journal.Extent{ext(6, 2)}},
+				{ext(2, 4), []journal.Extent{ext(2, 4)}},
+			}
+			if got := piecesOf(changes(t, h, fileA, journal.Version{})); !slices.EqualFunc(got, all, sameSeen) {
+				t.Errorf("Since(0) = %v, want %v", got, all)
+			}
+
+			after := []seen{{ext(6, 6), nil}, {ext(2, 4), []journal.Extent{ext(4, 2)}}}
+			if got := piecesOf(changes(t, h, fileA, v1)); !slices.EqualFunc(got, after, sameSeen) {
+				t.Errorf("Since(v1) = %v, want %v", got, after)
+			}
+
+			h.Settle(fileA, v3)
+
+			for i := range all {
+				all[i].over = nil
+			}
+
+			if got := piecesOf(changes(t, h, fileA, journal.Version{})); !slices.EqualFunc(got, all, sameSeen) {
+				t.Errorf("Since(0) after Settle = %v, want %v", got, all)
+			}
+		})
+	}
+}
+
+func sameSeen(a, b seen) bool { return a.e == b.e && slices.Equal(a.over, b.over) }
