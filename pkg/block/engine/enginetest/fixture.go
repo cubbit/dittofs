@@ -946,6 +946,16 @@ func (f *Fixture) HoldNextWrite(d time.Duration, err error) <-chan struct{} {
 	return f.fault(sim.Rule{Op: kvtest.OpUpdate, Key: "*", Count: 1, Action: sim.FaultAction{Delay: d, Err: err}})
 }
 
+// HoldWrites holds every write transaction of the store for d on the clock,
+// then runs it, from now on. The channel closes once one has been tried.
+func (f *Fixture) HoldWrites(d time.Duration) <-chan struct{} {
+	return f.fault(sim.Rule{
+		Op:     kvtest.OpUpdate,
+		Key:    "*",
+		Action: sim.FaultAction{Delay: d},
+	})
+}
+
 // FailFile makes every existence commit of file id fail for that file alone,
 // as an absent record, the other files of the same commit committing. The
 // channel closes once a write transaction reached the store.
