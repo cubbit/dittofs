@@ -82,10 +82,15 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 // write's Done: what an owner or group change runs first, so an append staged
 // before the change charges the old owner. A deadline ends it with ErrDelay
 // and the file's cause, never the context's error; a share with no binding
-// answers a Delay with DelayFrozen.
+// answers a Delay with DelayFrozen. While the self-fence holds it answers as
+// Commit does, at once, rather than wait out its deadline on a store that
+// commits nothing.
 func (e *Engine) CommitExistence(ctx context.Context, s entity.ShareID, f entity.FileID) error {
 	b, err := e.bindingOf(s)
 	if err != nil {
+		return err
+	}
+	if err := e.fenceGate(b); err != nil {
 		return err
 	}
 	if err := e.commitNow(ctx, b, f); err != nil {

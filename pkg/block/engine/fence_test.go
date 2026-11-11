@@ -420,6 +420,9 @@ func TestSelfFenceAnswersAfterAReadOnlyJournal(t *testing.T) {
 			if _, _, err := u.e.Commit(t.Context(), u.share.ID, a, 0, 1); !c.want(err) {
 				t.Errorf("Commit: %v", err)
 			}
+			if err := u.e.CommitExistence(t.Context(), u.share.ID, a); !c.want(err) {
+				t.Errorf("CommitExistence: %v", err)
+			}
 			frozen := &vfserr.Delay{Cause: vfserr.DelayFrozen}
 			if _, err := u.e.Write(t.Context(), entity.ShareID{0xff}, a, 0, []byte("x"), engine.WriteOpts{Done: func() {}}); !errors.Is(err, frozen) {
 				t.Errorf("Write to a share not attached: %v, want ErrDelay(DelayFrozen)", err)

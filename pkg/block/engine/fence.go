@@ -215,7 +215,8 @@ func (f *fence) gate() error {
 	return nil
 }
 
-// fenceGate is Write's and Commit's answer on b while the fence holds. The
+// fenceGate is Write's, Commit's and CommitExistence's answer on b while the
+// fence holds. The
 // self-fence answers after every refusal of a write that never reaches the
 // store: b's journal turned read-only answers as journalErr does (RFC 8
 // §11.2), and so would any capacity refusal of the journal the RFC places
