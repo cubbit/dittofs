@@ -55,6 +55,34 @@ func TestAWriteToAnUnboundShareIsFrozen(t *testing.T) {
 	}
 }
 
+// A write acknowledged and committed through the service, its existence
+// still pending, survives a crash: the composition built after it reads the
+// bytes back, which it does only if it starts the filesystem after the
+// engine has re-applied existence.
+func TestACommittedWriteSurvivesACrash(t *testing.T) {
+	c := compose(t)
+	ctx := t.Context()
+	h, _ := c.File("f")
+	data := []byte("survives")
+	if _, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(h), 0, data, vfs.Unstable); err != nil {
+		t.Fatal(err)
+	}
+	// The commit syncs the write in the journal and leaves its existence
+	// pending, for the next start to re-apply.
+	if _, err := c.fs.Commit(ctx, c.admin, vfs.Anonymous(h), 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Committed(h).Size; got != 0 {
+		t.Fatalf("the store's size before the crash %d, want 0, the existence pending", got)
+	}
+	c.Crash()
+	buf := make([]byte, len(data))
+	n, _, err := c.fs.Read(ctx, c.admin, vfs.Anonymous(h), 0, buf)
+	if err != nil || !bytes.Equal(buf[:n], data) {
+		t.Errorf("the read after the crash: %q, %v; want %q", buf[:n], err, data)
+	}
+}
+
 // While a truncate is pending, its phase 1 held at the store, GetAttr answers
 // its size, below both the committed record and the writes pending before
 // it; and the same once phase 1 commits.

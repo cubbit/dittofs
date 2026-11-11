@@ -806,9 +806,10 @@ func (h cloneHold) Served(ctx context.Context, s entity.ShardID) error {
 // errCrashed answers a store change the crashed process's engine makes.
 var errCrashed = errors.New("fixture: the process crashed: its engine commits nothing")
 
-// fencedExistence is the store's existence view, refusing every change once
-// crashed is set: a crashed process's engine closing must not commit what
-// only recovery may, or a row after the crash would pass without recovery.
+// fencedExistence is the store's existence view, keeping every change from
+// the store once crashed is set: a crashed process's engine closing must not
+// commit what only recovery may, or a row after the crash would pass without
+// recovery.
 type fencedExistence struct {
 	engine.Existence
 	crashed   *atomic.Bool
@@ -816,9 +817,13 @@ type fencedExistence struct {
 	cloneGate *atomic.Pointer[gate]
 }
 
+// Commit answers a crashed process's existence commit as done and writes
+// nothing: the store never sees it, as with a refusal, but the old engine's
+// close, whose last group commit waits for every pending file, ends rather
+// than retrying until a stop bound that runs on the fixture's clock.
 func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
 	if x.crashed.Load() {
-		return nil, errCrashed
+		return nil, nil
 	}
 	if x.stalled.Load() {
 		<-ctx.Done()
