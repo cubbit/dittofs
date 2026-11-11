@@ -564,24 +564,33 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	}
 
 	// The pieces the write will publish: one record per segment its split can
-	// reach past the room this grant claims. A write that rolls publishes one
-	// index entry per piece, never one for the whole extent — pieces never
-	// join at run time — so a plain write's real adds are the pre-check's
-	// count plus one per extra piece, and each of those can eat a held entry.
+	// reach. A write that rolls publishes one index entry per piece, never one
+	// for the whole extent — pieces never join at run time — so a plain
+	// write's real adds are the pre-check's count plus one per extra piece,
+	// and each of those can eat a held entry.
 	//
 	// decision: the extra pieces are counted only while a reservation holds
 	// entries (heldEntries > 0), so a journal with no reservation keeps the
 	// pre-check's own figure exactly — a zero-gap fill or a net-zero write at
 	// a full index stays admitted as the pre-check admits it. A write that
 	// adds nothing publishes no entry and adds no piece. The figure fails
-	// closed: the pieces are the split the room this grant claims names, and a
+	// closed: the pieces are the split the room the section read names, and a
 	// write whose room something else spent draws one piece beyond it, refused
 	// at its publish rather than admitted past the bound here.
 	if c.heldEntries > 0 && adds > 0 {
-		// The publish count is the split's pieces, which sparesBeyondRoom names
-		// exactly: one for a write the room covers, and one per piece a
-		// roomless or partly filled stream splits it into.
-		adds += int64(max(sparesBeyondRoom(r.Payload, max(roomLeft, 0), c.cfg.SegmentCap), 1)) - 1
+		// The publish count mirrors the three ways the split above names: a
+		// write the room covers publishes one piece; one the room only partly
+		// covers publishes its head there and one more per segment past it; a
+		// roomless one publishes one per spare. sparesBeyondRoom leaves the
+		// room's own piece out, so it is added back here.
+		var published int64
+		switch {
+		case r.Payload <= max(roomLeft, 0):
+			published = 1
+		default:
+			published = 1 + int64(sparesBeyondRoom(r.Payload, max(roomLeft, 0), c.cfg.SegmentCap))
+		}
+		adds += published - 1
 		// The entries open reservations hold are not the write's to spend: the
 		// pre-check sized the write's own entries against the index's count,
 		// and this names them, the extra pieces included, against the room the

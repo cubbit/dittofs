@@ -28,8 +28,9 @@ func (ix *Index) WriteRetain(tag core.ShareTag, id core.FileID, p Placed, seq co
 
 // WriteRetainClaim is WriteRetain reporting the index entries its admission
 // reserved for the piece: the figure a caller holding the bound back for a
-// reservation hands over once the piece is published. A refused publish
-// reserves nothing and answers no entry.
+// reservation hands over once the piece is published. A refused publish —
+// before the admission, or a commit after it — reserves nothing the caller can
+// hand over and answers no entry.
 func (ix *Index) WriteRetainClaim(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq) (HeldDelta, int64, error) {
 	var err error
 	if ix.fs.view(id, func(f *file) { err = f.check(tag, id) }) && err != nil {
@@ -47,7 +48,12 @@ func (ix *Index) WriteRetainClaim(tag core.ShareTag, id core.FileID, p Placed, s
 		f.writeRetain(p)
 		return nil
 	})
-	return hd, adm, err
+	if err != nil {
+		// commit's own delta returns the admission to the count, so a refused
+		// publish answers no entry: nothing for a caller to hand over.
+		return hd, 0, err
+	}
+	return hd, adm, nil
 }
 
 // CheckWrite predicts a content write of e on id against the index's bound

@@ -509,9 +509,10 @@ func TestReserveAhead_EntriesHandedOverAsPublished(t *testing.T) {
 	cost := capacity.WriteCharge(1, testSegmentCap)
 	pieces, spares := capacity.PiecesFor(int64(writes)*cost, writes, testSegmentCap)
 	c, _ := newTestCore(t, func(o *coreOptions) {
-		// The bound holds the reservation's entries and one: a plain write fits
-		// once the held figure has fallen, and not before.
-		o.extentLimit = int64(pieces) + 1
+		// The bound holds the reservation's entries and two: the room a
+		// stream's tail leaves makes the plain write below publish two pieces,
+		// so it fits once the held figure has fallen, and not before.
+		o.extentLimit = int64(pieces) + 2
 		o.contentSpares = spares + 1
 	})
 	s := mustShare(t, c, 1)
@@ -542,9 +543,10 @@ func TestReserveAhead_EntriesHandedOverAsPublished(t *testing.T) {
 		t.Fatalf("the plain write beside a partly published reservation: %v", err)
 	}
 
-	// A second plain write is refused naming the index: the reservation still
+	// A plain write that rolls — two pieces, one more entry than the bound's
+	// remaining slack — is refused naming the index: the reservation still
 	// holds what its later writes need.
-	_, err := c.WriteAt(context.Background(), s, testFile(21), 0, []byte("q"), 1)
+	_, err := c.WriteAt(context.Background(), s, testFile(21), 0, make([]byte, 2*emptyRoomOf(testSegmentCap)), 1)
 	_ = refused(t, err, core.LimitIndex)
 }
 
@@ -573,8 +575,6 @@ func TestReserveAhead_RollingWriteCannotEatHeldEntries(t *testing.T) {
 
 	// Beside a reservation with exactly one entry of slack over its own held
 	// entries: the rolling write's second entry would eat one of them.
-	files := make([]core.FileID, 0)
-	_ = files
 	c2, _ := newTestCore(t, func(o *coreOptions) {
 		o.extentLimit = int64(pieces) + 1
 		// Enough spares for the reservation's own pieces and the plain
@@ -599,8 +599,6 @@ func TestReserveAhead_PlainWritersCannotSpendAHeldVersion(t *testing.T) {
 	r := reserve(t, c, s, capacity.WriteCharge(1, testSegmentCap), 1)
 	defer r.Release()
 
-	// The limit is the version the reservation holds plus one: one version is
-	// left beside it, and no more.
 	// Tighten the limit so exactly one version is left free: the reservation
 	// holds one, and two plain writers race for the free one.
 	if err := c.SetVersionLimit(core.Version{Counter: c.counters.NextVersion().Counter + 2}); err != nil {
@@ -639,5 +637,61 @@ func TestReserveAhead_PlainWritersCannotSpendAHeldVersion(t *testing.T) {
 	// The held version survived: the reservation's write draws it.
 	if _, err := c.WriteReserved(context.Background(), s, r, testFile(3), 0, []byte("r"), 1); err != nil {
 		t.Fatalf("the reserved write after two plain writers: %v", err)
+	}
+}
+
+// TestReserveAhead_StraddleBesideAReservationCannotEatAHeldEntry checks a plain
+// write that straddles a partly filled segment — its head in the room left and
+// its tail beyond it, two published pieces — is refused naming the index beside
+// a reservation with one entry of slack, and admitted with no reservation. The
+// refusal lands on the admission, before any byte is appended, rather than at
+// the publish the second piece would meet.
+func TestReserveAhead_StraddleBesideAReservationCannotEatAHeldEntry(t *testing.T) {
+	// A warm record leaves the stream a room between one byte and the write's
+	// payload: the write below splits into a head in that room and a tail in the
+	// next segment.
+	warm := roomAfter(0) - 2048
+	payload := make([]byte, 4096)
+	cost := capacity.WriteCharge(int64(len(payload)), testSegmentCap)
+	pieces, spares := capacity.PiecesFor(cost, 1, testSegmentCap)
+
+	// No reservation: the straddling write is admitted.
+	c, _ := newTestCore(t, func(o *coreOptions) {
+		o.extentLimit = 1 << 20
+		o.contentSpares = max(spares, 2) + 2
+	})
+	s := mustShare(t, c, 1)
+	if _, err := c.WriteAt(context.Background(), s, testFile(9), 0, make([]byte, warm), 1); err != nil {
+		t.Fatalf("the warm write: %v", err)
+	}
+	if room := c.Streams().For(testFile(9)).Room(); room <= 0 || room >= int64(len(payload)) {
+		t.Fatalf("the warm write leaves a room of %d, want between 1 and %d", room, len(payload))
+	}
+	if _, err := c.WriteAt(context.Background(), s, testFile(1), 0, payload, 1); err != nil {
+		t.Fatalf("the straddling write with no reservation: %v", err)
+	}
+
+	// Beside a reservation with one entry of slack over its held figure: the
+	// straddling write's second piece would eat a held entry, so it is refused
+	// at its admission — before it appends the head's record.
+	c2, _ := newTestCore(t, func(o *coreOptions) {
+		o.extentLimit = int64(pieces) + 2 // the warm piece, the reservation, and one slack
+		o.contentSpares = spares + 4
+	})
+	s2 := mustShare(t, c2, 1)
+	if _, err := c2.WriteAt(context.Background(), s2, testFile(9), 0, make([]byte, warm), 1); err != nil {
+		t.Fatalf("the warm write beside the reservation: %v", err)
+	}
+	if room := c2.Streams().For(testFile(9)).Room(); room <= 0 || room >= int64(len(payload)) {
+		t.Fatalf("the warm write beside the reservation leaves a room of %d, want between 1 and %d", room, len(payload))
+	}
+	r := reserve(t, c2, s2, cost, 1)
+	defer r.Release()
+
+	before, _ := c2.set.ShareBytesAndRetired(1)
+	_, err := c2.WriteAt(context.Background(), s2, testFile(2), 0, payload, 1)
+	_ = refused(t, err, core.LimitIndex)
+	if after, _ := c2.set.ShareBytesAndRetired(1); after != before {
+		t.Fatalf("the refused straddling write appended a record: the share's bytes rose from %d to %d", before, after)
 	}
 }
