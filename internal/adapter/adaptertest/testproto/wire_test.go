@@ -272,8 +272,8 @@ func TestEncodeAndChainAReply(t *testing.T) {
 	if err := (headerCodec{}).Encode(related, 0, out2); err != nil {
 		t.Fatal(err)
 	}
-	if got := decodeAll(t, out2.B)[0].flags; got != flagReply {
-		t.Errorf("the reply to a related, pending request has flags %#x, want the reply flag alone", got)
+	if got := decodeAll(t, out2.B)[0]; got.flags != flagReply || got.credits != 1 {
+		t.Errorf("the reply to a related, pending request that charged nothing has flags %#x and grants %d; want the reply flag alone and 1", got.flags, got.credits)
 	}
 	if err := (headerCodec{}).Chain(out, len(out.B)); !errors.Is(err, errShort) {
 		t.Errorf("Chain at an offset with no header = %v, want a refusal", err)
@@ -439,7 +439,7 @@ func FuzzFrame(f *testing.F) {
 			}
 			r := rh.(*header)
 			if r.Op() != h.Op() || r.Version() != h.Version() || r.id() != h.id() || r.session() != h.session() ||
-				r.tree() != h.tree() || r.seq() != h.seq() || r.credits() != h.credits() || r.status() != h.status() {
+				r.tree() != h.tree() || r.seq() != h.seq() || r.credits() != max(h.credits(), 1) || r.status() != h.status() {
 				t.Fatalf("a header re-encoded to different fields:\n got % x\nfrom % x", r[:], h[:])
 			}
 			next := ch.Next()

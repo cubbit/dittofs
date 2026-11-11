@@ -71,6 +71,8 @@ func (s Settings) Validate() error {
 type Protocol struct {
 	d      adapter.Deps
 	bare   bool
+	reg    *registry
+	pool   *resources.BufPool // over the reply budget; nil when d has no budgets
 	tables func() [2]*core.OpTable
 }
 
@@ -82,7 +84,10 @@ type Protocol struct {
 // request, which a test protocol can afford. Withdraw it if a test needs the
 // failure at New.
 func New(d adapter.Deps) *Protocol {
-	p := &Protocol{d: d}
+	p := &Protocol{d: d, reg: newRegistry()}
+	if d.Budgets != nil && d.Budgets.Reply != nil {
+		p.pool = resources.NewBufPool(d.Budgets.Reply)
+	}
 	p.tables = sync.OnceValue(p.build)
 
 	return p
@@ -91,17 +96,32 @@ func New(d adapter.Deps) *Protocol {
 // Bare is the same frames with the Header and Router stages only, on version
 // 1: what core's defaults for every other stage are tested on.
 func (p *Protocol) Bare() core.Protocol {
-	return &Protocol{d: p.d, bare: true, tables: p.tables}
+	return &Protocol{d: p.d, bare: true, reg: p.reg, pool: p.pool, tables: p.tables}
 }
 
 // Framer finds a record's length.
 func (p *Protocol) Framer() core.Framer { return framer{} }
 
-// NewConn returns the connection's stages.
+// NewConn returns the connection's stages: every one on the full protocol,
+// the Hold stage included since the connection may reach version 2, and the
+// Header and Router alone on Bare.
 func (p *Protocol) NewConn(c *core.Conn) core.Stages {
 	cs := &connState{p: p, c: c}
+	if p.bare {
+		return core.Stages{Header: headerCodec{}, Router: &router{cs}}
+	}
+	credits := newFlow()
 
-	return core.Stages{Header: headerCodec{}, Router: &router{cs}}
+	return core.Stages{
+		Header:     headerCodec{flow: credits},
+		Router:     &router{cs},
+		Security:   security{},
+		Flow:       credits,
+		Replay:     &replay{pool: p.pool, m: map[replayKey][]byte{}},
+		Hold:       hold{flow: credits},
+		MaxPending: 8,
+		OnClose:    func(context.Context) { p.reg.leave(cs) },
+	}
 }
 
 // connState is one connection's state.
@@ -115,6 +135,8 @@ type connState struct {
 // of the member before it, so the filehandle a PutFH set is the next's.
 type state struct {
 	conn *connState
+	sid  uint32       // the session the header names, resolved
+	tid  uint32       // the tree the header names
 	fh   vfs.Handle   // the current filehandle; nil: none
 	max  core.Version // on a Negotiate: the highest version it may pick
 }
@@ -125,9 +147,25 @@ type router struct{ cs *connState }
 // Route answers the table of the header's version: 1 or 2, and 1 alone on
 // Bare.
 func (rt *router) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	r, err := rt.request(h, prev)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return rt.cs.p.tables()[r.Version-1], r, nil
+}
+
+// request builds the Request: its level is what the connection negotiated
+// and what the header's session and tree reach, and its credential ends when
+// the session's does.
+func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, error) {
+	hd, ok := h.(*header)
+	if !ok {
+		return nil, errors.New("testproto: route a header of another protocol")
+	}
 	v := h.Version()
 	if v < 1 || v > 2 || (rt.cs.p.bare && v != 1) {
-		return nil, nil, fmt.Errorf("testproto: version %d: %w", v, core.ErrVersion)
+		return nil, fmt.Errorf("testproto: version %d: %w", v, core.ErrVersion)
 	}
 	var s *state
 	if prev != nil && h.Related() {
@@ -142,22 +180,34 @@ func (rt *router) Route(h core.Header, prev *core.Request) (*core.OpTable, *core
 			s.max = set.MaxVersion
 		}
 	}
-	level := core.NeedsNothing
+	s.sid, s.tid = hd.session(), hd.tree()
+	r := &core.Request{Version: v, Level: core.NeedsNothing, Conn: rt.cs.c, State: s}
 	if rt.cs.version.Load() != 0 {
-		level = core.NeedsNegotiated
+		r.Level = core.NeedsNegotiated
+		if carried, expires, hasTree := rt.cs.p.reg.look(s.sid, rt.cs, s.tid); carried && !rt.cs.p.bare {
+			r.Level = core.NeedsSession
+			if hasTree {
+				r.Level = core.NeedsTree
+			}
+			r.Call.Identity.Evidence.Expires = expires
+		}
 	}
 	if s.fh != nil {
-		level |= core.NeedsFH
+		r.Level |= core.NeedsFH
 	}
 
-	return rt.cs.p.tables()[v-1], &core.Request{Version: v, Level: level, Conn: rt.cs.c, State: s}, nil
+	return r, nil
 }
 
 // build is both versions' tables: version 1 answers every error at once,
 // version 2 holds.
 func (p *Protocol) build() [2]*core.OpTable {
+	errs := core.NewErrorTable(StatusFault, errorRows(false)...)
+	members := core.NewOpTable(errs, false, memberRows(p.ops(1))...)
+	members.ReadOp = readOp
+
 	return [2]*core.OpTable{
-		core.NewOpTable(core.NewErrorTable(StatusFault, errorRows(false)...), false, p.ops(1)...),
+		core.NewOpTable(errs, false, append(p.ops(1), compound(members))...),
 		core.NewOpTable(core.NewErrorTable(StatusFault, errorRows(true)...), true, p.ops(2)...),
 	}
 }
@@ -199,11 +249,28 @@ func errorRows(holds bool) []core.ErrorRow {
 	}
 }
 
-// ops is version v's rows.
-func (p *Protocol) ops(core.Version) []*core.Op {
+// ops is version v's rows, but for version 1's compound row, which build
+// adds over its members' table.
+func (p *Protocol) ops(v core.Version) []*core.Op {
 	both := core.Range{First: 1, Last: 2}
+	rows := []*core.Op{
+		{Code: OpSession, Name: "Session", Versions: both, Needs: core.NeedsNegotiated, Expired: true, Decode: core.Bind(
+			decodeSession, noBound[sessionReq], nil, nil, nil, p.session, encodeNothing[empty])},
+		{Code: OpLogoff, Name: "Logoff", Versions: both, Needs: core.NeedsSession, Role: core.RoleRelease, Expired: true, Decode: core.Bind(
+			noArguments[empty], noBound[empty], nil, nil, nil, p.logoff, encodeNothing[empty])},
+		{Code: OpTree, Name: "Tree", Versions: both, Needs: core.NeedsSession, Decode: core.Bind(
+			noArguments[empty], noBound[empty], nil, nil, nil, p.tree, encodeNothing[empty])},
+		{Code: OpNotify, Name: "Notify", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
+			decodeTarget, noBound[targetReq], nil, nil, nil, p.notify, encodeNothing[empty])},
+		{Code: OpViolate, Name: "Violate", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
+			noArguments[empty], noBound[empty], nil, nil, nil, violate, encodeNothing[empty])},
+	}
+	if v == 2 {
+		rows = append(rows, &core.Op{Code: OpPark, Name: "Park", Versions: core.Range{First: 2, Last: 2}, Needs: core.NeedsTree | core.NeedsFH, Decode: core.Bind(
+			decodeName, noBound[nameReq], nil, nil, nil, p.park, encodeNothing[empty])})
+	}
 
-	return []*core.Op{
+	return append(rows, []*core.Op{
 		{Code: OpNegotiate, Name: "Negotiate", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
 			noArguments[empty], noBound[empty], nil, nil, nil, negotiate, encodeVersion)},
 		{Code: OpPutFH, Name: "PutFH", Versions: both, Needs: core.NeedsTree, Role: core.RoleContext, Decode: core.Bind(
@@ -214,7 +281,7 @@ func (p *Protocol) ops(core.Version) []*core.Op {
 			decodeName, noBound[nameReq], nil, nil, nil, p.create, encodeNothing[empty])},
 		{Code: OpPanic, Name: "Panic", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
 			noArguments[empty], noBound[empty], nil, nil, nil, panics, encodeNothing[empty])},
-	}
+	}...)
 }
 
 // empty is the arguments, or the reply, of an operation that has none.

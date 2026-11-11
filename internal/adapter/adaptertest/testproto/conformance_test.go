@@ -110,3 +110,59 @@ func TestConformanceEchoEndToEnd(t *testing.T) {
 	_ = conn.Close()
 	stop()
 }
+
+// A reply the cache stored is handed back clear, in a fresh buffer each time:
+// wrapping the caller's reply in place, or a copy Lookup returned, changes
+// neither the cache's copy nor the next Lookup's.
+func TestConformanceReplayLookupCopies(t *testing.T) {
+	budgets := &resources.Budgets{
+		Receive:    resources.NewWaitBudget("receive", 8<<20),
+		Reply:      resources.NewWaitBudget("reply", 8<<20),
+		Connection: resources.NewBudget("connection", 1<<20),
+		Hold:       resources.NewBudget("hold", 1<<20),
+	}
+	st := New(adapter.Deps{VFS: vfstest.Null{}, Budgets: budgets}).NewConn(nil)
+
+	request := &resources.Buf{B: Append(nil, Msg{Op: OpCreate, Version: 2, ID: 3, Session: 5, Seq: 7, Credits: 1, Name: "n"})[lengthLen:]}
+	h, err := st.Header.Decode(request, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, err = st.Security.Unwrap(h, request, nil); err != nil {
+		t.Fatal(err)
+	}
+	reply := &resources.Buf{}
+	if err := st.Header.Encode(h, StatusOK, reply); err != nil {
+		t.Fatal(err)
+	}
+	reply.B = append(reply.B, "the reply's body"...)
+	clear := bytes.Clone(reply.B)
+
+	st.Replay.Store(h, reply)
+	if err := st.Security.Wrap(h, reply); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := st.Replay.Lookup(t.Context(), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == nil || !bytes.Equal(first.B, clear) {
+		t.Fatalf("the first Lookup did not return the clear reply that was stored")
+	}
+	if err := st.Security.Wrap(h, first); err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.Replay.Lookup(t.Context(), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second == nil || !bytes.Equal(second.B, clear) {
+		t.Fatalf("the second Lookup returned a reply the first one's wrap had changed")
+	}
+	if &first.B[0] == &second.B[0] {
+		t.Error("two Lookups returned the same buffer")
+	}
+	first.Release()
+	second.Release()
+}

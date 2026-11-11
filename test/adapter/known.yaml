@@ -51,3 +51,10 @@
   category: feature
   reason: 'Epics 4 and 5: one Echo accepted over loopback by a core server on testproto is answered, and the server leaks nothing when it stops. It stops first at the tables, which NewOpTable and NewErrorTable build once epic 5 gives them bodies, then at NewServer and Start (core: new server), which are epic 4''s; whichever epic moves the first failure updates this message.'
   issue: '#3966'
+- test: TestConformanceReplayLookupCopies
+  message: 'resources: get'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 3: the replay cache hands back a fresh clear copy of a stored reply, in a buffer reserved from the reply budget. BufPool.Get is a stub that refuses every buffer until epic 3 gives pkg/resources its bodies.'
+  issue: '#3964'

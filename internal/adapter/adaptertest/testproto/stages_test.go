@@ -173,3 +173,175 @@ func TestClientRefusesAChangedReply(t *testing.T) {
 		t.Errorf("a reply with its last byte changed opens with %v, want a checksum refusal", err)
 	}
 }
+
+// headerOf is the first header of the record m encodes to.
+func headerOf(t *testing.T, m Msg) *header {
+	t.Helper()
+	h, err := headerCodec{}.Decode(&resources.Buf{B: Append(nil, m)[lengthLen:]}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h.(*header)
+}
+
+// Admit charges what a message carries and refuses one that would overdraw,
+// then admits it once a reply's grant arrives; a grant stops at the target.
+func TestFlowChargesRefusesAnOverdrawAndTakesAGrant(t *testing.T) {
+	f := newFlow()
+	two := headerOf(t, Msg{Op: OpEcho, Version: 2, Credits: 2})
+	if _, err := f.Admit(t.Context(), two); !errors.Is(err, errOverdraw) {
+		t.Fatalf("a charge of 2 against the opening credit: Admit = %v, want a refusal", err)
+	}
+	one := headerOf(t, Msg{Op: OpEcho, Version: 2, Credits: 1})
+	release, err := f.Admit(t.Context(), one)
+	if err != nil || release == nil {
+		t.Fatalf("a charge of 1 against the opening credit: Admit = %v", err)
+	}
+	if _, err := f.Admit(t.Context(), one); !errors.Is(err, errOverdraw) {
+		t.Errorf("a second charge of 1 with nothing left: Admit = %v, want a refusal", err)
+	}
+	if got := f.grant(2); got != 2 {
+		t.Fatalf("a grant of 2 added %d", got)
+	}
+	if _, err := f.Admit(t.Context(), two); err != nil {
+		t.Errorf("the charge of 2 once a grant of 2 arrived: Admit = %v", err)
+	}
+	if got := f.grant(200); got != creditTarget {
+		t.Errorf("a grant of 200 on an empty balance added %d, want the target of %d", got, creditTarget)
+	}
+	if got := f.grant(1); got != 0 {
+		t.Errorf("a grant at the target added %d, want 0", got)
+	}
+}
+
+// A reply's grant goes through the connection's credits: it is counted, and
+// what the target leaves no room for is not granted.
+func TestEncodeGrantsThroughTheConnectionsCredits(t *testing.T) {
+	f := newFlow()
+	codec := headerCodec{flow: f}
+	req := headerOf(t, Msg{Op: OpEcho, Version: 2, ID: 4, Credits: 3})
+	out := &resources.Buf{}
+	if err := codec.Encode(req, StatusOK, out); err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeAll(t, out.B)[0].credits; got != 3 {
+		t.Errorf("the reply grants %d, want the 3 its request charged", got)
+	}
+	if _, err := f.Admit(t.Context(), headerOf(t, Msg{Op: OpEcho, Version: 2, Credits: 4})); err != nil {
+		t.Errorf("a charge of 4 after a grant of 3 on the opening credit: %v", err)
+	}
+	f.grant(creditTarget)
+	out.B = out.B[:0]
+	if err := codec.Encode(req, StatusOK, out); err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeAll(t, out.B)[0].credits; got != 0 {
+		t.Errorf("a reply at the credit target grants %d, want 0", got)
+	}
+}
+
+func TestHoldKeyIsNeverZero(t *testing.T) {
+	var s hold
+	for _, id := range []uint64{0, 1, 1<<63 - 1} {
+		key := s.Key(headerOf(t, Msg{Op: OpCreate, Version: 2, ID: id}))
+		if key == 0 || key != id|1<<63 {
+			t.Errorf("Key of message %d = %#x, want its ID with the top bit set", id, key)
+		}
+	}
+}
+
+// Interim grants the request's credits with grant and one without, adds the
+// credits of the members after, and stops at the target.
+func TestInterimGrants(t *testing.T) {
+	req := Msg{Op: OpCreate, Version: 2, ID: 6, Session: 0, Credits: 5}
+	after := func(credits ...uint16) []core.Header {
+		var hs []core.Header
+		for _, c := range credits {
+			hs = append(hs, headerOf(t, Msg{Op: OpEcho, Version: 2, Credits: c}))
+		}
+		return hs
+	}
+	for _, c := range []struct {
+		name  string
+		grant bool
+		after []core.Header
+		want  uint16
+	}{
+		{"with grant", true, nil, 5},
+		{"without grant", false, nil, 1},
+		{"with the members after", false, after(2, 3), 6},
+		{"past the target", true, after(40, 40), creditTarget},
+	} {
+		s := hold{flow: &flow{}}
+		out := &resources.Buf{B: []byte("before")}
+		if err := s.Interim(headerOf(t, req), c.grant, c.after, out); err != nil {
+			t.Fatal(err)
+		}
+		got := decodeAll(t, out.B[len("before"):])
+		if len(got) != 1 || got[0].credits != c.want || got[0].flags != flagReply|flagInterim || got[0].id != 6|1<<63 || got[0].op != OpCreate {
+			t.Errorf("%s: the interim is %+v; want %d credits, the reply and interim flags, and the key as its ID", c.name, got, c.want)
+		}
+	}
+}
+
+// Final's header carries the key, and grants the rest of the request's
+// credits only when its interim withheld them.
+func TestFinalGrantsWhatTheInterimWithheld(t *testing.T) {
+	var s hold
+	req := headerOf(t, Msg{Op: OpCreate, Version: 2, ID: 6, Credits: 5, Pend: true})
+	for _, c := range []struct {
+		grant bool
+		want  uint16
+	}{{true, 4}, {false, 0}} {
+		out := &resources.Buf{}
+		if err := (headerCodec{}).Encode(s.Final(req, c.grant), StatusDelay, out); err != nil {
+			t.Fatal(err)
+		}
+		got := decodeAll(t, out.B)[0]
+		if got.credits != c.want || got.id != 6|1<<63 || got.flags != flagReply || core.Status(got.status) != StatusDelay {
+			t.Errorf("the final reply with grant %v is %+v; want %d credits, the key as its ID and the reply flag alone", c.grant, got, c.want)
+		}
+	}
+	if req.credits() != 5 || req.id() != 6 {
+		t.Error("Final changed the request's own header")
+	}
+	free := headerOf(t, Msg{Op: OpCreate, Version: 2, ID: 6})
+	out := &resources.Buf{}
+	if err := (headerCodec{}).Encode(s.Final(free, true), StatusOK, out); err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeAll(t, out.B)[0].credits; got != 0 {
+		t.Errorf("the final reply to a request that charged nothing grants %d, want 0", got)
+	}
+}
+
+func TestCancelsAndPends(t *testing.T) {
+	var s hold
+	if key, ok := s.Cancels(headerOf(t, Msg{Op: OpCancel, Version: 2, Target: 9})); !ok || key != 9|1<<63 {
+		t.Errorf("Cancels of a Cancel naming message 9 = %#x, %v; want that request's key", key, ok)
+	}
+	if _, ok := s.Cancels(headerOf(t, Msg{Op: OpEcho, Version: 2, ID: 9})); ok {
+		t.Error("Cancels names a request for an Echo")
+	}
+	if !s.Pends(headerOf(t, Msg{Op: OpCreate, Version: 2, Pend: true}), nil) || s.Pends(headerOf(t, Msg{Op: OpCreate, Version: 2}), nil) {
+		t.Error("Pends does not follow the message's pend flag")
+	}
+}
+
+// The cache keeps its own copy under the session and sequence, and answers
+// nothing for a request it has not seen.
+func TestReplayStoresItsOwnCopyPerSessionAndSequence(t *testing.T) {
+	r := &replay{m: map[replayKey][]byte{}}
+	req := headerOf(t, Msg{Op: OpCreate, Version: 1, Seq: 7})
+	rep := &resources.Buf{B: []byte("the reply")}
+	r.Store(req, rep)
+	rep.B[0] = 'X'
+	if got := r.m[replayKey{0, 7}]; string(got) != "the reply" {
+		t.Errorf("the cache holds %q after the caller changed its reply, want its own copy", got)
+	}
+	for _, other := range []Msg{{Op: OpCreate, Version: 1, Seq: 8}, {Op: OpCreate, Version: 1, Seq: 7, Session: 2}} {
+		if buf, err := r.Lookup(t.Context(), headerOf(t, other)); buf != nil || err != nil {
+			t.Errorf("Lookup of sequence %d under session %d = %v, %v; want nothing", other.Seq, other.Session, buf, err)
+		}
+	}
+}

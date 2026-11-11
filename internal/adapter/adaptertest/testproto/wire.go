@@ -155,6 +155,12 @@ func (h *header) seq() uint32      { return binary.BigEndian.Uint32(h[offSeq:]) 
 func (h *header) status() uint32   { return binary.BigEndian.Uint32(h[offStatus:]) }
 func (h *header) checksum() uint32 { return binary.BigEndian.Uint32(h[offChecksum:]) }
 
+// final is the header HoldCodec.Final returns: a copy of a held request's,
+// carrying its key as the message ID and exactly the credits its final reply
+// grants. It is a type of its own, not a flag in the header, so nothing a
+// client sends can pass for one.
+type final struct{ header }
+
 // headerAt is the header at off in body, checked to lie inside it with a next
 // that is 0 or leaves room for a whole header after this one.
 func headerAt(body []byte, off int) (*header, error) {
@@ -205,8 +211,10 @@ func xorKey(b []byte, session uint32) {
 	}
 }
 
-// headerCodec decodes a request's header and encodes its reply's.
-type headerCodec struct{}
+// headerCodec decodes a request's header and encodes its reply's. flow is the
+// connection's credits, which a reply's grant is added to; nil grants without
+// counting, as Bare does.
+type headerCodec struct{ flow *flow }
 
 // Decode returns the header at off in the record.
 func (headerCodec) Decode(rec *resources.Buf, off int) (core.Header, error) {
@@ -220,17 +228,34 @@ func (headerCodec) Decode(rec *resources.Buf, off int) (core.Header, error) {
 
 // Encode appends to out the header of the reply to h with status s: h's
 // operation, version, IDs and sequence, the reply flag, and a grant of the
-// credits h charged. Its checksum is left zero for Security.Wrap.
-func (headerCodec) Encode(h core.Header, s core.Status, out *resources.Buf) error {
-	req, ok := h.(*header)
-	if !ok {
+// credits h charged, at least one, so a client that charges nothing still
+// earns credit; a header from HoldCodec.Final grants exactly what it carries.
+// The grant stops at the connection's credit target. Its checksum is left
+// zero for Security.Wrap.
+func (c headerCodec) Encode(h core.Header, s core.Status, out *resources.Buf) error {
+	var req *header
+	exact := false
+	switch h := h.(type) {
+	case *header:
+		req = h
+	case *final:
+		req, exact = &h.header, true
+	default:
 		return fmt.Errorf("testproto: encode a reply to a %T header", h)
 	}
 	at := len(out.B)
 	out.B = append(out.B, req[:]...)
 	rep := (*header)(out.B[at : at+headerLen])
 	binary.BigEndian.PutUint32(rep[offNext:], 0)
+	grant := req.credits()
+	if !exact {
+		grant = max(grant, 1)
+	}
+	if c.flow != nil {
+		grant = c.flow.grant(grant)
+	}
 	rep[offFlags] = flagReply
+	binary.BigEndian.PutUint16(rep[offCredits:], grant)
 	binary.BigEndian.PutUint32(rep[offStatus:], uint32(s))
 	binary.BigEndian.PutUint32(rep[offChecksum:], 0)
 

@@ -1,11 +1,25 @@
 package testproto
 
 import (
+	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
+	"net/netip"
+	"sync"
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/resources"
+)
+
+// The stages a connection of the full protocol sets.
+var (
+	_ core.HeaderCodec = headerCodec{}
+	_ core.Router      = (*router)(nil)
+	_ core.Security    = security{}
+	_ core.FlowControl = (*flow)(nil)
+	_ core.ReplayCache = (*replay)(nil)
+	_ core.HoldCodec   = hold{}
 )
 
 var errNoPrev = errors.New("testproto: a member that inherits its session with none before it")
@@ -80,4 +94,185 @@ func (security) Wrap(_ core.Header, reply *resources.Buf) error {
 			return nil
 		}
 	}
+}
+
+// creditTarget is the most credits a connection holds at once.
+const creditTarget = 64
+
+var errOverdraw = errors.New("testproto: a message that charges more credits than the connection holds")
+
+// flow is the connection's credits: one to start with, charged by each
+// request and granted back by each reply.
+type flow struct {
+	mu      sync.Mutex
+	balance int
+}
+
+func newFlow() *flow { return &flow{balance: 1} }
+
+// Admit charges the header's credits, refusing a message that would overdraw.
+func (f *flow) Admit(_ context.Context, h core.Header) (func(), error) {
+	hd, ok := h.(*header)
+	if !ok {
+		return nil, errors.New("testproto: admit a header of another protocol")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if c := int(hd.credits()); c > f.balance {
+		return nil, errOverdraw
+	} else {
+		f.balance -= c
+	}
+
+	return func() {}, nil
+}
+
+// grant adds n credits, as many as the target leaves room for, and answers
+// how many it added.
+func (f *flow) grant(n uint16) uint16 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	g := min(int(n), max(creditTarget-f.balance, 0))
+	f.balance += g
+
+	return uint16(g)
+}
+
+// keyOf is the key a held or parked request is known by: its message ID with
+// the top bit set, so it is never 0.
+func keyOf(h *header) uint64 { return h.id() | 1<<63 }
+
+// hold is the stage version 2's table needs.
+type hold struct{ flow *flow }
+
+func (hold) Key(h core.Header) uint64 {
+	hd, ok := h.(*header)
+	if !ok {
+		return 1 << 63
+	}
+
+	return keyOf(hd)
+}
+
+// Interim appends the interim reply to h: it grants h's credits if grant,
+// else one, and the credits of every header in after, the sum stopping at the
+// credit target.
+//
+// ponytail: the credits of chain members answered before h are not added
+// here, since each of those members' own replies grants them. Add them here
+// if core comes to answer such a member with no reply of its own.
+func (s hold) Interim(h core.Header, grant bool, after []core.Header, out *resources.Buf) error {
+	hd, ok := h.(*header)
+	if !ok {
+		return errors.New("testproto: an interim for a header of another protocol")
+	}
+	want := 1
+	if grant {
+		want = int(hd.credits())
+	}
+	for _, a := range after {
+		if ah, ok := a.(*header); ok {
+			want += int(ah.credits())
+		}
+	}
+	granted := s.flow.grant(uint16(min(want, creditTarget)))
+
+	at := len(out.B)
+	out.B = append(out.B, hd[:]...)
+	rep := (*header)(out.B[at : at+headerLen])
+	binary.BigEndian.PutUint32(rep[offNext:], 0)
+	rep[offFlags] = flagReply | flagInterim
+	binary.BigEndian.PutUint16(rep[offCredits:], granted)
+	binary.BigEndian.PutUint64(rep[offID:], keyOf(hd))
+	binary.BigEndian.PutUint32(rep[offStatus:], 0)
+	binary.BigEndian.PutUint32(rep[offChecksum:], 0)
+
+	return nil
+}
+
+// Final is the header the final reply to a held request is encoded from: h's
+// with its key as the message ID. If grant, its interim granted one credit of
+// h's, and this grants the rest; otherwise none.
+func (hold) Final(h core.Header, grant bool) core.Header {
+	hd, ok := h.(*header)
+	if !ok {
+		return h
+	}
+	f := &final{header: *hd}
+	var credits uint16
+	if grant && hd.credits() > 0 {
+		credits = hd.credits() - 1
+	}
+	binary.BigEndian.PutUint16(f.header[offCredits:], credits)
+	binary.BigEndian.PutUint64(f.header[offID:], keyOf(hd))
+
+	return f
+}
+
+// Cancels names the request a Cancel carries the message ID of.
+func (hold) Cancels(h core.Header) (uint64, bool) {
+	hd, ok := h.(*header)
+	if !ok || hd.Op() != OpCancel {
+		return 0, false
+	}
+
+	return keyOf(hd), true
+}
+
+// Pends answers the message's pend flag.
+func (hold) Pends(h core.Header, _ error) bool {
+	hd, ok := h.(*header)
+
+	return ok && hd.flags()&flagPend != 0
+}
+
+// replayKey names a cached reply: its session and sequence.
+type replayKey struct{ session, seq uint32 }
+
+// replay answers a request it has cached the reply of.
+type replay struct {
+	pool *resources.BufPool // over the reply budget; nil: no budgets were given
+	mu   sync.Mutex
+	m    map[replayKey][]byte
+}
+
+// Lookup returns a fresh copy of the reply cached for h's session and
+// sequence, in a buffer reserved from the reply budget under ctx; or nil, nil
+// when none is cached.
+//
+// ponytail: the copy is reserved under no client's key, since a stage is
+// handed no client address, so a client replaying many requests takes no turn
+// behind the others. Key it by the client once core hands the stage one.
+func (r *replay) Lookup(ctx context.Context, h core.Header) (*resources.Buf, error) {
+	hd, ok := h.(*header)
+	if !ok {
+		return nil, errors.New("testproto: a replay lookup for a header of another protocol")
+	}
+	r.mu.Lock()
+	cached, found := r.m[replayKey{hd.session(), hd.seq()}]
+	r.mu.Unlock()
+	if !found {
+		return nil, nil
+	}
+	if r.pool == nil {
+		return nil, errors.New("testproto: a cached reply and no reply budget to copy it under")
+	}
+	buf, err := r.pool.Get(ctx, netip.Addr{}, len(cached))
+	if err != nil {
+		return nil, err
+	}
+	buf.B = append(buf.B[:0], cached...)
+
+	return buf, nil
+}
+
+// Store keeps its own copy of reply, which the caller then wraps in place.
+func (r *replay) Store(h core.Header, reply *resources.Buf) {
+	hd, ok := h.(*header)
+	if !ok {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.m[replayKey{hd.session(), hd.seq()}] = bytes.Clone(reply.B)
 }

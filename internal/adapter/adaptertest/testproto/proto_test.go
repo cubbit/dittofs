@@ -65,7 +65,8 @@ func TestEchoAnswersItsPayloadUnderItsOwnRole(t *testing.T) {
 	if !bytes.Equal(out.B, []byte("headhello")) {
 		t.Errorf("the reply is %q, want the payload appended after what was there", out.B)
 	}
-	if _, _, err := New(adapter.Deps{}).ops(1)[2].Decode(nil, 1); err == nil {
+	op, _ := row(t, 1, OpEcho, "\x00")
+	if _, _, err := op.Decode(nil, 1); err == nil {
 		t.Error("an Echo with no role byte was decoded")
 	}
 }
@@ -74,7 +75,7 @@ func TestEchoAnswersItsPayloadUnderItsOwnRole(t *testing.T) {
 // takes a nil reply.
 func TestEveryRowEncodesWithNoReply(t *testing.T) {
 	for _, op := range New(adapter.Deps{}).ops(2) {
-		inv, _, err := op.Decode([]byte("\x00"), 2)
+		inv, _, err := op.Decode(make([]byte, 9), 2)
 		if err != nil {
 			t.Fatalf("%s: %v", op.Name, err)
 		}
@@ -148,6 +149,11 @@ func TestRows(t *testing.T) {
 		OpEcho:      {core.NeedsNothing, false},
 		OpCreate:    {core.NeedsTree | core.NeedsFH, true},
 		OpPanic:     {core.NeedsNothing, false},
+		OpSession:   {core.NeedsNegotiated, false},
+		OpLogoff:    {core.NeedsSession, false},
+		OpTree:      {core.NeedsSession, false},
+		OpNotify:    {core.NeedsNothing, false},
+		OpViolate:   {core.NeedsNothing, false},
 	}
 	for _, v := range []core.Version{1, 2} {
 		seen := map[uint32]bool{}
@@ -166,8 +172,28 @@ func TestRows(t *testing.T) {
 			seen[op.Code] = true
 		}
 		if len(seen) != len(want) {
-			t.Errorf("version %d has %d of the %d stateless rows", v, len(seen), len(want))
+			t.Errorf("version %d has %d of the %d rows both versions serve", v, len(seen), len(want))
 		}
+	}
+
+	// Park is version 2's alone, and Session and Logoff run on an expired
+	// credential, Logoff as a release.
+	byCode := func(v core.Version) map[uint32]*core.Op {
+		m := map[uint32]*core.Op{}
+		for _, op := range New(adapter.Deps{}).ops(v) {
+			m[op.Code] = op
+		}
+		return m
+	}
+	v1, v2 := byCode(1), byCode(2)
+	if v1[OpPark] != nil || v2[OpPark] == nil || v2[OpPark].Versions != (core.Range{First: 2, Last: 2}) || v2[OpPark].Needs != core.NeedsTree|core.NeedsFH {
+		t.Errorf("Park: version 1 has it: %v; version 2's row: %+v", v1[OpPark] != nil, v2[OpPark])
+	}
+	if !v2[OpSession].Expired || !v2[OpLogoff].Expired || v2[OpLogoff].Role != core.RoleRelease || v2[OpEcho].Expired {
+		t.Errorf("the expired-credential columns: Session %v, Logoff %v with role %d, Echo %v", v2[OpSession].Expired, v2[OpLogoff].Expired, v2[OpLogoff].Role, v2[OpEcho].Expired)
+	}
+	if v1[OpCancel] != nil || v2[OpCancel] != nil {
+		t.Error("Cancel has a row: it is never routed")
 	}
 }
 
@@ -251,9 +277,6 @@ func TestRouteRefusesAVersionItDoesNotServe(t *testing.T) {
 		v    core.Version
 	}{{"version 0", full, 0}, {"version 3", full, 3}, {"version 2 on Bare", full.Bare(), 2}} {
 		st := c.p.NewConn(nil)
-		if st.Header == nil || st.Router == nil {
-			t.Fatalf("%s: NewConn left Header or Router unset", c.name)
-		}
 		if _, _, err := st.Router.Route(header(c.v), nil); !errors.Is(err, core.ErrVersion) {
 			t.Errorf("%s: Route = %v, want ErrVersion", c.name, err)
 		}
