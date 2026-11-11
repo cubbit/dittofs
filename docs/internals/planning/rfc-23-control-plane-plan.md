@@ -75,7 +75,8 @@ database or configuration refuses and names it. No migration tool.
   and §5.4.
 - **A3. RFC 16's `ControlPlane` gains one transactional entry point.** It takes the audit and
   idempotency metadata and runs a function over a transaction that carries the view's writes; a
-  refused sign-in counts its failure in a `SignInFailures` record written the same way. This
+  refused sign-in counts its failure in a `SignInFailures` record written the same way. The view
+  also gains a setting's delete and the `Secret` reads and writes the RFC 13 plan builds on. This
   touches RFC 16 §2.3, §3 and §4.2, and RFC 23 §4.3 cites it.
 - **A4. Only reconciled records carry a position.** RFC 23 §2.4 narrows "every control-plane record"
   to a setting, a share and a principal, as RFC 16 §3 has it; a grant, an export policy, a netgroup
@@ -328,15 +329,15 @@ registers no suite and no group, and changes no `lint-go` tag.
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | Delete v1, declare the surface | v1 deleted, cells and harness fixed; the node's, wire types', client's and kvstore's surfaces; the new `cmd/dfs` skeleton; architecture tests | 11 | 15 | team | every epic |
 | E2 | Store records | the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry | 8 | 20 | C | E5; partly E3, E4 |
-| E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven | 10 | 25 | A | E6 (partly), E7 |
-| E4 | The management API | server, route table, write path on the RFC 13 plan's check, preconditions, idempotency, problems, reads, resources, operations, audit read, the domain's actions (A5) | 12 | 30 | B | E6 (partly), E7 |
+| E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven | 9 | 23 | A | E6 (partly), E7 |
+| E4 | The management API | server, route table, write path on the RFC 13 plan's check, preconditions, idempotency, problems, reads, resources, operations, audit read, the domain's actions (A5) | 12 | 29 | B | E6 (partly), E7 |
 | E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): `dfs init`, `dfs reset-admin`, tokens, sessions, roles, throttling, first password, signing key | 7 | 16.5 | C | E6 (partly), E7 |
 | E6 | The CLI | the client on the wire types, the rebuilt `dfsctl`, generated reference | 6 | 12.5 | A | E7 |
 | E7 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides | 5 | 12.5 | team | E8 |
 | E8 🔀 | E2E green | the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **59** | **131.5** | | |
+| | **Total** | | **58** | **128.5** | | |
 
-**Plan estimate: 59 subtasks, 131.5 man-days, not counting epic 8.**
+**Plan estimate: 58 subtasks, 128.5 man-days, not counting epic 8.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
@@ -567,7 +568,7 @@ Each of these will carry a `ponytail:` marker at the code site:
 - **A rotation finishes in one step on one node.** "Every node holds the new version" is this node.
   - *Ceiling:* a second node.
   - *Upgrade path:* a wait step on the versions node status reports, with the cluster rows.
-  - *Epics:* 3 (credential) and 5 (signing key).
+  - *Epic:* 5 (the signing key).
 - **A parked long poll re-reads its record once a second** on the injected clock, with no
   notification hub.
   - *Ceiling:* RFC 23 §4.3's bound of parked polls, at one read each per second.
@@ -664,7 +665,7 @@ API write commits in, and a share's removal steps past the mark.
 
 ### Epic 3 — The node
 
-**Epic 3 estimate: 10 subtasks, 25 man-days.**
+**Epic 3 estimate: 9 subtasks, 23 man-days.**
 
 `node.New` composes every component that exists, and the node starts, reconciles, reports and
 stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
@@ -672,7 +673,6 @@ stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 **Owns:**
 - RFC 23 §2, §2.1 to §2.5 (single node);
 - RFC 23 §3.2's delete, driven past the mark;
-- RFC 23 §3.3's credential rotation, as a runner kind;
 - RFC 23 §4.6, the runner (single node);
 - RFC 23 §8.1, the rows not marked cluster, but the OpenID Connect row (deferred, O2) and the
   adapter that fails to start (RFC 20's plan's epic 7, D12);
@@ -699,16 +699,15 @@ stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
   (RFC 23 §2.5).
 - The operation runner on one node (D8, §4.3 above).
 - A user's and a group's deletion driven past the mark, their batches resumed at start (RFC 23
-  §3.5, RFC 16 §3).
+  §3.5, RFC 16 §3), which runs the restart clause of RFC 13 §9's "§7 user secrets".
 - A share's removal driven past the mark: epic 2's steps, with the join of RFC 23 §2.3's removed-share
   row at step 3, resumed at start.
-- The credential rotation's steps (RFC 23 §3.3; §4.3 above).
 - `dfs start`: RFC 23 §2's `run`, and nothing else.
 - The node harness, `internal/node/nodetest`.
 
 ### Epic 4 — The management API
 
-**Epic 4 estimate: 12 subtasks, 30 man-days.**
+**Epic 4 estimate: 12 subtasks, 29 man-days.**
 
 The API server answers every in-scope resource and action, writes only records, and maps every
 error to a status.
@@ -738,11 +737,11 @@ error to a status.
   `Idempotency-Key`, and A3's transaction with its audit record.
 - Reads: the envelope, cursor listings, indexed filters, and `applied` joined from node status
   (RFC 23 §2.4, §4.1, §4.2).
-- Shares: create, quiesce and resume, rename and re-path, delete as an operation, and
-  `?wait=serving` (RFC 23 §3.2). A share in a new namespace serves at commit: its first claim waits
+- Shares: create, quiesce and resume, rename and re-path, delete as an operation, a rebind of a share
+  with content refused (RFC 13 §5.1, "§5.1 share binding"), and `?wait=serving` (RFC 23 §3.2). A share in a new namespace serves at commit: its first claim waits
   with RFC 27's `Claim` (O2).
-- Remote stores and namespaces: bound fields, a proven endpoint, and the credential rotation started
-  as an operation (RFC 23 §3.3).
+- Remote stores and namespaces: bound fields, and a change of endpoint or credential refused as the
+  RFC 13 plan's D9 says, until the claim exists (O2).
 - Adapters, with `port` as a setting (A1), validated by `pkg/adapter/settings`'s validator, and the
   generic settings resource (D5).
 - Users, groups, grants, netgroups and quotas (RFC 23 §3.5), a user's or group's delete answered as an
@@ -889,6 +888,8 @@ entries and runs RFC 23's e2e rows.
     route-table row and, for an operation, one runner kind. That includes the "§4.4 background
     field" row, which starts a re-home;
   - the event streams and `AuditCursor`: RFC 25 §4's spool;
+  - a remote store's credential rotation and changed endpoint (RFC 23 §3.3), refused until the
+    capability check and the claim exist (the RFC 13 plan's D9);
   - a new namespace's first claim, an operation RFC 23 §3.2 and §4.6 name: RFC 27's `Claim` (§4.3
     above). Until then a share created in a new namespace serves once its binding does, with no
     claim operation;
@@ -939,7 +940,7 @@ entries and runs RFC 23's e2e rows.
 | RFC 23 §2.5 | E3; E7 (row) |
 | RFC 23 §3.1 | E1 (types), E2 (records) |
 | RFC 23 §3.2 | E2 (removal steps), E3 (driving), E4 (routes); E7 (delete row); E8 (mount row) |
-| RFC 23 §3.3 | E3 (rotation steps), E4; deferred actions O2 |
+| RFC 23 §3.3 | E4 (with the RFC 13 plan's D9 refusal); rotation and deferred actions O2 |
 | RFC 23 §3.4 | E4 (with A1); the node's adapter rows, RFC 20's plan's epic 7 (D12); O7 |
 | RFC 23 §3.5 | E3 (user and group deletion driven), E4 (with A5), E6; E7 (row) |
 | RFC 23 §3.6 | deferred, O2 |
