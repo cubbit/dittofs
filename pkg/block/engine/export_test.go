@@ -630,57 +630,17 @@ func (e *Engine) CommitAll(ctx context.Context, j Journal) error {
 }
 
 // DropShare takes share s's files off the due set of journal j and its
-// items off the journal's removal loop, ending each, as Drop will, and
+// items off the journal's removal loop, ending each, as Drop does, and
 // returns once no batch is in flight there, so none of them is committed
 // after.
 func (e *Engine) DropShare(ctx context.Context, j Journal, s entity.ShareID) error {
 	g := e.groupCommitFor(j)
-	g.removals.dropShare(s)
-	for {
-		g.mu.Lock()
-		for f, d := range g.due {
-			if d.b.share.ID == s {
-				delete(g.due, f)
-				g.clearFailingLocked(f)
-			}
-		}
-		inFlight, returned := g.inFlight && !g.closed, g.returned
-		g.mu.Unlock()
-		if !inFlight {
-			return nil
-		}
-		select {
-		case <-returned:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
 
-// dropShare takes share s's items off the loop, ending each; one running
-// now is ended when its run returns, and none of the share's is enqueued
-// after.
-func (l *removalLoop) dropShare(s entity.ShareID) {
-	l.mu.Lock()
-	if l.dropped == nil {
-		l.dropped = map[entity.ShareID]bool{}
-	}
-	l.dropped[s] = true
-	var dropped []*loopItem
-	l.items = slices.DeleteFunc(l.items, func(it *loopItem) bool {
-		if it.b.share.ID == s {
-			dropped = append(dropped, it)
-			return true
-		}
-		return false
-	})
-	l.mu.Unlock()
-	for _, it := range dropped {
-		l.unstall(it)
-		if it.end != nil {
-			it.end()
-		}
-	}
+	g.removals.dropShare(s)
+
+	_, err := g.takeDue(ctx, s)
+
+	return err
 }
 
 // EntryLocked reports whether f's entry lock is held: a probe that takes and
@@ -770,4 +730,63 @@ func (e *Engine) OnJoining(f func(what string)) {
 // Served reports whether share s has a binding in the share table.
 func (e *Engine) Served(s entity.ShareID) bool {
 	return e.table()[s] != nil
+}
+
+// EnterForTest registers one unit of work on share s's gate, as a content
+// call does, and answers the function that withdraws it.
+func (e *Engine) EnterForTest(s entity.ShareID) (leave func(), err error) {
+	b, err := e.enter(s)
+	if err != nil {
+		return nil, err
+	}
+
+	return b.gate.leave, nil
+}
+
+// InFlightForTest is the count of units entered on share s's gate and not
+// withdrawn.
+func (e *Engine) InFlightForTest(s entity.ShareID) int64 {
+	return e.table()[s].gate.st.Load() &^ shutBit
+}
+
+// LifecycleLockFree reports whether the lifecycle mutex is free now.
+func (e *Engine) LifecycleLockFree() bool {
+	if !e.mu.TryLock() {
+		return false
+	}
+
+	e.mu.Unlock()
+
+	return true
+}
+
+// EnqueueKind posts an item of kind for file f on share s's removal loop, even
+// when the share refuses calls, that calls run and then finishes, or, with
+// retry, asks to run again; end is called if the item is ended before it
+// finished.
+func (e *Engine) EnqueueKind(
+	s entity.ShareID,
+	f entity.FileID,
+	kind entity.RemovalKind,
+	retry bool,
+	run func(ctx context.Context),
+	end func(),
+) {
+	b := e.table()[s]
+
+	b.gc.removals.enqueue(&loopItem{
+		b:    b,
+		f:    f,
+		kind: kind,
+		run: func(ctx context.Context) answer {
+			run(ctx)
+
+			if retry {
+				return itemRetry
+			}
+
+			return itemDone
+		},
+		end: end,
+	})
 }

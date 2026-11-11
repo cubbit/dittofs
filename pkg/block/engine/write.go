@@ -25,10 +25,12 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	if off < 0 || int64(len(p)) > math.MaxInt64-off {
 		return vfserr.Verifier{}, vfserr.ErrInvalid
 	}
-	b, err := e.bindingOf(s)
+
+	b, err := e.enter(s)
 	if err != nil {
 		return vfserr.Verifier{}, err
 	}
+	defer b.gate.leave()
 	if err := e.fenceGate(b); err != nil {
 		return vfserr.Verifier{}, err
 	}

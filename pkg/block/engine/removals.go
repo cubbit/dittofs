@@ -69,18 +69,15 @@ type loopItem struct {
 // the scheduler's removal source when offload adds the first work that needs
 // fairness between shares.
 type removalLoop struct {
-	e      *Engine
-	mu     sync.Mutex
-	items  []*loopItem
-	closed bool
-	ending []*loopItem // the items the stop took, ended once the loop's goroutine has
-	// decision: only a test helper sets dropped, until Drop is built, so the
-	// branches that read it end a dropped share's items for tests alone.
-	// They are the shape Drop needs: Drop sets it, and the helper goes,
-	// once built. Delete the field and its branches if Drop ends a share's
-	// items some other way.
+	e       *Engine
+	mu      sync.Mutex
+	items   []*loopItem
+	closed  bool
+	ending  []*loopItem              // the items the stop took, ended once the loop's goroutine has
 	dropped map[entity.ShareID]bool  // shares dropped: an item of one, running or enqueued, is ended
 	waits   map[*loopItem]bool       // items waiting outside the loop, removal_stalled: see waiting
+	running *loopItem                // the item the loop is running, nil between two
+	ran     chan struct{}            // closed when the running item's step returned
 	steps   atomic.Int64             // items run, for a test to wait on a run
 	parked  atomic.Bool              // waiting with its timer armed, for a test to step the clock past it
 	runs    [runResults]atomic.Int64 // engine_removal_runs_total by result
@@ -97,7 +94,9 @@ func newRemovalLoop(e *Engine) *removalLoop {
 	return l
 }
 
-// enqueue adds it at the loop's back. On a closed loop it is ended at once.
+// enqueue adds it at the loop's back. On a closed loop, or for a dropped
+// share, it is ended at once. An item of a share being unbound is queued
+// parked, never run (see refused): Drop ends it.
 func (l *removalLoop) enqueue(it *loopItem) {
 	now := l.e.d.Clock.Now()
 	l.mu.Lock()
@@ -124,6 +123,8 @@ func (l *removalLoop) run() {
 		it, wait := l.next()
 		if it != nil {
 			l.step(it)
+			l.finish()
+
 			continue
 		}
 		select {
@@ -146,16 +147,29 @@ func (l *removalLoop) run() {
 	}
 }
 
-// next is the first item whose backoff has passed, taken off the loop, or
-// how long until the first one's has, -1 when the loop is empty.
+// refused reports whether the item's share is being unbound and the item is
+// not a clone's: such an item is never run, since the share admits no new
+// removal batch but the batches of a clone its join waits on (RFC 8 §2.3).
+func (it *loopItem) refused() bool {
+	return it.kind != entity.RemoveClone && it.b.gate.isShut()
+}
+
+// next is the first item whose backoff has passed, taken off the loop and
+// recorded as the running one, or how long until the first one's has, -1 when
+// the loop is empty. An item of a share being unbound stays parked on the
+// loop, never run: Drop ends it.
 func (l *removalLoop) next() (*loopItem, time.Duration) {
 	now := l.e.d.Clock.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	wait := time.Duration(-1)
 	for i, it := range l.items {
+		if it.refused() {
+			continue
+		}
 		if !it.notBefore.After(now) {
 			l.items = slices.Delete(l.items, i, i+1)
+			l.running, l.ran = it, make(chan struct{})
 			return it, 0
 		}
 		if w := it.notBefore.Sub(now); wait < 0 || w < wait {
@@ -163,6 +177,45 @@ func (l *removalLoop) next() (*loopItem, time.Duration) {
 		}
 	}
 	return nil, wait
+}
+
+// finish records that the running item's step returned, waking the join.
+func (l *removalLoop) finish() {
+	l.mu.Lock()
+	close(l.ran)
+	l.running, l.ran = nil, nil
+	l.mu.Unlock()
+}
+
+// joinRunning waits until the item the loop is running for share s, if any,
+// has returned, or until ctx ends, answering its error. The items queued
+// behind it are not waited for.
+func (l *removalLoop) joinRunning(ctx context.Context, s entity.ShareID) error {
+	l.mu.Lock()
+	ran := l.ran
+	mine := l.running != nil && l.running.b.share.ID == s
+	l.mu.Unlock()
+
+	if !mine {
+		return nil
+	}
+
+	select {
+	case <-ran:
+		return nil
+	default:
+	}
+
+	if f := l.e.seams.joining.Load(); f != nil {
+		(*f)(whatRemovalBatch)
+	}
+
+	select {
+	case <-ran:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // step runs it once, under a root span, and puts it back at the loop's end
@@ -278,6 +331,55 @@ func (l *removalLoop) halt(b *stopBound) bool {
 			it.end()
 		}
 	}
+}
+
+// dropShare ends everything the loop holds for share s, and answers the files
+// of the items it ended. An item of the share the loop runs now is ended when
+// its run returns, and none of the share's is enqueued after: a share that
+// was dropped runs nothing again. It clears the removal_stalled each ended
+// item raised.
+func (l *removalLoop) dropShare(s entity.ShareID) (files []entity.FileID) {
+	l.mu.Lock()
+
+	if l.dropped == nil {
+		l.dropped = map[entity.ShareID]bool{}
+	}
+
+	l.dropped[s] = true
+
+	var ended []*loopItem
+
+	l.items = slices.DeleteFunc(l.items, func(it *loopItem) bool {
+		if it.b.share.ID == s {
+			ended = append(ended, it)
+
+			return true
+		}
+
+		return false
+	})
+
+	// The running item is a clone's (an unbound share's gate refuses the rest).
+	// A clone's copies are not noted for a commit and its end leaves the
+	// destination's guard held, so this file is on no due set: only discard,
+	// through this file, frees its guard.
+	if l.running != nil && l.running.b.share.ID == s {
+		files = append(files, l.running.f)
+	}
+
+	l.mu.Unlock()
+
+	for _, it := range ended {
+		files = append(files, it.f)
+
+		l.unstall(it)
+
+		if it.end != nil {
+			it.end()
+		}
+	}
+
+	return files
 }
 
 // isDropped reports whether share s was dropped: nothing of it is noted for

@@ -11,9 +11,11 @@ import (
 // read, and no lock but the file's own. pending false: none is held, the zero
 // Overlay answers, and the File record answers alone.
 func (e *Engine) Overlay(ctx context.Context, s entity.ShareID, f entity.FileID) (o Overlay, pending bool, err error) {
-	if _, err := e.bindingOf(s); err != nil {
+	b, err := e.enter(s)
+	if err != nil {
 		return Overlay{}, false, err
 	}
+	defer b.gate.leave()
 	fe := e.files.lockOf(f)
 	if fe == nil {
 		return Overlay{}, false, nil

@@ -180,14 +180,17 @@ func (fe *fileEntry) drop(r *reg) {
 // 17 §5.9 step 2), which reads the File record: the engine reads none, and
 // the store keeps no incomplete flag for it to check.
 func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, x vfserr.Extent) error {
-	sb, err := e.bindingOf(srcShare)
+	sb, err := e.enter(srcShare)
 	if err != nil {
 		return err
 	}
-	db, err := e.bindingOf(dstShare)
+	defer sb.gate.leave()
+
+	db, err := e.enter(dstShare)
 	if err != nil {
 		return err
 	}
+	defer db.gate.leave()
 	st := e.settings.Load()
 	switch {
 	case st == nil:
