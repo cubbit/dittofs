@@ -57,6 +57,8 @@ func (e *Engine) beginLifecycle(id entity.ShareID, wants func(*binding) bool) (*
 		return nil, errClosed
 	case e.starting:
 		return nil, &vfserr.Delay{Cause: vfserr.DelayFrozen}
+	case e.unsuitable && e.table()[id].holdsNoJournal():
+		return nil, &vfserr.Delay{Cause: vfserr.DelayFrozen}
 	}
 
 	if _, busy := e.busy[id]; busy {

@@ -5,6 +5,7 @@ package conformance
 import (
 	"bytes"
 	"errors"
+	"maps"
 	"os"
 	"testing"
 	"time"
@@ -460,5 +461,117 @@ func TestRFC8A_VersionLimitCountsFromCounter(t *testing.T) {
 
 	if _, err := f.E.Draw(ctx, f.Share.ID, file); err != nil {
 		t.Errorf("the first share's draw after the Bind's raise = %v", err)
+	}
+}
+
+// dirContents is the name and size of every file of dir, for a test that
+// asserts a directory was left as it was.
+func dirContents(t *testing.T, dir string) map[string]int64 {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read the journal directory: %v", err)
+	}
+
+	out := map[string]int64{}
+
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			t.Fatalf("stat %s: %v", e.Name(), err)
+		}
+
+		out[e.Name()] = info.Size()
+	}
+
+	return out
+}
+
+// unsuitableJournal reports whether f's engine raises journal_unsuitable for
+// its device.
+func unsuitableJournal(f *enginetest.Fixture) bool {
+	for _, c := range f.E.Stats().Journals[f.Dir].Conditions {
+		if c.Name == "journal_unsuitable" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// TestRFC8A_UnsuitableJournalAtStart, adapted to one journal device: a start
+// over a directory the platform refuses succeeds, names the share with its
+// device and the rule, raises journal_unsuitable and changes nothing in the
+// directory; once the check clears and 30 s pass, the share attaches by
+// itself, its content reads back, its shard's incarnation is raised in the
+// start form, the write verifier differs from before the restart and the
+// condition clears.
+func TestRFC8A_UnsuitableJournalAtStart(t *testing.T) {
+	f := enginetest.New(t)
+	_, id := f.File("a")
+	v1 := write(t, f, id, 0, []byte("unoffloaded"))
+
+	var dir map[string]int64
+
+	f.RestartAfter(func() {
+		f.RefuseOpens(true)
+
+		dir = dirContents(t, f.Dir)
+	})
+
+	got := f.E.Stats().Shares[f.Share.ID]
+	if got.Device != f.Dir || !errors.Is(got.Refused, journal.ErrUnsuitableStorage) {
+		t.Errorf(
+			"share: device %q, refused %v; want %q and the rule",
+			got.Device, got.Refused, f.Dir,
+		)
+	}
+
+	if !unsuitableJournal(f) {
+		t.Error("journal_unsuitable is not raised")
+	}
+
+	if now := dirContents(t, f.Dir); !maps.Equal(now, dir) {
+		t.Errorf("the journal directory changed: %v, was %v", now, dir)
+	}
+
+	before, err := f.FS.Store.Shard(t.Context(), f.Share.Shard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.RefuseOpens(false)
+	eventually(t, "the retry's timer is set", func() bool {
+		return f.Clock.Pending() == 1
+	})
+	f.Clock.Advance(30 * time.Second)
+
+	eventually(t, "the share attaches", func() bool {
+		return f.E.Stats().Shares[f.Share.ID].Refused == nil
+	})
+
+	if !bytes.Equal(read(t, f, id, 0, 11), []byte("unoffloaded")) {
+		t.Error("the content does not read back after the attach")
+	}
+
+	after, err := f.FS.Store.Shard(t.Context(), f.Share.Shard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if want := before.Incarnation + 1; after.Incarnation != want || after.GraceInstance != want {
+		t.Errorf(
+			"shard after the attach: incarnation %d, grace %d; want %d and %d",
+			after.Incarnation, after.GraceInstance, want, want,
+		)
+	}
+
+	if v2 := write(t, f, id, 11, []byte("more")); v2 == v1 {
+		t.Errorf("a write after the attach answers the verifier %x from before the restart", v2)
+	}
+
+	if unsuitableJournal(f) {
+		t.Error("journal_unsuitable is still raised after the attach")
 	}
 }

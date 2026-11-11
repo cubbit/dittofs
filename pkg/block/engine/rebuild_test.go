@@ -34,9 +34,9 @@ type markerCrash struct {
 	want     []byte // the source extent at the clone's asOf
 }
 
-func newMarkerCrash(t *testing.T, copies int) *markerCrash {
+func newMarkerCrash(t *testing.T, copies int, opts ...starterOption) *markerCrash {
 	t.Helper()
-	r := newRig(t, withOpenState())
+	r := newRig(t, append([]starterOption{withOpenState()}, opts...)...)
 	r.serve(t)
 	_, src := r.newFile(t, "src")
 	_, dst := r.newFile(t, "dst")
