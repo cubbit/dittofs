@@ -443,11 +443,12 @@ func TestAnOpenThatFailsAfterCloseBeganLeavesTheCauseAsItWas(t *testing.T) {
 	})
 }
 
-// A Close that meets the retry's timer already fired opens nothing: the retry
-// sees the closed state before it opens the directory, whichever of the timer
-// and the cancelled context it wakes on. The bubble makes the order the same
-// each time, so a few runs are enough; a retry that opened would leave the journal
-// it opened, and closed, in the events.
+// A Close that meets the retry's timer already fired leaves nothing open and
+// attaches nothing. The retry either sees the closed state before it opens the
+// directory, opening nothing, or, with more than one CPU, gets past that check
+// first and is overtaken: its handle and journal are closed, in that order,
+// as TestALateAttachThatCloseOvertook pins. A bubble fixes the order only on
+// one CPU, so the row accepts either outcome and no other.
 func TestACloseThatMeetsTheFiredRetryTimerOpensNothing(t *testing.T) {
 	for i := range 3 {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
@@ -463,8 +464,9 @@ func TestACloseThatMeetsTheFiredRetryTimerOpensNothing(t *testing.T) {
 					t.Fatalf("Close = %v", err)
 				}
 
-				if got := b.ev.list(); len(got) != 0 {
-					t.Errorf("events %v after Close, want none: the retry opened the journal", got)
+				overtaken := []string{handleClose(s), "journal close"}
+				if got := b.ev.list(); len(got) != 0 && !slices.Equal(got, overtaken) {
+					t.Errorf("events %v after Close, want none, or %v when the retry was overtaken", got, overtaken)
 				}
 
 				if got := b.e.Stats().Shares[s.ID].Refused; got == nil {
