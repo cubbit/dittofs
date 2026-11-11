@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -185,5 +186,35 @@ func TestUnbindWaitsForARebuiltCloneWaitingForItsSourcesShard(t *testing.T) {
 
 	if s != 0 || d != 0 {
 		t.Errorf("Unbind returned with %d source and %d destination registrations of the rebuilt clone, want it done", s, d)
+	}
+}
+
+// A Close that begins while an Unbind waits for a rebuilt clone waiting for
+// its source's shard ends that wait, the Unbind answering ErrUnavailable, and
+// stops within its bound (catches an Unbind that keeps waiting for the clone,
+// which only Close stops, so Close's wait for the Unbind ends at its bound).
+func TestCloseEndsAnUnbindWaitingForARebuiltClone(t *testing.T) {
+	m := newRemovalCrash(t, false)
+	m.begin(t)
+	m.run()
+
+	joined := joins(m.e)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel() // ends the Unbind should Close leave it waiting
+	unbound := make(chan error, 1)
+
+	go func() { unbound <- m.e.Unbind(ctx, m.one.ID, false) }()
+
+	waitsForTheClone(t, joined, unbound)
+
+	cctx, ccancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer ccancel()
+
+	if err := m.e.Close(cctx); err != nil {
+		t.Fatalf("Close with an Unbind waiting for the rebuilt clone = %v, want nil", err)
+	}
+
+	if err := within(t, "Unbind", unbound); !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Fatalf("Unbind once Close began = %v, want ErrUnavailable", err)
 	}
 }

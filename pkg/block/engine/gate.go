@@ -84,10 +84,10 @@ func (g *gate) isShut() bool {
 	return g.st.Load()&shutBit != 0
 }
 
-// wait returns nil once the shut gate holds no unit, and ctx's own error if
-// ctx ends first; a later wait joins the units still entered. It is called
-// only after shut.
-func (g *gate) wait(ctx context.Context) error {
+// wait returns nil once the shut gate holds no unit, errClosed once stop is
+// closed, and ctx's own error if ctx ends first; a later wait joins the units
+// still entered. A nil stop never ends the wait. It is called only after shut.
+func (g *gate) wait(ctx context.Context, stop <-chan struct{}) error {
 	g.mu.Lock()
 	idle := g.idle
 	g.mu.Unlock()
@@ -99,6 +99,8 @@ func (g *gate) wait(ctx context.Context) error {
 	select {
 	case <-idle:
 		return nil
+	case <-stop:
+		return errClosed
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -120,7 +122,10 @@ func leaveOnce(gs ...*gate) func() {
 }
 
 // joinWork waits until share gate g, already shut, holds no unit, and fires
-// the joining seam when it has to wait.
+// the joining seam when it has to wait. A Close that begins ends the wait
+// with errClosed: Close's drain of the lifecycle calls waits for the Unbind
+// that waits here, while what it waits for, a rebuilt clone waiting for its
+// source's shard, ends only once Close stops the work after that drain.
 func (e *Engine) joinWork(ctx context.Context, g *gate) error {
 	if g.st.Load() != shutBit {
 		if f := e.seams.joining.Load(); f != nil {
@@ -128,5 +133,5 @@ func (e *Engine) joinWork(ctx context.Context, g *gate) error {
 		}
 	}
 
-	return g.wait(ctx)
+	return g.wait(ctx, e.stopping)
 }

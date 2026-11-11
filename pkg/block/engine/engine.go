@@ -57,11 +57,12 @@ type Engine struct {
 	// closed is set under mu when Close begins: every call answers
 	// ErrUnavailable from then on, and every publish checks it under mu. It
 	// is atomic so a content call, which never takes mu, reads it.
-	closed  atomic.Bool
-	closing *closeRun     // the Close running, or the last one
-	ended   chan struct{} // closed, and replaced, each time a lifecycle call ends
-	opened  atomic.Uint64 // the bindings made so far, which Close undoes in reverse
-	cloning sync.WaitGroup
+	closed   atomic.Bool
+	stopping chan struct{} // closed once, when the first Close begins: it ends Unbind's wait for work
+	closing  *closeRun     // the Close running, or the last one
+	ended    chan struct{} // closed, and replaced, each time a lifecycle call ends
+	opened   atomic.Uint64 // the bindings made so far, which Close undoes in reverse
+	cloning  sync.WaitGroup
 
 	gcMu            sync.Mutex
 	gcs             map[Journal]*groupCommit                        // each journal's group commit
@@ -136,6 +137,7 @@ func New(d Deps) (*Engine, error) {
 		busy:     map[entity.ShareID]struct{}{},
 		raised:   map[entity.ShardID]struct{}{},
 		ended:    make(chan struct{}),
+		stopping: make(chan struct{}),
 		block:    versionBlock,
 	}
 	e.conflictBound.Store(int64(time.Second))
