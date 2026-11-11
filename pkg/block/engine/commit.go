@@ -77,6 +77,23 @@ func (e *Engine) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 	return e.verifier(b), e.LossSeq(s, f), nil
 }
 
+// CommitExistence commits file f's pending existence now, its size, times and
+// charge included, joining the group commit, which calls each committed
+// write's Done: what an owner or group change runs first, so an append staged
+// before the change charges the old owner. A deadline ends it with ErrDelay
+// and the file's cause, never the context's error; a share with no binding
+// answers a Delay with DelayFrozen.
+func (e *Engine) CommitExistence(ctx context.Context, s entity.ShareID, f entity.FileID) error {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return err
+	}
+	if err := e.commitNow(ctx, b, f); err != nil {
+		return e.waitErr(b, f, err)
+	}
+	return nil
+}
+
 // overwrites reports whether xs, extents of file f of share s, cover
 // committed content. A read the caller's deadline ends answers ErrDelay, as
 // the waits it guards do, never the context's error.

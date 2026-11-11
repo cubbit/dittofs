@@ -99,7 +99,7 @@ func (u *fenceUnit) commitInBackground(t *testing.T, f entity.FileID) <-chan err
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	var wg sync.WaitGroup
-	wg.Go(func() { done <- u.e.CommitNow(ctx, u.share.ID, f) })
+	wg.Go(func() { done <- u.e.CommitExistence(ctx, u.share.ID, f) })
 	t.Cleanup(func() { cancel(); wg.Wait() })
 	return done
 }

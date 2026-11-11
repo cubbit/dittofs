@@ -18,7 +18,7 @@ func TestADeallocateWaitsOutAnAdmittedWrite(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if n := u.size(t, f); n != 60 {

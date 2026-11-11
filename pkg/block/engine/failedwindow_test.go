@@ -145,7 +145,7 @@ func TestAFailingFileWhoseWritesWereDroppedIsCleared(t *testing.T) {
 	u.write(t, d, 0, []byte("not content"))
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
-	_ = u.e.CommitNow(ctx, u.share.ID, d)
+	_ = u.e.CommitExistence(ctx, u.share.ID, d)
 	if !u.e.Failing(u.rec, d) {
 		t.Fatal("the directory's commit is not named failing")
 	}
@@ -173,7 +173,7 @@ func TestAFailedWindowBeforeTheWritesInsertDropsIt(t *testing.T) {
 	if _, err := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("lost"), engine.WriteOpts{Done: func() { dones.Add(1) }}); err != nil {
 		t.Fatal(err)
 	}
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h); err != nil || got.Size != 0 || got.Charged != 0 {

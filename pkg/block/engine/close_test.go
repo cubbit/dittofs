@@ -972,7 +972,7 @@ func closeOverAHeldBatch(t *testing.T, readOnly bool) {
 	go func() {
 		defer close(finished)
 
-		_ = u.e.CommitNow(context.Background(), u.share.ID, f)
+		_ = u.e.CommitExistence(context.Background(), u.share.ID, f)
 	}()
 
 	<-entered

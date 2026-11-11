@@ -263,12 +263,12 @@ func TestAllocationReadsAgainAfterAGroupCommitBetweenItsReads(t *testing.T) {
 	u := newUnit(t, onAllocation(ce.allocation))
 	f := u.create(t, "f")
 	u.write(t, f, 0, make([]byte, 4*kib))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	u.write(t, f, 4*kib, make([]byte, 8*kib))
 	ce.after = func() {
-		if err := u.e.CommitNow(context.Background(), u.share.ID, f); err != nil {
+		if err := u.e.CommitExistence(context.Background(), u.share.ID, f); err != nil {
 			t.Errorf("commit: %v", err)
 		}
 		u.write(t, f, 16*kib, make([]byte, 2*kib))
@@ -286,7 +286,7 @@ func TestAllocationReadsAgainAfterAPhase1BetweenItsReads(t *testing.T) {
 	u := newUnit(t, onAllocation(ce.allocation))
 	f := u.create(t, "f")
 	u.write(t, f, 0, make([]byte, 4*kib))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	u.write(t, f, 4*kib, make([]byte, 8*kib))

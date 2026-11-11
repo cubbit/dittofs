@@ -59,7 +59,7 @@ func TestStatsReportsExistenceCommitFailing(t *testing.T) {
 	}
 	c.on.Store(false)
 	u.clock.Advance(time.Second) // past the backoff
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := shareCondition(u.e.Stats(), u.share.ID, "existence_commit_failing", f); ok {
@@ -103,7 +103,7 @@ func TestStatsReportsRemovalStalled(t *testing.T) {
 	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x })
 	f := u.create(t, "f")
 	u.write(t, f, 0, fill(16, 'a'))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	x.mu.Lock()
@@ -276,7 +276,7 @@ func TestStatsClearsRemovalStalledOnAdvance(t *testing.T) {
 	x.f = f
 	x.cut.Store(-1 << 30) // no run advances yet
 	u.write(t, f, 0, fill(16, 'a'))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	x.mu.Lock()
@@ -315,7 +315,7 @@ func TestStatsClearsRemovalStalledOnDrop(t *testing.T) {
 	}))
 	f = u.create(t, "f")
 	u.write(t, f, 0, fill(16, 'a'))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {

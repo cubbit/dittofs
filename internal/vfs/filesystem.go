@@ -13,7 +13,6 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -21,6 +20,7 @@ import (
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
 	"github.com/cubbit/dittofs/internal/vfs/quota"
+	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/openstate"
@@ -49,12 +49,6 @@ type Deps struct {
 // with no binding answers a Delay with DelayFrozen, its binding still to come.
 // A share being removed never reaches it unbound, as admission answers
 // ErrStale from the removal mark.
-//
-// ponytail: WriteOpts and Overlay are declared here, beside Content, as the
-// engine that should declare them is not built, and so is CommitExistence,
-// the existence commit an owner or group change runs first, which the
-// engine's surface names no method for. Alias the engine's once it
-// declares them, so it satisfies Content unchanged.
 type Content interface {
 	// Draw is a version for a change stored outside the journal, drawn under
 	// the file's accept lock.
@@ -98,19 +92,13 @@ type Content interface {
 }
 
 // WriteOpts is what a write asks of the engine beside its bytes.
-type WriteOpts struct {
-	Suspend entity.TimeMask // the times this write leaves alone
-	Done    func()          // called exactly once per accepted write: by the commit recording its usage or its loss, or by the engine, charging nothing, when it drops the write uncommitted; never if Write fails
-}
+type WriteOpts = engine.WriteOpts
 
 // Overlay is a file's size, times and version as the journal's uncommitted
 // operations leave them.
-type Overlay struct {
-	Size         int64 // SizeSet: the size; else the end of the pending writes
-	SizeSet      bool  // a truncate is pending, so Size is exact
-	Mtime, Ctime time.Time
-	Version      entity.JournalVersion
-}
+type Overlay = engine.Overlay
+
+var _ Content = (*engine.Engine)(nil)
 
 // state is where the filesystem is in its life: built, serving, draining and
 // stopped, once each and in that order.

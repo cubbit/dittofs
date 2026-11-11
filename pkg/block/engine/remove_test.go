@@ -206,7 +206,7 @@ func TestAWriteAboveATruncateCommitsAfterIt(t *testing.T) {
 	if n := u.size(t, f); n != 3 {
 		t.Errorf("after phase 1 the size is %d, want 3", n)
 	}
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if n := u.size(t, f); n != 12 {
@@ -233,7 +233,7 @@ func TestAGroupCommitSkipsAGuardedFile(t *testing.T) {
 	u.clock.Advance(time.Second)
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
-	if err := u.e.CommitNow(ctx, u.share.ID, g); err != nil {
+	if err := u.e.CommitExistence(ctx, u.share.ID, g); err != nil {
 		t.Errorf("g's commit while f's truncate holds its entry: %v", err)
 	}
 	close(unblock)
@@ -266,7 +266,7 @@ func TestATruncateWaitsOutABatchInFlight(t *testing.T) {
 		}
 	})
 	commit := make(chan error, 1)
-	go func() { commit <- u.e.CommitNow(context.Background(), u.share.ID, f) }()
+	go func() { commit <- u.e.CommitExistence(context.Background(), u.share.ID, f) }()
 	<-held
 	truncated := make(chan error, 1)
 	go func() { truncated <- u.e.Truncate(context.Background(), u.share.ID, f, 4) }()
@@ -391,7 +391,7 @@ func TestATruncateUpIsAGrow(t *testing.T) {
 	if n := x.removes.Load(); n != 0 {
 		t.Errorf("a truncate up made %d removals", n)
 	}
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if n := u.size(t, f); n != 100 {
@@ -425,7 +425,7 @@ func TestACommitWaitsOutATruncateInFlight(t *testing.T) {
 	<-blocked
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
-	_ = u.e.CommitNow(ctx, u.share.ID, f)
+	_ = u.e.CommitExistence(ctx, u.share.ID, f)
 	close(unblock)
 	if err := <-done; err != nil {
 		t.Fatal(err)
@@ -442,7 +442,7 @@ func TestADeallocateRecordsItsHoleAtOnce(t *testing.T) {
 	u := newUnit(t)
 	f := u.create(t, "a")
 	u.write(t, f, 0, fill(16, 'a'))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	next := u.j.Stats().NextVersion.Counter
@@ -457,7 +457,7 @@ func TestADeallocateRecordsItsHoleAtOnce(t *testing.T) {
 		t.Errorf("at 4 after phase 1: %+v hole %v, %v; want the hole [4, 12)", run, hole, err)
 	}
 	u.write(t, f, 6, []byte("bb"))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	got := make([]byte, 4)
@@ -637,7 +637,7 @@ func TestAWriteArrivingWhileATruncateWaitsLandsAfterIt(t *testing.T) {
 	if err := <-truncated; err != nil {
 		t.Fatal(err)
 	}
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if n := u.size(t, f); n != 16 {
@@ -655,7 +655,7 @@ func TestARemovalRefusedForAnOperationBelowItEnds(t *testing.T) {
 	u := newUnit(t, func(d *engine.Deps) { d.Logger = slog.New(logs) })
 	f := u.create(t, "a")
 	u.write(t, f, 0, make([]byte, 100))
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if err := u.e.StageGrow(u.share.ID, f, 10); err != nil {

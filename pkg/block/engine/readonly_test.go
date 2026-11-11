@@ -148,7 +148,7 @@ func TestTheGroupCommitCommitsNothingOverAReadOnlyJournal(t *testing.T) {
 	u.j.ReadOnly(syscall.EIO)
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
-	_ = u.e.CommitNow(ctx, u.share.ID, f)
+	_ = u.e.CommitExistence(ctx, u.share.ID, f)
 	if n := u.size(t, f); n != 0 {
 		t.Errorf("size %d, want 0: the write committed", n)
 	}
@@ -230,7 +230,7 @@ func TestTheGroupCommitReadsTheStateAfterTheSync(t *testing.T) {
 	hook.set(func() { u.j.ReadOnly(syscall.EIO) })
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
-	_ = u.e.CommitNow(ctx, u.share.ID, f)
+	_ = u.e.CommitExistence(ctx, u.share.ID, f)
 	if n := u.size(t, f); n != 0 {
 		t.Errorf("size %d, want 0: the write committed", n)
 	}

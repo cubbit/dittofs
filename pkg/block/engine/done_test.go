@@ -17,7 +17,7 @@ import (
 
 // A write a batch claimed whose window then fails leaves the batch: the size
 // the batch commits excludes it, and its Done runs once, from the drop. The
-// other's runs before CommitNow returns, however slow the Done.
+// other's runs before CommitExistence returns, however slow the Done.
 func TestAFailedWindowTakesAWriteOutOfItsBatch(t *testing.T) {
 	u, jh := newHookedUnit(t)
 	res := enginetest.NewReservations(t)
@@ -32,7 +32,7 @@ func TestAFailedWindowTakesAWriteOutOfItsBatch(t *testing.T) {
 	}
 	var once sync.Once
 	jh.sync.set(func([]journal.FileID) { once.Do(func() { u.failWindow(f, 4, 4) }) })
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h); err != nil || got.Size != 4 {
@@ -56,17 +56,17 @@ func TestARetriedBatchCallsEachDoneOnce(t *testing.T) {
 	c.on.Store(true)
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
-	_ = u.e.CommitNow(ctx, u.share.ID, f)
+	_ = u.e.CommitExistence(ctx, u.share.ID, f)
 	if n := res.Outstanding(); n != 1 {
 		t.Fatalf("after the failed commit %d writes await their Done, want 1", n)
 	}
 	c.on.Store(false)
 	u.clock.Advance(time.Minute) // past the backoff
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	// The advanced clock also fires the retry on the group commit's own
-	// timer, and a CommitNow that finds that batch settled returns before its
+	// timer, and a CommitExistence that finds that batch settled returns before its
 	// Dones ran (the decision at runAll in groupCommit.commit): wait for them.
 	eventually(t, "the retry calls the write's Done", func() bool { return res.Outstanding() == 0 })
 }
@@ -123,7 +123,7 @@ func TestEveryAcceptedWriteGetsOneDone(t *testing.T) {
 				u.clock.Advance(time.Millisecond)
 			default:
 				ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-				_ = u.e.CommitNow(ctx, u.share.ID, f)
+				_ = u.e.CommitExistence(ctx, u.share.ID, f)
 				cancel()
 			}
 		}
@@ -160,13 +160,13 @@ func TestABatchRetriesAfterADrop(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
-	_ = u.e.CommitNow(ctx, u.share.ID, f)
+	_ = u.e.CommitExistence(ctx, u.share.ID, f)
 	if n := res.Outstanding(); n != 1 {
 		t.Fatalf("after the failed commit %d writes await their Done, want the one left", n)
 	}
 	c.on.Store(false)
 	u.clock.Advance(time.Minute) // past the backoff
-	if err := u.e.CommitNow(t.Context(), u.share.ID, f); err != nil {
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h); err != nil || got.Size != 4 {
