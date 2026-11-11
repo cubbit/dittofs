@@ -1697,9 +1697,12 @@ func TestTake_HoldsEveryRollingPiecesEntry(t *testing.T) {
 	q := req()
 	q.Payload = room + 4096 // head fills the room, tail rolls
 	q.Extent = core.Extent{Len: q.Payload}
+	// The split's own figure: the room's own piece, plus one per empty segment
+	// the rest fills past it.
+	want := int64(1 + sparesBeyondRoom(q.Payload, room, testCap))
 	g := r.grant(t, q)
-	if got := r.c.pendingEntries; got < 2 {
-		t.Fatalf("the partly covered take holds %d pending entries, want one per piece (at least 2)", got)
+	if got := r.c.pendingEntries; got != want {
+		t.Fatalf("the partly covered take holds %d pending entries, want the %d pieces its split publishes", got, want)
 	}
 	g.Release()
 	if got := r.c.pendingEntries; got != 0 {

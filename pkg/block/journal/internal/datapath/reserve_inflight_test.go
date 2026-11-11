@@ -10,6 +10,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
 // TestReserveAhead_InFlightPlainCannotEatTheReservationsEntries pins the gap
@@ -160,14 +161,15 @@ func TestReserveAhead_ReservedWriteAppendsInVersionOrder(t *testing.T) {
 	}
 }
 
-// TestReserveAhead_RollingPlainHoldsEveryPiece pins the second half of C1: a
-// plain write that rolls publishes one entry per piece, not the one the
-// pre-check counts, and every one of those must be held as pending while it is
-// in flight. One multi-segment plain write is parked between its grant and its
-// append with nothing held and nothing pending before it, so its count comes
-// from the pre-check alone unless Take counts the pieces; a reservation taken
-// while it is parked and then granted must still let its own write publish,
-// never refuse it LimitIndex part-way.
+// TestReserveAhead_RollingPlainHoldsEveryPiece pins that a rolling plain write
+// holds every index entry its pieces will publish: a plain write that rolls
+// publishes one entry per piece, not the one the pre-check counts, and every
+// one of those must be held as pending while it is in flight. One multi-segment
+// plain write is parked between its grant and its append with nothing held and
+// nothing pending before it, so its count comes from the pre-check alone unless
+// Take counts the pieces; a reservation taken while it is parked and then
+// granted must still let its own write publish, never refuse it LimitIndex
+// part-way.
 func TestReserveAhead_RollingPlainHoldsEveryPiece(t *testing.T) {
 	cost := capacity.WriteCharge(1, testSegmentCap)
 	pieces, spares := capacity.PiecesFor(cost, 1, testSegmentCap)
@@ -187,10 +189,14 @@ func TestReserveAhead_RollingPlainHoldsEveryPiece(t *testing.T) {
 	s := mustShare(t, c, 1)
 
 	// One plain write of three and a half segments, parked after its grant and
-	// before its first append: nothing is held or pending when it takes it.
+	// before its first append: nothing is held or pending when it takes it. A
+	// roomless stream splits it into one piece per empty segment it fills, the
+	// same figure the split itself draws.
+	payload := int64(3*testSegmentCap + testSegmentCap/2)
+	want := (payload-1)/segment.EmptyRoom(testSegmentCap) + 1
 	done := make(chan error, 1)
 	go func() {
-		_, err := c.WriteAt(context.Background(), s, testFile(60), 0, make([]byte, 3*testSegmentCap+testSegmentCap/2), 1)
+		_, err := c.WriteAt(context.Background(), s, testFile(60), 0, make([]byte, payload), 1)
 		done <- err
 	}()
 	<-parked
@@ -198,15 +204,20 @@ func TestReserveAhead_RollingPlainHoldsEveryPiece(t *testing.T) {
 	// The pending figure already holds every piece the write will publish, not
 	// the one the pre-check counts: a reservation taken here must size against
 	// all of them.
-	if got := c.PendingEntries(); got < 2 {
+	if got := c.PendingEntries(); got != want {
 		close(release)
 		if err := <-done; err != nil {
 			t.Logf("the plain write while the count is short: %v", err)
 		}
-		t.Fatalf("the parked plain write holds %d pending entries, want the pieces its split will publish (more than one)", got)
+		t.Fatalf("the parked plain write holds %d pending entries, want the %d pieces its split publishes", got, want)
 	}
 	r, err := c.Reserve(context.Background(), s, cost, 1)
 	if err != nil {
+		// A refusal here is correct too: the point is that a granted
+		// reservation's write is never refused part-way, and a Reserve refused
+		// at once, naming the index, honours that where a smaller held figure
+		// would have granted it and starved its write later. Assert it holds
+		// nothing, so a refusal that leaked its ask fails here.
 		close(release)
 		if werr := <-done; werr != nil {
 			t.Logf("the plain write worth a refused Reserve: %v", werr)
@@ -214,6 +225,12 @@ func TestReserveAhead_RollingPlainHoldsEveryPiece(t *testing.T) {
 		var ns *core.NoSpaceError
 		if !errors.As(err, &ns) || ns.Limit != core.LimitIndex {
 			t.Fatalf("Reserve beside the parked rolling write = %v, want the reservation or a refusal naming the index", err)
+		}
+		if got := c.ReservedBytes(); got != 0 {
+			t.Fatalf("the refused Reserve left ReservedBytes = %d, want 0", got)
+		}
+		if got := c.HeldEntries(); got != 0 {
+			t.Fatalf("the refused Reserve left %d held entries, want 0", got)
 		}
 		return
 	}
