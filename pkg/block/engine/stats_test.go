@@ -137,6 +137,11 @@ func TestStatsReportsRemovalStalled(t *testing.T) {
 // engine's clock, with no operator step, and a later window moves the hour.
 func TestStatsReportsJournalSyncFailedForAnHour(t *testing.T) {
 	u := newUnit(t)
+	// No existence commit falls due within the test's clock jumps, so no
+	// group commit starts a store transaction a later jump would see stalled.
+	if err := u.e.Apply(engine.Settings{ExistenceAge: 24 * time.Hour, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
 	f := u.create(t, "a")
 	failCommit := func() {
 		t.Helper()
