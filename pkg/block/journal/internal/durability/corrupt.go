@@ -52,6 +52,11 @@ type CorruptOutcome struct {
 	Kind CorruptKind
 	// Copy is the copy to read, set for CorruptUseCopy.
 	Copy segment.Location
+	// Lost is, for CorruptDropped of a synced record, the extents the drop
+	// loses, each of which the loss record and the index's loss marker will
+	// carry at the record's version. It is empty for an unsynced record and
+	// for a record the index no longer named, which lose nothing here.
+	Lost []core.Extent
 }
 
 // Corrupt handles a record a reader found not to verify. It first looks for
@@ -248,6 +253,11 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 		return dropped
 	}
 	unlock()
+	if synced {
+		for _, l := range job.losses {
+			dropped.Lost = append(dropped.Lost, l.Extent)
+		}
+	}
 
 	d.queueCorrupt(st, job)
 	return dropped

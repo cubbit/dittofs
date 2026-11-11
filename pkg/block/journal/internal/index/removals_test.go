@@ -110,7 +110,7 @@ func TestRemovalTruncateNarrowsAndLeavesAMarker(t *testing.T) {
 	}
 
 	wantChanges := []Change{
-		{Kind: core.ChangeWrite, Extent: ext(0, 4), Version: ver(2), Record: rec(1, 0)},
+		{Kind: core.ChangeWrite, Extent: ext(0, 4), Version: ver(2), Record: rec(1, 0), Seq: 2},
 		{Kind: core.ChangeTruncate, Extent: ext(4, math.MaxInt64-4), Version: ver(3)},
 	}
 	if got := ix.fs.since(id, core.Version{}, nil); !sameChanges(got, wantChanges) {

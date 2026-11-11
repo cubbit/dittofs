@@ -361,7 +361,7 @@ func TestCorruptCopyIOErrorDropsNothing(t *testing.T) {
 			cr.d.RegisterCopy(r.c.Seq, c.arrange(cr, r), r.kept)
 
 			out, err := cr.d.Corrupt(context.Background(), r.c)
-			if !errors.Is(err, c.want) || out != (CorruptOutcome{}) {
+			if !errors.Is(err, c.want) || out.Kind != 0 || out.Copy != (segment.Location{}) || len(out.Lost) != 0 {
 				t.Fatalf("Corrupt = %+v, %v, want no outcome and %v", out, err, c.want)
 			}
 			if got := cr.placedAt(t, f, 0); got != r.c.Record {

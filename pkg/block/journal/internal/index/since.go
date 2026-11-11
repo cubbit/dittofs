@@ -17,8 +17,13 @@ type Change struct {
 	Kind    core.ChangeKind // ChangeWrite for a held extent, else the removal or synced loss that left the marker
 	Extent  core.Extent     // a held extent, or the extent a marker covers
 	Version core.Version
-	Record  RecordAt        // a held extent's record; zero for a marker
-	Clone   *core.CloneSpec // a clone target's spec, a copy the caller may keep; nil otherwise
+	Record  RecordAt // a held extent's record; zero for a marker
+	// Seq and Skip are a held extent's record sequence number and the offset
+	// in the record's payload of the extent's first byte; zero for a marker.
+	// They let the caller verify the record against the extent.
+	Seq   core.Seq
+	Skip  uint32
+	Clone *core.CloneSpec // a clone target's spec, a copy the caller may keep; nil otherwise
 	// Over is a write's runs where it superseded another write of the file
 	// whose version is above the Since's from, in offset order, disjoint and
 	// not adjacent, each inside the write's extent; nil for anything else.
@@ -52,17 +57,16 @@ func (fs *files) since(id core.FileID, from core.Version, out []Change) []Change
 			// A piece next to the last one, of the same record, extends it:
 			// pieces of one record split only by their offloaded bit are one
 			// extent. The version test, as in joins, only guards against a
-			// caller that names one record with two. Skip is not compared,
-			// because Change carries none: give Change a skip and the merge
-			// must also require the piece's skip to continue the last one's.
+			// caller that names one record with two; the skip must continue
+			// the last one's, so the merged extent maps onto the payload.
 			if n := len(out); n > first {
 				if last := &out[n-1]; extentEnd(last.Extent) == p.Extent.Off && last.Record == p.Record &&
-					last.Version == p.Version {
+					last.Version == p.Version && int64(last.Skip)+last.Extent.Len == int64(p.Skip) {
 					last.Extent.Len += p.Extent.Len
 					return true
 				}
 			}
-			out = append(out, Change{Kind: core.ChangeWrite, Extent: p.Extent, Version: p.Version, Record: p.Record})
+			out = append(out, Change{Kind: core.ChangeWrite, Extent: p.Extent, Version: p.Version, Record: p.Record, Seq: p.Seq, Skip: p.Skip})
 			return true
 		})
 		if len(f.held.over) > 0 {

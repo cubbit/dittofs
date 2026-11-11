@@ -155,6 +155,16 @@ func (ix *Index) Lookup(id core.FileID, off int64) (Placed, bool) {
 	return p, ok
 }
 
+// Since returns the changes of id strictly above from: its held extents, its
+// unsettled removal markers and its synced losses, in version order, as a copy
+// that holds no lock once it returns. A file with no entry yields nothing.
+func (ix *Index) Since(id core.FileID, from core.Version) []Change { return ix.fs.since(id, from, nil) }
+
+// Settle drops id's removal and loss markers at or below v, and the
+// superseded runs kept for them. It claims nothing, appends nothing and is not
+// persisted; a file with no entry is left alone.
+func (ix *Index) Settle(id core.FileID, v core.Version) { ix.fs.settleRemovals(id, v) }
+
 // Span returns the pieces of id held inside e, clipped to it, and the exact
 // gaps between them, both in offset order. A file with no entry has nothing
 // held, so a non-empty e comes back wholly missing. Neighbouring pieces of one

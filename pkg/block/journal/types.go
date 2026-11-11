@@ -20,6 +20,7 @@ type (
 	SegmentID      = core.SegmentID
 	CloneSpec      = core.CloneSpec
 	ChangeKind     = core.ChangeKind
+	Change         = core.Change
 	LossEvent      = core.LossEvent
 	LossReason     = core.LossReason
 )

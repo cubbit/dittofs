@@ -23,17 +23,6 @@ type Handle struct {
 	s *datapath.Share
 }
 
-// Change is one thing Since reports about a file: a held extent, an unsettled
-// removal marker, or a synced loss.
-type Change struct {
-	Kind    ChangeKind
-	Extent  Extent  // the held extent, or the extent a removal marker covers
-	Version Version // the content version of the change
-	Mtime   int64   // a write's modification time as WriteAt was given it; 0 for every other kind
-	// Clone is the clone target's spec; nil for every other kind.
-	Clone *CloneSpec
-}
-
 // What a Change reports; see ChangeKind.
 const (
 	// ChangeWrite is a held extent, written or filled.
@@ -211,17 +200,27 @@ func (h *Handle) CloneTarget(ctx context.Context, id FileID, spec CloneSpec) (Ve
 
 // Since yields every held extent of file id, every unsettled removal marker
 // and every synced loss whose version is strictly above from, in version
+// order; of one version, markers come before extents, then extents in offset
 // order. It reads a consistent view of the file and blocks writes to it no
-// longer than a read does. An unsynced loss is not yielded, and neither is a
-// Forget.
+// longer than a read does: the view is copied under the file's lock and the
+// records are read after it is released. An unsynced loss is not yielded, and
+// neither is a Forget or a loss that reports a superseded write.
 //
-// decision: the stub yields one ErrNotImplemented rather than nothing. An
-// empty Since reads as "nothing changed since from", a silent wrong answer to
-// the caller rebuilding what metadata has not recorded.
+// A write carries the modification time its record holds, read from the
+// record and verified as a read verifies it, and the runs over which it
+// superseded another write above from. A record that does not verify goes to
+// the corruption rule: its extent is yielded when a copy serves it, and when
+// the record is dropped a synced one is yielded as a loss in its place. A
+// segment that is gone yields the extent with a zero Mtime. A cancelled ctx
+// ends the iteration with its error; an I/O error ends it with that error.
+//
+// decision: Since has no unread-file state to refuse on: the journal records
+// none yet, so ErrUnreadable cannot be yielded, and a file whose records do
+// not verify is handled by the corruption rule above. Withdraw this once an
+// open can leave a file unread, which Since must then answer with
+// ErrUnreadable and nothing else.
 func (h *Handle) Since(ctx context.Context, id FileID, from Version) iter.Seq2[Change, error] {
-	return func(yield func(Change, error) bool) {
-		yield(Change{}, ErrNotImplemented)
-	}
+	return h.j.core.Since(ctx, h.s, id, from)
 }
 
 // Settle states that metadata has recorded every removal of file id at or

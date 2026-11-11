@@ -49,7 +49,7 @@ func TestRemovalsSurviveToSince(t *testing.T) {
 		}},
 		{b, ver(6), []Change{
 			{Kind: core.ChangeWrite, Extent: ext(0, 4), Version: ver(3), Record: rb},
-			{Kind: core.ChangeWrite, Extent: ext(8, 8), Version: ver(3), Record: rb},
+			{Kind: core.ChangeWrite, Extent: ext(8, 8), Version: ver(3), Record: rb, Skip: 8},
 			{Kind: core.ChangeDeallocate, Extent: ext(4, 4), Version: ver(6)},
 		}},
 		{c, ver(7), []Change{
