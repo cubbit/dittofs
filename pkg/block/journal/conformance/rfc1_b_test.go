@@ -578,7 +578,8 @@ func reserve(t *testing.T, h *journal.Handle, n int64, writes int) *journal.Rese
 // headroom below half.
 //
 // The share-limit leg reserves 1 MiB for 4 writes of 128 KiB, a quarter of
-// the fixture's 64 MiB maximum. The rolling leg is scaled the way the
+// the 4 MiB limit that leg attaches its share with, and a sixty-fourth of the
+// fixture's 64 MiB journal maximum. The rolling leg is scaled the way the
 // datapath's scenario check scales it — 16 copy writes of one segment's room
 // (the fixture's 1 MiB segments, less one record's headroom) beside 16 more
 // appends, rather than the epic's 1 GiB copy in 1 MiB writes beside 10 GiB —

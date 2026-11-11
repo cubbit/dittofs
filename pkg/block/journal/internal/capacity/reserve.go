@@ -300,10 +300,11 @@ func (r *Reservation) Remaining() int64 {
 //
 // ponytail: a write that straddles a partly filled segment appends up to one
 // record header beyond its roomless split, past what the reservation still
-// holds once a caller sized n exactly. The grant's Wrote clamps it, so the
-// share's tally undercounts by at most that header — it fails open. Upgrade to
-// charging the room the append will find, which a reservation cannot know
-// before its writes land.
+// holds once a caller sized n exactly. The grant clamps what leaves the
+// reservation, while Grant.Wrote gives the share's tally the whole record, so
+// the share may exceed its limit by at most that header per clamped straddling
+// write until a retirement frees the segment. Upgrade to charging the room the
+// append will find, which a reservation cannot know before its writes land.
 func (r *Reservation) Draw(payload int64) (*Grant, error) {
 	if payload <= 0 {
 		return nil, core.ErrInvalidExtent

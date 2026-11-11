@@ -559,11 +559,13 @@ func TestReservationDrawsUnclaimedEntriesStayHeld(t *testing.T) {
 // write's own split, and it must not be refused.
 //
 // decision: a caller sizing n by the payload bytes it copies is short of each
-// write's record overhead, so its last write is refused core.ErrReservationExhausted.
-// The engine's clone sizes n that way (the source bytes it reads), while RFC 1
-// §6 names n as record bytes; that mismatch is open — RFC 8 §9.1 step 1 says
-// "the source bytes" — and is raised with the RFC authors. The engine's tests
-// stay green because they run over a fake journal that takes n as payload.
+// write's record overhead, so a later write, at the latest its last, is refused
+// core.ErrReservationExhausted. The engine's clone sizes n that way (the source
+// bytes it reads), while RFC 1 §6 names n as record bytes; that mismatch is
+// open — RFC 8 §9.1 step 1 says "the source bytes" — and is raised with the
+// RFC authors. The real-journal clone path is never reached today: the engine
+// conformance checks that would run it fail earlier, at the store's own
+// "vfs: retry shortly: commit", so the mismatch is hidden rather than absent.
 func TestReservationSizedByRecordBytesSpendsItsLastWrite(t *testing.T) {
 	r := newRig(t, std())
 	const writes = 4
