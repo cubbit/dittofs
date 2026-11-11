@@ -221,3 +221,65 @@ func (ix *Index) AsOf(id core.FileID) core.Version { return ix.fs.asOf(id) }
 func (ix *Index) RaiseFloor(floor core.Version) {
 	ix.fs.raiseBuckets(min(floor.Counter, maxVersion))
 }
+
+// MayOutrank reports whether a removal, release or loss record of id in seg,
+// covering e with pair n, may still outrank a record of the file in another
+// segment: a range of another segment overlaps e with a lowest pair below n.
+// False means the record outranks nothing on disk and the removal it stands
+// for may be dropped once its marker, if it left one, is settled. It takes
+// the file's lock shared and creates no entry. Reclamation's drop test is
+// the caller.
+func (ix *Index) MayOutrank(id core.FileID, seg core.SegmentID, e core.Extent, n Numbers) bool {
+	return ix.fs.mayOutrank(id, seg, e, n)
+}
+
+// MarkerSettled reports whether every removal marker of id not yet settled
+// sits above v: a removal at or below v still holding its marker reports
+// false — it waits for Settle to cover it, and a removal that arrived after
+// the last settle moves the answer back to false by leaving its marker. It
+// takes the file's lock shared and creates no entry. A file with no marker,
+// including one with no entry at all, has nothing unsettled at any v.
+func (ix *Index) MarkerSettled(id core.FileID, v core.Version) bool {
+	settled := true
+	ix.fs.view(id, func(f *file) {
+		settled = f.firstAbove(v) == 0
+	})
+	return settled
+}
+
+// Settle settles id's removal markers at or below v: the caller's statement
+// that metadata has recorded every removal of the file up to v, which drops
+// those markers. It is the step the journal's own Settle call carries, and
+// the tracker's MarkerSettled event relays; it appends nothing and is not
+// persisted — recovery rebuilds every marker and the caller settles again.
+func (ix *Index) Settle(id core.FileID, v core.Version) {
+	ix.fs.settleRemovals(id, v)
+}
+
+// SegmentGone notes that seg — unlinked or recycled — no longer holds a
+// record of id, dropping the file's drop ranges naming it, so no drop query
+// is answered against the retired segment's records again. It claims
+// nothing: a file the index has no entry for is left alone rather than
+// given one to drop nothing from. Call it only once the unlink or recycle
+// is durable, once per file its records named: the tracker's SegmentRetired
+// relays it for each file its own registry knows the segment named, the
+// journal's own retirement carrying it where it knows the segment's bytes
+// through RetiredBytes instead.
+func (ix *Index) SegmentGone(id core.FileID, seg core.SegmentID) {
+	if !ix.fs.view(id, func(*file) {}) {
+		return
+	}
+	_, _ = ix.fs.update(id, func(f *file) error {
+		f.segmentGone(seg)
+		return nil
+	})
+}
+
+// RetireSegment withdraws seg's per-segment byte counters, so a segment
+// gone from the journal answers SegmentBytes zero however its last content
+// left. Retirement is idempotent, so the journal's own retirement — which
+// walks the files through SegmentGone itself — relays into the same call
+// the tracker's SegmentRetired makes, and whichever lands first wins.
+func (ix *Index) RetireSegment(seg core.SegmentID) {
+	_, _ = ix.fs.retireSegment(seg)
+}

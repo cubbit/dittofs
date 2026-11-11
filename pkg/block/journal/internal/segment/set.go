@@ -143,6 +143,25 @@ type Set struct {
 	// c holds the counters of Counters above, maintained at each event that
 	// moves one and never rebuilt: every read is one lock and a copy.
 	c Counters
+
+	// onSeal and onRetire are the observers registered through OnSeal and
+	// OnRetire, guarded by obs: the delivery lock, which every
+	// observer-firing call takes for the whole of its state change and
+	// holds across the callback. They are registered before the set serves
+	// any caller, beside the rest of the ledger's construction.
+	onSeal   func(core.SegmentID)
+	onRetire func(core.SegmentID)
+
+	// obs serialises observer delivery: taken by each call that fires an
+	// observer before its state change begins and held until the callback
+	// has returned. A retire of a segment therefore cannot fire before
+	// that segment's seal callback has returned — the retire blocks until
+	// the seal's delivery is whole, state change and callback alike — and
+	// each callback sees the state change it names complete, every
+	// mutator's mu held nowhere across a callback. It is otherwise a leaf
+	// lock: no call takes it but the two fire sites and the two
+	// registrations, so it joins no cycle.
+	obs sync.Mutex
 }
 
 // entry is one segment of the set: its state, the size it is accounted at,
@@ -197,6 +216,59 @@ func NewSet(segCap int64, log *slog.Logger) *Set {
 // record a stream appends to one of its segments ends past. It is fixed when
 // the set is made and takes no lock.
 func (s *Set) Cap() int64 { return s.cap }
+
+// OnSeal registers fn as the set's seal observer: called with the id of each
+// segment a Seal closed, once the segment turned Sealed and with no lock of
+// the ledger's held — the whole state change its call made is visible to
+// the callback and to every other call — and never for a refusal. A seal's
+// callback has returned before any retire callback of the segment it sealed
+// runs, and a callback may read the set but not register an observer, which
+// would wait on the delivery its own call holds. A nil fn registers
+// nothing; a second call replaces the first. The observer is registered
+// beside the rest of the ledger's construction, before the set serves any
+// caller.
+func (s *Set) OnSeal(fn func(core.SegmentID)) {
+	s.obs.Lock()
+	defer s.obs.Unlock()
+	s.onSeal = fn
+}
+
+// OnRetire registers fn as the set's retire observer: called with the id of
+// each segment that left the set — a Retire's unlink and a Recycle's old id
+// alike — once the removal and every step it carried are complete and with
+// no lock of the ledger's held, and never for a refusal or a spare's drop.
+// The same delivery rules as OnSeal's hold: a retire callback for a segment
+// runs after that segment's seal callback has returned, and a callback may
+// read the set but not register an observer. The ledger names the retired
+// segment only: which files its records held is written nowhere in it once
+// the segment is gone, so a consumer that needs them keeps that registry
+// itself.
+func (s *Set) OnRetire(fn func(core.SegmentID)) {
+	s.obs.Lock()
+	defer s.obs.Unlock()
+	s.onRetire = fn
+}
+
+// sealSeen fires the seal observer for id, which a Seal has just closed.
+// It is called with mu released and obs held by the caller, which held obs
+// across its whole state change — so a retire of the segment cannot fire
+// before this callback has returned.
+func (s *Set) sealSeen(id core.SegmentID) {
+	if s.onSeal == nil {
+		return
+	}
+	s.onSeal(id)
+}
+
+// retireSeen fires the retire observer for id, which a Retire or a Recycle
+// has just removed from the set. It is called with mu released and obs held
+// by the caller, which held obs across its whole state change.
+func (s *Set) retireSeen(id core.SegmentID) {
+	if s.onRetire == nil {
+		return
+	}
+	s.onRetire(id)
+}
 
 // ownsLocked reports whether the id is already in the set or among the
 // spares. Only ids the ledger does not own may be added.
@@ -323,19 +395,28 @@ func (s *Set) State(id core.SegmentID) (State, error) {
 // failed stays Sealed and accounted at its cap (the truncation never became
 // durable), so a size at the cap does not name a full seal.
 func (s *Set) Seal(id core.SegmentID, full bool) error {
+	// obs is held across the state change and the callback: a retire of the
+	// segment waits here until the seal's delivery is whole, so the retire
+	// callback never runs before the seal callback has returned.
+	s.obs.Lock()
+	defer s.obs.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	e, ok := s.segs[id]
 	if !ok {
+		s.mu.Unlock()
 		return ErrNotInSet
 	}
 	if e.state != Active {
+		s.mu.Unlock()
 		return ErrWrongState
 	}
 	e.state = Sealed
 	e.full = full
 	s.c.Sealed++
+	s.mu.Unlock()
+	// No lock of the ledger's is held while the observer runs, and the seal
+	// it names is whole: every read answers with state past the change.
+	s.sealSeen(id)
 	return nil
 }
 
@@ -651,6 +732,11 @@ func (s *Set) DropSpare(id core.SegmentID) (freed int64, err error) {
 // belongs here rather than in a caller's pre-check. Withdrawn if a caller
 // ever needs to see either as a count.
 func (s *Set) Retire(id core.SegmentID) (freed int64, err error) {
+	// obs is held across the state change and the callback, as Seal's is,
+	// so the retire callback runs after any seal callback of the segment
+	// has returned.
+	s.obs.Lock()
+	defer s.obs.Unlock()
 	s.mu.Lock()
 	e, ok := s.segs[id]
 	if !ok {
@@ -670,6 +756,9 @@ func (s *Set) Retire(id core.SegmentID) (freed int64, err error) {
 	freed = e.size
 	s.removeLocked(id, e)
 	s.mu.Unlock()
+	// The segment is gone from the set and the counters are whole; no lock
+	// of the ledger's is held while the observer runs.
+	s.retireSeen(id)
 	return freed, nil
 }
 
@@ -688,6 +777,11 @@ func (s *Set) Retire(id core.SegmentID) (freed int64, err error) {
 // cap, which the segment format today forbids. A spare of the pool is
 // refused uncounted, for the same reason as Retire's.
 func (s *Set) Recycle(old, fresh core.SegmentID) error {
+	// obs is held across the state change and the callback, as Retire's
+	// is: the old id's retire callback runs once the fresh spare and the
+	// counters the recycle restores are in place.
+	s.obs.Lock()
+	defer s.obs.Unlock()
 	s.mu.Lock()
 	e, ok := s.segs[old]
 	if !ok {
@@ -722,11 +816,15 @@ func (s *Set) Recycle(old, fresh core.SegmentID) error {
 		s.mu.Unlock()
 		return ErrDuplicateID
 	}
+	// The segment leaves and the spare enters under the one lock, before
+	// the observer runs, so a callback reading the set sees the recycle
+	// whole: the footprint unmoved and the fresh id owned.
 	s.removeLocked(old, e)
 	s.spares[fresh] = struct{}{}
 	s.c.UsedBytes += s.cap
 	s.c.Spares++
 	s.mu.Unlock()
+	s.retireSeen(old)
 	return nil
 }
 
