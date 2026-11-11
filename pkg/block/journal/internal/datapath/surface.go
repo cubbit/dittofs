@@ -15,7 +15,7 @@ func (c *Core) Settle(s *Share, id core.FileID, v core.Version) {
 	if c.checkTag(s, id) != nil {
 		return
 	}
-	c.index.Settle(id, v)
+	c.index.SettleFor(s.Tag, id, v)
 }
 
 // Extents returns the extents of file id the journal holds, in offset order.

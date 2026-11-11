@@ -232,7 +232,8 @@ func (h *Handle) Settle(id FileID, v Version) { h.j.core.Settle(h.s, id, v) }
 // Extents returns the extents of file id the journal holds, in offset order.
 // It says what the journal holds, not what exists: a caller answering where
 // data or holes lie combines it with metadata, or it reports evicted content
-// as a hole.
+// as a hole. Pieces of one record that differ only in their offloaded bit
+// come back as one extent.
 func (h *Handle) Extents(id FileID) ([]Extent, error) {
 	return h.j.core.Extents(h.s, id)
 }

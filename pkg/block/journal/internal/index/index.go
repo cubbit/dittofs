@@ -165,6 +165,13 @@ func (ix *Index) Since(id core.FileID, from core.Version) []Change { return ix.f
 // persisted; a file with no entry is left alone.
 func (ix *Index) Settle(id core.FileID, v core.Version) { ix.fs.settleRemovals(id, v) }
 
+// SettleFor is Settle on behalf of share tag: the tag check is made under the
+// file's lock, and a file owned by, or rivalled with, another share is left
+// untouched.
+func (ix *Index) SettleFor(tag core.ShareTag, id core.FileID, v core.Version) {
+	ix.fs.settleFor(id, v, &tag)
+}
+
 // Files returns the files owned by tag that hold a piece or an unsettled
 // removal or loss marker, in no order.
 func (ix *Index) Files(tag core.ShareTag) []core.FileID { return ix.fs.list(tag) }

@@ -3,6 +3,7 @@ package index
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 	"testing"
 	"time"
@@ -501,4 +502,156 @@ func TestViewAllocatesNothing(t *testing.T) {
 		t.Fatalf("view allocated %v times per call, want 0", allocs)
 	}
 	_ = got
+}
+
+// listSet returns the files list yields for tag, as a set.
+func listSet(fs *files, tag core.ShareTag) map[core.FileID]bool {
+	out := map[core.FileID]bool{}
+	for _, id := range fs.list(tag) {
+		out[id] = true
+	}
+	return out
+}
+
+// releaseAll drops every piece id holds, offloaded first as release requires.
+func releaseAll(t *testing.T, fs *files, id core.FileID) {
+	t.Helper()
+	if _, err := fs.update(id, func(f *file) error {
+		f.held.markOffloaded(ext(0, 1<<20), ver(0), ver(1<<20))
+		_, err := f.held.release(ext(0, 1<<20), nil)
+		return err
+	}); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+}
+
+// TestListByTag: a file is listed under its owner's tag while it holds a piece,
+// an unsettled removal marker or a synced loss marker, and under no other tag;
+// a file whose pieces were all released, one holding only a segment record or
+// only retained content, and one whose tag was cleared are not listed.
+func TestListByTag(t *testing.T) {
+	ix := New(1 << 20)
+	const other = testTag + 1
+	held, marker, loss, released, segOnly, retained, rival := fid(1), fid(2), fid(3), fid(4), fid(5), fid(6), fid(7)
+
+	if _, err := ix.WriteRetain(testTag, held, write(0, 8, rec(1, 0), 1), 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ix.ApplyRemoval(testTag, marker, core.ChangeDeallocate, ext(0, 8), ver(2), 2, rec(1, 64), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ix.WriteRetain(testTag, loss, write(0, 8, rec(1, 128), 3), 3); err != nil {
+		t.Fatal(err)
+	}
+	releaseAll(t, &ix.fs, loss)
+	if _, err := ix.Lose(loss, ext(0, 8), ver(4)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ix.WriteRetain(testTag, released, write(0, 8, rec(1, 192), 5), 5); err != nil {
+		t.Fatal(err)
+	}
+	releaseAll(t, &ix.fs, released)
+	if _, err := ix.fs.update(segOnly, func(f *file) error {
+		return f.recorded(1, ext(0, 8), nums(6, 6), testTag, segOnly)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ix.WriteRetain(testTag, retained, write(0, 8, rec(1, 256), 7), 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ix.WriteRetain(testTag, retained, write(0, 8, rec(1, 320), 8), 8); err != nil {
+		t.Fatal(err)
+	}
+	releaseAll(t, &ix.fs, retained)
+	if len(ix.Retained(retained)) == 0 {
+		t.Fatal("setup: the retained-only file retains nothing")
+	}
+	if _, err := ix.WriteRetain(testTag, rival, write(0, 8, rec(1, 384), 9), 9); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ix.fs.update(rival, func(f *file) error { f.rivalled, f.rival = true, other; return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[core.FileID]bool{held: true, marker: true, loss: true, rival: true}
+	if got := listSet(&ix.fs, testTag); !maps.Equal(got, want) {
+		t.Fatalf("list(%d) = %v, want %v", testTag, got, want)
+	}
+	if got := ix.Files(other); len(got) != 0 {
+		t.Fatalf("list(%d) = %v, want none: the files are tag %d's", other, got, testTag)
+	}
+	if err := ix.ClearTag(held); err != nil {
+		t.Fatal(err)
+	}
+	if got := listSet(&ix.fs, testTag); got[held] {
+		t.Fatalf("list(%d) still names the file whose tag was cleared", testTag)
+	}
+}
+
+// TestSettleForLeavesOtherShareAlone: a settle made for a share that does not
+// own the file, or for either side of a rivalled file, changes nothing, and
+// the owner's settle drops the marker.
+func TestSettleForLeavesOtherShareAlone(t *testing.T) {
+	ix := New(1 << 20)
+	const other = testTag + 1
+	id := fid(1)
+	if _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(0, 8), ver(2), 2, rec(1, 0), nil); err != nil {
+		t.Fatal(err)
+	}
+	ix.SettleFor(other, id, ver(9))
+	if n := markerCount(&ix.fs, id); n != 1 {
+		t.Fatalf("markers = %d after another share's settle, want 1", n)
+	}
+	if _, err := ix.fs.update(id, func(f *file) error { f.rivalled, f.rival = true, other; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	ix.SettleFor(testTag, id, ver(9))
+	ix.SettleFor(other, id, ver(9))
+	if n := markerCount(&ix.fs, id); n != 1 {
+		t.Fatalf("markers = %d after a settle of a rivalled file, want 1", n)
+	}
+	if _, err := ix.fs.update(id, func(f *file) error { f.rivalled, f.rival = false, 0; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	ix.SettleFor(testTag, id, ver(9))
+	if n := markerCount(&ix.fs, id); n != 0 {
+		t.Fatalf("markers = %d after the owner's settle, want 0", n)
+	}
+}
+
+// TestListConcurrent: list runs against writers and settlers of the same
+// files under the race detector, and afterwards names exactly the files that
+// hold something.
+func TestListConcurrent(t *testing.T) {
+	ix := New(1 << 20)
+	var wg sync.WaitGroup
+	for w := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 50 {
+				id := fid(byte(w*50+i) + 1)
+				if _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(0, 8), ver(2), 2, rec(1, 0), nil); err != nil {
+					t.Error(err)
+					return
+				}
+				if i%2 == 0 {
+					ix.SettleFor(testTag, id, ver(2))
+				}
+			}
+		}()
+	}
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				_ = ix.Files(testTag)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := len(ix.Files(testTag)); got != 100 {
+		t.Fatalf("list = %d files, want the 100 whose marker was not settled", got)
+	}
 }

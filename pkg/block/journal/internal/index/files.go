@@ -697,10 +697,12 @@ func (fs *files) dropRangeCount() int64 { return fs.dropRanges.Load() }
 // in no order. A shard's lock is released before any file's is taken, so it
 // is never held while waiting on a file.
 //
-// decision: a file kept only by drop-range or superseded-run bookkeeping is
-// not listed, since the changes since yields for a file are its held pieces
-// and markers alone and a listed file exists to be asked for them. Overturned
-// by a caller that must find such a file to settle it.
+// decision: a file holding no piece and no marker is not listed, whatever
+// else its entry keeps (segment records, retained extents, a tag): since
+// yields only pieces and markers, and an entry holding neither has had its
+// superseded runs cleared with the held set, so none can be waiting on a
+// settle. Overturned by an entry that keeps such runs without a piece or a
+// marker.
 func (fs *files) list(tag core.ShareTag) []core.FileID {
 	var out []core.FileID
 	for i := range fs.shards {

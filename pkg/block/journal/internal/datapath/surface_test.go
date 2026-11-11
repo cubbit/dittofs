@@ -39,6 +39,9 @@ func TestSettleDropsMarkersAndLossNotExtents(t *testing.T) {
 	}
 	v3 := mustWrite(t, c, s, f, 12<<10, pattern(2<<10, 3))
 
+	if got := sinceAll(t, c, s, f, core.Version{}); !slices.ContainsFunc(got, func(ch core.Change) bool { return ch.Kind == core.ChangeLoss }) {
+		t.Fatalf("before Settle Since yields no loss: %+v", got)
+	}
 	// One Settle at the second marker drops both markers, the loss and, by
 	// version, every older one.
 	c.Settle(s, f, d2)
@@ -78,6 +81,13 @@ func TestSettleUnappliedRemovalReadsLost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// decision: the read half cannot tell a settled marker from an unsettled
+	// one here: the removal already cut the held bytes, so the extent reads
+	// missing either way until recovery can rebuild the marker. The Since
+	// check below carries the assertion that Settle dropped it.
+	if got := sinceAll(t, c, s, f, core.Version{}); !slices.ContainsFunc(got, func(ch core.Change) bool { return ch.Kind == core.ChangeDeallocate }) {
+		t.Fatalf("setup: no marker before Settle: %+v", got)
+	}
 	c.Settle(s, f, d)
 	if got := sinceAll(t, c, s, f, core.Version{}); slices.ContainsFunc(got, func(ch core.Change) bool { return ch.Kind == core.ChangeDeallocate }) {
 		t.Fatalf("the marker survived Settle: %+v", got)
@@ -97,7 +107,7 @@ func TestFilesListsLossOnlyFile(t *testing.T) {
 	s := mustShare(t, c, 1)
 	f, held := testFile(1), testFile(2)
 	ctx := context.Background()
-	v := mustWrite(t, c, s, f, 0, pattern(4<<10, 1))
+	mustWrite(t, c, s, f, 0, pattern(4<<10, 1))
 	syncFiles(t, c, f)
 	mustWrite(t, c, s, held, 0, pattern(4<<10, 2))
 	// Truncate to nothing leaves f with no extent; its marker is then settled,
@@ -111,7 +121,7 @@ func TestFilesListsLossOnlyFile(t *testing.T) {
 		t.Fatalf("Files = %v, want only the file holding an extent", got)
 	}
 	if _, err := c.Durability().Lose(ctx, durability.Loss{Share: 1, File: f, Extent: ex(0, 4<<10), Version: tr, Seq: 900, Reason: core.LossCorrupt, Synced: true}); err != nil {
-		t.Fatalf("Lose: %v (v=%v)", err, v)
+		t.Fatalf("Lose: %v", err)
 	}
 	if got := filesOf(c, s); !slices.Equal(got, []core.FileID{f, held}) {
 		t.Fatalf("Files = %v, want the loss-only file and the held one", got)
@@ -178,4 +188,35 @@ func TestFilesOtherShareExcluded(t *testing.T) {
 		t.Fatalf("Files on a closed handle = %v", got)
 	}
 	c.Settle(s1, f1, d)
+	s3 := mustShare(t, c, 1)
+	if got := sinceAll(t, c, s3, f1, core.Version{}); !slices.ContainsFunc(got, func(ch core.Change) bool { return ch.Kind == core.ChangeDeallocate }) {
+		t.Fatalf("Settle on a closed handle dropped the marker: %+v", got)
+	}
+}
+
+// TestSettleDropsOver: a write that superseded an older one carries Over until
+// a Settle at or above the superseded version, made through Core.Settle.
+func TestSettleDropsOver(t *testing.T) {
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	mustWrite(t, c, s, f, 0, pattern(4<<10, 1))
+	v2 := mustWrite(t, c, s, f, 0, pattern(4<<10, 2))
+	over := func() int {
+		n := 0
+		for _, ch := range sinceAll(t, c, s, f, core.Version{}) {
+			n += len(ch.Over)
+		}
+		return n
+	}
+	if over() == 0 {
+		t.Fatal("setup: the overwrite carries no Over run")
+	}
+	c.Settle(s, f, v2)
+	if n := over(); n != 0 {
+		t.Fatalf("Over runs after Settle = %d, want 0", n)
+	}
+	if got, _ := c.Extents(s, f); len(got) != 1 {
+		t.Fatalf("Settle dropped held extents: %v", got)
+	}
 }
