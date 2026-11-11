@@ -54,9 +54,6 @@ func TestIndexUnderRecorder(t *testing.T) {
 	e := core.Extent{Off: 0, Len: 512}
 	r := RecordAt{Segment: core.SegmentID(1), Offset: 0}
 	launchRecorded(8, func(i int) {
-		// The gone path: a delete removes the file's marker only through a
-		// settle, so the entry stays in the map until the settle below; that
-		// pair drives out what had an entry, over rounds.
 		v := uint64(i + 1)
 		for range recordedRounds {
 			tag := core.ShareTag(i%2 + 1)
@@ -91,21 +88,77 @@ func TestIndexUnderRecorder(t *testing.T) {
 			ix.fs.settleRemovals(gone, core.Version{Counter: v + 4})
 			v++
 		}
+		// On this very goroutine, after its last release: a hold the test
+		// leaked would be on the books of no other goroutine but this one.
+		if held := recorder.Held(); len(held) != 0 {
+			t.Errorf("worker %d holds ranks %v after the run, want none", i, held)
+		}
 	})
 
 	if vs := recorder.Violations(); len(vs) != 0 {
 		for _, v := range vs {
 			t.Errorf("recorder violation: %s acquiring %s over %v\n%s", v.Kind, v.Rank, v.Held, v.Stack)
 		}
+		return
 	}
 	if held := recorder.Held(); len(held) != 0 {
 		t.Fatalf("main goroutine holds ranks %v after the run, want none", held)
 	}
-	launchRecorded(8, func(int) {
-		if held := recorder.Held(); len(held) != 0 {
-			t.Errorf("worker goroutine holds ranks %v after the run, want none", held)
+
+	// A run of acquisitions the recorder never saw would pass every check
+	// above: rank-0 locks are invisible to it. So the same recorder is made
+	// to prove it saw the index's locks: with a higher rank held on this
+	// goroutine, an index read takes a shard lock and then the file's lock,
+	// and each that goes unreported would mean an unranked lock. A second
+	// read drives the same through an entry made after SetRecorder, the
+	// easiest one to leave unranked. The first run's zero is already
+	// asserted, so every violation below is the probe's.
+	probe := lockorder.SegmentAppend
+	recorder.Acquire(probe, probe)
+	ix.AsOf(recordedIDs[0])
+	vs := recorder.Violations()
+	if len(vs) != 2 {
+		t.Fatalf("the probe run recorded %d violations, want 2: %+v", len(vs), vs)
+	}
+	sawFileMap, sawFileIndex := false, false
+	for _, v := range vs {
+		if v.Kind != lockorder.OutOfOrder {
+			t.Errorf("probe violation kind = %v, want out of order (acquiring %s over %v)", v.Kind, v.Rank, v.Held)
 		}
-	})
+		switch v.Rank {
+		case lockorder.FileMap:
+			sawFileMap = true
+		case lockorder.FileIndex:
+			sawFileIndex = true
+		default:
+			t.Errorf("probe violation rank = %s, want file map or file index", v.Rank)
+		}
+	}
+	if !sawFileMap || !sawFileIndex {
+		t.Fatalf("probe violations = %v; want one file map and one file index, i.e. the rank 0 of a dropped Init must fail here", vs)
+	}
+	// Entries made after SetRecorder are Init'ed from the same recorder; the
+	// probe must find the late entry's locks recorded too: its read takes the
+	// shard lock and then the file's, one violation each.
+	late := fid(21)
+	if _, err := ix.WriteRetain(1, late, Placed{Extent: ext(0, 64), Record: rec(2, 0), Version: ver(1)}, core.Seq(1)); err != nil {
+		t.Fatalf("WriteRetain of the late entry: %v", err)
+	}
+	before := len(recorder.Violations())
+	ix.Span(late, ext(0, 64))
+	vs = recorder.Violations()
+	if n := len(vs) - before; n != 2 {
+		t.Fatalf("the late entry's read recorded %d new violations, want 2: %+v", n, vs[before:])
+	}
+	for i, want := range []lockorder.Rank{lockorder.FileMap, lockorder.FileIndex} {
+		if v := vs[before+i]; v.Kind != lockorder.OutOfOrder || v.Rank != want {
+			t.Fatalf("late-entry violation %d = %s of %s, want out of order of %s", i, v.Kind, v.Rank, want)
+		}
+	}
+	recorder.Release(probe, probe)
+	if held := recorder.Held(); len(held) != 0 {
+		t.Fatalf("main goroutine holds ranks %v after the probe's release, want none", held)
+	}
 }
 
 // TestIndexLocksNameTheirRanks: the file map and the file index are separate
