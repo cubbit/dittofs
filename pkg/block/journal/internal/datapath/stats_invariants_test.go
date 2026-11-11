@@ -406,3 +406,29 @@ func TestRFC1D_CorruptReadFiguresMatchIndex(t *testing.T) {
 		t.Fatalf("held/dirty = %d/%d after the only record was dropped, want 0", st.HeldBytes, st.DirtyBytes)
 	}
 }
+
+// TestRFC1D_StatsReservedCoversARecordNotYetCounted samples Stats after a
+// record is in its segment and before its share counts it: the share's
+// ReservedBytes covers the whole record, so the bytes show in one of the two
+// figures at every instant.
+func TestRFC1D_StatsReservedCoversARecordNotYetCounted(t *testing.T) {
+	var c *Core
+	var sampled bool
+	c, _ = newTestCore(t, func(o *coreOptions) {
+		o.beforeWrote = func() {
+			sampled = true
+			st := c.Stats()
+			if got := st.Shares[1].ReservedBytes; got < 4096 {
+				t.Errorf("share 1 ReservedBytes = %d before its record is counted, want at least the 4096-byte payload", got)
+			}
+			if st.ReservedBytes < st.Shares[1].ReservedBytes {
+				t.Errorf("ReservedBytes %d below share 1's %d", st.ReservedBytes, st.Shares[1].ReservedBytes)
+			}
+		}
+	})
+	s := mustShare(t, c, 1)
+	mustWrite(t, c, s, testFile(1), 0, make([]byte, 4096))
+	if !sampled {
+		t.Fatal("the beforeWrote seam never ran")
+	}
+}

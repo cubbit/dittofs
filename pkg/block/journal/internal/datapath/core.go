@@ -93,6 +93,9 @@ type coreOptions struct {
 	// domain held. It is the window a take's room grant and the append that
 	// spends it are apart in.
 	beforeAppend func()
+	// beforeWrote runs in WriteAt after a record is appended and before the
+	// share counts it, while the record is still reserved.
+	beforeWrote func()
 	// beforeResolve runs in ReadAt after the as-of is read and the file's
 	// append domain released, before the span is resolved.
 	beforeResolve func()
@@ -194,6 +197,11 @@ type Core struct {
 	// grant and its first append, the window a take's room grant is spent in.
 	// It is nil outside tests, for the same reason afterAppend is.
 	beforeAppend func()
+	// beforeWrote is a test seam that runs in WriteAt after a record is in its
+	// segment and before the share counts it, the window in which the record
+	// is still reserved. It is nil outside tests, for the same reason
+	// afterAppend is.
+	beforeWrote func()
 
 	// beforeResolve is a test seam that holds a read between reading its
 	// as-of and resolving its span. It is nil outside tests, for the same
@@ -277,7 +285,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)
