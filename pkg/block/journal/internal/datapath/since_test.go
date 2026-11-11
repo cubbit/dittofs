@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
@@ -321,11 +322,69 @@ func TestSinceDoesNotBlockWriter(t *testing.T) {
 		_, err := c.WriteAt(context.Background(), s, f, 0, make([]byte, 4<<10), 1)
 		wrote <- err
 	}()
-	if err := <-wrote; err != nil {
-		t.Fatalf("WriteAt during the iteration: %v", err)
+	// One generous backstop: a writer blocked behind the paused consumer
+	// would never finish, so the wait is the assertion.
+	select {
+	case err := <-wrote:
+		if err != nil {
+			t.Fatalf("WriteAt during the iteration: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("WriteAt to the file blocked while a consumer was paused inside Since")
 	}
 	close(release)
 	if got := <-done; len(got) != 2 {
 		t.Fatalf("Since yielded %d items, want the 2 of the view it copied before the write", len(got))
+	}
+}
+
+// TestSinceReportsLossAnotherReadDropped covers a synced record that a
+// concurrent read drops after Since copied the file's changes but before
+// Since reached it: Since still yields the loss, since a consumer whose
+// cursor passes the version would otherwise never learn of it. A second
+// Since, begun at once after the drop with no wait for the worker, sees the
+// loss marker too.
+func TestSinceReportsLossAnotherReadDropped(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 3)
+	f := testFile(1)
+	mustWrite(t, c, s, f, 0, pattern(4<<10, 1))
+	vb := mustWrite(t, c, s, f, 8<<10, pattern(4<<10, 2))
+	syncFiles(t, c, f)
+	rb := recordOf(t, c, f, 8<<10).Record
+	flip(t, seam, rb.Segment, payloadStart(rb)+10)
+
+	inYield, release, done := make(chan struct{}), make(chan struct{}), make(chan []core.Change)
+	go func() {
+		var got []core.Change
+		for ch, err := range c.Since(context.Background(), s, f, core.Version{}) {
+			if err != nil {
+				t.Errorf("Since: %v", err)
+				break
+			}
+			if len(got) == 0 {
+				close(inYield)
+				<-release
+			}
+			got = append(got, ch)
+		}
+		done <- got
+	}()
+	<-inYield
+	// The read drops the record the paused Since still holds in its copy.
+	readUntouched(t, c, s, f, 8<<10, 4<<10, []core.Extent{ex(8<<10, 4<<10)})
+	want := []brief{{core.ChangeLoss, ex(8<<10, 4<<10), vb, 0}}
+	if got := briefs(sinceAll(t, c, s, f, core.Version{Counter: vb.Counter - 1})); !slices.Equal(got, want) {
+		t.Fatalf("Since begun after the drop = %+v, want the loss %+v with no wait for the worker", got, want)
+	}
+	close(release)
+	var got []core.Change
+	select {
+	case got = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the paused Since never finished")
+	}
+	if b := briefs(got); len(b) != 2 || b[0].Kind != core.ChangeWrite || b[1] != want[0] {
+		t.Fatalf("paused Since = %+v, want the first write then the loss %+v", b, want[0])
 	}
 }

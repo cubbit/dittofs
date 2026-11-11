@@ -42,6 +42,10 @@ type Loss struct {
 	// publishes it but raises nothing.
 	Raised bool
 
+	// Marked says the caller already left the marker of a synced loss, so
+	// Lose leaves none.
+	Marked bool
+
 	// Deferred appends no record: the copy that retires the dropped
 	// record's segment writes it.
 	Deferred bool
@@ -126,7 +130,7 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	// reports no write lost, so Since does not yield it and it needs no
 	// Settle; a marker would make a later DropOlder inherit one that nothing
 	// settles. Withdraw this if a superseded loss ever has to be settled.
-	if l.Synced && l.Reason != core.LossSuperseded {
+	if l.Synced && !l.Marked && l.Reason != core.LossSuperseded {
 		delta, err := d.markLoss(l.File, l.Extent, l.Version)
 		if err != nil {
 			d.log.Error("a synced loss left no marker", "file", l.File, "err", err)

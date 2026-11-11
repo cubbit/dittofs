@@ -32,7 +32,7 @@ import (
 // copy it names that verifies stands in, and one that does not verify either
 // leaves the extent yielded with an Mtime of 0; a dropped record's extent is
 // not yielded, and when the drop was of a synced record the loss it left is
-// yielded in its place, from the extents Corrupt says it lost. A segment retired since the copy was taken yields the
+// yielded in its place. A segment retired since the copy was taken yields the
 // extent with an Mtime of 0.
 //
 // decision: the changes are those of the copy taken at the start. A drop of an
@@ -52,13 +52,24 @@ func (c *Core) Since(ctx context.Context, s *Share, id core.FileID, from core.Ve
 			yield(core.Change{}, err)
 			return
 		}
+		// decision: the handle's call count is held across every yield, so a
+		// consumer paused inside one makes Share.Close wait for it. Writers and
+		// readers are never blocked, which is all the spec asks of Since, and
+		// a Close that ran under a live iteration would read records of a
+		// closed handle. Overturned by a consumer that parks in a yield for
+		// long, which would need the iteration to re-enter per item.
 		defer exit()
 		if err := c.checkTag(s, id); err != nil {
 			yield(core.Change{}, err)
 			return
 		}
 		changes := c.index.Since(id, from)
-		sr := sinceRead{reading: reading{c: c, ctx: ctx, id: id, st: c.streams.For(id)}, dropped: map[index.RecordAt]bool{}}
+		sr := sinceRead{reading: reading{c: c, ctx: ctx, id: id, st: c.streams.For(id)}, from: from, dropped: map[index.RecordAt]bool{}, seen: map[lossKey]bool{}}
+		for _, ch := range changes {
+			if ch.Kind == core.ChangeLoss {
+				sr.seen[lossKey{ch.Version, ch.Extent}] = true
+			}
+		}
 		bp := recordBufs.Get().(*[]byte)
 		defer recordBufs.Put(bp)
 		for _, ch := range changes {
@@ -94,11 +105,19 @@ func (c *Core) Since(ctx context.Context, s *Share, id core.FileID, from core.Ve
 	}
 }
 
+// lossKey names one loss marker.
+type lossKey struct {
+	v core.Version
+	e core.Extent
+}
+
 // sinceRead is one Since's progress. It reuses reading for the Corruption a
 // record that does not verify is handed to Corrupt as.
 type sinceRead struct {
 	reading
+	from    core.Version
 	dropped map[index.RecordAt]bool // records Corrupt dropped during this iteration
+	seen    map[lossKey]bool        // loss markers the copy held or this iteration yielded in a write's place
 }
 
 // write reads ch's record and returns the modification time to yield with
@@ -147,8 +166,15 @@ func (r *sinceRead) write(ch index.Change, bp *[]byte) (mtime int64, replaced []
 	}
 	r.dropped[ch.Record] = true
 	replaced = []core.Change{}
-	for _, e := range out.Lost {
-		replaced = append(replaced, core.Change{Kind: core.ChangeLoss, Extent: e, Version: ch.Version})
+	// The marker of a synced loss is visible once Corrupt returns, whoever
+	// dropped the record, so the losses to yield in its place are the markers
+	// at its version that the copy did not hold: an unsynced drop leaves none.
+	for _, m := range r.c.index.Since(r.id, r.from) {
+		k := lossKey{m.Version, m.Extent}
+		if m.Kind == core.ChangeLoss && m.Version == ch.Version && !r.seen[k] {
+			r.seen[k] = true
+			replaced = append(replaced, core.Change{Kind: core.ChangeLoss, Extent: m.Extent, Version: m.Version})
+		}
 	}
 	slices.SortFunc(replaced, func(a, b core.Change) int { return cmp.Compare(a.Extent.Off, b.Extent.Off) })
 	return 0, replaced, nil

@@ -52,11 +52,6 @@ type CorruptOutcome struct {
 	Kind CorruptKind
 	// Copy is the copy to read, set for CorruptUseCopy.
 	Copy segment.Location
-	// Lost is, for CorruptDropped of a synced record, the extents the drop
-	// loses, each of which the loss record and the index's loss marker will
-	// carry at the record's version. It is empty for an unsynced record and
-	// for a record the index no longer named, which lose nothing here.
-	Lost []core.Extent
 }
 
 // Corrupt handles a record a reader found not to verify. It first looks for
@@ -202,8 +197,29 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 	// A synced record lifted what it superseded when it completed, or the
 	// worker is about to; lifting now first keeps the drop below from holding
 	// it again, and leaves the worker's own lift nothing to do.
+	//
+	// The synced loss's marker is left here too, before the drop, under the
+	// file's domain: a Since that copies the file's changes sees the record,
+	// the marker or both, never neither, and the marker is visible by the time
+	// Corrupt returns, whoever dropped the record. The worker's loss record
+	// then leaves no second marker (Loss.Marked).
+	marked := map[core.Extent]bool{}
 	if synced {
 		d.lift(c.File, c.Version, c.Extent)
+		for _, p := range held {
+			if marked[p.Extent] {
+				continue
+			}
+			delta, err := d.markLoss(c.File, p.Extent, c.Version)
+			if err != nil {
+				d.log.Error("a synced loss left no marker", "file", c.File, "err", err)
+				continue
+			}
+			marked[p.Extent] = true
+			if d.account != nil {
+				d.account(delta)
+			}
+		}
 	}
 	fw, hd, err := d.index.FailWindow(c.File, []index.WindowRecord{{Record: c.Record, Version: c.Version, Extent: c.Extent}})
 	if err != nil {
@@ -236,6 +252,7 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 		}
 		l := base
 		l.Extent, l.Offloaded = p.Extent, p.Offloaded
+		l.Marked = marked[p.Extent]
 		job.losses = append(job.losses, l)
 	}
 	if len(job.losses) == 0 && err != nil && len(held) > 0 {
@@ -253,11 +270,6 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 		return dropped
 	}
 	unlock()
-	if synced {
-		for _, l := range job.losses {
-			dropped.Lost = append(dropped.Lost, l.Extent)
-		}
-	}
 
 	d.queueCorrupt(st, job)
 	return dropped
