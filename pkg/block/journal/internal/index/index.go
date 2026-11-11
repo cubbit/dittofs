@@ -160,14 +160,11 @@ func (ix *Index) Lookup(id core.FileID, off int64) (Placed, bool) {
 // that holds no lock once it returns. A file with no entry yields nothing.
 func (ix *Index) Since(id core.FileID, from core.Version) []Change { return ix.fs.since(id, from, nil) }
 
-// Settle drops id's removal and loss markers at or below v, and the
-// superseded runs kept for them. It claims nothing, appends nothing and is not
-// persisted; a file with no entry is left alone.
-func (ix *Index) Settle(id core.FileID, v core.Version) { ix.fs.settleRemovals(id, v) }
-
-// SettleFor is Settle on behalf of share tag: the tag check is made under the
-// file's lock, and a file owned by, or rivalled with, another share is left
-// untouched.
+// SettleFor drops id's removal and loss markers at or below v, and the
+// superseded runs kept for them, on behalf of share tag. It claims nothing,
+// appends nothing and is not persisted; a file with no entry is left alone.
+// The tag check is made under the file's lock, and a file owned by, or rivalled
+// with, another share is left untouched.
 func (ix *Index) SettleFor(tag core.ShareTag, id core.FileID, v core.Version) {
 	ix.fs.settleFor(id, v, &tag)
 }

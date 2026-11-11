@@ -174,7 +174,7 @@ func TestSinceCorruptMtimeDropsAndReportsLoss(t *testing.T) {
 	if got := briefs(sinceAll(t, c, s, f, core.Version{})); !slices.Equal(got, want) {
 		t.Fatalf("second Since(0) = %+v, want %+v", got, want)
 	}
-	c.Index().Settle(f, v)
+	c.Settle(s, f, v)
 	if got := sinceAll(t, c, s, f, core.Version{}); len(got) != 0 {
 		t.Fatalf("Since(0) after Settle(%v) = %+v, want nothing", v, got)
 	}
