@@ -155,47 +155,58 @@ func (h *Handle) Fill(ctx context.Context, id FileID, off int64, p []byte, asOf 
 
 // Truncate stops holding every extent of file id at or beyond size, and
 // narrows an extent straddling it. It draws a new version, leaves a removal
-// marker until the caller settles it, and is durable on return.
+// marker until the caller settles it, and is durable on return. A removal
+// whose durability wait fails returns no version, as a failed write does: a
+// read-only journal undoes the unsynced record, so the removal did not happen.
 //
 // Its record draws on the reserved headroom and is never refused by the
 // share's limit or the journal's maximum. It is refused by a NoSpaceError
-// naming LimitHeadroom, when the headroom is exhausted and the removal frees
-// nothing held, or LimitVersion. It takes the file append domain.
+// naming LimitHeadroom once the headroom is exhausted — the ledger is never
+// credited back before repack, so the refusal can reach a removal of held
+// content too — or naming LimitVersion. A negative size is refused with
+// ErrInvalidExtent before anything is drawn or appended. It takes the file
+// append domain.
 func (h *Handle) Truncate(ctx context.Context, id FileID, size int64) (Version, error) {
-	return Version{}, ErrNotImplemented
+	return h.j.core.Truncate(ctx, h.s, id, size)
 }
 
 // Deallocate stops holding extent e of file id, whatever its offloaded bit. It
 // draws a new version, leaves a removal marker until the caller settles it,
-// and is durable on return. A zero-length e is refused with ErrZeroLength and
-// appends nothing.
+// and is durable on return; a failed durability wait returns no version. A
+// zero-length e is refused with ErrZeroLength and appends nothing; a negative
+// offset or length, or an end that overflows, with ErrInvalidExtent, likewise
+// before anything is drawn or appended.
 //
 // It draws on the headroom as Truncate does, and is refused as Truncate is or
 // by a NoSpaceError naming LimitIndex when splitting a held extent would pass
 // the index's cap on what removals add. It takes the file append domain.
 func (h *Handle) Deallocate(ctx context.Context, id FileID, e Extent) (Version, error) {
-	return Version{}, ErrNotImplemented
+	return h.j.core.Deallocate(ctx, h.s, id, e)
 }
 
 // Delete stops holding every extent of file id. It draws a new version, leaves
-// a removal marker until the caller settles it, and is durable on return. It
-// draws on the headroom and is refused as Truncate is. It takes the file
-// append domain.
+// a removal marker until the caller settles it, and is durable on return; a
+// failed durability wait returns no version. It draws on the headroom and is
+// refused as Truncate is. It takes the file append domain.
 func (h *Handle) Delete(ctx context.Context, id FileID) (Version, error) {
-	return Version{}, ErrNotImplemented
+	return h.j.core.Delete(ctx, h.s, id)
 }
 
 // CloneTarget stops holding (spec.DstOff, spec.Len) of file id as Deallocate
 // does, and its record and marker carry spec, so a restart that finds the
 // marker resumes the clone rather than leaving the range reading as a hole. A
-// zero-length spec is refused with ErrZeroLength and appends nothing.
+// zero-length spec is refused with ErrZeroLength and appends nothing, and one
+// whose source or destination cannot be named with ErrInvalidExtent: a
+// negative destination offset or length, or an end that overflows; a negative
+// SrcOff or one whose end overflows Len; or an AsOf carrying an epoch. Nothing
+// is drawn or appended for either.
 //
-// It draws a new version and is durable on return. Its record frees nothing,
-// so besides Deallocate's refusals it is refused with a NoSpaceError naming
-// LimitHeadroom once less than half the headroom remains. It takes the file
-// append domain.
+// It draws a new version and is durable on return; a failed durability wait
+// returns no version. Its record frees nothing, so besides Deallocate's
+// refusals it is refused with a NoSpaceError naming LimitHeadroom once less
+// than half the headroom remains. It takes the file append domain.
 func (h *Handle) CloneTarget(ctx context.Context, id FileID, spec CloneSpec) (Version, error) {
-	return Version{}, ErrNotImplemented
+	return h.j.core.CloneTarget(ctx, h.s, id, spec)
 }
 
 // Since yields every held extent of file id, every unsettled removal marker

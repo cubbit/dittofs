@@ -230,6 +230,45 @@ func (fs *files) reserve(want int64) (int64, error) {
 	}
 }
 
+// CheckRemoval predicts a removal of e on id against the removal allowance
+// without reserving: it returns the refusal the removal's admission would —
+// a NoSpaceError naming the index, counted by the index's refusals counter —
+// when e splits a held piece and the count stands an eighth of the limit above
+// the bound, or nil otherwise. A removal that splits nothing is never refused,
+// so a nil here means the removal will not be refused by the index at all; one
+// that splits may still lose the race to a reservation another file makes
+// between this check and its own admission, which fails closed.
+//
+// It reserves nothing and changes no entry, so a caller that checked and then
+// admits finds the index where the check left it. It creates no entry and takes
+// the named file's lock shared, exactly as the admission's own pre-check does.
+func (ix *Index) CheckRemoval(id core.FileID, e core.Extent) error {
+	var split bool
+	// A file with no entry holds nothing, so no removal of it splits a piece.
+	ix.fs.view(id, func(f *file) { split = f.splits(e) })
+	if !split {
+		return nil
+	}
+	c, limit := ix.fs.count.Load(), ix.fs.limit.Load()
+	if ceiling := removalCeiling(limit); c >= ceiling {
+		ix.fs.refusals.Add(1)
+		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + 1 - ceiling, Unit: core.UnitEntries}
+	}
+	return nil
+}
+
+// removalCeiling is the count the removal allowance ends at: the bound plus an
+// eighth of it, saturated so a limit near MaxInt64 does not wrap the sum
+// negative. A limit of zero or below has a ceiling at or below zero, so no
+// count stands under it and every splitting removal is refused.
+func removalCeiling(limit int64) int64 {
+	eighth := limit / 8
+	if room := math.MaxInt64 - limit; limit >= 0 && eighth > room {
+		eighth = room
+	}
+	return limit + eighth
+}
+
 // admitRemoval reserves adds, the entries a removal that would split a held
 // extent adds: one for a release, which splits a piece and leaves no marker,
 // and two for a deallocate or a clone target, which split a piece and leave
@@ -251,6 +290,14 @@ func (fs *files) reserve(want int64) (int64, error) {
 // ceiling even while splitting ones are refused; reserving only what the
 // removal may add is what keeps a trim pass moving under the ceiling, and
 // the commit's true delta keeps the count exact.
+//
+// decision: no production call reaches this now that the journal checks the
+// allowance before its append (CheckRemoval) and applies the removal after it
+// without one (ApplyRemoval). It is kept, and covered by its own tests, because
+// CheckRemoval is its read-only twin and the pair is what reserving the bound
+// before an append would need; a reservation path that lands uses it, and this
+// note goes with it. Withdraw it, and the tests that pin its counter, if the
+// bound is never reserved ahead of an append.
 func (fs *files) admitRemoval(id core.FileID, e core.Extent, adds int64) (int64, error) {
 	split := false
 	if !fs.view(id, func(f *file) { split = f.splits(e) }) {
@@ -260,19 +307,14 @@ func (fs *files) admitRemoval(id core.FileID, e core.Extent, adds int64) (int64,
 		return 0, nil
 	}
 	for {
-		c := fs.count.Load()
-		limit := fs.limit.Load()
-		// Saturate: a limit near MaxInt64 must not wrap the ceiling
+		c, limit := fs.count.Load(), fs.limit.Load()
+		// The ceiling saturates: a limit near MaxInt64 must not wrap it
 		// negative, or every splitting removal would be refused where
 		// nothing else is — content writes are still admitted against
 		// the limit. A negative one, which the settings must reject
 		// before the index, gives a negative ceiling and refuses the
 		// same way it refuses everything else.
-		eighth, room := limit/8, math.MaxInt64-limit
-		if limit >= 0 && eighth > room {
-			eighth = room
-		}
-		ceiling := limit + eighth
+		ceiling := removalCeiling(limit)
 		// The refusal begins once the count stands at the ceiling, not when
 		// a reservation no longer fits: it is the count standing an eighth of
 		// the limit above it that ends the allowance. Reserving the adds

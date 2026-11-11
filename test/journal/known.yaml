@@ -76,9 +76,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Fill, Deallocate and its removal marker.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs recovery of removal markers.'
   issue: '#3814'
-  message: 'stub: Deallocate'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC1A_NoZeroFill
   status: fail
@@ -192,14 +192,6 @@
   issue: '#3379'
   message: 'stub: Inspect.File'
 
-- test: TestRFC1B_FloorBuckets
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Delete and Settle.'
-  issue: '#3378'
-  message: 'stub: Delete'
-
 - test: TestRFC1B_FreedMeansFreed
   status: fail
   fix: planned
@@ -254,7 +246,7 @@
   category: feature
   reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs the version limit, Draw, the open floor and recovery of the version counter.'
   issue: '#3814'
-  message: 'fixture:'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC1B_OffloadedRecordsBelowHalfTheHeadroom
   status: fail
@@ -1834,33 +1826,33 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Truncate inside a held extent.'
-  issue: '#3814'
-  message: 'stub: Truncate'
+  reason: 'The journal opens; the check fails on a stub call. Needs Since to yield the removal marker.'
+  issue: '#3378'
+  message: 'stub: Since'
 
 - test: TestEdge_TruncateToZeroAndWriteAgain
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Truncate to zero and the writes after it.'
-  issue: '#3814'
-  message: 'stub: Truncate'
+  reason: 'The journal opens; the check fails on a stub call. Needs Sync.'
+  issue: '#3378'
+  message: 'stub: Sync'
 
 - test: TestEdge_TruncateDownAndBackUp
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Truncate down and back up.'
-  issue: '#3814'
-  message: 'stub: Truncate'
+  reason: 'The journal opens; the check fails on a counter the public Stats does not yet carry. Needs Stats to report FillRefused.'
+  issue: '#3378'
+  message: 'FillRefused rose by 0 over one stale fill, want 1'
 
 - test: TestEdge_DeallocateInsideAndAcross
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Deallocate inside and across records.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Since to carry each removal marker.'
   issue: '#3378'
-  message: 'stub: Deallocate'
+  message: 'stub: Since'
 
 - test: TestEdge_ReservationExactFitShare
   status: fail

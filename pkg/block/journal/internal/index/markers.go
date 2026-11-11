@@ -251,6 +251,65 @@ func (fs *files) fill(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq,
 	})
 }
 
+// applyRemoval applies a removal whose record is already in its segment,
+// without asking the removal allowance: it notes the record, claims the file
+// for tag, applies the removal and leaves its marker, all in one update under
+// the file's lock, and returns the change it made to the held state. A file
+// another tag owns is refused with the claim's OtherShareError and changes
+// nothing.
+//
+// e is the extent the removal covers as a rebuild notes it, which is not what
+// its record's header names for a truncate or a delete: both reach to the end
+// of the file. spec is the clone target's spec, kept by its marker, and nil
+// for every other kind.
+//
+// It asks the allowance no question because the record is on disk already:
+// refusing it would leave a removal a rebuild applies while the caller was
+// told it did not happen. CheckRemoval is the read-only twin the caller runs
+// before its append, and it is where a removal that would split a held
+// extent is refused.
+//
+// decision: a removal applied past the bound overruns the allowance by at
+// most the entries it adds, as a loss does, and the commit's true delta keeps
+// the count exact so the next admitted operation sees it. The alternative —
+// leaving the record unapplied — fails open on a removal, which resurrects
+// content the caller removed. Overturned by a bound that must hold against
+// the records already written, which only reserving the bound before the
+// append can give.
+func (fs *files) applyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec) (HeldDelta, error) {
+	// The tag check runs first, as every journal call's does, before the
+	// zero-length refusal and before anything is admitted or noted.
+	var err error
+	if fs.view(id, func(f *file) { err = f.check(tag, id) }) && err != nil {
+		return HeldDelta{}, err
+	}
+	switch k {
+	case core.ChangeDeallocate, core.ChangeCloneTarget:
+		// Refused before the record is noted and the file claimed: a record's
+		// length 0 would read, after a restart, as a removal to the end of the
+		// file.
+		if e.Len == 0 {
+			return HeldDelta{}, core.ErrZeroLength
+		}
+	}
+	return fs.commit(id, 0, func(f *file) error {
+		if err := f.recorded(at.Segment, e, Numbers{Version: v, Seq: seq}, tag, id); err != nil {
+			return err
+		}
+		switch k {
+		case core.ChangeTruncate:
+			f.truncate(e.Off, v)
+		case core.ChangeDeallocate:
+			return f.deallocate(e, v)
+		case core.ChangeDelete:
+			f.delete(v)
+		case core.ChangeCloneTarget:
+			return f.cloneTarget(*spec, v)
+		}
+		return nil
+	})
+}
+
 // fill holds p as a fill does, where nothing is held, except inside a marker
 // above p's version: a removal newer than the fetched content excludes it,
 // so while the marker is unsettled a cold read resolved against a ref older
