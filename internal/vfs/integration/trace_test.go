@@ -22,11 +22,14 @@ import (
 func TestAStableWriteSyncsUnderTheCallersSpan(t *testing.T) {
 	c := compose(t)
 	h, _ := c.File("f")
+	if _, err := c.fs.Write(t.Context(), c.admin, vfs.Anonymous(h), 0, []byte("before"), vfs.Unstable); err != nil {
+		t.Fatalf("the first write: %v", err)
+	}
 	ctx, end := c.Trace(t.Context(), "vfs.write")
 	_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(h), 0, []byte("stable"), vfs.FileSync)
 	end(err)
 	if err != nil {
-		t.Fatalf("the first write: %v", err)
+		t.Fatalf("the stable write: %v", err)
 	}
 	caller := ended(c.Spans(), "vfs.write")
 	if caller == nil {
@@ -43,6 +46,11 @@ func TestAStableWriteSyncsUnderTheCallersSpan(t *testing.T) {
 // A stable overwrite of committed content waits for its existence commit,
 // which ends an engine.existence_commit span of at least one file before the
 // write is answered.
+//
+// decision: the row checks neither the span's parent nor that it covered this
+// file: the group commit opens engine.existence_commit from its own loop for a
+// batch of callers' files, carrying only their count. Check both once a batched
+// stage names its callers.
 func TestAStableOverwriteRecordsItsExistenceCommit(t *testing.T) {
 	c := compose(t)
 	ctx := t.Context()
@@ -96,9 +104,14 @@ func TestAFailingCommitIsAConditionUntilItLands(t *testing.T) {
 	if _, err := c.fs.Commit(short, c.admin, vfs.Anonymous(h), 0, 0); err == nil {
 		t.Fatal("the commit answered success while the store refused the file's records")
 	}
+	// The failing batch runs on the group commit's own context and can outlive
+	// the commit's deadline, so the row waits for the condition it raises.
 	got, ok := failing(c.E.Stats(), c.Share.ID, id)
-	if !ok {
-		t.Fatalf("Stats names no existence_commit_failing for the file: %+v", c.E.Stats().Shares[c.Share.ID])
+	for deadline := time.Now().Add(10 * time.Second); !ok; got, ok = failing(c.E.Stats(), c.Share.ID, id) {
+		if time.Now().After(deadline) {
+			t.Fatalf("after 10 s, Stats names no existence_commit_failing for the file: %+v", c.E.Stats().Shares[c.Share.ID])
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if got.Subject.Scope != engine.ScopeShare || got.Subject.ID != c.Share.ID.String() || got.Cause == nil {
 		t.Errorf("existence_commit_failing is %+v, want the share's subject and a cause", got)
@@ -106,9 +119,7 @@ func TestAFailingCommitIsAConditionUntilItLands(t *testing.T) {
 	c.FailUpdatesSetting(nil)
 	// Past the file's first backoff, and short of the self-fence's bound.
 	c.Clock.Advance(time.Second)
-	// The filesystem's Commit answers retry-later while the file is failing,
-	// so the commit that lands is the existence commit itself.
-	if err := c.E.CommitExistence(ctx, c.Share.ID, id); err != nil {
+	if _, err := c.fs.Commit(ctx, c.admin, vfs.Anonymous(h), 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := failing(c.E.Stats(), c.Share.ID, id); ok {

@@ -343,7 +343,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Engine integration: a stable write through the filesystem records engine.sync as a child of the caller''s span. Init and Open work; the composition starts; the row stops at its write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and Sync until the journal has them.'
+  reason: 'Engine integration: a stable write through the filesystem records engine.sync as a child of the caller''s span. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and Sync until the journal has them.'
   issue: '#4052'
 - test: TestAStableOverwriteRecordsItsExistenceCommit
   message: 'the first write: vfs: retry shortly: commit'
