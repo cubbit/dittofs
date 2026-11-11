@@ -2586,7 +2586,7 @@ and the half above is half of the headroom without it.
 > of content the journal does not hold free nothing; an unmark is one per
 > extent the reseed finds wrongly marked, bounded by the offloaded records
 > before it. So the headroom is exhausted only by such removals issued faster
-> than repack returns space, and then those removals, and only they, are
+> than repack returns space, and then every removal, held content or not, is
 > refused until it does. Offloaded records are dropped rather than refused
 > because losing one costs a redundant upload, never content. Overturned by a
 > workload that reaches `headroom_draws` near the headroom's size, less the open
