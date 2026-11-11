@@ -636,3 +636,25 @@ func TestSinceRetargetsAPieceAfterAnotherWasSuperseded(t *testing.T) {
 		t.Fatalf("Since = %+v, want it to yield the second piece %+v", briefs(all), want)
 	}
 }
+
+// TestSinceFollowsARecordCorruptDroppedAfterItMoved damages the record Since's
+// copy names and moves it, repointing the index, before Since reads it:
+// Corrupt answers dropped for the old place, since the index no longer names
+// the record there, but the extent is held at its new one and is yielded with
+// its mtime.
+func TestSinceFollowsARecordCorruptDroppedAfterItMoved(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	data := pattern(4<<10, 21)
+	orig := retiredSinceFile(t, c, s, f, data)
+	resume := pauseSince(t, c, s, f)
+
+	flip(t, seam, orig.Record.Segment, payloadStart(orig.Record)+10)
+	moveRecord(t, c, seam, f, orig.Record, data)
+
+	want := brief{core.ChangeWrite, ex(0, 4<<10), orig.Version, 1}
+	if all := resume(); !slices.Contains(briefs(all), want) {
+		t.Fatalf("Since = %+v, want it to yield %+v from the record's new place", briefs(all), want)
+	}
+}

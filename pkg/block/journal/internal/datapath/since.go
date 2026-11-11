@@ -34,7 +34,8 @@ import (
 // not verify goes to Corrupt under the sequence number the index carries: a
 // copy it names that verifies stands in, and one that does not verify either
 // leaves the extent yielded with an Mtime of 0; a dropped record's extent is
-// not yielded, and when the drop was of a synced record the loss it left is
+// not yielded unless the index holds it at another place by then, where it is
+// read from, and when the drop was of a synced record the loss it left is
 // yielded in its place. A segment retired since the copy was taken sends the
 // read on, a bounded number of times, to the record the index now names for
 // each piece of the extent, as a repack leaves it; a piece the index no longer
@@ -133,7 +134,7 @@ var errRecordMoving = errors.New("journal: a record's segment was retired while 
 // unsynced drop. depth counts the retargets so far.
 func (r *sinceRead) write(ch index.Change, bp *[]byte, depth int) ([]core.Change, error) {
 	if r.dropped[ch.Record] {
-		return nil, nil
+		return r.retarget(ch, bp, depth, nil)
 	}
 	pc := index.Placed{Extent: ch.Extent, Record: ch.Record, Skip: ch.Skip, Version: ch.Version, Seq: ch.Seq}
 	g := recordPieces{at: ch.Record, pieces: []index.Placed{pc}}
@@ -177,7 +178,7 @@ func (r *sinceRead) write(ch index.Change, bp *[]byte, depth int) ([]core.Change
 		return []core.Change{r.written(ch, mtime)}, nil
 	}
 	r.dropped[ch.Record] = true
-	return r.lossesAt(ch.Version), nil
+	return r.retarget(ch, bp, depth, nil)
 }
 
 // written is the change a verified write yields.
@@ -186,13 +187,20 @@ func (r *sinceRead) written(ch index.Change, mtime int64) core.Change {
 }
 
 // retarget handles a record whose segment was retired after the copy was
-// taken. Each piece of ch's extent that the index still names with ch's
+// taken, or that Corrupt answered dropped, which it also does for a record that
+// only moved. Each piece of ch's extent that the index still names with ch's
 // sequence number, at another record, is read from there as a change of its
 // own, as a repack leaves it. A piece the index no longer holds for that record
 // was superseded or removed, and is left out, as are the others of the same
 // original record, which are looked up on their own. The losses at ch's version
-// that the copy did not hold are yielded too, none unless another read dropped
-// the record.
+// that the copy did not hold are yielded too, none unless the record was
+// dropped, by this Since or another read.
+//
+// decision: a record Corrupt reports dropped is followed through the index like
+// a retired one, because Corrupt answers dropped also for a record that moved
+// after the copy was taken; a piece still named at the dropped record is a
+// refused drop, which its loss marker stands for, and is left out. Only the
+// dropped record's losses are yielded for a piece the index no longer holds.
 //
 // decision: nothing is marked dropped for a lookup that missed. A record split
 // into pieces can lose one to a newer write and have another moved by a repack,
@@ -218,6 +226,9 @@ func (r *sinceRead) retarget(ch index.Change, bp *[]byte, depth int, gone error)
 			continue
 		}
 		if pc.Record == ch.Record {
+			if r.dropped[ch.Record] {
+				continue
+			}
 			return nil, fmt.Errorf("journal: the record of file %v at %+v is gone but still held: %w: %w", r.id, ch.Record, errRecordMoving, gone)
 		}
 		sub := ch
