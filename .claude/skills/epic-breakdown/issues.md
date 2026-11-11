@@ -199,6 +199,7 @@ subtasks come long after the epic issue.
 - **Every issue joins the repo's project board** that 6.1 found (for example the cubbit
   "DittoFS" project). Only subtask issues get `Estimate`, their man-days from §6:
   a figure on the epic or the roadmap epic too would count it twice in the project's sums.
+  In a new shell, set `R`, `owner`, `num`, `project` and `field` again as 6.1 does.
   ```bash
   item=$(gh project item-add "$num" --owner "$owner" --url <issue-url> --format json --jq .id)
   gh project item-edit --project-id "$project" --id "$item" --field-id "$field" --number <man-days>
