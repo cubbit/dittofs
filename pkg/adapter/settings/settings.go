@@ -12,6 +12,12 @@
 // restart-only mark and no comparison of two shapes. The node applies a
 // changed Port by building a new adapter and never hands it to Reconfigure,
 // which refuses one with a sentinel error and a one-field comparison.
+//
+// decision: Port defaults to 12049 for NFS and 12445 for SMB, not the
+// well-known 2049 and 445, so dfs serves without root and the guides and test
+// fixtures that mount on those ports keep working. An operator who wants the
+// well-known port sets it. Withdraw it if dfs comes to run privileged by
+// default.
 package settings
 
 import (
@@ -36,8 +42,8 @@ type Adapter struct {
 	// disturb the connections already accepted.
 	Addrs []netip.Addr `json:"-"`
 
-	// Port is what each listener that would bind the protocol's default port
-	// binds instead, on every address; 0 lets the system pick, for tests. It
+	// Port is what each listener that would bind the protocol's well-known
+	// port binds instead, on every address; 0 lets the system pick, for tests. It
 	// is restart-class: the node applies a change by building a new adapter.
 	Port uint16 `json:"port"`
 
@@ -124,7 +130,7 @@ func defaultAdapter(port uint16) Adapter {
 // DefaultNFS is every NFS setting's default.
 func DefaultNFS() NFS {
 	return NFS{
-		Adapter:  defaultAdapter(2049),
+		Adapter:  defaultAdapter(12049),
 		TLS:      TLS{Mode: "off"},
 		Versions: VersionRange{Min: "3", Max: "4.2"},
 	}
@@ -133,7 +139,7 @@ func DefaultNFS() NFS {
 // DefaultSMB is every SMB setting's default.
 func DefaultSMB() SMB {
 	return SMB{
-		Adapter:        defaultAdapter(445),
+		Adapter:        defaultAdapter(12445),
 		Dialects:       VersionRange{Min: "2.1", Max: "3.1.1"},
 		PendingTimeout: 10 * time.Minute,
 		RecallTimeout:  60 * time.Second,

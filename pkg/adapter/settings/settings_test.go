@@ -23,7 +23,7 @@ func TestDefaultsAreRFC13s(t *testing.T) {
 		ReadTimeout:      30 * time.Second,
 	}
 	nfsCommon, smbCommon := common, common
-	nfsCommon.Port, smbCommon.Port = 2049, 445
+	nfsCommon.Port, smbCommon.Port = 12049, 12445
 	wantNFS := NFS{Adapter: nfsCommon, TLS: TLS{Mode: "off"}, Versions: VersionRange{Min: "3", Max: "4.2"}}
 	wantSMB := SMB{
 		Adapter:        smbCommon,

@@ -366,8 +366,9 @@ names the epic that owns the rest.
 - **D20, the port is a setting, and its field lands now.** RFC 23's plan (its A1) makes an
   adapter's port the `adapters.<protocol>.port` setting, at installation scope with a node
   override and restart-class, while the listen addresses stay the host's, in
-  `settings.Adapter.Addrs`. RFC 20 §3.6 states it: `Port uint16 json:"port"`, defaulting to the
-  protocol's port (2049 for NFS, 445 for SMB) and 0 letting the system pick. RFC 23's plan
+  `settings.Adapter.Addrs`. RFC 20 §3.6 states it: `Port uint16 json:"port"`, defaulting to
+  the unprivileged 12049 for NFS and 12445 for SMB, so `dfs` runs without root and the guides
+  and test fixtures keep their ports, and 0 letting the system pick. RFC 23's plan
   places the field with the node's config loader in epic 7 (its O7), but `settings.Adapter` is
   surface frozen at S1 and `testproto.Settings` embeds it, so the field, its defaults and the
   golden file land with the Serving/Addrs surface change, in this document's pull request.
