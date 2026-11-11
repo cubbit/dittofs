@@ -135,6 +135,108 @@ The questions piece 1's build left open, which may add more, are plan §5 Q4.
   numbered from `IDS‖shard` when the share is created and never reused, and the filesystem
   serves each live share's shard at start and an added share's when it is added.
 
+### 2.1 Code sketch
+
+The sketch is illustrative: its signatures come from the RFC sections it cites or from the code
+on `feat/storage-v2`, and the epic documents decide the final names.
+
+The node builds the filesystem over what it already built, and hands adapters only `vfs.Service`
+(§2.3, RFC 23 §2.2). There is no node yet, so this part is planned; stage 2's tests build the same
+graph from their own constructor (§8).
+
+```go
+// planned: node.New's single-node rows (D2: no Serve, no Gateway).
+meta, _ := kvstore.Open(ctx, db)                       // D1: the new store, not metadata.Service
+open, _ := openstate.New(openstate.Deps{Records: meta, Clock: clk, Rand: rand.Reader})
+eng, _ := engine.New(engine.Deps{ /* … */ })           // stage 3; the in-memory Content until then (D3)
+fsys, _ := vfs.New(vfs.Deps{                           // internal/vfs; piece 2
+	Meta:    meta,
+	Open:    open,  // keeps only its seven views
+	Engine:  eng,   // as Content: only the methods plan §4 lists
+	Events:  sink,  // nil: the null sink
+	Metrics: reg,   // a prometheus.Registerer until RFC 25's Registry (D7)
+})
+var svc vfs.Service = fsys // the adapters' whole view of it (D2)
+```
+
+Start runs in build order and stops in reverse (§2.5). Open state starts first, with the
+filesystem as its `Sink` and its admission lock as the `Order`:
+
+```go
+open.Start(ctx, fsys, fsys.Admission) // Table.Start refuses a nil Sink or Order (piece 2)
+eng.Start(ctx, shares)
+fsys.Start(ctx)                       // serves each live share's shard, then drops removed shares (piece 7)
+// … adapters serve on svc …
+fsys.Drain(ctx)                       // after the adapters have drained
+fsys.Stop()                           // closes nothing it was handed (D8)
+eng.Close(ctx)
+open.Stop()
+```
+
+A write, in the order piece 8 builds it (§5.1). Every step but the engine call is the
+filesystem's own:
+
+```go
+func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, src []byte, st vfs.Stability) (vfs.WriteResult, error) {
+	ctx, done, err := fs.enter(ctx) // ErrUnavailable unless serving; counted for Drain
+	if err != nil {
+		return vfs.WriteResult{}, err
+	}
+	defer done()
+	// io: admission (piece 3, uncached), the file, ErrReadOnly for a narrowed caller,
+	// authz for an anonymous or delegated ref, then open state's CheckIO (§5.0's order).
+	a, f, unlock, release, err := fs.io(ctx, c, ref, vfs.OpWrite, off, int64(len(src)), true)
+	if err != nil {
+		return vfs.WriteResult{}, err
+	}
+	defer release()
+	res, err := fs.reserve(ctx, a, charged(f), entity.Usage{Bytes: add}) // piece 9
+	// stage takes f's accept lock, reads Before, runs the engine call, reads After.
+	wcc, err := fs.stage(ctx, c, a, ref.Handle, f, off, true, func() error {
+		v, err = fs.engine.Write(ctx, f.Share, f.ID, off, src, WriteOpts{Done: res.Release})
+		return err
+	})
+	unlock()
+	fs.entryChanged(ctx, a, &ref, f, written(wcc)) // Watches.Changed, piece 10 (D7)
+	if stable(a, ref, st) {
+		cv, _, err := fs.engine.Commit(ctx, f.Share, f.ID, off, int64(len(src)))
+		if err == nil && cv != v {
+			return vfs.WriteResult{}, &vfs.Delay{Cause: vfs.DelayCommit} // the client resends
+		}
+	}
+	return vfs.WriteResult{N: len(src), Verifier: v, WCC: wcc}, nil
+}
+```
+
+A change of name asks open state before the store changes anything (piece 5, §5.4):
+
+```go
+func (fs *Filesystem) Unlink(ctx context.Context, c vfs.Call, dir vfs.Target, name []byte) (vfs.UnlinkResult, error) {
+	a, release, err := fs.admitHandle(ctx, c, dir.H) // admission, uncached (piece 3)
+	defer release()
+	h, f := /* the entry, read under the locks lockorder.Take sorted (§5.0) */
+	// delete through the parent: dir.H is the via of D8, with the sticky rule
+	err = fs.authz.Decide(ctx, a.caller, op, h, dir.H, name, entity.Delete)
+	err = fs.checks.CheckChange(ctx, a.who(), keyOf(f), dir.Open, openstate.ChangeRemove)
+	// open: a deferred unlink, run at the last close (piece 7); else the store's
+	// Namespace change, then the engine's Delete of the content.
+}
+```
+
+One caller, an adapter handler in stage 5: decode, one `vfs.Service` call, translate, encode.
+The names on the adapter side are RFC 20's and planned:
+
+```go
+func write3(ctx context.Context, svc vfs.Service, c vfs.Call, req *xdr.Reader, out *xdr.Writer) error {
+	args, err := decodeWrite3(req)                 // XDR only
+	if err != nil {
+		return encodeStatus(out, nfs3errInval)
+	}
+	r, err := svc.Write(ctx, c, vfs.Anonymous(args.Handle), args.Off, args.Data, stability(args.How))
+	return encodeWrite3(out, nfs3Status(err), r)   // nfs3Status maps every error in vfs.Errors()
+}
+```
+
 ## 3. Pieces, in build order
 
 | # | Piece | RFC 17 | Needs |

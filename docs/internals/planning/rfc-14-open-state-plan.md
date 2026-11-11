@@ -171,6 +171,106 @@ in a shard (L7, L60). An open is written only when it is persistent, is a clone'
 an unlinked file alive (§8); the last is written by `Unlink`/`Rename` when they remove the file's
 last name.
 
+### 2.1 Code sketch
+
+The sketch is illustrative: its signatures come from the RFC 14 sections cited and from
+`pkg/openstate` and `internal/vfs` on `feat/storage-v2`, and the epic documents decide the final
+names.
+
+The node builds the table before the engine and the service, and starts it with the service as
+its `Sink` (D1, D5). No production node does this yet: `enginetest`'s fixture is the one caller,
+and the node's own order is RFC 23 §2.2's (planned).
+
+```go
+open, err := openstate.New(openstate.Deps{
+	Records: meta,        // *kvstore.Store, reached through Clients() and Opens() (D1, D7)
+	Clock:   clk,         // Elapsed and After only (D6)
+	Rand:    rand.Reader, // every random bit of a token or confirm
+	Logger:  log,
+})
+fs, err := vfs.New(vfs.Deps{Meta: meta, Open: open, Engine: eng, Logger: log})
+
+// The table starts first: the service is its Sink, its admission lock the Order (D5).
+err = open.Start(ctx, fs, fs.Admission) // raises the node epoch, arms the sweep
+err = eng.Start(ctx, shares)
+err = fs.Start(ctx) // serves every shard, below, before any adapter serves
+
+// Shutdown runs backwards: drain the service, close the engine, then stop the table.
+fs.Drain(ctx)
+eng.Close(ctx)
+open.Stop() // later calls answer ErrStopped
+```
+
+A restart serves each shard under a raised grace instance before anything there is answered
+(D5, §4.4, §11.2).
+
+```go
+func (fs *Filesystem) serve(ctx context.Context, shares []entity.Share) error {
+	fs.meta.Lifecycle().RaiseAtStart(ctx, shardsOf(shares)) // one transaction
+	for _, sh := range shares {
+		rec, _ := fs.meta.Shard(ctx, sh.Shard)
+		// Installs the shard's persistent opens, then enters grace: only clients
+		// its records name may reclaim; anything else is ErrGrace (piece 6, 7).
+		fs.recovery.ServeShard(ctx, sh.ID, sh.Shard, rec.GraceInstance)
+	}
+	return nil
+}
+```
+
+An open is one `Opens.Open` under the file's admission lock. A conflict with another client's
+caching grant starts the recall and answers at once, never waits (D4).
+
+```go
+// internal/vfs: grant, after authorisation and under the file's admission lock.
+who := openstate.Caller{Client: cl, Principal: p, Protocol: c.Protocol, Sessioned: hasSession}
+o, err := fs.opens.Open(ctx, who, openstate.FileKey{Share: f.Share, Shard: shard, ID: f.ID},
+	openstate.OpenRequest{Access: access, Deny: req.Deny, Owner: req.Owner, Seqs: req.Seqs,
+		Want: req.Want, Lease: req.Lease, Reclaim: req.Reclaim, Durability: req.Durability})
+if err != nil {
+	// Deny conflict, bad seqid, grace, or *DelayError{DelayRecall} while a grant
+	// is recalled: mapped once to RFC 17 §4.3's neutral errors (D1).
+	return vfs.OpenResult{}, openErr(err)
+}
+// o.Open.Ref is the state reference the adapter encodes; o.Grant, if set, is
+// the grant offered with it; o.Confirm asks an NFSv4.0 owner to ConfirmOpen.
+
+// Inside the table, the order of one call (D4, D5):
+//   step(f) { check deny modes; recall conflicting grants into the outbox;
+//             mint the StateRef; write the record only if durable (D7) }
+//   release the entry mutex, then out.raise(sink): Sink.RecallGrant(g) queues
+```
+
+A recall comes back through the service: the `Sink` delivers it, and the client's answer is
+`AckRecall` (piece 5).
+
+```go
+func (fs *Filesystem) RecallGrant(g openstate.CachingGrant) {
+	fs.background(func(stop context.Context) { // never inside the Sink call
+		opens, _ := fs.grants.Openers(stop, g.ID)
+		r := fs.reg.recallRoute(g.Client, opens)
+		r.cb.RecallGrant(stop, r.sess, r.openers, g, g.Recall.To) // the adapter sends a break or CB_RECALL
+	})
+}
+// The client's DELEGRETURN or break acknowledgement, via the adapter:
+err := open.Grants().AckRecall(ctx, who, g.ID, openstate.GrantNone)
+// No answer by the deadline (35 s SMB, one lease NFS): the sweep revokes the
+// grant and raises Sink.Revoked{Reason: RevokedGrant} (§5.3).
+```
+
+A lock that conflicts either fails at once or, for a callback waiter, is granted later through
+the `Sink` (L44, piece 4).
+
+```go
+res, err := fs.lockState.Lock(ctx, who, key, openstate.LockReq{
+	Owner: r.Owner, Open: ref, Ranges: r.Ranges, Wait: r.Wait, Seqs: r.Seqs, Reclaim: r.Reclaim,
+})
+if err == nil && res.Waiting {
+	return vfs.StateRef{}, vfs.ErrBlocked // NLM_BLOCKED, SMB pending; later:
+	// Sink.LockWaitOver(w, granted) -> callback -> Locks.WaitAnswered(ctx, who, w, refused)
+}
+return res.Ref, openErr(err)
+```
+
 ## 3. Pieces, in build order
 
 Each piece lands as its PR into `feat/storage-v2`, with its tests (plan §4), each after the
