@@ -112,6 +112,8 @@ func (f *file) ReadAt(p []byte, off int64) (int, error) {
 // fail the open: a direct read is what proves the end of a journal after a
 // crash, and a verified record whose direct re-read refuses is re-appended
 // from its first copy, so no refusal is widened or worked around here.
+// Withdraw it if RFC 28 allows a cached fallback on a filesystem known to
+// refuse the direct read.
 func (f *file) ReadAtDirect(p []byte, off int64) (int, error) {
 	return f.readDirect(p, off)
 }

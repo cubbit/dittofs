@@ -455,6 +455,47 @@ func TestReadAtDirectFailedClearAtEnd(t *testing.T) {
 	}
 }
 
+// TestReadAtDirectInterruptedRead checks a pread interrupted before it read
+// anything is made again, as the os package's own ReadAt repeats its
+// interrupted pread and Linux's readDirect does: the read still comes back
+// whole, and the repeated pread is the one that delivered it.
+func TestReadAtDirectInterruptedRead(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	r := &recorder{}
+	f := directCheckFile(t, newOS(t.TempDir(), r.table()), r, "a", []byte("record"))
+
+	r.failNext("pread", syscall.EINTR)
+	p := make([]byte, 6)
+	if n, err := f.ReadAtDirect(p, 0); n != 6 || err != nil || string(p) != "record" {
+		t.Fatalf("ReadAtDirect with its pread interrupted: %d, %v, %q; want 6, no error and the file's bytes", n, err, p)
+	}
+
+	log := r.take()
+	preads := 0
+	for _, c := range log {
+		if c.op == "pread" {
+			preads++
+		}
+	}
+
+	if preads != 2 {
+		t.Fatalf("got %v; want the interrupted pread made again", log)
+	}
+
+	if n := countFnocache(log, 1); n != 1 {
+		t.Fatalf("got %d calls of fcntl(F_NOCACHE, 1) in %v; want one set", n, log)
+	}
+
+	if n := countFnocache(log, 0); n != 1 {
+		t.Fatalf("got %d calls of fcntl(F_NOCACHE, 0) in %v; want one clear", n, log)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // countFnocache returns the calls of fcntl with F_NOCACHE and arg of log.
 func countFnocache(log []call, arg int) int {
 	n := 0

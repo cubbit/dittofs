@@ -10,18 +10,18 @@ import (
 // carries: the offset, the buffer's address and the buffer's length are
 // multiples of it. 4096 satisfies what O_DIRECT and FILE_FLAG_NO_BUFFERING
 // ask of it — a multiple of the device's logical sector size — on every
-// supported platform: no sector size a storage device reports there exceeds
-// it.
+// supported platform: no sector size a common storage device reports there
+// exceeds it.
 //
 // ponytail: the alignment is the constant 4096 rather than the device's own
 // requirement, read where the kernel names it — statx's STATX_DIOALIGN on
 // Linux (the statx entry is already in the table), the
 // FILE_STORAGE_INFO of the volume's file system on Windows — so a device
 // whose logical sectors exceed 4096, which the platforms refuse a direct
-// read on (EINVAL on Linux, ERROR_INVALID_PARAMETER on Windows), is
-// answered by that refusal as it is, and a journal on it cannot reopen
-// after a crash that left an unproven tail. Read the requirement and
-// request the alignment per device when such a device has to be supported.
+// read on, answers the read with that refusal as it is; what the open
+// makes of the refusal is the tail check's to decide (see ReadAtDirect).
+// Read the requirement and request the alignment per device when such a
+// device has to be supported.
 const directAlign int64 = 4096
 
 // directRead reads into p the len(p) bytes at off, calling raw over the aligned

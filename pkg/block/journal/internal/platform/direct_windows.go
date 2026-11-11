@@ -22,12 +22,14 @@ import (
 // decision: a filesystem that refuses the open or a read of the direct handle
 // is handed back as itself, never widened and never worked around with the
 // cached read, which would hand the tail check after a crash a proof it does
-// not have. The refusal is a ceiling: a journal on a filesystem refusing the
-// direct read cannot reopen after a crash that left an unproven tail.
+// not have. What the refusal means for the journal is not decided here — the
+// open's tail check decides it, against the refusal ReadAtDirect returns (see
+// ReadAtDirect's own decision).
 func (f *file) readDirect(p []byte, off int64) (int, error) {
 	if off < 0 {
-		// ReadAt names EINVAL for a negative offset; ReadFile would answer
-		// its own, unnamed one.
+		// ReadAt refuses a negative offset with an error of its own; this one
+		// names ERROR_INVALID_PARAMETER so errors.Is can match it, where
+		// ReadFile would answer its own, unnamed one.
 		return 0, &fs.PathError{
 			Op:   "ReadFile",
 			Path: f.f.Name(),
@@ -118,8 +120,10 @@ func (f *file) readDirect(p []byte, off int64) (int, error) {
 // file already holds (Linux reopens through /proc/self/fd, which Windows has
 // no counterpart of), so a segment renamed while its direct handle is
 // unopened has its next direct read open the file now carrying the name — a
-// different segment, if one was created under the old one. The cheaper
-// upgrade is windows.GetFinalPathNameByHandle, already in
+// different segment, if one was created under the old one.
+//
+// Upgrade when a direct read is made on a segment after a spare rename or a
+// recycle. The cheaper upgrade is windows.GetFinalPathNameByHandle, already in
 // golang.org/x/sys/windows: resolving the path through the handle the file
 // holds survives the rename with no new kernel call wrapped here, since the
 // handle follows the file, not the name. ReOpenFile, which reopens by the

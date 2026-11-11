@@ -32,8 +32,10 @@ func (c calls) setNoCache(fd uintptr, arg int) error {
 // holds — and it is set per open file description, not per read, so it is
 // set around each read and cleared again, and a concurrent cached ReadAt of
 // the same file shares the no-cache behaviour for the window's duration.
-// Upgrade to a read channel a concurrent cached read cannot share — the
-// Linux reopen with O_DIRECT, at the cost of a second descriptor per file —
+// Upgrade to a second descriptor per file, with F_NOCACHE set on it alone,
+// which would only stop a concurrent cached read from sharing the setting —
+// it stops nothing else, since the read stays advisory and macOS has no
+// strict bypass (no O_DIRECT), so a page the cache holds can still answer —
 // when a tail check needs the proof an advisory F_NOCACHE cannot give, or
 // when RFC 28 settles whether macOS may refuse F_NOCACHE outright.
 //
@@ -46,8 +48,9 @@ func (c calls) setNoCache(fd uintptr, arg int) error {
 // read of the file bypassing the cache unasked.
 func (f *file) readDirect(p []byte, off int64) (int, error) {
 	if off < 0 {
-		// ReadAt names EINVAL for a negative offset; pread would answer its
-		// own, unnamed one.
+		// ReadAt refuses a negative offset with an error of its own; this one
+		// names EINVAL so errors.Is can match it, where pread would answer
+		// its own, unnamed one.
 		return 0, &fs.PathError{
 			Op:   "pread",
 			Path: f.f.Name(),
@@ -107,7 +110,15 @@ func (f *file) readDirect(p []byte, off int64) (int, error) {
 		}()
 
 		n, rerr = directRead(p, off, directAlign, func(buf []byte, off int64) (int, error) {
-			return f.calls.pread(int(fd), buf, off)
+			// As Linux's pread does: a read interrupted by a signal is made
+			// again, since the golang.org/x/sys call is raw and repeats
+			// nothing.
+			n, err := f.calls.pread(int(fd), buf, off)
+			for errors.Is(err, unix.EINTR) {
+				n, err = f.calls.pread(int(fd), buf, off)
+			}
+
+			return n, err
 		})
 	}); err != nil {
 		// As in Sync: Control itself fails only on a closed file. The

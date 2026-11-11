@@ -364,6 +364,11 @@ func TestReadAtDirectReadsPastTheCache(t *testing.T) {
 	length := 2 * 4096
 	o := NewOS(t.TempDir())
 	f := directCheckFile(t, o, nil, "a", bytes.Repeat([]byte("A"), length))
+	t.Cleanup(func() {
+		// Closing again past the normal path's, which a failure skips: the
+		// second close ignores the os error it carries, which tests nothing.
+		_ = f.Close()
+	})
 
 	var residentBefore, residentAfter int
 
@@ -448,5 +453,123 @@ func TestReadAtDirectReadsPastTheCache(t *testing.T) {
 
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestReadAtDirectReadError checks a pread the filesystem fails arrives as an
+// *fs.PathError naming the file, one segment of its own — not the errno bare
+// — so a caller sees which file the failed read belongs to, as darwin and
+// windows answer theirs.
+func TestReadAtDirectReadError(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	dir := t.TempDir()
+	r := &recorder{}
+	o := newOS(dir, r.table())
+	f := directCheckFile(t, o, r, "a", []byte("record"))
+	t.Cleanup(func() {
+		_ = f.Close()
+	})
+
+	r.failNext("pread", syscall.EIO)
+	p := make([]byte, 6)
+	n, err := f.ReadAtDirect(p, 0)
+
+	var pe *fs.PathError
+	if !errors.As(err, &pe) {
+		t.Fatalf("ReadAtDirect of a failed read: %d, %v (%T); want an *fs.PathError", n, err, err)
+	}
+
+	if !errors.Is(pe.Err, syscall.EIO) {
+		t.Fatalf("ReadAtDirect of a failed read: %v; want the error wrapping EIO", err)
+	}
+
+	if pe.Path != filepath.Join(dir, "a") {
+		t.Fatalf("%v: names %s, want the file's own path", err, pe.Path)
+	}
+
+	if n != 0 || !bytes.Equal(p, make([]byte, 6)) {
+		t.Fatalf("ReadAtDirect: %d, %q; want 0 bytes, no read into p", n, p)
+	}
+}
+
+// TestReadAtDirectZeroLengthOpensNothing checks a read of no byte makes no
+// call through the table — never the direct descriptor's open — so a
+// filesystem that refuses the open cannot fail a read that asks for nothing.
+func TestReadAtDirectZeroLengthOpensNothing(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	r := &recorder{}
+	o := newOS(t.TempDir(), r.table())
+	f := directCheckFile(t, o, r, "a", []byte("record"))
+	t.Cleanup(func() {
+		_ = f.Close()
+	})
+
+	if n, err := f.ReadAtDirect(nil, 0); n != 0 || err != nil {
+		t.Fatalf("ReadAtDirect of no byte: %d, %v; want 0 and no error", n, err)
+	}
+
+	if log := r.take(); len(log) != 0 {
+		t.Fatalf("ReadAtDirect of no byte made %v; want no call", log)
+	}
+}
+
+// TestReadAtDirectInterruptedRead checks a pread interrupted before it read
+// anything is made again — never answered as the caller's failure — and the
+// repeated call's bytes come back whole, as the os package's own ReadAt
+// repeats its interrupted pread.
+func TestReadAtDirectInterruptedRead(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	dir := t.TempDir()
+	r := &recorder{}
+	o := newOS(dir, r.table())
+	f := directCheckFile(t, o, r, "a", []byte("record"))
+	t.Cleanup(func() {
+		_ = f.Close()
+	})
+
+	r.failNext("pread", syscall.EINTR)
+	p := make([]byte, 6)
+	if n, err := f.ReadAtDirect(p, 0); n != 6 || err != nil || string(p) != "record" {
+		t.Fatalf("ReadAtDirect with its pread interrupted: %d, %v, %q; want 6, no error and the file's bytes", n, err, p)
+	}
+
+	if log := r.take(); countPreads(log) != 2 {
+		t.Fatalf("got %v; want the interrupted pread made again", log)
+	}
+}
+
+// TestReadAtDirectInterruptedThenFailedRead checks a pread interrupted and
+// whose retry then fails answers the retry's error: the fault is never
+// swallowed and answered as bytes a read never delivered, and the error
+// arrives as an *fs.PathError of the pread naming the file.
+func TestReadAtDirectInterruptedThenFailedRead(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	dir := t.TempDir()
+	r := &recorder{}
+	o := newOS(dir, r.table())
+	f := directCheckFile(t, o, r, "a", []byte("record"))
+	t.Cleanup(func() {
+		_ = f.Close()
+	})
+
+	r.failNext("pread", syscall.EINTR, syscall.EIO)
+	p := make([]byte, 6)
+	n, err := f.ReadAtDirect(p, 0)
+
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("ReadAtDirect: %d, %v; want an error matching the second pread's EIO", n, err)
+	}
+
+	var pe *fs.PathError
+	if !errors.As(err, &pe) || pe.Op != "pread" || pe.Path != filepath.Join(dir, "a") {
+		t.Fatalf("ReadAtDirect: %v (%T); want an *fs.PathError of the pread naming the file", err, err)
+	}
+
+	if n != 0 || !bytes.Equal(p, make([]byte, 6)) {
+		t.Fatalf("ReadAtDirect: %d, %q; want 0 bytes, never bytes the fault's pread never delivered", n, p)
 	}
 }
