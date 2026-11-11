@@ -196,9 +196,9 @@ func TestRetiredBetweenListAndClaim(t *testing.T) {
 		if r.ID == a {
 			t.Fatalf("segment %d still in the set after Retire", a)
 		}
-		if want := r.ID == b; r.Claimed != want {
-			t.Fatalf("segment %d claimed = %v, want %v", r.ID, r.Claimed, want)
-		}
+	}
+	if f.set.Claim(b) {
+		t.Fatalf("Claim(%d) = true, want false: the pass still holds it", b)
 	}
 }
 
@@ -248,7 +248,7 @@ func TestSuspectUnreadMixed(t *testing.T) {
 			t.Fatalf("LiftSuperseded: %v", err)
 		}
 		failedUnread(t, un, clk, seg, at, unread.Content, selFid(1))
-		failedUnread(t, un, clk, seg, at+1000, unread.HeaderOnly, core.FileID{})
+		failedUnread(t, un, clk, seg, at+1000, unread.HeaderOnly, selFid(1))
 		if got := ids(f.over(un, nil).Select(Scope{Segments: []core.SegmentID{seg}}, 10)); len(got) != 0 {
 			t.Fatalf("candidates = %v, want none: the header-only record is unread", got)
 		}
@@ -293,5 +293,29 @@ func TestPinRefusedOnceClaimRecorded(t *testing.T) {
 	}
 	if want := []core.SegmentID{a}; !slices.Equal(got, want) {
 		t.Errorf("Select = %v, want %v: a refused pin leaves the claim standing", got, want)
+	}
+}
+
+// TestPinBeforeClaimRefused pins claim's own pin read: a pin landing after a
+// segment passed Select's filter and before its claim is refused by the claim.
+func TestPinBeforeClaimRefused(t *testing.T) {
+	f := newSelFixture(t)
+	a := f.sealedSeg(t, map[core.ShareTag]int64{selTag: 100})
+	b := f.sealedSeg(t, map[core.ShareTag]int64{selTag: 100})
+	f.live(t, b, 1, 10) // b sorts after a
+	pins := NewPins()
+	s := f.over(unread.New(nil), pins)
+	pinnedB := false
+	s.SetAfterClaim(func(id core.SegmentID) {
+		if id == a {
+			pinnedB = pins.Pin(b)
+		}
+	})
+	got := ids(s.Select(Scope{}, 10))
+	if !pinnedB {
+		t.Fatalf("Pin(%d) before its claim = false, want true", b)
+	}
+	if slices.Contains(got, b) {
+		t.Fatalf("Select = %v, want %d left out: it was pinned before its claim", got, b)
 	}
 }

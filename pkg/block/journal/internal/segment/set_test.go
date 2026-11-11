@@ -1373,14 +1373,10 @@ func TestSnapshot(t *testing.T) {
 	if err := s.Seal(2, true); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	if !s.Claim(2) {
-		t.Fatal("Claim of the sealed segment was refused")
-	}
-
 	rows := s.Snapshot()
 	want := []Row{
 		{ID: 1, State: Active, Size: segCap, Tags: map[core.ShareTag]int64{7: 100}},
-		{ID: 2, State: Sealed, Size: segCap, Claimed: true, Tags: map[core.ShareTag]int64{7: 40, 8: 60}},
+		{ID: 2, State: Sealed, Size: segCap, Tags: map[core.ShareTag]int64{7: 40, 8: 60}},
 		{ID: 3, State: Active, Size: segCap},
 	}
 	if len(rows) != len(want) {
@@ -1388,7 +1384,7 @@ func TestSnapshot(t *testing.T) {
 	}
 	for i, w := range want {
 		g := rows[i]
-		if g.ID != w.ID || g.State != w.State || g.Size != w.Size || g.Claimed != w.Claimed || !maps.Equal(g.Tags, w.Tags) {
+		if g.ID != w.ID || g.State != w.State || g.Size != w.Size || !maps.Equal(g.Tags, w.Tags) {
 			t.Errorf("row %d: got %+v, want %+v", i, g, w)
 		}
 	}

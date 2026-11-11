@@ -200,9 +200,12 @@ func (s *Selector) claim(id core.SegmentID) bool {
 // reads the ledger and the index's counters only, never a segment's storage.
 // The caller ends the pass with Done.
 //
-// The window, damage and unread checks are read before the claim and not
-// re-read after it; the pass re-reads under the file index before carrying
-// records.
+// A negative limit means no limit.
+//
+// decision: the window, damage and unread checks are read before the claim and
+// not re-read after it, so a window can open on a segment after it is selected.
+// The pass that carries records owes the re-read under the file index; withdraw
+// this once it does.
 //
 // decision: selection never consults a deferred-loss flag, so a segment holding
 // a dropped record whose loss is deferred is an ordinary candidate and its copy

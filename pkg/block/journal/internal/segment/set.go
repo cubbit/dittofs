@@ -603,11 +603,10 @@ func (s *Set) ShareBytesAndRetired(tag core.ShareTag) (settled, retired int64) {
 // copy of the record bytes per share tag, so a caller may keep or change it;
 // it is nil for a segment with no records.
 type Row struct {
-	ID      core.SegmentID
-	State   State
-	Size    int64
-	Claimed bool
-	Tags    map[core.ShareTag]int64
+	ID    core.SegmentID
+	State State
+	Size  int64
+	Tags  map[core.ShareTag]int64
 }
 
 // Snapshot lists every segment of the set, spares excluded, in ascending id
@@ -620,10 +619,7 @@ func (s *Set) Snapshot() []Row {
 
 	rows := make([]Row, 0, len(s.segs))
 	for id, e := range s.segs {
-		rows = append(rows, Row{
-			ID: id, State: e.state, Size: e.size,
-			Claimed: e.claimed, Tags: maps.Clone(e.tags),
-		})
+		rows = append(rows, Row{ID: id, State: e.state, Size: e.size, Tags: maps.Clone(e.tags)})
 	}
 	slices.SortFunc(rows, func(a, b Row) int { return cmp.Compare(a.ID, b.ID) })
 	return rows

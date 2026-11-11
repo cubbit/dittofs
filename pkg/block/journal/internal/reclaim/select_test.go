@@ -45,6 +45,19 @@ func (f *selFixture) live(t *testing.T, seg core.SegmentID, file byte, n int64) 
 	}
 }
 
+// retainedOnly plants n bytes in seg that are retained and not held: written
+// there, then superseded from a segment of their own and not lifted.
+func (f *selFixture) retainedOnly(t *testing.T, seg core.SegmentID, file byte, n int64) core.SegmentID {
+	t.Helper()
+	f.live(t, seg, file, n)
+	other := f.sealedSeg(t, map[core.ShareTag]int64{selTag: 100})
+	p := index.Placed{Extent: core.Extent{Len: n}, Record: index.RecordAt{Segment: other}, Version: selVer(uint64(file) + 100)}
+	if _, err := f.ix.WriteRetain(selTag, selFid(file), p, core.Seq(file)+100); err != nil {
+		t.Fatalf("WriteRetain: %v", err)
+	}
+	return other
+}
+
 func (f *selFixture) selector() *Selector {
 	return NewSelector(f.set, f.ix, unread.New(nil), nil, nil)
 }
@@ -76,9 +89,15 @@ func TestSelectOrder(t *testing.T) {
 	f.live(t, d, 4, 50)
 	f.live(t, e, 5, 50)
 
+	// g holds no held bytes but 95 retained ones (written, then superseded
+	// without lifting), so it counts as 95 live and sorts after a. The
+	// superseding record sits in h, 95 held, which ties with g and comes later.
+	g := f.sealedSeg(t, map[core.ShareTag]int64{selTag: 100})
+	h := f.retainedOnly(t, g, 6, 95)
+
 	sel := f.selector()
 	got := sel.Select(Scope{}, 100)
-	want := []core.SegmentID{f.seg, b, c, d, e, a}
+	want := []core.SegmentID{f.seg, b, c, d, e, a, g, h}
 	if !slices.Equal(ids(got), want) {
 		t.Fatalf("order = %v, want %v (least live first, ties by id)", ids(got), want)
 	}
@@ -299,9 +318,9 @@ func TestSuspectUnread(t *testing.T) {
 		clk := kit.NewStopwatchClock()
 		un := unread.New(clk)
 		seg := f.sealedSeg(t, map[core.ShareTag]int64{selTag: 100})
-		unreadAt(t, un, clk, seg, unread.HeaderOnly, core.FileID{})
+		unreadAt(t, un, clk, seg, unread.HeaderOnly, selFid(1))
 		if got := ids(f.over(un, nil).Select(Scope{}, 10)); len(got) != 0 {
-			t.Fatalf("candidates = %v, want none: an unread truncate may still matter", got)
+			t.Fatalf("candidates = %v, want none: a header-only record pins even when its file is known", got)
 		}
 	})
 }
