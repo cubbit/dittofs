@@ -434,6 +434,97 @@ internal/
     runner.go
 ```
 
+### 4.1 Code sketch
+
+The sketch is illustrative: its signatures come from the cited RFC sections or from the code
+epic 1 has on its branch, and the epic documents decide the final names. Bodies marked
+"planned" do not exist yet; the epic named beside them builds them. The code calls the settings
+package `pkg/adapter/settings`, which the layout above lists as `config/`.
+
+The node builds an adapter from its `Deps` and its settings, then drives the `adapter.Adapter`
+it gets back (epic 7, planned after S4; RFC 20 §3.4, §4.7):
+
+```go
+// internal/node (planned, epic 7): adapters start last and stop first.
+smbA, err := smb.New(adapter.Deps{
+	VFS:     svc,     // required
+	Budgets: budgets, // required: Receive, Reply, Connection, Hold (RFC 24)
+	Metrics: reg, Tracer: tr, Logger: log, Watch: watchdog.Loop,
+}, settings.DefaultSMB())
+if err != nil {
+	return err // invalid settings, or a required Deps field missing
+}
+if err := smbA.Start(ctx); err != nil { // binds every listener, then StateServing
+	return err
+}
+runner.Sync(ctx, servingSet()) // planned (E4): sidecars follow Addrs()
+// ...
+err = smbA.Reconfigure(ctx, next) // or Stop, New and Start when a change needs a rebind (§3.6)
+err = smbA.Stop(ctx)              // drain under DrainTimeout, then StateStopped
+```
+
+`New` composes and names no operation: tables beside their handlers, one `Protocol`, one
+`core.Server` (E1 stub, E6 body; RFC 20 §4.7):
+
+```go
+// pkg/adapter/smb/smb.go
+func New(d adapter.Deps, s settings.SMB) (adapter.Adapter, error) {
+	if err := s.Validate(); err != nil {
+		return nil, err
+	}
+	// d.VFS and d.Budgets are checked here (in code today).
+	t := ops.Table(&ops.Handlers{VFS: d.VFS}) // planned (E6): every row answers "not supported"
+	return core.NewServer(d, s, core.Listener{
+		Services: []string{"smb"}, Network: "tcp", Port: s.Port,
+		Protocol: protocol.New(t, d), // planned (E6): framer, header codec, router
+	})
+}
+```
+
+A connection, from accept to the writer (E4 for the connection, E5 for the pipeline; RFC 20
+§3.2, §4.1, §6.1). Each step is a stage a protocol supplies or a default `core` fills in:
+
+```go
+// internal/adapter/core/conn.go (planned, E4): one reader per connection.
+stages := proto.NewConn(c) // nil stages take core's defaults here
+for {
+	hdr := readN(conn, fr.HeaderLen())
+	n, err := fr.BodyLen(hdr) // past the cap: close
+	rec, err := pool.Get(ctx, remote, n) // Budgets.Receive: waits for room, never refuses
+	readInto(rec, conn)
+	dispatcher.Dispatch(ctx, c, rec) // on the reader: returns once the request is admitted
+}
+
+// internal/adapter/core/pipeline.go (planned, E5): one request runs RFC 20 §4.7's
+// pipeline, in its order; T5.1 builds it from there. Dispatch runs it up to Admit
+// on the reader, so the reader blocks in Admit (§6.9) and the connection is not
+// read until a request completes (§4.1); the rest runs on a goroutine per admitted
+// request, its final reply on the writer's queue (§6.2), not through Conn.Send.
+```
+
+A handler is decode, one `vfs.Service` call, translate, encode. `core.Bind` joins the four into
+the `Op.Decode` a table row holds (in code; RFC 20 §4.3). This is `testproto`'s create, which
+epic 2 builds; RFC 21 and 22 write theirs the same way:
+
+```go
+// internal/adapter/adaptertest/testproto (planned, E2)
+func (h *Handlers) createOp() *core.Op { // one row of the table
+	return &core.Op{
+		Code: OpCreate, Name: "CREATE", Versions: core.Range{First: 1, Last: 2},
+		Needs: core.NeedsTree | core.NeedsFH, Cacheable: true,
+		Decode: core.Bind(decodeCreate, createBound, nil, nil, nil, h.Create, encodeCreate),
+	}
+}
+
+func (h *Handlers) Create(ctx context.Context, r *core.Request, m *Msg) (*Reply, error) {
+	res, err := h.VFS.Create(ctx, r.Call, currentFH(r), m.Name, vfs.CreateArgs{}) // the only call
+	if err != nil {
+		return nil, err // the error table answers it, never the handler (§4.5)
+	}
+	return &Reply{Handle: res.Handle}, nil
+}
+```
+
 ## 5. The epics in detail
 
 ### Epic 1 — Delete v1, fix the surface ⛔
