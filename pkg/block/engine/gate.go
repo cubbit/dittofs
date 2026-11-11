@@ -17,6 +17,7 @@ type gate struct {
 	st   atomic.Int64
 	mu   sync.Mutex
 	idle chan struct{}
+	down chan struct{} // closed once the gate is shut; made by shut or shutdown
 }
 
 // shutBit marks a shut gate in its state word; the bits below it count the
@@ -62,7 +63,8 @@ func (g *gate) leave() {
 
 // shut refuses every later enter. It makes the idle channel before it sets
 // the shut bit, so a leave that takes the count to zero always finds a channel
-// to close. A second shut changes nothing.
+// to close. It closes the shutdown channel after the bit is set, so a call
+// woken by it finds the gate shut. A second shut changes nothing.
 func (g *gate) shut() {
 	g.mu.Lock()
 
@@ -70,8 +72,41 @@ func (g *gate) shut() {
 		g.idle = make(chan struct{})
 	}
 
+	if g.down == nil {
+		g.down = make(chan struct{})
+	}
+
 	g.mu.Unlock()
 	g.st.Or(shutBit)
+
+	g.mu.Lock()
+
+	select {
+	case <-g.down:
+	default:
+		close(g.down)
+	}
+
+	g.mu.Unlock()
+}
+
+// shutdown is a channel that closes once the gate is shut, so a call waiting
+// inside the gate for something that may never come can leave it and let the
+// shut gate drain.
+func (g *gate) shutdown() <-chan struct{} {
+	g.mu.Lock()
+
+	defer g.mu.Unlock()
+
+	if g.down == nil {
+		g.down = make(chan struct{})
+
+		if g.st.Load()&shutBit != 0 {
+			close(g.down)
+		}
+	}
+
+	return g.down
 }
 
 // drained reports whether the gate is shut and holds no unit.

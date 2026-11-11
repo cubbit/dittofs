@@ -863,3 +863,23 @@ func (e *Engine) HoldRaiseLockForTest(ctx context.Context, s entity.ShareID) (fu
 func SettledForTest(l journal.Limit, left int64, others bool) bool {
 	return !settled(refusal{limit: l}, left, others).noSpace
 }
+
+// RaiseFullForTest runs the raise of journal_full for a refusal of share s's
+// journal by its headroom, as a refused write does.
+func (e *Engine) RaiseFullForTest(s entity.ShareID) {
+	err := &journal.NoSpaceError{Limit: journal.LimitHeadroom}
+
+	e.raiseFull(e.table()[s], refusal{limit: journal.LimitHeadroom}, err)
+}
+
+// AcceptedWriteForTest runs what an accepted write of share s does to
+// journal_full.
+func (e *Engine) AcceptedWriteForTest(s entity.ShareID) {
+	e.acceptedWrite(e.table()[s])
+}
+
+// HeadroomNamedForTest reports whether the latest journal_full refusal of
+// share s's journal named the headroom, so the next accepted write clears it.
+func (e *Engine) HeadroomNamedForTest(s entity.ShareID) bool {
+	return e.table()[s].gc.cap.headroom.Load()
+}

@@ -228,12 +228,19 @@ func TestDrawIsTheJournalsNextVersion(t *testing.T) {
 
 	failIfWaits(t, u.e, cancel)
 
-	ctx := clockCtx{Context: base, now: u.clock.Now()}
-	_, err = u.e.Draw(ctx, u.share.ID, g)
+	// With no deadline and no raise in flight the draw answers at once, without
+	// waiting: the call that a passed deadline below does not reach.
+	_, err = u.e.Draw(base, u.share.ID, g)
 	var delay *vfserr.Delay
 	var noSpace *journal.NoSpaceError
 	if !errors.As(err, &delay) || delay.Cause != vfserr.DelayCommit || errors.As(err, &noSpace) {
 		t.Errorf("a draw at the version limit: %v, want ErrDelay(DelayCommit) with no journal type", err)
+	}
+
+	ctx := clockCtx{Context: base, now: u.clock.Now()}
+	_, err = u.e.Draw(ctx, u.share.ID, g)
+	if !errors.As(err, &delay) || delay.Cause != vfserr.DelayCommit || errors.As(err, &noSpace) {
+		t.Errorf("a draw past its deadline at the version limit: %v, want ErrDelay(DelayCommit) with no journal type", err)
 	}
 }
 

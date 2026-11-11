@@ -185,7 +185,7 @@ func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID
 		return e.storeErr(err)
 	}
 
-	grow, err := e.stageAnswering(ctx, r, true, func(fe *fileEntry) (journal.Version, error) {
+	grow, err := e.stageAnswering(ctx, r, func(fe *fileEntry) (journal.Version, error) {
 		return b.h.Truncate(ctx, fileID(f), size)
 	}, opTruncate, journal.Extent{Off: size}, func(fe *fileEntry) bool {
 		return size >= replaySize(committed, fe.ops)
@@ -219,7 +219,7 @@ func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 		return err
 	}
 	x := journal.Extent{Off: off, Len: n}
-	if _, err := e.stageAnswering(ctx, r, true, func(*fileEntry) (journal.Version, error) {
+	if _, err := e.stageAnswering(ctx, r, func(*fileEntry) (journal.Version, error) {
 		return b.h.Deallocate(ctx, fileID(f), x)
 	}, opDeallocate, x, nil); err != nil {
 		e.release(r, false)
@@ -376,13 +376,12 @@ func (e *Engine) abort(r *removal) error {
 func (e *Engine) stageAnswering(
 	ctx context.Context,
 	r *removal,
-	wait bool,
 	j func(*fileEntry) (journal.Version, error),
 	kind opKind,
 	x journal.Extent,
 	grow func(*fileEntry) bool,
 ) (bool, error) {
-	return answeringRefusals(ctx, e, r.b, wait, func() (bool, error) {
+	return answeringRefusals(ctx, e, r.b, true, func() (bool, error) {
 		return e.stage(ctx, r, j, kind, x, grow)
 	})
 }

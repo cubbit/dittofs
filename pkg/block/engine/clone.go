@@ -502,9 +502,18 @@ func (e *Engine) runClone(c *cloneRun) {
 	r, err := e.begin(ctx, c.db, c.dst, entity.RemoveClone, c.rd.Extent)
 	if err == nil {
 		dx := journal.Extent{Off: c.spec.DstOff, Len: c.spec.Len}
-		if _, err = e.stageAnswering(ctx, r, false, func(*fileEntry) (journal.Version, error) {
+		// The removal loop's step answers no caller, so a capacity refusal is
+		// answered by the table at once, with no repack, wait, count or warning,
+		// as size does for the loop's reservation. stage returns the refusal
+		// raw, its entry lock released.
+		_, err = e.stage(ctx, r, func(*fileEntry) (journal.Version, error) {
 			return c.db.h.CloneTarget(ctx, fileID(c.dst), c.spec)
-		}, opClone, dx, nil); err != nil {
+		}, opClone, dx, nil)
+		if answer, ok := tableAnswer(err); ok {
+			err = answer
+		}
+
+		if err != nil {
 			e.release(r, false)
 		}
 	}

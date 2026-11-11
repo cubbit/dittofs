@@ -143,8 +143,15 @@ func (e *Engine) repack(ctx context.Context, b *binding, scope journal.RepackSco
 // so a failed window reaches the file's next Commit (RFC 8 §5.1). It takes
 // no file entry, guard or registration, only the group commit's lock for a
 // moment, so a Delete or Truncate refused while it holds its removal guard
-// cannot deadlock on it.
-func (e *Engine) syncScope(ctx context.Context, bound []*binding) error {
+// cannot deadlock on it. A share other than own whose handle is closed is
+// being dropped, since Drop closes the handle before it marks the binding
+// removed: its files are skipped, as they are not this refusal's to free and
+// its closed handle would fail the refused share's write.
+//
+// The journal's Files is a stub that yields no file until the index lands, so
+// over the real journal this syncs nothing yet; the figures it is meant to
+// move are read from Stats afterwards either way.
+func (e *Engine) syncScope(ctx context.Context, own *binding, bound []*binding) error {
 	for _, sb := range bound {
 		var ids []journal.FileID
 
@@ -157,6 +164,10 @@ func (e *Engine) syncScope(ctx context.Context, bound []*binding) error {
 		}
 
 		if err := e.sync(ctx, sb, ids...); err != nil {
+			if sb != own && errors.Is(err, journal.ErrClosed) {
+				continue // being dropped: its files are not this refusal's to free
+			}
+
 			return err
 		}
 	}
@@ -172,8 +183,11 @@ func (e *Engine) syncScope(ctx context.Context, bound []*binding) error {
 //
 // ponytail: repack runs only at a refusal, one scoped pass per refusal and none
 // queued or kept in flight per scope; the eviction loop's own repack comes with
-// offload. Upgrade to one repack in flight per journal and scope that later
-// refusals wait on when repack bytes copied per byte freed rises under a
+// offload. A journal-wide limit also runs its own syncScope per refusal, which
+// grows with the files on the journal, so a burst of N refusals is 2N repacks
+// and N full-journal syncs. Upgrade to one repack and one scope sync in flight
+// per journal and scope that later refusals wait on when repack bytes copied
+// per byte freed, or the time a refusal spends in syncScope, rises under a
 // refusal storm.
 func (e *Engine) relieve(ctx context.Context, b *binding, r refusal, at *step) error {
 	scope, bound := e.scopeOf(b, r)
@@ -185,7 +199,7 @@ func (e *Engine) relieve(ctx context.Context, b *binding, r refusal, at *step) e
 		err = e.repack(ctx, b, scope)
 		*at = stepRepack
 	default:
-		if err = e.syncScope(ctx, bound); err == nil || ctx.Err() == nil {
+		if err = e.syncScope(ctx, b, bound); err == nil || ctx.Err() == nil {
 			serr := e.repack(ctx, b, scope)
 			if err == nil {
 				err = serr
@@ -276,8 +290,6 @@ func (e *Engine) raiseFull(b *binding, r refusal, err error) {
 		n.missing, n.unit = ns.Missing, ns.Unit
 	}
 
-	b.gc.cap.headroom.Store(r.limit == journal.LimitHeadroom && !r.device)
-
 	e.conds.raise(condKey{conditionJournalFull, b.gc}, Condition{
 		Name:    conditionJournalFull,
 		Subject: Subject{Scope: ScopeJournal},
@@ -288,6 +300,12 @@ func (e *Engine) raiseFull(b *binding, r refusal, err error) {
 			r, n.missing, n.unit, n.used, n.maxBytes, n.freed, n.headroom, n.extents, n.extentAt,
 		),
 	}, time.Time{})
+
+	// The flag follows the raise, so a write accepted between the two finds
+	// the flag false and leaves the condition up; the next accepted write,
+	// which finds it true, clears it. The other order let that write clear a
+	// condition not raised yet, which then stayed up.
+	b.gc.cap.headroom.Store(r.limit == journal.LimitHeadroom && !r.device)
 }
 
 // acceptedWrite clears journal_full when the latest refusal named the
@@ -295,7 +313,9 @@ func (e *Engine) raiseFull(b *binding, r refusal, err error) {
 // so one accepted outside a reservation shows the headroom has room again. No
 // other accepted write clears it (RFC 8 §11.1).
 func (e *Engine) acceptedWrite(b *binding) {
-	if b.gc.cap.headroom.CompareAndSwap(true, false) {
+	// A load first: a write on every accepted call must not take the cache
+	// line exclusively while the flag is false, which it nearly always is.
+	if b.gc.cap.headroom.Load() && b.gc.cap.headroom.CompareAndSwap(true, false) {
 		e.conds.clear(condKey{conditionJournalFull, b.gc})
 	}
 }

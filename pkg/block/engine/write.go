@@ -7,6 +7,7 @@ import (
 	"math"
 	"slices"
 	"syscall"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -41,11 +42,8 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 		}
 		return v, nil
 	}
-	now := e.d.Clock.Now() // one reading: the entry keeps the time the journal records
-	var mtime int64        // nanoseconds since the Unix epoch; 0 leaves the modification time alone
-	if o.Suspend&entity.TimeModify == 0 {
-		mtime = now.UnixNano()
-	}
+	var now time.Time // the last attempt's reading: the entry keeps the time the journal records
+	var mtime int64   // nanoseconds since the Unix epoch; 0 leaves the modification time alone
 	// Each attempt admits the write under the entry's lock, where a clone's
 	// registration is checked and installed, counts it until the journal has
 	// answered, and leaves, so a write waiting for the raise holds neither the
@@ -53,6 +51,16 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	x := entity.Extent{Offset: off, Length: int64(len(p))}
 
 	got, err := answeringRefusals(ctx, e, b, true, func() (admitted, error) {
+		// Read on each attempt, so a write that waited for the raise lands
+		// with the time the journal took it, not one older than a write that
+		// arrived after it and was served first.
+		now = e.d.Clock.Now()
+		mtime = 0
+
+		if o.Suspend&entity.TimeModify == 0 {
+			mtime = now.UnixNano()
+		}
+
 		fe, err := e.admitAfterStaging(ctx, f)
 		if err != nil {
 			return admitted{}, err
@@ -215,6 +223,14 @@ func fileID(f entity.FileID) journal.FileID { return journal.NewFileID(f) }
 // journalErr is the content methods' answer for an error the journal
 // returned, so no journal type crosses the content boundary.
 func (e *Engine) journalErr(err error) error {
+	// A capacity refusal of a call that does not go through the refusal path
+	// (Forget at Drop is one) is answered by the table, uncounted and
+	// unlogged, as it answers no client write. A read-only journal is no
+	// capacity refusal, so its case below is unchanged.
+	if answer, ok := tableAnswer(err); ok {
+		return answer
+	}
+
 	var other *journal.OtherShareError
 	switch {
 	case errors.As(err, &other):

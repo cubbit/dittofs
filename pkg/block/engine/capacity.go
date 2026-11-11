@@ -52,10 +52,8 @@ func capacityRefusal(err error) (refusal, bool) {
 // the system clears the cause by itself. A limit the journal drains by itself
 // answers retry-later, so the client waits; a full device is cleared only by
 // an operator, so waiting on it would hold every writer's call open for as
-// long as no one acts, and it answers no space at once. Until the repack and
-// the last step exist, a limit that offload and repack can drain answers
-// retry-later without trying either. Overturned if a store gains a signal that
-// an operator is acting.
+// long as no one acts, and it answers no space at once. Overturned if a store
+// gains a signal that an operator is acting.
 var refusalTable = map[journal.Limit]row{
 	journal.LimitShare:    {delay: vfserr.DelayCapacity},
 	journal.LimitJournal:  {delay: vfserr.DelayCapacity},
@@ -196,9 +194,13 @@ func (r refusal) String() string {
 	return r.limit.String()
 }
 
-// answeredRefusal reports whether err is an answer the table gave.
+// answeredRefusal reports whether err is an answer the engine already gave
+// for a refusal: the table's, or an unavailable journal that the refusal path
+// found closed and logged. Mapping it again would log it a second time.
 func answeredRefusal(err error) bool {
-	return errors.Is(err, vfserr.ErrDelay) || errors.Is(err, vfserr.ErrNoSpace)
+	return errors.Is(err, vfserr.ErrDelay) ||
+		errors.Is(err, vfserr.ErrNoSpace) ||
+		errors.Is(err, vfserr.ErrUnavailable)
 }
 
 // answeringRefusals runs call, a journal call of binding b's, and answers a
@@ -231,7 +233,13 @@ func answeringRefusals[T any](
 			return got, err
 		}
 
-		if wait && e.mayWait(ctx, b, r, changed) && e.awaitRaise(ctx, changed) {
+		if wait && e.mayWait(ctx, b, r, changed) && e.awaitRaise(ctx, changed, b.gate.shutdown()) {
+			if ctx.Err() != nil {
+				answer, _ := e.answered(b, err)
+
+				return got, answer
+			}
+
 			continue
 		}
 
@@ -260,10 +268,11 @@ func closed(c <-chan struct{}) bool {
 }
 
 // awaitRaise waits until the raise changes the limit or the journal refuses
-// one, which is when changed closes, and reports true; or until ctx ends, and
-// reports false. A change that already happened does not wait. A hook tells a
-// test when a call is about to block.
-func (e *Engine) awaitRaise(ctx context.Context, changed <-chan struct{}) bool {
+// one, which is when changed closes, and reports true; or until ctx ends or
+// the share's gate is shut, which is when down closes, and reports false. A
+// change that already happened does not wait. A hook tells a test when a call
+// is about to block.
+func (e *Engine) awaitRaise(ctx context.Context, changed, down <-chan struct{}) bool {
 	select {
 	case <-changed:
 	default:
@@ -273,6 +282,8 @@ func (e *Engine) awaitRaise(ctx context.Context, changed <-chan struct{}) bool {
 
 		select {
 		case <-changed:
+		case <-down:
+			return false
 		case <-ctx.Done():
 			return false
 		}
@@ -283,9 +294,9 @@ func (e *Engine) awaitRaise(ctx context.Context, changed <-chan struct{}) bool {
 
 // mayWait reports whether a call refused with r waits for the raise: the table
 // says its row waits, a raise is in flight for the journal or has changed the
-// limit since the call took changed, no raise is known to be refused, and its
-// context has not ended nor passed its deadline by the
-// engine's clock.
+// limit since the call took changed, no raise is known to be refused, the
+// share's gate is not shut, and its context has not ended nor passed its
+// deadline by the engine's clock.
 //
 // decision: a raise is in flight when its state is not raiseIdle, running or
 // running with a wake pending, so a goroutine is raising or will raise again.
@@ -298,8 +309,11 @@ func (e *Engine) awaitRaise(ctx context.Context, changed <-chan struct{}) bool {
 // channel, so the call runs again; with none in flight and the channel open
 // the call answers retry-later at once. A wake with nothing changed is
 // harmless: the call retries and, with no raise in flight, answers
-// retry-later. Overturned if a version refusal must wait with no raise
-// triggered.
+// retry-later. A call inside a gate that Unbind shut does not wait: the
+// raise may never commit while the store fails, and the shut gate would never
+// drain, so Close behind the Unbind would end stuck; the shut wakes the
+// waiting calls, which answer retry-later. Overturned if a version refusal
+// must wait with no raise triggered, or must outlast an Unbind.
 func (e *Engine) mayWait(
 	ctx context.Context,
 	b *binding,
@@ -307,6 +321,10 @@ func (e *Engine) mayWait(
 	changed <-chan struct{},
 ) bool {
 	if row, known := rowOf(r); !known || !row.wait || b.vl.refused.Load() {
+		return false
+	}
+
+	if b.gate.isShut() {
 		return false
 	}
 
@@ -369,6 +387,12 @@ func (e *Engine) relieved(
 			return e.journalErr(serr), false
 		}
 
+		return e.answeredAs(b, err, r, row{delay: vfserr.DelayCapacity}), false
+	}
+
+	// A context that ended during the step must not reach the retry, which
+	// would answer its error and not the refusal's retry-later (RFC 8 §10.2).
+	if ctx.Err() != nil {
 		return e.answeredAs(b, err, r, row{delay: vfserr.DelayCapacity}), false
 	}
 
