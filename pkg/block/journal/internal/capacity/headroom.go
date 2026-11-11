@@ -118,8 +118,8 @@ type Headroom struct {
 	// Nothing is acquired under it besides what a caller held: the at-limit
 	// read, the below-half read and every admission hold no other lock
 	// across it, and the check and the move in Drawn and Refund are the
-	// section alone. It is not a leaf: a recorded wrong order under it
-	// must be reported, not exempted.
+	// section alone. A recorded wrong order under it must be reported,
+	// not exempted.
 	mu lockorder.Mutex
 	// drawn is the record bytes the headroom has admitted and no Refund
 	// has returned; guarded by mu.

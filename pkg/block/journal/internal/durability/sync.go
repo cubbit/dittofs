@@ -265,7 +265,11 @@ type Durability struct {
 	unproduced map[core.SegmentID]int
 
 	// copyMu guards copies, the table of other copies of re-appended records.
-	// It is a leaf mutex, held only for a map access.
+	//
+	// decision: copyMu is a leaf mutex outside the six lock domains, held for
+	// a map access and never across I/O. registerOriginal also asks the set
+	// under it, which takes the set's capacity lock inside copyMu; nothing
+	// takes copyMu below that lock.
 	copyMu sync.Mutex
 	copies map[core.Seq]copyEntry
 
@@ -334,6 +338,10 @@ type Durability struct {
 	// mu guards made, started and stopped. It is not held across a stream
 	// call, except that Start registers the layer's end consumer under it:
 	// nothing takes mu below a stream's own locks, so that cannot deadlock.
+	//
+	// decision: mu is a leaf mutex outside the six lock domains, never held
+	// across I/O. Start's registration takes each stream's segment append
+	// lock inside it, and nothing takes mu while holding that lock.
 	mu      sync.Mutex
 	made    map[uint32]*stream
 	started bool
@@ -346,6 +354,10 @@ type Durability struct {
 	// cmu guards change, a layer-wide channel closed and replaced on every
 	// stream change, so a waiter on several streams wakes on any of them. It
 	// is a leaf lock, taken under a stream's mu.
+	//
+	// decision: cmu is a leaf mutex outside the six lock domains, held for a
+	// channel close and replace or a read of change, and takes nothing while
+	// held.
 	//
 	// ponytail: one channel serves every stream, so a report on any stream
 	// wakes every waiter of every stream and each re-scans its ledger targets.
