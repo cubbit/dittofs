@@ -1,6 +1,11 @@
 package journal
 
-import "time"
+import (
+	"slices"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/datapath"
+)
 
 // Stats returns the journal's statistics: journal-wide, with a per-share
 // breakdown. It is served from counters the journal maintains: it neither
@@ -8,11 +13,54 @@ import "time"
 // safe to call concurrently with every other operation. After Close it
 // returns the zero Stats, since it has no error to return.
 //
-// decision: the stub returns the zero Stats because the signature has no
-// error to carry ErrNotImplemented. A zero Stats reads as an empty journal, so
-// no caller may depend on it until the counters land.
+// decision: fields whose source belongs to a later step (the offload, release
+// and repack counters, PinnedSegments, Recovery, RejectedSegments, TornTails,
+// ScanResyncs) read zero, and so does UnreclaimedBytes, journal-wide and per
+// share: the index has no per-record backing hook to keep it without a walk.
+// A zero reads as nothing offered, nothing recovered, nothing unreclaimed; no
+// caller may rely on those until the sources land.
 func (j *Journal) Stats() Stats {
-	return Stats{}
+	// closed is read first: a Close racing this call leaves the core's
+	// statistics readable, or this returns the zero Stats, and never both
+	// halves.
+	if j.closed.Load() || j.core == nil {
+		return Stats{}
+	}
+	return statsFrom(j.core.Stats())
+}
+
+// statsFrom converts the core's statistics to the public shape. Maps and
+// slices are copied, so the result is the caller's.
+func statsFrom(c datapath.Stats) Stats {
+	s := Stats{
+		MaxBytes: c.MaxBytes, UsedBytes: c.UsedBytes, ReservedBytes: c.ReservedBytes,
+		HeldBytes: c.HeldBytes, DirtyBytes: c.DirtyBytes, OldestDirty: c.OldestDirty,
+		Files: c.Files, ExtentCount: c.ExtentCount, DropRanges: c.DropRanges,
+		Segments: c.Segments, Sealed: c.Sealed, UnreclaimedBytes: c.UnreclaimedBytes,
+		HeadroomBytes: c.HeadroomBytes, RepackReserveBytes: c.RepackReserveBytes,
+		PinnedSegments: c.PinnedSegments, OpenDescriptors: c.OpenDescriptors, DescriptorLimit: c.DescriptorLimit,
+		DamagedSegments: c.DamagedSegments,
+		SyncDuration: Histogram{
+			Bounds: slices.Clone(c.SyncDuration.Bounds), Counts: slices.Clone(c.SyncDuration.Counts), Sum: c.SyncDuration.Sum,
+		},
+		RemovalMarkers: c.RemovalMarkers, VersionLimit: c.VersionLimit, VersionsLeft: c.VersionsLeft,
+		NextVersion: c.NextVersion, ExtentLimit: c.ExtentLimit,
+		Counters:       Counters(c.Counters),
+		Losses:         slices.Clone(c.Losses),
+		LossGeneration: c.LossGeneration,
+		ReadOnly:       c.ReadOnly,
+	}
+	if c.LastSyncError != nil {
+		s.LastSyncError = &SyncFailure{Err: c.LastSyncError.Err, At: c.LastSyncError.At}
+	}
+	for _, t := range c.TagConflicts {
+		s.TagConflicts = append(s.TagConflicts, TagConflict{File: t.File, Tags: t.Tags})
+	}
+	s.Shares = make(map[ShareTag]ShareStats, len(c.Shares))
+	for t, ss := range c.Shares {
+		s.Shares[t] = ShareStats(ss)
+	}
+	return s
 }
 
 // Stats is the journal's statistics. It is not a consistent snapshot of the
