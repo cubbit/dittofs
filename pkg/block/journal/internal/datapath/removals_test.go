@@ -3,6 +3,7 @@ package datapath
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"syscall"
 	"testing"
@@ -175,9 +176,12 @@ func TestRemovalsLeaveTheirMarkers(t *testing.T) {
 }
 
 // TestRemovalsRefuseShapesAndDrawNoVersion checks the shape refusals: a
-// zero-length deallocate and clone target is refused with ErrZeroLength, a
-// negative truncate and a deallocate whose end overflows with ErrInvalidExtent,
-// each appends nothing and draws no version.
+// zero-length deallocate and clone target is refused with ErrZeroLength, and a
+// negative truncate, a deallocate whose end overflows, and a clone target whose
+// source offset is negative, overflows with its length or whose AsOf carries an
+// epoch with ErrInvalidExtent. Each appends nothing, draws no version and draws
+// no headroom: the three clone source shapes are ones the record's encoding
+// would panic on.
 func TestRemovalsRefuseShapesAndDrawNoVersion(t *testing.T) {
 	ctx := context.Background()
 	for name, tc := range map[string]struct {
@@ -214,13 +218,31 @@ func TestRemovalsRefuseShapesAndDrawNoVersion(t *testing.T) {
 			},
 			want: core.ErrInvalidExtent,
 		},
+		"clone source offset negative": {
+			call: func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+				return c.CloneTarget(ctx, s, f, core.CloneSpec{SrcOff: -1, DstOff: 0, Len: 8})
+			},
+			want: core.ErrInvalidExtent,
+		},
+		"clone source offset overflow": {
+			call: func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+				return c.CloneTarget(ctx, s, f, core.CloneSpec{SrcOff: math.MaxInt64 - 3, DstOff: 0, Len: 8})
+			},
+			want: core.ErrInvalidExtent,
+		},
+		"clone source asOf epoch": {
+			call: func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+				return c.CloneTarget(ctx, s, f, core.CloneSpec{DstOff: 0, Len: 8, AsOf: core.Version{Epoch: 1, Counter: 1}})
+			},
+			want: core.ErrInvalidExtent,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, seam := newTestCore(t)
 			s := mustShare(t, c, 1)
 			f := testFile(1)
 			next := c.counters.NextVersion()
-			writes := seam.Calls(kit.OpWrite)
+			writes, draws := seam.Calls(kit.OpWrite), c.headroom.Draws()
 			v, err := tc.call(c, s, f)
 			want := tc.want
 			if !errors.Is(err, want) {
@@ -240,6 +262,9 @@ func TestRemovalsRefuseShapesAndDrawNoVersion(t *testing.T) {
 			}
 			if got := c.Index().FileEntries(f); len(got) != 0 {
 				t.Fatalf("%s left index entries: %+v", name, got)
+			}
+			if got := c.headroom.Draws(); got != draws {
+				t.Fatalf("%s drew %d headroom records", name, got-draws)
 			}
 		})
 	}
@@ -423,6 +448,14 @@ func TestRemovalInAFailedWindowIsReappended(t *testing.T) {
 	seg := recordOf(t, c, f, 0).Record.Segment
 
 	hold := seam.HoldFirst(t, kit.OpSync, format.SegmentName(seg))
+	// A removal that hangs in its wait is failed rather than left parked: the
+	// cleanup turns the journal read-only, which wakes every waiter, and
+	// releases the hold, so a regression trips the within assertion below
+	// instead of the go test timeout.
+	t.Cleanup(func() {
+		c.Durability().Enter(syscall.EROFS)
+		hold.Release()
+	})
 	done := make(chan struct {
 		v   core.Version
 		err error

@@ -38,40 +38,36 @@ func TestRemovalDrainsTheHeadroom(t *testing.T) {
 	}
 }
 
-// TestRemovalRefusedAtTheExhaustedHeadroom checks that a removal of content
-// the journal does not hold is refused naming the headroom once it is
-// exhausted — never naming the share or the journal — while one of held
-// content beside it is not refused by either of those limits.
-func TestRemovalRefusedAtTheExhaustedHeadroom(t *testing.T) {
+// drainHeadroom draws the headroom down to its exhaustion with removals of a
+// file the journal does not hold: they free nothing, so every one that is
+// admitted dates the headroom. It returns once the next such removal is
+// refused naming the headroom, at the edge where the open reserve is all that
+// is left.
+func drainHeadroom(t *testing.T, c *Core, s *Share) {
+	t.Helper()
 	ctx := context.Background()
-	c, s, f := removalAtTheLimit(t)
 	reserve := capacity.OpenReserveRecords(acceptanceRecords)
-	// Drain the headroom below half with removals of content the journal does
-	// not hold: they free nothing, so they date it. Below half but above the
-	// open reserve, a removal of held content is still admitted.
 	drain := testFile(9)
-	for i := 0; i < 11; i++ {
-		if _, err := c.Deallocate(ctx, s, drain, core.Extent{Off: 2 * int64(i), Len: 1}); err != nil {
-			t.Fatalf("deallocate %d of nothing held: %v", i+1, err)
-		}
-	}
-	if !c.headroom.BelowHalf() {
-		t.Fatal("eleven removals left the headroom above half")
-	}
-	if _, err := c.Truncate(ctx, s, f, 0); err != nil {
-		t.Fatalf("a truncate below half the headroom = %v, want it admitted", err)
-	}
-	// Drain it to the open reserve's edge: the drawings before this point,
-	// the truncate's own included, count, so the loop runs to what the
-	// headroom's counter already names. The last deallocate admitted leaves
-	// the reserve whole, and the one after it is the refusal below.
 	for i := 0; c.headroom.Draws() < uint64(acceptanceRecords-reserve); i++ {
-		if _, err := c.Deallocate(ctx, s, drain, core.Extent{Off: 2 * int64(100+i), Len: 1}); err != nil {
+		if _, err := c.Deallocate(ctx, s, drain, core.Extent{Off: 2 * int64(i), Len: 1}); err != nil {
 			t.Fatalf("deallocate %d of nothing held, above the reserve: %v", i+1, err)
 		}
 	}
-	next := c.counters.NextVersion()
-	_, err := c.Deallocate(ctx, s, drain, core.Extent{Off: 1 << 20, Len: 1})
+	if !c.headroom.BelowHalf() {
+		t.Fatal("the drained headroom is not below half")
+	}
+}
+
+// TestUnheldRemovalRefusedAtTheExhaustedHeadroom checks that a removal of
+// content the journal does not hold is refused naming the headroom once it is
+// exhausted — never naming the share or the journal — drawing no version and
+// no headroom record.
+func TestUnheldRemovalRefusedAtTheExhaustedHeadroom(t *testing.T) {
+	ctx := context.Background()
+	c, s, _ := removalAtTheLimit(t)
+	drainHeadroom(t, c, s)
+	next, draws := c.counters.NextVersion(), c.headroom.Draws()
+	_, err := c.Deallocate(ctx, s, testFile(9), core.Extent{Off: 1 << 20, Len: 1})
 	ns := refused(t, err, core.LimitHeadroom)
 	if ns.Limit == core.LimitShare || ns.Limit == core.LimitJournal {
 		t.Fatalf("the removal was refused naming %s, want the headroom", ns.Limit)
@@ -79,11 +75,58 @@ func TestRemovalRefusedAtTheExhaustedHeadroom(t *testing.T) {
 	if got := c.counters.NextVersion(); got != next {
 		t.Fatalf("a headroom refusal drew a version: next is %v, was %v", got, next)
 	}
+	if got := c.headroom.Draws(); got != draws {
+		t.Fatalf("a headroom refusal drew %d headroom records", got-draws)
+	}
+}
+
+// TestRemovalOfHeldContentAdmittedAtTheExhaustedHeadroom checks that a
+// truncate, a deallocate and a delete of content the journal holds are admitted
+// at an exhausted headroom and leave their markers: a removal of held content
+// frees space, so only a removal of content the journal does not hold may be
+// refused naming the headroom. Neither the share's limit nor the journal's
+// maximum may refuse one either.
+func TestRemovalOfHeldContentAdmittedAtTheExhaustedHeadroom(t *testing.T) {
+	ctx := context.Background()
+	for name, call := range map[string]func(*Core, *Share, core.FileID) (core.Version, error){
+		"truncate": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+			return c.Truncate(ctx, s, f, 0)
+		},
+		"deallocate": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+			return c.Deallocate(ctx, s, f, core.Extent{Off: 0, Len: 8})
+		},
+		"delete": func(c *Core, s *Share, f core.FileID) (core.Version, error) {
+			return c.Delete(ctx, s, f)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, s, f := removalAtTheLimit(t)
+			drainHeadroom(t, c, s)
+			// The file the warm write filled still holds content, so the
+			// removal frees space and is admitted.
+			v, err := call(c, s, f)
+			if err != nil {
+				t.Fatalf("%s of held content at an exhausted headroom = %v, want it admitted", name, err)
+			}
+			if v == (core.Version{}) {
+				t.Fatalf("%s of held content drew no version", name)
+			}
+			want := map[string]core.ChangeKind{
+				"truncate":   core.ChangeTruncate,
+				"deallocate": core.ChangeDeallocate,
+				"delete":     core.ChangeDelete,
+			}[name]
+			if m := markerOfKind(t, c, f, want); m.Version != v {
+				t.Fatalf("%s marker = %+v, want it at the returned version %v", name, m, v)
+			}
+		})
+	}
 }
 
 // TestCloneTargetRefusedBelowHalfTheHeadroom checks a clone target, which
 // frees nothing, is refused naming the headroom once less than half of it
-// remains, while a deallocate that frees space is admitted.
+// remains — over content the journal holds as over content it does not — while
+// a deallocate that frees space is admitted.
 func TestCloneTargetRefusedBelowHalfTheHeadroom(t *testing.T) {
 	ctx := context.Background()
 	c, s, f := removalAtTheLimit(t)
@@ -97,6 +140,10 @@ func TestCloneTargetRefusedBelowHalfTheHeadroom(t *testing.T) {
 	}
 	next := c.counters.NextVersion()
 	_, err := c.CloneTarget(ctx, s, testFile(2), core.CloneSpec{DstOff: 0, Len: 8})
+	_ = refused(t, err, core.LimitHeadroom)
+	// Over content the journal holds too: a clone target frees nothing, so it
+	// keeps the refusal the removals that free space are spared.
+	_, err = c.CloneTarget(ctx, s, f, core.CloneSpec{DstOff: 0, Len: 8})
 	_ = refused(t, err, core.LimitHeadroom)
 	if got := c.counters.NextVersion(); got != next {
 		t.Fatalf("a headroom refusal drew a version: next is %v, was %v", got, next)

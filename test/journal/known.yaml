@@ -78,7 +78,7 @@
   category: feature
   reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs recovery of removal markers.'
   issue: '#3814'
-  message: 'fixture:'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC1A_NoZeroFill
   status: fail
@@ -246,7 +246,7 @@
   category: feature
   reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs the version limit, Draw, the open floor and recovery of the version counter.'
   issue: '#3814'
-  message: 'fixture:'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC1B_OffloadedRecordsBelowHalfTheHeadroom
   status: fail
