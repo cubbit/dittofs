@@ -888,3 +888,41 @@ func TestCountersReturnToRest(t *testing.T) {
 	rs.Release()
 	rest(t, r, "a reservation released")
 }
+
+// TestReserve_ManySmallWritesKeepTheExcessCharged checks the part of a
+// reservation's ask its held spares do not cover stays charged beside the
+// footprint: a thousand one-byte writes carry a record header and a footer
+// entry each, so their ask outruns the spares PiecesFor sizes, and the
+// excess is exactly what a plain write's journal headroom loses until Release.
+func TestReserve_ManySmallWritesKeepTheExcessCharged(t *testing.T) {
+	o := std()
+	o.spares = 8
+	r := newRig(t, o)
+	const writes = 1000
+	q := rq()
+	q.Bytes, q.Writes = writes*WriteCharge(1, testCap), writes
+	pieces, spares := PiecesFor(q.Bytes, writes, testCap)
+	ask := q.Bytes + int64(pieces)*format.CatalogEntrySize
+	wantCharged := ask - int64(spares)*(testCap-format.SegmentHeaderSize)
+	if wantCharged <= 0 {
+		t.Fatalf("precondition: the ask %d fits its %d spares, want an excess", ask, spares)
+	}
+
+	rs := r.reserve(t, q)
+	defer rs.Release()
+	if got := r.c.reservedAsk; got != wantCharged {
+		t.Fatalf("the journal-side ask = %d, want the %d the %d held spares do not cover", got, wantCharged, spares)
+	}
+
+	// The maximum leaves a byte less than one segment beside the footprint and
+	// the excess: the plain write's one uncovered seat misses by that byte.
+	r.c.cfg.MaxBytes = r.set.Counters().UsedBytes + wantCharged + testCap - 1
+	w := req()
+	pc := r.pool.Counters()
+	w.Payload = r.room() + (pc.Spares-pc.Held)*segment.EmptyRoom(testCap) + 50 // one spare past those free
+	w.Extent = core.Extent{Len: w.Payload}
+	ns := r.refusedWrite(t, w, core.LimitJournal)
+	if ns.Missing != 1 || ns.Unit != core.UnitBytes {
+		t.Fatalf("the plain write's refusal = %d %s, want the one byte past the excess's %d", ns.Missing, ns.Unit, wantCharged)
+	}
+}

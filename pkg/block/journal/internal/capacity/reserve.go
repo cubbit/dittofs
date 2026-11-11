@@ -88,9 +88,12 @@ func PiecesFor(bytes int64, writes int, segCap int64) (pieces, spares int) {
 // its spares are segments already in the footprint (and the pool makes more to
 // stay ahead of them, in the footprint too), so the part of the ask they cover
 // is no longer charged beside it: the room is charged once, when the spare is
-// made. A ready spare is taken whole, so the ask a hold does not cover is the
-// excess over its spares' caps, zero for every ask PiecesFor sizes. Withdrawn
-// if a hold can ever serve spares that are not in the footprint.
+// made. A spare holds its cap less the segment header in records, so the ask a
+// hold does not cover is the excess over that, which is zero for an ask of a
+// few large writes and not for one of many small ones: each write's record
+// header and footer entry are counted in the ask, while PiecesFor sizes the
+// spares by pieces. That excess stays charged until Release. Withdrawn if a
+// hold can ever serve spares that are not in the footprint.
 //
 // decision: the held entries and versions ride beside the injected reads
 // rather than inside an index or counter reservation, because both layers'
@@ -187,6 +190,18 @@ func (c *Capacity) Reserve(ctx context.Context, r ReserveRequest) (*Reservation,
 	// takes have seated and no hold has settled, and the footprint. This ask
 	// is counted whole, though its spares will be in the footprint, so a
 	// reservation of exactly the room left is taken and a byte more refused.
+	//
+	// decision: the footprint this reads includes the spares the pool made for
+	// an earlier attempt of this same reservation that was refused LimitSpare
+	// on an empty pool, and the whole ask is counted beside it. A reservation
+	// re-made after such a refusal therefore needs about spares x cap more room
+	// at the journal maximum than the same ask finds with ready spares: an ask
+	// of 1216 bytes over 2 spares needs 132288 bytes of room, not 1216. The rule
+	// holds because counting the held spares against the ask would change what
+	// RFC 1 §6's "remaining space" means, which is an RFC reading to take, not
+	// a change to make here. Overturned by the RFC's text counting a held spare
+	// against the ask, or by a re-made reservation refused at the maximum
+	// observed in a running journal.
 	// The seats are the whole segments Take reserved for the
 	// spares it still needs (pendingSeats), each at its cap, so the two agree:
 	// a reservation cannot claim room a take in flight has already seated.
@@ -228,7 +243,7 @@ func (c *Capacity) Reserve(ctx context.Context, r ReserveRequest) (*Reservation,
 	// charged again until Release, on top of the spares the pool keeps making
 	// to stay ahead of the holds.
 	ask := r.Bytes + footer
-	charged := max(ask-int64(spares)*c.cfg.SegmentCap, 0)
+	charged := max(ask-int64(spares)*(c.cfg.SegmentCap-format.SegmentHeaderSize), 0)
 	c.mu.Lock()
 	c.reservedAsk -= ask - charged
 	c.mu.Unlock()
