@@ -14,33 +14,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// directCheckFile creates in o's directory the file name holding b and
-// returns it as a file of o, drained of its table's log: the Create, WriteAt
-// and Sync the helper makes go through the os package and fdatasync, not the
-// direct read's calls. r may be nil.
-func directCheckFile(t *testing.T, o *OS, r *recorder, name string, b []byte) *file {
-	t.Helper()
-
-	f, err := o.Create(name)
-	if err != nil {
-		t.Fatalf("Create %s: %v", name, err)
-	}
-
-	if _, err := f.WriteAt(b, 0); err != nil {
-		t.Fatalf("WriteAt %s: %v", name, err)
-	}
-
-	if err := f.Sync(); err != nil {
-		t.Fatalf("Sync %s: %v", name, err)
-	}
-
-	if r != nil {
-		r.take()
-	}
-
-	return f.(*file)
-}
-
 // TestReadAtDirectDescriptorIsDirect checks ReadAtDirect reads through a
 // descriptor of the file reopened with O_DIRECT: the table's log shows one
 // open of /proc/self/fd/N, read-only, close-on-exec and O_DIRECT, whose

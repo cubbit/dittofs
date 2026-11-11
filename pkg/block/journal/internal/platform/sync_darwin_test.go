@@ -27,6 +27,10 @@ type call struct {
 	store unix.Fstore_t // fcntlFstore: the structure as the call received it
 	size  int64         // ftruncate: the size asked for
 
+	// pread: the offset and the bytes asked for.
+	off   int64
+	asked int
+
 	// Every call but open and close: the file the descriptor referred to at
 	// the call, so a call on a stale or wrong descriptor is seen.
 	dev, ino uint64
@@ -51,6 +55,15 @@ func (c call) String() string {
 		)
 	case "ftruncate":
 		return fmt.Sprintf("ftruncate(%d, %d) on dev %d ino %d", c.fd, c.size, c.dev, c.ino)
+	case "pread":
+		return fmt.Sprintf(
+			"pread(%d, %d bytes, %d) on dev %d ino %d",
+			c.fd,
+			c.asked,
+			c.off,
+			c.dev,
+			c.ino,
+		)
 	default:
 		return fmt.Sprintf("%s(%d) on dev %d ino %d", c.op, c.fd, c.dev, c.ino)
 	}
@@ -212,6 +225,15 @@ func (r *recorder) table() calls {
 			}
 
 			return err
+		},
+		pread: func(fd int, p []byte, off int64) (int, error) {
+			c := on("pread", fd)
+			c.off, c.asked = off, len(p)
+
+			n, err := unix.Pread(fd, p, off)
+			_ = r.add(c)
+
+			return n, err
 		},
 	}
 }

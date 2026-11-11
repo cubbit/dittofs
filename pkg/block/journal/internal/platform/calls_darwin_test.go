@@ -28,6 +28,7 @@ func TestSyscallTableIsReal(t *testing.T) {
 		{"fstat", "unix.Fstat", got.fstat, unix.Fstat},
 		{"ftruncate", "unix.Ftruncate", got.ftruncate, unix.Ftruncate},
 		{"close", "unix.Close", got.close, unix.Close},
+		{"pread", "unix.Pread", got.pread, unix.Pread},
 	}
 
 	if n := reflect.TypeOf(calls{}).NumField(); n != len(pins) {

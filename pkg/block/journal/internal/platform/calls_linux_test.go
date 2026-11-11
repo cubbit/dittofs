@@ -76,6 +76,7 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"EOPNOTSUPP":               true,
 		"FALLOC_FL_ALLOCATE_RANGE": true,
 		"F_FULLFSYNC":              true,
+		"F_NOCACHE":                true,
 		"F_PREALLOCATE":            true,
 		"F_ALLOCATEALL":            true,
 		"F_PEOFPOSMODE":            true,

@@ -65,6 +65,33 @@ func directFile(t *testing.T, want []byte) *os.File {
 	return f
 }
 
+// directCheckFile creates in o's directory the file name holding b and
+// returns it as a file of o, drained of its table's log: the Create, WriteAt
+// and Sync the helper makes the storage's own calls, not the direct read's.
+// r may be nil for an o built on the real table.
+func directCheckFile(t *testing.T, o *OS, r *recorder, name string, b []byte) *file {
+	t.Helper()
+
+	f, err := o.Create(name)
+	if err != nil {
+		t.Fatalf("Create %s: %v", name, err)
+	}
+
+	if _, err := f.WriteAt(b, 0); err != nil {
+		t.Fatalf("WriteAt %s: %v", name, err)
+	}
+
+	if err := f.Sync(); err != nil {
+		t.Fatalf("Sync %s: %v", name, err)
+	}
+
+	if r != nil {
+		r.take()
+	}
+
+	return f.(*file)
+}
+
 // checkDirectRead answers every case against raw, which reads into buf the
 // bytes at off.
 func checkDirectRead(t *testing.T, want []byte, raw func(buf []byte, off int64) (int, error)) {

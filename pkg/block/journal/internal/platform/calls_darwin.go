@@ -15,6 +15,7 @@ type calls struct {
 	fstat       func(fd int, stat *unix.Stat_t) error
 	ftruncate   func(fd int, length int64) error
 	close       func(fd int) error
+	pread       func(fd int, p []byte, off int64) (n int, err error)
 }
 
 // realTable is the table NewOS gives every OS.
@@ -25,4 +26,5 @@ var realTable = calls{
 	fstat:       unix.Fstat,
 	ftruncate:   unix.Ftruncate,
 	close:       unix.Close,
+	pread:       unix.Pread,
 }
