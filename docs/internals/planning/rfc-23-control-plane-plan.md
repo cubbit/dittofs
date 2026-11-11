@@ -275,8 +275,8 @@ registers no suite and no group, and changes no `lint-go` tag.
    integration epic.
 6. **Known failures shrink** (`CLAUDE.md`, "Writing tests", "By kind"). No suite RFC 23's checks run in
    keeps a `known.yaml`, so no test lands red. Should a later epic register a cell with one, a red test
-   that turns green leaves its suite's `known.yaml` in the same change, as "Design principles" in
-   `.claude/skills/rfc-to-epic-plan/SKILL.md` says.
+   that turns green leaves its suite's `known.yaml` in the same change, since RFC 29 §4.7 fails a run
+   whose known failure passes.
 7. **v2 ignores v1.** v1 is deleted before any v2 code lands, and an architecture test fails on an
    import of a deleted path. Nothing of v1 is copied: what v2 needs from it is rewritten against RFC
    23. What stays was never v1's alone, and is kept in place:
