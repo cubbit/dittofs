@@ -2438,12 +2438,16 @@ from the pool for the reservation. A reserved write that rolls because the
 stream's other writes filled its segment takes the roll one of them would
 otherwise have made, so the reservation then takes a replacement spare from the
 pool ahead of every unreserved write, and an unreserved roll that would leave an
-open reservation short of its spares is refused `spare` in its place. So a
-reserved write never meets the no-spare refusal while the pool can be refilled.
+open reservation short of its spares is refused `spare` in its place. The pool
+makes the replacement on its own time and a refusal never waits, so a reserved
+roll that follows a replacement before the pool has made it is itself refused
+`spare`, at once, and its holder retries once the refill has caught up. A reserved
+write therefore meets the no-spare refusal only while the pool is refilling a
+replacement, never because an unreserved write took its spare.
 It holds them until `(*Reservation).Close` returns what is left;
 `(*Reservation).WriteAt`, with `WriteAt`'s arguments, draws a write's share of
 each from it, and while it holds enough is refused by none of those limits nor
-by the headroom's half rule, so no reserved copy is refused part-way.
+by the headroom's half rule, so no limit refuses a reserved copy part-way.
 It is how an operation that must not fail part-way — a clone's copies
 ([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) — finds every refusal before it changes anything. A reservation
 is in memory: a restart drops it, and its holder reserves again at start. For a
