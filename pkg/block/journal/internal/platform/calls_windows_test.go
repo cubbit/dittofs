@@ -45,6 +45,7 @@ func TestSyscallTableIsReal(t *testing.T) {
 			windows.SetFileInformationByHandle,
 		},
 		{"writeFile", "windows.WriteFile", got.writeFile, windows.WriteFile},
+		{"readFile", "windows.ReadFile", got.readFile, windows.ReadFile},
 	}
 
 	table := reflect.ValueOf(got)

@@ -19,7 +19,8 @@ import (
 // call is one entry of a recorder's log.
 type call struct {
 	// op is createFile, flushFileBuffers, closeHandle,
-	// getFileInformationByHandle, setFileInformationByHandle or writeFile.
+	// getFileInformationByHandle, setFileInformationByHandle, writeFile or
+	// readFile.
 	op string
 
 	// handle is the handle acted on, or createFile's result; InvalidHandle
@@ -42,7 +43,8 @@ type call struct {
 	value int64
 
 	// writeFile: the offset its overlapped names, -1 with no overlapped; the
-	// bytes asked for; whether every byte asked for is zero.
+	// bytes asked for; whether every byte asked for is zero. readFile shares
+	// the offset and the bytes asked for.
 	off   int64
 	n     int
 	zeros bool
@@ -285,6 +287,37 @@ func (r *recorder) table() calls {
 			}
 
 			return windows.SetFileInformationByHandle(h, class, buf, n)
+		},
+		readFile: func(h windows.Handle, p []byte, done *uint32, o *windows.Overlapped) error {
+			c := call{
+				op:        "readFile",
+				handle:    h,
+				inControl: inControl(),
+				off:       -1,
+				n:         len(p),
+			}
+
+			if o != nil {
+				c.off = int64(o.OffsetHigh)<<32 | int64(o.Offset)
+			}
+
+			if done == nil {
+				return fmt.Errorf("readFile: no done count for %v", c)
+			}
+
+			if err := r.add(c); err != nil {
+				*done = 0
+
+				return err
+			}
+
+			if r.dry {
+				*done = uint32(len(p))
+
+				return nil
+			}
+
+			return windows.ReadFile(h, p, done, o)
 		},
 		writeFile: func(h windows.Handle, p []byte, done *uint32, o *windows.Overlapped) error {
 			c := call{

@@ -116,6 +116,8 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"ERROR_INVALID_PARAMETER":    true,
 		"ERROR_DISK_FULL":            true,
 		"ERROR_HANDLE_DISK_FULL":     true,
+		"ERROR_HANDLE_EOF":           true,
+		"FILE_FLAG_NO_BUFFERING":     true,
 		"Handle":                     true,
 		"Overlapped":                 true,
 		"ByHandleFileInformation":    true,

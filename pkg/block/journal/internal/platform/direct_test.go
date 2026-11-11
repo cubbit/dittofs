@@ -106,12 +106,12 @@ func checkDirectRead(t *testing.T, want []byte, raw func(buf []byte, off int64) 
 			continue
 		}
 
-		switch {
-		case tc.want == "nil":
+		switch tc.want {
+		case "nil":
 			if err != nil {
 				t.Errorf("{off %d, len %d}: got %v, want no error", tc.off, tc.n, err)
 			}
-		case tc.want == "eof":
+		case "eof":
 			if !errors.Is(err, io.EOF) {
 				t.Errorf("{off %d, len %d}: got %v, want io.EOF", tc.off, tc.n, err)
 			}
