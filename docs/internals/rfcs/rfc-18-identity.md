@@ -701,8 +701,9 @@ and inside SMB's SPNEGO ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
   keytab holds — `nfs/<host>`, `cifs/<host>` and `host/<host>` — for every host
   name a node answers on. A ticket for any other name **MUST** be refused.
 - **Encryption types are AES only.** The keytab holds AES128 and AES256 keys
-  (`aes128-cts-hmac-sha1-96`, `aes256-cts-hmac-sha1-96`), a join sets the
-  computer account's `msDS-SupportedEncryptionTypes` to `0x18`, and a ticket
+  (`aes128-cts-hmac-sha1-96`, `aes256-cts-hmac-sha1-96`), an online join sets
+  the computer account's `msDS-SupportedEncryptionTypes` to `0x18`, an offline
+  join refuses an account whose value lacks either bit (§3.5), and a ticket
   under DES or RC4 **MUST** be refused `ErrLogonFailure`.
 
 > decision: AES only. DES is broken and RC4's key is the NT hash, so a domain
@@ -716,9 +717,10 @@ and inside SMB's SPNEGO ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
   `Secret`; once every node reports it applied
   ([RFC 23 §2.4](rfc-23-control-plane.md#2.4%20What%20a%20node%20reports)), the
   key is changed at the KDC; the old version is kept for one maximum ticket
-  lifetime after that, 10 hours plus the clock skew, then removed. So tickets
-  under either key are accepted during the rollover, and a retired key is not
-  accepted forever.
+  lifetime after that, 10 hours plus the clock skew, then removed, a restart
+  included: longer than RFC 13 §7 keeps another secret's previous version. So
+  tickets under either key are accepted during the rollover, and a retired key
+  is not accepted forever.
 - **Checks.** `SignIn` **MUST** verify the ticket's encryption, its start and end
   times within a clock skew of 5 minutes, as Kerberos implementations use, the
   authenticator's freshness against a replay cache held in the node's memory,
@@ -747,6 +749,29 @@ and inside SMB's SPNEGO ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
 > anonymous would hide the first and admit the second to every share with an
 > everyone grant. Revisit if a deployment is shown to need cross-realm users
 > with no directory, and then as a share-scoped option.
+
+**On a joined installation, the computer account's own service names are
+keyed from the machine password.** A join registers `cifs/` and `host/`
+service names, for the short name and the fully qualified one, on the computer
+account, so a ticket for them is encrypted under that account's key. For
+exactly the service names the computer account holds, identity derives the
+keys from the machine password (§3.5) — the AES keys under the computer
+account's salt — each tagged with the account's key version number
+(`msDS-KeyVersionNumber`), because a ticket names its key by that number, not
+by the `Secret`'s version. A derived key follows its password's version: it is
+applied with it, and kept after it stops being current for the retention
+above. Every other service name a node answers on — `nfs/<host>`, another host
+name, or a name registered on a separate service account — keeps an imported
+keytab `Secret`, rotated in the order above. An imported key for a name the
+computer account holds is refused, so no name has two keys.
+
+> decision: the computer account's names are derived rather than imported,
+> because their key and the machine password are one key; rotating them apart
+> breaks every Kerberos sign-in for them at the first rotation. Samba keeps its
+> keytab in step with the machine password the same way. Names on another
+> account keep an imported keytab, since the machine password says nothing of
+> their key. Overturned if no deployment registers a service name on the
+> computer account, which leaves derivation without a user.
 
 ### 3.4 The PAC
 
@@ -841,44 +866,37 @@ again stores a hash only at a user's next password set.
 > Kerberos everywhere turns it off. Revisit the default once local users are
 > shown to be rare.
 
-**On a joined installation the keytab is the machine password's.** A join
-registers `cifs/` and `host/` service names, for the short name and the fully
-qualified one, on the computer account, so a ticket for them is encrypted
-under that account's key. Identity therefore derives the keytab from the
-machine password — the AES keys under the computer account's salt — and the
-keytab `Secret` is versioned with the password: one rotation, domain controller
-first and then a new `Secret` version, changes both, and the previous version
-keeps verifying tickets issued under it for the retention above. A keytab is
-imported as its own `Secret` only on an installation that is not joined.
-
-> decision: a joined installation derives its keytab rather than holding a
-> second copy, because the keytab's key and the machine password are one key
-> once the service names are on the computer account; rotating them apart
-> breaks every Kerberos sign-in at the first rotation. Samba keeps its keytab
-> in step with the machine password the same way. Overturned if the service
-> names are ever registered on a separate service account.
-
 **The machine account.** Pass-through needs the installation joined to the
 directory's domain as a computer account. Joining is an operation
 ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)) that
-creates the computer object, sets its service names, and stores its password as
-a `Secret`; an **offline join** takes instead a computer account an
-administrator created, with its password, and verifies it against a domain
-controller before storing it. Either writes the account's name as
-`identity.netbios_name`, which a joined installation refuses to change. Domain
-controllers are found from the domain's DNS service records, with fail-over
-between them, unless the directory record names a domain controller address
-(and optionally a DNS server), which is then used alone. The join's state, the
-secure channel's health and the last rotation are reported in the node's
-status and raise `machine_account_unhealthy` when the channel fails. The password rotates on a schedule shorter than the
-domain's maximum machine-password age, always domain controller first, then a
-new `Secret` version
-([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)); a rotation **MUST NOT**
-start until every node reports the previous one applied, because a domain
-controller accepts only the current and the previous password, and a second
-rotation would leave a lagging node with neither. A failure to store the new
-version after the domain controller took it leaves a password only that
-controller knows, and needs a re-join.
+creates the computer object, sets its service names and its
+`msDS-SupportedEncryptionTypes` (§3.3), and stores its password as a `Secret`.
+An **offline join** takes instead a computer account an administrator created,
+with its password. It verifies the password against a domain controller,
+refuses an account whose `msDS-SupportedEncryptionTypes` lacks either AES bit,
+and reports which service names the account holds, so an operator knows which
+names still need an imported key (§3.3), before storing the password. Either
+join writes the account's name as `identity.netbios_name`, which a joined
+installation refuses to change. Domain controllers are found from the domain's
+DNS service records, with fail-over between them, unless the directory record
+names a domain controller address (and optionally a DNS server), which is then
+used alone (§5.1). The join's state, the secure channel's health and the last
+rotation are reported in the node's status, and raise §9.2's
+`machine_account_unhealthy`.
+
+**The machine password rotates** on a schedule shorter than the domain's
+maximum machine-password age, in [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)'s
+order, as an imported keytab does (§3.3): the new password is sealed as a new
+`Secret` version first; once every node reports it applied, it is set at the
+domain controller; then the account's key version number is read and recorded
+with it, for the keys derived from it. Until the domain controller takes the
+new password, the secure channel signs in with the previous one. Each step is
+recorded as RFC 23 §4.6 requires, and a resumed rotation sets the password
+only if the domain controller does not already accept the sealed version, so a
+crash between sealing and setting leaves no password only the controller
+knows. A rotation **MUST NOT** start until every node reports the previous one
+applied, because a domain controller accepts only the current and the previous
+password, and a second rotation would leave a lagging node with neither.
 
 > ponytail: pass-through reaches only the one directory's domain; §5.1's
 > ponytail says when to follow trusts.
@@ -1141,9 +1159,11 @@ and RFC 21 carries it on the wire.
 A directory is one external source of users and groups — an LDAP directory with
 Windows attributes (MS-ADTS), or one with RFC 2307 attributes — named by the
 installation's directory record (`identity.directory`): its address, base, bind
-credential reference, trust roots, realm, NetBIOS domain, and the attributes
+credential reference, trust roots, realm, NetBIOS domain, the attributes
 that hold a user's and a group's name (default `sAMAccountName`; `uid` and `cn`
-for an RFC 2307 directory). There is at most one.
+for an RFC 2307 directory), and optionally a domain controller address and a
+DNS server, used instead of the domain's DNS service records (§3.5). There is
+at most one.
 
 A directory answers three questions, each by a bounded number of queries under a
 5-second timeout:
@@ -1887,7 +1907,7 @@ alice's still signs in as alice.
 | Condition | Scope | Raised |
 | --- | --- | --- |
 | `directory_unreachable` | installation | degraded while lookups are served stale within the grace; unhealthy once one is refused past it; cleared by the first query the directory answers |
-| `machine_account_unhealthy` | node | unhealthy while the secure channel to every domain controller fails, or the machine password's last rotation failed; cleared by the next channel set up or rotation completed |
+| `machine_account_unhealthy` | node | unhealthy while either cause holds: the secure channel to every domain controller fails, cleared by the next channel set up; or the machine password's last rotation failed, cleared only by a rotation completed, never by a channel set up with the previous password |
 
 No metric label or span attribute carries an issuer's subject, an address or a
 user name. Caller-cache hits and misses are admission's
@@ -1947,6 +1967,11 @@ RFC 16's conformance suite's, not repeated here.
 | logon throttle | 1 | 10 wrong passwords for alice from one address, then the right one: refused, outcome `throttled`, and the domain controller's bad-password count is 10, not 11, a count the domain controller's suite holds to the real one, its reset on a success included. | a throttle that still checks the credential |
 | expiry | 2 | Over `sec=krb5`, keep a context open past its ticket's `Expires`: the next request is refused with the expired-credential answer. | a context served past its ticket |
 | replay | 1 | The same AP-REQ twice: the second refused, outcome `replay`. | no replay cache |
+| AES only | 1 | Tickets for a keytab name under RC4 and under DES: both `ErrLogonFailure`; under AES128 and AES256: accepted. | an RC4 ticket forged from an NT hash |
+| derived keytab | 1 | Joined to the in-memory domain controller, rotate the machine password, then restart identity over the same store: tickets under the previous and the new key version number are both accepted until the retention passes, then the previous one is refused. Stop a rotation between sealing and setting, and resume it: the password is set once and the channel signs in. Import a key for a `cifs/` name the computer account holds: refused. | a rotation breaking Kerberos; a password only the controller knows |
+| offline join | 1 | Offline-join an account whose `msDS-SupportedEncryptionTypes` lacks AES: refused. One that advertises it: joined, with the service names it holds reported. | a join whose tickets are all refused |
+| machine account health | 1 | Fail the secure channel to every domain controller: `machine_account_unhealthy` raised; restore one: cleared. Fail a rotation, then restore the channel: raised until a rotation completes. | a failed rotation hidden by a reconnect |
+| NetBIOS name while joined | 1 | On a joined installation, a settings change to `identity.netbios_name`: refused at validation, the name unchanged. | a CHALLENGE naming an account the installation does not hold |
 | keytab rollover | 1 | During a rollover, tickets under the old and the new key version are both accepted; past the retention, an old-version ticket is refused. | a rotation failing tickets, or a retired key accepted forever |
 | `ManageGIDs` | 2 | A user in 20 store groups calls over `AUTH_SYS`: a file whose ACL grants only the 20th group is granted. | groups capped at the credential's 16 |
 | NTLM off | 2 | Make a cache hit on a local NTLM session and on a pass-through one, then turn `identity.ntlm` off with no principal change and apply it: both refused on their next call, a fresh NTLM sign-in refused, and once the deletion ends, no NT hash in the store. Hold a password set between `NewHashes` and its write across the change: no NT hash written. | an NTLM context outliving the setting; a stray hash |

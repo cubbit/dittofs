@@ -730,6 +730,7 @@ row.
 | `snapshot_policy_skipping` | [RFC 12 §6](rfc-12-snapshots.md#6.%20Observability) | share, at 3 skipped ticks | degraded | ticket |
 | `backup_failing`, `backup_location_mismatch` | [RFC 26 §7](rfc-26-catalog-backups.md#7.%20Observability) | share; location | degraded | ticket |
 | `directory_unreachable` | [RFC 18 §9.2](rfc-18-identity.md#9.2%20Metrics) | installation | degraded within the stale grace; unhealthy past it, since sign-ins are refused | ticket; page at 5 min when unhealthy |
+| `machine_account_unhealthy` | [RFC 18 §9.2](rfc-18-identity.md#9.2%20Metrics) | node | unhealthy while the secure channel to every domain controller fails, or the machine password's last rotation failed; each cause clears on its own, a failed rotation only by a rotation completed | page at 5 min |
 | `adapter_listener_lost` | [RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes) | node, naming the adapter and address | unhealthy: a listener's socket failed while serving | page at 5 min |
 | `adapter_refused` | [RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes) | node, naming the adapter and its error | unhealthy while an enabled adapter's settings fail at configured; cleared when it serves or is disabled | page at once |
 | `start_failed` | [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) | node, naming the step and its error | unhealthy; held until the process exits, since a failed start does not retry, and a restart starts it again | page at once |
