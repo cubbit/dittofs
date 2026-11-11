@@ -586,6 +586,200 @@ Each of these will carry a `ponytail:` marker at the code site:
     here.
   - *Epic:* 3.
 
+### 4.4 Code sketch
+
+The sketch is illustrative: its signatures come from the RFC sections and code it cites, and the
+epic documents decide the final names.
+
+`cmd/dfs` reads the bootstrap, builds the node and drives it; `New` builds the node-level services
+empty (epics 3 and 5):
+
+```go
+func start(ctx context.Context, path string) error {
+	boot, err := bootstrap.Load(path) // X1, D6: --config or DITTOFS_CONFIG; v1 keys refused
+	if err != nil {
+		return err
+	}
+	if err := refuseV1Database(boot); err != nil { // §1.4: names the controlplane.db it found
+		return err
+	}
+	n, err := node.New(node.Config{Bootstrap: boot, KV: kv.Open(boot.Store), Clock: systemClock{} /* ... */})
+	if err != nil {
+		return err
+	}
+	if err := n.Start(ctx); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return n.Stop(context.Background())
+}
+
+// dfs init (epic 5), in this order: kvstore.Init (a second one refused, §1.4); the journals
+// recorded; bootstrap.InitNodeID after each journal's Init (A2); the administrator, its
+// password stored through identity.NewHashes (X2).
+
+func New(cfg Config) (*Node, error) {
+	n := &Node{cfg: cfg, md: metadata.Open(cfg.KV /* ... */)}
+	// D11: each service built empty from its own Deps; no store client, share or adapter yet
+	n.engine, n.gc, n.identity, n.fs = engine.New(/* ... */), gc.New(/* ... */), identity.New(/* ... */), vfs.New(/* ... */)
+	n.health = health.NewRegistry(cfg.Clock) // §4.3 above: only the conditions this plan raises
+	n.runner = newRunner(n.md.ControlPlane(), cfg.Clock) // D8
+	n.api = api.New(api.Deps{Store: n.md.ControlPlane(), SignIn: n.identity, Settings: n.table, Health: n.health /* ... */})
+	return n, nil
+}
+```
+
+Reconcile reads the counters once a second and calls the three per-record functions (epic 3); the
+adapter rows are RFC 20's plan's epic 7 (D12):
+
+```go
+func (n *Node) reconcileLoop(ctx context.Context) {
+	full := true // RFC 23 §2.3: at start, and after a failed read
+	for range n.cfg.Clock.Tick(time.Second) {
+		c, err := n.records.Counters(ctx)
+		if err != nil {
+			full = true // node_reconcile_errors_total (rule 3)
+			continue
+		}
+		if full || c.ShareList != n.seen.ShareList {
+			for _, s := range n.missing(ctx) { n.addShare(ctx, s) }   // records.List, paged
+			for _, id := range n.removed(ctx) { n.removeShare(ctx, id) }
+		}
+		if full || c != n.seen {
+			n.apply(ctx, c)
+		}
+		n.seen, full = c, false
+		n.writeStatus(ctx) // node_reconciled_position, config_generation_lag_seconds (RFC 23 §2.4)
+	}
+}
+
+func (n *Node) apply(ctx context.Context, c Counters) error {
+	next := n.table.Snapshot(ctx, n.records)            // the RFC 13 plan's snapshot
+	n.restartPending(settings.Diff(n.applied, next))    // node_restart_pending
+	n.identity.Apply(settings.Get[identity.Settings](next, n.nodeID))
+	// ... *vfs.Filesystem, the engine and GC, each with its own section
+	n.applySMB(ctx, settings.Get[adaptersettings.SMB](next, n.nodeID)) // D12
+	n.applied = next
+	return nil
+}
+
+// D12: written by RFC 20's plan's epic 7; shown for where it sits.
+func (n *Node) applySMB(ctx context.Context, s adaptersettings.SMB) error {
+	s.Addrs = n.cfg.Bootstrap.ListenAddrs // A1: addresses are bootstrap facts, the port a setting
+	if old := n.smb; old != nil && n.smbPort == s.Port {
+		return old.Reconfigure(ctx, s)
+	}
+	nu, err := smb.New(adapter.Deps{VFS: n.fs, Budgets: n.budgets, Metrics: n.cfg.Metrics, Tracer: n.tracer, Logger: n.cfg.Logger}, s)
+	if err != nil {
+		return err // reported refused; the old one keeps serving
+	}
+	// then the old one's Stop and nu's Start, in RFC 23 §2.3's restart-class row
+	n.smb, n.smbPort = nu, s.Port
+	return nil
+}
+```
+
+An API write decodes, checks, and commits through A3's entry point; a setting's `PUT` (D5) and a
+share's delete, which answers `202` with an operation (epic 4):
+
+```go
+func (h *handlers) putSetting(w http.ResponseWriter, r *http.Request) {
+	// unknown fields refused, fuzzed (rule 2); expect from If-Match, or 0 for If-None-Match: *
+	// (RFC 23 §4.4)
+	value, expect, err := decodeWrite(r)
+	if err != nil {
+		h.problem(w, err)
+		return
+	}
+	scope, key := scopeOf(r), r.PathValue("key")
+	audit := auditOf(r, settingRef(scope, key)) // fn fills Before, After and Change
+	err = h.store.Write(r.Context(), metadata.WriteMeta{Audit: audit, Idempotency: idempotencyOf(r)},
+		func(tx metadata.ControlPlaneTx) error {
+			if err := h.table.Check(tx, scope, key, value); err != nil { // its reads tracked in tx
+				return err
+			}
+			return tx.PutSetting(metadata.Setting{Scope: scope, Key: key, Value: value}, expect)
+		})
+	h.answer(w, r, err) // the problem table (RFC 23 §4.7); ErrIdempotentReplay writes the recorded answer
+}
+
+func (h *handlers) deleteShare(w http.ResponseWriter, r *http.Request) {
+	// decode and precondition as above
+	op := metadata.Operation{ID: newOperationID(), Kind: "share.delete", Target: ref, Account: callerOf(r)}
+	err := h.store.Write(r.Context(), metadata.WriteMeta{Audit: auditOf(r, ref), Idempotency: idempotencyOf(r)},
+		func(tx metadata.ControlPlaneTx) error {
+			if err := tx.DeleteShare(id, snapshots, expect); err != nil { // the mark
+				return err
+			}
+			return tx.PutOperation(op, 0)
+		})
+	h.answerOperation(w, r, op, err) // 202, Location: /api/v1/operations/{id}
+}
+```
+
+The runner drives an operation no component drives on its own, `resolve-principal` here, through
+identity's step (A5, D8, epic 3):
+
+```go
+func (r *runner) drive(ctx context.Context, op metadata.Operation, version uint64) {
+	step := r.steps[op.Kind] // resolve-principal: identity's, the RFC 18 plan's epic 7
+	for {
+		next, done, err := step(ctx, op.Step) // resumes from the last durable step
+		was := op.State
+		op.Step, op.Updated, op.State = next, r.clock.Now(), stateOf(done, err)
+		meta := metadata.WriteMeta{}
+		if op.State != was {
+			meta.Audit = r.auditOf(op) // every state change carries its audit (RFC 16 §3)
+		}
+		err = r.store.Write(ctx, meta, func(tx metadata.ControlPlaneTx) error {
+			return tx.PutOperation(op, version)
+		})
+		if err != nil || op.State != metadata.OpRunning {
+			return // a failed write is resumed at the next start (§4.3 above)
+		}
+		version++
+	}
+}
+```
+
+Sign-in verifies through identity, signs a token with its key's version, and every call reads the
+account again (epic 5):
+
+```go
+func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
+	req, src := decodeSignIn(r), sourceOf(r)
+	if wait := h.throttle(r.Context(), req.Name, src); wait > 0 { // SignInFailures, by account and source (A3)
+		h.retryAfter(w, wait)
+		return
+	}
+	p, err := h.signin.VerifyPassword(r.Context(), req.Name, req.Password) // APISignIn (X2)
+	if err != nil {
+		// A3: a second Write that counts the failure, with the refusal's audit
+		h.store.Write(r.Context(), metadata.WriteMeta{Audit: refusedAuditOf(r)},
+			func(tx metadata.ControlPlaneTx) error { return h.countFailure(tx, req.Name, src) })
+		h.problem(w, err)
+		return
+	}
+	sess := h.newSession(r.Context(), p) // its Write also resets the account's count
+	key := h.signingKey()                // the installation Secret, through pkg/secrets' Resolve (D10)
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims(p, sess))
+	tok.Header["kid"] = key.Version // D3: rotation verifies older tokens by version
+	h.writeTokens(w, tok, key, sess)
+}
+
+func (h *handlers) authenticate(r *http.Request) (metadata.User, error) {
+	claims, err := h.verify(r) // jwt.Parse, the key chosen by kid, HS256 only
+	if err != nil {
+		return metadata.User{}, err
+	}
+	u, err := h.signin.Account(r.Context(), claims.Principal) // per call (RFC 23 §5.3)
+	if err != nil || claims.IssuedAt.Before(u.NotBefore) || h.revoked(r.Context(), claims.Session) {
+		return metadata.User{}, errUnauthenticated
+	}
+	return u, nil
+}
+```
+
 ## 5. The epics in detail
 
 ### Epic 1 — Delete v1, declare the surface ⛔
