@@ -269,7 +269,8 @@ type Durability struct {
 	// decision: copyMu is a leaf mutex outside the six lock domains, held for
 	// a map access and never across I/O. registerOriginal also asks the set
 	// under it, which takes the set's capacity lock inside copyMu; nothing
-	// takes copyMu below that lock.
+	// takes copyMu below that lock. That is an unranked lock held above a
+	// ranked one, which the lock recorder cannot see.
 	copyMu sync.Mutex
 	copies map[core.Seq]copyEntry
 
@@ -341,7 +342,9 @@ type Durability struct {
 	//
 	// decision: mu is a leaf mutex outside the six lock domains, never held
 	// across I/O. Start's registration takes each stream's segment append
-	// lock inside it, and nothing takes mu while holding that lock.
+	// lock inside it, and nothing takes mu while holding that lock. That is
+	// an unranked lock held above a ranked one, which the lock recorder
+	// cannot see.
 	mu      sync.Mutex
 	made    map[uint32]*stream
 	started bool
@@ -477,15 +480,17 @@ type entry struct {
 
 // stream is one stream's state.
 //
-// decision: mu is a leaf mutex, never held across I/O, a sync, the clock, a
-// file domain or another lock, because both sinks run under the
-// segment's append domain and must not wait on anything. The four locks
-// taken under it are leaves themselves, which take nothing while held: the
-// change channel's cmu, the segment ledger's mutex, which a hold's claim,
-// release and lookup take (segHold says why), the directory registry's
-// mutex, which a raise of the generation takes, so a raise and the change
-// that makes its loss visible are one step, and dmu, which a hold's count of
-// records its corrupt segment cannot produce takes (pinLocked).
+// decision: mu is a leaf mutex outside the six lock domains, never held
+// across I/O, a sync, the clock or a file domain, because both sinks run
+// under the segment's append domain and must not wait on anything. It does
+// take other locks inside it, none of which takes anything while held: the
+// change channel's cmu, dmu, which a hold's count of records its corrupt
+// segment cannot produce takes (pinLocked), the directory registry's mutex,
+// which a raise of the generation takes, so a raise and the change that makes
+// its loss visible are one step, and the set's capacity-ranked lock, which a
+// hold's claim, release and lookup take (segHold says why). That last one is
+// an unranked lock held above a ranked one, which the lock recorder cannot
+// see.
 type stream struct {
 	d  *Durability
 	no uint32
