@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"math"
 	"strings"
 	"sync"
@@ -1343,4 +1344,64 @@ func TestClaimRetirement(t *testing.T) {
 			t.Fatalf("after the retire the footprint is %d, want 0", c.UsedBytes)
 		}
 	})
+}
+
+func TestSnapshot(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	s := NewSet(segCap, nil)
+	for _, id := range []core.SegmentID{3, 1, 2} {
+		if err := s.AddSpare(id, noMax); err != nil {
+			t.Fatalf("AddSpare(%d): %v", id, err)
+		}
+	}
+	for _, id := range []core.SegmentID{2, 1, 3} {
+		if err := s.Take(id); err != nil {
+			t.Fatalf("Take(%d): %v", id, err)
+		}
+	}
+	if err := s.AddRecord(1, 7, 100); err != nil {
+		t.Fatalf("AddRecord(1): %v", err)
+	}
+	if err := s.AddRecord(2, 7, 40); err != nil {
+		t.Fatalf("AddRecord(2, 7): %v", err)
+	}
+	if err := s.AddRecord(2, 8, 60); err != nil {
+		t.Fatalf("AddRecord(2, 8): %v", err)
+	}
+	if err := s.Seal(2, true); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if !s.Claim(2) {
+		t.Fatal("Claim of the sealed segment was refused")
+	}
+
+	rows := s.Snapshot()
+	want := []Row{
+		{ID: 1, State: Active, Size: segCap, Tags: map[core.ShareTag]int64{7: 100}},
+		{ID: 2, State: Sealed, Size: segCap, Claimed: true, Tags: map[core.ShareTag]int64{7: 40, 8: 60}},
+		{ID: 3, State: Active, Size: segCap},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("Snapshot has %d rows, want %d (the spare is excluded): %+v", len(rows), len(want), rows)
+	}
+	for i, w := range want {
+		g := rows[i]
+		if g.ID != w.ID || g.State != w.State || g.Size != w.Size || g.Claimed != w.Claimed || !maps.Equal(g.Tags, w.Tags) {
+			t.Errorf("row %d: got %+v, want %+v", i, g, w)
+		}
+	}
+
+	if rows[2].Tags != nil {
+		t.Errorf("Tags of a segment with no records = %v, want nil", rows[2].Tags)
+	}
+
+	rows[1].Tags[7] = 999
+	if got := s.ShareBytes(7); got != 140 {
+		t.Fatalf("ShareBytes(7) after mutating a returned Tags map: got %d, want 140", got)
+	}
+	if got := s.Snapshot()[1].Tags[7]; got != 40 {
+		t.Fatalf("a second Snapshot's Tags[7]: got %d, want 40", got)
+	}
 }
