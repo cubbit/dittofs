@@ -2,11 +2,11 @@ package index
 
 import (
 	"encoding/binary"
-	"sync"
 	"sync/atomic"
 	"unsafe"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 )
 
 // fileShards is the number of shards the file map is split into: 1<<6, the
@@ -41,7 +41,9 @@ const floorBuckets = 4096
 // the map access, is a store-wide lock taken by every read of every file, and
 // its shared counter is a cache line every reader writes. 64 shards spread
 // that over 64 locks spaced 64 bytes apart. Revisit if a profile shows shard
-// locks contended under many concurrent readers.
+// locks contended under many concurrent readers. Each shard lock names the
+// file map domain and is Init'ed with its rank under SetRecorder, before
+// the index is shared.
 //
 // decision: the file map and the file entry stay unexported, like most of
 // this package. The exported surface is the Index handle, added with its first
@@ -49,6 +51,13 @@ const floorBuckets = 4096
 // calls; the rest are exported with the consumer that needs them.
 type files struct {
 	shards [fileShards]fileShard
+
+	// rec is the recorder every lock of the index is Init'ed with — each
+	// shard's under SetRecorder, and each entry's under the newFile call
+	// that makes it, which reads this store — set once before the index is
+	// shared. Nil leaves every lock working, unranked and unseen by the
+	// recorder's checks.
+	rec atomic.Pointer[lockorder.Recorder]
 	// count is the journal's placement index entries: held pieces, retained
 	// extents and removal markers of every file, plus the entries admitted to
 	// content writes not yet applied. In-flight admissions count, so a gauge
@@ -133,9 +142,15 @@ type files struct {
 }
 
 type fileShard struct {
-	mu sync.Mutex
+	// decision: the shard's lock is ranked file map, the domain of finding,
+	// adding or removing one entry of this shard, and covers nothing else:
+	// it is released before any other lock is taken, so nothing — above all
+	// no file's lock — is ever acquired under it. The recorder reports the
+	// first acquisition that breaks this; withdraw the release-before-all
+	// rule only with a ranked call that justifies it.
+	mu lockorder.Mutex
 	m  map[core.FileID]*file
-	_  [64 - unsafe.Sizeof(sync.Mutex{}) - unsafe.Sizeof(map[core.FileID]*file(nil))]byte
+	_  [64 - unsafe.Sizeof(lockorder.Mutex{}) - unsafe.Sizeof(map[core.FileID]*file(nil))]byte
 }
 
 // file is one FileID's entry in the placement index.
@@ -154,9 +169,13 @@ type fileShard struct {
 // Readers of other files never touch this lock, and a reader of this file
 // waits only for one in-memory change, since no I/O is done holding it.
 // Revisit if reads of a file under a heavy stream of writes to that same file
-// show lock waits in a latency profile.
+// show lock waits in a latency profile. The lock names the file's own domain,
+// the file index, and is Init'ed with its rank by the newFile call that makes
+// the entry, from the recorder's store, so every entry is policed from its
+// first acquisition; without a recorder its rank stays 0 and it is invisible
+// to the checks while working as a plain read-write lock.
 type file struct {
-	mu sync.RWMutex
+	mu lockorder.RWMutex
 	// gone is set, under mu, when the entry leaves the map. A caller that
 	// finds a gone entry after taking its lock looks the file up again.
 	gone bool
@@ -195,10 +214,13 @@ type file struct {
 }
 
 // newFile returns an entry whose held and retained sets feed acct, keeping a
-// file created by files.update accounted from its first piece.
-func newFile(acct *segments) *file {
+// file created by files.update accounted from its first piece, sharing the
+// recorder's store so its lock is Init'ed with the file index rank before the
+// entry is published under the shard lock.
+func newFile(acct *segments, fs *files) *file {
 	f := &file{held: heldSet{acct: acct}, retained: retainedSet{acct: acct}}
 	f.held.times, f.retained.times = &f.dirtyAt, &f.dirtyAt
+	f.mu.Init(lockorder.FileIndex, fs.recorder())
 	return f
 }
 
@@ -206,6 +228,26 @@ func newFile(acct *segments) *file {
 // pieces, retained extents and removal markers.
 func (f *file) entries() int64 {
 	return int64(f.held.len()) + int64(f.retained.len()) + int64(len(f.markers))
+}
+
+// recorder returns the recorder the index's locks report to, nil when none
+// was installed. New entries read it to Init their lock with, so an entry
+// made after SetRecorder joins the same account.
+func (fs *files) recorder() *lockorder.Recorder { return fs.rec.Load() }
+
+// setRecorder installs the recorder the index's locks report to, Init'ing
+// every shard lock with the file map rank, and stores it for the entries
+// made later, whose own locks the newFile call Inits with the file index
+// rank. Call it before the index is shared: Init writes the lock's rank as
+// a plain field, so it must precede any concurrent use, and an entry whose
+// lock was Init'ed before the recorder arrived stays unranked — a hold
+// begun before the recorder saw it is dropped by it on release, never
+// reported. A nil rec leaves every lock working, unranked.
+func (fs *files) setRecorder(rec *lockorder.Recorder) {
+	for i := range fs.shards {
+		fs.shards[i].mu.Init(lockorder.FileMap, rec)
+	}
+	fs.rec.Store(rec)
 }
 
 // hashID mixes a FileID into the hash the shard and the floor bucket are
@@ -407,7 +449,7 @@ func (fs *files) commit(id core.FileID, admitted int64, fn func(*file) error) (H
 			if s.m == nil {
 				s.m = make(map[core.FileID]*file)
 			}
-			f = newFile(&fs.segs)
+			f = newFile(&fs.segs, fs)
 			s.m[id] = f
 		}
 		s.mu.Unlock()

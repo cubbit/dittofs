@@ -1,6 +1,9 @@
 package index
 
-import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+import (
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
+)
 
 // Index is the placement index of one journal: the exported handle over the
 // file table. Every method takes only the lock of the file it names, and only
@@ -14,6 +17,13 @@ func New(extentLimit int64) *Index {
 	ix.fs.setExtentLimit(extentLimit)
 	return ix
 }
+
+// SetRecorder installs the lock-order recorder the index's locks report to:
+// every shard lock names the file map domain, every entry's the file index
+// domain of its own file. It must be called before the index is shared, and
+// with nil it leaves every lock working, unranked. Entries made later are
+// Init'ed from the same recorder, so they join the account too.
+func (ix *Index) SetRecorder(rec *lockorder.Recorder) { ix.fs.setRecorder(rec) }
 
 // WriteRetain publishes a client write of p to id through tag: it checks the
 // file's owner, admits the write against the extent bound, notes the record
