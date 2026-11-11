@@ -31,7 +31,7 @@ func TestStopClosesNothingItWasHanded(t *testing.T) {
 	h, id := c.File("f")
 	data := []byte("hello")
 	if _, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(h), 0, data, vfs.Unstable); err != nil {
-		t.Fatal(err)
+		t.Fatalf("the first write: %v", err)
 	}
 	c.StopService()
 	buf := make([]byte, len(data))
@@ -57,15 +57,15 @@ func TestAWriteToAnUnboundShareIsFrozen(t *testing.T) {
 
 // A write acknowledged and committed through the service, its existence
 // still pending, survives a crash: the composition built after it reads the
-// bytes back, which it does only if it starts the filesystem after the
-// engine has re-applied existence.
+// bytes back, and the store holds the size the start's re-application of
+// existence wrote.
 func TestACommittedWriteSurvivesACrash(t *testing.T) {
 	c := compose(t)
 	ctx := t.Context()
 	h, _ := c.File("f")
 	data := []byte("survives")
 	if _, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(h), 0, data, vfs.Unstable); err != nil {
-		t.Fatal(err)
+		t.Fatalf("the first write: %v", err)
 	}
 	// The commit syncs the write in the journal and leaves its existence
 	// pending, for the next start to re-apply.
@@ -76,6 +76,9 @@ func TestACommittedWriteSurvivesACrash(t *testing.T) {
 		t.Fatalf("the store's size before the crash %d, want 0, the existence pending", got)
 	}
 	c.Crash()
+	if got := c.Committed(h).Size; got != int64(len(data)) {
+		t.Errorf("the store's size after the crash %d, want %d: the start re-applied no existence", got, len(data))
+	}
 	buf := make([]byte, len(data))
 	n, _, err := c.fs.Read(ctx, c.admin, vfs.Anonymous(h), 0, buf)
 	if err != nil || !bytes.Equal(buf[:n], data) {
@@ -92,7 +95,7 @@ func TestAPendingTruncateIsTheSize(t *testing.T) {
 	h, id := c.File("f")
 	const mib = 1 << 20
 	if _, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(h), 0, make([]byte, mib), vfs.Unstable); err != nil {
-		t.Fatal(err)
+		t.Fatalf("the first write: %v", err)
 	}
 	if err := c.E.CommitExistence(ctx, c.Share.ID, id); err != nil {
 		t.Fatal(err)
@@ -113,7 +116,13 @@ func TestAPendingTruncateIsTheSize(t *testing.T) {
 		_, err := c.fs.SetAttr(ctx, c.admin, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithSize(mib / 2)})
 		truncated <- err
 	}()
-	<-held
+	select {
+	case <-held:
+	case err := <-truncated:
+		// Lifted, so the hold does not catch the fixture's stop instead.
+		c.Heal()
+		t.Fatalf("the truncate ended before its phase 1 reached the store: %v", err)
+	}
 	during, err := c.fs.GetAttr(ctx, c.admin, h)
 	c.Clock.Advance(hold)
 	if err := <-truncated; err != nil {
@@ -138,7 +147,7 @@ func TestAChownChargesStagedBytesToTheOldOwnerFirst(t *testing.T) {
 	data := make([]byte, 64<<10)
 	alices, bobs := c.usage(t, c.alice.Principal), c.usage(t, c.bob.Principal)
 	if _, err := c.fs.Write(ctx, signedIn(c.alice.Principal), vfs.Anonymous(h), 0, data, vfs.Unstable); err != nil {
-		t.Fatal(err)
+		t.Fatalf("the first write: %v", err)
 	}
 	chown := vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(c.bob.Principal)}
 	if _, err := c.fs.SetAttr(ctx, c.admin, vfs.Target{H: h}, chown); err != nil {
@@ -175,7 +184,7 @@ func TestAFileFailingItsCommitDelaysOnlyItself(t *testing.T) {
 		id entity.FileID
 	}{{ha, a}, {hb, b}} {
 		if _, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(f.h), 0, []byte("before"), vfs.Unstable); err != nil {
-			t.Fatal(err)
+			t.Fatalf("the first write: %v", err)
 		}
 		if err := c.E.CommitExistence(ctx, c.Share.ID, f.id); err != nil {
 			t.Fatal(err)
