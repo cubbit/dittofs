@@ -377,6 +377,7 @@ func changedRun(t *testing.T, change bool, option string, o Options) (report.Cel
     options:
       own: { cmd: go test ./pkg/b }
       mixed: { cmd: ["go test {packages}", go test ./pkg/b] }
+      tagged: { packages: { tag: nosuchtag } }
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -475,9 +476,17 @@ func TestPackagesOverrideNarrows(t *testing.T) {
 	if o, _ := changedRun(t, false, "own", Options{Base: "base", Packages: []string{"./pkg/a"}}); o.Result != report.Passed || !slices.Equal(ran(o), []string{"example.com/m/pkg/b.TestB"}) {
 		t.Errorf("own command keeps its packages: %+v", o)
 	}
+	// a cell where only some commands take {packages} keeps its patterns, as --changed does.
+	if o, _ := changedRun(t, false, "mixed", Options{Base: "base", Packages: []string{"./pkg/a"}}); o.Result != report.Passed || !slices.Equal(ran(o), []string{"example.com/m/pkg/a.TestA", "example.com/m/pkg/b.TestB", "example.com/m/pkg/b.TestB"}) {
+		t.Errorf("--packages on a mixed cell: %+v", o)
+	}
+	// a cell whose packages come from a build tag keeps go list's answer for that tag.
+	if o, _ := changedRun(t, false, "tagged", Options{Base: "base", Packages: []string{"./pkg/a"}}); slices.Contains(ran(o), "example.com/m/pkg/a.TestA") {
+		t.Errorf("--packages on a tag cell: %+v", o)
+	}
 	// --changed with nothing changed passes as \"no change to check\"; with --packages, the given ones run regardless.
 	if o, _ := changedRun(t, false, "", Options{Changed: true, Base: "base", Packages: []string{"./pkg/a"}}); o.Result != report.Passed || !slices.Equal(ran(o), []string{"example.com/m/pkg/a.TestA"}) {
-		t.Errorf("--packages without a change: %+v", o)
+		t.Errorf("--packages with nothing changed: %+v", o)
 	}
 }
 

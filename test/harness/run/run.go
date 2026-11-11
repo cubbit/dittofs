@@ -368,7 +368,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		lists["test-args"] = []string{""} // until each test's, from its line, fills it
 	}
 	unchanged := false // --changed left {packages} empty
-	if pkgs := o.Packages; len(pkgs) > 0 && takesPackages(c.Unit) {
+	if pkgs := o.Packages; len(pkgs) > 0 && takesPackages(c.Unit) && c.Unit.Packages != nil && c.Unit.Packages.Tag == "" {
 		lists["packages"] = pkgs
 	} else if p := c.Unit.Packages; p != nil {
 		pkgs := p.Patterns

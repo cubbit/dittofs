@@ -1058,7 +1058,7 @@ dt plan --tier T [--base REF] [--shard I/N]    the cells a tier runs, each with 
    [--estimate [--ci] [--last N]]              and the tier's runner-minutes, from dt history
 dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exit status below
    [--tier T] [--only A,B] [--skip A,B] [--parallel N] [--base REF] [--changed]
-                                                [--packages P,...] overrides both: only these packages, in every cell that takes {packages}
+   [--packages P,...]                          overrides both: only these packages, in every cell that takes {packages}
 dt run --tier T --place P                      the cells of tier T that dt plan gives place P (the dedicated host)
 dt report [RUN] [--format text|md|json]        show a run; CI appends --format md to the job summary
 dt report [RUN...] --failures                  only the new failures; --post CELL,... posts them, given a tier
