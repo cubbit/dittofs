@@ -7,11 +7,13 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -517,3 +519,66 @@ func srcFile() [16]byte {
 
 // contains reports whether s holds substr, as a refusal's naming is checked.
 func contains(s, substr string) bool { return strings.Contains(s, substr) }
+
+// TestScanSegmentRetriesAFailedSizeThenSucceeds holds the size half of the
+// read bound: a segment whose open faults twice — the attach pass's one
+// header read before it having passed healthy — and then reports a size
+// answers exactly the scan the same segment with no fault gives, and a size
+// no bounded attempt answers is collected as the segment's whole range,
+// never judged as a length the caller guesses.
+func TestScanSegmentRetriesAFailedSizeThenSucceeds(t *testing.T) {
+	id := core.SegmentID(4)
+	seg := buildSeg(id, rec(3, nil))
+
+	clean := newRig(t)
+	clean.plantSeg(id, seg)
+	want, err := clean.scan(id, journalID)
+	if err != nil {
+		t.Fatalf("scanSegment without faults: %v", err)
+	}
+
+	scheduled := func(r *rig, rules ...kit.Rule) {
+		r.t.Helper()
+		if err := r.seam.Schedule(rules...); err != nil {
+			r.t.Fatalf("fixture: schedule: %v", err)
+		}
+	}
+
+	// The size's open is the first call the bound makes of the file: the
+	// two EIOs are its first two attempts, and the third answers the size,
+	// so the scan proceeds over the same bytes as the clean one.
+	r := newRig(t)
+	r.plantSeg(id, seg)
+	scheduled(r, kit.Failing(kit.OpOpen, format.SegmentName(id), 2, syscall.EIO))
+
+	got, err := r.scan(id, journalID)
+	if err != nil {
+		t.Fatalf("scanSegment with two EIOs then success on the size's open: %v", err)
+	}
+	if len(got.Records) != len(want.Records) || got.Records[0] != want.Records[0] {
+		t.Errorf("scanSegment: the two-EIO size open got records %+v, want the no-fault %+v", got.Records, want.Records)
+	}
+
+	// No bounded attempt answers: the whole file is collected as the one
+	// range a size the bound never learned names.
+	failing := newRig(t)
+	failing.plantSeg(id, seg)
+	scheduled(failing, kit.Failing(kit.OpOpen, format.SegmentName(id), 0, syscall.EIO))
+	before := failing.fileBytes(format.SegmentName(id))
+
+	rd := newReader(context.Background(), failing.seam.FS(), failing.clk, nil)
+	_, err = scanSegment(rd, journalID, SegmentInfo{ID: id})
+	if err == nil {
+		t.Fatalf("scanSegment with every size open failing returned no error, want the fault it never cleared")
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("scanSegment: an EIO every size open attempt failed came back as the context's error: %v", err)
+	}
+	ranges := rd.Unreadable()
+	if len(ranges) == 0 || ranges[0].Segment != id || ranges[0].Off != 0 || ranges[0].Len <= 0 {
+		t.Errorf("scanSegment: the unreadable ranges got %v, want the segment %d whole, a size no bounded attempt answered", ranges, id)
+	}
+	if after := failing.fileBytes(format.SegmentName(id)); !slices.Equal(before, after) {
+		t.Errorf("scanSegment: the refused size changed the segment file: got %x, want the bytes it started with", after)
+	}
+}

@@ -1,14 +1,19 @@
 package recovery
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"runtime"
+	"slices"
+	"sync"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/readretry"
 )
 
 // asideRecord is the header of one record the rebuild does not feed — a
@@ -88,11 +93,11 @@ func (a readerAt) ReadAt(p []byte, off int64) (int, error) {
 // reconcile record may be read past until the reconcile work lands, which
 // is what withdraws this marker.
 func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segmentScan, error) {
-	// The size is opened through the same fs the bounded reads take but
-	// outside the bound itself: the bound retries reads of bytes, never the
-	// one length every read is measured against, and a size the device will
-	// not report answers the open with its own error rather than a scan
-	// over bytes nobody measured.
+	// The size goes through the same bound every byte read takes: an open
+	// or a Size the device does not answer is retried on the bound's own
+	// gates, and one no bounded attempt completes is collected as the
+	// segment's range rather than answered with a scan over bytes nobody
+	// measured.
 	size, err := segSize(rd, info.ID)
 	if err != nil {
 		return segmentScan{ID: info.ID}, err
@@ -240,18 +245,205 @@ func cloneSpec(rd *reader, identity core.JournalID, h format.RecordHeader) (*cor
 	}, nil
 }
 
-// segSize returns the segment file's size, opened through the same fs the
-// bounded reads take. The open is outside the read bound: the bound
-// retries reads of bytes, and a size is the one length those reads are
-// measured against, not bytes the device faulted on.
+// segSize returns the segment file's size, its open and its Size taken
+// through the same bound every byte read of the open takes: the bound's
+// gates decide whether the storage is asked again, and an open or a Size
+// the device does not answer comes back as the error the open refuses on.
+// A size names no byte range of its own — what the bound did not learn is
+// the file's whole shape — so the refusal collects the file whole: every
+// byte of a segment whose length no bounded attempt answered, the smallest
+// honest name for "a size that could not be read".
 func segSize(rd *reader, id core.SegmentID) (int64, error) {
-	if err := rd.ctx.Err(); err != nil {
+	name := format.SegmentName(id)
+	var size int64
+	_, err := readretry.Do(rd.ctx, rd.clk, readretry.Attempts, func() error {
+		f, ferr := rd.fs.Open(name)
+		if ferr != nil {
+			return ferr
+		}
+		// The close's own error is dropped: the size the attempt existed
+		// for has already been asked for, and a close that failed releases
+		// nothing the caller still needs.
+		var serr error
+		size, serr = f.Size()
+		_ = f.Close()
+		return serr
+	})
+	switch {
+	case err == nil:
+		return size, nil
+	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 		return 0, err
 	}
-	f, err := rd.fs.Open(format.SegmentName(id))
-	if err != nil {
-		return 0, err
+	rd.warnUnreadable(name, err)
+	rd.unread = append(rd.unread, core.SegmentRange{Segment: id, Off: 0, Len: math.MaxInt64})
+	return 0, err
+}
+
+// rebuildOrder is the test seam the rebuild's order check drives: it
+// reorders the segments the dispatch walks before it starts a reader. nil
+// keeps the listing's order, the one the open runs in production. It is a
+// test seam only, never an exported option: the rebuild must give one index
+// whatever order the listing hands the segments over in, and the check that
+// proves it needs orders the directory itself would not hand over.
+var rebuildOrder func(own []SegmentInfo)
+
+// rebuilt is the rebuild phase's answer: the index the records on disk
+// rebuilt into with the counters they raised, the scan of every own
+// segment — aside kinds carried for the phases that apply their rules, the
+// tail facts for the phases that judge them — and the number of scans that
+// resynchronised past a bad range.
+type rebuilt struct {
+	Index       *index.Index
+	Counters    *index.Counters
+	Scans       []segmentScan
+	ScanResyncs int
+}
+
+// rebuildIndex scans every own segment the attach pass found and feeds the
+// records into a fresh index, floor the version floor the journal was
+// opened with — Finish takes it, refusing one with a non-zero epoch the
+// same error a record of that shape takes. order reorders the segments
+// before the dispatch — nil keeps the listing order — and is the one seam
+// the order check drives: the index must come out identical whatever order
+// the segments are walked in. extentLimit bounds the index the way the
+// journal's settings do.
+//
+// Every segment is scanned by its own reader, at most GOMAXPROCS at a time:
+// the work per segment is one file's walk, and the bound costs nothing a
+// file read costs. The first error stops the dispatch — the workers that
+// are running answer their current read at the context's error and their
+// segments are no longer started — and the whole phase returns it, the
+// index discarded unbuilt, so a refused open returns no half-built state.
+// A read no bounded attempt completed is collected by its worker's reader
+// and merged into rd here, so the open refuses on every range the phase
+// could not read, as the attach pass's own are.
+//
+// Nothing is written: the phase reads, feeds and finishes; the phases after
+// it own every change the open makes.
+//
+// ponytail: one goroutine per segment, so a lone huge segment is walked by
+// one reader while the others idle behind the bound. Split a scan at
+// catalogued offsets — walking the two halves of one segment on two
+// readers, merging the scans — when a start-up profile of a journal with
+// huge segments shows the rebuild bound by one.
+func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, floor core.Version, extentLimit int64, order func([]SegmentInfo)) (rebuilt, error) {
+	ix := index.New(extentLimit)
+	ctr := &index.Counters{}
+	b := ix.Rebuilder(ctr)
+
+	if order != nil && len(own) > 0 {
+		// The seam works on a copy, so the listing the caller holds is not
+		// reordered under it: the listing is State's, and a check that
+		// reshuffles it would change what later phases see.
+		shuffled := slices.Clone(own)
+		order(shuffled)
+		own = shuffled
 	}
-	defer func() { _ = f.Close() }()
-	return f.Size()
+
+	// The bound: one slot per reader GOMAXPROCS allows, released by each
+	// worker as its segment is scanned.
+	slots := make(chan struct{}, max(runtime.GOMAXPROCS(0), 1))
+
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		first   error
+		scans   = make([]segmentScan, len(own))
+		workers = make([]*reader, len(own))
+	)
+	failed := func(err error) {
+		mu.Lock()
+		if first == nil {
+			first = err
+		}
+		mu.Unlock()
+	}
+
+	for i := range own {
+		if err := ctx.Err(); err != nil {
+			// A cancellation stops the dispatch the way an error does: the
+			// workers running answer at their next read, and none after
+			// this is started.
+			failed(err)
+			break
+		}
+		// A first error already landed: stop starting segments.
+		mu.Lock()
+		stopped := first != nil
+		mu.Unlock()
+		if stopped {
+			break
+		}
+
+		slots <- struct{}{} // a reader slot, held until the segment is done
+		wg.Add(1)
+		go func(i int, info SegmentInfo) {
+			defer wg.Done()
+			defer func() { <-slots }()
+
+			srd := newReader(ctx, rd.fs, rd.clk, rd.log)
+			sc, err := scanSegment(srd, identity, info)
+			mu.Lock()
+			scans[i] = sc
+			// What this worker's reads could not complete merges into the
+			// reader the open refuses on, in the reader's own collection
+			// order, after every worker has answered: a merge under the
+			// workers' own races is the one thing these mutexes forbid.
+			workers[i] = srd
+			mu.Unlock()
+			if err != nil {
+				failed(err)
+				return
+			}
+			for _, rec := range sc.Records {
+				if err := b.Feed(rec); err != nil {
+					failed(err)
+					return
+				}
+			}
+			// The aside kinds are carried for the phase that owns their
+			// rules, fed nowhere: the index sees none of them.
+		}(i, own[i])
+	}
+	wg.Wait()
+
+	// Every worker's unreadable ranges merge into rd, so the open's end
+	// check refuses on the whole phase's, the attach pass's among them.
+	for _, srd := range workers {
+		if srd == nil {
+			// A segment the dispatch never started: its reader read
+			// nothing, so it has nothing to merge.
+			continue
+		}
+		rd.unread = append(rd.unread, srd.Unreadable()...)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// A segment's refusal or the context's error answers the phase: the
+	// index is discarded unbuilt, no half-built state returned, and the
+	// builder's feeders have all returned by the wait above. The worker
+	// errors reached Run raw — wrapped only where scanSegment named the
+	// segment — so errors.Is answers the caller's own sentinel.
+	if first != nil {
+		return rebuilt{}, first
+	}
+	// Finish runs once every feeder returned. The floor's epoch half is
+	// refused before the claim takes it, so a refused floor builds nothing
+	// and changes nothing, and the counters' error answers as the record's
+	// own epoch refusal does.
+	if err := b.Finish(floor); err != nil {
+		return rebuilt{}, err
+	}
+
+	out := rebuilt{Index: ix, Counters: ctr, Scans: scans}
+	resyncs := 0
+	for _, sc := range out.Scans {
+		if sc.Resynced {
+			resyncs++
+		}
+	}
+	out.ScanResyncs = resyncs
+	return out, nil
 }
