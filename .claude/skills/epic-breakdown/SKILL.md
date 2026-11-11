@@ -105,8 +105,10 @@ inputs rather than guess.
   - no **Owns:** / **Done when:** lines, or no §4.2–§4.3 → the epic's §5 paragraph and §7
     rows give the owned sections, and its decisions are whatever the plan's text settles
     for the epic. The plan is not converted as part of the breakdown.
-  - a §1.5 that says to copy the rules word for word, or rules with no number or title →
-    §2 cites them anyway, by number, or by a short title the document gives each.
+  - a §1.5 that says to copy the rules word for word or forbids linking the plan, or rules
+    with no number or title → §2 cites them anyway, with its one link to §1.5, by number or
+    by a short title the document gives each; the skill's format supersedes that older
+    instruction.
 - The RFC: the owned sections in full, and the sections they cite. Large RFCs exceed one
   `Read`; list headings with `rg -n '^#' <rfc>` and read by line range.
 - The epics this one depends on: their documents if they exist, for the interfaces this epic
@@ -158,8 +160,10 @@ Note each candidate with its RFC line number in a scratch file, not in the docum
   (decisions).
 - An obligation the RFC leaves open (it states the rule but not one case of it) stays a
   requirement, and names the subtask that decides it and records a `decision:` marker. When
-  a later subtask of this epic or a later epic pins the case, §4 decides it, with its marker,
-  rather than the code.
+  only a later subtask of this epic pins the case, §4 decides it, with its marker, rather than
+  the code. When a later epic pins it, the case is a contract the RFC leaves open: the
+  document's pull request proposes the RFC text as an amendment (`rfc-to-epic-plan`, "What
+  the plan holds"), and the row cites the amended section once the user agrees.
 
 - An obligation in an owned section that another epic carries out: write the part that is
   this epic's, and name the epic that owns the rest ("the index offers the predicate; epic 9
@@ -194,7 +198,9 @@ A number is never reused or renumbered, and a dropped requirement keeps its row,
   an unmapped candidate is a gap.
 - Every R-number has a subtask, and either a test that fails on its assertion when the
   requirement is broken, or what already enforces it when this epic lands, named: the
-  compiler, a check, E2's red test, or a test of an epic this one depends on, by id. A
+  compiler, a check, an E2 test this epic turns green (its `known.yaml` entry removed by the
+  subtask named), or a test of an epic this one depends on, by id. An E2 test that stays red
+  after this epic enforces nothing: a known failure is graded Known whatever the code does. A
   requirement nothing in this epic can break goes to the epic that can.
 - Every subtask covers at least one R-number, or names, by id, the subtask in this epic that
   consumes it. A contract a later epic pins is allowed only with a §4 decision saying why it
@@ -213,7 +219,8 @@ Good: T4.1 B-tree container with its property test
 ```
 
 Each subtask leaves the tree building and its tests green, lands its own tests, and creates
-only what it or an earlier subtask consumes.
+only what it consumes or what a later subtask, named by id in its Deliverables, consumes
+(Step 2.4).
 
 **Size.** One engineer, under the subtask ceiling (rfc-to-epic-plan, "Subtasks are not pull
 requests" in §1.5's instruction), and there is no target number of subtasks. Cut by what makes sense: one logical change, readable on its
@@ -291,7 +298,10 @@ is an open point linked as "Ask, don't guess" in the Design principles says; not
 keep up to date as the work goes on; it is revised through a pull request when a decision changes). Acceptance criteria
 are plain bullets, not checkboxes.
 
-Use this structure. Section numbers are fixed so epic documents can be compared.
+Use this structure. Section numbers are fixed so epic documents can be compared. A document
+written before this structure (§2 copying the plan's rules, with no link to the plan's §1.5)
+is not converted wholesale: a revision brings to it only the sections it touches, and its
+report names the Verification items it left for the untouched ones.
 
 ```
 # Epic <k>: <component> v2 <title>
@@ -336,7 +346,7 @@ Each subtask in §6:
 - **Track:** B. **Depends on:** T4.1.
 - **Covers:** R1–R6, R13–R16.
 - **Deliverables:** the types, functions and files it adds, with signatures where they are
-  a contract.
+  a contract, each with the subtask or epic that consumes it.
 - **Acceptance criteria:** specific, checkable conditions, in terms of the requirements.
 - **Tests:** each test, the bug it catches, the layer it runs at (the consumer's, CLAUDE.md
   "Verifying a change"), and each test double by its kind in CLAUDE.md "Writing tests". A
@@ -354,8 +364,9 @@ requests" in `.claude/skills/rfc-to-epic-plan/SKILL.md`. It is a suggestion, not
 obligation: the owner may follow it, regroup, or open one pull request per subtask, and the
 subtasks stay the unit that is estimated and tracked. Say so in one line under the table.
 
-- **Size:** under the pull-request ceiling in the same instruction. The number of pull
-  requests follows from that and from the groupings below.
+- **Size:** under the pull-request ceiling in §1.5's instruction ("Subtasks are not pull
+  requests", in `rfc-to-epic-plan`). The number of pull requests follows from that and from
+  the groupings below.
 - **What goes together:** group by logic, readability and dependencies, so that each pull
   request delivers a piece of functionality that can be named. Take consecutive subtasks in
   the order of work. Each pull request builds, passes its tests and leaves nothing
@@ -402,8 +413,8 @@ Before handing over, check:
 - Every candidate of 2.1 (key words, bold lead sentences, invariants, bounds) is mapped,
   and the R-tables carry `Kind`, `Source` and `Subtasks` on every row.
 - Every R-number has a subtask and a test that fails on its assertion, or names what already
-  enforces it when this epic lands (2.4); every subtask covers an R-number or names the
-  subtask that consumes it.
+  enforces it when this epic lands (2.4), never an E2 test that stays red after this epic;
+  every subtask covers an R-number or names the subtask that consumes it.
 - Design principles: every deliverable names its consumer; each §4 decision cites prior art
   or says none was found. They were applied: the architect proposal was reconciled, the
   three review passes ran and their findings are fixed (or, without agents, ran in sequence
