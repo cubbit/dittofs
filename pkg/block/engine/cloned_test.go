@@ -953,17 +953,12 @@ func TestACloneWithoutItsDoneSignalIsUnbuilt(t *testing.T) {
 	}
 }
 
-// The copies never reach the store's Clone, which Copied covers: none of the
-// operations it is handed is a copy's.
+// The copies never reach the store's Clone, which Copied covers: the store
+// records no overwrite at a copy's version over the destination, which it
+// would for a copy handed to it as a write, and phase 1 records the
+// destination's one write outside the extent.
 func TestACloneHandsTheStoreNoCopy(t *testing.T) {
-	var mu sync.Mutex
-	var handled []kvstore.PendingOp // the operations each store Clone was handed
-	u := clonedUnit(t, onClone(func(ctx context.Context, next engine.Existence, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
-		mu.Lock()
-		handled = append(handled, pending...)
-		mu.Unlock()
-		return next.Clone(ctx, op, pending)
-	}))
+	u := clonedUnit(t)
 	src := u.committedFile(t, "src", fill(mib, 's'))
 	dst := u.create(t, "dst")
 	u.write(t, dst, 4*mib, fill(10, 'w'))
@@ -972,15 +967,18 @@ func TestACloneHandsTheStoreNoCopy(t *testing.T) {
 	for _, v := range heldIn(t, u.h, dst, 0, mib) {
 		copies[entity.JournalVersion(v.Bytes())] = true
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(handled) != 1 {
-		t.Errorf("the store's Clone was handed %d operations, want the destination's one write", len(handled))
-	}
-	for _, op := range handled {
-		if copies[op.Version] {
-			t.Errorf("the store's Clone was handed a copy at %v", op.Version)
+	written := false
+	for sp, err := range u.fs.Store.Content().Covering(t.Context(), u.share.ID, dst, 0, 4*mib+10) {
+		if err != nil {
+			t.Fatal(err)
 		}
+		if copies[sp.Overwrite] {
+			t.Errorf("the store records an overwrite of %+v at a copy's version %v", sp.Extent, sp.Overwrite)
+		}
+		written = written || sp.Offset == 4*mib && sp.Class == entity.Uncarved
+	}
+	if !written {
+		t.Error("phase 1 did not record the destination's write outside the extent")
 	}
 }
 
