@@ -25,6 +25,8 @@ var _ adapter.Adapter = (*Server)(nil)
 // because one port carries several: NFS's carries NFS, MOUNT, NLM and NSM,
 // told apart by RPC program. So Network repeats Socket's field, and a field
 // added to Socket must be added here too, or Addrs builds incomplete keys.
+// Withdraw it, and give Listener a Socket, if each port comes to carry one
+// service, as it would were NFS's auxiliary programs given ports of their own.
 type Listener struct {
 	Services []string // the names Addrs and a sidecar know it by: "nfs", "mount", "nlm", "nsm", "smb"
 	Network  string   // "tcp" or "udp"
@@ -60,10 +62,12 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 
 // Addrs is every address each listener is bound on now, by service and
-// network, in a fresh map the caller owns, slices included: a port of 0
-// resolved, an address Reconfigure added included and one it removed
-// gone. It is empty before Start and after Stop. The node builds each
-// Serving from it.
+// network, in a fresh map the caller owns, slices included: each address
+// as the settings name it, its port the one bound, so a port of 0 is
+// resolved and a wildcard such as 0.0.0.0 is reported as itself, never as
+// the [::] its socket reports; an address Reconfigure added included and
+// one it removed gone. It is empty before Start and after Stop. The node
+// builds each Serving from it.
 func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort {
 	panic("not implemented")
 }
