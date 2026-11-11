@@ -72,11 +72,14 @@ func (c call) String() string {
 // recorder is a table that logs every call and makes it. An error queued for
 // an op is returned by its next call instead: that call then does not run,
 // except close, which runs, as the descriptor is released even when close
-// reports an error.
+// reports an error. A queue registered for the op's Nth call fires only
+// there, so a fault can target a call past the first.
 type recorder struct {
-	mu   sync.Mutex
-	log  []call
-	fail map[string][]error // per op, what its next calls return, oldest first
+	mu    sync.Mutex
+	log   []call
+	fail  map[string][]error         // per op, what its next calls return, oldest first
+	failN map[string]map[int][]error // per op, per call number, what its calls return
+	n     map[string]int             // per op, the calls made so far
 }
 
 // failNext makes the next calls of op return errs, one each, in order.
@@ -89,6 +92,25 @@ func (r *recorder) failNext(op string, errs ...error) {
 	}
 
 	r.fail[op] = append(r.fail[op], errs...)
+}
+
+// failNth makes op's calls from the nth one on return errs, one each, in
+// order — the first call goes through, so a fault can wait for the op to be
+// under way before it fires.
+func (r *recorder) failNth(op string, nth int, errs ...error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.failN == nil {
+		r.failN = map[string]map[int][]error{}
+		r.n = map[string]int{}
+	}
+
+	if r.failN[op] == nil {
+		r.failN[op] = map[int][]error{}
+	}
+
+	r.failN[op][nth] = append(r.failN[op][nth], errs...)
 }
 
 // take returns the calls logged since the last take.
@@ -110,12 +132,26 @@ func (r *recorder) queued(op string) bool {
 	return len(r.fail[op]) > 0
 }
 
-// add logs c and returns the error queued for its op, if any.
+// add logs c and returns the error queued for its op, if any: the next
+// call's own queues first, then the queue registered for the call's number,
+// if this is that call.
 func (r *recorder) add(c call) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.log = append(r.log, c)
+	if r.n == nil {
+		r.n = map[string]int{}
+	}
+
+	r.n[c.op]++
+	n := r.n[c.op]
+
+	if q := r.failN[c.op][n]; len(q) > 0 {
+		r.failN[c.op][n] = q[1:]
+
+		return q[0]
+	}
 
 	if q := r.fail[c.op]; len(q) > 0 {
 		r.fail[c.op] = q[1:]

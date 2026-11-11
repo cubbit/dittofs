@@ -1,13 +1,18 @@
 package platform
 
 import (
+	"errors"
+	"io"
 	"io/fs"
 
 	"golang.org/x/sys/unix"
 )
 
-// noCache is the argument that turns F_NOCACHE on; 0 turns it off.
-const noCacheOn = 1
+// noCacheOn and noCacheOff are the arguments that turn F_NOCACHE on and off.
+const (
+	noCacheOn  = 1
+	noCacheOff = 0
+)
 
 // setNoCache makes fcntl with F_NOCACHE and arg on fd through
 // retryInterrupted, and returns the fcntl's own result.
@@ -96,7 +101,7 @@ func (f *file) readDirect(p []byte, off int64) (int, error) {
 		}
 
 		defer func() {
-			if err := f.calls.setNoCache(fd, 0); err != nil {
+			if err := f.calls.setNoCache(fd, noCacheOff); err != nil {
 				cerr = err
 			}
 		}()
@@ -118,6 +123,11 @@ func (f *file) readDirect(p []byte, off int64) (int, error) {
 	switch {
 	case serr != nil:
 		return 0, &fs.PathError{Op: "fcntl", Path: f.f.Name(), Err: serr}
+	case errors.Is(rerr, io.EOF):
+		// A short read of the file's end answers io.EOF bare, as ReadAt
+		// does — never a PathError wrapping it, which an err == io.EOF
+		// caller would not see.
+		return n, io.EOF
 	case rerr != nil:
 		return n, &fs.PathError{Op: "pread", Path: f.f.Name(), Err: rerr}
 	case cerr != nil:
