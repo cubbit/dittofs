@@ -740,11 +740,11 @@ This epic waits for an SMB adapter serving through the node (S3).
     plan also defers;
   - the logon stream waits for RFC 25 §4 (§4.3 above).
 - **O3. What RFC 22's plan (#3911) must settle**, raised in its review:
-  - its sign-in tests use a canned `SignIn`; `CLAUDE.md`'s "Writing tests" asks for the real identity
-    server over the in-memory store, available at S2;
+  - its sign-in tests run on `vfstest.Memory`, which waits for this plan's S2;
   - who verifies and sends SPNEGO's `mechListMIC` (RFC 4178), keyed from `Keys.Session`;
-  - `Keys.Session` is the authenticator's subkey when present, truncated to 16 bytes (MS-SMB2
-    3.3.5.5.3), and no AP-REP subkey is sent;
+  - `Keys.Session` is the authenticator's subkey when present, kept whole: SMB signs and runs
+    AES-128 on its first 16 bytes and AES-256 on all 32 (MS-SMB2 3.3.5.5.3's `FullSessionKey`),
+    and no AP-REP subkey is sent;
   - the CHALLENGE's AV pairs, `MsvAvTimestamp` among them, with `MsvAvNbComputerName` equal to
     `identity.netbios_name` (A2), or clients send no MIC and pass-through fails;
   - whether an anonymous session holds an all-zero key or none (RFC 18 §3.6);
