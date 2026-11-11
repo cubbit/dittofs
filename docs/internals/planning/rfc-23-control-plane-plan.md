@@ -1020,9 +1020,9 @@ error to a status.
 - The domain's routes (A5): a user's `krb` spelling (a Kerberos-name link), and the actions
   `resolve-principal`, `test-directory`, `join-domain` (online and offline), `leave-domain` and
   `rotate-machine-password` as operation kinds, with the join's state on the installation's
-  status. An offline join writes its password as the machine password's first `Secret` version
-  through `pkg/secrets` in its own transaction, and keeps no idempotency record (RFC 23 §3.5,
-  §4.5). The runner's steps for them are identity's, built by the RFC 18 plan's epic 7.
+  status. An offline join writes its password as a new version of the machine password's `Secret`
+  through `pkg/secrets`, committed before the operation, and keeps no idempotency record (RFC 23
+  §3.5, §4.5). The runner's steps for them are identity's, built by the RFC 18 plan's epic 7.
 - Operations (read, `?wait=`), nodes and their connections, and the audit read.
 
 ### Epic 5 — Accounts and sign-in
@@ -1061,7 +1061,8 @@ call against their current record.
 - The per-call account check and the role table of RFC 23 §5.2, including `404` for what the caller
   may not read and `last_admin`. The harness gains a signed-in caller of each role.
 - Throttling (RFC 23 §5.3): each attempt counted in one `Write` before the password is checked,
-  by principal and by source, an unknown name by source only; a benchmark of a refused sign-in's
+  a `429` included, the wait decided on the counts as read, by principal and by source, an unknown
+  name by source only; a benchmark of a refused sign-in's
   two commits (§4.3 above).
 - The first password's must-change and the password change; a changed password hash's old version
   pruned at once, since nothing needs it (the RFC 13 plan's §4.3 rule: its rotation's owner

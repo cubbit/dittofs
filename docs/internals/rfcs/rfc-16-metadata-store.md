@@ -741,8 +741,8 @@ type APIToken struct { // RFC 23 §5.3
 }
 
 type SignInFailures struct { // RFC 23 §5.3: one per account and one per source address
-	Count uint32    // consecutive failed sign-ins; a success resets the account's
-	Last  time.Time // store time of the last failure, which the next wait counts from
+	Count uint32    // attempts counted since the last success, each before its password is checked, a 429 included; a success resets the account's and takes back its own raise of the source's
+	Last  time.Time // store time of the last counted attempt; the next wait and a source's 24 h expiry count from it
 }
 
 type AuditRecord struct { // RFC 23 §6: append-only; deleted only past audit.retention

@@ -969,10 +969,12 @@ them and decides nothing about identity:
   deleted one fails closed (RFC 16);
 - **the domain join** is an operation the runner drives through identity:
   `join-domain` creates the computer account, or, offline, takes one an
-  administrator created with its password, which the call writes as the machine
-  password's first `Secret` version in its own transaction, so neither the
-  operation nor its audit record holds more than the reference, and the call keeps
-  no idempotency record (§4.5);
+  administrator created with its password, which the call writes as a new
+  version of the machine password's `Secret` in a transaction committed before
+  the operation's, so neither the operation nor its audit record holds more than
+  the reference; a crash between the two leaves a version no join uses, which
+  the next join or rotation supersedes. The call keeps no idempotency record
+  (§4.5);
   `leave-domain` removes it;
   `rotate-machine-password` changes the password at the domain controller,
   then writes the machine password's next `Secret` version
@@ -1416,18 +1418,28 @@ second store.
   `admin`'s, an operation (§4.6), as RFC 13 §7 rotates a secret: the next key
   signs once every node holds it, and the old one verifies until the last token
   it signed has expired. No secret route writes it (§5.2).
-- **Throttling.** After 5 consecutive failed sign-ins for an account, or from
-  one source address, each further attempt waits twice as long as the last,
-  from 1 s up to 5 min, answered `429` with `Retry-After`. The counts are kept
+- **Throttling.** Once 5 attempts have been counted for an account, or from
+  one source address, each further attempt waits twice
+  as long as the last, from 1 s up to 5 min, and one that comes sooner is
+  answered `429` with `Retry-After`. The counts are kept
   in the store, so the bound is 5 per account and per source
   installation-wide, not per node. An attempt is counted before its password is
   checked, in one transaction that reads both counts and raises them, so
-  concurrent guesses cannot all pass at the same count; a write that fails
-  refuses the attempt. A success then resets the account's count and takes
+  concurrent guesses cannot all pass at the same count; the wait is decided on
+  the counts as read, so the fifth attempt is checked and the sixth waits; a
+  write that fails refuses the attempt. An attempt answered `429` is counted
+  too, and its password is never checked. A success then resets the account's count and takes
   back its own raise of the source's, and a failure is audited (§6). An account's count is keyed by its principal, so
   spellings of one name share it, and a name that resolves to no account
   counts against its source only. A source's count is forgotten 24 h after its
   last failure.
+
+  > decision: an attempt answered `429` raises the counts, so a guesser who keeps
+  > trying a name holds that account at the 5 min wait for as long as it
+  > tries, its owner included; the wait bounds guessing, not availability.
+  > The break-glass reset clears `admin`'s (§5.4). Revisit if a held-out
+  > account is reported, and then key the account's wait by account and
+  > source together.
 - **Transport.** The API **MUST** be served over TLS on every address but
   loopback. Its certificate and key are bootstrap facts of the host.
 
@@ -1660,7 +1672,7 @@ These rules bind from the single node on, where most of them cost nothing
 | --- | --- |
 | CP1 | `node.New` builds every component; after start, only the node changes which components run, and only from records. |
 | CP2 | The API changes nothing but records; it never calls a component to change it, and a write answers success only after its transaction commits. |
-| CP3 | Every node applies records by their binding class, in counter order, and reports the position it has reconciled through per kind, the records it refused and those awaiting a restart; a record of a reconciled kind is applied on a node only when that position reaches the record's own and it is in neither set, and any other from its commit (§2.4). |
+| CP3 | Every node applies records by their binding class, in counter order, and reports the position it has reconciled through per kind, the records it refused and those awaiting a restart; a record of a reconciled kind is applied on a node only when that position reaches the record's own and it is in neither set; a record of any other kind is applied from its commit (§2.4). |
 | CP4 | Stop is the reverse of start; the API outlives the adapters and the store outlives everything. |
 | CP5 | Every `PUT`, `PATCH` and `DELETE` carries `If-Match` — or, for a `PUT` that creates, `If-None-Match: *` — checked inside the write's transaction; a write never commits over a tag, or over a record, its author did not read. |
 | CP6 | A request with a recorded idempotency key is answered from the record and applied at most once. |
