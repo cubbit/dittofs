@@ -363,26 +363,26 @@ func TestRecorder_RemovalDuringHeldCallback(t *testing.T) {
 // the calling goroutine holds exactly the file append and capacity ranks. A
 // Take that ran with the file index held — a capacity lock taken under
 // it, the order RFC 1 §8.3 forbids — or under any lock besides the write's
-// own domain, fails the exact-equality below. The hook fires exactly once
-// for the test's own write — the count proves the probe ran, so the test
-// neither hangs on a hook that never fired nor passes vacuously.
+// own domain, fails the exact-equality below. The hook is set through the
+// core's options, so it is in place before the core starts; it answers only
+// the test's own write, once the fixture's publishes have finished and the
+// recorder is armed, and the test waits on the answer it sends.
 func TestRecorder_TakeRunsUnderAppendOnly(t *testing.T) {
-	// The hook is installed after the core is built — the fixture builds
-	// and starts the core in one piece, so this is the earliest a test can
-	// reach it — and no other Take runs in this fixture while it is
-	// installed: the fixture's own publishes have finished before this
-	// point and the test's write is the only admission that follows, so
-	// the once-only fire count below answers it alone.
+	// The fixture's own publishes run Takes before the test's write: the
+	// hook answers nothing until the recorder is armed, after the build.
+	var armed atomic.Pointer[lockorder.Recorder]
 	var took atomic.Bool
 	heldInside := make(chan []lockorder.Rank, 1)
-	c, rec, shares := newRecordedCore(t)
-	s := shares[0]
-	f := streamFileID(c, c.streams.IndexFor(fid(1)))
-	c.cap.SetTakeHook(func() {
-		if took.CompareAndSwap(false, true) {
-			heldInside <- rec.Held()
+	c, rec, shares := newRecordedCoreOpts(t, func(o *coreOptions) {
+		o.takeHook = func() {
+			if r := armed.Load(); r != nil && took.CompareAndSwap(false, true) {
+				heldInside <- r.Held()
+			}
 		}
 	})
+	armed.Store(rec)
+	s := shares[0]
+	f := streamFileID(c, c.streams.IndexFor(fid(1)))
 	wrote := make(chan error, 1)
 	go func() {
 		_, err := c.WriteAt(context.Background(), s, f, 0, []byte("admitted"), 1)
@@ -394,9 +394,6 @@ func TestRecorder_TakeRunsUnderAppendOnly(t *testing.T) {
 	held := recordedJoin(t, c, "the admission's decision-section report", heldInside)
 	if got, want := withoutPins(held), []lockorder.Rank{lockorder.FileAppend, lockorder.Capacity}; !slices.Equal(got, want) {
 		t.Fatalf("ranks held inside the admission's decision section = %v, want %v: the admission ran under a lock besides the write's own append domain", got, want)
-	}
-	if !took.Load() {
-		t.Fatal("the take hook never fired: the probe did not run")
 	}
 	assertNoRecordedViolations(t, rec, "the recorded admission")
 }
@@ -699,12 +696,19 @@ func TestRFC1B_NoDeadlockRecorded(t *testing.T) {
 
 	var wg sync.WaitGroup
 	start := make(chan struct{})
+	// Each worker's source is seeded from a fixed constant and its index, so
+	// a failure replays with the same choices.
+	const seedBase = 0x8115eed
+	t.Logf("workers' random seed base %#x", seedBase)
+	var workers uint64
 	worker := func(name string, fn func(r *rand.Rand)) {
 		wg.Add(1)
+		workers++
+		stream := workers
 		go func() {
 			defer wg.Done()
 			defer func() { assertHeldNone(t, rec, name) }()
-			r := rand.New(rand.NewPCG(uint64(rand.Uint64()), 1))
+			r := rand.New(rand.NewPCG(seedBase, stream))
 			<-start
 			for range rounds {
 				fn(r)
