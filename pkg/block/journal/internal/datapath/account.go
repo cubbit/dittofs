@@ -12,13 +12,13 @@ import "github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 // commute: apply takes its own mutex and sets state, so two deltas of one file
 // applied in opposite order can leave a stale entry. Every caller but one
 // holds the changed file's append domain, which orders them; the exception is
-// the loss path's markLoss, when the loss is not already Marked (the
-// refused-drop fallback).
+// the loss path's markLoss, when the loss is not already Marked (a synced
+// drop whose synchronous marker failed).
 //
 // decision: the dirty list is ordered by the append domain alone, and the
 // unmarked loss path is not. apply re-adds a file only on BecameDirty, so a
 // BecameClean applied after a concurrent BecameDirty of the same file leaves
-// it dirty but unlisted. Overturned if that fallback is seen to race a write to
+// it dirty but unlisted. Overturned if that path is seen to race a write to
 // the same file, which would need the list ordered by a per-file sequence.
 //
 // decision: the counters follow the index's delta rather than each caller's
