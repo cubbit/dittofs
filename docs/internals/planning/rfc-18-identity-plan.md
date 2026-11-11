@@ -84,6 +84,8 @@ that needs it.
   - the machine password rotates in RFC 13 §7's order, sealed first and then set at the domain
     controller, resumably; a keytab's and a machine password's previous version is kept for
     RFC 18 §3.3's retention, a restart included, as RFC 13 §7 and RFC 16's row now say;
+  - an online join seals the password before it creates the account, and refuses an existing
+    account unless the request takes it over;
   - an offline join takes a computer account an administrator created, with its password, refuses
     one that does not advertise AES, and reports which service names it holds;
   - the directory record may name a domain controller address and a DNS server, used instead of
@@ -890,7 +892,8 @@ the keytab derived from it.
 - Domain-controller discovery from DNS, lifted from v1, or the directory record's explicit address
   and DNS server (A3).
 - The online and the offline join as runner kinds (D8), each writing `identity.netbios_name`; the
-  offline join's AES check and its report of the account's service names (RFC 18 §3.5).
+  online join's refusal of an existing account unless taken over; the offline join's AES check and
+  its report of the account's service names (RFC 18 §3.5).
 - The keys of the names the computer account holds derived from the machine password, tagged with
   its key version number, beside the imported keytab epic 5 loads for every other name (RFC 18
   §3.3).
@@ -978,7 +981,8 @@ This epic waits for an SMB adapter serving through the node (S3).
   table); epic 6 lifts the LDAP provider from history (D6), and `internal/auth/netlogon` stays.
 - **O5. Routes from RFC 23 (#4050).** RFC 23's amendment A5 in #4050 adds them, and that plan's
   epic 4 builds them: the directory test, the online join, the offline join and the machine
-  password's rotation as RFC 23 §4.1 actions, each run as an operation with its own `OpKind`; the
+  password's rotation as RFC 23 §4.1 actions, each run as an operation with its own `OpKind`, the
+  online join taking an explicit takeover of an existing account as a parameter (RFC 18 §3.5); the
   join's state on the installation's status, the secure channel's health a node condition; and a
   grant by name or SID as two calls, `resolve-principal`, which mints the principal in its own
   transaction, then `PUT /shares/{id}/grants/{principal}` by ID (RFC 23 §3.5, §4.3). A user's `krb`
