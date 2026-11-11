@@ -300,12 +300,19 @@ func TestReadFooterEntryKinds(t *testing.T) {
 		{"unhold of length 0", KindUnhold, 0, 152},
 		{"stamp of length 0", KindStamp, 0, 152},
 		{"forget of length 0", KindForget, 0, 144},
+		{"reconcile of length 0", KindReconcile, 0, 144},
+		{"reconciled of length 0", KindReconciled, 0, 160},
 	}
 
 	for _, c := range cases {
 		e := testEntryA
 		e.Kind = c.kind
 		e.Extent = core.Extent{Off: testRecordFileOffset, Len: c.len}
+		if c.kind == KindReconcile || c.kind == KindReconciled {
+			// The journal's own kinds name no file, version or share.
+			e.Extent = core.Extent{}
+			e.File, e.Version, e.Tag = core.FileID{}, core.Version{}, 0
+		}
 
 		seg := sealedSegment(t, []CatalogEntry{e}, 0)
 		f, err := ReadFooter(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)

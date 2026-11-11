@@ -128,6 +128,9 @@ func fuzzAssertHeaders(t *testing.T, mode string, seg []byte, identity core.Jour
 		if r.Header.Offset+int64(RecordHeaderSize) > size {
 			t.Fatalf("%s headers: record %d at %d holds a header past the size %d", mode, i, r.Header.Offset, size)
 		}
+		if r.Header.Offset+r.Header.Size() > size {
+			t.Fatalf("%s headers: record %d at %d runs to %d, past the size %d", mode, i, r.Header.Offset, r.Header.Offset+r.Header.Size(), size)
+		}
 		decoded, decErr := DecodeRecordHeader(seg[r.Header.Offset:r.Header.Offset+int64(RecordHeaderSize)], identity, segment, r.Header.Offset)
 		if decErr != nil {
 			t.Fatalf("%s headers: record %d at %d does not re-decode: %v", mode, i, r.Header.Offset, decErr)

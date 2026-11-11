@@ -119,6 +119,12 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 
 	for _, rec := range walk.Records {
 		h := rec.Header
+		// Every kind meets the largest-value and epoch rule, content or
+		// aside: the numbers a record carries are refused whatever its
+		// kind's own rules do with them.
+		if err := checkNumbers(h); err != nil {
+			return sc, err
+		}
 		if h.SyncedThrough > sc.SyncedThrough {
 			sc.SyncedThrough = h.SyncedThrough
 		}
@@ -155,15 +161,22 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 // from damage or another writer and fails the open.
 const largestCounter = math.MaxUint64
 
+// checkNumbers refuses a record whose version carries a non-zero epoch or
+// whose version counter or sequence number is the largest 64-bit value,
+// naming the segment and the record's offset.
+func checkNumbers(h format.RecordHeader) error {
+	if h.Version.Epoch != 0 || h.Version.Counter == largestCounter || h.Seq == core.Seq(largestCounter) {
+		return fmt.Errorf("%w: segment %d: the record at %d carries version %v, seq %d",
+			core.ErrUnknownFormat, h.Segment, h.Offset, h.Version, h.Seq)
+	}
+	return nil
+}
+
 // contentRecord converts one content-kind record header into the index
 // record the rebuild feeds, reading a clone target's 56-byte spec at the
 // record's own offset through the bound — the one body the walk left
 // unread that the index record needs, verified whole before it is used.
 func contentRecord(rd *reader, identity core.JournalID, h format.RecordHeader) (index.Record, error) {
-	if h.Version.Epoch != 0 || h.Version.Counter == largestCounter || h.Seq == core.Seq(largestCounter) {
-		return index.Record{}, fmt.Errorf("%w: segment %d: the record at %d carries version %v, seq %d",
-			core.ErrUnknownFormat, h.Segment, h.Offset, h.Version, h.Seq)
-	}
 
 	r := index.Record{
 		File:    h.File,
@@ -216,6 +229,15 @@ func contentRecord(rd *reader, identity core.JournalID, h format.RecordHeader) (
 // that does not verify is used. A body that does not verify fails the open
 // naming the segment and the record's offset — never silently dropped, for
 // the destination's extent would then read as zeros.
+//
+// decision: a clone target whose body is torn or does not verify refuses
+// the open, and keeps refusing on every retry, because the open cannot
+// recover what it cannot read: dropping the record would read the
+// destination as zeros and keeping it would serve a spec nobody verified.
+// The ceiling is a journal that stays closed over a torn clone target at
+// the tail; the refusal is withdrawn when the torn and corrupt classing of
+// a tail and of corrupt records is built, which tells that record apart
+// from damage mid-segment.
 func cloneSpec(rd *reader, identity core.JournalID, h format.RecordHeader) (*core.CloneSpec, error) {
 	body := make([]byte, h.BodySize())
 	n, rerr := rd.ReadAt(format.SegmentName(h.Segment), body, h.Offset+format.RecordHeaderSize)
@@ -280,14 +302,6 @@ func segSize(rd *reader, id core.SegmentID) (int64, error) {
 	return 0, err
 }
 
-// rebuildOrder is the test seam the rebuild's order check drives: it
-// reorders the segments the dispatch walks before it starts a reader. nil
-// keeps the listing's order, the one the open runs in production. It is a
-// test seam only, never an exported option: the rebuild must give one index
-// whatever order the listing hands the segments over in, and the check that
-// proves it needs orders the directory itself would not hand over.
-var rebuildOrder func(own []SegmentInfo)
-
 // rebuilt is the rebuild phase's answer: the index the records on disk
 // rebuilt into with the counters they raised, the scan of every own
 // segment — aside kinds carried for the phases that apply their rules, the
@@ -345,6 +359,9 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	// worker as its segment is scanned.
 	slots := make(chan struct{}, max(runtime.GOMAXPROCS(0), 1))
 
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var (
 		wg      sync.WaitGroup
 		mu      sync.Mutex
@@ -356,6 +373,7 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 		mu.Lock()
 		if first == nil {
 			first = err
+			cancel() // the running workers answer their next read at the context's error
 		}
 		mu.Unlock()
 	}
@@ -377,12 +395,22 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 		}
 
 		slots <- struct{}{} // a reader slot, held until the segment is done
+		// A slot may free only because a worker failed: look again, so a
+		// segment is never started behind the error that stopped the
+		// dispatch.
+		mu.Lock()
+		stopped = first != nil
+		mu.Unlock()
+		if stopped {
+			<-slots
+			break
+		}
 		wg.Add(1)
 		go func(i int, info SegmentInfo) {
 			defer wg.Done()
 			defer func() { <-slots }()
 
-			srd := newReader(ctx, rd.fs, rd.clk, rd.log)
+			srd := newReader(wctx, rd.fs, rd.clk, rd.log)
 			sc, err := scanSegment(srd, identity, info)
 			mu.Lock()
 			scans[i] = sc
@@ -410,13 +438,16 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 
 	// Every worker's unreadable ranges merge into rd, so the open's end
 	// check refuses on the whole phase's, the attach pass's among them.
+	collected := false
 	for _, srd := range workers {
 		if srd == nil {
 			// A segment the dispatch never started: its reader read
 			// nothing, so it has nothing to merge.
 			continue
 		}
-		rd.unread = append(rd.unread, srd.Unreadable()...)
+		sranges := srd.Unreadable()
+		collected = collected || len(sranges) > 0
+		rd.unread = append(rd.unread, sranges...)
 	}
 
 	mu.Lock()
@@ -427,6 +458,9 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	// errors reached Run raw — wrapped only where scanSegment named the
 	// segment — so errors.Is answers the caller's own sentinel.
 	if first != nil {
+		if collected && !errors.Is(first, context.Canceled) && !errors.Is(first, context.DeadlineExceeded) {
+			return rebuilt{}, &core.UnreadableRangesError{Ranges: slices.Clone(rd.unread)}
+		}
 		return rebuilt{}, first
 	}
 	// Finish runs once every feeder returned. The floor's epoch half is

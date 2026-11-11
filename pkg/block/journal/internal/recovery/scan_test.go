@@ -325,6 +325,56 @@ func TestScanSegmentRefusesAnEpochAndTheLargestCounters(t *testing.T) {
 	}
 }
 
+// TestScanSegmentRefusesTheLargestNumbersOfEveryAsideKind holds R22 for the
+// kinds the scan only sets aside: a loss, hold, unhold, stamp or forget
+// whose sequence number is the largest 64-bit value fails the scan as a
+// content kind's does, and so does one whose version counter is — for the
+// kinds whose rules allow a version at all (an unhold and a forget name
+// none).
+func TestScanSegmentRefusesTheLargestNumbersOfEveryAsideKind(t *testing.T) {
+	zeroed := func(r *raw.Record) { r.FileID = [16]byte{}; r.Version = raw.Version{}; r.Offset, r.Length = 0, 0 }
+	kinds := []struct {
+		name       string
+		build      func() raw.Record
+		hasVersion bool
+	}{
+		{"loss", func() raw.Record {
+			return rec(10, func(r *raw.Record) { r.Loss = &raw.LossBody{Dropped: 99, Flags: 1 | 1<<8} })
+		}, true},
+		{"hold", func() raw.Record {
+			return rec(11, func(r *raw.Record) { r.Cut = &raw.CutBody{Cut: 3}; r.Offset, r.Length = 0, 0 })
+		}, true},
+		{"unhold", func() raw.Record { return rec(12, func(r *raw.Record) { r.Cut = &raw.CutBody{Cut: 4}; zeroed(r) }) }, false},
+		{"stamp", func() raw.Record {
+			return rec(13, func(r *raw.Record) { r.Cut = &raw.CutBody{Cut: 5}; r.Offset, r.Length = 0, 0 })
+		}, true},
+		{"forget", func() raw.Record { return rec(14, zeroed) }, false},
+	}
+	for _, k := range kinds {
+		for _, num := range []string{"seq", "version"} {
+			if num == "version" && !k.hasVersion {
+				continue
+			}
+			t.Run(k.name+" with the largest "+num, func(t *testing.T) {
+				id := core.SegmentID(8)
+				rc := k.build()
+				if num == "seq" {
+					rc.Seq = math.MaxUint64
+				} else {
+					rc.Version = raw.Version{Counter: math.MaxUint64}
+				}
+				r := newRig(t)
+				r.plantSeg(id, buildSeg(id, rc))
+
+				_, err := r.scan(id, journalID)
+				if !errors.Is(err, core.ErrUnknownFormat) {
+					t.Fatalf("scanSegment over a %s with the largest %s got err %v, want ErrUnknownFormat", k.name, num, err)
+				}
+			})
+		}
+	}
+}
+
 // TestScanSegmentCountsOneResyncPerScan holds the resync count: two bad
 // ranges crossed in one scan count one Resynced, and a range in each of two
 // segments counts one per scan — the count is scans that resynced, not the

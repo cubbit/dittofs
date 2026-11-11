@@ -19,6 +19,12 @@ type Deps struct {
 	Clock  core.Clock
 	Tracer core.Tracer
 	Log    *slog.Logger
+
+	// rebuildOrder reorders the segments the rebuild dispatches before it
+	// starts a reader; nil keeps the listing's order, the one the open runs
+	// in. It is unexported and set only by tests that need an order the
+	// directory would not hand over.
+	rebuildOrder func(own []SegmentInfo)
 }
 
 // State is what recovery rebuilt of the journal's state: the attach pass's
@@ -78,8 +84,8 @@ func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 // attached, through the same reader the open refuses on. The extent bound is
 // the index's no-bound value, for no option of the open has plumbed one into
 // recovery yet: the phase refuses nothing the builder's own rules do not.
-func runRebuild(ctx context.Context, _ Deps, rd *reader, st *State, expect core.JournalID, floor core.Version) error {
-	out, err := rebuildIndex(ctx, rd, expect, st.Attached.Own, floor, math.MaxInt64, rebuildOrder)
+func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version) error {
+	out, err := rebuildIndex(ctx, rd, expect, st.Attached.Own, floor, math.MaxInt64, deps.rebuildOrder)
 	if err != nil {
 		return err
 	}

@@ -311,15 +311,14 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			return nil, err
 		}
 		// decision: a directory holding a segment is refused with
-		// ErrNotImplemented, not recovered: the attach pass above is the
-		// one step of a recovering open this implementation has, and the
-		// recovery after it — the rebuild, the marks, the tail's proof, the
-		// spares and the emptying — is not built. Every reopen of a journal
-		// that has run meets this, because the spare pool leaves its
-		// finished spares as segment files, so no journal that has served
-		// can be opened again here. The refusal keeps the directory as the
-		// attach pass left it, so the recovery that exists later takes it
-		// whole.
+		// ErrNotImplemented, not recovered: the attach pass and the rebuild
+		// above have run, and the recovery after them — the marks, the
+		// tail's proof, the spares and the emptying — is not built. Every
+		// reopen of a journal that has run meets this, because the spare
+		// pool leaves its finished spares as segment files, so no journal
+		// that has served can be opened again here. The refusal keeps the
+		// directory as the attach and rebuild passes left it, so the
+		// recovery that exists later takes it whole.
 		return nil, fmt.Errorf("%w: %s holds segments; recovering them is not built", ErrNotImplemented, dir)
 	}
 

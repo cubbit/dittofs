@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -314,11 +315,11 @@ func TestRunRebuildIsIdenticalInAnyOrderAndReaderCount(t *testing.T) {
 				r.writeFormat()
 				r.plantSteps(steps, stepsPerSegment)
 
+				deps := r.runDeps()
 				if i > 0 {
-					setOrder(shuffleOrder(seed))
+					deps.rebuildOrder = shuffleOrder(seed)
 				}
-				st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
-				setOrder(nil)
+				st, err := Run(context.Background(), deps, core.Version{}, journalID, nil)
 				if err != nil {
 					t.Fatalf("Run with the order seed %d on %d readers: %v", seed, procs, err)
 				}
@@ -521,25 +522,116 @@ func TestRunRebuildEIOTwiceThenSucceedsBuildsTheSameIndex(t *testing.T) {
 // TestRunRebuildEIOEveryAttemptFailsWithUnreadableRangesNamingTheSegment
 // holds R46's refusal half: a segment read no bounded attempt completes
 // fails the whole open with *core.UnreadableRangesError naming that segment,
-// with the directory keeping the bytes it held.
+// with the directory keeping the bytes it held. The fault lets the attach
+// pass's header read through and fails every read after it, so the failure
+// is the rebuild's own, whichever read of the walk it falls on.
 func TestRunRebuildEIOEveryAttemptFailsWithUnreadableRangesNamingTheSegment(t *testing.T) {
+	for from := 2; from <= 6; from++ {
+		t.Run(fmt.Sprintf("from read %d", from), func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			r.plantSteps(seededSteps(5), stepsPerSegment)
+			if err := r.seam.Schedule(kit.FailingFrom(kit.OpRead, format.SegmentName(2), from, 0, syscall.EIO)); err != nil {
+				t.Fatalf("fixture: schedule: %v", err)
+			}
+			before := r.snapshot()
+
+			_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+			var ure *core.UnreadableRangesError
+			if !errors.As(err, &ure) {
+				t.Fatalf("Run with every read of segment 2 past read %d failing got err %v, want an UnreadableRangesError", from, err)
+			}
+			if !slices.ContainsFunc(ure.Ranges, func(sr core.SegmentRange) bool { return sr.Segment == 2 }) {
+				t.Errorf("Run: the refusal names ranges %v and none of segment 2, the one whose reads failed", ure.Ranges)
+			}
+			assertOnlySpareUnlinks(t, before, r)
+		})
+	}
+}
+
+// TestRunRebuildASizeOrCloneSpecReadThatFailsIsUnreadableRanges: the two
+// reads the walk's own do not make — the segment's size and a clone target's
+// spec — answer a failure no attempt cleared as the unreadable range the open
+// refuses on, never as the raw I/O error. The size fault fails every open of
+// segment 2 after the attach pass's; the spec fault fails every read after
+// the attach pass's header read and the walk's one record read.
+func TestRunRebuildASizeOrCloneSpecReadThatFailsIsUnreadableRanges(t *testing.T) {
+	cloneSeg := func(id core.SegmentID) []byte {
+		return buildSeg(id, rec(7, func(r *raw.Record) {
+			r.Offset, r.Length = 0x100, 3
+			r.Clone = &raw.CloneBody{Share: srcShare(), File: srcFile(), Off: 0x101, AsOf: raw.Version{Counter: 9}}
+		}))
+	}
+	for _, tc := range []struct {
+		name string
+		rule kit.Rule
+	}{
+		{"the size", kit.FailingFrom(kit.OpOpen, format.SegmentName(2), 2, 0, syscall.EIO)},
+		{"the clone spec", kit.FailingFrom(kit.OpRead, format.SegmentName(2), 3, 0, syscall.EIO)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			r.plantSeg(2, cloneSeg(2))
+			if err := r.seam.Schedule(tc.rule); err != nil {
+				t.Fatalf("fixture: schedule: %v", err)
+			}
+
+			_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+			var ure *core.UnreadableRangesError
+			if !errors.As(err, &ure) {
+				t.Fatalf("Run with %s read failing got err %v, want an UnreadableRangesError", tc.name, err)
+			}
+			if !slices.ContainsFunc(ure.Ranges, func(sr core.SegmentRange) bool { return sr.Segment == 2 }) {
+				t.Errorf("Run: the refusal names ranges %v and none of segment 2", ure.Ranges)
+			}
+		})
+	}
+}
+
+// TestRebuildIndexAFailedSegmentStopsTheDispatch: with one reader slot and
+// segment 1's read parked, then released to fail, the slot frees only because
+// segment 1 failed, and the dispatch does not start segment 2 behind that
+// error: segment 2 is never read. The dispatcher is blocked on the slot while
+// segment 1 is parked, so the slot it takes is the one the failure freed.
+func TestRebuildIndexAFailedSegmentStopsTheDispatch(t *testing.T) {
+	forceGOMAXPROCS(t, 1)
 	r := newRig(t)
 	r.writeFormat()
 	r.plantSteps(seededSteps(5), stepsPerSegment)
-	r.failReads(format.SegmentName(2), 0)
-	before := r.snapshot()
+	if err := r.seam.Schedule(kit.FailingFrom(kit.OpRead, format.SegmentName(1), 1, 0, syscall.EIO)); err != nil {
+		t.Fatalf("fixture: schedule: %v", err)
+	}
 
-	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+	rec := newReadsOf(r.seam.FS())
+	rec.holdSegReadsPastTheHeader()
+	ctx := context.Background()
+	rd := newReader(ctx, rec, r.clk, nil)
+	own := []SegmentInfo{
+		{ID: 1, Header: format.SegmentHeader{Identity: journalID, ID: 1}},
+		{ID: 2, Header: format.SegmentHeader{Identity: journalID, ID: 2}},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, nil)
+		done <- err
+	}()
+	// Segment 1's walk is parked in its first read. Polling the condition
+	// itself; the test timeout is the backstop.
+	for rec.inFlightSegReads() < 1 {
+		runtime.Gosched()
+	}
+	rec.releaseSegReads()
+	err := <-done
 	var ure *core.UnreadableRangesError
 	if !errors.As(err, &ure) {
-		t.Fatalf("Run with every read of segment 2 failing got err %v, want an UnreadableRangesError", err)
+		t.Fatalf("rebuildIndex with segment 1 failing got err %v, want an UnreadableRangesError", err)
 	}
-	if !slices.ContainsFunc(ure.Ranges, func(sr core.SegmentRange) bool { return sr.Segment == 2 }) {
-		t.Errorf("Run: the refusal names ranges %v and none of segment 2, the one whose reads failed", ure.Ranges)
-	}
-	assertOnlySpareUnlinks(t, before, r)
-	if calls := r.seam.CallsFor(kit.OpRead, format.SegmentName(2)); calls == 0 {
-		t.Errorf("Run: segment 2 was never read, want the bound's attempts")
+	for _, read := range rec.saw() {
+		if kind, id := format.ClassifyName(read.name); kind == format.NameSegment && id == 2 {
+			t.Errorf("rebuildIndex read segment 2 at %d, want it never started behind segment 1's error", read.off)
+		}
 	}
 }
 
@@ -907,4 +999,34 @@ func (r *rig) plantStepsPayloads(steps []step, perSegment int) []core.SegmentRan
 	r.t.Helper()
 	_, payloads := r.plantStepsRecording(steps, perSegment)
 	return payloads
+}
+
+// TestScanSegmentZeroTailIsSearchedInWindows: a segment whose records are
+// followed by a multi-megabyte zero tail — the shape of a stream's newest
+// segment, allocated whole — is walked in reads of the window's size, not one
+// small read per 8 bytes. The recorded reads, passed through to the real
+// bytes, are bounded by a small constant times the window count plus the
+// records stepped through.
+func TestScanSegmentZeroTailIsSearchedInWindows(t *testing.T) {
+	id := core.SegmentID(3)
+	seg := buildSeg(id, rec(3, nil), rec(5, func(r *raw.Record) { r.Seq = 101; r.Version = raw.Version{Counter: 201} }))
+	records := 2
+	tail := 4 << 20
+	seg = append(seg, make([]byte, tail)...)
+
+	r := newRig(t)
+	r.plantSeg(id, seg)
+	rec := newReadsOf(r.seam.FS())
+	rd := newReader(context.Background(), rec, r.clk, nil)
+	got, err := scanSegment(rd, journalID, SegmentInfo{ID: id, Header: format.SegmentHeader{Identity: journalID, ID: id}})
+	if err != nil {
+		t.Fatalf("scanSegment over a zero tail: %v", err)
+	}
+	if len(got.Records) != records {
+		t.Fatalf("scanSegment attached %d records, want the %d planted", len(got.Records), records)
+	}
+	limit := 2*(len(seg)/(1<<20)+1) + records + 4
+	if n := len(rec.saw()); n > limit {
+		t.Errorf("scanSegment over a %d-byte zero tail made %d reads, want at most %d: one per window, not one per slot", tail, n, limit)
+	}
 }
