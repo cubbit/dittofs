@@ -60,8 +60,8 @@ planned separately with the same skill afterwards.
   `dcerpc` seam: their RFC 21/22 epics, or cutover for sidecars.
 - Feature parity with develop, and re-enabling today's suites: those plans, then cutover (#3119
   stage 7).
-- Wiring adapters into `cmd/dfs` and `node.New`: cutover. RFC 23's plan (#4050) builds
-  `internal/node`, and leaves the adapter rows to the adapters plan's epic 7 (its D12).
+- Wiring adapters into `node.New`: the adapters plan's epic 7, after S4 (RFC 23's plan, #4050,
+  D12). Wiring them into `cmd/dfs`: cutover.
 
 ## Anti-goals
 

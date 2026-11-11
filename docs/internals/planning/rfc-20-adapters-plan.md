@@ -686,11 +686,15 @@ Waits for RFC 23's `internal/node`. Then: `node.New` builds each enabled adapter
 `pkg/adapter/nfs.New` and `smb.New` from its `Deps`, starts them last, applies a settings
 generation by `Reconfigure` or by stop, `New` and start, drives the sidecar runner, reports
 `Health` and `Connections()` to the control plane's client list, and checks every budget at zero
-after the adapters stop. It also takes the ledger rows that need a node: the config loader for
-`pkg/adapter/config`, `core`'s conditions in RFC 25 §3.9's registry and the alert rules for
-`adapter_unmapped_errors_total` and `adapter_handler_panics_total` (RFC 25 §7). RFC 23's plan
-(#4050) leaves these rows to this epic (its D12), and adds one: the node rebuilds an adapter when
-its `port` setting changes (its O7). The field itself is epic 2's (#4000, D20).
+after the adapters stop. It also takes the ledger rows that need a node: `core`'s conditions in
+RFC 25 §3.9's registry and the alert rules for `adapter_unmapped_errors_total` and
+`adapter_handler_panics_total` (RFC 25 §7). RFC 23's plan (#4050) leaves these rows to this epic
+(its D12), and adds one: the node rebuilds an adapter when its `port` setting changes (its O7).
+The adapters' settings are split three ways. The field `settings.Adapter.Port` is epic 2's (#4000,
+D20). The one settings table, with the adapters' section, and `Check`, wired into the node's
+reconcile and into the settings routes, are RFC 13's plan's epic 5 (#4059), though #4050's D12
+still lists the loader and validator here. This epic writes what reconcile calls for an adapter:
+`Reconfigure`, or stop, `New` and start.
 
 RFC sections: §3.4's "built by `node.New`", §3.6's sequence, §3.7's conditions, §10.1's alerting
 sentences; RFC 23 §2.2, §2.3; RFC 24 §2.7; RFC 25 §3.9, §7.
@@ -777,7 +781,8 @@ feature parity with develop. A row moves only to another owner, never off the le
 | end-to-end benchmark and nightly benchmark tracking (§6.10); a `core` soak under real traffic | need a mountable protocol | RFC 21/22 plans | their E2E green |
 | the authenticator: keytab, PAC, NTLMv2, NETLOGON, LDAP, consolidated as `internal/identity` | RFC 18's | RFC 18's plan (#4058) | before RFC 22's sign-in epic |
 | RFC 24's turns, `Reclaim`, `ShareCap`, `Detect`, `Split` | no consumer here | RFC 24 plan | when the node budgets memory |
-| `node.New` wiring; config loader for `pkg/adapter/config`; conditions in RFC 25 §3.9's registry; alert rules | need `internal/node` | epic 7 | S4 |
+| `node.New` wiring; conditions in RFC 25 §3.9's registry; alert rules | need `internal/node` | epic 7 | S4 |
+| the settings table's adapters' section and `Check`, wired into reconcile and the settings routes | need `internal/node` and `pkg/settings` | RFC 13's plan (#4059), epic 5 | that epic |
 | concrete sidecars: mDNS, WS-Discovery (`pkg/discovery`), port mapper, rpcbind registration | need serving protocols | cutover | stage 7 |
 | `/api/v1/adapters`, the settings watcher, `dfsctl adapter` (deleted in T1.2); the persisted `NFSAdapterSettings` and `SMBAdapterSettings` rows and the share adapter config, mapped onto `pkg/adapter/config` | built on the Runtime | cutover, on `pkg/adapter` | stage 7 |
 | the `/clients` and `/mounts` listings and their registries (deleted in T1.2: nothing can add a record), the `/durable-handles` listing, empty once T1.1 deletes its producers; `dfsctl client` (deleted in T1.2) | read v1's connection and handle state | RFC 23's plan (#4050, D12), RFC 22 plan (durable handles) | with their records |
@@ -789,7 +794,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | `test/required-tests.json` pins for the adapters' authorization gates | the v1 tests are deleted | RFC 21/22 plans | each gate's test re-written |
 | `vfs.WithRequestID` (RFC 17 §4.7), set from the protocol's retry identity | its one reader is the gateway, which RFC 17's plan leaves to the cluster stage (D2) | RFC 17 cluster stage, in core's pipeline (RFC 20 §6.4), from each protocol's retry identity | when the gateway is built |
 | docs: architecture's adapter section, the configuration guide's adapter keys, the user guides | describe v1 | cutover | stage 7 |
-| `k8s/dittofs-operator`, which drives the adapter and settings API through its own client | breaks against the branch once T1.2 deletes that API | cutover | when the API comes back |
+| `k8s/dittofs-operator`, which drives the adapter and settings API through its own client | breaks against the branch once T1.2 deletes that API | RFC 30's plan (RFC 23's plan, #4050, O4) | that plan |
 | `dfsctl share mount`'s discovery of a non-default port (`ListAdapterPorts`); it uses each protocol's default port | its route is deleted in T1.2 | RFC 23's plan (#4050, D12) | its epic 6 |
 | the packages deleted in T1.1 for having no importer: `pkg/discovery/mdns` and `wsd`; `pkg/auth`, `pkg/auth/kerberos`, `pkg/identity/kerberos`, `internal/auth/kerberos`; `internal/mfsymlink` | nothing imports them once v1 is gone | discovery: cutover; Kerberos and `pkg/auth`: RFC 18's plan (#4058); `mfsymlink`: RFC 22 plan | each lifted from develop's history by its consumer |
 | `pkg/apiclient`'s adapter and netgroup methods, kept for the e2e helpers `lint-go` vets; their routes answer 404 | compiled tests still call them | cutover | with their routes |

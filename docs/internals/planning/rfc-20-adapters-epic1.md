@@ -786,8 +786,10 @@ cannot build apart.
 **Deferral-ledger rows this breakdown adds** (missing from the ledger the epic inherits):
 
 - `k8s/dittofs-operator` drives the adapter and settings API through its own client; it breaks
-  against the branch until the cutover brings the API back. Owner: the cutover.
-- `dfsctl share mount` no longer discovers a non-default port (D5). Owner: the cutover.
+  against the branch until RFC 30's plan moves it onto the new wire shapes. Owner: RFC 30's plan
+  (RFC 23's plan, #4050, O4).
+- `dfsctl share mount` no longer discovers a non-default port (D5). Owner: RFC 23's plan (#4050,
+  D12), its epic 6.
 - The packages D3 deletes: discovery (the cutover's sidecars), Kerberos and `pkg/auth` (RFC
   18's plan), `internal/mfsymlink` (RFC 22's plan), each lifted from develop's history.
 - `pkg/apiclient`'s adapter and netgroup methods kept for e2e helpers (D5). Owner: the cutover.
