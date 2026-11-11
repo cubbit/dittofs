@@ -219,8 +219,18 @@ func (c *Capacity) Reserve(ctx context.Context, r ReserveRequest) (*Reservation,
 // Reservation is what Reserve took: the record bytes and footer entries held
 // against the share's limit and the journal's maximum, the index entries and
 // versions held against their bounds, and the pool's hold on the spares the
-// bytes roll into. It is not safe from two goroutines at once; the caller
-// that reserved owns it.
+// bytes roll into.
+//
+// decision: one goroutine at a time owns a reservation, its draws and its
+// Release; the caller that reserved is that goroutine. Not only the counters
+// would race: a reserved roll's replacement reads the hold's left and its need
+// and then replaces, a read-then-replace that is not atomic, so two writes of
+// one reservation in flight could both replace and raise the hold by one each.
+// Bounded and returned at Release, the over-hold is the accepted cost of not
+// serialising the pool behind a reservation-wide lock, the shape the pool's own
+// holds keep. Overturned by a caller that must run one reservation's writes
+// concurrently, which would take a lock of the reservation around draw and
+// replace together.
 type Reservation struct {
 	c   *Capacity
 	tag core.ShareTag
@@ -371,18 +381,30 @@ func WriteCharge(payload, segCap int64) int64 {
 
 // NeedsSpares returns the spares the reservation's still-undrawn bytes need: the
 // PiecesFor figure of what its writes have not drawn yet. A hold offering fewer
-// than this is short of what the reservation's own rolls will take, so a
-// reserved roll's spare must be replaced; one offering this many or more has
-// what it took interleaving already given back, and a further replacement would
-// inflate it.
+// than this has been drawn below what those bytes' own rolls will take, so a
+// reserved roll's spare is replaced up to this figure; one offering this many or
+// more is not replaced.
 //
 // decision: the figure is measured from the bytes left rather than from each
-// write's own split, because a write's own split cannot tell a roll its bytes
-// forced from one another writer forced on a stream it shares: a copy of small
-// writes alone on one stream straddles its own tails, and every such roll is
-// already sized into the reservation's spares (RFC 1 §6, "one per cap they can
-// cross plus one"). Measured from the need, a replacement happens exactly when
-// the hold has fallen behind it, never for a roll the reservation counted.
+// write's own split, because the stream cannot tell a roll a write's own bytes
+// forced from one another writer forced on a stream it shares. A hold therefore
+// sometimes exceeds this figure by one — a copy of small writes alone on one
+// stream straddles its own tails, and a stray replacement of such a roll raises
+// the hold above what its bytes need until the next draw lowers the figure past
+// it. The over-hold is bounded: the hold never exceeds caps(bytes left)+1, which
+// is at most what Reserve took, it is returned whole at Release, and it fails
+// closed — an unreserved take can be refused spare against one spare the
+// reservation did not strictly need while it is open. Overturned by an exact
+// own-vs-interleaved roll signal from the stream, or by spare_refusals showing
+// unreserved writes starved behind a reservation's over-hold.
+//
+// ponytail: NeedsSpares recounts PiecesFor's first-segment +1 on every call, and
+// a write's draw lowers leftBytes while its grant's unlanded bytes raise it
+// again, so the figure moves within one write and a stray replacement can land.
+// The cost is one spare held past need until Release. Upgrade to a stream signal
+// naming a roll as the reservation's own — exact, one comparison a roll — if
+// spare_refusals ever shows unreserved writes starved behind an open
+// reservation.
 func (r *Reservation) NeedsSpares() int {
 	r.c.mu.Lock()
 	left := r.leftBytes

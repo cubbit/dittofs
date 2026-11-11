@@ -38,13 +38,16 @@ import (
 // rolls anyway; while its hold has fallen below what the reservation's remaining
 // bytes need, the roll takes a replacement spare back from the pool (RFC 1 §6),
 // so a reserved write meets no no-spare refusal while the pool can be refilled.
-// An unreserved write has no reservation to replenish, and one piece more than
-// its split can still roll — the room another appender spent between the take
-// and its append, a window neither its charge nor its hold covers — and that one
-// rolls unreserved; see the decision at the loop below for its ceiling and what
-// closes it. The ceiling even for a reserved write is a spare the pool cannot
-// make: a full device's ENOSPC still refuses it part-way, as RFC 1 §6's own
-// ponytail records.
+// The stream cannot tell such a roll from one the write's own bytes forced, so a
+// stray replacement may leave the hold one above that need until the
+// reservation's next draw; the over-hold is bounded by what Reserve took, is
+// returned at Release, and fails closed. An unreserved write has no reservation
+// to replenish, and one piece more than its split can still roll — the room
+// another appender spent between the take and its append, a window neither its
+// charge nor its hold covers — and that one rolls unreserved; see the decision
+// at the loop below for its ceiling and what closes it. The ceiling even for a
+// reserved write is a spare the pool cannot make: a full device's ENOSPC still
+// refuses it part-way, as RFC 1 §6's own ponytail records.
 //
 // The version is drawn, and the record appended and published, with the
 // file's append domain held, so the versions of one file are appended in the
@@ -149,14 +152,15 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	}
 	// A reserved write's roll is replaced only while the reservation's hold has
 	// fallen behind what its still-undrawn bytes need. A hold at or above that
-	// figure already has what its own rolls took, so a further replacement
-	// would inflate it — and a copy of small writes alone on one stream
-	// straddles its own tails, every roll of which the reservation already
-	// sized. Measured from the remaining need, a replacement happens exactly
-	// when interleaving took a spare the reservation will still need, and
-	// never for a roll its own bytes account for (RFC 1 §6). An admitted
-	// write's hold is not a reservation's and closes with its grant: only a
-	// drawn grant replaces.
+	// figure has what those bytes' own rolls will take, so a replacement there
+	// would raise it past need. The stream cannot say whose roll forced the
+	// move, so a copy of small writes alone on one stream can still have one of
+	// its own straddles replaced, leaving the hold one above the need until the
+	// next draw lowers it: bounded by what Reserve took, returned at Release,
+	// and failing closed. Overturned by an exact own-vs-interleaved roll signal,
+	// or by spare_refusals showing unreserved writes starved behind an open
+	// reservation's over-hold. An admitted write's hold is not a reservation's
+	// and closes with its grant: only a drawn grant replaces.
 	if c.beforeAppend != nil {
 		c.beforeAppend()
 	}

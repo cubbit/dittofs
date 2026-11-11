@@ -514,10 +514,11 @@ func TestReserveAhead_EntriesHandedOverAsPublished(t *testing.T) {
 		// fallen, and not before.
 		o.extentLimit = int64(pieces) + 1
 		// The pool readies the reservation's spares and one the plain write's
-		// roll takes, beside the one the reservation's own first roll takes: its
-		// hold falls to one below what its remaining bytes need, and the
-		// replacement that restores it holds one spare the plain write's slot
-		// still assumes.
+		// roll needs. The reservation's own first roll onto the empty stream is
+		// still replaced by the remaining-need rule — the stream cannot tell it
+		// from an interleaved one — which raises the hold back to what its
+		// remaining bytes need; the plain write below needs ready to exceed that
+		// raised hold, so the pool carries one spare beyond it.
 		o.contentSpares = spares + 2
 	})
 	s := mustShare(t, c, 1)

@@ -41,7 +41,10 @@ func (c *Core) Reserve(ctx context.Context, s *Share, bytes int64, writes int) (
 }
 
 // WriteReserved appends p at off of file id as a write record drawn from the
-// reservation r, under s's tag, and returns the version it carries. It is
+// reservation r, under s's tag, and returns the version it carries. A
+// reservation is owned by one goroutine at a time — its draws, its writes and
+// its Release — so a caller never runs two WriteReserved of one r at once; see
+// capacity.Reservation. It is
 // WriteAt with the reservation's grant in place of the admission's: the tag
 // check, the append domain, the publish and the counters are the same, and no
 // limit of the journal refuses it while r holds enough. A write r no longer
