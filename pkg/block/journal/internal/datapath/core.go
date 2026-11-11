@@ -115,25 +115,27 @@ type coreOptions struct {
 // the segment streams, the durability layer over them, and the counters that
 // follow the index's held-state deltas.
 //
-// decision: a Core owns no lock of its own. The one domain it uses is the file
-// append domain, taken through its domain table and held across a file's
-// append and publish, which includes I/O; its counters are atomics. Revisit if
-// a core-wide invariant ever needs a mutex of its own.
+// decision: a Core owns no lock that spans I/O. The one domain it uses is the
+// file append domain, taken through its domain table and held across a file's
+// append and publish, which includes I/O; its counters are atomics. Its one
+// mutex is the dirty-file list's leaf, held only for a map operation. Revisit
+// if a core-wide invariant ever needs a mutex that outlives one.
 type Core struct {
-	index    *index.Index
-	clock    core.Clock // the injected clock, read for the write time a dirty write carries
-	counters *index.Counters
-	set      *segment.Set
-	pool     *segment.Pool
-	cache    *segment.Descriptors
-	streams  *segment.Streams
-	dur      *durability.Durability
-	domains  durability.Domains
-	cap      *capacity.Capacity
-	headroom *capacity.Headroom
-	segCap   int64               // the set's segment cap, what the streams roll at and the admission sizes by
-	retirer  *segment.Retirer    // the retirement executor
-	sealer   *segment.IdleSealer // the idle sealer; nil when Deps.IdleSealBytes is zero
+	index      *index.Index
+	dirtyFiles dirtyList
+	clock      core.Clock // the injected clock, read for the write time a dirty write carries
+	counters   *index.Counters
+	set        *segment.Set
+	pool       *segment.Pool
+	cache      *segment.Descriptors
+	streams    *segment.Streams
+	dur        *durability.Durability
+	domains    durability.Domains
+	cap        *capacity.Capacity
+	headroom   *capacity.Headroom
+	segCap     int64               // the set's segment cap, what the streams roll at and the admission sizes by
+	retirer    *segment.Retirer    // the retirement executor
+	sealer     *segment.IdleSealer // the idle sealer; nil when Deps.IdleSealBytes is zero
 
 	held, dirty, retained atomic.Int64
 	writtenBytes          atomic.Uint64

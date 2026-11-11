@@ -251,11 +251,18 @@ func (h *Handle) Files() iter.Seq[FileID] {
 // DirtyFiles yields the share's files holding an extent whose offloaded bit is
 // unset, each with the write time of its oldest dirty byte. It is served from
 // a list the journal maintains, costs O(dirty files), and neither walks the
-// placement index nor reads a record.
+// placement index nor reads a record. The order is unspecified.
 //
-// decision: the stub yields nothing because the signature has no error to
-// carry ErrNotImplemented. An empty result reads as "no dirty files", so no
-// caller may depend on it until the index lands.
+// The iteration runs over a copy taken when DirtyFiles is called, so a caller
+// may write or release while ranging and sees none of it. A file whose write
+// time is not known, as after a rebuild, carries the zero time.
 func (h *Handle) DirtyFiles() iter.Seq2[FileID, time.Time] {
-	return func(func(FileID, time.Time) bool) {}
+	files := h.j.core.DirtyFiles(h.s)
+	return func(yield func(FileID, time.Time) bool) {
+		for _, f := range files {
+			if !yield(f.File, f.Oldest) {
+				return
+			}
+		}
+	}
 }

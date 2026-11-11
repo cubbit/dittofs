@@ -3,7 +3,9 @@ package datapath
 import "github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 
 // Account applies one index update's change to the core's held-state counters.
-// A zero delta changes nothing.
+// A zero delta changes nothing. A delta with no byte change still updates the
+// dirty-file list when it moves its file across the dirty line or changes its
+// oldest dirty time.
 //
 // It takes no lock and needs none: it only adds to atomics, which commute, so
 // the order two callers apply their deltas in does not matter. Most callers
@@ -16,9 +18,10 @@ import "github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 // bytes is counted once. Overturned if an update can move held bytes without
 // returning a delta.
 func (c *Core) Account(d index.HeldDelta) {
-	if d.HeldBytes == 0 && d.DirtyBytes == 0 && d.RetainedBytes == 0 {
+	if d == (index.HeldDelta{}) {
 		return
 	}
+	c.dirtyFiles.apply(d)
 	c.held.Add(d.HeldBytes)
 	c.dirty.Add(d.DirtyBytes)
 	c.retained.Add(d.RetainedBytes)
