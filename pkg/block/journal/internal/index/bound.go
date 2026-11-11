@@ -290,6 +290,14 @@ func removalCeiling(limit int64) int64 {
 // ceiling even while splitting ones are refused; reserving only what the
 // removal may add is what keeps a trim pass moving under the ceiling, and
 // the commit's true delta keeps the count exact.
+//
+// decision: no production call reaches this now that the journal checks the
+// allowance before its append (CheckRemoval) and applies the removal after it
+// without one (ApplyRemoval). It is kept, and covered by its own tests, because
+// CheckRemoval is its read-only twin and the pair is what reserving the bound
+// before an append would need; a reservation path that lands uses it, and this
+// note goes with it. Withdraw it, and the tests that pin its counter, if the
+// bound is never reserved ahead of an append.
 func (fs *files) admitRemoval(id core.FileID, e core.Extent, adds int64) (int64, error) {
 	split := false
 	if !fs.view(id, func(f *file) { split = f.splits(e) }) {

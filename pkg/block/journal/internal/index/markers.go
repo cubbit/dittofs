@@ -251,48 +251,23 @@ func (fs *files) fill(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq,
 	})
 }
 
-// removalAdds is the entries a removal that splits a held piece adds: the
-// piece's two halves and the removal's marker. A removal that splits nothing
-// adds no entry: it drops or narrows what it covers and keeps one marker,
-// which the piece it narrowed lost back. Only a deallocate and a clone target
-// can split one: a truncate's and a delete's extent reaches the end of the
-// file, so no piece covers both of its ends.
-const removalAdds = 2
-
-// removal applies the removal a record of kind k made of e on id, at version v
-// and sequence number seq, sitting at at: it notes the record, claims the file
+// applyRemoval applies a removal whose record is already in its segment,
+// without asking the removal allowance: it notes the record, claims the file
 // for tag, applies the removal and leaves its marker, all in one update under
 // the file's lock, and returns the change it made to the held state. A file
 // another tag owns is refused with the claim's OtherShareError and changes
 // nothing.
 //
-// e is the extent the removal covers as a rebuild notes it, which is not always
-// what its record's header names: a truncate's header carries the new size and
-// a delete's nothing, and both reach the end of the file. A truncate's e is
-// toEnd of its size, so its Off is the size the removal keeps. spec is the
-// clone target's spec, kept by its marker, and nil for every other kind.
+// e is the extent the removal covers as a rebuild notes it, which is not what
+// its record's header names for a truncate or a delete: both reach to the end
+// of the file. spec is the clone target's spec, kept by its marker, and nil
+// for every other kind.
 //
-// A removal that splits a held piece is admitted first, as a release is, and is
-// refused with a NoSpaceError naming the index once the count stands an eighth
-// of the limit above it; one that splits nothing reserves nothing. The
-// reservation is consumed by the update whichever way it ends, and a removal
-// refused by the tag check, which runs before the reservation, never makes one.
-//
-// decision: the tag check runs before the removal is admitted, as a fill's
-// does, so a removal through another share's tag reserves nothing and counts no
-// index refusal. It runs again inside the update, as a write's claim does, only
-// so a rival the update finds is refused by its claim rather than applied.
-func (fs *files) removal(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec) (HeldDelta, error) {
-	return fs.applyRemoval(tag, id, k, e, v, seq, at, spec, true)
-}
-
-// applyRemoval is removal with the removal allowance as a switch: admitted
-// false applies the removal without asking the bound. It is the call for a
-// record already in its segment — a removal whose append succeeded before
-// its admission was asked, or one whose admission another file's reservation
-// overtook in between — because a removal refused there is on disk all the
-// same, and the journal has told nobody: recovery would apply it while the
-// caller was told it did not happen.
+// It asks the allowance no question because the record is on disk already:
+// refusing it would leave a removal a rebuild applies while the caller was
+// told it did not happen. CheckRemoval is the read-only twin the caller runs
+// before its append, and it is where a removal that would split a held
+// extent is refused.
 //
 // decision: a removal applied past the bound overruns the allowance by at
 // most the entries it adds, as a loss does, and the commit's true delta keeps
@@ -301,7 +276,7 @@ func (fs *files) removal(tag core.ShareTag, id core.FileID, k core.ChangeKind, e
 // content the caller removed. Overturned by a bound that must hold against
 // the records already written, which only reserving the bound before the
 // append can give.
-func (fs *files) applyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec, admitted bool) (HeldDelta, error) {
+func (fs *files) applyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec) (HeldDelta, error) {
 	// The tag check runs first, as every journal call's does, before the
 	// zero-length refusal and before anything is admitted or noted.
 	var err error
@@ -317,14 +292,7 @@ func (fs *files) applyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKi
 			return HeldDelta{}, core.ErrZeroLength
 		}
 	}
-	var adm int64
-	if admitted {
-		adm, err = fs.admitRemoval(id, e, removalAdds)
-		if err != nil {
-			return HeldDelta{}, err
-		}
-	}
-	return fs.commit(id, adm, func(f *file) error {
+	return fs.commit(id, 0, func(f *file) error {
 		if err := f.recorded(at.Segment, e, Numbers{Version: v, Seq: seq}, tag, id); err != nil {
 			return err
 		}

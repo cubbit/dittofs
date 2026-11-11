@@ -115,56 +115,6 @@ func (ix *Index) Lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta,
 	return ix.fs.lose(id, e, v)
 }
 
-// Truncate stops holding every extent of id at or beyond size, narrowing a
-// piece straddling it, notes the record at at under seq, claims id for tag and
-// leaves a removal marker from size to the end of the file at v, and returns
-// the change it made to the file's held state. The marker outlives the call
-// until the caller settles it, and a rebuild makes it again from the record.
-//
-// It is refused with the claim's OtherShareError when another share owns the
-// file, and with a NoSpaceError naming the index when the truncate would split
-// a held piece and the count already stands an eighth of the limit above the
-// bound. A refusal notes no record, claims nothing and changes nothing. It
-// takes the file's lock exclusively and creates the entry of a file it has
-// never seen, that the record's segment may outrank an older one.
-//
-// decision: at names the record so its segment is noted in the file's drop
-// ranges, as a write's is. The rebuild does not need it — it learns the same
-// segment from the record it replays — but the running journal must keep a
-// segment's ranges while a removal in it outranks a record of another segment,
-// and that is what the note is for. Overturned by a removal whose record never
-// outranks anything, which the drop query could then answer without its
-// segment.
-func (ix *Index) Truncate(tag core.ShareTag, id core.FileID, size int64, v core.Version, seq core.Seq, at RecordAt) (HeldDelta, error) {
-	return ix.fs.removal(tag, id, core.ChangeTruncate, toEnd(size), v, seq, at, nil)
-}
-
-// Deallocate stops holding e of id whatever its offloaded bit, notes the record
-// at at under seq, claims id for tag and leaves a removal marker over e at v,
-// and returns the change it made to the file's held state. A zero-length e is
-// refused with core.ErrZeroLength and changes nothing. Its refusals are
-// Truncate's; a deallocate splits a held piece more often than a truncate does.
-func (ix *Index) Deallocate(tag core.ShareTag, id core.FileID, e core.Extent, v core.Version, seq core.Seq, at RecordAt) (HeldDelta, error) {
-	return ix.fs.removal(tag, id, core.ChangeDeallocate, e, v, seq, at, nil)
-}
-
-// Delete stops holding every extent of id, notes the record at at under seq,
-// claims id for tag and leaves a removal marker over the whole file at v, and
-// returns the change it made to the file's held state. Its refusals are
-// Truncate's.
-func (ix *Index) Delete(tag core.ShareTag, id core.FileID, v core.Version, seq core.Seq, at RecordAt) (HeldDelta, error) {
-	return ix.fs.removal(tag, id, core.ChangeDelete, toEnd(0), v, seq, at, nil)
-}
-
-// CloneTarget stops holding (spec.DstOff, spec.Len) of id as Deallocate does,
-// notes the record at at under seq, claims id for tag, and leaves a removal
-// marker keeping a copy of spec at v, so a restart resumes the clone rather
-// than applying a plain removal. A zero-length spec is refused with
-// core.ErrZeroLength and changes nothing. Its refusals are Deallocate's.
-func (ix *Index) CloneTarget(tag core.ShareTag, id core.FileID, spec core.CloneSpec, v core.Version, seq core.Seq, at RecordAt) (HeldDelta, error) {
-	return ix.fs.removal(tag, id, core.ChangeCloneTarget, core.Extent{Off: spec.DstOff, Len: spec.Len}, v, seq, at, &spec)
-}
-
 // ApplyRemoval applies the removal of kind k that a record already in its
 // segment carries, exactly as Truncate, Deallocate, Delete and CloneTarget
 // apply theirs, but without asking the removal allowance: it notes the
@@ -176,12 +126,23 @@ func (ix *Index) CloneTarget(tag core.ShareTag, id core.FileID, spec core.CloneS
 // zero-length deallocate or clone target is refused with ErrZeroLength as
 // those are, and a file another share owns with the claim's OtherShareError.
 //
-// It is the call for a removal whose admission was checked before its record
-// was appended, where the append then found the allowance gone: the record
-// is on disk, so a refusal left here would be applied by a rebuild while the
-// caller was told it was not. See the decision at files.applyRemoval.
+// It is the only call into the index's removal operations: the journal checks
+// the allowance through CheckRemoval before it appends and applies the
+// removal here after, so the record never lands unapplied. It is also the
+// call for a removal whose pre-check another file's reservation overtook
+// between it and the append: the record is on disk by then, so a refusal
+// here would be applied by a rebuild while the caller was told it was not.
+// See the decision at files.applyRemoval.
+//
+// decision: at names the record so its segment is noted in the file's drop
+// ranges, as a write's is. The rebuild does not need it — it learns the same
+// segment from the record it replays — but the running journal must keep a
+// segment's ranges while a removal in it outranks a record of another segment,
+// and that is what the note is for. Overturned by a removal whose record never
+// outranks anything, which the drop query could then answer without its
+// segment.
 func (ix *Index) ApplyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec) (HeldDelta, error) {
-	return ix.fs.applyRemoval(tag, id, k, e, v, seq, at, spec, false)
+	return ix.fs.applyRemoval(tag, id, k, e, v, seq, at, spec)
 }
 
 // Lookup returns the held piece of id that covers off, and false when none
