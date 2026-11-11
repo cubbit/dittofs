@@ -2,6 +2,7 @@ package datapath
 
 import (
 	"context"
+	"errors"
 	"math"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
@@ -26,6 +27,7 @@ func (c *Core) Truncate(ctx context.Context, s *Share, id core.FileID, size int6
 	r := removal{
 		class:  capacity.Truncate,
 		change: core.ChangeTruncate,
+		frees:  true,
 		kind:   format.KindTruncate,
 		// A truncate's header names the new size and writes length 0; its
 		// marker runs from that size to the end of the file.
@@ -50,6 +52,7 @@ func (c *Core) Deallocate(ctx context.Context, s *Share, id core.FileID, e core.
 	r := removal{
 		class:  capacity.Deallocate,
 		change: core.ChangeDeallocate,
+		frees:  true,
 		kind:   format.KindDeallocate,
 		header: e,
 		marker: e,
@@ -72,6 +75,21 @@ func shapeError(e core.Extent) error {
 	return nil
 }
 
+// cloneShapeError is shapeError for a clone target's destination, and the
+// clone's source too: a source offset that is negative or whose end overflows
+// the copy's length, and an AsOf carrying an epoch, are shapes the record's
+// encoding refuses by panicking, so they are refused here with
+// core.ErrInvalidExtent before anything is drawn or appended.
+func cloneShapeError(e core.Extent, spec core.CloneSpec) error {
+	if err := shapeError(e); err != nil {
+		return err
+	}
+	if spec.SrcOff < 0 || spec.SrcOff > math.MaxInt64-spec.Len || spec.AsOf.Epoch != 0 {
+		return core.ErrInvalidExtent
+	}
+	return nil
+}
+
 // Delete stops holding every extent of file id, draws a version, appends a
 // header-only record carrying it, leaves a removal marker over the whole file,
 // and returns once that record is durable. Its record names no extent — a
@@ -80,6 +98,7 @@ func (c *Core) Delete(ctx context.Context, s *Share, id core.FileID) (core.Versi
 	return c.remove(ctx, s, id, removal{
 		class:  capacity.Delete,
 		change: core.ChangeDelete,
+		frees:  true,
 		kind:   format.KindDelete,
 		header: core.Extent{},
 		marker: toEnd(0),
@@ -92,10 +111,12 @@ func (c *Core) Delete(ctx context.Context, s *Share, id core.FileID) (core.Versi
 // draws a version, appends a header-only record carrying it and spec, and
 // returns once that record is durable.
 //
-// A zero-length spec is refused with core.ErrZeroLength and appends nothing,
-// and so is one whose destination cannot exist, with core.ErrInvalidExtent. Its
-// record frees nothing, so besides Deallocate's refusals it is refused naming
-// the headroom once less than half of it remains.
+// A zero-length spec is refused with core.ErrZeroLength and appends nothing.
+// core.ErrInvalidExtent refuses one whose destination cannot exist — a negative
+// offset or length, or an end that overflows — and one whose source cannot be
+// named: a negative SrcOff, a SrcOff whose end overflows Len, or an AsOf
+// carrying an epoch. Its record frees nothing, so besides Deallocate's refusals
+// it is refused naming the headroom once less than half of it remains.
 func (c *Core) CloneTarget(ctx context.Context, s *Share, id core.FileID, spec core.CloneSpec) (core.Version, error) {
 	e := core.Extent{Off: spec.DstOff, Len: spec.Len}
 	r := removal{
@@ -106,7 +127,7 @@ func (c *Core) CloneTarget(ctx context.Context, s *Share, id core.FileID, spec c
 		marker: e,
 		spec:   &spec,
 	}
-	r.bad = shapeError(e)
+	r.bad = cloneShapeError(e, spec)
 	return c.remove(ctx, s, id, r)
 }
 
@@ -117,6 +138,11 @@ func (c *Core) CloneTarget(ctx context.Context, s *Share, id core.FileID, spec c
 type removal struct {
 	class  capacity.RecordClass
 	change core.ChangeKind
+	// frees reports whether the removal stops holding content, so it returns
+	// journal space: true for a truncate, a deallocate and a delete, false for
+	// a clone target, whose record frees nothing even though it removes as a
+	// deallocate does.
+	frees  bool
 	kind   format.Kind
 	header core.Extent
 	marker core.Extent
@@ -130,6 +156,14 @@ type removal struct {
 // toEnd returns the extent from off to the end of the file, the range a
 // truncate's and a delete's marker covers.
 func toEnd(off int64) core.Extent { return core.Extent{Off: off, Len: math.MaxInt64 - off} }
+
+// holdsInside reports whether the index holds any content inside e. It takes
+// the file's index lock shared and creates no entry: a file with no entry
+// holds nothing.
+func (c *Core) holdsInside(id core.FileID, e core.Extent) bool {
+	placed, _ := c.index.Span(id, e)
+	return len(placed) > 0
+}
 
 // remove appends spec's record for file id under s's tag, publishes the
 // removal to the placement index, and returns the version it drew once that
@@ -197,14 +231,29 @@ func (c *Core) appendRemoval(s *Share, id core.FileID, spec removal) (core.Versi
 		return core.Version{}, segment.Location{}, err
 	}
 	draw, err := c.headroom.Admit(spec.class)
+	var admittedAnyway bool
 	if err != nil {
-		return core.Version{}, segment.Location{}, err
+		// decision: only a removal of content the journal does not hold may be
+		// refused for an exhausted headroom. A truncate, deallocate or delete
+		// that drops held content frees space, so admitting it is what lets a
+		// full journal drain; the headroom ledger drew nothing for it, so
+		// nothing is counted and nothing is refunded. A clone target is not
+		// among them: it frees nothing (RFC 1 §3.6), so it keeps the refusal.
+		// The read-only refusal is Admit's first check and matches no
+		// *core.NoSpaceError, so it is returned here unchanged. Overturned by a
+		// journal whose removals of held content can themselves exhaust it.
+		var ns *core.NoSpaceError
+		if !errors.As(err, &ns) || ns.Limit != core.LimitHeadroom || !spec.frees || !c.holdsInside(id, spec.marker) {
+			return core.Version{}, segment.Location{}, err
+		}
+		admittedAnyway = true
 	}
 	// A class answered not-appendable below half the headroom appends nothing:
 	// no removal is of such a class today — only an Offloaded record's, which
 	// sets its bits in memory — so the refusal is here rather than an append
-	// the table forbade. No token was drawn, so nothing is refunded.
-	if !draw.Append {
+	// the table forbade. No token was drawn, so nothing is refunded. A removal
+	// refused by the headroom and admitted above carries no token either.
+	if !admittedAnyway && !draw.Append {
 		return core.Version{}, segment.Location{}, &core.NoSpaceError{Limit: core.LimitHeadroom, Missing: 1, Unit: core.UnitEntries}
 	}
 	if err := c.index.CheckRemoval(id, spec.marker); err != nil {
