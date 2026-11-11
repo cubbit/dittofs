@@ -84,17 +84,42 @@ func recordedStreams(t *testing.T) *recordedEnv {
 	return &recordedEnv{seam: seam, ss: ss, set: set, m: m, pool: pool, cache: cache, rec: rec}
 }
 
-// assertNoViolations fails t on every violation the recorder collected, and
-// fails once more when the calling goroutine still holds a rank other than a
-// storage guard pin: a pin is the stream's active ref, held from the roll
-// that took it to the roll or close that releases it, so a worker that ends
-// between the two holds its segment's pin and nothing else. It is called on
-// every goroutine the recorded run launches, at its own end.
+// reportedViolations keeps the violations each recorder's checks have
+// already failed the test for, per recorder, so a violation one goroutine's
+// assertion saw is not re-reported by every other goroutine's — and a fresh
+// recorder in a later test reports its own violations anew.
+var reportedViolations = struct {
+	sync.Mutex
+	seen map[*lockorder.Recorder]map[string]struct{}
+}{seen: make(map[*lockorder.Recorder]map[string]struct{})}
+
+// assertNoViolations fails t on every violation the recorder collected, each
+// once, and fails once more when the calling goroutine still holds a rank
+// other than a storage guard pin: a pin is the stream's active ref, held
+// from the roll that took it to the roll or close that releases it, so a
+// worker that ends between the two holds its segment's pin and nothing
+// else. It is called on every goroutine the recorded run launches, at its
+// own end.
 func assertNoViolations(t *testing.T, rec *lockorder.Recorder, where string) {
 	t.Helper()
 
 	if vs := rec.Violations(); len(vs) != 0 {
+		reportedViolations.Lock()
+		if reportedViolations.seen[rec] == nil {
+			reportedViolations.seen[rec] = make(map[string]struct{})
+		}
+		reported := reportedViolations.seen[rec]
+		reportedViolations.Unlock()
 		for _, v := range vs {
+			reportedViolations.Lock()
+			_, dup := reported[v.Stack]
+			if !dup {
+				reported[v.Stack] = struct{}{}
+			}
+			reportedViolations.Unlock()
+			if dup {
+				continue
+			}
 			t.Errorf("%s: recorder violation: %s acquiring %s over %v\n%s", where, v.Kind, v.Rank, v.Held, v.Stack)
 		}
 		return
@@ -141,6 +166,56 @@ func TestStreamsUnderRecorder(t *testing.T) {
 	// appends fill it.
 	locs := make(chan segment.Location, 8*recordedRounds)
 
+	// The readers run beside the appenders, not after them: each round
+	// reads one location twice — through the stream's own ReadAt, an
+	// acquire and a release per read, and through a reference held across
+	// the read, the shape a reader of one record in pieces takes — until
+	// the appenders join and the stop channel closes. A segment already
+	// retired answers its refusal to the reader that watches for it, not
+	// an error.
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	readers.Add(2)
+	for range 2 {
+		go func() {
+			defer readers.Done()
+			s := e.ss.Stream(0)
+			buf := make([]byte, format.RecordHeaderSize)
+			for {
+				select {
+				case <-stop:
+					assertNoViolations(t, e.rec, "the reader")
+					return
+				case loc := <-locs:
+					if _, err := s.ReadAt(loc.Segment, buf, loc.Off); err != nil {
+						t.Errorf("ReadAt of the record at %d: %v", loc.Off, err)
+						return
+					}
+					ref, err := s.AcquireRead(loc.Segment)
+					if err == nil {
+						_, rerr := ref.ReadAt(buf, loc.Off)
+						ref.Release()
+						if rerr != nil {
+							t.Errorf("the held reference's read: %v", rerr)
+							return
+						}
+					} else if !slices.Contains([]error{segment.ErrStreamClosed, segment.ErrSegmentGone, segment.ErrCacheClosed}, err) {
+						t.Errorf("AcquireRead: %v", err)
+						return
+					}
+				default:
+					runtime.Gosched()
+				}
+			}
+		}()
+	}
+
+	// Each stream must roll at least once for the run to say anything
+	// about rolls: the appends each carry an eighth of the cap, so a
+	// stream's locations must span at least two distinct segments. The
+	// map is mutex-guarded, for the two appenders fill it together.
+	var distMu sync.Mutex
+	distinct := make(map[core.SegmentID]struct{})
 	recordedLaunch(2, func(i int) {
 		s := e.ss.Stream(i)
 		fid := streamFileID(i)
@@ -151,6 +226,9 @@ func TestStreamsUnderRecorder(t *testing.T) {
 				t.Errorf("stream %d's append %d: %v", i, v, err)
 				return
 			}
+			distMu.Lock()
+			distinct[p.Loc.Segment] = struct{}{}
+			distMu.Unlock()
 			select {
 			case locs <- p.Loc:
 			default:
@@ -158,41 +236,12 @@ func TestStreamsUnderRecorder(t *testing.T) {
 		}
 		assertNoViolations(t, e.rec, "the appender")
 	})
-
-	// The readers: each round reads one location twice — through the
-	// stream's own ReadAt, an acquire and a release per read, and through a
-	// reference held across the read, the shape a reader of one record in
-	// pieces takes. A segment already retired answers its refusal to the
-	// reader that watches for it, not an error.
-	recordedLaunch(2, func(int) {
-		s := e.ss.Stream(0)
-		buf := make([]byte, format.RecordHeaderSize)
-		for range recordedRounds * 2 {
-			select {
-			case loc := <-locs:
-				if _, err := s.ReadAt(loc.Segment, buf, loc.Off); err != nil {
-					t.Errorf("ReadAt of the record at %d: %v", loc.Off, err)
-					return
-				}
-				ref, err := s.AcquireRead(loc.Segment)
-				if err == nil {
-					_, rerr := ref.ReadAt(buf, loc.Off)
-					ref.Release()
-					if rerr != nil {
-						t.Errorf("the held reference's read: %v", rerr)
-						return
-					}
-				} else if !slices.Contains([]error{segment.ErrStreamClosed, segment.ErrSegmentGone, segment.ErrCacheClosed}, err) {
-					t.Errorf("AcquireRead: %v", err)
-					return
-				}
-			default:
-				runtime.Gosched()
-			}
-		}
-		assertNoViolations(t, e.rec, "the reader")
-	})
+	close(stop)
+	readers.Wait()
 	close(locs)
+	if len(distinct) < 4 {
+		t.Fatalf("the run's appends landed in %d distinct segments, want at least 4 (two rolls per stream at least)", len(distinct))
+	}
 
 	// The retirer drains one. The active segment is the one the next
 	// record lands in; the appenders have all joined, so the segment
@@ -242,10 +291,19 @@ func TestStreamsUnderRecorder(t *testing.T) {
 		}
 		close(release)
 	}()
-	if _, err := r.Retire(active, segment.NotHeld); err != nil {
+	// The retirement runs on a goroutine that holds no pin: the test
+	// goroutine still pins the active segment its own appends landed in,
+	// and a drain wait taken across any pin is reported — production
+	// retirers hold none, so the check must not run on this one's books.
+	retired := make(chan error, 1)
+	go func() {
+		_, err := r.Retire(active, segment.NotHeld)
+		retired <- err
+		assertNoViolations(t, e.rec, "the retirer")
+	}()
+	if err := <-retired; err != nil {
 		t.Fatalf("Retire of the sealed segment %d: %v", active, err)
 	}
-	assertNoViolations(t, e.rec, "the retirer")
 
 	// The streams close before the cache's Shutdown cleanup: each stream
 	// holds its active segment's reference until its close, and a shutdown
@@ -257,6 +315,40 @@ func TestStreamsUnderRecorder(t *testing.T) {
 	}
 	if held := e.rec.Held(); len(held) != 0 {
 		t.Fatalf("the test goroutine holds ranks %v after the close, want none", held)
+	}
+
+	// The zero above would pass over locks that were never recorded, so
+	// the same recorder is made to prove it saw the ranked locks of this
+	// very fixture: with a higher rank held on this goroutine, one read
+	// per lock — a stream's append lock, the pool's and the ledger's —
+	// and each that goes unreported means an unwired Init. The probes
+	// hold a foreign identity, so no real lock is taken.
+	probe := lockorder.StorageGuard
+	e.rec.Acquire(probe, "probe")
+	_ = e.ss.Stream(0).Room()
+	_ = e.pool.Counters()
+	_ = e.set.Counters()
+	vs := e.rec.Violations()
+	e.rec.Release(probe, "probe")
+	// One report per lock: rank storage guard is held, so each capacity
+	// and segment append acquisition goes out of order.
+	if len(vs) != 3 {
+		t.Fatalf("the probes recorded %d violations, want 3 (one per ranked lock of the fixture): %+v", len(vs), vs)
+	}
+	saw := map[lockorder.Rank]bool{}
+	for _, v := range vs {
+		if v.Kind != lockorder.OutOfOrder {
+			t.Errorf("probe violation kind = %v, want out of order (acquiring %s over %v)", v.Kind, v.Rank, v.Held)
+		}
+		saw[v.Rank] = true
+	}
+	for _, rank := range []lockorder.Rank{lockorder.SegmentAppend, lockorder.Capacity} {
+		if !saw[rank] {
+			t.Errorf("the probes saw no %s violation; the fixture left that lock unwired (got ranks %v)", rank, vs)
+		}
+	}
+	if held := e.rec.Held(); len(held) != 0 {
+		t.Fatalf("the test goroutine holds ranks %v after the probes' release, want none", held)
 	}
 }
 
@@ -314,7 +406,7 @@ func TestGuardRecorded(t *testing.T) {
 	}
 	ref.Release()
 	if got := rec.Held(); len(got) != 0 {
-		t.Fatalf("Held() after Release = %v, got a non-empty hold, want none", []lockorder.Rank{})
+		t.Fatalf("Held() after Release = %v, want none", got)
 	}
 
 	// The drain wait's guard, reported by the probe: a file index held on
@@ -448,6 +540,23 @@ func TestSegmentLocksNameTheirRanks(t *testing.T) {
 	if v := pvs[0]; v.Kind != lockorder.OutOfOrder || v.Rank != lockorder.Capacity {
 		t.Fatalf("the pool probe's violation = %s of %s over %v, want out of order of capacity", v.Kind, v.Rank, v.Held)
 	}
+
+	// The ledger's capacity-ranked mutex: a counter read under a held
+	// segment append rank — which outranks capacity — must report, so a
+	// Set whose SetRecorder was dropped or whose Init is missing cannot
+	// pass this check.
+	setrec := lockorder.NewRecorder()
+	e.set.SetRecorder(setrec)
+	setrec.Acquire(lockorder.SegmentAppend, "probe")
+	_ = e.set.Counters()
+	svs := setrec.Violations()
+	setrec.Release(lockorder.SegmentAppend, "probe")
+	if len(svs) != 1 {
+		t.Fatalf("the ledger probe recorded %d violations, want the ledger's capacity lock once: %+v", len(svs), svs)
+	}
+	if v := svs[0]; v.Kind != lockorder.OutOfOrder || v.Rank != lockorder.Capacity {
+		t.Fatalf("the ledger probe's violation = %s of %s over %v, want out of order of capacity", v.Kind, v.Rank, v.Held)
+	}
 }
 
 // TestStreamRollsTwiceUnderRecorder checks the case the ref exemption was
@@ -468,22 +577,30 @@ func TestStreamRollsTwiceUnderRecorder(t *testing.T) {
 
 	// The rolls' books: each successor's ref is pinned while the
 	// predecessor's still is, and the pinned pair must record nothing.
+	// reported counts the violations already failed for, so the first one
+	// names the append that caused it and none is printed twice.
 	payload := make([]byte, segCap/8)
-	pins := 0
+	distinct := make(map[core.SegmentID]struct{})
+	reported := 0
 	for v := range 32 {
 		h, body := streamWriteHeader(streamFileID(0), int64(v)*int64(segCap), payload, core.ShareTag(1), core.Version{Counter: uint64(v + 1)})
-		if _, err := s.Append(h, body); err != nil {
+		p, err := s.Append(h, body)
+		if err != nil {
 			t.Fatalf("append %d: %v", v, err)
 		}
-		if pins < len(rec.Violations()) {
-			pins = len(rec.Violations())
-			t.Errorf("append %d recorded %s acquiring %s over %v\n%s", v,
-				rec.Violations()[pins-1].Kind, rec.Violations()[pins-1].Rank,
-				rec.Violations()[pins-1].Held, rec.Violations()[pins-1].Stack)
+		distinct[p.Loc.Segment] = struct{}{}
+		if now := len(rec.Violations()); reported < now {
+			v0 := rec.Violations()[now-1]
+			reported = now
+			t.Errorf("append %d recorded %s acquiring %s over %v\n%s", v, v0.Kind, v0.Rank, v0.Held, v0.Stack)
 		}
 	}
-	// Thirty-two appends of an eighth of the cap: the stream has rolled
-	// several times over by here, which is the whole point of the check.
+	// Thirty-two appends of an eighth of the cap roll the stream several
+	// times over — at least two segments must have been landed in for the
+	// check to have exercised a roll at all.
+	if len(distinct) < 2 {
+		t.Fatalf("the appends landed in %d distinct segments, want at least 2: no roll ran for the exemption to matter", len(distinct))
+	}
 	// The close is what clears the appender's last pin off its books, so
 	// the hold check runs after it, never before.
 	if err := e.ss.Close(); err != nil {
@@ -491,5 +608,21 @@ func TestStreamRollsTwiceUnderRecorder(t *testing.T) {
 	}
 	if held := rec.Held(); len(held) != 0 {
 		t.Fatalf("the appender holds ranks %v after the close, want none", held)
+	}
+	// The zero above would pass over a recorder that was never wired: the
+	// same recorder is made to prove it saw this fixture's locks, one
+	// probe read per ranked lock, each that goes unreported meaning an
+	// unwired Init.
+	probe := lockorder.StorageGuard
+	rec.Acquire(probe, "probe")
+	_ = s.Room()
+	_ = e.pool.Counters()
+	vs := rec.Violations()
+	rec.Release(probe, "probe")
+	if got := len(vs) - reported; got < 2 {
+		t.Fatalf("the probes recorded %d new violations, want at least 2 (the append lock once, the pool's and the ledger's capacity lock): %+v", got, vs[reported:])
+	}
+	if held := rec.Held(); len(held) != 0 {
+		t.Fatalf("the appender holds ranks %v after the probes' release, want none", held)
 	}
 }
