@@ -14,11 +14,10 @@ import (
 
 // TestReappendIntoAPartFullSegmentKeepsEveryHeldByteReadable covers a failed
 // window's content record re-appended into a segment that no longer has room
-// for it whole (another file's record landed there first): the stream splits
-// it, placing only part of its payload in the new record. Every held piece
-// the index names at the new place must still be backed by bytes the record
-// holds, and what is read back through the index's own extent must equal what
-// was written.
+// for it whole (another file's record landed there first). The record must
+// roll to a segment where it fits and land whole, so every held piece the
+// index names at the new place is backed by bytes the record holds, and what
+// is read back through the index's own extent equals what was written.
 func TestReappendIntoAPartFullSegmentKeepsEveryHeldByteReadable(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRigUnstarted(t, 1)

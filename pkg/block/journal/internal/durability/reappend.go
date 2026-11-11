@@ -153,11 +153,17 @@ func (d *Durability) appendAgain(st *stream, h format.RecordHeader, body format.
 	// decision: a re-append lands whole, because it is the same record in a
 	// new place under its original sequence number, and one old record must
 	// map to one new record for the repoint, the ledger and the copy table.
-	// A segment with too little room is sealed early, with that room unused,
-	// and the record goes to the next one. The ceiling is a part-full segment
-	// sealed per re-append that does not fit; overturned by a measurement
-	// showing that waste matters, which would call for splitting with a
-	// repoint per piece.
+	// A segment with too little room is sealed full before it fills: its
+	// free tail stays allocated at the cap until the segment retires, and the
+	// record goes to the next one. The ceiling is one part-full segment so
+	// sealed per re-append that does not fit; overturned by failed-sync
+	// recovery showing full-sealed segments with a low held-to-size ratio,
+	// which would call for splitting with a repoint per piece.
+	// ErrSegmentFull cannot come back for a re-append today: the record
+	// already fitted a segment of the same cap with the same kind overhead,
+	// and windows and holds live only in memory. Revisit it the day the cap
+	// can differ between the segment a record was written in and the one it
+	// is re-appended to.
 	p, err := st.s.AppendRoll(nh, body, segment.Roll{Whole: true})
 	if err != nil {
 		return segment.Placed{}, err

@@ -596,7 +596,8 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 // lock. The roll takes the spare r names, seals the full segment, and writes
 // the new segment's header naming the sealed one as predecessor; the record
 // is then reserved in the new segment. A write or fill whose whole record
-// still does not fit is split at the cap: this call returns the largest piece
+// still does not fit is split at the cap, unless r.Whole asks for it to land
+// in one piece, in which case the roll comes first and it is placed whole: this call returns the largest piece
 // that fits and N below the payload's length, and the caller's next call
 // rolls. A record that fits nowhere at all — one whose payload it cannot
 // place a single byte of, or whose own size exceeds an empty segment's room,
@@ -744,7 +745,9 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		// which fits exactly when its size equals the room — anywhere in
 		// an empty segment, the largest room a stream hands out. A write or
 		// fill whose payload alone exceeds a segment is not refused but
-		// split, piece by piece, segment after segment (RFC 28 §2.2); the
+		// split, piece by piece, segment after segment (RFC 28 §2.2), except
+		// that a record that must land whole (r.Whole) and is larger than an
+		// empty segment's room is refused with ErrSegmentFull; the
 		// refusal is for the record whose own overhead leaves the room no
 		// piece at all, and reserve-side discovery, after a take, would
 		// consume one spare after another for a record that fits nowhere.
@@ -808,7 +811,8 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 					size, placed = h.Size(), fit
 				} else {
 					// Not even one payload byte places, or the kind carries
-					// no payload and does not fit: the record has no piece
+					// no payload and does not fit, or the record must land
+					// whole (r.Whole): the record has no piece
 					// here, and the roll takes the next segment for it. A
 					// record no segment could hold at all was refused by
 					// the empty-room guard above, before anything rolled,
