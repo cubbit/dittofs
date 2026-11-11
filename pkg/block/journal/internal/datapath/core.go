@@ -433,22 +433,6 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 // Index returns the placement index.
 func (c *Core) Index() *index.Index { return c.index }
 
-// Set returns the segment set.
-func (c *Core) Set() *segment.Set { return c.set }
-
-// Pool returns the spare pool.
-func (c *Core) Pool() *segment.Pool { return c.pool }
-
-// Descriptors returns the segment descriptor cache.
-func (c *Core) Descriptors() *segment.Descriptors { return c.cache }
-
-// Headroom returns the headroom reserve.
-func (c *Core) Headroom() *capacity.Headroom { return c.headroom }
-
-// MaxBytes returns the journal's configured maximum local footprint, zero
-// meaning unbounded.
-func (c *Core) MaxBytes() int64 { return c.maxBytes }
-
 // Durability returns the durability layer.
 func (c *Core) Durability() *durability.Durability { return c.dur }
 
