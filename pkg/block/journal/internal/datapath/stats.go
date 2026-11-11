@@ -65,8 +65,10 @@ type Stats struct {
 // up to four times until dirty <= held, which a pair read with no fall between
 // satisfies. The retries are bounded so a lasting dirty > held (an accounting
 // bug) cannot hang a Stats call on a commit path: a pair still out of order
-// after them is returned as read. A reservation is released only after its record is counted in
-// its share's UsedBytes, so ReservedBytes and ReservedByTag are read before
+// after them is returned as read, so for that one read the RFC 1 section 3.7
+// guarantee DirtyBytes <= HeldBytes does not hold: that signals an accounting
+// bug rather than hanging a commit path. A reservation is released only after
+// its record is counted in its share's UsedBytes, so ReservedBytes and ReservedByTag are read before
 // the set's figures: a record in flight is then counted in at least one of
 // them. UsedBytes comes from the set, which allocation raises before a record
 // is reserved in it. Any other pair may differ by one operation in flight.
