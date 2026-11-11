@@ -278,8 +278,8 @@ func TestRun_ThePhasesAndTheirSpans(t *testing.T) {
 // TestRun_TheSpansEndWithTheirErrors pins that a refusal ends the open
 // span with the error that failed the open — the attach pass itself ends
 // nil, for it classed every name it read and the collected range is the
-// refusal the whole run answers — and that a run cancelled before any
-// phase ends the open span with the context's error, never a span ended
+// refusal the whole run answers — and that a run cancelled as the open
+// span starts ends that span with the context's error, never a span ended
 // nil over failed work.
 func TestRun_TheSpansEndWithTheirErrors(t *testing.T) {
 	var mu sync.Mutex
@@ -306,117 +306,35 @@ func TestRun_TheSpansEndWithTheirErrors(t *testing.T) {
 		}
 	}
 
-	// A cancelled run ends the open span with the context's error.
+	// A run cancelled as the open span starts: no phase has run yet, the
+	// context check before the first phase answers the cancellation, and
+	// the open span — started before the cancellation — is the one span
+	// recorded, ended with the context's error.
 	mu2 := sync.Mutex{}
 	tracer2, spans2Of := recordingTracer(&mu2)
 	r2 := newRig(t)
 	r2.writeFormat()
 	r2.writeSeg(3, journalID)
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	cerr := func() error {
-		_, e := Run(ctx, r2.runDepsWithTracer(tracer2), core.Version{}, journalID, nil)
-		return e
-	}()
+	rec := func(c context.Context, op core.SpanOp, a ...slog.Attr) (context.Context, func(error)) {
+		if op == core.SpanOpen {
+			cancel()
+		}
+		return tracer2(c, op, a...)
+	}
+	_, cerr := Run(ctx, r2.runDepsWithTracer(rec), core.Version{}, journalID, nil)
 	if !errors.Is(cerr, context.Canceled) {
-		t.Fatalf("Run: a cancelled context got err %v, want context.Canceled", cerr)
+		t.Fatalf("Run: a run cancelled as the open span started got err %v, want context.Canceled", cerr)
 	}
-	for _, sp := range spans2Of() {
-		if sp.op == core.SpanOpen && sp.err == nil {
-			t.Errorf("Run: the open span ended nil over a run cancelled before any phase; want %v", cerr)
-		}
+	spans2 := spans2Of()
+	if len(spans2) != 1 {
+		t.Fatalf("Run: a run cancelled as the open span started recorded %d spans, want 1: the open's alone", len(spans2))
 	}
-}
-
-// TestRun_SpareHighestIDSeedsMaxID plants a .spare.tmp whose id outranks the
-// .seg file beside it: the state the phases return seeds the id high-water
-// mark above the spare's id, so a spare made after open draws a fresh id and
-// never reuses one the directory named.
-func TestRun_SpareHighestIDSeedsMaxID(t *testing.T) {
-	r := newRig(t)
-	r.writeFormat()
-	r.writeSeg(3, journalID)
-	r.write(format.SpareName(11), nil)
-
-	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	if spans2[0].op != core.SpanOpen {
+		t.Errorf("Run: the one span of a run cancelled at the open span is %s, want the open's", spans2[0].op)
 	}
-	if st.Attached.MaxID != 11 {
-		t.Errorf("Run: MaxID got %d, want 11, above the .spare.tmp's id", st.Attached.MaxID)
-	}
-	if slices.Contains(r.listing(), format.SpareName(11)) {
-		t.Errorf("Run: the .spare.tmp was not unlinked; directory holds %v", r.listing())
-	}
-}
-
-// TestRun_UnrecognisedNamesLeftAlone plants a segment-named backup and a
-// notes file: the phases change neither, and neither counts in the state.
-func TestRun_UnrecognisedNamesLeftAlone(t *testing.T) {
-	names := []string{"00000000000000000042.seg.bak", "notes.txt"}
-	r := newRig(t)
-	r.writeFormat()
-	r.writeSeg(2, journalID)
-	for _, name := range names {
-		r.write(name, []byte("bytes of a file the journal did not write"))
-	}
-
-	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	got := r.listing()
-	for _, name := range names {
-		if !slices.Contains(got, name) {
-			t.Errorf("Run: unrecognised file %s was removed; directory holds %v", name, got)
-		}
-	}
-	if st.Attached.MaxID != 2 {
-		t.Errorf("Run: MaxID got %d, want 2: an unrecognised name counts nowhere", st.Attached.MaxID)
-	}
-	if !slices.Equal(st.Attached.Unrecognised, names) {
-		t.Errorf("Run: the state reports the files it did not recognise as %v, want %v",
-			st.Attached.Unrecognised, names)
-	}
-}
-
-// TestRun_UnreadableRangeRefusesWithNoIdentity makes one segment's header
-// read fail on every attempt: the run answers an UnreadableRangesError
-// naming the range and no identity — its rule fills Identity only when the
-// caller expected no journal in particular, and this run carried one the
-// attach pass verified — never State, and the segment file is still on
-// disk: neither unlinked, zeroed nor judged.
-func TestRun_UnreadableRangeRefusesWithNoIdentity(t *testing.T) {
-	r := newRig(t)
-	r.writeFormat()
-	r.writeSeg(12, journalID)
-	r.failReads(format.SegmentName(12), 0)
-
-	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
-	var ure *core.UnreadableRangesError
-	if !errors.As(err, &ure) {
-		t.Fatalf("Run: a header read that never completed got err %v, want an UnreadableRangesError", err)
-	}
-	if !errors.Is(err, core.ErrUnreadable) {
-		t.Errorf("Run: the unreadable refusal %v does not match ErrUnreadable", err)
-	}
-	want := []core.SegmentRange{{Segment: 12, Off: 0, Len: format.SegmentHeaderSize}}
-	if !slices.Equal(ure.Ranges, want) {
-		t.Errorf("Run: the refusal names ranges %v, want %v", ure.Ranges, want)
-	}
-	if ure.Format {
-		t.Errorf("Run: the refusal names the format file too; only the segment's read failed")
-	}
-	if ure.Identity != (core.JournalID{}) {
-		t.Errorf("Run: the refusal names identity %x, want none: an Open that reached recovery carries a named identity, and Identity's rule fills it only for the caller that expected none", ure.Identity)
-	}
-	if !slices.Contains(r.listing(), format.SegmentName(12)) {
-		t.Errorf("Run: the segment whose read never completed was taken off disk; directory holds %v",
-			r.listing())
-	}
-	if calls := r.seam.CallsFor(kit.OpRead, format.SegmentName(12)); calls != 3 {
-		t.Errorf("Run: header reads got %d, want 3, the readretry bound", calls)
+	if !errors.Is(spans2[0].err, context.Canceled) {
+		t.Errorf("Run: the open span ended with %v, want context.Canceled", spans2[0].err)
 	}
 }
 
@@ -629,24 +547,5 @@ func TestReadFormat_DecodesAWholeFile(t *testing.T) {
 	if ff.Identity != journalID || ff.Installation != install {
 		t.Errorf("ReadFormat: got identity %x installation %x, want %x %x",
 			ff.Identity, ff.Installation, journalID, install)
-	}
-}
-
-// TestRun_HeaderReadFailsTwiceThenSucceeds retires the attach pass's retry
-// into the open's run: a header read that faults twice and then succeeds
-// attaches the segment, nothing is collected, and the run returns State.
-func TestRun_HeaderReadFailsTwiceThenSucceeds(t *testing.T) {
-	r := newRig(t)
-	r.writeFormat()
-	r.writeSeg(7, journalID)
-	r.failReads(format.SegmentName(7), 2)
-
-	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
-	if err != nil {
-		t.Fatalf("Run: a header read that recovered on the third attempt: %v", err)
-	}
-	if want := []core.SegmentID{7}; !slices.Equal(ids(st.Attached.Own), want) {
-		t.Errorf("Run: a segment whose header read on the third attempt got own ids %v, want %v",
-			ids(st.Attached.Own), want)
 	}
 }

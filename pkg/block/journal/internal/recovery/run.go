@@ -30,13 +30,42 @@ type State struct {
 	Attached Attached
 }
 
-// phases is the open's recovery, each step's span in the order the open
-// runs it. The marks phase runs twice with two jobs — raising and
-// withholding first, the lost-tail check after the tail's proof — each run
-// its own span and its own context check.
-var phases = [...]core.SpanOp{
-	core.SpanOpenAttach, core.SpanOpenRebuild, core.SpanOpenMarksRaise, core.SpanOpenTailProof, core.SpanOpenMarksLostTail,
-	core.SpanOpenSpares, core.SpanOpenReappend, core.SpanOpenAssembly, core.SpanOpenSeal, core.SpanOpenEmptying,
+// phase is one step of the open's recovery: the span it runs under, and
+// the work it does over the reader the run built, filling the state it
+// rebuilt into st. A phase is one arm of the list below; a phase not yet
+// built runs as a no-op whose span still opens.
+type phase struct {
+	span core.SpanOp
+	run  func(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID) error
+}
+
+// String names the phase by its span.
+func (p phase) String() string { return string(p.span) }
+
+// phases is the open's recovery, each step in the order the open runs it.
+// The marks phase runs twice with two jobs — raising and withholding first,
+// the lost-tail check after the tail's proof — each run its own span and
+// its own context check, which the list keys on the phase itself rather
+// than the span, so two phases may share one.
+var phases = [...]phase{
+	{span: core.SpanOpenAttach, run: runAttach},
+	{span: core.SpanOpenRebuild},
+	{span: core.SpanOpenMarksRaise},
+	{span: core.SpanOpenTailProof},
+	{span: core.SpanOpenMarksLostTail},
+	{span: core.SpanOpenSpares},
+	{span: core.SpanOpenReappend},
+	{span: core.SpanOpenAssembly},
+	{span: core.SpanOpenSeal},
+	{span: core.SpanOpenEmptying},
+}
+
+// runAttach is the attach pass as a phase of the run: over the reader the
+// run built, so its collected ranges reach the open's refusal below.
+func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID) error {
+	att, err := attach(ctx, deps.FS, rd, expect, deps.Log)
+	st.Attached = att
+	return err
 }
 
 // Run rebuilds the journal's state from its directory, running the open's
@@ -57,26 +86,23 @@ func Run(ctx context.Context, deps Deps, floor core.Version, expect core.Journal
 	defer func() { endOpen(err) }()
 
 	rd := newReader(ctx, deps.FS, deps.Clock, deps.Log)
-	for _, span := range phases {
+	for _, ph := range phases {
 		if err := ctx.Err(); err != nil {
 			return State{}, err
 		}
-		phCtx, end := startSpan(ctx, deps, span)
-		switch span {
-		case core.SpanOpenAttach:
-			att, aerr := attach(phCtx, deps.FS, rd, expect, deps.Log)
-			end(aerr)
-			if aerr != nil {
-				return State{}, aerr
-			}
-			st = State{Attached: att}
-		default:
-			// decision: a phase not yet built changes nothing. Its step is a
-			// named, traced no-op, and the phases around it keep this list,
-			// so each one lands with its contract and its own span and
-			// context check, without reordering anything. State stays zero
-			// where a later phase would fill it.
-			end(nil)
+		phCtx, end := startSpan(ctx, deps, ph.span)
+		perr := error(nil)
+		if ph.run != nil {
+			perr = ph.run(phCtx, deps, rd, &st, expect)
+		}
+		// decision: a phase not yet built changes nothing. Its step is a
+		// named, traced no-op, and the phases around it keep this list,
+		// so each one lands with its contract and its own span and
+		// context check, without reordering anything. State stays zero
+		// where a later phase would fill it.
+		end(perr)
+		if perr != nil {
+			return State{}, perr
 		}
 	}
 
@@ -94,7 +120,7 @@ func Run(ctx context.Context, deps Deps, floor core.Version, expect core.Journal
 	// not name, before any phase runs. So the only unreadable-format
 	// refusal that names an identity is the one ReadFormat answers, for
 	// the caller that expected none.
-	ranges, _ := rd.Unreadable()
+	ranges := rd.Unreadable()
 	if len(ranges) > 0 {
 		return State{}, &core.UnreadableRangesError{Ranges: ranges}
 	}
@@ -199,13 +225,12 @@ func agreeingIdentity(ctx context.Context, deps Deps, rd *reader) core.JournalID
 
 	none := core.JournalID{}
 	agree := none
-	some := false
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			// The cancellation stops reading more headers; the identity
 			// the ones before it agreed on still names what the
 			// directory holds, and the refusal below carries it.
-			return agreeOrNone(agree, some)
+			return agree
 		}
 		if kind, _ := format.ClassifyName(name); kind != format.NameSegment {
 			continue
@@ -231,21 +256,10 @@ func agreeingIdentity(ctx context.Context, deps Deps, rd *reader) core.JournalID
 		default:
 			continue // damaged, or a version this binary does not read
 		}
-		if some && h.Identity != agree {
+		if agree != none && h.Identity != agree {
 			return core.JournalID{} // two headers name different journals: none agrees
 		}
 		agree = h.Identity
-		some = true
-	}
-	return agreeOrNone(agree, some)
-}
-
-// agreeOrNone returns agree when some header verified, zero otherwise. A
-// cancellation is the one case an agreeing identity is named without the
-// whole directory read, so the rule lives once, beside the normal end.
-func agreeOrNone(agree core.JournalID, some bool) core.JournalID {
-	if !some {
-		return core.JournalID{}
 	}
 	return agree
 }

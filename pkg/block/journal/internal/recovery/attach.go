@@ -13,10 +13,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
-// errNotExist is fs.ErrNotExist held under a name the attach pass's own
-// fs parameter does not shadow.
-var errNotExist = fs.ErrNotExist
-
 // SegmentInfo is one own or foreign segment the attach pass found: its
 // header as it verified, and the id in its file name. The two may differ —
 // an interrupted recycle leaves a header naming the segment its file used
@@ -77,14 +73,14 @@ type Attached struct {
 // pass with the context's error, collected nowhere — a cancelled open never
 // answers with a segment silently missing, and changes nothing the pass
 // made but .spare.tmp unlinks.
-func attach(ctx context.Context, fs storage.FS, rd *reader, id core.JournalID, log *slog.Logger) (Attached, error) {
+func attach(ctx context.Context, fsys storage.FS, rd *reader, id core.JournalID, log *slog.Logger) (Attached, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	if err := ctx.Err(); err != nil {
 		return Attached{}, err
 	}
-	names, err := fs.List()
+	names, err := fsys.List()
 	if err != nil {
 		return Attached{}, err
 	}
@@ -108,7 +104,7 @@ func attach(ctx context.Context, fs storage.FS, rd *reader, id core.JournalID, l
 			if sid > att.MaxID {
 				att.MaxID = sid
 			}
-			if err := fs.Remove(name); err != nil && !errors.Is(err, errNotExist) {
+			if err := fsys.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				// A name already gone is the unlink done: nothing but a
 				// concurrent hand may take it, and the open's own rules
 				// leave no window for one.

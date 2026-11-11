@@ -2,9 +2,7 @@ package recovery
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
-	"hash/crc32"
 	"slices"
 	"syscall"
 	"testing"
@@ -109,11 +107,7 @@ func (r *rig) run(ctx context.Context) (Attached, []core.SegmentRange) {
 	if err != nil {
 		r.t.Fatalf("attach: %v", err)
 	}
-	ranges, unreadFormat := rd.Unreadable()
-	if unreadFormat {
-		r.t.Fatalf("attach: the format file was collected as unreadable: %v", ranges)
-	}
-	return att, ranges
+	return att, rd.Unreadable()
 }
 
 // failReads makes reads of name fail count times with EIO, then pass; zero
@@ -252,7 +246,11 @@ func TestAttachUnrecognisedNamesLeftAlone(t *testing.T) {
 func TestAttachUnknownHeaderVersion(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
-	r.write(format.SegmentName(4), versionTwoSegmentHeader())
+	// A header of format version 2 that verifies by its checksum and names
+	// this journal, so the decoder reads it whole and refuses it on the
+	// version alone — the one refusal the attach pass must fail the open
+	// with rather than classing the segment damaged.
+	r.write(format.SegmentName(4), raw.SegmentHeader{Version: 2, Identity: journalID, ID: 4}.Bytes())
 
 	rd := newReader(context.Background(), r.seam.FS(), r.clk, nil)
 	_, err := attach(context.Background(), r.seam.FS(), rd, journalID, nil)
@@ -287,7 +285,7 @@ func TestAttachZeroHeaderSlot(t *testing.T) {
 			if err != nil {
 				t.Fatalf("attach: %v", err)
 			}
-			ranges, unreadFormat := rd.Unreadable()
+			ranges := rd.Unreadable()
 
 			if want := []core.SegmentID{6}; !slices.Equal(att.ZeroHeader, want) {
 				t.Errorf("attach: zero-header segments got %v, want %v", att.ZeroHeader, want)
@@ -302,9 +300,9 @@ func TestAttachZeroHeaderSlot(t *testing.T) {
 			// A file that holds none of its header is its length, not a
 			// device fault: the short read ended in io.EOF, one read,
 			// and nothing is collected as unreadable.
-			if len(ranges) != 0 || unreadFormat {
-				t.Errorf("attach: nothing a short or empty file holds was collected as unreadable: ranges %v, format %t, want none",
-					ranges, unreadFormat)
+			if len(ranges) != 0 {
+				t.Errorf("attach: nothing a short or empty file holds was collected as unreadable: ranges %v, want none",
+					ranges)
 			}
 			if calls := r.seam.CallsFor(kit.OpRead, format.SegmentName(6)); calls != 1 {
 				t.Errorf("attach: header reads got %d, want 1: a read that ends at the file's end is never retried", calls)
@@ -385,7 +383,7 @@ func TestAttachHeaderReadFailsAllAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach: a failed header read failed the pass itself: %v", err)
 	}
-	ranges, _ := rd.Unreadable()
+	ranges := rd.Unreadable()
 
 	want := []core.SegmentRange{{Segment: 12, Off: 0, Len: format.SegmentHeaderSize}}
 	if !slices.Equal(ranges, want) {
@@ -466,55 +464,14 @@ func TestAttachCancelledMidPass(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatalf("attach: a pass cancelled mid-listing did not return")
 	}
-	ranges, unreadFormat := rd.Unreadable()
-	if len(ranges) != 0 || unreadFormat {
-		t.Errorf("reader: the cancellation was collected as a device fault: ranges %v, format %t, want none",
-			ranges, unreadFormat)
+	ranges := rd.Unreadable()
+	if len(ranges) != 0 {
+		t.Errorf("reader: the cancellation was collected as a device fault: ranges %v, want none", ranges)
 	}
 	if !slices.Contains(r.listing(), format.SegmentName(13)) {
 		t.Errorf("attach: a cancelled pass changed the directory: segment 13 is gone; directory holds %v",
 			r.listing())
 	}
-}
-
-// A read of the format file that no attempt completes — three of them — is
-// collected with the format flag set, as the one no segment id names; the
-// attach pass leaves the flag to the open to refuse on.
-func TestReaderFormatUnreadable(t *testing.T) {
-	r := newRig(t)
-	r.writeFormat()
-	r.failReads(format.FormatFileName, 0)
-
-	rd := newReader(context.Background(), r.seam.FS(), r.clk, nil)
-	b := make([]byte, format.FormatFileSize)
-	if _, err := rd.ReadAt(format.FormatFileName, b, 0); err == nil {
-		t.Fatalf("reader: a format file no read completes returned nil, want the storage's error")
-	}
-	ranges, formatUnread := rd.Unreadable()
-	if !formatUnread {
-		t.Errorf("reader: the format file's failed reads were not collected: got formatUnread false, want true")
-	}
-	if len(ranges) != 0 {
-		t.Errorf("reader: the format file's failure was wrongly collected as a segment range: %v", ranges)
-	}
-	if calls := r.seam.CallsFor(kit.OpRead, format.FormatFileName); calls != 3 {
-		t.Errorf("reader: format reads got %d, want 3, the readretry bound", calls)
-	}
-}
-
-// versionTwoSegmentHeader returns a segment header of format version 2: it
-// verifies by its checksum and names this journal, so the decoder reads it
-// whole and refuses it on the version alone — the one refusal the attach
-// pass must fail the open with rather than classing the segment damaged.
-func versionTwoSegmentHeader() []byte {
-	b := make([]byte, format.SegmentHeaderSize)
-	copy(b, "DJH1")
-	binary.LittleEndian.PutUint16(b[4:6], 2)
-	copy(b[8:24], journalID[:])
-	binary.LittleEndian.PutUint64(b[24:32], 4)
-	binary.LittleEndian.PutUint32(b[44:48],
-		crc32.Checksum(b[:44], crc32.MakeTable(crc32.Castagnoli)))
-	return b
 }
 
 // ids returns the segment ids of the infos, in their order.
@@ -545,8 +502,8 @@ func (r *rig) fileBytes(name string) []byte {
 // reported a device fault here would leave a supervisor retrying a device
 // that never failed.
 //
-// decision: no format file is written for this rig, so the pass holding
-// nothing but the one segment proves the read left the propagate branch of
+// No format file is written for this rig, so the pass holding nothing but
+// the one segment proves the read left the propagate branch of
 // attachSegment and not a later iteration's ctx check; a cancelled read
 // between two segments is TestAttachCancelledMidPass's.
 func TestAttachCancelPropagatesThroughAFailingSegmentRead(t *testing.T) {
@@ -575,10 +532,9 @@ func TestAttachCancelPropagatesThroughAFailingSegmentRead(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatalf("attach: a read the cancellation cut did not return")
 	}
-	ranges, unreadFormat := rd.Unreadable()
-	if len(ranges) != 0 || unreadFormat {
-		t.Errorf("reader: the cancellation was collected as a device fault: ranges %v, format %t, want none",
-			ranges, unreadFormat)
+	ranges := rd.Unreadable()
+	if len(ranges) != 0 {
+		t.Errorf("reader: the cancellation was collected as a device fault: ranges %v, want none", ranges)
 	}
 	if !slices.Contains(r.listing(), format.SegmentName(12)) {
 		t.Errorf("attach: a cancelled pass changed the directory: segment 12 is gone; directory holds %v",

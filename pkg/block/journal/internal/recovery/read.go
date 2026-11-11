@@ -21,16 +21,19 @@ import (
 // makes goes through it, so a read the device cannot complete is retried by
 // the bound and, when no attempt reads, collected rather than judged. It
 // belongs to one open and is not safe for concurrent use.
+//
+// A format file's failed read is the caller's to answer, never the
+// reader's: ReadFormat runs under the same bound and knows the one file it
+// asked for, so it judges the failure on the read's own error rather than
+// consulting a flag here.
 type reader struct {
 	ctx context.Context
 	fs  storage.FS
 	clk core.Clock
 	log *slog.Logger
 
-	// unread holds each segment range no bounded read completed, and
-	// formatUnread says the format file's read never completed.
-	unread       []core.SegmentRange
-	formatUnread bool
+	// unread holds each segment range no bounded read completed.
+	unread []core.SegmentRange
 }
 
 // newReader returns the open's reader over fs, running under ctx and on
@@ -111,17 +114,16 @@ func (r *reader) ReadAt(name string, buf []byte, off int64) (n int, err error) {
 	// truncated or reported as lost. Withdrawn when an unread record can
 	// be held instead of refused.
 	r.warnUnreadable(name, err)
-	if kind, id := format.ClassifyName(name); kind == format.NameFormat {
-		r.formatUnread = true
-	} else {
-		r.unread = append(r.unread, core.SegmentRange{Segment: id, Off: off, Len: int64(len(buf))})
-	}
+	// The format file is read by ReadFormat, which answers its own failure;
+	// every name here is a segment the open reaches through the pass.
+	_, id := format.ClassifyName(name)
+	r.unread = append(r.unread, core.SegmentRange{Segment: id, Off: off, Len: int64(len(buf))})
 	return n, err
 }
 
-// Unreadable returns each byte range no bounded read completed, and whether
-// the format file never read. The open refuses on what it collected; an
-// empty answer is an open that read everything it reached for.
-func (r *reader) Unreadable() (ranges []core.SegmentRange, format bool) {
-	return r.unread, r.formatUnread
+// Unreadable returns each byte range no bounded read completed, in the
+// order the reads that failed were made. The open refuses on what it
+// collected; an empty answer is an open that read everything it reached for.
+func (r *reader) Unreadable() []core.SegmentRange {
+	return r.unread
 }

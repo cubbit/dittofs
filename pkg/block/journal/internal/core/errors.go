@@ -60,9 +60,12 @@ var (
 
 	// ErrUnreadable is matched by every UnreadableRangesError and by every
 	// read of a held extent, Sync or Since that names an unread file: a read
-	// the device cannot complete, never a record that does not verify. Open
-	// wraps it in an UnreadableRangesError that names the ranges, so a caller
-	// reads them from the value, never from the error's text.
+	// the device cannot complete, never a record that does not verify. Only
+	// Open returns it today, wrapping it in an UnreadableRangesError that
+	// names the ranges, so a caller reads them from the value, never from
+	// the error's text; the journal's reads return the device's own error
+	// and Sync and Since answer ErrNotImplemented until the reopen that
+	// reads returns it.
 	ErrUnreadable = errors.New("journal: unreadable")
 
 	// ErrCorrupt is returned when a structure the journal must read does not

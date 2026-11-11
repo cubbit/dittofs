@@ -25,12 +25,6 @@ const Attempts = 3
 // attempts of similar length the total stays under about twice it.
 const window = 15 * time.Second
 
-// Clock is the journal's one clock, core.Clock, under the name this
-// package's callers write it with. A second clock interface would give the
-// journal two sources of time to drift between; the test double satisfies
-// this one as it does core's.
-type Clock = core.Clock
-
 // Do runs read until it returns nil, attempts have been made, the window has
 // passed on clk since the first started, or ctx is done, and returns the
 // number tried and the error of the last thing that stopped it. read is
@@ -40,7 +34,7 @@ type Clock = core.Clock
 // returned, not the context's: the bound, not the context, is what spent the
 // attempt, and a caller counting its own attempts answers for the device
 // failure it saw. An attempts below 1 is read as 1.
-func Do(ctx context.Context, clk Clock, attempts int, read func() error) (tried int, err error) {
+func Do(ctx context.Context, clk core.Clock, attempts int, read func() error) (tried int, err error) {
 	if attempts < 1 {
 		attempts = 1
 	}
