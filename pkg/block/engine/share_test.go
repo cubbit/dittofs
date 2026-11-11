@@ -826,7 +826,7 @@ func TestTheTableUnderReadersAndBinds(t *testing.T) {
 				default:
 				}
 
-				if _, err := u.e.Draw(context.Background(), u.share.ID, entity.NewFileID()); err != nil {
+				if err := u.e.BindingOf(u.share.ID); err != nil {
 					t.Errorf("a reader lost the share: %v", err)
 
 					return
