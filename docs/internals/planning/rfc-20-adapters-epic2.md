@@ -163,7 +163,7 @@ names the epic that owns the rest.
 | --- | --- | --- | --- | --- |
 | R29 | One call fails a test that leaves behind a goroutine or a descriptor it opened, naming each goroutine with its stack; it polls the goroutines themselves, never a fixed sleep, with one backstop timeout; no new dependency | MUST | rule 4; `CLAUDE.md` "Writing tests" | T2.4 |
 | R30 | The same call fails when any of `Deps.Budgets`' four budgets reads above zero, naming it | MUST | rule 4, rule 8; §6.8; §9 A18 | T2.4 (green with E3) |
-| R31 | A test that can pass only once a later epic fills a stub lands red in the `adapter-conformance` suite, behind its own build tag, with one `known.yaml` entry giving its failure message and the issue of the epic that turns it green; that epic removes the entry once CI shows the test passing; until then it fails on an assertion or a returned error, never a panic; the suite is named in RFC 20's suites paragraph and its tag in `lint-go`'s vet line | MUST | RFC 20 §8.5; RFC 29 §4.6, §4.7, §4.9; owner decision | T2.4 |
+| R31 | A test that can pass only once a later epic fills a stub lands red in the `adapter-conformance` suite, behind its own build tag, with one `known.yaml` entry giving its failure message and the issue of the epic that turns it green; that epic removes the entry once CI shows the test passing; until then it fails on an assertion or a returned error, never a panic, so a map entry it indexes, `Addrs`' among them, is checked for presence and length first, and a read that waits on the server has a backstop deadline; the suite is named in RFC 20's suites paragraph and its tag in `lint-go`'s vet line | MUST | RFC 20 §8.5; RFC 29 §4.6, §4.7, §4.9; owner decision | T2.4 |
 
 **The surface amendment**
 
@@ -242,8 +242,9 @@ names the epic that owns the rest.
   allowing `pkg/vfs/...` would pass, and one importing `internal/prof`. A v1 path is checked by whether a
   package exists there, which also covers any import of it.
 - **D10, the walk reads files, not packages.** The import test reuses
-  `internal/vfs/arch_test.go`'s approach, `go/parser` with `ImportsOnly` over every `.go` file
-  under the tree, `testdata` left out, rather than `go/packages`: standard library only, and
+  `internal/vfs/arch_test.go`'s `filepath.WalkDir` walk and its `testdata` skip, but parses with
+  `parser.ImportsOnly` and, unlike it, reads `_test.go` files too, so R10–R12's test-file rules
+  and their seeds are seen; it loads no package with `go/packages`: standard library only, and
   build-tagged files are read whatever their tags, so an import behind a tag is not hidden. A
   `ponytail:` names the ceiling: a package's path is read from its directory, so a `replace` or a
   vendored copy would be missed; move to `go/packages`, inside the test alone, if the module ever
@@ -277,8 +278,12 @@ names the epic that owns the rest.
   specification with subtests has one entry per subtest, which excuses its parent (RFC 29 §4.6).
   The suite is `engine-conformance`'s shape, `tier: pr`.
 - **D12, the allocation cell lands here; the epic's owner chose this.** `testproto`'s header gate is the
-  first allocation gate written, so `unit/adapter-allocs` and its fixed `dt run` step in the unit
-  job, as `unit/journal-index` has, land with it in T2.1 rather than with `BufPool`'s in E3. E3's
+  first allocation gate written, so `unit/adapter-allocs` lands with it in T2.1 rather than with
+  `BufPool`'s in E3. While the branch's `tests.yml` keeps its filter of the cells it runs, the
+  cell also gets a fixed `dt run` step in the unit job, the job the ruleset requires, as
+  `unit/journal-index` has, and `adapter-conformance` an entry in that filter beside
+  `engine-conformance`; once develop's `tests.yml`, which plans every cell, reaches the branch,
+  the registry entries alone run both. E3's
   T3.3 adds its package to the cell's command.
 - **D13, the leak check is the journal's profiler, moved; goroutine IDs, the epic's owner chose this.**
   `pkg/block/journal/journaltest/prof` already fails a test that leaves goroutines (compared by ID
@@ -408,7 +413,7 @@ pkg/adapter/nfs/nfs_test.go        T2.3  vfstest.Memory for internal/vfs (D15)
 pkg/adapter/smb/smb_test.go        T2.3  vfstest.Memory for internal/vfs (D15)
 test/adapter/known.yaml            T2.4  the red specifications (D11)
 test/suites.yaml                   T2.1  unit/adapter-allocs cell; T2.4  adapter-conformance suite, its tag in lint-go's vet line, unit/journal-index's prof path
-.github/workflows/tests.yml        T2.1  unit/adapter-allocs' fixed step; T2.4  adapter-conformance in the branch's cell filter
+.github/workflows/tests.yml        T2.1  unit/adapter-allocs' fixed step; T2.4  adapter-conformance in the branch's cell filter; each only while the branch keeps that filter (D12)
 .github/workflows/journal-platforms.yml  T2.4  internal/prof in its path filter and its go test
 docs/internals/rfcs/rfc-20-adapters.md  T2.4  §8.5's sentence on red tests names adapter-conformance
 pkg/block/journal/imports_test.go  T2.4  internal/prof allowed in journaltest and tests
@@ -527,8 +532,8 @@ func (c *Client) Balance() int
 
 **Subtask T2.4 estimate: 1.75 man-days.**
 
-- **Track:** the team. **Depends on:** S1. First, since T2.1 and T2.2 read `prof` and land red
-  specifications in the suite this registers.
+- **Track:** the team. **Depends on:** S1. **Why first:** T2.1 and T2.2 read `prof` and land
+  red specifications in the suite this registers.
 - **Covers:** R29, R30, R31.
 - **Deliverables:**
   - `pkg/block/journal/journaltest/prof` moved to `internal/prof` with its tests (D13); every
@@ -544,8 +549,8 @@ func (c *Client) Balance() int
   - the `adapter-conformance` suite in `test/suites.yaml` (`format: go-json`, `cmd: go test -race
     -tags=adapter_conformance -run ^TestConformance ./internal/adapter/...`, `known:
     test/adapter/known.yaml`, `tier: pr`), in a component group named `adapters`; the tag on
-    `lint-go`'s `go vet -tags=` line; the suite in `tests.yml`'s branch cell filter beside
-    `engine-conformance`; the suite's name added to RFC 20 §8.5's sentence on red tests, which
+    `lint-go`'s `go vet -tags=` line; while the branch's `tests.yml` keeps its cell filter, the
+    suite in it beside `engine-conformance` (D12); the suite's name added to RFC 20 §8.5's sentence on red tests, which
     `dt docs --check` accepts only once the suite is registered; `docs/internals/testing.md`
     regenerated with `test/harness/bin/dt docs`;
   - `leak_conformance_test.go`, two specifications ordered as D11 says; one `known.yaml` entry
@@ -599,10 +604,14 @@ func (c *Client) Balance() int
   - `client.go`: `Msg`, `Reply`, `Client`, `NewClient`, `Send`, `Recv`, `Balance` as §5 states
     its contract.
   - `unit/adapter-allocs` in `test/suites.yaml`, its command `go test` over
-    `./internal/adapter/adaptertest/testproto/`, and its fixed `dt run` step in the unit job (D12).
+    `./internal/adapter/adaptertest/testproto/`, and, while the branch's `tests.yml` keeps its
+    cell filter, its fixed `dt run` step in the unit job (D12).
   - `conformance_test.go`: `TestConformanceEchoEndToEnd`, `testproto`'s tables built first (D11),
     then a `core.NewServer` on `testproto` and a `Settings` of `settings.DefaultNFS().Adapter`'s
-    timeouts over `127.0.0.1:0`, its listener's `Services` `{"testproto"}`, started, dialled at `Addrs()[adapter.Socket{Service: "testproto", Network: "tcp"}][0]`,
+    timeouts over `127.0.0.1:0`, its listener's `Services` `{"testproto"}`, started, dialled at the first address of `Addrs()`' `adapter.Socket{Service: "testproto",
+    Network: "tcp"}` entry, the test calling `t.Fatalf` naming the key and the whole map when
+    that entry is missing or empty, the connection given one backstop deadline so a server that
+    binds but never replies fails `Recv` with an error rather than hanging the suite,
     one `Echo` sent by the client and its reply read, `CheckLeaks` clean after `Stop`; its
     `known.yaml` entry (`message: 'testproto: tables: not implemented'`, `issue: "#3966"`, its
     reason naming E5's tables and pipeline and E4's server).

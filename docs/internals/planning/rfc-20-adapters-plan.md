@@ -154,9 +154,10 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
 RFC 20's suites paragraph puts every layer this plan builds in `unit`, the allocation gates
 in a non-race cell, and a test only a later change can turn green in a red suite of its own. `unit/nonrace` is nightly, and the nightly runs on develop's schedule, never
 on `feat/storage-v2`, so the gates get a per-change cell of their own, `unit/adapter-allocs`, as
-the journal's run in `unit/journal-index`. Like that cell, it runs from a fixed step in the unit
-job: the branch's cell filter drops a cell with no job, so the cell alone would never run. Cell
-and step land with their first gate, `testproto`'s header gate in T2.1; E3 adds `BufPool`'s. `unit` keeps no `known.yaml`, so it cannot hold a red test: **epic 2
+the journal's run in `unit/journal-index`. While the branch's `tests.yml` keeps its filter of
+the cells it runs, which drops this cell, it runs from a fixed step in the unit job, the job the
+ruleset requires, as that cell does; once develop's `tests.yml`, which plans every cell, reaches
+the branch, the registry entry alone runs it. Cell and step land with their first gate, `testproto`'s header gate in T2.1; E3 adds `BufPool`'s. `unit` keeps no `known.yaml`, so it cannot hold a red test: **epic 2
 registers a red suite of its own, `adapter-conformance`**, behind the `adapter_conformance` build
 tag with `known: test/adapter/known.yaml` and `tier: pr`, as `engine-conformance` is (RFC 29
 §4.7). A test that is the specification a later epic builds to, and can pass only once that
@@ -564,7 +565,9 @@ rows, A10, A11, A14, A19, A20.
   `NewServer` refuses a listener naming no service, an empty one or one twice, and two naming
   the same `adapter.Socket` or the same network and nonzero port. `Addrs()`'s body (stub from the
   Serving/Addrs surface change): one `adapter.Socket` per service of each listener, each address
-  at the port bound there, with one test per promise: the map and its slices are the caller's (the test
+  at the port bound there, binding by the address's family (`tcp4`, `tcp6`) and reporting the
+  address as the settings name it, with one test per promise: a listener on `0.0.0.0` is reported
+  at `0.0.0.0:<port>`, not `[::]:<port>`; the map and its slices are the caller's (the test
   mutates both, calls `Addrs` again and finds the server unchanged); port 0 is resolved; an
   address `Reconfigure` adds is present and one it removes gone (with T4.6); the map is empty
   before `Start` and after `Stop`. If it moves the first
@@ -700,7 +703,8 @@ and SMB rows, §5.1, §5.2, §5.4 for the headers, §6.10's codec gate for the h
   settings snapshot; every command not supported over loopback, leak checks clean.
 - T6.4 `nfs/protocol` and `New` (internal and public), `New` binding on `Port` the listeners it
   would put on 2049 (RFC 20 §3.6) and building every table (`protocol.Tables`)
-  as RFC 20 §4.8's example does, no `init()` registration: `Router` by (program, version) over empty
+  as RFC 20 §4.8's example does but passing its TCP listener only (the UDP one waits on `core`'s
+  datagram listener, in the ledger), no `init()` registration: `Router` by (program, version) over empty
   tables; unknown program, version and procedure each refused as RFC 5531 says over loopback,
   a version outside `Versions` answered `PROG_MISMATCH` naming the range's ends and a minor
   version outside it `NFS4ERR_MINOR_VERS_MISMATCH`, the range read from the connection's
@@ -784,7 +788,8 @@ feature parity with develop. A row moves only to another owner, never off the le
 | Deferred | Why not here | Owner | Comes back when |
 | --- | --- | --- | --- |
 | NFSv3 procedures; NFSv4.0, 4.1 and 4.2 operations; the `ops/` tables | handlers are RFC 21's | RFC 21 plan | its handler epics |
-| MOUNT, NLM, NSM, `SM_NOTIFY`; NLM and NSM over UDP (RFC 20 §11 q3) | auxiliary programs are RFC 21's | RFC 21 plan | its auxiliary-services epic |
+| MOUNT, NLM, NSM, `SM_NOTIFY`; NLM and NSM over UDP (RFC 20 §11 q3, which drops MOUNT over UDP) | auxiliary programs are RFC 21's | RFC 21 plan | its auxiliary-services epic |
+| `core`'s datagram listener (RFC 20 §3.1: a bounded queue, a datagram dropped when it is full), and the UDP listener of RFC 20 §4.8's example | every epic 4 subtask is TCP; only NLM and NSM over UDP need it | RFC 21 plan | with NLM and NSM over UDP |
 | RPCSEC_GSS context table and window; NFSv4.1 slots and reply cache; the v3 and v4.0 duplicate-request cache (RFC 20 §11 q2) | stage state machines, no driver here | RFC 21 plan | with `EXCHANGE_ID`/`CREATE_SESSION` and GSS `INIT` |
 | NFS-over-TLS (`Conn.StartTLS`, `tlsconfig` reload, `require` mode); a certificate that does not load refused when `New` loads it (at configured) and when `Reconfigure` does, before the snapshot swap, never by `Validate`, which reads no file (RFC 20 §3.6); the loading lands with E4's `Reconfigure` and RFC 21's `New` (E6 has no TLS) | starts at the `NULL` handler; `StartTLS` is a method added to `Conn`, no frozen signature changed | RFC 21 plan | with `NULL` |
 | NFS callbacks (`CB_RECALL`, `CB_NOTIFY`, `CB_RECALL_ANY`, NLM `GRANTED` via `Deps.DialClient`) | need sessions and handlers | RFC 21 plan | with delegations and NLM |
