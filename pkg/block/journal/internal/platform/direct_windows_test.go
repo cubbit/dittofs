@@ -17,19 +17,20 @@ import (
 // TestReadAtDirectHandleIsNoBuffering checks ReadAtDirect reads through a
 // second handle of the file opened with FILE_FLAG_NO_BUFFERING: the table's
 // log shows one createFile of the file's path, with read access alone, sharing
-// reads, writes and deletes — FILE_SHARE_DELETE included, so the handle holds
-// a file nothing else renames or removes — OPEN_EXISTING, and no attribute
-// but FILE_FLAG_NO_BUFFERING, and a readFile on the handle it returned, of
-// the window's own size at the offset its overlapped names, returning the
-// file's synced bytes. It does not ask a direct read to diverge from the page
-// cache over another handle's buffered write: FILE_FLAG_NO_BUFFERING reads
-// only what writes through caching handles write back, so both reads answer
-// the same. The test's bytes are one window wide, so the table's log is one
-// readFile alone after the open.
+// reads, writes and deletes — FILE_SHARE_DELETE included, without which this
+// second handle would block the journal's own rename or remove of the file
+// while it is open — OPEN_EXISTING, and no attribute but
+// FILE_FLAG_NO_BUFFERING, and a readFile on the handle it returned, of the
+// window's own size at the offset its overlapped names, returning the file's
+// synced bytes. It does not ask a direct read to diverge from the page cache
+// over another handle's buffered write: FILE_FLAG_NO_BUFFERING reads only
+// what writes through caching handles write back, so both reads answer the
+// same. The read asked for is one window wide — a block of a two-block file
+// — so the table's log is one readFile alone after the open.
 func TestReadAtDirectHandleIsNoBuffering(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	synced := bytes.Repeat([]byte("A"), 4096)
+	synced := bytes.Repeat([]byte("A"), 2*4096)
 
 	dir := t.TempDir()
 	r := &recorder{}
@@ -38,11 +39,14 @@ func TestReadAtDirectHandleIsNoBuffering(t *testing.T) {
 
 	direct := make([]byte, 4096)
 	if n, err := f.ReadAtDirect(direct, 4096); n != 4096 || err != nil {
-		t.Fatalf("ReadAtDirect: %d, %v; want 4096 and no error", n, err)
+		t.Fatalf("ReadAtDirect at 4096: %d, %v; want the second block, 4096 and no error", n, err)
 	}
 
-	if !bytes.Equal(direct, synced) {
-		t.Fatalf("ReadAtDirect: got %q, want the file's bytes %q", direct[:8], synced[:8])
+	if !bytes.Equal(direct, synced[4096:]) {
+		t.Fatalf(
+			"ReadAtDirect at 4096: got %q, want the file's second block %q",
+			direct[:8], synced[4096:4096+8],
+		)
 	}
 
 	log := r.take()
@@ -69,7 +73,11 @@ func TestReadAtDirectHandleIsNoBuffering(t *testing.T) {
 		{"FILE_SHARE_DELETE", windows.FILE_SHARE_DELETE},
 	} {
 		if open.share&bit.bit == 0 {
-			t.Errorf("%s: want %s, so the handle holds a file nothing else renames or removes", open, bit.name)
+			t.Errorf(
+				"%s: want %s, without which this second handle would block the journal's own rename or remove of the file",
+				open,
+				bit.name,
+			)
 		}
 	}
 
@@ -192,9 +200,9 @@ func TestReadAtDirectRefusedByFilesystem(t *testing.T) {
 // TestReadAtDirectEndOfFile checks a read the file's end cuts short answers
 // io.EOF as bare as ReadAt does — never an fs.PathError wrapping it, the
 // shape ReadAt wraps only the errors that are not io.EOF — so a caller
-// comparing err == io.EOF, as the format catalogue does, holds. The second
-// block of the window reads past the file's end, where Windows answers
-// ERROR_HANDLE_EOF, which the read maps to the same io.EOF.
+// comparing err == io.EOF, as the format catalogue does, holds. Both reads
+// sit inside the file's first block, whose one readFile call of the window
+// returns a partial count with no error and ends it off the alignment.
 func TestReadAtDirectEndOfFile(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -213,6 +221,65 @@ func TestReadAtDirectEndOfFile(t *testing.T) {
 
 	if n, err := f.ReadAtDirect(make([]byte, 1), 6); n != 0 || err != io.EOF {
 		t.Fatalf("ReadAtDirect past the end: %d, %v (%T); want 0 and io.EOF bare", n, err, err)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestReadAtDirectHandleEOFAtBlockEnd is the EOF case the mapping in
+// readDirect's raw exists for, which every shorter file never reaches: a
+// file whole blocks long, asked for a byte more than it holds, whose window
+// spans a second block that starts at the file's end — where ReadFile can
+// answer ERROR_HANDLE_EOF with no byte, the refusal the raw maps to io.EOF.
+// The second raw call's answer is injected, since a synchronous handle may
+// instead read it as zero bytes and no error, which directRead maps the same
+// way; the first raw call runs for real, reading the file's one block whole
+// as a partial count of a wider window. The read answers io.EOF bare with
+// the 4096 bytes the file had, and the table's log holds the second readFile
+// call at 4096 whose queued refusal it was. Delete the ERROR_HANDLE_EOF
+// branch in readDirect and its error reaches the caller wrapped in an
+// *fs.PathError instead of io.EOF, and the test fails on its bare-io.EOF
+// assertion.
+func TestReadAtDirectHandleEOFAtBlockEnd(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	dir := t.TempDir()
+	r := &recorder{}
+	o := newOS(dir, r.table())
+	f := directCheckFile(t, o, r, "a", bytes.Repeat([]byte("A"), 4096))
+	r.failNext("readFile", nil, windows.ERROR_HANDLE_EOF)
+
+	p := make([]byte, 4097)
+	n, err := f.ReadAtDirect(p, 0)
+
+	if err != io.EOF {
+		t.Fatalf("ReadAtDirect past the end: %d, %v (%T); want io.EOF bare", n, err, err)
+	}
+
+	if n != 4096 || !bytes.Equal(p[:4096], bytes.Repeat([]byte("A"), 4096)) {
+		t.Fatalf(
+			"ReadAtDirect past the end: read %d bytes, %q...; want the file's whole block",
+			n,
+			p[:min(8, n)],
+		)
+	}
+
+	log := r.take()
+	if len(log) != 3 || log[0].op != "createFile" || log[1].op != "readFile" || log[2].op != "readFile" {
+		t.Fatalf("want the direct open and two readFile calls in the table's log, got %v", log)
+	}
+
+	if log[1].off != 0 || log[1].n != 8192 {
+		t.Fatalf("%s: want the first read of the whole two-block window at 0", log[1])
+	}
+
+	if log[2].off != 4096 || log[2].n != 4096 || log[2].handle != log[1].handle {
+		t.Fatalf(
+			"%s: want the second readFile of the window's last block at the file's end, on the first's handle",
+			log[2],
+		)
 	}
 
 	if err := f.Close(); err != nil {
@@ -365,9 +432,10 @@ func TestReadAtDirectOpensOnce(t *testing.T) {
 
 // TestReadAtDirectCloseClosesHandle checks Close closes the direct handle
 // through the table: after a ReadAtDirect, Close's log is exactly one
-// closeHandle of the handle the open returned, and a closed file's Close —
-// the second on the same file — makes none, so the direct handle is closed
-// once and never twice.
+// closeHandle of the handle the open returned, and after it the file is
+// marked closed, so a second Close — its own file handle is already gone, an
+// error its os answer carries and nothing here cares about — makes no
+// further closeHandle, and the direct handle is closed once and never twice.
 func TestReadAtDirectCloseClosesHandle(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -389,6 +457,12 @@ func TestReadAtDirectCloseClosesHandle(t *testing.T) {
 	log := r.take()
 	if len(log) != 1 || log[0].op != "closeHandle" || log[0].handle != h {
 		t.Fatalf("Close made %v; want exactly one closeHandle of the direct handle %#x", log, h)
+	}
+
+	_ = f.Close()
+
+	if log := r.take(); len(log) != 0 {
+		t.Fatalf("the second Close made %v; want no call, the direct handle is closed once", log)
 	}
 }
 

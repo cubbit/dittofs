@@ -13,11 +13,11 @@ import (
 // over the aligned window directRead builds. The handle is opened lazily by
 // the file's first direct read, asks for read access alone — a reader asks
 // nothing of the file but its bytes — and shares reads, writes and deletes as
-// the journal's own opens do, so the handle holds a file nothing else renames
-// or removes. It is kept for the file's life and closed by Close, and the
-// direct mu holds the open, the read and the close together, so a Close
-// cannot release the handle under a read and two reads never open a handle
-// twice.
+// the journal's own opens do, so this second handle never blocks the
+// journal's own rename or remove of the file while it is open. It is kept for
+// the file's life and closed by Close, and the direct mu holds the open, the
+// read and the close together, so a Close cannot release the handle under a
+// read and two reads never open a handle twice.
 //
 // decision: a filesystem that refuses the open or a read of the direct handle
 // is handed back as itself, never widened and never worked around with the
@@ -61,6 +61,10 @@ func (f *file) readDirect(p []byte, off int64) (int, error) {
 	h := windows.Handle(f.directFD)
 
 	n, rerr := directRead(p, off, directAlign, func(buf []byte, off int64) (int, error) {
+		// ponytail: the buffer reaches ReadFile uncapped, and its length is
+		// passed to the syscall as a 32-bit count, so a window of 4 GiB or
+		// more would be truncated and misread. Cap it as WriteAt caps its
+		// writes when a journal read ever asks for that much memory at once.
 		o := windows.Overlapped{
 			Offset:     uint32(off),
 			OffsetHigh: uint32(off >> 32),
