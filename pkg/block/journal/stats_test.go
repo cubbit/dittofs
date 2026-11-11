@@ -1,11 +1,17 @@
 package journal
 
 import (
+	"errors"
 	"maps"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/datapath"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 )
 
 // TestStats_ListsTagsHoldingRecordsWithoutAHandle checks a journal whose share
@@ -52,15 +58,18 @@ func TestStats_AfterCloseIsZero(t *testing.T) {
 	writeReady(t, h, NewFileID([16]byte{1}), "x")
 
 	var wg sync.WaitGroup
+	start := make(chan struct{})
 	for range 4 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			<-start
 			for range 50 {
 				_ = j.Stats()
 			}
 		}()
 	}
+	close(start)
 	if err := j.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -117,5 +126,80 @@ func TestStats_NoFieldReportsAnOffloadedBit(t *testing.T) {
 				t.Errorf("%s.%s reports an offloaded bit", ty.Name(), f.Name)
 			}
 		}
+	}
+}
+
+// TestStatsFromDistinct hands the conversion a core Stats whose every value is
+// different, so an assignment to the wrong public field fails, and checks the
+// result shares no slice or map with its input.
+func TestStatsFromDistinct(t *testing.T) {
+	at := time.Unix(1700000000, 0)
+	boom := errors.New("sync boom")
+	ro := errors.New("read-only cause")
+	in := datapath.Stats{
+		MaxBytes: 1, UsedBytes: 2, ReservedBytes: 3, HeldBytes: 4, DirtyBytes: 5,
+		OldestDirty: at, Files: 6, ExtentCount: 7, DropRanges: 8, Segments: 9, Sealed: 10,
+		UnreclaimedBytes: 11, HeadroomBytes: 12, RepackReserveBytes: 13, PinnedSegments: 14,
+		OpenDescriptors: 15, DescriptorLimit: 16, DamagedSegments: 17,
+		LastSyncError:  &durability.SyncFailure{Err: boom, At: at.Add(time.Second)},
+		SyncDuration:   durability.Histogram{Bounds: []time.Duration{1, 2}, Counts: []uint64{3, 4, 5}, Sum: 6},
+		RemovalMarkers: 18, VersionLimit: Version{Counter: 19}, VersionsLeft: 20, NextVersion: Version{Counter: 21},
+		ExtentLimit: 22,
+		Counters: datapath.Counters{
+			WrittenBytes: 101, FilledBytes: 102, FillRefused: 103, OfferedBytes: 104, MarkedBytes: 105,
+			ReleasedBytes: 106, FreedBytes: 107, RepackedBytes: 108, ReservationRefused: 109, Syncs: 110,
+			SyncFailures: 111, SyncReappendedBytes: 112, HeadroomDraws: 113, CorruptExtentsDataLoss: 114,
+			CorruptExtentsRepairable: 115, StaleExtents: 116, SupersededExtents: 117, TornTails: 118,
+			ScanResyncs: 119, IndexRefusals: 120, SegmentReopens: 121, SpareRefusals: 122, DoubleRetires: 123,
+		},
+		Losses:         []LossEvent{{SeqNum: 1, Share: 7, Extent: Extent{Off: 8, Len: 9}}, {SeqNum: 2}},
+		LossGeneration: 24,
+		TagConflicts:   []index.Conflict{{File: NewFileID([16]byte{1}), Tags: [2]ShareTag{3, 4}}},
+		Shares:         map[ShareTag]datapath.ShareStats{5: {Limit: 31, UsedBytes: 32, ReservedBytes: 33, HeldBytes: 34, DirtyBytes: 35, UnreclaimedBytes: 36}},
+		ReadOnly:       ReadOnlyState{ReadOnly: true, Err: ro, SpareMade: true, Check: boom},
+	}
+	got := statsFrom(in)
+
+	want := Stats{
+		MaxBytes: 1, UsedBytes: 2, ReservedBytes: 3, HeldBytes: 4, DirtyBytes: 5,
+		OldestDirty: at, Files: 6, ExtentCount: 7, DropRanges: 8, Segments: 9, Sealed: 10,
+		UnreclaimedBytes: 11, HeadroomBytes: 12, RepackReserveBytes: 13, PinnedSegments: 14,
+		OpenDescriptors: 15, DescriptorLimit: 16, DamagedSegments: 17,
+		LastSyncError:  &SyncFailure{Err: boom, At: at.Add(time.Second)},
+		SyncDuration:   Histogram{Bounds: []time.Duration{1, 2}, Counts: []uint64{3, 4, 5}, Sum: 6},
+		RemovalMarkers: 18, VersionLimit: Version{Counter: 19}, VersionsLeft: 20, NextVersion: Version{Counter: 21},
+		ExtentLimit: 22,
+		Counters: Counters{
+			WrittenBytes: 101, FilledBytes: 102, FillRefused: 103, OfferedBytes: 104, MarkedBytes: 105,
+			ReleasedBytes: 106, FreedBytes: 107, RepackedBytes: 108, ReservationRefused: 109, Syncs: 110,
+			SyncFailures: 111, SyncReappendedBytes: 112, HeadroomDraws: 113, CorruptExtentsDataLoss: 114,
+			CorruptExtentsRepairable: 115, StaleExtents: 116, SupersededExtents: 117, TornTails: 118,
+			ScanResyncs: 119, IndexRefusals: 120, SegmentReopens: 121, SpareRefusals: 122, DoubleRetires: 123,
+		},
+		Losses:         []LossEvent{{SeqNum: 1, Share: 7, Extent: Extent{Off: 8, Len: 9}}, {SeqNum: 2}},
+		LossGeneration: 24,
+		TagConflicts:   []TagConflict{{File: NewFileID([16]byte{1}), Tags: [2]ShareTag{3, 4}}},
+		Shares:         map[ShareTag]ShareStats{5: {Limit: 31, UsedBytes: 32, ReservedBytes: 33, HeldBytes: 34, DirtyBytes: 35, UnreclaimedBytes: 36}},
+		ReadOnly:       ReadOnlyState{ReadOnly: true, Err: ro, SpareMade: true, Check: boom},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("statsFrom =\n%+v\nwant\n%+v", got, want)
+	}
+
+	// Recovery is a field no core figure feeds, so it stays zero.
+	if got.Recovery != (RecoveryStats{}) {
+		t.Errorf("Recovery = %+v, want zero", got.Recovery)
+	}
+
+	// The result is the caller's: changing it leaves the input as it was.
+	got.SyncDuration.Bounds[0], got.SyncDuration.Counts[0] = 99, 99
+	got.Losses[0].SeqNum = 99
+	got.TagConflicts[0].Tags[0] = 99
+	got.LastSyncError.Err = nil
+	got.Shares[5] = ShareStats{}
+	delete(got.Shares, 5)
+	if in.SyncDuration.Bounds[0] != 1 || in.SyncDuration.Counts[0] != 3 || in.Losses[0].SeqNum != 1 ||
+		in.TagConflicts[0].Tags[0] != 3 || in.LastSyncError.Err != boom || len(in.Shares) != 1 || in.Shares[5].Limit != 31 {
+		t.Fatalf("changing the converted Stats reached the input: %+v", in)
 	}
 }
