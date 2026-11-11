@@ -650,6 +650,27 @@ RFC 13 §9's single-node rows run against a server `node.New` builds, through th
 - **O6. Estimates least certain.** Epic 3's write check, where the newer-schema refusal and the
   delete meet the existing settings view's transaction, and the transaction RFC 23's plan builds.
 
+### 6.1 Deferral ledger
+
+What this plan knowingly does not build. Each row indexes the section that defers it.
+
+| Deferred | Why | Owner | Trigger | Issue |
+| --- | --- | --- | --- | --- |
+| The provisioning file (RFC 13 §2.4) and its series (header, O1, §1.4) | no plan takes it; RFC 23's plan defers it too | unowned | a plan takes RFC 13 §2.4 | — |
+| The backup location's record (RFC 13 §2.5); "§5.2 backup location credential" (header, O1, §1.4) | it needs backups | RFC 26 | RFC 26's plan | — |
+| The scratch paths of RFC 13 §2.2; "§2.2 scratch paths" (header, O1, §1.4) | no v1 component reads them | RFC 26, RFC 1 and RFC 25 plans | the first reader: backups' spill, salvage export or the event spool | — |
+| A remote store's endpoint or credential change, refused; "§5.2 same content" (D9, O1, §1.4) | needs the capability check (RFC 4 §4.11) and the claim (RFC 27 §2.1) | RFC 4 and RFC 27; RFC 23 plan (#4050) for its credential rotation and proven endpoint | both pieces built | — |
+| The call that raises an active version, `raise-format` (RFC 13 §5.5) (header, §4.3's `ponytail:`, O1) | each format has one version | unowned | a format gains a second version | — |
+| "§7 rotation"'s wrapping-key half and its reseal pass (§4.3's `ponytail:`, O1, §1.4) | a retired role key keeps every secret open | unowned | an operator must remove a role key | — |
+| The namespace key table; "§5.1 encryption bound", "§7 namespace keys", "§7 chunk-ID key", "§7 key table" (header, O1, §1.4) | RFC 13 §7's material bullets are RFC 5's | RFC 5 plan | RFC 5's plan | — |
+| "§5.3 recorded" and "§6 block target range" (O1, §1.4) | the engine's and the remote tier's validator rows, through this plan's table | RFC 8 plan; RFC 4 plan | their epics declare the keys | — |
+| The cluster rules: §5's two-step restart value, §5.4 and §5.5 across nodes, the two-node §9 rows; a lagging node refusing the raise (header, §4.3's `ponytail:`, O1, §1.4) | single node only | RFC 15 | a second node | — |
+| Pruning an old secret version once every node's status reports the new one (§4.3's `ponytail:`) | one node prunes on its own resolve | RFC 15 | a second node | — |
+| Reconcile reading only records above its position, with an index by position (§4.3's `ponytail:`) | one prefix scan per generation move | unowned | the scan shows at the settings count of 10⁴ shares | — |
+| The cross-component rule, RFC 13 §6's example (§4.3's `ponytail:`) | its second setting, `migration.freeze_timeout`, does not exist | unowned | that setting is declared | — |
+| A per-role passphrase variable for key files (§4.3's `ponytail:`) | `keyprovider` reads one variable | unowned | two roles need distinct passphrases | — |
+| Appendix B sections no component has declared (D3, O4) | each section is its component's plan's | each component's plan | that plan declares the section | — |
+
 ## 7. RFC coverage
 
 | RFC section | Epic(s) |
