@@ -53,13 +53,13 @@ func shareTwice(t *testing.T, j engine.Journal) {
 	id := journal.NewFileID([16]byte{'s'})
 	p := []byte("sixsix")
 
-	if _, err := j.Share(0, 0, journal.Version{}); !errors.Is(err, journal.ErrInvalidSetting) {
+	if _, err := j.Share(0, 0, journal.Version{Counter: refused}); !errors.Is(err, journal.ErrInvalidSetting) {
 		t.Errorf("Share of tag 0 = %v, want ErrInvalidSetting", err)
 	}
 	if _, err := j.Share(1, 0, journal.Version{Epoch: 1, Counter: refused}); !errors.Is(err, journal.ErrUnknownFormat) {
 		t.Errorf("Share with a floor of epoch 1 = %v, want ErrUnknownFormat", err)
 	}
-	if _, err := j.Share(1, -1, journal.Version{}); !errors.Is(err, journal.ErrInvalidSetting) {
+	if _, err := j.Share(1, -1, journal.Version{Counter: refused}); !errors.Is(err, journal.ErrInvalidSetting) {
 		t.Errorf("Share with a negative limit = %v, want ErrInvalidSetting", err)
 	}
 
