@@ -789,7 +789,8 @@ proof.
 - Grants and the flags (RFC 18 §6.4, §6.5).
 - Every `Secret` identity refused while `identity.ntlm` is off (RFC 18 §3.5, reason `ntlm_off`).
 - The `State` and its generation, applied under `Apply` (RFC 18 §2.6, §7.2).
-- `Identity.Key()` and admission's caller cache keyed as RFC 18 §7.1 says, with single-flight misses.
+- `Identity.Key()` and admission's caller cache keyed as RFC 18 §7.1 says, with single-flight misses;
+  a resolution whose own mint made it stale re-resolves once (O8).
 - `vfs`'s `Spell` and `Find` routed to `Names`.
 
 ### Epic 4 — Local NTLMv2 sign-in
@@ -877,6 +878,7 @@ stale grace, and mints each directory principal once.
   domain asked of the directory first, minted only with `FindOpts.Mint` (RFC 18 §4.4).
 - A test call that binds and looks up one entry, for RFC 23's directory-test action (§6 O5).
 - The `directory_unreachable` condition.
+- A benchmark of a cold resolution of a user in 300 groups (O8).
 - The in-memory directory and its conformance suite.
 - `integration/ad-dc` taken out of the plan job's filter in `.github/workflows/tests.yml`, once RFC
   23's plan's epic 1 has removed the tests that drive the old server; RFC 23's plan's epic 8 then no
@@ -1006,6 +1008,14 @@ This epic waits for an SMB adapter serving through the node (S3).
 - **O7. Estimates least certain.** Epic 7 depends on how much of v1's secure channel survives the
   hardening, and on the Kerberos client its named pipe needs. Epic 6 depends on real AD's group
   nesting.
+- **O8. A cold sign-in's cost.** A directory user's first sign-in mints each of its groups in its
+  own transaction (RFC 18 §5.1's mint), and each raises `PGEN` (§7.2): a user in 300 groups costs
+  about 300 directory queries and 300 raises, each of which empties every node's caller cache.
+  Epic 6 benchmarks a cold resolution of such a user; if it shows, the fix is an RFC 18 amendment
+  minting one resolution's records in one transaction with one raise, and looking groups up in
+  batches. The same raise leaves the resolution's own `Caller.Built` stale, which §7.2 neither
+  stores nor serves: epic 3 re-resolves once, the re-run mints nothing and raises nothing, and a
+  re-run that is stale again fails `ErrUnavailable`, retryable.
 
 ### 6.1 Deferral ledger
 
