@@ -12,15 +12,15 @@ import (
 
 func TestTwoRecordsKeepSegmentSuspect(t *testing.T) {
 	s := New(kit.NewStopwatchClock())
-	s.mark(Ref{Segment: 7, Off: 0, Len: 10, Kind: Content})
-	s.mark(Ref{Segment: 7, Off: 64, Len: 20, Kind: HeaderOnly})
+	s.mark(Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 0, Len: 10}, Kind: Content})
+	s.mark(Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 64, Len: 20}, Kind: HeaderOnly})
 
 	want := []core.SegmentRange{{Segment: 7, Off: 0, Len: 10}, {Segment: 7, Off: 64, Len: 20}}
 	if got := s.Ranges(7); !reflect.DeepEqual(got, want) {
 		t.Errorf("Ranges(7) after two marks = %v, want %v", got, want)
 	}
 
-	s.clear(Ref{Segment: 7, Off: 0, Len: 10, Kind: Content})
+	s.clear(Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 0, Len: 10}, Kind: Content})
 	if got := s.Suspect(7); !got {
 		t.Errorf("Suspect(7) with one record still unread = %v, want true", got)
 	}
@@ -28,7 +28,7 @@ func TestTwoRecordsKeepSegmentSuspect(t *testing.T) {
 		t.Errorf("SuspectSegments() with one record left = %d, want 1", got)
 	}
 
-	s.clear(Ref{Segment: 7, Off: 64, Len: 20, Kind: HeaderOnly})
+	s.clear(Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 64, Len: 20}, Kind: HeaderOnly})
 	if got := s.Suspect(7); got {
 		t.Errorf("Suspect(7) after clearing both records = %v, want false", got)
 	}
@@ -39,7 +39,7 @@ func TestTwoRecordsKeepSegmentSuspect(t *testing.T) {
 
 func TestMarkTwiceCountsOnce(t *testing.T) {
 	s := New(kit.NewStopwatchClock())
-	ref := Ref{Segment: 7, Off: 32, Len: 8, Kind: Content}
+	ref := Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 32, Len: 8}, Kind: Content}
 	s.mark(ref)
 	s.mark(ref)
 
@@ -53,8 +53,8 @@ func TestMarkTwiceCountsOnce(t *testing.T) {
 
 func TestRetiredDropsEntriesAndGauge(t *testing.T) {
 	s := New(kit.NewStopwatchClock())
-	seven := Ref{Segment: 7, Off: 0, Len: 10, Kind: Content}
-	eight := Ref{Segment: 8, Off: 16, Len: 20, Kind: HeaderOnly}
+	seven := Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 0, Len: 10}, Kind: Content}
+	eight := Ref{SegmentRange: core.SegmentRange{Segment: 8, Off: 16, Len: 20}, Kind: HeaderOnly}
 	s.mark(seven)
 	s.mark(eight)
 
@@ -80,8 +80,8 @@ func TestRetiredDropsEntriesAndGauge(t *testing.T) {
 
 func TestRangesIsACopy(t *testing.T) {
 	s := New(kit.NewStopwatchClock())
-	s.mark(Ref{Segment: 7, Off: 0, Len: 10, Kind: Content})
-	s.mark(Ref{Segment: 7, Off: 64, Len: 20, Kind: HeaderOnly})
+	s.mark(Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 0, Len: 10}, Kind: Content})
+	s.mark(Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 64, Len: 20}, Kind: HeaderOnly})
 
 	got := s.Ranges(7)
 	got[0].Len = 999
@@ -106,7 +106,7 @@ func TestGaugeMatchesDistinctSegmentsConcurrently(t *testing.T) {
 			rng := rand.New(rand.NewSource(int64(g) + 1))
 			for i := 0; i < 1000; i++ {
 				seg := core.SegmentID(1 + rng.Intn(segments))
-				ref := Ref{Segment: seg, Off: int64(8 * rng.Intn(32))}
+				ref := Ref{SegmentRange: core.SegmentRange{Segment: seg, Off: int64(8 * rng.Intn(32))}}
 				switch rng.Intn(3) {
 				case 0:
 					s.mark(ref)
@@ -140,7 +140,7 @@ func TestSuspectSegmentsAllocatesNothing(t *testing.T) {
 	s := New(kit.NewStopwatchClock())
 	for seg := 0; seg < 100; seg++ {
 		for off := int64(0); off < 1000; off++ {
-			s.mark(Ref{Segment: core.SegmentID(seg + 1), Off: off * 64, Len: 32})
+			s.mark(Ref{SegmentRange: core.SegmentRange{Segment: core.SegmentID(seg + 1), Off: off * 64, Len: 32}})
 		}
 	}
 

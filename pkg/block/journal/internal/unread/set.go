@@ -25,14 +25,12 @@ const (
 	HeaderOnly
 )
 
-// Ref names one unread range of one segment. Its identity is (Segment, Off):
-// marking and clearing find the same entry regardless of the Kind or Len a
-// later pass carries.
+// Ref names one unread range of one segment, and the kind of record it holds.
+// Its identity is (Segment, Off): marking and clearing find the same entry
+// regardless of the Kind or Len a later pass carries.
 type Ref struct {
-	Segment core.SegmentID
-	Off     int64
-	Len     int64
-	Kind    Kind
+	core.SegmentRange
+	Kind Kind
 }
 
 // Set holds the journal's records whose bytes no read attempt returned,
@@ -141,7 +139,7 @@ func (s *Set) Ranges(seg core.SegmentID) []core.SegmentRange {
 	defer s.mu.Unlock()
 	ranges := make([]core.SegmentRange, 0, len(s.entries[seg]))
 	for _, ref := range s.entries[seg] {
-		ranges = append(ranges, core.SegmentRange{Segment: ref.Segment, Off: ref.Off, Len: ref.Len})
+		ranges = append(ranges, ref.SegmentRange)
 	}
 	sort.Slice(ranges, func(i, j int) bool { return ranges[i].Off < ranges[j].Off })
 	return ranges

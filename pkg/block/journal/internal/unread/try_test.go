@@ -106,7 +106,7 @@ func TestTryTransientErrorsReturnBytes(t *testing.T) {
 	r := newRig(t)
 	r.write(recordFile, []byte("record bytes"))
 	r.failReads(recordFile, 2)
-	ref := Ref{Segment: 7, Off: 0, Len: 12, Kind: Content}
+	ref := Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 0, Len: 12}, Kind: Content}
 	s := New(r.clk)
 
 	b, err := s.Try(context.Background(), ref, r.read(ref, recordFile))
@@ -132,7 +132,7 @@ func TestTryExhaustionMarks(t *testing.T) {
 	r := newRig(t)
 	r.write(recordFile, []byte("record bytes"))
 	r.failReads(recordFile, 0) // every read
-	ref := Ref{Segment: 7, Off: 0, Len: 12, Kind: Content}
+	ref := Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 0, Len: 12}, Kind: Content}
 	s := New(r.clk)
 
 	b, err := s.Try(context.Background(), ref, r.read(ref, recordFile))
@@ -167,7 +167,7 @@ func TestTrySecondAccessMakesOneAttempt(t *testing.T) {
 	r := newRig(t)
 	r.write(recordFile, []byte("record bytes"))
 	r.failReads(recordFile, 0) // every read
-	ref := Ref{Segment: 7, Off: 0, Len: 12, Kind: Content}
+	ref := Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 0, Len: 12}, Kind: Content}
 	s := New(r.clk)
 
 	if _, err := s.Try(context.Background(), ref, r.read(ref, recordFile)); !errors.Is(err, core.ErrUnreadable) {
@@ -205,7 +205,7 @@ func TestTryWindowStopsRetries(t *testing.T) {
 	r := newRig(t)
 	r.write(recordFile, []byte("record bytes"))
 	r.failReads(recordFile, 1) // the first attempt faults
-	ref := Ref{Segment: 7, Off: 0, Len: 12, Kind: Content}
+	ref := Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 0, Len: 12}, Kind: Content}
 	s := New(r.clk)
 
 	// A read that takes sixteen seconds between its first and second
@@ -238,7 +238,7 @@ func TestTryContextCutAfterAFailedAttemptMarks(t *testing.T) {
 	r := newRig(t)
 	r.write(recordFile, []byte("record bytes"))
 	r.failReads(recordFile, 0) // every read
-	ref := Ref{Segment: 7, Off: 0, Len: 12, Kind: Content}
+	ref := Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 0, Len: 12}, Kind: Content}
 	s := New(r.clk)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -278,7 +278,7 @@ func TestTryContextCutAfterAFailedAttemptMarks(t *testing.T) {
 func TestTryContextDoneBeforeAnyAttemptMarksNothing(t *testing.T) {
 	r := newRig(t)
 	r.write(recordFile, []byte("record bytes"))
-	ref := Ref{Segment: 7, Off: 0, Len: 12, Kind: Content}
+	ref := Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 0, Len: 12}, Kind: Content}
 	s := New(r.clk)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -304,7 +304,7 @@ func TestTryContextDoneBeforeAnyAttemptMarksNothing(t *testing.T) {
 // error clears a previously marked ref.
 func TestTryZeroBytesNoErrorIsSuccess(t *testing.T) {
 	r := newRig(t)
-	ref := Ref{Segment: 3, Off: 0, Len: 4, Kind: Content}
+	ref := Ref{SegmentRange: core.SegmentRange{Segment: 3, Off: 0, Len: 4}, Kind: Content}
 	s := New(r.clk)
 	s.mark(ref)
 
@@ -327,7 +327,7 @@ func TestTryKeepsHeaderOnlyKind(t *testing.T) {
 	r := newRig(t)
 	r.write(recordFile, []byte("0123456789abcdefghijklmnopqrstuvwxyzABCDEF"))
 	r.failReads(recordFile, 0) // every read
-	ref := Ref{Segment: 7, Off: 32, Len: 8, Kind: HeaderOnly}
+	ref := Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 32, Len: 8}, Kind: HeaderOnly}
 	s := New(r.clk)
 
 	_, err := s.Try(context.Background(), ref, r.read(ref, recordFile))
@@ -360,7 +360,7 @@ func TestTryCancelDuringLastAttemptReturnsAttemptFailure(t *testing.T) {
 	r := newRig(t)
 	r.write(recordFile, []byte("record bytes"))
 	r.failReads(recordFile, 0) // every read
-	ref := Ref{Segment: 7, Off: 0, Len: 12, Kind: Content}
+	ref := Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 0, Len: 12}, Kind: Content}
 	s := New(r.clk)
 	s.mark(ref) // the range is unread, so its next access gets one attempt
 
@@ -398,7 +398,7 @@ func TestTryCancelDuringLastAttemptReturnsAttemptFailure(t *testing.T) {
 // context's error but marks the range and wraps ErrUnreadable around it.
 func TestTryForeignDeadlineExceededMarks(t *testing.T) {
 	s := New(kit.NewStopwatchClock())
-	ref := Ref{Segment: 7, Off: 0, Len: 12, Kind: Content}
+	ref := Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 0, Len: 12}, Kind: Content}
 
 	_, err := s.Try(context.Background(), ref, func() ([]byte, error) {
 		return nil, context.DeadlineExceeded // a deadline that was not Try's
