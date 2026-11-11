@@ -103,7 +103,9 @@ that needs it.
 
 - **A6. Review fixes to RFC 18's Kerberos and PAC rules**: the PAC's server checksum is computed
   over the PAC's bytes as received, and only the first buffer of a type is used (§3.4); §10 gains
-  the rows "clock skew" and "service name" for §3.3's two MUSTs that had none.
+  the rows "clock skew" and "service name" for §3.3's two MUSTs that had none; NTLM routes a UPN
+  sign-in and the directory's DNS domain to pass-through, and counts an unknown domain apart (§3.5,
+  §9.2).
 
 ## 1. Introduction
 
@@ -801,15 +803,15 @@ expiry).
 
 **Done when:**
 - RFC 18 ID12 holds: a re-authenticated context acts as its new principal, a failed one ends it;
-- RFC 18 §10's rows "NTLM MIC" and "NTLM domain" pass, the cryptography checked against MS-NLMP
-  §4.2.4's published vectors;
+- RFC 18 §10's rows "NTLM MIC" and "NTLM domain" (its local and refusal halves) pass, the
+  cryptography checked against MS-NLMP §4.2.4's published vectors;
 - `vfs.Service`'s `SignIn` answers an NTLM step.
 
 **Expected content:**
 - NTLM messages built from MS-NLMP's published vectors for the tests, including a MIC over exact
   NEGOTIATE, CHALLENGE and AUTHENTICATE bytes.
-- Domain routing (RFC 18 §3.5's table, its local and refusal rows), against `identity.netbios_name`
-  (A2).
+- Domain routing (RFC 18 §3.5's table, its local and refusal rows, the refusal counted
+  `unknown_domain`), against `identity.netbios_name` (A2).
 - NTLMv2 verification in constant time, with the same work for an unknown name, lifted from
   `develop` (rule 7).
 - The MIC, key exchange and the session key returned in `Keys`.
@@ -892,8 +894,8 @@ the keytab derived from it.
 §3.7's sign-in half for pass-through.
 
 **Done when:**
-- RFC 18 §10's rows "pass-through", "logon throttle", "derived keytab", "online join", "offline join" and
-  "machine account health" pass;
+- RFC 18 §10's rows "pass-through", "NTLM domain" (its pass-through half), "logon throttle",
+  "derived keytab", "online join", "offline join" and "machine account health" pass;
 - the domain controller's suite passes in `unit` and in `integration/ad-dc`;
 - the §1.4 scenario assigned to epic 7 passes in `integration/ad-dc`.
 
