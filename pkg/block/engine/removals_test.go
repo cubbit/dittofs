@@ -14,7 +14,10 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -155,39 +158,68 @@ func TestAStalledPhase2HoldsNoOther(t *testing.T) {
 	u.until(t, "g's removal is pruned while f's phase 2 stalls", func() bool { return u.unpruned(t, g) == 0 })
 }
 
-// cutResume is the store's content view whose first cut phase 2 runs of
-// the file it names each commit a batch and are cut at the bound with more
-// to do, as runs of a removal larger than one bound's worth of batches.
-type cutResume struct {
-	*resuming
-	f   entity.FileID
-	cut atomic.Int32
+// newCutUnit is the unit over a store whose small key budget runs a
+// removal's phase 2 one hole a batch, behind a kv.KV that faults on cue.
+func newCutUnit(t *testing.T, deps ...func(*engine.Deps)) (*unit, *kvtest.FaultKV) {
+	t.Helper()
+	var faults *kvtest.FaultKV
+	u := newUnitOver(t, func(k kv.KV) kv.KV {
+		faults = kvtest.NewFaultKV(limitKV{KV: k, entries: 12})
+		return faults
+	}, deps...)
+	return u, faults
 }
 
-func (x *cutResume) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) (bool, error) {
-	if file == x.f && x.cut.Add(-1) >= 0 {
-		return true, context.DeadlineExceeded
+// holed writes n runs of f a page apart and commits each, so truncating f
+// to 0 leaves phase 2 the n-1 holes between them to drop, one a batch.
+func (u *unit) holed(t *testing.T, f entity.FileID, n int) {
+	t.Helper()
+	for i := range n {
+		u.write(t, f, int64(i)*4096, fill(16, 'a'))
+		if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return x.resuming.Resume(ctx, share, file)
+}
+
+// removalSet is a rule failing with err the writes of a removal record from
+// the from-th on, count of them (every one when count is 0). Phase 1 writes
+// the record once, and each phase 2 batch once more as it moves the cursor.
+func removalSet(from, count int, err error) sim.Rule {
+	return sim.Rule{Op: kvtest.OpSet, Key: "F‖*‖rm‖*", From: from, Count: count, Action: sim.FaultAction{Err: err}}
+}
+
+// cutRuns is the fault on the store that cuts each of phase 2's first n
+// runs at the deadline once its first batch committed, as runs of a
+// removal larger than one bound's worth of batches.
+func cutRuns(t *testing.T, faults *kvtest.FaultKV, n int) {
+	t.Helper()
+	rules := make([]sim.Rule, n)
+	for i := range rules {
+		rules[i] = removalSet(3+2*i, 1, context.DeadlineExceeded)
+	}
+	s, err := sim.NewSchedule(1, nil, rules...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	faults.SetFault(s)
 }
 
 // A removal whose phase 2 needs more runs than removal_stalled allows
 // failures, each advancing, is never reported stalled, and finishes.
 func TestAnAdvancingPhase2IsNotStalled(t *testing.T) {
-	x := &cutResume{resuming: newResuming()}
 	logs := newLogRecorder()
-	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x; d.Logger = slog.New(logs) })
+	u, faults := newCutUnit(t, func(d *engine.Deps) { d.Logger = slog.New(logs) })
 	f := u.create(t, "f")
-	x.f = f
-	x.cut.Store(8)
-	u.write(t, f, 0, fill(16, 'a'))
-	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
-		t.Fatal(err)
-	}
-	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
+	u.holed(t, f, 10)
+	cutRuns(t, faults, 8)
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
 		t.Fatal(err)
 	}
 	u.until(t, "f's removal is pruned", func() bool { return u.unpruned(t, f) == 0 })
+	if n := u.e.Stats().RemovalRuns["advanced"]; n != 8 {
+		t.Errorf("%d phase 2 runs advanced and were cut, want 8", n)
+	}
 	for _, r := range logs.records() {
 		if strings.HasPrefix(r.Message, "removal_stalled") {
 			t.Errorf("logged %q for a phase 2 that advanced on every run", r.Message)

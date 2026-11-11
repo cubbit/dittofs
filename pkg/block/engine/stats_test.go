@@ -12,6 +12,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // shareCondition is the condition named name that Stats reports for share s
@@ -270,30 +271,37 @@ func TestStatsBesideWrites(t *testing.T) {
 // A stalled removal whose phase 2 run advances without finishing clears
 // removal_stalled.
 func TestStatsClearsRemovalStalledOnAdvance(t *testing.T) {
-	x := &cutResume{resuming: newResuming()}
-	u := newUnit(t, func(d *engine.Deps) { x.Content = d.Content; d.Content = x })
+	u, faults := newCutUnit(t)
 	f := u.create(t, "f")
-	x.f = f
-	x.cut.Store(-1 << 30) // no run advances yet
-	u.write(t, f, 0, fill(16, 'a'))
-	if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
-		t.Fatal(err)
+	u.holed(t, f, 3)
+	fault := func(r sim.Rule) {
+		s, err := sim.NewSchedule(1, nil, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		faults.SetFault(s)
 	}
-	x.mu.Lock()
-	x.failing[f] = true
-	x.mu.Unlock()
-	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
+	fault(removalSet(2, 0, errInjected)) // every batch fails, so no run advances
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
 		t.Fatal(err)
 	}
 	u.until(t, "f removal_stalled", func() bool {
 		_, ok := shareCondition(u.e.Stats(), u.share.ID, "removal_stalled", f)
 		return ok
 	})
-	x.cut.Store(1 << 30) // every run advances, none finishes
-	u.until(t, "removal_stalled cleared on advance", func() bool {
-		_, ok := shareCondition(u.e.Stats(), u.share.ID, "removal_stalled", f)
-		return !ok
+	// The next run commits a batch and fails the next one, so it advances
+	// without finishing; the one run again at once fails, its backoff not
+	// passed on the clock left still.
+	before := u.e.Stats().RemovalRuns
+	fault(removalSet(2, 0, errInjected))
+	u.clock.Advance(time.Second)
+	eventually(t, "an advanced run and a failed one after it", func() bool {
+		st := u.e.Stats().RemovalRuns
+		return st["advanced"] == before["advanced"]+1 && st["error"] == before["error"]+1
 	})
+	if _, ok := shareCondition(u.e.Stats(), u.share.ID, "removal_stalled", f); ok {
+		t.Error("removal_stalled still raised after a run that advanced")
+	}
 }
 
 // A stalled removal whose share is dropped while its phase 2 runs clears
