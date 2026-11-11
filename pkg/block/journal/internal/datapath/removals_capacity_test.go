@@ -68,10 +68,7 @@ func TestUnheldRemovalRefusedAtTheExhaustedHeadroom(t *testing.T) {
 	drainHeadroom(t, c, s)
 	next, draws := c.counters.NextVersion(), c.headroom.Draws()
 	_, err := c.Deallocate(ctx, s, testFile(9), core.Extent{Off: 1 << 20, Len: 1})
-	ns := refused(t, err, core.LimitHeadroom)
-	if ns.Limit == core.LimitShare || ns.Limit == core.LimitJournal {
-		t.Fatalf("the removal was refused naming %s, want the headroom", ns.Limit)
-	}
+	_ = refused(t, err, core.LimitHeadroom)
 	if got := c.counters.NextVersion(); got != next {
 		t.Fatalf("a headroom refusal drew a version: next is %v, was %v", got, next)
 	}
@@ -105,10 +102,7 @@ func TestHeldRemovalRefusedAtTheExhaustedHeadroom(t *testing.T) {
 			drainHeadroom(t, c, s)
 			next, writes := c.counters.NextVersion(), seam.Calls(kit.OpWrite)
 			_, err := call(c, s, f)
-			ns := refused(t, err, core.LimitHeadroom)
-			if ns.Limit == core.LimitShare || ns.Limit == core.LimitJournal {
-				t.Fatalf("%s of held content was refused naming %s, want the headroom", name, ns.Limit)
-			}
+			_ = refused(t, err, core.LimitHeadroom)
 			if got := c.counters.NextVersion(); got != next {
 				t.Fatalf("%s drew a version on a headroom refusal: next is %v, was %v", name, got, next)
 			}
