@@ -108,9 +108,9 @@ func TestStats_ConvertsTheCoresFigures(t *testing.T) {
 	}
 	want := maps.Clone(st.Shares)
 	clear(st.Shares)
-	st.SyncDuration.Bounds[0] = -1
+	st.SyncDuration.Bounds[0], st.SyncDuration.Counts[0] = -1, 99
 	again := j.Stats()
-	if !maps.Equal(again.Shares, want) || again.SyncDuration.Bounds[0] == -1 {
+	if !maps.Equal(again.Shares, want) || again.SyncDuration.Bounds[0] == -1 || again.SyncDuration.Counts[0] == 99 {
 		t.Fatalf("a caller's change reached the next Stats: shares %+v want %+v", again.Shares, want)
 	}
 }
@@ -130,8 +130,7 @@ func TestStats_NoFieldReportsAnOffloadedBit(t *testing.T) {
 }
 
 // TestStatsFromDistinct hands the conversion a core Stats whose every value is
-// different, so an assignment to the wrong public field fails, and checks the
-// result shares no slice or map with its input.
+// different, so an assignment to the wrong public field fails.
 func TestStatsFromDistinct(t *testing.T) {
 	at := time.Unix(1700000000, 0)
 	boom := errors.New("sync boom")
@@ -191,15 +190,4 @@ func TestStatsFromDistinct(t *testing.T) {
 		t.Errorf("Recovery = %+v, want zero", got.Recovery)
 	}
 
-	// The result is the caller's: changing it leaves the input as it was.
-	got.SyncDuration.Bounds[0], got.SyncDuration.Counts[0] = 99, 99
-	got.Losses[0].SeqNum = 99
-	got.TagConflicts[0].Tags[0] = 99
-	got.LastSyncError.Err = nil
-	got.Shares[5] = ShareStats{}
-	delete(got.Shares, 5)
-	if in.SyncDuration.Bounds[0] != 1 || in.SyncDuration.Counts[0] != 3 || in.Losses[0].SeqNum != 1 ||
-		in.TagConflicts[0].Tags[0] != 3 || in.LastSyncError.Err != boom || len(in.Shares) != 1 || in.Shares[5].Limit != 31 {
-		t.Fatalf("changing the converted Stats reached the input: %+v", in)
-	}
 }

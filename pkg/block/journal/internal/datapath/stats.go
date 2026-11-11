@@ -139,15 +139,9 @@ func (c *Core) Stats() Stats {
 	for t, ss := range s.Shares {
 		ss.UsedBytes = used[t]
 		ss.HeldBytes, ss.DirtyBytes = figs[t].Held, figs[t].Dirty
+		ss.ReservedBytes = reservedBy[t]
 		s.Shares[t] = ss
 	}
-
 	s.ReservedBytes = reserved
-	for t, r := range reservedBy {
-		if ss, ok := s.Shares[t]; ok {
-			ss.ReservedBytes = r
-			s.Shares[t] = ss
-		}
-	}
 	return s
 }

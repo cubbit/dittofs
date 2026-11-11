@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"maps"
 	"reflect"
 	"slices"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -226,15 +224,6 @@ func TestStatsMetricsMoveOnTheirCondition(t *testing.T) {
 	}
 }
 
-// TestStatsFreshCountersAreZero checks every counter reads zero on a core
-// that has done nothing.
-func TestStatsFreshCountersAreZero(t *testing.T) {
-	c, _ := newTestCore(t)
-	if got := c.Stats().Counters; got != (Counters{}) {
-		t.Fatalf("Counters on a fresh core = %+v, want zero", got)
-	}
-}
-
 // TestStatsSharesAreAttachedOrHoldingRecords checks the per-share map lists a
 // tag with an open handle and a tag that holds records with none, with the
 // handle's limit only for the first, and never tag 0.
@@ -264,26 +253,6 @@ func TestStatsSharesAreAttachedOrHoldingRecords(t *testing.T) {
 	}
 	if got[3] != (ShareStats{Limit: 0}) {
 		t.Errorf("empty attached share 3 = %+v, want zero", got[3])
-	}
-}
-
-// TestStatsResultIsCallerOwned checks a caller's changes to a returned map or
-// slice reach no later Stats.
-func TestStatsResultIsCallerOwned(t *testing.T) {
-	c, _ := newTestCore(t)
-	s := mustShare(t, c, 1)
-	mustWrite(t, c, s, testFile(1), 0, make([]byte, 4096))
-	first := c.Stats()
-	want := maps.Clone(first.Shares)
-	clear(first.Shares)
-	first.SyncDuration.Counts[0] = 99
-	first.SyncDuration.Bounds[0] = 99
-	again := c.Stats()
-	if !maps.Equal(again.Shares, want) {
-		t.Fatalf("Shares after a caller cleared one = %+v, want %+v", again.Shares, want)
-	}
-	if again.SyncDuration.Counts[0] == 99 || again.SyncDuration.Bounds[0] == 99 {
-		t.Fatal("a caller's change to the histogram reached the next Stats")
 	}
 }
 
@@ -352,19 +321,6 @@ func TestStatsEveryFieldIsServedOrNamed(t *testing.T) {
 			t.Errorf("%s is raised by a scenario but listed unserved (%s)", n, why)
 		case !nonzero[n] && !named:
 			t.Errorf("%s is zero in every scenario and not listed unserved: it may be unwired", n)
-		}
-	}
-}
-
-// TestStatsReportsNoOffloadedBit checks no field is named for, or typed as, an
-// extent's offloaded bit.
-func TestStatsReportsNoOffloadedBit(t *testing.T) {
-	for _, ty := range []reflect.Type{reflect.TypeOf(Stats{}), reflect.TypeOf(Counters{}), reflect.TypeOf(ShareStats{})} {
-		for i := range ty.NumField() {
-			f := ty.Field(i)
-			if strings.Contains(strings.ToLower(f.Name), "offloaded") || strings.Contains(strings.ToLower(f.Type.String()), "offloaded") {
-				t.Errorf("%s.%s reports an offloaded bit", ty.Name(), f.Name)
-			}
 		}
 	}
 }

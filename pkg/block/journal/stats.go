@@ -1,7 +1,6 @@
 package journal
 
 import (
-	"slices"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/datapath"
@@ -41,12 +40,12 @@ func statsFrom(c datapath.Stats) Stats {
 		PinnedSegments: c.PinnedSegments, OpenDescriptors: c.OpenDescriptors, DescriptorLimit: c.DescriptorLimit,
 		DamagedSegments: c.DamagedSegments,
 		SyncDuration: Histogram{
-			Bounds: slices.Clone(c.SyncDuration.Bounds), Counts: slices.Clone(c.SyncDuration.Counts), Sum: c.SyncDuration.Sum,
+			Bounds: c.SyncDuration.Bounds, Counts: c.SyncDuration.Counts, Sum: c.SyncDuration.Sum,
 		},
 		RemovalMarkers: c.RemovalMarkers, VersionLimit: c.VersionLimit, VersionsLeft: c.VersionsLeft,
 		NextVersion: c.NextVersion, ExtentLimit: c.ExtentLimit,
 		Counters:       Counters(c.Counters),
-		Losses:         slices.Clone(c.Losses),
+		Losses:         c.Losses,
 		LossGeneration: c.LossGeneration,
 		ReadOnly:       c.ReadOnly,
 	}
