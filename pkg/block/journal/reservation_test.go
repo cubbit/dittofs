@@ -183,3 +183,24 @@ func TestJournalClose_ReleasesEveryHandlesReservations(t *testing.T) {
 		}
 	}
 }
+
+// TestReservation_WriteBeyondTheAskIsExhausted checks that a reserved write the
+// reservation cannot cover is refused with the public ErrReservationExhausted,
+// not a NoSpaceError, so a caller outside the package can tell it apart.
+func TestReservation_WriteBeyondTheAskIsExhausted(t *testing.T) {
+	j := newTestJournal(t)
+	withLimit(t, j)
+	h, err := j.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+	r := reserveAhead(t, h, 1, 1)
+	_, err = r.WriteAt(context.Background(), fileOf(1), 0, make([]byte, 4096), 1)
+	if !errors.Is(err, ErrReservationExhausted) {
+		t.Fatalf("a 4096-byte write into a 1-byte reservation = %v, want ErrReservationExhausted", err)
+	}
+	var ns *NoSpaceError
+	if errors.As(err, &ns) {
+		t.Fatalf("the refusal is a NoSpaceError (%v), want none: no limit was met", ns)
+	}
+}
