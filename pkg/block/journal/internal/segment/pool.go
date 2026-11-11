@@ -379,6 +379,20 @@ type Hold struct {
 // every unreserved write. A hold whose left has run out behaves as an
 // unreserved content take, and a hold whose pool has gone short after a
 // Replace — no content spare ready — is refused `spare` like one.
+//
+// decision: a reserved write's next roll in the same write can be refused
+// `spare` part-way. Its roll takes a replacement (Replace) the moment its hold
+// falls behind what the remaining bytes need, which raises held above ready
+// while the maker refills asynchronously; the very next roll of the same write
+// then finds left > 0 and no content spare ready and is refused. The refusal is
+// kept rather than turned into a wait: a wait here would sit inside the pool's
+// lock, a new blocking path the pool has none of, and RFC 1 §6 says a refusal
+// never waits. So RFC 1 §6's sentence that a reserved write "never meets the
+// no-spare refusal while the pool can be refilled" is stronger than a no-wait
+// pool can keep — an open RFC point, not a defect here. Overturned by
+// `spare_refusals` showing reserved writes among them under a load the maker
+// cannot keep up with, which is RFC 1 §6's own ponytail's evidence for sizing
+// the spare target from the device's rate.
 func (h *Hold) Take() (core.SegmentID, error) {
 	defer h.p.Kick()
 
@@ -562,10 +576,6 @@ func (p *Pool) Kick() {
 	}
 	p.mu.Unlock()
 }
-
-// Target returns the pool's content spare target: the ready spares it keeps
-// for rolls while no hold is open.
-func (p *Pool) Target() int { return p.t.Content }
 
 // ReadyContent returns the content spares an unreserved take can still reach:
 // the ready ones less the spares owed to open holds, zero when the difference
