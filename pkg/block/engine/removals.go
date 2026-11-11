@@ -360,10 +360,8 @@ func (e *Engine) phase2(r *removal) *loopItem {
 	}}
 }
 
-// phase2Result is a phase-2 run's result and its answer, from whether its
-// Resume advanced and the run's error, Resume's or the prune's after it:
-// done once both succeed, advanced when Resume moved the cursor whatever its
-// error, conflict for a store conflict from either, and error otherwise.
+// phase2Result is a phase-2 run's result and answer from whether Resume
+// advanced and the run's error, Resume's or the prune's.
 func phase2Result(advanced bool, err error) (runResult, answer) {
 	switch {
 	case err == nil:

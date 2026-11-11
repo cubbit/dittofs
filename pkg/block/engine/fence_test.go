@@ -380,8 +380,7 @@ func TestSelfFenceOnAFailingPrune(t *testing.T) {
 // a commit: the bound restarts from it, though the run answers the store's
 // error and its owner stays failing at the store.
 func TestSelfFenceCountsAnAdvancedPhase2AsACommit(t *testing.T) {
-	cu, faults := newCutUnit(t)
-	u := &fenceUnit{unit: cu, faults: faults}
+	u := newCutUnit(t)
 	runs := func() map[string]int64 { return u.e.Stats().RemovalRuns }
 	f := u.create(t, "f")
 	u.holed(t, f, 3)

@@ -146,19 +146,19 @@ func TestFenceCauseOfAStallAfterARecoveredFailure(t *testing.T) {
 
 // probe is the store failing behind the fenced views: each write
 // transaction records the count the fence holds outstanding while it runs,
-// and fails with err.
+// and fails with errStoreDown.
 //
 // decision: the probe fails every call on cue and embeds no store, since the
 // engine's import rule keeps the store out of its internal tests. Its
 // success path is the real store's, reached through StoreViews in
 // fence_test.go (TestSelfFenceCountsAnAdvancedPhase2AsACommit for Resume).
+// Withdraw it if the engine's internal tests may import the store.
 type probe struct {
 	f    *fence
 	seen int64
-	err  error
 }
 
-func (p *probe) call() error { p.seen = p.f.outstanding.Load(); return p.err }
+func (p *probe) call() error { p.seen = p.f.outstanding.Load(); return errStoreDown }
 
 type probeExistence struct {
 	Existence
@@ -246,7 +246,7 @@ func TestFenceRecordsEveryWriteTransaction(t *testing.T) {
 	for name, call := range fencedCalls {
 		t.Run(name, func(t *testing.T) {
 			f, _ := newClockFence()
-			p := &probe{f: f, err: errStoreDown}
+			p := &probe{f: f}
 			if err := call(withRetryingOwner(context.Background()), p); !errors.Is(err, errStoreDown) {
 				t.Fatalf("the call answered %v, want the store's error", err)
 			}

@@ -12,7 +12,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // shareCondition is the condition named name that Stats reports for share s
@@ -271,17 +270,10 @@ func TestStatsBesideWrites(t *testing.T) {
 // A stalled removal whose phase 2 run advances without finishing clears
 // removal_stalled.
 func TestStatsClearsRemovalStalledOnAdvance(t *testing.T) {
-	u, faults := newCutUnit(t)
+	u := newCutUnit(t)
 	f := u.create(t, "f")
 	u.holed(t, f, 3)
-	fault := func(r sim.Rule) {
-		s, err := sim.NewSchedule(1, nil, r)
-		if err != nil {
-			t.Fatal(err)
-		}
-		faults.SetFault(s)
-	}
-	fault(removalSet(2, 0, errInjected)) // every batch fails, so no run advances
+	u.fault(t, removalSet(2, 0, errInjected)) // every batch fails, so no run advances
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +285,7 @@ func TestStatsClearsRemovalStalledOnAdvance(t *testing.T) {
 	// without finishing; the one run again at once fails, its backoff not
 	// passed on the clock left still.
 	before := u.e.Stats().RemovalRuns
-	fault(removalSet(2, 0, errInjected))
+	u.fault(t, removalSet(2, 0, errInjected))
 	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
 	u.clock.Advance(time.Second)
 	eventually(t, "an advanced run and a failed one after it", func() bool {

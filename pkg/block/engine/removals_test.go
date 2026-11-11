@@ -158,16 +158,20 @@ func TestAStalledPhase2HoldsNoOther(t *testing.T) {
 	u.until(t, "g's removal is pruned while f's phase 2 stalls", func() bool { return u.unpruned(t, g) == 0 })
 }
 
-// newCutUnit is the unit over a store whose small key budget runs a
-// removal's phase 2 one hole a batch, behind a kv.KV that faults on cue.
-func newCutUnit(t *testing.T, deps ...func(*engine.Deps)) (*unit, *kvtest.FaultKV) {
+// newCutUnit is the fence unit over a store whose small key budget runs a
+// removal's phase 2 one hole a batch.
+func newCutUnit(t *testing.T) *fenceUnit {
 	t.Helper()
-	var faults *kvtest.FaultKV
-	u := newUnitOver(t, func(k kv.KV) kv.KV {
-		faults = kvtest.NewFaultKV(limitKV{KV: k, entries: 12})
-		return faults
-	}, deps...)
-	return u, faults
+	fu := &fenceUnit{logs: newLogRecorder()}
+	fu.unit = newUnitWith(t, unitConfig{
+		kv: func(k kv.KV) kv.KV {
+			fu.faults = kvtest.NewFaultKV(limitKV{KV: k, entries: 12})
+			return fu.faults
+		},
+		deps: []func(*engine.Deps){func(d *engine.Deps) { d.Logger = slog.New(fu.logs) }},
+	})
+	fu.e.SetConflictBound(time.Hour)
+	return fu
 }
 
 // holed writes n runs of f a page apart and commits each, so truncating f
@@ -192,27 +196,22 @@ func removalSet(from, count int, err error) sim.Rule {
 // cutRuns is the fault on the store that cuts each of phase 2's first n
 // runs at the deadline once its first batch committed, as runs of a
 // removal larger than one bound's worth of batches.
-func cutRuns(t *testing.T, faults *kvtest.FaultKV, n int) {
+func cutRuns(t *testing.T, u *fenceUnit, n int) {
 	t.Helper()
 	rules := make([]sim.Rule, n)
 	for i := range rules {
 		rules[i] = removalSet(3+2*i, 1, context.DeadlineExceeded)
 	}
-	s, err := sim.NewSchedule(1, nil, rules...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	faults.SetFault(s)
+	u.fault(t, rules...)
 }
 
 // A removal whose phase 2 needs more runs than removal_stalled allows
 // failures, each advancing, is never reported stalled, and finishes.
 func TestAnAdvancingPhase2IsNotStalled(t *testing.T) {
-	logs := newLogRecorder()
-	u, faults := newCutUnit(t, func(d *engine.Deps) { d.Logger = slog.New(logs) })
+	u := newCutUnit(t)
 	f := u.create(t, "f")
 	u.holed(t, f, 10)
-	cutRuns(t, faults, 8)
+	cutRuns(t, u, 8)
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +219,7 @@ func TestAnAdvancingPhase2IsNotStalled(t *testing.T) {
 	if n := u.e.Stats().RemovalRuns["advanced"]; n != 8 {
 		t.Errorf("%d phase 2 runs advanced and were cut, want 8", n)
 	}
-	for _, r := range logs.records() {
+	for _, r := range u.logs.records() {
 		if strings.HasPrefix(r.Message, "removal_stalled") {
 			t.Errorf("logged %q for a phase 2 that advanced on every run", r.Message)
 		}
@@ -232,14 +231,10 @@ func TestAnAdvancingPhase2IsNotStalled(t *testing.T) {
 // when it found nothing left, so it is retried after the backoff, the retry
 // pruning the removal and counted done.
 func TestAFailedPruneIsCountedAndRetried(t *testing.T) {
-	u, faults := newCutUnit(t)
+	u := newCutUnit(t)
 	f := u.create(t, "f")
 	u.holed(t, f, 2)
-	s, err := sim.NewSchedule(1, nil, sim.Rule{Op: kvtest.OpDelete, Key: "F‖*‖rm‖*", Count: 2, Action: sim.FaultAction{Err: errInjected}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	faults.SetFault(s)
+	u.fault(t, sim.Rule{Op: kvtest.OpDelete, Key: "F‖*‖rm‖*", Count: 2, Action: sim.FaultAction{Err: errInjected}})
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
 		t.Fatal(err)
 	}
