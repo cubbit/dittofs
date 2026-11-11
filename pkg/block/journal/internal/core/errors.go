@@ -58,6 +58,13 @@ var (
 	// The journal is not opened, upgraded or repaired. It is never retried.
 	ErrUnknownFormat = errors.New("journal: unknown format")
 
+	// ErrUnreadable is matched by every UnreadableRangesError and by every
+	// read of a held extent, Sync or Since that names an unread file: a read
+	// the device cannot complete, never a record that does not verify. Open
+	// wraps it in an UnreadableRangesError that names the ranges, so a caller
+	// reads them from the value, never from the error's text.
+	ErrUnreadable = errors.New("journal: unreadable")
+
 	// ErrCorrupt is returned when a structure the journal must read does not
 	// verify against its checksum and nothing can stand in for it: the format
 	// file at Open, or a record an offer's reader must verify before it returns
@@ -323,4 +330,29 @@ type ReadOnlyState struct {
 	// Check is the check a probe of the read-only journal found failing; nil
 	// when the probe passes or has not run.
 	Check error
+}
+
+// UnreadableRangesError is an Open refused on segments whose bytes no bounded
+// read completed: Ranges names each byte range the device never read, and
+// Format is a format file no bounded read completed, so it names no identity.
+// Identity is the one every verifying header names where they agree, set
+// when the caller expected none; zero when the caller told Open its own.
+// The engine and the journal_range_unreadable condition read the ranges from
+// the value, never from the error's text.
+type UnreadableRangesError struct {
+	Ranges   []SegmentRange
+	Format   bool
+	Identity JournalID
+}
+
+func (e *UnreadableRangesError) Error() string {
+	if e.Format {
+		return fmt.Sprintf("journal: format file of identity %x is unreadable", e.Identity)
+	}
+	return fmt.Sprintf("journal: %d unreadable range(s) in identity %x", len(e.Ranges), e.Identity)
+}
+
+// Unwrap returns ErrUnreadable, so the value matches it under errors.Is.
+func (e *UnreadableRangesError) Unwrap() error {
+	return ErrUnreadable
 }

@@ -22,6 +22,8 @@ type (
 	ChangeKind     = core.ChangeKind
 	LossEvent      = core.LossEvent
 	LossReason     = core.LossReason
+	SyncMark       = core.SyncMark
+	SegmentRange   = core.SegmentRange
 )
 
 // The loss reasons; see LossReason.

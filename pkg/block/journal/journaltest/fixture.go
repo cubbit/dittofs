@@ -240,7 +240,7 @@ func (f *Fixture) tryOpen(expect journal.JournalID, limit bool) error {
 	f.tb.Helper()
 
 	f.floor = f.limit
-	j, err := journal.Open(f.tb.Context(), f.Dir, f.floor, expect, f.options()...)
+	j, err := journal.Open(f.tb.Context(), f.Dir, f.floor, expect, nil, f.options()...)
 	if err != nil {
 		return err
 	}

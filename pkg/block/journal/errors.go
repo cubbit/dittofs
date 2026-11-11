@@ -27,17 +27,19 @@ var (
 	ErrNoClock           = core.ErrNoClock
 	ErrJournalReadOnly   = core.ErrJournalReadOnly
 	ErrUnsuitableStorage = core.ErrUnsuitableStorage
+	ErrUnreadable        = core.ErrUnreadable
 )
 
 type (
-	Limit             = core.Limit
-	Unit              = core.Unit
-	NoSpaceError      = core.NoSpaceError
-	OtherShareError   = core.OtherShareError
-	IdentityError     = core.IdentityError
-	SyncError         = core.SyncError
-	NotOffloadedError = core.NotOffloadedError
-	ReadOnlyState     = core.ReadOnlyState
+	Limit                 = core.Limit
+	Unit                  = core.Unit
+	NoSpaceError          = core.NoSpaceError
+	OtherShareError       = core.OtherShareError
+	IdentityError         = core.IdentityError
+	SyncError             = core.SyncError
+	NotOffloadedError     = core.NotOffloadedError
+	ReadOnlyState         = core.ReadOnlyState
+	UnreadableRangesError = core.UnreadableRangesError
 )
 
 // The limits a NoSpaceError names; see Limit.

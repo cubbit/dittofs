@@ -218,6 +218,11 @@ func namesIdentity(fs storage.FS, id JournalID) bool {
 // and every version on disk, so none issued before a crash whose record was
 // lost is issued again.
 //
+// marks are the per-stream sync marks the caller recorded durably and hands
+// Open, which recovery checks the scanned tails against. Without them a tail
+// the device lost reads as torn, and an append lands after records no sync
+// proved. A caller that recorded none passes nil.
+//
 // Open requires WithClock. Without it, Open fails with ErrNoClock and opens
 // nothing.
 //
@@ -231,7 +236,7 @@ func namesIdentity(fs storage.FS, id JournalID) bool {
 // refusal altogether — a WriteAt that waits for a spare, or an Open that
 // returns only once the pool has made its first ones — is the later change
 // that removes it.
-func Open(ctx context.Context, dir string, floor Version, expect JournalID, opts ...Option) (*Journal, error) {
+func Open(ctx context.Context, dir string, floor Version, expect JournalID, marks []SyncMark, opts ...Option) (*Journal, error) {
 	cfg, err := resolveConfig(dir, opts)
 	if err != nil {
 		return nil, err
