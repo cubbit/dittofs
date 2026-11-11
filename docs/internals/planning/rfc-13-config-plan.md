@@ -470,6 +470,196 @@ Each carries a `ponytail:` marker at the code site:
   - *Upgrade path:* a per-role passphrase variable in the provider's configuration.
   - *Epic:* 4.
 
+### 4.4 Code sketch
+
+The sketch is illustrative: its signatures come from the cited RFC sections or existing code, and the
+epic documents decide the final names.
+
+The start: the host file, the node's identity, then the node RFC 23's plan builds (D7; A2 in #4050).
+
+```go
+func start(ctx context.Context, configFlag string) error {
+	b, err := bootstrap.Load(configFlag) // "" is ~/.config/dittofs/config.yaml (D7)
+	if err != nil {
+		return err
+	}
+	id, err := bootstrap.NodeID(b) // every journal directory's node-id copy agrees, or b's override (A2)
+	if err != nil {
+		return err // no copy and no override refuses; dfs init wrote the copies (InitNodeID)
+	}
+	n, err := node.New(ctx, b, id) // RFC 23's plan; refuses outside the active versions (epic 2, §4.3)
+	if err != nil {
+		return err
+	}
+	return n.Serve(ctx)
+}
+
+// pkg/bootstrap, the renamed pkg/config.Load (epic 2).
+func Load(path string) (*Bootstrap, error) {
+	v := viper.New()
+	setupViper(v, path)
+	if _, err := readConfigFile(v); err != nil {
+		return nil, err
+	}
+	if err := checkEnviron(os.Environ()); err != nil {
+		return nil, err // a DITTOFS_* name that is no bootstrap key: viper never sees it (D7)
+	}
+	var md mapstructure.Metadata
+	var b Bootstrap
+	if err := v.Unmarshal(&b, viper.DecodeHook(decodeHooks()),
+		func(dc *mapstructure.DecoderConfig) { dc.Metadata = &md }); err != nil {
+		return nil, err
+	}
+	if err := checkRenamedKeys(md.Unused); err != nil {
+		return nil, err // a v1 key, naming the record that replaced it (transition policy)
+	}
+	if len(md.Unused) > 0 {
+		// D7's unknown-key refusal. Not ErrorUnused itself: it fails the decode
+		// before md.Unused is filled, so no v1 key could be named.
+		return nil, unknownKeys(md.Unused)
+	}
+	return &b, b.Validate() // the roles flag: both roles or refused (RFC 13 §2.2)
+}
+```
+
+A section, declared by its component and listed once in the node's table (D2):
+
+```go
+// internal/node/settings.go: the one table, read by Check and by reconcile.
+var Settings = settings.Table{
+	settings.Of[adaptersettings.SMB]("adapters.smb",
+		metadata.ScopeInstallation, settings.NoOverride, // "installation, per adapter" (RFC 13 Appendix B)
+		adaptersettings.DefaultSMB(),
+		settings.Classes{"port": settings.Restart}), // every key not named is live (settings.SMB's decision note)
+	settings.Of[adaptersettings.NFS]("adapters.nfs", /* the same */),
+	// ...every other component's section (epic 5; identity.* is RFC 18's plan's)
+}
+
+// pkg/settings.
+func Of[T interface{ Validate() error }](prefix string, scope, override metadata.SettingScopeKind,
+	def T, classes Classes) Section
+```
+
+The write path: the API's settings route checks inside RFC 16's `Write`, so a related setting it
+reads conflicts with a concurrent change (epic 5).
+
+```go
+func (h *settingsRoutes) put(ctx context.Context, meta metadata.WriteMeta, s metadata.Setting, expect uint64) error {
+	return h.cp.Write(ctx, meta, func(tx metadata.ControlPlaneTx) error {
+		if err := node.Settings.Check(tx, s, h.holdsContent); err != nil {
+			return err // config_refused_total; bound ones also config_bound_refusals_total
+		}
+		return tx.PutSetting(s, expect) // raises CFGGEN; a stale expect is ErrGenerationMismatch
+	})
+}
+
+// pkg/settings (epic 3), in this order.
+func (t Table) Check(tx metadata.ControlPlaneTx, s metadata.Setting, holds HoldsContent) error {
+	sec, key, err := t.lookup(s.Key, s.Scope) // unknown key, wrong scope, newer Schema (RFC 13 §2.3)
+	if err != nil {
+		return err
+	}
+	if err := sec.decodeValidate(tx, s); err != nil {
+		return err // strict decode over the defaults and the wider row, then the component's Validate
+	}
+	if sec.class(key) == Bound {
+		if has, err := holds(tx, s.Scope); err != nil || has {
+			return refuseBound(s, err) // RFC 13 §5.1
+		}
+	}
+	if storeLocation(s.Key) {
+		// decision: D9. Refused until the capability check finds the claim
+		// (RFC 13 §5.2); withdraw when both are built.
+		return ErrUnproven
+	}
+	return t.checkFormatVersion(s) // a namespace's block format past this node's range (RFC 13 §5.4)
+}
+```
+
+Reconcile, when `CFGGEN` moved: each change takes its class's path (RFC 23 §2.3, epic 5).
+
+```go
+func (n *Node) reconcileSettings(ctx context.Context) error {
+	cur, err := settings.Read(ctx, n.cp, node.Settings, n.id) // ponytail: one prefix scan per move (§4.3)
+	if err != nil {
+		return err
+	}
+	for _, ch := range settings.Diff(n.settings, cur) {
+		switch ch.Class {
+		case settings.Live, settings.Bound: // a bound change got here only past Check's refusal
+			if err := n.reconfigure(ch.Section, cur); err != nil {
+				return err
+			}
+		case settings.Restart:
+			if !n.rebuild(ch.Section, cur) { // an adapter's port: a new adapter (settings.SMB's note)
+				n.restartPending(ch.Key)
+			}
+		case settings.NextWrite: // nothing to apply: the next write reads cur
+		}
+	}
+	n.settings = cur
+	return n.reportGeneration(ctx, cur.Generation) // NodeStatus.Settings (RFC 16 §2.4)
+}
+
+func (n *Node) reconfigure(section string, cur settings.Snapshot) error {
+	switch section {
+	case "adapters.smb":
+		smb, err := settings.Get[adaptersettings.SMB](cur, section, n.id) // installation row, then the override
+		if err != nil {
+			return err
+		}
+		return n.adapters.SMB.Reconfigure(smb)
+	// ...one case per section with live keys
+	}
+	return nil
+}
+```
+
+Secrets: two role keys from `pkg/keyprovider` (D5), an envelope per version (D4), versions through
+RFC 16 §3's `Secret`, `PutSecret` and `PruneSecret` (epic 4).
+
+```go
+type Provider struct {
+	cp   metadata.ControlPlane
+	keys map[Role]keyprovider.KeyProvider // protocol and storage, each from its bootstrap key location
+}
+
+func (p *Provider) Seal(ctx context.Context, role Role, ref metadata.SecretRef, value []byte) (metadata.SecretRef, error) {
+	cur, err := p.latest(ctx, ref) // RFC 16 §3 reads a named version only: the epic settles how the latest is found
+	if err != nil && !errors.Is(err, metadata.ErrNotFound) {
+		return ref, err
+	}
+	next := cur.Version + 1
+	dk := freshKey()                                 // one data key per version (D4)
+	sealed := gcmSeal(dk, value, aad(role, ref, next)) // AAD = role‖ref‖version: moved, it fails to open
+	wrapped, keyID, err := p.keys[role].Wrap(ctx, dk)
+	if err != nil {
+		return ref, err
+	}
+	s := metadata.Secret{ID: ref, Version: next, KeyID: keyID, Value: envelope(wrapped, sealed)}
+	return ref, p.cp.PutSecret(ctx, s, cur.Version) // raises CFGGEN, so every node resolves it again
+}
+
+func (p *Provider) Resolve(ctx context.Context, role Role, ref metadata.SecretRef) ([]byte, error) {
+	s, err := p.latest(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	wrapped, sealed := open(s.Value)
+	dk, err := p.keys[role].Unwrap(ctx, wrapped, s.KeyID) // a retired key ID still opens: no reseal (§4.3)
+	if err != nil {
+		return nil, err
+	}
+	return gcmOpen(dk, sealed, aad(role, ref, s.Version))
+}
+
+// Prune is called by the rotation's owner once its retention ends: on one node, once this
+// node reports the new version in NodeStatus.Secrets (§4.3).
+func (p *Provider) Prune(ctx context.Context, ref metadata.SecretRef, held uint64) error {
+	return p.cp.PruneSecret(ctx, ref, held) // every version below held
+}
+```
+
 ## 5. The epics in detail
 
 ### Epic 1 — The configuration surface ⛔
