@@ -79,7 +79,7 @@ two `New`); `pkg/resources`' signatures; `core`'s §4.7 surface with stub bodies
   change without an RFC amendment.
 - **S2**, `testproto` and the import test in CI, after E2.
 - **S3**, `core` serves `testproto` end to end, after E4 and E5.
-- **S4**, `internal/node` exists (RFC 23), outside this programme's epics.
+- **S4**, `internal/node` exists: RFC 23's plan's S2 (#4050), outside this programme's epics.
 - **The deferral ledger**: the list of everything RFC 20 or develop's v1 provides that the
   branch does not serve yet, each row naming the owner that brings it back.
 - **The cutover**: the programme stage that wires v2 adapters into `dfs` and turns the
@@ -311,7 +311,8 @@ which epic owns the rest.
   NETLOGON cases stay. Each package is a ledger row (§9), and D1's recorded commit covers them.
 - **D4, the persisted adapter rows stay.** `NFSAdapterSettings`, `SMBAdapterSettings`,
   `AdapterConfig` and `ShareAdapterConfig` keep their models and store methods: deleting them
-  needs a schema migration, and the cutover maps them onto `pkg/adapter/config`. Only their
+  needs a schema migration. Nothing maps them onto `pkg/adapter/settings`: v2 starts fresh and
+  refuses a v1 database (§9). Only their
   routes, the settings watcher and `EnsureDefaultAdapters`' call in the start path go.
 - **D5, `pkg/apiclient` keeps what compiled tests still call.** The `e2e` build tag is vetted
   by `lint-go`, and e2e helpers call the adapter and netgroup client methods. Those methods
@@ -786,11 +787,16 @@ cannot build apart.
 **Deferral-ledger rows this breakdown adds** (missing from the ledger the epic inherits):
 
 - `k8s/dittofs-operator` drives the adapter and settings API through its own client; it breaks
-  against the branch until the cutover brings the API back. Owner: the cutover.
-- `dfsctl share mount` no longer discovers a non-default port (D5). Owner: the cutover.
+  against the branch until RFC 30's plan moves it onto the new wire shapes. Owner: RFC 30's plan
+  (RFC 23's plan, #4050, O4).
+- `dfsctl share mount` no longer discovers a non-default port (D5). Owner: RFC 23's plan (#4050,
+  D12), its epic 6.
 - The packages D3 deletes: discovery (the cutover's sidecars), Kerberos and `pkg/auth` (RFC
   18's plan), `internal/mfsymlink` (RFC 22's plan), each lifted from develop's history.
-- `pkg/apiclient`'s adapter and netgroup methods kept for e2e helpers (D5). Owner: the cutover.
+- `pkg/apiclient`'s adapter and netgroup methods kept for e2e helpers (D5). Owner: RFC 23's
+  plan (#4050): its epic 1 deletes `pkg/apiclient`'s v1 bodies, these included, since its rule 7
+  does not keep them, and fixes or removes the e2e code that calls them; its epic 6 rewrites
+  `pkg/apiclient` on `pkg/node/apiv1`. Its epic 1 therefore overrides D5 for these methods.
 - `metrics.Registry` an alias of the branch's `Metrics` rather than RFC 25's registry (D10).
   Owner: RFC 25.
 - `vfs.Grace{Until}` (D26), named in RFC 17 by T1.9. Owner: RFC 17's plan, before E5's T5.5.
@@ -809,7 +815,7 @@ cannot build apart.
   `export_auth_policy.go` and `share_permission.go` the reference. Owner: RFC 18's and RFC 19's
   plans.
 - Netgroups can still be attached to a share's NFS config (D4 keeps the route) but no longer
-  managed, since T1.2 deletes their routes and commands. Owner: RFC 23, with its records.
+  managed, since T1.2 deletes their routes and commands. Owner: RFC 23's plan (#4050, D12).
 - The `require_kerberos` boot refusal (D25). Owner: RFC 21's plan, with the NFS adapter.
 - The NFS lock grace period setting, which the start path no longer applies, though D4 keeps
   the row that holds it. Owner: RFC 21's plan.
