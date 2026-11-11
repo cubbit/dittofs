@@ -1275,7 +1275,11 @@ type ControlPlane interface {
 	// the request's writes through tx, which carries this view's Put*, Set*
 	// and Delete* without their ctx, each checking its expect as above; Write
 	// then writes meta's AuditRecord and, when meta names a key, its
-	// IdempotencyRecord, and commits all of them or none. A transaction
+	// IdempotencyRecord, and commits all of them or none. Before fn, Write reads
+	// that key's record with conflict tracking: one with the same digest returns
+	// ErrIdempotentReplay carrying the recorded answer, and fn does not run; one
+	// with another digest returns ErrIdempotencyMismatch. Two requests that both
+	// miss the record conflict on its key, so the one that retries finds it. A transaction
 	// conflict retries fn from the start, so fn holds no state between calls;
 	// an expect that does not match returns ErrGenerationMismatch through fn
 	// and is not retried. The methods above stay, each one Write with no

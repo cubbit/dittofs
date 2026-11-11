@@ -9,7 +9,7 @@ are in scope as follows:
   - [RFC 16](../rfcs/rfc-16-metadata-store.md): the records RFC 23 adds and the fields it needs (§3,
     §4.2), and a share's removal steps (§2.3.2), which the store today stops after the mark.
   - [RFC 18 §8.1](../rfcs/rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface): the API's
-    sign-in interface.
+    sign-in interface, which the RFC 18 plan builds and epic 5 consumes (O11).
   - [RFC 25](../rfcs/rfc-25-observability.md): the health registry and watchdog (§3, §8.1) and the
     `api_`, `node_` and `audit_` series (§2.1).
 - **Constraints only:** RFCs 0, 8, 9, 11, 12, 14, 15, 17, 20, 24, 26, 27 and 30.
@@ -37,8 +37,8 @@ nothing as the pieces connect (§6 O1).
 **Divergence from the planning skill.** There is no test-foundations epic, by the user's decision. The
 pieces it would hold already exist or land with their first consumer:
 
-- the leak check is the profiler RFC 20's plan's epic 2 moves to `internal/prof` (from
-  `pkg/block/journal/journaltest/prof`);
+- the leak check is `pkg/block/journal/journaltest/prof`, which RFC 20's plan's epic 2 moves to
+  `internal/prof` (#4000); each epic uses whichever path exists when it lands;
 - the KV fault wrapper is `pkg/metadata/kv/kvtest`'s;
 - the architecture tests guard epic 1's deletion, so they land in epic 1;
 - the node harness lands in epic 3 with its first test.
@@ -60,7 +60,7 @@ database or configuration refuses and names it. No migration tool.
 - dashboards: none;
 - the bootstrap file keeps its path, with a flag to name another (D6).
 
-**RFC amendments in this pull request.** The user agreed to three, all on draft RFCs:
+**RFC amendments in this pull request.** The user agreed to four, all on draft RFCs:
 
 - **A1. An adapter's port becomes an adapter setting**, `adapters.<protocol>.port`, at installation
   scope with a node override, restart-class. The listen addresses stay the host's bootstrap facts,
@@ -72,6 +72,10 @@ database or configuration refuses and names it. No migration tool.
 - **A3. RFC 16's `ControlPlane` gains one transactional entry point.** It takes the audit and
   idempotency metadata and runs a function over a transaction that carries the view's writes. This
   touches RFC 16 §3, and RFC 23 §4.3 cites it.
+- **A4. Only reconciled records carry a position.** RFC 23 §2.4 narrows "every control-plane record"
+  to a setting, a share and a principal, as RFC 16 §3 has it; a grant, an export policy, a netgroup
+  and a quota are versioned instead, and §4.4's quota entity tag is its version. This closes RFC 23
+  §13 item 1.
 
 ## 1. Introduction
 
@@ -94,8 +98,10 @@ What replaces what:
 | `cmd/dfsctl` command bodies | the same tree, rebuilt | bodies deleted in epic 1 |
 | `pkg/health`'s `share.go`, `cache.go`, `wrap.go` | `pkg/health`, with RFC 25's registry and watchdog beside the `Checker` and `Report` the stores implement | those three deleted in epic 1 |
 | `pkg/snapshot` (only v1 calls it) | none | deleted in epic 1 |
+| `pkg/identity`'s root files (v1 resolver, cache, link store) and `pkg/auth/sid/mapper.go` | RFC 18's `pkg/identity` and RID counter (RFC 18 plan) | deleted in epic 1; `pkg/identity/ldap` and `internal/auth/netlogon` stay, without importers, for the RFC 18 plan to move |
 | `pkg/config`'s v1 sections | `pkg/config`, the host's bootstrap only, loaded as today | stripped in epic 1 |
 | key `database.*`, the `controlplane.db` file | none | a start refuses them |
+| keys `kerberos.*`, `ldap.*`, `identity.machine_sid`, `DITTOFS_KERBEROS_*`, `DITTOFS_LDAP_*` | `identity.*` settings and `Secret` records (RFC 18 plan) | a start refuses them |
 | keys `controlplane.jwt.*`, `DITTOFS_CONTROLPLANE_SECRET`, `admin.*`, `DITTOFS_ADMIN_INITIAL_PASSWORD` | the installation's signing-key `Secret`; the initialisation step's password reference | a start refuses them |
 | keys `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*`, `blockstore.*` (except the journal path) | settings records (RFC 13 Appendix B) | a start refuses them, naming the setting that replaced each |
 
@@ -185,7 +191,8 @@ registers no suite and no group, and changes no `lint-go` tag.
   16's KV suite holds, the API on `127.0.0.1:0`, and an injected clock. It lands in epic 3, and
   epic 5 adds a signed-in caller of each role;
 - `pkg/metadata/kv/kvtest`'s fault wrapper, for commit faults and unreachable reads;
-- the leak check in `internal/prof`, for goroutines, descriptors and heap.
+- the leak check (`journaltest/prof`, `internal/prof` once #4000 lands), for goroutines,
+  descriptors and heap.
 
 ### 1.5 General rules for each epic
 
@@ -232,7 +239,7 @@ registers no suite and no group, and changes no `lint-go` tag.
 
 1. **Independent unit tests.** Each epic carries its own unit tests. They build on the test
    components (the node harness `internal/node/nodetest`, `pkg/metadata/kv/kvtest`'s fault wrapper,
-   `internal/prof`'s leak check), on the implementation of an epic it depends on once that has landed, and only on
+   the leak check, `journaltest/prof` or `internal/prof` after #4000), on the implementation of an epic it depends on once that has landed, and only on
    the test doubles `CLAUDE.md`'s "Writing tests" allows: the in-memory KV that RFC 16's KV suite
    holds, and the in-memory `vfs.Service` that RFC 17 §8 holds. An API handler is tested with the
    calling account placed in its request context, which is an input rather than a double, until the
@@ -255,7 +262,7 @@ registers no suite and no group, and changes no `lint-go` tag.
 
    Conditions go in RFC 25 §3.9's registry: `config_generation_behind`. `adapter_refused` is the
    adapters' own, raised where RFC 20's plan's epic 7 wires them into the node.
-   `namespace_unclaimed` is not raised while every namespace answers held (§4.3). No exception
+   `namespace_unclaimed` is not raised while every namespace answers held (§4.3 above). No exception
    applies: RFC 23 restricts no dependency.
 4. **Profiling.** Every node and API test runs under the leak check, and fails on a goroutine,
    descriptor or heap growth left behind. No allocations-per-operation assertion: RFC 23 names no
@@ -309,17 +316,17 @@ registers no suite and no group, and changes no `lint-go` tag.
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | Delete v1, declare the surface | v1 deleted, cells and harness fixed; the node's, wire types', client's and kvstore's surfaces; the new `cmd/dfs` skeleton; architecture tests | 11 | 15 | team | every epic |
 | E2 | Store records | the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; sealed secrets; expiry | 9 | 22 | C | E5; partly E3, E4 |
-| E3 | The node | bootstrap, `dfs start`, composition, start and stop, reconcile, node status, health, the operation runner | 10 | 25 | A | E6 (partly), E7 |
+| E3 | The node | bootstrap, `dfs start`, composition, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven | 11 | 26.5 | A | E6 (partly), E7 |
 | E4 | The management API | server, route table, write path, preconditions, idempotency, problems, reads, resources, operations, audit read | 11 | 29 | B | E6 (partly), E7 |
-| E5 | Accounts and sign-in | RFC 18 §8.1's interface, `dfs init`, `dfs reset-admin`, tokens, sessions, roles, throttling, first password, signing key | 8 | 18.5 | C | E6 (partly), E7 |
+| E5 | Accounts and sign-in | on RFC 18 §8.1's interface (O11): `dfs init`, `dfs reset-admin`, tokens, sessions, roles, throttling, first password, signing key | 7 | 16.5 | C | E6 (partly), E7 |
 | E6 | The CLI | the client on the wire types, the rebuilt `dfsctl`, generated reference | 6 | 12.5 | A | E7 |
 | E7 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides | 5 | 12.5 | team | E8 |
 | E8 🔀 | E2E green | the e2e rows, the cells taken off in epic 1 back on | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **60** | **134.5** | | |
+| | **Total** | | **60** | **134** | | |
 
-**Plan estimate: 60 subtasks, 134.5 man-days, not counting epic 8.**
+**Plan estimate: 60 subtasks, 134 man-days, not counting epic 8.**
 
-The skill's estimate for RFC 23's 1,802 lines is 5 middle epics (`round(1802 / 400)`), and this plan
+The skill's estimate for RFC 23's 1,806 lines is 5 middle epics (`round(1806 / 400)`), and this plan
 has 5.
 
 **Legend.** ⛔ is a blocker; 🔀 waits on a synchronisation point. "team" is an epic that belongs to
@@ -394,7 +401,7 @@ flowchart TD
   table and the reads, which wait on nothing. Its write path joins once epic 2's entry point lands.
   Track B is the only track with one epic, and the largest one: once its routes are in, it leads
   integration.
-- **Track C** takes epic 2 at S1, then epic 5. Epic 5 starts with RFC 18 §8.1's interface in
+- **Track C** takes epic 2 at S1, then epic 5. Epic 5 starts with
   `pkg/identity` and `dfs init`, which need only the user fields epic 2 lands first, so Track C is
   not idle while the rest of the records finish.
 - **The team converges** at epic 1 (one pull request, since the deletion and the new surface must
@@ -416,7 +423,6 @@ pkg/apiclient/                client on pkg/node/apiv1 (same path as v1's)      
 cmd/dfsctl/                   CLI: the noun-verb tree, bodies rebuilt                E6
 pkg/config/                   the host's bootstrap only                              E1 strip, E3
 pkg/health/                   + RFC 25's registry and watchdog, the parts used       E3
-pkg/identity/                 + RFC 18 §8.1's sign-in interface                      E5
 pkg/metadata/entity/          + RFC 16's records for RFC 23, and its User fields     E2
 pkg/metadata/kvstore/         + those records, expect on every write, A3's entry     E1 surface, E2
                               point, a share's removal steps, sealed secrets
@@ -635,7 +641,7 @@ API write commits in, and a share's removal steps past the mark.
 - A3's entry point: the transaction type carrying the view's writes, and the audit and idempotency
   records written in it.
 - `expect` on every write of the view, including the renames RFC 16 makes (`DeleteGrant`).
-- `User.Role`, `NotBefore`, `MustChange` and `email` (RFC 23 §3.5). These land first, since epic 5
+- `User.Role`, `NotBefore`, `MustChange` and `email` (RFC 23 §5.1, §5.3, §5.4, §3.5). These land first, since epic 5
   starts on them.
 - `Position` on the reconciled kinds, and the principals-generation counter.
 - The `Operation`, `IdempotencyRecord`, `Session`, `APIToken` and `AuditRecord` records, with their
@@ -644,12 +650,12 @@ API write commits in, and a share's removal steps past the mark.
   §2.4).
 - A share's removal steps after the mark, in bounded batches, each resumable from the removal's
   record (RFC 16 §2.3.2).
-- The sweeper (§4.3).
+- The sweeper (§4.3 above).
 - Secret sealing (D10) and the versioned `Secret` writes RFC 13 §7 rotates.
 
 ### Epic 3 — The node
 
-**Epic 3 estimate: 10 subtasks, 25 man-days.**
+**Epic 3 estimate: 11 subtasks, 26.5 man-days.**
 
 `node.New` composes every component that exists, and the node starts, reconciles, reports and
 stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
@@ -659,9 +665,10 @@ stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 - RFC 23 §3.2's delete, driven past the mark;
 - RFC 23 §3.3's credential rotation, as a runner kind;
 - RFC 23 §4.6, the runner (single node);
-- RFC 23 §8.1, the rows not marked cluster;
+- RFC 23 §8.1, the rows not marked cluster, but the OpenID Connect row (deferred, O2) and the
+  adapter that fails to start (RFC 20's plan's epic 7, D12);
 - RFC 13 §2.2 with A1 and A2;
-- RFC 25 §3 and §8.1, the parts §4.3 names.
+- RFC 25 §3 and §8.1, the parts §4.3 above names.
 
 **Done when:**
 - RFC 23 CP1, CP3, CP4 and CP13 hold at the node's layer, driven by records the harness writes
@@ -676,14 +683,16 @@ stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 - The remote registry and the adapter factories that reconcile acquires instances through (D11).
 - `Start` and `Stop`, in RFC 23 §2.2's order, with the start-failure and stop-bound rules.
 - Reconcile: the counters read once a second, the full reconcile, and `addShare`, `removeShare` and
-  `apply` (RFC 23 §2.3), with the namespace simplification of §4.3.
+  `apply` (RFC 23 §2.3), with the namespace simplification of §4.3 above.
 - The node-status writer and the `node_` series (RFC 23 §2.4, §11).
 - The health and readiness endpoints and the metrics listener, with RFC 25's registry and watchdog
   (RFC 23 §2.5).
-- The operation runner on one node (D8, §4.3).
+- The operation runner on one node (D8, §4.3 above).
+- A user's and a group's deletion driven past the mark, their batches resumed at start (RFC 23
+  §3.5, RFC 16 §3).
 - A share's removal driven past the mark: epic 2's steps, with the join of RFC 23 §2.3's removed-share
   row at step 3, resumed at start.
-- The credential rotation's steps (RFC 23 §3.3, §4.3).
+- The credential rotation's steps (RFC 23 §3.3; §4.3 above).
 - `dfs start`: RFC 23 §2's `run`, and nothing else.
 - The node harness, `internal/node/nodetest`.
 
@@ -705,6 +714,8 @@ error to a status.
 **Done when:**
 - RFC 23 CP2, CP5, CP6 and CP8 hold at the handler layer, with the caller in the request context
   (rule 1);
+- RFC 23 CP11 holds on the API side: no secret value in an answer, an audit record, an idempotency
+  record, a log line or a metric;
 - the error table's totality test passes.
 
 **Expected content:**
@@ -718,18 +729,20 @@ error to a status.
 - Reads: the envelope, cursor listings, indexed filters, and `applied` joined from node status
   (RFC 23 §2.4, §4.1, §4.2).
 - Shares: create, quiesce and resume, rename and re-path, delete as an operation, and
-  `?wait=serving` (RFC 23 §3.2).
+  `?wait=serving` (RFC 23 §3.2). A share in a new namespace serves at commit: its first claim waits
+  with RFC 27's `Claim` (O2).
 - Remote stores and namespaces: bound fields, a proven endpoint, and the credential rotation started
   as an operation (RFC 23 §3.3).
 - Adapters, with `port` as a setting (A1), validated by `pkg/adapter/config`'s validator, and the
   generic settings resource (D5).
-- Users, groups, grants, netgroups and quotas (RFC 23 §3.5).
+- Users, groups, grants, netgroups and quotas (RFC 23 §3.5), a user's or group's delete answered as an
+  operation.
 - Operations (read, `?wait=`), nodes and their connections, and the audit read.
 - The validators of RFC 13 §6 for the settings these resources write.
 
 ### Epic 5 — Accounts and sign-in
 
-**Epic 5 estimate: 8 subtasks, 18.5 man-days.**
+**Epic 5 estimate: 7 subtasks, 16.5 man-days.**
 
 The installation gets its first account. API accounts sign in, hold tokens, and are authorized per
 call against their current record.
@@ -739,14 +752,14 @@ call against their current record.
 - RFC 23 §4.5's credential calls;
 - RFC 23 §6's refusals and sign-ins;
 - RFC 16 §3.2's `Init`, as `dfs init` calls it;
-- RFC 18 §8.1, without `VerifyToken`, which waits for OpenID Connect.
+- RFC 18 §8.1 as a consumer: the RFC 18 plan builds it (O11); `TokenVerifier` (RFC 18 §8.2) waits
+  for OpenID Connect.
 
 **Done when:**
 - RFC 23 CP9 and CP10 hold at the API's authentication layer;
 - the §1.4 scenarios assigned to epic 5 pass.
 
 **Expected content:**
-- RFC 18 §8.1's interface in `pkg/identity`: password check, account read and hash derivation.
 - `dfs init`:
   - the installation, through `kvstore.Init`;
   - the journals recorded;
@@ -758,7 +771,7 @@ call against their current record.
 - The per-call account check and the role table of RFC 23 §5.2, including `404` for what the caller
   may not read and `last_admin`. The harness gains a signed-in caller of each role.
 - Throttling, counted in the store, and the first password's must-change and the password change.
-- The signing key as an installation `Secret`, and its rotation steps for the runner (§4.3).
+- The signing key as an installation `Secret`, and its rotation steps for the runner (§4.3 above).
 
 ### Epic 6 — The CLI
 
@@ -792,7 +805,8 @@ node `node.New` builds.
 **Owns:** RFC 23 §12, the single-node rows that need no mount; RFC 23 §8, the single-node bullets as
 a whole.
 
-**Done when:** these RFC 23 §12 rows pass, in their single-node part:
+**Done when:** RFC 23 CP7 holds (an operation survives a restart and is read through the API), and
+these RFC 23 §12 rows pass, in their single-node part:
 
 | Row | What it needs together |
 | --- | --- |
@@ -855,22 +869,25 @@ took off and runs RFC 23's e2e rows.
     route-table row and, for an operation, one runner kind. That includes the "§4.4 background
     field" row, which starts a re-home;
   - the event streams and `AuditCursor`: RFC 25 §4's spool;
+  - a new namespace's first claim, an operation RFC 23 §3.2 and §4.6 name: RFC 27's `Claim` (§4.3
+    above). Until then a share created in a new namespace serves once its binding does, with no
+    claim operation;
   - the alert rules for rule 3's conditions (RFC 25 §7): the repository has no alert rules yet, so
     they wait for RFC 25's plan.
-- **O3. Components the node composes but that RFC 23 §13 item 4 leaves unspecified.** That is GC
-  in its v1 shape, identity's directory connections, the pools and the event sink. Epic 3 composes
+- **O3. Components the node composes but whose lifecycle is unspecified.** RFC 23 §13 item 4
+  lists identity's directory connections, the pools and the event sink; GC adds its v1 shape. Epic 3 composes
   what exists and records each gap in its own document.
 - **O4. The Kubernetes operator.** It imports nothing of this module and mirrors v1's wire shapes
   by hand, so it builds after epic 1 but stops working against the new server. Moving it onto the
   new wire shapes is RFC 30's, and its cell is off until then (D9).
-- **O5. Which counter a grant's, an export policy's, a netgroup's and a quota's position is of**
-  (RFC 23 §13 item 1). RFC 16 §3 now says these four carry none. Epic 2 follows RFC 16; RFC 23's
-  §13 item should be closed by its author.
+- **O5. Which counter a position is of** (RFC 23 §13 item 1) is settled by amendment A4: only the
+  reconciled kinds carry one, as RFC 16 §3 has it.
 - **O6. The cost of a full reconcile** (RFC 23 §13 item 5) is unmeasured. Epic 3 reconciles as the
   RFC says, and measures it at 10⁴ shares in a benchmark.
 - **O7. A1 reaches into RFC 20's code.** `pkg/adapter/config.Adapter` gains `Port`, and each
   protocol's `New` binds on it the listeners it puts on its default port today (RFC 20 §3.6, §4.8).
-  The field and the `New` change belong to RFC 20's plan's epic 7, beside its config loader. R37 of
+  The field, the `New` change and `Reconfigure`'s refusal of a changed `port` (a sentinel error,
+  RFC 20 §3.6) belong to RFC 20's plan's epic 7, beside its config loader. R37 of
   `rfc-20-adapters-epic1.md` stays true: addresses still come from the host.
 - **O8. An MCP server for the API.** It was asked about while this plan was written, and the user
   deferred it. An MCP server is one more client of the API, like the CLI, and needs nothing on the
@@ -879,6 +896,10 @@ took off and runs RFC 23's e2e rows.
 - **O9. Client eviction.** RFC 20's plan's ledger hands v1's `DELETE /api/v1/clients/{id}` to RFC
   23 "when RFC 23 decides". RFC 23 defines no eviction call: the connection listing is read-only
   (RFC 23 §4.2). Until an RFC adds one, an operator disables the account (RFC 23 §3.5).
+- **O11. RFC 18 §8.1 is the RFC 18 plan's.** `APISignIn`, `NewHashes` and their package are built
+  there, with the sealed hash set; epic 5 consumes them. The RFC 13 configuration-lifecycle plan
+  likewise takes the bootstrap, settings and secrets pieces this plan places in epics 1 to 4; this
+  plan is revised to consume both once they merge.
 - **O10. Estimates least certain.**
   - Epic 4 depends on how many RFC 13 validators the in-scope settings need.
   - Epic 3 depends on how far today's GC and identity fit RFC 23 §2.1's table.
@@ -922,6 +943,6 @@ took off and runs RFC 23's e2e rows.
 | RFC 16 §2.3, §3, §4.2 | E1 (signatures, A3), E2 |
 | RFC 16 §2.3.2 | E2 (steps), E3 (driving) |
 | RFC 16 §3.2 | E5 (`Init`) |
-| RFC 18 §8.1 | E5 (without `VerifyToken`) |
+| RFC 18 §8.1 | the RFC 18 plan (O11); E5 consumes it |
 | RFC 25 §2.1, §3, §8.1 | E3 (registry, watchdog), each epic's series (rule 3) |
 | RFC 25 §3.9 | E3 (conditions), E7 (checked) |

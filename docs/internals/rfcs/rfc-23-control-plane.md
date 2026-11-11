@@ -108,7 +108,8 @@ Under this RFC:
 - **generation** — the counter every record carries, raised by every change
   ([RFC 13 §2.3](rfc-13-configuration.md#2.3%20A%20record%20is%20versioned)); the entity tag of most resources (§4.4).
 - **position** — the value of its kind's counter that a record's last change
-  raised; how "applied" is computed, and a quota's entity tag (§2.4, §4.4).
+  raised, carried by a setting, a share and a principal; how "applied" is
+  computed (§2.4).
 - **node-status record** — the one record each node writes about itself: what
   it has reconciled, refused and holds restart-pending (§2.4).
 - **operation** — a resource that stands for work longer than one request, with
@@ -686,9 +687,13 @@ when a value changed:
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)).
 
 A record's own generation (§4.4) counts its changes; it is not comparable with
-these counters. So every control-plane record **MUST** also carry its
-**position**: the value of its kind's counter that its last change raised,
-written in that change's transaction. A record at position *S* is **applied**
+these counters. So every record of a reconciled kind — a setting, a share, a
+principal — **MUST** also carry its **position**: the value of its kind's
+counter that its last change raised, written in that change's transaction.
+A grant, an export policy, a netgroup and a quota carry none: each call reads
+their versions, which are in the cache keys that hold them
+([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)), so
+one is applied on every node from its commit. A record at position *S* is **applied**
 on a node once that node has reconciled its kind through at least *S* and the
 record is in neither its refused set nor its restart-pending set. The API joins
 these reports into each resource's status (§4.1), so "applied on 2 of 3 nodes;
@@ -1108,7 +1113,7 @@ Every resource read returns an `ETag` that is the value RFC 16's write of that
 record takes as `expect`
 ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)): its
 generation ([RFC 13 §2.3](rfc-13-configuration.md#2.3%20A%20record%20is%20versioned)), its version (a grant, an export policy, a
-netgroup) or its position (a quota, §2.4). A client compares it only for
+netgroup, a quota). A client compares it only for
 equality. A resource built from
 several records — a share's info, its state and its namespaces are three
 ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)) — takes its tag from the one its `spec` writes; the others
@@ -1717,13 +1722,10 @@ in `e2e`, their Kerberos flavours in `e2e/kerberos`. No suite runs yet the multi
 
 ## 13. Open questions
 
-1. **Which counter a position is of.** [RFC 16](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)
-   defines the records this RFC adds and their keys, a `User`'s role and
-   not-before time, every record's `Position`, and `expect` on every write,
-   `SetGrant` and `SetQuota` included. One question is left: which counter
-   (`CFGGEN`, `SL` or `PGEN`) a grant's, an export policy's, a netgroup's and a
-   quota's `Position` is of. [RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)
-   keeps grants and export policies off the principals generation.
+1. **Which counter a position is of.** Settled in §2.4: only the reconciled
+   kinds carry one, as [RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)
+   has it; a grant, an export policy, a netgroup and a quota are versioned
+   instead.
 2. **Audit volume at scale.** An audit record per change is nothing for
    operators; a provisioning reload that rewrites 10⁴ shares writes 10⁴ records
    in its transactions. Whether a reload's records are summarised per record
