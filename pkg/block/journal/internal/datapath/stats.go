@@ -62,8 +62,10 @@ type Stats struct {
 // before held, so dirty <= held holds at every instant, but that protects only
 // a reader seeing both at one instant: a fall landing between a dirty read and
 // a held read leaves the pair dirty above held. The pair is therefore re-read
-// until dirty <= held, which ends because a pair read with no fall between
-// satisfies it. A reservation is released only after its record is counted in
+// up to four times until dirty <= held, which a pair read with no fall between
+// satisfies. The retries are bounded so a lasting dirty > held (an accounting
+// bug) cannot hang a Stats call on a commit path: a pair still out of order
+// after them is returned as read. A reservation is released only after its record is counted in
 // its share's UsedBytes, so ReservedBytes and ReservedByTag are read before
 // the set's figures: a record in flight is then counted in at least one of
 // them. UsedBytes comes from the set, which allocation raises before a record
@@ -77,13 +79,12 @@ func (c *Core) Stats() Stats {
 	var s Stats
 	s.MaxBytes = c.maxBytes
 	reserved, reservedBy := c.cap.ReservedBytes(), c.cap.ReservedByTag()
-	for {
-		d := c.dirty.Load()
+	for range 4 {
+		s.DirtyBytes = c.dirty.Load()
 		if c.betweenHeldReads != nil {
 			c.betweenHeldReads()
 		}
-		if h := c.held.Load(); d <= h {
-			s.DirtyBytes, s.HeldBytes = d, h
+		if s.HeldBytes = c.held.Load(); s.DirtyBytes <= s.HeldBytes {
 			break
 		}
 	}
