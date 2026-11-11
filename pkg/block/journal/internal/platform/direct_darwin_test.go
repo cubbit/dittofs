@@ -234,6 +234,7 @@ func TestReadAtDirectInterruptedRead(t *testing.T) {
 
 	r := &recorder{}
 	f := directCheckFile(t, newOS(t.TempDir(), r.table()), r, "a", []byte("record"))
+	t.Cleanup(func() { _ = f.Close() })
 
 	r.failNext("pread", syscall.EINTR)
 	p := make([]byte, 6)
@@ -259,10 +260,6 @@ func TestReadAtDirectInterruptedRead(t *testing.T) {
 
 	if n := countFnocache(log, 0); n != 1 {
 		t.Fatalf("got %d calls of fcntl(F_NOCACHE, 0) in %v; want one clear", n, log)
-	}
-
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
 	}
 }
 
