@@ -92,7 +92,7 @@ that needs it.
     the domain's DNS service records;
   - the join's state, the secure channel's health and the last rotation are reported, with a
     `machine_account_unhealthy` condition whose two causes clear apart, registered in RFC 25 §3.9;
-  - RFC 18 §10 gains the rows "clock skew", "service name", "AES only", "derived keytab", "online join", "offline join",
+  - RFC 18 §10 gains the rows "AES only", "derived keytab", "online join", "offline join",
     "machine account health" and "NetBIOS name while joined".
 - **A4. Kerberos is AES only** (RFC 18 §3.3): the keytab holds AES keys, an online join sets
   `msDS-SupportedEncryptionTypes` to `0x18`, an offline join refuses an account without both AES
@@ -100,6 +100,10 @@ that needs it.
 - **A5. A user holds two secret references, one per wrapping key** (RFC 16 §2.3's `User`):
   `Password`, sealed under the `storage` key, and `NTHash`, sealed under the `protocol` key and zero
   while NTLM is off, as RFC 13 §7 seals each.
+
+- **A6. Review fixes to RFC 18's Kerberos and PAC rules**: the PAC's server checksum is computed
+  over the PAC's bytes as received, and only the first buffer of a type is used (§3.4); §10 gains
+  the rows "clock skew" and "service name" for §3.3's two MUSTs that had none.
 
 ## 1. Introduction
 
