@@ -4,10 +4,14 @@
 package unread
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"sort"
 	"sync"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/readretry"
 )
 
 // Kind distinguishes a record body from its header, which stay unread for
@@ -50,6 +54,44 @@ type Set struct {
 // New returns an empty set reading the journal's clock.
 func New(clk core.Clock) *Set {
 	return &Set{entries: map[core.SegmentID]map[int64]Ref{}, clk: clk}
+}
+
+// Try reads ref's bytes through the bound's retries and keeps the custody
+// the set exists to hold: a range no attempt reads is marked unread, and a
+// range that reads is cleared, so the next access of it goes to the block
+// store alone.
+//
+// A range already unread gets one attempt only — it has failed once, so
+// nothing but the one quick try is spent asking the device again — while a
+// range no read has failed yet gets readretry.Attempts of them: a fresh
+// failure may be the transient one the bound was written for. Both run
+// inside the bound's window, on the journal's clock.
+//
+// The set marks nothing on a context error: the caller ended the retries at
+// its own deadline, and the cancellation says nothing about the device. A
+// read ending in nil has said everything — bytes or none — and the range is
+// cleared whatever it was before.
+func (s *Set) Try(ctx context.Context, ref Ref, read func() ([]byte, error)) ([]byte, error) {
+	attempts := readretry.Attempts
+	if s.Unread(ref) {
+		attempts = 1
+	}
+	var b []byte
+	_, err := readretry.Do(ctx, s.clk, attempts, func() (err error) {
+		b, err = read()
+		return err
+	})
+	switch {
+	case err == nil:
+		s.clear(ref)
+		return b, nil
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return nil, err
+	default:
+		s.mark(ref)
+		return nil, fmt.Errorf("%w: segment %d offset %d: %w",
+			core.ErrUnreadable, ref.Segment, ref.Off, err)
+	}
 }
 
 // Unread reports whether the range starting at ref.Off of ref.Segment is one
@@ -103,6 +145,17 @@ func (s *Set) SuspectSegments() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.suspect
+}
+
+// entry returns the Kind the set holds for ref's (Segment, Off), and whether
+// it holds one. It is the in-package read the set's own tests take of the
+// Kind a mark kept, which no exported view serves yet: Ranges answers bytes
+// only, and the range reader the epic adds is what reaches the Kind.
+func (s *Set) entry(ref Ref) (Kind, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	held, ok := s.entries[ref.Segment][ref.Off]
+	return held.Kind, ok
 }
 
 // mark records ref as unread. Marking a range twice counts it once.
