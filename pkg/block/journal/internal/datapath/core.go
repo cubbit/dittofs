@@ -134,12 +134,13 @@ type coreOptions struct {
 //
 // decision: a Core owns no lock that spans I/O. The one domain it uses is the
 // file append domain, taken through its domain table and held across a file's
-// append and publish, which includes I/O; its counters are atomics. Its one
-// mutex is the dirty-file list's leaf, held only for a map operation. Revisit
+// append and publish, which includes I/O; its counters are atomics. Its two
+// mutexes, the dirty-file list's and the per-share ledger's, are leaves, each held only for a map operation. Revisit
 // if a core-wide invariant ever needs a mutex that outlives one.
 type Core struct {
 	index         *index.Index
 	dirtyFiles    dirtyList
+	shares        shareLedger
 	clock         core.Clock // the injected clock, read for the write time a dirty write carries
 	counters      *index.Counters
 	set           *segment.Set
