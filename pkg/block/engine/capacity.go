@@ -265,15 +265,16 @@ func (e *Engine) awaitRaise(ctx context.Context, changed <-chan struct{}) bool {
 // decision: a raise is in flight when its state is not raiseIdle, running or
 // running with a wake pending, so a goroutine is raising or will raise again.
 // The wake channel was taken before the journal call and the state is read
-// after the refusal. Every exit of a raise wakes the channel: a commit, a
-// refusal by the journal, a failed attempt before its retry wait, and the end
-// of the raise, which it does once the state is idle; only a cancellation by
-// the engine's close wakes none, which the close subtask must do. A raise that
-// ends between the call and the read has closed the channel, so the call runs
-// again; with none in flight and the channel open the call answers
-// retry-later at once. A wake with nothing changed is harmless: the call
-// retries and, with no raise in flight, answers retry-later. Overturned if a
-// version refusal must wait with no raise triggered.
+// after the refusal. A commit and a refusal by the journal wake the channel
+// when they happen, and every exit of the raise wakes it once the state is
+// idle, a cancellation by the engine's close included. A failed attempt wakes
+// none: a woken call is refused again, finds the raise still running and
+// waits again. A raise that ends between the call and the read has closed the
+// channel, so the call runs again; with none in flight and the channel open
+// the call answers retry-later at once. A wake with nothing changed is
+// harmless: the call retries and, with no raise in flight, answers
+// retry-later. Overturned if a version refusal must wait with no raise
+// triggered.
 func (e *Engine) mayWait(
 	ctx context.Context,
 	b *binding,

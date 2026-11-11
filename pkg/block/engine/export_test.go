@@ -829,6 +829,11 @@ func (e *Engine) EnqueueKind(
 	})
 }
 
+// StopRaisesForTest cancels the context every raise runs under, as Close does.
+func (e *Engine) StopRaisesForTest() {
+	e.raising.cancel()
+}
+
 // WakeRaiseForTest starts share s's journal's raise, or marks it to run once
 // more, as a version drawn within the trigger does.
 func (e *Engine) WakeRaiseForTest(s entity.ShareID) {
