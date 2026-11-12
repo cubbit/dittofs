@@ -15,6 +15,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
+// RecordBytes is what one copy of n payload bytes reserves in the journal.
+var RecordBytes = recordBytes
+
 // ErrNotStarted is the answer of a Bind while no journal is open.
 var ErrNotStarted = errNotStarted
 

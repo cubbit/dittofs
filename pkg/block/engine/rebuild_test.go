@@ -183,8 +183,8 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 				t.Error("the rebuilt clone's destination does not read the source at its asOf")
 			}
 			remade := 2 - c.copies
-			if n := reserved.Load(); n != int64(remade)*runLen {
-				t.Errorf("reserved %d bytes while the copies were made, want %d", n, remade*runLen)
+			if n, want := reserved.Load(), int64(remade)*engine.RecordBytes(runLen); n != want {
+				t.Errorf("reserved %d bytes while the copies were made, want %d", n, want)
 			}
 			// The copies kept are the first c.copies runs: the others the
 			// destination holds were made again.
