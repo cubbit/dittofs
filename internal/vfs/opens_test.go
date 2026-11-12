@@ -2042,7 +2042,7 @@ func TestTwoReleasesOfOneFileDeleteItOnce(t *testing.T) {
 	n.must(t, err)
 	var wg sync.WaitGroup
 	wg.Go(func() { _ = n.releaseAlone(ctx, n.fs.Share.ID, f.ID) })
-	<-entered
+	awaited(t, "the first release's Delete", entered)
 	wg.Go(func() { _ = n.releaseAlone(ctx, n.fs.Share.ID, f.ID) })
 	time.Sleep(50 * time.Millisecond) // the second is waiting
 	close(open)

@@ -926,7 +926,7 @@ func TestDrainJoinsAReleaseRunAgain(t *testing.T) {
 	}()
 	time.Sleep(50 * time.Millisecond)
 	unlock()
-	atDrain := <-drained
+	atDrain := awaited(t, "Drain once the re-run release was unlocked", drained)
 	time.Sleep(50 * time.Millisecond)
 	if d := deletes.Load(); d != atDrain {
 		t.Errorf("%d Deletes when Drain returned, %d after, want none after", atDrain, d)
@@ -950,11 +950,22 @@ func TestStopJoinsTheWaitOnAPendingRelease(t *testing.T) {
 	n.marks = m
 	f := n.create(t, n.admin, n.fs.Root, "f", vfs.CreateRegular).File
 	n.stored(t, f.ID)
-	if _, err := n.Unlink(t.Context(), n.admin, vfs.Target{H: n.fs.Root}, []byte("f")); err != nil {
-		t.Fatal(err)
+	unlinked := make(chan error, 1)
+	go func() {
+		_, err := n.Unlink(t.Context(), n.admin, vfs.Target{H: n.fs.Root}, []byte("f"))
+		unlinked <- err
+	}()
+	select {
+	case err := <-unlinked:
+		n.must(t, err)
+	case <-m.entered:
+		close(m.gate)
+		t.Fatalf("an unlink waited on its release's outcome (it then answered %v), want the release left pending", <-unlinked)
+	case <-time.After(5 * time.Second):
+		t.Fatal("an unlink whose release is pending still ran after 5s")
 	}
 	retry <- nil
-	<-m.entered
+	awaited(t, "the release's outcome reaching its mark", m.entered)
 	n.must(t, n.Drain(t.Context()))
 	stopped := make(chan error, 1)
 	go func() { stopped <- n.Stop() }()
@@ -965,7 +976,21 @@ func TestStopJoinsTheWaitOnAPendingRelease(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	close(m.gate)
-	n.must(t, <-stopped)
+	n.must(t, awaited(t, "Stop once the release's outcome ended", stopped))
+}
+
+// awaited is what ch answers, failing the test if it answers nothing within
+// 5s: the backstop on an event the test waits for.
+func awaited[T any](t *testing.T, what string, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s: nothing after 5s", what)
+		var zero T
+		return zero
+	}
 }
 
 func TestStopEndsTheWaitOnAPendingRelease(t *testing.T) {
