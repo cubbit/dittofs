@@ -277,7 +277,9 @@ func TestRFC8A_JournalGone(t *testing.T) {
 		},
 	}
 
-	if _, err := f.E.Write(ctx, f.Second.ID, entity.NewFileID(), 0, []byte("second"), opts); err != nil {
+	// A file the store holds, so its existence commits before the restart
+	// rather than failing stale until the close bound.
+	if _, err := f.E.Write(ctx, f.Second.ID, secondFile(t, f, "s"), 0, []byte("second"), opts); err != nil {
 		t.Fatalf("write to the second share: %v", err)
 	}
 
