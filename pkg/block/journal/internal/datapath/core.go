@@ -12,6 +12,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
@@ -164,6 +165,8 @@ type Core struct {
 	segCap        int64               // the set's segment cap, what the streams roll at and the admission sizes by
 	contentTarget int                 // the content spare target the pool was built with, for the test helper's wait
 	retirer       *segment.Retirer    // the retirement executor
+	liveness      *reclaim.Tracker    // the segment liveness the retirement worker asks
+	retiring      *reclaim.Worker     // the retirement worker that turns liveness into retirements
 	sealer        *segment.IdleSealer // the idle sealer; nil when Deps.IdleSealBytes is zero
 
 	held, dirty, retained atomic.Int64
@@ -292,6 +295,13 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	}
 	c.domains = domains
 
+	// The liveness tracker is built after the retirer below, but the events
+	// that reach it through the closures named here — the loss records the
+	// durability layer appends, the segments its moves empty — first run
+	// once a data path does, which is never before d.Start; assigning tr
+	// early keeps the wiring's order readable while the closures stay safe.
+	var tr *reclaim.Tracker
+
 	// The durability layer is built first of the storage-touching pieces,
 	// because its Observe wrap is the storage every later part must reach
 	// the directory through: the first EROFS from any call the maker, the
@@ -310,6 +320,37 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		Counters: c.counters,
 		// The durability layer hands the delta Lose returns to Account itself.
 		MarkLoss: c.index.Lose,
+		// Each loss record counts live where it landed: a segment holding
+		// one stays held until the record's own liveness ends.
+		LossRegistered: func(l durability.Loss, seq core.Seq, at segment.Location) {
+			tr.Register(reclaim.Rec{
+				Kind:  format.KindLoss,
+				File:  l.File,
+				Seg:   at.Segment,
+				Ext:   l.Extent,
+				Pair:  index.Numbers{Version: l.Version, Seq: seq},
+				Seq:   seq,
+				Named: l.Seq,
+				// The flags that pick the loss's own drop rule.
+				Synced:     l.Synced,
+				Superseded: l.Reason == core.LossSuperseded,
+			})
+		},
+		// A move the durability layer made emptied a segment: the segment is
+		// offered to the retirement worker with the causality record whose
+		// durability its retirement waits on — but only when nothing else
+		// holds it, checked here rather than in the worker, so the offer the
+		// worker queues names a segment the tracker already answers not
+		// held. Like the move that runs it, the closure takes only the
+		// tracker's lock-free read and the worker's queue lock, and waits on
+		// no sync and no append domain.
+		Emptied: func(segs []core.SegmentID, at segment.Location) {
+			for _, seg := range segs {
+				if !tr.Held(seg) {
+					c.retiring.Emptied(seg, at)
+				}
+			}
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -417,9 +458,47 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		FS:       fs,
 		ReadOnly: d.Admit,
 		Retired:  func(id core.SegmentID) { c.retiredSegment(id) },
-		Log:      deps.Log,
+		// decision: the retired segment reaches the liveness tracker
+		// through this durable-retirement signal alone, not through the
+		// set's retire observer: the observer fires before the unlink's
+		// directory sync, while SegmentRetired reaches the index's
+		// SegmentGone, whose contract demands the unlink be durable —
+		// telling it earlier would let a drop query answer against a segment
+		// whose records the crash the failed sync covers may still name. The
+		// ceiling: a failed directory sync delivers no signal at all, so the
+		// tracker keeps a retired segment's registrations — holds it answered
+		// not held, for the segment is gone from the set — until the next
+		// open's rebuild drops them.
+		Durable: func(ret segment.Retirement) { tr.SegmentRetired(ret.ID, nil) },
+		Log:     deps.Log,
 	})
+
+	// The liveness tracker and the retirement worker close the loop the
+	// executor alone left open: the tracker counts what keeps a segment
+	// held beside its bytes, fires a candidate when the last thing leaves,
+	// and the worker claims each candidate, re-checks it against the
+	// tracker, the durability layer's gate and the ledger's state, and hands
+	// it to the retirer — the same executor a repack or a liveness-driven
+	// retirement reaches, whose queue and claim rules both stay its own.
+	//
+	// The tracker is built before the worker because the worker's
+	// constructor demands one, and the candidate it carries defers to the
+	// worker through the field because the worker cannot exist first: the
+	// candidate never fires before the assignment, the tracker's events
+	// running only on the data paths, which start below.
+	tr = reclaim.New(state.Index, func(seg core.SegmentID) { c.retiring.Prompt(seg) })
+	c.liveness = tr
+	c.retiring = reclaim.NewWorker(state.Set, tr, d, c.retirer)
+	// A segment is a member exactly while it is still a segment of the set,
+	// so a snapshot segment a retirement already took is answered gone.
+	tr.SetMember(func(id core.SegmentID) bool {
+		_, err := state.Set.State(id)
+		return err == nil
+	})
+	state.Set.OnSeal(tr.SealObserved)
+
 	c.retirer.Start()
+	c.retiring.Start()
 
 	if deps.IdleSealBytes > 0 {
 		c.sealer = segment.NewIdleSealer(c.streams, deps.Clock, deps.IdleSealBytes, d.Admit, deps.Log)
@@ -534,16 +613,21 @@ func (c *Core) retiredSegment(id core.SegmentID) {
 // refill and never by time.
 func (c *Core) WaitSpares(ctx context.Context) error { return c.pool.WaitSpares(ctx) }
 
-// Close stops the durability layer, then closes the streams, then stops the
-// idle sealer, the pool and the retirer — every background worker joined
-// before the segments it touches are closed, the pool before the retirer, as
-// the segment package's group close documents — and last shuts the descriptor
-// cache, whose Shutdown waits for every reader's reference and then closes
-// every descriptor. It is safe to call twice.
+// Close stops the durability layer, then the retirement worker, then closes
+// the streams, then stops the idle sealer, the pool and the retirer — every
+// background worker joined before the segments it touches are closed, the
+// gate provider (the durability layer, whose Durable, WindowOpen and
+// ReclaimBlocked the worker's pass asks) before the worker, the worker before
+// the retirer it hands to, so a pass never consults a dead gate nor hands to
+// a stopped executor; the pool before the retirer, as the segment package's
+// group close documents — and last shuts the descriptor cache, whose Shutdown
+// waits for every reader's reference and then closes every descriptor. It is
+// safe to call twice.
 func (c *Core) Close() error {
 	c.closedFlag.Store(true)
 	c.closeOnce.Do(func() {
 		c.dur.Stop()
+		c.retiring.Stop()
 		serr := c.streams.Close()
 		if c.sealer != nil {
 			c.sealer.Stop()
