@@ -28,6 +28,11 @@ var (
 	ErrJournalReadOnly   = core.ErrJournalReadOnly
 	ErrUnsuitableStorage = core.ErrUnsuitableStorage
 	ErrUnreadable        = core.ErrUnreadable
+
+	// ErrReservationExhausted is a reserved write's refusal when what its
+	// reservation still holds does not cover the write. It is not a NoSpaceError:
+	// no journal limit was met, the caller asked for less than it then wrote.
+	ErrReservationExhausted = core.ErrReservationExhausted
 )
 
 type (

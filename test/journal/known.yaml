@@ -360,12 +360,29 @@
   issue: '#3378'
   message: 'shares use 0, the journal 0: want each at most MaxBytes 0'
 
-- test: TestRFC1B_ReserveAhead
+- test: TestRFC1B_ReserveAhead/AtTheShareLimit
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check''s legs fail each on the call or refusal still missing. Needs Reserve, its writes and Close, share limits, the index bound and the headroom half rule.'
-  issue: '#3814'
+  reason: 'The journal opens, and the leg''s reservation, its writes, its Close and its refusals pass. It stops at Stats, which is a stub: needs the share''s ReservedBytes gauge Stats serves.'
+  issue: '#3378'
+  message: 'the share''s ReservedBytes = 0 with half a reservation unused, want it counted'
+
+- test: TestRFC1B_ReserveAhead/DroppedByARestart
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens, and the leg''s reservation is taken. It stops at Stats, which is a stub: needs the journal''s ReservedBytes gauge Stats serves.'
+  issue: '#3378'
+  message: 'ReservedBytes = 0 with a reservation open, want it counted'
+
+- test: TestRFC1B_ReserveAhead/BelowHalfTheHeadroom
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens, and the leg''s reservation is taken. It stops at Stats, which is a stub: needs HeadroomBytes as allocated.'
+  issue: '#3378'
+  message: 'HeadroomBytes = 0, want the headroom allocated'
 
 - test: TestRFC1B_SegmentAndRecordAccounting
   status: fail
@@ -578,9 +595,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs reservations, failed syncs, corrupt reads, torn tails and foreign segments counted.'
-  issue: '#3814'
-  message: 'stub: Reserve'
+  reason: 'The journal opens, and the refused reservation counts. The leg stops at Stats, which is a stub: needs the counters and failed syncs, corrupt reads, torn tails and foreign segments served through it.'
+  issue: '#3378'
+  message: 'ReservationRefused is zero after a refused reservation'
 
 - test: TestRFC1D_NamedInequalitiesHold
   status: fail
@@ -1866,9 +1883,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Reservations against the journal''s maximum.'
+  reason: 'The journal opens, and a reservation is refused as a caller bug at the maximum the check reads. The check stops at Stats, which is a stub: needs MaxBytes served through it for the ask to be sized.'
   issue: '#3378'
-  message: 'stub: a reservation of the journal''s whole maximum'
+  message: 'returned journal: invalid extent, want a NoSpaceError naming journal'
 
 - test: TestEdge_FilesystemENOSPCIsNotErrNoSpace
   status: fail

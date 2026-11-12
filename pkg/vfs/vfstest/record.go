@@ -1,5 +1,6 @@
 // Package vfstest holds the fakes an adapter is tested against: Record, a
-// Service that records each call and answers as scripted; Null, one that
+// Service that records each call and answers as scripted; Faults, a wrapper
+// around any Service that fails or holds a call on cue; Null, one that
 // answers every call at once with zero values; and RecordingCallbacks, the
 // client side of the callbacks. Each implements every method explicitly, so a
 // method added to the interface fails to compile here until it is handled.
