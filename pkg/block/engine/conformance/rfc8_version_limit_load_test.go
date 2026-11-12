@@ -1,4 +1,4 @@
-//go:build engine_conformance && engine_load
+//go:build engine_conformance
 
 package conformance
 
