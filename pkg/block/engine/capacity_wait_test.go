@@ -585,8 +585,6 @@ func TestWaitHoldingTheLocksIsWokenByTheRaise(t *testing.T) {
 		var src, dst entity.FileID
 
 		s, g := atLimit(t, func(s *starter) {
-			s.e.FakeCloneDone()
-
 			src = createFile(t, s, "src")
 			dst = createFile(t, s, "dst")
 
