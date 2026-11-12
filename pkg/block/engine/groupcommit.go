@@ -858,7 +858,11 @@ func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []capt
 	// fails some files' transactions while committing others is read as
 	// those files failing. Overturned if a corrupt file is seen fencing a
 	// node regardless: then the store reports an undecodable record per file.
-	if (recorded || len(failed) < len(batch)) && !slices.ContainsFunc(slices.Collect(maps.Values(failed)), storeWide) {
+	wide := false
+	for _, err := range failed {
+		wide = wide || storeWide(err)
+	}
+	if (recorded || len(failed) < len(batch)) && !wide {
 		e.fence.release(ownerOf(ctx))
 	}
 	end(nil)

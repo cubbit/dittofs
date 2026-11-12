@@ -807,3 +807,97 @@ func TestSelfFenceNotOnARemovalsUndecodableRecord(t *testing.T) {
 	repair()
 	u.until(t, "the removal finishes once its record is repaired", func() bool { return !u.e.RemovalStalled(a) && u.e.RemovalsPending() == 0 })
 }
+
+// holdAfterBatch holds the group commit's loop at its pass after the first
+// batch it takes, so no retry runs after that batch, and answers a wait for
+// the hold, which moves the clock meanwhile so a batch due by age is taken.
+// The loop is released when the test ends.
+func (u *fenceUnit) holdAfterBatch(t *testing.T) (wait func()) {
+	t.Helper()
+	var took atomic.Bool
+	var once sync.Once
+	held, release := make(chan struct{}), make(chan struct{})
+	u.e.OnTake(func() { took.Store(true) })
+	u.e.OnLoop(func() {
+		if took.Load() {
+			once.Do(func() { close(held); <-release })
+		}
+	})
+	t.Cleanup(func() { close(release) })
+	return func() {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; {
+			select {
+			case <-held:
+				return
+			case <-time.After(time.Millisecond):
+				if time.Now().After(deadline) {
+					t.Fatal("after 5 s the group commit's loop never passed again after its first batch")
+				}
+				u.clock.Advance(100 * time.Millisecond)
+			}
+		}
+	}
+}
+
+// A batch of two files whose marks fail: b's existence is good and a's hole
+// record does not decode, so the split commits b's half and fails a's, last.
+// With the loop held after that batch and 31 s passing, the node is not
+// fenced: b's half committing narrows a's error to a. Releasing the owner
+// only when the marks committed fences here.
+func TestSelfFenceNotWhenAnotherFilesHalfCommits(t *testing.T) {
+	u := newFenceUnit(t)
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	a, b, c := u.create(t, "a"), u.create(t, "b"), u.create(t, "c")
+	u.corrupt(t, a, keys.FH)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Fatal(err)
+	}
+	u.clock.Advance(time.Millisecond) // b is the older, so it leads the batch
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, sim.Rule{Op: kvtest.OpGet, Key: "J‖*", Action: sim.FaultAction{Err: errInjected}})
+	u.holdAfterBatch(t)()
+	if n := len(u.e.Pending(b)); n != 0 {
+		t.Fatalf("b's pending operations after the batch: %d, want 0, its half committed", n)
+	}
+	if !u.e.Failing(u.rec, a) {
+		t.Fatal("existence_commit_failing does not name the corrupt file after the batch")
+	}
+
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(c); err != nil {
+		t.Errorf("a write 31s after the batch: %v, want acknowledged", err)
+	}
+	if f, ok := u.nodeFenced(); ok {
+		t.Errorf("node_fenced %v, want none", f)
+	}
+}
+
+// A file whose existence commits hit the deadline while the marks sent alone
+// commit: a deadline is store-wide, so the marks committing does not narrow
+// it to the file. With the loop held after that batch, the node fences 31 s
+// on, naming the deadline. Releasing the owner whenever another call of the
+// batch committed fences nothing here.
+func TestSelfFenceOnADeadlineBesideCommittedMarks(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, sim.Rule{Op: kvtest.OpGet, Key: fileRecord(u.share.ID, a), Action: sim.FaultAction{Err: context.DeadlineExceeded}})
+	wait := u.holdAfterBatch(t)
+	u.commitInBackground(t, a)
+	wait()
+
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s after the batch: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if f, ok := u.nodeFenced(); !ok || !errors.Is(f.Cause, context.DeadlineExceeded) {
+		t.Errorf("node_fenced %v naming %v, want the deadline", ok, f.Cause)
+	}
+}
