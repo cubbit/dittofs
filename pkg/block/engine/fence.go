@@ -85,6 +85,14 @@ func raise(a *atomic.Int64, v int64) {
 // clears another owner still failing at the store. A store error that is no
 // undecodable record also keeps the owner from releaseOwn until it commits.
 // A one-shot call's error is neither a commit nor a failure.
+//
+// decision: an attempt that fails on its own clears its owner even when
+// another of the owner's files or items failed at the store, so one
+// conflicting in turn with one failing at the store keeps a node where only
+// that owner writes from fencing, while a write elsewhere still fences it.
+// A store error followed by conflicts on the same file must not fence, and
+// that one flag cannot tell the two apart. Track failing per file or item
+// if such a node is seen not fencing on a store that refuses writes.
 func (f *fence) end(ctx context.Context, err error) {
 	o := ownerOf(ctx)
 	switch {
