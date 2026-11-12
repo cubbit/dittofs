@@ -202,7 +202,11 @@ func (c *Core) remove(ctx context.Context, s *Share, id core.FileID, spec remova
 	// sees only this goroutine's own holds, so it cannot see another
 	// goroutine holding the domain, which the wait's own blocking makes
 	// moot — this call's domain still held would deadlock on the worker
-	// it waits for.
+	// it waits for. The wait's sibling check, AssertNoneHeld on the
+	// offload callback, has no caller yet: the offload path that must run
+	// it does not exist in this journal, so no recorded run reaches it,
+	// and the recorded test of a removal completing while a held callback
+	// runs comes with that path.
 	c.rec.AssertNotHeld(lockorder.FileAppend, "removal wait")
 	// decision: the wait runs with the append domain released and returns its
 	// own refusal as it is — a read-only journal's, which matches
