@@ -41,6 +41,13 @@ func TestAnExistenceCommitReachesTheStore(t *testing.T) {
 		{"a clone of a hole past the end", cloneInto(func(ctx context.Context, s *memory.Service, src vfs.Handle) error {
 			return truncate(100)(ctx, s, entity.File{}, src)
 		}, 10, 100), 110, 10},
+		// This case pins the known difference the decision: over Memory's
+		// commit names: the store keeps a hole cloned over the file's data
+		// charged, where the engine's clone would free it (6 bytes). A fix
+		// changes this case.
+		{"a clone of a hole over data", cloneInto(func(ctx context.Context, s *memory.Service, src vfs.Handle) error {
+			return truncate(4)(ctx, s, entity.File{}, src)
+		}, 2, 4), 10, 10},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := memory.New(t)
