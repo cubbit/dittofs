@@ -837,6 +837,12 @@ func (f *Fixture) start() {
 	}
 }
 
+// closeDeadline bounds the fixture's engine close. The fixture closes over a
+// clock it never advances, so this deadline is what ends a kept-backoff wait;
+// a close that can finish does so at once, so only a failing commit waits it
+// out.
+const closeDeadline = 2 * time.Second
+
 // stop stops the composed service, if one was built, closes the engine
 // running now, if one started, and stops the open-state table. clean is false
 // after a crash, when the engine's close is expected to fail and is only
@@ -855,7 +861,7 @@ func (f *Fixture) stop(clean bool) {
 		if parent.Err() != nil {
 			parent = context.Background()
 		}
-		ctx, cancel := context.WithTimeout(parent, time.Minute)
+		ctx, cancel := context.WithTimeout(parent, closeDeadline)
 		defer cancel()
 		if err := f.E.Close(ctx); err != nil {
 			if clean {
