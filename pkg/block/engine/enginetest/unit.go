@@ -30,7 +30,7 @@ type Unit struct {
 	J     *FakeJournal // the fake journal, under the wrapper UnitOptions.Journal set
 	FS    *kvstoretest.FS
 	Clock *sim.TestClock
-	Share engine.Share     // the share as the engine binds it
+	Share engine.Share // the share as the engine binds it
 	// Opens is the real open-state table, if UnitOptions.OpenState. It is the
 	// engine's CloneHold unless a UnitOptions.Deps function replaces Holds, and
 	// it serves Share's shard once NewUnit binds Share; a test that sets
