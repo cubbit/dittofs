@@ -266,3 +266,38 @@ func TestAReleaseOfADoneClonesDestinationForgetsIt(t *testing.T) {
 		t.Errorf("the retry into the released destination = %v, want ErrStale", err)
 	}
 }
+
+// A clone within one file is remembered in its entry once, and a write over
+// either of its extents drops it, its retry then run (catches the record put
+// in the file's entry twice, as source and as destination).
+func TestADoneCloneWithinOneFileIsRememberedOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		off  int64
+	}{{"the source extent", 0}, {"the destination extent", mib}} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := clonedUnit(t)
+			f := u.committedFile(t, "f", fill(2*mib, 's'))
+			x := vfserr.Extent{DstOff: mib, Len: mib}
+			u.clone(t, f, f, x)
+			if n := u.e.DoneIn(f); n != 1 {
+				t.Fatalf("the file's entry holds %d done clones, want the self-clone once", n)
+			}
+
+			u.write(t, f, tc.off, fill(4096, 'w'))
+			if n := u.e.DoneIn(f); n != 0 {
+				t.Errorf("the file's entry holds %d done clones after a write over %s, want 0", n, tc.name)
+			}
+			if n := u.e.DoneClones(); n != 0 {
+				t.Errorf("the node remembers %d done clones after a write over %s, want 0", n, tc.name)
+			}
+			before := len(u.cloneMarkers(f))
+			if err := u.retried(t, f, f, x); err != nil {
+				t.Fatalf("the retry after a write over %s = %v, want nil", tc.name, err)
+			}
+			if n := len(u.cloneMarkers(f)); n != before+1 {
+				t.Errorf("the journal holds %d clone markers after the retry, want %d, the retry run", n, before+1)
+			}
+		})
+	}
+}

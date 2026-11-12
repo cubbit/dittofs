@@ -894,6 +894,16 @@ func (e *Engine) SetDoneClones(n int) {
 	e.doneMu.Unlock()
 }
 
+// DoneIn is the count of done clones f's entry holds, 0 with no entry.
+func (e *Engine) DoneIn(f entity.FileID) int {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return 0
+	}
+	defer e.files.unlock(f, fe)
+	return len(fe.done)
+}
+
 // DoneClones is the count of done clones the node remembers.
 func (e *Engine) DoneClones() int {
 	e.doneMu.Lock()

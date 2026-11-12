@@ -901,18 +901,18 @@ func (e *Engine) doneBefore(srcShare entity.ShareID, src entity.FileID, dstShare
 // remember puts c's spec in both its files' entries in place of its
 // registrations, each swap under one lock so no write meets the extent
 // between them, then at the back of the done list, dropping the oldest past
-// doneCap. A spec dropped before it reaches an entry or the list is not put
-// there.
+// doneCap. A clone within one file puts it in that file's entry once. A spec
+// dropped before it reaches an entry or the list is not put there.
 func (e *Engine) remember(c *cloneRun) {
 	d := &doneClone{srcShare: c.sb.share.ID, dstShare: c.db.share.ID, src: c.src, dst: c.dst,
 		x: vfserr.Extent{SrcOff: c.spec.SrcOff, DstOff: c.spec.DstOff, Len: c.spec.Len}}
-	for _, s := range []struct {
+	for i, s := range []struct {
 		f entity.FileID
 		r *reg
 	}{{c.dst, c.rd}, {c.src, c.rs}} {
 		fe := e.files.lockFor(s.f)
 		fe.drop(s.r)
-		if !d.gone.Load() {
+		if !d.gone.Load() && (i == 0 || c.src != c.dst) {
 			fe.done = append(fe.done, d)
 		}
 		e.files.unlock(s.f, fe)
@@ -951,23 +951,32 @@ func (fe *fileEntry) forgetOver(f entity.FileID, x entity.Extent) []*doneClone {
 }
 
 // unremember takes each of ds, already marked gone, out of both its files'
-// entries, releasing what it kept alive, and out of the done list. The
-// caller holds no entry's lock.
+// entries, releasing what it kept alive, then out of the done list: each
+// entry's lock is taken once, and doneMu once after them. The caller holds no
+// entry's lock.
 func (e *Engine) unremember(ds ...*doneClone) {
+	if len(ds) == 0 {
+		return
+	}
+	gone := make(map[*doneClone]bool, len(ds))
+	files := make(map[entity.FileID]bool)
 	for _, d := range ds {
-		for _, f := range []entity.FileID{d.src, d.dst} {
-			if fe := e.files.lockOf(f); fe != nil {
-				fe.done = slices.DeleteFunc(fe.done, func(o *doneClone) bool { return o == d })
-				e.files.unlock(f, fe)
-			}
+		gone[d], files[d.src], files[d.dst] = true, true, true
+	}
+	for f := range files {
+		if fe := e.files.lockOf(f); fe != nil {
+			fe.done = slices.DeleteFunc(fe.done, func(o *doneClone) bool { return gone[o] })
+			e.files.unlock(f, fe)
 		}
-		e.doneMu.Lock()
+	}
+	e.doneMu.Lock()
+	for _, d := range ds {
 		if d.el != nil {
 			e.done.Remove(d.el)
 			d.el = nil
 		}
-		e.doneMu.Unlock()
 	}
+	e.doneMu.Unlock()
 }
 
 // forgetShare drops every remembered clone with share s on either side: once
