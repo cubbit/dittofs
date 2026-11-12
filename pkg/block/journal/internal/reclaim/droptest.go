@@ -247,12 +247,21 @@ func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
 // files' registries under rm, then their counts lowered one by one through
 // the same release path a record's own Unregister takes, so the candidate
 // fires for the held-to-not-held transition the retirement crosses exactly
-// as a release does — the relations the segment held in the index leave
-// too (its byte counters, and each named file's drop ranges of it, both
-// idempotent in the index, so a journal whose own retirement relays the
-// same calls meets them retired and retires nothing twice), and the files
-// its records named are re-tested, their answers no longer kept by anything
-// in seg. files, when empty, is filled from the tracker's own registry of
+// as a release does — the segment's byte counters leave the index too
+// (RetireSegment below, idempotent in the index, so a journal whose own
+// retirement relays the same call meets it retired and retires nothing
+// twice), and the files its records named are re-tested, their answers no
+// longer kept by anything in seg. The drop ranges the segment holds of
+// each named file do NOT leave with the retirement: the file list waits
+// at pendingGone for RemovalDurable, the retirer's durable signal, so a
+// removal record whose retention counted the segment answers not droppable
+// until the unlink that retired it is durable — a drop that preceded the
+// unlink's durability would have a crash bring the retired segment back
+// without the removal record that covered it. The retirer runs the retired
+// hook — this call — after the segment has left the set but before the
+// directory sync; a recycle's own sync has already returned by then, so
+// its pending entry lives only the microseconds between the two hooks.
+// files, when empty, is filled from the tracker's own registry of
 // the segment's files; a caller carrying its own list must name every file
 // the segment held, or a file its list misses keeps its registry entries
 // for a segment no re-test will drop again. Every record registered live of
@@ -267,21 +276,10 @@ func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
 // The segment's state leaves the tracker with the segment, so a scan of
 // the states never visits a retired one and Held of a retired segment
 // answers from the index's counters alone, which the relay has emptied.
-// The intended wiring hands the set's retire observer the call —
-// set.OnRetire(func(id core.SegmentID) { tr.SegmentRetired(id, nil) }) —
+// The intended wiring hands the retirer's retired hook the call:
+// Retired: func(id core.SegmentID) { tr.SegmentRetired(id, nil) } —
 // where the nil files list makes the tracker fill the list from its own
-// registry of the segment's files. The wiring owner must confirm the
-// observer's delivery runs only once the unlink or recycle is durable:
-//
-// decision: the segment set delivers its retire observer with no lock of
-// the ledger's held (Set.Retire removes the segment under s.mu, releases
-// it, then calls the observer from retireSeen), but the durability of the
-// unlink or recycle the retirement names is the RETIRING PATH's to order —
-// the set fires the observer when the segment leaves the set, and whether
-// the storage removal is durable by then is a property of the caller
-// between its unlink and its Retire, which this code neither observes nor
-// controls. Wiring this call to OnRetire is safe only where that caller
-// has made removal durable before Retire.
+// registry of the segment's files.
 //
 // ponytail: the retirement walks the whole registry of forget records to
 // prune the ones naming the segment, O(forgets outstanding) beside a
@@ -368,6 +366,16 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 	// be a loss and its holder in one, whose registration the take above
 	// has already released.
 	files = append(files, t.pruneMarks(seg)...)
+	// The retire's half of the durable-unlink gate: the file list waits
+	// here for RemovalDurable, and the drop ranges it names stay in the
+	// index until then, keeping every removal that counted on the segment
+	// answering not droppable.
+	if len(files) > 0 {
+		if t.pendingGone == nil {
+			t.pendingGone = make(map[core.SegmentID][]core.FileID)
+		}
+		t.pendingGone[seg] = append([]core.FileID(nil), files...)
+	}
 	t.rm.Unlock()
 	t.retireHolds(seg)
 	for _, rec := range rel {
@@ -375,6 +383,27 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 	}
 	t.forget(seg)
 	t.ix.RetireSegment(seg)
+	t.retest(files...)
+}
+
+// RemovalDurable consumes the pending file list SegmentRetired stored for
+// seg — the retirer's durable signal runs it once the directory sync after
+// the unlink or recycle returned nil — relaying each named file's
+// ix.SegmentGone(f, seg) and re-testing those files, so the index serves
+// no drop query against the retired segment's records any more and a
+// removal record whose retention counted the segment may drop at the next
+// event of its file. The ranges' leaving lands here, never at the
+// retirement itself: a retirement whose directory sync failed never reaches
+// this call, and its entry stays where pendingGone's own decision names.
+// A segment with no pending entry — one never retired, or one whose
+// durability this call already consumed — releases nothing. The entry is
+// consumed under the registry lock it was stored with, so a second call
+// finds no list to relay a second time.
+func (t *Tracker) RemovalDurable(seg core.SegmentID) {
+	t.rm.Lock()
+	files := t.pendingGone[seg]
+	delete(t.pendingGone, seg)
+	t.rm.Unlock()
 	for _, f := range files {
 		t.ix.SegmentGone(f, seg)
 	}

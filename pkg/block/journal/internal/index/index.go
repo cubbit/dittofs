@@ -290,10 +290,10 @@ func (ix *Index) Settle(id core.FileID, v core.Version) {
 // is answered against the retired segment's records again. It claims
 // nothing: a file the index has no entry for is left alone rather than
 // given one to drop nothing from. Call it only once the unlink or recycle
-// is durable, once per file its records named: the tracker's SegmentRetired
-// relays it for each file its own registry knows the segment named, the
-// journal's own retirement carrying it where it knows the segment's bytes
-// through RetiredBytes instead.
+// is durable, once per file its records named: the tracker's RemovalDurable
+// — the retirer's durable signal — relays it for each file its own registry
+// knows the segment named, the journal's own retirement carrying it where it
+// knows the segment's bytes through RetiredBytes instead.
 func (ix *Index) SegmentGone(id core.FileID, seg core.SegmentID) {
 	if !ix.fs.view(id, func(*file) {}) {
 		return

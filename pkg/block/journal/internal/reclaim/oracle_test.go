@@ -392,6 +392,12 @@ func (s *scenario) run(t *testing.T, step int, o op) {
 			}
 		}
 		s.tr.SegmentRetired(s.segs[o.seg], files)
+		// The durable half of the retirement, the retirer's durable signal:
+		// the ranges leave the index only once the unlink is durable, so
+		// the scenario runs both halves back to back — the oracle's retire
+		// drops the segment's ranges whole, the way the two calls do
+		// together.
+		s.tr.RemovalDurable(s.segs[o.seg])
 		s.o.retire(o.seg, ofiles)
 	case opNopKind:
 	}

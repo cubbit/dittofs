@@ -105,6 +105,24 @@ type Tracker struct {
 	// leaves when the loss's registration does, and a retired holder
 	// segment leaves every mark set that names it.
 	marks map[Rec]map[core.SegmentID]struct{}
+	// pendingGone is each retired segment's file list waiting for the
+	// unlink that retired it to become durable: SegmentRetired fills it
+	// with the files whose drop ranges name the segment, and RemovalDurable
+	// — the retirer's durable signal — consumes it, relaying each file's
+	// index drop of the segment's ranges. Between the two, no removal the
+	// segment's records kept answers droppable, so a removal record never
+	// leaves the journal before the unlink it counted on is durable.
+	//
+	// decision: an entry whose retirement's directory sync failed is never
+	// consumed in this process — a failed sync is never re-reported durable
+	// by a later one — so every removal the segment kept answers not
+	// droppable until the process ends, the safe direction: a drop before
+	// the unlink is durable would have a crash bring the retired segment
+	// back without the removal record that covered it. The next open's
+	// scan settles what the failed sync left on disk: a segment it finds
+	// gone rebuilds no ranges of, and one it still finds named is retired
+	// and dropped again there.
+	pendingGone map[core.SegmentID][]core.FileID
 
 	// mu serialises creating states: a leaf lock, held only while the state
 	// table is copied, never across the index or a candidate call.
