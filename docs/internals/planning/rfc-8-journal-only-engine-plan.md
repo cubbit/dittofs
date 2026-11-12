@@ -31,7 +31,7 @@ journal v2 team, Davide (`didimelli`) and Vitor (`viquitorreis`), coordinated by
 #3119's stage list and the journal plan's epic 11 still give all of stage 3 to the journal
 v2 team (§6, point 1). Stage 3 replaces nothing that a later stage deletes: today's engine
 keeps serving `develop` until the cutover (stage 7), and this part is composed by no root
-before stage 4.
+before `node.New`, which RFC 23's plan's epic 3 (#4050) builds.
 **Naming:** **v1** was the engine before this plan, `pkg/block/engine` until #3645 deleted it on `feat/storage-v2`, over one journal per
 share and payload-keyed chunk rows. **v2** is the engine RFC 8 describes, built here, first as
 `pkg/block/enginev2`, as #3543 agreed (point 7). #3645 deleted v1 and
@@ -81,7 +81,7 @@ ships in a release. It sets no offloaded bit, because its journal interface hold
 
 | RFC 8 | In this part | Left to the second part, and what stands in |
 | --- | --- | --- |
-| §2.1, §2.6 composition | `Deps` holding only what this part calls | `Carver`, `Syncer`, `Refs`, `Gate` join `Deps` with the code that calls them; the root's "every share has a remote" check is the root's (stage 4) |
+| §2.1, §2.6 composition | `Deps` holding only what this part calls | `Carver`, `Syncer`, `Refs`, `Gate` join `Deps` with the code that calls them; the root's "every share has a remote" check is the root's (`node.New`, RFC 23's plan, #4050, not yet placed there) |
 | §2.3 bindings | the share table, a handle per journal, settings, state; `Bind`, `Unbind`, `Drop` | no flow, no key scope, no budgets beyond the journal's per-share limit |
 | §2.5 start | steps 1 to 5 and 8; stop steps 1, 2, 4, 5 | no work queue (step 6), no reseed or eviction (step 7); restart re-offers nothing |
 | §3 policy, §6 offload, §7.2 to §7.4, §7.7, §7.8 | none | all of it |
@@ -1030,7 +1030,7 @@ excluded. Spans: a clone's batches as root spans.
 **Epic 9 estimate: 5 subtasks, 11.5 man-days.**
 
 The programme puts the engine under `*vfs.Filesystem` at RFC 17 §8's integration tier now,
-and into `node.New` at stage 4, so this epic composes the two and nothing else: no root, no
+and into `node.New` in RFC 23's plan's epic 3 (#4050), so this epic composes the two and nothing else: no root, no
 configuration keys, no API or CLI. Observability is wired with what exists (rule 3): `Deps`
 from a logger and a recording `Tracer` the fixture builds, the counters and conditions read
 through `Stats`. RFC 8 names no alert rule this part can raise. Sections
@@ -1159,8 +1159,8 @@ follows the journal's, not this part's (§6 point 7).
     takes no open. RFC 8 §8.1 already says a release reads and writes no open state, and that
     the one open the engine holds is a clone's, through `Deps.Holds`.
 14. **RFC 25's metrics registry, watchdog and health source** exist on no branch. Until
-    someone builds them, the engine reports through `Stats` (rule 3), and stage 4's root
-    adapts it.
+    someone builds them, the engine reports through `Stats` (rule 3), and the root, `node.New`
+    (RFC 23's plan, #4050, not yet placed there), adapts it.
 15. **How a delayed `Delete` hands back its retry (C11).** T5.4's stall and T8.2's
     registered extent both answer a release that the service finishes or runs again later.
     The retry stays between the engine and the service, off the error value: a
@@ -1203,6 +1203,32 @@ follows the journal's, not this part's (§6 point 7).
   row. Rule 8 bounds that: the in-memory journal passes the in-memory journal's rows the journal plan names, and no engine
   conformance row runs over it, so a drift the suite misses shows as a row that is green on
   unit tests and red in the suite.
+
+### 6.1 Deferral ledger
+
+What this part knowingly does not build. Each row indexes the section that defers it.
+
+| Deferred | Why | Owner | Trigger |
+| --- | --- | --- | --- |
+| Offload: RFC 8 §3 policy, §6 offload, §7.2 to §7.4, §7.7, §7.8, §8.3, §11.4; the carver, syncer, remote block store, work scheduler, fill and speculator (header, §1.1) | every byte stays in the journal | RFC 8 second part plan | planned once this part is under way |
+| `Carver`, `Syncer`, `Refs` and `Gate` in `Deps`; start steps 6 and 7, so restart re-offers nothing (§1.1) | no code here calls them | RFC 8 second part plan | with the code that calls them |
+| The root's "every share has a remote" check (§1.1) | no root composes this part | RFC 23's plan (#4050), not yet placed there | stage 4 |
+| The cut (`PrepareCut`, `CommitCut`) and the stamp after a group commit; clone's snapshot cases (§1.1, §7) | snapshots | RFC 12 | snapshots are built |
+| Clone's adoption of carved refs (§1.1, epic 8) | this part writes no carved ref | RFC 8 second part plan | offload |
+| Eviction, pacing, the pressure flag; RFC 8 §10.1, §10.2.1, §10.4 (§1.1, epic 7) | nothing is released without offload | RFC 8 second part plan | offload |
+| Repack run from the eviction loop, not only at a refusal (epic 7's `ponytail:`) | repack runs only when a write is refused | RFC 8 second part plan | offload adds the eviction loop, or refusals show repack time on the write path |
+| Removal phase 2 and its prune on the shared work scheduler (epic 5's `ponytail:`; §6 point 5) | one loop per journal stands in | RFC 8 second part plan | offload adds the first work that needs fairness between shares |
+| Offload health, put and get health, `stranded_export_failed` with the salvage export of stranded tags, `PreWarm`, `WaitOffloaded` (§1.1, §1.4, §6 point 7) | need offload | RFC 8 second part plan | offload |
+| Scenario rows, or parts of rows, needing offload, eviction, fills, pacing, the scheduler, snapshots, a cluster or RFC 26; the operator's acknowledgement that serves a journal-gone share again (§1.4) | this part cannot pass them | RFC 8 second part plan; RFC 12, the cluster stage, RFC 26 | with each owner |
+| RFC 1 §5.4's read-only journal state (§1.4) | the journal has no read-only state | journal plan, its E6 | that epic builds it |
+| The engine's side of the read-only journal: `journal_sync_failed`'s read-only half, §11.2's journal-sync row, `ErrReadOnly`, `journal_read_only`, the reopen, and the test of C11's undo of a pending `Delete` (§1.4, epics 5 and 7) | needs RFC 1 §5.4's state; epic 7 leaves it out (its §1.2) | unowned | the journal's read-only state lands |
+| §1.1's remaining second-part items: §4.1's `Dirty` event, §2.3's flow, key scope and budgets | need offload | RFC 8 second part plan (budgets with RFC 24) | offload |
+| GC, RFC 8 §10.5 (§7) | out | RFC 9 | GC is built |
+| §12.2 retried mutation, the route envelope (§1.1, §7) | single node | RFC 15 §4.3, the cluster stage | the cluster stage |
+| The engine-cost benchmark and allocations-per-op assertions (§1.5 rule 4) | RFC 8 §15.4 defers it | unowned | a profile of E10's B5, B7 or B9 shows engine time on the request path |
+| RFC 8 §15.4's B1 to B4, B6 and B8: offload throughput, small files, pacing, cold reads, one large file, cold sequential reads (E10 adapts only B5, B7 and B9) | need offload and eviction | RFC 8 second part plan | offload |
+| RFC 25's metrics registry, watchdog and health source (§1.5 rule 3, §6 point 14) | exist on no branch; the engine reports through `Stats` | RFC 25; RFC 23's plan (#4050) adapts `Stats`, not yet placed there | someone builds them |
+| `CloneClose` reporting an orphan for a source whose release waits for a start, lifting T8.6's ceiling (§6 point 11) | needs open state's `Releasing` | unowned | the RFC 14 plan takes up `Releasing` |
 
 ## 7. RFC coverage
 
