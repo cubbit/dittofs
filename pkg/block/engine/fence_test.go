@@ -1182,6 +1182,10 @@ func TestSelfFenceNotOnAFileWhoseWritesTheBatchDropped(t *testing.T) {
 		_, ok := u.logged(slog.LevelWarn, "existence_commit_failing")
 		return ok
 	})
+	// The warning comes before the batch settles the file: wait for the settle.
+	if err := u.e.WaitBatch(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
 	cancel()
 	<-done
 	if _, failing := u.e.FenceBusy(); failing {
