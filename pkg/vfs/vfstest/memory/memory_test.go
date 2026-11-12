@@ -19,20 +19,28 @@ func TestRunPassesMemory(t *testing.T) {
 // A chown commits the file's pending existence, after which the file's size
 // and its owner's usage are read from the store alone: what the write and the
 // change after it left, a removal's included, with no removal left half done.
+// A clone into the file is charged its source's data, not its holes.
 func TestAnExistenceCommitReachesTheStore(t *testing.T) {
 	for _, c := range []struct {
 		name  string
-		then  func(ctx context.Context, s *memory.Service, h vfs.Handle) error // after the write of 10 bytes
+		then  func(ctx context.Context, s *memory.Service, f entity.File, h vfs.Handle) error // after the write of 10 bytes
 		size  int64
 		bytes int64
 	}{
 		{"a write", nil, 10, 10},
 		{"a shrinking truncate", truncate(3), 3, 3},
 		{"a growing truncate", truncate(16), 16, 10},
-		{"a deallocate", func(ctx context.Context, s *memory.Service, h vfs.Handle) error {
+		{"a deallocate", func(ctx context.Context, s *memory.Service, _ entity.File, h vfs.Handle) error {
 			_, err := s.Deallocate(ctx, s.Admin(), vfs.Anonymous(h), 2, 2)
 			return err
 		}, 10, 8},
+		{"a clone of data past the end", cloneInto(func(ctx context.Context, s *memory.Service, src vfs.Handle) error {
+			_, err := s.Write(ctx, s.Admin(), vfs.Anonymous(src), 0, []byte("abcd"), vfs.Unstable)
+			return err
+		}, 8, 4), 12, 12},
+		{"a clone of a hole past the end", cloneInto(func(ctx context.Context, s *memory.Service, src vfs.Handle) error {
+			return truncate(100)(ctx, s, entity.File{}, src)
+		}, 10, 100), 110, 10},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := memory.New(t)
@@ -42,7 +50,7 @@ func TestAnExistenceCommitReachesTheStore(t *testing.T) {
 				t.Fatalf("Write: %v", err)
 			}
 			if c.then != nil {
-				if err := c.then(ctx, s, h); err != nil {
+				if err := c.then(ctx, s, f, h); err != nil {
 					t.Fatalf("%s: %v", c.name, err)
 				}
 			}
@@ -90,9 +98,25 @@ func TestAReleaseReachesTheStore(t *testing.T) {
 	}
 }
 
-func truncate(n int64) func(ctx context.Context, s *memory.Service, h vfs.Handle) error {
-	return func(ctx context.Context, s *memory.Service, h vfs.Handle) error {
+func truncate(n int64) func(ctx context.Context, s *memory.Service, f entity.File, h vfs.Handle) error {
+	return func(ctx context.Context, s *memory.Service, _ entity.File, h vfs.Handle) error {
 		_, err := s.SetAttr(ctx, s.Admin(), vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithSize(n)})
 		return err
+	}
+}
+
+// cloneInto clones n bytes from the start of a new file, which fill has
+// written, into the file at off, through the share's Content: the filesystem
+// does not serve a clone yet.
+func cloneInto(fill func(ctx context.Context, s *memory.Service, src vfs.Handle) error, off, n int64) func(ctx context.Context, s *memory.Service, f entity.File, h vfs.Handle) error {
+	return func(ctx context.Context, s *memory.Service, f entity.File, _ vfs.Handle) error {
+		h, src, err := s.Store.Store.Namespace().Create(ctx, s.Store.Admin, s.Store.Root, []byte("src"), kvstore.Regular(0o644))
+		if err != nil {
+			return err
+		}
+		if err := fill(ctx, s, h); err != nil {
+			return err
+		}
+		return s.Content.Clone(ctx, src.Share, src.ID, f.Share, f.ID, vfs.Extent{SrcOff: 0, DstOff: off, Len: n})
 	}
 }

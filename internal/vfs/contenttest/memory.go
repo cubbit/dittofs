@@ -63,6 +63,7 @@ type file struct {
 // op is one pending operation as Overlay replays it.
 type op struct {
 	truncate bool
+	grow     bool               // a clone's raise of the size to its end, past its last data run
 	size     int64              // a truncate's size; else the end of the bytes it changed, 0 for none
 	x        entity.Extent      // the bytes a write or clone changed, or the extent a removal cuts
 	cut      entity.RemovalKind // a shrinking truncate's or a deallocate's; zero for any other
@@ -236,26 +237,33 @@ func (m *Memory) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 // record; one that fails leaves them pending, to commit again, as the store
 // skips what it has already applied.
 func (m *Memory) CommitExistence(ctx context.Context, s entity.ShareID, f entity.FileID) error {
+	ops, err := m.commitExistence(ctx, s, f)
+	finish(ops) // after the commits lock, as the engine runs Dones after its guard: a Done may commit another file
+	return err
+}
+
+// commitExistence commits f's pending operations and answers them, under
+// the commits lock.
+func (m *Memory) commitExistence(ctx context.Context, s entity.ShareID, f entity.FileID) ([]op, error) {
 	m.commits.Lock()
 	defer m.commits.Unlock()
 	m.mu.Lock()
 	if _, err := m.bound(s, f); err != nil {
 		m.mu.Unlock()
-		return err
+		return nil, err
 	}
 	fl := m.file(f)
 	ops := fl.ops
 	m.mu.Unlock()
 	if m.store != nil {
 		if err := m.commit(ctx, s, f, ops); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	m.mu.Lock()
 	fl.ops = fl.ops[len(ops):] // what was staged meanwhile stays pending
 	m.mu.Unlock()
-	finish(ops)
-	return nil
+	return ops, nil
 }
 
 // commit applies ops to f's File record in st, in version order: each write,
@@ -263,10 +271,12 @@ func (m *Memory) CommitExistence(ctx context.Context, s entity.ShareID, f entity
 // through the store's Remove, with the operations before it, then its phase
 // 2, as the engine runs them.
 //
-// decision: a clone or copy commits as a write of its destination extent,
-// which sets the same size, times and charge, rather than as the store's
-// clone, which adopts the source's chunks: Memory carves none. Commit it as a
-// clone once Memory keeps chunks.
+// decision: a clone or copy commits as one write per data run it copied, then
+// a truncate up to its end, which set the size, times and charge the store's
+// clone does, rather than as the store's clone, which adopts the source's
+// chunks: Memory carves none. A hole copied over the destination's data is
+// the one difference: Allocation answers it a hole, the store keeps it
+// charged, as nothing cuts it. Commit it as a clone once Memory keeps chunks.
 //
 // ponytail: no write names the earlier pending writes it overlaps (the
 // store's Over), so no overwrite record covers them; nothing reads one
@@ -292,7 +302,7 @@ func (m *Memory) commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 				return err
 			}
 			continue
-		case o.truncate:
+		case o.truncate, o.grow:
 			p.Kind, p.Extent, p.Size = kvstore.OpGrow, entity.Extent{}, o.size
 		}
 		pending = append(pending, p)
@@ -387,8 +397,16 @@ func (m *Memory) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 // never answers a retry channel: Memory has no clone running past its call.
 // Over a store the release commits there too, with f's pending operations,
 // and a holder the store records aborts it, vfserr.ErrFileOpen, changing
-// nothing.
+// nothing. A write staged while the release commits is released with it.
 func (m *Memory) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) (<-chan error, error) {
+	ops, err := m.release(ctx, s, f)
+	finish(ops) // after the commits lock, as CommitExistence does
+	return nil, err
+}
+
+// release releases f and answers the operations it dropped, under the
+// commits lock.
+func (m *Memory) release(ctx context.Context, s entity.ShareID, f entity.FileID) ([]op, error) {
 	m.commits.Lock()
 	defer m.commits.Unlock()
 	m.mu.Lock()
@@ -397,9 +415,8 @@ func (m *Memory) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 		m.mu.Unlock()
 		return nil, err
 	}
-	fl := m.files[f]
 	var ops []op
-	if fl != nil {
+	if fl := m.files[f]; fl != nil {
 		ops = fl.ops
 	}
 	release := op{cut: entity.RemoveRelease, x: entity.ExtentOf(0, entity.EndOfFile), at: m.clock.Now(), version: m.draw(j)}
@@ -414,11 +431,14 @@ func (m *Memory) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 		}
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	ops = nil
+	if fl := m.files[f]; fl != nil {
+		ops = fl.ops // with any staged while the store committed
+	}
 	delete(m.files, f)
 	delete(m.owners, f)
-	m.mu.Unlock()
-	finish(ops)
-	return nil, nil
+	return ops, nil
 }
 
 func (m *Memory) Clone(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, x vfs.Extent) error {
@@ -454,10 +474,28 @@ func (m *Memory) Copy(ctx context.Context, srcShare entity.ShareID, src entity.F
 			}
 			return 0, vfs.ErrInvalid
 		}
-		to.grow(x.DstOff + x.Len)
+		size, end := int64(len(to.b)), x.DstOff+x.Len
+		to.grow(end)
 		copy(to.b[x.DstOff:], from.b[x.SrcOff:x.SrcOff+x.Len])
 		copy(to.data[x.DstOff:], from.data[x.SrcOff:x.SrcOff+x.Len])
-		m.stage(j, to, op{size: x.DstOff + x.Len, x: entity.Extent{Offset: x.DstOff, Length: x.Len}, mtime: true})
+		staged := false
+		for at := x.DstOff; at < end; { // one write per data run, so a hole copied is charged nothing
+			run := at
+			for run < end && to.data[run] == to.data[at] {
+				run++
+			}
+			if to.data[at] {
+				m.stage(j, to, op{size: run, x: entity.ExtentOf(at, run), mtime: true})
+				size, staged = max(size, run), true
+			}
+			at = run
+		}
+		switch {
+		case end > size:
+			m.stage(j, to, op{grow: true, size: end, mtime: true})
+		case !staged: // all hole within the file: it still moves the times
+			m.stage(j, to, op{mtime: true})
+		}
 		n += x.Len
 	}
 	return n, nil
