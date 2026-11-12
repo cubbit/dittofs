@@ -1,6 +1,6 @@
 ---
 name: epic-breakdown
-description: Expand one epic of a DittoFS implementation plan (docs/internals/planning/rfc-*-plan.md) into its standalone epic document — every MUST and MUST NOT the RFC places on the epic numbered as R-requirements, ordered subtasks with acceptance criteria, tests and a man-day estimate each, a grep-able total, and a suggested, optional grouping into pull requests — written to docs/internals/planning/. Also says how to create the epic and its subtasks as GitHub issues that point at the document, in the repo's project board with their estimates and under the RFC's roadmap epic, done only when explicitly asked and once the document has merged. Use whenever an epic is to be broken down, detailed, expanded into subtasks or made ready to start ("break down epic 5 of the journal plan", "expand rfc-1 epic 7", "/epic-breakdown 1 8"). Not for planning a whole RFC (rfc-to-epic-plan).
+description: Expand one epic of a DittoFS implementation plan (docs/internals/planning/rfc-*-plan.md) into its standalone epic document — every MUST and MUST NOT the RFC places on the epic numbered as R-requirements, ordered subtasks with acceptance criteria, tests and a man-day estimate each, a grep-able total, and a suggested, optional grouping into pull requests — written to docs/internals/planning/. Also says how to create the epic and its subtasks as GitHub issues that point at the document, in the repo's project board with their estimates and blocked-by links and under the RFC's roadmap epic, done when asked once the plan or the document has merged; after that the issues, not the documents, hold the current estimates and dependencies. Use whenever an epic is to be broken down, detailed, expanded into subtasks or made ready to start ("break down epic 5 of the journal plan", "expand rfc-1 epic 7", "/epic-breakdown 1 8"). Not for planning a whole RFC (rfc-to-epic-plan).
 ---
 
 # Epic breakdown
@@ -393,11 +393,12 @@ Compute each pull request's man-days from the subtask lines, for example
 `grep -E '^\*\*Subtask T4\.(1|2|4)[a-z]? estimate:' <epic-doc> | awk '{d+=$4} END{print d}'`
 (the `[a-z]?` keeps split subtasks such as `T4.2a` and `T4.2b` in the sum). The
 pull requests' man-days add up to the epic total. Each pull request's description names the
-RFC and every subtask it delivers, one id per mention (`RFC 1, T4.1, T4.2`),
-and says when it finishes a subtask only in part, so that it can be mapped to the subtasks
-it delivers.
+RFC and every subtask it delivers, one id per mention (`RFC 1, T4.1, T4.2`), and closes
+the issue of each subtask it finishes with its own `Closes #<N>` line: that line is what
+maps the pull request to the subtask. A subtask it finishes only in part is named, not
+closed.
 
-## Step 6 — GitHub issues: only when asked
+## Step 6 — GitHub issues: at each merge
 
 In [`issues.md`](issues.md), beside this file.
 

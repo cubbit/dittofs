@@ -540,8 +540,10 @@ use `epic-breakdown` in the document they are reading:
 >   be named, not to hit a number.
 > - **Every subtask states how it meets each rule that applies to it.** A rule that does
 >   not apply is named, with the reason.
-> - **In the issue tracker, only when someone asks for issues,** following `epic-breakdown`
->   Step 6, their one description. Issues point at the documents and copy nothing. The
+> - **In the issue tracker, once each document merges,** following `epic-breakdown`
+>   Step 6, their one description. Issues point at the documents and copy nothing; once
+>   created, their `Estimate` and blocked-by links are the current estimate and
+>   dependencies, and the documents are not revised to follow them. The
 >   epic issues exist before E2's pull request lands, because each red test's
 >   `known.yaml` entry names one; subtask issues come once their epic document has
 >   merged. The release an epic ships in is set by the RFC's roadmap epic that its epic
@@ -645,14 +647,16 @@ use `epic-breakdown` in the document they are reading:
   that leaves work to someone else a row.
 - §1.5 opens with its instruction, verbatim.
 
-## GitHub issues, on request
+## GitHub issues, once the plan merges
 
 Roadmap epics, epic issues and subtask issues are described in one place, `epic-breakdown`
-Step 6 (`.claude/skills/epic-breakdown/issues.md`): its lookups, labels, bodies, milestones
-and project fields apply as written. Two requests come to this skill and are carried out
-there: a **roadmap epic** for the RFC and a release (Step 6.2), and **epic issues for a
-merged plan**, one per epic that has none, before its epic document exists (Step 6.3), so
-the epics can be placed under a roadmap epic and E2's `known.yaml` entries can name them.
+Step 6 (`.claude/skills/epic-breakdown/issues.md`): its lookups, labels, bodies, milestones,
+project fields and blocked-by links apply as written. Two requests come to this skill and
+are carried out there: a **roadmap epic** for the RFC and a release (Step 6.2), before the
+plan, and **epic issues for a merged plan**, one per epic that has none, before its epic
+document exists (Step 6.3), each with the plan's figure as its `Estimate` and the plan's
+dependencies as blocked-by links, so the epics can be placed under a roadmap epic, the
+burn-up can show the plan's scope epic by epic, and E2's `known.yaml` entries can name them.
 The roadmap epic comes first: without one, stop and ask for it.
 A third request, the **deferral ledger's issues** for a merged plan, is `issues.md` 6.6.
 
