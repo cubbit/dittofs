@@ -359,112 +359,112 @@
   category: feature
   reason: 'Engine integration: a store refusing one file''s records raises existence_commit_failing in Stats for the file''s share, cleared once its existence commit lands. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and Sync until the journal has them.'
   issue: '#4052'
-- test: TestV19/an_unstable_write_on_a_persistent_open_survives_a_crash
+- test: TestV19/journal/an_unstable_write_on_a_persistent_open_survives_a_crash
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V19: an unstable write through a persistent open on a continuously available share is synced before its reply and reads back after a crash. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and Sync, then at the crash''s restart, which the journal refuses while its directory holds segments (recovering them is not built), and the replay''s ReadAt, until the journal has them.'
   issue: '#4052'
-- test: TestV19/a_stable_append_waits_for_no_metadata_transaction
+- test: TestV19/journal/a_stable_append_waits_for_no_metadata_transaction
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V19: a stable append through the filesystem is answered with no store transaction. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and Sync until the journal has them.'
   issue: '#4052'
-- test: TestV19/a_stable_overwrite_stalled_with_the_store_is_a_delay
+- test: TestV19/journal/a_stable_overwrite_stalled_with_the_store_is_a_delay
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V19: a stable overwrite whose existence commit the store holds answers ErrDelay at its deadline. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and Sync until the journal has them.'
   issue: '#4052'
-- test: TestV20/a_refusal_repack_can_answer_is_a_delay_until_it_frees
+- test: TestV20/journal/a_refusal_repack_can_answer_is_a_delay_until_it_frees
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V20: a write refused at the share''s journal limit while another refusal''s repack runs answers ErrDelay (DelayCapacity), and is served once that repack frees the superseded records. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and Sync, then the journal''s Repack, which returns ErrNotImplemented, and its Stats, which has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6).'
   issue: '#4052'
-- test: TestV20/a_refusal_nothing_can_free_is_no_space_at_once
+- test: TestV20/journal/a_refusal_nothing_can_free_is_no_space_at_once
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V20: a write refused at the share''s journal limit with nothing superseded answers ErrNoSpace at once. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and Sync, then the journal''s Repack, which returns ErrNotImplemented, and its Stats, which has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6).'
   issue: '#4052'
-- test: TestV22/a_write_by_bob
+- test: TestV22/journal/a_write_by_bob
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V22: an unprivileged write clears setuid and setgid in a committed change, read back through GetAttr before any existence commit. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt until the journal has it.'
   issue: '#4052'
-- test: TestV22/a_write_by_alice
+- test: TestV22/journal/a_write_by_alice
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V22: the owner''s unprivileged write clears setuid and setgid in a committed change, read back through GetAttr before any existence commit. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt until the journal has it.'
   issue: '#4052'
-- test: TestV22/a_truncate_by_bob
+- test: TestV22/journal/a_truncate_by_bob
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V22: an unprivileged truncate clears setuid and setgid in a committed change. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and Truncate until the journal has them.'
   issue: '#4052'
-- test: TestV22/a_deallocate_by_bob
+- test: TestV22/journal/a_deallocate_by_bob
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V22: an unprivileged deallocate clears setuid and setgid in a committed change. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and Deallocate until the journal has them.'
   issue: '#4052'
-- test: TestV22/a_clear_that_fails_stages_nothing
+- test: TestV22/journal/a_clear_that_fails_stages_nothing
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V22: a write whose setuid clear the store refuses stages no byte. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and ReadAt until the journal has them.'
   issue: '#4052'
-- test: TestV22/an_append-only_file
+- test: TestV22/journal/an_append-only_file
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V22: an unprivileged append to a setuid, append-only file clears the bit, and a write below its size is ErrPerm and clears nothing. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt until the journal has it.'
   issue: '#4052'
-- test: TestV22/a_write_of_no_byte
+- test: TestV22/journal/a_write_of_no_byte
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V22: a write of no byte leaves setuid, setgid and mtime as they were. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and the overlay''s read of the pending write until the journal has them.'
   issue: '#4052'
-- test: TestV25/a_commit_over_a_failed_window_answers_another_verifier
+- test: TestV25/journal/a_commit_over_a_failed_window_answers_another_verifier
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V25: a commit whose sync window fails answers a verifier other than the write''s. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt, Sync and the failed window''s loss report until the journal has them.'
   issue: '#4052'
-- test: TestV25/a_stable_write_over_a_failed_window_is_a_delay
+- test: TestV25/journal/a_stable_write_over_a_failed_window_is_a_delay
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V25: a stable write answers its own verifier, and ErrDelay (DelayCommit) when its sync window fails. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt, Sync and the failed window''s loss report until the journal has them.'
   issue: '#4052'
-- test: TestV25/an_unstable_write_dropped_as_lost_changes_the_verifier
+- test: TestV25/journal/an_unstable_write_dropped_as_lost_changes_the_verifier
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
   reason: 'Engine integration, RFC 17 V25: an unstable write the group commit''s failed sync drops changes the next write''s verifier in the same process. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt, Sync and the failed window''s loss report until the journal has them.'
   issue: '#4052'
-- test: TestV25/an_SMB_flush_through_each_open_fails_once_across_a_loss
+- test: TestV25/journal/an_SMB_flush_through_each_open_fails_once_across_a_loss
   message: 'the first write: vfs: retry shortly: commit'
   status: fail
   fix: planned
@@ -597,3 +597,192 @@
   category: feature
   reason: 'Epic 7: the real journal refuses the share''s first version by the version limit with no raise in flight, so the row ends at its first draw, answered retry-later (commit), and never reaches the stall. Blocked until the journal opens with the limit the engine passed or the engine''s trigger reads the journal''s real limit, and its Stats reports NextVersion; the negative case at a block of 2^20 also needs the block the conformance package cannot set. The same scenarios run over the fake journal in the engine''s own tests.'
   issue: '#3590'
+- test: TestV22CopyAndClone/a_copy_by_bob
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, RFC 17 V22: an unprivileged copy into a setuid and setgid file clears the bits in a committed change, read back through GetAttr before any existence commit. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt, Sync and the copy''s clone until the journal has them; and the filesystem''s Copy, unbuilt until stage 2''s piece 11.'
+  issue: '#4052'
+- test: TestV22CopyAndClone/a_clone_by_bob
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, RFC 17 V22: an unprivileged clone into a setuid and setgid file clears the bits in a committed change, read back through GetAttr before any existence commit. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt, Sync and the clone until the journal has them; and the filesystem''s Clone, unbuilt until stage 2''s piece 11.'
+  issue: '#4052'
+- test: TestV26/a_refusal_changes_nothing/a_same-file_clone_whose_extents_overlap
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, RFC 17 V26: a same-file clone whose extents overlap is ErrInvalid and leaves the file readable as it was. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt until the journal has it; and the filesystem''s Clone, unbuilt until stage 2''s piece 11.'
+  issue: '#4052'
+- test: TestV26/a_refusal_changes_nothing/a_same-file_copy_whose_extents_overlap
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, RFC 17 V26: a same-file copy whose extents overlap is ErrInvalid and leaves the file readable as it was. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt until the journal has it; and the filesystem''s Copy, unbuilt until stage 2''s piece 11.'
+  issue: '#4052'
+- test: TestV26/a_refusal_changes_nothing/a_copy_ending_one_byte_past_the_source's_size
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, RFC 17 V26: a copy whose range ends one byte past the source''s size is ErrInvalid and leaves the destination readable as it was. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt until the journal has it; and the filesystem''s Copy, unbuilt until stage 2''s piece 11.'
+  issue: '#4052'
+- test: TestV26/a_refusal_changes_nothing/a_clone_one_byte_over_clone_max_len
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, RFC 17 V26: a clone one byte over clone_max_len is ErrInvalid and leaves the destination readable as it was. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt and the truncate''s Draw until the journal has them; and the filesystem''s Clone, unbuilt until stage 2''s piece 11.'
+  issue: '#4052'
+- test: TestV26/a_refusal_changes_nothing/a_clone_into_a_share_of_another_namespace
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, RFC 17 V26: a clone into a share bound in another namespace is ErrCross (CrossNamespace) and leaves the destination readable as it was. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt until the journal has it; and the filesystem''s Clone, unbuilt until stage 2''s piece 11.'
+  issue: '#4052'
+- test: TestV26/a_copy_past_its_deadline_is_short_and_its_running_chunk_completes
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, RFC 17 V26: a 200 MiB copy whose deadline passes in its second chunk answers 64 MiB, the destination holding exactly those bytes, and the second chunk completes past the count before the copy continues from it. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt, Sync and the chunks'' clones until the journal has them; and the filesystem''s Copy, unbuilt until stage 2''s piece 11.'
+  issue: '#4052'
+- test: TestV26/a_clone_of_a_lost_run_reads_lost_there
+  message: 'the first write: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, RFC 17 V26: a clone of a source whose synced run the journal lost reads ErrLost there at the destination and the source''s bytes elsewhere. Init and Open work; the composition starts; the row stops at its first write through the filesystem, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt, Sync, the replay''s loss and the clone until the journal has them; and the filesystem''s Clone, unbuilt until stage 2''s piece 11.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/WrittenBytesReadBack
+  message: 'Write(0, "hello"): vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: bytes written read back, a gap as zeros, a read short at the end of file. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt and ReadAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/AVersionIsAboveEveryVersionBefore
+  message: 'Draw: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: every version drawn or staged is above every one before it on the share. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt and Truncate until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/OverlayReflectsAWriteStagedAnInstantBefore
+  message: 'Draw: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: a write is in the Overlay as soon as Write answers. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/OverlayReplaysInVersionOrder
+  message: 'Write(0, "abcd"): vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: the Overlay replays a pending truncate and the writes after it in version order. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt and Truncate until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/ASuspendedModifyTimeIsLeftAlone
+  message: 'Write(0, "a"): vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: a write suspending the modification time moves the change time only. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/DoneIsCalledOnceByTheExistenceCommit
+  message: 'Write(0, "abcd") with a Done: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: a write''s Done is called once, by the existence commit. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt, Sync and ReadAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/TruncateReadsBackAsEndOfFileOrZeros
+  message: 'Write(0, "abcdefgh"): vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: what a truncate cuts reads as end of file, a grow after it as zeros. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt, Truncate and ReadAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/DeallocateReadsBackAsZeros
+  message: 'Write(0, "abcdefgh"): vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: a deallocated extent reads as zeros and is a hole. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt, Deallocate and ReadAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/AllocationReportsHolesAndData
+  message: 'Write(8, "xy"): vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: Allocation answers the longest run of hole or data from an offset. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/DeleteLeavesNothing
+  message: 'Write(0, "abcd") with a Done: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: a release leaves nothing to read or pending and calls each pending write''s Done. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt, Delete and ReadAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/CloneCopiesTheExtentHolesIncluded
+  message: 'Write(0, "abcd"): vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: a clone makes the destination extent the source''s, holes included. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt, Sync and ReadAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/CopyCopiesItsExtentsInOrder
+  message: 'Write(0, "abcdefgh"): vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: a copy runs its extents in order and answers the bytes it copied. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt and ReadAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/ARefusedCopyChangesNothing
+  message: 'Write(0, "abcdefgh"): vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: a copy or clone with an invalid extent, or a source extent past the source''s size, changes nothing. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt and ReadAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/TheVerifierIsStableWhileNothingIsLost
+  message: 'Write(0, "a"): vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: with nothing lost every Write and Commit answers one verifier. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt and Sync until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/AnUnboundShareIsFrozen
+  message: 'Write(0, "abcd"): vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: every call naming an unbound share answers DelayFrozen. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt and ReadAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/AFileOfAnotherShareIsCorrupt
+  message: 'Write(0, "abcd"): vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: a file named through another bound share is corrupt. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt and ReadAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/FilesWrittenConcurrentlyKeepTheirOwnBytes
+  message: 'Draw: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: files written concurrently read back their own bytes. Init and Open work; the fixture starts with both shares bound; the case stops at its first write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the case''s own need: at WriteAt and ReadAt until the journal has them.'
+  issue: '#4052'
+- test: TestContentSuiteOverTheJournal/ALossChangesTheVerifierAndRaisesTheLossSequence
+  message: 'the Content under test cannot be made to lose a write'
+  status: skip
+  fix: planned
+  category: feature
+  reason: 'Engine integration, the Content suite over the real journal: a loss changes the verifier and raises only the lost file''s loss sequence. The run supplies no Lose, so the case skips: the fixture fails a whole sync window, every file pending in it, where the case needs one file''s content lost and another''s loss sequence left alone; the engine''s run over the fake journal covers it. It runs once the fixture can fail one file''s window.'
+  issue: '#4052'

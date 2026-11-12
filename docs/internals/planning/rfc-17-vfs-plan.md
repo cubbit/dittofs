@@ -53,7 +53,8 @@ is the contract to agree with the journal v2 team before either side builds agai
 
 **D4. Identity through a minimal real resolver in `internal/vfs/admit` (settled on #3526).**
 - There is one resolver until RFC 18 lands, so `Deps` has no `Identity` field yet; §2.3 keeps
-  `Deps.Identity` as the target RFC 18 brings.
+  `Deps.Identity` as the target RFC 18 brings. RFC 18's plan (#4058) adds the field in its epic 1
+  and moves this resolver into identity in its epic 3.
 - It lives in `internal/vfs/admit`, since resolving the caller is admission's step 4 (§4.9), over
   `Principals.SharePolicy`, `ByProtocolID` (a `Claimed` caller's uid), `Groups`, `Grant` and
   `User` (refusing a disabled or deleted principal, RFC 18 §6.1), filling
@@ -67,7 +68,8 @@ is the contract to agree with the journal v2 team before either side builds agai
   // uncached; RFC 18's resolver replaces it, behind Deps.Identity, adding the
   // cache and directories.
   ```
-- `Deps.Auth` and `Deps.Names` wait for RFC 18 with the `Principals` area (piece 3).
+- `Deps.Auth` and `Deps.Names` wait for RFC 18 with the `Principals` area (piece 3): RFC 18's
+  plan (#4058) adds them in its epic 1 and fills them in its epics 3 and 4 (its S2).
 
 **D5. Packages as §2.4 lays them out.** `pkg/vfs` is the contract (types, errors, ID codecs,
 `Service`, `Callbacks`, `Events`) plus `vfstest` (`Memory`, `Faults`, `Callbacks`, `Null`) and its
@@ -134,6 +136,101 @@ The questions piece 1's build left open, which may add more, are plan §5 Q4.
 - Shard numbers are installation-wide (#3551, RFC 16 §2.3.1): each share has its own shard,
   numbered from `IDS‖shard` when the share is created and never reused, and the filesystem
   serves each live share's shard at start and an added share's when it is added.
+
+### 2.1 Code sketch
+
+The sketch is illustrative: its signatures come from the RFC sections it cites or from the code
+on `feat/storage-v2`, and the epic documents decide the final names.
+
+The node builds the filesystem over what it already built, and hands adapters only `vfs.Service`
+(§2.3, RFC 23 §2.2). There is no node yet, so this part is planned; stage 2's tests build the same
+graph from their own constructor (§8).
+
+```go
+// planned: node.New's single-node rows (D2: no Serve, no Gateway).
+meta, _ := kvstore.Open(ctx, db)                       // D1: the new store, not metadata.Service
+open, _ := openstate.New(openstate.Deps{Records: meta, Clock: clk, Rand: rand.Reader})
+eng, _ := engine.New(engine.Deps{ /* … */ })           // stage 3; the in-memory Content until then (D3)
+fsys, _ := vfs.New(vfs.Deps{                           // internal/vfs; piece 2
+	Meta:    meta,
+	Open:    open,  // keeps only its seven views
+	Engine:  eng,   // as Content: only the methods plan §4 lists
+	Events:  sink,  // nil: the null sink
+	Metrics: reg,   // a prometheus.Registerer until RFC 25's Registry (D7)
+})
+var svc vfs.Service = fsys // the adapters' whole view of it (D2)
+```
+
+Start runs in build order and stops in reverse (§2.5). Open state starts first, with the
+filesystem as its `Sink` and its admission lock as the `Order`:
+
+```go
+open.Start(ctx, fsys, fsys.Admission) // Table.Start refuses a nil Sink or Order (piece 2)
+eng.Start(ctx, shares)
+fsys.Start(ctx)                       // serves each live share's shard, then drops removed shares (piece 7)
+// … adapters serve on svc …
+fsys.Drain(ctx)                       // after the adapters have drained
+fsys.Stop()                           // closes nothing it was handed (D8)
+eng.Close(ctx)
+open.Stop()
+```
+
+A write, in the order piece 8 builds it (§5.1). Every step but the engine call is the
+filesystem's own:
+
+```go
+func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, src []byte, st vfs.Stability) (vfs.WriteResult, error) {
+	ctx, done, err := fs.enter(ctx) // ErrUnavailable unless serving; counted for Drain
+	if err != nil {
+		return vfs.WriteResult{}, err
+	}
+	defer done()
+	// io: admission (piece 3, uncached), the file, ErrReadOnly for a narrowed caller,
+	// authz for an anonymous or delegated ref, then open state's CheckIO (§5.0's order).
+	a, f, unlock, release, err := fs.io(ctx, c, ref, vfs.OpWrite, off, int64(len(src)), true)
+	if err != nil {
+		return vfs.WriteResult{}, err
+	}
+	defer release()
+	add, err := fs.charges(ctx, f, off, int64(len(src))) // what the write charges once committed
+	res, err := fs.reserve(ctx, a, charged(f), entity.Usage{Bytes: add}) // piece 9
+	// stage takes f's accept lock, reads Before, runs the engine call, reads After.
+	wcc, err := fs.stage(ctx, c, a, ref.Handle, f, off, true, func() error {
+		v, err = fs.engine.Write(ctx, f.Share, f.ID, off, src, WriteOpts{Done: res.Release})
+		return err
+	})
+	unlock()
+	fs.entryChanged(ctx, a, &ref, f, written(wcc)) // Watches.Changed, piece 10 (D7)
+	if stable(a, ref, st) {
+		cv, _, cerr := fs.engine.Commit(ctx, f.Share, f.ID, off, int64(len(src)))
+		if cerr != nil {
+			return vfs.WriteResult{}, cerr
+		}
+		if cv != v {
+			return vfs.WriteResult{}, &vfs.Delay{Cause: vfs.DelayCommit} // the client resends
+		}
+	}
+	return vfs.WriteResult{N: len(src), Verifier: v, WCC: wcc}, nil
+}
+```
+
+A change of name asks open state before the store changes anything (piece 5, §5.4):
+
+```go
+func (fs *Filesystem) Unlink(ctx context.Context, c vfs.Call, dir vfs.Target, name []byte) (vfs.UnlinkResult, error) {
+	a, release, err := fs.admitHandle(ctx, c, dir.H) // admission, uncached (piece 3)
+	defer release()
+	h, f := /* the entry, read under the locks lockorder.Take sorted (§5.0) */
+	// delete through the parent: dir.H is the via of D8, with the sticky rule
+	err = fs.authz.Decide(ctx, a.caller, op, h, dir.H, name, entity.Delete)
+	err = fs.checks.CheckChange(ctx, a.who(), keyOf(f), dir.Open, openstate.ChangeRemove)
+	// the store's Namespace change, then the content's release, which an open
+	// defers to its last close (§5.4).
+}
+```
+
+One caller, an adapter handler in stage 5: one `vfs.Service` call per row, in RFC 20 §4.3's shape
+and bound as §4.7 binds `WRITE`; the RFC 20 plan's §4.1 sketches one.
 
 ## 3. Pieces, in build order
 
@@ -210,7 +307,7 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
      [`Spell`](../rfcs/rfc-17-vfs.md#3.1%20Operations), `Find`) are stubs, since nothing calls
      them before stage 5 and nothing is under them yet: `Snapshots` answers an empty list
      until RFC 12's store view exists, and the three `Principals` calls answer `ErrAccess` until
-     RFC 18 lands, with `Deps.Auth` and `Deps.Names`.
+     RFC 18 lands, with `Deps.Auth` and `Deps.Names` (RFC 18's plan, #4058, S2).
    - §4.9 allows admission's steps 1–4 to be cached; stage 2 does not, so it has no cache key to
      get wrong:
 
@@ -347,7 +444,8 @@ which are the node's, a removal's or a cut's.
 
 1. **The engine contract (plan §4):** is `Content` frozen against E11 of #3152 before piece 2?
 2. ~~**D4:** when does RFC 18's resolver land to replace the minimal one?~~ Settled on #3526:
-   the minimal one stays in `internal/vfs/admit`, uncached, until RFC 18 lands.
+   the minimal one stays in `internal/vfs/admit`, uncached, until RFC 18 lands; RFC 18's plan
+   (#4058) replaces it in its epic 3.
 3. **Gaps below the filesystem** (§10.4): the store calls the filesystem needs that `feat/storage-v2`
    lacks. All are store work, and so ours. Quota records already have a read view,
    `Capacity.Quota` (`pkg/metadata/kvstore/quota.go`), and #3532 landed `ShareIndex`,
@@ -358,7 +456,7 @@ which are the node's, a removal's or a cut's.
    |---|---|
    | D4's resolver (admission's step 4) | `Principals.SharePolicy`; `Grant` returns `(ShareAccess, error)`, not RFC 16's `(ShareAccess, bool, error)` |
    | piece 6 streams | `Files.Streams` (RFC 7) |
-   | the stage that carries `develop`'s shares into this store | the upgrade mapping, with a case per mapping: `require_kerberos` to `MinProof` Ticket, else `allow_auth_sys` to None, else Secret; `min_kerberos_level` krb5i and krb5p to Integrity and Privacy, and to none on a share whose mapped `MinProof` admits AUTH_SYS (None or Claimed), so a `require_kerberos` krb5p share stored with `allow_auth_sys`, as `develop` stores it by default, keeps Privacy; SMB's guest flag set where the adapter-wide guest setting is on and the share has `allow_auth_sys`; SMB's encrypt flag set by `encrypt_data` or a mapped Privacy; both minimums binding SMB on the share as today (RFC 16 §2.3) |
+   | a migration of `develop`'s shares into this store, if one is ever built (§6's ledger) | the upgrade mapping, with a case per mapping: `require_kerberos` to `MinProof` Ticket, else `allow_auth_sys` to None, else Secret; `min_kerberos_level` krb5i and krb5p to Integrity and Privacy, and to none on a share whose mapped `MinProof` admits AUTH_SYS (None or Claimed), so a `require_kerberos` krb5p share stored with `allow_auth_sys`, as `develop` stores it by default, keeps Privacy; SMB's guest flag set where the adapter-wide guest setting is on and the share has `allow_auth_sys`; SMB's encrypt flag set by `encrypt_data` or a mapped Privacy; both minimums binding SMB on the share as today (RFC 16 §2.3) |
    | piece 3 `StatFS` | `Capacity.Info`; `Usage` has a different signature |
    | piece 7 `Start`, V17 and V35's restarts | a shard number per share, drawn from `IDS‖shard` at the share's creation (RFC 16 §2.3.1, #3551); the per-shard incarnation and grace instance are in (`Store.RaiseIncarnations` and `Shard`, #3463), and only the start's call to them is piece 7's (RFC 14 §4.4, §11.2) |
    | piece 7, a removal resumed at start | a read view listing the shares being removed: `Shares` lists by name, and the mark deletes the name row |
@@ -370,6 +468,25 @@ which are the node's, a removal's or a cut's.
    filesystem's mapping of open state's errors is not total (#3414 maps `ErrCreateInUse` as
    `StateError` `CreateInUse`).
 
-## 6. What sets the pace
+## 6. What sets the pace, and what is deferred
 
 What blocks what is the Needs column of plan §3.
+
+### 6.1 Deferral ledger
+
+What this plan knowingly does not build. Each row indexes the section that defers it.
+
+| Deferred | Why | Owner | Trigger |
+| --- | --- | --- | --- |
+| `Gateway`, `Serve`, `Router`, `Transport`, `Peers` and the multi-node tier; V4, V11 and V41 (D2, plan §3) | single node only; §9 puts them in their own cluster slice | the cluster stage | the cluster stage |
+| Moving the adapters onto `vfs.Service`, and RFC 20's shared pipeline (D2) | stage 5's | RFC 20, 21 and 22 plans | stage 5 |
+| pNFS layouts (§10.2) and compound batching (§10.1) (D2) | left out with the cluster | unowned | layouts: a pNFS RFC lands; batching: §8's benchmark through the gateway shows compound round trips limiting a cluster (RFC 17 §10) |
+| RFC 18's resolver behind `Deps.Identity`, with its cache and directories; `Deps.Auth`, `Deps.Names`; `SignIn`, `Spell` and `Find`, stubs answering `ErrAccess` (D4's `ponytail:`, piece 3) | one resolver until RFC 18 lands | RFC 18 plan (#4058) | RFC 18 lands |
+| `Deps.Metrics` as RFC 25's `metrics.Registry`, not a `prometheus.Registerer` (D7's `ponytail:`) | the registry does not exist | RFC 25 | the registry is built |
+| Caching admission's steps 1–4; §8's cache-key case and cached-against-uncached comparison; V9's and V12's cached cases (piece 3's `ponytail:`) | uncached, so no cache key to get wrong | unowned | §8's uncached admission benchmark (next row) shows steps 1–4 costing more than a cache lookup would |
+| §8's benchmarks: per operation, service overhead, contention, uncached admission, recall latency (D6) | the plan builds none, and no registered suite runs `go test -bench` | RFC 29 harness | a registered suite runs `go test -bench` |
+| RFC 16 §2.3.2's full removal driver, replacing piece 3's stand-in (piece 3's `ponytail:`) | no node exists | RFC 23's plan (#4050), its epic 3 | that epic drives a removal |
+| `Snapshots` beyond an empty list; §6's §5.9 row for an `Incomplete` source (piece 3, plan §3) | RFC 12's store view does not exist | RFC 12 | its snapshot view exists |
+| The integration tier against the real engine; V19, V20 and V25 completed (D6, plan §3) | needs the engine | RFC 8 plan | stage 3 |
+| §8's nightly fuzz targets beyond their seeds (D6) | no registered suite runs `go test -fuzz` | RFC 29 harness | a suite runs `-fuzz` |
+| The upgrade mapping of `develop`'s shares into this store (plan §5 Q3) | storage v2 serves new installations only, so no stage carries `develop`'s shares over; the mapping is part of the migration the RFC 1 plan's ledger holds as unowned (its §6.1, "A migration tool from v1") | unowned (its own RFC, none yet) | demand for one |

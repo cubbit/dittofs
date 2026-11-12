@@ -44,10 +44,12 @@ func (e *Engine) rebuildRun(o *opened, db *binding, dst entity.FileID, spec jour
 		src:  entity.FileID(spec.Src.Bytes()),
 		dst:  dst,
 		rs:   &reg{Extent: entity.Extent{Offset: spec.SrcOff, Length: spec.Len}},
-		rd:   &reg{Extent: entity.Extent{Offset: spec.DstOff, Length: spec.Len}, dst: true},
 		spec: spec,
 		done: make(chan struct{}),
 	}
+	c.rd = &reg{Extent: entity.Extent{Offset: spec.DstOff, Length: spec.Len}, dst: true, run: c} // a retry of the clone joins it
+	c.req = cloneRequest{srcShare: entity.ShareID(spec.SrcShare), dstShare: db.share.ID, src: c.src, dst: dst,
+		ext: vfserr.Extent{SrcOff: spec.SrcOff, DstOff: spec.DstOff, Len: spec.Len}}
 
 	c.enterShares() // the bindings are this start's: no Unbind has shut either gate
 
@@ -61,7 +63,6 @@ func (e *Engine) rebuildRun(o *opened, db *binding, dst entity.FileID, spec jour
 		fe.regs = append(fe.regs, x.r)
 		e.files.unlock(x.f, fe)
 	}
-	e.addClone(c) // a retry of the clone joins it
 	// The clone is posted only once the table is published, which a failed
 	// start never does: nothing else ends it, holds a reservation or waits on it.
 	o.undoRebuilds = append(o.undoRebuilds, func() { e.endClone(c, errClosed) })

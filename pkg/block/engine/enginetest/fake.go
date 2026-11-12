@@ -31,7 +31,7 @@ const fakeStream uint32 = 3
 // It stands in for the journal only where the logic under test is the
 // engine's: no check of what the journal itself does runs over it. Every
 // operation is synced and durable at once, unless the test loses it with
-// Lose.
+// Lose or FailNextWindow.
 //
 // Its records lie on one append stream: each write and removal appends one,
 // a write of its length and a removal of none, so a sync's marks name where
@@ -55,6 +55,8 @@ type FakeJournal struct {
 	handles       []*FakeHandle
 	failing       map[journal.FileID]bool // FailSync's files: the next Sync naming one fails its window
 	undurable     map[journal.FileID]bool // files a failed window left undurable, until a Sync of theirs succeeds
+	failWindow    bool                    // FailNextWindow's: the next Sync fails the window
+	syncedAt      uint64                  // the counter of the last version issued when the window last closed
 	seg           uint64                  // the stream's segment, from 1
 	end           int64                   // the end of the stream's last record in seg
 	seq           uint64                  // the stream's last record's sequence number
@@ -298,6 +300,9 @@ func (j *FakeJournal) Reopen() {
 	for _, f := range j.files {
 		f.settled = journal.Version{}
 	}
+
+	j.syncedAt = j.last               // what the fake kept across the restart is durable
+	j.failing, j.undurable = nil, nil // a restart loses the unreported failures
 }
 
 // Lose drops what file id holds in e as the journal does on a loss: the bytes
@@ -707,6 +712,11 @@ func (h *FakeHandle) Sync(_ context.Context, ids ...journal.FileID) ([]entity.Sy
 			return nil, h.j.refusal
 		}
 	}
+	if h.j.failWindow {
+		h.j.failWindow = false
+		h.j.loseWindow()
+	}
+	h.j.syncedAt = h.j.last
 	var failed []journal.FileID
 	for _, id := range ids {
 		if h.j.failing[id] {
@@ -809,6 +819,59 @@ func (j *FakeJournal) FailSync(id journal.FileID, e journal.Extent, also ...jour
 	j.undurable[id] = true
 	for _, a := range also {
 		j.undurable[a] = true
+	}
+}
+
+// FailNextWindow fails the window the next Sync closes, whatever files it
+// names, as a failed fsync whose read-back does not verify does: every write
+// issued since the window last closed is lost as a failed window's, the loss
+// generation rises once, and each file that had a write in the window is left
+// undurable, its next Sync answering a SyncError naming it. Removals in the
+// window are kept, as the journal re-appends a header-only record.
+func (j *FakeJournal) FailNextWindow() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.failWindow = true
+}
+
+// loseWindow drops every write issued since the window last closed, as
+// FailNextWindow says. j.mu is held.
+//
+// ponytail: it finds the window's writes among the pieces still held and cuts
+// each one's extent, where RFC 1 §5.3 drops each of the window's records as one
+// loss event and holds again what it superseded. So a write a later one in the
+// window splits gives two events, a write overwritten or removed whole in the
+// window gives none and its file is not told, and the failed segment keeps
+// taking appends, where §5.3 starts a new one. Model each once a row fails a
+// window holding such writes, reads what a lost write overwrote, or appends
+// after one.
+func (j *FakeJournal) loseWindow() {
+	if j.failing == nil {
+		j.failing = map[journal.FileID]bool{}
+		j.undurable = map[journal.FileID]bool{}
+	}
+	type lostWrite struct {
+		id journal.FileID
+		f  *fakeFile
+		p  piece
+	}
+	var window []lostWrite
+	for id, f := range j.files {
+		for _, p := range f.pieces {
+			if p.v.Counter > j.syncedAt {
+				window = append(window, lostWrite{id, f, p})
+			}
+		}
+	}
+	slices.SortFunc(window, func(a, b lostWrite) int { return a.p.v.Compare(b.p.v) })
+	for _, w := range window {
+		e := journal.Extent{Off: w.p.off, Len: int64(len(w.p.b))}
+		j.cut(w.f, e.Off, e.Off+e.Len)
+		j.losses = append(j.losses, journal.LossEvent{SeqNum: j.nextSeq(), Share: w.f.tag, File: w.id, Extent: e, Version: w.p.v, Reason: journal.LossFailedWindow})
+		j.failing[w.id], j.undurable[w.id] = true, true
+	}
+	if len(window) > 0 {
+		j.gen++
 	}
 }
 
