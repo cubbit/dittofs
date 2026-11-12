@@ -19,8 +19,8 @@ Nothing here.
 
 **Subtask T7.2 estimate: 1 man-days.**
 
-- **Track:** A. **Depends on:** T7.3a. Ships before T7.1, since T7.3b
-  waits on it.
+- **Track:** A. **Depends on:** T7.3a, whose rows it
+  reads. Ships before T7.1, since T7.3b waits on it.
 
 ### T7.3a Work item
 

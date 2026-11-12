@@ -20,7 +20,7 @@ Nothing here.
 **Subtask T7.2 estimate: 1 man-days.**
 
 - **Track:** A. **Depends on:** T7.1; epic 4's T4.4, whose rows it reads;
-  T7.3a, whose table it fills.
+  epic 5's T5.1; T7.3a, whose table it fills.
 
 ### T7.3a Work item
 
