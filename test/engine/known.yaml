@@ -16,13 +16,6 @@
   category: feature
   reason: 'Epic 6: recovery re-applies existence at start; also Write, Read, Overlay and Allocation (epic 3). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
   issue: '#3589'
-- test: TestRFC8A_OverwriteWaitsForExistence
-  message: 'the first write''s existence commits: not within 10s'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epic 4: Commit waits for an overwrite''s existence; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a wait for the group commit to reach the store: the journal''s Sync is not built, so the commit fails with journal: not implemented and never commits, until the journal has Sync.'
-  issue: '#3587'
 - test: TestRFC8A_StableWriteLazyExistence
   message: 'holds segments; recovering them is not built'
   status: fail
