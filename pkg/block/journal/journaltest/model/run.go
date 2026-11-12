@@ -153,6 +153,17 @@ func runDataPath(ctx context.Context, tgt Target, steps []Step) (ran int, n idle
 	return runMode(ctx, tgt, steps, true)
 }
 
+// RunDataPath runs steps against tgt, as CheckDataPath does, and returns the
+// run's error: nothing is shrunk, reported or written. A sweep asking only
+// whether some bounded set of sequences holds one that diverges costs one run
+// each, the divergence included, where the check would also shrink and re-run
+// every sequence that fails; the caller that finds one runs CheckDataPath on
+// it when it wants the shrunk sequence.
+func RunDataPath(ctx context.Context, tgt Target, steps []Step) error {
+	_, _, err := runDataPath(ctx, tgt, steps)
+	return err
+}
+
 func runMode(ctx context.Context, tgt Target, steps []Step, dataPath bool) (ran int, n idle, err error) {
 	r := &runner{ctx: ctx, tgt: tgt, m: New(), dataPath: dataPath}
 	defer func() { n = r.idle }()

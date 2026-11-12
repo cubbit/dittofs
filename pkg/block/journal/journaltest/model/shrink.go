@@ -133,7 +133,7 @@ func (e openError) Unwrap() error { return e.err }
 // call not written yet, ends the test, the latter as "stub: <call>".
 // newTarget returns the target and the function that closes it.
 func Check(tb testing.TB, name string, steps []Step, newTarget func() (Target, func(), error), notes ...string) {
-	check(tb, name, steps, runCounting, newTarget, notes...)
+	check(tb, name, steps, runCounting, newTarget, "model", notes...)
 }
 
 // CheckDataPath runs steps against a journal newTarget opens, as Check does,
@@ -142,11 +142,12 @@ func Check(tb testing.TB, name string, steps []Step, newTarget func() (Target, f
 // data path, whose sequences drive no offload. Its target's views carry no
 // index, or the comparison asks their journal for answers it does not give.
 func CheckDataPath(tb testing.TB, name string, steps []Step, newTarget func() (Target, func(), error), notes ...string) {
-	check(tb, name, steps, runDataPath, newTarget, notes...)
+	check(tb, name, steps, runDataPath, newTarget, "model-datapath", notes...)
 }
 
-// check is Check, with run choosing the mode its runner makes fills in.
-func check(tb testing.TB, name string, steps []Step, run func(context.Context, Target, []Step) (int, idle, error), newTarget func() (Target, func(), error), notes ...string) {
+// check is Check, with run choosing the mode its runner makes fills in, and
+// corpusDir the directory under testdata the sequence commits to.
+func check(tb testing.TB, name string, steps []Step, run func(context.Context, Target, []Step) (int, idle, error), newTarget func() (Target, func(), error), corpusDir string, notes ...string) {
 	tb.Helper()
 
 	var n idle
@@ -201,5 +202,5 @@ func check(tb testing.TB, name string, steps []Step, run func(context.Context, T
 	if werr := os.WriteFile(path, text, 0o644); werr != nil {
 		path = fmt.Sprintf("nowhere (%v)", werr)
 	}
-	tb.Errorf("%s: the journal diverged from the model: %v\nshrunk from %d to %d steps; commit this as testdata/model/%s (written to %s, which outlives the test only under go test -artifacts):\n%s", name, err, len(steps), len(shrunk), name, path, text)
+	tb.Errorf("%s: the journal diverged from the model: %v\nshrunk from %d to %d steps; commit this as testdata/%s/%s (written to %s, which outlives the test only under go test -artifacts):\n%s", name, err, len(steps), len(shrunk), corpusDir, name, path, text)
 }
