@@ -17,9 +17,9 @@ import (
 //
 // decision: Lose is left nil, so the loss case skips. The real journal fails
 // a whole sync window, every file pending in it, and the case asserts that
-// another file's loss sequence stays put; the engine's own run covers it over
-// the fake journal, which loses one file. Supply it once the fixture can fail
-// one file's window.
+// another file's loss sequence stays put; the run over the unit composition
+// covers it over the fake journal, which loses one file. Supply it once the
+// fixture can fail one file's window.
 func TestContentSuiteOverTheJournal(t *testing.T) {
 	contenttest.Run(t, func(t *testing.T) contenttest.Subject {
 		f := enginetest.New(t)

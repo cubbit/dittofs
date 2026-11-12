@@ -648,12 +648,12 @@ func TestTake_NamedRefusalFields(t *testing.T) {
 	}
 }
 
-// TestTake_FitsRoomTakesNoSpare runs four hundred concurrent takes that all
-// fit the stream's room together (each claims a record and its footer entry of
-// the real room, and four hundred of them sit inside it), with no ready spare and the journal's maximum
-// already reached, and checks every one is granted from the room and the
-// pool is never asked: a write that needs no new segment is never refused
-// by the maximum, which bounds only whole segments.
+// TestTake_FitsRoomTakesNoSpare runs as many concurrent takes as the
+// stream's room holds claims of, each claiming a record and its footer entry
+// of the real room, with no ready spare and the journal's maximum already
+// reached, and checks every one is granted from the room and the pool is
+// never asked: a write that needs no new segment is never refused by the
+// maximum, which bounds only whole segments.
 func TestTake_FitsRoomTakesNoSpare(t *testing.T) {
 	// MaxBytes == the footprint: the primed stream's one segment, a cap, and
 	// no spare is ready.
@@ -664,7 +664,17 @@ func TestTake_FitsRoomTakesNoSpare(t *testing.T) {
 		t.Fatalf("the footprint is %d, want the one cap the maximum names", used)
 	}
 
-	const takes = 400
+	// The takes that fit the room together are the room split by one take's
+	// claim of it — its record's bytes and the footer entry its landing also
+	// takes — and never a count the figures do not bear: enough grants parked
+	// between their Take and their Release to claim the whole room leave the
+	// takes past it refused by the journal's maximum, the only interleaving
+	// the count decides.
+	claim := segment.RecordBytes(1) + format.CatalogEntrySize
+	takes := int(r.room() / claim)
+	if takes < 300 {
+		t.Fatalf("the room holds only %d claims of a one-byte take, want at least 300 for the storm", takes)
+	}
 	q := req()
 	q.Payload = 1
 	var wg sync.WaitGroup
@@ -683,7 +693,7 @@ func TestTake_FitsRoomTakesNoSpare(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if got := granted.Load(); got != takes {
+	if got := granted.Load(); got != int64(takes) {
 		t.Fatalf("%d of %d takes that fit the room were granted, want all", got, takes)
 	}
 	if got := r.holds.Load(); got != 0 {
@@ -1707,5 +1717,28 @@ func TestTake_HoldsEveryRollingPiecesEntry(t *testing.T) {
 	g.Release()
 	if got := r.c.pendingEntries; got != 0 {
 		t.Fatalf("after release, pendingEntries = %d, want 0", got)
+	}
+}
+
+// TestGettersReservedByTag: ReservedByTag reads the bytes a grant holds under
+// its tag while it is open, and nothing once it is released.
+func TestGettersReservedByTag(t *testing.T) {
+	r := newRig(t, std())
+	r.seed(t, 0)
+	if got := r.c.ReservedByTag()[tag1]; got != 0 {
+		t.Fatalf("ReservedByTag[tag1] before any Take = %d, want 0", got)
+	}
+	g := r.grant(t, req())
+	got := r.c.ReservedByTag()
+	if got[tag1] <= 0 || got[tag1] != r.c.ReservedBytes() {
+		t.Fatalf("ReservedByTag[tag1] mid-write = %d, want the held %d", got[tag1], r.c.ReservedBytes())
+	}
+	got[tag1] = -1
+	if r.c.ReservedByTag()[tag1] == -1 {
+		t.Fatal("ReservedByTag shares its map with the capacity, want a copy")
+	}
+	g.Release()
+	if got := r.c.ReservedByTag()[tag1]; got != 0 {
+		t.Fatalf("ReservedByTag[tag1] after Release = %d, want 0", got)
 	}
 }

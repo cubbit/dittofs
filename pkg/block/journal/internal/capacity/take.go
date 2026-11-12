@@ -15,6 +15,7 @@ package capacity
 import (
 	"context"
 	"errors"
+	"maps"
 	"math"
 	"sync"
 
@@ -1215,6 +1216,14 @@ func (c *Capacity) PendingEntries() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.pendingEntries
+}
+
+// ReservedByTag returns a copy of what open reservations hold per share tag,
+// taken under the capacity's lock — no walk.
+func (c *Capacity) ReservedByTag() map[core.ShareTag]int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return maps.Clone(c.reservedTagged)
 }
 
 // RefusedCount returns the reservation_refused counter: how many

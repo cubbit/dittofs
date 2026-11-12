@@ -32,8 +32,18 @@ func (c *Core) Account(d index.HeldDelta) {
 		return
 	}
 	c.dirtyFiles.apply(d)
-	c.held.Add(d.HeldBytes)
+	c.shares.apply(d)
+	// Held is raised before dirty and dirty lowered before held, so dirty
+	// never exceeds held at any instant; a reader of both re-reads (see Stats).
+	c.held.Add(max(d.HeldBytes, 0))
+	if c.stepSpy != nil {
+		c.stepSpy(1)
+	}
 	c.dirty.Add(d.DirtyBytes)
+	if c.stepSpy != nil {
+		c.stepSpy(2)
+	}
+	c.held.Add(min(d.HeldBytes, 0))
 	c.retained.Add(d.RetainedBytes)
 	if c.accountSpy != nil {
 		c.accountSpy(d)
