@@ -265,33 +265,32 @@ func TestTwoSuccessorsMayNameOnePredecessor(t *testing.T) {
 	wantFate(t, st, 3, fateIntact, 0)
 }
 
-func TestAZeroSlotAProofCoversIsDamage(t *testing.T) {
-	st := slotRig(t, func(slot int64) int64 { return slot + 1 })
-	wantDamaged(t, st, 2)
-	// Damage, not a tear: no torn slot and no tail, so nothing here cuts.
-	wantFate(t, st, 2, fateIntact, 0)
+func TestAZeroSlotAProofCoversRefusesTheOpen(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, slotSeg(2, func(slot int64) int64 { return slot + 1 }))
+	wantRefused(t, r, 2, endA, endA+16)
 }
 
-func TestARefusedRangeInANamedSegmentIsDamage(t *testing.T) {
+func TestARefusedRangeInANamedSegmentRefusesTheOpen(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
 	r := newRig(t)
 	r.writeFormat()
 	// R's synced-through is below the slot: unnamed, this slot is torn.
 	r.plantSeg(1, slotSeg(1, func(slot int64) int64 { return slot - 1 }))
 	r.plantSeg(2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
-	st := runUnchanged(t, r, 1)
-	wantDamaged(t, st, 1)
-	wantFate(t, st, 1, fateSealed, 0)
+	wantRefused(t, r, 1, endA, endA+16)
 }
 
-func TestARefusedRangeInASealedSegmentIsDamage(t *testing.T) {
+func TestARefusedRangeInASealedSegmentRefusesTheOpen(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
 	seg := slotSeg(1, func(slot int64) int64 { return slot - 1 })
 	seg = append(seg, raw.SealMarker{Identity: journalID, Segment: 1, Offset: uint64(len(seg))}.Bytes()...)
 	r := newRig(t)
 	r.writeFormat()
 	r.plantSeg(1, seg)
-	st := runUnchanged(t, r, 1)
-	wantDamaged(t, st, 1)
-	wantFate(t, st, 1, fateSealToProve, 0)
+	wantRefused(t, r, 1, endA, endA+16)
 }
 
 func TestATornSlotAndATailRangeEndAtTheLastRecord(t *testing.T) {

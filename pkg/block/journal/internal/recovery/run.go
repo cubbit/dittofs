@@ -122,7 +122,7 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 		return err
 	}
 	st.Rebuilt = out
-	st.Tails, err = classifyTails(st.Attached, out.Scans)
+	st.Tails, err = classifyTails(rd, st.Attached, out.Scans)
 	return err
 }
 
