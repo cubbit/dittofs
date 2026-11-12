@@ -45,7 +45,11 @@ func (e *Engine) Unbind(ctx context.Context, id entity.ShareID, keepHolds bool) 
 		return err
 	}
 
-	return b.gc.removals.joinRunning(ctx, id)
+	if err := b.gc.removals.joinRunning(ctx, id); err != nil {
+		return err
+	}
+	e.forgetShare(id) // its clones are done; their files may change where this node does not see it
+	return nil
 }
 
 // beginLifecycle takes the lifecycle entry of share id and answers its

@@ -106,21 +106,22 @@ func synced(spans []*enginetest.Span) bool {
 	return false
 }
 
-// holdRepack holds the share's first repack at the journal's storage, where it
-// removes a segment it retired, until release; reached is closed once it is
-// there.
-func holdRepack(t *testing.T, c *composition) (reached <-chan struct{}, release func()) {
-	t.Helper()
-	h := c.Seam.HoldFirst(t, "remove", "*")
-	return h.Reached(), h.Release
+// overBoth runs rows over the journal and over the fake journal. Over the
+// journal they wait on the parts it has not built; over the fake they check
+// the engine and the filesystem above it, whose logic the rows are about.
+func overBoth(t *testing.T, rows func(t *testing.T, opts ...enginetest.Option)) {
+	t.Run("journal", func(t *testing.T) { rows(t) })
+	t.Run("fake journal", func(t *testing.T) { rows(t, enginetest.WithFakeJournal()) })
 }
 
 // RFC 17 V19: a write through a persistent open is stable whatever it asks; a
 // stable write waits for its sync and, overwriting committed content, for its
 // existence commit, and for nothing else.
-func TestV19(t *testing.T) {
+func TestV19(t *testing.T) { overBoth(t, v19) }
+
+func v19(t *testing.T, opts ...enginetest.Option) {
 	t.Run("an unstable write on a persistent open survives a crash", func(t *testing.T) {
-		c := compose(t)
+		c := compose(t, opts...)
 		_, id := c.File("f")
 		c.continuouslyAvailable(t)
 		pc := c.smb(t, "pc", c.FS.Admin.Principal)
@@ -144,7 +145,7 @@ func TestV19(t *testing.T) {
 	})
 
 	t.Run("a stable append waits for no metadata transaction", func(t *testing.T) {
-		c := compose(t)
+		c := compose(t, opts...)
 		h, _ := c.File("f")
 		c.FS.Counts.TakeUpdates()
 		if _, err := c.fs.Write(bounded(t), c.admin, vfs.Anonymous(h), 0, []byte("appended"), vfs.FileSync); err != nil {
@@ -156,7 +157,7 @@ func TestV19(t *testing.T) {
 	})
 
 	t.Run("a stable overwrite stalled with the store is a delay", func(t *testing.T) {
-		c := compose(t)
+		c := compose(t, opts...)
 		h, id := c.File("f")
 		if _, err := c.fs.Write(bounded(t), c.admin, vfs.Anonymous(h), 0, []byte("before"), vfs.Unstable); err != nil {
 			t.Fatalf("the first write: %v", err)
@@ -192,9 +193,11 @@ func TestV19(t *testing.T) {
 // bytes by offload, wait out an unreachable store, or meet a store refusing
 // puts need the remote tier, which this composition does not have: RFC 8's
 // second part adds them here.
-func TestV20(t *testing.T) {
+func TestV20(t *testing.T) { overBoth(t, v20) }
+
+func v20(t *testing.T, opts ...enginetest.Option) {
 	t.Run("a refusal repack can answer is a delay until it frees", func(t *testing.T) {
-		c := compose(t)
+		c := compose(t, opts...)
 		h, _ := c.File("f")
 		g, _ := c.File("g")
 		// 7 MiB recorded under the 8 MiB limit, 3 MiB of them superseded.
@@ -211,7 +214,7 @@ func TestV20(t *testing.T) {
 		// Past the journal's sync bound, so the superseded bytes are unreclaimed.
 		c.Clock.Advance(time.Minute)
 
-		reached, release := holdRepack(t, c)
+		reached, release := c.HoldFirstRepack()
 		first := make(chan error, 1)
 		go func() {
 			_, err := c.write(t, c.admin, h, 4*mib, bytes.Repeat([]byte{'c'}, 2*mib))
@@ -244,7 +247,7 @@ func TestV20(t *testing.T) {
 	})
 
 	t.Run("a refusal nothing can free is no space at once", func(t *testing.T) {
-		c := compose(t)
+		c := compose(t, opts...)
 		h, _ := c.File("f")
 		var err error
 		for i := 0; err == nil; i++ {
@@ -271,7 +274,7 @@ func TestV20(t *testing.T) {
 	})
 
 	t.Run("a write past a hard quota is refused at once", func(t *testing.T) {
-		c := compose(t)
+		c := compose(t, opts...)
 		h, _ := c.owned(t, "f", c.alice.Principal, 0o644)
 		q := entity.Quota{Principal: c.alice.Principal, Hard: entity.Limit{Bytes: 4}}
 		if err := c.FS.Store.ControlPlane().SetQuota(t.Context(), c.Share.ID, q); err != nil {
@@ -293,7 +296,9 @@ func TestV20(t *testing.T) {
 // caller's change of a setuid or setgid file, the owner's included, clears the
 // bits in a committed change before the bytes are staged. Its copy and clone
 // cases run with the filesystem's copy and clone.
-func TestV22(t *testing.T) {
+func TestV22(t *testing.T) { overBoth(t, v22) }
+
+func v22(t *testing.T, opts ...enginetest.Option) {
 	// setID is a file of alice's, setuid and setgid, holding "data" written
 	// by the administrator, who keeps the bits.
 	setID := func(t *testing.T, c *composition) vfs.Handle {
@@ -339,7 +344,7 @@ func TestV22(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := compose(t)
+			c := compose(t, opts...)
 			h := setID(t, c)
 			if err := tc.change(t, c, h); err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
@@ -349,7 +354,7 @@ func TestV22(t *testing.T) {
 	}
 
 	t.Run("a clear that fails stages nothing", func(t *testing.T) {
-		c := compose(t)
+		c := compose(t, opts...)
 		h := setID(t, c)
 		c.FailWrites()
 		t.Cleanup(c.Heal)
@@ -363,7 +368,7 @@ func TestV22(t *testing.T) {
 	})
 
 	t.Run("an append-only file", func(t *testing.T) {
-		c := compose(t)
+		c := compose(t, opts...)
 		h, _ := c.owned(t, "f", c.alice.Principal, 0o666)
 		if _, err := c.write(t, c.admin, h, 0, []byte("old")); err != nil {
 			t.Fatalf("the first write: %v", err)
@@ -391,7 +396,7 @@ func TestV22(t *testing.T) {
 	})
 
 	t.Run("a write of no byte", func(t *testing.T) {
-		c := compose(t)
+		c := compose(t, opts...)
 		h := setID(t, c)
 		before, err := c.fs.GetAttr(t.Context(), c.admin, h)
 		if err != nil {
@@ -413,9 +418,11 @@ func TestV22(t *testing.T) {
 // an SMB flush across a loss fails once per open. A shard handed away and
 // back, and a shard-epoch raise that moves nothing, need a cluster: a single
 // node raises no shard epoch, so the cluster adds those cases here.
-func TestV25(t *testing.T) {
+func TestV25(t *testing.T) { overBoth(t, v25) }
+
+func v25(t *testing.T, opts ...enginetest.Option) {
 	t.Run("a commit over a failed window answers another verifier", func(t *testing.T) {
-		c := compose(t)
+		c := compose(t, opts...)
 		h, _ := c.File("f")
 		w, err := c.write(t, c.admin, h, 0, []byte("in a failed window"))
 		if err != nil {
@@ -428,7 +435,7 @@ func TestV25(t *testing.T) {
 	})
 
 	t.Run("a stable write over a failed window is a delay", func(t *testing.T) {
-		c := compose(t)
+		c := compose(t, opts...)
 		h, _ := c.File("f")
 		w, err := c.fs.Write(bounded(t), c.admin, vfs.Anonymous(h), 0, []byte("stable"), vfs.FileSync)
 		if err != nil {
@@ -445,7 +452,7 @@ func TestV25(t *testing.T) {
 	})
 
 	t.Run("an unstable write dropped as lost changes the verifier", func(t *testing.T) {
-		c := compose(t)
+		c := compose(t, opts...)
 		h, id := c.File("f")
 		w, err := c.write(t, c.admin, h, 0, []byte("lost"))
 		if err != nil {
@@ -470,7 +477,7 @@ func TestV25(t *testing.T) {
 	})
 
 	t.Run("an SMB flush through each open fails once across a loss", func(t *testing.T) {
-		c := compose(t)
+		c := compose(t, opts...)
 		c.File("f")
 		pc, laptop := c.smb(t, "pc", c.FS.Admin.Principal), c.smb(t, "laptop", c.FS.Admin.Principal)
 		opens := []struct {
