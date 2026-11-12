@@ -9,16 +9,38 @@ epics"): the RFC's roadmap epic before its plan, the epic issues once the plan m
 an epic's subtask issues once its epic document merges. Create them when the user asks at
 one of those points, never while the document is still in review.
 
-**Once an issue exists, it holds the figures.** Its `Estimate` and its blocked-by links are
-the current estimate and dependencies; the documents keep the first ones and are never
-revised to follow the issues. The burn-up reads them in that order: a subtask issue, then
-its epic issue, then the epic document, then the plan. An issue with no blocked-by links
-defers to its document: absent links mean "not stated here", never "depends on nothing".
+**Once an issue exists, it holds the figures.** The documents keep the first ones and are
+never revised to follow the issues. Each figure is read from the newest source that states
+it, which is also what the burn-up does:
+
+- **Estimate.** A subtask's is its issue's `Estimate`, else its epic document's estimate
+  line, else its share of the plan's epic figure. An epic's is the sum of its subtask
+  issues; with none, its issue's `Estimate`, else its document's figure, else the plan's.
+  To change an estimate once its issue exists, change the issue: a document revision never
+  overwrites an issue's `Estimate` (6.7).
+- **Dependencies.** An issue's blocked-by links, else its document's: a subtask's
+  **Depends on:** line in the epic document's §6; an epic's header **Depends on:** line in
+  its document, else the plan's Blocks column. No links means "not stated here", never
+  "depends on nothing"; a line that says `none` means none of its own.
+- **The first subtask of each epic** also waits on everything its epic waits on, whatever
+  its own links or line say. This is implied, not linked: its issue gets no blocked-by links
+  for its epic's blockers, but whatever computes dependencies (the burn-up, a plan of work)
+  adds them.
 
 **The documents' dependencies stay required, and must be right.** The plan's §2 Blocks
 column and §3, the epic document's header **Depends on:** line and each subtask's in §6 are
 what the blocked-by links are created from, and what the burn-up reads for an issue that has
 none. An issue's body does not copy them; the links carry them.
+
+**Sync points.** A sync point (`S2`, `S4a`) is a named point in the plan's §3 where the
+team converges: the moment a set of epics or subtasks is done, or an agreement outside the
+repository. A document may name one in a **Depends on:** line for brevity, and may name
+it for reasons beyond dependencies too (a review checkpoint, a hand-over). GitHub has no
+sync points, so a link resolves one to what it stands for: one that lists subtasks (`S3`:
+T3.1, T5.2) to their subtask issues; one over whole epics (`S2`, "end of E2"; `S4`, "epics 3
+to 8 done") to their epic issues; one with nothing in the repository to link (`S4a`, an
+agreement with another team) stays one line in the issue's body,
+`**Waits on:** S4a, <what it is>`, the only dependency a body carries.
 
 This step is the **one description** of the RFC's issues: roadmap epics, epic issues,
 subtask issues and deferral-ledger issues. `rfc-to-epic-plan` sends its issue requests here.
@@ -166,7 +188,8 @@ Blocks column names it: that column lists the epics a row blocks, so read it in 
 (epic 3's row saying `4, 8` makes epics 4 and 8 blocked by epic 3, never epic 3 blocked by
 them), and `everything` or `all` names every later epic; §3 gives the reasons. Once its
 document has merged, it is blocked by the epics the document's header **Depends on:** line
-names, where "every earlier epic" is a link to each of them.
+names, where "every earlier epic" is a link to each of them. A sync point resolves as
+"Sync points" above says.
 
 ### 6.4 One issue per subtask
 
@@ -200,8 +223,9 @@ Subtask T<e>.<n> of epic <k> (#<epic-number>): <the subtask's purpose, in one se
 **Specification:** [T<e>.<n> <title>](<document link>#<heading anchor>)
 ```
 Its dependencies are blocked-by links (6.5), from the subtask's **Depends on:** line in §6:
-a subtask names that subtask's issue, a whole epic its epic issue, and a sync point the
-issues of the subtasks it lists.
+a subtask names that subtask's issue, a whole epic its epic issue, and a sync point what it
+stands for ("Sync points" above). The first subtask gets no links for its epic's blockers:
+it waits on them implicitly.
 The anchor is GitHub's for the `### T<e>.<n> <title>` heading: lower case, dots and
 punctuation other than hyphens dropped, spaces as hyphens (`### T3.1 Usage table` →
 `#t31-usage-table`). Open one link to check it. Requirements, acceptance criteria, tests and
@@ -298,9 +322,11 @@ backticks, which a shell quote ends or runs.
   of its subtasks, and the documents from both: expected, and not corrected.
 - A document revision that does merge is synced to the issues **after its pull request has
   merged**, on request, never in the same pass: until then the links still show the old
-  document. The sync covers a renamed subtask's title, a changed estimate's field, a new
-  subtask's issue, a withdrawn subtask's issue closed as not planned, a split subtask, and
-  the blocked-by links of a dependency the revision changed. An epic whose milestone is due
+  document. The sync covers a renamed subtask's title, a new subtask's issue, a withdrawn
+  subtask's issue closed as not planned, a split subtask, and the blocked-by links of a
+  dependency the revision changed. An estimate is written only to an issue whose `Estimate`
+  is empty: one that has a figure keeps it, since the issue is the newer source, and a
+  revision's different figure is reported, not written. An epic whose milestone is due
   before that of an epic it depends on is a conflict to report. Bodies need no change,
   because they say nothing the document can contradict. An older body's `**Depends on:**`
   line is read only while its issue has no blocked-by links.
