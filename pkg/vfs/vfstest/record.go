@@ -1,8 +1,12 @@
 // Package vfstest holds the fakes an adapter is tested against: Record, a
 // Service that records each call and answers as scripted; Null, one that
-// answers every call at once with zero values; and RecordingCallbacks, the
-// client side of the callbacks. Each implements every method explicitly, so a
-// method added to the interface fails to compile here until it is handled.
+// answers every call at once with zero values; Mutations, a wrapper around
+// any Service recording the calls that may change state as it passes them
+// through; and Callbacks and RecordingCallbacks, the client side of the
+// callbacks. Each implements every method explicitly, so a method added to
+// the interface fails to compile here until it is handled. The filesystem
+// over memory, the Service a handler is tested against, is in package
+// memory below, as this package is one the filesystem's own tests import.
 package vfstest
 
 import (

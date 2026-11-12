@@ -3,14 +3,18 @@ package contenttest
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // Clock is the time Memory stamps its operations and versions with.
@@ -19,18 +23,24 @@ type Clock interface{ Now() time.Time }
 // Memory is Content held in memory: every write is durable once staged, so a
 // Commit only answers, and nothing is lost but by Lose. A file's operations
 // stay pending, in its Overlay and holding their writes' Dones, until
-// CommitExistence or Delete commits them. A share answers only once bound,
-// and a file only through the share it was first named with.
+// CommitExistence or Delete commits them; over a store, CommitExistence
+// commits them to its File records too. A share answers only once bound, and
+// a file only through the share it was first named with.
 //
-// ponytail: one lock serves every share and file, and a file's bytes are held
-// whole, a sparse file costing its size. Split the lock per file, or keep
-// extents, if a test's load or sizes ever show in its run time.
+// ponytail: one lock serves every share and file, one more serialises every
+// existence commit and release, and a file's bytes are held whole, a sparse
+// file costing its size. Split the locks per file, or keep extents, if a
+// test's load or sizes ever show in its run time.
 type Memory struct {
-	clock  Clock
-	mu     sync.Mutex
-	shares map[entity.ShareID]*journal
-	files  map[entity.FileID]*file
-	owners map[entity.FileID]entity.ShareID // the share each file was first named with
+	clock Clock
+	store *kvstore.Store // nil: an existence commit is kept nowhere but here
+	// commits serialises existence commits and releases, as the engine's
+	// file guard does, so no two take the same pending operations.
+	commits sync.Mutex
+	mu      sync.Mutex
+	shares  map[entity.ShareID]*journal
+	files   map[entity.FileID]*file
+	owners  map[entity.FileID]entity.ShareID // the share each file was first named with
 }
 
 var _ Content = (*Memory)(nil)
@@ -53,7 +63,9 @@ type file struct {
 // op is one pending operation as Overlay replays it.
 type op struct {
 	truncate bool
-	size     int64 // a truncate's size; else the end of the bytes it changed, 0 for none
+	size     int64              // a truncate's size; else the end of the bytes it changed, 0 for none
+	x        entity.Extent      // the bytes a write or clone changed, or the extent a removal cuts
+	cut      entity.RemovalKind // a shrinking truncate's or a deallocate's; zero for any other
 	at       time.Time
 	mtime    bool // it moves the modification time
 	version  uint64
@@ -63,6 +75,16 @@ type op struct {
 // New is a Memory with no share bound, reading clock.
 func New(clock Clock) *Memory {
 	return &Memory{clock: clock, shares: map[entity.ShareID]*journal{}, files: map[entity.FileID]*file{}, owners: map[entity.FileID]entity.ShareID{}}
+}
+
+// NewOver is a Memory whose existence commits reach st's File records, as the
+// engine's do: a filesystem over it reads a file's size and times from st once
+// its operations are no longer pending. Every file it commits must have a
+// record there.
+func NewOver(clock Clock, st *kvstore.Store) *Memory {
+	m := New(clock)
+	m.store = st
+	return m
 }
 
 // Bind makes s served: before it, every call naming s answers a Delay with
@@ -191,7 +213,7 @@ func (m *Memory) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	for i := off; i < end; i++ {
 		fl.data[i] = true
 	}
-	m.stage(j, fl, op{size: end, mtime: o.Suspend&entity.TimeModify == 0, done: o.Done})
+	m.stage(j, fl, op{size: end, x: entity.ExtentOf(off, end), mtime: o.Suspend&entity.TimeModify == 0, done: o.Done})
 	m.mu.Unlock()
 	return v, nil
 }
@@ -209,14 +231,13 @@ func (m *Memory) Commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 	return verifier(j), m.file(f).loss, nil
 }
 
-// CommitExistence commits f's pending operations, calling their writes' Dones.
-//
-// ponytail: the committed size and times are kept nowhere but in the bytes,
-// as no File record is written: past this call the Overlay answers nothing
-// pending, and a filesystem over Memory reads the size from its own store.
-// Commit them through the store's Existence once a filesystem test over
-// Memory reads attributes after an existence commit.
+// CommitExistence commits f's pending operations, calling their writes'
+// Dones once committed. Over a store it first commits them to f's File
+// record; one that fails leaves them pending, to commit again, as the store
+// skips what it has already applied.
 func (m *Memory) CommitExistence(ctx context.Context, s entity.ShareID, f entity.FileID) error {
+	m.commits.Lock()
+	defer m.commits.Unlock()
 	m.mu.Lock()
 	if _, err := m.bound(s, f); err != nil {
 		m.mu.Unlock()
@@ -224,10 +245,66 @@ func (m *Memory) CommitExistence(ctx context.Context, s entity.ShareID, f entity
 	}
 	fl := m.file(f)
 	ops := fl.ops
-	fl.ops = nil
+	m.mu.Unlock()
+	if m.store != nil {
+		if err := m.commit(ctx, s, f, ops); err != nil {
+			return err
+		}
+	}
+	m.mu.Lock()
+	fl.ops = fl.ops[len(ops):] // what was staged meanwhile stays pending
 	m.mu.Unlock()
 	finish(ops)
 	return nil
+}
+
+// commit applies ops to f's File record in st, in version order: each write,
+// clone and growing truncate as the store's pending operation, each removal
+// through the store's Remove, with the operations before it, then its phase
+// 2, as the engine runs them.
+//
+// decision: a clone or copy commits as a write of its destination extent,
+// which sets the same size, times and charge, rather than as the store's
+// clone, which adopts the source's chunks: Memory carves none. Commit it as a
+// clone once Memory keeps chunks.
+//
+// ponytail: no write names the earlier pending writes it overlaps (the
+// store's Over), so no overwrite record covers them; nothing reads one
+// without chunks. Compute them once Memory keeps chunks.
+func (m *Memory) commit(ctx context.Context, s entity.ShareID, f entity.FileID, ops []op) error {
+	x, c := m.store.Existence(), m.store.Content()
+	var pending []kvstore.PendingOp
+	for _, o := range ops {
+		p := kvstore.PendingOp{Version: entity.VersionOf(o.version), Kind: kvstore.OpWrite, Extent: o.x, Ctime: o.at}
+		if o.mtime {
+			p.Mtime = o.at
+		}
+		switch {
+		case o.cut != 0:
+			if err := x.Remove(ctx, s, f, 0, kvstore.RemoveOp{Version: p.Version, Kind: o.cut, Extent: o.x, Time: o.at}, pending); err != nil {
+				return err
+			}
+			pending = nil
+			if _, err := c.Resume(ctx, s, f); err != nil {
+				return err
+			}
+			if err := c.PruneRemovals(ctx, s, f, p.Version); err != nil {
+				return err
+			}
+			continue
+		case o.truncate:
+			p.Kind, p.Extent, p.Size = kvstore.OpGrow, entity.Extent{}, o.size
+		}
+		pending = append(pending, p)
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	failed, err := x.Commit(ctx, []kvstore.PendingExistence{{Share: s, File: f, Ops: pending}}, nil)
+	if err == nil {
+		err = failed[f]
+	}
+	return err
 }
 
 // finish calls the Done of each of ops' writes.
@@ -275,11 +352,13 @@ func (m *Memory) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID
 		return err
 	}
 	fl := m.file(f)
+	o := op{truncate: true, size: size, mtime: true}
 	if size < int64(len(fl.b)) {
 		fl.b, fl.data = fl.b[:size], fl.data[:size]
+		o.cut, o.x = entity.RemoveTruncate, entity.ExtentOf(size, entity.EndOfFile)
 	}
 	fl.grow(size)
-	m.stage(j, fl, op{truncate: true, size: size, mtime: true})
+	m.stage(j, fl, o)
 	return nil
 }
 
@@ -300,23 +379,41 @@ func (m *Memory) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 	from, to := min(off, int64(len(fl.b))), min(off+n, int64(len(fl.b)))
 	clear(fl.b[from:to])
 	clear(fl.data[from:to])
-	m.stage(j, fl, op{})
+	m.stage(j, fl, op{cut: entity.RemoveDeallocate, x: entity.Extent{Offset: off, Length: n}})
 	return nil
 }
 
 // Delete releases f within the call, its pending writes' Dones called, so it
-// never answers a retry channel: Memory has no holder to abort it and no
-// clone running past its call.
+// never answers a retry channel: Memory has no clone running past its call.
+// Over a store the release commits there too, with f's pending operations,
+// and a holder the store records aborts it, vfserr.ErrFileOpen, changing
+// nothing.
 func (m *Memory) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) (<-chan error, error) {
+	m.commits.Lock()
+	defer m.commits.Unlock()
 	m.mu.Lock()
-	if _, err := m.bound(s, f); err != nil {
+	j, err := m.bound(s, f)
+	if err != nil {
 		m.mu.Unlock()
 		return nil, err
 	}
+	fl := m.files[f]
 	var ops []op
-	if fl := m.files[f]; fl != nil {
+	if fl != nil {
 		ops = fl.ops
 	}
+	release := op{cut: entity.RemoveRelease, x: entity.ExtentOf(0, entity.EndOfFile), at: m.clock.Now(), version: m.draw(j)}
+	m.mu.Unlock()
+	if m.store != nil {
+		err := m.commit(ctx, s, f, append(slices.Clip(ops), release))
+		if errors.Is(err, kvstore.ErrHeld) {
+			return nil, vfserr.ErrFileOpen
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	m.mu.Lock()
 	delete(m.files, f)
 	delete(m.owners, f)
 	m.mu.Unlock()
@@ -360,7 +457,7 @@ func (m *Memory) Copy(ctx context.Context, srcShare entity.ShareID, src entity.F
 		to.grow(x.DstOff + x.Len)
 		copy(to.b[x.DstOff:], from.b[x.SrcOff:x.SrcOff+x.Len])
 		copy(to.data[x.DstOff:], from.data[x.SrcOff:x.SrcOff+x.Len])
-		m.stage(j, to, op{size: x.DstOff + x.Len, mtime: true})
+		m.stage(j, to, op{size: x.DstOff + x.Len, x: entity.Extent{Offset: x.DstOff, Length: x.Len}, mtime: true})
 		n += x.Len
 	}
 	return n, nil
