@@ -312,11 +312,20 @@ func (fs *Filesystem) io(ctx context.Context, c vfs.Call, ref vfs.OpenRef, op vf
 	if err != nil {
 		return nil, vfs.File{}, nil, nil, err
 	}
-	fail := func(err error) (*admitted, vfs.File, func(), func(), error) {
+	f, err := fs.judge(ctx, a, ref, op, off, n, write)
+	if err != nil {
 		unlock()
 		release()
 		return nil, vfs.File{}, nil, nil, err
 	}
+	return a, f, unlock, release, nil
+}
+
+// judge is io's judgement once the file's admission lock is held: it reads
+// the file ref names and judges the caller a admitted for op over n bytes
+// from off, as io says.
+func (fs *Filesystem) judge(ctx context.Context, a *admitted, ref vfs.OpenRef, op vfs.Op, off, n int64, write bool) (vfs.File, error) {
+	fail := func(err error) (vfs.File, error) { return vfs.File{}, err }
 	f, err := fs.file(ctx, a, ref.Handle)
 	if err == nil {
 		err = content(f)
@@ -356,7 +365,7 @@ func (fs *Filesystem) io(ctx context.Context, c vfs.Call, ref vfs.OpenRef, op vf
 	if err := fs.checks.CheckIO(ctx, a.who(), keyOf(f), ref, r, want); err != nil {
 		return fail(openErr(err))
 	}
-	return a, f, unlock, release, nil
+	return f, nil
 }
 
 // content refuses a file that holds no content: ErrIsDir for a directory,
@@ -379,28 +388,40 @@ func content(f vfs.File) error {
 // checked again against the size the overlay leaves, the WCC's Before is
 // read, do stages the change, and the After is read, all in that one hold.
 func (fs *Filesystem) stage(ctx context.Context, c vfs.Call, a *admitted, h vfs.Handle, f vfs.File, off int64, appendable bool, do func() error) (vfs.WCC, error) {
-	if flagsRefuse(f, off, appendable) {
-		return vfs.WCC{}, vfs.ErrPerm
-	}
-	if _, err := fs.clearSetID(ctx, a, h, f, off >= f.Size); err != nil {
-		return vfs.WCC{}, err
-	}
-	unlock, err := fs.locks.Take(ctx, lockorder.Set{Accept: []lockorder.Key{lockorder.Key(f.ID)}})
+	before, unlock, err := fs.staging(ctx, a, h, f, off, appendable)
 	if err != nil {
-		return vfs.WCC{}, errContended
+		return vfs.WCC{}, err
 	}
 	defer unlock()
-	before, err := fs.file(ctx, a, h)
-	if err != nil {
-		return vfs.WCC{}, err
-	}
-	if flagsRefuse(before, off, appendable) {
-		return vfs.WCC{}, vfs.ErrPerm
-	}
 	if err := do(); err != nil {
 		return vfs.WCC{}, storeErr(err)
 	}
 	return fs.wcc(ctx, c, a, h, before), nil
+}
+
+// staging is stage's steps before the change: the flags, the clear, then
+// under f's accept lock the flags again and the WCC's Before. It answers the
+// Before and the accept lock's release.
+func (fs *Filesystem) staging(ctx context.Context, a *admitted, h vfs.Handle, f vfs.File, off int64, appendable bool) (vfs.File, func(), error) {
+	if flagsRefuse(f, off, appendable) {
+		return vfs.File{}, nil, vfs.ErrPerm
+	}
+	if _, err := fs.clearSetID(ctx, a, h, f, off >= f.Size); err != nil {
+		return vfs.File{}, nil, err
+	}
+	unlock, err := fs.locks.Take(ctx, lockorder.Set{Accept: []lockorder.Key{lockorder.Key(f.ID)}})
+	if err != nil {
+		return vfs.File{}, nil, errContended
+	}
+	before, err := fs.file(ctx, a, h)
+	if err == nil && flagsRefuse(before, off, appendable) {
+		err = vfs.ErrPerm
+	}
+	if err != nil {
+		unlock()
+		return vfs.File{}, nil, err
+	}
+	return before, unlock, nil
 }
 
 // flagsRefuse reports whether f's flags refuse a change of its content at off,

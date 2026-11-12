@@ -639,3 +639,36 @@ func TestAnUnlockReplayAndANoOpenTestPassThrough(t *testing.T) {
 		t.Errorf("bob's NLM test of alice's 0600 file: %v, want ErrAccess", err)
 	}
 }
+
+// A copy is judged against the mandatory locks on its source extents, as a
+// read there is: one inside its first extent, past that extent's start,
+// refuses it, and one on the source past its last extent leaves it alone.
+func TestACopyIsJudgedAgainstLocksOnItsSourceExtents(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	src := s.file(t, "src", s.alice.Principal, 0o666)
+	dst := s.file(t, "dst", s.alice.Principal, 0o666)
+	_, err := s.Write(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Anonymous(src), 0, []byte("abcdefgh"), vfs.Unstable)
+	s.must(t, err)
+	holder, _ := s.connected(t, signedIn(s.alice.Principal, 1), smb("holder-pc", 1))
+	held := s.opener(t, holder, "src", entity.ReadData|entity.WriteData)
+	holds := vfs.LockOwner{Client: holder.Client, Name: []byte("h"), Stack: true}
+	bob := signedIn(s.bob.Principal, 2)
+	xs := []vfs.Extent{{SrcOff: 0, DstOff: 0, Len: 2}, {SrcOff: 4, DstOff: 4, Len: 2}}
+	copied := func() error {
+		_, err := s.Copy(ctx, bob, vfs.CopyArgs{Src: vfs.Anonymous(src), Dst: vfs.Anonymous(dst), Extents: xs})
+		return err
+	}
+	if _, err := s.Lock(ctx, holder, held, vfs.LockReq{Owner: holds, Ranges: span(6, 2, true)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := copied(); err != nil {
+		t.Errorf("a copy whose source another holds locked only past its extents: %v, want it admitted", err)
+	}
+	if _, err := s.Lock(ctx, holder, held, vfs.LockReq{Owner: holds, Ranges: span(1, 1, true)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := copied(); !errors.Is(err, vfs.ErrLocked) {
+		t.Errorf("a copy whose first source extent another holds locked: %v, want ErrLocked", err)
+	}
+}

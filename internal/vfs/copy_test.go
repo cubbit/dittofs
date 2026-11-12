@@ -3,6 +3,7 @@ package vfs_test
 import (
 	"context"
 	"errors"
+	"math"
 	"net/netip"
 	"strconv"
 	"sync/atomic"
@@ -273,4 +274,93 @@ func fileID(t *testing.T, s *copier, h vfs.Handle) entity.FileID {
 		t.Fatal(err)
 	}
 	return f.ID
+}
+
+// ext is the extent of n bytes from src of the source to dst of the
+// destination.
+func ext(src, dst, n int64) vfs.Extent { return vfs.Extent{SrcOff: src, DstOff: dst, Len: n} }
+
+// An append-only destination takes a copy that only appends, landing it at
+// the size, and refuses with ErrPerm one any of whose extents lands below
+// it, whichever extent that is, the file unchanged.
+func TestACopyIntoAnAppendOnlyFileOnlyAppends(t *testing.T) {
+	s := newCopier(t)
+	src := s.file(t, "src", s.alice, 0o644, "abcdefgh")
+	dst := s.file(t, "dst", s.alice, 0o644, "0123")
+	if _, err := s.Store.Store.Files().SetAttrs(s.ctx, s.Store.Admin, dst, entity.Attrs{}.WithFlags(entity.FlagAppendOnly)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Copy(s.ctx, s.alice, args(src, dst, ext(0, 0, 2), ext(4, 4, 2))); !errors.Is(err, vfs.ErrPerm) {
+		t.Errorf("a copy whose first extent lands below the size: %v, want ErrPerm", err)
+	}
+	if got, _ := s.state(t, dst); got != "0123" {
+		t.Errorf("after the refused copy the destination reads %q, want %q", got, "0123")
+	}
+	if r, err := s.Copy(s.ctx, s.alice, args(src, dst, ext(0, 4, 4))); err != nil || r.N != 4 {
+		t.Errorf("a copy appending at the size = %d, %v; want 4, nil", r.N, err)
+	}
+	if got, _ := s.state(t, dst); got != "0123abcd" {
+		t.Errorf("after the appending copy the destination reads %q, want %q", got, "0123abcd")
+	}
+}
+
+// Within one file, extents that only touch are copied and cloned: only an
+// overlap is refused.
+func TestACopyOrCloneBetweenTouchingExtentsOfOneFile(t *testing.T) {
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			s := newCopier(t)
+			f := s.file(t, "f", s.alice, 0o644, "01234567")
+			if _, _, err := call(s, s.alice, args(f, f, ext(0, 4, 4))); err != nil {
+				t.Fatalf("a %s from 0 to 4 of 4 bytes: %v", name, err)
+			}
+			if got, _ := s.state(t, f); got != "01230123" {
+				t.Errorf("after the %s the file reads %q, want %q", name, got, "01230123")
+			}
+		})
+	}
+}
+
+// A copy reserves the charge of all its extents together, against the
+// destination's owner: bob's source copied into alice's file past her hard
+// limit is ErrQuota, though no one extent crosses it and bob has no limit.
+func TestACopyIsChargedAllItsExtentsToTheDestinationsOwner(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		xs   []vfs.Extent
+	}{
+		{"two extents, each within the limit", []vfs.Extent{ext(0, 0, 4), ext(4, 4, 4)}},
+		{"one extent", []vfs.Extent{ext(0, 0, 8)}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newCopier(t)
+			src := s.file(t, "src", s.bob, 0o644, "abcdefgh")
+			dst := s.file(t, "dst", s.alice, 0o644, "")
+			if err := s.Store.Store.ControlPlane().SetQuota(s.ctx, s.Store.Share.ID, entity.Quota{Principal: s.alice.Identity.Evidence.Principal, Hard: entity.Limit{Bytes: 6}}); err != nil {
+				t.Fatal(err)
+			}
+			_, err := s.Copy(s.ctx, s.alice, args(src, dst, c.xs...))
+			var qe *vfs.QuotaError
+			if !errors.As(err, &qe) || qe.Scope != vfs.QuotaUser {
+				t.Errorf("a copy of 8 bytes into alice's file, 6 allowed: %v, want ErrQuota of the user", err)
+			}
+		})
+	}
+}
+
+// An extent ending past the largest offset is ErrInvalid before anything is
+// reserved, even where its end, summed, wraps below the source's size.
+func TestAnExtentPastTheLargestOffsetIsInvalidBeforeTheQuota(t *testing.T) {
+	s := newCopier(t)
+	src := s.file(t, "src", s.alice, 0o644, "abcdefgh")
+	dst := s.file(t, "dst", s.alice, 0o6777, "0123")
+	if err := s.Store.Store.ControlPlane().SetQuota(s.ctx, s.Store.Share.ID, entity.Quota{Principal: s.alice.Identity.Evidence.Principal, Hard: entity.Limit{Bytes: 1 << 20}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Copy(s.ctx, s.bob, args(src, dst, ext(1, 0, math.MaxInt64))); !errors.Is(err, vfs.ErrInvalid) {
+		t.Errorf("a copy of MaxInt64 bytes from 1: %v, want ErrInvalid", err)
+	}
+	if got, mode := s.state(t, dst); got != "0123" || mode != 0o6777 {
+		t.Errorf("after the refusal the destination reads %q mode %o, want %q mode 6777", got, mode, "0123")
+	}
 }
