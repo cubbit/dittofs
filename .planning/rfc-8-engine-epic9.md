@@ -22,8 +22,8 @@ on `feat/storage-v2` (#3729), which the data cases call; piece 12, the test doub
 writes `internal/vfs/contenttest` and the in-memory `Content` T9.2 runs beside the engine;
 piece 11, Copy and clone, which turns T9.6's rows green. An RFC change naming the existence
 commit on the engine's surface (§9, point 1) before T9.1 exports it.
-**Blocks:** epic 10: T10.1 burns down the rows this epic registers red, and T10.2's soak and
-T10.3's benchmarks run over T9.3's composition.
+**Blocks:** epic 10: T10.4 burns down the rows this epic registers red, and T10.1's soak runs
+over T9.3's composition, which T10.2's benchmarks repeat on a real directory.
 
 ---
 
@@ -539,8 +539,8 @@ flowchart TD
 T9.1 needs only epic 4, which has landed, and the RFC change, so it can start before S3.
 T9.2 waits on piece 12 and T9.3 on S3, and neither on the other. T9.3 is the riskiest: the
 fixture's start and stop order with the filesystem as the table's `Sink`, rebuilt at every
-crash. Checkpoint after T9.3: the composition exists, and epic 10's soak and benchmarks can
-be written over it. T9.4, T9.5 and T9.6 are independent of each other.
+crash. Checkpoint after T9.3: the composition exists, and epic 10's soak can be written
+over it and its benchmarks can be built on its shape. T9.4, T9.5 and T9.6 are independent of each other.
 
 ## 8. Suggested pull requests
 
