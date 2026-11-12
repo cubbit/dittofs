@@ -36,6 +36,11 @@ type Deps struct {
 	// means GOMAXPROCS, what the open runs with. It is unexported and set
 	// only by tests that need a bound the machine would not give.
 	rebuildReaders int
+
+	// rebuildForceScan makes the rebuild scan every segment rather than
+	// read the footer a verified successor names, the test-only switch
+	// that lets a check compare the two sources' answers.
+	rebuildForceScan bool
 }
 
 // State is what recovery rebuilt of the journal's state: the attach pass's
@@ -100,7 +105,7 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 	if limit < 1 {
 		limit = math.MaxInt64
 	}
-	out, err := rebuildIndex(ctx, rd, expect, st.Attached.Own, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil)
+	out, err := rebuildIndex(ctx, rd, expect, st.Attached.Own, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan)
 	if err != nil {
 		return err
 	}

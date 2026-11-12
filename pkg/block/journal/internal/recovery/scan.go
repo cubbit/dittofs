@@ -42,11 +42,20 @@ type segmentScan struct {
 	SyncedThrough int64
 
 	Sealed bool
+	// SealedByCatalog is set only when the scan was built from the
+	// segment's verified footer rather than the header walk: the later
+	// phases read it to know which source a segment's facts came from, and
+	// the rebuild counts it.
+	SealedByCatalog bool
 	// End is where the walk stopped: the seal marker's offset, the failing
 	// slot's offset, or the file's size.
 	End int64
 	// Size is the segment file's own size, as its storage reported.
 	Size int64
+
+	// Dropped holds the catalogued entries the tail's proof will judge;
+	// filled by the phase that owns them, never by the sources here.
+	Dropped []droppedRecord
 }
 
 // readerAt adapts the open's reader to io.ReaderAt for one file name, so
@@ -314,16 +323,31 @@ type rebuilt struct {
 	Counters    *index.Counters
 	Scans       []segmentScan
 	ScanResyncs int
+
+	// ByCatalog counts the scans a segment's verified footer built: one per
+	// own segment a verified successor named and whose trailer held a
+	// verifying catalogue.
+	ByCatalog int
 }
 
-// rebuildIndex scans every own segment the attach pass found and feeds the
-// records into a fresh index, floor the version floor the journal was
-// opened with — Finish takes it, refusing one with a non-zero epoch the
-// same error a record of that shape takes. order reorders the segments
-// before the dispatch — nil keeps the listing order — and is the one seam
-// the order check drives: the index must come out identical whatever order
-// the segments are walked in. extentLimit bounds the index the way the
-// journal's settings do.
+// rebuildIndex rebuilds the index over every own segment the attach pass
+// found and feeds the records into a fresh index, floor the version floor
+// the journal was opened with — Finish takes it, refusing one with a
+// non-zero epoch the same error a record of that shape takes.
+//
+// Each segment is read from one of two sources: the catalogue its trailer
+// names, offered to a segment only when another own segment's verified
+// header names it as predecessor, or the header walk, which every other
+// segment takes. A named segment whose trailer holds no verifying footer is
+// demoted to the walk, and the two sources must give the same answer — the
+// catalogue is an accelerator, not a second opinion. forceScan turns the
+// catalogue off, the test-only switch that makes every segment take the
+// walk so a check can compare the sources' answers.
+//
+// order reorders the segments before the dispatch — nil keeps the listing
+// order — and is the one seam the order check drives: the index must come
+// out identical whatever order the segments are walked in. extentLimit
+// bounds the index the way the journal's settings do.
 //
 // Every segment is scanned by its own reader, at most readers at a time
 // (the open passes GOMAXPROCS; a value below one runs one):
@@ -344,7 +368,7 @@ type rebuilt struct {
 // catalogued offsets — walking the two halves of one segment on two
 // readers, merging the scans — when a start-up profile of a journal with
 // huge segments shows the rebuild bound by one.
-func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID)) (rebuilt, error) {
+func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool) (rebuilt, error) {
 	ix := index.New(extentLimit)
 	ctr := &index.Counters{}
 	b := ix.Rebuilder(ctr)
@@ -356,6 +380,29 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 		shuffled := slices.Clone(own)
 		order(shuffled)
 		own = shuffled
+	}
+
+	// named is the successor set: every own segment another own segment
+	// names as its predecessor. The catalogue a named segment's trailer may
+	// hold is the only thing this buys — a segment nobody names takes the
+	// walk, its trailer never read.
+	//
+	// decision: only a verified own header's claim counts. The attach pass
+	// read and verified every own header before this dispatch, so the
+	// predecessor column read here was itself covered by a checksum; a
+	// successor the attach pass rejected — a foreign or damaged one —
+	// claims nothing, for its predecessor column is not trusted. The
+	// newest segment of a stream, which no own header names, is therefore
+	// scanned whatever its trailer says, so a recycled segment's old
+	// trailer is never read as its catalogue; the trailer's own defence
+	// stays beside it — the footer's seal marker is seeded with the
+	// journal's identity and the segment's own id, so no other segment's
+	// footer verifies as a named segment's.
+	named := make(map[core.SegmentID]bool, len(own))
+	for _, seg := range own {
+		if seg.Header.Predecessor != 0 {
+			named[seg.Header.Predecessor] = true
+		}
 	}
 
 	wctx, cancel := context.WithCancel(ctx)
@@ -390,7 +437,24 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 			}
 			srd := newReader(wctx, rd.fs, rd.clk, rd.log)
 			workers[i] = srd
-			scans[i], errs[i] = scanSegment(srd, identity, own[i])
+			switch {
+			case forceScan || !named[own[i].ID]:
+				scans[i], errs[i] = scanSegment(srd, identity, own[i])
+			default:
+				got, byCatalog, cerr := catalogSegment(srd, identity, own[i])
+				switch {
+				case cerr != nil:
+					scans[i], errs[i] = got, cerr
+				case byCatalog:
+					scans[i] = got
+				default:
+					// The demotion: a named segment whose trailer holds no
+					// verifying footer — a segment sealed at a crash holds
+					// a marker but no trailer — falls back to the walk,
+					// whose answer the catalogued one must match.
+					scans[i], errs[i] = scanSegment(srd, identity, own[i])
+				}
+			}
 			if errs[i] == nil {
 				for _, rec := range scans[i].Records {
 					if errs[i] = b.Feed(rec); errs[i] != nil {
@@ -449,12 +513,17 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	}
 	out := rebuilt{Index: ix, Counters: ctr, Scans: scans}
 	resyncs := 0
+	byCatalog := 0
 	for _, sc := range out.Scans {
 		if sc.Resynced {
 			resyncs++
 		}
+		if sc.SealedByCatalog {
+			byCatalog++
+		}
 	}
 	out.ScanResyncs = resyncs
+	out.ByCatalog = byCatalog
 	return out, nil
 }
 

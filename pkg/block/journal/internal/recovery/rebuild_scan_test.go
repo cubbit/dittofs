@@ -58,6 +58,7 @@ type step struct {
 
 	payload []byte
 	clone   *raw.CloneBody
+	loss    *raw.LossBody
 
 	// syncedAt is the synced-through offset the record names; zero in the
 	// workload, kept a field so a tail case can name one.
@@ -158,6 +159,8 @@ func appendStep(b []byte, id core.SegmentID, st step) []byte {
 		r.Fill = &raw.FillBody{Payload: st.payload}
 	case 7:
 		r.Clone = st.clone
+	case 10:
+		r.Loss = st.loss
 	}
 	return append(b, r.Bytes()...)
 }
@@ -735,7 +738,7 @@ func TestRebuildIndexTwoSegmentsFailingAtOnceAnswerWithTheLowestSegmentID(t *tes
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 2, nil, nil)
+		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 2, nil, nil, false)
 		done <- err
 	}()
 	for rec.inFlightSegReads() < 2 {
@@ -786,7 +789,7 @@ func TestRebuildIndexAFailedSegmentStopsTheDispatch(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil, onStart)
+		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil, onStart, false)
 		done <- err
 	}()
 	// Segment 1's walk is parked in its first read. Polling the condition
@@ -835,7 +838,7 @@ func TestRebuildIndexCancelledMidFeedChangesNothing(t *testing.T) {
 	done := make(chan rebuiltOrErr, 1)
 	rd := newReader(ctx, r.seam.FS(), r.clk, nil)
 	go func() {
-		out, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil, nil)
+		out, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil, nil, false)
 		done <- rebuiltOrErr{out, err}
 	}()
 
