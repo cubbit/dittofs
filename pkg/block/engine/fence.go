@@ -139,8 +139,9 @@ func (f *fence) committed() {
 // other error is the store's, a deadline the engine's own bound cut included,
 // since an erroring store must fence as one that answers nothing does. A
 // file's own failure the store reports as an error of the whole call, not one
-// listed here, counts as the store's: name it here once the store gives it a
-// value of its own.
+// listed here, counts here as the store's; the group commit releases its
+// owner once another call of the batch committed, which narrows it to the
+// file (syncAndCommit).
 func storeFailed(err error) bool {
 	return !errors.Is(err, kvstore.ErrConflict) &&
 		!errors.Is(err, context.Canceled) &&

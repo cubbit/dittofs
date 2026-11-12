@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -683,5 +684,78 @@ func TestSelfFenceGateUnderRace(t *testing.T) {
 	u.clock.Advance(time.Hour)
 	if err := <-bound; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// corruptHole stores a hole record of file at offset 0 that does not decode,
+// which fails every existence commit of the file as an error of the whole
+// call (RFC 16's store reads the holes over each write).
+func (u *fenceUnit) corruptHole(t *testing.T, file entity.FileID) {
+	t.Helper()
+	key := keys.Uint64(append(keys.ID(keys.ID([]byte{keys.KindF}, u.share.ID[:]), file[:]), keys.FH), 0)
+	if err := u.faults.Update(t.Context(), func(tx kv.Txn) error { return tx.Set(key, []byte{0xff}) }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A file whose hole record does not decode fails each existence commit as an
+// error of the whole call, which the group commit narrows to it, as its marks
+// sent alone commit. With its retries held off for 31 s and nothing else
+// written, the node is not fenced: another file's write is acknowledged and
+// its existence commits, while the corrupt file stays named failing and its
+// stability point answers retry-later. Counting the narrowed error as the
+// store's failure fences here.
+func TestSelfFenceNotOnAFilesUndecodableRecord(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	u.corruptHole(t, a)
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	var hold atomic.Bool
+	held, resume := make(chan struct{}, 1), make(chan struct{})
+	u.e.OnLoop(func() {
+		if hold.Load() {
+			select {
+			case held <- struct{}{}:
+			default:
+			}
+			<-resume
+		}
+	})
+	u.commitInBackground(t, a)
+	eventually(t, "existence_commit_failing names the corrupt file", func() bool { return u.e.Failing(u.rec, a) })
+	hold.Store(true)
+	t.Cleanup(func() { hold.Store(false); close(resume) })
+	// The loop is held at its next pass, after a retry the clock may still
+	// have to release first.
+	for waiting := true; waiting; {
+		select {
+		case <-held:
+			waiting = false
+		case <-time.After(time.Millisecond):
+			u.clock.Advance(time.Second)
+		}
+	}
+
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Fatalf("a write 31s after the corrupt file's last attempt: %v, want acknowledged", err)
+	}
+	if c, ok := u.nodeFenced(); ok {
+		t.Fatalf("node_fenced %v, want none", c)
+	}
+	hold.Store(false)
+	resume <- struct{}{}
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, b); err != nil {
+		t.Errorf("the other file's existence commit: %v, want committed", err)
+	}
+	if !u.e.Failing(u.rec, a) {
+		t.Error("existence_commit_failing no longer names the corrupt file")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if err := u.e.CommitExistence(ctx, u.share.ID, a); !errors.Is(err, &vfserr.Delay{Cause: vfserr.DelayCommit}) {
+		t.Errorf("the corrupt file's stability point: %v, want ErrDelay(DelayCommit)", err)
 	}
 }

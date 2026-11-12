@@ -842,11 +842,24 @@ func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []capt
 		mw, read = g.readMarks()
 	}
 	ctx, end := e.d.Tracer(ctx, "engine.existence_commit", slog.Int("files", len(batch)))
-	switch recorded, err := e.commitSplit(ctx, pending, mw, failed, alone); {
+	recorded, err := e.commitSplit(ctx, pending, mw, failed, alone)
+	switch {
 	case recorded:
 		g.recorded(mw, read)
 	case mw != nil:
 		g.marksFailed(mw, err)
+	}
+	// A call of the batch committed, so the store writes: an error of the
+	// whole call the split left on a file is that file's (RFC 8 §11.2).
+	//
+	// decision: the batch's own commits are the only proof the store writes.
+	// A file failing alone with no marks beside it, marks stopped or not
+	// last, still counts until a later batch commits, and a store that
+	// fails some files' transactions while committing others is read as
+	// those files failing. Overturned if a corrupt file is seen fencing a
+	// node regardless: then the store reports an undecodable record per file.
+	if (recorded || len(failed) < len(batch)) && !slices.ContainsFunc(slices.Collect(maps.Values(failed)), storeWide) {
+		e.fence.release(ownerOf(ctx))
 	}
 	end(nil)
 	return failed, alone, nil
