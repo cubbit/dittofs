@@ -1072,7 +1072,8 @@ follows the journal's, not this part's (§6 point 7).
 - T10.1 The burn-down: each remaining row green over the real journal, its entry removed;
   an adapted row leaves once the half this part runs passes, its other half named in the
   second part. At S3 the entries still red are re-pointed from their middle epic's issue to
-  epic 10's.
+  epic 10's. At S4 it drops the rows' runs over the in-memory journal that rule 8 allows until
+  then, T9.3's start order and T9.4's rows among them.
 - T10.2 A soak: crash and restart in a loop at the integration tier under fault schedules,
   asserting every acknowledged synced write reads back or reads **Lost**.
 - T10.3 B5, B7 and B9 at the service tier (B9 adapted: stable overwrites through `vfs.Service`
