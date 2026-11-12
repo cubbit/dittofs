@@ -177,6 +177,7 @@ func pass(ctx context.Context, p *atomic.Pointer[gate]) error {
 // window it belongs to fails. A spare's sync as it is made is not one.
 func (f *Fixture) FailNextSync() {
 	f.t.Helper()
+	f.journalOnly("FailNextSync")
 	if err := f.Seam.Schedule(kit.Failing(kit.OpSync, "*.seg", 1, errors.New("fixture: an injected sync failure"))); err != nil {
 		f.t.Fatalf("fixture: schedule a sync failure: %v", err)
 	}
@@ -346,8 +347,11 @@ type Option func(*Fixture)
 // WithFakeJournal has every process start open one in-memory journal, kept
 // across Restart and Crash, in place of the journal in Dir: for a check of the
 // composition's own order of work that the journal's unbuilt parts would stop
-// first. The fixture's journal-side controls (the seam's faults, the handles
-// of HandleOf, Reinit) act on the journal in Dir, which nothing reads then.
+// first. The fake is held to the journal for Share alone
+// (TestShareAgreesWithTheJournal), so nothing else it answers here is checked
+// against the journal. The fixture's journal-side controls (FailNextSync,
+// FailNextWindow, Reinit, Crash's variants, HandleOf) act on the journal in
+// Dir, which nothing reads then, so each fails the test.
 //
 // decision: a check run this way proves nothing about the journal, only what
 // the engine and the service above it do in what order; the fake stands in
@@ -357,6 +361,15 @@ type Option func(*Fixture)
 // segments.
 func WithFakeJournal() Option {
 	return func(f *Fixture) { f.fake = NewFakeJournal() }
+}
+
+// journalOnly fails a control that acts on the journal in Dir, which
+// WithFakeJournal leaves unread.
+func (f *Fixture) journalOnly(what string) {
+	f.t.Helper()
+	if f.fake != nil {
+		f.t.Fatalf("fixture: %s acts on the journal in Dir, which WithFakeJournal leaves unread", what)
+	}
 }
 
 // Service is what a compose hook builds over the fixture's open-state table
@@ -589,6 +602,7 @@ func (f *Fixture) RestartAfter(change func()) {
 // is stopped, inside RestartAfter.
 func (f *Fixture) Reinit() journal.JournalID {
 	f.t.Helper()
+	f.journalOnly("Reinit")
 
 	if err := os.RemoveAll(f.Dir); err != nil {
 		f.t.Fatalf("fixture: remove the journal: %v", err)
@@ -620,6 +634,9 @@ func (f *Fixture) Reinit() journal.JournalID {
 // variants.
 func (f *Fixture) Crash(opts ...kit.CrashOption) {
 	f.t.Helper()
+	if len(opts) > 0 {
+		f.journalOnly("a crash variant")
+	}
 	f.crashed.Store(true) // before the crash, so nothing the old engine runs meanwhile reaches the store
 	f.kv.left.Store(-1)
 	f.kv.setting.Store(nil)
