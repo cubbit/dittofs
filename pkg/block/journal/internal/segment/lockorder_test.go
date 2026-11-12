@@ -90,6 +90,21 @@ func awaitReadyContent(p *segment.Pool, n int) bool {
 	return true
 }
 
+// awaitRefs polls the real condition — the entry's live reference count —
+// until it reaches n, with a short pause between polls and the one backstop:
+// the count is what names a waiter as parked on an in-flight open.
+func awaitRefs(t *testing.T, c *segment.Descriptors, id core.SegmentID, n int) {
+	t.Helper()
+	deadline := time.Now().Add(recordedBound)
+	for segment.Refs(c, id) < n {
+		if time.Now().After(deadline) {
+			t.Errorf("segment %d never held %d references within %v", id, n, recordedBound)
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // recordedRounds is the record count each stream of the recorded run appends:
 // a payload an eighth of the cap rolls the stream every few records, so the
 // run exercises rolls and reader holds against the recorder.
@@ -460,6 +475,9 @@ func TestGuardRecorded(t *testing.T) {
 	// recorder exists to report, and is on no books afterwards.
 	seam, _, m := maker(t, 0, noMax)
 	c := segment.NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(4))
+	// The shutdown closes the descriptors this test's grants leave cached,
+	// including the cold open's, so the run ends owning no file.
+	shutRegister(t, c)
 	rec := lockorder.NewRecorder()
 	c.SetRecorder(rec)
 	id, err := m.Make()
@@ -539,6 +557,77 @@ func TestGuardRecorded(t *testing.T) {
 	}
 	if held := probe.Held(); len(held) != 0 {
 		t.Fatalf("the closing goroutine holds ranks %v after Close, want none", held)
+	}
+
+	// A reference granted on a cold open — the cache holds no descriptor of
+	// the segment, so the acquire opens the file before the grant — runs the
+	// same rules as the hitting acquire above, so one granted under the
+	// file index is reported exactly once. The earlier probe's violation
+	// is kept apart by the snapshot of what the recorder held before.
+	id3, err := m.Make()
+	if err != nil {
+		t.Fatalf("Make of the cold-open segment: %v", err)
+	}
+	before := len(rec.Violations())
+	rec.Acquire(lockorder.FileIndex, "probe")
+	ref3, err := c.Acquire(id3)
+	rec.Release("probe")
+	if err != nil {
+		t.Fatalf("the cold Acquire of segment %d: %v", id3, err)
+	}
+	ref3.Release()
+	vs3 := rec.Violations()[before:]
+	if len(vs3) != 1 || vs3[0].Kind != lockorder.GuardUnderIndex || vs3[0].Rank != lockorder.StorageGuard {
+		t.Fatalf("a reference granted on a cold open under the file index recorded %+v, want exactly one guard under index of storage guard", vs3)
+	}
+
+	// The waiter route: a second Acquire that parks on an in-flight open is
+	// granted its reference once the opener lands, on the waiter's own
+	// goroutine, so the grant runs the rules with whatever that goroutine
+	// holds — the probe below, held on this goroutine, which is the waiter.
+	// The opener's own grant runs holding nothing, so the probe's recorder
+	// sees exactly the waiter's one report. The producer of the open holds
+	// the seam open until the waiter has joined it, and releases the hold
+	// whatever the poll saw, so a failure frees the test rather than
+	// wedging the waiter on the open.
+	id4, err := m.Make()
+	if err != nil {
+		t.Fatalf("Make of the waiter's segment: %v", err)
+	}
+	probe2 := lockorder.NewRecorder()
+	c3 := segment.NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(4))
+	shutRegister(t, c3)
+	c3.SetRecorder(probe2)
+	hold := seam.HoldFirst(t, kit.OpOpen, format.SegmentName(id4))
+	openerErr := make(chan error, 1)
+	go func() {
+		r, err := c3.Acquire(id4)
+		if err == nil {
+			r.Release()
+		}
+		openerErr <- err
+	}()
+	awaitRecorded(t, "the opener reaching the held open", hold.Reached())
+	go func() {
+		awaitRefs(t, c3, id4, 2)
+		hold.Release() // whatever the poll saw: the waiter must not wedge on the open
+	}()
+	probe2.Acquire(lockorder.FileIndex, "probe")
+	ref4, err := c3.Acquire(id4) // parks on the open with the probe held
+	probe2.Release("probe")
+	if err != nil {
+		t.Fatalf("the waiting Acquire of segment %d: %v", id4, err)
+	}
+	ref4.Release()
+	if err := awaitRecorded(t, "the opener's acquire", openerErr); err != nil {
+		t.Fatalf("the opener's Acquire of segment %d: %v", id4, err)
+	}
+	vs4 := probe2.Violations()
+	if len(vs4) != 1 || vs4[0].Kind != lockorder.GuardUnderIndex || vs4[0].Rank != lockorder.StorageGuard {
+		t.Fatalf("a reference granted to a waiter under the file index recorded %+v, want exactly one guard under index of storage guard", vs4)
+	}
+	if held := probe2.Held(); len(held) != 0 {
+		t.Fatalf("the waiting goroutine holds ranks %v after its grant, want none", held)
 	}
 }
 
