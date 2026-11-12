@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
-	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
@@ -34,17 +33,6 @@ func cloneUnitWith(t *testing.T, c unitConfig) *unit {
 		t.Fatal(err)
 	}
 	return u
-}
-
-// bindShare binds another share on the unit's journal, in namespace ns.
-func (u *unit) bindShare(t *testing.T, name string, ns entity.NamespaceID) entity.ShareID {
-	t.Helper()
-	s := enginetest.AddShare(t, u.fs.Store, name, 1<<30)
-	s.Namespace = ns
-	if err := u.e.Bind(t.Context(), s); err != nil {
-		t.Fatal(err)
-	}
-	return s.ID
 }
 
 // Admission refuses before registering anything, and admits up to its
