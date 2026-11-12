@@ -831,6 +831,31 @@ func TestIPCShare_RevokedSessionRefused(t *testing.T) {
 	}
 }
 
+// An authorization re-check leaves a live session's IPC$ tree as it was.
+// IPC$ is never registered, so the share lookup the pass makes for a disk
+// tree misses it; treating that miss as a removed share retired every IPC$
+// tree on every pass, and the client's next named-pipe call failed.
+func TestRevalidateAuthorization_KeepsIPCTree(t *testing.T) {
+	store := &revalidateUserStore{user: enabledUser(), perm: models.PermissionReadWrite}
+	h, sessionID, _ := newRevalidateHandler(t, enabledUser(), store, models.PermissionNone, false)
+
+	ctx := &SMBHandlerContext{Context: context.Background(), SessionID: sessionID}
+	res, err := h.handleIPCShare(ctx)
+	if err != nil || res.Status != types.StatusSuccess {
+		t.Fatalf("handleIPCShare = %v, %v; want success", res, err)
+	}
+
+	h.RevalidateAuthorization(context.Background())
+
+	tree, ok := h.GetTree(ctx.TreeID)
+	if !ok {
+		t.Fatal("the re-check removed the IPC$ tree of a session it kept")
+	}
+	if tree.Permission != models.PermissionReadWrite {
+		t.Errorf("IPC$ tree Permission = %v, want read-write, as TREE_CONNECT granted it", tree.Permission)
+	}
+}
+
 func countTrees(h *Handler) int {
 	n := 0
 	h.trees.Range(func(_, _ any) bool {
