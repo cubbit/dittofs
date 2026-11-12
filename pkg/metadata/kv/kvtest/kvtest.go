@@ -47,6 +47,7 @@ func Run(t *testing.T, open func(t *testing.T) kv.KV) {
 		{"Before", testBefore},
 		{"BeforeSeesOwnWrites", testBeforeOwnWrites},
 		{"BeforeUntracked", testBeforeUntracked},
+		{"BeforeSeesStoredHistory", testBeforeStoredHistory},
 		{"ScanSeesNothingUncommitted", testScanUncommitted},
 		{"Versions", testVersions},
 		{"Now", testNow},
@@ -990,6 +991,58 @@ func testBeforeOwnWrites(t *testing.T, s kv.KV) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Before answers from what the store holds after several commits: a key's
+// last committed value, never an older one, no key a commit deleted, and
+// nothing a commit made after the snapshot.
+func testBeforeStoredHistory(t *testing.T, s kv.KV) {
+	set(t, s, "a/1", "x", "a/3", "y", "a/5", "z")
+	set(t, s, "a/3", "y2")
+
+	check := func(step, want string) {
+		t.Helper()
+
+		if err := s.View(ctx(t), func(r kv.Reader) error {
+			got, err := before(r, "a/", "a/5")
+			if err == nil && got != want {
+				t.Errorf("%s: Before = %q, want %q", step, got, want)
+			}
+
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check("after an overwrite", "a/3=y2")
+
+	del := func(key string) func(kv.Txn) error {
+		return func(tx kv.Txn) error {
+			return tx.Delete([]byte(key))
+		}
+	}
+	for _, k := range []string{"a/3", "a/1"} {
+		if err := s.Update(ctx(t), del(k)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	check("after deleting a/3 and a/1", "")
+
+	if err := s.View(ctx(t), func(r kv.Reader) error {
+		set(t, s, "a/4", "later")
+
+		got, err := before(r, "a/", "a/5")
+		if err == nil && got != "" {
+			t.Errorf("a snapshot older than the set of a/4: Before = %q, want none", got)
+		}
+
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	check("after the set of a/4", "a/4=later")
 }
 
 func testBeforeUntracked(t *testing.T, s kv.KV) {

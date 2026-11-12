@@ -2,6 +2,7 @@ package badgerkv
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -185,5 +186,73 @@ func TestConcurrentCommitsShareSyncs(t *testing.T) {
 	}
 	if n := s.sync.syncs.Load() - before; n >= writers {
 		t.Errorf("%d syncs for %d concurrent commits: they did not share syncs", n, writers)
+	}
+}
+
+// A seek below a key reads only the versions under its own prefix: n keys
+// set and then deleted below it, as the keys of n released files lie below
+// the next file's, cost it nothing, and a seek over those n keys reads their
+// two versions each and stops at the prefix's edge, never reaching the live
+// key below it.
+func TestBeforeStopsAtItsPrefix(t *testing.T) {
+	for _, n := range []int{1, 1000} {
+		s := open(t, Options{})
+		t.Cleanup(func() {
+			if err := s.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+
+		var keys [][]byte
+		for i := range n {
+			keys = append(keys, fmt.Appendf(nil, "b/%04d", i))
+		}
+
+		for _, op := range []func(kv.Txn, []byte) error{
+			func(tx kv.Txn, k []byte) error {
+				return tx.Set(k, []byte("v"))
+			},
+			func(tx kv.Txn, k []byte) error {
+				return tx.Delete(k)
+			},
+		} {
+			if err := s.Update(context.Background(), func(tx kv.Txn) error {
+				for _, k := range keys {
+					if err := op(tx, k); err != nil {
+						return err
+					}
+				}
+
+				return tx.Set([]byte("a"), []byte("live"))
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		snap := s.db.NewTransaction(false)
+		for _, c := range []struct {
+			prefix, key string
+			visited     int
+		}{
+			{"c/", "c/9", 0},
+			{"b/", "b/~", 2 * n},
+		} {
+			b := newBelow(snap, []byte(c.prefix), []byte(c.key))
+			if b.Valid() || b.visited != c.visited {
+				t.Errorf(
+					"n=%d: below %q under %q: found %v, visited %d versions, want none and %d",
+					n,
+					c.key,
+					c.prefix,
+					b.Valid(),
+					b.visited,
+					c.visited,
+				)
+			}
+
+			b.it.Close()
+		}
+
+		snap.Discard()
 	}
 }
