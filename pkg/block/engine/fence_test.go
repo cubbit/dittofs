@@ -952,3 +952,67 @@ func TestSelfFenceOnFailingMarksBesideAnUndecodableRecord(t *testing.T) {
 		t.Error("node_fenced not raised 31s after the batch")
 	}
 }
+
+// A store refusing a file's writes with an error of its own, its marks
+// empty, and two files retried in turn in batches of one: x fails at the
+// store, a on its own hole record that does not decode. The node fences 30 s
+// after the first failed attempt. Letting the corrupt file's failure clear
+// the other's failure at the store, as one owner retries both, fences
+// nothing here.
+func TestSelfFenceOnAStoreRefusingWritesBesideAnUndecodableRecord(t *testing.T) {
+	u := newFenceUnit(t)
+	u.rec.noMarks.Store(true)
+	// Batches of one file, so the two are retried in turn.
+	if err := u.e.Apply(engine.Settings{ExistenceAge: 24 * time.Hour, GroupCommitMaxFiles: 1, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	a, x, b := u.create(t, "a"), u.create(t, "x"), u.create(t, "b")
+	u.corrupt(t, a, keys.FH)
+	for _, f := range []entity.FileID{a, x} {
+		if _, err := u.tryWrite(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// x's writes fail; a's commit fails reading its hole record first.
+	u.fault(t, sim.Rule{Op: kvtest.OpSet, Key: fileRecord(u.share.ID, x) + "*", Action: sim.FaultAction{Err: syscall.ENOSPC}})
+	u.commitInBackground(t, a)
+	u.commitInBackground(t, x)
+	eventually(t, "existence_commit_failing names both files", func() bool { return u.e.Failing(u.rec, a) && u.e.Failing(u.rec, x) })
+
+	u.advanceInSteps(29 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Fatalf("a write 29s into the failures: %v, want acknowledged", err)
+	}
+	u.advanceInSteps(2 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s into the failures: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("node_fenced not raised 31s into the failures")
+	}
+}
+
+// A store error, then a commit, then a file whose hole record does not
+// decode, all in one batch: the commit ends the store's failure, so with the
+// loop held after the batch and 31 s passing the node is not fenced. Keeping
+// an owner's store failure past its commit fences here.
+func TestSelfFenceNotOnAnUndecodableRecordAfterAStoreErrorCommitted(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	u.corrupt(t, a, keys.FH)
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, nextUpdate(sim.FaultAction{Err: errInjected}))
+	wait := u.holdAfterBatch(t)
+	u.commitInBackground(t, a)
+	wait()
+
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Errorf("a write 31s after the batch: %v, want acknowledged", err)
+	}
+	if f, ok := u.nodeFenced(); ok {
+		t.Errorf("node_fenced %v, want none", f)
+	}
+}

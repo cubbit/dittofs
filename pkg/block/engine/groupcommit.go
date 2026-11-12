@@ -851,7 +851,8 @@ func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []capt
 	}
 	// A record that does not decode, which the split narrowed to its file,
 	// is that file's failure, not the store's (RFC 8 §11.2): when every
-	// error the batch met is a file's own, its owner is not left failing.
+	// error the batch met is a file's own, its owner is not left failing,
+	// unless another batch failed at the store since it last committed.
 	//
 	// decision: any undecodable record a call reads is the file's, the
 	// journal's open generation a marks write reads included, since a store
@@ -864,7 +865,7 @@ func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []capt
 		own = own && (!storeFailed(ferr) || kvstore.Undecodable(ferr))
 	}
 	if own {
-		e.fence.release(ownerOf(ctx))
+		e.fence.releaseOwn(ownerOf(ctx))
 	}
 	end(nil)
 	return failed, alone, nil
@@ -1065,8 +1066,9 @@ func (e *Engine) commitMarksAlone(ctx context.Context, mw *kvstore.MarksWrite) e
 type retryingOwner struct{}
 
 // ownerState is one retrying owner's part of the self-fence: whether its
-// latest attempt failed at the store.
-type ownerState struct{ failing atomic.Bool }
+// latest attempt failed at the store, and whether one failed at the store
+// with no record of its own to blame since the owner last committed.
+type ownerState struct{ failing, stored atomic.Bool }
 
 // withRetryingOwner is ctx marked as a new retrying owner's.
 func withRetryingOwner(ctx context.Context) context.Context {
