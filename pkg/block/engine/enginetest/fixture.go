@@ -402,9 +402,10 @@ func WithFakeJournal() Option {
 	}
 }
 
-// The fake journal's segment model under WithFakeJournal: 1 MiB segments, so
-// a row's few MiB of overwrites span sealed segments repack can retire, under
-// a maximum well above the share's limit.
+// The fake journal's segment model under WithFakeJournal: 1 MiB segments
+// under a maximum well above the share's limit. The rows need the model on,
+// so repack has segments to free, not these sizes: a capacity pass seals the
+// active segment.
 const (
 	fakeSegmentCap = 1 << 20
 	fakeMaxBytes   = 64 << 20

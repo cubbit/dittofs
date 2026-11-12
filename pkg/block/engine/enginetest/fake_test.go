@@ -176,7 +176,8 @@ func TestFakeFailNextWindowLosesTheWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	va := write(t, h, fileA, 4, "lost")
-	vb := write(t, h, fileB, 0, "lost")
+	vb := write(t, h, fileB, 4, "lost")
+	vb0 := write(t, h, fileB, 0, "lost")
 	j.FailNextWindow()
 
 	var se *journal.SyncError
@@ -186,7 +187,8 @@ func TestFakeFailNextWindowLosesTheWindow(t *testing.T) {
 	s := j.Stats()
 	want := []journal.LossEvent{
 		{SeqNum: 1, Share: 1, File: fileA, Extent: ext(4, 4), Version: va, Reason: journal.LossFailedWindow},
-		{SeqNum: 2, Share: 1, File: fileB, Extent: ext(0, 4), Version: vb, Reason: journal.LossFailedWindow},
+		{SeqNum: 2, Share: 1, File: fileB, Extent: ext(4, 4), Version: vb, Reason: journal.LossFailedWindow},
+		{SeqNum: 3, Share: 1, File: fileB, Extent: ext(0, 4), Version: vb0, Reason: journal.LossFailedWindow},
 	}
 	if s.LossGeneration != 1 || !slices.Equal(s.Losses, want) {
 		t.Errorf("after the failed window: generation %d, ring %+v; want generation 1, %+v", s.LossGeneration, s.Losses, want)
@@ -197,11 +199,60 @@ func TestFakeFailNextWindowLosesTheWindow(t *testing.T) {
 	if j.Durable(fileA) {
 		t.Error("file A is durable before a Sync of it answered its failed window")
 	}
-	if _, err := h.Sync(ctx, fileA); !errors.As(err, &se) || !slices.Equal(se.Files, []journal.FileID{fileA}) {
-		t.Errorf("file A's first Sync after the failed window = %v, want a SyncError naming it", err)
+	if _, err := h.Sync(ctx, fileA, fileB); !errors.As(err, &se) || !slices.Equal(se.Files, []journal.FileID{fileA}) {
+		t.Errorf("the first Sync of files A and B after the failed window = %v, want a SyncError naming file A alone", err)
 	}
 	if _, err := h.Sync(ctx, fileA, fileB); err != nil || !j.Durable(fileA) {
 		t.Errorf("the Sync after each file answered its failure = %v, durable %v; want nil, durable", err, j.Durable(fileA))
+	}
+}
+
+// A restart closes the window and drops its unreported failures: what the
+// fake kept is durable, and a file whose failure went unreported syncs.
+func TestFakeFailNextWindowAcrossAReopen(t *testing.T) {
+	j, h := fake(t, 0)
+	ctx := t.Context()
+	write(t, h, fileA, 0, "lost")
+	j.FailNextWindow()
+	if _, err := h.Sync(ctx, fileB); err != nil {
+		t.Fatal(err)
+	}
+	write(t, h, fileB, 0, "kept")
+	j.Reopen()
+	h, err := j.Share(1, 0, journal.Version{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.FailNextWindow()
+	if _, err := h.Sync(ctx, fileA); err != nil {
+		t.Errorf("file A's first Sync after the restart = %v, want nil: a restart loses the unreported failure", err)
+	}
+	if _, missing, _, _, _ := h.ReadAt(ctx, fileB, 0, make([]byte, 4)); len(missing) != 0 {
+		t.Errorf("file B, written before the restart: missing %v after the next failed window, want none", missing)
+	}
+}
+
+// A failed window holding only a removal loses nothing: the journal
+// re-appends a header-only record, so the Sync succeeds, the generation stays
+// and the removal is kept.
+func TestFakeFailNextWindowKeepsRemovals(t *testing.T) {
+	j, h := fake(t, 0)
+	ctx := t.Context()
+	write(t, h, fileA, 0, "kept")
+	if _, err := h.Sync(ctx, fileA); err != nil {
+		t.Fatal(err)
+	}
+	vt, err := h.Truncate(ctx, fileA, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.FailNextWindow()
+	_, err = h.Sync(ctx, fileA)
+	if s := j.Stats(); err != nil || s.LossGeneration != 0 || len(s.Losses) != 0 {
+		t.Errorf("a failed window holding only a truncate: Sync %v, generation %d, ring %+v; want nil, 0, none", err, s.LossGeneration, s.Losses)
+	}
+	if got := changes(t, h, fileA, ver(0)); !slices.ContainsFunc(got, func(c journal.Change) bool { return c.Kind == journal.ChangeTruncate && c.Version == vt }) {
+		t.Errorf("file A's changes after the failed window = %+v, want its truncate at %v kept", got, vt)
 	}
 }
 

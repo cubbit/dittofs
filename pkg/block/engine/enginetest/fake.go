@@ -301,7 +301,8 @@ func (j *FakeJournal) Reopen() {
 		f.settled = journal.Version{}
 	}
 
-	j.syncedAt = j.last // what the fake kept across the restart is durable
+	j.syncedAt = j.last               // what the fake kept across the restart is durable
+	j.failing, j.undurable = nil, nil // a restart loses the unreported failures
 }
 
 // Lose drops what file id holds in e as the journal does on a loss: the bytes
@@ -836,9 +837,14 @@ func (j *FakeJournal) FailNextWindow() {
 // loseWindow drops every write issued since the window last closed, as
 // FailNextWindow says. j.mu is held.
 //
-// ponytail: it cuts each lost write's extent, where RFC 1 holds again what
-// the dropped record superseded. Model that once a row reads what a write in
-// a failed window overwrote.
+// ponytail: it finds the window's writes among the pieces still held and cuts
+// each one's extent, where RFC 1 §5.3 drops each of the window's records as one
+// loss event and holds again what it superseded. So a write a later one in the
+// window splits gives two events, a write overwritten or removed whole in the
+// window gives none and its file is not told, and the failed segment keeps
+// taking appends, where §5.3 starts a new one. Model each once a row fails a
+// window holding such writes, reads what a lost write overwrote, or appends
+// after one.
 func (j *FakeJournal) loseWindow() {
 	if j.failing == nil {
 		j.failing = map[journal.FileID]bool{}
