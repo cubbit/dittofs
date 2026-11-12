@@ -15,7 +15,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
-// copyChunk is the engine's copy chunk under the fixture's clone_max_len.
+// copyChunk is the engine's copy chunk under the fixture's clone_max_len: it
+// must match copyChunk in pkg/block/engine/clone.go.
 const copyChunk = 64 << 20
 
 // backstop is a generous real-time bound on a wait that must end, so a wrong
@@ -53,14 +54,14 @@ func copyArgs(src, dst vfs.Handle, xs ...vfs.Extent) vfs.CopyArgs {
 func TestV22CopyAndClone(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		do   func(c *composition, call vfs.Call, a vfs.CopyArgs) error
+		do   func(ctx context.Context, c *composition, call vfs.Call, a vfs.CopyArgs) error
 	}{
-		{"a copy by bob", func(c *composition, call vfs.Call, a vfs.CopyArgs) error {
-			_, err := c.fs.Copy(context.Background(), call, a)
+		{"a copy by bob", func(ctx context.Context, c *composition, call vfs.Call, a vfs.CopyArgs) error {
+			_, err := c.fs.Copy(ctx, call, a)
 			return err
 		}},
-		{"a clone by bob", func(c *composition, call vfs.Call, a vfs.CopyArgs) error {
-			_, err := c.fs.Clone(context.Background(), call, a)
+		{"a clone by bob", func(ctx context.Context, c *composition, call vfs.Call, a vfs.CopyArgs) error {
+			_, err := c.fs.Clone(ctx, call, a)
 			return err
 		}},
 	} {
@@ -68,7 +69,9 @@ func TestV22CopyAndClone(t *testing.T) {
 			c := compose(t)
 			src := c.written(t, "src", c.alice.Principal, 0o644, []byte("copy"))
 			dst := c.written(t, "dst", c.alice.Principal, 0o6777, []byte("data"))
-			if err := tc.do(c, signedIn(c.bob.Principal), copyArgs(src, dst, vfs.Extent{Len: 4})); err != nil {
+			ctx, cancel := context.WithTimeout(t.Context(), backstop)
+			defer cancel()
+			if err := tc.do(ctx, c, signedIn(c.bob.Principal), copyArgs(src, dst, vfs.Extent{Len: 4})); err != nil {
 				t.Fatalf("%s into alice's setuid file: %v", tc.name, err)
 			}
 			if f, err := c.fs.GetAttr(t.Context(), c.admin, dst); err != nil || f.Mode != 0o777 {
@@ -212,6 +215,8 @@ func TestV26(t *testing.T) {
 		case <-first:
 		case a := <-answered:
 			t.Fatalf("the copy answered %d, %v before its first chunk reached the store", a.res.N, a.err)
+		case <-time.After(backstop):
+			t.Fatalf("the copy's first chunk did not reach the store within %v", backstop)
 		}
 		second, releaseSecond := c.HoldNextClone()
 		releaseFirst()
@@ -219,10 +224,17 @@ func TestV26(t *testing.T) {
 		case <-second:
 		case a := <-answered:
 			t.Fatalf("the copy answered %d, %v before its second chunk reached the store", a.res.N, a.err)
+		case <-time.After(backstop):
+			t.Fatalf("the copy's second chunk did not reach the store within %v", backstop)
 		}
 		// The deadline passes while the second chunk runs.
 		cancel()
-		a := <-answered
+		var a answer
+		select {
+		case a = <-answered:
+		case <-time.After(backstop):
+			t.Fatalf("the copy did not answer within %v of its deadline", backstop)
+		}
 		if a.err != nil || a.res.N != copyChunk {
 			t.Fatalf("the copy whose deadline passed in its second chunk: %d, %v; want %d, nil", a.res.N, a.err, copyChunk)
 		}
@@ -237,7 +249,9 @@ func TestV26(t *testing.T) {
 			}
 		}
 		rest := vfs.Extent{SrcOff: copyChunk, DstOff: copyChunk, Len: size - copyChunk}
-		res, err := c.fs.Copy(t.Context(), c.admin, copyArgs(src, dst, rest))
+		restCtx, restCancel := context.WithTimeout(t.Context(), backstop)
+		defer restCancel()
+		res, err := c.fs.Copy(restCtx, c.admin, copyArgs(src, dst, rest))
 		if err != nil || res.N != rest.Len {
 			t.Fatalf("the copy continued from the count: %d, %v; want %d", res.N, err, rest.Len)
 		}
@@ -258,7 +272,9 @@ func TestV26(t *testing.T) {
 		}
 		loseRun(t, c, src, parts[1])
 		dst, _ := c.owned(t, "dst", c.FS.Admin.Principal, 0o644)
-		if _, err := c.fs.Clone(t.Context(), c.admin, copyArgs(src, dst, vfs.Extent{Len: 3 * part})); err != nil {
+		ctx, cancel := context.WithTimeout(t.Context(), backstop)
+		defer cancel()
+		if _, err := c.fs.Clone(ctx, c.admin, copyArgs(src, dst, vfs.Extent{Len: 3 * part})); err != nil {
 			t.Fatalf("the clone of a source with a lost run: %v", err)
 		}
 		for _, i := range []int{0, 2} {
