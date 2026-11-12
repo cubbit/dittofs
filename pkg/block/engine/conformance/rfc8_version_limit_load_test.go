@@ -125,7 +125,18 @@ func (r *loadRun) stallAtTheRaise(t *testing.T, rate, trigger uint64, d time.Dur
 		if n%rate == 0 {
 			r.f.Clock.Advance(time.Second)
 
-			left = r.headroom(t)
+			// More versions left than the draws left means the engine raised
+			// the limit before the row's trigger: the loop would never end.
+			next := r.headroom(t)
+			if next > left {
+				t.Fatalf(
+					"the engine raised the limit with %d versions left, above the row's trigger %d",
+					left,
+					trigger,
+				)
+			}
+
+			left = next
 		}
 	}
 
