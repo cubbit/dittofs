@@ -15,6 +15,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/recovery"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/unread"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
@@ -1403,5 +1404,318 @@ func TestCopyLockOrder(t *testing.T) {
 	}
 	if got := wrote.Load(); got < 2 {
 		t.Fatalf("the concurrent writers landed %d real writes during the pass, want ≥ 2: both wrote beside the pass before it ran", got)
+	}
+}
+
+// shutdown makes the fixture's segment files durable the way the seam does —
+// one Sync through the seam's own file for every segment, then one SyncDir —
+// and closes the core cleanly, so the reopen's attach pass unlinks no
+// temporary a live spare pool still owns.
+func (f *copyFixture) shutdown(t *testing.T) {
+	t.Helper()
+	names, err := f.seam.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, name := range names {
+		if kind, _ := format.ClassifyName(name); kind != format.NameSegment {
+			continue
+		}
+		file, err := f.seam.Open(name)
+		if err != nil {
+			t.Fatalf("Open %s: %v", name, err)
+		}
+		if err := file.Sync(); err != nil {
+			t.Fatalf("Sync %s: %v", name, err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("Close %s: %v", name, err)
+		}
+	}
+	if err := f.seam.SyncDir(); err != nil {
+		t.Fatalf("SyncDir: %v", err)
+	}
+	if err := f.core.Close(); err != nil {
+		t.Fatalf("Close of the core: %v", err)
+	}
+}
+
+// reopen reads the fixture's directory the way an open of it does: the
+// attach pass runs over the seam, and every record the format's real scan
+// attaches is fed to a fresh rebuild. The feed stands in for the open's own
+// record walk until that exists, and carries only the content kinds a
+// journal's copies are — a write or a fill: any other kind the scan
+// attached, or any record whose bytes it refused, fails the test rather than
+// being skipped in the feed. It returns the run's state, the rebuilt index
+// and the records the scan attached.
+func (f *copyFixture) reopen(t *testing.T) (recovery.State, *index.Index, []format.RecordHeader) {
+	t.Helper()
+	st, err := recovery.Run(context.Background(), recovery.Deps{
+		FS: f.seam.FS(), Clock: f.clock,
+	}, core.Version{}, copyIdentity, nil)
+	if err != nil {
+		t.Fatalf("the reopen over the fixture's directory: %v", err)
+	}
+	if got := len(st.Attached.Unverified) + len(st.Attached.Foreign); got != 0 {
+		t.Fatalf("the reopen found %d unverified or foreign segments, want 0: the directory holds only this journal's own writes, fills and copies", got)
+	}
+	ix := index.New(copyExtents)
+	b := ix.Rebuilder(&index.Counters{})
+	var fed []format.RecordHeader
+	for _, si := range st.Attached.Own {
+		name := format.SegmentName(si.ID)
+		file, err := f.seam.Open(name)
+		if err != nil {
+			t.Fatalf("Open %s: %v", name, err)
+		}
+		size, err := file.Size()
+		if err != nil {
+			t.Fatalf("Size of %s: %v", name, err)
+		}
+		sc, err := format.ScanSegment(file, size, copyIdentity, si.ID)
+		if cerr := file.Close(); cerr != nil {
+			t.Fatalf("Close %s: %v", name, cerr)
+		}
+		if err != nil {
+			t.Fatalf("the scan of segment %d: %v", si.ID, err)
+		}
+		if n := len(sc.Refused); n != 0 {
+			t.Fatalf("the scan of segment %d refused %d records whose bodies did not verify, want none: every record the pass and the writer wrote must read back whole", si.ID, n)
+		}
+		for _, r := range sc.Records {
+			var k index.RecordKind
+			switch r.Header.Kind {
+			case format.KindWrite:
+				k = index.RecWrite
+			case format.KindFill:
+				k = index.RecFill
+			default:
+				t.Fatalf("the scan attached a %s record of file %v in segment %d, want only a write or a fill", r.Header.Kind, r.Header.File, si.ID)
+			}
+			if err := b.Feed(index.Record{
+				Kind:    k,
+				File:    r.Header.File,
+				Tag:     r.Header.Tag,
+				Segment: si.ID,
+				At:      uint32(r.Header.Offset),
+				Off:     r.Header.Extent.Off,
+				Len:     r.Header.Extent.Len,
+				Numbers: index.Numbers{Version: r.Header.Version, Seq: r.Header.Seq},
+			}); err != nil {
+				t.Fatalf("feeding the record of segment %d at %d to the rebuild: %v", si.ID, r.Header.Offset, err)
+			}
+			fed = append(fed, r.Header)
+		}
+	}
+	if err := b.Finish(core.Version{}); err != nil {
+		t.Fatalf("finishing the rebuild of the directory's records: %v", err)
+	}
+	return st, ix, fed
+}
+
+// TestCopyReopenFillBitAndMTime copies a source segment holding one write of
+// a distinctive modification time and one fill beside it — a genuine fill
+// record appended and published through the core's own fill path — makes the
+// copies durable, and reopens the directory the way an open of it reads one:
+// the attach pass, then the format's real record scan feeding a fresh
+// rebuild. The rebuilt index — the consumer, not the copy's internals —
+// serves the file from the copies: a read of either extent resolves to the
+// copy's record, its fresher sequence number outranking the source record
+// the rebuild also consumed, the fill's rebuilt entry carries the offloaded
+// bit a reopen sets for a fill — a copy of a fill is a fill; a copy encoded
+// as a write loses the bit — and the write's change, which Since names only
+// by the record to read its time from, serves the source's own modification
+// time from the record's bytes, not the copy's append time. The planted
+// content stays small beside the segment's cap, so no run splits across
+// placements: a split copy's reopen shape is the conformance tier's row, not
+// this test's.
+func TestCopyReopenFillBitAndMTime(t *testing.T) {
+	f := newCopyFixture(t)
+	file := copyFile(1)
+	const mtime = int64(1234567890)
+	payW := make([]byte, copyKib)
+	for i := range payW {
+		payW[i] = byte(int64(i)>>8) ^ 0xa5
+	}
+	recW, seqW, vW := f.plant(t, copyTag, file, payW, mtime)
+
+	// The fill beside the write, through the core's real fill path: absent
+	// bytes read from the remote tier, so its every piece is held offloaded.
+	payF := make([]byte, copyKib)
+	for i := range payF {
+		payF[i] = byte(int64(i)>>8) ^ 0x3c
+	}
+	vF, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw for the fill: %v", err)
+	}
+	share := f.share(t, copyTag)
+	if err := f.core.Fill(context.Background(), share, file, copyKib, payF, vF, vF); err != nil {
+		t.Fatalf("the fill beside the write: %v", err)
+	}
+	placed, ok := f.ix.Lookup(file, copyKib+100)
+	if !ok {
+		t.Fatal("the fill published nothing: the writer's fill path holds the extent it appends")
+	}
+	live := f.ix.HeldAt(file, placed.Record)
+	if len(live) != 1 || !live[0].Offloaded || live[0].Extent != (core.Extent{Off: copyKib, Len: copyKib}) {
+		t.Fatalf("the planted fill holds %d pieces at its record (%+v), want one offloaded piece over [4 KiB, 8 KiB): the writer's fill path publishes held and offloaded", len(live), live)
+	}
+	if placed.Record.Segment != recW.Segment {
+		t.Fatalf("the write and its fill landed in segments %d and %d, want one shared source segment", recW.Segment, placed.Record.Segment)
+	}
+	seg := recW.Segment
+	f.sealSource(t, file)
+	f.waitSpares(t)
+
+	cs := f.selector().Select(reclaim.Scope{Segments: []core.SegmentID{seg}}, 1)
+	if len(cs) != 1 || cs[0].ID != seg {
+		t.Fatalf("Select returned %v, want the one candidate %d", cs, seg)
+	}
+	res, err := f.copier().Copy(context.Background(), seg)
+	if err != nil {
+		t.Fatalf("Copy of the write-and-fill segment: %v", err)
+	}
+	if len(res.Copies) != 2 {
+		t.Fatalf("Copy appended %d copies (%+v), want 2: the write's and the fill's, kinds never merging", len(res.Copies), res.Copies)
+	}
+	var cpW, cpF *reclaim.Copied
+	for i := range res.Copies {
+		switch res.Copies[i].Kind {
+		case format.KindWrite:
+			cpW = &res.Copies[i]
+		case format.KindFill:
+			cpF = &res.Copies[i]
+		}
+	}
+	if cpW == nil || cpF == nil {
+		t.Fatalf("Copy appended copies of kinds %+v, want one write and one fill", res.Copies)
+	}
+	if cpW.Extent != (core.Extent{Len: copyKib}) || cpW.From != recW || cpW.Version != vW || cpW.Seq <= seqW {
+		t.Fatalf("the write's copy %+v, want the whole [0, 4 KiB) of %v at the source's version %v under a fresh number above %d", *cpW, recW, vW, seqW)
+	}
+	if cpF.Extent != (core.Extent{Off: copyKib, Len: copyKib}) || cpF.From != placed.Record || cpF.Version != vF || cpF.Seq <= placed.Seq {
+		t.Fatalf("the fill's copy %+v, want the whole [4 KiB, 8 KiB) of %v at the fill's version %v under a fresh number above %d", *cpF, placed.Record, vF, placed.Seq)
+	}
+	if cpW.To.Segment == seg || cpF.To.Segment == seg {
+		t.Fatalf("a copy landed in its own source segment %d (write %v, fill %v), want fresh segments", seg, cpW.To, cpF.To)
+	}
+
+	f.shutdown(t)
+	st, ix2, fed := f.reopen(t)
+
+	// The reopen attached the copy beside its source: both segments class
+	// as the journal's own under its identity.
+	var ownSrc, ownCp bool
+	for _, si := range st.Attached.Own {
+		switch si.ID {
+		case seg:
+			ownSrc = true
+		case cpW.To.Segment:
+			ownCp = true
+		}
+	}
+	if !ownSrc || !ownCp {
+		t.Fatalf("the reopen attached the source segment %d = %v and the copy segment %d = %v, want both as its own", seg, ownSrc, cpW.To.Segment, ownCp)
+	}
+
+	// The rebuild consumed exactly the four records the source and its
+	// copies hold: the write and fill, and their copies.
+	wantFed := map[core.Seq]format.Kind{
+		seqW:       format.KindWrite,
+		placed.Seq: format.KindFill,
+		cpW.Seq:    format.KindWrite,
+		cpF.Seq:    format.KindFill,
+	}
+	if len(fed) != len(wantFed) {
+		t.Fatalf("the scan attached %d records (%+v), want the %d the source segment and its copies hold (%v)", len(fed), fed, len(wantFed), wantFed)
+	}
+	for _, h := range fed {
+		if k, ok := wantFed[h.Seq]; !ok || k != h.Kind {
+			t.Fatalf("the record the scan attached with seq %d is kind %s, want a %s or none besides the four named", h.Seq, h.Kind, wantFed[h.Seq])
+		}
+	}
+
+	// The fill's rebuilt entry carries the bit a reopen sets for a fill, and
+	// the pieces the fill's mark must not reach — the write's entry — keep
+	// theirs clear.
+	fillPieces := ix2.HeldAt(file, cpF.To)
+	if len(fillPieces) != 1 || fillPieces[0].Extent != cpF.Extent || fillPieces[0].Version != vF {
+		t.Fatalf("the rebuilt index holds %d pieces at the fill's copy %v (%+v), want one over the fill's extent %v at its version %v", len(fillPieces), cpF.To, fillPieces, cpF.Extent, vF)
+	}
+	if !fillPieces[0].Offloaded {
+		t.Fatalf("the rebuilt fill piece's offloaded bit is clear, want it set: a copy of a fill is a fill, and a reopen sets its bit")
+	}
+	writePieces := ix2.HeldAt(file, cpW.To)
+	if len(writePieces) != 1 || writePieces[0].Extent != cpW.Extent || writePieces[0].Version != vW {
+		t.Fatalf("the rebuilt index holds %d pieces at the write's copy %v (%+v), want one over the write's extent %v at its version %v", len(writePieces), cpW.To, writePieces, cpW.Extent, vW)
+	}
+	if writePieces[0].Offloaded {
+		t.Fatal("the rebuilt write piece's offloaded bit is set, want it clear: a fill's mark reaches the fill's own entry alone")
+	}
+
+	// Precedence: both records of each extent were fed, and the copy's fresh
+	// sequence number outranks the source record's at the same version.
+	for _, look := range []struct {
+		name   string
+		source index.RecordAt
+	}{
+		{"the fill's source record", placed.Record},
+		{"the write's source record", recW},
+	} {
+		if got := ix2.HeldAt(file, look.source); len(got) != 0 {
+			t.Fatalf("the rebuilt index holds %d pieces at %s %v, want none: the copy of the same content carries a fresher sequence number and outranks it", len(got), look.name, look.source)
+		}
+	}
+	p, ok := ix2.Lookup(file, copyKib/2)
+	if !ok || p.Record != cpW.To {
+		t.Fatalf("a read of the copied write after the reopen resolves to record %v (%v), want the copy at %v and not the source at %v", p.Record, ok, cpW.To, recW)
+	}
+	if p.Version != vW || p.Seq != cpW.Seq || p.Extent != (core.Extent{Len: copyKib}) {
+		t.Fatalf("the rebuilt placement of the write = %+v, want its extent [0, 4 KiB) at the source's version %v under the copy's seq %d", p, vW, cpW.Seq)
+	}
+	pf, ok := ix2.Lookup(file, copyKib+100)
+	if !ok || pf.Record != cpF.To {
+		t.Fatalf("a read of the copied fill after the reopen resolves to record %v (%v), want the copy at %v and not the source at %v", pf.Record, ok, cpF.To, placed.Record)
+	}
+
+	// The write's modification time: the index keeps no time of its own, so
+	// Since names the record to read it from — the copy's — and the record's
+	// bytes serve the source's own time, not the copy's append time.
+	chs := ix2.Since(file, core.Version{})
+	var chW, chF *index.Change
+	for i := range chs {
+		switch chs[i].Extent {
+		case core.Extent{Len: copyKib}:
+			chW = &chs[i]
+		case core.Extent{Off: copyKib, Len: copyKib}:
+			chF = &chs[i]
+		}
+	}
+	if chW == nil || chF == nil {
+		t.Fatalf("Since over the rebuilt file yielded %+v, want the write's change and the fill's: a held extent is a change whether it was written or filled", chs)
+	}
+	if chW.Kind != core.ChangeWrite || chW.Record != cpW.To || chW.Seq != cpW.Seq || chW.Skip != 0 || chW.Version != vW {
+		t.Fatalf("the write's change after the reopen = %+v, want ChangeWrite naming the copy at %v under its seq %d with the source's version %v", *chW, cpW.To, cpW.Seq, vW)
+	}
+	hW, bodyW := f.readBack(t, chW.Record)
+	if hW.Kind != format.KindWrite {
+		t.Fatalf("the record the write's change names = kind %s, want a write: the copy carries the source's kind", hW.Kind)
+	}
+	if bodyW.MTime != mtime {
+		t.Fatalf("the write's change serves the modification time %d, want the source's %d: a copy carries the write's own time, not its append time", bodyW.MTime, mtime)
+	}
+	if !bytes.Equal(bodyW.Payload, payW) {
+		t.Fatalf("the write's change serves %d bytes, want the source's bytes byte-exact", len(bodyW.Payload))
+	}
+	if chF.Kind != core.ChangeWrite || chF.Record != cpF.To || chF.Version != vF {
+		t.Fatalf("the fill's change after the reopen = %+v, want ChangeWrite naming the copy at %v at the fill's version %v", *chF, cpF.To, vF)
+	}
+	hF, bodyF := f.readBack(t, chF.Record)
+	if hF.Kind != format.KindFill {
+		t.Fatalf("the record the fill's change names = kind %s, want a fill: a copy of a fill is a fill, the kind the reopen sets the bit by", hF.Kind)
+	}
+	if !bytes.Equal(bodyF.Payload, payF) {
+		t.Fatalf("the fill's change serves %d bytes, want the source's bytes byte-exact", len(bodyF.Payload))
 	}
 }
