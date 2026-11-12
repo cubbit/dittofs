@@ -419,7 +419,8 @@ var marked sync.Mutex // decision: marked is a leaf.
 // different file of the same package, one Init'ed with a nil recorder — the
 // call matches statically while wiring nothing — or two same-named fields of
 // different ranks in one package, where either rank's Init satisfies both
-// markers. The leaf promise rides on the phrase "Init'ed as a leaf" alone,
+// markers, or a marker citing a domain other than the lock's own, which the
+// Init on that field name then satisfies. The leaf promise rides on the phrase "Init'ed as a leaf" alone,
 // so a marker reworded to drop the phrase loses its InitLeaf check. The
 // recorded fixture's wiring probes are the net under all of those; upgrade
 // to a go/types pass if a lock lands unwired through any of the shapes above.
