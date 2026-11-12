@@ -544,12 +544,12 @@ func TestRecorder_FileMapHeldOnlyAcrossALookup(t *testing.T) {
 }
 
 // recordedFiles returns the file set the recorded no-deadlock run works
-// over: four fresh ids, one per (stream, share) pair — files 0 and 2 run
-// through share 1, files 1 and 3 through share 2, and each share names one
-// file on each stream. Each slot searches from its own base past every id
-// the other helpers hand out, so no two picks collide and none meets an
-// entry the fixture seeded; the four are asserted distinct before the run
-// uses them.
+// over: four fresh ids — files 0 and 1 run through share 1, files 2 and 3
+// through share 2, each share naming one file on each stream, so the two
+// shares append on one stream together. Each slot searches from its own
+// base past every id the other helpers hand out, so no two picks collide
+// and none meets an entry the fixture seeded; the four are asserted
+// distinct before the run uses them.
 func recordedFiles(c *Core) [4]core.FileID {
 	var out [4]core.FileID
 	s0 := c.streams.IndexFor(fid(1))
@@ -598,7 +598,7 @@ func TestRFC1B_NoDeadlockRecorded(t *testing.T) {
 	c, rec, shares := newRecordedCore(t)
 	ctx := context.Background()
 	files := recordedFiles(c)
-	shareOf := func(i int) *Share { return shares[i%2] }
+	shareOf := func(i int) *Share { return shares[i/2] }
 	// Each file is published once up front, through the share that owns
 	// it: the first write of a file claims it for the handle that ran it,
 	// so a fixed owner per file keeps every later operation on the owning
