@@ -28,6 +28,8 @@ var allowed = map[string][]string{
 	module + "pkg/metadata/kvstore": {"*"},
 	module + "pkg/openstate":        {"enginetest", unitTests},
 	module + "pkg/vfs/vfserr":       {"*"},
+	// The unit tests run the filesystem's Content suite over the engine.
+	module + "internal/vfs/contenttest": {unitTests},
 	// The test fixture composes the engine over the real journal, its seam and
 	// profiler, the real store on an in-memory kv.KV, and a test clock. The
 	// unit tests' start failure tests, and the fixture's rows of the self-fence,
