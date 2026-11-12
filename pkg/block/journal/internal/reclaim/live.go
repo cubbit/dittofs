@@ -94,6 +94,20 @@ type Tracker struct {
 	// reaches only the record it names, whose registrations sit here under
 	// the sequence number the loss carries.
 	recs map[core.FileID]map[Rec]int
+	// released keeps, per segment, the records a re-test's release spent:
+	// one count per released registration, mirroring how recs counts the
+	// live ones, so a release is recoverable by count. A re-test's release
+	// spends the record's liveness, not its bytes: the record keeps its
+	// place in its segment until the segment retires, and a pass that moves
+	// what the record covered — the copies a pass notes under it — re-learns
+	// it at its prologue with the pass's own copies counted, so the release
+	// is recoverable exactly while the bytes remain: the same closed window
+	// the durable-unlink gate keeps, seen from the other side. Only the
+	// re-test's releases enter the set: an explicit Unregister is a caller
+	// retiring the record by its own rules, and SegmentRetired clears the
+	// segment's whole set — the bytes left with the segment, and the
+	// recoverability with them. Guarded by rm, like recs.
+	released map[core.SegmentID]map[Rec]int
 	// forgets is each live forget record's snapshot, keyed by the whole Rec
 	// like recs: the segments that held records of the record's share tag
 	// when the forget was appended — the only ones that can hold a record

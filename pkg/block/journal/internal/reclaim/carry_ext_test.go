@@ -156,11 +156,14 @@ func (c carryLayout) retireAsync() (chan segment.Retirement, chan error) {
 // counted: a settled truncate whose removal covers content the same pass
 // carries forward as retained must be carried beside it, because the copy
 // the pass just placed is on disk below the truncate's pair and a re-test
-// that counts it answers the truncate not droppable. A decision run before
-// the copies are counted finds nothing below the truncate's pair in another
-// segment, releases it as dead weight, and the walk carries nothing in its
-// place — a crash would then resurrect the copied bytes as held where the
-// removal's zeros belong.
+// that counts it answers the truncate not droppable. The marker settles
+// BEFORE the pass, so the settle's own re-test spends the truncate's
+// registration as dead weight — the copies that would keep it do not
+// exist yet — and the carry's prologue must re-learn the spent record once
+// the pass's copies are noted: a prologue that does not walks the
+// registrations alone, finds nothing to carry, and its segment retires
+// over the released removal — a crash would then resurrect the copied
+// bytes as held where the removal's zeros belong.
 //
 // The retained content is planted the only way this fixture can reach it:
 // nowhere can it take a snapshot hold, which is the journal's channel for
@@ -218,11 +221,19 @@ func TestCarryDropsDecidedAfterCopies(t *testing.T) {
 
 	// The truncate at size 50, its record appended in the source segment
 	// after the two writes, cutting the superseder's piece and W's held
-	// extent above it, and leaving its marker over [50, end).
-	trec, _, seqT, vT := f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
-		core.Extent{Off: 50}, core.Extent{Off: 50, Len: math.MaxInt64 - 50}, false)
+	// extent above it, and leaving its marker over [50, end). Its marker
+	// settles at once, BEFORE the pass: the settle's re-test answers the
+	// truncate droppable — every record that could keep it sits in its own
+	// segment, which the outranking test never counts — and spends its
+	// registration, the settled removal a later pass's own copies must
+	// answer for.
+	trec, _, seqT, _ := f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 50}, core.Extent{Off: 50, Len: math.MaxInt64 - 50}, true)
 	if trec.Seg != recW.Segment {
 		t.Fatalf("the truncate landed in segment %d, want the source segment %d that holds the old write", trec.Seg, recW.Segment)
+	}
+	if !f.tracker.Droppable(trec) {
+		t.Fatal("Droppable of the settled truncate before the pass exists = false, want true: nothing below its pair sits in another segment, so the settle's re-test spent its registration")
 	}
 
 	c := f.copier()
@@ -238,25 +249,12 @@ func TestCarryDropsDecidedAfterCopies(t *testing.T) {
 	}
 	f.waitSpares(t)
 
-	// The marker settles between the unit's two phases, and its own re-test
-	// takes the truncate's registration: the pass's copy is on disk but
-	// noted nowhere yet, so nothing below the truncate answers from another
-	// segment and the answer is right at that moment. The registration is
-	// made again the way an open finds the record on disk, which is the
-	// state the carry's own decision must answer — and the only thing that
-	// can overturn it is the pass counting its own copies.
-	f.tracker.MarkerSettled(file, vT)
-	f.tracker.Register(trec)
-	if !f.tracker.Droppable(trec) {
-		t.Fatal("Droppable of the settled truncate before the pass's copies are counted = false, want true: nothing below its pair sits in another segment yet")
-	}
-
 	carry, err := c.Carry(context.Background(), recW.Segment, res)
 	if err != nil {
 		t.Fatalf("Carry: %v", err)
 	}
 	if len(carry.Carried) != 1 {
-		t.Fatalf("Carry carried %d records (%+v), want the settled truncate: the copy the pass placed is on disk below the truncate's pair", len(carry.Carried), carry.Carried)
+		t.Fatalf("Carry carried %d records (%+v), want the settled truncate: the settlement's re-test spent its registration, and the pass's own copy — on disk below the truncate's pair — re-learns it before the walk", len(carry.Carried), carry.Carried)
 	}
 	cr := carry.Carried[0]
 	if cr.Rec.Kind != format.KindTruncate || cr.Rec.File != file || cr.Rec.Seq != seqT || cr.Rec.Pair != trec.Pair {
@@ -654,6 +652,170 @@ func TestCarryBadRecordAbandonsUnit(t *testing.T) {
 	h, body := f.readBack(t, res.Copies[0].To)
 	if h.Kind != format.KindWrite || !bytes.Equal(body.Payload, payload) {
 		t.Fatalf("the content copy at %v holds kind %s and %d payload bytes, want the write's bytes whole", res.Copies[0].To, h.Kind, len(body.Payload))
+	}
+}
+
+// plantForget appends one forget record of tag through the zero file's
+// stream — the stream a record naming no file belongs to — and registers it
+// live with the snapshot the caller names, the way the Forget path's own
+// barrier hands the registration its snapshot.
+func (f *copyFixture) plantForget(t *testing.T, tag core.ShareTag, snap []core.SegmentID) (reclaim.Rec, core.Seq) {
+	t.Helper()
+	zero := core.FileID{}
+	unlock := f.core.Domains().Lock(zero)
+	defer unlock()
+	// A forget record names only its tag: the format refuses any version,
+	// file or extent on one, so the record's pair is the sequence number
+	// alone.
+	seq, err := f.counters.NextSeq()
+	if err != nil {
+		t.Fatalf("NextSeq of the forget record: %v", err)
+	}
+	pl, err := f.core.Streams().For(zero).Append(format.RecordHeader{
+		Kind: format.KindForget, File: zero, Seq: seq, Tag: tag,
+	}, format.RecordBody{})
+	if err != nil {
+		t.Fatalf("Append of the forget record: %v", err)
+	}
+	rec := reclaim.Rec{
+		Kind: format.KindForget, File: zero, Seg: pl.Loc.Segment,
+		Pair: index.Numbers{Seq: seq}, Seq: seq, Tag: tag, Loc: pl.Loc,
+	}
+	f.tracker.RegisterForget(rec, snap)
+	return rec, seq
+}
+
+// TestCarryCarriesForgetRecord carries a live forget record — the walk's
+// KindForget branch — and checks the copy the branch places end to end:
+// appended on the zero file's deterministic stream under the source's own
+// pair — both numbers are the record's identity, and a copy reissued under
+// a fresh one would outrank what the forget ends below it — its
+// registration cloned from the source's snapshot so it answers not
+// droppable while any snapshot segment remains, and released at the
+// retirement of the last one through the dropped-at-retirement snapshot
+// rule, the real retirer driving both retirements. The second half checks
+// the seam the copy pass shares with the content half: a forget record
+// whose tag the forgetting mark names is carried nowhere, the tag's drop
+// being the forget's own, and its registration left standing.
+func TestCarryCarriesForgetRecord(t *testing.T) {
+	f := newCopyFixture(t)
+	zero := core.FileID{}
+
+	// Two segments holding the tag's records below the forget: the snapshot
+	// that keeps the record live, seeded the way the barrier collects it.
+	fileA, fileB := copyFile(3), copyFile(5)
+	recA, _, _ := f.plant(t, copyTag, fileA, []byte("records of the forgotten tag, one"), 0)
+	sa1 := recA.Segment
+	f.sealSource(t, fileA)
+	f.waitSpares(t)
+	recB, _, _ := f.plant(t, copyTag, fileB, []byte("records of the forgotten tag, two"), 0)
+	sa2 := recB.Segment
+	if sa2 == sa1 {
+		t.Fatalf("the second write landed in segment %d, want a segment beside the sealed %d", sa2, sa1)
+	}
+	f.sealSource(t, fileB)
+	f.waitSpares(t)
+
+	frec, seqF := f.plantForget(t, copyTag, []core.SegmentID{sa1, sa2})
+	if f.tracker.Droppable(frec) {
+		t.Fatal("Droppable of the forget record with two live snapshot segments = true, want false: the snapshot keeps it")
+	}
+	f.sealSource(t, zero)
+	f.waitSpares(t)
+
+	ctx := context.Background()
+	c := f.copier()
+	res, err := c.Copy(ctx, frec.Seg)
+	if err != nil {
+		t.Fatalf("Copy of the forget's segment: %v", err)
+	}
+	if len(res.Copies) != 0 {
+		t.Fatalf("Copy appended %d copies (%+v), want none: a forget record backs no content", len(res.Copies), res.Copies)
+	}
+	carry, err := c.Carry(ctx, frec.Seg, res)
+	if err != nil {
+		t.Fatalf("Carry of the forget's segment: %v", err)
+	}
+	if len(carry.Carried) != 1 {
+		t.Fatalf("Carry carried %d records (%+v), want the live forget record: the walk's forget branch appends the record's copy", len(carry.Carried), carry.Carried)
+	}
+	cr := carry.Carried[0]
+	if cr.Rec.Kind != format.KindForget || cr.Rec.Tag != copyTag || cr.Rec.File != zero {
+		t.Fatalf("the carried record = %+v, want a forget record of the zero file under the stream's tag", cr.Rec)
+	}
+	if cr.Rec.Seq != seqF || cr.Rec.Pair != frec.Pair {
+		t.Fatalf("carried forget Seq %d Pair %+v, want the source's own %d %+v: both numbers are the record's identity", cr.Rec.Seq, cr.Rec.Pair, seqF, frec.Pair)
+	}
+	if cr.Rec.Seg != cr.To.Segment || cr.To.Segment == frec.Seg {
+		t.Fatalf("carried forget Rec %+v and placement %v disagree or name the source segment %d, want the copy's own placement", cr.Rec, cr.To, frec.Seg)
+	}
+	// The copy on disk decodes back at its placement through the seam's own
+	// bytes, on the zero file's stream.
+	hC, bC := f.readBack(t, cr.To)
+	if hC.Kind != format.KindForget || hC.Seq != seqF || hC.Tag != copyTag || hC.File != (core.FileID{}) {
+		t.Fatalf("the copy's header = %+v, want the forget record's kind, zero file, tag and the source's own seq %d", hC, seqF)
+	}
+	if bC.MTime != 0 || bC.Payload != nil || bC.Loss != (format.Loss{}) {
+		t.Fatalf("the copy's body = %+v, want empty: a forget record carries none", bC)
+	}
+	// The copy's registration answers not droppable: the snapshot it was
+	// registered with still names a live segment.
+	if f.tracker.Droppable(cr.Rec) {
+		t.Fatal("Droppable of the carried copy = true, want false: its cloned snapshot keeps it live while either segment remains")
+	}
+
+	// The retirer wired the way the journal's executor is: the retired-segment
+	// hook the tracker's own, the durable signal its relay.
+	m := segment.NewMaker(f.seam.FS(), f.set, math.MaxInt64, 0, nil)
+	cache := segment.NewDescriptors(f.seam.FS(), format.SegmentName, core.NewDescriptorBudget(64))
+	ret := segment.NewRetirer(segment.RetirerConfig{
+		Set:   f.set,
+		Cache: cache,
+		Maker: m,
+		FS:    f.seam.FS(),
+		Retired: func(id core.SegmentID) {
+			f.tracker.SegmentRetired(id, nil)
+		},
+		Durable: func(r segment.Retirement) {
+			f.tracker.RemovalDurable(r.ID)
+		},
+	})
+	if _, err := ret.Retire(sa1, segment.NotHeld); err != nil {
+		t.Fatalf("Retire of the first snapshot segment %d: %v", sa1, err)
+	}
+	if f.tracker.Droppable(cr.Rec) {
+		t.Fatal("Droppable of the carried copy after the first snapshot segment's retirement = true, want false: the second keeps it")
+	}
+	if _, err := ret.Retire(sa2, segment.NotHeld); err != nil {
+		t.Fatalf("Retire of the second snapshot segment %d: %v", sa2, err)
+	}
+	if !f.tracker.Droppable(cr.Rec) {
+		t.Fatal("Droppable of the carried copy after its snapshot emptied at the retirements = false, want true: the retirements released its registration")
+	}
+	if f.tracker.Held(cr.To.Segment) {
+		t.Fatal("Held of the copy's segment after the release = true, want false: nothing the index counts and nothing registered keeps it")
+	}
+
+	// A forget record whose tag the forgetting mark names is carried
+	// nothing: the tag's drop is the forget's own, the copy pass sharing
+	// the content half's seam, and its registration left standing.
+	f.forgetting = func(tag core.ShareTag) bool { return tag == copyTag }
+	frec2, _ := f.plantForget(t, copyTag, []core.SegmentID{cr.To.Segment})
+	if f.tracker.Droppable(frec2) {
+		t.Fatal("Droppable of the second forget record = true, want false: its snapshot names a live segment")
+	}
+	if !f.tracker.Held(frec2.Seg) {
+		t.Fatal("Held of the second forget's segment before its carry = false, want true: the record is registered live")
+	}
+	again, err := f.copier().Carry(ctx, frec2.Seg, reclaim.Result{})
+	if err != nil {
+		t.Fatalf("Carry of the marked tag's forget record: %v", err)
+	}
+	if len(again.Carried) != 0 {
+		t.Fatalf("Carry carried %d records (%+v), want none: the forgetting seam the share registry marks carries nothing for the marked tag", len(again.Carried), again.Carried)
+	}
+	if !f.tracker.Held(frec2.Seg) {
+		t.Fatal("Held of the second forget's segment after its carry = false, want true: the skip abandons the copy and keeps the registration standing")
 	}
 }
 

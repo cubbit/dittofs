@@ -75,12 +75,13 @@ type DeferredCopy struct {
 // decision runs once over their files beside the source's: the re-test
 // releases each registered record the index now answers droppable, which
 // is the drops the segment gets; the walk enumerates what the re-test left,
-// so a record it released is carried nowhere and a record it kept is. A
-// note that fails abandons the unit before anything is read: an unnoted
-// copy on disk is the worse failure, so the error answers whole. The walk
-// below still re-asks each record it visits under its file's domain, a
-// narrowing race guard against what moved between the re-test and the
-// visit, so the two decisions cannot disagree.
+// so a record it released is carried nowhere and a record it kept is —
+// except a release the copies overturn, which the prologue's re-learn
+// takes back before the walk. A note that fails abandons the unit before
+// anything is read: an unnoted copy on disk is the worse failure, so the
+// error answers whole. The walk below still re-asks each record it visits
+// under its file's domain, a narrowing race guard against what moved
+// between the re-test and the visit, so the two decisions cannot disagree.
 //
 // The walk visits one file at a time under the file's append domain, in
 // (file, sequence) order; a forget record names no file, so it takes no
@@ -104,6 +105,10 @@ func (c *Copier) Carry(ctx context.Context, seg core.SegmentID, res Result) (Car
 		if err := c.ix.NotePlaced(cp.Tag, cp.File, cp.Loc.Segment, cp.Extent, index.Numbers{Version: cp.Version, Seq: cp.Seq}); err != nil {
 			return CarryResult{}, fmt.Errorf("reclaim: carrying segment %d: noting the copy of file %v seq %d the unit itself appended: %w", seg, cp.File, cp.Seq, err)
 		}
+		// A file only the pass's copies touch holds no registered record of
+		// this segment, so the retirement must relay its gone step by the
+		// pass's own files list, or its drop ranges outlive the retiring
+		// segment.
 		files = append(files, cp.File)
 	}
 	// The re-test's files: beside the source's registered records, the
@@ -113,8 +118,17 @@ func (c *Copier) Carry(ctx context.Context, seg core.SegmentID, res Result) (Car
 		files = append(files, rec.File)
 	}
 	c.tracker.Retest(files...)
-	// The walk enumerates what the re-test left registered: each record it
-	// released is the drop this segment gets, carried nowhere.
+	// A release a re-test spent — this one or an earlier event's — is
+	// recoverable while the record's bytes stay in this segment, and the
+	// copies just noted are what overturns it: the copy the pass placed
+	// under a settled removal outranks it from another segment, so the
+	// re-learn registers the record again and the walk reaches it through
+	// the registry it re-entered. A record the copies do not overturn
+	// stays released: dead weight, dropping with the segment.
+	c.tracker.relearnReleased(seg)
+	// The walk enumerates what the re-test and the re-learn left registered:
+	// each record released without recovery is the drop this segment gets,
+	// carried nowhere.
 	recs := c.tracker.registeredIn(seg)
 	for _, rec := range recs {
 		if rec.Loc == (segment.Location{}) {
@@ -152,6 +166,10 @@ func (c *Copier) Carry(ctx context.Context, seg core.SegmentID, res Result) (Car
 	// walk's copies are. An admission or append error abandons the unit like
 	// the walk's own aborts, the records already placed answering for
 	// themselves.
+	//
+	// The read is a snapshot: a deferral raised in the gap after it stays
+	// uncounted here, so the retirement path must re-check Held after it,
+	// which counts what the gap raised.
 	if c.deferred != nil {
 		for _, entry := range c.deferred(seg) {
 			if err := ctx.Err(); err != nil {
@@ -182,6 +200,9 @@ func (c *Copier) carryDeferredLoss(ctx context.Context, seg core.SegmentID, entr
 	}
 	unlock := c.dom.Lock(entry.File)
 	defer unlock()
+	// No failure from here owes a Refund: a refusal moved no headroom
+	// counter, and the RepackCopy admission this draw took drew nothing on
+	// the headroom ledger, so a failed append refunds nothing.
 	draw, err := c.admit(capacity.RepackCopy)
 	if err != nil {
 		return fmt.Errorf("reclaim: carrying segment %d: admitting the deferred loss of file %v seq %d on the repack reserve: %w", seg, entry.File, entry.Seq, err)
@@ -220,13 +241,23 @@ func (c *Copier) carryDeferredLoss(ctx context.Context, seg core.SegmentID, entr
 	if err := c.ix.NotePlaced(entry.Share, entry.File, pl.Loc.Segment, entry.Extent, index.Numbers{Version: entry.Version, Seq: seq}); err != nil {
 		return fmt.Errorf("reclaim: carrying segment %d: noting the deferred loss record of seq %d: %w", seg, entry.Seq, err)
 	}
-	// Superseded stays unset — false — in the registration: a loss an open
-	// deferred is never a record metadata holds newer content under.
+	// Superseded carries the entry's reason: a deferred loss can be one a
+	// superseding record outranked, and that copy answers the rule that
+	// leaves no marker to settle. An unsynced copy registers without the
+	// original's presence marks — the marks are keyed by the original's
+	// Rec — so its drop test runs without the named-record holder set.
+	//
+	// decision: unsynced, the copy's drop test bounded by the MayOutrank
+	// outranking guard alone, which keeps it while any segment holding the
+	// named record still has its ranges noted. Overturned by a holder whose
+	// ranges the index no longer knows — a retired-but-unrelayed segment
+	// would be one.
 	c.tracker.Register(Rec{
 		Kind: format.KindLoss, File: entry.File, Seg: pl.Loc.Segment, Ext: entry.Extent,
 		Pair: index.Numbers{Version: entry.Version, Seq: seq},
 		Seq:  seq, Named: entry.Seq, Tag: entry.Share, Synced: entry.Synced,
-		Loc: pl.Loc,
+		Superseded: entry.Reason == core.LossSuperseded,
+		Loc:        pl.Loc,
 	})
 	out.Deferred = append(out.Deferred, DeferredCopy{Loss: entry, Loc: pl.Loc})
 	return nil
@@ -367,11 +398,56 @@ func (c *Copier) placeCarried(rec Rec, h format.RecordHeader, body format.Record
 	return CarriedRec{Rec: cp, To: index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}}, nil
 }
 
+// relearnReleased re-asks, for the pass about to carry seg, every
+// registration a re-test's release spent in seg, with the pass's copies now
+// noted through the index: a record that still answers droppable stays
+// released — its release was sound, and nothing the pass did overturns it,
+// so it drops with the segment as the dead weight it is — while one the
+// copies now keep is registered again, once per registration the release
+// spent, through the same register path the original took so the counts
+// move, and the walk below reaches it through the registry it re-entered.
+// The ask runs under rm against the copies' notes, and the registrations
+// run after it, outside the lock, so no registering path is re-entered
+// under rm.
+func (t *Tracker) relearnReleased(seg core.SegmentID) {
+	t.rm.Lock()
+	rel := t.released[seg]
+	if len(rel) == 0 {
+		t.rm.Unlock()
+		return
+	}
+	var again []Rec
+	for rec, n := range rel {
+		if t.droppableLocked(rec) {
+			continue
+		}
+		delete(rel, rec)
+		for range n {
+			again = append(again, rec)
+		}
+	}
+	if len(rel) == 0 {
+		delete(t.released, seg)
+	}
+	t.rm.Unlock()
+	// A record re-released after this point re-enters the released set by
+	// count, so the second pass re-learns it exactly the same way.
+	for _, rec := range again {
+		t.Register(rec)
+	}
+}
+
 // registeredIn returns the distinct records registered live in seg, sorted
 // by (file, sequence) so a unit's walk is deterministic whatever the
 // registry's map order is: one Rec per distinct record, whatever live
 // registrations count it — the copy a carry places registers one more, and
 // the next walk finds the record once either way.
+//
+// ponytail: registeredIn scans every registered record of every file under
+// rm, twice per unit per segment — once before the re-test for its file
+// list, once after for the walk. Upgrade to a per-segment files index in
+// the segment state when a pass over a many-file journal shows the scan
+// in a profile.
 func (t *Tracker) registeredIn(seg core.SegmentID) []Rec {
 	t.rm.Lock()
 	var out []Rec

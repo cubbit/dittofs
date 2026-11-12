@@ -178,6 +178,7 @@ func (t *Tracker) retest(files ...core.FileID) {
 				if t.droppableLocked(rec) && t.take(rec) {
 					t.forgetTaken(rec)
 					t.markTaken(rec)
+					t.releasedSpent(rec)
 					rel = append(rel, rec)
 				}
 			}
@@ -191,6 +192,19 @@ func (t *Tracker) retest(files ...core.FileID) {
 	for _, rec := range rel {
 		t.releaseCount(rec)
 	}
+}
+
+// releasedSpent counts one registration of rec a re-test's release spent
+// into the per-segment released set, the record the carry's prologue re-asks
+// once the pass's copies are noted. The caller holds rm.
+func (t *Tracker) releasedSpent(rec Rec) {
+	if t.released == nil {
+		t.released = make(map[core.SegmentID]map[Rec]int)
+	}
+	if t.released[rec.Seg] == nil {
+		t.released[rec.Seg] = make(map[Rec]int)
+	}
+	t.released[rec.Seg][rec]++
 }
 
 // Retest re-tests the records registered live of each of files: each one the
@@ -285,13 +299,17 @@ func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
 // prune the ones naming the segment, O(forgets outstanding) beside a
 // records walk that visits every registered record of every file,
 // O(all registered records) — all of it under rm, and the call runs in
-// the retire observer's delivery when wired to OnRetire, so a stream roll
-// can wait behind one retirement's whole walk. Upgrade to a walk scoped
+// the retirer's retired-hook delivery, so a stream roll can wait behind
+// one retirement's whole walk. Upgrade to a walk scoped
 // to the retiring segment's own files, from the state's files table, and
 // an index of forget records by snapshot segment, when a retirement of a
 // busy journal shows in a profile.
 func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 	t.rm.Lock()
+	// The released set left with the segment's bytes: a record the re-test
+	// spent is no longer recoverable once nothing holds the bytes its
+	// release covered.
+	delete(t.released, seg)
 	st := t.stateOf(seg)
 	if st != nil {
 		st.mu.Lock()
