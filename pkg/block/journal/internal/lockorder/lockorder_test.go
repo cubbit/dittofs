@@ -1,6 +1,7 @@
 package lockorder_test
 
 import (
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -168,6 +169,74 @@ func TestNilRecorder_AcquiresAfterRelease(t *testing.T) {
 			t.Error("the blocked un-Init-ed RLock never acquired after Unlock")
 		}
 	})
+}
+
+// TestLockRecordsBeforeItWaits checks an attempt reaches the recorder before
+// the lock it names starts waiting: B takes the same domain's other mutex
+// clean, then blocks on A's, and its acquisition must be on the books while B
+// is still parked — which a poll of the recorder sees. A record made after
+// the wait instead reports a deadlocking order only after the deadlock
+// released, which never, and a self-deadlock blocks with no violation at all.
+func TestLockRecordsBeforeItWaits(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	var held, blocked lockorder.Mutex
+	held.Init(lockorder.FileAppend, rec)
+	blocked.Init(lockorder.FileAppend, rec)
+
+	armed := make(chan struct{})
+	release := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		held.Lock()
+		close(armed)
+		<-release
+		held.Unlock()
+	}()
+	go func() {
+		defer wg.Done()
+		<-armed
+		blocked.Lock()
+		held.Lock() // blocks on A: the attempt must be recorded first
+		if got, want := rec.Held(), []lockorder.Rank{lockorder.FileAppend, lockorder.FileAppend}; !slices.Equal(got, want) {
+			t.Errorf("the blocked goroutine's held ranks once its wait ended = %v, want %v: its earlier hold beside the acquired one", got, want)
+		}
+		held.Unlock()
+		blocked.Unlock()
+	}()
+	// The poll of the real condition — B's same-domain attempt turning up
+	// among the violations — is the synchronisation; the deadline is the
+	// backstop, never the wait.
+	deadline := time.Now().Add(backstop)
+	for {
+		saw := false
+		for _, v := range rec.Violations() {
+			if v.Kind == lockorder.SameDomain && v.Rank == lockorder.FileAppend {
+				saw = true
+			}
+		}
+		if saw {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(release)
+			wg.Wait()
+			t.Fatalf("no same-domain violation while a Lock was blocked on a held one: the attempt was recorded only after the wait")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	joined := make(chan struct{})
+	go func() { wg.Wait(); close(joined) }()
+	select {
+	case <-joined:
+	case <-time.After(backstop):
+		t.Fatal("the blocking Lock never acquired after its holder released")
+	}
+	if got := len(rec.Violations()); got != 1 {
+		t.Errorf("violations after the release = %d, want 1: B's same-domain attempt alone", got)
+	}
 }
 
 func TestNilRecorder_MethodsAreNoOps(t *testing.T) {
