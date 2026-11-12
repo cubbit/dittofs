@@ -736,6 +736,9 @@ file, versions the journal assigns are appended in the order they were assigned.
 Otherwise a lower version can land after a higher one and an offload between them
 offers the higher without the lower, breaking [RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order).
 
+A zero-length `p` changes nothing, and no version is drawn for it: the write is
+accepted, appends nothing, and returns the zero version as `v`.
+
 `Sync` returns once every operation on the named files that returned before the
 call is durable **and proven synced**: below its stream's synced-through offset in
 its own segment ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)), or in a segment sealed by a seal whose sync
