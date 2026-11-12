@@ -71,6 +71,7 @@ func plantCarryLayout(t *testing.T) carryLayout {
 	c.del = reclaim.Rec{
 		Kind: format.KindDelete, File: c.file, Seg: recD.Segment,
 		Pair: index.Numbers{Version: vD, Seq: seqD}, Seq: seqD, Tag: copyTag,
+		Loc: segment.Location{Segment: recD.Segment, Off: int64(recD.Offset)},
 	}
 	c.tr.Register(c.del)
 	// The delete's marker settles above its own version, exactly the way
@@ -146,6 +147,204 @@ func (c carryLayout) retireAsync() (chan segment.Retirement, chan error) {
 		done <- ret
 	}()
 	return done, failed
+}
+
+// TestCarryDropsDecidedAfterCopies is the journal-level form of RFC 1 §7.2's
+// rule that a pass decides its drops once its own copies are appended and
+// counted: a settled truncate whose removal covers content the same pass
+// carries forward as retained must be carried beside it, because the copy
+// the pass just placed is on disk below the truncate's pair and a re-test
+// that counts it answers the truncate not droppable. A decision run before
+// the copies are counted finds nothing below the truncate's pair in another
+// segment, releases it as dead weight, and the walk carries nothing in its
+// place — a crash would then resurrect the copied bytes as held where the
+// removal's zeros belong.
+//
+// The retained content is planted the only way this fixture can reach it:
+// nowhere can it take a snapshot hold, which is the journal's channel for
+// content that outlives a removal through a seal, so the old write's
+// covered half is instead retained by a superseding write that is published
+// but never synced — content a removal alone would leave dead and the pass
+// still owes. The superseder rides the file's own stream inside the source
+// segment, and the source is filled to the brim rather than sealed, since
+// sealing syncs a stream and a sync lifts the retention; full is what
+// makes the pass's own copy roll onto a reserve segment, so the drop
+// ranges the note below counts sit outside the source.
+func TestCarryDropsDecidedAfterCopies(t *testing.T) {
+	f := newCopyFixture(t)
+	file := copyFile(6)
+	// The old write covers [40, 64840): 64800 bytes fill the source so that
+	// the truncate still places after it while the pass's own copy — the
+	// twenty live bytes of [40, 60) — cannot, and rolls. Payload and fills
+	// below are picked from the format's arithmetic: a record costs its
+	// aligned 96-byte header besides its payload, and a segment keeps room
+	// for the seal marker, one catalog entry per record, and the trailer.
+	const bigLen = 64800
+	// x is the ten bytes below the truncation size the write holds, plus
+	// the ten covered ones the superseder keeps retained: the merged copy
+	// the pass places for them.
+	x := core.Extent{Off: 40, Len: 20}
+
+	// W (v0), the old write, the content the pass carries forward.
+	vW, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw of the old write's version: %v", err)
+	}
+	recW, seqW := f.plantAt(t, copyTag, file, core.Extent{Off: 40, Len: bigLen}, make([]byte, bigLen), 0, vW)
+
+	// A superseding write published over W's [50, 60): its record is
+	// unsynced, so W's covered bytes there live on as retained content, and
+	// the superseder's own extent sits inside the removal below, so its
+	// held piece dies with it and the pass copies W alone.
+	vX, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw of the superseding write's version: %v", err)
+	}
+	f.plantAt(t, copyTag, file, core.Extent{Off: 50, Len: 10}, make([]byte, 10), 0, vX)
+	if p, ok := f.ix.Lookup(file, 55); !ok || p.Version != vX {
+		t.Fatalf("Lookup at 55 over the superseded ten = %+v %v, want the superseder's piece at %v", p, ok, vX)
+	}
+	var coveredRetained bool
+	for _, rt := range f.ix.Retained(file) {
+		if rt.Record == recW && rt.Extent == (core.Extent{Off: 50, Len: 10}) {
+			coveredRetained = true
+		}
+	}
+	if !coveredRetained {
+		t.Fatalf("Retained of the file names no piece of the old write over [50,60), want the covered ten: the content the pass owes")
+	}
+
+	// The truncate at size 50, its record appended in the source segment
+	// after the two writes, cutting the superseder's piece and W's held
+	// extent above it, and leaving its marker over [50, end).
+	trec, _, seqT, vT := f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 50}, core.Extent{Off: 50, Len: math.MaxInt64 - 50}, false)
+	if trec.Seg != recW.Segment {
+		t.Fatalf("the truncate landed in segment %d, want the source segment %d that holds the old write", trec.Seg, recW.Segment)
+	}
+
+	c := f.copier()
+	res, err := c.Copy(context.Background(), recW.Segment)
+	if err != nil {
+		t.Fatalf("Copy: %v", err)
+	}
+	if len(res.Copies) != 1 {
+		t.Fatalf("Copy appended %d copies (%+v), want the old write's one: its held ten below the size and its retained ten beside them merge", len(res.Copies), res.Copies)
+	}
+	if cp := res.Copies[0]; cp.Version != vW || cp.Seq <= seqW || cp.Extent != x || cp.Loc.Segment == recW.Segment {
+		t.Fatalf("the copy = %+v, want the old write's version %v under a fresh number above %d over %v in a segment beside the source", cp, vW, seqW, x)
+	}
+	f.waitSpares(t)
+
+	// The marker settles between the unit's two phases, and its own re-test
+	// takes the truncate's registration: the pass's copy is on disk but
+	// noted nowhere yet, so nothing below the truncate answers from another
+	// segment and the answer is right at that moment. The registration is
+	// made again the way an open finds the record on disk, which is the
+	// state the carry's own decision must answer — and the only thing that
+	// can overturn it is the pass counting its own copies.
+	f.tracker.MarkerSettled(file, vT)
+	f.tracker.Register(trec)
+	if !f.tracker.Droppable(trec) {
+		t.Fatal("Droppable of the settled truncate before the pass's copies are counted = false, want true: nothing below its pair sits in another segment yet")
+	}
+
+	carry, err := c.Carry(context.Background(), recW.Segment, res)
+	if err != nil {
+		t.Fatalf("Carry: %v", err)
+	}
+	if len(carry.Carried) != 1 {
+		t.Fatalf("Carry carried %d records (%+v), want the settled truncate: the copy the pass placed is on disk below the truncate's pair", len(carry.Carried), carry.Carried)
+	}
+	cr := carry.Carried[0]
+	if cr.Rec.Kind != format.KindTruncate || cr.Rec.File != file || cr.Rec.Seq != seqT || cr.Rec.Pair != trec.Pair {
+		t.Fatalf("the carried record = %+v, want the truncate of the file at its own pair %+v (seq %d)", cr.Rec, trec.Pair, seqT)
+	}
+	if cr.Rec.Seg != cr.To.Segment || cr.To.Segment == recW.Segment {
+		t.Fatalf("the carried truncate's Rec %+v and placement %v disagree or name the source segment %d", cr.Rec, cr.To, recW.Segment)
+	}
+
+	// The decision the pass made stays made: the copy below the truncate's
+	// pair keeps it answering not droppable, and the pass publishes its
+	// copies nowhere — the removed extents read missing, the ten below the
+	// truncation still held.
+	if f.tracker.Droppable(trec) {
+		t.Fatal("Droppable of the truncate after the pass counted its own copies = true, want false: the copy below its pair keeps it")
+	}
+	for _, off := range []int64{55, 60, 1 << 16} {
+		if p, ok := f.ix.Lookup(file, off); ok {
+			t.Fatalf("Lookup at %d over the truncated extent = %+v, want missing", off, p)
+		}
+	}
+	if p, ok := f.ix.Lookup(file, 45); !ok || p.Version != vW {
+		t.Fatalf("Lookup at 45 below the truncation = %+v %v, want the old write's held bytes at %v", p, ok, vW)
+	}
+}
+
+// TestCarryDropsSettledDeleteAfterDurableRetire is the delete-alone-selected
+// half of removal-outlives-its-segment: once the segment holding the write a
+// settled delete counted on is retired through the real retirer and its
+// unlink is durable, the delete answers droppable at the carry's own
+// re-test, which releases its registration — nothing is carried for it, and
+// a second carry appends nothing. The file reads absent through the index,
+// so a rebuild of the deleted write's extents finds no piece to hold.
+func TestCarryDropsSettledDeleteAfterDurableRetire(t *testing.T) {
+	c := plantCarryLayout(t)
+
+	ret, err := c.r.Retire(c.sa, segment.NotHeld)
+	if err != nil {
+		t.Fatalf("Retire of the source segment: %v", err)
+	}
+	if !ret.Durable {
+		t.Fatalf("Durable of the retirement after a clean sync = %v, want true", ret.Durable)
+	}
+	if !c.tr.Droppable(c.del) {
+		t.Fatal("Droppable of the settled delete after the unlink of its older records is durable = false, want true: the write it counted on left with the source segment")
+	}
+	// The durable signal's re-test released the registration the layout made;
+	// the pass holds the delete registered the way an open finds its record
+	// on disk, which is the state the carry's own decision must answer.
+	c.tr.Register(c.del)
+	if !c.tr.Held(c.del.Seg) {
+		t.Fatal("Held of the delete's segment after its registration = false, want the delete counted live")
+	}
+
+	// The delete's segment is sealed the way a pass claims only sealed
+	// segments, before the unit runs.
+	c.f.sealSource(t, c.file)
+	c.f.waitSpares(t)
+
+	cx := c.f.copier()
+	res, err := cx.Copy(context.Background(), c.del.Seg)
+	if err != nil {
+		t.Fatalf("Copy: %v", err)
+	}
+	if len(res.Copies) != 0 {
+		t.Fatalf("Copy appended %d copies (%+v), want none: the settled delete backs no content", len(res.Copies), res.Copies)
+	}
+
+	carry, err := cx.Carry(context.Background(), c.del.Seg, res)
+	if err != nil {
+		t.Fatalf("Carry: %v", err)
+	}
+	if len(carry.Carried) != 0 {
+		t.Fatalf("Carry carried %d records (%+v), want none: the re-test released the settled delete before the walk", len(carry.Carried), carry.Carried)
+	}
+	if c.tr.Held(c.del.Seg) {
+		t.Fatal("Held of the delete's segment after the carry = true, want false: the re-test released its registration")
+	}
+	again, err := cx.Carry(context.Background(), c.del.Seg, res)
+	if err != nil {
+		t.Fatalf("the second Carry: %v", err)
+	}
+	if len(again.Carried) != 0 {
+		t.Fatalf("the second Carry carried %d records (%+v), want none: nothing registered stays in the segment", len(again.Carried), again.Carried)
+	}
+	for off := int64(0); off < int64(len(carryPayload)); off += 7 {
+		if p, ok := c.f.ix.Lookup(c.file, off); ok {
+			t.Fatalf("Lookup at %d over the deleted write's extent = %+v, want missing", off, p)
+		}
+	}
 }
 
 // TestCarryRemovalOutlivesItsSegment: a removal record whose retention

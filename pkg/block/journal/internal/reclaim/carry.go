@@ -33,12 +33,25 @@ type CarryResult struct {
 }
 
 // Carry places a fresh copy of every header-only record registered live in
-// seg, the claimed source segment whose content the caller already copied:
-// each record is read whole at its place through the same unread-set read
-// the content half uses, decoded and verified with the journal's own codec,
-// and re-appended under a repack roll with its sequence number and version
-// unchanged — the pair is the record's identity, and a copy reissued under a
-// fresh number would outrank the records the source once covered.
+// seg, the claimed source segment whose content the caller already copied.
+// res is the same unit's Copy result: its copies are the pass's own, on
+// disk already, so the drop decision below must count them — a copy the
+// pass carries content forward under carries an old version below the
+// removals that could outrank it, and a decision that reads the ranges
+// without the copies' notes would drop those removals as dead weight.
+//
+// Before the walk, each copy in res.Copies is noted through the index over
+// the extent it covers with the pair its record carries — a record can
+// never sit on disk unnoted, and the copies are on disk — and the drop
+// decision runs once over their files beside the source's: the re-test
+// releases each registered record the index now answers droppable, which
+// is the drops the segment gets; the walk enumerates what the re-test left,
+// so a record it released is carried nowhere and a record it kept is. A
+// note that fails abandons the unit before anything is read: an unnoted
+// copy on disk is the worse failure, so the error answers whole. The walk
+// below still re-asks each record it visits under its file's domain, a
+// narrowing race guard against what moved between the re-test and the
+// visit, so the two decisions cannot disagree.
 //
 // The walk visits one file at a time under the file's append domain, in
 // (file, sequence) order; a forget record names no file, so it takes no
@@ -54,6 +67,25 @@ func (c *Copier) Carry(ctx context.Context, seg core.SegmentID, res Result) (Car
 	if err := ctx.Err(); err != nil {
 		return CarryResult{}, err
 	}
+	// The pass's own copies, counted before the decision: every placement
+	// piece of a split copy is its own entry in res.Copies, so each piece
+	// is noted where it landed.
+	files := make([]core.FileID, 0, len(res.Copies))
+	for _, cp := range res.Copies {
+		if err := c.ix.NotePlaced(cp.Tag, cp.File, cp.Loc.Segment, cp.Extent, index.Numbers{Version: cp.Version, Seq: cp.Seq}); err != nil {
+			return CarryResult{}, fmt.Errorf("reclaim: carrying segment %d: noting the copy of file %v seq %d the unit itself appended: %w", seg, cp.File, cp.Seq, err)
+		}
+		files = append(files, cp.File)
+	}
+	// The re-test's files: beside the source's registered records, the
+	// copies' files — the copies can cover a file the source's own
+	// header-only records never named.
+	for _, rec := range c.tracker.registeredIn(seg) {
+		files = append(files, rec.File)
+	}
+	c.tracker.Retest(files...)
+	// The walk enumerates what the re-test left registered: each record it
+	// released is the drop this segment gets, carried nowhere.
 	recs := c.tracker.registeredIn(seg)
 	for _, rec := range recs {
 		if rec.Loc == (segment.Location{}) {
