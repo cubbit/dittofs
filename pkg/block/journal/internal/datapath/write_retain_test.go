@@ -147,10 +147,26 @@ func (h *syncWhileHeld) syncNow(fail bool) {
 	for deadline := time.Now().Add(5 * time.Second); ; runtime.Gosched() {
 		st := h.c.Durability().Stats()
 		if st.Syncs > before.Syncs || st.SyncFailures > before.SyncFailures {
-			return
+			break
 		}
 		if time.Now().After(deadline) {
 			panic("the held write's sync was never issued")
+		}
+	}
+	// A failure is counted before the worker ends its segment, and the armed
+	// write rolls on into the very segment the failing sync was of: a roll
+	// into a segment whose sync has failed ends it with the error instead of
+	// waiting the end out, so the write must not go on until the end has
+	// happened. The set answers Ended only once the stream has ended the
+	// segment, which is past the count.
+	if fail && h.failSeg != 0 {
+		for deadline := time.Now().Add(5 * time.Second); ; runtime.Gosched() {
+			if state, err := h.c.Streams().For(h.f).Set().State(h.failSeg); err == nil && state == segment.Ended {
+				break
+			}
+			if time.Now().After(deadline) {
+				panic("the failed sync's end never reached the segment set")
+			}
 		}
 	}
 }
