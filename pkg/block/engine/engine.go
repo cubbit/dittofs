@@ -65,9 +65,6 @@ type Engine struct {
 	opened   atomic.Uint64 // the bindings made so far, which Close undoes in reverse
 	cloning  sync.WaitGroup
 
-	clonesMu sync.Mutex             // held for a lookup or change of clones only
-	clones   map[cloneKey]*cloneRun // the running clones past their step 1, live and rebuilt, by destination
-
 	gcMu            sync.Mutex
 	gcs             map[Journal]*groupCommit                        // each journal's group commit
 	gcsClosed       bool                                            // the group commits were closed: none starts again
@@ -157,7 +154,6 @@ func New(d Deps) (*Engine, error) {
 		fence:    f,
 		d:        d,
 		files:    newFiles(d.Clock),
-		clones:   map[cloneKey]*cloneRun{},
 		instance: instanceID(),
 		busy:     map[entity.ShareID]struct{}{},
 		raised:   map[entity.ShardID]struct{}{},

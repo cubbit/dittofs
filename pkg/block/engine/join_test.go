@@ -99,6 +99,29 @@ func TestACloneRetryJoinsTheRunningClone(t *testing.T) {
 	}
 }
 
+// A Clone with the spec of a clone still in its step 1, on its first call,
+// answers DelayClone at once rather than joining it (catches a clone joined
+// before its step 1 is done, which its first call's context may yet refuse).
+func TestACloneRetryInItsStep1IsNotJoined(t *testing.T) {
+	u := cloneUnit(t)
+	src, dst := u.create(t, "src"), u.create(t, "dst")
+	release := heldClone(t, u, src, dst)
+	defer release()
+
+	answer := make(chan error, 1)
+	go func() {
+		answer <- u.e.Clone(context.Background(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{DstOff: 8 * mib, Len: 4 * mib})
+	}()
+	select {
+	case err := <-answer:
+		if !isDelay(err, vfserr.DelayClone) {
+			t.Errorf("the retry in the clone's step 1 = %v, want DelayClone", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the retry in the clone's step 1 got no answer: it joined the clone")
+	}
+}
+
 // A retry after the first call answered DelayClone at its context's end
 // joins the clone still running and is answered once it is done (catches a
 // clone that leaves the running clones when its first caller stops waiting).
@@ -154,19 +177,21 @@ func TestACloneWithAnotherSpecIsNotJoined(t *testing.T) {
 	u.startCloneHeld(t, h, src, u.share.ID, dst)
 	same := u.bindShare(t, "same", entity.NamespaceID{})
 	for _, c := range []struct {
-		name  string
-		share entity.ShareID
-		src   entity.FileID
-		x     vfserr.Extent
+		name     string
+		share    entity.ShareID
+		src      entity.FileID
+		dstShare entity.ShareID
+		x        vfserr.Extent
 	}{
-		{"another source file", u.share.ID, other, vfserr.Extent{Len: mib}},
-		{"another source share", same, src, vfserr.Extent{Len: mib}},
-		{"another source offset", u.share.ID, src, vfserr.Extent{SrcOff: 1, Len: mib}},
-		{"another destination offset", u.share.ID, src, vfserr.Extent{DstOff: 1, Len: mib}},
-		{"another length", u.share.ID, src, vfserr.Extent{Len: mib - 1}},
+		{"another source file", u.share.ID, other, u.share.ID, vfserr.Extent{Len: mib}},
+		{"another source share", same, src, u.share.ID, vfserr.Extent{Len: mib}},
+		{"another destination share", u.share.ID, src, same, vfserr.Extent{Len: mib}},
+		{"another source offset", u.share.ID, src, u.share.ID, vfserr.Extent{SrcOff: 1, Len: mib}},
+		{"another destination offset", u.share.ID, src, u.share.ID, vfserr.Extent{DstOff: 1, Len: mib}},
+		{"another length", u.share.ID, src, u.share.ID, vfserr.Extent{Len: mib - 1}},
 	} {
 		answer := make(chan error, 1)
-		go func() { answer <- u.e.Clone(context.Background(), c.share, c.src, u.share.ID, dst, c.x) }()
+		go func() { answer <- u.e.Clone(context.Background(), c.share, c.src, c.dstShare, dst, c.x) }()
 		select {
 		case err := <-answer:
 			if !isDelay(err, vfserr.DelayClone) {
