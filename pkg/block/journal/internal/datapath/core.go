@@ -2,7 +2,6 @@ package datapath
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -263,7 +262,11 @@ type Core struct {
 	// context can refuse at once; the work itself runs under closeOnce.
 	closedFlag atomic.Bool
 	closeOnce  sync.Once
-	closeErr   error
+	// drain counts one goroutine per share the close fenced, each waiting on
+	// its share's idle channel; Close waits the group before it stops the
+	// core's workers. See close.go.
+	drain    sync.WaitGroup
+	closeErr error
 }
 
 // unboundedBytes is the Maker's byte ceiling: none that a journal could
@@ -590,26 +593,5 @@ func (c *Core) retiredSegment(id core.SegmentID) {
 // refill and never by time.
 func (c *Core) WaitSpares(ctx context.Context) error { return c.pool.WaitSpares(ctx) }
 
-// Close stops the durability layer, then closes the streams, then stops the
-// idle sealer, the pool and the retirer — every background worker joined
-// before the segments it touches are closed, the pool before the retirer, as
-// the segment package's group close documents — and last shuts the descriptor
-// cache, whose Shutdown waits for every reader's reference and then closes
-// every descriptor. It is safe to call twice.
-func (c *Core) Close() error {
-	c.closedFlag.Store(true)
-	c.closeOnce.Do(func() {
-		c.dur.Stop()
-		serr := c.streams.Close()
-		if c.sealer != nil {
-			c.sealer.Stop()
-		}
-		c.pool.Stop()
-		if c.retirer != nil {
-			c.retirer.Stop()
-		}
-		cerr := c.cache.Shutdown()
-		c.closeErr = errors.Join(serr, cerr)
-	})
-	return c.closeErr
-}
+// Close stops the core: it fences (BeginClose), drains every call the fence
+// found in flight, and stops the workers. See close.go.

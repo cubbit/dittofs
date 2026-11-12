@@ -70,14 +70,6 @@ func Restamp(ctx context.Context, dir string, expect JournalID, install Installa
 // Close returns once all of that has happened. Calling it again returns
 // ErrClosed.
 func (j *Journal) Close() error {
-	// decision: this closes the core and nothing else, and answers a second
-	// call with ErrClosed. The rest of the close the contract above names — new
-	// calls failing with ErrClosed the moment one begins, and the in-flight
-	// calls waited for before it — is the cancellation piece of a broader step
-	// of the journal's own; until it lands, Close joins the core's background
-	// work and releases its descriptors, and the calls in flight are joined by
-	// the core's own shutdown. Withdraw the narrow behaviour when that step
-	// lands.
 	if !j.closed.CompareAndSwap(false, true) {
 		return ErrClosed
 	}
@@ -86,24 +78,6 @@ func (j *Journal) Close() error {
 		// closes, owns nothing to shut down.
 		return ErrClosed
 	}
-	// Every handle's share is drained, then its open reservations are
-	// released, before the core goes: a reservation is in memory and named by
-	// no record, so nothing of it can be recovered, and its bytes, entries,
-	// versions and spares would otherwise stay held by a journal that is
-	// closing. The drain comes first, so a reserved write in flight lands whole
-	// against a hold still open and Release never runs beside the goroutine
-	// that owns the reservation. Each handle's closing flag is set before its
-	// drain, so a Reserve racing this close cannot register a reservation
-	// nothing releases.
-	//
-	// decision: a share this drained is closed, and the handle's own Close
-	// afterwards answers nil once, as it did when the journal's Close left the
-	// share open, and ErrClosed after that: the claim below marks the handle for
-	// it, made before the drain so a Close racing this one answers by who won,
-	// never by when the drain finished. A handle whose own Close claimed it first
-	// is waited for here and answers as a first Close does. Overturned by a
-	// contract that has Handle.Close answer ErrClosed once its journal has
-	// closed.
 	j.handlesMu.Lock()
 	open := make([]*Handle, 0, len(j.handles))
 	for _, h := range j.handles {
@@ -113,6 +87,37 @@ func (j *Journal) Close() error {
 	for _, h := range open {
 		h.closing.Store(true)
 		h.closer.CompareAndSwap(0, 2)
+	}
+	// decision: the core fences here, after every handle's closing flag is
+	// up and before any handle is drained or its reservations released, so
+	// from this step on no new call starts anywhere — neither through a
+	// handle, whose share the fence closes, nor on the journal itself, whose
+	// Draw, Share and SetVersionLimit refuse from the flag the fence raises.
+	// Every handle of the snapshot is drained below through its own share, so
+	// a call in flight on it is waited for before anything it holds is
+	// released; a handle that attached past the snapshot, which only the
+	// fence's own gate can let through, is collected by the fence into the
+	// core's drain, which the last step waits for. The reservation release
+	// still runs after the drains and before the core's Close, unchanged: a
+	// reservation is in memory and named by no record, so nothing of it can
+	// be recovered, and its bytes, entries, versions and spares would
+	// otherwise stay held by a journal that is closing. The drain comes
+	// first, so a reserved write in flight lands whole against a hold still
+	// open and Release never runs beside the goroutine that owns the
+	// reservation. Each handle's closing flag is set before its drain, so a
+	// Reserve racing this close cannot register a reservation nothing
+	// releases.
+	//
+	// decision: a share this drained is closed, and the handle's own Close
+	// afterwards answers nil once, as it did when the journal's Close left the
+	// share open, and ErrClosed after that: the claim above marks the handle for
+	// it, made before the drain so a Close racing this one answers by who won,
+	// never by when the drain finished. A handle whose own Close claimed it first
+	// is waited for here and answers as a first Close does. Overturned by a
+	// contract that has Handle.Close answer ErrClosed once its journal has
+	// closed.
+	j.core.BeginClose()
+	for _, h := range open {
 		_ = h.s.Close()
 	}
 	for _, h := range open {

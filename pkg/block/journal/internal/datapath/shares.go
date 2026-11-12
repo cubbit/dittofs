@@ -91,9 +91,12 @@ func (s *Share) Close() error { return s.owner.closeShare(s) }
 //
 // Tag 0 and a negative limit are refused with core.ErrInvalidSetting; a floor
 // with a non-zero epoch is refused with core.ErrUnknownFormat. A refusal
-// registers nothing and changes neither the counter nor a bucket. The counter
-// and the buckets are raised before the handle is registered, so no write
-// through it is issued a version at or below the floor.
+// registers nothing and changes neither the counter nor a bucket. Once the
+// core's Close began, a new handle is refused with core.ErrClosed and nothing
+// is raised; the fence of a handle already open is the one that gives its
+// callers core.ErrClosed, and unchanged here. The counter and the buckets are
+// raised before the handle is registered, so no write through it is issued a
+// version at or below the floor.
 //
 // ponytail: the registry is an immutable slice replaced by a copy, under a
 // mutex only Share and Close take, so an attach or a close costs one slice
@@ -104,6 +107,9 @@ func (c *Core) Share(tag core.ShareTag, limit int64, floor core.Version) (*Share
 	if tag == 0 || limit < 0 {
 		return nil, core.ErrInvalidSetting
 	}
+	if c.closed() {
+		return nil, core.ErrClosed
+	}
 	if err := c.counters.RaiseFloor(floor); err != nil {
 		return nil, err
 	}
@@ -111,6 +117,12 @@ func (c *Core) Share(tag core.ShareTag, limit int64, floor core.Version) (*Share
 
 	c.registryMu.Lock()
 	defer c.registryMu.Unlock()
+	// The check runs again under the registry's own lock, one step with the
+	// fence's registry swap, so an attach that races the fence is either
+	// refused here or fenced with the registry it landed in.
+	if c.closed() {
+		return nil, core.ErrClosed
+	}
 	var open []*Share
 	if p := c.registry.Load(); p != nil {
 		open = *p
@@ -128,7 +140,15 @@ func (c *Core) Share(tag core.ShareTag, limit int64, floor core.Version) (*Share
 	return s, nil
 }
 
-func (c *Core) closeShare(s *Share) error {
+// fence sets the handle's closed bit and removes it from the registry, and
+// reports whether this call set the bit: the close that set it is the one
+// that closes a handle's idle channel when it found no call in flight, while
+// a close that finds the bit already set only waits, in the caller. Setting
+// the bit and removing the entry are one step, both under the core's registry
+// mutex, so an attach racing the fence cannot be handed a handle whose entry
+// is leaving. The wait, never taken here, belongs to the close that waits.
+func (s *Share) fence() bool {
+	c := s.owner
 	c.registryMu.Lock()
 	old := s.state.Load()
 	for old&closedBit == 0 && !s.state.CompareAndSwap(old, old|closedBit) {
@@ -136,8 +156,7 @@ func (c *Core) closeShare(s *Share) error {
 	}
 	if old&closedBit != 0 {
 		c.registryMu.Unlock()
-		<-s.idle
-		return core.ErrClosed
+		return false
 	}
 	var open []*Share
 	if p := c.registry.Load(); p != nil {
@@ -154,6 +173,14 @@ func (c *Core) closeShare(s *Share) error {
 
 	if old == 0 {
 		close(s.idle)
+	}
+	return true
+}
+
+func (c *Core) closeShare(s *Share) error {
+	if !s.fence() {
+		<-s.idle
+		return core.ErrClosed
 	}
 	<-s.idle
 	return nil
