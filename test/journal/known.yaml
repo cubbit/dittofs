@@ -24,6 +24,30 @@
   issue: '#3378'
   message: 'stub:'
 
+- test: TestMetrics_ConditionsMoveTheirMetric/sync
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and the Sync succeeds; the check reads Counters.Syncs from Stats, and Stats is not written yet (T8.13) and reads zero. Needs Stats.'
+  issue: '#3378'
+  message: 'a sync moved Counters.Syncs from 0 to 0'
+
+- test: TestMetrics_ConditionsMoveTheirMetric/failed_sync
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and the Sync fails; the check reads Counters.SyncFailures from Stats, and Stats is not written yet (T8.13) and reads zero. Needs Stats.'
+  issue: '#3378'
+  message: 'a failed sync moved Counters.SyncFailures from 0 to 0'
+
+- test: TestMetrics_ConditionsMoveTheirMetric/read_only
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and turns read-only; the check reads Counters.SyncFailures from Stats, and Stats is not written yet (T8.13) and reads zero. Needs Stats and the read-only state counted.'
+  issue: '#3378'
+  message: 'the sync that turned the journal read-only moved Counters.SyncFailures from 0 to 0'
+
 - test: TestModel
   status: fail
   fix: planned
@@ -54,7 +78,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs stamps, offers of unstamped versions, release and repack.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: Stamp'
 
 - test: TestRFC1A_NeighboursAreFrozen
   status: fail
@@ -102,7 +126,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs sync, offload and release.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: Stamp'
 
 - test: TestRFC1A_OfferedBytesVerified
   status: fail
@@ -110,7 +134,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs offers whose reader verifies whole records, and corrupt drops.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1A_PartialReleaseKeepsRecordWhole
   status: fail
@@ -148,9 +172,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Sync and recovery of removal markers.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs recovery of removal markers.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC1A_UnlinkUnderRead
   status: fail
@@ -174,7 +198,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs repack, Close joining background work before closing segments, and recovery.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1B_Coalescing
   status: fail
@@ -206,15 +230,15 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs release, retirement of segments left holding nothing and repack.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1B_HeadroomIsAllocated
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs headroom allocated ahead, MarkOffloaded, release, removals and repack.'
+  reason: 'The journal opens; a content write on a full device is refused by the spare limit, not answered with the filesystem''s ENOSPC. Needs headroom allocated ahead, MarkOffloaded, release, removals and repack.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'want the filesystem''s ENOSPC and no NoSpaceError'
 
 - test: TestRFC1B_IndexBoundRefuses
   status: fail
@@ -230,7 +254,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs capacity refusals naming their limit and shortfall, release and repack.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1B_NoDeadlock
   status: fail
@@ -238,7 +262,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, Fill, MarkOffloaded, release, repack and Verify.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1B_NoVersionRepeats
   status: fail
@@ -276,25 +300,25 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the read-only state, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
+  reason: 'The journal opens; the reopen once the open''s failure ended is refused, since a journal that has run cannot be reopened until recovery lands. Needs the read-only state, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
   issue: '#3748'
-  message: 'stub: Sync'
+  message: 'the open to succeed once its failure ended'
 
 - test: TestRFC1B_ReadOnlyProbe
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the read-only state, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
+  reason: 'The journal opens and a Sync answers the read-only refusal; the check waits for Stats to name the read-only state, and Stats is not written yet (T8.13) and reads zero. Needs Stats, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
   issue: '#3748'
-  message: 'stub: Sync'
+  message: 'the journal to turn read-only'
 
 - test: TestRFC1B_ReadOnlyStopsTheDrain
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the read-only state, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
+  reason: 'The journal opens and a Sync answers the read-only refusal; the check waits for Stats to name the read-only state, and Stats is not written yet (T8.13) and reads zero. Needs Stats, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
   issue: '#3748'
-  message: 'stub: Sync'
+  message: 'Stats to name the read-only state'
 
 - test: TestRFC1B_ReclaimNotStarved
   status: fail
@@ -302,15 +326,15 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, release and repack taking a segment under sustained reads.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1B_RecordsWithoutBytesAtTheLimit
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs capacity refusals, records drawn on the headroom, idle sealing, MarkOffloaded and release.'
+  reason: 'The journal opens; a Deallocate at the journal''s maximum is refused by the headroom limit. Needs capacity refusals, records drawn on the headroom, idle sealing, MarkOffloaded and release.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'Deallocate at the journal''s maximum: journal: no space: refused by the headroom limit'
 
 - test: TestRFC1B_RemovalRecordsDroppedPerExtent
   status: fail
@@ -326,7 +350,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs offload, removals that never wait on its callback, and repack.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1B_RepackAimedAtShare
   status: fail
@@ -398,7 +422,7 @@
   category: feature
   reason: 'The journal opens, but not all of what the check exercises is written yet. Needs share limits and per-share accounting rebuilt at open.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC1B_StorageReturned
   status: fail
@@ -406,7 +430,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs release, retirement of segments left holding nothing and repack.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1B_SyncFailure
   status: fail
@@ -427,9 +451,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs clone targets, their markers carried by Since with their spec, and recovery.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs clone targets, their markers carried by Since with their spec, and recovery.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC1C_EpochHalfIsZero
   status: fail
@@ -447,21 +471,29 @@
   issue: '#3379'
   message: 'stub:'
 
+- test: TestRFC1C_FileIsItsSharesShare/a_planted_second_tag_surfaces_a_conflict
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check plants a second tag and reopens, and a journal that has run cannot be reopened until recovery lands. Needs tag-conflict recovery.'
+  issue: '#3379'
+  message: 'holds segments; recovering them is not built'
+
 - test: TestRFC1C_FillBeatsOlderWrite
   status: fail
   fix: planned
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path keeping a filled extent over the released offloaded content it covers, across recovery.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Offload'
 
 - test: TestRFC1C_ForgetLeavesNothingToSettle
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs forget settling the removal markers of a tag and dropping every one of its index entries.'
+  reason: 'The journal opens; the check counts removal markers through Stats, and Stats is not written yet (T8.13) and reads zero. Needs Stats, and forget settling the removal markers of a tag and dropping every one of its index entries.'
   issue: '#3815'
-  message: 'stub: Sync'
+  message: 'left the removal marker count at 0, want one more'
 
 - test: TestRFC1C_HeaderOnlyRecordsReappended
   status: fail
@@ -469,7 +501,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the failed-sync re-append of records without payload bytes, and the failed segment never sealed.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: Offload'
 
 - test: TestRFC1C_IncrementalReport
   status: fail
@@ -477,7 +509,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the offload report marking the extents it is given while the callback still runs.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1C_LossSurvivesRestart
   status: fail
@@ -485,7 +517,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs loss records read back at open, the dropped record staying dropped, and the loss generation.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1C_Monotonicity
   status: fail
@@ -493,7 +525,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs version and sequence watermarks rebuilt above every one on disk, and recovery run in a shuffled listing order.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1C_ReleaseRecordLost
   status: fail
@@ -525,7 +557,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the restamp of the format file, durable across a reopen, and its identity refusal.'
   issue: '#3596'
-  message: 'stub: Sync'
+  message: 'stub: Restamp'
 
 - test: TestRFC1C_StaleFill
   status: fail
@@ -539,9 +571,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the per-share statistics rebuilt at open for a tag no share attached.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs the per-share statistics rebuilt at open for a tag no share attached.'
   issue: '#3815'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC1C_UnclaimedTagsAreTheCallersToName
   status: fail
@@ -581,7 +613,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the loss generation and corrupt reads.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1D_LossEvents
   status: fail
@@ -589,7 +621,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the loss ring, corrupt reads and the stale rule of MarkOffloaded.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1D_MetricsAreReachable
   status: fail
@@ -629,7 +661,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs Verify and the data path.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1D_WedgeIsVisibleDirty
   status: fail
@@ -651,17 +683,17 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Open: the corrupt drop with its loss generation is built (Durability.Corrupt), the fixture cannot open a journal.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs Open: the corrupt drop with its loss generation is built (Durability.Corrupt), the fixture cannot open a journal.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC28A_CorruptOffloaded
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Open: the offloaded corrupt drop is built (Durability.Corrupt), the fixture cannot open a journal.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs Open: the offloaded corrupt drop is built (Durability.Corrupt), the fixture cannot open a journal.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC28B_SegmentReclaimable
   status: fail
@@ -669,7 +701,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, idle seals, repack and the spare pool.'
   issue: '#3815'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC28C_BadCopyDoesNotMaskAGoodOne
   status: fail
@@ -677,7 +709,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs failed sync windows, the re-append, recovery and the loss ring.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC28C_NeighboursSurvive
   status: fail
@@ -693,15 +725,15 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs recovery by scan with the synced-through rule, and corrupt reads.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC28C_Rebuild
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, Sync, and recovery that cuts and seals a torn tail.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path and recovery that cuts and seals a torn tail.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC28A_DirectoryEntrySurvives
   status: fail
@@ -717,7 +749,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs reservations, failed writes and a recovery scan that steps over a zero slot.'
   issue: '#3596'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC28C_TornTailCutOff
   status: fail
@@ -725,7 +757,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs recovery that cuts a torn tail, seals the segment and counts it.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC28C_TruncatedSealedSegment
   status: fail
@@ -741,7 +773,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, release and the rebuild of offloaded bits.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28A_UnmarkClears
   status: fail
@@ -749,7 +781,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, Unmark, release and the rebuild of offloaded bits.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28C_ReseedByVersion
   status: fail
@@ -757,7 +789,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded by version, release and recovery.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28A_UnprovenTailVerifiedAtOpen
   status: fail
@@ -765,7 +797,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs recovery that verifies the unproven tail on the device and re-appends from the reserve.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC28C_SourcesAgree
   status: fail
@@ -811,25 +843,25 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, Since with the modification time, recovery and corrupt reads.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs the data path, Since with the modification time, recovery and corrupt reads.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC28C_SealMarkerCopiedIntoAPayload
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, Sync and recovery by scan.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path and recovery by scan.'
   issue: '#3596'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC28C_SparesAreReAdopted
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs spares made ahead, recovery that re-adopts them and the reserves accounted.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs spares made ahead, recovery that re-adopts them and the reserves accounted.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC28C_SpareIsWholeOrAbsent/create
   status: fail
@@ -837,7 +869,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28C_SpareIsWholeOrAbsent/allocate
   status: fail
@@ -845,7 +877,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28C_SpareIsWholeOrAbsent/write
   status: fail
@@ -853,7 +885,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28C_SpareIsWholeOrAbsent/sync
   status: fail
@@ -861,7 +893,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28C_SpareIsWholeOrAbsent/rename
   status: fail
@@ -869,7 +901,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28C_SpareIsWholeOrAbsent/durable_temporary_entry
   status: fail
@@ -901,31 +933,23 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded with the stale rule, release, repack and recovery.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28C_VersionFloor
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the version floor at open and MarkOffloaded.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs the version floor at open and MarkOffloaded.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC28C_JournalGone
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Open refusing a missing, emptied or replaced journal, and the identity error.'
+  reason: 'The journal opens; an open with no recorded identity names the spares an earlier open left behind. Needs Open refusing a missing, emptied or replaced journal, and the identity error.'
   issue: '#3814'
-  message: 'stub: Sync'
-
-- test: TestRFC28C_UnidentifiedDirectory
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Open refusing a directory it cannot identify, Init refusing a directory that is not empty, and the format file.'
-  issue: '#3378'
-  message: 'stub: Sync'
+  message: 'segments true, want '
 
 - test: TestRFC28C_InterruptedInit
   status: fail
@@ -947,9 +971,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that checks the identity a header names before anything else.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs recovery that checks the identity a header names before anything else.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC28C_KindValuesRefused
   status: fail
@@ -957,7 +981,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs recovery by scan that fails the open on a kind the format does not define.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Open'
 
 - test: TestRFC28C_FormatFile
   status: fail
@@ -965,7 +989,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the format file checked at open, Restamp by a whole-file replace, and recovery.'
   issue: '#3596'
-  message: 'stub: Sync'
+  message: 'stub: Restamp'
 
 - test: TestDamage_LostWrites/write_at
   status: fail
@@ -973,7 +997,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestDamage_LostWrites/seal
   status: fail
@@ -981,7 +1005,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestDamage_LostWrites/footer
   status: fail
@@ -989,7 +1013,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestDamage_LostWrites/repack_copy
   status: fail
@@ -997,7 +1021,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3815'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestDamage_LostWrites/repack_unlink
   status: fail
@@ -1005,15 +1029,15 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3815'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestDamage_LostWrites/spare_entry
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestDamage_LostWrites/open_unproven_tail
   status: fail
@@ -1021,7 +1045,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestDamage_LostWrites/open_torn_tail_truncation
   status: fail
@@ -1029,7 +1053,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestDamage_LostWrites/open_seal_after_truncation
   status: fail
@@ -1037,7 +1061,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestDamage_LostWrites/open_reappend
   status: fail
@@ -1045,7 +1069,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestDamage_LostWrites/open_spare_zeroing
   status: fail
@@ -1077,7 +1101,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3815'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestDamage_TornWrites/final_record
   status: fail
@@ -1085,7 +1109,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, seals, recovery of a torn tail and the reference model agreeing after each cut.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestDamage_TornWrites/trailer
   status: fail
@@ -1093,15 +1117,15 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, seals, recovery of a torn tail and the reference model agreeing after each cut.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestDamage_ReorderedWrites
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, writes split at the cap, recovery and the reference model agreeing after each subset.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs the data path, writes split at the cap, recovery and the reference model agreeing after each subset.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestDamage_BitFlip/record_header/magic
   status: fail
@@ -1749,7 +1773,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs recovery that leaves a file it did not name alone, and the data path.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'stub: Open'
 
 - test: TestDamage_DirectoryRestored
   status: fail
@@ -1757,23 +1781,23 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded with the stale rule, the version floor and recovery.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestEdge_ZeroLengthWrite
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs WriteAt for an empty payload.'
+  reason: 'The journal opens; WriteAt answers an empty write with no error and the zero version, neither refusing it with ErrZeroLength nor drawing a version. Needs WriteAt for an empty payload.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'an empty write at 0 drew version {0 0}, not above the write before it'
 
 - test: TestEdge_WriteNearLargestOffset
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs writes near the largest offset and the largest file offset.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs writes near the largest offset and the largest file offset.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestEdge_ThreeWaySplit
   status: fail
@@ -1781,7 +1805,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs overwrites splitting a held extent.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestEdge_OverwriteSpansManyExtents
   status: fail
@@ -1789,15 +1813,15 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs overwrites spanning many extents.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestEdge_ManyOverwritesFlatHeldBytes
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs repeated overwrites and the stats.'
+  reason: 'The journal opens and the overwrites succeed; the check reads NextVersion from Stats, and Stats is not written yet (T8.13) and reads zero. Needs the stats.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'NextVersion rose by 0 over 1000 overwrites'
 
 - test: TestEdge_WriteCrossesSegment
   status: fail
@@ -1835,25 +1859,25 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs a first held byte far from zero.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs a first held byte far from zero.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestEdge_TruncateInsideExtent
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the group commit that Sync waits on.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs recovery.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestEdge_TruncateToZeroAndWriteAgain
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Sync.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs recovery.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestEdge_TruncateDownAndBackUp
   status: fail
@@ -1867,9 +1891,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the group commit that Sync waits on.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Inspect.File.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestEdge_ReservationExactFitShare
   status: fail
@@ -1907,9 +1931,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs records without bytes at the journal''s maximum.'
+  reason: 'The journal opens and the records without bytes are taken; the check reads HeadroomDraws from Stats, and Stats is not written yet (T8.13) and reads zero. Needs the stats.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'HeadroomDraws did not rise over a truncate at the maximum'
 
 - test: TestEdge_WriteLargerThanSegmentRest
   status: fail
@@ -1925,15 +1949,15 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs a write larger than a segment cut into pieces.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestEdge_OpenEmptyDirectory
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Open and Init over an empty directory.'
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs Open and Init over an empty directory.'
   issue: '#3814'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestEdge_OpenFormatOnly
   status: fail
@@ -1941,7 +1965,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs Open and Init over a lone format file.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestEdge_FillOverHeldDirtyAndAbsent
   status: fail
@@ -1965,7 +1989,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs Release of a partly offloaded range.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestEdge_ReleaseMiddleEndsAndAll
   status: fail
@@ -1973,7 +1997,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs Release at every place in a record.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestEdge_FullyReleasedSegmentReclaimedWithoutRead
   status: fail
@@ -1989,23 +2013,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs retirement by eviction and by repack.'
   issue: '#3379'
-  message: 'stub: Sync'
-
-- test: TestCounted_MixedDurability
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path and group commit that waits no more than the sync interval.'
-  issue: '#3378'
-  message: 'stub: Sync'
-
-- test: TestCounted_SyncsPerWrite
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs WriteAt and Sync counted.'
-  issue: '#3378'
-  message: 'stub: WriteAt/Sync'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1A_CarriedReleaseKeepsItsSequence
   status: fail
@@ -2021,7 +2029,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs repack that drops a record superseded mid-copy, and recovery.'
   issue: '#3815'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1A_CrashMidRepack
   status: fail
@@ -2029,7 +2037,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs repack atomic against a crash between its copy and its unlink, and recovery.'
   issue: '#3815'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1A_DropsDecidedAfterCopies
   status: fail
@@ -2037,7 +2045,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs repack ordering its drops after its copies, holds, Settle and recovery.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1A_FailedSyncWindow
   status: fail
@@ -2051,9 +2059,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs a failed sync window reported to one Sync only, and the rest unaffected.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Inspect.File: a failed sync window reported to one Sync only is built.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1A_LossByExactRecord
   status: fail
@@ -2061,7 +2069,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs a lost window reported by the exact record it lost, not the extent it overlaps.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1A_LossRaisesLossGeneration
   status: fail
@@ -2069,7 +2077,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs Open: the loss generation rising before the Sync returns is built (Durability), the fixture cannot open a journal.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1A_ReappendKeepsItsNumbers
   status: fail
@@ -2157,4 +2165,4 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs Open: the synced corrupt loss masking what it superseded is built (Durability.Corrupt), the fixture cannot open a journal.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
