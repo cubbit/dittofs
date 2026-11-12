@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -806,5 +808,507 @@ func TestCopySupersededMiddle(t *testing.T) {
 		if at := bytes.Index(raw, oldMiddle); at >= 0 {
 			t.Fatalf("the superseded middle's bytes sit in copy target segment %v at %d, want them nowhere", seg, at)
 		}
+	}
+}
+
+// forgetRec is one registered forget record for tag: a hand-made Rec of
+// kind forget counted against the segment the caller names, its sequence
+// number the caller drew — the registry state a pass's forgetting check
+// consults.
+func forgetRec(tag core.ShareTag, seg core.SegmentID, seq core.Seq) reclaim.Rec {
+	return reclaim.Rec{
+		Kind: format.KindForget, File: core.FileID{}, Seg: seg,
+		Pair: index.Numbers{Seq: seq}, Seq: seq, Tag: tag,
+	}
+}
+
+// TestCopyLosesToNewerWrite copies a source record whose whole extent a
+// newer write overwrites between the two phases. The race point is the
+// copier's own domain table, wrapped for the pass: its Lock runs the
+// overwrite just before the real lock is taken — the pass's first phase
+// (enumerate, read, verify) has finished, its second (the liveness check
+// under the domain and the append) is about to run. The overwrite takes the
+// file's append domain itself through the real write path: a WriteAt of
+// exactly the source's extent through the fixture core's own share, drawing
+// its own version and superseding the source's piece.
+//
+// The synced half settles the overwrite before the check runs — the
+// supersede published and lifted the way a synced writer's path does — so
+// at the check the source's piece is neither held nor retained and no copy
+// appends. The unsynced half stops after the append and publish: the source
+// is retained, not held, until the superseder syncs (RFC 1 §7.2), so the
+// copy appends anyway — the real record of content a newer write replaced
+// but has not yet settled — carrying the source's version and modification
+// time under a fresh sequence number, reported for repoint.
+func TestCopyLosesToNewerWrite(t *testing.T) {
+	const kib = int64(4 << 10)
+	for _, tc := range []struct {
+		name   string
+		synced bool
+	}{
+		{"a synced overwrite lands first, so no copy appends", true},
+		{"an unsynced overwrite lands first, so the source still copies", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCopyFixture(t)
+			file := copyFile(1)
+			const mtime = 12345
+			payA := make([]byte, kib)
+			for i := range payA {
+				payA[i] = byte(int64(i)>>8) ^ 0xa5
+			}
+			recA, seqA, vA := f.plant(t, copyTag, file, payA, mtime)
+			f.sealSource(t, file)
+			f.waitSpares(t)
+
+			cs := f.selector().Select(reclaim.Scope{Segments: []core.SegmentID{recA.Segment}}, 1)
+			if len(cs) != 1 || cs[0].ID != recA.Segment {
+				t.Fatalf("Select returned %v, want the one candidate %d", cs, recA.Segment)
+			}
+
+			share := f.share(t, copyTag)
+			payS := make([]byte, kib)
+			for i := range payS {
+				payS[i] = byte(int64(i)>>8) ^ 0x5a
+			}
+			dom := &countingDomains{inner: f.core.Domains()}
+			var vNew core.Version
+			dom.hook = func(core.FileID) {
+				v, err := f.core.WriteAt(context.Background(), share, file, 0, payS, 777)
+				if err != nil {
+					t.Fatalf("the overwriting WriteAt over the source's extent: %v", err)
+				}
+				vNew = v
+				if tc.synced {
+					// The superseder settled: its publish lift dropped what it
+					// superseded, the same lift a synced writer's path takes,
+					// so nothing of the source is left at the check.
+					if _, err := f.ix.LiftSuperseded(file, v, core.Extent{Len: kib}); err != nil {
+						t.Fatalf("LiftSuperseded over the source's extent: %v", err)
+					}
+					if got := f.ix.HeldAt(file, recA); got != nil {
+						t.Fatalf("the overwrite synced, held pieces at the source = %v, want none", got)
+					}
+					for _, rt := range f.ix.Retained(file) {
+						if rt.Record == recA {
+							t.Fatalf("the overwrite synced, want nothing of the source retained, got extent %v", rt.Extent)
+						}
+					}
+					return
+				}
+				// The superseder appended and published but has not synced:
+				// the source holds nothing and retains everything (RFC 1
+				// §7.2), the state the unsynced half's copy must answer for.
+				if got := f.ix.HeldAt(file, recA); got != nil {
+					t.Fatalf("the overwrite published, held pieces at the source = %v, want none: the superseder holds the extent now", got)
+				}
+				var retained bool
+				for _, rt := range f.ix.Retained(file) {
+					if rt.Record == recA {
+						retained = true
+					}
+				}
+				if !retained {
+					t.Fatal("the unsynced overwrite retains nothing of the source, want its piece retained until the superseder syncs")
+				}
+			}
+
+			res, err := f.copierOver(dom).Copy(context.Background(), recA.Segment)
+			if err != nil {
+				t.Fatalf("Copy over the overwritten source: %v", err)
+			}
+			// The overwrite published under a newer version whatever the
+			// half: the fact the two answers differ over.
+			if p, ok := f.ix.Lookup(file, kib/2); !ok || p.Version != vNew {
+				t.Fatalf("the source's extent after the overwrite = %+v %v, want it held at the overwriting version %v", p, ok, vNew)
+			}
+			if tc.synced {
+				if len(res.Copies) != 0 {
+					t.Fatalf("Copy appended %d copies over a synced overwrite (%+v), want 0: the source is neither held nor retained", len(res.Copies), res.Copies)
+				}
+				return
+			}
+			if len(res.Copies) != 1 {
+				t.Fatalf("Copy appended %d copies over an unsynced overwrite (%+v), want 1: the source's piece is still retained", len(res.Copies), res.Copies)
+			}
+			cp := res.Copies[0]
+			if cp.From != recA || cp.Extent != (core.Extent{Len: kib}) {
+				t.Fatalf("the copy is of record %v covering %v, want the source record %v whole", cp.From, cp.Extent, recA)
+			}
+			if cp.Version != vA {
+				t.Fatalf("copy Version = %v, want the source's %v and not the superseder's %v", cp.Version, vA, vNew)
+			}
+			if cp.Seq <= seqA {
+				t.Fatalf("copy Seq = %d, want a fresh number above the source's %d", cp.Seq, seqA)
+			}
+			if cp.To.Segment == recA.Segment {
+				t.Fatalf("the copy landed in its own target segment %d", cp.To.Segment)
+			}
+			h, body := f.readBack(t, cp.To)
+			if h.Version != vA || body.MTime != mtime {
+				t.Fatalf("the copy carries version %v and mtime %d, want the source's %v and %d", h.Version, body.MTime, vA, mtime)
+			}
+			if !bytes.Equal(body.Payload, payA) {
+				t.Fatalf("the copy's payload holds %d bytes, want the source's bytes whole: the retained content is what the pass owes", len(body.Payload))
+			}
+		})
+	}
+}
+
+// TestCopyAbandonedUnderForget pins the two orders of a forget record and a
+// pass of its tag's segment (RFC 1 §8.4): a mark live before the copy's
+// check abandons the tag's files — nothing appended, no sequence number
+// drawn for them, the copies of another tag's records unaffected — while a
+// mark registered after a pass draws its own number above every copy the
+// pass appended, and a later pass over the same claim copies nothing under
+// it.
+func TestCopyAbandonedUnderForget(t *testing.T) {
+	const kib = int64(4 << 10)
+	pattern := func(xor byte) []byte {
+		pay := make([]byte, kib)
+		for i := range pay {
+			pay[i] = byte(int64(i)>>8) ^ xor
+		}
+		return pay
+	}
+
+	// The mark live before the check: the tag's file is abandoned whole and
+	// the other tag's records copy as if nothing changed.
+	t.Run("a mark before the check abandons the tag's files alone", func(t *testing.T) {
+		f := newCopyFixture(t)
+		const other = copyTag + 1
+		fileT, fileU := copyFile(1), copyFile(2)
+		payT, payU := pattern(0xa5), pattern(0x3c)
+		recT, _, _ := f.plant(t, copyTag, fileT, payT, 12345)
+		// The two files sit on different streams, so the second's record
+		// needs the pool's next spare beside the first's.
+		f.waitSpares(t)
+		recU, _, _ := f.plant(t, other, fileU, payU, 999)
+		f.sealSource(t, fileT)
+		f.sealSource(t, fileU)
+
+		seqF, err := f.counters.NextSeq()
+		if err != nil {
+			t.Fatalf("NextSeq for the forget record: %v", err)
+		}
+		f.tracker.RegisterForget(forgetRec(copyTag, recT.Segment, seqF), []core.SegmentID{recT.Segment})
+		if !f.tracker.Forgetting(copyTag) {
+			t.Fatal("Forgetting of the marked tag = false, want true: the registry holds the mark")
+		}
+		if f.tracker.Forgetting(other) {
+			t.Fatal("Forgetting of the unmarked tag = true, want false: the mark answers for its own tag alone")
+		}
+
+		f.waitSpares(t)
+		segs := []core.SegmentID{recT.Segment}
+		if recU.Segment != recT.Segment {
+			segs = append(segs, recU.Segment)
+		}
+		seqPre, err := f.counters.NextSeq()
+		if err != nil {
+			t.Fatalf("NextSeq before the copies: %v", err)
+		}
+		var res reclaim.Result
+		for _, seg := range segs {
+			cs := f.selector().Select(reclaim.Scope{Segments: []core.SegmentID{seg}}, 1)
+			if len(cs) != 1 || cs[0].ID != seg {
+				t.Fatalf("Select over segment %d returned %v, want the one candidate", seg, cs)
+			}
+			r, err := f.copier().Copy(context.Background(), seg)
+			if err != nil {
+				t.Fatalf("Copy over segment %d: %v", seg, err)
+			}
+			res.Copies = append(res.Copies, r.Copies...)
+		}
+
+		var forT, forU []reclaim.Copied
+		for _, cp := range res.Copies {
+			switch cp.File {
+			case fileT:
+				forT = append(forT, cp)
+			case fileU:
+				forU = append(forU, cp)
+			}
+		}
+		if len(forT) != 0 {
+			t.Fatalf("the pass appended %d copies for the forgotten tag's file, want 0: the mark was live before its check ran (%+v)", len(forT), forT)
+		}
+		if len(forU) != 1 {
+			t.Fatalf("the pass appended %d copies for the other tag's file, want 1: forgetting one tag abandons only its files", len(forU))
+		}
+		cp := forU[0]
+		if cp.From != recU {
+			t.Fatalf("the other tag's copy is of record %v, want its own source record %v", cp.From, recU)
+		}
+		_, body := f.readBack(t, cp.To)
+		if !bytes.Equal(body.Payload, payU) {
+			t.Fatalf("the other tag's copy holds %d bytes, want its source's bytes byte-exact: an abandoned neighbour changes nothing", len(body.Payload))
+		}
+		// The forgotten tag's bytes sit in no copy target: nothing was
+		// appended for its files at all.
+		for _, name := range func() []string {
+			names, err := f.seam.List()
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			return names
+		}() {
+			kind, id := format.ClassifyName(name)
+			if kind != format.NameSegment || id == recT.Segment || id == recU.Segment {
+				continue
+			}
+			raw := f.readNameBytes(t, name)
+			if at := bytes.Index(raw, payT); at >= 0 {
+				t.Fatalf("the forgotten tag's bytes sit in copy target segment %d at %d, want them nowhere but the source", id, at)
+			}
+		}
+		// The seq the pass drew: one per copy it appended, and not one for
+		// the abandoned file.
+		seqPost, err := f.counters.NextSeq()
+		if err != nil {
+			t.Fatalf("NextSeq after the copies: %v", err)
+		}
+		if got, want := int(seqPost-seqPre)-1, len(res.Copies); got != want {
+			t.Fatalf("the pass drew %d sequence numbers, want %d: one per copy appended and none for the abandoned file", got, want)
+		}
+	})
+
+	// The mark registered after a pass: the copies already stand, the forget
+	// record's own number answers above every copy's, and a later pass over
+	// the same claim copies nothing under it.
+	t.Run("a mark after the copies draws above every copy", func(t *testing.T) {
+		f := newCopyFixture(t)
+		file := copyFile(1)
+		pay := pattern(0xa5)
+		rec, _, _ := f.plant(t, copyTag, file, pay, 12345)
+		f.sealSource(t, file)
+
+		cs := f.selector().Select(reclaim.Scope{Segments: []core.SegmentID{rec.Segment}}, 1)
+		if len(cs) != 1 || cs[0].ID != rec.Segment {
+			t.Fatalf("Select returned %v, want the one candidate %d", cs, rec.Segment)
+		}
+		f.waitSpares(t)
+		res, err := f.copier().Copy(context.Background(), rec.Segment)
+		if err != nil {
+			t.Fatalf("the first Copy over the source: %v", err)
+		}
+		if len(res.Copies) != 1 {
+			t.Fatalf("the first Copy appended %d copies, want 1: no mark was live", len(res.Copies))
+		}
+		cp := res.Copies[0]
+		_, body := f.readBack(t, cp.To)
+		if !bytes.Equal(body.Payload, pay) || cp.From != rec {
+			t.Fatalf("the standing copy is of %v with %d bytes, want the source %v byte-exact", cp.From, len(body.Payload), rec)
+		}
+
+		seqF, err := f.counters.NextSeq()
+		if err != nil {
+			t.Fatalf("NextSeq for the forget record: %v", err)
+		}
+		f.tracker.RegisterForget(forgetRec(copyTag, rec.Segment, seqF), []core.SegmentID{rec.Segment})
+		for _, cp := range res.Copies {
+			if seqF <= cp.Seq {
+				t.Fatalf("the forget record's seq %d is not above copy (of %v) seq %d, want above: copies drawn under the domain before the mark precede its own draw", seqF, cp.From, cp.Seq)
+			}
+		}
+
+		// The same claim re-run under the now-live mark: the file is
+		// abandoned, so no copy of the tag answers with a sequence number
+		// the forget record would leave behind.
+		res2, err := f.copier().Copy(context.Background(), rec.Segment)
+		if err != nil {
+			t.Fatalf("the second Copy under the mark: %v", err)
+		}
+		if len(res2.Copies) != 0 {
+			t.Fatalf("the second Copy appended %d copies under a live forget mark (%+v), want 0: a copy of the tag after the mark would carry a sequence number above the forget record's %d", len(res2.Copies), res2.Copies, seqF)
+		}
+		// The standing copy still reads byte-exact: the mark abandons the
+		// later pass, never the record already appended.
+		_, standing := f.readBack(t, cp.To)
+		if !bytes.Equal(standing.Payload, pay) {
+			t.Fatal("the standing copy's payload changed under the mark, want the source's bytes byte-exact")
+		}
+	})
+}
+
+// TestCopyLockOrder runs the pass over a segment holding two files'
+// records while concurrent writers write other files around it, through the
+// fixture core's real write path. The copier's domain table is wrapped with
+// a counter: the pass holds at most one file append domain at any instant,
+// and none at all while its source reads run. The reads are pinned to that
+// by holding the pass's first source read at the seam: with the read
+// parked, the counter answers zero, and a lookup and a span of the copied
+// file answer beside it — the index takes no lock the pass holds while it
+// reads, and no I/O the pass makes runs under any index lock (RFC 1 §8.4).
+func TestCopyLockOrder(t *testing.T) {
+	f := newCopyFixture(t)
+	const kib = int64(4 << 10)
+
+	// Two source files on one stream, so their pair of records lands in one
+	// segment the pass copies under two separate file domains.
+	first := copyFile(1)
+	second := copyFile(0)
+	for b := byte(2); f.core.Streams().IndexFor(second) != f.core.Streams().IndexFor(first); b++ {
+		if b > 40 {
+			t.Fatalf("no second file id found on file %v's stream", first)
+		}
+		second = copyFile(b)
+	}
+
+	type source struct {
+		file core.FileID
+		rec  index.RecordAt
+		pay  []byte
+	}
+	var srcs []source
+	for i, file := range []core.FileID{first, second} {
+		pay := make([]byte, kib)
+		for j := range pay {
+			pay[j] = byte(int64(j)>>8) ^ byte(0xa0+i)
+		}
+		rec, _, _ := f.plant(t, copyTag, file, pay, 12345)
+		srcs = append(srcs, source{file: file, rec: rec, pay: pay})
+	}
+	if srcs[0].rec.Segment != srcs[1].rec.Segment {
+		t.Fatalf("the two source files landed in segments %d and %d, want one shared source segment", srcs[0].rec.Segment, srcs[1].rec.Segment)
+	}
+	seg := srcs[0].rec.Segment
+	// The two files share one stream, so the one seal of its active segment
+	// closes them both.
+	f.sealSource(t, first)
+
+	cs := f.selector().Select(reclaim.Scope{Segments: []core.SegmentID{seg}}, 1)
+	if len(cs) != 1 || cs[0].ID != seg {
+		t.Fatalf("Select returned %v, want the one candidate %d", cs, seg)
+	}
+
+	// Concurrent writers of other files, through the real write path while
+	// the pass runs: their writes take their own files' domains on the same
+	// real table the copier's wrapper wraps.
+	share := f.share(t, copyTag)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var wrote atomic.Int32
+	for i := range 2 {
+		file := copyFile(byte(9 + i))
+		pay := make([]byte, kib)
+		for j := range pay {
+			pay[j] = byte(int64(j)>>8) ^ byte(0x50+i)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for off := int64(0); ; off += kib {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if _, err := f.core.WriteAt(context.Background(), share, file, off, pay, 1); err != nil {
+					// A spare the pool is refilling beneath two writers
+					// refuses a piece; wait for the pool's settle and try
+					// the same write again.
+					ctx, cancel := context.WithTimeout(context.Background(), copyWait)
+					_ = f.core.WaitSpares(ctx)
+					cancel()
+					continue
+				}
+				wrote.Add(1)
+			}
+		}()
+	}
+
+	// The pass's first source read is held at the seam: everything the
+	// parked-moment assertions read runs while the pass waits inside its
+	// read, holding nothing.
+	h := f.seam.HoldFirst(t, kit.OpRead, format.SegmentName(seg))
+	dom := &countingDomains{inner: f.core.Domains()}
+	type copyAnswer struct {
+		res reclaim.Result
+		err error
+	}
+	done := make(chan copyAnswer, 1)
+	go func() {
+		res, err := f.copierOver(dom).Copy(context.Background(), seg)
+		done <- copyAnswer{res, err}
+	}()
+	select {
+	case <-h.Reached():
+	case <-time.After(copyWait):
+		h.Release()
+		close(stop)
+		wg.Wait()
+		t.Fatalf("the copy never reached its first source read within %v, want it held", copyWait)
+	}
+
+	if got := dom.heldNow(); got != 0 {
+		h.Release()
+		close(stop)
+		wg.Wait()
+		t.Fatalf("the copier held %d file domains while its source read was parked, want 0: the reads run under no lock", got)
+	}
+
+	// A lookup and a span of the copied file answer while the read waits:
+	// both complete, so the index was free across the parked read.
+	probe := make(chan struct{})
+	go func() {
+		f.ix.Lookup(srcs[0].file, kib/2)
+		f.ix.Span(srcs[0].file, core.Extent{Len: kib})
+		close(probe)
+	}()
+	select {
+	case <-probe:
+	case <-time.After(copyWait):
+		// A bounded wait, the assertion backstop: while the read parks, the
+		// index owes the probe an answer; a pass holding an index lock
+		// across its reads would park the probe with it.
+		h.Release()
+		close(stop)
+		wg.Wait()
+		t.Fatalf("a lookup and a span of the copied file did not answer within %v while the source read was parked, want the index free: no I/O runs under an index lock", copyWait)
+	}
+	h.Release()
+
+	var a copyAnswer
+	select {
+	case a = <-done:
+	case <-time.After(copyWait):
+		close(stop)
+		wg.Wait()
+		t.Fatalf("Copy did not finish within %v after the hold released, want it completed", copyWait)
+	}
+	close(stop)
+	wg.Wait()
+
+	if a.err != nil {
+		t.Fatalf("Copy beside concurrent writers: %v", a.err)
+	}
+	if len(a.res.Copies) != 2 {
+		t.Fatalf("the pass appended %d copies for its two source files, want 2", len(a.res.Copies))
+	}
+	counts := map[core.FileID]int{}
+	for _, cp := range a.res.Copies {
+		counts[cp.File]++
+		var pay []byte
+		for _, s := range srcs {
+			if s.file == cp.File {
+				pay = s.pay
+			}
+		}
+		_, body := f.readBack(t, cp.To)
+		if !bytes.Equal(body.Payload, pay) {
+			t.Fatalf("the copy of file %v holds %d bytes, want its source's bytes byte-exact beside concurrent writers", cp.File, len(body.Payload))
+		}
+	}
+	for _, s := range srcs {
+		if counts[s.file] != 1 {
+			t.Fatalf("the pass appended %d copies of file %v, want 1", counts[s.file], s.file)
+		}
+	}
+	if got := dom.maxHeld(); got > 1 {
+		t.Fatalf("the copier held %d file domains at once, want ≤ 1: only one file's domain is held at any instant", got)
+	}
+	if got := wrote.Load(); got < 1 {
+		t.Fatalf("the concurrent writers landed %d real writes during the pass, want ≥ 1: they run the real write path beside it", got)
 	}
 }

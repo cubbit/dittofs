@@ -276,6 +276,16 @@ func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source
 	if !ok {
 		return fmt.Errorf("reclaim: file %v holds no owner share", file)
 	}
+	// The forgetting mark of the file's tag, consulted under the domain the
+	// caller holds (RFC 1 §8.4): a copy whose held check ran after the mark
+	// is abandoned, never appended after it — a copy of the tag appended now
+	// would carry a sequence number above the forget record's, and a crash
+	// would resurrect the content the forget drops. The file is abandoned
+	// whole: nothing of it is appended, reported or drawn, since its tag's
+	// drop is the forget's own.
+	if c.tracker.Forgetting(tag) {
+		return nil
+	}
 	retained := c.ix.Retained(file)
 
 	// A corrupt source is dropped before anything copies, with the file's

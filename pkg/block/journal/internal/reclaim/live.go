@@ -31,6 +31,12 @@ import (
 // are one record in two places. The pair alone would too — the journal
 // issues one pair once — but the file and the extent make the re-test
 // registries answer by key without reading the record back.
+//
+// Tag is the share the record's header names. It carries no identity of its
+// own — a content record's share reads from its file, and the re-test
+// registries key nothing by it — and exists for the forget record alone: a
+// forget names no file, so its tag is the one thing its registration answers
+// Forgetting by.
 type Rec struct {
 	Kind       format.Kind
 	File       core.FileID
@@ -39,6 +45,7 @@ type Rec struct {
 	Pair       index.Numbers
 	Seq        core.Seq
 	Named      core.Seq
+	Tag        core.ShareTag
 	Synced     bool
 	Superseded bool
 }
@@ -492,6 +499,24 @@ func (t *Tracker) forgetTaken(rec Rec) {
 	if rec.Kind == format.KindForget {
 		delete(t.forgets, rec)
 	}
+}
+
+// Forgetting answers whether a live forget record is registered for the
+// tag. The copy consults it under the file's append domain, so a copy whose
+// held check ran after the mark is abandoned (RFC 1 §8.4).
+// decision: the mark is the tracker's registered forget records consulted
+// per file; the barrier Forget itself takes around its record is its own.
+// ponytail: a scan of the live forgets, O(live forget records); a tag-keyed
+// index when many forgets run at once.
+func (t *Tracker) Forgetting(tag core.ShareTag) bool {
+	t.rm.Lock()
+	defer t.rm.Unlock()
+	for rec := range t.forgets {
+		if rec.Tag == tag {
+			return true
+		}
+	}
+	return false
 }
 
 // RegisterAtOpen is the registration the rebuild at an open hands its

@@ -3,6 +3,7 @@ package reclaim_test
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -178,6 +179,78 @@ func (f *copyFixture) selector() *reclaim.Selector {
 // corrupter are the core's own pieces.
 func (f *copyFixture) copier() *reclaim.Copier {
 	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, f.core.Domains(), f.corrupt, f.clock, slog.New(slog.DiscardHandler))
+}
+
+// copierOver wires the pass over the fixture's core behind dom, the append
+// domain table the copier takes instead of the core's own: a recording
+// wrapper around the real one, or the plain table.
+func (f *copyFixture) copierOver(dom reclaim.Domains) *reclaim.Copier {
+	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, dom, f.corrupt, f.clock, slog.New(slog.DiscardHandler))
+}
+
+// share returns the fixture core's handle of tag, closed when the test ends.
+func (f *copyFixture) share(t *testing.T, tag core.ShareTag) *datapath.Share {
+	t.Helper()
+	s, err := f.core.Share(tag, 0, core.Version{})
+	if err != nil {
+		t.Fatalf("Share of tag %d: %v", tag, err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close of the share of tag %d: %v", tag, err)
+		}
+	})
+	return s
+}
+
+// countingDomains wraps the real file append domains for the copier alone.
+// Lock runs the test hook just before it takes the real lock — the seam
+// between the pass's two phases, where the liveness check and the append
+// are about to run under the domain — and counts how many domains the
+// wrapper's holders keep, so a test can race a write in that gap and assert
+// on what the pass holds at any instant.
+type countingDomains struct {
+	inner reclaim.Domains
+	hook  func(core.FileID)
+
+	mu   sync.Mutex
+	held int
+	max  int
+}
+
+// Lock runs the hook, then takes the real domain and counts it held until
+// the release it returns is called.
+func (d *countingDomains) Lock(id core.FileID) func() {
+	if d.hook != nil {
+		d.hook(id)
+	}
+	unlock := d.inner.Lock(id)
+	d.mu.Lock()
+	d.held++
+	if d.held > d.max {
+		d.max = d.held
+	}
+	d.mu.Unlock()
+	return func() {
+		d.mu.Lock()
+		d.held--
+		d.mu.Unlock()
+		unlock()
+	}
+}
+
+// heldNow reports how many domains the wrapper's holders keep.
+func (d *countingDomains) heldNow() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.held
+}
+
+// maxHeld reports the most domains any instant found held.
+func (d *countingDomains) maxHeld() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.max
 }
 
 // corrupt drops a record the pass could not verify into the durability
