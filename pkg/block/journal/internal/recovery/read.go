@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -123,7 +124,15 @@ func (r *reader) ReadAt(name string, buf []byte, off int64) (n int, err error) {
 	// The format file is read by ReadFormat, which answers its own failure;
 	// every name here is a segment the open reaches through the pass.
 	_, id := format.ClassifyName(name)
-	r.unread = append(r.unread, core.SegmentRange{Segment: id, Off: off, Len: int64(len(buf))})
+	// A range an earlier failed read already collected contains is not named
+	// twice: a scan that narrows a failed read to fewer bytes of the same
+	// place fails the same bytes again, and the open names them once.
+	sr := core.SegmentRange{Segment: id, Off: off, Len: int64(len(buf))}
+	if !slices.ContainsFunc(r.unread, func(o core.SegmentRange) bool {
+		return o.Segment == sr.Segment && o.Off <= sr.Off && sr.Off+sr.Len <= o.Off+o.Len
+	}) {
+		r.unread = append(r.unread, sr)
+	}
 	return n, err
 }
 

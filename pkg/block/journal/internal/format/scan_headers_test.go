@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 	"testing"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
 // The tests in this file hold ScanSegmentHeaders to its contract: the same
@@ -126,6 +129,9 @@ func TestScanHeadersReadsNoBodyByte(t *testing.T) {
 		t.Errorf("refused = %+v, want none", got.Refused)
 	}
 	for _, rd := range rec.reads {
+		if rd[0]+rd[1] > seal+SealMarkerSize {
+			t.Errorf("a read [%d, %d) reaches past the seal marker's end %d, want no footer byte read", rd[0], rd[0]+rd[1], seal+SealMarkerSize)
+		}
 		for _, r := range got.Records {
 			bodyStart := r.Header.Offset + RecordHeaderSize
 			bodyEnd := r.Header.Offset + r.Header.Size()
@@ -134,6 +140,33 @@ func TestScanHeadersReadsNoBodyByte(t *testing.T) {
 					rd[0], rd[0]+rd[1], r.Header.Offset, bodyStart, bodyEnd)
 			}
 		}
+	}
+}
+
+// TestScanJudgesASealMarkerFromItsOwnBytes: a byte the device cannot read
+// just past the 32-byte marker, in the footer, does not fail a healthy sealed
+// segment, for either walk: the marker is judged from its own bytes and the
+// segment returns sealed.
+func TestScanJudgesASealMarkerFromItsOwnBytes(t *testing.T) {
+	seg, _ := scanSegment(t, testIdentity, scanTestRecords()...)
+	seal := scanSeal(t, &seg, testIdentity, testSegment)
+	seg = append(seg, make([]byte, 256)...)
+	size := int64(len(seg))
+	bad := seal + SealMarkerSize + 8 // past the marker, in the footer
+
+	for name, walk := range map[string]func(io.ReaderAt, int64, core.JournalID, core.SegmentID) (Scan, error){
+		"ScanSegment":        ScanSegment,
+		"ScanSegmentHeaders": ScanSegmentHeaders,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := walk(&readAtCover{b: seg, off: bad, err: errors.New("device read failed in the footer")}, size, testIdentity, testSegment)
+			if err != nil {
+				t.Fatalf("%s with a footer byte unreadable = %v, want no error: the marker's own bytes were readable", name, err)
+			}
+			if !got.Sealed || got.End != seal {
+				t.Errorf("%s: sealed %v end %d, want sealed at the marker's %d", name, got.Sealed, got.End, seal)
+			}
+		})
 	}
 }
 

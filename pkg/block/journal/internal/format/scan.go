@@ -296,8 +296,20 @@ type scanner struct {
 // tested cheap before any checksum is computed — and only then the
 // decoders, which is what makes a forward search cheap to run.
 func (sc *scanner) examine(off int64) slot {
+	// A slot is first read as far as a seal marker reaches, and only a record
+	// prefix widens the read to the header's size, so a header-only walk makes
+	// no read past a marker's own bytes into the footer a sealed segment holds
+	// after it.
+	//
+	// decision: the verifying walk's window refills wide, so the bytes past a
+	// marker — the footer — may be read ahead of the slot that reaches the
+	// marker: read, never judged, and a refill that fails there is retried on
+	// the slot's own bytes (scanner.read). Withdrawn if a verifying walk is
+	// ever ruled to read no footer byte, for its window would then need to stop
+	// at the first slot that could be a marker.
 	n := min(int64(RecordHeaderSize), sc.size-off)
-	b, err := sc.read(off, n)
+	first := min(n, SealMarkerSize)
+	b, err := sc.read(off, first)
 	if err != nil {
 		return slot{outcome: slotStop, err: err}
 	}
@@ -310,15 +322,20 @@ func (sc *scanner) examine(off int64) slot {
 	// neither a prefix to tell by nor a record: whatever its bytes, the
 	// forward search reports them in the range they end in, and the slot
 	// contributes no run of its own.
-	if n < 4 {
+	if first < 4 {
 		return slot{outcome: slotNothing}
 	}
 
 	switch {
 	case string(b[:4]) == "DJR1":
+		if n > first {
+			if b, err = sc.extend(off, n); err != nil {
+				return slot{outcome: slotStop, err: err}
+			}
+		}
 		return sc.examineRecord(b, off)
 	case string(b[:4]) == "DJS1":
-		if n < SealMarkerSize {
+		if first < SealMarkerSize {
 			// A marker the segment ends in the middle of is not a marker;
 			// bad, like a header cut short.
 			return slot{outcome: slotNothing}
@@ -338,6 +355,23 @@ func (sc *scanner) examine(off int64) slot {
 		// change what it returns by nothing at all.
 		return slot{outcome: slotNothing}
 	}
+}
+
+// extend widens the slot just read at off to n bytes: the window's own bytes
+// when it holds them, the bytes it lacks read from where a window that starts
+// at off ends — so the bytes already read are never read twice — and an
+// ordinary refill when the slot sits inside a window that ends short of it.
+func (sc *scanner) extend(off, n int64) ([]byte, error) {
+	if off != sc.cur {
+		return sc.read(off, n)
+	}
+	if n > sc.have {
+		if err := readFull(sc.r, sc.window[sc.have:n], off+sc.have); err != nil {
+			return nil, fmt.Errorf("format: read slot at %d: %w", off+sc.have, err)
+		}
+		sc.have = n
+	}
+	return sc.window[:n], nil
 }
 
 // examineRecord judges a DJR1 slot's whole record: the header decodes, the

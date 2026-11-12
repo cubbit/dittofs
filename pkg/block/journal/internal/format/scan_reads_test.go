@@ -59,7 +59,7 @@ func TestScanReturnsReadErrorsAsThemselves(t *testing.T) {
 		// search, and nothing after it verifies — zeros the whole
 		// megabyte the search must cross. The first read the search
 		// cannot be served from the refill the damaged write was judged
-		// under is the slot whose own header crosses that window's edge,
+		// under is the slot whose first read crosses that window's edge,
 		// so the reader fails exactly there. The search dies mid-way:
 		// End at the read's own offset, the bad write's range closed
 		// at the failing read and kept, for every byte of it was read
@@ -69,8 +69,9 @@ func TestScanReturnsReadErrorsAsThemselves(t *testing.T) {
 		h, body := scanKindBody(KindWrite)
 		seg, _ = scanAppend(t, seg, testIdentity, scanRecord{h: h, body: body})
 		binary.LittleEndian.PutUint64(seg[48 : 48+96][40:48], 4<<20)
-		// the first slot whose header read crosses the window [48, 48+scanWindow)
-		failAt := int64(SegmentHeaderSize + scanWindow - RecordHeaderSize + 8)
+		// the first slot whose first read, a seal marker's 32 bytes, crosses
+		// the window [48, 48+scanWindow)
+		failAt := int64(SegmentHeaderSize + scanWindow - SealMarkerSize + 8)
 		seg = append(seg, make([]byte, failAt+96-int64(len(seg)))...)
 
 		got, err := ScanSegment(readAtFailer{b: seg, off: failAt, err: injected}, int64(len(seg)), testIdentity, testSegment)
@@ -410,8 +411,8 @@ func TestScanReadsOnlyTheBytesItNeeds(t *testing.T) {
 		size := int64(len(seg))
 
 		// The bad byte sits in the zero run past the first window's
-		// reach, so the first read to cover it is the 96-byte
-		// examination of the slot 88 bytes below it — the refill that
+		// reach, so the first read to cover it is the 32-byte
+		// examination of the slot 24 bytes below it — the refill that
 		// examination asks for and its narrow retry both reach it,
 		// so both fail and the error is that slot's own. The range
 		// before the failing slot closes and is kept — every byte of
@@ -429,7 +430,7 @@ func TestScanReadsOnlyTheBytesItNeeds(t *testing.T) {
 		// whose next megabyte holds a bad sector dies under a
 		// hundred-thousand-odd of them.
 		bad := int64(SegmentHeaderSize + scanWindow + 64)
-		failSlot := bad - 88 // the slot whose own examination first covers the bad byte
+		failSlot := bad - 24 // the slot whose own examination first covers the bad byte
 		want := ScanRange{Off: SegmentHeaderSize, End: failSlot, Kind: RangeBad}
 
 		failer := coverFailer(seg, bad)

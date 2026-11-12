@@ -555,7 +555,7 @@ func TestRunRebuildEIOEveryAttemptFailsWithUnreadableRangesNamingTheSegment(t *t
 // spec — answer a failure no attempt cleared as the unreadable range the open
 // refuses on, never as the raw I/O error. The size fault fails every open of
 // segment 2 after the attach pass's; the spec fault fails every read after
-// the attach pass's header read and the walk's one record read.
+// the attach pass's header read and the walk's two reads of the record's slot.
 func TestRunRebuildASizeOrCloneSpecReadThatFailsIsUnreadableRanges(t *testing.T) {
 	cloneSeg := func(id core.SegmentID) []byte {
 		return buildSeg(id, rec(7, func(r *raw.Record) {
@@ -570,7 +570,7 @@ func TestRunRebuildASizeOrCloneSpecReadThatFailsIsUnreadableRanges(t *testing.T)
 	}{
 		{"the size", kit.FailingFrom(kit.OpOpen, format.SegmentName(2), 2, 0, syscall.EIO),
 			core.SegmentRange{Segment: 2, Off: 0, Len: math.MaxInt64}},
-		{"the clone spec", kit.FailingFrom(kit.OpRead, format.SegmentName(2), 3, 0, syscall.EIO),
+		{"the clone spec", kit.FailingFrom(kit.OpRead, format.SegmentName(2), 4, 0, syscall.EIO),
 			core.SegmentRange{Segment: 2, Off: format.SegmentHeaderSize + format.RecordHeaderSize, Len: 56}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -595,7 +595,7 @@ func TestRunRebuildASizeOrCloneSpecReadThatFailsIsUnreadableRanges(t *testing.T)
 
 // TestRebuildIndexTwoSegmentsFailingAtOnceAnswerWithTheLowestSegmentID holds
 // the precedence between failures that land together: both segments' walks
-// are parked inside their first read, so each worker is past the bound's
+// are parked inside the read that widens a record slot to its header, so each worker is past the bound's
 // context check when released, and both fail on the same kind of refusal.
 // The phase answers with the failure of the lowest segment id, whatever the
 // order the segments were dispatched in and whichever worker failed first.
@@ -606,7 +606,7 @@ func TestRebuildIndexTwoSegmentsFailingAtOnceAnswerWithTheLowestSegmentID(t *tes
 		r.plantSeg(id, buildSeg(id, rec(17, nil)))
 	}
 	rec := newReadsOf(r.seam.FS())
-	rec.holdSegReadsPastTheHeader()
+	rec.holdSegReadsLongerThan(format.SealMarkerSize)
 	ctx := context.Background()
 	rd := newReader(ctx, rec, r.clk, nil)
 	// Dispatched highest first, so an answer taken by dispatch order or by
@@ -886,6 +886,9 @@ type readsOf struct {
 	// so the count the bound allows is the one that lands.
 	gate  chan struct{}
 	gated bool
+	// gateOver is the length a read must exceed to be held: zero holds every
+	// read past the header.
+	gateOver int
 }
 
 func newReadsOf(fs storage.FS) *readsOf { return &readsOf{fs: fs} }
@@ -897,6 +900,17 @@ func (r *readsOf) holdSegReadsPastTheHeader() {
 	defer r.mu.Unlock()
 	r.gate = make(chan struct{})
 	r.gated = true
+}
+
+// holdSegReadsLongerThan holds only the segment reads past offset 0 longer
+// than n bytes, until ReleaseSegReads: the walk's first read of a record slot
+// is a seal marker's 32 bytes, and the read that widens it to the header is
+// the one a check parks to stop the walk inside a record.
+func (r *readsOf) holdSegReadsLongerThan(n int) {
+	r.holdSegReadsPastTheHeader()
+	r.mu.Lock()
+	r.gateOver = n
+	r.mu.Unlock()
 }
 
 // releaseSegReads frees every read holdSegReadsPastTheHeader is holding.
@@ -965,6 +979,9 @@ func (f readRec) ReadAt(p []byte, off int64) (int, error) {
 	}
 	f.of.mu.Lock()
 	gate := f.of.gate
+	if len(p) <= f.of.gateOver {
+		gate = nil
+	}
 	f.of.inSeg++
 	if f.of.inSeg > f.of.peakSeg {
 		f.of.peakSeg = f.of.inSeg
