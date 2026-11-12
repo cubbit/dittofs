@@ -24,30 +24,6 @@
   issue: '#3378'
   message: 'stub:'
 
-- test: TestMetrics_ConditionsMoveTheirMetric/sync
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens and the Sync succeeds; the check reads Counters.Syncs from Stats, and Stats is not written yet (T8.13) and reads zero. Needs Stats.'
-  issue: '#3378'
-  message: 'a sync moved Counters.Syncs from 0 to 0'
-
-- test: TestMetrics_ConditionsMoveTheirMetric/failed_sync
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens and the Sync fails; the check reads Counters.SyncFailures from Stats, and Stats is not written yet (T8.13) and reads zero. Needs Stats.'
-  issue: '#3378'
-  message: 'a failed sync moved Counters.SyncFailures from 0 to 0'
-
-- test: TestMetrics_ConditionsMoveTheirMetric/read_only
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens and turns read-only; the check reads Counters.SyncFailures from Stats, and Stats is not written yet (T8.13) and reads zero. Needs Stats and the read-only state counted.'
-  issue: '#3378'
-  message: 'the sync that turned the journal read-only moved Counters.SyncFailures from 0 to 0'
-
 - test: TestModel
   status: fail
   fix: planned
@@ -208,14 +184,6 @@
   issue: '#3379'
   message: 'stub: Release'
 
-- test: TestRFC1B_Descriptors
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Stats serves the descriptor budget; the check now stops on a stub call after it reads it. Needs the data path, segments and reopens counted in Stats.'
-  issue: '#3378'
-  message: 'stub: Sync'
-
 - test: TestRFC1B_FailedWindowDoesNotWedge
   status: fail
   fix: planned
@@ -278,7 +246,7 @@
   category: feature
   reason: 'Stats serves HeadroomBytes; the check now stops on a stub call after it reads it. Needs the data path, the headroom half rule, offload, holds, stamps and recovery of offloaded bits.'
   issue: '#3379'
-  message: 'stub: Sync'
+  message: 'stub: Offload'
 
 - test: TestRFC1B_PinnedSegmentsBounded
   status: fail
@@ -308,17 +276,17 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and a Sync answers the read-only refusal; the check waits for Stats to name the read-only state, and Stats is not written yet (T8.13) and reads zero. Needs Stats, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
+  reason: 'The journal opens, a Sync answers the read-only refusal and Stats names the read-only state; Stats never names the probe''s failed check. Needs the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
   issue: '#3748'
-  message: 'the journal to turn read-only'
+  message: 'Stats to name the failed check within 2s'
 
 - test: TestRFC1B_ReadOnlyStopsTheDrain
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and a Sync answers the read-only refusal; the check waits for Stats to name the read-only state, and Stats is not written yet (T8.13) and reads zero. Needs Stats, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
+  reason: 'The journal opens, a Sync answers the read-only refusal and Stats names the read-only state; a Release then answers journal: not implemented, not the read-only refusal. Needs Release refused on a read-only journal, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
   issue: '#3748'
-  message: 'Stats to name the read-only state'
+  message: 'a Release on a read-only journal returned journal: not implemented, want ErrJournalReadOnly'
 
 - test: TestRFC1B_ReclaimNotStarved
   status: fail
@@ -390,7 +358,7 @@
   category: feature
   reason: 'Stats serves per-share UsedBytes; the check now stops on a stub call after it reads it. Needs the data path, segments, their accounting, per-share record accounting and idle sealing.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1B_ShareLimit
   status: fail
@@ -467,9 +435,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check counts removal markers through Stats, and Stats is not written yet (T8.13) and reads zero. Needs Stats, and forget settling the removal markers of a tag and dropping every one of its index entries.'
+  reason: 'The journal opens and Stats counts the removal markers; the check stops at Forget, a stub. Needs forget settling the removal markers of a tag and dropping every one of its index entries.'
   issue: '#3815'
-  message: 'left the removal marker count at 0, want one more'
+  message: 'stub: Forget'
 
 - test: TestRFC1C_HeaderOnlyRecordsReappended
   status: fail
@@ -595,9 +563,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Stats serves the counters; the leg now stops on a stub call before it reads them. Needs the data path, failed syncs, corrupt reads, torn tails and foreign segments.'
+  reason: 'Stats serves the counters; the leg now stops on a stub call. Needs the data path, failed syncs, corrupt reads, torn tails and foreign segments.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1D_NamedInequalitiesHold
   status: fail
@@ -1779,9 +1747,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and the overwrites succeed; the check reads NextVersion from Stats, and Stats is not written yet (T8.13) and reads zero. Needs the stats.'
+  reason: 'The journal opens, the overwrites succeed and Stats serves NextVersion; the check then stops on a stub call. Needs Inspect.File.'
   issue: '#3378'
-  message: 'NextVersion rose by 0 over 1000 overwrites'
+  message: 'stub: Inspect.File'
 
 - test: TestEdge_WriteCrossesSegment
   status: fail
@@ -1843,9 +1811,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Stats serves FillRefused; the check now stops on a stub call after it reads it. Needs the data path.'
+  reason: 'Stats serves FillRefused and the data path runs; the check stops at its crash, since a journal that has run cannot be reopened until recovery lands. Needs recovery.'
   issue: '#3378'
-  message: 'stub: Sync'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestEdge_DeallocateInsideAndAcross
   status: fail
