@@ -485,9 +485,11 @@ func TestAStalledClonePhase2KeepsItsRegistrations(t *testing.T) {
 	if err := u.answered(t, "the clone", errc); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
-	if !logged(logs, "removal_stalled cleared", dst) || u.e.RemovalStalled(dst) {
-		t.Error("removal_stalled not cleared once phase 2 succeeded")
-	}
+	// The clone is answered inside the item's run, and the loop clears the
+	// condition once the run returns, so the clear is awaited, not read.
+	u.until(t, "removal_stalled cleared once phase 2 succeeded", func() bool {
+		return logged(logs, "removal_stalled cleared", dst) && !u.e.RemovalStalled(dst)
+	})
 	s, _ = u.e.Registrations(src)
 	_, d = u.e.Registrations(dst)
 	if s+d != 0 {
