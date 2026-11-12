@@ -188,6 +188,29 @@ func TestACloneWithAnotherSpecIsNotJoined(t *testing.T) {
 	}
 }
 
+// A Clone with the source, offsets and length of a clone running into
+// another file runs a clone of its own into its destination, answered before
+// the running clone is done (catches a join keyed or compared without the
+// destination file, which answers the call with the other clone's outcome and
+// leaves its destination without the copy).
+func TestACloneIntoAnotherFileIsNotJoined(t *testing.T) {
+	u, h, src, dst := heldCloneUnit(t)
+	otherDst := u.create(t, "other")
+	u.startCloneHeld(t, h, src, u.share.ID, dst)
+
+	answer := u.startClone(context.Background(), src, otherDst, vfserr.Extent{Len: mib})
+	if err := u.answered(t, "the clone into another file", answer); err != nil {
+		t.Fatalf("the clone into another file = %v, want nil", err)
+	}
+	if _, d := u.e.Registrations(dst); d != 1 {
+		t.Errorf("the held clone holds %d destination registrations, want 1 (still running)", d)
+	}
+	if got := u.read(t, otherDst, 0, mib); !bytes.Equal(got, fill(mib, 's')) {
+		t.Error("the other destination does not read the source")
+	}
+	h.let()
+}
+
 // Once a clone is done, a Clone with its spec runs the clone again: the
 // source written since is what the destination then reads (catches a done
 // clone kept among the running clones, which a retry joins, answered at once

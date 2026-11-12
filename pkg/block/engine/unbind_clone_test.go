@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,11 +15,12 @@ import (
 )
 
 // heldPhase1 delays the first clone phase 1 in the store's call until let
-// is called: entered is closed once it is held there.
+// is called: entered is closed once it is held there. A later phase 1 runs
+// on, the first one held or not.
 type heldPhase1 struct {
 	entered chan struct{}
 	hold    chan struct{}
-	once    sync.Once
+	first   atomic.Bool
 	let     func()
 }
 
@@ -30,7 +32,10 @@ func newHeldPhase1(t *testing.T) *heldPhase1 {
 }
 
 func (h *heldPhase1) clone(ctx context.Context, next engine.Existence, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
-	h.once.Do(func() { close(h.entered); <-h.hold })
+	if h.first.CompareAndSwap(false, true) {
+		close(h.entered)
+		<-h.hold
+	}
 	return next.Clone(ctx, op, pending)
 }
 
