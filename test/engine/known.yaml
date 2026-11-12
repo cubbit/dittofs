@@ -373,6 +373,13 @@
   category: feature
   reason: 'Epic 6: a journal refused as unsuitable at start leaves its share unattached and named, and the retried open attaches it once the check clears. The row stops at its first journal-backed write, which the engine answers retry-shortly because the journal''s Stats is still a zero value until the journal reports its version counter and recovers its segments at open; the unit tests prove the engine side over the fake journal.'
   issue: '#3589'
+- test: TestTheFilesystemStartsAfterTheEngine
+  message: 'fixture: engine start: engine: start: open the journal'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Engine integration: a restart and a crash start the filesystem only after the engine''s start has finished, the filesystem refusing a call as unavailable while the engine''s start is held. Init and Open work; the composition starts; the row stops at the restart''s reopen of a journal that holds segments, which the journal refuses (recovering them is not built). Then back to the row''s own need: none, as it writes nothing through the filesystem.'
+  issue: '#4052'
 - test: TestRFC8A_RetryLaterAtTheShareLimit
   message: 'the write at the limit: vfs: retry shortly: commit, want ErrDelay(DelayCapacity)'
   status: fail
