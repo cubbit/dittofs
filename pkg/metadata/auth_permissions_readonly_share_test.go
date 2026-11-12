@@ -456,7 +456,7 @@ func TestRemoveFile_DeleteAccessStillSucceedsOnWritableShare(t *testing.T) {
 }
 
 // TestSetFileAttributes_ReadOnlyShareBlocksHandleTimestamp asserts both
-// read-only ceilings beat TimestampAuthorizedByHandle: the per-user
+// read-only ceilings beat AttributesAuthorizedByHandle: the per-user
 // AuthContext.ShareReadOnly flag and the store-level ShareOptions.ReadOnly. A
 // SETATTR is a write, so neither a read-only user nor any user on a read-only
 // share may set a timestamp, whatever the handle was granted.
@@ -473,15 +473,15 @@ func TestSetFileAttributes_ReadOnlyShareBlocksHandleTimestamp(t *testing.T) {
 
 		// Baseline: the handle grant works on a writable share.
 		rw := f.authContext(uid, gid)
-		rw.TimestampAuthorizedByHandle = true
+		rw.AttributesAuthorizedByHandle = true
 		_, err = f.service.SetFileAttributes(rw, handle, &metadata.SetAttrs{Mtime: &stampTime})
 		require.NoError(t, err, "precondition: handle timestamp grant works on a writable share")
 
 		ro := f.authContext(uid, gid)
-		ro.TimestampAuthorizedByHandle = true
+		ro.AttributesAuthorizedByHandle = true
 		ro.ShareReadOnly = true
 		_, err = f.service.SetFileAttributes(ro, handle, &metadata.SetAttrs{Mtime: &stampTime})
-		require.Error(t, err, "per-user read-only must beat TimestampAuthorizedByHandle")
+		require.Error(t, err, "per-user read-only must beat AttributesAuthorizedByHandle")
 		requireErrorCode(t, err, metadata.ErrReadOnly)
 	})
 
@@ -497,10 +497,10 @@ func TestSetFileAttributes_ReadOnlyShareBlocksHandleTimestamp(t *testing.T) {
 			&metadata.ShareOptions{ReadOnly: true}))
 
 		authCtx := f.authContext(uid, gid)
-		authCtx.TimestampAuthorizedByHandle = true
+		authCtx.AttributesAuthorizedByHandle = true
 		authCtx.ShareReadOnly = false
 		_, err = f.service.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{Mtime: &stampTime})
-		require.Error(t, err, "store-level read-only must beat TimestampAuthorizedByHandle")
+		require.Error(t, err, "store-level read-only must beat AttributesAuthorizedByHandle")
 		requireErrorCode(t, err, metadata.ErrReadOnly)
 	})
 }

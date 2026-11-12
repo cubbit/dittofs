@@ -59,28 +59,31 @@ type AuthContext struct {
 	// of this flag.
 	WriteAuthorizedByHandle bool
 
-	// TimestampAuthorizedByHandle indicates that the SMB open handle driving this
-	// operation was granted FILE_WRITE_ATTRIBUTES at CREATE time. When set, an
-	// explicit timestamp write (SetAttrs carrying only Atime / Mtime / Ctime /
-	// CreationTime) is authorized without POSIX ownership of the file: MS-FSA
-	// 2.1.5.15.2 ("FileBasicInformation") authorizes the write by that right on
-	// the open, where POSIX requires ownership (or root) for utimensat() with
-	// explicit times. Without this flag a non-owner holding a handle opened with
-	// exactly the right the protocol names is refused by the ownership gate.
+	// AttributesAuthorizedByHandle indicates that the SMB open handle driving this
+	// operation was granted FILE_WRITE_ATTRIBUTES at CREATE time. When set, a
+	// FileBasicInformation write (SetAttrs carrying only Atime / Mtime / Ctime /
+	// CreationTime, Hidden and the DOS attribute masks) is authorized without
+	// POSIX ownership of the file: MS-FSA 2.1.5.15.2 ("FileBasicInformation")
+	// authorizes the write by that right on the open, where POSIX requires
+	// ownership (or root) for utimensat() with explicit times and has no DOS
+	// attributes at all. Without this flag a non-owner holding a handle opened
+	// with exactly the right the protocol names is refused by the ownership
+	// gate, which a Linux client meets on every unlink of a file still open:
+	// its rename-then-delete compound sets FILE_ATTRIBUTE_HIDDEN first.
 	//
 	// Deliberately NOT the same flag as WriteAuthorizedByHandle, which is derived
 	// from FILE_WRITE_DATA / FILE_APPEND_DATA: MS-FSCC 2.6 keeps the two rights
 	// distinct, so neither may confer the other.
 	//
-	// Scope is exactly the explicit-timestamp write — it does not relax chmod,
-	// chown, ACL replace, truncate or EA mutation — and it never overrides an
-	// explicit DENY ACE or either read-only share ceiling, both of which
-	// SetFileAttributes evaluates first.
+	// Scope is exactly that write — it does not relax chmod, chown, ACL replace,
+	// truncate or EA mutation — and it never overrides an explicit DENY ACE or
+	// either read-only share ceiling, both of which SetFileAttributes evaluates
+	// first.
 	//
 	// Set ONLY by SMB op handlers, derived from OpenFile.GrantedAccess. NFS is
 	// PATH-BASED — it has no handle and MUST leave this false, so POSIX timestamp
 	// semantics on the NFS path are unchanged.
-	TimestampAuthorizedByHandle bool
+	AttributesAuthorizedByHandle bool
 
 	// EAAuthorizedByHandle indicates that the SMB open handle driving this
 	// operation was granted FILE_WRITE_EA at CREATE time. When set, a SetAttrs
@@ -90,7 +93,7 @@ type AuthContext struct {
 	// open, so a handle that carries the bit passed an explicit DENY-EA ACE.
 	//
 	// Deliberately NOT WriteAuthorizedByHandle, for the same reason
-	// TimestampAuthorizedByHandle is not: that flag is defined as the
+	// AttributesAuthorizedByHandle is not: that flag is defined as the
 	// FILE_WRITE_DATA / FILE_APPEND_DATA bypass and the metadata funnel spends it
 	// on every write-related check in the operation. Borrowing it for EA would
 	// let a handle opened only for extended attributes suppress the POSIX write
