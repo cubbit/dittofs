@@ -292,17 +292,18 @@ func TestScanSegmentRefusesKind17AndKind128(t *testing.T) {
 	}
 }
 
-// TestScanSegmentRefusesAnEpochAndTheLargestCounters holds R22: a record
-// whose version carries a non-zero epoch half fails the open as an
-// unknown kind does, and so does a record whose version counter or sequence
-// number is the largest 64-bit value — the journal issues neither, so it
-// comes from damage or another writer.
-func TestScanSegmentRefusesAnEpochAndTheLargestCounters(t *testing.T) {
+// TestScanSegmentRefusesTheWalksEpochStopAndTheLargestCounters holds R22: a
+// record whose version carries a non-zero epoch half is refused by the walk's
+// own stop, as an unknown kind is, and a record whose version counter or
+// sequence number is the largest 64-bit value is refused by the scan's number
+// check — the journal issues neither, so it comes from damage or another
+// writer.
+func TestScanSegmentRefusesTheWalksEpochStopAndTheLargestCounters(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		rec  raw.Record
 	}{
-		{"a non-zero epoch", rec(3, func(r *raw.Record) { r.Version = raw.Version{Epoch: 1, Counter: 200} })},
+		{"a non-zero epoch (the walk's stop)", rec(3, func(r *raw.Record) { r.Version = raw.Version{Epoch: 1, Counter: 200} })},
 		{"the largest version counter", rec(3, func(r *raw.Record) { r.Version = raw.Version{Counter: math.MaxUint64} })},
 		{"the largest sequence number", rec(5, func(r *raw.Record) { r.Seq = math.MaxUint64 })},
 	} {
@@ -502,7 +503,7 @@ func TestScanSegmentRetriesAFailedReadThenSucceeds(t *testing.T) {
 	}
 }
 
-// TestScanSegmentTooShortForASlotIsEmpty holds Review Focus 1: a segment
+// TestScanSegmentTooShortForASlotIsEmpty holds the empty scan of a segment
 // with its header verifying but too short for one record slot contributes
 // nothing and fails nothing — the later phases judge it.
 func TestScanSegmentTooShortForASlotIsEmpty(t *testing.T) {
@@ -521,6 +522,9 @@ func TestScanSegmentTooShortForASlotIsEmpty(t *testing.T) {
 	}
 	if got.ID != id {
 		t.Errorf("scanSegment over a too-short segment: the scan's segment id got %d, want %d", got.ID, id)
+	}
+	if want := int64(len(b)); got.End != want || got.Size != want {
+		t.Errorf("scanSegment over a too-short segment: End %d and Size %d, want both the file's size %d", got.End, got.Size, want)
 	}
 }
 

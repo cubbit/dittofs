@@ -286,18 +286,6 @@ func assertOnlySpareUnlinks(t *testing.T, before map[string][]byte, r *rig) {
 	}
 }
 
-// forceGOMAXPROCS sets the process's GOMAXPROCS to n until the test ends,
-// restoring the value it found, so a leg that changes it never leaks the
-// change into the tests after it. n of zero changes nothing.
-func forceGOMAXPROCS(t *testing.T, n int) {
-	t.Helper()
-	if n <= 0 {
-		return
-	}
-	had := runtime.GOMAXPROCS(n)
-	t.Cleanup(func() { runtime.GOMAXPROCS(had) })
-}
-
 // TestRunRebuildIsIdenticalInAnyOrderAndReaderCount feeds the same directory
 // through every dispatch order the seam has and under one, two and eight
 // readers, and the rebuild must give one identical index: precedence, not
@@ -307,8 +295,6 @@ func TestRunRebuildIsIdenticalInAnyOrderAndReaderCount(t *testing.T) {
 	steps := seededSteps(7)
 	for _, procs := range []int{1, 2, 8} {
 		t.Run(fmt.Sprintf("%d readers", procs), func(t *testing.T) {
-			forceGOMAXPROCS(t, procs)
-
 			var want map[string][]index.Entry
 			for i, seed := range []uint64{0, 3, 5, 6, 9, 11, 12, 15, 17, 19, 21, 24, 26, 28, 30, 33, 35, 38, 41, 44} {
 				r := newRig(t)
@@ -316,6 +302,7 @@ func TestRunRebuildIsIdenticalInAnyOrderAndReaderCount(t *testing.T) {
 				r.plantSteps(steps, stepsPerSegment)
 
 				deps := r.runDeps()
+				deps.rebuildReaders = procs
 				if i > 0 {
 					deps.rebuildOrder = shuffleOrder(seed)
 				}
@@ -334,7 +321,7 @@ func TestRunRebuildIsIdenticalInAnyOrderAndReaderCount(t *testing.T) {
 	}
 }
 
-// TestRunRebuildWithManyMoreSegmentsThanReaders holds Review Focus 2: a
+// TestRunRebuildWithManyMoreSegmentsThanReaders holds a
 // dispatch of many more segments than the readers — the shared workload's
 // records a segment each, on one reader — gives the index the same plant
 // gives under more readers than segments: the bound changes nothing the
@@ -346,16 +333,17 @@ func TestRunRebuildIsIdenticalInAnyOrderAndReaderCount(t *testing.T) {
 // answer against its own: the one-segment-per-record plant under one reader
 // against the same plant under eight, and the single-segment plant the same
 // way. Both legs also hold the natural plant's answer against its own
-// across reader counts, which the order check's GOMAXPROCS legs cover.
+// across reader counts, which the order check's reader-count legs cover.
 func TestRunRebuildWithManyMoreSegmentsThanReaders(t *testing.T) {
 	steps := seededSteps(11)
 	build := func(t *testing.T, perSeg, procs int) map[string][]index.Entry {
 		t.Helper()
-		forceGOMAXPROCS(t, procs)
 		r := newRig(t)
 		r.writeFormat()
 		r.plantSteps(steps, perSeg)
-		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+		deps := r.runDeps()
+		deps.rebuildReaders = procs
+		st, err := Run(context.Background(), deps, core.Version{}, journalID, nil)
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -377,15 +365,15 @@ func TestRunRebuildWithManyMoreSegmentsThanReaders(t *testing.T) {
 	})
 }
 
-// TestRunRebuildScansConcurrentlyUpToGOMAXPROCS holds D8's bound: at most
-// GOMAXPROCS segment readers run at once. Every segment walk's read past
+// TestRunRebuildScansConcurrentlyUpToTheReaderBound holds the reader bound: at most
+// rebuildReaders segment readers run at once. Every segment walk's read past
 // the header slot — the attach pass reads each header alone, at offset 0 —
 // parks where it stands, so the readers the dispatch runs land in the park
 // together and the count of them is the count that ran beside each other.
-// With the bound, exactly GOMAXPROCS park and the rest never start; the
+// With the bound, exactly the bound's readers park and the rest never start; the
 // poll below waits on that condition, the real one, and releases. A
 // dispatch without the bound parks one walk per segment.
-func TestRunRebuildScansConcurrentlyUpToGOMAXPROCS(t *testing.T) {
+func TestRunRebuildScansConcurrentlyUpToTheReaderBound(t *testing.T) {
 	const procs = 2
 	r := newRig(t)
 	r.writeFormat()
@@ -393,14 +381,13 @@ func TestRunRebuildScansConcurrentlyUpToGOMAXPROCS(t *testing.T) {
 	if len(segs) <= procs {
 		t.Fatalf("fixture: the workload planted %d segments, want more than the %d readers the check forces", len(segs), procs)
 	}
-	forceGOMAXPROCS(t, procs)
 
 	rec := newReadsOf(r.seam.FS())
 	rec.holdSegReadsPastTheHeader()
 	defer rec.releaseSegReads()
 	done := make(chan error, 1)
 	go func() {
-		_, err := Run(context.Background(), Deps{FS: rec, Clock: r.clk}, core.Version{}, journalID, nil)
+		_, err := Run(context.Background(), Deps{FS: rec, Clock: r.clk, rebuildReaders: procs}, core.Version{}, journalID, nil)
 		done <- err
 	}()
 
@@ -435,23 +422,26 @@ func TestRunRebuildScansConcurrentlyUpToGOMAXPROCS(t *testing.T) {
 		t.Fatalf("Run did not return once the reads were released")
 	}
 	// The parked peak is the whole dispatch's answer: the bound runs
-	// GOMAXPROCS readers, and the unbounded break parks one walk per
+	// readers, and the unbounded break parks one walk per
 	// segment — over twenty here.
 	if got, want := rec.peakSegmentReads(), procs; got > want {
-		t.Errorf("Run: %d segment readers ran beside each other, want at most %d, the GOMAXPROCS the bound allows", got, want)
+		t.Errorf("Run: %d segment readers ran beside each other, want at most %d, the bound", got, want)
 	}
 }
 
-// TestRunRebuildFailsOnAVerifyingReconcileRecord keeps D14's ceiling through
-// the whole open: a verifying reconcile or reconciled record fails the open
-// with ErrNotImplemented raw enough for errors.Is — the Task 4 refusals
+// TestRunRebuildFailsOnAVerifyingReconcileRecord keeps the reconcile ceiling
+// through the whole open: a verifying reconcile or reconciled record fails
+// the open with ErrNotImplemented, and a record of an unknown kind, a
+// non-zero epoch or the largest counter fails it with ErrUnknownFormat, each
+// raw enough for errors.Is — the refusals
 // reach Run's caller as the open's error — and the directory keeps every
 // byte but the .spare.tmp files the attach pass unlinked.
 func TestRunRebuildFailsOnAVerifyingReconcileRecord(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		rec  func(id core.SegmentID) raw.Record
-		kind string
+		kind string // what the refusal must name
+		want error  // the sentinel the open's error must wrap
 	}{
 		{"reconcile", func(id core.SegmentID) raw.Record {
 			return rec(15, func(r *raw.Record) {
@@ -462,7 +452,7 @@ func TestRunRebuildFailsOnAVerifyingReconcileRecord(t *testing.T) {
 				r.Version = raw.Version{}
 				r.Tag = 0
 			})
-		}, "reconcile"},
+		}, "reconcile", core.ErrNotImplemented},
 		{"reconciled", func(id core.SegmentID) raw.Record {
 			return rec(16, func(r *raw.Record) {
 				r.Identity = journalID
@@ -473,7 +463,18 @@ func TestRunRebuildFailsOnAVerifyingReconcileRecord(t *testing.T) {
 				r.Tag = 0
 				r.Reconciled = &raw.ReconciledBody{Segment: 1, Start: 1, End: 2}
 			})
-		}, "reconciled"},
+		}, "reconciled", core.ErrNotImplemented},
+		{"kind 17", func(core.SegmentID) raw.Record { return rec(17, nil) }, "segment 4", core.ErrUnknownFormat},
+		{"kind 128", func(core.SegmentID) raw.Record { return rec(128, nil) }, "segment 4", core.ErrUnknownFormat},
+		{"epoch 1", func(core.SegmentID) raw.Record {
+			return rec(3, func(r *raw.Record) { r.Version = raw.Version{Epoch: 1, Counter: 200} })
+		}, "segment 4", core.ErrUnknownFormat},
+		{"the largest version counter", func(core.SegmentID) raw.Record {
+			return rec(3, func(r *raw.Record) { r.Version = raw.Version{Counter: math.MaxUint64} })
+		}, "segment 4", core.ErrUnknownFormat},
+		{"the largest sequence number", func(core.SegmentID) raw.Record {
+			return rec(5, func(r *raw.Record) { r.Seq = math.MaxUint64 })
+		}, "segment 4", core.ErrUnknownFormat},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRig(t)
@@ -483,11 +484,11 @@ func TestRunRebuildFailsOnAVerifyingReconcileRecord(t *testing.T) {
 
 			before := r.snapshot()
 			_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
-			if !errors.Is(err, core.ErrNotImplemented) {
-				t.Fatalf("Run over a %s record got err %v, want ErrNotImplemented, raw through the open's error", tc.kind, err)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Run over a %s record got err %v, want %v, raw through the open's error", tc.name, err, tc.want)
 			}
 			if !strings.Contains(err.Error(), tc.kind) {
-				t.Errorf("Run: the refusal %q does not name the kind %s it refused", err.Error(), tc.kind)
+				t.Errorf("Run: the refusal %q does not name %q", err.Error(), tc.kind)
 			}
 			assertOnlySpareUnlinks(t, before, r)
 		})
@@ -565,9 +566,12 @@ func TestRunRebuildASizeOrCloneSpecReadThatFailsIsUnreadableRanges(t *testing.T)
 	for _, tc := range []struct {
 		name string
 		rule kit.Rule
+		want core.SegmentRange // the range the refusal must name
 	}{
-		{"the size", kit.FailingFrom(kit.OpOpen, format.SegmentName(2), 2, 0, syscall.EIO)},
-		{"the clone spec", kit.FailingFrom(kit.OpRead, format.SegmentName(2), 3, 0, syscall.EIO)},
+		{"the size", kit.FailingFrom(kit.OpOpen, format.SegmentName(2), 2, 0, syscall.EIO),
+			core.SegmentRange{Segment: 2, Off: 0, Len: math.MaxInt64}},
+		{"the clone spec", kit.FailingFrom(kit.OpRead, format.SegmentName(2), 3, 0, syscall.EIO),
+			core.SegmentRange{Segment: 2, Off: format.SegmentHeaderSize + format.RecordHeaderSize, Len: 56}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRig(t)
@@ -582,10 +586,52 @@ func TestRunRebuildASizeOrCloneSpecReadThatFailsIsUnreadableRanges(t *testing.T)
 			if !errors.As(err, &ure) {
 				t.Fatalf("Run with %s read failing got err %v, want an UnreadableRangesError", tc.name, err)
 			}
-			if !slices.ContainsFunc(ure.Ranges, func(sr core.SegmentRange) bool { return sr.Segment == 2 }) {
-				t.Errorf("Run: the refusal names ranges %v and none of segment 2", ure.Ranges)
+			if !slices.Contains(ure.Ranges, tc.want) {
+				t.Errorf("Run: the refusal names ranges %v, want one to be %+v", ure.Ranges, tc.want)
 			}
 		})
+	}
+}
+
+// TestRebuildIndexTwoSegmentsFailingAtOnceAnswerWithTheLowestSegmentID holds
+// the precedence between failures that land together: both segments' walks
+// are parked inside their first read, so each worker is past the bound's
+// context check when released, and both fail on the same kind of refusal.
+// The phase answers with the failure of the lowest segment id, whatever the
+// order the segments were dispatched in and whichever worker failed first.
+func TestRebuildIndexTwoSegmentsFailingAtOnceAnswerWithTheLowestSegmentID(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	for _, id := range []core.SegmentID{1, 3} {
+		r.plantSeg(id, buildSeg(id, rec(17, nil)))
+	}
+	rec := newReadsOf(r.seam.FS())
+	rec.holdSegReadsPastTheHeader()
+	ctx := context.Background()
+	rd := newReader(ctx, rec, r.clk, nil)
+	// Dispatched highest first, so an answer taken by dispatch order or by
+	// the first failure to land is segment 3's.
+	own := []SegmentInfo{
+		{ID: 3, Header: format.SegmentHeader{Identity: journalID, ID: 3}},
+		{ID: 1, Header: format.SegmentHeader{Identity: journalID, ID: 1}},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 2, nil)
+		done <- err
+	}()
+	for rec.inFlightSegReads() < 2 {
+		runtime.Gosched()
+	}
+	rec.releaseSegReads()
+
+	err := <-done
+	if !errors.Is(err, core.ErrUnknownFormat) {
+		t.Fatalf("rebuildIndex with two segments refused got err %v, want ErrUnknownFormat", err)
+	}
+	if got := err.Error(); !contains(got, "segment 1:") || contains(got, "segment 3:") {
+		t.Errorf("rebuildIndex with segments 3 and 1 refused got %q, want the refusal of segment 1, the lowest id", got)
 	}
 }
 
@@ -595,7 +641,6 @@ func TestRunRebuildASizeOrCloneSpecReadThatFailsIsUnreadableRanges(t *testing.T)
 // error: segment 2 is never read. The dispatcher is blocked on the slot while
 // segment 1 is parked, so the slot it takes is the one the failure freed.
 func TestRebuildIndexAFailedSegmentStopsTheDispatch(t *testing.T) {
-	forceGOMAXPROCS(t, 1)
 	r := newRig(t)
 	r.writeFormat()
 	r.plantSteps(seededSteps(5), stepsPerSegment)
@@ -614,7 +659,7 @@ func TestRebuildIndexAFailedSegmentStopsTheDispatch(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, nil)
+		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil)
 		done <- err
 	}()
 	// Segment 1's walk is parked in its first read. Polling the condition
@@ -635,7 +680,7 @@ func TestRebuildIndexAFailedSegmentStopsTheDispatch(t *testing.T) {
 	}
 }
 
-// TestRebuildIndexCancelledMidFeedChangesNothing holds Review Focus 3: a
+// TestRebuildIndexCancelledMidFeedChangesNothing holds that a
 // cancellation that lands while a segment's scan is inside the bound
 // answers with the context's error, the directory keeps the bytes it held
 // — the phase writes nothing — and no half-built answer comes back: the
@@ -663,7 +708,7 @@ func TestRebuildIndexCancelledMidFeedChangesNothing(t *testing.T) {
 	done := make(chan rebuiltOrErr, 1)
 	rd := newReader(ctx, r.seam.FS(), r.clk, nil)
 	go func() {
-		out, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, nil)
+		out, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil)
 		done <- rebuiltOrErr{out, err}
 	}()
 
@@ -692,7 +737,7 @@ type rebuiltOrErr struct {
 	err error
 }
 
-// TestRunRebuildRefusesAFloorWithAnEpoch holds Review Focus 4 (R22): a floor
+// TestRunRebuildRefusesAFloorWithAnEpoch holds R22 for a floor
 // whose epoch half is not zero is refused the way a record carrying one is,
 // and the refused open returns no half-built state.
 func TestRunRebuildRefusesAFloorWithAnEpoch(t *testing.T) {
@@ -740,9 +785,9 @@ func TestRunRebuildCountsOneResyncPerScan(t *testing.T) {
 	}
 }
 
-// TestRunRebuildTooShortForASlotDoesNotFailTheOpen holds Review Focus 1
-// through the open: a segment too short to hold a record slot contributes a
-// scan of nothing and fails nothing — the tail phases' judgement is later.
+// TestRunRebuildTooShortForASlotDoesNotFailTheOpen holds the empty scan through
+// the open: a segment too short to hold a record slot contributes a scan of
+// nothing and fails nothing — the tail phases' judgement is later.
 func TestRunRebuildTooShortForASlotDoesNotFailTheOpen(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
