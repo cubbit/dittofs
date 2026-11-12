@@ -705,15 +705,26 @@ func TestSelfFenceGateUnderRace(t *testing.T) {
 	}
 }
 
-// corruptHole stores a hole record of file at offset 0 that does not decode,
-// which fails every existence commit of the file as an error of the whole
-// call (RFC 16's store reads the holes over each write).
-func (u *fenceUnit) corruptHole(t *testing.T, file entity.FileID) {
+// corrupt stores a record of file at offset 0 under sub that does not
+// decode: a hole (keys.FH) fails every existence commit of the file as an
+// error of the whole call (RFC 16's store reads the holes over each write),
+// and a ref (keys.FRef) every phase 2 batch of a removal over it. repair
+// deletes the record.
+func (u *fenceUnit) corrupt(t *testing.T, file entity.FileID, sub byte) (repair func()) {
 	t.Helper()
-	key := keys.Uint64(append(keys.ID(keys.ID([]byte{keys.KindF}, u.share.ID[:]), file[:]), keys.FH), 0)
+	key := keys.Uint64(append(keys.ID(keys.ID([]byte{keys.KindF}, u.share.ID[:]), file[:]), sub), 0)
 	if err := u.faults.Update(t.Context(), func(tx kv.Txn) error { return tx.Set(key, []byte{0xff}) }); err != nil {
 		t.Fatal(err)
 	}
+	// The store's check at the test's end decodes refs, so the record never
+	// outlives the test.
+	repair = func() {
+		if err := u.faults.Update(context.Background(), func(tx kv.Txn) error { return tx.Delete(key) }); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(repair)
+	return repair
 }
 
 // A file whose hole record does not decode fails each existence commit as an
@@ -726,7 +737,7 @@ func (u *fenceUnit) corruptHole(t *testing.T, file entity.FileID) {
 func TestSelfFenceNotOnAFilesUndecodableRecord(t *testing.T) {
 	u := newFenceUnit(t)
 	a, b := u.create(t, "a"), u.create(t, "b")
-	u.corruptHole(t, a)
+	u.corrupt(t, a, keys.FH)
 	if _, err := u.tryWrite(a); err != nil {
 		t.Fatal(err)
 	}
@@ -778,6 +789,43 @@ func TestSelfFenceNotOnAFilesUndecodableRecord(t *testing.T) {
 	}
 }
 
+// A truncate whose phase 2 fails on a ref record of its file that does not
+// decode is retried at its backoff and raises removal_stalled naming the
+// file, and with nothing else written for 31 s the node is not fenced:
+// another file's write is acknowledged and its existence commits. Once the
+// record is repaired the removal finishes. Counting the file's error as the
+// store's failure fences here.
+func TestSelfFenceNotOnARemovalsUndecodableRecord(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	u.write(t, a, 0, fill(16, 'a'))
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, a); err != nil {
+		t.Fatal(err)
+	}
+	repair := u.corrupt(t, a, keys.FRef)
+	if err := u.e.Truncate(t.Context(), u.share.ID, a, 0); err != nil {
+		t.Fatalf("the truncate's phase 1: %v", err)
+	}
+	u.until(t, "the truncate's phase 2 removal_stalled", func() bool { return u.e.RemovalStalled(a) })
+
+	// In steps, so phase 2 retries throughout, each attempt failing.
+	u.advanceInSteps(31 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Fatalf("a write 31s into the removal's failures: %v, want acknowledged", err)
+	}
+	if c, ok := u.nodeFenced(); ok {
+		t.Fatalf("node_fenced %v, want none", c)
+	}
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, b); err != nil {
+		t.Errorf("the other file's existence commit: %v, want committed", err)
+	}
+	if !u.e.RemovalStalled(a) {
+		t.Error("removal_stalled no longer names the corrupt file")
+	}
+	repair()
+	u.until(t, "the removal finishes once its record is repaired", func() bool { return !u.e.RemovalStalled(a) && u.e.RemovalsPending() == 0 })
+}
+
 // holdAfterBatch holds the group commit's loop at its pass after the first
 // batch it takes, so no retry runs after that batch, and answers a wait for
 // the hold, which moves the clock meanwhile so a batch due by age is taken.
@@ -818,7 +866,7 @@ func (u *fenceUnit) holdAfterBatch(t *testing.T) (wait func()) {
 func TestSelfFenceNotOnAnUndecodableRecordWithMarksStopped(t *testing.T) {
 	u := newFenceUnit(t)
 	a, b := u.create(t, "a"), u.create(t, "b")
-	u.corruptHole(t, a)
+	u.corrupt(t, a, keys.FH)
 	if _, err := u.tryWrite(a); err != nil {
 		t.Fatal(err)
 	}
@@ -901,7 +949,7 @@ func TestSelfFenceOnAStoreRefusingWritesBesideEmptyMarks(t *testing.T) {
 func TestSelfFenceOnFailingMarksBesideAnUndecodableRecord(t *testing.T) {
 	u := newFenceUnit(t)
 	a, b := u.create(t, "a"), u.create(t, "b")
-	u.corruptHole(t, a)
+	u.corrupt(t, a, keys.FH)
 	if _, err := u.tryWrite(a); err != nil {
 		t.Fatal(err)
 	}
@@ -933,7 +981,7 @@ func TestSelfFenceOnAStoreRefusingWritesBesideAnUndecodableRecord(t *testing.T) 
 		t.Fatal(err)
 	}
 	a, x, b := u.create(t, "a"), u.create(t, "x"), u.create(t, "b")
-	u.corruptHole(t, a)
+	u.corrupt(t, a, keys.FH)
 	for _, f := range []entity.FileID{a, x} {
 		if _, err := u.tryWrite(f); err != nil {
 			t.Fatal(err)
@@ -965,7 +1013,7 @@ func TestSelfFenceOnAStoreRefusingWritesBesideAnUndecodableRecord(t *testing.T) 
 func TestSelfFenceNotOnAnUndecodableRecordAfterAStoreErrorCommitted(t *testing.T) {
 	u := newFenceUnit(t)
 	a, b := u.create(t, "a"), u.create(t, "b")
-	u.corruptHole(t, a)
+	u.corrupt(t, a, keys.FH)
 	if _, err := u.tryWrite(a); err != nil {
 		t.Fatal(err)
 	}
@@ -983,6 +1031,42 @@ func TestSelfFenceNotOnAnUndecodableRecordAfterAStoreErrorCommitted(t *testing.T
 	}
 }
 
+// Two truncates whose phase 2 runs fail in turn: x's at the store, its
+// writes refused with an error of the store's own, a's on a ref record that
+// does not decode. With nothing else written, the node fences 30 s after the
+// first failed run. Letting a's failure clear x's at the store, as the
+// removal loop is one owner for both, fences nothing here.
+func TestSelfFenceOnARemovalFailingAtTheStoreBesideAnUndecodableRecord(t *testing.T) {
+	u := newFenceUnit(t)
+	a, x, b := u.create(t, "a"), u.create(t, "x"), u.create(t, "b")
+	for _, f := range []entity.FileID{a, x} {
+		u.write(t, f, 0, fill(16, 'a'))
+		if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u.corrupt(t, a, keys.FRef)
+	refused := sim.FaultAction{Err: syscall.ENOSPC}
+	deletes := sim.Rule{Op: kvtest.OpDelete, Key: fileRecord(u.share.ID, x) + "‖*", Action: refused}
+	u.fault(t, deletes) // phase 1 deletes none of x's records; phase 2 does
+	for _, f := range []entity.FileID{a, x} {
+		if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
+			t.Fatalf("the truncate's phase 1: %v", err)
+		}
+	}
+	u.fault(t, deletes, sim.Rule{Op: kvtest.OpSet, Key: fileRecord(u.share.ID, x) + "‖*", Action: refused})
+	u.until(t, "both phase 2s removal_stalled", func() bool { return u.e.RemovalStalled(a) && u.e.RemovalStalled(x) })
+
+	// In steps, so both phase 2s retry throughout, each attempt failing.
+	u.advanceInSteps(31 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s into the removals' failures: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("node_fenced not raised 31s into the removals' failures")
+	}
+}
+
 // One store error on a call carrying a file whose hole record does not
 // decode, then only that file's retries, each failing on its own record,
 // its marks empty: the node is not fenced 31 s on, nor two minutes later,
@@ -992,7 +1076,7 @@ func TestSelfFenceNotAfterOneStoreErrorOnACorruptFile(t *testing.T) {
 	u := newFenceUnit(t)
 	u.rec.noMarks.Store(true)
 	a, b := u.create(t, "a"), u.create(t, "b")
-	u.corruptHole(t, a)
+	u.corrupt(t, a, keys.FH)
 	if _, err := u.tryWrite(a); err != nil {
 		t.Fatal(err)
 	}
@@ -1071,7 +1155,7 @@ func (u *fenceUnit) corruptOpenGen(t *testing.T) {
 func TestSelfFenceOnAnUndecodableOpenGeneration(t *testing.T) {
 	u := newFenceUnit(t)
 	a, b := u.create(t, "a"), u.create(t, "b")
-	u.corruptHole(t, a)
+	u.corrupt(t, a, keys.FH)
 	u.corruptOpenGen(t)
 	if _, err := u.tryWrite(a); err != nil {
 		t.Fatal(err)
