@@ -1,6 +1,7 @@
 package contenttest_test
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/sim"
 	pvfs "github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // The two declarations of Content hold the same methods.
@@ -201,6 +203,28 @@ func TestMemoryOverAStoreReleasesAWriteStagedDuringARelease(t *testing.T) {
 	}
 	if got := dones.Load(); got != 2 {
 		t.Errorf("after the release: Dones called %d times, want 2", got)
+	}
+}
+
+// A release of a file the store records a durable open of is aborted as
+// vfserr.ErrFileOpen, the one error the filesystem's release clears its
+// releasing mark for, rather than as the store's ErrHeld.
+func TestMemoryOverAStoreAnswersAHeldReleaseFileOpen(t *testing.T) {
+	fs := kvstoretest.NewFS(t, memKV)
+	m := contenttest.NewOver(sim.NewTestClock(time.Unix(0, 0)), fs.Store)
+	m.Bind(fs.Share.ID)
+	_, f := fs.Create(t, fs.Admin, fs.Root, "f", kvstore.Regular(0o644))
+	id, err := fs.Store.NextID(t.Context(), kvstore.IDOpen)
+	if err != nil {
+		t.Fatalf("NextID: %v", err)
+	}
+	open := entity.OpenRecord{ID: entity.OpenID(id), File: f.ID, Client: 1, Principal: fs.Admin.Principal, Access: 0x3}
+	// The unlink of the last name writes the open durable: it holds the file.
+	if _, err := fs.Store.Namespace().Unlink(t.Context(), fs.Admin, fs.Root, []byte("f"), open); err != nil {
+		t.Fatalf("Unlink: %v", err)
+	}
+	if _, err := m.Delete(t.Context(), f.Share, f.ID); !errors.Is(err, vfserr.ErrFileOpen) {
+		t.Errorf("Delete of a file held by a durable open: %v, want vfserr.ErrFileOpen", err)
 	}
 }
 
