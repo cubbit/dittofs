@@ -3,6 +3,7 @@ package engine_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -82,8 +84,8 @@ func TestARetryOfADoneCloneIsAnsweredWhileAnotherRunsIntoItsFile(t *testing.T) {
 	}
 }
 
-// A write or removal overlapping either extent of a done clone drops it:
-// the retry runs the clone again, a second clone marker, and the
+// A write, removal or later clone overlapping either extent of a done clone
+// drops it: the retry runs the clone again, one more clone marker, and the
 // destination reads the source as it is now. The other file, which only the
 // memory kept, holds no entry once it is dropped (catches a change that
 // leaves the spec remembered, or leaves it keeping the other file alive).
@@ -109,6 +111,12 @@ func TestAChangeOverADoneClonesExtentRunsTheRetry(t *testing.T) {
 				t.Fatalf("Truncate of the destination: %v", err)
 			}
 		}},
+		{"a clone over the destination", false, func(t *testing.T, u *unit, _, dst entity.FileID) {
+			u.clone(t, u.committedFile(t, "o", fill(mib, 'o')), dst, vfserr.Extent{Len: mib})
+		}},
+		{"a clone over the source", true, func(t *testing.T, u *unit, src, _ entity.FileID) {
+			u.clone(t, u.committedFile(t, "o", fill(mib, 'o')), src, vfserr.Extent{Len: mib})
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			u, src, dst := doneCloneUnit(t)
@@ -121,11 +129,14 @@ func TestAChangeOverADoneClonesExtentRunsTheRetry(t *testing.T) {
 			if u.e.HasEntry(other) {
 				t.Errorf("the file the change did not touch keeps an entry after %s, want it released", tc.name)
 			}
+			// A clone over the destination leaves a marker of its own there:
+			// the retry's is counted from the markers the change left.
+			before := len(u.cloneMarkers(dst))
 			if err := u.retried(t, src, dst, vfserr.Extent{Len: mib}); err != nil {
 				t.Fatalf("the retry after %s = %v, want nil", tc.name, err)
 			}
-			if n := len(u.cloneMarkers(dst)); n != 2 {
-				t.Errorf("the journal holds %d clone markers after %s and the retry, want two clones", n, tc.name)
+			if n := len(u.cloneMarkers(dst)); n != before+1 {
+				t.Errorf("the journal holds %d clone markers after %s and the retry, want %d, the retry run", n, tc.name, before+1)
 			}
 			if got, want := u.read(t, dst, 0, mib), u.read(t, src, 0, mib); !bytes.Equal(got, want) {
 				t.Errorf("after %s and the retry the destination does not read the source", tc.name)
@@ -221,5 +232,37 @@ func TestUnbindForgetsTheSharesDoneClones(t *testing.T) {
 	if u.e.HasEntry(src) || u.e.HasEntry(dst) {
 		t.Errorf("the files keep entries after the Unbind (source %v, destination %v), want both released",
 			u.e.HasEntry(src), u.e.HasEntry(dst))
+	}
+}
+
+// A release of a done clone's destination forgets the clone and releases
+// the source's entry, which only the memory kept, and the clone's retry runs,
+// answered by the store (catches a release that leaves the spec remembered,
+// whose retry is answered nil with no destination left).
+func TestAReleaseOfADoneClonesDestinationForgetsIt(t *testing.T) {
+	u, src, dst := doneCloneUnit(t)
+	key := openstate.FileKey{Share: u.share.ID, Shard: u.share.Shard, ID: dst}
+	u.unlink(t, u.tb, key, "dst")
+	done, err := u.tb.Opens().Releasing(t.Context(), key)
+	if err != nil {
+		t.Fatalf("Releasing the destination: %v", err)
+	}
+	ch, err := u.e.Delete(t.Context(), u.share.ID, dst)
+	done(err == nil && ch == nil)
+	if ch != nil || err != nil {
+		t.Fatalf("the release of the destination: %v, %v; want it released", ch, err)
+	}
+
+	if n := u.e.DoneClones(); n != 0 {
+		t.Errorf("the node remembers %d done clones after the release, want 0", n)
+	}
+	if u.e.HasEntry(src) {
+		t.Error("the source keeps an entry after the release, want it released")
+	}
+	// The released destination's ID names nothing now, and a file recreated
+	// under its name has another, so the retry that stale memory would answer
+	// nil reaches the store, which refuses it.
+	if err := u.retried(t, src, dst, vfserr.Extent{Len: mib}); !errors.Is(err, vfserr.ErrStale) {
+		t.Errorf("the retry into the released destination = %v, want ErrStale", err)
 	}
 }
