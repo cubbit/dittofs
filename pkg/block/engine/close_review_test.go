@@ -419,22 +419,19 @@ func TestTheLastGroupCommitOverridesAStaleRetryBackoff(t *testing.T) {
 		return next.Commit(ctx, p, marks)
 	}))
 
-	takes := make(chan struct{}, 8)
-	u.e.OnLoop(func() { takes <- struct{}{} })
-
 	f := u.create(t, "a")
 	if _, err := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("abc"),
 		engine.WriteOpts{Done: func() { done.Add(1) }}); err != nil {
 		t.Fatal(err)
 	}
 
-	<-takes // the loop is awake: this was its first look at the due set
-
-	// ExistenceAge is 24 h in a unit: the file becomes due and its first
-	// batch fails, settling a 100 ms backoff on the frozen clock.
+	// ExistenceAge is 24 h in a unit: once the wait is armed the file is
+	// made due by advancing the clock, and its first batch fails, settling
+	// a 100 ms backoff on the frozen clock. The backoff is settled state,
+	// waited on as such, not a count of the loop's passes.
+	eventually(t, "the group commit's timer is set", func() bool { return u.clock.Pending() > 0 })
 	u.clock.Advance(25 * time.Hour)
-	<-takes // the take that runs the failing batch
-	<-takes // the look after the batch settled the backoff: it is in place
+	eventually(t, "the failed batch backs the file off", func() bool { return u.e.Failing(u.rec, f) })
 
 	// The clock never moves again: only overriding the backoff can take
 	// the file. A deadline of its own keeps the stop bound off the test
