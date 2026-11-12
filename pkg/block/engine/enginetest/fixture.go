@@ -131,10 +131,10 @@ func (f *Fixture) HoldNextClone() (entered <-chan struct{}, release func()) {
 	return f.holdNext(&f.cloneGate)
 }
 
-// HoldNextStart holds the next engine start inside its start steps, at its
-// store call raising the shards' incarnations, after its journal is open,
-// until release is called; entered is closed once it arrives. A test's
-// cleanup releases it.
+// HoldNextStart holds the next raise of the shards' incarnations at the
+// store: the next engine start's, inside its start steps after its journal
+// is open, or a first attach's if one comes first. It holds until release is
+// called; entered is closed once it arrives. A test's cleanup releases it.
 func (f *Fixture) HoldNextStart() (entered <-chan struct{}, release func()) {
 	return f.holdNext(&f.startGate)
 }
