@@ -141,7 +141,8 @@ func (f *fence) committed() {
 // file's own failure the store reports as an error of the whole call, not one
 // listed here, counts here as the store's; the group commit releases its
 // owner once another call of the batch committed, which narrows it to the
-// file (syncAndCommit).
+// file (syncAndCommit), and the removal loop once a phase 2 run failed on a
+// record that does not decode (phase2).
 func storeFailed(err error) bool {
 	return !errors.Is(err, kvstore.ErrConflict) &&
 		!errors.Is(err, context.Canceled) &&
