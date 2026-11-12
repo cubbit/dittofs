@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
@@ -27,9 +28,37 @@ type CarriedRec struct {
 // CarryResult is what one Carry placed. A carry appends and registers each
 // placed record before it moves to the next, so a unit that abandons midway
 // answers the records it had already placed; the pass's later steps own
-// them, as they own the copies its content half appended.
+// them, as they own the copies its content half appended. The deferred
+// losses it wrote the records of name no end: the deferral ends only once
+// the record is durable, which the caller that waits on the location owns.
 type CarryResult struct {
-	Carried []CarriedRec
+	Carried  []CarriedRec
+	Deferred []DeferredCopy
+}
+
+// DeferredLoss is one loss whose record a deferral owes: the registry entry
+// the layer that keeps the deferred losses hands the pass, mapped field by
+// field — the dropped record's owner, place and numbers, why it was dropped,
+// and the flags its own record would carry. Declared here, core types only,
+// because the pass never imports the layer that keeps the registry; the
+// wiring the pass gets maps the entry into this.
+type DeferredLoss struct {
+	Share     core.ShareTag
+	File      core.FileID
+	Extent    core.Extent
+	Version   core.Version
+	Seq       core.Seq
+	Reason    core.LossReason
+	Offloaded bool
+	Synced    bool
+}
+
+// DeferredCopy is one deferred loss the carry wrote the record of: the
+// registry entry it built the record from, and the place the record landed,
+// the location whose durability ends the deferral.
+type DeferredCopy struct {
+	Loss DeferredLoss
+	Loc  segment.Location
 }
 
 // Carry places a fresh copy of every header-only record registered live in
@@ -118,7 +147,89 @@ func (c *Copier) Carry(ctx context.Context, seg core.SegmentID, res Result) (Car
 		}
 		i = j
 	}
+	// Every deferred loss the segment owes, beside the walk's records: each
+	// becomes the loss record its deferral promised, written the way the
+	// walk's copies are. An admission or append error abandons the unit like
+	// the walk's own aborts, the records already placed answering for
+	// themselves.
+	if c.deferred != nil {
+		for _, entry := range c.deferred(seg) {
+			if err := ctx.Err(); err != nil {
+				return out, err
+			}
+			if err := c.carryDeferredLoss(ctx, seg, entry, &out); err != nil {
+				return out, err
+			}
+		}
+	}
 	return out, nil
+}
+
+// carryDeferredLoss writes the record of one deferred loss the walk's
+// segment holds, under the entry's file append domain on the file's stream:
+// the admission every appending call asks runs first, the repack copy — the
+// one class the headroom cannot refuse — and its draw pairs with drawn once
+// the record appended; a fresh sequence number follows, since a deferred
+// loss record never had one; then the record itself, built from the entry,
+// under a repack roll. The finished placement is noted through the index
+// and registered live like every record the walk places, and the result
+// answers it for the caller that waits out the location's durability to end
+// the deferral. This ends nothing: EndDeferral, and the SetDeferred that
+// lowers the source with it, are the durable-waiting caller's.
+func (c *Copier) carryDeferredLoss(ctx context.Context, seg core.SegmentID, entry DeferredLoss, out *CarryResult) error {
+	if c.admit == nil {
+		return fmt.Errorf("reclaim: carrying segment %d: a deferred loss of file %v seq %d arrived with no admission wired", seg, entry.File, entry.Seq)
+	}
+	unlock := c.dom.Lock(entry.File)
+	defer unlock()
+	draw, err := c.admit(capacity.RepackCopy)
+	if err != nil {
+		return fmt.Errorf("reclaim: carrying segment %d: admitting the deferred loss of file %v seq %d on the repack reserve: %w", seg, entry.File, entry.Seq, err)
+	}
+	seq, err := c.counters.NextSeq()
+	if err != nil {
+		return fmt.Errorf("reclaim: carrying segment %d: numbering the deferred loss of file %v seq %d: %w", seg, entry.File, entry.Seq, err)
+	}
+	h := format.RecordHeader{
+		Kind:    format.KindLoss,
+		File:    entry.File,
+		Extent:  entry.Extent,
+		Seq:     seq,
+		Version: entry.Version,
+		Tag:     entry.Share,
+	}
+	body := format.RecordBody{Loss: format.Loss{
+		Dropped:   entry.Seq,
+		Synced:    entry.Synced,
+		Offloaded: entry.Offloaded,
+		Reason:    lossReasonOf(entry.Reason),
+	}}
+	// ponytail: in a copy a loss record takes its real bytes, 184 — a
+	// 96-byte header, a 16-byte payload and a 72-byte footer entry — against
+	// at least 168 for the header-only record it replaces, so a segment of
+	// nothing but dropped header-only records needs a tenth more than one
+	// segment's cap of repack reserve. Upgrade to sizing the reserve at
+	// 11/10 of a cap when a deferred loss is seen in the field.
+	pl, err := c.streams.For(entry.File).AppendRoll(h, body, segment.Roll{Repack: true})
+	if err != nil {
+		return fmt.Errorf("reclaim: carrying segment %d: placing the deferred loss record of seq %d: %w", seg, entry.Seq, err)
+	}
+	if c.drawn != nil {
+		c.drawn(draw)
+	}
+	if err := c.ix.NotePlaced(entry.Share, entry.File, pl.Loc.Segment, entry.Extent, index.Numbers{Version: entry.Version, Seq: seq}); err != nil {
+		return fmt.Errorf("reclaim: carrying segment %d: noting the deferred loss record of seq %d: %w", seg, entry.Seq, err)
+	}
+	// Superseded stays unset — false — in the registration: a loss an open
+	// deferred is never a record metadata holds newer content under.
+	c.tracker.Register(Rec{
+		Kind: format.KindLoss, File: entry.File, Seg: pl.Loc.Segment, Ext: entry.Extent,
+		Pair: index.Numbers{Version: entry.Version, Seq: seq},
+		Seq:  seq, Named: entry.Seq, Tag: entry.Share, Synced: entry.Synced,
+		Loc: pl.Loc,
+	})
+	out.Deferred = append(out.Deferred, DeferredCopy{Loss: entry, Loc: pl.Loc})
+	return nil
 }
 
 // carryFile carries one file's records under the file's append domain, which
@@ -298,4 +409,23 @@ func (t *Tracker) forgetSnapshotOf(rec Rec) []core.SegmentID {
 		out = append(out, s)
 	}
 	return out
+}
+
+// lossReasonOf maps a reason to the number its loss record carries. It
+// panics on a reason that names none, which is a wiring bug: the layer whose
+// registry the entry came from refused one at Lose already.
+func lossReasonOf(r core.LossReason) format.LossReason {
+	switch r {
+	case core.LossCorrupt:
+		return format.LossCorrupt
+	case core.LossStale:
+		return format.LossStale
+	case core.LossFailedWindow:
+		return format.LossFailedSync
+	case core.LossSuperseded:
+		return format.LossSuperseded
+	case core.LossAcknowledged:
+		return format.LossAcknowledged
+	}
+	panic(fmt.Sprintf("reclaim: loss reason %d names no reason", r))
 }

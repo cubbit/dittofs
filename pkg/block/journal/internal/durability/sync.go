@@ -339,6 +339,12 @@ type Durability struct {
 	// a journal with a long loss history shows up in a heap profile.
 	pieces map[piece]struct{}
 
+	// deferredLosses holds, per segment, the losses Lose deferred against
+	// it — one entry per deferred piece it took, the entry the copy that
+	// retires the segment builds its loss record from. An entry leaves on
+	// EndDeferral alone. Guarded by lmu, like pieces.
+	deferredLosses map[core.SegmentID][]Loss
+
 	// resolved is Config.Resolved: the announcement of a resolved window.
 	resolved func(stream uint32, seg core.SegmentID)
 
@@ -444,11 +450,10 @@ func New(cfg Config) (*Durability, error) {
 		counters: cfg.Counters,
 		markLoss: cfg.MarkLoss,
 		account:  cfg.Account,
-
 		lossRegistered: cfg.LossRegistered,
 		emptied:        cfg.Emptied,
-
-		pieces: map[piece]struct{}{},
+		pieces:         map[piece]struct{}{},
+		deferredLosses: map[core.SegmentID][]Loss{},
 	}
 	d.refuse = d.Admit
 	d.readOnly = d.Enter

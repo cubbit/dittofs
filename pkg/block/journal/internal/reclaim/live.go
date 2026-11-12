@@ -413,15 +413,15 @@ func (t *Tracker) lowerCount(seg core.SegmentID, st *segState, n *atomic.Int64) 
 // that retires this segment, so the segment stays held while one stands —
 // and lowered when a deferral ends, once the copy that writes the loss
 // record has it durable. The registry of deferred losses lives with the
-// durability layer, which counts per segment the losses it deferred and
-// the segments holding their dropped records: it must call SetDeferred
-// once per deferral that starts, and once per deferral that ends, on the
-// segment holding the dropped record. No such registry exists yet, so
-// nothing moves the count; it and Held's read of it are in place for the
-// day one does. The count clamps at zero: an end without a start, or a
-// repeated end, lowers nothing. The last end on a segment holding nothing
-// else crosses to not held and fires the candidate, exactly as any release
-// does.
+// durability layer (loss.go's deferred registry): a deferred Lose stores
+// each entry against the segment holding the dropped record, and the pass
+// that retires the segment reads them through DeferredAgainst and ends
+// each with EndDeferral and SetDeferred(seg, false) once the record's
+// place is durable; the deferring path raises the count with its own
+// SetDeferred call beside its Lose. The count clamps at zero: an end
+// without a start, or a repeated end, lowers nothing. The last end on a
+// segment holding nothing else crosses to not held and fires the candidate,
+// exactly as any release does.
 //
 // A segment named here is not re-created for the set's word alone: with a
 // member check set, a segment the set no longer holds answers nothing, for
@@ -844,8 +844,8 @@ type segState struct {
 	// the durability layer still defers — one per loss that started, taken
 	// back per loss that ended. SetDeferred raises and lowers it, and the
 	// registry of deferred losses reaches the tracker through that call
-	// alone. No such registry exists yet, so nothing moves it and it reads
-	// zero; Held consults it for the day one does.
+	// alone, the pass ending each deferral the registry gives up once the
+	// copy's record is durable.
 	deferred atomic.Int64
 	// Holds is the count of ended holds registered on the segment — one per
 	// HoldEnded — each released at the proof its registration named, a mark

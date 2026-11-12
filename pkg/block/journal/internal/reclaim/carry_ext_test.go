@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
@@ -652,5 +654,228 @@ func TestCarryBadRecordAbandonsUnit(t *testing.T) {
 	h, body := f.readBack(t, res.Copies[0].To)
 	if h.Kind != format.KindWrite || !bytes.Equal(body.Payload, payload) {
 		t.Fatalf("the content copy at %v holds kind %s and %d payload bytes, want the write's bytes whole", res.Copies[0].To, h.Kind, len(body.Payload))
+	}
+}
+
+// TestCarryDeferredLossOnReserve is the journal-level form of the rule that a
+// deferred loss is owed its record by the copy that retires the segment
+// holding the dropped record: the segment stays held by the deferral alone
+// and answers a selection like any candidate, the unit writes the record
+// from the registry entry on the repack-reserve admission — the one class
+// the headroom never refuses, checked over a real headroom held at its
+// limit — and the deferral ends only once the target is durable, which the
+// carry never does itself: a crash while the target's directory sync is
+// held still finds the dropped record's bytes on disk in the source, so the
+// next open re-derives the loss there, and the end the durable-waiting
+// caller plays leaves the source crossing to not held, the hand-over the
+// pass waits for.
+func TestCarryDeferredLossOnReserve(t *testing.T) {
+	f := newCopyFixture(t)
+	dur := f.core.Durability()
+	file := copyFile(7)
+	payload := []byte("the write the deferred loss names")
+	ctx := context.Background()
+
+	// The dropped record: the file's only write, synced and sealed in the
+	// source segment, so its bytes are durable there and nothing but the
+	// held piece keeps the segment.
+	recW, seqW, _ := f.plant(t, copyTag, file, payload, 0)
+	sa := recW.Segment
+	if err := dur.Sync(ctx, file); err != nil {
+		t.Fatalf("Sync of the planted write: %v", err)
+	}
+	f.sealSource(t, file)
+	f.waitSpares(t)
+
+	// The deferral. A deferred Lose naming no segment is a caller bug
+	// refused before the piece is taken: the same loss raised again with one
+	// goes through whole, which the registry below answers to.
+	vL, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw of the loss's version: %v", err)
+	}
+	x := core.Extent{Len: int64(len(payload))}
+	if _, err := dur.Lose(ctx, durability.Loss{
+		Share: copyTag, File: file, Extent: x, Version: vL,
+		Seq: seqW, Reason: core.LossStale, Synced: true, Deferred: true,
+	}); err == nil {
+		t.Fatal("Lose of a deferred loss naming no segment = nil error, want the refusal")
+	}
+	if _, err := dur.Lose(ctx, durability.Loss{
+		Share: copyTag, File: file, Extent: x, Version: vL,
+		Seq: seqW, Reason: core.LossStale, Synced: true, Deferred: true, Seg: sa,
+	}); err != nil {
+		t.Fatalf("Lose of the deferred loss: %v", err)
+	}
+	// The deferral appends no record and drops the piece, as a synced loss
+	// does: nothing but the write's bytes kept the source, so it holds
+	// nothing now.
+	if n := f.countLossRecords(t); n != 0 {
+		t.Fatalf("%d loss records on disk after the deferred Lose, want 0: the deferral appends no record anywhere", n)
+	}
+	if p, ok := f.ix.Lookup(file, 0); ok {
+		t.Fatalf("Lookup at 0 over the lost write = %+v, want missing: the marker the synced loss left stopped holding it", p)
+	}
+	losses := dur.DeferredAgainst(sa)
+	if len(losses) != 1 {
+		t.Fatalf("DeferredAgainst of the source = %+v, want the one deferred loss", losses)
+	}
+	if losses[0].Seq != seqW || losses[0].Seg != sa {
+		t.Fatalf("the registry entry = %+v, want the dropped record's seq %d against the source %d", losses[0], seqW, sa)
+	}
+
+	// Held by the deferral alone, the source is a candidate like any other:
+	// the loss emptied it, and nothing but the deferred flag keeps it.
+	if f.tracker.Held(sa) {
+		t.Fatal("Held of the source before the deferral starts = true, want false: the loss dropped its only content")
+	}
+	f.tracker.SetDeferred(sa, true)
+	if !f.tracker.Held(sa) {
+		t.Fatal("Held of the source kept by the deferral alone = false, want true")
+	}
+	sel := f.selector()
+	cands := sel.Select(reclaim.Scope{Segments: []core.SegmentID{sa}}, 1)
+	if len(cands) != 1 || cands[0].ID != sa {
+		t.Fatalf("Select over the source = %+v, want the source %d alone: a segment held by a deferral is a candidate", cands, sa)
+	}
+	if cands[0].Live != 0 {
+		t.Fatalf("the candidate's live bytes = %d, want 0: the loss dropped the only content", cands[0].Live)
+	}
+	sel.Done(sa)
+
+	// A real headroom over injected facts, at its limit and drawn past the
+	// open reserve: every class but Open and the repack copy draws nothing
+	// and is refused, so the record below lands only through the one
+	// admission that never refuses.
+	const hrRecords = 2
+	hr := capacity.NewHeadroom(capacity.HeadroomConfig{
+		Records:    hrRecords,
+		Footprint:  func() int64 { return 1 },
+		MaxBytes:   1,
+		SegmentCap: copySegCap,
+		Admit:      func() error { return nil },
+	})
+	draw, err := hr.Admit(capacity.Stamp)
+	if err != nil {
+		t.Fatalf("the headroom's opening draw: %v", err)
+	}
+	hr.Drawn(draw)
+
+	// The wirings the pass would make: the registry mapped field by field,
+	// and the headroom the record is admitted through.
+	f.deferred = func(seg core.SegmentID) []reclaim.DeferredLoss {
+		var out []reclaim.DeferredLoss
+		for _, l := range dur.DeferredAgainst(seg) {
+			out = append(out, reclaim.DeferredLoss{
+				Share: l.Share, File: l.File, Extent: l.Extent, Version: l.Version,
+				Seq: l.Seq, Reason: l.Reason, Offloaded: l.Offloaded, Synced: l.Synced,
+			})
+		}
+		return out
+	}
+	f.admit = hr.Admit
+	f.drawn = hr.Drawn
+
+	// The unit: no content copies — the only content left the index at the
+	// loss — and the deferred loss record written beside them, the target's
+	// directory sync held at the seam so no retirement of the source could
+	// turn durable under the unit's feet.
+	hold := f.seam.Hold(t, kit.OpSyncDir, "*")
+	c := f.copier()
+	res, err := c.Copy(ctx, sa)
+	if err != nil {
+		t.Fatalf("Copy of the source: %v", err)
+	}
+	if len(res.Copies) != 0 {
+		t.Fatalf("Copy appended %d copies (%+v), want none: the loss dropped the only content", len(res.Copies), res.Copies)
+	}
+	carry, err := c.Carry(ctx, sa, res)
+	if err != nil {
+		t.Fatalf("Carry of the source: %v", err)
+	}
+	if len(carry.Deferred) != 1 {
+		t.Fatalf("Carry wrote %d deferred loss records (%+v), want the one the segment owes", len(carry.Deferred), carry.Deferred)
+	}
+	dc := carry.Deferred[0]
+	want := reclaim.DeferredLoss{
+		Share: copyTag, File: file, Extent: x, Version: vL,
+		Seq: seqW, Reason: core.LossStale, Synced: true,
+	}
+	if dc.Loss != want {
+		t.Fatalf("the deferred copy's entry = %+v, want the registry's own %+v", dc.Loss, want)
+	}
+	if dc.Loc.Segment == sa {
+		t.Fatalf("the loss record landed in its own source segment %d, want another", sa)
+	}
+	// The record landed, whole and decoded back: kind, named number, reason
+	// and its own numbers.
+	at := index.RecordAt{Segment: dc.Loc.Segment, Offset: uint32(dc.Loc.Off)}
+	h, body := f.readBack(t, at)
+	if h.Kind != format.KindLoss {
+		t.Fatalf("the carried record's kind = %s, want a loss record", h.Kind)
+	}
+	if body.Loss.Dropped != seqW {
+		t.Fatalf("the loss record's Dropped = %d, want the dropped record's seq %d", body.Loss.Dropped, seqW)
+	}
+	if body.Loss.Reason != format.LossStale {
+		t.Fatalf("the loss record's reason = %d, want the stale one", body.Loss.Reason)
+	}
+	if !body.Loss.Synced || body.Loss.Offloaded {
+		t.Fatalf("the loss record's flags = synced %v offloaded %v, want the entry's synced true offloaded false", body.Loss.Synced, body.Loss.Offloaded)
+	}
+	if h.File != file || h.Extent != x || h.Version != vL || h.Tag != copyTag {
+		t.Fatalf("the loss record's header = %+v, want the entry's file, extent, version and tag", h)
+	}
+	if h.Seq <= seqW {
+		t.Fatalf("the loss record's Seq = %d, want a fresh one above the dropped record's %d", h.Seq, seqW)
+	}
+	// Admitted through the wired headroom: the real one, held at its limit,
+	// would have refused the record under any other class.
+	if _, err := hr.Admit(capacity.Loss); err == nil {
+		t.Fatal("Admit of a loss-class record over the headroom at its limit = nil error, want the refusal: only the repack copy draws")
+	}
+	// The record is registered live in the target, as every record the walk
+	// places is, and the deferral is untouched: the registry still names
+	// the entry and the source stays held.
+	if !f.tracker.Held(dc.Loc.Segment) {
+		t.Fatalf("Held of the target %d after the carry = false, want the loss record registered live there", dc.Loc.Segment)
+	}
+	if still := dur.DeferredAgainst(sa); len(still) != 1 || still[0] != losses[0] {
+		t.Fatalf("DeferredAgainst of the source after the carry = %+v, want the deferral still standing: the carry ends nothing", still)
+	}
+	if !f.tracker.Held(sa) {
+		t.Fatal("Held of the source after the carry = false, want true: the deferral ends only once the target is durable")
+	}
+
+	// A crash at the seam while the target's sync is held must leave the
+	// source's dropped record on disk: the deferral had not ended and the
+	// source was never retired, so the only thing a crash can take is the
+	// unsynced target.
+	f.crashed = true
+	if err := f.seam.Crash(); err != nil {
+		t.Fatalf("the crash: %v", err)
+	}
+	hW, bW := f.readBack(t, recW)
+	if hW.Kind != format.KindWrite || !bytes.Equal(bW.Payload, payload) {
+		t.Fatalf("the dropped record on disk in the source after the crash = kind %s with %d payload bytes, want the write's whole %d: the source may not be retired before the target is durable", hW.Kind, len(bW.Payload), len(payload))
+	}
+
+	// The end the durable-waiting caller plays once the target is synced:
+	// the registry gives its entry up, idempotently, and the source crosses
+	// to not held — the hand-over condition the pass waits for before it
+	// retires the source.
+	hold.Release()
+	if !dur.EndDeferral(sa, losses[0]) {
+		t.Fatal("EndDeferral of the entry the registry still holds = false, want true: the deferral ends")
+	}
+	if still := dur.DeferredAgainst(sa); len(still) != 0 {
+		t.Fatalf("DeferredAgainst of the source after the end = %+v, want empty", still)
+	}
+	if dur.EndDeferral(sa, losses[0]) {
+		t.Fatal("the second EndDeferral = true, want false: the end is idempotent")
+	}
+	f.tracker.SetDeferred(sa, false)
+	if f.tracker.Held(sa) {
+		t.Fatal("Held of the source after the deferral ended = true, want false: the crossing the durable-waiting caller's hand-over turns on")
 	}
 }
