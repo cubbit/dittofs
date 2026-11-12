@@ -799,8 +799,15 @@ func (f *Fixture) stop(clean bool) {
 	if f.E != nil {
 		// A frozen test clock can hold the engine's own stop waits off
 		// forever, so the close runs under a deadline: ended by it, the
-		// close reports its stuck step, logged on the crash path.
-		ctx, cancel := context.WithTimeout(f.t.Context(), time.Minute)
+		// close reports its stuck step, logged on the crash path. The
+		// cleanup path runs once the test's context is already cancelled,
+		// and a Close over it would report every join stuck at once, so
+		// the deadline stands on its own there.
+		parent := f.t.Context()
+		if parent.Err() != nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, time.Minute)
 		defer cancel()
 		if err := f.E.Close(ctx); err != nil {
 			if clean {
