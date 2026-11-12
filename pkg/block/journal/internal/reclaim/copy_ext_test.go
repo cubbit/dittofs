@@ -359,10 +359,13 @@ func TestCopyCorruptHeaderNoPieceLeft(t *testing.T) {
 // An I/O error is not a checksum failure: the unread source suspends the
 // whole unit and reaches no corruption handler — B, read and verified before
 // A's reads fail, is appended nowhere either — while the index keeps both
-// records' extents and the unread set keeps A's range. The recovery then
-// reads A again through the pass's own read — the bound for a record already
-// unread is one attempt — and clears the set, and a second Copy over the
-// same claimed segment copies both A and B whole.
+// records' extents and the unread set keeps A's range. The recovery half
+// meets one more failing read on the range A's mark now holds: the bound for
+// a record already unread is one attempt, spent as a single header read that
+// gives up without the three a range that never failed before gets, and the
+// mark survives it. Once the fault clears, the same read succeeds, clears
+// the set, and a second Copy over the same claimed segment copies both A and
+// B whole.
 func TestCopySourceEIOSuspends(t *testing.T) {
 	f := newCopyFixture(t)
 	file := copyFile(1)
@@ -454,17 +457,36 @@ func TestCopySourceEIOSuspends(t *testing.T) {
 		t.Fatalf("%d loss records on the seam after the suspended Copy, want 0: nothing was dropped and no loss recorded", got)
 	}
 
-	// The recovery half: the fault clears and A reads again, through the
-	// same read the pass's first phase makes of every source, on the claim
-	// the test still holds. A's range is unread until this read, so the
-	// access is bounded at one attempt of the copier's closure: one header
-	// read and one body read, no retry.
+	// The recovery half, first on a range A's mark holds: with one more
+	// failing read armed on the source segment, the pass's own read of A
+	// spends its single header attempt and gives up — the one-attempt bound
+	// for a record already in the set, with no retry behind it — and clears
+	// nothing, the range unread before the read and after it alike.
 	if want := 5; reads != want {
 		t.Fatalf("%d reads of the source segment by the suspended Copy, want %d: B's header and body and A's three failed attempts", reads, want)
 	}
-	f.seam.SetFault(nil)
-	pre := f.seam.CallsFor(kit.OpRead, format.SegmentName(seg))
+	if err := f.seam.Schedule(kit.FailingFrom(kit.OpRead, format.SegmentName(seg), 1, 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
 	cp := f.copier()
+	pre := f.seam.CallsFor(kit.OpRead, format.SegmentName(seg))
+	if _, rerr := cp.ReadSource(context.Background(), seg, file, recA); !errors.Is(rerr, core.ErrUnreadable) {
+		t.Fatalf("the read of the still-unread record under one more failing read: error %v, want one wrapping %v", rerr, core.ErrUnreadable)
+	}
+	if delta := f.seam.CallsFor(kit.OpRead, format.SegmentName(seg)) - pre; delta != 1 {
+		t.Fatalf("the read of the already-unread record made %d seam reads, want 1: its single header attempt, the one-attempt bound for a record already in the set, with no retry behind it", delta)
+	}
+	if !f.un.Unread(ref(recA)) {
+		t.Fatal("A no longer marked unread after a read that returned no bytes again, want the range kept: the failed attempt clears nothing")
+	}
+
+	// The fault clears and A reads again, through the same read the pass's
+	// first phase makes of every source, on the claim the test still holds.
+	// A's range is unread until this read, so the access stays bounded at one
+	// attempt — and the attempt succeeds this time: one header read and one
+	// body read, no retry, and reading whole is what clears the set.
+	f.seam.SetFault(nil)
+	pre = f.seam.CallsFor(kit.OpRead, format.SegmentName(seg))
 	got, rerr := cp.ReadSource(context.Background(), seg, file, recA)
 	if rerr != nil {
 		t.Fatalf("the recovery read of the record marked unread: %v", rerr)
@@ -522,6 +544,102 @@ func TestCopySourceEIOSuspends(t *testing.T) {
 		if !bytes.Equal(body.Payload, want.pay) {
 			t.Fatalf("copy %d carries %d bytes, want the source's bytes whole", i, len(body.Payload))
 		}
+	}
+}
+
+// TestCopySplitPlacement copies one source segment holding a single 16 KiB
+// write while the stream's active segment — the copy's target, beside the
+// file's own writers — holds less than the run's bytes but more than nothing.
+// The run places the piece the part-full segment still takes and continues
+// as its own record in the segment the roll takes: two adjacent copies tiling
+// the run exactly, each with a fresh sequence number of its own, both
+// carrying the run's kind, version and modification time, and the bytes read
+// back and concatenated equal the source's exactly.
+func TestCopySplitPlacement(t *testing.T) {
+	f := newCopyFixture(t)
+	file := copyFile(1)
+	pay := make([]byte, 4*copyKib)
+	for i := range pay {
+		pay[i] = byte(int64(i)>>8) ^ 0xa5
+	}
+	const mtime = 12345
+	rec, seqA, vA := f.plant(t, copyTag, file, pay, mtime)
+	f.sealSource(t, file)
+
+	// The target's room, consumed through the file's own write path. The seal
+	// leaves the stream with no open segment until its next append, so the
+	// first filler rolls it onto the fresh active segment the copy will append
+	// to; the rest land beside it, each whole, until the room it holds is
+	// below the run's bytes but a filler's width above 0 — which is why the
+	// loop plants only while the whole run still fits.
+	f.waitSpares(t)
+	vFill, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw for the filler writes: %v", err)
+	}
+	fill := make([]byte, copyKib)
+	for i := range fill {
+		fill[i] = byte(int64(i)>>8) ^ 0x3c
+	}
+	f.plantAt(t, copyTag, file, core.Extent{Off: 64 * copyKib, Len: copyKib}, fill, 999, vFill)
+	for off := int64(65 * copyKib); f.core.Streams().For(file).Room() >= int64(len(pay)); off += copyKib {
+		f.plantAt(t, copyTag, file, core.Extent{Off: off, Len: copyKib}, fill, 999, vFill)
+	}
+	room := f.core.Streams().For(file).Room()
+	if room <= 0 || room >= int64(len(pay)) {
+		t.Fatalf("the active segment's room for one more write = %d bytes, want one below the run's %d and above 0", room, len(pay))
+	}
+
+	f.waitSpares(t)
+	cs := f.selector().Select(reclaim.Scope{Segments: []core.SegmentID{rec.Segment}}, 1)
+	if len(cs) != 1 || cs[0].ID != rec.Segment {
+		t.Fatalf("Select returned %v, want the one candidate %d", cs, rec.Segment)
+	}
+	res, err := f.copier().Copy(context.Background(), rec.Segment)
+	if err != nil {
+		t.Fatalf("Copy of a run beside a part-full target: %v", err)
+	}
+	if len(res.Copies) != 2 {
+		t.Fatalf("Copy split the %d-byte run into %d copies (%+v), want 2: the piece the part-full segment takes and the record the roll continues as", len(pay), len(res.Copies), res.Copies)
+	}
+	first, second := res.Copies[0], res.Copies[1]
+	if first.Extent.Off != 0 || first.Extent.Len <= 0 || first.Extent.Len >= int64(len(pay)) {
+		t.Fatalf("the first placement covers %v, want a part of the run's [0,%d)", first.Extent, len(pay))
+	}
+	if second.Extent.Off != first.Extent.Off+first.Extent.Len || first.Extent.Len+second.Extent.Len != int64(len(pay)) {
+		t.Fatalf("the placements cover %v and %v, want two adjacent extents tiling the run's [0,%d) exactly", first.Extent, second.Extent, len(pay))
+	}
+	if first.Seq == second.Seq {
+		t.Fatalf("the placements share seq %d, want a distinct fresh number per record: each piece places as its own", first.Seq)
+	}
+	if first.To.Segment == second.To.Segment {
+		t.Fatalf("the placements landed in one segment %d, want the partial piece in the part-full segment and the rest in the segment the roll took", first.To.Segment)
+	}
+	var assembled []byte
+	for i, cp := range []reclaim.Copied{first, second} {
+		if cp.File != file || cp.From != rec || cp.Tag != copyTag {
+			t.Fatalf("copy %d is of file %v record %v tag %d, want the run's source %v of file %v tag %d", i, cp.File, cp.From, cp.Tag, rec, file, copyTag)
+		}
+		if cp.Kind != format.KindWrite || cp.Version != vA {
+			t.Fatalf("copy %d carries kind %s version %v, want the run's kind %s version %v under both placements", i, cp.Kind, cp.Version, format.KindWrite, vA)
+		}
+		if cp.Seq <= seqA {
+			t.Fatalf("copy %d carries seq %d, want a fresh number above the source's %d: each placement draws its own", i, cp.Seq, seqA)
+		}
+		if cp.To.Segment == rec.Segment {
+			t.Fatalf("copy %d landed in its own source segment %d", i, rec.Segment)
+		}
+		h, body := f.readBack(t, cp.To)
+		if h.Extent != cp.Extent {
+			t.Fatalf("copy %d's record covers %v, want the extent its fact names %v", i, h.Extent, cp.Extent)
+		}
+		if body.MTime != mtime {
+			t.Fatalf("copy %d carries mtime %d, want the run's %d under both placements", i, body.MTime, mtime)
+		}
+		assembled = append(assembled, body.Payload...)
+	}
+	if !bytes.Equal(assembled, pay) {
+		t.Fatalf("the placements hold %d bytes read back, want the run's bytes byte-exact in file order", len(assembled))
 	}
 }
 

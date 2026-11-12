@@ -47,9 +47,11 @@ func input(specs ...spec) []pieceInfo {
 	return out
 }
 
-// TestPlanRuns pins the coalescing rule (R30): adjacent pieces merge when
-// they share version, kind, offloaded bit and — for writes — mtime, and a gap
-// splits the copy (R29). Kinds never mix. The kinds, mtimes and versions are
+// TestPlanRuns pins the coalescing rule a repack's copies answer to — copy
+// adjacent held extents of one file that share a content version and an
+// offloaded bit as one record (RFC 1 §4.2): adjacent pieces merge when they
+// share version, kind, offloaded bit and — for writes — mtime, and a gap
+// starts a new copy. Kinds never mix. The kinds, mtimes and versions are
 // hard-coded; no fixture takes part.
 func TestPlanRuns(t *testing.T) {
 	recA := index.RecordAt{Segment: 1, Offset: 0}

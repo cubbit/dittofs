@@ -472,6 +472,9 @@ func (t *Tracker) entryIfLive(seg core.SegmentID) *segState {
 // the record and the open's rebuild that reads it back build the Rec from
 // the record's own header, which names the tag; nothing else carries it, so
 // the tag is the one field the caller must not invent its own value for.
+// The rule holds while a forget record names exactly one tag; one that ever
+// carries a second tag identity the journal must distinguish overturns it,
+// for the registry key would then have to name both.
 func (t *Tracker) RegisterForget(rec Rec, segs []core.SegmentID) {
 	if len(segs) == 0 {
 		t.Register(rec)
@@ -520,6 +523,9 @@ func (t *Tracker) forgetTaken(rec Rec) {
 // held check ran after the mark is abandoned (RFC 1 §8.4).
 // decision: the mark is the tracker's registered forget records consulted
 // per file; the barrier Forget itself takes around its record is its own.
+// Overturned when a second caller needs a consult this shape does not answer
+// — an offer needing the mark outside the file append domain among them —
+// which is the day the mark grows an API of its own.
 // ponytail: a scan of the live forgets, O(live forget records); a tag-keyed
 // index when many forgets run at once.
 func (t *Tracker) Forgetting(tag core.ShareTag) bool {

@@ -75,7 +75,9 @@ type Copier struct {
 
 // NewCopier builds the pass over one journal's pieces. dom is the append
 // domain table; corrupt is called per corrupt source with the file's domain
-// held; a nil corrupt drops corrupt sources without reporting them.
+// held; with a nil corrupt no handler is consulted, nothing is dropped from
+// the index either way — dropping is the handler's own — and the source is
+// still reported in the Result.
 func NewCopier(ix *index.Index, c *index.Counters, st *segment.Streams, un *unread.Set, tr *Tracker, dom Domains, corrupt Corrupter, clk core.Clock, log *slog.Logger) *Copier {
 	return &Copier{ix: ix, counters: c, streams: st, un: un, tracker: tr, dom: dom, corrupt: corrupt, clock: clk, log: log}
 }
@@ -120,6 +122,12 @@ func (c *Copier) read(ctx context.Context, set *segment.Set, seg core.SegmentID)
 	// Phase one over the in-memory pieces alone, holding no domain: the
 	// files whose entries name a record of seg, and the distinct records
 	// behind them.
+	//
+	// ponytail: a full per-file walk per unit — Files(tag) then every file's
+	// entries, once per segment the row names — which is O(files of the
+	// scope's tags × their entries) per segment to find the few entries that
+	// name seg. Upgrade to a segment→records registry the index keeps, when a
+	// profile shows the walk above the copies' own cost.
 	fileOf := make(map[index.RecordAt]core.FileID)
 	var found bool
 	for _, row := range set.Snapshot() {
@@ -458,9 +466,9 @@ func merges(prev, next pieceInfo) bool {
 }
 
 // planRuns groups file-sorted live pieces into copy runs: adjacent pieces
-// (prev.Extent.End == next.Extent.Off) merge when they share version, kind,
-// offloaded bit and — for writes — mtime. Kinds never mix in a merge, and a
-// gap starts a new run (RFC 1 §4.2).
+// (prev.Extent.Off+prev.Extent.Len == next.Extent.Off) merge when they share
+// version, kind, offloaded bit and — for writes — mtime. Kinds never mix in
+// a merge, and a gap starts a new run (RFC 1 §4.2).
 //
 // decision: kinds never mix, so a fill beside a write at one version stays
 // two copies. A merged fill would lose its bit at the next crash: one record
