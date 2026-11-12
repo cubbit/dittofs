@@ -114,6 +114,14 @@ type files struct {
 	// beside whatever an entry's ranges hold.
 	dropRanges atomic.Int64
 
+	// filesHeld is the number of files with at least one held extent, and
+	// removalMarkers the number of unsettled removal and loss markers over
+	// every file. Both are maintained by apply, under each file's lock, from
+	// the file's state before and after the update, so a rebuild's replay
+	// counts through the same path and no figure is ever derived by a walk.
+	filesHeld      atomic.Int64
+	removalMarkers atomic.Int64
+
 	// conflicts is the set of rivalled files. TagConflicts' cost is
 	// proportional to the set's size and never to the number of files. Each
 	// member is told to the set exactly once, under its file's lock, when the
@@ -436,12 +444,23 @@ func (f *file) apply(fs *files, s *fileShard, id core.FileID, before, admitted i
 	rangesBefore := f.nranges
 	wasRivalled := f.rivalled
 	was := f.totals()
+	heldBefore, markersBefore := f.held.len() > 0, len(f.markers)
 	// The unlock is deferred first, so it runs last: even a panic in any of
 	// the settling below cannot leave the file locked.
 	defer f.mu.Unlock()
 	defer func() { f.conflictDiff(fs, id, wasRivalled) }()
 	defer func() { d = f.delta(id, was) }()
 	defer func() { fs.dropRanges.Add(int64(f.nranges - rangesBefore)) }()
+	defer func() {
+		fs.removalMarkers.Add(int64(len(f.markers) - markersBefore))
+		if held := f.held.len() > 0; held != heldBefore {
+			if held {
+				fs.filesHeld.Add(1)
+			} else {
+				fs.filesHeld.Add(-1)
+			}
+		}
+	}()
 	defer f.counted(fs, before, admitted)
 	defer f.settle(fs, s, id)
 	return HeldDelta{}, fn(f)

@@ -574,3 +574,15 @@ func TestFloorAboveTopIsClamped(t *testing.T) {
 		t.Errorf("RaiseFloor with a non-zero epoch: got %v, want ErrUnknownFormat", err)
 	}
 }
+
+// TestGettersCountersLimit checks Limit reads back the limit last set.
+func TestGettersCountersLimit(t *testing.T) {
+	c := &Counters{}
+	if got := c.Limit(); got != (core.Version{}) {
+		t.Fatalf("Limit of fresh counters = %v, want zero", got)
+	}
+	setLimit(c, 77)
+	if got := c.Limit(); got != ver(77) {
+		t.Fatalf("Limit after SetVersionLimit(77) = %v, want %v", got, ver(77))
+	}
+}

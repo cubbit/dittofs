@@ -91,13 +91,6 @@ func (u *unit) commitOps(t *testing.T, f entity.FileID, ps []engine.PendingView)
 	}
 }
 
-// create creates an empty file in the unit's share.
-func (u *unit) create(t *testing.T, name string) entity.FileID {
-	t.Helper()
-	_, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, name, kvstore.Regular(0o644))
-	return made.ID
-}
-
 func (u *unit) lose(f entity.FileID, off, n int64) {
 	u.j.Lose(journal.NewFileID(f), journal.Extent{Off: off, Len: n}, journal.LossCorrupt)
 }

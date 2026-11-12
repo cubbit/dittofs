@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -44,9 +45,30 @@ func heldPieces(t *testing.T, c *Core, f core.FileID, lo, hi int64) []index.Plac
 	return out
 }
 
+// retryRefused runs op until it stops being refused by one of limits or a
+// generous deadline passes, and returns its last error. A roll that finds no
+// spare ready, or an append that finds the headroom drawn, is refused
+// retryably by design and the pool refills on its own; no clock can be
+// injected into that refill, so the bounded wait is the condition itself.
+func retryRefused(op func() error, limits ...core.Limit) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := op()
+		var ns *core.NoSpaceError
+		if !errors.As(err, &ns) || !slices.Contains(limits, ns.Limit) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func mustWrite(t *testing.T, c *Core, s *Share, f core.FileID, off int64, p []byte) core.Version {
 	t.Helper()
-	v, err := c.WriteAt(context.Background(), s, f, off, p, 1)
+	var v core.Version
+	err := retryRefused(func() (err error) {
+		v, err = c.WriteAt(context.Background(), s, f, off, p, 1)
+		return err
+	}, core.LimitSpare)
 	if err != nil {
 		t.Fatalf("WriteAt(%d, %d bytes): %v", off, len(p), err)
 	}

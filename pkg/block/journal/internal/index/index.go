@@ -224,9 +224,11 @@ func (ix *Index) SegmentBytes(seg core.SegmentID) SegmentBytes { return ix.fs.se
 // order, held and retained pieces and removal markers alike; nil when the
 // file holds none. It takes the file's lock shared and creates no entry.
 //
-// decision: exported so the datapath tests can see a file's entries, and a
-// later inspection read-out is expected to take it over. It is withdrawn if
-// the inspection path does not use it.
+// decision: exported for the copier's per-file enumeration, which walks a
+// file's entries to find the records naming its claimed segment; the datapath
+// tests read it too, but a production consumer is what keeps it. An inspection
+// read-out may take it over unchanged. Withdrawn when the index grows the
+// segment→records registry the copier would read instead.
 func (ix *Index) FileEntries(id core.FileID) []Entry { return ix.fs.inspect(id) }
 
 // AsOf returns the change version a read of id reports.
@@ -306,3 +308,22 @@ func (ix *Index) SegmentGone(id core.FileID, seg core.SegmentID) {
 func (ix *Index) RetireSegment(seg core.SegmentID) {
 	_, _ = ix.fs.retireSegment(seg)
 }
+
+// ExtentCount returns the number of entries of the placement index, one
+// atomic read.
+func (ix *Index) ExtentCount() int64 { return ix.fs.extentCount() }
+
+// ExtentLimit returns the configured bound on ExtentCount.
+func (ix *Index) ExtentLimit() int64 { return ix.fs.limit.Load() }
+
+// DropRanges returns the number of drop ranges over every file and segment,
+// one atomic read.
+func (ix *Index) DropRanges() int { return int(ix.fs.dropRangeCount()) }
+
+// FilesHeld returns the number of files with at least one held extent, one
+// atomic read.
+func (ix *Index) FilesHeld() int64 { return ix.fs.filesHeld.Load() }
+
+// RemovalMarkers returns the number of unsettled removal and loss markers
+// over every file, one atomic read.
+func (ix *Index) RemovalMarkers() int64 { return ix.fs.removalMarkers.Load() }
