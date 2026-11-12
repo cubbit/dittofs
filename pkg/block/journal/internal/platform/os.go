@@ -72,10 +72,9 @@ type file struct {
 	// of it, so a Close cannot release the descriptor under a read, and a
 	// read cannot open one over a Close in flight.
 	//
-	// decision: directMu is outside the six lock domains and unranked, so the
-	// lock-order recorder never sees it, and the scan that names every lock's
-	// domain covers five other internal directories, not this one. It is not
-	// a leaf in the sense of holding nothing else: it is held across I/O —
+	// decision: directMu is unranked and outside the six lock domains, so the
+	// lock-order recorder never sees it. It is not a leaf in the sense of
+	// holding nothing else: it is held across I/O —
 	// the descriptor's lazy open, the direct read itself and Close's closing
 	// of the file — so a caller holding a ranked lock across a direct read or
 	// a Close also holds this one over that I/O. Withdraw the exemption if a

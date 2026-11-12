@@ -83,16 +83,20 @@ func markerText(own, enclosing []*ast.CommentGroup, locksInEnclosing int) string
 
 var (
 	leafPhrase = regexp.MustCompile(`\bis a leaf\b`)
-	negation   = regexp.MustCompile(`\b(not|no|never)\b|n't\b`)
-	clauseEnd  = regexp.MustCompile(`[.;:!?]`)
+	// unrankedPhrase is how a plain lock that is not a leaf says so: held
+	// across other locks or I/O, it sits outside the six domains, which the
+	// recorder cannot see, so the marker records the order it relies on.
+	unrankedPhrase = regexp.MustCompile(`\bis unranked\b`)
+	negation       = regexp.MustCompile(`\b(not|no|never)\b|n't\b`)
+	clauseEnd      = regexp.MustCompile(`[.;:!?]`)
 )
 
-// hasLeaf reports whether the marker says, un-negated, "is a leaf" (as in
-// "mu is a leaf mutex"). A negation earlier in the same clause, as in "is not a
-// leaf" or "never is a leaf", cancels the phrase.
-func hasLeaf(text string) bool {
+// hasPhrase reports whether the marker says, un-negated, the phrase re
+// matches (as in "mu is a leaf mutex"). A negation earlier in the same
+// clause, as in "is not a leaf" or "never is a leaf", cancels the phrase.
+func hasPhrase(text string, re *regexp.Regexp) bool {
 	text = strings.Join(strings.Fields(text), " ")
-	for _, loc := range leafPhrase.FindAllStringIndex(text, -1) {
+	for _, loc := range re.FindAllStringIndex(text, -1) {
 		before := text[:loc[0]]
 		if i := clauseEnd.FindAllStringIndex(before, -1); len(i) > 0 {
 			before = before[i[len(i)-1][1]:]
@@ -107,23 +111,24 @@ func hasLeaf(text string) bool {
 // classify returns what is wrong with a lock of the given kind ("sync" or
 // "lockorder") whose marker text is text, or "" when it is right. The marker
 // is the text decision: plus either one of the six domain names, for a
-// lockorder lock, or the phrase "is a leaf", for a sync lock.
+// lockorder lock, or the phrase "is a leaf" or "is unranked", for a sync lock.
 func classify(kind, text string) string {
 	if !strings.Contains(text, "decision:") {
 		return "a decision: marker naming a domain or leaf"
 	}
-	leaf := hasLeaf(text)
+	leaf := hasPhrase(text, leafPhrase)
+	unranked := hasPhrase(text, unrankedPhrase)
 	named := false
 	for _, d := range domainNames {
 		named = named || strings.Contains(text, d)
 	}
 	switch {
-	case kind == "sync" && leaf:
+	case kind == "sync" && (leaf || unranked):
 		return ""
 	case kind == "sync" && named:
-		return "a lockorder lock (a ranked domain needs the ranked type) or the phrase \"is a leaf\""
+		return "a lockorder lock (a ranked domain needs the ranked type) or the phrase \"is a leaf\" or \"is unranked\""
 	case kind == "sync":
-		return "the phrase \"is a leaf\""
+		return "the phrase \"is a leaf\" or \"is unranked\""
 	case leaf:
 		return "a domain, not leaf"
 	case !named:
@@ -231,16 +236,18 @@ func TestClassify(t *testing.T) {
 	for _, c := range []struct {
 		name, kind, text, want string
 	}{
-		{"negated leaf on sync", "sync", "decision: mu is the capacity domain. It is not a leaf.", "a lockorder lock (a ranked domain needs the ranked type) or the phrase \"is a leaf\""},
-		{"never a leaf on sync", "sync", "decision: mu never is a leaf", "the phrase \"is a leaf\""},
+		{"negated leaf on sync", "sync", "decision: mu is the capacity domain. It is not a leaf.", "a lockorder lock (a ranked domain needs the ranked type) or the phrase \"is a leaf\" or \"is unranked\""},
+		{"never a leaf on sync", "sync", "decision: mu never is a leaf", "the phrase \"is a leaf\" or \"is unranked\""},
 		{"leaf on sync", "sync", "decision: mu is a leaf mutex, held for a map access.", ""},
 		{"leaf then negation after on sync", "sync", "decision: mu is a leaf, never held across I/O.", ""},
 		{"leaf split over lines", "sync", "decision: mu is a\nleaf lock.", ""},
 		{"domain on lockorder", "lockorder", "decision: mu is the capacity domain.", ""},
+		{"unranked on sync", "sync", "decision: mu is unranked, held across I/O.", ""},
+		{"negated unranked on sync", "sync", "decision: mu is not unranked.", "the phrase \"is a leaf\" or \"is unranked\""},
 		{"leaf on lockorder", "lockorder", "decision: mu is a leaf.", "a domain, not leaf"},
 		{"neither on lockorder", "lockorder", "decision: mu guards things.", "one of the six domain names"},
 		{"no decision", "sync", "mu is a leaf.", "a decision: marker naming a domain or leaf"},
-		{"decision with neither", "sync", "decision: mu guards things.", "the phrase \"is a leaf\""},
+		{"decision with neither", "sync", "decision: mu guards things.", "the phrase \"is a leaf\" or \"is unranked\""},
 	} {
 		if got := classify(c.kind, c.text); got != c.want {
 			t.Errorf("%s: classify(%q, %q) = %q, want %q", c.name, c.kind, c.text, got, c.want)
@@ -292,29 +299,59 @@ type each struct {
 // function-local variable. Upgrade to a go/types check if a domain starts
 // being named on atomics or any of those forms appears.
 func TestEveryLockNamesItsDomain(t *testing.T) {
-	dirs := []string{"../index", "../segment", "../capacity", "../datapath", "../durability"}
+	// Every internal package is scanned, so a lock added to a new one fails
+	// here rather than passing unseen. The recorder's own package is left
+	// out: its mutex is deliberately unranked.
+	pkgs, err := os.ReadDir("..")
+	if err != nil {
+		t.Fatalf("reading the internal packages: %v", err)
+	}
+	var dirs []string
+	for _, p := range pkgs {
+		if !p.IsDir() || p.Name() == "lockorder" || p.Name() == "testdata" || p.Name() == "vendor" {
+			continue
+		}
+		dirs = append(dirs, filepath.Join("..", p.Name()))
+	}
 	fset := token.NewFileSet()
 	var offenders []string
+	scanned := map[string]int{}
+	total := 0
 	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatalf("reading %s: %v", dir, err)
-		}
-		dirLocks := 0
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
-				continue
-			}
-			f, err := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, parser.ParseComments)
+		err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
-				t.Fatalf("parsing %s: %v", e.Name(), err)
+				return err
+			}
+			if d.IsDir() {
+				if d.Name() == "testdata" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+			if err != nil {
+				return fmt.Errorf("parsing %s: %w", path, err)
 			}
 			n, bad := scanFile(fset, f)
-			dirLocks += n
+			scanned[dir] += n
+			total += n
 			offenders = append(offenders, bad...)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
-		if dirLocks == 0 {
-			t.Errorf("%s: scanned no locks; the scan is not looking at the code", dir)
+	}
+	if total == 0 {
+		t.Error("scanned no locks; the scan is not looking at the code")
+	}
+	// The packages that hold locks today must still be reached.
+	for _, name := range []string{"index", "segment", "capacity", "datapath", "durability"} {
+		if scanned[filepath.Join("..", name)] == 0 {
+			t.Errorf("%s: scanned no locks; the scan is not looking at the code", name)
 		}
 	}
 	sort.Strings(offenders)
