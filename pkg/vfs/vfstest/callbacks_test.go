@@ -60,6 +60,29 @@ func TestCallbackFaultsFailOnCue(t *testing.T) {
 	}
 }
 
+// CallbackFaults hands Fail a recall naming openers with the session Inner
+// picked for it, so a fault keyed on that session fires.
+func TestCallbackFaultsFailOnThePickedSession(t *testing.T) {
+	ctx := context.Background()
+	failed := errors.New("no answer")
+	alice := entity.NewUser()
+	picked := vfs.SessionRef{ID: 3}
+	var inner vfstest.Callbacks
+	inner.SignIn(picked, alice)
+	cb := &vfstest.CallbackFaults{
+		Inner: &inner,
+		Fail: func(_ context.Context, c vfstest.Callback) error {
+			if c.Method == "RecallGrant" && c.Session == picked {
+				return failed
+			}
+			return nil
+		},
+	}
+	if sent, err := cb.RecallGrant(ctx, vfs.SessionRef{}, []vfs.Principal{alice}, vfs.CachingGrant{}, vfs.GrantNone); sent || err != failed {
+		t.Errorf("a recall to alice's sessions, failed on session %v = %v, %v; want unsent, %v", picked, sent, err, failed)
+	}
+}
+
 // Callbacks keeps every callback delivered, in order, each answered as a
 // client that is there and accepts, and sends a recall naming openers on the
 // lowest-numbered session signed in as one of them, or on none.
