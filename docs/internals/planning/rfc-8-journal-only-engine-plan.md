@@ -95,6 +95,10 @@ ships in a release. It sets no offloaded bit, because its journal interface hold
 | §12.1 interface | the content methods, `New`, `Apply`, `Start`, `Close`, `Bind`, `Unbind`, `Drop`, `Stats` | `PrepareCut`, `CommitCut`, `PreWarm`, `WaitOffloaded` |
 | §12.2 retried mutation | none | single node: no route envelope (RFC 15 §4.3) |
 
+The metadata reconcile, which the reseed (step 7) runs when a crash leaves one owed (RFC 8
+§2.5), is left out of this plan on purpose: its owner is the reconcile task of epic 6 in the
+engine plus offload plan, which is not written yet.
+
 **Capacity without offload.** Nothing is released, so the only space that returns is what
 repack frees: records superseded by an overwrite, and extents a truncate, deallocate or
 delete removed (RFC 1 §7.1, §7.2). Content written and kept is never freed; a share's
@@ -1226,6 +1230,7 @@ What this part knowingly does not build. Each row indexes the section that defer
 | The cut (`PrepareCut`, `CommitCut`) and the stamp after a group commit; clone's snapshot cases (§1.1, §7) | snapshots | RFC 12 | snapshots are built |
 | Clone's adoption of carved refs (§1.1, epic 8) | this part writes no carved ref | RFC 8 second part plan | offload |
 | Eviction, pacing, the pressure flag; RFC 8 §10.1, §10.2.1, §10.4 (§1.1, epic 7) | nothing is released without offload | RFC 8 second part plan | offload |
+| The metadata reconcile: the visit of each held file, `DropOlder`, the loss sequence's raise and `Reconciled`, with `Bind` taking over its handle (§1.1, RFC 8 §2.5 step 7) | the reseed is out of this part, and the reconcile runs inside it | RFC 8 second part plan (a reconcile task in its epic 6) | that plan is written |
 | Repack run from the eviction loop, not only at a refusal (epic 7's `ponytail:`) | repack runs only when a write is refused | RFC 8 second part plan | offload adds the eviction loop, or refusals show repack time on the write path |
 | Removal phase 2 and its prune on the shared work scheduler (epic 5's `ponytail:`; §6 point 5) | one loop per journal stands in | RFC 8 second part plan | offload adds the first work that needs fairness between shares |
 | Offload health, put and get health, `stranded_export_failed` with the salvage export of stranded tags, `PreWarm`, `WaitOffloaded` (§1.1, §1.4, §6 point 7) | need offload | RFC 8 second part plan | offload |
