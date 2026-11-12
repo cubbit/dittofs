@@ -815,14 +815,18 @@ func (d *Durability) Durable(at segment.Location) bool {
 // the step that records it lost, so a lost location is never named here and
 // no retirement may wait on a record that can no longer sync.
 //
-// It is the pending-tail barrier a retirement hand-over asks: consulted
-// beside the locations a mover's offer recorded, it holds the hand-over back
-// while any stream's unsynced record — in a ledger or held by a pending
-// window — could name content of a segment the retirement would unlink.
+// It is the pending-tail barrier a retirement hand-over asks: the worker
+// freezes one snapshot per candidate, at the entry's first not-held pass,
+// and waits on the frozen locations beside the ones the mover's offer
+// recorded, so the hand-over is held back while any stream's unsynced
+// record — in a ledger or held by a pending window — could name content of
+// a segment the retirement would unlink. Freezing, rather than re-sampling
+// each pass, is what keeps steady writers on an unrelated stream from
+// starving an unrelated retirement.
 //
 // ponytail: it scans every stream's ledger and pending windows, like Durable,
-// once per candidate per pass. Upgrade alongside Durable to a per-segment
-// index when a profile shows the scan.
+// once per candidate at its first not-held pass. Upgrade alongside Durable
+// to a per-segment index when a profile shows the scan.
 func (d *Durability) Pending() []segment.Location {
 	var out []segment.Location
 	for _, st := range d.snapshot() {
@@ -843,6 +847,25 @@ func (d *Durability) Pending() []segment.Location {
 		st.mu.Unlock()
 	}
 	return out
+}
+
+// Lost reports whether the record at the location can never become
+// durable: a failed window settled it as lost, or a read-only journal undid
+// it. A record that failed and was re-appended elsewhere reports false —
+// its place chain leads somewhere that can still sync — and the re-appended
+// place is answered like any other record's. It is what lets a retirement
+// hand-over drop a frozen pending location whose record failed, rather than
+// wait on a durability that will never come.
+func (d *Durability) Lost(at segment.Location) bool {
+	for _, st := range d.snapshot() {
+		st.mu.Lock()
+		_, lost := st.lost[st.followLocked(at)]
+		st.mu.Unlock()
+		if lost {
+			return true
+		}
+	}
+	return false
 }
 
 // SyncBound returns the longest a record waits for a sync.

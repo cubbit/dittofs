@@ -62,13 +62,20 @@ func (d *Durability) lift(file core.FileID, v core.Version, e core.Extent, at se
 // taken the segment's held bytes to zero before this report's crossing,
 // leaving the segment's own offer with nothing to name but the crossing it
 // observed. The hand-over that consumes the report gates on the pending-tail
-// barrier, which holds the retirement until every stream's appended record
-// — resident in a ledger or held by a pending window — is durable, so this
-// report needs no timing premise of its own. The barrier is exact while
-// every record that empties a segment is appended before the cut that
-// empties it, which every mover does. Overturned by a mover publishing a cut
-// whose record reaches neither a ledger nor a pending window before the
-// hand-over claims the segment.
+// barrier — a snapshot of every stream's appended, unsynced records, ledger
+// resident or window-held, frozen at the candidate's first not-held pass —
+// so this report needs no timing premise for the ordinary movers, whose cut
+// publishes a record before it runs. The window-resolution cut is the
+// exception that proves the premise cannot be universal: the failure pass
+// cuts a failed segment's records out of the index before the loss record
+// naming the crossing appends, so the barrier's frozen snapshot can miss
+// the crossing it owes. Two things hold the segment through that cut: the
+// records it failed sit in its pending window until the pass settles or
+// re-appends them — the barrier's window walk names them — and the worker's
+// ended-window re-read refuses any hand-over while the window answers open,
+// which covers the instants the walk alone does not. Overturned by a cut
+// whose causality record reaches neither a ledger nor a pending window while
+// its segment answers not held with no window open — no mover makes one.
 func (d *Durability) reportEmptied(segs []core.SegmentID, at segment.Location) {
 	if len(segs) == 0 || at == (segment.Location{}) || d.emptied == nil {
 		return

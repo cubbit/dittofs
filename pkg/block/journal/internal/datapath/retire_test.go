@@ -3,7 +3,9 @@ package datapath
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 
@@ -503,7 +505,13 @@ func TestARecycledRetirementKeepsTheOldID(t *testing.T) {
 	// spare pool, it did not return to the filesystem), the pool is one
 	// spare richer per recycle, the retired ids are gone from the set, and
 	// the witness released — the tracker heard the retirement under the old
-	// ids.
+	// ids. The two live gauges are waited to their settled values first:
+	// the retirer's completion kicks the pool's counters mid-flight, so a
+	// point-in-time read races the rebalancing rather than the recycle.
+	waitIn(t, 5*time.Second, "the recycled cap to settle in the set and the pool", func() bool {
+		return c.set.Counters().UsedBytes == used &&
+			c.pool.Counters().Spares == sparesBefore+int64(len(sealed))
+	})
 	if got, want := c.set.Counters().UsedBytes, used; got != want {
 		t.Fatalf("UsedBytes across the recycle = %d, want %d: a recycle moves the cap into the spare pool, it frees no byte", got, want)
 	}
@@ -818,6 +826,9 @@ func TestCloseDropsAQueuedCandidateAndJoinsTheWorker(t *testing.T) {
 	// A candidate in the worker's queue, the way the tracker's crossing or
 	// the tick's scan would put one there: a prompt with no location, whose
 	// hand-over waits out a full tick — a wait the close below runs past.
+	// The wait is also what keeps the candidate queued: drop the prompt-only
+	// tick decision and this candidate retires inside the tick the close
+	// joins within, reddening this row on its own assertion.
 	c.retiring.Prompt(seg)
 	if err := c.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -989,4 +1000,475 @@ func TestAnUndurableCandidateDoesNotWedgeTheWorker(t *testing.T) {
 	if got := c.set.Counters().DoubleRetires; got != 0 {
 		t.Fatalf("DoubleRetires after both retirements = %d, want 0", got)
 	}
+}
+
+// TestSteadyWritesOnAnotherStreamDoNotStarveRetirement: a retirement whose
+// emptiness is owed to a durable record must not wait on records that have
+// nothing to do with it. The writer below keeps another stream churning —
+// appending and syncing one record after another, so the stream almost
+// always holds an unsynced record at any given tick — while the row parks
+// the truncation's own sync, so the candidate's passes spread over several
+// ticks, sampling the writer's traffic again and again. Once that sync is
+// released, the segment retires within a few ticks while the writer still
+// runs: the worker froze the other stream's pending tail into the candidate
+// at its first not-held pass and waits on that frozen sample, which the
+// rolls drain, not on a fresh one whose every sample names the writer's
+// newest record. Red is the re-sample: a barrier that asks the whole
+// journal again on every pass waits for a moment no stream holds an
+// unsynced record, which the writer never grants, and the segment starves
+// while the writer runs.
+func TestSteadyWritesOnAnotherStreamDoNotStarveRetirement(t *testing.T) {
+	ctx := context.Background()
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	g := otherStreamFile(c, f)
+
+	mustWrite(t, c, s, f, 0, make([]byte, 3*testSegmentCap/2))
+	syncFiles(t, c, f)
+	waitIn(t, 5*time.Second, "the pool to refill to its target", func() bool {
+		return c.pool.Counters().Spares >= int64(c.contentTarget)
+	})
+	seg := recordOf(t, c, f, 0).Record.Segment
+	active := recordOf(t, c, f, 3*testSegmentCap/2-1).Record.Segment
+
+	// The writer: one unsynced record after another on g's own stream, each
+	// at a fresh offset so it supersedes nothing, never calling a sync of its
+	// own — exactly the shape the re-sample starves under: the stream's
+	// records drain only at the rolls that seal its full segments, a pass
+	// sampling between two rolls always finds unsynced records — and nothing
+	// the writer does kicks the retire worker, so its passes stay on the
+	// tick alone. The rolls are also what a frozen sample rides on: every
+	// record the freeze caught goes durable at the next roll, so the frozen
+	// tail clears without the writer's help.
+	writeErr := make(chan error, 1)
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		var off int64
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := c.WriteAt(ctx, s, g, off, make([]byte, 4<<10), 1); err != nil {
+				select {
+				case writeErr <- err:
+				default:
+				}
+				return
+			}
+			off += 4 << 10
+		}
+	}()
+	t.Cleanup(func() { close(stop); <-stopped })
+
+	// The truncation's own sync parks at the seam, so the worker's passes
+	// spread over several full ticks while the candidate waits on the
+	// parking record — each pass sampling the writer's churning stream.
+	hold := seam.Hold(t, kit.OpSync, format.SegmentName(active))
+	truncDone := make(chan error, 1)
+	go func() {
+		_, err := c.Truncate(ctx, s, f, 0)
+		truncDone <- err
+	}()
+	waitIn(t, 5*time.Second, "the truncation's sync to reach the parked call", func() bool {
+		return hold.Waiting() != 0
+	})
+	// A bounded window the retirement cannot cross in either shape: the
+	// offered record is unsynced while the park stands, so the candidate
+	// stays queued whatever the barrier samples.
+	notWithin(t, 2*time.Second, "a retirement of the truncated segment while its own record parked", func() bool {
+		return !inSet(c, seg)
+	})
+
+	// The release: the truncation's record goes durable while the writer
+	// still runs, and the segment retires within a few ticks.
+	hold.Release()
+	select {
+	case err := <-truncDone:
+		if err != nil {
+			t.Fatalf("the truncation after its parked sync was released: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the truncation never returned once its parked sync was released")
+	}
+	gone(t, c, "the truncated segment to retire behind the steady writer", seg)
+	select {
+	case err := <-writeErr:
+		t.Fatalf("the writer failed: %v", err)
+	default:
+	}
+	if !inSet(c, recordOf(t, c, g, 0).Record.Segment) {
+		t.Fatal("the writer's segment was retired, want the writer's own records to keep it")
+	}
+	if got := c.set.Counters().DoubleRetires; got != 0 {
+		t.Fatalf("DoubleRetires = %d, want 0", got)
+	}
+}
+
+// TestAFailedWindowsResolutionHoldsItsSegmentAndItsLossRecord: the window
+// resolution's cut is the one whose causality record does not exist when
+// the index cut runs — the failure pass appends the loss record after it
+// cut the failed segment's records out of the index. The row parks the loss
+// record's append at that exact crossing: the ended segment answers not
+// held, its window holds the failed records, nothing has named the loss
+// record anywhere, and no retirement may take the empty segment while any
+// of that stands. The parked append released, the loss record lands, syncs
+// and registers — and the segment carrying it stays held for the process's
+// life, sealed holding only that record.
+func TestAFailedWindowsResolutionHoldsItsSegmentAndItsLossRecord(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	boom := errors.New("the injected sync failure")
+
+	const payload = 4 << 10
+	mustWrite(t, c, s, f, 0, make([]byte, payload))
+	seg := recordOf(t, c, f, 0).Record.Segment
+
+	// The fault on the segment's own sync and on its reads back: the failed
+	// seal ends the segment, and its window, which cannot re-append the
+	// record from pages that do not read back, fails it. The hold below
+	// parks the first write to any segment after the seal — the loss record
+	// the failure pass appends: an early seal that failed its sync writes
+	// nothing more to the segment files.
+	writeHold := seam.HoldFirst(t, kit.OpWrite, "*.seg")
+	if err := seam.Schedule(
+		kit.Failing(kit.OpSync, format.SegmentName(seg), 1, boom),
+		kit.Failing(kit.OpRead, format.SegmentName(seg), 0, errors.New("the injected read failure")),
+	); err != nil {
+		t.Fatalf("the seam refused the window's faults: %v", err)
+	}
+	if _, err := c.Streams().For(f).Seal(true); err == nil {
+		t.Fatal("the seal succeeded over a segment whose sync the seam fails, want the failure to end it")
+	}
+	st, err := c.set.State(seg)
+	if err != nil || st != segment.Ended {
+		t.Fatalf("the state of the segment whose seal failed = %v, %v, want Ended", st, err)
+	}
+	waitIn(t, 5*time.Second, "the failed segment's window to be taken", func() bool {
+		return c.Durability().WindowOpen(seg)
+	})
+
+	// Bounding window, not a truth: the failure pass has cut the segment's
+	// records out of the index — the parked append is the loss record the
+	// cut ran ahead of — and full scan passes run inside the window, each
+	// of which must find the segment held back: by its pending window's
+	// records, which the barrier's window walk names, and by the ended
+	// candidate's window re-read, which refuses while the window answers
+	// open.
+	// The bound sits above the worker's whole one-tick grace envelope: a
+	// prompt-only candidate the park leaves with nothing to wait on would
+	// still take two ticks to leave — the first pass's one-tick wait, then
+	// the hand-over — so the window must outlast both to prove anything.
+	notWithin(t, 3500*time.Millisecond, "a retirement of the ended segment between its cut and its loss record", func() bool {
+		return !inSet(c, seg) || c.Retirer().Counters().FreedBytes != 0
+	})
+
+	// The release lets the loss record land: appended, synced, registered
+	// with the tracker before its segment can seal, and the moved report the
+	// durability layer makes names the segment gated on it.
+	writeHold.Release()
+	waitIn(t, 5*time.Second, "the failed segment's window to resolve once its loss record landed", func() bool {
+		return !c.Durability().WindowOpen(seg)
+	})
+	lossSeg := lossRecordSegmentOf(t, seam)
+	if lossSeg == 0 {
+		t.Fatal("no loss record reached the disk once the window resolved, want the failure's crossing recorded")
+	}
+	if !c.liveness.Held(lossSeg) {
+		t.Fatal("the segment carrying the loss record answered not held, want the record's registration to keep it for its life")
+	}
+	gone(t, c, "the ended segment to retire once its window resolved", seg)
+
+	// The loss record's own segment now holds only that record: sealed
+	// early and rolled off, it must never retire — the registration pins it
+	// for the process's life, the one thing a settled journal never
+	// re-tests.
+	if _, err := c.Streams().For(f).Seal(true); err != nil {
+		t.Fatalf("the early seal of the loss record's segment: %v", err)
+	}
+	if st, err := c.set.State(lossSeg); err != nil || st != segment.Sealed {
+		t.Fatalf("the loss record's segment's state = %v, %v, want Sealed", st, err)
+	}
+	mustWrite(t, c, s, f, 0, make([]byte, payload))
+	notWithin(t, 4*time.Second, "a retirement of the segment holding the loss record", func() bool {
+		return !inSet(c, lossSeg)
+	})
+	if !c.liveness.Held(lossSeg) {
+		t.Fatal("the loss record's registration was released over its segment's life, want it held until the journal closes")
+	}
+	if got := c.set.Counters().DoubleRetires; got != 0 {
+		t.Fatalf("DoubleRetires = %d, want 0", got)
+	}
+}
+
+// lossRecordSegmentOf scans the seam's segment files for a loss record and
+// returns the segment it finds one in, zero over none. It reads the live
+// directory, so a record whose sync has not completed is seen as soon as
+// its append ran.
+func lossRecordSegmentOf(t *testing.T, seam *kit.Seam) core.SegmentID {
+	t.Helper()
+	names, err := seam.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, name := range names {
+		kind, id := format.ClassifyName(name)
+		if kind != format.NameSegment {
+			continue
+		}
+		f, err := seam.Open(name)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			t.Fatalf("Open %s: %v", name, err)
+		}
+		size, err := f.Size()
+		if err != nil {
+			t.Fatalf("Size %s: %v", name, err)
+		}
+		sc, err := format.ScanSegment(f, size, testIdentity, id)
+		if err != nil {
+			// A segment the row faults the reads of shows nothing the
+			// scan can name; the loss record lives in a healthy one.
+			continue
+		}
+		for _, r := range sc.Records {
+			if r.Header.Kind == format.KindLoss {
+				return id
+			}
+		}
+	}
+	return 0
+}
+
+// TestASealedSegmentHoldingOnlyATruncateRecordStays: the removal path's
+// registration is the only thing that keeps a segment whose held content a
+// removal cut away while the removal record itself still rides in it. The
+// row empties the file, seals the segment that now holds nothing but the
+// truncate record, rolls the stream off it and keeps writing: the tick
+// scan offers the not-held-looking segment every second — without the
+// registration the removal path makes before the marker's cut, one of
+// those offers retires it.
+func TestASealedSegmentHoldingOnlyATruncateRecordStays(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+
+	mustWrite(t, c, s, f, 0, make([]byte, 3*testSegmentCap/2))
+	syncFiles(t, c, f)
+	waitIn(t, 5*time.Second, "the pool to refill to its target", func() bool {
+		return c.pool.Counters().Spares >= int64(c.contentTarget)
+	})
+	// The segment the truncate record will land in: the stream's active
+	// one, holding the write's tail.
+	holder := recordOf(t, c, f, 3*testSegmentCap/2-1).Record.Segment
+
+	if _, err := c.Truncate(ctx, s, f, 0); err != nil {
+		t.Fatalf("Truncate(%d, 0): %v", f, err)
+	}
+	syncFiles(t, c, f)
+	if _, err := c.Streams().For(f).Seal(true); err != nil {
+		t.Fatalf("the early seal of the segment holding the truncate record: %v", err)
+	}
+	if st, err := c.set.State(holder); err != nil || st != segment.Sealed {
+		t.Fatalf("the truncate holder's state = %v, %v, want Sealed", st, err)
+	}
+
+	// Roll the stream off the sealed segment and write on: the sealed one
+	// takes nothing more.
+	mustWrite(t, c, s, f, 0, make([]byte, 4<<10))
+	syncFiles(t, c, f)
+
+	// Bounding window, not a truth: full scan passes run inside it, each
+	// finding the segment offered unless the registration holds it.
+	notWithin(t, 4*time.Second, "a retirement of the segment holding the truncate record", func() bool {
+		return !inSet(c, holder)
+	})
+	if !c.liveness.Held(holder) {
+		t.Fatal("the truncate record's answer to Held was released while its record remained, want the registration to hold its segment for the process's life")
+	}
+	if got := c.set.Counters().DoubleRetires; got != 0 {
+		t.Fatalf("DoubleRetires = %d, want 0", got)
+	}
+}
+
+// TestTheDurableRetirementSignalWaitsForTheDirectorySync: the tracker hears
+// a retirement only through the durable-retirement signal, the one that
+// fires once the unlink has been made durable by the executor's directory
+// sync. With that sync failing at the seam, the unlink happens, the segment
+// leaves the set — and the tracker still holds every registration the
+// retired segment carried: a crash between the unlink and the sync has the
+// next open rebuild the segment from its surviving file, so releasing the
+// registrations on an unlink nothing made durable would treat a retirement
+// the crash undoes as done. The green twin beside it: the identical
+// retirement with its directory sync intact releases the witness.
+func TestTheDurableRetirementSignalWaitsForTheDirectorySync(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	g := otherStreamFile(c, f)
+
+	// One early-sealed segment per stream, each carrying a forget record's
+	// witness whose snapshot names it: undroppable until the tracker hears
+	// the segment's durable retirement.
+	const payload = 4 << 10
+	// Both seals first, then both witness homes: a home write that runs
+	// between another file's seal and its own would land in the segment
+	// that seal is about to make, keeping it held and breaking the row's
+	// own shape.
+	seg := earlySealedWithWitness(t, c, s, f, payload)
+	segB := earlySealedWithWitness(t, c, s, g, payload)
+	rec := witnessOn(t, c, s, testFile(10), seg)
+	recB := witnessOn(t, c, s, testFile(11), segB)
+
+	// Every directory sync fails from here: the retirement's unlink runs,
+	// the sync that would make it durable does not.
+	if err := seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 0, errors.New("the failed directory sync"))); err != nil {
+		t.Fatalf("the seam refused the directory sync fault: %v", err)
+	}
+
+	// The failed-sync twin: f's overwrite empties its sealed segment, the
+	// retirement unlinks, the directory sync fails, and the witness stays.
+	mustWrite(t, c, s, f, 0, make([]byte, payload))
+	syncFiles(t, c, f)
+	gone(t, c, "the segment whose retirement's directory sync failed", seg)
+	if c.liveness.Droppable(rec) {
+		t.Fatal("the tracker released a retired segment's registrations on a retirement whose directory sync failed, want the durable-retirement signal kept back")
+	}
+
+	// The green twin: g's identical retirement, its directory sync intact,
+	// carries the signal and releases its witness.
+	if err := seam.Schedule(); err != nil {
+		t.Fatalf("the seam refused to clear its rules: %v", err)
+	}
+	mustWrite(t, c, s, g, 0, make([]byte, payload))
+	syncFiles(t, c, g)
+	gone(t, c, "the segment whose retirement's directory sync succeeded", segB)
+	if !c.liveness.Droppable(recB) {
+		t.Fatal("the witness of the durably retired segment stayed held, want the tracker to hear the durable-retirement signal")
+	}
+	if c.liveness.Droppable(rec) {
+		t.Fatal("the failed-sync witness was released by the second retirement, want each retirement's signal to name only its own segment")
+	}
+}
+
+// earlySealedWithWitness writes payload at 0 of f through s, syncs it and
+// seals the segment early, returning the sealed segment.
+func earlySealedWithWitness(t *testing.T, c *Core, s *Share, f core.FileID, payload int) core.SegmentID {
+	t.Helper()
+	mustWrite(t, c, s, f, 0, make([]byte, payload))
+	syncFiles(t, c, f)
+	if _, err := c.Streams().For(f).Seal(true); err != nil {
+		t.Fatalf("the early seal: %v", err)
+	}
+	return recordOf(t, c, f, 0).Record.Segment
+}
+
+// witnessOn registers a forget record whose snapshot names seg and returns
+// it: undroppable until the tracker hears seg's durable retirement. The
+// record's own registration lands on the segment a throwaway write of home
+// took — never on seg itself, whose registration would hold the very
+// segment the witness watches.
+func witnessOn(t *testing.T, c *Core, s *Share, home core.FileID, seg core.SegmentID) reclaim.Rec {
+	t.Helper()
+	mustWrite(t, c, s, home, 0, make([]byte, 4<<10))
+	syncFiles(t, c, home)
+	rec := reclaim.Rec{
+		Kind: format.KindForget,
+		File: testFile(9),
+		Seg:  recordOf(t, c, home, 0).Record.Segment,
+		Pair: index.Numbers{Version: core.Version{Counter: 7}, Seq: 1},
+		Seq:  1,
+	}
+	c.liveness.RegisterForget(rec, []core.SegmentID{seg})
+	if c.liveness.Droppable(rec) {
+		t.Fatal("the witness answered droppable over a segment of the set, want it undroppable until the durable retirement")
+	}
+	return rec
+}
+
+// TestACrashUndoesARetirementsUnsyncedUnlink: an unlink's durability rides
+// on the directory sync after it, and the crash seam's model is exact about
+// that: a crash between the retirement's unlink and its directory sync puts
+// the directory back where its last sync left it — the retired segment's
+// file returns, its content restored — while the overwrite record that
+// emptied it survives in the stream's next segment. Nothing the journal
+// owed is lost: the crossing is durable on the surviving side, and the
+// unlink that was not durable is undone with it.
+func TestACrashUndoesARetirementsUnsyncedUnlink(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+
+	const payload = 4 << 10
+	v0 := mustWrite(t, c, s, f, 0, make([]byte, payload))
+	syncFiles(t, c, f)
+	if _, err := c.Streams().For(f).Seal(true); err != nil {
+		t.Fatalf("the early seal: %v", err)
+	}
+	seg := recordOf(t, c, f, 0).Record.Segment
+
+	// The directory syncs park here: the retirement's unlink runs, the sync
+	// that would make it durable never does.
+	dirHold := seam.Hold(t, kit.OpSyncDir, "*")
+
+	v1 := mustWrite(t, c, s, f, 0, make([]byte, payload))
+	syncFiles(t, c, f)
+
+	// The unlink happened: the segment file left the live directory, with
+	// the directory sync still parked behind it.
+	waitIn(t, 8*time.Second, "the retirement's unlink to run", func() bool {
+		return !segmentFilePresent(t, seam, seg)
+	})
+	if dirHold.Waiting() == 0 {
+		t.Fatal("no directory sync stood parked after the unlink, want the retirement held between its unlink and its sync")
+	}
+
+	// The crash: the unsynced unlink is undone, the segment file restored
+	// with its old content; the overwrite record survives where it synced.
+	if err := seam.Crash(); err != nil {
+		t.Fatalf("the crash: %v", err)
+	}
+	crashedSeams.Store(seam, true)
+
+	if !segmentFilePresent(t, seam, seg) {
+		t.Fatal("the retired segment's file stayed unlinked in the crash's durable image, want the unsynced unlink undone")
+	}
+	var old, newRec bool
+	for _, r := range readRecords(t, seam) {
+		if r.Header.File != f {
+			continue
+		}
+		if r.Header.Version == v0 {
+			old = true
+		}
+		if r.Header.Version == v1 {
+			newRec = true
+		}
+	}
+	if !old {
+		t.Fatal("the unlinked-and-restored segment's old content was lost in the crash's image, want the undo whole")
+	}
+	if !newRec {
+		t.Fatal("the overwrite record that emptied the segment was lost in the crash's image, want it durable in a surviving segment")
+	}
+	dirHold.Release()
+}
+
+// segmentFilePresent reports whether seg's file name is in the seam's
+// directory listing.
+func segmentFilePresent(t *testing.T, seam *kit.Seam, seg core.SegmentID) bool {
+	t.Helper()
+	names, err := seam.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	return slices.Contains(names, format.SegmentName(seg))
 }

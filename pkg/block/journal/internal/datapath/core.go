@@ -267,6 +267,10 @@ const unboundedBytes = int64(1) << 62
 func New(deps Deps, state State) (*Core, error) { return newCore(deps, state, coreOptions{}) }
 
 func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
+	// A caller's State can carry a rebuilt set whose header-only records
+	// nobody has registered with the liveness tracker yet; the worker below
+	// must stay off its back until the open registration exists.
+	freshSet := state.Set == nil
 	if state.Set == nil {
 		state.Set = segment.NewSet(deps.SegmentCap, deps.Log)
 	}
@@ -498,7 +502,19 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	state.Set.OnSeal(tr.SealObserved)
 
 	c.retirer.Start()
-	c.retiring.Start()
+	// decision: only a set this constructor built itself starts the
+	// retirement worker, whatever State the core continues from. A caller's
+	// set — the rebuild hand-off shape — carries segments whose header-only
+	// records no registration pins, so the worker's tick would hand them to
+	// the retirer as soon as their bytes answer not held; until the open
+	// registration exists, a continued core runs the executor but not the
+	// worker, and its liveness events queue for a start that must come with
+	// that registration. Overturned by the open registration landing: it
+	// must register the rebuilt records before starting the worker, which
+	// this guard then wants removed.
+	if freshSet {
+		c.retiring.Start()
+	}
 
 	if deps.IdleSealBytes > 0 {
 		c.sealer = segment.NewIdleSealer(c.streams, deps.Clock, deps.IdleSealBytes, d.Admit, deps.Log)

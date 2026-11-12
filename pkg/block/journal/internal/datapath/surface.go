@@ -14,11 +14,18 @@ func (c *Core) Settle(s *Share, id core.FileID, v core.Version) {
 	defer exit()
 	// decision: a settled marker is not relayed to the liveness tracker —
 	// nothing in production fires the re-test events a registered record
-	// waits to be released by. The cost: a sealed segment holding a removal
-	// record is pinned until the process ends, and the drop ranges of a
-	// retired content-only segment stay until the file's next settle and
-	// re-test cycle or the process ends. Overturned by the settle relay, or
-	// the open registration, landing.
+	// waits to be released by. The cost is wider than a single record: a
+	// removal or loss record keeps its registration for the process's life,
+	// so EVERY segment that ever held one — a truncate, deallocate, delete
+	// or loss record — stays pinned until the journal closes, and space
+	// returns only for segments that never took one; under workloads heavy
+	// in truncations and attribute changes that is most segments. The next
+	// open re-tests nothing even after a clean close, because Open refuses
+	// a directory holding segments, so the pin is process-shaped only until
+	// recovery lands: its open registration must register these records
+	// before the retirement worker starts, or retire them the way the
+	// settle relay would. Overturned by the settle relay, or the open
+	// registration, landing.
 	c.index.SettleFor(s.Tag, id, v)
 }
 
