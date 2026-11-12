@@ -43,7 +43,7 @@ func removals(r kv.Reader, share entity.ShareID, file entity.FileID) ([]entity.R
 		}
 		v, _, err := keys.ReadVersion(row.Key[len(pre):])
 		if err != nil {
-			return nil, fmt.Errorf("%w: removal key: %v", errMalformed, err)
+			return nil, fileRecord(fmt.Errorf("%w: removal key: %v", errMalformed, err))
 		}
 		m, err := decodeRemoval(v, row.Value)
 		if err != nil {
