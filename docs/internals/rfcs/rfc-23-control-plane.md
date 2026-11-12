@@ -976,10 +976,11 @@ them and decides nothing about identity:
   no record holds more than the reference; a crash between the two leaves an
   audited version no join uses, which the next join or rotation supersedes. The call keeps no idempotency record
   (§4.5);
-  `leave-domain` removes it;
-  `rotate-machine-password` changes the password at the domain controller,
-  then writes the machine password's next `Secret` version
-  ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). `test-directory` checks that every node reaches the
+  `rotate-machine-password` seals the machine password's next `Secret` version
+  first, then sets that password at the domain controller, in
+  [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)'s order
+  ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). Leaving the domain has
+  no action until RFC 18 defines it. `test-directory` checks that every node reaches the
   directory the record names, and reports each node's answer. The join's
   state is the installation's status: the computer account's name and the
   machine password's version, the last rotation. Each node reports its secure
@@ -1053,13 +1054,15 @@ this table is all of them:
 | `declare-lost` | backup location | `admin` | yes | [RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record), [RFC 26 §4.1](rfc-26-catalog-backups.md#4.1%20Interfaces) |
 | `resolve-principal` | installation | `operator` | yes | §3.5, [RFC 18 §4.6](rfc-18-identity.md#4.6%20Names) |
 | `test-directory` | installation | `admin` | yes | §3.5, [RFC 18 §5.1](rfc-18-identity.md#5.1%20What%20a%20directory%20provides) |
-| `join-domain`, `leave-domain` | installation | `admin` | yes | §3.5, [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2) |
+| `join-domain` | installation | `admin` | yes | §3.5, [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2) |
 | `rotate-machine-password` | installation | `admin` | yes | §3.5, [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2) |
 | `cancel` | operation | the role that may start its kind | no | §4.6 |
 
 An operation's `Kind` is an `OpKind`, a closed set read from this table and
-§4.6's list: one value per action above that is an operation, and one per
-create or delete §4.6 makes one. So `api_operations{kind}` is a closed set
+§4.6's list: one value per action above that is an operation, one per
+create or delete §4.6 makes one, and `identity.nt-hash-delete`, the deletion
+of every stored NT hash that setting `identity.ntlm` off starts, in that
+setting's write ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)). So `api_operations{kind}` is a closed set
 ([RFC 25 §2.4](rfc-25-observability.md#2.4%20Labels)), and `operation_running`
 keys on the same value.
 
@@ -1227,7 +1230,7 @@ changed. A client **MUST** reuse a key across its own retries of one action and
 
 Work that does not finish in one transaction — a share's removal, a user's
 deletion, a clone, a restore, a backup, a re-home, a move, a credential
-rotation, a signing-key rotation, an index rebuild, a copy's acceptance, a location's loss — is an **operation**. Its call commits the work's
+rotation, a signing-key rotation, the NT hashes' deletion, an index rebuild, a copy's acceptance, a location's loss — is an **operation**. Its call commits the work's
 first durable step and answers `202 Accepted` with `Location:
 /api/v1/operations/{id}` and the operation's body.
 

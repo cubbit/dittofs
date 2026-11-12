@@ -89,11 +89,14 @@ database or configuration refuses and names it. No migration tool.
   and a quota are versioned instead, and §4.4's quota entity tag is its version. This closes RFC 23
   §13 item 1.
 - **A5. The domain's actions are RFC 23's.** §4.1's action table gains `resolve-principal`,
-  `test-directory`, `join-domain`, `leave-domain` and `rotate-machine-password`, each an operation
-  the runner drives through identity, and §3.5 says how a grant names a directory principal (resolve
-  first, then grant by ID) and where the join's state is read. This touches RFC 23 §3.5, §4.1,
-  §4.5 (an offline join carries no `Idempotency-Key`) and §12, and settles the RFC 18 plan's O5
-  (#4058).
+  `test-directory`, `join-domain` and `rotate-machine-password`, each an operation the runner
+  drives through identity, the rotation sealing its next `Secret` version before it sets the
+  password at the domain controller, as RFC 18 §3.5 orders it; the closed `OpKind` set gains
+  `identity.nt-hash-delete`, which setting `identity.ntlm` off starts; and §3.5 says how a grant
+  names a directory principal (resolve first, then grant by ID) and where the join's state is
+  read. Leaving the domain has no action until RFC 18 defines it (§6.1). This touches RFC 23 §3.5,
+  §4.1, §4.5 (an offline join carries no `Idempotency-Key`), §4.6 and §12, and settles the RFC 18
+  plan's O5 (#4058).
 
 ## 1. Introduction
 
@@ -984,7 +987,8 @@ stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
   `node_` series (RFC 23 §2.4, §11).
 - The health and readiness endpoints and the metrics listener, with RFC 25's registry and watchdog
   (RFC 23 §2.5).
-- The operation runner on one node (D8, §4.3 above).
+- The operation runner on one node (D8, §4.3 above), with a slot per in-scope `OpKind` for its
+  owner's step function, the domain's and `identity.nt-hash-delete` among them (A5).
 - A user's and a group's deletion driven past the mark, their batches resumed at start (RFC 23
   §3.5, RFC 16 §3), which runs the restart clause of RFC 13 §9's "§7 user secrets".
 - A share's removal driven past the mark: epic 2's steps, with the join of RFC 23 §2.3's removed-share
@@ -1042,11 +1046,13 @@ error to a status.
   by ID. It is how squash, the flavour floor (`MinProof`, `MinProtection`), read-only and the
   netgroup allowlist reach a share.
 - The domain's routes (A5): a user's `krb` spelling (a Kerberos-name link), and the actions
-  `resolve-principal`, `test-directory`, `join-domain` (online and offline), `leave-domain` and
-  `rotate-machine-password` as operation kinds, with the join's state on the installation's
+  `resolve-principal`, `test-directory`, `join-domain` (online and offline) and
+  `rotate-machine-password` as operation kinds, and `identity.nt-hash-delete`, started in the
+  write that sets `identity.ntlm` off, with the join's state on the installation's
   status. An offline join writes its password as a new version of the machine password's `Secret`
   through `pkg/secrets`, in its own `Write` audited as a `set` of the reference, committed before
-  the operation, and keeps no idempotency record (RFC 23 §3.5, §4.5). The runner's steps for them are identity's, built by the RFC 18 plan's epic 7.
+  the operation, and keeps no idempotency record (RFC 23 §3.5, §4.5). The runner's steps for them
+  are identity's, built by the RFC 18 plan's epic 7, and epic 2 for the NT hashes' deletion.
 - Operations (read, `?wait=`), nodes and their connections, and the audit read.
 
 ### Epic 5 — Accounts and sign-in
@@ -1286,6 +1292,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | A remote store's credential rotation and changed endpoint (RFC 23 §3.3), refused (O2, §7) | needs the capability check and the claim (the RFC 13 plan's D9) | RFC 4 and RFC 27 for the pieces; this plan for the operation | both pieces exist | — |
 | The alert rules for rule 3's conditions (RFC 25 §7) (O2, §7) | the repository has no alert rules | RFC 25's plan | that plan | — |
 | The health registry beyond this plan's conditions, and the watchdog beyond the node's loops (§4.3's `ponytail:`) | only what this plan raises | RFC 25's plan | that plan | — |
+| Leaving the domain, RFC 23's former `leave-domain` (A5) | RFC 18 states no rule for it | unowned | RFC 18 defines leaving the domain | — |
 | The node's adapter rows (D12) | RFC 20's plan's epic 7 | RFC 20's plan, epic 7 | S2 | — |
 | The Kubernetes operator on the new wire shapes (O4, D9) | its cell is off until then | RFC 30's plan | that plan | — |
 | An MCP server for the API, as `dfsctl mcp` (O8) | the user deferred it | unowned | the API's surface settles after epic 6 | — |
