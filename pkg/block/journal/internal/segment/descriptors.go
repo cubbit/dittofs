@@ -207,35 +207,28 @@ func (c *Descriptors) SetRecorder(rec *lockorder.Recorder) {
 	c.rec.Store(rec)
 }
 
-// guardAcquire records a storage guard reference hold of e: the segment's
-// descriptor is held open and its bytes cannot be freed or moved until the
-// matching release. The hold is shared — a guard reference never waits on a
-// lock or on a drain — so it is recorded as a reference, exempt from the
-// same-domain rule against other guard references the way a reader's nested
-// hold is, while every other rule binds it. The acquire that builds it can
-// itself wait, on an in-flight open of the same segment and on the
-// descriptor budget's reclaim; the reference is recorded when it is granted,
-// so an acquire that hangs in that wait is not yet on the books. Nil-safe: a cache with no recorder records
-// nothing.
+// guardAcquire checks the storage guard rules for a reference to e that was
+// just granted: the segment's descriptor is held open and its bytes cannot
+// be freed or moved until the matching release. A reference never waits on
+// a lock once granted, and is on no goroutine's books, since the stream
+// keeps one across rolls and a reader may release on another goroutine; the
+// acquire that builds it can itself wait, on an in-flight open of the same
+// segment and on the descriptor budget's reclaim, so the rules are checked
+// after the grant. Nil-safe: a cache with no recorder records nothing.
 func (c *Descriptors) guardAcquire(e *descEntry) {
 	c.rec.Load().AcquireRef(e)
 }
 
-// guardRelease ends the hold guardAcquire recorded.
-func (c *Descriptors) guardRelease(e *descEntry) {
-	c.rec.Load().ReleaseRef(e)
-}
-
 // drainAcquire records the exclusive storage guard hold Close's drain wait
 // takes: the one guard form that waits for holders, so the one checked
-// against every hold — references included, which no reference ever is.
+// against every lock the goroutine holds; a reference is not one of them.
 func (c *Descriptors) drainAcquire(e *descEntry) {
 	c.rec.Load().Acquire(lockorder.StorageGuard, e)
 }
 
 // drainRelease ends the hold drainAcquire recorded.
 func (c *Descriptors) drainRelease(e *descEntry) {
-	c.rec.Load().Release(lockorder.StorageGuard, e)
+	c.rec.Load().Release(e)
 }
 
 // Acquire returns a reference to segment id's open descriptor, opening the
@@ -558,7 +551,6 @@ func (r Ref) Release() {
 		c.lastRefLocked(e)
 	}
 	c.mu.Unlock()
-	c.guardRelease(e)
 }
 
 // idlePushFront moves the entry to the front of the idle list, the most

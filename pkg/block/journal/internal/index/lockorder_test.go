@@ -155,7 +155,7 @@ func TestIndexUnderRecorder(t *testing.T) {
 			t.Fatalf("late-entry violation %d = %s of %s, want out of order of %s", i, v.Kind, v.Rank, want)
 		}
 	}
-	recorder.Release(probe, probe)
+	recorder.Release(probe)
 	if held := recorder.Held(); len(held) != 0 {
 		t.Fatalf("main goroutine holds ranks %v after the probe's release, want none", held)
 	}

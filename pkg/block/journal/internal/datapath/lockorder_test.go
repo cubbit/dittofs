@@ -82,15 +82,12 @@ func assertNoRecordedViolations(t *testing.T, rec *lockorder.Recorder, where str
 }
 
 // assertHeldNone fails the test when the calling goroutine still holds any
-// rank beyond the storage guard pins a stream's appender leaves — a hold the
-// test leaked would be on the books of this goroutine alone.
+// rank — a hold the test leaked would be on the books of this goroutine
+// alone.
 func assertHeldNone(t *testing.T, rec *lockorder.Recorder, where string) {
 	t.Helper()
-	for _, h := range rec.Held() {
-		if h != lockorder.StorageGuard {
-			t.Errorf("%s: the goroutine holds ranks %v, want only pins", where, rec.Held())
-			return
-		}
+	if held := rec.Held(); len(held) != 0 {
+		t.Errorf("%s: the goroutine holds ranks %v, want none", where, held)
 	}
 }
 
@@ -129,12 +126,11 @@ func TestRecorder_ReadReleasesIndexBeforeSegment(t *testing.T) {
 	if _, _, _, _, err := c.ReadAt(context.Background(), s, f, 0, make([]byte, 6)); err != nil {
 		t.Fatalf("ReadAt: %v", err)
 	}
-	// The stream appender's storage guard pins ride this goroutine's books
-	// from the writes it made and order nothing; anything else held at the
-	// seam names a lock the read carried past its resolve.
+	// Anything held at the seam names a lock the read carried past its
+	// resolve.
 	held := recordedJoin(t, c, "the beforeRead seam's report", heldInside)
-	if got := withoutPins(held); len(got) != 0 {
-		t.Fatalf("ranks held at the beforeRead seam = %v, want only the appender's pins: the read still held a lock past its resolve", got)
+	if len(held) != 0 {
+		t.Fatalf("ranks held at the beforeRead seam = %v, want none: the read still held a lock past its resolve", held)
 	}
 	assertNoRecordedViolations(t, rec, "the recorded read")
 }
@@ -392,8 +388,8 @@ func TestRecorder_TakeRunsUnderAppendOnly(t *testing.T) {
 		t.Fatalf("WriteAt under the take hook: %v", err)
 	}
 	held := recordedJoin(t, c, "the admission's decision-section report", heldInside)
-	if got, want := withoutPins(held), []lockorder.Rank{lockorder.FileAppend, lockorder.Capacity}; !slices.Equal(got, want) {
-		t.Fatalf("ranks held inside the admission's decision section = %v, want %v: the admission ran under a lock besides the write's own append domain", got, want)
+	if want := []lockorder.Rank{lockorder.FileAppend, lockorder.Capacity}; !slices.Equal(held, want) {
+		t.Fatalf("ranks held inside the admission's decision section = %v, want %v: the admission ran under a lock besides the write's own append domain", held, want)
 	}
 	assertNoRecordedViolations(t, rec, "the recorded admission")
 }
@@ -407,7 +403,7 @@ func TestRecorder_TakeRunsUnderAppendOnly(t *testing.T) {
 // admission: a refusal that held the file's index or append domain behind
 // itself would stop a read past the watchdog. Each refused write's own
 // goroutine — where a leaked hold would sit on the books of no other
-// goroutine — must come back holding only the stream appender's pins.
+// goroutine — must come back holding nothing.
 func TestRecorder_RefusedWriteHoldsNothing(t *testing.T) {
 	c, rec, shares := newRecordedCore(t)
 	s := shares[0]
@@ -490,7 +486,7 @@ func TestRecorder_RefusedWriteHoldsNothing(t *testing.T) {
 	waitForReads("the first refusal", 1)
 
 	// Several refused writes, each in turn: every one must answer naming
-	// the share, and the goroutine it ran on must hold nothing but pins
+	// the share, and the goroutine it ran on must hold nothing
 	// once it has. Each refusal runs on its own goroutine behind the
 	// watchdog, so a regression answers as a stack dump, not as the run
 	// waiting out the suite's timeout. A write that is not refused fails
@@ -500,7 +496,7 @@ func TestRecorder_RefusedWriteHoldsNothing(t *testing.T) {
 		refused := make(chan refusal, 1)
 		go func() {
 			_, err := c.WriteAt(context.Background(), limited, f, int64(attempt)*each, make([]byte, each), 1)
-			refused <- refusal{err: err, held: withoutPins(rec.Held())}
+			refused <- refusal{err: err, held: rec.Held()}
 		}()
 		out := recordedJoin(t, c, "the refused write", refused)
 		var ns *core.NoSpaceError
@@ -508,7 +504,7 @@ func TestRecorder_RefusedWriteHoldsNothing(t *testing.T) {
 			t.Fatalf("refused write %d got error %v, want a NoSpaceError naming the share's limit", attempt, out.err)
 		}
 		if len(out.held) != 0 {
-			t.Fatalf("refused write %d's goroutine holds ranks %v after its refusal, want only the stream's pins", attempt, out.held)
+			t.Fatalf("refused write %d's goroutine holds ranks %v after its refusal, want none", attempt, out.held)
 		}
 	}
 	// At least one further read must complete past the last refusal
@@ -564,7 +560,7 @@ func TestRecorder_FileMapHeldOnlyAcrossALookup(t *testing.T) {
 		go func() {
 			defer close(done)
 			rec.Acquire(lockorder.SegmentAppend, probeLock{component: "file map probe"})
-			defer rec.Release(lockorder.SegmentAppend, probeLock{component: "file map probe"})
+			defer rec.Release(probeLock{component: "file map probe"})
 			if _, err := c.WriteAt(context.Background(), s, fresh, 4096, []byte("entry"), 1); err != nil {
 				t.Errorf("the probe's write of the fresh file: %v", err)
 				return
