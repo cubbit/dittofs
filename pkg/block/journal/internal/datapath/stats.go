@@ -74,10 +74,24 @@ type Stats struct {
 // allocation raises before a record is reserved in it. Any other pair may
 // differ by one operation in flight.
 //
-// decision: UnreclaimedBytes is zero, for the journal and every share. The
-// index has no per-record backing hook, so the figure cannot be kept without
-// a walk of the segments; a per-record backed-bytes transition carrying the
-// record's whole size in the index's change report would serve it.
+// decision: UnreclaimedBytes is clamped at zero per share. It is the record
+// bytes the set holds for a share less the share's held and retained bytes and
+// the record overhead. Held and retained are read first, then the set's bytes
+// and overhead together in one lock hold. A write in flight inflates the
+// figure by its payload, the set being charged before held rises; that is not
+// negative. The clamp's remaining job is a release followed by a retire: held
+// falls at publish and the set falls later, at the retire, so a reader that
+// read held first can see the set below it once retirement is wired. Nothing
+// retires a segment the index still holds yet, so production cannot reach
+// that case; the clamp is the guard for when it can.
+//
+// ponytail: the figure ignores footer entries, segment headers and trailers,
+// which the set does not count, and the header and padding of every record on
+// disk stay counted as backed until its segment retires. Ceiling: one record
+// header plus padding per dead record, so a segment of dead small writes or
+// dead removal records reads near zero while wholly reclaimable. Upgrade to a
+// per-record backed-bytes count once repack picks segments by this figure or
+// that error shows in a capacity decision.
 func (c *Core) Stats() Stats {
 	var s Stats
 	s.MaxBytes = c.maxBytes
@@ -126,7 +140,8 @@ func (c *Core) Stats() Stats {
 
 	// One entry per tag with an open handle or a record on disk, tag 0 (the
 	// journal's own records) excepted.
-	used, figs := c.set.TagBytes(), c.shareFigures()
+	figs := c.shareFigures()
+	used, over := c.set.TagFigures()
 	s.Shares = make(map[core.ShareTag]ShareStats)
 	if p := c.registry.Load(); p != nil {
 		for _, h := range *p {
@@ -143,8 +158,22 @@ func (c *Core) Stats() Stats {
 		ss.UsedBytes = used[t]
 		ss.HeldBytes, ss.DirtyBytes = figs[t].Held, figs[t].Dirty
 		ss.ReservedBytes = reservedBy[t]
+		ss.UnreclaimedBytes = unreclaimed(used[t], over[t], figs[t])
+		s.UnreclaimedBytes += ss.UnreclaimedBytes
 		s.Shares[t] = ss
 	}
 	s.ReservedBytes = reserved
 	return s
+}
+
+// unreclaimed is the record bytes of a share that back no held or retained
+// extent and no live record: its record bytes less its held and retained
+// payload and the non-payload bytes of its records, never below zero.
+func unreclaimed(tagBytes, overhead int64, f shareHeld) int64 {
+	return max(0, unreclaimedRaw(tagBytes, overhead, f))
+}
+
+// unreclaimedRaw is the figure before the clamp.
+func unreclaimedRaw(tagBytes, overhead int64, f shareHeld) int64 {
+	return tagBytes - f.Held - f.Retained - overhead
 }

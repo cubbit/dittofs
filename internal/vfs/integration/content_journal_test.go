@@ -22,7 +22,10 @@ import (
 // fixture can fail one file's window.
 func TestContentSuiteOverTheJournal(t *testing.T) {
 	contenttest.Run(t, func(t *testing.T) contenttest.Subject {
-		f := enginetest.New(t)
+		// Eight concurrent writers each hold a content spare while they run, so the
+		// pool keeps one per writer, plus the fixture's own two: a pool of two refuses
+		// the excess retry-later whenever its refill lags.
+		f := enginetest.New(t, enginetest.WithSpares(8+2))
 		if err := f.E.Bind(t.Context(), f.Second); err != nil {
 			t.Fatal(err)
 		}

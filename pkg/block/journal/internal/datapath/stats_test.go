@@ -260,9 +260,7 @@ func TestStatsSharesAreAttachedOrHoldingRecords(t *testing.T) {
 // scenario here raises, each with why.
 var statsUnserved = map[string]string{
 	"Shares.UnreclaimedEndedBytes": "no Repack seals yet, so no segment is ended with unreclaimed bytes; zero until it does",
-	"Shares.UnreclaimedBytes":      "the index has no per-record backing hook, so it is kept at zero",
 	"Shares.ReservedBytes":         "a reservation is open only inside a write, which only the beforeWrote seam stands inside; TestRFC1D_StatsReservedCoversARecordNotYetCounted drives it, outside these scenarios",
-	"UnreclaimedBytes":             "the index has no per-record backing hook, so it is kept at zero",
 	"Counters.OfferedBytes":        "offload is not built yet",
 	"Counters.MarkedBytes":         "offload is not built yet",
 	"Counters.ReleasedBytes":       "release is not built yet",
@@ -322,5 +320,117 @@ func TestStatsEveryFieldIsServedOrNamed(t *testing.T) {
 		case !nonzero[n] && !named:
 			t.Errorf("%s is zero in every scenario and not listed unserved: it may be unwired", n)
 		}
+	}
+}
+
+// TestUnreclaimedPure checks the figure's arithmetic: record bytes less held,
+// retained and overhead, and never below zero.
+func TestUnreclaimedPure(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		tagBytes, over int64
+		f              shareHeld
+		want           int64
+	}{
+		{"record bytes beyond payload and overhead", 1000, 100, shareHeld{Held: 400, Retained: 100}, 400},
+		{"held and retained payload only", 700, 100, shareHeld{Held: 500, Retained: 100}, 0},
+		{"header-only records are all overhead", 300, 300, shareHeld{}, 0},
+		{"held ahead of the set clamps", 100, 10, shareHeld{Held: 500}, 0},
+		{"overhead beyond the bytes clamps", 100, 500, shareHeld{}, 0},
+		{"nothing", 0, 0, shareHeld{}, 0},
+	} {
+		if got := unreclaimed(tc.tagBytes, tc.over, tc.f); got != tc.want {
+			t.Errorf("%s: unreclaimed(%d, %d, %+v) = %d, want %d", tc.name, tc.tagBytes, tc.over, tc.f, got, tc.want)
+		}
+	}
+}
+
+// wantUnreclaimed fails unless share tag's figure is want and the total is the
+// sum of the shares' figures.
+func wantUnreclaimed(t *testing.T, c *Core, when string, tag core.ShareTag, want int64) {
+	t.Helper()
+	st := c.Stats()
+	if got := st.Shares[tag].UnreclaimedBytes; got != want {
+		t.Fatalf("%s: share %d UnreclaimedBytes = %d, want %d", when, tag, got, want)
+	}
+	var sum int64
+	for _, ss := range st.Shares {
+		sum += ss.UnreclaimedBytes
+	}
+	if st.UnreclaimedBytes != sum {
+		t.Fatalf("%s: UnreclaimedBytes = %d, want the shares' sum %d", when, st.UnreclaimedBytes, sum)
+	}
+}
+
+// TestUnreclaimedFollowsReleasesAndRetires checks clean content reads zero, a
+// removal of part of an extent raises its share's figure by exactly the bytes
+// it dropped and no other share's, a record without a payload adds nothing,
+// and the figure falls to zero once the segment holding the bytes is unlinked.
+func TestUnreclaimedFollowsReleasesAndRetires(t *testing.T) {
+	ctx := context.Background()
+	c, seam := newTestCore(t)
+	s1, s2 := mustShare(t, c, 1), mustShare(t, c, 2)
+	f, g := testFile(1), testFile(2)
+	mustWrite(t, c, s1, f, 0, bytes.Repeat([]byte{'a'}, 3*4096))
+	mustWrite(t, c, s2, g, 0, bytes.Repeat([]byte{'b'}, 4096))
+	wantUnreclaimed(t, c, "after writes", 1, 0)
+	wantUnreclaimed(t, c, "after writes", 2, 0)
+
+	// A removal over a hole drops nothing: its record is all overhead.
+	if _, err := c.Deallocate(ctx, s1, f, core.Extent{Off: 1 << 20, Len: 4096}); err != nil {
+		t.Fatalf("Deallocate over a hole: %v", err)
+	}
+	wantUnreclaimed(t, c, "after a header-only record", 1, 0)
+
+	if _, err := c.Deallocate(ctx, s1, f, core.Extent{Off: 4096, Len: 4096}); err != nil {
+		t.Fatalf("Deallocate: %v", err)
+	}
+	wantUnreclaimed(t, c, "after dropping 4096 bytes of share 1", 1, 4096)
+	wantUnreclaimed(t, c, "after dropping 4096 bytes of share 1", 2, 0)
+
+	// A release of its own size in share 2 moves share 2's figure by that
+	// size and leaves share 1's where it was.
+	if _, err := c.Deallocate(ctx, s2, g, core.Extent{Off: 0, Len: 1000}); err != nil {
+		t.Fatalf("Deallocate in share 2: %v", err)
+	}
+	wantUnreclaimed(t, c, "after dropping 1000 bytes of share 2", 2, 1000)
+	wantUnreclaimed(t, c, "after dropping 1000 bytes of share 2", 1, 4096)
+
+	seg := recordOf(t, c, f, 0).Record.Segment
+	// Drop the rest of f, so the segment backs nothing, then retire it with
+	// the unlink held back.
+	if _, err := c.Deallocate(ctx, s1, f, core.Extent{Off: 0, Len: 3 * 4096}); err != nil {
+		t.Fatalf("Deallocate the rest: %v", err)
+	}
+	wantUnreclaimed(t, c, "after dropping all 12288 bytes of share 1", 1, 3*4096)
+	if _, err := c.Streams().For(f).Seal(false); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	mustWrite(t, c, s2, sameStreamFile(c, f), 0, make([]byte, 4096))
+	syncFiles(t, c, f)
+	name := format.SegmentName(seg)
+	rm, mv := seam.Hold(t, kit.OpRemove, name), seam.Hold(t, kit.OpRename, name)
+	done := make(chan error, 1)
+	go func() { _, err := c.Retirer().Retire(seg, segment.NotHeld); done <- err }()
+	select {
+	case <-rm.Reached():
+	case <-mv.Reached():
+	case err := <-done:
+		t.Fatalf("Retire returned (%v) before reaching its unlink", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("Retire did not reach its unlink")
+	}
+	wantUnreclaimed(t, c, "while the unlink is held", 1, 3*4096)
+	rm.Release()
+	mv.Release()
+	if err := <-done; err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	wantUnreclaimed(t, c, "after the unlink", 1, 0)
+	// The zero is the figure itself, not the clamp's: the retire folds the
+	// segment's bytes and overhead back out of the set exactly.
+	used, over := c.set.TagFigures()
+	if raw := unreclaimedRaw(used[1], over[1], c.shareFigures()[1]); raw != 0 {
+		t.Fatalf("after the unlink: share 1's figure before the clamp = %d, want 0 (bytes %d, overhead %d)", raw, used[1], over[1])
 	}
 }

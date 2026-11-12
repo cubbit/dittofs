@@ -593,7 +593,7 @@ func FuzzSet(f *testing.F) {
 			case opShrink:
 				got = s.Shrink(op.id, op.n)
 			case opAddRecord:
-				got = s.AddRecord(op.id, op.tag, op.n)
+				got = s.AddRecord(op.id, op.tag, op.n, op.n/2)
 			case opClaim:
 				// Claim answers with a boolean, which the oracle encodes
 				// as an error class; carrying the oracle's class over to
