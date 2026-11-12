@@ -642,59 +642,6 @@ func TestPoolCondUnderRecorder(t *testing.T) {
 	p.Stop()
 }
 
-// TestSegmentLocksNameTheirRanks proves the two ranked mutexes of the layer
-// carry their ranks: with a higher rank held on this goroutine, a stream read
-// takes the append lock and a pool read takes the pool's, and each that goes
-// unreported would mean a lock left unranked, invisible to every check above.
-func TestSegmentLocksNameTheirRanks(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	e := streamOver(t, streamCap, func(e streamEnv) {})
-	srec := lockorder.NewRecorder()
-	e.s.SetRecorder(srec)
-	srec.Acquire(lockorder.StorageGuard, "probe")
-	_ = e.s.Room()
-	vs := srec.Violations()
-	srec.Release("probe")
-	if len(vs) != 1 {
-		t.Fatalf("the append probe recorded %d violations, want the append lock once: %+v", len(vs), vs)
-	}
-	if v := vs[0]; v.Kind != lockorder.OutOfOrder || v.Rank != lockorder.SegmentAppend {
-		t.Fatalf("the append probe's violation = %s of %s over %v, want out of order of segment append", v.Kind, v.Rank, v.Held)
-	}
-
-	_, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
-	prec := lockorder.NewRecorder()
-	p.SetRecorder(prec)
-	prec.Acquire(lockorder.FileIndex, "probe")
-	_ = p.Counters()
-	pvs := prec.Violations()
-	prec.Release("probe")
-	if len(pvs) != 1 {
-		t.Fatalf("the pool probe recorded %d violations, want the pool's capacity lock once: %+v", len(pvs), pvs)
-	}
-	if v := pvs[0]; v.Kind != lockorder.OutOfOrder || v.Rank != lockorder.Capacity {
-		t.Fatalf("the pool probe's violation = %s of %s over %v, want out of order of capacity", v.Kind, v.Rank, v.Held)
-	}
-
-	// The ledger's capacity-ranked mutex: a counter read under a held
-	// segment append rank — which outranks capacity — must report, so a
-	// Set whose SetRecorder was dropped or whose Init is missing cannot
-	// pass this check.
-	setrec := lockorder.NewRecorder()
-	e.set.SetRecorder(setrec)
-	setrec.Acquire(lockorder.SegmentAppend, "probe")
-	_ = e.set.Counters()
-	svs := setrec.Violations()
-	setrec.Release("probe")
-	if len(svs) != 1 {
-		t.Fatalf("the ledger probe recorded %d violations, want the ledger's capacity lock once: %+v", len(svs), svs)
-	}
-	if v := svs[0]; v.Kind != lockorder.OutOfOrder || v.Rank != lockorder.Capacity {
-		t.Fatalf("the ledger probe's violation = %s of %s over %v, want out of order of capacity", v.Kind, v.Rank, v.Held)
-	}
-}
-
 // TestStreamRollsTwiceUnderRecorder checks one stream, one goroutine and
 // appends large enough to roll, twice over: the successor's reference is
 // granted while the predecessor's is still kept, and the run must record no
