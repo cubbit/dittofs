@@ -162,7 +162,9 @@ func (fe *fileEntry) drop(r *reg) {
 // extent a running clone holds (DelayClone). A call naming the source,
 // destination, offsets and length of a clone running into the destination
 // joins it (RFC 8 §9.1), starting no second clone; one naming another spec
-// meets the running clone's registrations, answering DelayClone. Otherwise it
+// meets the running clone's registrations, answering DelayClone. One naming
+// a done clone's spec, neither extent changed since, answers nil at once
+// (doneBefore). Otherwise it
 // registers the source extent and the destination extent, then runs step 1
 // on the call (prepare), whose refusal undoes both registrations and changes
 // nothing, then from the journal step on its own goroutine (runClone) and the
