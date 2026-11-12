@@ -15,6 +15,11 @@ revised to follow the issues. The burn-up reads them in that order: a subtask is
 its epic issue, then the epic document, then the plan. An issue with no blocked-by links
 defers to its document: absent links mean "not stated here", never "depends on nothing".
 
+**The documents' dependencies stay required, and must be right.** The plan's §2 Blocks
+column and §3, the epic document's header **Depends on:** line and each subtask's in §6 are
+what the blocked-by links are created from, and what the burn-up reads for an issue that has
+none. An issue's body does not copy them; the links carry them.
+
 This step is the **one description** of the RFC's issues: roadmap epics, epic issues,
 subtask issues and deferral-ledger issues. `rfc-to-epic-plan` sends its issue requests here.
 Issues never copy the specification: a body is a pointer to a section of the plan or of the
@@ -225,9 +230,10 @@ subtasks come long after the epic issue.
   item=$(gh project item-add "$num" --owner "$owner" --url <issue-url> --format json --jq .id)
   gh project item-edit --project-id "$project" --id "$item" --field-id "$field" --number <man-days>
   ```
-- **Blocked-by links**, not a **Depends on:** line in a body: an epic issue is blocked by
-  other epic issues, a subtask issue by subtask issues, or by an epic issue when it waits on
-  a whole epic. The API also wants the blocker's numeric `id`:
+- **Blocked-by links**, created from the documents' dependencies (6.3, 6.4) and never
+  written as a **Depends on:** line in the issue's body: an epic issue is blocked by other
+  epic issues, a subtask issue by subtask issues, or by an epic issue when it waits on a
+  whole epic. The API also wants the blocker's numeric `id`:
   ```bash
   id=$(gh api "repos/$R/issues/<blocker-number>" --jq .id)
   gh api -X POST "repos/$R/issues/<blocked-number>/dependencies/blocked_by" -F issue_id="$id"
