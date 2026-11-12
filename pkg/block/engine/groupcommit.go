@@ -450,6 +450,7 @@ func (g *groupCommit) run() {
 		if h := g.e.beforeTake.Load(); h != nil {
 			(*h)()
 		}
+		start := g.e.d.Clock.Now()
 		batch, last, wait := g.take()
 		if h := g.e.hooks.taken.Load(); h != nil && len(batch) > 0 {
 			(*h)()
@@ -471,6 +472,12 @@ func (g *groupCommit) run() {
 		var timer <-chan struct{}
 		if wait >= 0 {
 			timer = g.e.d.Clock.After(wait)
+			// The timer counts wait from when it is armed: a clock that
+			// reached the deadline since take read it would leave it a
+			// whole wait late, so take looks again.
+			if !g.e.d.Clock.Now().Before(start.Add(wait)) {
+				continue
+			}
 		}
 		select {
 		case <-g.wake:

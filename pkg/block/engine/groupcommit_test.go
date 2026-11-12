@@ -16,6 +16,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -1189,4 +1190,35 @@ func TestACoveredCallerKeepsALaterAskForTheSameFile(t *testing.T) {
 			t.Logf("the later caller, ended by its context: %v", err)
 		}
 	}
+}
+
+// lateArmClock is the unit's clock moving by step between the group commit
+// reading it and arming its timer: its first After of wait advances the clock
+// before it arms, as a test's Advance racing the group commit can.
+type lateArmClock struct {
+	*sim.TestClock
+	wait, step time.Duration
+	once       sync.Once
+}
+
+func (c *lateArmClock) After(d time.Duration) <-chan struct{} {
+	if d == c.wait {
+		c.once.Do(func() { c.Advance(c.step) })
+	}
+	return c.TestClock.After(d)
+}
+
+// A clock that reaches a file's age while the group commit arms its timer
+// commits the file, rather than waiting a whole existence_age more.
+func TestAClockPastTheAgeWhileTheTimerIsArmedCommits(t *testing.T) {
+	u := newUnit(t, func(d *engine.Deps) {
+		d.Clock = &lateArmClock{TestClock: d.Clock.(*sim.TestClock), wait: time.Second, step: 2 * time.Second}
+	})
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	f := u.create(t, "a")
+	u.write(t, f, 0, []byte("abc"))
+	// The clock never moves again, so the bound is the assertion.
+	eventually(t, "the write is committed without another advance", func() bool { return !u.e.HasEntry(f) })
 }
