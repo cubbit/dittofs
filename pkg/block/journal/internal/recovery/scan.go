@@ -60,11 +60,16 @@ type segmentScan struct {
 	// Size is the segment file's own size, as its storage reported.
 	Size int64
 
-	// Dropped holds the catalogued entries the tail's classing will judge.
-	// Nothing fills it yet: the catalogue read refuses a record that does
-	// not verify rather than drop one no phase reads — the confine arm's
-	// decision — and the day the classing exists the catalogue's confine
-	// flips and fills it. The walk leaves it empty regardless.
+	// VerifiedEnd is where the last record that verified whole ends, a clone
+	// target whose body failed excluded: format.SegmentHeaderSize when none
+	// did. It is the line the classing draws between a torn drop at the tail
+	// and one a later record follows.
+	VerifiedEnd int64
+
+	// Dropped holds the entries the tail's classing will judge: the catalogue
+	// read fills it for each record it confines, with Synced set, and the walk
+	// fills it for each clone target whose body did not verify, with Entry
+	// zero and Synced unset. What it carries is the tail's to own.
 	Dropped []droppedRecord
 }
 
@@ -121,7 +126,8 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 		return segmentScan{ID: info.ID}, err
 	}
 
-	sc := segmentScan{ID: info.ID, Size: size, End: size, RecordsEnd: format.SegmentHeaderSize}
+	sc := segmentScan{ID: info.ID, Size: size, End: size, RecordsEnd: format.SegmentHeaderSize,
+		VerifiedEnd: format.SegmentHeaderSize}
 	if size < format.SegmentHeaderSize {
 		// Only an unverified-header segment can be this short: no record
 		// slot exists, so the scan is empty and the tail phases judge it.
@@ -154,6 +160,13 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 		switch {
 		case h.Kind <= format.KindUnmark: // the content kinds, 1–9
 			r, cerr := contentRecord(rd, identity, h)
+			if errors.Is(cerr, core.ErrCorrupt) {
+				// Only a clone target's body can fail this way: the
+				// record's header names it, so the tail's classing
+				// decides it, torn or corrupt.
+				sc.Dropped = append(sc.Dropped, droppedRecord{Header: h, Err: cerr})
+				continue
+			}
 			if cerr != nil {
 				return sc, cerr
 			}
@@ -163,6 +176,7 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 		default: // the reconcile kinds, 15 and 16
 			return sc, fmt.Errorf("%w: a %s record in segment %d", core.ErrNotImplemented, h.Kind, info.ID)
 		}
+		sc.VerifiedEnd = h.Offset + h.Size()
 	}
 	if werr != nil {
 		// The walk's stop: an unknown kind or a non-zero epoch — the
@@ -251,25 +265,12 @@ func contentRecord(rd *reader, identity core.JournalID, h format.RecordHeader) (
 
 // cloneSpec reads a clone target record's 56-byte body at the record's own
 // offset through the bound and verifies it whole, so no part of a record
-// that does not verify is used. A body that does not verify fails the open
-// naming the segment and the record's offset — never silently dropped, for
-// the destination's extent would then read as zeros.
+// that does not verify is used. A body that does not verify returns an error
+// wrapping core.ErrCorrupt naming the segment and the record's offset.
 //
-// decision: a clone target whose body is torn or does not verify refuses
-// the open, and keeps refusing on every retry, because the open cannot
-// recover what it cannot read: dropping the record would read the
-// destination as zeros and keeping it would serve a spec nobody verified.
-// The ceiling is a journal that stays closed over a clone target torn at
-// the tail of the newest segment, where a crash leaves one and no later
-// record shows it is not damage; the refusal is withdrawn when the tail's
-// own classing is built, which must drop a torn record at the newest tail
-// as a torn tail and tell it apart from damage mid-segment, so that such a
-// tail no longer refuses every open. The refusal is a scanned segment's
-// shape: the walk knows no record boundaries but the ones it decodes
-// itself, so a record it cannot verify is indistinguishable from damage
-// anywhere in the segment and nothing may be dropped blind — a catalogued
-// segment, whose entries name each record's place, confines the refusal
-// to the records that do not verify instead.
+// A clone target whose body does not verify is confined to that record:
+// the caller records it as dropped and the tail's classing decides whether
+// it is a crash's tear or damage.
 func cloneSpec(rd *reader, identity core.JournalID, h format.RecordHeader) (*core.CloneSpec, error) {
 	body := make([]byte, h.BodySize())
 	n, rerr := rd.ReadAt(format.SegmentName(h.Segment), body, h.Offset+format.RecordHeaderSize)

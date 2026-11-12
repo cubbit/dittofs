@@ -54,6 +54,15 @@ type corruptRecord struct {
 	Drop    droppedRecord
 }
 
+// at is the offset of the record the drop names: the catalogue entry's where
+// one named it, the scanned header's otherwise.
+func (c corruptRecord) at() int64 {
+	if c.Drop.Entry.RecordOffset != 0 {
+		return c.Drop.Entry.RecordOffset
+	}
+	return c.Drop.Header.Offset
+}
+
 // tails is the classing's answer for every own and unverified-header segment.
 type tails struct {
 	// Fates holds one fate per segment, ascending by id.
@@ -97,6 +106,7 @@ func classifyTails(rd *reader, att Attached, scans []segmentScan) (tails, error)
 	for _, sc := range scans {
 		id := sc.ID
 		damaged, tornSlot, tail := false, false, false
+		tailAt := sc.RecordsEnd // where a torn tail starts: before any torn drop at it
 		for _, r := range sc.Ranges {
 			switch {
 			case named[id] && !sc.Sealed && r.Off >= sc.RecordsEnd:
@@ -154,10 +164,21 @@ func classifyTails(rd *reader, att Attached, scans []segmentScan) (tails, error)
 			}
 		}
 
-		if len(sc.Dropped) > 0 {
-			damaged = true
-			for _, d := range sc.Dropped {
+		// A dropped record the catalogue confined is already synced. A scanned
+		// one is synced where a proof covers it, which makes it corrupt; below
+		// the last verifying record without one it is a torn slot, and past
+		// that record it is the torn tail. Neither is ever written or reported.
+		for _, d := range sc.Dropped {
+			switch {
+			case d.Synced || sc.Sealed || named[id] || d.Header.Offset < sc.SyncedThrough:
+				d.Synced = true
+				damaged = true
 				out.Corrupt = append(out.Corrupt, corruptRecord{Segment: id, Drop: d})
+			case d.Header.Offset >= sc.VerifiedEnd:
+				tail = true
+				tailAt = min(tailAt, d.Header.Offset)
+			default:
+				tornSlot = true
 			}
 		}
 		if damaged {
@@ -175,10 +196,10 @@ func classifyTails(rd *reader, att Attached, scans []segmentScan) (tails, error)
 		case tornSlot || tornHeader:
 			f.Kind = fateEnded
 			if tail {
-				f.Offset = sc.RecordsEnd
+				f.Offset = tailAt
 			}
 		case tail:
-			f.Kind, f.Offset = fateTornTail, sc.RecordsEnd
+			f.Kind, f.Offset = fateTornTail, tailAt
 		default:
 			f.Kind = fateIntact
 		}
@@ -188,7 +209,7 @@ func classifyTails(rd *reader, att Attached, scans []segmentScan) (tails, error)
 	slices.SortFunc(out.Fates, func(a, b segmentFate) int { return cmp.Compare(a.ID, b.ID) })
 	slices.Sort(out.Damaged)
 	slices.SortStableFunc(out.Corrupt, func(a, b corruptRecord) int {
-		return cmp.Or(cmp.Compare(a.Segment, b.Segment), cmp.Compare(a.Drop.Entry.RecordOffset, b.Drop.Entry.RecordOffset))
+		return cmp.Or(cmp.Compare(a.Segment, b.Segment), cmp.Compare(a.at(), b.at()))
 	})
 	return out, nil
 }
