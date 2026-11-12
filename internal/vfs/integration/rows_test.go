@@ -67,6 +67,14 @@ func (c *composition) continuouslyAvailable(t *testing.T) {
 	}
 }
 
+// bounded is a context that ends after bound, so a wrong engine fails on its
+// assertion instead of hanging the package.
+func bounded(t *testing.T) context.Context {
+	ctx, cancel := context.WithTimeout(t.Context(), bound)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 // write writes p at off of the file h names as call, unstable, under a context
 // that ends after bound.
 func (c *composition) write(t *testing.T, call vfs.Call, h vfs.Handle, off int64, p []byte) (vfs.WriteResult, error) {
@@ -81,7 +89,7 @@ func (c *composition) write(t *testing.T, call vfs.Call, h vfs.Handle, off int64
 func (c *composition) read(t *testing.T, h vfs.Handle, off int64, n int) []byte {
 	t.Helper()
 	p := make([]byte, n)
-	got, _, err := c.fs.Read(t.Context(), c.admin, vfs.Anonymous(h), off, p)
+	got, _, err := c.fs.Read(bounded(t), c.admin, vfs.Anonymous(h), off, p)
 	if err != nil {
 		t.Fatalf("read %d bytes at %d: %v", n, off, err)
 	}
@@ -119,7 +127,7 @@ func TestV19(t *testing.T) {
 		ref := c.open(t, pc, "f", entity.DurabilityPersistent)
 		data := []byte("persistent")
 		before := len(c.Spans())
-		if _, err := c.fs.Write(t.Context(), pc, ref, 0, data, vfs.Unstable); err != nil {
+		if _, err := c.fs.Write(bounded(t), pc, ref, 0, data, vfs.Unstable); err != nil {
 			t.Fatalf("the first write: %v", err)
 		}
 		// The reply waits for the write's sync, which ends an engine.sync span.
@@ -130,7 +138,7 @@ func TestV19(t *testing.T) {
 		// Read from the engine: the service refuses reads while the persistent
 		// open's grace period lasts.
 		got := make([]byte, len(data))
-		if n, err := c.E.Read(t.Context(), c.Share.ID, id, 0, got); err != nil || !bytes.Equal(got[:n], data) {
+		if n, err := c.E.Read(bounded(t), c.Share.ID, id, 0, got); err != nil || !bytes.Equal(got[:n], data) {
 			t.Errorf("after the crash the file reads %q, %v; want %q", got[:n], err, data)
 		}
 	})
@@ -139,7 +147,7 @@ func TestV19(t *testing.T) {
 		c := compose(t)
 		h, _ := c.File("f")
 		c.FS.Counts.TakeUpdates()
-		if _, err := c.fs.Write(t.Context(), c.admin, vfs.Anonymous(h), 0, []byte("appended"), vfs.FileSync); err != nil {
+		if _, err := c.fs.Write(bounded(t), c.admin, vfs.Anonymous(h), 0, []byte("appended"), vfs.FileSync); err != nil {
 			t.Fatalf("the first write: %v", err)
 		}
 		if got := c.FS.Counts.TakeUpdates(); got.Updates != 0 {
@@ -150,16 +158,16 @@ func TestV19(t *testing.T) {
 	t.Run("a stable overwrite stalled with the store is a delay", func(t *testing.T) {
 		c := compose(t)
 		h, id := c.File("f")
-		if _, err := c.fs.Write(t.Context(), c.admin, vfs.Anonymous(h), 0, []byte("before"), vfs.Unstable); err != nil {
+		if _, err := c.fs.Write(bounded(t), c.admin, vfs.Anonymous(h), 0, []byte("before"), vfs.Unstable); err != nil {
 			t.Fatalf("the first write: %v", err)
 		}
-		if err := c.E.CommitExistence(t.Context(), c.Share.ID, id); err != nil {
+		if err := c.E.CommitExistence(bounded(t), c.Share.ID, id); err != nil {
 			t.Fatal(err)
 		}
 		// The store holds the overwrite's existence commit until the clock
 		// passes a minute. The cleanup lifts the hold and moves the clock past
 		// it, so the fixture's stop finds the commit done.
-		c.HoldNextWrite(time.Minute, nil)
+		held := c.HoldNextWrite(time.Minute, nil)
 		t.Cleanup(func() {
 			c.Heal()
 			c.Clock.Advance(time.Minute)
@@ -167,8 +175,13 @@ func TestV19(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 		defer cancel()
 		_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(h), 0, []byte("after!"), vfs.FileSync)
-		if !errors.Is(err, vfs.ErrDelay) {
-			t.Errorf("a stable overwrite with the store stalled: %v, want ErrDelay at the deadline", err)
+		if !errors.Is(err, &vfs.Delay{Cause: vfs.DelayCommit}) {
+			t.Errorf("a stable overwrite with the store stalled: %v, want ErrDelay (DelayCommit) at the deadline", err)
+		}
+		select {
+		case <-held:
+		default:
+			t.Error("the stable overwrite was answered before its existence commit reached the store")
 		}
 	})
 }
@@ -264,10 +277,14 @@ func TestV20(t *testing.T) {
 		if err := c.FS.Store.ControlPlane().SetQuota(t.Context(), c.Share.ID, q); err != nil {
 			t.Fatal(err)
 		}
+		start := time.Now()
 		_, err := c.write(t, signedIn(c.alice.Principal), h, 0, []byte("12345"))
 		var qe *vfs.QuotaError
 		if !errors.As(err, &qe) || qe.Scope != vfs.QuotaUser || errors.Is(err, vfs.ErrDelay) {
 			t.Errorf("a write past alice's hard quota: %v, want ErrQuota naming her quota", err)
+		}
+		if took := time.Since(start); took > bound/10 {
+			t.Errorf("the refusal took %v, want under %v: it waited", took, bound/10)
 		}
 	})
 }
@@ -284,6 +301,9 @@ func TestV22(t *testing.T) {
 		h, _ := c.owned(t, "f", c.alice.Principal, 0o6777)
 		if _, err := c.write(t, c.admin, h, 0, []byte("data")); err != nil {
 			t.Fatalf("the first write: %v", err)
+		}
+		if m := c.Committed(h).Mode; m != 0o6777 {
+			t.Fatalf("the administrator's write left mode %o, want 6777", m)
 		}
 		return h
 	}
@@ -309,12 +329,12 @@ func TestV22(t *testing.T) {
 			return err
 		}},
 		{"a truncate by bob", func(t *testing.T, c *composition, h vfs.Handle) error {
-			_, err := c.fs.SetAttr(t.Context(), signedIn(c.bob.Principal), vfs.Target{H: h},
+			_, err := c.fs.SetAttr(bounded(t), signedIn(c.bob.Principal), vfs.Target{H: h},
 				vfs.AttrChange{Attrs: entity.Attrs{}.WithSize(2)})
 			return err
 		}},
 		{"a deallocate by bob", func(t *testing.T, c *composition, h vfs.Handle) error {
-			_, err := c.fs.Deallocate(t.Context(), signedIn(c.bob.Principal), vfs.Anonymous(h), 0, 2)
+			_, err := c.fs.Deallocate(bounded(t), signedIn(c.bob.Principal), vfs.Anonymous(h), 0, 2)
 			return err
 		}},
 	} {
@@ -339,9 +359,6 @@ func TestV22(t *testing.T) {
 		c.Heal()
 		if got := c.read(t, h, 0, 4); !bytes.Equal(got, []byte("data")) {
 			t.Errorf("the file reads %q after a write whose clear failed, want %q: the bytes were staged first", got, "data")
-		}
-		if m := c.Committed(h).Mode; m != 0o6777 {
-			t.Errorf("the store's mode after the failed clear %o, want 6777", m)
 		}
 	})
 
@@ -405,7 +422,7 @@ func TestV25(t *testing.T) {
 			t.Fatalf("the first write: %v", err)
 		}
 		c.FailNextWindow()
-		if v, err := c.fs.Commit(t.Context(), c.admin, vfs.Anonymous(h), 0, 0); err != nil || v == w.Verifier {
+		if v, err := c.fs.Commit(bounded(t), c.admin, vfs.Anonymous(h), 0, 0); err != nil || v == w.Verifier {
 			t.Errorf("the commit over a failed window: verifier %x, %v; want success, other than the write's %x", v, err, w.Verifier)
 		}
 	})
@@ -413,15 +430,15 @@ func TestV25(t *testing.T) {
 	t.Run("a stable write over a failed window is a delay", func(t *testing.T) {
 		c := compose(t)
 		h, _ := c.File("f")
-		w, err := c.fs.Write(t.Context(), c.admin, vfs.Anonymous(h), 0, []byte("stable"), vfs.FileSync)
+		w, err := c.fs.Write(bounded(t), c.admin, vfs.Anonymous(h), 0, []byte("stable"), vfs.FileSync)
 		if err != nil {
 			t.Fatalf("the first write: %v", err)
 		}
-		if v, err := c.fs.Commit(t.Context(), c.admin, vfs.Anonymous(h), 0, 0); err != nil || v != w.Verifier {
+		if v, err := c.fs.Commit(bounded(t), c.admin, vfs.Anonymous(h), 0, 0); err != nil || v != w.Verifier {
 			t.Errorf("a stable write with no failed window answered verifier %x, the commit after it %x, %v; want the same", w.Verifier, v, err)
 		}
 		c.FailNextWindow()
-		_, err = c.fs.Write(t.Context(), c.admin, vfs.Anonymous(h), 0, []byte("stable"), vfs.FileSync)
+		_, err = c.fs.Write(bounded(t), c.admin, vfs.Anonymous(h), 0, []byte("stable"), vfs.FileSync)
 		if !errors.Is(err, &vfs.Delay{Cause: vfs.DelayCommit}) {
 			t.Errorf("a stable write whose sync window failed: %v, want ErrDelay (DelayCommit)", err)
 		}
@@ -440,7 +457,7 @@ func TestV25(t *testing.T) {
 		// timer set after one move still comes due.
 		for deadline := time.Now().Add(bound); ; time.Sleep(10 * time.Millisecond) {
 			c.Clock.Advance(enginetest.Settings.ExistenceAge)
-			if _, pending, err := c.E.Overlay(t.Context(), c.Share.ID, id); err == nil && !pending {
+			if _, pending, err := c.E.Overlay(bounded(t), c.Share.ID, id); err == nil && !pending {
 				break
 			}
 			if time.Now().After(deadline) {
@@ -464,15 +481,15 @@ func TestV25(t *testing.T) {
 			{"pc", pc, c.open(t, pc, "f", 0)},
 			{"laptop", laptop, c.open(t, laptop, "f", 0)},
 		}
-		if _, err := c.fs.Write(t.Context(), pc, opens[0].ref, 0, []byte("lost"), vfs.Unstable); err != nil {
+		if _, err := c.fs.Write(bounded(t), pc, opens[0].ref, 0, []byte("lost"), vfs.Unstable); err != nil {
 			t.Fatalf("the first write: %v", err)
 		}
 		c.FailNextWindow()
 		for _, o := range opens {
-			if _, err := c.fs.Commit(t.Context(), o.c, o.ref, 0, 0); !errors.Is(err, vfs.ErrLost) {
+			if _, err := c.fs.Commit(bounded(t), o.c, o.ref, 0, 0); !errors.Is(err, vfs.ErrLost) {
 				t.Errorf("%s: the first flush across the loss: %v, want ErrLost", o.name, err)
 			}
-			if _, err := c.fs.Commit(t.Context(), o.c, o.ref, 0, 0); err != nil {
+			if _, err := c.fs.Commit(bounded(t), o.c, o.ref, 0, 0); err != nil {
 				t.Errorf("%s: the flush after it: %v, want success", o.name, err)
 			}
 		}
