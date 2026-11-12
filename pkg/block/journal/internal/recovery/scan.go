@@ -50,6 +50,13 @@ type segmentScan struct {
 	// End is where the walk stopped: the seal marker's offset, the failing
 	// slot's offset, or the file's size.
 	End int64
+	// RecordsEnd is where the last verifying record ends:
+	// format.SegmentHeaderSize when the segment holds none, End for a sealed
+	// or catalogued scan, whose last record ends at the seal marker.
+	RecordsEnd int64
+	// Ranges holds the byte ranges the walk attached nothing from, as the
+	// walk reported them, ascending; a catalogued scan has none.
+	Ranges []format.ScanRange
 	// Size is the segment file's own size, as its storage reported.
 	Size int64
 
@@ -114,12 +121,24 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 		return segmentScan{ID: info.ID}, err
 	}
 
-	sc := segmentScan{ID: info.ID, Size: size}
+	sc := segmentScan{ID: info.ID, Size: size, End: size, RecordsEnd: format.SegmentHeaderSize}
+	if size < format.SegmentHeaderSize {
+		// Only an unverified-header segment can be this short: no record
+		// slot exists, so the scan is empty and the tail phases judge it.
+		return sc, nil
+	}
 	walk, werr := format.ScanSegmentHeaders(readerAt{rd: rd, name: format.SegmentName(info.ID)},
 		size, identity, info.ID)
 	sc.End = walk.End
 	sc.Sealed = walk.Sealed
 	sc.Resynced = walk.Resynced
+	sc.Ranges = walk.Ranges
+	if walk.Sealed {
+		sc.RecordsEnd = walk.End
+	} else if n := len(walk.Records); n > 0 {
+		last := walk.Records[n-1].Header
+		sc.RecordsEnd = last.Offset + last.Size()
+	}
 
 	for _, rec := range walk.Records {
 		h := rec.Header
@@ -448,7 +467,7 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 			srd := newReader(wctx, rd.fs, rd.clk, rd.log)
 			workers[i] = srd
 			switch {
-			case forceScan || !named[own[i].ID]:
+			case forceScan || own[i].Unverified || !named[own[i].ID]:
 				scans[i], errs[i] = scanSegment(srd, identity, own[i])
 			default:
 				got, byCatalog, cerr := catalogSegment(srd, identity, own[i])

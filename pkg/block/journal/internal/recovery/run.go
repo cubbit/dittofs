@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"runtime"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -105,7 +106,14 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 	if limit < 1 {
 		limit = math.MaxInt64
 	}
-	out, err := rebuildIndex(ctx, rd, expect, st.Attached.Own, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan)
+	// The unverified-header segments' records verify by identity, segment
+	// and offset whatever their header slot says, so they scan too; the
+	// zero-header ones are not scanned here.
+	segs := slices.Clone(st.Attached.Own)
+	for _, id := range st.Attached.Unverified {
+		segs = append(segs, SegmentInfo{ID: id, Unverified: true})
+	}
+	out, err := rebuildIndex(ctx, rd, expect, segs, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan)
 	if err != nil {
 		return err
 	}

@@ -111,6 +111,8 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 		End:             footer.Offset - format.SealMarkerSize,
 		Size:            size,
 	}
+	// The last entry ends at the seal marker.
+	sc.RecordsEnd = sc.End
 	for _, e := range footer.Entries {
 		// The entry's numbers meet the largest-value rule first, exactly as
 		// a decoded header's numbers would: whatever its kind does with
