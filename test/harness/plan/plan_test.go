@@ -43,7 +43,7 @@ func TestPRTier(t *testing.T) {
 	want := []string{
 		"lint-go", "lint-repo", "shellcheck",
 		"unit", "unit/windows", "unit/journal-index", "unit/journal-plant", "unit/adapter-allocs",
-		"journal-conformance",
+		"journal-conformance", "journal-conformance-norace",
 		"engine-conformance", "adapter-conformance",
 		"integration", "integration/portmap", "integration/kerberos",
 		"operator",
