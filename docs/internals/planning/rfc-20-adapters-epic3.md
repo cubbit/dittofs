@@ -106,7 +106,7 @@ cited by number and title, and how it applies here or why it does not.
 | R4 | `Release` returns the reservation's bytes to its budget, then zeroes the `Reservation`, so a second `Release` does nothing, on either kind | MUST | RFC 24 §2.5; RFC 20 §4.7 | T3.1 |
 | R5 | A release past zero panics in tests and clamps to zero in production, on either kind; in production the clamp is logged at Error with the budget's name, at most once per budget (D7, which also says where the count of them comes from) | MUST | RFC 24 §2.7; D7 | T3.1 |
 | R6 | A `WaitBudget`'s `Reserve` charges n bytes for key; when they do not fit under the ceiling it waits within `ctx`, holding nothing. A release grants the next waiter on the releasing goroutine: the waiter's bytes are charged before `Release` returns, and no budget starts a goroutine | MUST | RFC 24 §2.5, §2.3, §2.7 | T3.1 |
-| R7 | Under a `ctx` already past its deadline, `Reserve` tries once and refuses at once | MUST | RFC 24 §2.5; RFC 20 §4.7 | T3.1 |
+| R7 | Under a `ctx` already past its deadline or cancelled, `Reserve` tries once: it takes the charge when it fits and no waiter is ahead of it, and otherwise refuses at once without waiting | MUST | RFC 24 §2.5; RFC 20 §4.7 | T3.1 |
 | R8 | Every reservation is released on every path: a `Reserve` whose `ctx` ends while it waits is refused and leaves nothing reserved (the path through a panic is the caller's, §1.2) | MUST | RFC 24 §2.5 | T3.1 |
 
 **Buffers**
@@ -223,7 +223,7 @@ pkg/resources/
   resources_test.go      E1's class and import tests, kept
 test/adapter/known.yaml  T3.1: 6 entries removed; T3.2: 1
 test/suites.yaml         T3.1: ./pkg/resources/ added to unit/adapter-allocs
-docs/internals/rfcs/rfc-24-resources.md   T3.2: §3.1's header room (D5)
+docs/internals/rfcs/rfc-24-resources.md   T3.1: §2.5's expired context (R7); T3.2: §3.1's header room (D5)
 docs/internals/rfcs/rfc-20-adapters.md    T3.2: §6.8's comment on cap (D5)
 ```
 
@@ -246,9 +246,11 @@ E1 froze them. The gates skip under the race detector and the poison read withou
   and the clamp's log, once per budget (D7).
   A `Reserve` whose context ends takes the lock, and either leaves the queue with nothing
   reserved or, where a release granted it first, returns that grant to the budget, which may
-  wake the next waiter. The markers of D1 to D4 and D7, and E1's comments on `WaitBudget`, `Reserve`
-  and `Release` that say "fair per key", "its turn" and "its key's count" rewritten to arrival
-  order. `./pkg/resources/` added to `unit/adapter-allocs`' command in `test/suites.yaml`. Six
+  wake the next waiter. The markers of D1 to D4 and D7, and E1's comments on `WaitBudget`,
+  `Reserve` and `Release` that say "fair per key", "its turn" and "its key's count" rewritten
+  to arrival order. `Reserve`'s comment that it "tries once and refuses at once" under an
+  expired context rewritten as R7 reads, and RFC 24 §2.5's same sentence amended with it.
+  `./pkg/resources/` added to `unit/adapter-allocs`' command in `test/suites.yaml`. Six
   entries removed from `test/adapter/known.yaml`: the four subtests of
   `TestConformanceBudgetsHeldNamesEachCharged` and the two of
   `TestConformanceCheckLeaksReadsBudgets`.
