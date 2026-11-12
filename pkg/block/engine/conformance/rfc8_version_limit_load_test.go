@@ -157,6 +157,15 @@ func (r *loadRun) stallAtTheRaise(t *testing.T, rate, trigger uint64, d time.Dur
 
 	entered := r.f.HoldWrites(d)
 
+	// A store write in the hold waits d on the fixture's clock, and the
+	// fixture closes the engine over a clock it never moves. When the row
+	// ends, before the fixture's own cleanup runs, it lifts the hold, so a
+	// write that Close sends is not held again, and moves the clock past it.
+	t.Cleanup(func() {
+		r.f.Heal()
+		r.f.Clock.Advance(d)
+	})
+
 	if err := r.draw(); err != nil {
 		t.Fatalf("the draw at which the raise falls due: %v", err)
 	}
