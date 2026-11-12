@@ -60,10 +60,12 @@ type segmentScan struct {
 	// Size is the segment file's own size, as its storage reported.
 	Size int64
 
-	// VerifiedEnd is where the last record that verified whole ends, a clone
+	// VerifiedEnd is where the last record whose header verified ends, a clone
 	// target whose body failed excluded: format.SegmentHeaderSize when none
-	// did. It is the line the classing draws between a torn drop at the tail
-	// and one a later record follows.
+	// did. The walk never reads a content payload, so a record whose payload
+	// is torn still counts here; it is not proof of a payload. It is the line
+	// the classing draws between a torn drop at the tail and one a later
+	// record follows.
 	VerifiedEnd int64
 
 	// Dropped holds the entries the tail's classing will judge: the catalogue

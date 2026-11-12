@@ -59,7 +59,13 @@ func fuzzRecs(tag uint32, seq uint64) []raw.Record {
 		r.FileID[0] = byte(s) // a file per record
 		return r
 	}
-	return []raw.Record{mk(1, seq), mk(1, seq+1)}
+	// A clone target, so a mutated body drives the dropped-record path.
+	c := rec(7, func(r *raw.Record) {
+		r.Tag, r.Seq, r.Version = tag, seq+2, raw.Version{Counter: seq + 2}
+		r.Clone = &raw.CloneBody{Share: srcShare(), File: srcFile(), Off: 0x101, AsOf: raw.Version{Counter: 9}}
+	})
+	c.FileID[0] = byte(seq + 2)
+	return []raw.Record{mk(1, seq), mk(1, seq+1), c}
 }
 
 // FuzzOpen runs the open's recovery over one mutated segment: the fuzz input
@@ -105,7 +111,15 @@ func FuzzOpen(f *testing.F) {
 		if len(st.Tails.Fates) != len(st.Rebuilt.Scans) {
 			t.Fatalf("Fates %+v, want one per scanned segment (%d)", st.Tails.Fates, len(st.Rebuilt.Scans))
 		}
+		syncedThrough := map[core.SegmentID]int64{}
+		for _, sc := range st.Rebuilt.Scans {
+			syncedThrough[sc.ID] = sc.SyncedThrough
+		}
 		for _, f := range st.Tails.Fates {
+			// R50: a cut never goes below a synced-through a verifying header names.
+			if (f.Kind == fateTornTail || f.Kind == fateEnded) && f.Offset != 0 && f.Offset < syncedThrough[f.ID] {
+				t.Fatalf("fate %+v: cut below the synced-through %d", f, syncedThrough[f.ID])
+			}
 			if sz := size[f.ID]; f.Offset != 0 && (f.Offset < format.SegmentHeaderSize || f.Offset > sz) {
 				t.Fatalf("fate %+v: offset outside [%d,%d]", f, format.SegmentHeaderSize, sz)
 			}
@@ -117,7 +131,7 @@ func FuzzOpen(f *testing.F) {
 						continue
 					}
 					sz, ok := size[e.Record.Segment]
-					if !ok || int64(e.Record.Offset) < format.SegmentHeaderSize || int64(e.Record.Offset) >= sz {
+					if !ok || int64(e.Record.Offset) < format.SegmentHeaderSize || int64(e.Record.Offset)+format.RecordHeaderSize > sz {
 						t.Fatalf("entry %+v: record %+v names no slot of a scanned segment (sizes %v)", e, e.Record, size)
 					}
 				}
