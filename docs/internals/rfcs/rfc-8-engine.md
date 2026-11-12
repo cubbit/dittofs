@@ -2819,10 +2819,10 @@ there that are not yet offloaded, and reporting the extent as a hole would make 
 sparse-aware copy skip them.
 
 From an offset at or past the end of file, judged as for a read
-([§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)), `Allocation` **MUST** answer an empty span at that offset: no
-bytes, hole nor data. A hole there would describe bytes the file does not have,
-with no end to give it; the empty span says where the file ends, as a short
-read does there.
+([§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)), `Allocation` **MUST** answer an empty span at that offset,
+`Length` 0, whatever its `Class`: no bytes, hole nor data. A hole there would
+describe bytes the file does not have, with no end to give it; the empty span
+says the file ends at or before that offset, as a short read does there.
 
 ### 7.7 An absent object is re-resolved while its location moves
 
@@ -3762,13 +3762,14 @@ phase 1 512 KiB at the same *v*, so an NFSv4 client that cached 2 MiB under *v*
 would never revalidate.
 
 **A released file reads as stale, and overlays as nothing.** Once a file's
-release has committed its phase 1 ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), `Read` and `Allocation` **MUST**
+release has committed its phase 1 ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), a `Read` of at least one byte and `Allocation` **MUST**
 answer `ErrStale`, a handle to nothing ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)): both ask block
 metadata, which no longer holds the file, and a short read or an empty span
 would pass the released file off as an empty one. `Overlay` answers `pending`
-false and no error: it reads the journal only, whose `Delete` left nothing of
-the file, so it cannot tell a released file from one with nothing pending, and
-the File record the service joins it with answers `ErrStale` first.
+false and no error: it reads the journal only, and phase 1 committed the file's
+pending existence with the release, so it cannot tell a released file from one
+with nothing pending, and the File record the service joins it with answers
+`ErrStale` first.
 
 Offload, eviction and removal batches are not engine methods: the work queue
 runs offload and removal batches ([§6.1](#6.1%20The%20work%20queue)) and the eviction loop eviction
