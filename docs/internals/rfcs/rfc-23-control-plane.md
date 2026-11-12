@@ -842,7 +842,9 @@ encrypts — fixed at creation. The API applies RFC 13's classes and nothing els
 - **rotating a credential is an operation**: it writes the new version, waits
   until every node using it reports that version, then deletes the old one
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). The operation reports the nodes still holding the
-  old version, and succeeds only when the old version is gone;
+  old version, and succeeds once every node reports the new one; the old one is
+  then deleted, or kept for the retention RFC 13 §7 names for a keytab, a
+  machine password or the signing key, and deleted when it passes;
 - a remote store is deleted only when no namespace names it; a namespace only
   when no share names it, after which GC drains it — collecting a held namespace, forgetting any other ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)) and the
   namespace's status shows the drain.
