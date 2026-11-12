@@ -55,20 +55,20 @@ var fixtureSettings = journal.Settings{Streams: 2, SpareTarget: 2}
 // sparesBackstop bounds the wait for a journal's first spares.
 const sparesBackstop = 10 * time.Second
 
-// awaitSpares returns once j's pool holds the content spares fixtureSettings
-// asks for: Open returns while the pool is still making them, and a write that
+// awaitSpares returns once j's pool holds the content spares settings asks
+// for: Open returns while the pool is still making them, and a write that
 // needs one before it lands is refused for want of a spare. It polls the real
 // condition, since the pool works in real time and no clock can be injected
 // there, and fails once the backstop passes.
-func awaitSpares(ctx context.Context, j *journal.Journal) error {
+func awaitSpares(ctx context.Context, j *journal.Journal, settings journal.Settings) error {
 	ctx, cancel := context.WithTimeout(ctx, sparesBackstop)
 	defer cancel()
 
-	for j.Stats().Spares < fixtureSettings.SpareTarget {
+	for j.Stats().Spares < settings.SpareTarget {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("fixture: the journal's pool made %d of %d spares: %w",
-				j.Stats().Spares, fixtureSettings.SpareTarget, ctx.Err())
+				j.Stats().Spares, settings.SpareTarget, ctx.Err())
 		case <-time.After(time.Millisecond):
 		}
 	}
@@ -136,9 +136,10 @@ type Fixture struct {
 	spansMu sync.Mutex
 	spans   []*Span // every span ended, in the order they ended
 
-	compose func(*Fixture, *engine.Engine) Service // builds the service each process start composes; nil for none
-	svc     Service                                // the service running now, built by compose
-	serving bool                                   // svc was started and is not yet stopped
+	compose  func(*Fixture, *engine.Engine) Service // builds the service each process start composes; nil for none
+	settings journal.Settings                       // the settings every open of the journal in Dir takes
+	svc      Service                                // the service running now, built by compose
+	serving  bool                                   // svc was started and is not yet stopped
 }
 
 // batchHold holds the removal batches of the engine running now at their span
@@ -435,6 +436,16 @@ const (
 	fakeMaxBytes   = 64 << 20
 )
 
+// WithSpares has every open of the journal in Dir keep n content spares, and
+// the fixture wait for all n before the engine's first write. Every write holds
+// a spare of the pool for as long as it runs, so a row with more concurrent
+// writers than the fixture's two spares has the excess refused retry-later,
+// and how often depends on how fast the pool refills in real time: such a row
+// asks for a spare per concurrent writer, plus one per stream's first roll.
+func WithSpares(n int) Option {
+	return func(f *Fixture) { f.settings.SpareTarget = n }
+}
+
 // journalOnly fails a control that acts on the journal in Dir, which
 // WithFakeJournal leaves unread.
 func (f *Fixture) journalOnly(what string) {
@@ -591,13 +602,14 @@ func newFixture(t *testing.T, wrap func(kv.KV) kv.KV, opts ...Option) *Fixture {
 	}
 	clock := sim.NewTestClock(fixtureStart)
 	f := &Fixture{
-		Seam:   seam,
-		Clock:  clock,
-		Node:   fixtureNode,
-		Dir:    dir,
-		t:      t,
-		logger: slog.New(slog.NewTextHandler(t.Output(), nil)),
-		ended:  make(chan struct{}, 64),
+		Seam:     seam,
+		Clock:    clock,
+		Node:     fixtureNode,
+		Dir:      dir,
+		t:        t,
+		logger:   slog.New(slog.NewTextHandler(t.Output(), nil)),
+		ended:    make(chan struct{}, 64),
+		settings: fixtureSettings,
 	}
 	for _, o := range opts {
 		o(f)
@@ -811,11 +823,11 @@ func (f *Fixture) start() {
 			}
 			j, err := journal.Open(ctx, dir, floor, expect, nil,
 				journal.WithClock(f.Clock), journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS()),
-				journal.WithSettings(fixtureSettings))
+				journal.WithSettings(f.settings))
 			if err != nil {
 				return nil, err
 			}
-			if err := awaitSpares(ctx, j); err != nil {
+			if err := awaitSpares(ctx, j, f.settings); err != nil {
 				_ = j.Close()
 				return nil, err
 			}
