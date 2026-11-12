@@ -399,7 +399,8 @@ func (b *Budget) Reserved() int64 // for gauges and the leak check (§2.7)
 type WaitBudget struct{ /* name, ceiling, reserved, per-key DRR queues */ }
 func NewWaitBudget(name string, ceiling int64) *WaitBudget
 // Reserve charges n bytes for key, waiting within ctx. Under a ctx already past
-// its deadline it tries once and refuses at once, as Park needs.
+// its deadline or cancelled it tries once: it takes the charge when it fits and
+// no waiter is ahead of it, and otherwise refuses at once, as Park needs.
 func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Reservation, error)
 func (b *WaitBudget) Reserved() int64
 
