@@ -28,7 +28,7 @@ func TestIndexCheckWrite(t *testing.T) {
 	// A write on a new file adds an entry the bound still has room for:
 	// the check passes, and reserves nothing — the count is unmoved, so the
 	// admission the caller runs later finds all the room it was told.
-	if err := ix.CheckWrite(fid(2), ext(0, 4096)); err != nil {
+	if _, err := ix.CheckWrite(fid(2), ext(0, 4096)); err != nil {
 		t.Fatalf("CheckWrite one below the bound = %v, want nil", err)
 	}
 	if c := ix.fs.extentCount(); c != 1 {
@@ -40,7 +40,7 @@ func TestIndexCheckWrite(t *testing.T) {
 
 	// A whole-piece overwrite adds nothing, so it passes even at the bound:
 	// the check refuses only what the bound would.
-	if err := ix.CheckWrite(id, ext(0, 4096)); err != nil {
+	if _, err := ix.CheckWrite(id, ext(0, 4096)); err != nil {
 		t.Fatalf("a whole-piece overwrite = %v, want nil", err)
 	}
 	if c := ix.fs.extentCount(); c != 1 {
@@ -56,7 +56,7 @@ func TestIndexCheckWrite(t *testing.T) {
 	// A third write adds an entry the bound has no room for: refused naming
 	// the index, one entry missing, in entries — the same refusal the
 	// admission itself returns — and the refusal is counted, once per check.
-	err := ix.CheckWrite(fid(3), ext(0, 4070))
+	_, err := ix.CheckWrite(fid(3), ext(0, 4070))
 	assertIndexRefusal(t, err)
 	var ns *core.NoSpaceError
 	if !errors.As(err, &ns) {
@@ -68,7 +68,7 @@ func TestIndexCheckWrite(t *testing.T) {
 	if r := ix.fs.indexRefusals(); r != 1 {
 		t.Fatalf("after one refused CheckWrite, refusals = %d, want 1", r)
 	}
-	if err := ix.CheckWrite(fid(3), ext(0, 4096)); err == nil {
+	if _, err := ix.CheckWrite(fid(3), ext(0, 4096)); err == nil {
 		t.Fatal("CheckWrite at the bound was not refused")
 	}
 	if r := ix.fs.indexRefusals(); r != 2 {

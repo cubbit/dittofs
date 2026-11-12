@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -475,4 +476,69 @@ func TestAFailureAfterTheSparesFirstSyncRollsOn(t *testing.T) {
 	if n := len(ro.all()); n != 0 {
 		t.Errorf("the read-only entry was called %d times for a failure after a sync", n)
 	}
+}
+
+// TestWindowOpen covers the fact a segment selector asks of the layer: a
+// segment's window is open from the failure until it resolves, and stays open
+// while a hold withholds its announcement.
+func TestWindowOpen(t *testing.T) {
+	t.Run("failed sync", func(t *testing.T) {
+		prof.Watch(t, prof.Options{})
+		atFail := make(chan struct{}, 1)
+		release, open := releaser(t)
+		fr := newFailRig(t, func(fr *failRig) {
+			t.Cleanup(open)
+			fr.d.beforeFail = func(*window) {
+				select {
+				case atFail <- struct{}{}:
+				default:
+				}
+				<-release
+			}
+		})
+		f := file(1)
+		loc, _ := fr.publish(t, f, 0, "aaaa")
+		if fr.d.WindowOpen(loc.Segment) {
+			t.Fatalf("WindowOpen before any failure = true, want false")
+		}
+		fr.failSyncOf(t, loc.Segment, errors.New("sync boom"))
+		answer := fr.syncAsync(context.Background(), f)
+		select {
+		case <-atFail:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the worker never reached the window")
+		}
+		if !fr.d.WindowOpen(loc.Segment) {
+			t.Fatalf("WindowOpen while the window is pending = false, want true")
+		}
+		open()
+		fr.awaitResolved(t)
+		_ = mustReturn(t, "Sync", answer)
+		if fr.d.WindowOpen(loc.Segment) {
+			t.Fatalf("WindowOpen after the window resolved = true, want false")
+		}
+	})
+	t.Run("withheld by a hold", func(t *testing.T) {
+		prof.Watch(t, prof.Options{})
+		cr := newCorruptRig(t, nil)
+		f := file(1)
+		r := cr.reappend(t, f, 0, "aaaa")
+		seg := r.orig.Segment
+		st := cr.d.made[0]
+		oc := ownedCopy{File: f, Seq: r.c.Seq, Record: r.c.Record, Copy: r.orig, Share: r.c.Share, Version: r.c.Version, Extent: r.c.Extent}
+		unlock := cr.domains.Lock(f)
+		cr.d.holdCopy(st, oc)
+		unlock()
+		cr.d.resolve(st, &window{id: 1 << 40, seg: seg})
+		if !cr.d.WindowOpen(seg) {
+			t.Fatalf("WindowOpen while a hold withholds the announcement = false, want true")
+		}
+		unlock = cr.domains.Lock(f)
+		cr.d.unholdCopy(st, oc)
+		unlock()
+		cr.awaitResolved(t)
+		if cr.d.WindowOpen(seg) {
+			t.Fatalf("WindowOpen after the hold ended = true, want false")
+		}
+	})
 }

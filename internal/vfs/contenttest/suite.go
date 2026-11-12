@@ -45,8 +45,8 @@ type Subject struct {
 // engine commits it at a shrinking truncate, a deallocate and a clone, on
 // source and destination (RFC 8 §8.1), calling its writes' Dones and leaving
 // its Overlay not pending, where Memory keeps them pending until
-// CommitExistence or Delete, having no File record to hold the size. Assert
-// it once Memory commits through the store's Existence.
+// CommitExistence or Delete. Assert it once Memory commits at those points
+// too.
 func Run(t *testing.T, newSubject func(t *testing.T) Subject) {
 	cases := []struct {
 		name string
