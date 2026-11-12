@@ -418,7 +418,7 @@ regression it names (after "catches").
   new service, to the new size (catches a compose hook not re-run at `Crash`, or a start that
   skips the engine's re-application of existence, serving the file short; the read runs once
   both pieces have started, so it cannot catch them started in the wrong order, which the
-  fixture's start enforces and no row pins yet); after the
+  fixture's start enforces and `TestTheFilesystemStartsAfterTheEngine` pins); after the
   filesystem's `Stop`, a direct engine `Read` of the same file still answers and the open-state
   table still serves, and only the fixture's stop closes them (catches a filesystem closing
   what it was handed, R6); a write through the service to the fixture's second share, which no
