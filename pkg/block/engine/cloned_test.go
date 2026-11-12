@@ -27,18 +27,19 @@ func clonedUnit(t *testing.T, opts ...func(*engine.Deps)) *unit {
 	return clonedUnitWith(t, unitConfig{deps: opts})
 }
 
-// clonedUnitWith is clonedUnit as c asks. An unbound unit composes open
-// state itself, with withOpenState, once its share is bound.
+// clonedUnitWith is clonedUnit as c asks. A faultHolds a dep sets with no
+// next answers through the unit's open-state table.
 func clonedUnitWith(t *testing.T, c unitConfig) *unit {
 	t.Helper()
-	var h *faultHolds
-	c.deps = append([]func(*engine.Deps){func(d *engine.Deps) { d.Holds = &faultHolds{} }}, c.deps...)
-	c.deps = append(c.deps, func(d *engine.Deps) { h, _ = d.Holds.(*faultHolds) })
-	u := cloneUnitWith(t, c)
-	if h != nil && !c.unbound {
-		u.withOpenState(t, h)
-	}
-	return u
+	c.openState = true
+	var table engine.CloneHold
+	c.deps = append([]func(*engine.Deps){func(d *engine.Deps) { table, d.Holds = d.Holds, &faultHolds{} }}, c.deps...)
+	c.deps = append(c.deps, func(d *engine.Deps) {
+		if h, ok := d.Holds.(*faultHolds); ok && h.next == nil {
+			h.next = table
+		}
+	})
+	return cloneUnitWith(t, c)
 }
 
 // committedFile creates a file holding p at 0, its existence committed.

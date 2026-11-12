@@ -3,9 +3,7 @@ package engine_test
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
-	"io"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -202,7 +200,7 @@ func TestAClonesHoldSpansItsPhase2(t *testing.T) {
 	if err := u.e.Bind(t.Context(), u.share); err != nil {
 		t.Fatal(err)
 	}
-	u.withOpenState(t, h)
+	u.serveShard(t)
 	src = u.committedFile(t, "src", fill(mib, 's'))
 	dst = u.create(t, "dst")
 	u.clone(t, src, dst, vfserr.Extent{Len: mib})
@@ -504,27 +502,13 @@ func logged(logs logRecorder, msg string, f entity.FileID) bool {
 	})
 }
 
-// withOpenState composes the real open-state table over the unit's store,
-// serving its share's shard, behind h, and keeps it and its sink on u.
-func (u *unit) withOpenState(t *testing.T, h *faultHolds) {
+// serveShard has the unit's open-state table serve its share's shard, for a
+// unit that left its share for the test to bind.
+func (u *unit) serveShard(t *testing.T) {
 	t.Helper()
-	tb, err := openstate.New(openstate.Deps{Records: u.fs.Store, Clock: u.clock, Rand: rand.Reader,
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
-	if err != nil {
+	if err := u.tb.Recovery().ServeShard(t.Context(), u.share.ID, u.share.Shard, 1); err != nil {
 		t.Fatal(err)
 	}
-	sink := &enginetest.Sink{}
-	if err := tb.Start(t.Context(), sink, func(entity.FileID) func() { return func() {} }); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(tb.Stop)
-	if err := tb.Recovery().ServeShard(t.Context(), u.share.ID, u.share.Shard, 1); err != nil {
-		t.Fatal(err)
-	}
-	h.mu.Lock()
-	h.next = enginetest.Holds(tb, u.fs.Store.Opens())
-	h.mu.Unlock()
-	u.tb, u.sink = tb, sink
 }
 
 // unlink removes name, the last entry of key's file, from the share's
