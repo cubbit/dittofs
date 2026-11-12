@@ -441,6 +441,14 @@ func TestAdmissionHoldsTheFilesAdmissionLock(t *testing.T) {
 	release()
 }
 
+// setEngine makes m the content the filesystem calls, behind a fault
+// wrapper, so the fixture's helpers and a restart over it reach m too.
+func (f *fixture) setEngine(m *contenttest.Memory) {
+	f.content = m
+	f.engine = contenttest.Faults(m)
+	f.Filesystem.engine = f.engine
+}
+
 // on runs fn with the file each call of op names as the call reaches the
 // engine, then passes it through; nil clears what was set on op.
 func (f *fixture) on(op contenttest.Op, fn func(entity.FileID)) {

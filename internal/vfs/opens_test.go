@@ -605,7 +605,7 @@ func TestADeleteOnCloseTakesTheDirectoryAfterTheFile(t *testing.T) {
 	// which no store commit of the content takes part in.
 	content := contenttest.New(wallClock{})
 	content.Bind(n.fs.Share.ID)
-	n.Filesystem.engine = content
+	n.setEngine(content)
 	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
 	// The row's 10⁴ runs take about 20s; under -race, about 30 times that,
 	// so the race detector sees 300, and -short 50.
