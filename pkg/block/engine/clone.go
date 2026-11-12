@@ -218,9 +218,12 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	// decision: a clone is joined only once its step 1 is done (addClone): a
 	// retry meeting it in step 1, where the first call's own context still
 	// governs and its end refuses the clone, meets its registrations and
-	// answers DelayClone, and the client retries again. Join it there too if
-	// retries are seen answered DelayClone behind clones that were not slow.
-	if c := e.runningClone(dstShare, dst); c != nil && c.names(srcShare, src, x) {
+	// answers DelayClone, and the client retries again. The window grows with
+	// the clone: step 1 commits the source, reads CloneFree and reserves over
+	// the whole extent, up to clone_max_len, so a long clone's retries answer
+	// DelayClone for longer. Join it there too if retries are seen answered
+	// DelayClone behind clones that were not slow.
+	if c := e.joinable(dstShare, dst, srcShare, src, x); c != nil {
 		return c.wait(ctx)
 	}
 	rs := &reg{Extent: entity.Extent{Offset: x.SrcOff, Length: x.Len}}
@@ -281,25 +284,25 @@ type cloneKey struct {
 	file  entity.FileID
 }
 
-// names reports whether a clone of x of src of share srcShare is c's: the
-// same source, destination, offsets and length, which RFC 8 §9.1 calls a
-// retry. The destination is c's key.
-func (c *cloneRun) names(srcShare entity.ShareID, src entity.FileID, x vfserr.Extent) bool {
-	return c.sb.share.ID == srcShare && c.src == src &&
-		c.spec.SrcOff == x.SrcOff && c.spec.DstOff == x.DstOff && c.spec.Len == x.Len
-}
-
-// runningClone is the clone running into dst of share s, nil when none is.
+// joinable is the clone running into dst of share dstShare when it is a
+// retry of this call, nil otherwise. A retry, as RFC 8 §9.1 calls it, names
+// the same source, destination, offsets and length; the destination is the
+// running clone's key.
 //
 // ponytail: a retry joins a clone only while it runs; one after it is done
 // runs the clone again rather than answering success at once, as no done
 // clone's spec is kept. Keep the spec in both files' entries until a write or
 // removal over either extent drops it, bounded node-wide, when a client's
 // retries are seen re-running clones that were done.
-func (e *Engine) runningClone(s entity.ShareID, dst entity.FileID) *cloneRun {
+func (e *Engine) joinable(dstShare entity.ShareID, dst entity.FileID, srcShare entity.ShareID, src entity.FileID, x vfserr.Extent) *cloneRun {
 	e.clonesMu.Lock()
-	defer e.clonesMu.Unlock()
-	return e.clones[cloneKey{s, dst}]
+	c := e.clones[cloneKey{dstShare, dst}]
+	e.clonesMu.Unlock()
+	if c == nil || c.sb.share.ID != srcShare || c.src != src ||
+		c.spec.SrcOff != x.SrcOff || c.spec.DstOff != x.DstOff || c.spec.Len != x.Len {
+		return nil
+	}
+	return c
 }
 
 // addClone keeps c, past its step 1, where a retry of it finds it, until it

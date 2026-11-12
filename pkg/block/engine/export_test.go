@@ -369,25 +369,15 @@ func (e *Engine) SetConflictBound(d time.Duration) { e.conflictBound.Store(int64
 // RetryingOwner reports whether ctx carries the retrying-owner mark.
 func RetryingOwner(ctx context.Context) bool { return ownerOf(ctx) != nil }
 
-// ErrStopped answers a clone SetAfterRegister's hook stopped.
+// ErrStopped is what a test's SetAfterRegister hook returns to stop a clone
+// once registered: a test of admission alone.
 var ErrStopped = errors.New("engine test: the clone stopped once registered")
 
 // SetAfterRegister makes h run once each clone's registrations are
-// installed; the clone then stops, its registrations undone, answering
-// ErrStopped: a test of admission alone. A nil h lets clones run.
-func (e *Engine) SetAfterRegister(h func()) {
-	if h == nil {
-		e.afterRegister = nil
-		return
-	}
-	e.afterRegister = func() error { h(); return ErrStopped }
-}
-
-// OnRegistered makes h run once a clone's registrations are installed, before
-// it enters its shares' gates, and lets the clone run on.
-func (e *Engine) OnRegistered(h func()) {
-	e.afterRegister = func() error { h(); return nil }
-}
+// installed, before it enters its shares' gates. An error from h stops the
+// clone there, its registrations undone, and the clone answers it; nil lets
+// it run on. A nil h removes the hook.
+func (e *Engine) SetAfterRegister(h func() error) { e.afterRegister = h }
 
 // SetCloneMarkerHook makes h run for each clone marker start step 3 finds,
 // standing in for the clone's rebuild.

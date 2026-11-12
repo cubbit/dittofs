@@ -331,7 +331,7 @@ func TestAContentCallOnAnOpenShareLeavesItsGate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	u.e.SetAfterRegister(func() {}) // a clone past its gates stops, its files being none the store holds
+	u.e.SetAfterRegister(func() error { return engine.ErrStopped }) // a clone past its gates stops, its files being none the store holds
 
 	for _, c := range u.contentCalls(t.Context(), other) {
 		t.Run(c.name, func(t *testing.T) {

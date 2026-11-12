@@ -117,6 +117,33 @@ func TestACloneRetryAfterItsCallEndedJoinsTheClone(t *testing.T) {
 	}
 }
 
+// A retry joined to a running clone answers DelayClone at its own context's
+// end and leaves the clone running (catches a joined retry that waits for
+// the clone past its own deadline).
+func TestAJoinedRetryAnswersDelayCloneAtItsOwnEnd(t *testing.T) {
+	u, h, src, dst := heldCloneUnit(t)
+	u.startCloneHeld(t, h, src, u.share.ID, dst)
+	ctx, cancel := context.WithCancel(context.Background())
+	w := &waitingCtx{Context: ctx, waiting: make(chan struct{})}
+	answer := make(chan error, 1)
+	go func() { answer <- u.e.Clone(w, u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: mib}) }()
+	select {
+	case <-w.waiting:
+	case err := <-answer:
+		t.Fatalf("the retry answered %v without waiting for the running clone", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the retry neither waited nor answered")
+	}
+	cancel()
+	if err := u.answered(t, "the joined retry", answer); !isDelay(err, vfserr.DelayClone) {
+		t.Fatalf("the joined retry at its context's end = %v, want DelayClone", err)
+	}
+	if _, d := u.e.Registrations(dst); d != 1 {
+		t.Errorf("the clone holds %d destination registrations once its joiner left, want 1 (still running)", d)
+	}
+	h.let()
+}
+
 // A clone into a file another clone is running into, with any part of the
 // spec other than that clone's, answers DelayClone at once, not once the
 // running clone is done (catches a spec compared on part of its fields,

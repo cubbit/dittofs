@@ -258,9 +258,10 @@ func TestACloneWhoseSharesUnbindBeganAfterItsEntryChangesNothing(t *testing.T) {
 	dst := u.create(t, "dst")
 	joined := joins(u.e)
 	var unbound <-chan error
-	u.e.OnRegistered(func() {
+	u.e.SetAfterRegister(func() error {
 		unbound = u.unbinding(t)
 		waitsForTheClone(t, joined, unbound) // the gate is shut, the call's entry still counted
+		return nil
 	})
 
 	err := u.e.Clone(t.Context(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: mib})
