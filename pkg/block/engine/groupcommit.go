@@ -849,20 +849,21 @@ func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []capt
 	case mw != nil:
 		g.marksFailed(mw, err)
 	}
-	// A call of the batch committed, so the store writes: an error of the
-	// whole call the split left on a file is that file's (RFC 8 §11.2).
+	// A record that does not decode, which the split narrowed to its file,
+	// is that file's failure, not the store's (RFC 8 §11.2): when every
+	// error the batch met is a file's own, its owner is not left failing.
 	//
-	// decision: the batch's own commits are the only proof the store writes.
-	// A file failing alone with no marks beside it, marks stopped or not
-	// last, still counts until a later batch commits, and a store that
-	// fails some files' transactions while committing others is read as
-	// those files failing. Overturned if a corrupt file is seen fencing a
-	// node regardless: then the store reports an undecodable record per file.
-	wide := false
-	for _, err := range failed {
-		wide = wide || storeWide(err)
+	// decision: any undecodable record a call reads is the file's, the
+	// journal's open generation a marks write reads included, since a store
+	// that cannot write fails with no decode error. Each file it fails is
+	// named by existence_commit_failing instead, and writes elsewhere
+	// commit. Count it toward the fence if a shared record is seen failing
+	// every file's existence commit with nothing else naming it.
+	own := err == nil || !storeFailed(err) || kvstore.Undecodable(err)
+	for _, ferr := range failed {
+		own = own && (!storeFailed(ferr) || kvstore.Undecodable(ferr))
 	}
-	if (recorded || len(failed) < len(batch)) && !wide {
+	if own {
 		e.fence.release(ownerOf(ctx))
 	}
 	end(nil)

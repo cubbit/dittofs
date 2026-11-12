@@ -5,6 +5,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
 // Every control-plane codec is at version 1. A field the key carries is not
@@ -13,6 +14,14 @@ const v1 = 1
 
 // errMalformed is a value whose fields decode but name no valid choice.
 var errMalformed = errors.New("kvstore: malformed value")
+
+// Undecodable reports that err is a stored record, or its key, that does not
+// decode: the call that read it fails the same way until the record is
+// repaired, whatever the store's health.
+func Undecodable(err error) bool {
+	return errors.Is(err, errMalformed) || errors.Is(err, keys.ErrMalformed) ||
+		errors.Is(err, codec.ErrVersion) || errors.Is(err, codec.ErrTruncated) || errors.Is(err, codec.ErrTrailing)
+}
 
 func open(b []byte) (*codec.Reader, error) {
 	r, _, err := codec.NewReader(b, v1)
