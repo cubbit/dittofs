@@ -285,6 +285,93 @@ func (f *copyFixture) corrupt(ctx context.Context, bad reclaim.BadSource) (recla
 	return 0, fmt.Errorf("durability answered corrupt with an outcome %d with no mapping", out.Kind)
 }
 
+// plantRemoval appends one header-only removal record of kind of file and
+// publishes it the way the writer's own removal path does: the file's append
+// domain held, a version and a sequence number drawn, the record appended,
+// the removal applied with its marker left over over, the held delta
+// accounted. The record registers live with the tracker at the place its
+// append reported, and settle names whether metadata's settle covers the
+// removal's own version at once, the re-test of its file included, the way
+// a settle racing a pass would.
+func (f *copyFixture) plantRemoval(t *testing.T, tag core.ShareTag, file core.FileID, kind format.Kind, change core.ChangeKind, header, over core.Extent, settle bool) (reclaim.Rec, index.RecordAt, core.Seq, core.Version) {
+	t.Helper()
+	unlock := f.core.Domains().Lock(file)
+	defer unlock()
+	v, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw of the %s's version: %v", kind, err)
+	}
+	seq, err := f.counters.NextSeq()
+	if err != nil {
+		t.Fatalf("NextSeq of the %s: %v", kind, err)
+	}
+	pl, err := f.core.Streams().For(file).Append(format.RecordHeader{
+		Kind: kind, File: file, Extent: header, Seq: seq, Version: v, Tag: tag,
+	}, format.RecordBody{})
+	if err != nil {
+		t.Fatalf("Append of the %s record: %v", kind, err)
+	}
+	at := index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}
+	hd, err := f.ix.ApplyRemoval(tag, file, change, over, v, seq, at, nil)
+	if err != nil {
+		t.Fatalf("ApplyRemoval of the %s: %v", kind, err)
+	}
+	f.core.Account(hd)
+	rec := reclaim.Rec{
+		Kind: kind, File: file, Seg: pl.Loc.Segment, Ext: header,
+		Pair: index.Numbers{Version: v, Seq: seq}, Seq: seq, Tag: tag, Loc: pl.Loc,
+	}
+	f.tracker.Register(rec)
+	if settle {
+		f.tracker.MarkerSettled(file, v)
+	}
+	return rec, at, seq, v
+}
+
+// plantLoss appends one header-only loss record of file naming the dropped
+// record's sequence number and publishes it the way the durability layer's
+// own loss path does: the file's append domain held, a version and a
+// sequence number drawn, the record appended with its loss body, the synced
+// loss applied over the extent e it covers, its marker left over it. The
+// record registers live with the tracker at the place its append reported,
+// settle is plantRemoval's.
+func (f *copyFixture) plantLoss(t *testing.T, tag core.ShareTag, file core.FileID, dropped core.Seq, why format.LossReason, e core.Extent, settle bool) (reclaim.Rec, index.RecordAt, core.Seq, core.Version) {
+	t.Helper()
+	unlock := f.core.Domains().Lock(file)
+	defer unlock()
+	v, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw of the loss record's version: %v", err)
+	}
+	seq, err := f.counters.NextSeq()
+	if err != nil {
+		t.Fatalf("NextSeq of the loss record: %v", err)
+	}
+	pl, err := f.core.Streams().For(file).Append(format.RecordHeader{
+		Kind: format.KindLoss, File: file, Extent: e, Seq: seq, Version: v, Tag: tag,
+	}, format.RecordBody{Loss: format.Loss{Dropped: dropped, Synced: true, Reason: why}})
+	if err != nil {
+		t.Fatalf("Append of the loss record: %v", err)
+	}
+	at := index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}
+	hd, err := f.ix.Lose(file, e, v)
+	if err != nil {
+		t.Fatalf("Lose of the loss record: %v", err)
+	}
+	f.core.Account(hd)
+	rec := reclaim.Rec{
+		Kind: format.KindLoss, File: file, Seg: pl.Loc.Segment, Ext: e,
+		Pair: index.Numbers{Version: v, Seq: seq},
+		Seq:  seq, Named: dropped, Tag: tag,
+		Synced: true, Superseded: why == format.LossSuperseded, Loc: pl.Loc,
+	}
+	f.tracker.Register(rec)
+	if settle {
+		f.tracker.MarkerSettled(file, v)
+	}
+	return rec, at, seq, v
+}
+
 // flipByte flips every bit of the byte at off of the segment the record at
 // names: damage on the device, written through the seam's own file.
 func (f *copyFixture) flipByte(t *testing.T, at index.RecordAt, off int64) {

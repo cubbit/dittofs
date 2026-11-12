@@ -304,6 +304,27 @@ func (ix *Index) SegmentGone(id core.FileID, seg core.SegmentID) {
 	})
 }
 
+// NotePlaced notes a record the caller appended to its stream outside the
+// index's own publish calls — a carried header-only record, placed by a
+// reclamation pass the way the pass appends its content copies — over the
+// extent e it covers and with the pair n it carries, so the record never
+// sits on disk unnoted: seg joins the file's drop ranges and the file is
+// claimed for tag, exactly as a write's or a removal's own note does. The
+// note over e and n is the caller's word about the record it already
+// appended; nothing is admitted and no extent is held. A file the index has
+// no entry for is a no-op, claiming nothing and noting no range — a caller
+// carrying a record of a file nothing holds publishes only the placement,
+// which no drop query reads.
+func (ix *Index) NotePlaced(tag core.ShareTag, id core.FileID, seg core.SegmentID, e core.Extent, n Numbers) error {
+	if !ix.fs.view(id, func(*file) {}) {
+		return nil
+	}
+	_, err := ix.fs.update(id, func(f *file) error {
+		return f.recorded(seg, e, n, tag, id)
+	})
+	return err
+}
+
 // RetireSegment withdraws seg's per-segment byte counters, so a segment
 // gone from the journal answers SegmentBytes zero however its last content
 // left. Retirement is idempotent, so the journal's own retirement — which

@@ -13,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
 // Rec is one record as reclamation sees it: what the record is, the file it
@@ -51,6 +52,14 @@ type Rec struct {
 	Tag        core.ShareTag
 	Synced     bool
 	Superseded bool
+	// Loc is where the record's own bytes sit, the placement its append
+	// reported. Zero is tolerated — a registration without one keys,
+	// releases and drops exactly like any other — and a carry reaching a
+	// record with no place fails its unit, since it cannot read or move
+	// the record. Loc is part of the key of every registry this type keys
+	// by the whole Rec, Tag's own rule: a registration and its release
+	// must spell the same one, or the entry twice-keyed sits undropped.
+	Loc segment.Location
 }
 
 // Tracker is one journal's segment liveness: per segment, beside the bytes
@@ -571,8 +580,11 @@ func (t *Tracker) forgetTaken(rec Rec) {
 // once, whatever its copies. The open ends its registration with one
 // OpenDone call, after every RegisterAtOpen and after SetMember.
 //
-// The plain records carry no location: the tracker keys a record by the whole
-// Rec, which names its segment, so a location is added when a reader exists.
+// The plain records carry no location. The tracker keys a record by the
+// fields the drop test reads, so a registration without its place works —
+// but a carry reaching one fails its unit, since it can no longer read the
+// record: the open's feed must hand each record its placement once the pass
+// that runs the carry lands.
 func (t *Tracker) RegisterAtOpen(recs []Rec, forgets []ForgetSet, unsynced []UnsyncedLoss) {
 	for _, r := range recs {
 		t.Register(r)

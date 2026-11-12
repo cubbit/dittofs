@@ -1,6 +1,8 @@
 package reclaim_test
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"math"
 	"testing"
@@ -228,5 +230,228 @@ func TestCarryRemovalStaysWhenADirectorySyncFails(t *testing.T) {
 	}
 	if c.tr.Droppable(c.del) {
 		t.Fatal("Droppable of the delete after a failed directory sync = true, want false: the unlink is not durable, so the removal stays carried until this process ends")
+	}
+}
+
+// TestCarryKeepsBothNumbers carries a settled-below truncate beside the
+// content the same unit copied and checks the copy the carry places: a fresh
+// record at another segment carrying the source's own sequence number and
+// version — the pair is the record's identity, and a copy reissued under a
+// fresh number would outrank the fills the truncate once released — its bytes
+// decoding back to the same header and body, its registration raising the
+// target segment's count, and the truncate's marker still answering from the
+// index.
+func TestCarryKeepsBothNumbers(t *testing.T) {
+	f := newCopyFixture(t)
+	file := copyFile(4)
+	payload := []byte("the write the truncate leaves below it")
+
+	recW, _, vW := f.plant(t, copyTag, file, payload, 12)
+	size := core.Extent{Off: int64(len(payload))}
+	trec, atT, seqT, vT := f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
+		size, core.Extent{Off: size.Off, Len: math.MaxInt64 - size.Off}, false)
+	if trec.Seg != recW.Segment {
+		t.Fatalf("the truncate landed in segment %d, want the source segment %d that holds the write", trec.Seg, recW.Segment)
+	}
+	// Metadata has recorded every removal of the file below the truncate's
+	// pair; its own marker is what keeps the record from answering droppable.
+	f.tracker.MarkerSettled(file, vW)
+	if f.tracker.Droppable(trec) {
+		t.Fatal("Droppable of the truncate = true, want false: its own marker is unsettled at its own version")
+	}
+	f.sealSource(t, file)
+	f.waitSpares(t)
+
+	c := f.copier()
+	res, err := c.Copy(context.Background(), recW.Segment)
+	if err != nil {
+		t.Fatalf("Copy: %v", err)
+	}
+	if len(res.Copies) != 1 {
+		t.Fatalf("Copy appended %d copies, want the one write's", len(res.Copies))
+	}
+	carry, err := c.Carry(context.Background(), recW.Segment, res)
+	if err != nil {
+		t.Fatalf("Carry: %v", err)
+	}
+	if len(carry.Carried) != 1 {
+		t.Fatalf("Carry carried %d records (%+v), want the truncate alone", len(carry.Carried), carry.Carried)
+	}
+	cr := carry.Carried[0]
+	// The seq equality is the point: a copy under a fresh number would
+	// outrank the records the truncate released.
+	if cr.Rec.Seq != seqT {
+		t.Fatalf("carried truncate Seq = %d, want the source's own %d: the copy must keep the sequence number it was written under", cr.Rec.Seq, seqT)
+	}
+	if cr.Rec.Pair != trec.Pair {
+		t.Fatalf("carried truncate Pair = %+v, want the source's %+v: both numbers are the record's identity", cr.Rec.Pair, trec.Pair)
+	}
+	if cr.Rec.Kind != format.KindTruncate || cr.Rec.File != file || cr.Rec.Ext != size || cr.Rec.Tag != copyTag {
+		t.Fatalf("carried record = %+v, want the source's kind, file, extent and tag unchanged", cr.Rec)
+	}
+	if cr.To.Segment == recW.Segment {
+		t.Fatalf("the carried truncate landed in its own source segment %d, want another", recW.Segment)
+	}
+	if cr.Rec.Seg != cr.To.Segment || cr.Rec.Loc.Segment != cr.To.Segment || cr.Rec.Loc.Off != int64(cr.To.Offset) {
+		t.Fatalf("carried Rec = %+v names no the placement %v: Seg and Loc must name the copy", cr.Rec, cr.To)
+	}
+
+	// Both records decoded back through the seam's own bytes: the copy holds
+	// the same header and body the source does.
+	hS, bS := f.readBack(t, atT)
+	hC, bC := f.readBack(t, cr.To)
+	if hS.Kind != hC.Kind || hS.File != hC.File || hS.Extent != hC.Extent ||
+		hS.Seq != hC.Seq || hS.Version != hC.Version || hS.Tag != hC.Tag {
+		t.Fatalf("the copy's header (%+v) and the source's (%+v) differ on kind, file, extent, seq, version or tag", hC, hS)
+	}
+	if hC.Seq != seqT {
+		t.Fatalf("the copy's record Seq = %d, want the source's own %d", hC.Seq, seqT)
+	}
+	if bS.MTime != 0 || bC.MTime != 0 || bS.Payload != nil || bC.Payload != nil ||
+		bS.Loss != (format.Loss{}) || bC.Loss != (format.Loss{}) {
+		t.Fatalf("a truncate's body is empty; got source %+v, copy %+v", bS, bC)
+	}
+
+	// The copy's registration raises the target's count: nothing the index
+	// holds names the target, so its liveness is the copy's alone.
+	if !f.tracker.Held(cr.To.Segment) {
+		t.Fatalf("Held of segment %d after the carry = false, want the copy registered live there", cr.To.Segment)
+	}
+	// The truncate's change still answers from the index.
+	var found bool
+	for _, ch := range f.ix.Since(file, vW) {
+		if ch.Kind == core.ChangeTruncate && ch.Version == vT && ch.Extent.Off == size.Off {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Since above the write's version %v yields no truncate's change, want the marker at %v", vW, vT)
+	}
+}
+
+// TestCarryUnsettledTruncateAlways carries a truncate whose marker was never
+// settled: never droppable, so always carried, and its marker keeps
+// answering from the index after the copy is placed.
+func TestCarryUnsettledTruncateAlways(t *testing.T) {
+	f := newCopyFixture(t)
+	file := copyFile(5)
+	trec, _, seqT, vT := f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 8}, core.Extent{Off: 8, Len: math.MaxInt64 - 8}, false)
+	if f.tracker.Droppable(trec) {
+		t.Fatal("Droppable of the unsettled truncate = true, want false: its marker never settled")
+	}
+	f.sealSource(t, file)
+	f.waitSpares(t)
+
+	carry, err := f.copier().Carry(context.Background(), trec.Seg, reclaim.Result{})
+	if err != nil {
+		t.Fatalf("Carry: %v", err)
+	}
+	if len(carry.Carried) != 1 {
+		t.Fatalf("Carry carried %d records (%+v), want the unsettled truncate: it is never droppable", len(carry.Carried), carry.Carried)
+	}
+	cr := carry.Carried[0]
+	if cr.Rec.Seq != seqT || cr.Rec.Pair != trec.Pair {
+		t.Fatalf("carried truncate Seq %d Pair %+v, want the source's own %d %+v", cr.Rec.Seq, cr.Rec.Pair, seqT, trec.Pair)
+	}
+	if f.tracker.Droppable(trec) {
+		t.Fatal("Droppable of the unsettled truncate after its carry = true, want false: the carry settles nothing")
+	}
+	var found bool
+	for _, ch := range f.ix.Since(file, core.Version{}) {
+		if ch.Kind == core.ChangeTruncate && ch.Version == vT {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Since from the bottom yields no truncate's change, want the marker at %v still answering", vT)
+	}
+}
+
+// TestCarrySkipsForgottenTag carries a segment holding records of two tags
+// whose first is being forgotten: the forgotten tag's record is appended
+// and registered nowhere, the other tag's record carries.
+func TestCarrySkipsForgottenTag(t *testing.T) {
+	f := newCopyFixture(t)
+	f.forgetting = func(tag core.ShareTag) bool { return tag == copyTag }
+	// Two files on the one stream, so their removals share one segment.
+	fileA, fileB := copyFile(3), copyFile(5)
+	if f.core.Streams().IndexFor(fileA) != f.core.Streams().IndexFor(fileB) {
+		t.Fatalf("files 3 and 5 stream to %d and %d, want one shared stream", f.core.Streams().IndexFor(fileA), f.core.Streams().IndexFor(fileB))
+	}
+	const otherTag = core.ShareTag(2)
+	recA, _, _, _ := f.plantRemoval(t, copyTag, fileA, format.KindDelete, core.ChangeDelete,
+		core.Extent{}, core.Extent{Len: math.MaxInt64}, false)
+	recB, _, seqB, _ := f.plantRemoval(t, otherTag, fileB, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 4}, core.Extent{Off: 4, Len: math.MaxInt64 - 4}, false)
+	if recA.Seg != recB.Seg {
+		t.Fatalf("the removals landed in segments %d and %d, want one shared source segment", recA.Seg, recB.Seg)
+	}
+	f.sealSource(t, fileA)
+	f.waitSpares(t)
+
+	carry, err := f.copier().Carry(context.Background(), recA.Seg, reclaim.Result{})
+	if err != nil {
+		t.Fatalf("Carry: %v", err)
+	}
+	if len(carry.Carried) != 1 {
+		t.Fatalf("Carry carried %d records (%+v), want the forgotten tag's file skipped whole and the other tag's truncate alone carried", len(carry.Carried), carry.Carried)
+	}
+	cr := carry.Carried[0]
+	if cr.Rec.File != fileB || cr.Rec.Tag != otherTag || cr.Rec.Seq != seqB {
+		t.Fatalf("the carried record = %+v, want the other tag's truncate of fileB at the source's own numbers", cr.Rec)
+	}
+}
+
+// TestCarryBadRecordAbandonsUnit corrupts a header-only record the carry is
+// about to read and checks the unit's answer: an error, nothing appended and
+// nothing registered for the carry, the record's registration standing, and
+// the content copies the unit's first step appended still on disk.
+func TestCarryBadRecordAbandonsUnit(t *testing.T) {
+	f := newCopyFixture(t)
+	file := copyFile(8)
+	payload := []byte("content the same unit already copied")
+	recW, _, _ := f.plant(t, copyTag, file, payload, 3)
+	lrec, atL, _, _ := f.plantLoss(t, copyTag, file, 71, format.LossCorrupt, core.Extent{Off: 8 << 10, Len: 4 << 10}, false)
+	if lrec.Seg != recW.Segment {
+		t.Fatalf("the loss landed in segment %d, want the source segment %d that holds the write", lrec.Seg, recW.Segment)
+	}
+	if f.tracker.Droppable(lrec) {
+		t.Fatal("Droppable of the loss = true, want false: its marker never settled, so the carry must reach it")
+	}
+	f.sealSource(t, file)
+	f.waitSpares(t)
+
+	c := f.copier()
+	res, err := c.Copy(context.Background(), recW.Segment)
+	if err != nil {
+		t.Fatalf("Copy: %v", err)
+	}
+	if len(res.Copies) != 1 {
+		t.Fatalf("Copy appended %d copies, want the one write's", len(res.Copies))
+	}
+	// Damage on the device under the loss record's own header.
+	f.flipByte(t, atL, int64(atL.Offset))
+
+	carry, err := c.Carry(context.Background(), recW.Segment, res)
+	if err == nil {
+		t.Fatal("Carry over a segment whose loss record does not read back = nil error, want the unit abandoned")
+	}
+	if len(carry.Carried) != 0 {
+		t.Fatalf("the abandoned carry placed %d records (%+v), want none", len(carry.Carried), carry.Carried)
+	}
+	// The registration stands: the carry still reaches the record and fails
+	// on it again, having dropped nothing.
+	again, err := c.Carry(context.Background(), recW.Segment, res)
+	if err == nil {
+		t.Fatal("the second Carry = nil error, want the corrupt record's registration still standing in the source segment")
+	}
+	if len(again.Carried) != 0 {
+		t.Fatalf("the second carry placed %d records (%+v), want none", len(again.Carried), again.Carried)
+	}
+	// The content copies the unit's first step appended remain.
+	h, body := f.readBack(t, res.Copies[0].To)
+	if h.Kind != format.KindWrite || !bytes.Equal(body.Payload, payload) {
+		t.Fatalf("the content copy at %v holds kind %s and %d payload bytes, want the write's bytes whole", res.Copies[0].To, h.Kind, len(body.Payload))
 	}
 }
