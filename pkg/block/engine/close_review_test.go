@@ -450,3 +450,59 @@ func TestTheLastGroupCommitOverridesAStaleRetryBackoff(t *testing.T) {
 		t.Errorf("%d writes still pending after a clean Close", len(got))
 	}
 }
+
+// A store that keeps failing keeps the backoff the Close's own batch earned:
+// the closing engine overrides each file's backoff once, so a failing store
+// is waited out in one backoff, not retried hot for the whole stop bound.
+func TestAFailingStoreKeepsTheBackoffItsCloseEarned(t *testing.T) {
+	var (
+		commits atomic.Int32
+		done    atomic.Int32
+	)
+
+	u := newUnit(t, onCommit(func(
+		ctx context.Context,
+		next engine.Existence,
+		p []kvstore.PendingExistence,
+		marks *kvstore.MarksWrite,
+	) (map[entity.FileID]error, error) {
+		commits.Add(1)
+
+		errs := make(map[entity.FileID]error, len(p))
+		for _, pe := range p {
+			errs[pe.File] = errInjected
+		}
+		return errs, nil
+	}))
+
+	f := u.create(t, "a")
+	if _, err := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("abc"),
+		engine.WriteOpts{Done: func() { done.Add(1) }}); err != nil {
+		t.Fatal(err)
+	}
+
+	eventually(t, "the group commit's timer is set", func() bool { return u.clock.Pending() > 0 })
+	u.clock.Advance(25 * time.Hour)
+	eventually(t, "the failed batch backs the file off", func() bool { return u.e.Failing(u.rec, f) })
+
+	if n := commits.Load(); n != 1 {
+		t.Fatalf("%d commits before the Close, want only the backing-off one", n)
+	}
+
+	// The clock never moves, so the backoff the Close's own batch earns is
+	// the last word: the bound ends at the deadline with the file still
+	// backed off, as the stuck error reports — not hot-retried each round.
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	closed := closing(u.e, ctx)
+
+	if err := <-closed; err == nil || !strings.Contains(err.Error(), "still running at the end of the stop bound") {
+		t.Errorf("Close = %v, want the last group commit stuck at its bound", err)
+	}
+	if n := commits.Load(); n != 2 {
+		t.Errorf("%d commits, want 2: the backing-off batch and one overridden retry, not a hot loop", n)
+	}
+	if n := done.Load(); n != 0 {
+		t.Errorf("%d Dones ran, want 0: nothing committed against the failing store", n)
+	}
+}
