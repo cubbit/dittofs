@@ -444,16 +444,13 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		}
 	}
 
-	// The attributes that require ownership rather than mere write permission.
-	//
-	// decision: the mode-bit masks count as ownership-requiring, the same as an
-	// absolute Mode. They flip DOS attribute bits, and a DOS attribute change is
-	// ownership-gated in its own right — so none of the write-permission
-	// relaxations below may admit one, however small the truncate or timestamp
-	// bump it is bundled with. Every relaxation keyed on this flag inherits the
-	// rule; onlyClearingSuidSgid does not use it and carries its own clause.
-	// Withdraw this only if DOS attributes stop being ownership-gated, not
-	// because a caller finds a pairing convenient.
+	// The attributes POSIX write permission never buys. The mode-bit masks
+	// count among them, the same as an absolute Mode: they flip DOS attribute
+	// bits, so none of the write-permission relaxations below may admit one,
+	// however small the truncate or timestamp bump it is bundled with. Every
+	// relaxation keyed on this flag inherits the rule; onlyClearingSuidSgid
+	// does not use it and carries its own clause. What does authorize a DOS
+	// attribute change, besides ownership, is the decision further down.
 	noOwnershipAttrs := attrs.Mode == nil && attrs.UID == nil && attrs.GID == nil &&
 		attrs.ModeOrMask == nil && attrs.ModeAndNotMask == nil
 
@@ -502,20 +499,33 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// as an alternative to ownership (POSIX semantics).
 	writePermSufficient := onlySettingTimesToNow || onlySettingSize || onlyClearingSuidSgid || onlyEAMutations
 
-	// SMB authorizes an explicit timestamp write by FILE_WRITE_ATTRIBUTES on the
-	// open handle rather than by ownership, so such a handle satisfies the
-	// ownership gate below — but only for a SetAttrs that changes nothing except
-	// the four timestamps, and never past an explicit DENY ACE, which encodes
-	// intent POSIX bits cannot express (mirroring the handle write bypass in
-	// checkFilePermissions). Both read-only ceilings are already enforced by
-	// shareForbidsWrites above. See AuthContext.TimestampAuthorizedByHandle.
-	onlySettingExplicitTimes := noOwnershipAttrs && attrs.Size == nil &&
-		attrs.Hidden == nil && attrs.ACL == nil && len(attrs.EAMutations) == 0 &&
-		!attrs.AtimeNow && !attrs.MtimeNow &&
+	// SMB authorizes a FileBasicInformation write, the four timestamps and the
+	// DOS attributes, by FILE_WRITE_ATTRIBUTES on the open handle rather than by
+	// ownership (MS-FSA 2.1.5.15.2), so such a handle satisfies the ownership
+	// gate below, for a SetAttrs that changes nothing else. See
+	// AuthContext.AttributesAuthorizedByHandle.
+	//
+	// decision: a DOS attribute change is gated by the handle's right, as a
+	// timestamp write is, never past an explicit DENY ACE, which encodes intent
+	// POSIX bits cannot express, and never on a read-only share, which
+	// shareForbidsWrites has refused above. So a caller who does not own the
+	// file but holds the right can set READONLY on it, and READONLY then
+	// refuses writes on both protocols until someone with the right clears it.
+	// That matches Windows. An absolute Mode, an owner or group change and an
+	// ACL stay ownership-gated, and a mask naming a bit that is no DOS attribute
+	// is refused here, though the apply step would drop the bit anyway, so the
+	// grant cannot be read as covering it. Withdraw it if READONLY ever maps
+	// onto the POSIX mode bits.
+	dosMasksOnly := (attrs.ModeOrMask == nil || *attrs.ModeOrMask&^dosAttributeModeBits == 0) &&
+		(attrs.ModeAndNotMask == nil || *attrs.ModeAndNotMask&^dosAttributeModeBits == 0)
+	onlySettingBasicInfo := attrs.Mode == nil && attrs.UID == nil && attrs.GID == nil &&
+		attrs.Size == nil && attrs.ACL == nil && len(attrs.EAMutations) == 0 &&
+		!attrs.AtimeNow && !attrs.MtimeNow && dosMasksOnly &&
 		(attrs.Atime != nil || attrs.Mtime != nil ||
-			attrs.Ctime != nil || attrs.CreationTime != nil)
-	timestampAuthorizedByHandle := ctx.TimestampAuthorizedByHandle &&
-		onlySettingExplicitTimes && !acl.HasExplicitDeny(file.ACL)
+			attrs.Ctime != nil || attrs.CreationTime != nil ||
+			attrs.Hidden != nil || attrs.ModeOrMask != nil || attrs.ModeAndNotMask != nil)
+	attributesAuthorizedByHandle := ctx.AttributesAuthorizedByHandle &&
+		onlySettingBasicInfo && !acl.HasExplicitDeny(file.ACL)
 
 	// decision: an EA-only write is authorized by FILE_WRITE_EA on the open
 	// handle instead of by the file's POSIX mode. The right the protocol checked
@@ -558,12 +568,12 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// answer. Close it if the permission decision can ever be recomputed from
 	// the row alone.
 	ownershipAuthorized := isOwner && !isRoot &&
-		!eaAuthorizedByHandle && !timestampAuthorizedByHandle
+		!eaAuthorizedByHandle && !attributesAuthorizedByHandle
 
 	switch {
 	case isOwner || isRoot:
 		// Ownership answers for everything below.
-	case eaAuthorizedByHandle || timestampAuthorizedByHandle:
+	case eaAuthorizedByHandle || attributesAuthorizedByHandle:
 		// A right the protocol names on the open stands in for ownership, and
 		// for the POSIX write check the alternatives below would run.
 	case writePermSufficient:

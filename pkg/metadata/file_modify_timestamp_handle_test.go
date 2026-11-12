@@ -24,7 +24,7 @@ func requirePermissionDenied(t *testing.T, err error) {
 }
 
 // stampTime is an arbitrary fixed explicit timestamp used by the
-// TimestampAuthorizedByHandle tests.
+// AttributesAuthorizedByHandle tests.
 var stampTime = time.Unix(1_000_000, 0).UTC()
 
 // newForeignOwnedFile creates a regular file owned by UID 2002 under the
@@ -46,11 +46,11 @@ func newForeignOwnedFile(t *testing.T, f *testFixture, name string, mode uint32)
 	return handle
 }
 
-// TestSetFileAttributes_TimestampAuthorizedByHandleGrantsNonOwner asserts the
+// TestSetFileAttributes_AttributesAuthorizedByHandleGrantsNonOwner asserts the
 // headline case: SMB authorizes a timestamp write by FILE_WRITE_ATTRIBUTES on
 // the open handle, not by ownership of the file, so a non-owner holding such a
 // handle can set an explicit timestamp the POSIX ownership gate would refuse.
-func TestSetFileAttributes_TimestampAuthorizedByHandleGrantsNonOwner(t *testing.T) {
+func TestSetFileAttributes_AttributesAuthorizedByHandleGrantsNonOwner(t *testing.T) {
 	f := newTestFixture(t)
 	handle := newForeignOwnedFile(t, f, "handle_ts.txt", 0o600)
 
@@ -62,7 +62,7 @@ func TestSetFileAttributes_TimestampAuthorizedByHandleGrantsNonOwner(t *testing.
 
 	// With the grant the same write lands.
 	authCtx := f.authContext(1001, 1001)
-	authCtx.TimestampAuthorizedByHandle = true
+	authCtx.AttributesAuthorizedByHandle = true
 	_, err = f.service.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{Mtime: &stampTime})
 	require.NoError(t, err, "FILE_WRITE_ATTRIBUTES on the handle must authorize an explicit timestamp write")
 
@@ -93,7 +93,7 @@ func TestSetFileAttributes_TimestampHandleGrantCoversAllFourStamps(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			handle := newForeignOwnedFile(t, f, "stamps_"+tc.name+".txt", 0o600)
 			authCtx := f.authContext(1001, 1001)
-			authCtx.TimestampAuthorizedByHandle = true
+			authCtx.AttributesAuthorizedByHandle = true
 			_, err := f.service.SetFileAttributes(authCtx, handle, tc.attrs)
 			require.NoError(t, err)
 		})
@@ -101,10 +101,11 @@ func TestSetFileAttributes_TimestampHandleGrantCoversAllFourStamps(t *testing.T)
 }
 
 // TestSetFileAttributes_TimestampHandleGrantDoesNotWiden asserts the flag
-// relaxes the ownership gate for a timestamp-only change and nothing else. A
-// SetAttrs that also carries a mode, ownership, size, DOS-attribute or EA
-// change still requires ownership, so the flag cannot be used to smuggle a
-// chmod or a truncate past the gate by pairing it with a timestamp.
+// relaxes the ownership gate for a FileBasicInformation change and nothing
+// else. A SetAttrs that also carries a mode, ownership, size or EA change, or a
+// mask naming a bit that is no DOS attribute, still requires ownership, so the
+// flag cannot be used to smuggle a chmod or a truncate past the gate by pairing
+// it with a timestamp.
 func TestSetFileAttributes_TimestampHandleGrantDoesNotWiden(t *testing.T) {
 	f := newTestFixture(t)
 
@@ -112,6 +113,7 @@ func TestSetFileAttributes_TimestampHandleGrantDoesNotWiden(t *testing.T) {
 	uid := uint32(1001)
 	size := uint64(4096)
 	mask := uint32(0o6000)
+	dosAndSetID := modeDOSExplicitBit | modeDOSReadonlyBit | 0o4000
 	hidden := true
 
 	for _, tc := range []struct {
@@ -124,7 +126,8 @@ func TestSetFileAttributes_TimestampHandleGrantDoesNotWiden(t *testing.T) {
 		{"size", &metadata.SetAttrs{Mtime: &stampTime, Size: &size}},
 		{"modeOrMask", &metadata.SetAttrs{Mtime: &stampTime, ModeOrMask: &mask}},
 		{"modeAndNotMask", &metadata.SetAttrs{Mtime: &stampTime, ModeAndNotMask: &mask}},
-		{"hidden", &metadata.SetAttrs{Mtime: &stampTime, Hidden: &hidden}},
+		{"dosMaskWithSetIDBits", &metadata.SetAttrs{ModeOrMask: &dosAndSetID}},
+		{"hiddenWithSize", &metadata.SetAttrs{Hidden: &hidden, Size: &size}},
 		{"ea", &metadata.SetAttrs{
 			Mtime:       &stampTime,
 			EAMutations: []metadata.EAMutation{{Name: "user.x", Value: []byte("v")}},
@@ -133,13 +136,60 @@ func TestSetFileAttributes_TimestampHandleGrantDoesNotWiden(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			handle := newForeignOwnedFile(t, f, "widen_"+tc.name+".txt", 0o600)
 			authCtx := f.authContext(1001, 1001)
-			authCtx.TimestampAuthorizedByHandle = true
+			authCtx.AttributesAuthorizedByHandle = true
 			_, err := f.service.SetFileAttributes(authCtx, handle, tc.attrs)
 			// The denial code varies by field — a size change reaches the
 			// POSIX truncate branch and is refused as access-denied rather
 			// than not-permitted. What matters is that none of these are
 			// authorized by the timestamp handle grant.
 			require.Error(t, err, "handle timestamp grant must not authorize a %s change", tc.name)
+		})
+	}
+}
+
+// TestSetFileAttributes_HandleGrantCoversDOSAttributes asserts the other half
+// of FileBasicInformation: FILE_WRITE_ATTRIBUTES on the open authorizes a DOS
+// attribute change on a file the caller does not own (MS-FSA 2.1.5.15.2), with
+// or without a timestamp beside it, and the change lands. A Linux client's
+// unlink of a file still open depends on it: it sets FILE_ATTRIBUTE_HIDDEN
+// before it renames the file away.
+func TestSetFileAttributes_HandleGrantCoversDOSAttributes(t *testing.T) {
+	f := newTestFixture(t)
+
+	hidden := true
+	readonly := modeDOSExplicitBit | modeDOSReadonlyBit
+	archive := modeDOSArchiveBit
+
+	for _, tc := range []struct {
+		name  string
+		attrs *metadata.SetAttrs
+		check func(t *testing.T, file *metadata.File)
+	}{
+		{"hidden", &metadata.SetAttrs{Hidden: &hidden}, func(t *testing.T, file *metadata.File) {
+			require.True(t, file.Hidden, "Hidden was accepted but did not land")
+		}},
+		{"masks", &metadata.SetAttrs{ModeOrMask: &readonly, ModeAndNotMask: &archive}, func(t *testing.T, file *metadata.File) {
+			require.Equal(t, readonly, file.Mode&(readonly|archive), "the DOS bits were accepted but did not land")
+		}},
+		{"hiddenWithTimestamp", &metadata.SetAttrs{Hidden: &hidden, Mtime: &stampTime}, func(t *testing.T, file *metadata.File) {
+			require.True(t, file.Hidden)
+			require.True(t, file.Mtime.Equal(stampTime))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handle := newForeignOwnedFile(t, f, "dos_"+tc.name+".txt", 0o600)
+
+			_, err := f.service.SetFileAttributes(f.authContext(1001, 1001), handle, tc.attrs)
+			requirePermissionDenied(t, err)
+
+			authCtx := f.authContext(1001, 1001)
+			authCtx.AttributesAuthorizedByHandle = true
+			_, err = f.service.SetFileAttributes(authCtx, handle, tc.attrs)
+			require.NoError(t, err, "FILE_WRITE_ATTRIBUTES on the handle must authorize a DOS attribute change")
+
+			file, err := f.service.GetFile(authCtx.Context, handle)
+			require.NoError(t, err)
+			tc.check(t, file)
 		})
 	}
 }
@@ -161,7 +211,7 @@ func TestSetFileAttributes_TimestampAndWriteHandleGrantsAreDistinct(t *testing.T
 
 	// Attribute-write handle only: data write stays denied.
 	tsOnly := f.authContext(1001, 1001)
-	tsOnly.TimestampAuthorizedByHandle = true
+	tsOnly.AttributesAuthorizedByHandle = true
 	got, err := f.service.CheckPermissions(tsOnly, handle, metadata.PermissionWrite)
 	require.NoError(t, err)
 	require.Zero(t, got&metadata.PermissionWrite,
@@ -170,7 +220,7 @@ func TestSetFileAttributes_TimestampAndWriteHandleGrantsAreDistinct(t *testing.T
 
 // TestSetFileAttributes_NFSTimestampSemanticsUnchanged pins that the NFS path
 // is untouched by the bridge. NFS is path-based, has no handle, and never sets
-// TimestampAuthorizedByHandle, so POSIX ownership remains the rule for an
+// AttributesAuthorizedByHandle, so POSIX ownership remains the rule for an
 // explicit timestamp write and write permission alone remains insufficient —
 // while UTIME_NOW continues to be satisfied by write permission.
 func TestSetFileAttributes_NFSTimestampSemanticsUnchanged(t *testing.T) {
@@ -180,7 +230,7 @@ func TestSetFileAttributes_NFSTimestampSemanticsUnchanged(t *testing.T) {
 	handle := newForeignOwnedFile(t, f, "nfs.txt", 0o666)
 
 	nfsCtx := f.authContext(1001, 1001)
-	require.False(t, nfsCtx.TimestampAuthorizedByHandle,
+	require.False(t, nfsCtx.AttributesAuthorizedByHandle,
 		"an NFS AuthContext must never carry the SMB handle grant")
 
 	got, err := f.service.CheckPermissions(nfsCtx, handle, metadata.PermissionWrite)

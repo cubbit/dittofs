@@ -216,7 +216,7 @@ func strPtr(s string) *string { return &s }
 
 // TestSetFileAttributes_ACLDenyOverridesHandleTimestamp is the timestamp
 // counterpart of TestCheckPermissions_ACLDenyOverridesHandleWrite: an explicit
-// DENY ACE beats TimestampAuthorizedByHandle, so a handle grant can never let a
+// DENY ACE beats AttributesAuthorizedByHandle, so a handle grant can never let a
 // caller past a deny the DACL expresses.
 //
 // As with the write bypass this cannot arise in production — the open-time DACL
@@ -257,11 +257,14 @@ func TestSetFileAttributes_ACLDenyOverridesHandleTimestamp(t *testing.T) {
 
 	authCtx := f.authContext(requesterUID, 1001)
 	authCtx.Identity.SID = strPtr(requesterSID)
-	authCtx.TimestampAuthorizedByHandle = true
+	authCtx.AttributesAuthorizedByHandle = true
 	authCtx.ShareReadOnly = false
 
 	_, err = f.service.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{Mtime: &stampTime})
-	require.Error(t, err, "an explicit deny ACE must beat TimestampAuthorizedByHandle")
+	require.Error(t, err, "an explicit deny ACE must beat AttributesAuthorizedByHandle")
+	hidden := true
+	_, err = f.service.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{Hidden: &hidden})
+	require.Error(t, err, "an explicit deny ACE must beat the grant for a DOS attribute change too")
 
 	// The same grant on a file with an allow-only ACL still works, so the guard
 	// is keyed on the deny and not on the mere presence of an ACL.
