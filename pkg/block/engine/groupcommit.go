@@ -628,8 +628,12 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 	// waiting commits with that error and keeps no backoff, nor leaves the
 	// files due: the journal documents the answer as never retried, and no
 	// retry can make an unbuilt sync succeed. It costs a stubbed journal a
-	// failed commit where it used to answer retry-shortly for good. It is
-	// overturned by a journal whose Sync is built, which never answers it.
+	// failed commit where it used to answer retry-shortly for good. It holds
+	// while the journal's whole Sync is a stub. Withdraw it before Sync
+	// answers ErrNotImplemented for one unread file (core/errors.go,
+	// ErrUnreadable): g.unbuilt is journal-wide, so one file's answer would
+	// fail every commit on the journal and drop the batch's other files from
+	// the due set.
 	// Repack keeps its own interim retry-later answer for the same error
 	// because it has a figure to refuse by; a commit has none.
 	unbuilt := errors.Is(syncErr, journal.ErrNotImplemented)
