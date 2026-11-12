@@ -334,9 +334,9 @@ func (g *groupCommit) commitAll(b *stopBound) bool {
 	// earned by a batch this Close asked for is kept: the store is failing
 	// under this Close too, and retrying it every synchronisation round for
 	// the whole bound turns a quiet wait into a hot loop on a failing store.
-	// Each Close call over once per file (a Close after a stuck one re-runs
-	// the steps). Overturned if a cooler schedule is measured to land
-	// commits the immediate retry misses.
+	// It is once per Close call, not once per engine: a Close after a stuck
+	// one re-runs the steps and overrides the backoff again. Overturned if a
+	// cooler schedule is measured to land commits the immediate retry misses.
 	for {
 		if ro := g.j.Stats().ReadOnly; ro.ReadOnly {
 			g.e.d.Logger.Warn("close left a read-only journal's pending existence to the next start",
@@ -356,7 +356,9 @@ func (g *groupCommit) commitAll(b *stopBound) bool {
 			if g.e.guardOf(f) != nil {
 				continue
 			}
+
 			g.mu.Lock()
+
 			if d := g.due[f]; d != nil {
 				d.now, asked = true, true
 				if !cleared[f] {
@@ -364,6 +366,7 @@ func (g *groupCommit) commitAll(b *stopBound) bool {
 					d.notBefore = time.Time{}
 				}
 			}
+
 			g.mu.Unlock()
 		}
 
