@@ -74,6 +74,13 @@ func (l *loadEntered) At(op string, key []byte) (time.Duration, int, error) {
 func newLoadUnit(t *testing.T, block uint64) *loadUnit {
 	t.Helper()
 
+	// ponytail: the five rows take 5 to 9 minutes under -race, so -short skips them and a
+	// full run keeps them. Upgrade to a copy scaled by 2^-8 that -short can run, once the
+	// exact counts are recomputed.
+	if testing.Short() {
+		t.Skip("version limit load rows take minutes under -race; run without -short")
+	}
+
 	lu := &loadUnit{
 		payload: make([]byte, 4096),
 	}
