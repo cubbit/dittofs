@@ -68,9 +68,76 @@ func TestHandleSync_PublicSyncsItsOwnAndRefusesAnotherShares(t *testing.T) {
 	}
 }
 
-// placedWrite is the durable write record of version v of the file id, as the
-// journal placed and synced it, with the segment's stream number. It fails the
-// test when no such record is durable, and reports the first it finds.
+// TestHandleSync_ASealedSegmentsRecordProvesNoMark covers the journal's own
+// Config.Sealed wiring, which the durability rig cannot reach: a file whose
+// only record sits in a segment a roll sealed -- the seal is the record's
+// proof, so the mark machinery must filter it -- returns no mark, whether or
+// not the layer falls back to it from the index (Config.Latest, which the
+// same call exercises). A file whose record sits on the other stream, in an
+// unsealed segment, is marked beside it, so a wiring that answered unsealed
+// for everything would hand a mark for the sealed record too: two marks
+// instead of one, and this is the check that catches it.
+func TestHandleSync_ASealedSegmentsRecordProvesNoMark(t *testing.T) {
+	j, seam := newSeamedJournal(t)
+	withLimit(t, j)
+	h, err := j.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share 1: %v", err)
+	}
+	id := fileOf(7)
+	seg := placedWriteOf(t, seam, h, id, "tiny").segment
+
+	// One further file on the sealed record's stream -- found by probing,
+	// since only the seam says where a write landed -- and one on the other
+	// stream: the roll below seals the first stream's segment holding both
+	// records, and the other stream's segment never rolls.
+	var sealed, other FileID
+	var otherAt placedRecord
+	for b := byte(2); sealed == (FileID{}) || other == (FileID{}); b++ {
+		if b == 0 {
+			t.Fatalf("probing the streams ran out of files")
+		}
+		if c := fileOf(b); c != id {
+			if at := placedWriteOf(t, seam, h, c, "probe"); at.segment == seg {
+				sealed = c
+			} else if other == (FileID{}) {
+				other, otherAt = c, at
+			}
+		}
+	}
+
+	// A write bigger than the segment's remainder, to the same file, splits
+	// and rolls: the roll seals the segment the two records sit in.
+	big := make([]byte, 96<<10)
+	for i := range big {
+		big[i] = byte(i)
+	}
+	writeReady(t, h, id, string(big))
+
+	marks, err := h.Sync(context.Background(), sealed)
+	if err != nil {
+		t.Fatalf("Sync = %v, want nil", err)
+	}
+	if len(marks) != 0 {
+		t.Fatalf("Sync of the sealed segment's file returned marks %+v, want none: the wiring must answer sealed for segment %d, whose proof the roll's seal already wrote", marks, seg)
+	}
+	marks, err = h.Sync(context.Background(), sealed, other)
+	if err != nil {
+		t.Fatalf("Sync of both files = %v, want nil", err)
+	}
+	if len(marks) != 1 {
+		t.Fatalf("Sync returned %d marks, want one: the sealed record's stream alone filtered, and a wiring that answered unsealed for everything would hand a mark for the sealed record too -- %+v", len(marks), marks)
+	}
+	if marks[0].Segment != otherAt.segment {
+		t.Errorf("the mark names segment %d, want the other file's record's segment %d", marks[0].Segment, otherAt.segment)
+	}
+	if marks[0].Segment == seg {
+		t.Errorf("the mark names the sealed segment %d", seg)
+	}
+}
+
+// placedRecord is the durable write record placedWrite reports: its place
+// and the stream its segment's header names.
 type placedRecord struct {
 	stream  uint32
 	segment uint64
@@ -78,6 +145,23 @@ type placedRecord struct {
 	size    int64
 	seq     uint64
 }
+
+// placedWriteOf writes the payload, syncs it and reports its placed record:
+// placedWrite of a record the sync made durable, since the seam's durable
+// image holds only what a sync reached.
+func placedWriteOf(t *testing.T, seam *kit.Seam, h *Handle, id FileID, payload string) placedRecord {
+	t.Helper()
+	v := writeReady(t, h, id, payload)
+	if _, err := h.Sync(context.Background(), id); err != nil {
+		t.Fatalf("Sync of %v = %v, want nil", id, err)
+	}
+	return placedWrite(t, seam, id, v)
+}
+
+// placedWrite finds the durable write record of version v of the file id, as
+// the journal placed and synced it, with the stream its segment's header
+// names. It fails the test when no such record is durable, and reports the
+// first it finds.
 
 func placedWrite(t *testing.T, seam *kit.Seam, id FileID, v Version) placedRecord {
 	t.Helper()
@@ -88,7 +172,7 @@ func placedWrite(t *testing.T, seam *kit.Seam, id FileID, v Version) placedRecor
 		}
 		head, err := format.DecodeSegmentHeader(raw[:format.SegmentHeaderSize], seamedIdentity)
 		if err != nil {
-			t.Fatalf("decoding the header of segment %d: %v", seg, err)
+			continue // a spare or a segment the journal never opened
 		}
 		off := int64(format.SegmentHeaderSize)
 		for off+format.RecordHeaderSize <= int64(len(raw)) {

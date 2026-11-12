@@ -138,8 +138,9 @@ func streamOf(t *testing.T, f *journaltest.Fixture, seg journal.SegmentID, live 
 // wantSyncMark fails the test unless m is exactly the mark of frr's record:
 // the stream its segment's header names, the segment, the record's end and
 // its sequence number as the header's bytes carry them, and a synced-through
-// offset that covers the record. Through itself is only bounded: no public
-// answer names a synced-through offset to compare with.
+// offset that covers the record and claims nothing past the durable bytes
+// of its segment. Through is otherwise not compared: no public answer names
+// a synced-through offset to compare with.
 func wantSyncMark(t *testing.T, f *journaltest.Fixture, what string, m journal.SyncMark, frr foundRecord) {
 	t.Helper()
 
@@ -154,6 +155,9 @@ func wantSyncMark(t *testing.T, f *journaltest.Fixture, what string, m journal.S
 	}
 	if m.Through < m.Offset {
 		t.Errorf("%s: mark.Through = %d, want at least the record's end %d", what, m.Through, m.Offset)
+	}
+	if dur := int64(len(durable(t, f, segmentName(frr.seg)))); m.Through > dur {
+		t.Errorf("%s: mark.Through = %d, want at most the segment's durable length %d: a synced-through offset proves only durable bytes", what, m.Through, dur)
 	}
 	if s := streamOf(t, f, frr.seg, false); m.Stream != s {
 		t.Errorf("%s: mark.Stream = %d, want the stream segment %d's header names, %d", what, m.Stream, frr.seg, s)

@@ -13,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
@@ -47,30 +48,51 @@ func mustSyncReturn(t *testing.T, what string, ch <-chan syncAnswer) syncAnswer 
 	}
 }
 
-// headerOf decodes the durable record header at the location, from the raw
-// bytes the seam holds, the way a recovery pass reads a placed record.
-func (r *rig) headerOf(t *testing.T, loc segment.Location) format.RecordHeader {
-	t.Helper()
-	raw, err := r.seam.Durable(format.SegmentName(loc.Segment))
-	if err != nil {
-		t.Fatalf("reading the durable bytes of segment %d: %v", loc.Segment, err)
+// setLatest hands the layer the Latest the datapath wires over the core: the
+// file's newest record the rig's index names, its place read from the
+// record's header. A rig without it answers as the layer did before the
+// fallback existed.
+func (r *rig) setLatest() {
+	r.d.latest = func(id core.FileID) (segment.Location, core.Seq, bool) {
+		var best index.RecordAt
+		for _, e := range r.ix.FileEntries(id) {
+			if e.Record == (index.RecordAt{}) {
+				continue // a marker names no record
+			}
+			if best == (index.RecordAt{}) || e.Record.Segment > best.Segment ||
+				(e.Record.Segment == best.Segment && e.Record.Offset > best.Offset) {
+				best = e.Record
+			}
+		}
+		if best == (index.RecordAt{}) {
+			return segment.Location{}, 0, false
+		}
+		head := make([]byte, format.RecordHeaderSize)
+		if _, err := r.streams.For(id).ReadAt(best.Segment, head, int64(best.Offset)); err != nil {
+			return segment.Location{}, 0, false
+		}
+		h, err := format.DecodeRecordHeader(head, rigIdentity, best.Segment, int64(best.Offset))
+		if err != nil {
+			return segment.Location{}, 0, false
+		}
+		return segment.Location{Segment: best.Segment, Off: int64(best.Offset), Len: h.Size()}, h.Seq, true
 	}
-	if loc.Off+format.RecordHeaderSize > int64(len(raw)) {
-		t.Fatalf("the record at %d of segment %d runs past the durable bytes", loc.Off, loc.Segment)
-	}
-	h, err := format.DecodeRecordHeader(raw[loc.Off:loc.Off+format.RecordHeaderSize], rigIdentity, loc.Segment, loc.Off)
-	if err != nil {
-		t.Fatalf("decoding the record at %+v: %v", loc, err)
-	}
-	return h
 }
 
 // wantMark fails the test unless m is exactly the mark of the record at loc:
 // the segment, the record's end, its sequence number as the placed record's
-// header carries it, and a synced-through offset that covers the record.
+// header carries it, and a synced-through offset that covers the record and
+// claims nothing past the durable bytes of its segment.
 func (r *rig) wantMark(t *testing.T, what string, m core.SyncMark, loc segment.Location) {
 	t.Helper()
-	h := r.headerOf(t, loc)
+	raw, err := r.seam.Durable(format.SegmentName(loc.Segment))
+	if err != nil || loc.Off+format.RecordHeaderSize > int64(len(raw)) {
+		t.Fatalf("%s: the durable bytes of segment %d do not hold the record at %+v (%v)", what, loc.Segment, loc, err)
+	}
+	h, err := format.DecodeRecordHeader(raw[loc.Off:loc.Off+format.RecordHeaderSize], rigIdentity, loc.Segment, loc.Off)
+	if err != nil {
+		t.Fatalf("%s: decoding the record at %+v: %v", what, loc, err)
+	}
 	if m.Segment != uint64(loc.Segment) {
 		t.Errorf("%s: mark.Segment = %d, want the record's segment %d", what, m.Segment, loc.Segment)
 	}
@@ -83,9 +105,12 @@ func (r *rig) wantMark(t *testing.T, what string, m core.SyncMark, loc segment.L
 	if m.Through < m.Offset {
 		t.Errorf("%s: mark.Through = %d, want at least the record's end %d", what, m.Through, m.Offset)
 	}
+	if dur := int64(len(raw)); m.Through > dur {
+		t.Errorf("%s: mark.Through = %d, want at most the segment's durable length %d: a synced-through offset proves only durable bytes", what, m.Through, dur)
+	}
 }
 
-// fileOnEachStream returns two files the rig places on different streams.
+// filesOnEachStream returns two files the rig places on different streams.
 func filesOnEachStream(t *testing.T, r *rig) (core.FileID, core.FileID) {
 	t.Helper()
 	f := file(1)
@@ -169,16 +194,14 @@ func TestSyncReturnsNoMarkForASealedSegment(t *testing.T) {
 	r := newRigConfigured(t, 1, func(c *Config) {
 		c.Sealed = func(id core.SegmentID) bool {
 			if s := set.Load(); s != nil {
-				if st, err := s.State(id); err == nil && st == segment.Sealed {
-					return true
-				}
+				st, err := s.State(id)
+				return err != nil || st == segment.Sealed
 			}
 			return false
 		}
 	})
 	set.Store(r.set)
 	hook, reached, release := gate(t)
-	t.Cleanup(release)
 	captured := make(chan struct{})
 	var capturedOnce sync.Once
 	r.d.beforeWait = func(ws []work) {
@@ -198,15 +221,18 @@ func TestSyncReturnsNoMarkForASealedSegment(t *testing.T) {
 		}
 	}
 	r.d.Start(r.streams)
-	f := file(1)
-	r.appendWrite(t, f, 0, "ssss")
+	// Registered after the rig's own cleanups, so a failing test reports
+	// before the layer's Stop tries to join the parked worker.
+	t.Cleanup(release)
 
-	// Park the worker in a pass before its completion, so the sealed
-	// segment's entry is still a target when the Sync below captures its
-	// candidates and the mark can only be missing because the sealed check
-	// removed it.
+	f := file(1)
+	// The park is armed before the append, so the pass the append itself
+	// kicks is the parked one: nothing can complete the record first, and
+	// the sealed segment's entry is still a target when the Sync below
+	// captures its candidates, so the mark can only be missing because the
+	// sealed check removed it.
 	armed.Store(true)
-	r.d.made[0].wake()
+	r.appendWrite(t, f, 0, "ssss")
 	awaitGate(t, "the worker's pause", reached)
 	if _, err := r.streams.For(f).Seal(false); err != nil {
 		t.Fatalf("Seal: %v", err)
@@ -285,6 +311,37 @@ func TestSyncReturnsNoMarksOnAFailedWindow(t *testing.T) {
 	r.wantMark(t, "the mark after the failure", marks[0], w)
 }
 
+// TestSyncReturnsNoMarksForAnyStreamOnAFailedWindow covers the decision's
+// scope: a Sync whose window failed on one stream returns no marks for its
+// OTHER stream either, though that stream's named file lost nothing -- the
+// no-marks-on-error rule is the call's, not the lost record's, so a healthy
+// record never shares a Sync with a failed one in the marks it hands back.
+func TestSyncReturnsNoMarksForAnyStreamOnAFailedWindow(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := newRig(t, 2)
+	f, g := filesOnEachStream(t, r)
+	a := r.appendWrite(t, f, 0, "ffff")
+	r.appendWrite(t, g, 0, "gggg")
+	// The default rig fails the re-read of a pending window's segment, so the
+	// record is failed and its file marked, as a segment whose pages the
+	// failed sync left unreliable.
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, errors.New("sync boom"))); err != nil {
+		t.Fatal(err)
+	}
+
+	marks, err := r.d.Sync(context.Background(), f, g)
+	var se *core.SyncError
+	if !errors.As(err, &se) {
+		t.Fatalf("Sync across the failed window = %v, want a *SyncError", err)
+	}
+	if !slices.Contains(se.Files, f) {
+		t.Errorf("the SyncError names files %v, want %v among them", se.Files, f)
+	}
+	if marks != nil {
+		t.Errorf("Sync across a failed window on one stream returned marks %+v, want none on every stream: the rule is the call's, not the lost record's", marks)
+	}
+}
+
 // TestSyncMarkFollowsAReAppendedRecord covers: a Sync that waits through a
 // re-append returns the mark of the copy -- the new segment and the copy's
 // end -- never the ended segment the record was first placed in. The worker
@@ -354,61 +411,72 @@ func TestSyncMarkFollowsAReAppendedRecord(t *testing.T) {
 	}
 }
 
-// TestSyncReturnsNilMarksWhenNothingIsNamed covers: a Sync naming only files
-// with nothing unsynced, and one naming no file at all, return no marks and no
-// error.
-func TestSyncReturnsNilMarksWhenNothingIsNamed(t *testing.T) {
+// TestSyncMarksAFileSyncedEarlier covers: a Sync naming a file with nothing
+// unsynced -- the timer or an earlier call already made its record durable --
+// returns its mark all the same, from the newest record the index names
+// (RFC 1 §3.1: the clause carries no unsynced qualifier), issuing no sync of
+// its own. A Sync naming no file at all returns no marks.
+func TestSyncMarksAFileSyncedEarlier(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	r := newRig(t, 1)
+	r := newRigConfigured(t, 1, func(*Config) {})
+	r.setLatest()
+	r.d.Start(r.streams)
 	f := file(1)
-	r.appendWrite(t, f, 0, "ffff")
-	if _, err := r.d.Sync(context.Background(), f); err != nil {
-		t.Fatalf("Sync(f) = %v, want nil", err)
+	a, _ := r.publish(t, f, 0, "ffff")
+	if marks, err := r.d.Sync(context.Background(), f); err != nil || len(marks) != 1 {
+		t.Fatalf("the first Sync = %v, %d marks, want nil error and one", err, len(marks))
 	}
 
-	for name, ids := range map[string][]core.FileID{
-		"a file with nothing unsynced": {f},
-		"no file":                      nil,
-	} {
-		marks, err := r.d.Sync(context.Background(), ids...)
-		if err != nil {
-			t.Fatalf("Sync of %s = %v, want nil", name, err)
-		}
-		if len(marks) != 0 {
-			t.Errorf("Sync of %s returned marks %+v, want none", name, marks)
-		}
+	marks, err := r.d.Sync(context.Background(), f)
+	if err != nil {
+		t.Fatalf("the second Sync of %v = %v, want nil: nothing unsynced, so no sync, but the mark still comes", f, err)
+	}
+	if len(marks) != 1 {
+		t.Fatalf("the second Sync of a synced file returned %d marks, want the record's: %+v", len(marks), marks)
+	}
+	r.wantMark(t, "the mark of the already-synced record", marks[0], a)
+	if marks, err = r.d.Sync(context.Background()); err != nil || len(marks) != 0 {
+		t.Fatalf("Sync naming no file = %v, %d marks, want nil error and none", err, len(marks))
 	}
 }
 
-// TestSyncMarksTheNewestNamedRecordOutsideASealedSegment covers the RFC's
-// applicability clause: a stream is marked for its newest named record
-// OUTSIDE a sealed segment, so a stream whose newest named record sits in a
-// sealed segment while an older named record sits in an unsealed one is
-// marked for the older record, never skipped. The unsealed older place is a
-// retired segment here: gone from the registry, Sealed answers for it the
-// safe direction, not sealed. The worker is parked before any completion, as
-// the sealed-segment test parks it, and the parked worker is released only
-// once the waiter holds its candidates: beforeWait runs after the waiter's
-// checks found something still pending, and the parked worker is the only
-// thing that can complete the records, so releasing before the capture ran
-// would let the worker empty the ledger under a Sync that then held no
-// candidate to build a mark from.
-func TestSyncMarksTheNewestNamedRecordOutsideASealedSegment(t *testing.T) {
+// TestSyncReturnsNoMarkForRecordsInSealedOrRetiredSegments covers the sealed
+// verdict's direction: a segment gone from the registry answers sealed to the
+// marks' filter -- the caller keeps each stream's latest mark, so a proofless
+// Through:0 mark naming a dead segment would replace the stream's real proof
+// -- and so does a genuinely sealed one. A stream whose older named record's
+// segment retired, and whose newer named record's segment sealed, returns no
+// mark at all.
+//
+// The park is armed before the record is appended, so the pass the append
+// itself kicks is the parked one -- nothing can complete the record first --
+// and the parked worker is released only once the waiter holds its candidates
+// (beforeWait runs after the waiter's checks found something still pending,
+// and the parked worker is the only thing that can complete the records), so
+// the empty answer below comes from the sealed filter alone.
+//
+// Production ordering note: this fixture could not arise in the reverse
+// direction from the stream's lifecycle. Every roll seals the segment it
+// leaves, so a stream's unsealed segment is its active one, which holds its
+// newest appends: production never orders a sealed segment holding a NEWER
+// named record than an unsealed one's. The greatest-passing selection in
+// marksOf is belt for that ordering, naming the stream's newest named record
+// whose segment is not sealed should any later path -- a recycle, a reseed --
+// ever produce the reverse.
+func TestSyncReturnsNoMarkForRecordsInSealedOrRetiredSegments(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	var set atomic.Pointer[segment.Set]
 	r := newRigConfigured(t, 1, func(c *Config) {
 		c.Sealed = func(id core.SegmentID) bool {
 			if s := set.Load(); s != nil {
-				if st, err := s.State(id); err == nil && st == segment.Sealed {
-					return true
-				}
+				st, err := s.State(id)
+				return err != nil || st == segment.Sealed
 			}
 			return false
 		}
 	})
 	set.Store(r.set)
 	hook, reached, release := gate(t)
-	t.Cleanup(release)
 	captured := make(chan struct{})
 	var capturedOnce sync.Once
 	r.d.beforeWait = func(ws []work) {
@@ -426,11 +494,13 @@ func TestSyncMarksTheNewestNamedRecordOutsideASealedSegment(t *testing.T) {
 		}
 	}
 	r.d.Start(r.streams)
+	// Registered after the rig's own cleanups, so a failing test reports
+	// before the layer's Stop tries to join the parked worker.
+	t.Cleanup(release)
 
 	f, g := file(1), file(2)
-	a := r.appendKind(t, f, format.KindDelete, format.RecordBody{})
 	armed.Store(true)
-	r.d.made[0].wake()
+	a := r.appendKind(t, f, format.KindDelete, format.RecordBody{})
 	awaitGate(t, "the worker's pause", reached)
 	if _, err := r.streams.For(f).Seal(false); err != nil {
 		t.Fatalf("Seal of the older record's segment: %v", err)
@@ -461,12 +531,8 @@ func TestSyncMarksTheNewestNamedRecordOutsideASealedSegment(t *testing.T) {
 	if answered.err != nil {
 		t.Fatalf("Sync = %v, want nil", answered.err)
 	}
-	if len(answered.marks) != 1 {
-		t.Fatalf("Sync returned %d marks, want the one of the older, unsealed named record: %+v", len(answered.marks), answered.marks)
-	}
-	r.wantMark(t, "the mark of the older, unsealed named record", answered.marks[0], a)
-	if answered.marks[0].Segment == uint64(b.Segment) {
-		t.Errorf("the mark names the sealed segment %d that holds the newer named record", b.Segment)
+	if len(answered.marks) != 0 {
+		t.Errorf("Sync returned marks %+v, want none: the retired record's segment answers sealed (gone from the registry), the newer record's is sealed, so no named record can be proved", answered.marks)
 	}
 }
 
