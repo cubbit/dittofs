@@ -62,12 +62,9 @@ func (e *Engine) rebuildRun(o *opened, db *binding, dst entity.FileID, spec jour
 		e.files.unlock(x.f, fe)
 	}
 	e.addClone(c) // a retry of the clone joins it
-	o.undoRebuilds = append(o.undoRebuilds, func() {
-		e.dropClone(c)
-		e.unregister(c.dst, c.rd)
-		e.unregister(c.src, c.rs)
-		c.leave()
-	})
+	// The clone is posted only once the table is published, which a failed
+	// start never does: nothing else ends it, holds a reservation or waits on it.
+	o.undoRebuilds = append(o.undoRebuilds, func() { e.endClone(c, errClosed) })
 
 	return c, nil
 }
