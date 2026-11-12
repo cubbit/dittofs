@@ -265,7 +265,18 @@ type Core struct {
 	// drain counts one goroutine per share the close fenced, each waiting on
 	// its share's idle channel; Close waits the group before it stops the
 	// core's workers. See close.go.
-	drain    sync.WaitGroup
+	drain sync.WaitGroup
+	// decision: stopsMu is a leaf. It guards the stops slice alone, and no
+	// stop and no close step runs with it held, so a stop that takes a
+	// worker's own locks never nests it. See close.go.
+	stopsMu sync.Mutex
+	// stops are the stop functions of the workers the core started, in the
+	// order they registered — in reverse of which Close stops them. See
+	// close.go.
+	stops []func()
+	// group is the segment set the core runs, closed by Close once every
+	// registered worker has stopped. Nil on a Core no constructor returned.
+	group    *segment.Group
 	closeErr error
 }
 
@@ -478,14 +489,33 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		Retired:  func(id core.SegmentID) { c.retiredSegment(id) },
 		Log:      deps.Log,
 	})
+	// The workers register their stops as they start, in the order their
+	// pieces were built: the retirer, then the idle sealer, then the
+	// durability layer. Close stops them in the reverse of this order, so the
+	// durability layer — the one whose Stop wakes every durability waiter —
+	// is stopped first among the workers, and the retirer last.
 	c.retirer.Start()
+	c.addStop(c.retirer.Stop)
 
 	if deps.IdleSealBytes > 0 {
 		c.sealer = segment.NewIdleSealer(c.streams, deps.Clock, deps.IdleSealBytes, d.Admit, deps.Log)
 		c.sealer.Start()
+		c.addStop(c.sealer.Stop)
 	}
 	c.pool.Start()
 	d.Start(c.streams)
+	c.addStop(d.Stop)
+
+	// The group closes the segment set once every registered worker has
+	// stopped: the streams, the idle sealer, the pool, the retirer and the
+	// descriptor cache, in the order the segment package documents.
+	c.group = segment.NewGroup(segment.GroupConfig{
+		Streams: c.streams,
+		Idle:    c.sealer,
+		Pool:    c.pool,
+		Retirer: c.retirer,
+		Cache:   c.cache,
+	})
 	return c, nil
 }
 
@@ -550,8 +580,9 @@ func (c *Core) PoolCounters() segment.PoolCounters { return c.pool.Counters() }
 func (c *Core) Retired(tag core.ShareTag) { c.cap.Retired(tag) }
 
 // Retirer returns the retirement executor the core runs. Nothing above the
-// core reaches it through this accessor today — the core's own Close uses
-// the field — so it is a test seam: the one a test retires through, driving
+// core reaches it through this accessor today — the core's own close stops
+// it through the registry registered at its Start, not through the field —
+// so it is a test seam: the one a test retires through, driving
 // the executor's gates and retired-segment hook exactly as the assembled
 // journal's own retirement path does. A later reclamation caller above the
 // core, which none exists yet, would take it from here.

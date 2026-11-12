@@ -92,9 +92,14 @@ func (s *Share) Close() error { return s.owner.closeShare(s) }
 // Tag 0 and a negative limit are refused with core.ErrInvalidSetting; a floor
 // with a non-zero epoch is refused with core.ErrUnknownFormat. A refusal
 // registers nothing and changes neither the counter nor a bucket. Once the
-// core's Close began, a new handle is refused with core.ErrClosed and nothing
-// is raised; the fence of a handle already open is the one that gives its
-// callers core.ErrClosed, and unchanged here. The counter and the buckets are
+// core's Close began, a new handle is refused with core.ErrClosed. An attach
+// that passed the first flag check before the fence raised it can still raise
+// the counter and the buckets before the check under the registry's mutex
+// refuses it, but a fenced core admits no call that could read the raised
+// figures, so the raise is unobservable — and moving it under the registry's
+// mutex would nest the counter's own locks under it. The fence of a handle
+// already open is the one that gives its callers core.ErrClosed, unchanged
+// here. The counter and the buckets are
 // raised before the handle is registered, so no write through it is issued a
 // version at or below the floor.
 //
