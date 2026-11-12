@@ -151,8 +151,8 @@ func (c carryLayout) retireAsync() (chan segment.Retirement, chan error) {
 	return done, failed
 }
 
-// TestCarryDropsDecidedAfterCopies is the journal-level form of RFC 1 §7.2's
-// rule that a pass decides its drops once its own copies are appended and
+// TestCarryDropsDecidedAfterCopies pins, at the journal level, the rule
+// that a pass decides its drops once its own copies are appended and
 // counted: a settled truncate whose removal covers content the same pass
 // carries forward as retained must be carried beside it, because the copy
 // the pass just placed is on disk below the truncate's pair and a re-test
