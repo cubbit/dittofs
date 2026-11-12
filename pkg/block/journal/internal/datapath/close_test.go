@@ -197,6 +197,103 @@ func TestInFlightCallsFinishAtClose(t *testing.T) {
 	}
 }
 
+// TestCallsWhileAWriteIsHeldAtItsAppend checks the surface that takes no
+// context against a write held at the seam before its append: the parked
+// write holds its file's append domain, its admission's grant and its share's
+// drain, and Extents, Files, DirtyFiles and Settle must each answer while it
+// is held. A call of that surface that waited on the parked write — its
+// file's append domain among them — sits past the watchdog and fails its leg
+// here rather than surfacing only once Close's drain waits it out. Each call
+// names the held write's own file and share, the strongest case. Stats is
+// not a leg here: it waits on the change that owns its counters'
+// close-time behaviour.
+func TestCallsWhileAWriteIsHeldAtItsAppend(t *testing.T) {
+	parked, release := make(chan struct{}), make(chan struct{})
+	var armed atomic.Bool
+	var parkN atomic.Int32
+	c, _ := newTestCore(t, func(o *coreOptions) {
+		// The park answers only the test's own held write: the warm-up below
+		// runs before the arm and passes the seam through.
+		o.beforeAppend = func() {
+			if armed.Load() && parkN.Add(1) == 1 {
+				close(parked)
+				<-release
+			}
+		}
+	})
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	warmV, err := c.WriteAt(context.Background(), s, f, 0, []byte("warm"), 1)
+	if err != nil {
+		t.Fatalf("the warm-up write: %v", err)
+	}
+	// A failure between the park and the release must not leave the write
+	// parked for the core's cleanup to wait on.
+	stopWrite := releaser(t, release)
+
+	held := make(chan writeResult, 1)
+	armed.Store(true)
+	go func() {
+		v, err := c.WriteAt(context.Background(), s, f, 1<<20, []byte("held at its append"), 1)
+		held <- writeResult{v, err}
+	}()
+	within(t, parked, "the write to park before its append")
+
+	// Extents names the held write's own file, whose append domain it parks
+	// under: a call that took that domain waits on it and fails the bound.
+	extents := make(chan error, 1)
+	go func() {
+		es, err := c.Extents(s, f)
+		if err == nil && len(es) == 0 {
+			err = errors.New("no extent for the warmed file")
+		}
+		extents <- err
+	}()
+	if err := within(t, extents, "Extents while the write is held"); err != nil {
+		t.Fatalf("Extents beside the held write = %v, want the warmed extents", err)
+	}
+
+	files := make(chan error, 1)
+	go func() {
+		if !slices.Contains(c.Files(s), f) {
+			files <- errors.New("the warmed file is not among the share's files")
+			return
+		}
+		files <- nil
+	}()
+	if err := within(t, files, "Files while the write is held"); err != nil {
+		t.Fatalf("Files beside the held write = %v, want the warmed file listed", err)
+	}
+
+	dirty := make(chan error, 1)
+	go func() {
+		if !slices.ContainsFunc(c.DirtyFiles(s), func(d DirtyFile) bool { return d.File == f }) {
+			dirty <- errors.New("the warmed file is not dirty")
+			return
+		}
+		dirty <- nil
+	}()
+	if err := within(t, dirty, "DirtyFiles while the write is held"); err != nil {
+		t.Fatalf("DirtyFiles beside the held write = %v, want the warmed file dirty", err)
+	}
+
+	settled := make(chan struct{})
+	go func() {
+		c.Settle(s, f, warmV)
+		close(settled)
+	}()
+	within(t, settled, "Settle while the write is held")
+
+	stopWrite()
+	got := within(t, held, "the held write")
+	if got.err != nil {
+		t.Fatalf("the held write = %v, want its version", got.err)
+	}
+	if got.v == (core.Version{}) {
+		t.Fatal("the held write returned no version")
+	}
+}
+
 // seamOps is every operation name the seam counts, so a test can hold all of
 // them and compare.
 var seamOps = []string{
@@ -471,8 +568,21 @@ func TestPoolStopsBeforeRetirer(t *testing.T) {
 		}
 	})
 
-	if err := c.Close(); err != nil {
-		t.Fatalf("Close = %v, want nil", err)
+	// Close runs behind the package's watchdog, so a close that blocked on a
+	// wrong order fails at the watchdog's message instead of hanging the run
+	// to the suite's timeout. The core is abandoned before the failure is
+	// raised, for the cleanup's own Close waits on this one through the
+	// close's once and would block on the same stuck close.
+	closed := make(chan error, 1)
+	go func() { closed <- c.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close = %v, want nil", err)
+		}
+	case <-time.After(watchdog):
+		abandonRecorded(t, c)
+		t.Fatalf("Close did not return within %s: the group closed before the workers it owns stopped", watchdog)
 	}
 	got := within(t, probeDone, "the probe's stop, between the pool's and the retirer's")
 	if !errors.Is(got, core.ErrClosed) {
