@@ -27,8 +27,19 @@ any target: that line is what credits the PR to the subtask on the burn-up. A su
 finished only in part is named, not closed. On every target, also link the PR to each issue
 it closes from the issue's or the PR's sidebar ("Development"), so the issue shows the PR:
 on `develop` the keyword creates that link itself, so check it is there; on any other target
-only the sidebar creates it. No API can, so when the PR is opened by a script or an agent,
-the report asks its author to add the links. Never mention Claude Code or
+the sidebar or the API creates it. From a script or an agent:
+
+```bash
+pr=$(gh pr view <PR> -R cubbit/dittofs --json id -q .id)
+issue=$(gh issue view <N> -R cubbit/dittofs --json id -q .id)
+gh api graphql -f query="mutation{addCloseIssueReferences(input:{issueId:\"$issue\",pullRequestIds:[\"$pr\"]}){clientMutationId}}"
+```
+
+`removeCloseIssueReferences`, with the same input, removes a link added this way; a link the
+`Closes` keyword created goes only by editing the PR body. `closingIssuesReferences` on the
+PR and `closedByPullRequestsReferences` on the issue read the links.
+
+Never mention Claude Code or
 AI tooling, and add no `Co-Authored-By` lines for AI.
 
 ## Stack or not
