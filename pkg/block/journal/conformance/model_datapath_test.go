@@ -57,7 +57,10 @@ func TestModel_DataPath(t *testing.T) {
 		// overwhelmingly likely, not certain; reading which
 		// streams a finished sequence's records reached waits for the
 		// inspection read-out that recovery builds, and TestModel already
-		// carries that assertion, waiting there on the same read-out.
+		// carries that assertion, waiting there on the same read-out. The
+		// per-fixture check over every journal these tests build, on the
+		// files and shares each one holds, is the follow-up issue this PR's
+		// body names.
 		if r.Files < 2 {
 			t.Errorf("reached: Files = %d, want at least 2: the generated draws name more than one file", r.Files)
 		}
