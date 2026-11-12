@@ -858,12 +858,13 @@ value; D7's drift test passes.
   `docs/guide/cli.md` regenerated.
 - The roles flag on `Bootstrap`, and `Load` refusing a value other than both roles (RFC 13 §2.2,
   RFC 15 §2.2).
-- The node identity (RFC 13 §2.2, as #4050's A2 amends it): `InitNodeID` writes the `node-id`
-  file in a journal directory for `dfs init`, through a temporary file that is synced and renamed,
-  keeping a copy already there that agrees, so an interrupted init reruns; `NodeID` reads every
-  copy at start and compares the parsed identities, refusing unless all agree with each other and
-  with the host file's key, if it names one, and writing a logged copy into a directory that lacks
-  one through the same temporary file, sync and rename, since nothing rewrites a torn copy.
+- The node identity, by RFC 13 §2.2's node-identity row and RFC 28 §2.1's `node-id` file as
+  #4050 amends them (its A2): `InitNodeID` writes a copy for `dfs init` and a recovery import,
+  keeping one already there that agrees, so an interrupted init reruns; `NodeID` reads every copy
+  at start and refuses on what the row names, a copy differing from the host file's key among them,
+  and ignores a leftover `node-id.tmp`. A start writes a missing copy, logged, only beside a journal
+  the store records for this node and device; a directory whose journal is not recorded gets its
+  copy only from `dfs init` or a recovery import.
 - The version gate (§4.3 above), over the installation's active versions, the store format's
   active version in `\x00format` (RFC 13 §5.5) and each namespace's block format version, with
   `format_active_version` and `format_supported_range`.
