@@ -410,6 +410,11 @@ func (c *Core) Durability() *durability.Durability { return c.dur }
 // Streams returns the append streams.
 func (c *Core) Streams() *segment.Streams { return c.streams }
 
+// Domains returns the file append domains, which the reclamation pass
+// takes per file — one at a time — around its copy's liveness check and
+// append (RFC 1 §8.3).
+func (c *Core) Domains() durability.Domains { return c.domains }
+
 // WrittenBytes returns the payload bytes WriteAt has published since the core
 // was built: the written_bytes counter.
 func (c *Core) WrittenBytes() uint64 { return c.writtenBytes.Load() }
