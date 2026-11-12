@@ -105,7 +105,7 @@ func runUnchanged(t *testing.T, r *rig, id core.SegmentID) State {
 
 func wantDamaged(t *testing.T, st State, want ...core.SegmentID) {
 	t.Helper()
-	if !slices.Equal(st.Tails.Damaged, want) && !(len(want) == 0 && len(st.Tails.Damaged) == 0) {
+	if !slices.Equal(st.Tails.Damaged, want) {
 		t.Errorf("Damaged got %v, want %v", st.Tails.Damaged, want)
 	}
 	if len(st.Tails.Corrupt) != 0 {
@@ -305,9 +305,9 @@ func TestATornSlotAndATailRangeEndAtTheLastRecord(t *testing.T) {
 	wantFate(t, st, 1, fateEnded, end)
 }
 
-// TestACataloguedDropIsCorruptAndItsSegmentDamaged confines one record by an
-// clone-target entry whose seq its header contradicts: the drop carries into Tails.Corrupt as
-// synced and the segment is damaged, though the open succeeds.
+// TestACataloguedDropIsCorruptAndItsSegmentDamaged confines one record by a
+// clone-target entry whose seq its header contradicts: the drop carries into
+// Tails.Corrupt as synced and the segment is damaged, though the open succeeds.
 func TestACataloguedDropIsCorruptAndItsSegmentDamaged(t *testing.T) {
 	clone := rec(7, func(r *raw.Record) {
 		r.Clone = &raw.CloneBody{Share: srcShare(), File: srcFile(), Off: 0x101, AsOf: raw.Version{Counter: 9}}
