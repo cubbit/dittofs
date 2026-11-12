@@ -88,6 +88,11 @@ func classifyTails(rd *reader, att Attached, scans []segmentScan) (tails, error)
 		unverified[id] = true
 	}
 
+	// The refusal is the first one met, so the visit order is the segment
+	// id's, never the listing order the rebuild answered in.
+	scans = slices.Clone(scans)
+	slices.SortStableFunc(scans, func(a, b segmentScan) int { return cmp.Compare(a.ID, b.ID) })
+
 	var out tails
 	for _, sc := range scans {
 		id := sc.ID
@@ -114,9 +119,17 @@ func classifyTails(rd *reader, att Attached, scans []segmentScan) (tails, error)
 
 		// A named predecessor was sealed before its successor was made, so
 		// its seal marker must verify. One that does not is a missing end
-		// the open refuses, unless the marker alone rotted. A file too short
-		// to hold a header slot has no records to miss: its header is judged
-		// below.
+		// the open refuses, unless the marker alone rotted.
+		//
+		// decision: a named segment shorter than the first record slot opens
+		// with its damage reported and is never refused as a missing end: the
+		// missing end runs from the last verifying record to the segment's
+		// length, and under the first record slot that range inverts, so the
+		// refusal would name an empty one. The ceiling is an open that serves
+		// content the truncated records superseded, since nothing readable
+		// names them now. Overturned when the reconcile work gives the open a
+		// verdict for content nothing names, or when the format rules bounds
+		// for a truncation below the first record slot.
 		if named[id] && !sc.Sealed && !sc.SealedByCatalog && sc.Size >= format.SegmentHeaderSize {
 			exempt, err := markerAloneRotted(rd, sc)
 			if err != nil {

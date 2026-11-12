@@ -205,6 +205,7 @@ type trailerFailFS struct {
 	storage.FS
 	at    int64 // the trailer's offset
 	reads *atomic.Int32
+	ok    *atomic.Int32 // the trailer reads served before the failing ones start
 }
 
 func (f trailerFailFS) Open(name string) (storage.File, error) {
@@ -215,18 +216,22 @@ func (f trailerFailFS) Open(name string) (storage.File, error) {
 	if kind, _ := format.ClassifyName(name); kind != format.NameSegment {
 		return file, nil
 	}
-	return trailerFailFile{File: file, at: f.at, reads: f.reads}, nil
+	return trailerFailFile{File: file, at: f.at, reads: f.reads, ok: f.ok}, nil
 }
 
 type trailerFailFile struct {
 	storage.File
 	at    int64
 	reads *atomic.Int32
+	ok    *atomic.Int32
 }
 
 func (f trailerFailFile) ReadAt(p []byte, off int64) (int, error) {
 	if off == f.at && len(p) == raw.TrailerSize && f.reads.Add(1) > 1 {
 		return 0, syscall.EIO
+	}
+	if off == f.at && len(p) == raw.TrailerSize {
+		f.ok.Add(1)
 	}
 	return f.File.ReadAt(p, off)
 }
@@ -239,7 +244,8 @@ func TestAReadErrorOnTheExemptionProbeRefusesTheOpenOnTheRange(t *testing.T) {
 	r.plantSeg(2, namingSeg(2, 1))
 
 	deps := r.runDeps()
-	deps.FS = trailerFailFS{FS: deps.FS, at: int64(len(b)) - raw.TrailerSize, reads: new(atomic.Int32)}
+	ok := new(atomic.Int32)
+	deps.FS = trailerFailFS{FS: deps.FS, at: int64(len(b)) - raw.TrailerSize, reads: new(atomic.Int32), ok: ok}
 	_, err := Run(context.Background(), deps, core.Version{}, journalID, nil)
 	var ure *core.UnreadableRangesError
 	if !errors.As(err, &ure) {
@@ -251,6 +257,11 @@ func TestAReadErrorOnTheExemptionProbeRefusesTheOpenOnTheRange(t *testing.T) {
 	}
 	if errors.Is(err, core.ErrNotImplemented) {
 		t.Errorf("Run's refusal %v also answers ErrNotImplemented, want the read's range alone", err)
+	}
+	// The catalog phase's read of the trailer is the only one served, so the
+	// failing read is the exemption probe's own.
+	if got := ok.Load(); got != 1 {
+		t.Errorf("%d trailer reads were served before the failure, want 1: the catalog's, leaving the probe's to fail", got)
 	}
 }
 
