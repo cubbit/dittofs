@@ -89,6 +89,17 @@ func toFormat(r core.LossReason) format.LossReason {
 // Withdraw this once that admission exists and Lose is told which class of
 // caller it serves.
 func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
+	return d.loseMoved(ctx, l, nil)
+}
+
+// loseMoved is Lose with moved: the segments whose held bytes the caller's
+// move already took out of the index without a marker of this layer's own —
+// a failed window's cut of its lost records, which frees the segments before
+// the loss record that names the loss exists. Once this call has placed that
+// record, the move is reported through Config.Emptied gated on its place; a
+// caller whose move lowered no segment of its own, or whose marker does the
+// accounting (a synced loss), passes nil.
+func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.SegmentID) (core.LossEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return core.LossEvent{}, err
 	}
@@ -112,13 +123,14 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	d.pieces[k] = struct{}{}
 	d.lmu.Unlock()
 
+	var at segment.Location
 	var recErr error
 	refused := false
 	if !l.Deferred {
 		if recErr = d.refuse(); recErr != nil {
 			refused = true
 		} else {
-			recErr = d.appendRecord(l)
+			at, recErr = d.appendRecord(l)
 		}
 		if d.afterAppend != nil {
 			d.afterAppend()
@@ -126,19 +138,29 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	}
 
 	firstErr := recErr
+	// A window's own cut of its lost records named no causality record of
+	// theirs: the loss record this call has just placed is the one a
+	// retirement of their segment waits on. reportEmptied drops the report
+	// when nothing was appended, so a refusal names nothing.
+	d.reportEmptied(moved, at)
 	// decision: a superseded loss leaves no marker even when synced. It
 	// reports no write lost, so Since does not yield it and it needs no
 	// Settle; a marker would make a later DropOlder inherit one that nothing
 	// settles. Withdraw this if a superseded loss ever has to be settled.
 	if l.Synced && !l.Marked && l.Reason != core.LossSuperseded {
-		delta, _, err := d.markLoss(l.File, l.Extent, l.Version)
+		delta, touched, err := d.markLoss(l.File, l.Extent, l.Version)
 		if err != nil {
 			d.log.Error("a synced loss left no marker", "file", l.File, "err", err)
 			if firstErr == nil {
 				firstErr = err
 			}
-		} else if d.account != nil {
-			d.account(delta)
+		} else {
+			if d.account != nil {
+				d.account(delta)
+			}
+			// The marker's cut and the record the marker rode on name one
+			// crossing, so the report is gated on the record's place.
+			d.reportEmptied(touched, at)
 		}
 	}
 
@@ -207,7 +229,9 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	return ev, firstErr
 }
 
-// appendRecord appends the loss record to the file's stream and syncs it.
+// appendRecord appends the loss record to the file's stream and syncs it. It
+// returns the record's place, zero when it appended nothing, and the sync's
+// error when it placed the record but could not make it durable.
 //
 // ponytail: the sync is the segment's own, one per loss, issued outside the
 // group commit. A failed window of N content records therefore costs N serial
@@ -222,10 +246,10 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 // WaitDurable or Durable for the record's location instead, when a loss
 // record's sync failure shows up in a sync_failures reading or the layer's own
 // accounting needs it.
-func (d *Durability) appendRecord(l Loss) error {
+func (d *Durability) appendRecord(l Loss) (segment.Location, error) {
 	seq, err := d.counters.NextSeq()
 	if err != nil {
-		return err
+		return segment.Location{}, err
 	}
 	h := format.RecordHeader{
 		Kind:    format.KindLoss,
@@ -243,12 +267,17 @@ func (d *Durability) appendRecord(l Loss) error {
 	}}
 	streams := d.streams.Load()
 	if streams == nil {
-		return fmt.Errorf("durability: the layer is not started: %w", core.ErrClosed)
+		return segment.Location{}, fmt.Errorf("durability: the layer is not started: %w", core.ErrClosed)
 	}
 	s := streams.For(l.File)
 	placed, err := s.Append(h, body)
 	if err != nil {
-		return err
+		return segment.Location{}, err
+	}
+	// Registered between the append and the sync, so the record is named
+	// before the segment carrying it can seal.
+	if d.lossRegistered != nil {
+		d.lossRegistered(l, seq, placed.Loc)
 	}
 	if d.beforeSync != nil {
 		d.beforeSync()
@@ -265,7 +294,7 @@ func (d *Durability) appendRecord(l Loss) error {
 			d.log.Debug("could not end the segment a loss record's sync failed", "segment", placed.Loc.Segment, "err", eerr)
 		}
 	}
-	return err
+	return placed.Loc, err
 }
 
 // piece is one extent of one dropped record.

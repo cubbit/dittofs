@@ -59,6 +59,28 @@ type Config struct {
 	// Sync or take a file's append domain.
 	Account func(index.HeldDelta)
 
+	// LossRegistered, when set, is told of each loss record the layer
+	// appends: the loss the record names, the sequence number the record
+	// drew, and the place it landed. It runs between the record's append and
+	// its sync, so the record is registered before the segment carrying it
+	// can seal. A deferred loss appends nothing, so it is not called. Nil
+	// registers nothing.
+	LossRegistered func(l Loss, seq core.Seq, at segment.Location)
+
+	// Emptied, when set, is told of the segments whose per-segment held or
+	// retained counters a move of this layer lowered — a lift of a completed
+	// sync, a synced loss's marker, a failed window's cut of its records —
+	// with at the location of the causality record whose durability a
+	// retirement of those segments waits on: the superseding record for a
+	// lift, the loss record itself for the loss paths. It runs where the move
+	// ran, on the stream's worker or the caller's goroutine, holding no lock
+	// of this layer — a lift holds the file's append domain, the loss paths
+	// hold none — so it must not wait on a Sync or take a file's append
+	// domain, the restriction Account names. A move that lowered nothing,
+	// or whose causality record the layer cannot place (a deferred loss, one
+	// whose append was refused) is not reported. Nil reports nothing.
+	Emptied func(segs []core.SegmentID, at segment.Location)
+
 	// Undo, when set, undoes in memory one header-only record a read-only
 	// journal fails: a truncate, deallocate, delete, release or any other kind
 	// that is neither content nor a loss record. It reverses what the record's
@@ -179,6 +201,12 @@ type Durability struct {
 	counters *index.Counters
 	markLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, []core.SegmentID, error)
 	account  func(index.HeldDelta)
+
+	// lossRegistered and emptied are Config.LossRegistered and Config.Emptied.
+	lossRegistered func(Loss, core.Seq, segment.Location)
+	// A move with no segment to name, or no causality record to gate them on,
+	// reports nothing, so a nil hook is a no-op by the same guard.
+	emptied func([]core.SegmentID, segment.Location)
 
 	// streams are the append streams a loss record is written through, bound
 	// by Start. It is nil before Start, which Lose reports as an error.
@@ -416,7 +444,11 @@ func New(cfg Config) (*Durability, error) {
 		counters: cfg.Counters,
 		markLoss: cfg.MarkLoss,
 		account:  cfg.Account,
-		pieces:   map[piece]struct{}{},
+
+		lossRegistered: cfg.LossRegistered,
+		emptied:        cfg.Emptied,
+
+		pieces: map[piece]struct{}{},
 	}
 	d.refuse = d.Admit
 	d.readOnly = d.Enter

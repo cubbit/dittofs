@@ -16,8 +16,11 @@ func isContent(w segment.Written) bool {
 }
 
 // lift stops retaining what the record of version v and header extent e
-// superseded in file, now that the record is synced, and accounts the change.
-// A failure is logged and stands: the extent stays retained, which wastes space
+// superseded in file, now that the record is synced, accounts the change, and
+// reports the move: the segments whose retained counters it lowered are named
+// through Config.Emptied, gated on at, the superseding record's place — the
+// causality record a retirement of the superseded segments waits on. A
+// failure is logged and stands: the extent stays retained, which wastes space
 // and loses nothing.
 //
 // decision: the caller holds file's append domain. A writer publishes the
@@ -27,13 +30,47 @@ func isContent(w segment.Written) bool {
 // domain would find nothing to drop, and the extent would stay retained for
 // good. Overturned by a publish that no longer follows the append under one
 // domain hold.
-func (d *Durability) lift(file core.FileID, v core.Version, e core.Extent) {
-	hd, _, err := d.index.LiftSuperseded(file, v, e)
+//
+// decision: a caller that cannot place the superseding record — a cover a
+// failed window's records handed the parts to, which the index names by
+// version alone — passes the zero location and the move reports nothing:
+// every such lift names a superseder that already synced (a cover is lifted
+// here only once its record left the ledger, and a corrupt record is lifted
+// only once it was synced), so nothing rides on the absent gate, and there
+// is no place to gate a report on. Overturned by a caller that lifts a
+// superseder which has not synced yet: that caller must place the record so
+// the report can gate a retirement on it.
+func (d *Durability) lift(file core.FileID, v core.Version, e core.Extent, at segment.Location) {
+	hd, segs, err := d.index.LiftSuperseded(file, v, e)
 	if err != nil {
 		d.log.Error("journal could not lift superseded content", "file", file, "version", v, "extent", e, "err", err)
 		return
 	}
 	d.accountDelta(hd)
+	d.reportEmptied(segs, at)
+}
+
+// reportEmptied hands the segments a move of this layer lowered to
+// Config.Emptied, with at the location of the causality record whose
+// durability a retirement of the segments waits on. Nothing is reported when
+// the move lowered nothing, when no record place is had to gate on (a
+// deferred loss whose record another path owes, one whose append was
+// refused), or when no hook is set.
+//
+// decision: a mover can report Emptied for a segment whose retirement is
+// already in flight, so the worker that consumes the report may hand the
+// segment over gated only on an earlier causality location. The cover: the
+// move that emptied the segment is published to the index before this
+// report, and the per-stream sync bound covers every published record
+// within one tick, so an unlink racing ahead of the late record's sync would
+// need a mover that publishes without entering the sync bound's window,
+// which none does. Overturned by a mover reporting Emptied before its
+// record publishes, or from outside the sync-bound window.
+func (d *Durability) reportEmptied(segs []core.SegmentID, at segment.Location) {
+	if len(segs) == 0 || at == (segment.Location{}) || d.emptied == nil {
+		return
+	}
+	d.emptied(segs, at)
 }
 
 // accountDelta hands hd to Config.Account when one is set and hd changes

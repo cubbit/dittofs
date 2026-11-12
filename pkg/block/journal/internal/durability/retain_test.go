@@ -2,8 +2,11 @@ package durability
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
@@ -211,5 +214,171 @@ func TestSyncInTheGapLiftsAfterThePublish(t *testing.T) {
 	eventually(t, "v1 to leave the retained set", func() bool { return len(r.retainedBy(f, v2)) == 0 })
 	if got := r.ix.Retained(f); len(got) != 0 {
 		t.Fatalf("%+v is retained after the sync that covered v2", got)
+	}
+}
+
+// emptied is one report a move made through Config.Emptied: the segments it
+// named and the causality location a retirement of them waits on.
+type emptied struct {
+	segs []core.SegmentID
+	at   segment.Location
+}
+
+// newMovedRig reports a started one-stream rig whose Config.Emptied records
+// every report its moves make, the account log's own pattern over the real
+// paths. It installs the real index marker when mark is set, as the datapath
+// wires it, instead of the harness's zero marker. One rig per test, so the
+// one recorder never serves two.
+func newMovedRig(t *testing.T, mark bool) (*recorder[emptied], *rig) {
+	t.Helper()
+	log := &recorder[emptied]{}
+	r := newRigConfigured(t, 1, func(c *Config) {
+		c.Emptied = func(segs []core.SegmentID, at segment.Location) {
+			log.add(emptied{segs: slices.Clone(segs), at: at})
+		}
+		if mark {
+			c.MarkLoss = c.Index.Lose
+		}
+	})
+	r.d.Start(r.streams)
+	return log, r
+}
+
+// lossPlaces reads the durable loss records off the rig's seam, with the
+// places they sit at, the way the harness walks the directory's segments.
+func (r *rig) lossPlaces(t *testing.T) []segment.Location {
+	t.Helper()
+	var out []segment.Location
+	for id := core.SegmentID(1); id < 64; id++ {
+		raw, err := r.seam.Durable(format.SegmentName(id))
+		if err != nil {
+			continue
+		}
+		off := int64(format.SegmentHeaderSize)
+		for off+format.RecordHeaderSize <= int64(len(raw)) {
+			h, err := format.DecodeRecordHeader(raw[off:off+format.RecordHeaderSize], rigIdentity, id, off)
+			if err != nil {
+				break // the zero tail of a segment ends the scan
+			}
+			end := off + format.RecordHeaderSize + h.BodySize()
+			if end > int64(len(raw)) {
+				t.Fatalf("record at %d of segment %d runs past the durable bytes", off, id)
+			}
+			if _, err := format.VerifyRecordBody(raw[off+format.RecordHeaderSize:end], rigIdentity, h); err != nil {
+				t.Fatalf("record at %d of segment %d: %v", off, id, err)
+			}
+			if h.Kind == format.KindLoss {
+				out = append(out, segment.Location{Segment: id, Off: off, Len: h.Size()})
+			}
+			off += h.Size()
+		}
+	}
+	return out
+}
+
+// TestTheCompletedSyncsLiftReportsTheTouchedSegments pins that the lift a
+// completed sync makes reports, through Config.Emptied, the segments whose
+// retained counters it lowered — the superseded records' own — gated on the
+// superseding record's place, the causality record a retirement of those
+// segments waits on.
+func TestTheCompletedSyncsLiftReportsTheTouchedSegments(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	moved, r := newMovedRig(t, false)
+	f := file(1)
+	loc1, _ := r.publish(t, f, 0, "aaaa")
+	if err := r.d.Sync(context.Background(), f); err != nil {
+		t.Fatalf("Sync of v1: %v", err)
+	}
+	loc2, _ := r.publish(t, f, 0, "bbbb")
+	if err := r.d.Sync(context.Background(), f); err != nil {
+		t.Fatalf("Sync of v2: %v", err)
+	}
+	// The Sync that completed v2 has lifted it: the lift the report names has
+	// run by the time the syncing record is no longer pending.
+
+	got := moved.all()
+	if len(got) != 1 {
+		t.Fatalf("the lift reported %d moves, want 1: v2's record superseded one piece", len(got))
+	}
+	if want := []core.SegmentID{loc1.Segment}; !slices.Equal(got[0].segs, want) {
+		t.Errorf("the lift named the segments %v, want %v: the superseded record's own", got[0].segs, want)
+	}
+	if got[0].at != loc2 {
+		t.Errorf("the lift gated its report on %+v, want the superseding record's place %+v", got[0].at, loc2)
+	}
+}
+
+// TestASyncedLossReportsTheSegmentsItsMarkerEmptied pins that a synced loss's
+// report is gated on its own record's place: the segments whose held counters
+// its marker lowered are named, through Config.Emptied, with the location of
+// the loss record the call appended, the causality record a retirement of
+// them waits on.
+func TestASyncedLossReportsTheSegmentsItsMarkerEmptied(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	moved, r := newMovedRig(t, true)
+	f := file(1)
+	loc1, _ := r.publish(t, f, 0, "aaaa")
+	if err := r.d.Sync(context.Background(), f); err != nil {
+		t.Fatalf("Sync of v1: %v", err)
+	}
+
+	l := Loss{Share: 1, File: f, Extent: core.Extent{Off: 0, Len: 4},
+		Version: core.Version{Counter: 5000}, Seq: core.Seq(7), Reason: core.LossStale, Synced: true}
+	if _, err := r.d.Lose(context.Background(), l); err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+
+	got := moved.all()
+	if len(got) != 1 {
+		t.Fatalf("the synced loss reported %d moves, want 1: its marker cut one held piece", len(got))
+	}
+	if want := []core.SegmentID{loc1.Segment}; !slices.Equal(got[0].segs, want) {
+		t.Errorf("the loss named the segments %v, want %v: the cut piece's record's own segment", got[0].segs, want)
+	}
+	places := r.lossPlaces(t)
+	if len(places) != 1 {
+		t.Fatalf("the journal holds %d durable loss records, want the one the Lose appended", len(places))
+	}
+	if got[0].at != places[0] {
+		t.Errorf("the loss gated its report on %+v, want its own record's place %+v", got[0].at, places[0])
+	}
+	if h := r.ix.SegmentBytes(loc1.Segment).Held; h != 0 {
+		t.Errorf("segment %d still holds %d bytes the marker should have cut, so the report named a segment it did not empty", loc1.Segment, h)
+	}
+}
+
+// TestAFailedWindowReportsItsLostRecordsSegmentWithItsLossRecordsLocation
+// pins that a failed window's loss, which leaves no marker of its own, still
+// reports: the lost record's own segment is named, through Config.Emptied,
+// gated on the loss record the worker appends for it — the causality record
+// a retirement of the failed segment waits on, so a crash that loses the
+// record cannot leave the segment retired with its loss unrecorded.
+func TestAFailedWindowReportsItsLostRecordsSegmentWithItsLossRecordsLocation(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	moved, r := newMovedRig(t, false)
+	f := file(1)
+	loc := r.appendWrite(t, f, 0, "a")
+
+	r.failSyncOf(t, loc.Segment, errors.New("sync boom"))
+	if err := mustReturn(t, "Sync", r.syncAsync(context.Background(), f)); !errors.Is(err, core.ErrSyncFailed) {
+		t.Fatalf("Sync = %v, want ErrSyncFailed", err)
+	}
+
+	eventually(t, "the failed window to report its lost record's segment", func() bool {
+		return len(moved.all()) != 0
+	})
+	got := moved.all()
+	if len(got) != 1 {
+		t.Fatalf("the failed window reported %d moves, want 1", len(got))
+	}
+	if want := []core.SegmentID{loc.Segment}; !slices.Equal(got[0].segs, want) {
+		t.Errorf("the failed window named the segments %v, want %v: the lost record's own", got[0].segs, want)
+	}
+	places := r.lossPlaces(t)
+	if len(places) != 1 {
+		t.Fatalf("the journal holds %d durable loss records, want the one the worker appended for the lost record", len(places))
+	}
+	if got[0].at != places[0] {
+		t.Errorf("the failed window gated its report on %+v, want its loss record's place %+v", got[0].at, places[0])
 	}
 }
