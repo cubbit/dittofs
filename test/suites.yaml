@@ -121,6 +121,10 @@ suites:
   # The engine's version-limit load rows: each draws about 2^24 versions through the real journal
   # under the race detector, which takes far longer than the pull-request gate's limit, so they
   # run on request behind their own tag (on top of engine_conformance, whose helpers they share).
+  # They are not expected to pass yet: the real journal now draws, so each row loops its draws for
+  # minutes (all three outlast a 3-minute timeout) and the run ends red at the timeout, with no
+  # failure message to record in a known file. Give them one when the journal draws at the speed
+  # the rows need (#4163).
   engine-load:
     format: go-json
     cmd: go test -race -tags=engine_conformance,engine_load -timeout=2h -run '^TestRFC8_VersionLimit(SustainedLoad|Burst250000|Burst500000)$' ./pkg/block/engine/conformance/
