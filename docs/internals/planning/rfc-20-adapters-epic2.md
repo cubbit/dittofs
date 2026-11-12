@@ -309,7 +309,8 @@ names the epic that owns the rest.
   `pkg/resources`' `TestImportsOnlyStdlibAndMetrics` stays: its rule is RFC 24 §2.8's.
 - **D15, two test files move to `vfstest.Memory`.** `pkg/adapter/nfs/nfs_test.go` and
   `pkg/adapter/smb/smb_test.go` import `internal/vfs` for a typed nil `*vfs.Filesystem`, which
-  R11 forbids. They take `vfstest.Memory(t)`, the service RFC 20 §7.2 gives adapter tests;
+  R11 forbids. They take `vfstest.Memory(t)`, the service RFC 20 §7.2 gives adapter tests,
+  which landed as `memory.New(t)` in `pkg/vfs/vfstest/memory`;
   `vfstest.Null` is not used, since RFC 20 §7 keeps it for the allocation gate and the
   benchmarks. So the import test starts green with no allowlist (R9), and T2.3 waits for
   `Memory`.
@@ -409,8 +410,8 @@ pkg/block/engine/imports_test.go   T2.4  allowlist entry for internal/prof
 pkg/metadata/kv/kvtest/fault_test.go  T2.4  imports internal/prof
 pkg/adapter/adapter_test.go        T2.3  import-shape test removed (D14)
 pkg/adapter/settings/settings_test.go  T2.3  import-shape test removed (D14)
-pkg/adapter/nfs/nfs_test.go        T2.3  vfstest.Memory for internal/vfs (D15)
-pkg/adapter/smb/smb_test.go        T2.3  vfstest.Memory for internal/vfs (D15)
+pkg/adapter/nfs/nfs_test.go        T2.3  memory.New for internal/vfs (D15)
+pkg/adapter/smb/smb_test.go        T2.3  memory.New for internal/vfs (D15)
 test/adapter/known.yaml            T2.4  the red specifications (D11)
 test/suites.yaml                   T2.1  unit/adapter-allocs cell; T2.4  adapter-conformance suite, its tag in lint-go's vet line, unit/journal-index's prof path
 .github/workflows/tests.yml        T2.1  unit/adapter-allocs' fixed step; T2.4  adapter-conformance in the branch's cell filter; each only while the branch keeps that filter (D12)
