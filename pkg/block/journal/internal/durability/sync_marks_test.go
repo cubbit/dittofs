@@ -571,3 +571,43 @@ func TestSyncReturnsNoMarkForARecordCorruptDropsMidWait(t *testing.T) {
 	}
 	cr.wantMark(t, "the mark after the drop", marks[0], v)
 }
+
+// TestSyncReturnsNoMarkWhenTheIndexFallbacksCoveringOffsetWasSwept covers the
+// belt on the index fallback's Through source: the worker's completion sweep
+// deletes a segment's synced-through offset once no live record remains and
+// the segment is not the active one, and a fallback record whose covering
+// value is gone would name a live segment proofless, {Through: 0, Offset:
+// end} -- the shape finding 1 closed for registry-gone segments. Such a
+// candidate is skipped instead. The deletion here is made by hand: production
+// cannot reach the state, because every roll seals the segment it leaves, so
+// the unsealed segments are the active one, whose offset the sweep spares --
+// the belt holds for an ordering some later path (a recycle, a reseed) could
+// produce.
+func TestSyncReturnsNoMarkWhenTheIndexFallbacksCoveringOffsetWasSwept(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := newRigConfigured(t, 1, func(*Config) {})
+	r.setLatest()
+	r.d.Start(r.streams)
+	f := file(1)
+	a, _ := r.publish(t, f, 0, "ffff")
+	if marks, err := r.d.Sync(context.Background(), f); err != nil || len(marks) != 1 {
+		t.Fatalf("the first Sync = %v, %d marks, want nil error and one", err, len(marks))
+	}
+
+	st := r.d.made[0]
+	st.mu.Lock()
+	if _, have := st.synced[a.Segment]; !have {
+		st.mu.Unlock()
+		t.Fatalf("segment %d has no synced-through offset after the sync that covered the record", a.Segment)
+	}
+	delete(st.synced, a.Segment)
+	st.mu.Unlock()
+
+	marks, err := r.d.Sync(context.Background(), f)
+	if err != nil {
+		t.Fatalf("the second Sync = %v, want nil: nothing unsynced, so no sync runs", err)
+	}
+	if len(marks) != 0 {
+		t.Errorf("the second Sync returned marks %+v, want none: the fallback record's covering synced-through offset is gone, so no honest mark can name it", marks)
+	}
+}

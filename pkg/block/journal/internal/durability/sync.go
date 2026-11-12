@@ -998,10 +998,14 @@ type target struct {
 // record a corrupt read took out while the call waited: the stream no longer
 // holds it, so the marks no longer name it.
 type cand struct {
-	t       target
-	final   segment.Location
-	along   int64
-	dropped bool
+	t     target
+	final segment.Location
+	along int64
+	// fromIndex marks the candidate the Latest fallback named, whose covering
+	// synced-through offset must itself still be readable: see
+	// resolveCandsLocked.
+	fromIndex bool
+	dropped   bool
 }
 
 // work is a caller's targets on one stream. cands is kept beside the targets
@@ -1117,11 +1121,15 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) ([]core.SyncM
 	// the call would answer nothing for a file it was asked to prove
 	// (RFC 1 §3.1's clause carries no unsynced qualifier). Its candidate comes
 	// from the file's newest record the index names, on the stream that owns
-	// the file; the record is covered by construction -- no target means
-	// every record of the file is completed -- so the wait itself never runs
-	// for it, and resolveCandsLocked reads its covering synced-through offset
-	// like a target's. Nil Latest keeps the behaviour the layer had before the
-	// fallback existed.
+	// the file. The record completed before the call began -- no target means
+	// every record the file had was completed -- but that bounds only what
+	// was there: a concurrent writer may append a newer record of the file
+	// between this call's targets and its Latest, and the call then waits
+	// for that record and may even answer its failure, as any Sync of the
+	// file would. The fallback narrows what the marks name, never what the
+	// call waits for, and resolveCandsLocked reads the record's covering
+	// synced-through offset like a target's. Nil Latest keeps the behaviour
+	// the layer had before the fallback existed.
 	if d.latest != nil {
 		streams := d.streams.Load()
 		for _, id := range ids {
@@ -1143,7 +1151,7 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) ([]core.SyncM
 			}
 			for i := range ws {
 				if ws[i].st.no == uint32(streams.IndexFor(id)) {
-					ws[i].cands = append(ws[i].cands, cand{t: target{file: id, loc: loc, seq: seq}})
+					ws[i].cands = append(ws[i].cands, cand{t: target{file: id, loc: loc, seq: seq}, fromIndex: true})
 					break
 				}
 			}
@@ -1199,6 +1207,22 @@ func (st *stream) resolveCandsLocked(cs []cand) {
 			c.final, c.along = at, st.synced[at.Segment]
 		} else if th := st.synced[c.final.Segment]; th >= c.final.Off+c.final.Len && th > c.along {
 			c.along = th
+		}
+		if c.fromIndex && c.along < c.final.Off+c.final.Len {
+			// Belt: a fallback record whose covering synced-through offset was
+			// never captured has none left to capture -- the worker's
+			// completion sweep deletes a segment's offset once no live record
+			// remains and the segment is not the active one -- and a candidate
+			// without it would name a live segment proofless, {Through: 0,
+			// Offset: the record's end}, the shape a registry-gone segment is
+			// filtered for. It is skipped instead. Today's ordering keeps this
+			// unreachable: every roll seals the segment it leaves, so a
+			// fallback record's unsealed segment is the active one, whose
+			// offset the sweep spares; the reachability note at marksOf names
+			// the paths that could overturn it.
+			if _, have := st.synced[c.final.Segment]; !have {
+				c.dropped = true
+			}
 		}
 	}
 }

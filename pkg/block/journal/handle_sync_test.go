@@ -162,7 +162,6 @@ func placedWriteOf(t *testing.T, seam *kit.Seam, h *Handle, id FileID, payload s
 // the journal placed and synced it, with the stream its segment's header
 // names. It fails the test when no such record is durable, and reports the
 // first it finds.
-
 func placedWrite(t *testing.T, seam *kit.Seam, id FileID, v Version) placedRecord {
 	t.Helper()
 	for seg := core.SegmentID(1); seg < 64; seg++ {
