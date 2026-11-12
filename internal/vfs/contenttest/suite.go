@@ -262,7 +262,7 @@ func doneIsCalledOnceByTheExistenceCommit(t *testing.T, s Subject) {
 	var calls atomic.Int32
 	opts := engine.WriteOpts{Done: func() { calls.Add(1) }}
 	if _, err := s.Content.Write(t.Context(), s.Share, f, 0, []byte("abcd"), opts); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Write(0, \"abcd\") with a Done: %v", err)
 	}
 	if _, pending := s.overlay(t, f); pending && calls.Load() != 0 {
 		t.Errorf("Done called %d times while its write is pending", calls.Load())
@@ -359,7 +359,7 @@ func deleteLeavesNothing(t *testing.T, s Subject) {
 	f := s.File(t)
 	var calls atomic.Int32
 	if _, err := s.Content.Write(t.Context(), s.Share, f, 0, []byte("abcd"), engine.WriteOpts{Done: func() { calls.Add(1) }}); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Write(0, \"abcd\") with a Done: %v", err)
 	}
 	retry, err := s.Content.Delete(t.Context(), s.Share, f)
 	if err != nil {
