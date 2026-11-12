@@ -21,6 +21,11 @@ type Deps struct {
 	Tracer core.Tracer
 	Log    *slog.Logger
 
+	// ExtentLimit is the index entry bound the rebuilt index carries into
+	// the journal's later writes. Zero is no bound. A rebuild over the bound
+	// still builds: the bound refuses later writes, never the open.
+	ExtentLimit int64
+
 	// rebuildOrder reorders the segments the rebuild dispatches before it
 	// starts a reader; nil keeps the listing's order, the one the open runs
 	// in. It is unexported and set only by tests that need an order the
@@ -31,6 +36,10 @@ type Deps struct {
 	// means GOMAXPROCS, what the open runs with. It is unexported and set
 	// only by tests that need a bound the machine would not give.
 	rebuildReaders int
+
+	// rebuildStarted is called, when set, as each segment's scan begins. It
+	// is unexported and set only by tests that watch the dispatch.
+	rebuildStarted func(core.SegmentID)
 }
 
 // State is what recovery rebuilt of the journal's state: the attach pass's
@@ -87,11 +96,15 @@ func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 }
 
 // runRebuild is the rebuild phase: it scans the segments the attach pass
-// attached, through the same reader the open refuses on. The extent bound is
-// the index's no-bound value, for no option of the open has plumbed one into
-// recovery yet: the phase refuses nothing the builder's own rules do not.
+// attached, through the same reader the open refuses on. The index carries
+// deps.ExtentLimit, no bound when it is unset; the builder never consults the
+// bound while rebuilding, so a directory past it still opens.
 func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version) error {
-	out, err := rebuildIndex(ctx, rd, expect, st.Attached.Own, floor, math.MaxInt64, rebuildReaders(deps), deps.rebuildOrder)
+	limit := deps.ExtentLimit
+	if limit < 1 {
+		limit = math.MaxInt64
+	}
+	out, err := rebuildIndex(ctx, rd, expect, st.Attached.Own, floor, limit, rebuildReaders(deps), deps.rebuildOrder, deps.rebuildStarted)
 	if err != nil {
 		return err
 	}

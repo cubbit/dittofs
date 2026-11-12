@@ -303,10 +303,11 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// read the device never completed refuses the open on its ranges;
 		// a pass that ran answers ErrNotImplemented below.
 		if _, err := recovery.Run(ctx, recovery.Deps{
-			FS:     cfg.Storage,
-			Clock:  cfg.Clock,
-			Tracer: cfg.Tracer,
-			Log:    cfg.Logger,
+			FS:          cfg.Storage,
+			Clock:       cfg.Clock,
+			Tracer:      cfg.Tracer,
+			Log:         cfg.Logger,
+			ExtentLimit: resolveDefaults(cfg.Settings).ExtentLimit,
 		}, floor, expect, marks); err != nil {
 			return nil, err
 		}

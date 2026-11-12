@@ -554,6 +554,63 @@ func TestScanSegmentRefusesACloneTargetBodyThatDoesNotVerify(t *testing.T) {
 	}
 }
 
+// TestScanSegmentRefusesACloneTargetBodyOfALaterEpochAsUnknownFormat holds
+// that a verifying clone target whose as-of version names a non-zero epoch
+// is refused as a format this binary does not read, as a header carrying one
+// is, and not as damage.
+func TestScanSegmentRefusesACloneTargetBodyOfALaterEpochAsUnknownFormat(t *testing.T) {
+	id := core.SegmentID(14)
+	seg := buildSeg(id, rec(7, func(r *raw.Record) {
+		r.Clone = &raw.CloneBody{Share: srcShare(), File: srcFile(), Off: 0x101, AsOf: raw.Version{Epoch: 1, Counter: 9}}
+	}))
+	r := newRig(t)
+	r.plantSeg(id, seg)
+
+	_, err := r.scan(id, journalID)
+	if !errors.Is(err, core.ErrUnknownFormat) {
+		t.Fatalf("scanSegment over a clone target with an as-of epoch 1 got err %v, want ErrUnknownFormat", err)
+	}
+	if errors.Is(err, core.ErrCorrupt) {
+		t.Errorf("scanSegment: a clone target's epoch refusal %v also answers ErrCorrupt, want the unknown format alone", err)
+	}
+	if got := err.Error(); !contains(got, "14") || !contains(got, fmt.Sprint(format.SegmentHeaderSize)) {
+		t.Errorf("scanSegment: the refusal %q names neither the segment 14 nor the record's offset", got)
+	}
+}
+
+// TestScanSegmentRefusesASequenceNumberOfZeroOnAnAsideRecord holds that the
+// zero sequence number, which the journal's writer never issues, is refused
+// whatever the record's kind: an aside record of seq 0 fails the scan, and
+// the same record of seq 1 is carried.
+func TestScanSegmentRefusesASequenceNumberOfZeroOnAnAsideRecord(t *testing.T) {
+	id := core.SegmentID(8)
+	build := func(seq uint64) []byte {
+		return buildSeg(id, rec(10, func(r *raw.Record) {
+			r.Seq = seq
+			r.Loss = &raw.LossBody{Dropped: 99, Flags: 1 | 1<<8}
+		}))
+	}
+	t.Run("seq 0", func(t *testing.T) {
+		r := newRig(t)
+		r.plantSeg(id, build(0))
+		_, err := r.scan(id, journalID)
+		if !errors.Is(err, core.ErrUnknownFormat) {
+			t.Fatalf("scanSegment over a loss record of seq 0 got err %v, want ErrUnknownFormat", err)
+		}
+	})
+	t.Run("seq 1", func(t *testing.T) {
+		r := newRig(t)
+		r.plantSeg(id, build(1))
+		got, err := r.scan(id, journalID)
+		if err != nil {
+			t.Fatalf("scanSegment over a loss record of seq 1: %v", err)
+		}
+		if len(got.Aside) != 1 || got.Aside[0].Header.Seq != 1 {
+			t.Errorf("scanSegment: Aside got %v, want the one record of seq 1", got.Aside)
+		}
+	})
+}
+
 // bytes16 returns sixteen payload bytes, distinct from every header range.
 func bytes16() []byte {
 	b := make([]byte, 16)

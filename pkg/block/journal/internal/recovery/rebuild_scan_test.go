@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand/v2"
 	"runtime"
@@ -266,7 +267,8 @@ func (r *rig) snapshot() map[string][]byte {
 
 // assertOnlySpareUnlinks holds that after the call came back, the directory
 // holds what it did before, except that .spare.tmp files — which hold
-// nothing — may be gone: the rebuild phase of this open writes nothing.
+// nothing — may be gone: the rebuild phase of this open writes nothing, and
+// creates and renames in no file.
 func assertOnlySpareUnlinks(t *testing.T, before map[string][]byte, r *rig) {
 	t.Helper()
 	for name, b := range before {
@@ -282,6 +284,11 @@ func assertOnlySpareUnlinks(t *testing.T, before map[string][]byte, r *rig) {
 		}
 		if !slices.Equal(b, after) {
 			t.Errorf("Run: the refusal changed %s: got %x, want the bytes it held %x", name, after, b)
+		}
+	}
+	for _, name := range r.listing() {
+		if _, ok := before[name]; !ok {
+			t.Errorf("Run: the refusal left %s in the directory, which it did not hold before and no rule of this open may create", name)
 		}
 	}
 }
@@ -495,26 +502,136 @@ func TestRunRebuildFailsOnAVerifyingReconcileRecord(t *testing.T) {
 	}
 }
 
+// TestRunRebuildARefusalBesideAnAttachRangeAnswersTheUnreadableRanges holds
+// that a range the attach pass collected is not lost behind a later refusal
+// that read nothing wrong: segment 1's header is unreadable on every attempt
+// (the attach pass collects the range and goes on), segment 2 holds a
+// reconcile record the rebuild refuses. The open answers with the
+// unreadable ranges, naming segment 1, not with the raw refusal.
+func TestRunRebuildARefusalBesideAnAttachRangeAnswersTheUnreadableRanges(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, buildSeg(1, rec(3, nil)))
+	r.plantSeg(2, buildSeg(2, rec(15, func(r *raw.Record) {
+		r.FileID = [16]byte{}
+		r.Offset, r.Length = 0, 0
+		r.Version = raw.Version{}
+		r.Tag = 0
+	})))
+	if err := r.seam.Schedule(kit.FailingFrom(kit.OpRead, format.SegmentName(1), 1, 0, syscall.EIO)); err != nil {
+		t.Fatalf("fixture: schedule: %v", err)
+	}
+
+	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+	var ure *core.UnreadableRangesError
+	if !errors.As(err, &ure) {
+		t.Fatalf("Run with segment 1's header unreadable and a reconcile record in segment 2 got err %v, want an UnreadableRangesError", err)
+	}
+	if !slices.ContainsFunc(ure.Ranges, func(sr core.SegmentRange) bool { return sr.Segment == 1 }) {
+		t.Errorf("Run: the refusal names ranges %v and none of segment 1, the unreadable header", ure.Ranges)
+	}
+}
+
+// TestRunRebuildCarriesTheConfiguredExtentBound holds that the index the
+// rebuild hands on carries the bound the open was configured with: a
+// directory already holding more entries than the bound still opens, and a
+// write past it is then refused. The same directory rebuilt with no bound set
+// admits the write.
+func TestRunRebuildCarriesTheConfiguredExtentBound(t *testing.T) {
+	probe := core.Extent{Off: 1 << 20, Len: 8}
+	for _, tc := range []struct {
+		name    string
+		limit   int64
+		refused bool
+	}{
+		{"a bound below the entries on disk", 1, true},
+		{"no bound", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			r.plantSteps(seededSteps(5), stepsPerSegment)
+			deps := r.runDeps()
+			deps.ExtentLimit = tc.limit
+
+			st, err := Run(context.Background(), deps, core.Version{}, journalID, nil)
+			if err != nil {
+				t.Fatalf("Run with the bound %d over a directory past it: %v, want the open to build", tc.limit, err)
+			}
+			_, err = st.Rebuilt.Index.CheckWrite(workFiles[0], probe)
+			if got := err != nil; got != tc.refused {
+				t.Errorf("CheckWrite after a rebuild with the bound %d got err %v, want refused=%v", tc.limit, err, tc.refused)
+			}
+		})
+	}
+}
+
+// TestRunRebuildReleasesTheConvertedRecordsAndKeepsTheAside holds that the
+// scans the open carries on keep the aside headers the later phases read but
+// not the converted content records, which the index already holds.
+func TestRunRebuildReleasesTheConvertedRecordsAndKeepsTheAside(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, buildSeg(1, rec(3, nil), rec(10, func(r *raw.Record) {
+		r.Seq, r.Version = 101, raw.Version{Counter: 201}
+		r.Loss = &raw.LossBody{Dropped: 99, Flags: 1 | 1<<8}
+	})))
+
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(st.Rebuilt.Scans) != 1 {
+		t.Fatalf("Run: %d scans, want 1", len(st.Rebuilt.Scans))
+	}
+	sc := st.Rebuilt.Scans[0]
+	if sc.Records != nil {
+		t.Errorf("Run: the scan still holds %d converted records, want them released once the index holds them", len(sc.Records))
+	}
+	if len(sc.Aside) != 1 {
+		t.Errorf("Run: the scan holds %d aside records, want the 1 the later phases read", len(sc.Aside))
+	}
+}
+
 // TestRunRebuildEIOTwiceThenSucceedsBuildsTheSameIndex holds the recovery
-// half of the read-fault rule through the open: a segment read that faults twice and then succeeds
-// rebuilds the index the same directory with the fault off gives.
+// half of the read-fault rule through the open: a segment read that faults
+// twice and then succeeds rebuilds the index the same directory with the
+// fault off gives. The attach pass's one healthy header read is read 1 of the
+// segment, so the fault starts at read 2 — the rebuild's own first read —
+// and the recorder proves both faults landed on reads past the header, so the
+// retry that cleared them was the rebuild's.
 func TestRunRebuildEIOTwiceThenSucceedsBuildsTheSameIndex(t *testing.T) {
 	steps := seededSteps(5)
-	build := func(faulted bool) map[string][]index.Entry {
+	seg := format.SegmentName(2)
+	build := func(faulted bool) (map[string][]index.Entry, []oneRead) {
 		r := newRig(t)
 		r.writeFormat()
 		r.plantSteps(steps, stepsPerSegment)
 		if faulted {
-			r.failReads(format.SegmentName(2), 2)
+			if err := r.seam.Schedule(kit.FailingFrom(kit.OpRead, seg, 2, 2, syscall.EIO)); err != nil {
+				t.Fatalf("fixture: schedule: %v", err)
+			}
 		}
-		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+		rec := newReadsOf(r.seam.FS())
+		st, err := Run(context.Background(), Deps{FS: rec, Clock: r.clk}, core.Version{}, journalID, nil)
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
-		return entriesOf(st.Rebuilt.Index)
+		return entriesOf(st.Rebuilt.Index), rec.failedReads()
 	}
-	want := build(false)
-	got := build(true)
+	want, noFaults := build(false)
+	got, failed := build(true)
+	if len(noFaults) != 0 {
+		t.Fatalf("fixture: the no-fault run saw failed reads %v, want none", noFaults)
+	}
+	if len(failed) != 2 {
+		t.Fatalf("Run: the recorder saw %d failed reads past the header, want the 2 the fault schedule names: %v", len(failed), failed)
+	}
+	for _, f := range failed {
+		if f.name != seg || f.off == 0 {
+			t.Errorf("Run: a fault landed on %s at %d, want a read of %s past its header", f.name, f.off, seg)
+		}
+	}
 	if !sameEntries(want, got) {
 		t.Errorf("Run: the two-EIO rebuild differs from the no-fault one: got %+v, want %+v", got, want)
 	}
@@ -618,7 +735,7 @@ func TestRebuildIndexTwoSegmentsFailingAtOnceAnswerWithTheLowestSegmentID(t *tes
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 2, nil)
+		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 2, nil, nil)
 		done <- err
 	}()
 	for rec.inFlightSegReads() < 2 {
@@ -638,8 +755,9 @@ func TestRebuildIndexTwoSegmentsFailingAtOnceAnswerWithTheLowestSegmentID(t *tes
 // TestRebuildIndexAFailedSegmentStopsTheDispatch: with one reader slot and
 // segment 1's read parked, then released to fail, the slot frees only because
 // segment 1 failed, and the dispatch does not start segment 2 behind that
-// error: segment 2 is never read. The dispatcher is blocked on the slot while
-// segment 1 is parked, so the slot it takes is the one the failure freed.
+// error. The dispatcher is blocked on the slot while segment 1 is parked, so
+// the slot it takes is the one the failure freed; the scan-start hook names
+// every segment whose scan began, and only segment 1's did.
 func TestRebuildIndexAFailedSegmentStopsTheDispatch(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
@@ -656,10 +774,19 @@ func TestRebuildIndexAFailedSegmentStopsTheDispatch(t *testing.T) {
 		{ID: 1, Header: format.SegmentHeader{Identity: journalID, ID: 1}},
 		{ID: 2, Header: format.SegmentHeader{Identity: journalID, ID: 2}},
 	}
+	var (
+		mu      sync.Mutex
+		started []core.SegmentID
+	)
+	onStart := func(id core.SegmentID) {
+		mu.Lock()
+		defer mu.Unlock()
+		started = append(started, id)
+	}
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil)
+		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil, onStart)
 		done <- err
 	}()
 	// Segment 1's walk is parked in its first read. Polling the condition
@@ -673,10 +800,10 @@ func TestRebuildIndexAFailedSegmentStopsTheDispatch(t *testing.T) {
 	if !errors.As(err, &ure) {
 		t.Fatalf("rebuildIndex with segment 1 failing got err %v, want an UnreadableRangesError", err)
 	}
-	for _, read := range rec.saw() {
-		if kind, id := format.ClassifyName(read.name); kind == format.NameSegment && id == 2 {
-			t.Errorf("rebuildIndex read segment 2 at %d, want it never started behind segment 1's error", read.off)
-		}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []core.SegmentID{1}; !slices.Equal(started, want) {
+		t.Errorf("rebuildIndex started the scans of segments %v, want %v: none behind segment 1's error", started, want)
 	}
 }
 
@@ -708,7 +835,7 @@ func TestRebuildIndexCancelledMidFeedChangesNothing(t *testing.T) {
 	done := make(chan rebuiltOrErr, 1)
 	rd := newReader(ctx, r.seam.FS(), r.clk, nil)
 	go func() {
-		out, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil)
+		out, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil, nil)
 		done <- rebuiltOrErr{out, err}
 	}()
 
@@ -872,6 +999,9 @@ type readsOf struct {
 
 	mu    sync.Mutex
 	calls []oneRead
+	// failed is every read past a header that returned an error other than
+	// the end of the file, as the device reported it.
+	failed []oneRead
 
 	// inSeg is how many gated segment reads are mid-call now, and peakSeg the
 	// most there ever were at once: the bound the rebuild's readers allow
@@ -955,6 +1085,13 @@ func (r *readsOf) saw() []oneRead {
 	return slices.Clone(r.calls)
 }
 
+// failedReads returns every read past a header the device failed.
+func (r *readsOf) failedReads() []oneRead {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.failed)
+}
+
 // peakSegmentReads returns the most segment reads that were mid-call at
 // once.
 func (r *readsOf) peakSegmentReads() int {
@@ -997,6 +1134,9 @@ func (f readRec) ReadAt(p []byte, off int64) (int, error) {
 	f.of.mu.Lock()
 	if n > 0 {
 		f.of.calls = append(f.of.calls, oneRead{name: f.name, off: off, n: int64(n)})
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		f.of.failed = append(f.of.failed, oneRead{name: f.name, off: off, n: int64(n)})
 	}
 	f.of.mu.Unlock()
 	return n, err

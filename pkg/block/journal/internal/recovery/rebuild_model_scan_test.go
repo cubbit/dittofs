@@ -1,12 +1,10 @@
 package recovery_test
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"iter"
 	"math/rand/v2"
-	"slices"
 	"testing"
 	"time"
 
@@ -443,12 +441,6 @@ type shareView struct {
 	tag core.ShareTag
 }
 
-// mtime names the mtime of the record at the location the read-out entry
-// names, the write's own and a fill's zero.
-func (v shareView) mtime(e index.Entry) int64 {
-	return v.w.mtimes[e.Record.Segment][e.Record.Offset]
-}
-
 // ReadAt serves p from the pieces the index holds, reading each piece's
 // bytes from the payload the workload planted for them, and reports the
 // exact missing.
@@ -485,50 +477,23 @@ func (v shareView) Extents(id journal.FileID) ([]journal.Extent, error) {
 	return out, nil
 }
 
-// Since yields the file's changes above from, derived from the read-out the
-// index exports — pieces the version filter keeps are writes, and markers
-// above from are removals — ordered as the journal's own Since is: by
-// version, markers before held extents at one version, then by offset. The
-// mtime of a write the index does not keep; every write of this workload
-// named 1, so that is what is yielded.
+// Since yields the rebuilt index's own Since of the file, mapped onto the
+// journal's change kinds: the index's order and its version filter are the
+// rule under test, so they are not restated here. The mtime of a write the
+// index does not keep; it is read from the workload's table by the record the
+// change names. The model drives a clone target as the deallocate its extent
+// is, and the marker yields under that name.
 func (v shareView) Since(ctx context.Context, id journal.FileID, from journal.Version) iter.Seq2[journal.Change, error] {
 	return func(yield func(journal.Change, error) bool) {
-		type item struct {
-			c      journal.Change
-			marker bool
-		}
-		var items []item
-		for _, e := range v.ix.FileEntries(cFile(id)) {
-			if e.Version.Compare(core.Version(from)) <= 0 {
-				continue
+		for _, c := range v.ix.Since(cFile(id), core.Version(from)) {
+			out := journal.Change{Kind: journal.ChangeKind(c.Kind), Extent: journal.Extent(c.Extent), Version: j_Ver(c.Version)}
+			switch c.Kind {
+			case core.ChangeWrite:
+				out.Mtime = v.w.mtimes[c.Record.Segment][c.Record.Offset]
+			case core.ChangeCloneTarget:
+				out.Kind = journal.ChangeDeallocate
 			}
-			switch e.Kind {
-			case index.EntryHeld:
-				items = append(items, item{c: journal.Change{Kind: journal.ChangeWrite, Extent: journal.Extent(e.Extent), Version: j_Ver(e.Version), Mtime: v.mtime(e)}})
-			case index.EntryMarker:
-				kind := journal.ChangeKind(e.Removal)
-				if e.Removal == core.ChangeCloneTarget {
-					// The model drives a clone target as the deallocate its
-					// extent is; the marker yields under the same name.
-					kind = journal.ChangeDeallocate
-				}
-				items = append(items, item{c: journal.Change{Kind: kind, Extent: journal.Extent(e.Extent), Version: j_Ver(e.Version)}, marker: true})
-			}
-		}
-		slices.SortStableFunc(items, func(a, b item) int {
-			if c := a.c.Version.Compare(b.c.Version); c != 0 {
-				return c
-			}
-			if a.marker != b.marker {
-				if b.marker {
-					return -1
-				}
-				return 1
-			}
-			return cmp.Compare(a.c.Extent.Off, b.c.Extent.Off)
-		})
-		for _, it := range items {
-			if !yield(it.c, nil) {
+			if !yield(out, nil) {
 				return
 			}
 		}
