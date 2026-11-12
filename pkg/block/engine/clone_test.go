@@ -48,7 +48,7 @@ func (u *unit) bindShare(t *testing.T, name string, ns entity.NamespaceID) entit
 }
 
 // Admission refuses before registering anything, and admits up to its
-// bounds: an admitted clone reaches the steps not built yet.
+// bounds: an admitted clone is stopped once registered.
 //
 // The journal is left as it was and the store is never reached, admitted or
 // not: the journal's Stats are compared and the store reads and writes
@@ -61,6 +61,7 @@ func TestCloneAdmission(t *testing.T) {
 	f, g := entity.NewFileID(), entity.NewFileID()
 	same := u.bindShare(t, "same", entity.NamespaceID{})
 	other := u.bindShare(t, "other", entity.NewNamespaceID())
+	u.e.SetAfterRegister(func() error { return engine.ErrStopped })
 	counts.Take()
 	counts.TakeUpdates()
 	before := u.j.Stats()
@@ -102,7 +103,7 @@ func TestCloneAdmission(t *testing.T) {
 
 func isInvalid(err error) bool { return errors.Is(err, vfserr.ErrInvalid) }
 func frozen(err error) bool    { return isDelay(err, vfserr.DelayFrozen) }
-func admitted(err error) bool  { return errors.Is(err, engine.ErrUnbuilt) }
+func admitted(err error) bool  { return errors.Is(err, engine.ErrStopped) }
 func isCrossNamespace(err error) bool {
 	var c *vfserr.CrossError
 	return errors.As(err, &c) && c.Kind == vfserr.CrossNamespace
@@ -114,11 +115,12 @@ func heldClone(t *testing.T, u *unit, src, dst entity.FileID) (release func()) {
 	t.Helper()
 	registered, hold := make(chan struct{}), make(chan struct{})
 	var first atomic.Bool // only the first clone is held: a later one goes on
-	u.e.SetAfterRegister(func() {
+	u.e.SetAfterRegister(func() error {
 		if first.CompareAndSwap(false, true) {
 			close(registered)
 			<-hold
 		}
+		return engine.ErrStopped
 	})
 	done := u.startClone(context.Background(), src, dst, vfserr.Extent{SrcOff: 0, DstOff: 8 * mib, Len: 4 * mib})
 	select {
@@ -264,12 +266,13 @@ func TestARegistrationWaitsForAnAdmittedWrite(t *testing.T) {
 	src, dst := u.create(t, "src"), u.create(t, "dst")
 	open, staged := u.gateFirstWrite(t, g, src, 1*mib)
 	sizes := make(chan int64, 1)
-	u.e.SetAfterRegister(func() {
+	u.e.SetAfterRegister(func() error {
 		o, _, err := u.e.Overlay(context.Background(), u.share.ID, src)
 		if err != nil {
 			t.Error(err)
 		}
 		sizes <- o.Size
+		return engine.ErrStopped
 	})
 	done := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: 4 * mib})
 	select {
@@ -338,7 +341,7 @@ func TestRacingWritersAndARegistration(t *testing.T) {
 	}})
 	src, dst := u.create(t, "src"), u.create(t, "dst")
 	tr.f = journal.NewFileID(src)
-	u.e.SetAfterRegister(func() {
+	u.e.SetAfterRegister(func() error {
 		for range 32 {
 			runtime.Gosched()
 		}
@@ -349,6 +352,7 @@ func TestRacingWritersAndARegistration(t *testing.T) {
 		if p := u.e.PendingWrites(src, 0, 4*mib); int64(p) != fin {
 			t.Errorf("a registration returned with %d writes into its extent in the entry, %d taken by the journal", p, fin)
 		}
+		return engine.ErrStopped
 	})
 	var wg sync.WaitGroup
 	errs := make(chan error, 32*50)

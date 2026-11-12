@@ -424,6 +424,26 @@ func (u *unit) writesOver(
 	}
 }
 
+// stepUntilBatch advances the clock by step until ran delivers, a group
+// commit batch having run. The group commit reads its wait from the clock and
+// arms its timer after, on its own goroutine, so one Advance landing between
+// the two is lost and the timer never fires: the clock is stepped until the
+// batch runs, bounded so a group commit that never runs fails here.
+func (u *unit) stepUntilBatch(t *testing.T, step time.Duration, ran <-chan struct{}) {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		u.clock.Advance(step)
+		select {
+		case <-ran:
+			return
+		case <-time.After(time.Millisecond):
+		case <-deadline:
+			t.Fatal("no group commit batch ran after 10 s of stepping the clock")
+		}
+	}
+}
+
 // A Drop with a batch due as it joins calls each Done once: the batch's files
 // by the batch, the rest by the Drop, and nothing is left in the entries.
 func TestDropUnderWritesWithABatchDueAsItJoinsCallsEachDoneOnce(t *testing.T) {
@@ -470,8 +490,7 @@ func TestDropUnderWritesWithABatchDueAsItJoinsCallsEachDoneOnce(t *testing.T) {
 	files := []entity.FileID{u.create(t, "a"), u.create(t, "b"), u.create(t, "c"), u.create(t, "d")}
 
 	u.writesOver(t, res, files, 2)
-	u.clock.Advance(2 * time.Hour)
-	<-entered
+	u.stepUntilBatch(t, time.Hour, entered)
 	u.unbind(t)
 
 	joined := joinOf(u.e, "a group commit batch")
@@ -597,20 +616,7 @@ func TestDropTakesTheSharesFilesOffTheDueSetAndNoLaterBatchCapturesOne(t *testin
 	u.writesOver(t, enginetest.NewReservations(t), mine, 1)
 	u.dropped(t)
 
-	// The group commit arms its timer on its own goroutine, so one Advance can
-	// land before the timer exists and never fire it: step the clock until a
-	// batch runs, bounded so a group commit that never runs fails here.
-	deadline := time.After(10 * time.Second)
-	for ran := false; !ran; {
-		u.clock.Advance(time.Second)
-		select {
-		case <-batch:
-			ran = true
-		case <-time.After(time.Millisecond):
-		case <-deadline:
-			t.Fatal("no group commit ran after 10 s of stepping the clock")
-		}
-	}
+	u.stepUntilBatch(t, time.Second, batch)
 
 	mu.Lock()
 	defer mu.Unlock()
