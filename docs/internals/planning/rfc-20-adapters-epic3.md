@@ -113,9 +113,9 @@ cited by number and title, and how it applies here or why it does not.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R9 | Buffers come in four classes, small 4 KiB, directory 64 KiB, transfer 1 MiB and large 8 MiB, and a request draws the smallest class that holds it | MUST | RFC 24 §3.1 | T3.2 |
+| R9 | Buffers come in four classes, small 4 KiB, directory 64 KiB, transfer 1 MiB and large 8 MiB, and a request draws the smallest class whose capacity (D5) holds it | MUST | RFC 24 §3.1 | T3.2 |
 | R10 | Each class holds its size plus the protocol's headers (D5 says how much, and for which classes) | MUST | RFC 24 §3.1 | T3.2 |
-| R11 | A buffer larger than the largest class is not pooled, and is charged its exact size | MUST | RFC 24 §3.1 | T3.2 |
+| R11 | A buffer larger than the largest class's capacity (D5) is not pooled, and is charged its exact size (D6 reads RFC 24 §3.1's "its protocol uses" as the pool's own largest class) | MUST | RFC 24 §3.1 | T3.2 |
 | R12 | `Get` takes one reservation for key, of n's class plus the per-request overhead of 8 KiB, before it takes any bytes; it waits in the budget, never in the allocator | MUST | RFC 20 §6.8; RFC 24 §2.5, §3.1 | T3.2 |
 | R13 | `Get` returns a `Buf` with one reference, whose `B` has its class's capacity and the record's or reply's length (D8: the n asked) | MUST | RFC 20 §6.8 | T3.2 |
 | R14 | Each class has one free list, a `sync.Pool` of `*Buf`; this epic's gate holds a `Get` on a class with a free buffer, and the `Release` that returns it, at no allocation, in the non-race cell | bound | RFC 20 §6.8, §6.10 | T3.2 |
@@ -208,7 +208,10 @@ called by E4's and E5's tests.
   Codec tests build `&resources.Buf{B: ...}`, and `core` releases what it is handed. With the
   unexported count at zero meaning one holder, a literal behaves as a buffer from `Get` does:
   `Retain` and `Release` pair on it, its last `Release` frees nothing, having no pool and no
-  reservation, and one more panics (R17). `decision:` at the field. No prior art found.
+  reservation, and one more panics (R17). A `Retain` after the last `Release` would bring
+  the count back to zero and read as one holder of a buffer the pool may already have handed
+  out, so it panics as well, in tests and in production, as R17's release does. `decision:`
+  at the field. No prior art found.
 
 ## 5. Target tree
 
@@ -323,8 +326,8 @@ E1 froze them. The gates skip under the race detector and the poison read withou
 - **Consumers:** E4's reader and writer, E5's pipeline and replay check, `testproto`'s replay
   stage (already written against `Get`).
 - **Acceptance criteria:**
-  - `Get` of n returns `len(B) == n` in the smallest class that holds n with its header room,
-    and `Reserved` rises by that class's capacity plus 8 KiB: 12 KiB for the small class; at
+  - `Get` of n returns `len(B) == n` and `cap(B)` equal to the capacity of the smallest class
+    that holds n with its header room, and `Reserved` rises by that class's capacity plus 8 KiB: 12 KiB for the small class; at
     each class's edge, one byte more draws the next class.
   - `Get` past the largest class charges n plus 8 KiB exactly, and its last `Release` pools
     nothing.
@@ -332,19 +335,24 @@ E1 froze them. The gates skip under the race detector and the poison read withou
     reserved, and a blocked `Get` has taken no buffer from its class.
   - After `Retain`, the first `Release` changes neither `Reserved` nor the bytes; the last
     lowers `Reserved` by the whole charge.
-  - One `Release` more than the holders panics, on a buffer from `Get` and on a literal.
+  - One `Release` more than the holders panics, on a buffer from `Get` and on a literal; so
+    does a `Retain` after the last `Release`.
   - Under `-race`, a slice of `B` kept across the last `Release` reads as the poison byte
     throughout, also when the holder reassigned `B` before releasing.
-- **Tests:** in `buf_test.go`. The class table with its edges (catches a class chosen without
-  the room, and a charge that forgets the overhead or the room). The unpooled path, read on
+- **Tests:** in `buf_test.go`. The class table with its edges, asserting `len(B)`, `cap(B)`
+  and the charge at each (catches a class chosen without the room, a charge that forgets the
+  overhead or the room, and a buffer of the wrong capacity under the right charge). The unpooled path, read on
   the large class's `New`, which the in-package test wraps with a counter: after an oversized
   buffer's release, the next large `Get` still calls it (catches an oversized buffer pooled
-  into the large class). `Get` blocked on a full budget in a `synctest` bubble, with the same
+  into the large class). It skips on `prof.RaceEnabled`, as the gates do: under the race
+  detector `sync.Pool` drops one `Put` in four at random, so the mutant would pass one run in
+  four there. `Get` blocked on a full budget in a `synctest` bubble, with the same
   counter unchanged until the grant and after a cancel (catches a buffer taken before its
   reservation, R12, and a reservation kept on the error path). Retain and release, reading
   `Reserved` and the bytes after each (catches a reservation or a poison at the first release,
   R15). The extra release, on both kinds of `Buf` (catches a silent double free, and a literal
-  that panics on its holder's one release). The poison read, run only under the race detector
+  that panics on its holder's one release). The `Retain` after the last release, on both
+  kinds (catches a released buffer revived as held). The poison read, run only under the race detector
   (catches a `Release` that leaves the bytes, and one that poisons what `B` was reassigned
   to). The gate: a `Get` and `Release` pair per pooled class at 0 allocations, with collection
   off for the measurement so the free list is not emptied under it (catches a free list that
