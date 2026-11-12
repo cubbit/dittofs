@@ -48,10 +48,14 @@ func TestReappendIntoAPartFullSegmentKeepsEveryHeldByteReadable(t *testing.T) {
 		t.Fatalf("C in segment %d, want a segment after A's", c.Segment)
 	}
 	r.d.takeWindows(st)
-	r.d.resolveWindows(st)
-	if ws := r.windowsOf(0); len(ws) != 0 {
-		t.Fatalf("windows = %+v, want the window resolved", ws)
-	}
+	// A roll takes a spare, and the pool's refill can lag the pass: a refused
+	// window stays pending and the worker's next pass retries it, so the test
+	// runs passes until the window is resolved. No clock can be injected into the
+	// pool's refill, so the bounded wait on the real condition is the assertion.
+	eventually(t, "the window to be resolved", func() bool {
+		r.d.resolveWindows(st)
+		return len(r.windowsOf(0)) == 0
+	})
 
 	checkHeldReadable(t, r, f, want)
 }
@@ -136,10 +140,14 @@ func TestTwoFailedWindowsReappendedIntoOneNearFullSegmentEachLandWhole(t *testin
 	r.publish(t, h, 0, strings.Repeat("c", 40000))
 
 	r.d.takeWindows(st)
-	r.d.resolveWindows(st)
-	if ws := r.windowsOf(0); len(ws) != 0 {
-		t.Fatalf("windows = %+v, want both resolved", ws)
-	}
+	// A roll takes a spare, and the pool's refill can lag the pass: a refused
+	// window stays pending and the worker's next pass retries it, so the test
+	// runs passes until both are resolved. No clock can be injected into the
+	// pool's refill, so the bounded wait on the real condition is the assertion.
+	eventually(t, "both windows to be resolved", func() bool {
+		r.d.resolveWindows(st)
+		return len(r.windowsOf(0)) == 0
+	})
 	checkHeldReadable(t, r, f, wantF)
 	checkHeldReadable(t, r, g, wantG)
 }
