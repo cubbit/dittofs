@@ -359,45 +359,66 @@ func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		seq, err := c.counters.NextSeq()
-		if err != nil {
-			return err
-		}
-		// A run shares kind, version and mtime across its pieces; a fill
-		// stays a fill, its body carrying no mtime of its own.
-		h := format.RecordHeader{
-			Kind:    r.pieces[0].kind,
-			File:    file,
-			Extent:  r.extent,
-			Seq:     seq,
-			Version: r.pieces[0].Version,
-			Tag:     tag,
-		}
 		payload := make([]byte, r.extent.Len)
 		var n int
 		for _, p := range r.pieces {
 			n += copy(payload[n:], p.src.body.Payload[p.Skip:p.Skip+uint32(p.Extent.Len)])
 		}
-		body := format.RecordBody{MTime: r.pieces[0].mtime, Payload: payload}
-		pl, err := c.streams.For(file).AppendRoll(h, body, segment.Roll{Repack: true})
-		if err != nil {
-			return err
+		// A placement may take only part of the run's payload — the active
+		// segment's room ran out, as it does beside the file's own writers,
+		// since a copy appends on the file's stream like any write. The
+		// rest continues as its own record, the way the write path's split
+		// does (RFC 28 §2.2): each piece keeps the run's kind, version and
+		// modification time under a sequence number of its own, and lands
+		// as its own copy fact covering the sub-extent it placed.
+		var placed int64
+		for placed < r.extent.Len {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			seq, err := c.counters.NextSeq()
+			if err != nil {
+				return err
+			}
+			rest := payload[placed:]
+			// A run shares kind, version and mtime across its pieces; a fill
+			// stays a fill, its body carrying no mtime of its own.
+			h := format.RecordHeader{
+				Kind:    r.pieces[0].kind,
+				File:    file,
+				Extent:  core.Extent{Off: r.extent.Off + placed, Len: int64(len(rest))},
+				Seq:     seq,
+				Version: r.pieces[0].Version,
+				Tag:     tag,
+			}
+			body := format.RecordBody{MTime: r.pieces[0].mtime, Payload: rest}
+			pl, err := c.streams.For(file).AppendRoll(h, body, segment.Roll{Repack: true})
+			if err != nil {
+				return err
+			}
+			// decision: a stream that places nothing and reports no error
+			// would turn this loop into a spin, so the answer is a unit
+			// error, not a retry. Unreachable while an empty segment holds
+			// every record's first piece — the stream refuses such a record
+			// with ErrSegmentFull before placing — overturned by an
+			// AppendRoll that returns a no-byte placement with no error.
+			if pl.N <= 0 {
+				return fmt.Errorf("reclaim: the copy of file %v at offset %d placed %d of %d bytes", file, h.Extent.Off, pl.N, len(rest))
+			}
+			res.Copies = append(res.Copies, Copied{
+				File:    file,
+				Tag:     tag,
+				Kind:    h.Kind,
+				Version: r.pieces[0].Version,
+				Seq:     seq,
+				Extent:  core.Extent{Off: r.extent.Off + placed, Len: pl.N},
+				At:      c.clock.Now(),
+				From:    r.pieces[0].src.rec,
+				To:      index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
+				Loc:     pl.Loc,
+			})
+			placed += pl.N
 		}
-		if pl.N != r.extent.Len {
-			return fmt.Errorf("reclaim: the copy of file %v at offset %d placed %d of %d bytes", file, r.extent.Off, pl.N, r.extent.Len)
-		}
-		res.Copies = append(res.Copies, Copied{
-			File:    file,
-			Tag:     tag,
-			Kind:    h.Kind,
-			Version: r.pieces[0].Version,
-			Seq:     seq,
-			Extent:  r.extent,
-			At:      c.clock.Now(),
-			From:    r.pieces[0].src.rec,
-			To:      index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
-			Loc:     pl.Loc,
-		})
 	}
 	return nil
 }

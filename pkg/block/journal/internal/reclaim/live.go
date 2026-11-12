@@ -36,7 +36,9 @@ import (
 // own — a content record's share reads from its file, and the re-test
 // registries key nothing by it — and exists for the forget record alone: a
 // forget names no file, so its tag is the one thing its registration answers
-// Forgetting by.
+// Forgetting by, and dropping it there leaves a mark no tag matches, so a
+// forget registered without its tag abandons nothing (RegisterForget names
+// the rule).
 type Rec struct {
 	Kind       format.Kind
 	File       core.FileID
@@ -458,6 +460,18 @@ func (t *Tracker) entryIfLive(seg core.SegmentID) *segState {
 // the file append domain, or a re-append of a failed window naming the tag,
 // overturns it. The upgrade is a scan of the snapshot's segments for
 // records of the tag at each retirement.
+//
+// decision: the Rec handed here must name its tag: the registration's whole
+// Rec, Tag included, is the registry key a copy pass's forgetting check
+// (Forgetting) matches a tag by, and the price of the match is the field no
+// other path needs — so a forget whose Rec carries a zero Tag registers and
+// releases like any other, but it is a mark no tag matches and copies of the
+// forgotten share append after it undisturbed. The registry key covers the
+// release too: an Unregister dropping the forget must carry the same Tag
+// the registration set, or the registry entry sits. The Forget that appends
+// the record and the open's rebuild that reads it back build the Rec from
+// the record's own header, which names the tag; nothing else carries it, so
+// the tag is the one field the caller must not invent its own value for.
 func (t *Tracker) RegisterForget(rec Rec, segs []core.SegmentID) {
 	if len(segs) == 0 {
 		t.Register(rec)

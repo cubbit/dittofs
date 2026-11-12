@@ -841,7 +841,6 @@ func forgetRec(tag core.ShareTag, seg core.SegmentID, seq core.Seq) reclaim.Rec 
 // but has not yet settled — carrying the source's version and modification
 // time under a fresh sequence number, reported for repoint.
 func TestCopyLosesToNewerWrite(t *testing.T) {
-	const kib = int64(4 << 10)
 	for _, tc := range []struct {
 		name   string
 		synced bool
@@ -853,7 +852,7 @@ func TestCopyLosesToNewerWrite(t *testing.T) {
 			f := newCopyFixture(t)
 			file := copyFile(1)
 			const mtime = 12345
-			payA := make([]byte, kib)
+			payA := make([]byte, copyKib)
 			for i := range payA {
 				payA[i] = byte(int64(i)>>8) ^ 0xa5
 			}
@@ -867,7 +866,7 @@ func TestCopyLosesToNewerWrite(t *testing.T) {
 			}
 
 			share := f.share(t, copyTag)
-			payS := make([]byte, kib)
+			payS := make([]byte, copyKib)
 			for i := range payS {
 				payS[i] = byte(int64(i)>>8) ^ 0x5a
 			}
@@ -883,7 +882,7 @@ func TestCopyLosesToNewerWrite(t *testing.T) {
 					// The superseder settled: its publish lift dropped what it
 					// superseded, the same lift a synced writer's path takes,
 					// so nothing of the source is left at the check.
-					if _, err := f.ix.LiftSuperseded(file, v, core.Extent{Len: kib}); err != nil {
+					if _, err := f.ix.LiftSuperseded(file, v, core.Extent{Len: copyKib}); err != nil {
 						t.Fatalf("LiftSuperseded over the source's extent: %v", err)
 					}
 					if got := f.ix.HeldAt(file, recA); got != nil {
@@ -919,7 +918,7 @@ func TestCopyLosesToNewerWrite(t *testing.T) {
 			}
 			// The overwrite published under a newer version whatever the
 			// half: the fact the two answers differ over.
-			if p, ok := f.ix.Lookup(file, kib/2); !ok || p.Version != vNew {
+			if p, ok := f.ix.Lookup(file, copyKib/2); !ok || p.Version != vNew {
 				t.Fatalf("the source's extent after the overwrite = %+v %v, want it held at the overwriting version %v", p, ok, vNew)
 			}
 			if tc.synced {
@@ -932,7 +931,7 @@ func TestCopyLosesToNewerWrite(t *testing.T) {
 				t.Fatalf("Copy appended %d copies over an unsynced overwrite (%+v), want 1: the source's piece is still retained", len(res.Copies), res.Copies)
 			}
 			cp := res.Copies[0]
-			if cp.From != recA || cp.Extent != (core.Extent{Len: kib}) {
+			if cp.From != recA || cp.Extent != (core.Extent{Len: copyKib}) {
 				t.Fatalf("the copy is of record %v covering %v, want the source record %v whole", cp.From, cp.Extent, recA)
 			}
 			if cp.Version != vA {
@@ -958,14 +957,13 @@ func TestCopyLosesToNewerWrite(t *testing.T) {
 // TestCopyAbandonedUnderForget pins the two orders of a forget record and a
 // pass of its tag's segment (RFC 1 §8.4): a mark live before the copy's
 // check abandons the tag's files — nothing appended, no sequence number
-// drawn for them, the copies of another tag's records unaffected — while a
-// mark registered after a pass draws its own number above every copy the
-// pass appended, and a later pass over the same claim copies nothing under
-// it.
+// drawn for them, the copies of another tag's records unaffected, a
+// shared segment's other tag included — while a mark registered after a
+// pass draws its own number above every copy the pass appended, and a
+// later pass over the same claim copies nothing under it.
 func TestCopyAbandonedUnderForget(t *testing.T) {
-	const kib = int64(4 << 10)
 	pattern := func(xor byte) []byte {
-		pay := make([]byte, kib)
+		pay := make([]byte, copyKib)
 		for i := range pay {
 			pay[i] = byte(int64(i)>>8) ^ xor
 		}
@@ -1129,6 +1127,80 @@ func TestCopyAbandonedUnderForget(t *testing.T) {
 			t.Fatal("the standing copy's payload changed under the mark, want the source's bytes byte-exact")
 		}
 	})
+
+	// The abandoned file shares its source segment with another tag's record:
+	// the abandon answers per file under its own domain, so one unit holding
+	// both tags copies the one and abandons the other.
+	t.Run("the abandoned file's segment-mate of another tag still copies", func(t *testing.T) {
+		f := newCopyFixture(t)
+		const other = copyTag + 1
+		fileT := copyFile(1)
+		fileU := sameStreamFile(t, f, fileT)
+		payT, payU := pattern(0xa5), pattern(0x3c)
+		recT, _, _ := f.plant(t, copyTag, fileT, payT, 12345)
+		recU, _, _ := f.plant(t, other, fileU, payU, 999)
+		if recT.Segment != recU.Segment {
+			t.Fatalf("the two records landed in segments %d and %d, want one shared source segment", recT.Segment, recU.Segment)
+		}
+		seg := recT.Segment
+		f.sealSource(t, fileT)
+
+		seqF, err := f.counters.NextSeq()
+		if err != nil {
+			t.Fatalf("NextSeq for the forget record: %v", err)
+		}
+		f.tracker.RegisterForget(forgetRec(copyTag, seg, seqF), []core.SegmentID{seg})
+
+		f.waitSpares(t)
+		cs := f.selector().Select(reclaim.Scope{Segments: []core.SegmentID{seg}}, 1)
+		if len(cs) != 1 || cs[0].ID != seg {
+			t.Fatalf("Select returned %v, want the one candidate %d", cs, seg)
+		}
+		res, err := f.copier().Copy(context.Background(), seg)
+		if err != nil {
+			t.Fatalf("Copy over the shared segment: %v", err)
+		}
+		var forT, forU int
+		var cpU reclaim.Copied
+		for _, cp := range res.Copies {
+			switch cp.File {
+			case fileT:
+				forT++
+			case fileU:
+				forU++
+				cpU = cp
+			}
+		}
+		if forT != 0 {
+			t.Fatalf("the pass appended %d copies of the forgotten tag's file inside its shared segment, want 0", forT)
+		}
+		if forU != 1 {
+			t.Fatalf("the pass appended %d copies of the other tag's file inside the shared segment, want 1: the abandon answers per file", forU)
+		}
+		if cpU.From != recU {
+			t.Fatalf("the segment-mate's copy is of record %v, want its own source record %v", cpU.From, recU)
+		}
+		_, body := f.readBack(t, cpU.To)
+		if !bytes.Equal(body.Payload, payU) {
+			t.Fatalf("the segment-mate's copy holds %d bytes, want its source's bytes byte-exact beside an abandoned file", len(body.Payload))
+		}
+	})
+}
+
+// sameStreamFile returns the id of another file on the stream of first, so
+// records planted for the two land in one stream, one segment when neither
+// stream rolls between their appends.
+func sameStreamFile(t *testing.T, f *copyFixture, first core.FileID) core.FileID {
+	t.Helper()
+	want := f.core.Streams().IndexFor(first)
+	for b := byte(2); b < 40; b++ {
+		id := copyFile(b)
+		if f.core.Streams().IndexFor(id) == want {
+			return id
+		}
+	}
+	t.Fatalf("no second file id found on file %v's stream", first)
+	return core.FileID{}
 }
 
 // TestCopyLockOrder runs the pass over a segment holding two files'
@@ -1142,18 +1214,11 @@ func TestCopyAbandonedUnderForget(t *testing.T) {
 // reads, and no I/O the pass makes runs under any index lock (RFC 1 §8.4).
 func TestCopyLockOrder(t *testing.T) {
 	f := newCopyFixture(t)
-	const kib = int64(4 << 10)
 
 	// Two source files on one stream, so their pair of records lands in one
 	// segment the pass copies under two separate file domains.
 	first := copyFile(1)
-	second := copyFile(0)
-	for b := byte(2); f.core.Streams().IndexFor(second) != f.core.Streams().IndexFor(first); b++ {
-		if b > 40 {
-			t.Fatalf("no second file id found on file %v's stream", first)
-		}
-		second = copyFile(b)
-	}
+	second := sameStreamFile(t, f, first)
 
 	type source struct {
 		file core.FileID
@@ -1162,7 +1227,7 @@ func TestCopyLockOrder(t *testing.T) {
 	}
 	var srcs []source
 	for i, file := range []core.FileID{first, second} {
-		pay := make([]byte, kib)
+		pay := make([]byte, copyKib)
 		for j := range pay {
 			pay[j] = byte(int64(j)>>8) ^ byte(0xa0+i)
 		}
@@ -1189,16 +1254,18 @@ func TestCopyLockOrder(t *testing.T) {
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	var wrote atomic.Int32
+	landed := make(chan struct{}, 2)
 	for i := range 2 {
 		file := copyFile(byte(9 + i))
-		pay := make([]byte, kib)
+		pay := make([]byte, copyKib)
 		for j := range pay {
 			pay[j] = byte(int64(j)>>8) ^ byte(0x50+i)
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for off := int64(0); ; off += kib {
+			var signalled bool
+			for off := int64(0); ; off += copyKib {
 				select {
 				case <-stop:
 					return
@@ -1212,6 +1279,10 @@ func TestCopyLockOrder(t *testing.T) {
 					_ = f.core.WaitSpares(ctx)
 					cancel()
 					continue
+				}
+				if !signalled {
+					signalled = true
+					landed <- struct{}{}
 				}
 				wrote.Add(1)
 			}
@@ -1252,8 +1323,8 @@ func TestCopyLockOrder(t *testing.T) {
 	// both complete, so the index was free across the parked read.
 	probe := make(chan struct{})
 	go func() {
-		f.ix.Lookup(srcs[0].file, kib/2)
-		f.ix.Span(srcs[0].file, core.Extent{Len: kib})
+		f.ix.Lookup(srcs[0].file, copyKib/2)
+		f.ix.Span(srcs[0].file, core.Extent{Len: copyKib})
 		close(probe)
 	}()
 	select {
@@ -1266,6 +1337,23 @@ func TestCopyLockOrder(t *testing.T) {
 		close(stop)
 		wg.Wait()
 		t.Fatalf("a lookup and a span of the copied file did not answer within %v while the source read was parked, want the index free: no I/O runs under an index lock", copyWait)
+	}
+
+	// Both writers place their first write while the read is still parked,
+	// so the count below rests on an event rather than on a race with the
+	// pass's speed. A bounded wait, the assertion backstop: the parked pass
+	// consumes nothing and the pool refills beside it, so a writer that
+	// never lands a write inside it is a starvation the pool must answer
+	// for.
+	for range 2 {
+		select {
+		case <-landed:
+		case <-time.After(copyWait):
+			h.Release()
+			close(stop)
+			wg.Wait()
+			t.Fatalf("a concurrent writer placed no write within %v while the source read was parked, want one: the pool refills beside a waiting pass", copyWait)
+		}
 	}
 	h.Release()
 
@@ -1283,32 +1371,37 @@ func TestCopyLockOrder(t *testing.T) {
 	if a.err != nil {
 		t.Fatalf("Copy beside concurrent writers: %v", a.err)
 	}
-	if len(a.res.Copies) != 2 {
-		t.Fatalf("the pass appended %d copies for its two source files, want 2", len(a.res.Copies))
-	}
-	counts := map[core.FileID]int{}
-	for _, cp := range a.res.Copies {
-		counts[cp.File]++
-		var pay []byte
-		for _, s := range srcs {
-			if s.file == cp.File {
-				pay = s.pay
-			}
-		}
-		_, body := f.readBack(t, cp.To)
-		if !bytes.Equal(body.Payload, pay) {
-			t.Fatalf("the copy of file %v holds %d bytes, want its source's bytes byte-exact beside concurrent writers", cp.File, len(body.Payload))
-		}
-	}
+	// Beside the concurrent writers a run places whole or split across
+	// placements, so the assertion is the invariant, not a count: each source
+	// file's copies tile its extent adjacently, cover it exactly, and hold
+	// its payload byte-exact in file order.
 	for _, s := range srcs {
-		if counts[s.file] != 1 {
-			t.Fatalf("the pass appended %d copies of file %v, want 1", counts[s.file], s.file)
+		var assembled []byte
+		var covered int64
+		i := 0
+		for _, cp := range a.res.Copies {
+			if cp.File != s.file {
+				continue
+			}
+			if cp.Extent.Off != covered {
+				t.Fatalf("copy %d of file %v covers %v, want it adjacent at file offset %d: the run's placements tile its extent", i, s.file, cp.Extent, covered)
+			}
+			covered += cp.Extent.Len
+			_, body := f.readBack(t, cp.To)
+			assembled = append(assembled, body.Payload...)
+			i++
+		}
+		if covered != copyKib {
+			t.Fatalf("the copies of file %v cover %d bytes in %d placements, want the source's whole %d: every planned byte lands", s.file, covered, i, copyKib)
+		}
+		if !bytes.Equal(assembled, s.pay) {
+			t.Fatalf("the copies of file %v hold %d bytes, want the source's bytes byte-exact in file order", s.file, len(assembled))
 		}
 	}
 	if got := dom.maxHeld(); got > 1 {
 		t.Fatalf("the copier held %d file domains at once, want ≤ 1: only one file's domain is held at any instant", got)
 	}
-	if got := wrote.Load(); got < 1 {
-		t.Fatalf("the concurrent writers landed %d real writes during the pass, want ≥ 1: they run the real write path beside it", got)
+	if got := wrote.Load(); got < 2 {
+		t.Fatalf("the concurrent writers landed %d real writes during the pass, want ≥ 2: both wrote beside the pass before it ran", got)
 	}
 }
