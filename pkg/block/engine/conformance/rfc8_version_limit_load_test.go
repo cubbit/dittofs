@@ -124,6 +124,11 @@ func (r *loadRun) stallAtTheRaise(t *testing.T, rate, trigger uint64, d time.Dur
 		t.Fatalf("the first version: %v", err)
 	}
 
+	// The first draw lands in the loop's rate bucket unless isolated: a peak
+	// of rate+1 sits the engine's trigger 32 above the row's and wakes the
+	// raise one draw before the hold.
+	r.f.Clock.Advance(time.Second)
+
 	// The store is read once a clock second: between two reads every draw
 	// takes exactly one version off what is left.
 	left := r.headroom(t)
