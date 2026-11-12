@@ -169,7 +169,7 @@ func fmtStep(s Step) string {
 
 func (r *runner) compare() error {
 	for i := range numShares {
-		if err := r.m.Compare(r.ctx, tagOf(i), stubView{r.tgt.View(i), &r.s}); err != nil {
+		if err := r.m.Compare(r.ctx, tagOf(i), wrapView(r.tgt.View(i), &r.s)); err != nil {
 			return err
 		}
 	}

@@ -11,8 +11,10 @@ import (
 )
 
 // HandleView is the View of a real journal: a change to the handle's methods
-// that breaks it breaks the build here.
+// that breaks it breaks the build here. It carries an index, and the pin on
+// IndexedView below says so.
 var _ View = HandleView{}
+var _ IndexedView = HandleView{}
 
 // An error says whose it is: the journal did what the RFC does not allow, or
 // the model was called in a way it cannot take.
