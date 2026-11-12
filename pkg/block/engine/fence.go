@@ -82,12 +82,16 @@ func raise(a *atomic.Int64, v int64) {
 // the store's (storeFailed), and its commit or an attempt that fails on its
 // own (a conflict, a stale file, a cancelled context) clears that owner
 // alone, since an owner's failing is timed from its latest attempt. Neither
-// clears another owner still failing at the store. A one-shot call's error
-// is neither a commit nor a failure.
+// clears another owner still failing at the store. A store error that is no
+// undecodable record also keeps the owner from releaseOwn until it commits.
+// A one-shot call's error is neither a commit nor a failure.
 func (f *fence) end(ctx context.Context, err error) {
 	o := ownerOf(ctx)
 	switch {
 	case o != nil && err != nil && storeFailed(err):
+		if !kvstore.Undecodable(err) {
+			o.stored.Store(true)
+		}
 		f.lastErr.Store(&err)
 		// Counted before outstanding leaves zero, so no reader sees the
 		// node idle meanwhile.
@@ -98,6 +102,9 @@ func (f *fence) end(ctx context.Context, err error) {
 		f.release(o)
 	}
 	if err == nil {
+		if o != nil {
+			o.stored.Store(false)
+		}
 		f.committed()
 	}
 	f.outstanding.Add(-1)
@@ -117,6 +124,16 @@ func (f *fence) end(ctx context.Context, err error) {
 func (f *fence) release(o *ownerState) {
 	if f != nil && o != nil && o.failing.Swap(false) {
 		f.failing.Add(-1)
+	}
+}
+
+// releaseOwn releases o after an attempt that failed on a record of its own
+// that does not decode, unless an attempt of o failed at the store with no
+// such record since o last committed: one owner retries many files, and one
+// file's own failure does not clear another's failure at the store.
+func (f *fence) releaseOwn(o *ownerState) {
+	if o != nil && !o.stored.Load() {
+		f.release(o)
 	}
 }
 
