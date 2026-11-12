@@ -289,7 +289,7 @@ func TestRecordedCoreFixture(t *testing.T) {
 		lockorder.FileMap, lockorder.SegmentAppend, lockorder.StorageGuard,
 	} {
 		if !saw[rank] {
-			t.Errorf("no probe violation ranks %s: the fixture's probes never drove a lock of that domain, so a lock of it can stay unwired and unchecked", rank)
+			t.Errorf("no probe violation ranks %s: the fixture's probes never drove a lock of that domain, so a whole domain can stay unwired; a single lock of one still can, which each probe's exact count is the net for", rank)
 		}
 	}
 }

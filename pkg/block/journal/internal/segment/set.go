@@ -139,9 +139,11 @@ type Set struct {
 	// the sinks take that mutex under the segment append lock, so a
 	// capacity-under-append acquisition is in order by rank and turns into
 	// the cycle the leaf flag exists to catch only once some Set method
-	// takes another lock under mu. Overturned the day mu must hold across
-	// anything — a callback, a callback's locks, or a second mutex — and
-	// the leaf marker goes with it.
+	// takes another lock under mu. What the flag still cannot see is an
+	// unranked lock taken under mu, or a path no recorded run exercises:
+	// it reports what the recorder ranks, nothing more. Overturned the day
+	// mu must hold across anything — a callback, a callback's locks, or a
+	// second mutex — and the leaf marker goes with it.
 	mu     lockorder.Mutex
 	cap    int64
 	log    *slog.Logger
