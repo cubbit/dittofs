@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -158,4 +159,72 @@ func TestClassifyTailsVisitsTheScansByAscendingID(t *testing.T) {
 	if want := "segment 4:"; !contains(err.Error(), want) {
 		t.Errorf("classifyTails refused with %q, want it to name the lowest segment (%q)", err.Error(), want)
 	}
+}
+
+// TestTwoCorruptCloneTargetDropsComeInAscendingRecordOffset holds the order of
+// Tails.Corrupt for scanned drops, whose entry is zero: the record's own
+// header offset orders them. The Run leg plants two rotted bodies a later
+// record's synced-through covers; the direct leg hands the classing the same
+// drops in descending order, since a walk only ever yields them ascending.
+func TestTwoCorruptCloneTargetDropsComeInAscendingRecordOffset(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	endB := endAfter(tailRec(200, 0x4100), cloneRec())
+	endC := endAfter(tailRec(200, 0x4100), cloneRec(), cloneRec())
+	seg := buildSeg(1, tailRec(200, 0x4100), cloneRec(), cloneRec(), syncedRec(201, 0x8100, endC))
+	seg[endA+format.RecordHeaderSize] ^= 0xff // B's spec
+	seg[endB+format.RecordHeaderSize] ^= 0xff // C's spec
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg)
+	st := runUnchanged(t, r, 1)
+
+	offsets := func(cs []corruptRecord) []int64 {
+		var o []int64
+		for _, c := range cs {
+			if !c.Drop.Synced {
+				t.Errorf("a drop at %d is not synced, want both covered by the later record's proof", c.Drop.Header.Offset)
+			}
+			o = append(o, c.Drop.Header.Offset)
+		}
+		return o
+	}
+	want := []int64{endA, endB}
+	if got := offsets(st.Tails.Corrupt); !slices.Equal(got, want) {
+		t.Errorf("Run's Corrupt offsets got %v, want %v", got, want)
+	}
+	if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
+		t.Errorf("Damaged got %v, want [1] once", st.Tails.Damaged)
+	}
+
+	sc, ok := scanOf(st, 1)
+	if !ok || len(sc.Dropped) != 2 {
+		t.Fatalf("the scan holds %d drops, want 2", len(sc.Dropped))
+	}
+	slices.Reverse(sc.Dropped)
+	got, err := classifyTails(nil, Attached{}, []segmentScan{sc})
+	if err != nil {
+		t.Fatalf("classifyTails: %v", err)
+	}
+	if o := offsets(got.Corrupt); !slices.Equal(o, want) {
+		t.Errorf("classifyTails over descending drops got Corrupt offsets %v, want %v", o, want)
+	}
+}
+
+// TestATornSlotDropDoesNotMoveTheTailStart holds that the tail's start is the
+// end of the last verifying record when a torn slot, a dropped clone target
+// below that record, precedes it: the slot's own offset never lowers the cut.
+func TestATornSlotDropDoesNotMoveTheTailStart(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	seg := buildSeg(1, tailRec(200, 0x4100), cloneRec(), tailRec(201, 0x8100))
+	seg[endA+format.RecordHeaderSize] ^= 0xff // B's spec; nothing proves B
+	end := int64(len(seg))
+	seg = append(seg, bytes.Repeat([]byte{0xff}, 16)...)
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg)
+	st := runUnchanged(t, r, 1)
+
+	wantFate(t, st, 1, fateEnded, end)
+	wantDamaged(t, st)
+	wantNoCorrupt(t, st)
 }
