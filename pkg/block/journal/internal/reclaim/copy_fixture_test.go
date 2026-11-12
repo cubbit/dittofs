@@ -92,14 +92,7 @@ func newCopyFixture(t *testing.T) *copyFixture {
 			t.Errorf("Close: %v", err)
 		}
 	})
-	// The pool's own settle event, never a sleep: the copy's roll cannot run
-	// before a spare of its class is ready.
-	ctx, cancel := context.WithTimeout(context.Background(), copyWait)
-	defer cancel()
-	if err := c.WaitSpares(ctx); err != nil {
-		t.Fatalf("WaitSpares: %v", err)
-	}
-	return &copyFixture{
+	f := &copyFixture{
 		core:     c,
 		seam:     seam,
 		ix:       ix,
@@ -109,27 +102,48 @@ func newCopyFixture(t *testing.T) *copyFixture {
 		tracker:  reclaim.New(ix, nil),
 		clock:    clock,
 	}
+	f.waitSpares(t)
+	return f
 }
 
-// plant appends one write record of payload to file under tag and publishes
-// it through the index, the way the writer's path does: the file's append
-// domain held, a version drawn, a sequence number issued, the record
-// appended and its entry retained, the held delta accounted. The set's
-// per-tag ledger needs no hand-planting here: the stream's own append
-// accounts the record's bytes on the share's row.
+// waitSpares waits for the spare pool's own settle event: every draw a test
+// or a pass makes — a plant's content spare, a copy's reserve target — has to
+// find one ready, and the refilling beside it is the pool's own work.
+func (f *copyFixture) waitSpares(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), copyWait)
+	defer cancel()
+	if err := f.core.WaitSpares(ctx); err != nil {
+		t.Fatalf("WaitSpares: %v", err)
+	}
+}
+
+// plant appends one write record of payload to file at offset zero, under a
+// version drawn fresh, and publishes it the way the writer's path does.
 func (f *copyFixture) plant(t *testing.T, tag core.ShareTag, file core.FileID, payload []byte, mtime int64) (index.RecordAt, core.Seq, core.Version) {
 	t.Helper()
-	unlock := f.core.Domains().Lock(file)
-	defer unlock()
 	v, err := f.counters.Draw()
 	if err != nil {
 		t.Fatalf("Draw: %v", err)
 	}
+	rec, seq := f.plantAt(t, tag, file, core.Extent{Len: int64(len(payload))}, payload, mtime, v)
+	return rec, seq, v
+}
+
+// plantAt appends one write record covering x of file, under the version the
+// caller names, and publishes it through the index the way the writer's path
+// does: the file's append domain held, a sequence number issued, the record
+// appended and its entry retained, the held delta accounted. The set's
+// per-tag ledger needs no hand-planting here: the stream's own append
+// accounts the record's bytes on the share's row.
+func (f *copyFixture) plantAt(t *testing.T, tag core.ShareTag, file core.FileID, x core.Extent, payload []byte, mtime int64, v core.Version) (index.RecordAt, core.Seq) {
+	t.Helper()
+	unlock := f.core.Domains().Lock(file)
+	defer unlock()
 	seq, err := f.counters.NextSeq()
 	if err != nil {
 		t.Fatalf("NextSeq: %v", err)
 	}
-	x := core.Extent{Len: int64(len(payload))}
 	p, err := f.core.Streams().For(file).Append(format.RecordHeader{
 		Kind: format.KindWrite, File: file, Extent: x, Seq: seq, Version: v, Tag: tag,
 	}, format.RecordBody{Payload: payload, MTime: mtime})
@@ -142,7 +156,7 @@ func (f *copyFixture) plant(t *testing.T, tag core.ShareTag, file core.FileID, p
 		t.Fatalf("WriteRetain: %v", err)
 	}
 	f.core.Account(hd)
-	return rec, seq, v
+	return rec, seq
 }
 
 // sealSource seals the segment the file's records landed in the way the

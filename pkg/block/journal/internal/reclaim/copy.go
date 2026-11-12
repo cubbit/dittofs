@@ -238,9 +238,11 @@ func (c *Copier) append(ctx context.Context, sources []source) (Result, error) {
 }
 
 // appendFile copies one file's live pieces under the file's append domain,
-// which the caller holds. Each source's pieces are read from the index
-// again, under the domain, so a piece released since the pass enumerated is
-// not copied; a source that no piece names is skipped.
+// which the caller holds. The pieces of every good source are read from the
+// index again, under the domain, so a piece released since the pass
+// enumerated is not copied; a source no piece names is skipped. The pieces
+// plan into runs, and each run copies as one record whose payload is
+// stitched piece by piece, whatever record or skip each piece came from.
 func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source, res *Result) error {
 	tag, ok := c.ix.Owner(file)
 	if !ok {
@@ -267,8 +269,9 @@ func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source
 		res.Corrupt = append(res.Corrupt, bad)
 	}
 
+	var live []pieceInfo
 	for i := range srcs {
-		src := srcs[i]
+		src := &srcs[i]
 		if src.bad {
 			continue
 		}
@@ -278,84 +281,122 @@ func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source
 				pieces = append(pieces, rt.Piece)
 			}
 		}
-		if len(pieces) == 0 {
-			continue
+		for _, p := range pieces {
+			live = append(live, pieceInfo{Piece: p, kind: src.h.Kind, mtime: src.body.MTime, src: src})
 		}
-		slices.SortFunc(pieces, func(a, b index.Piece) int {
-			if n := cmp.Compare(a.Extent.Off, b.Extent.Off); n != 0 {
-				return n
-			}
-			return cmp.Compare(a.Skip, b.Skip)
+	}
+	slices.SortFunc(live, func(a, b pieceInfo) int {
+		if n := cmp.Compare(a.Extent.Off, b.Extent.Off); n != 0 {
+			return n
+		}
+		return cmp.Compare(a.Skip, b.Skip)
+	})
+	for _, r := range planRuns(live) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		seq, err := c.counters.NextSeq()
+		if err != nil {
+			return err
+		}
+		// A run shares kind, version and mtime across its pieces; a fill
+		// stays a fill, its body carrying no mtime of its own.
+		h := format.RecordHeader{
+			Kind:    r.pieces[0].kind,
+			File:    file,
+			Extent:  r.extent,
+			Seq:     seq,
+			Version: r.pieces[0].Version,
+			Tag:     tag,
+		}
+		payload := make([]byte, r.extent.Len)
+		var n int
+		for _, p := range r.pieces {
+			n += copy(payload[n:], p.src.body.Payload[p.Skip:p.Skip+uint32(p.Extent.Len)])
+		}
+		body := format.RecordBody{MTime: r.pieces[0].mtime, Payload: payload}
+		pl, err := c.streams.For(file).AppendRoll(h, body, segment.Roll{Repack: true})
+		if err != nil {
+			return err
+		}
+		if pl.N != r.extent.Len {
+			return fmt.Errorf("reclaim: the copy of file %v at offset %d placed %d of %d bytes", file, r.extent.Off, pl.N, r.extent.Len)
+		}
+		res.Copies = append(res.Copies, Copied{
+			File:    file,
+			Tag:     tag,
+			Kind:    h.Kind,
+			Version: r.pieces[0].Version,
+			Seq:     seq,
+			Extent:  r.extent,
+			At:      c.clock.Now(),
+			From:    r.pieces[0].src.rec,
+			To:      index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
+			Loc:     pl.Loc,
 		})
-		for _, run := range runs(pieces) {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			seq, err := c.counters.NextSeq()
-			if err != nil {
-				return err
-			}
-			h := format.RecordHeader{
-				Kind:    src.h.Kind,
-				File:    file,
-				Extent:  run.ext,
-				Seq:     seq,
-				Version: src.h.Version,
-				Tag:     tag,
-			}
-			// A fill stays a fill: its body carries no mtime, so the
-			// verified body's zero MTime is the copy's too.
-			body := format.RecordBody{MTime: src.body.MTime, Payload: src.body.Payload[run.skip : run.skip+uint32(run.ext.Len)]}
-			pl, err := c.streams.For(file).AppendRoll(h, body, segment.Roll{Repack: true})
-			if err != nil {
-				return err
-			}
-			if pl.N != run.ext.Len {
-				return fmt.Errorf("reclaim: the copy of file %v at offset %d placed %d of %d bytes", file, run.ext.Off, pl.N, run.ext.Len)
-			}
-			res.Copies = append(res.Copies, Copied{
-				File:    file,
-				Tag:     tag,
-				Kind:    h.Kind,
-				Version: src.h.Version,
-				Seq:     seq,
-				Extent:  run.ext,
-				At:      c.clock.Now(),
-				From:    src.rec,
-				To:      index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
-				Loc:     pl.Loc,
-			})
-		}
 	}
 	return nil
 }
 
-// copyRun is one span of a record's payload copied as one record: the file
-// extent it covers and where in the payload its first byte sits.
-type copyRun struct {
-	ext  core.Extent
-	skip uint32
+// pieceInfo is one live piece beside the two facts of its verified source the
+// grouping reads: the record's content kind and the mtime its verified body
+// carried. The source itself sits in src for the append step's stitch; the
+// grouping never reads it.
+type pieceInfo struct {
+	index.Piece
+	kind  format.Kind
+	mtime int64
+	src   *source
 }
 
-// runs groups pieces, in offset order, into runs whose extents are
-// contiguous in the file and whose payload slices are contiguous in the
-// record: each run is copied whole, as one record. A gap or an overlap in
-// either starts a new run.
-func runs(pieces []index.Piece) []copyRun {
-	var out []copyRun
+// run is one copy the plan makes: the file extent it covers, and the pieces
+// it stitches in offset order, each carrying the record its bytes read from.
+type run struct {
+	extent core.Extent
+	pieces []pieceInfo
+}
+
+// merges reports whether prev and next — neighbours in file order — copy as
+// one record: next's extent begins where prev's ends, and the two share the
+// keys one record's header can carry. The offloaded bit is a key, but two
+// adjacent same-kind pieces with differing bits have no row: no writer marks
+// the bit today.
+func merges(prev, next pieceInfo) bool {
+	return prev.Extent.Off+prev.Extent.Len == next.Extent.Off &&
+		prev.Version == next.Version &&
+		prev.kind == next.kind &&
+		prev.Offloaded == next.Offloaded &&
+		// Writes merge only at one mtime: a record's header spells the one
+		// mtime its whole payload changed at, so two mtimes cannot ride in
+		// one copy. A fill carries no mtime, so nothing separates two fills.
+		(prev.kind != format.KindWrite || prev.mtime == next.mtime)
+}
+
+// planRuns groups file-sorted live pieces into copy runs: adjacent pieces
+// (prev.Extent.End == next.Extent.Off) merge when they share version, kind,
+// offloaded bit and — for writes — mtime. Kinds never mix in a merge, and a
+// gap starts a new run (RFC 1 §4.2).
+//
+// decision: kinds never mix, so a fill beside a write at one version stays
+// two copies. A merged fill would lose its bit at the next crash: one record
+// carries one kind and one offloaded mark (RFC 28 §3.2), so the reopen could
+// not set the bit the fill's half needs. Ceiling: files whose writes and
+// fills alternate keep one index entry per run after a pass; revisit when
+// such files reach the extent bound through repack copies, which RFC 28
+// §2.3's record format cannot express a fix for today.
+func planRuns(pieces []pieceInfo) []run {
+	var out []run
 	for i := 0; i < len(pieces); {
 		j := i + 1
-		for j < len(pieces) &&
-			pieces[j].Extent.Off == pieces[j-1].Extent.Off+pieces[j-1].Extent.Len &&
-			pieces[j].Skip == pieces[j-1].Skip+uint32(pieces[j-1].Extent.Len) {
+		for j < len(pieces) && merges(pieces[j-1], pieces[j]) {
 			j++
 		}
-		out = append(out, copyRun{
-			ext: core.Extent{
+		out = append(out, run{
+			extent: core.Extent{
 				Off: pieces[i].Extent.Off,
 				Len: pieces[j-1].Extent.Off + pieces[j-1].Extent.Len - pieces[i].Extent.Off,
 			},
-			skip: pieces[i].Skip,
+			pieces: pieces[i:j],
 		})
 		i = j
 	}
