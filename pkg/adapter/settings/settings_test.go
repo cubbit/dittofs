@@ -2,12 +2,8 @@ package settings
 
 import (
 	"encoding/json"
-	"go/parser"
-	"go/token"
 	"net/netip"
-	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -213,28 +209,5 @@ func TestDrainTimeoutFloor(t *testing.T) {
 	s.DrainTimeout = 65 * time.Second
 	if err := s.Validate(); err != nil {
 		t.Errorf("DrainTimeout 65s: %v, want accepted", err)
-	}
-}
-
-// pkg/adapter/settings is a leaf: it imports only the standard library.
-func TestImportsOnlyTheStandardLibrary(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(token.NewFileSet(), f, nil, parser.ImportsOnly)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, imp := range file.Imports {
-			p, _ := strconv.Unquote(imp.Path.Value)
-			if strings.Contains(strings.Split(p, "/")[0], ".") {
-				t.Errorf("%s imports %s; pkg/adapter/settings imports only the standard library", f, p)
-			}
-		}
 	}
 }

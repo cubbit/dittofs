@@ -47,7 +47,7 @@ moving the adapters onto `vfs.Service` (stage 5) and RFC 20's shared pipeline, p
 §3.5's table and §5.3 call, no more. Its conformance suite is written first, then the smallest
 in-memory `Content` that passes it; the real `*engine.Engine` satisfies the interface unchanged
 at stage 3. The in-memory `Content` stays: it stands in for the engine in the unit tiers and in
-`vfstest.Memory`, and the engine passing the same suite is what keeps the two together
+`memory.New`, and the engine passing the same suite is what keeps the two together
 ([RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)). The method list (plan §4)
 is the contract to agree with the journal v2 team before either side builds against it.
 
@@ -302,7 +302,7 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
     `Content` suite written first and the in-memory `Content` that passes it (D3); `vfstest.Faults`,
     every `Service` method wrapped explicitly, with a fault that holds a call until the test
     releases it (an event, never a timed wait); `vfstest.Callbacks` in place of
-    `RecordingCallbacks`; and `vfstest.Memory`, the filesystem over the in-memory store, open
+    `RecordingCallbacks`; and `memory.New`, the filesystem over the in-memory store, open
     state and that `Content`, with its recording wrapper of mutating calls. It then moves the
     seven `internal/vfs` test files off the old helpers and deletes `Record`, `RecordingCallbacks`
     and `fakeContent`. Owner: this plan; it lands before RFC 20's T2.3, whose import test needs
@@ -336,7 +336,7 @@ Stage 2 writes the in-memory `Content`, since neither today's `engine.Store` nor
 `journaltest/model` can stand in for it, and writes its conformance suite first: verified bytes
 back, a version above the last drawn, nothing returned before its stage. Until stage 3 the suite
 holds only the in-memory `Content`; the engine runs it as it lands. The in-memory `Content` then
-stands in for the engine in the unit tiers and in `vfstest.Memory`, and the engine passing the
+stands in for the engine in the unit tiers and in `memory.New`, and the engine passing the
 same suite is what keeps the two together.
 
 Not the filesystem's to call: `Apply`, `Start`, `Close`, the storage-binding calls `Bind`, `Unbind`
