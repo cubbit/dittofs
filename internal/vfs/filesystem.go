@@ -81,7 +81,9 @@ type Content interface {
 	Delete(ctx context.Context, s entity.ShareID, f entity.FileID) (retry <-chan error, err error)
 	// Clone is atomic; Copy copies xs in order and may be short. Each file
 	// is named with its own share, as on one node a clone between two
-	// shares of one namespace reaches the engine.
+	// shares of one namespace reaches the engine. Each runs its context's
+	// admitted hook (engine.WithAdmitted) once its admission passed and
+	// before the destination changes, perhaps more than once.
 	Clone(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, x vfs.Extent) error
 	Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfs.Extent) (int64, error)
 	// Overlay is the file's size, times and version as the journal's
