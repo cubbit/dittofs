@@ -487,6 +487,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | §8's benchmarks: per operation, service overhead, contention, uncached admission, recall latency (D6) | the plan builds none, and no registered suite runs `go test -bench` | RFC 29 harness | a registered suite runs `go test -bench` |
 | RFC 16 §2.3.2's full removal driver, replacing piece 3's stand-in (piece 3's `ponytail:`) | no node exists | RFC 23's plan (#4050), its epic 3 | that epic drives a removal |
 | `Snapshots` beyond an empty list; §6's §5.9 row for an `Incomplete` source (piece 3, plan §3) | RFC 12's store view does not exist | RFC 12 | its snapshot view exists |
+| §5.9's held wait behind a running clone, `WithHold`; V29's clone case and V30 (piece 11) | a call behind a clone answers `DelayClone` at once, as `WithHold(0)` does, until an adapter passes a hold (RFC 20 §4.6) | RFC 20 plan | stage 5 puts an adapter on `vfs.Service` |
 | The integration tier against the real engine; V19, V20 and V25 completed (D6, plan §3) | needs the engine | RFC 8 plan | stage 3 |
 | §8's nightly fuzz targets beyond their seeds (D6) | no registered suite runs `go test -fuzz` | RFC 29 harness | a suite runs `-fuzz` |
 | The upgrade mapping of `develop`'s shares into this store (plan §5 Q3) | storage v2 serves new installations only, so no stage carries `develop`'s shares over; the mapping is part of the migration the RFC 1 plan's ledger holds as unowned (its §6.1, "A migration tool from v1") | unowned (its own RFC, none yet) | demand for one |
