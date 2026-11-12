@@ -13,7 +13,7 @@ RFCs, with how far each is in scope:
   `vfs.WithHold` (RFC 17 §5.9), which `pkg/vfs` lacks and epic 5 adds; `vfs.WithRequestID`
   (RFC 17 §4.7) is a ledger row (§6.2). `pkg/vfs` and
   `vfstest.Null` exist on `feat/storage-v2`; tests here use the in-memory service,
-  `vfstest.Memory`, held to RFC 17 §8's suite, and its fault wrapper, `vfstest.Faults`, which
+  `memory.New`, held to RFC 17 §8's suite, and its fault wrapper, `vfstest.Faults`, which
   RFC 17's plan delivers (ledger, §6.2); `Null` serves the allocation gate and the pipeline
   benchmark only.
 - [RFC 24](../rfcs/rfc-24-resources.md), resources: **only the parts this RFC cannot work
@@ -56,7 +56,7 @@ branch is `feat/storage-v2`, on which RFC 17's plan has merged; the plan documen
 | Buffers | a three-class `sync.Pool` of byte slices behind package functions | `pkg/resources`: reference-counted `Buf` behind a `Budget` reservation, shared with any component |
 | Drain | cancels every request, 100 ms read deadline | stops accepting, serves what each request's `Role` allows, finishes what the service holds, abandons at the deadline |
 | Sidecars | each adapter runs its own group | one runner driven by the serving set |
-| Tests | handlers on real stores; four fakes | `core` on a test-only protocol over `vfstest.Memory`; the import test from the first commit |
+| Tests | handlers on real stores; four fakes | `core` on a test-only protocol over `memory.New`; the import test from the first commit |
 
 **Dependency limits.** What an adapter may import is RFC 20 §2.3's list, which its §7.1 import
 test enforces; this plan does not restate it. Liveness reaches an adapter as `Deps.Watch`, which
@@ -168,7 +168,7 @@ Epic 2 builds what those tests stand on:
 - **`adaptertest/testproto`**: a protocol of length-prefixed frames with operations that echo,
   panic, take a `Role` an argument sets (for the drain filter and the expiry gate) and make one
   service call; its delays, holds and transient errors come only from `vfstest.Faults` around
-  `vfstest.Memory`, never from an operation that waits or answers `ErrDelay` itself; toy `Security` (a checksum), `Flow` (a
+  `memory.New`, never from an operation that waits or answers `ErrDelay` itself; toy `Security` (a checksum), `Flow` (a
   counter) and `Replay` (a map) stages, and a `HoldCodec` whose interim and final headers carry
   the credits they grant against a client balance the test reads; a version range for the `Versions` column. Tests drive it
   over a plain `net.Conn`. Its stateful half exercises the rest of RFC 20 §4.7, so the surface frozen
@@ -252,7 +252,7 @@ and 5.
 >   document, and its subtask issues take the same release, also when created later.
 
 1. **Independent unit tests, under `-race`.** Each epic carries its own unit tests. It may use
-   another epic's implementation once that has landed, `vfstest.Memory` and `vfstest.Faults`, and
+   another epic's implementation once that has landed, `memory.New` and `vfstest.Faults`, and
    E2's `testproto` and leak checks. Every double is one of
    [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds. `core` is tested from `package core_test` on `testproto` and
    never through NFS or SMB; no `core` test imports a protocol package. Connections are real TCP
@@ -358,7 +358,7 @@ flowchart TD
   S3 -. "New on the real runner" .-> E6
   S4(["S4 internal/node exists, RFC 23"]):::sync --> E7["E7 Integration with the node 🔀"]:::sync
   E5 -. "WithHold, read by the clone wait" .-> P11(["RFC 17 plan piece 11"]):::sync
-  P12(["RFC 17 plan piece 12"]):::sync -. "vfstest.Memory, Faults" .-> E2
+  P12(["RFC 17 plan piece 12"]):::sync -. "memory.New, Faults" .-> E2
   E6 --> E8["E8 E2E green"]
   E7 -. "node-level ledger rows" .-> E8
   classDef blocker stroke:#c0392b,stroke-width:3px
@@ -376,7 +376,7 @@ flowchart TD
   import test runs in `unit` and reports each seeded violation and no seeded allowance. Unblocks E3, E4 and E6's `wire/`
   and `protocol/`.
 - **🔀 S3 `core` serves `testproto` end to end** (after E4 and E5). A `testproto` request goes
-  accept → frame → pipeline → `vfstest.Memory` → reply; drain serves what its `Role` allows (RFC 20 §3.1)
+  accept → frame → pipeline → `memory.New` → reply; drain serves what its `Role` allows (RFC 20 §3.1)
   and abandons at the deadline; reconfigure and the leak checks pass; the handshake deadline, kept
   state, held and parked requests, cancel and chains run on `testproto`'s stateful half. Unblocks E6's `New`, which
   wires each `protocol/` to the real runner.
@@ -389,7 +389,7 @@ flowchart TD
 | --- | --- | --- |
 | ⛔ E1 | everything | `pkg/adapter` is recreated at v1's path, and every epic builds on its types |
 | ⛔ E2 | E3–E6 | `core` is proven only on `testproto`; the import test must run from the first package |
-| RFC 17 plan piece 12 | E2, so E3–E6 | E2's import test needs `vfstest.Memory`, and `testproto`'s holds `Faults`' releasable hold |
+| RFC 17 plan piece 12 | E2, so E3–E6 | E2's import test needs `memory.New`, and `testproto`'s holds `Faults`' releasable hold |
 | E3 | E4, E5, partly | the reader reserves receive bytes before a body; the pipeline reserves the reply. Both start on E1's stubs and finish on E3 |
 | E4 | E5, partly | the pipeline's tests that send a reply run on the real `Conn` over loopback |
 | E4, E5 | E6's `New`, via S3 | a scaffold is done only when "not supported" goes through the real pipeline; `protocol/` is built before, against the frozen surface |
@@ -410,7 +410,7 @@ flowchart TD
   E1's types. Track C would then idle until S3, so it takes three E5 subtasks that need only E1's
   types and `testproto`: the middleware chain (T5.6), the error table (T5.7) and observability
   (T5.9). Then each `protocol/` from S2: what epic 6 builds, the `Router` over its tables, is
-  unit-tested against the frozen surface, `testproto`'s stateful half and `vfstest.Memory`, leaving
+  unit-tested against the frozen surface, `testproto`'s stateful half and `memory.New`, leaving
   only `New`'s wiring to the real runner for S3. SMB's `Security` and `HoldCodec` are the RFC 22
   plan's (ledger), which can start them at S2 the same way.
 - **The team.** E1 and E2 before the tracks start; E8 after them. E7 when S4 is reached.
@@ -554,7 +554,7 @@ The adapter's life and its connections, in `core`: the four states, listeners, a
 limits, one reader and one writer per connection, drain, `Reconfigure` with its settings
 snapshot, health, and the TCP options. Then the sidecar runner in `internal/sidecar`, which
 follows those states. Proven on `testproto` over loopback, its drain and cancellation tests on
-the real pipeline once E5's lands (§3.4), then end to end against `vfstest.Memory` at S3.
+the real pipeline once E5's lands (§3.4), then end to end against `memory.New` at S3.
 
 RFC sections: §3.1 (states, drain, abandon at the deadline, auxiliary listeners all or none),
 §3.2 (a connection's lifecycle; the session-keyed cleanup wait as a `core` mechanism), §3.5,
@@ -613,10 +613,10 @@ filter, operation tables and their precondition columns, the reply reservation, 
 runner, held requests and their re-drive, the middleware chain, the error-table mapping and
 totality check, the request context, and the observability of RFC 20 §10. Tested on `testproto`,
 its replies sent by E4's real `Conn` over loopback (§3.4), end to end at S3, against
-`vfstest.Memory` and `vfstest.Faults`.
+`memory.New` and `vfstest.Faults`.
 
 RFC sections: §3.1's drain filter, §4.1, §4.2, §4.3's runner and reply budget (the one-call rule
-is read from `vfstest.Memory`'s record of mutating calls, §7.2), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's table selection, §6.3,
+is read from `memory.New`'s record of mutating calls, §7.2), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's table selection, §6.3,
 §6.4's request deadline (its request ID: §6.2), §6.5's client-cancel half, §6.6, §6.9's request rows,
 §6.10's pipeline row, §10, A4, A6, A7, A15, A16, A17.
 
@@ -772,7 +772,7 @@ RFC sections: §6.10's codec and pipeline rows.
    most of the estimate, and RFC 17's piece 12 must land before E2 ends; track C's share of E5 is what keeps the tracks parallel, and E4's and
    E5's tests that need the other's half wait for it. Those tests add no man-days: they are the
    tests E4's and E5's subtasks already carry, run on the real `Conn` and pipeline rather than on
-   a stand-in, and the sidecar runner's trivial real sidecar is part of T4.9. `vfstest.Memory`
+   a stand-in, and the sidecar runner's trivial real sidecar is part of T4.9. `memory.New`
    and `Faults` are RFC 17 plan piece 12's, estimated there.
 10. **The first milestone needs two pieces no plan builds yet.** An SMB mount with AD sign-in
    needs `gss` (risk 5) and the authenticator behind `SignIn` (keytab, PAC, NTLMv2, NETLOGON,
@@ -800,8 +800,8 @@ feature parity with develop. A row moves only to another owner, never off the le
 | `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, RFC 4121 tokens, `gsstest` | no handshake to drive it | the RFC 22 plan, until its own RFC (risk 5) | first `SESSION_SETUP` or GSS `INIT` |
 | `translate` (ACLs, access masks, times, attributes, `Fit`) | no handler calls it | RFC 21/22 plans | their first handler epic |
 | each protocol's error-table rows and its totality test (RFC 20 §7.3) | rows are protocol choices | RFC 21/22 plans | with their handlers |
-| `vfstest.Memory`, `vfstest.Faults`, and `Faults`' fault that holds a call until the test releases it, on which epic 2's held and parked requests rest | the service's test doubles are RFC 17's | RFC 17 plan, piece 12 | before epic 2's T2.3, whose import test needs `Memory` |
-| handler tests on `vfstest.Memory` and `vfstest.Faults` (§7.2), the one-call rule read per handler from `vfstest.Memory`'s record of mutating calls | no handlers | RFC 21/22 plans | every handler epic |
+| `memory.New`, `vfstest.Faults`, and `Faults`' fault that holds a call until the test releases it, on which epic 2's held and parked requests rest | the service's test doubles are RFC 17's | RFC 17 plan, piece 12 | before epic 2's T2.3, whose import test needs `Memory` |
+| handler tests on `memory.New` and `vfstest.Faults` (§7.2), the one-call rule read per handler from `memory.New`'s record of mutating calls | no handlers | RFC 21/22 plans | every handler epic |
 | operation codecs, their golden vectors from reference captures, 0-allocation gates for `READ`, `WRITE`, `GETATTR`, `QUERY_INFO` | no handlers | RFC 21/22 plans | with those operations |
 | import test: entry-method call sites (§4.10, §7.1) and the 800-line allowlist (§2.5) | vacuous with no handlers | RFC 21/22 plans | first handler epic |
 | scripted client (§8.2) and a shared golden helper | first consumers are wire tests and benchmarks | RFC 21/22 plans | first wire-test or benchmark epic |
@@ -831,7 +831,7 @@ feature parity with develop. A row moves only to another owner, never off the le
 | `pkg/apiclient`'s adapter and netgroup methods, kept for the e2e helpers `lint-go` vets; their routes answer 404 | compiled tests still call them | cutover | with their routes |
 | `metrics.Registry` an alias of `pkg/metrics`' `Metrics` (T1.6), not RFC 25 §8.2's registry | the registry is not built | RFC 25 | when the registry is built |
 | `vfs.Grace{Until}`, the typed `ErrGrace` carrying the shard's grace end, which an `ErrorRow.Hold` reads to bound a hold (RFC 17 §4.3) | named in RFC 17 by T1.9; not yet in `pkg/vfs` | RFC 17 plan: the type in `pkg/vfs`, returned by `*vfs.Filesystem` | before E5's T5.5 |
-| `vfs.Shares.MoveTarget`, which says whether a draining request's share has a gateway to move to (`ErrMoved`) or none (`ErrDraining`), asked per request (RFC 20 §3.1) | named in RFC 17 by T1.9; not yet in `pkg/vfs` | RFC 17 plan: the method in `pkg/vfs`, `*vfs.Filesystem` (so `vfstest.Memory`) and `vfstest.Null`, answering none | before E4's T4.5 calls it; a real target once RFC 15's topology exists |
+| `vfs.Shares.MoveTarget`, which says whether a draining request's share has a gateway to move to (`ErrMoved`) or none (`ErrDraining`), asked per request (RFC 20 §3.1) | named in RFC 17 by T1.9; not yet in `pkg/vfs` | RFC 17 plan: the method in `pkg/vfs`, `*vfs.Filesystem` (so `memory.New`) and `vfstest.Null`, answering none | before E4's T4.5 calls it; a real target once RFC 15's topology exists |
 
 ## 7. RFC coverage
 

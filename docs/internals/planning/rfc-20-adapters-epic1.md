@@ -88,7 +88,7 @@ two `New`); `pkg/resources`' signatures; `core`'s §4.7 surface with stub bodies
 ## 2. General rules for each epic
 
 1. **Independent unit tests, under `-race`.** Each epic carries its own unit tests. It may use
-   another epic's implementation once that has landed, `vfstest.Memory` and `vfstest.Faults`, and
+   another epic's implementation once that has landed, `memory.New` and `vfstest.Faults`, and
    E2's `testproto` and leak checks. Every double is one of
    [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds. `core` is tested from `package core_test` on `testproto` and
    never through NFS or SMB; no `core` test imports a protocol package. Connections are real TCP
@@ -796,9 +796,9 @@ cannot build apart.
   Owner: RFC 25.
 - `vfs.Grace{Until}` (D26), named in RFC 17 by T1.9. Owner: RFC 17's plan, before E5's T5.5.
 - `vfs.Shares.MoveTarget` (D16), named in RFC 17 by T1.9, in `pkg/vfs`, `*vfs.Filesystem`
-  (so `vfstest.Memory`) and `vfstest.Null`. Owner: RFC 17's plan, before E4 calls it; until RFC
+  (so `memory.New`) and `vfstest.Null`. Owner: RFC 17's plan, before E4 calls it; until RFC
   15's topology exists it answers none.
-- `vfstest.Memory`, the in-memory service passing RFC 17 §8's conformance suite, and
+- `memory.New`, the in-memory service passing RFC 17 §8's conformance suite, and
   `vfstest.Faults`, its fault wrapper, which every handler and `core` test runs on; `Null` serves
   the allocation gate and the benchmarks only (RFC 20 §7.2). Owner: RFC 17's plan, piece 12, a
   stage-2 follow-up estimated there, which delivers `Memory` with its in-memory `Content`; it
