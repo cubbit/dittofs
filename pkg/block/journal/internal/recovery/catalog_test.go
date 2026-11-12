@@ -2,13 +2,27 @@ package recovery
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"hash/crc32"
+	"math"
+	"slices"
+	"syscall"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/readretry"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
+
+// castagnoli is the table the trailer checksums are computed with — plain
+// CRC32C, unseeded, as format/crc.go computes them — so a check that redoes
+// a trailer's checksum after mutating its bytes mirrors the format's own.
+var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
 // catalogSteps is the workload the catalog checks drive: a deterministic
 // step list holding one or more records of every kind the journal can append
@@ -290,7 +304,13 @@ func TestCatalogDemotesEveryNoFooterToAScan(t *testing.T) {
 		}},
 		{"trailer flags nonzero", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
 			// Byte 6 opens the flags column, read as a version none define.
+			// The trailer's own checksum is redone over the flipped bytes —
+			// plain CRC32C, as format/crc.go computes it — so the flags
+			// column itself is what refuses, not the checksum a bare flip
+			// breaks first.
 			b[len(b)-raw.TrailerSize+6] ^= 1
+			binary.LittleEndian.PutUint32(b[len(b)-4:],
+				crc32.Checksum(b[len(b)-raw.TrailerSize:len(b)-4], castagnoli))
 			return b
 		}},
 		{"no seal marker before the footer", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
@@ -458,4 +478,382 @@ func TestCatalogReadsOnlySegmentsASuccessorNames(t *testing.T) {
 			t.Errorf("Run: the scan-only rebuild built a different index than the chained one that read its %d catalogues", len(segs)-1)
 		}
 	})
+}
+
+// buildSealed returns the bytes of segment id holding recs, sealed the way
+// plantSealed seals and as the journal's seal writer leaves them — one
+// footer entry per record, ascending by RecordOffset, and the trailer —
+// with the entries themselves, derived from the records' own columns, so a
+// check can assert or mutate them.
+func buildSealed(id core.SegmentID, recs ...raw.Record) ([]byte, []format.CatalogEntry) {
+	rc := slices.Clone(recs)
+	b := raw.SegmentHeader{Identity: journalID, ID: uint64(id)}.Bytes()
+	ents := make([]format.CatalogEntry, 0, len(rc))
+	for i := range rc {
+		rc[i].Identity = journalID
+		rc[i].Segment = uint64(id)
+		rc[i].RecordOffset = uint32(len(b))
+		b = append(b, rc[i].Bytes()...)
+		ents = append(ents, format.CatalogEntry{
+			File:         core.NewFileID(rc[i].FileID),
+			Extent:       core.Extent{Off: int64(rc[i].Offset), Len: int64(rc[i].Length)},
+			RecordOffset: int64(rc[i].RecordOffset),
+			Seq:          core.Seq(rc[i].Seq),
+			Version:      core.Version{Epoch: rc[i].Version.Epoch, Counter: rc[i].Version.Counter},
+			Kind:         format.Kind(rc[i].Kind),
+			Tag:          core.ShareTag(rc[i].Tag),
+		})
+	}
+	return appendSealed(b, id, ents), ents
+}
+
+// withoutTheCloneEntry drops the workload's one clone-target entry from a
+// built index map: the confined record's own contribution, which the scan
+// run the comparison reads attaches and the catalog run that confined it
+// does not. In the read-out a clone target is the marker carrying its spec.
+func withoutTheCloneEntry(ix *index.Index) map[string][]index.Entry {
+	m := entriesOf(ix)
+	for k, es := range m {
+		m[k] = slices.DeleteFunc(slices.Clone(es), func(e index.Entry) bool {
+			return e.Clone != nil
+		})
+	}
+	return m
+}
+
+// TestCatalogReadsTheHeaderOnlyKindsAtTheirEntry holds the read-back kinds'
+// arm: a sealed, catalogued segment's loss, hold, unhold and stamp records
+// are read at their entries' offsets and set aside as the headers their own
+// bytes verified — named fields and payload checksum alike — never as the
+// headers the entries claim, and exactly what a forced scan of the same
+// directory sets aside.
+func TestCatalogReadsTheHeaderOnlyKindsAtTheirEntry(t *testing.T) {
+	aside := []raw.Record{
+		rec(10, func(r *raw.Record) { r.Loss = &raw.LossBody{Dropped: 99, Flags: 1 | 1<<8} }),
+		rec(11, func(r *raw.Record) { r.Cut = &raw.CutBody{Cut: 3}; r.Offset, r.Length = 0, 0 }), // hold
+		rec(12, func(r *raw.Record) { // unhold: no file, no version, no extent
+			r.Cut = &raw.CutBody{Cut: 4}
+			r.FileID = [16]byte{}
+			r.Version = raw.Version{}
+			r.Offset, r.Length = 0, 0
+		}),
+		rec(13, func(r *raw.Record) { r.Cut = &raw.CutBody{Cut: 5}; r.Offset, r.Length = 0, 0 }), // stamp
+	}
+
+	// build plants the sealed segment and a successor whose header names
+	// it — the successor is the stream's newest, so it scans while the
+	// sealed one is offered its catalogue — and opens the journal with the
+	// test-only switch set.
+	build := func(t *testing.T, forceScan bool) (State, []format.CatalogEntry) {
+		t.Helper()
+		r := newRig(t)
+		r.writeFormat()
+		seg, ents := buildSealed(2, aside...)
+		r.plantSeg(2, seg)
+		r.plantSeg(3, raw.SegmentHeader{Identity: journalID, ID: 3, Predecessor: 2}.Bytes())
+		deps := r.runDeps()
+		deps.rebuildForceScan = forceScan
+		st, err := Run(context.Background(), deps, core.Version{}, journalID, nil)
+		if err != nil {
+			t.Fatalf("Run over the directory holding the read-back kinds: %v", err)
+		}
+		return st, ents
+	}
+
+	st, ents := build(t, false)
+	if got, want := st.Rebuilt.ByCatalog, 1; got != want {
+		t.Fatalf("Run rebuilt %d segments by catalog, want %d: the sealed one was not offered its catalogue", got, want)
+	}
+	cat, ok := scanOf(st, 2)
+	if !ok {
+		t.Fatalf("Run: the scans name no segment 2, want the sealed one")
+	}
+	if got, want := len(cat.Aside), len(aside); got != want {
+		t.Fatalf("the catalogued scan sets %d records aside, want the %d planted", got, want)
+	}
+	wantKinds := []format.Kind{format.KindLoss, format.KindHold, format.KindUnhold, format.KindStamp}
+	for i, a := range cat.Aside {
+		if a.Header.Kind != wantKinds[i] {
+			t.Errorf("aside record %d's kind got %v, want %v", i, a.Header.Kind, wantKinds[i])
+		}
+		// The entry honestly mirrors the record, so the named columns agree —
+		// an arm feeding from the entry's claim passes these too:
+		want := headerFromEntry(2, ents[i])
+		if a.Header.File != want.File || a.Header.Extent != want.Extent ||
+			a.Header.Seq != want.Seq || a.Header.Version != want.Version ||
+			a.Header.Kind != want.Kind || a.Header.Offset != want.Offset {
+			t.Errorf("aside record %d's header got file %v extent %+v seq %d version %+v kind %v offset %d, want the record's %v %+v %d %+v %v %d",
+				i, a.Header.File, a.Header.Extent, a.Header.Seq, a.Header.Version, a.Header.Kind, a.Header.Offset,
+				want.File, want.Extent, want.Seq, want.Version, want.Kind, want.Offset)
+		}
+		// The payload checksum no entry carries: the verified header holds
+		// the record body's own, an entry's claim always zero.
+		if a.Header.PayloadCRC == 0 {
+			t.Errorf("aside record %d carries payload checksum 0, want the verified header's: the aside came from the entry's claim, not the record", i)
+		}
+	}
+
+	// The aside a forced scan of the same directory collects — headers read
+	// by the walk, verified to their own place — is the aside the catalogued
+	// scan holds, whole struct equal.
+	scanSt, _ := build(t, true)
+	if got, want := scanSt.Rebuilt.ByCatalog, 0; got != want {
+		t.Fatalf("the forced-scan run rebuilt %d segments by catalog, want %d", got, want)
+	}
+	scan, scOK := scanOf(scanSt, 2)
+	if !scOK {
+		t.Fatalf("Run: the forced-scan run's scans name no segment 2")
+	}
+	if !slices.EqualFunc(scan.Aside, cat.Aside, func(x, y asideRecord) bool { return x.Header == y.Header }) {
+		t.Errorf("the catalogued scan's asides differ from the scan's, want the verified headers of one and the same records")
+	}
+}
+
+// TestCatalogConfinesARecordThatDoesNotVerify holds the confinement: a
+// record the catalogue's own read cannot verify — a body whose checksum the
+// damage broke, an entry whose summary its record contradicts — drops into
+// its segment's Dropped, carried for the tail's classing, while the open
+// succeeds, every neighbour still attaches and the segment is not demoted
+// from its catalogue. The dropped record's header is the record's own, not
+// the entry's claim of it: the segments win.
+func TestCatalogConfinesARecordThatDoesNotVerify(t *testing.T) {
+	rows := []struct {
+		name string
+		idx  int // the victim's entry whose record the row confines
+		// mutateEntry rewrites the confined record's entry before the seal
+		// is rebuilt over it; the record's own bytes are left honest.
+		mutateEntry func(*format.CatalogEntry)
+		// flipBody flips one byte of the confined record's body instead;
+		// the entries are left honest.
+		flipBody bool
+		// scanRefuses holds that the header walk over the broken bytes
+		// refuses the open itself, so the index leg compares against an
+		// honest directory's scan rather than the broken one's.
+		scanRefuses bool
+	}{
+		{"a loss whose body bytes are flipped", 3, nil, true, false},
+		{"a clone target whose spec flips", 0, nil, true, true},
+		{"an entry whose seq disagrees with its record header", 0, func(e *format.CatalogEntry) { e.Seq += 1 }, false, false},
+		{"an entry whose extent disagrees with its record header", 0, func(e *format.CatalogEntry) { e.Extent.Off += 64 }, false, false},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			// plant writes the chained workload and damages one record of
+			// the second sealed segment — the one holding the clone target
+			// at its first record and the loss at its fourth — returning the
+			// rig, the planted ids, the confined record's entry as the
+			// footer now names it and the same entry as it was planted.
+			// damage false replants the honest directory.
+			plant := func(damage bool) (*rig, []core.SegmentID, format.CatalogEntry, format.CatalogEntry) {
+				r := newRig(t)
+				r.writeFormat()
+				segs, ents := r.plantSealed(catalogSteps(), stepsPerSegment, true)
+				victim := segs[1]
+				name := format.SegmentName(victim)
+				es := slices.Clone(ents[victim])
+				b := r.fileBytes(name)
+				if damage && row.mutateEntry != nil {
+					row.mutateEntry(&es[row.idx])
+					// The seal is rebuilt over the lying entry — the
+					// trailer's checksums recomputed — so the footer is one
+					// a writer could have bungled, not one the damage itself
+					// already refuses.
+					markerOff := len(b) - raw.TrailerSize - raw.CatalogEntrySize*len(es) - format.SealMarkerSize
+					b = appendSealed(b[:markerOff], victim, es)
+				}
+				if damage && row.flipBody {
+					b[es[row.idx].RecordOffset+format.RecordHeaderSize] ^= 0xff
+				}
+				r.rewrite(name, b)
+				return r, segs, es[row.idx], ents[victim][row.idx]
+			}
+			open := func(r *rig, forceScan bool) (State, error) {
+				deps := r.runDeps()
+				deps.rebuildForceScan = forceScan
+				return Run(context.Background(), deps, core.Version{}, journalID, nil)
+			}
+
+			r, segs, confined, honest := plant(true)
+			victim := segs[1]
+			st, err := open(r, false)
+			if err != nil {
+				t.Fatalf("Run over the damaged directory: %v", err)
+			}
+			// The confinement is per record: the segment keeps its catalogue
+			// and its neighbours their entries.
+			if got, want := st.Rebuilt.ByCatalog, len(segs)-1; got != want {
+				t.Fatalf("Run rebuilt %d segments by catalog, want %d: a confined record demotes nothing", got, want)
+			}
+			sc, ok := scanOf(st, victim)
+			if !ok {
+				t.Fatalf("Run: the scans name no segment %d, want the damaged one", victim)
+			}
+			if len(sc.Dropped) != 1 {
+				t.Fatalf("the scan of segment %d holds %d dropped records, want the one the damage confined", victim, len(sc.Dropped))
+			}
+			d := sc.Dropped[0]
+			if d.Entry != confined {
+				t.Errorf("the dropped entry got %+v, want the damaged one %+v", d.Entry, confined)
+			}
+			// The record outranks its summary: the dropped header is what
+			// the record's own bytes decoded as, whatever the entry claims.
+			if d.Header.Seq != honest.Seq || d.Header.Extent != honest.Extent {
+				t.Errorf("the dropped record's header carries seq %d extent %+v, want the record's %d %+v: the segments win",
+					d.Header.Seq, d.Header.Extent, honest.Seq, honest.Extent)
+			}
+			if !d.Synced {
+				t.Errorf("the dropped record is not marked synced, want it: it sat below a seal that verifies")
+			}
+			if !errors.Is(d.Err, core.ErrCorrupt) {
+				t.Errorf("the dropped record's error got %v, want one wrapping ErrCorrupt", d.Err)
+			}
+			for _, a := range sc.Aside {
+				if a.Header.Kind == confined.Kind && a.Header.Seq == honest.Seq {
+					t.Errorf("the confined record was also set aside, want it dropped and carried, feeding nothing")
+				}
+			}
+
+			// Every neighbour attaches: the index is the scan's, minus the
+			// confined record's own contribution.
+			sr, _, _, _ := plant(true)
+			if row.scanRefuses {
+				_, scanErr := open(sr, true)
+				if !errors.Is(scanErr, core.ErrCorrupt) {
+					t.Fatalf("the forced scan over the damaged directory got %v, want its own ErrCorrupt refusal", scanErr)
+				}
+				// The walk refuses the broken bytes itself, so the
+				// neighbours' reference is the honest directory's scan.
+				cr, _, _, _ := plant(false)
+				cleanSt, cerr := open(cr, true)
+				if cerr != nil {
+					t.Fatalf("Run over the honest directory: %v", cerr)
+				}
+				got := entriesOf(st.Rebuilt.Index)
+				if row.idx == 0 { // the confined clone target's entry removed from the reference
+					if !sameEntries(withoutTheCloneEntry(cleanSt.Rebuilt.Index), got) {
+						t.Errorf("Run: the confined rebuild differs from the honest scan beyond the one confined record")
+					}
+				} else if !sameEntries(entriesOf(cleanSt.Rebuilt.Index), got) {
+					t.Errorf("Run: a confined aside record changed an index neither source feeds it into")
+				}
+				return
+			}
+			scanSt, scanErr := open(sr, true)
+			if scanErr != nil {
+				t.Fatalf("the forced scan over the damaged directory: %v", scanErr)
+			}
+			got := entriesOf(st.Rebuilt.Index)
+			if row.idx == 0 {
+				if !sameEntries(withoutTheCloneEntry(scanSt.Rebuilt.Index), got) {
+					t.Errorf("Run: the confined rebuild differs from the scan beyond the one confined record")
+				}
+			} else if !sameEntries(entriesOf(scanSt.Rebuilt.Index), got) {
+				t.Errorf("Run: a confined aside record changed an index neither source feeds it into")
+			}
+		})
+	}
+}
+
+// TestCatalogRefusesTheLargestNumbersAnEntryCarries holds the largest-value
+// rule on the entry path: an entry whose record is never read back — a
+// release, whose kind an entry stands for — carries a sequence number no
+// writer issues, and the open refuses naming the segment, confining nothing
+// and demoting nothing.
+func TestCatalogRefusesTheLargestNumbersAnEntryCarries(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		seq  uint64
+	}{
+		{"the largest sequence number", math.MaxUint64},
+		{"sequence number zero", 0},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			segs, ents := r.plantSealed(catalogSteps(), stepsPerSegment, true)
+			victim := segs[0]
+			name := format.SegmentName(victim)
+			es := slices.Clone(ents[victim])
+			es[2].Seq = core.Seq(row.seq) // the release entry, kind 3: its record is never read back
+			b := r.fileBytes(name)
+			markerOff := len(b) - raw.TrailerSize - raw.CatalogEntrySize*len(es) - format.SealMarkerSize
+			r.rewrite(name, appendSealed(b[:markerOff], victim, es))
+
+			_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+			if err == nil {
+				t.Fatalf("Run over an entry carrying %s returned no error, want the open to refuse", row.name)
+			}
+			if !errors.Is(err, core.ErrUnknownFormat) {
+				t.Errorf("Run: an entry carrying %s got err %v, want ErrUnknownFormat, the largest-value rule's own refusal", row.name, err)
+			}
+			if got := err.Error(); !contains(got, fmt.Sprint(victim)) {
+				t.Errorf("Run: the refusal %q does not name the segment %d it refused", got, victim)
+			}
+		})
+	}
+}
+
+// TestCatalogRefusesAnUnreadableFooterRead holds the fault rule through the
+// catalogue: a read of the trailer, the seal marker or a record the footer
+// names that no bounded attempt completes refuses the open on the collected
+// range — never demoted to a scan of bytes nobody read, never counted by
+// catalogue — and the bound's attempts are exactly its three, after the
+// healthy reads the file had before the faulted one.
+func TestCatalogRefusesAnUnreadableFooterRead(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		from  int    // the first call of the file the fault fails
+		prior int    // the healthy reads the file had before the faulted one
+		where string // which read the fault lands on, for the range it names
+	}{
+		{"the trailer read", 2, 1, "trailer"},
+		{"the seal marker read", 3, 2, "marker"},
+		{"a record read the footer names", 5, 4, "record"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			segs, ents := r.plantSealed(catalogSteps(), stepsPerSegment, true)
+			// The victim holds the clone target at its first record, so the
+			// record the footer names and the rebuild reads back is the
+			// first read past the footer's own.
+			victim := segs[1]
+			name := format.SegmentName(victim)
+			b := r.fileBytes(name)
+			size := int64(len(b))
+			footerOff := size - raw.TrailerSize - raw.CatalogEntrySize*int64(len(ents[victim]))
+			var want core.SegmentRange
+			switch row.where {
+			case "trailer":
+				want = core.SegmentRange{Segment: victim, Off: size - raw.TrailerSize, Len: int64(raw.TrailerSize)}
+			case "marker":
+				want = core.SegmentRange{Segment: victim, Off: footerOff - format.SealMarkerSize, Len: format.SealMarkerSize}
+			case "record":
+				want = core.SegmentRange{Segment: victim, Off: ents[victim][0].RecordOffset, Len: format.RecordHeaderSize}
+			}
+			if err := r.seam.Schedule(kit.FailingFrom(kit.OpRead, name, row.from, 0, syscall.EIO)); err != nil {
+				t.Fatalf("fixture: schedule: %v", err)
+			}
+			before := r.fileBytes(name)
+
+			st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+			var ure *core.UnreadableRangesError
+			if !errors.As(err, &ure) {
+				t.Fatalf("Run with %s faulting on every attempt got err %v, want an UnreadableRangesError", row.name, err)
+			}
+			if !slices.Contains(ure.Ranges, want) {
+				t.Errorf("Run: the refusal names ranges %v, want one to be %+v", ure.Ranges, want)
+			}
+			if got := st.Rebuilt.ByCatalog; got != 0 {
+				t.Errorf("Run: the refused open counted %d segments by catalog, want none", got)
+			}
+			if got, wantCalls := r.seam.CallsFor(kit.OpRead, name), row.prior+readretry.Attempts; got != wantCalls {
+				t.Errorf("Run: the faulted read made %d attempts, want the %d healthy reads before it and the bound's %d",
+					got, row.prior, readretry.Attempts)
+			}
+			if after := r.fileBytes(name); !slices.Equal(before, after) {
+				t.Errorf("Run: the refused read changed the segment file, want the bytes it started with")
+			}
+		})
+	}
 }
