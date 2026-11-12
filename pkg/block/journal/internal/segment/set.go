@@ -28,9 +28,12 @@
 package segment
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -594,6 +597,32 @@ func (s *Set) ShareBytesAndRetired(tag core.ShareTag) (settled, retired int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.tags[tag], s.retired[tag]
+}
+
+// Row is one segment of the set as Snapshot reads it. Tags is the row's own
+// copy of the record bytes per share tag, so a caller may keep or change it;
+// it is nil for a segment with no records.
+type Row struct {
+	ID    core.SegmentID
+	State State
+	Size  int64
+	Tags  map[core.ShareTag]int64
+}
+
+// Snapshot lists every segment of the set, spares excluded, in ascending id
+// order. It is one lock and a copy, with no I/O: the rows describe the set at
+// one instant, and a caller that acts on one must still re-check it, as every
+// claim does.
+func (s *Set) Snapshot() []Row {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rows := make([]Row, 0, len(s.segs))
+	for id, e := range s.segs {
+		rows = append(rows, Row{ID: id, State: e.state, Size: e.size, Tags: maps.Clone(e.tags)})
+	}
+	slices.SortFunc(rows, func(a, b Row) int { return cmp.Compare(a.ID, b.ID) })
+	return rows
 }
 
 // Claim takes a retirement's claim on a segment of the set that no stream

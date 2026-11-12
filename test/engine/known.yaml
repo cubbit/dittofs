@@ -280,8 +280,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: the version limit''s raise failing for 31s fences the node and its commit clears it; waits for epic 6''s retried raise (T6.7), which nothing issues yet, so the row then fails on never fencing. Init and Open work; the fixture now attaches the share; the row stops at its own check: nothing retries the failing raise, so the node never fences. Then back to the row''s own need: until the journal has Draw.'
-  issue: '#3701'
+  reason: 'Epic 7: the version limit''s raise failing for 31s fences the node and its commit clears it. The engine side is done: the raise loop runs as a retrying owner. The row stops before its own check: the real journal refuses every Draw by the version limit with no raise in flight, answered retry-later (commit), and its Stats has no NextVersion (zero), so no raise ever falls due and the node never fences. Waits for the journal to report its version counter.'
+  issue: '#3590'
 - test: TestRFC8A_RemovalCrashedBetweenBatchesResumes
   message: 'vfs: retry shortly: commit'
   status: fail
@@ -575,4 +575,25 @@
   fix: planned
   category: feature
   reason: 'Epic 7: repack draws on the reserve, so a third share is served. Init and Open work; the fixture now attaches the share; the row stops at its first journal-backed write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6).'
+  issue: '#3590'
+- test: TestRFC8_VersionLimitSustainedLoad
+  message: 'the first version: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 7: the real journal refuses the share''s first version by the version limit with no raise in flight, so the row ends at its first draw, answered retry-later (commit), and never reaches the stall. Blocked until the journal opens with the limit the engine passed or the engine''s trigger reads the journal''s real limit, and its Stats reports NextVersion; the negative case at a block of 2^20 also needs the block the conformance package cannot set. The same scenarios run over the fake journal in the engine''s own tests.'
+  issue: '#3590'
+- test: TestRFC8_VersionLimitBurst250000
+  message: 'the first version: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 7: the real journal refuses the share''s first version by the version limit with no raise in flight, so the row ends at its first draw, answered retry-later (commit), and never reaches the stall. Blocked until the journal opens with the limit the engine passed or the engine''s trigger reads the journal''s real limit, and its Stats reports NextVersion; the negative case at a block of 2^20 also needs the block the conformance package cannot set. The same scenarios run over the fake journal in the engine''s own tests.'
+  issue: '#3590'
+- test: TestRFC8_VersionLimitBurst500000
+  message: 'the first version: vfs: retry shortly: commit'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 7: the real journal refuses the share''s first version by the version limit with no raise in flight, so the row ends at its first draw, answered retry-later (commit), and never reaches the stall. Blocked until the journal opens with the limit the engine passed or the engine''s trigger reads the journal''s real limit, and its Stats reports NextVersion; the negative case at a block of 2^20 also needs the block the conformance package cannot set. The same scenarios run over the fake journal in the engine''s own tests.'
   issue: '#3590'
