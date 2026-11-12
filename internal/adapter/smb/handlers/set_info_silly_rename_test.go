@@ -106,3 +106,41 @@ func TestClose_DeletesAFileRenamedThroughAnotherHandle(t *testing.T) {
 		t.Errorf("entries after the last close: %v, want none", names)
 	}
 }
+
+// A rename moves one name of a file, so an open made through another hard
+// link of it keeps its own name, while an open made through the renamed name
+// follows it.
+func TestRename_LeavesAnOpenThroughAnotherHardLinkItsName(t *testing.T) {
+	h, ctx, rootHandle := setupStreamsDisabledShare(t, false)
+
+	renamer := dirTestCreate(t, h, ctx, "a.txt", types.FileOpenIf, 0)
+	sameName := dirTestCreate(t, h, ctx, "a.txt", types.FileOpen, 0)
+	first, ok := h.GetOpenFile(renamer)
+	if !ok {
+		t.Fatal("the first open is not in the table")
+	}
+	if _, err := h.Registry.GetMetadataService().CreateHardLink(dirTestAuthContext(), rootHandle, "b.txt", first.GetMetadataHandle()); err != nil {
+		t.Fatalf("CreateHardLink: %v", err)
+	}
+	otherLink := dirTestCreate(t, h, ctx, "b.txt", types.FileOpen, 0)
+
+	dirTestRename(t, h, ctx, renamer, "a2.txt")
+
+	for _, c := range []struct {
+		what string
+		id   [16]byte
+		want string
+	}{
+		{"the renaming open", renamer, "a2.txt"},
+		{"another open through the renamed name", sameName, "a2.txt"},
+		{"the open through the other link", otherLink, "b.txt"},
+	} {
+		open, ok := h.GetOpenFile(c.id)
+		if !ok {
+			t.Fatalf("%s is not in the table", c.what)
+		}
+		if got := open.Name().FileName; got != c.want {
+			t.Errorf("%s is named %q after the rename, want %q", c.what, got, c.want)
+		}
+	}
+}

@@ -1113,19 +1113,25 @@ func (h *Handler) applyFileInfoFromStore(
 		openFile.SetName(renamed)
 		openFile.Unlock()
 		h.StoreOpenFile(openFile)
-		// Every other open of the file follows it to the new name: a deferred
+		// Every other open made through the renamed name follows it: a deferred
 		// delete-on-close removes the file by the name of whichever handle
-		// closes last, which is rarely the one that renamed it. The write lands
-		// on the pointer the table holds, with no re-Store, which would
-		// resurrect a handle its own CLOSE has removed.
+		// closes last, which is rarely the one that renamed it. An open made
+		// through another hard link has the same handle and a name of its own,
+		// which the rename did not touch, so the old parent and name are matched
+		// too. The write lands on the pointer the table holds, with no re-Store,
+		// which would resurrect a handle its own CLOSE has removed.
 		if renamedHandle := openFile.GetMetadataHandle(); len(renamedHandle) > 0 {
 			h.files.Range(func(_, value any) bool {
 				other := value.(*OpenFile)
-				if other.FileID != openFile.FileID && bytes.Equal(other.GetMetadataHandle(), renamedHandle) {
-					other.Lock()
-					other.SetName(renamed)
-					other.Unlock()
+				if other.FileID == openFile.FileID || !bytes.Equal(other.GetMetadataHandle(), renamedHandle) {
+					return true
 				}
+				if n := other.Name(); !bytes.Equal(n.ParentHandle, srcParentHandle) || !strings.EqualFold(n.FileName, oldFileName) {
+					return true
+				}
+				other.Lock()
+				other.SetName(renamed)
+				other.Unlock()
 				return true
 			})
 		}
