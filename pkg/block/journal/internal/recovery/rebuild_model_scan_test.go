@@ -287,7 +287,7 @@ func (r *modelRig) plantWorkload(w *workload) {
 // three files of two shares, across several segments — through the open's
 // rebuild, and every file the model holds must read back through the
 // rebuilt index exactly as the model derives it: entries, versions, record
-// locations and markers (R12). The clone target the model has no operation
+// locations and markers. The clone target the model has no operation
 // for is driven as the deallocate its extent is, and its marker and spec
 // are held against the read-out directly.
 //

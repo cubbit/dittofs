@@ -157,7 +157,7 @@ func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment cor
 //
 // decision: the bodies are skipped because the two checksums are separate —
 // the header verifies on its own, so a scan can trust a record's boundaries
-// without reading its payload (RFC 28 §2.3), and each live payload is
+// without reading its payload, and each live payload is
 // verified whole where it is handed out instead: recovery's own body reads,
 // which re-read and verify each record they use. Overturned the day the
 // format rules that a scan verifies every live payload at open; until then,

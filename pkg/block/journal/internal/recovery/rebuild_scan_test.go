@@ -289,8 +289,8 @@ func assertOnlySpareUnlinks(t *testing.T, before map[string][]byte, r *rig) {
 // TestRunRebuildIsIdenticalInAnyOrderAndReaderCount feeds the same directory
 // through every dispatch order the seam has and under one, two and eight
 // readers, and the rebuild must give one identical index: precedence, not
-// arrival order, decides each byte (R19), whatever reader count the machine
-// allows (D8's bound).
+// arrival order, decides each byte, whatever reader count the machine
+// allows.
 func TestRunRebuildIsIdenticalInAnyOrderAndReaderCount(t *testing.T) {
 	steps := seededSteps(7)
 	for _, procs := range []int{1, 2, 8} {
@@ -495,8 +495,8 @@ func TestRunRebuildFailsOnAVerifyingReconcileRecord(t *testing.T) {
 	}
 }
 
-// TestRunRebuildEIOTwiceThenSucceedsBuildsTheSameIndex holds R46's recovery
-// half through the open: a segment read that faults twice and then succeeds
+// TestRunRebuildEIOTwiceThenSucceedsBuildsTheSameIndex holds the recovery
+// half of the read-fault rule through the open: a segment read that faults twice and then succeeds
 // rebuilds the index the same directory with the fault off gives.
 func TestRunRebuildEIOTwiceThenSucceedsBuildsTheSameIndex(t *testing.T) {
 	steps := seededSteps(5)
@@ -521,7 +521,7 @@ func TestRunRebuildEIOTwiceThenSucceedsBuildsTheSameIndex(t *testing.T) {
 }
 
 // TestRunRebuildEIOEveryAttemptFailsWithUnreadableRangesNamingTheSegment
-// holds R46's refusal half: a segment read no bounded attempt completes
+// holds the refusal half of the read-fault rule: a segment read no bounded attempt completes
 // fails the whole open with *core.UnreadableRangesError naming that segment,
 // with the directory keeping the bytes it held. The fault lets the attach
 // pass's header read through and fails every read after it, so the failure
@@ -737,7 +737,7 @@ type rebuiltOrErr struct {
 	err error
 }
 
-// TestRunRebuildRefusesAFloorWithAnEpoch holds R22 for a floor
+// TestRunRebuildRefusesAFloorWithAnEpoch holds the refusal of a floor
 // whose epoch half is not zero is refused the way a record carrying one is,
 // and the refused open returns no half-built state.
 func TestRunRebuildRefusesAFloorWithAnEpoch(t *testing.T) {
@@ -759,7 +759,7 @@ func TestRunRebuildRefusesAFloorWithAnEpoch(t *testing.T) {
 
 // TestRunRebuildCountsOneResyncPerScan sums the scans' resync counts: a bad
 // slot before a verifying record in each of two segments counts two, the
-// count being scans that resynchronised, not bad ranges (R38, R66).
+// count being scans that resynchronised, not bad ranges.
 func TestRunRebuildCountsOneResyncPerScan(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
@@ -805,7 +805,7 @@ func TestRunRebuildTooShortForASlotDoesNotFailTheOpen(t *testing.T) {
 	}
 }
 
-// TestRunRebuildAsideCarriedNotFed pins the T7.5 handoff through the rebuild:
+// TestRunRebuildAsideCarriedNotFed pins that aside records are carried, not fed, through the rebuild:
 // a loss, hold, unhold, stamp or forget record's header reached Scans and
 // nothing of it was fed — the index holds no entry of its file — and the
 // aside kinds' synced-through offsets count into their scan like any
@@ -994,10 +994,10 @@ func (f readRec) Size() (int64, error)                          { return f.f.Siz
 func (f readRec) Close() error                                  { return f.f.Close() }
 func (f readRec) Name() string                                  { return f.name }
 
-// TestRunRebuildReadsNoPayloadOfAnyNewestOrOlderSegment holds R20's read
-// half through the whole open: no recorded read overlaps a write or fill
+// TestRunRebuildReadsNoPayloadOfAnyNewestOrOlderSegment holds the no-payload-read
+// half of the scan rule through the whole open: no recorded read overlaps a write or fill
 // record's payload range, in any segment, newest or older alike. The
-// acceptance the epic names covers the segments that are not the newest of
+// rule covers the segments that are not the newest of
 // a stream — the header-only walk reads no write's or fill's body anywhere,
 // so every segment of the plant is asserted the same way; a clone target's
 // 56-byte spec is the one body the scan reads back whole, by design, and

@@ -292,7 +292,7 @@ func TestScanSegmentRefusesKind17AndKind128(t *testing.T) {
 	}
 }
 
-// TestScanSegmentRefusesTheWalksEpochStopAndTheLargestCounters holds R22: a
+// TestScanSegmentRefusesTheWalksEpochStopAndTheLargestCounters holds the number-range rule: a
 // record whose version carries a non-zero epoch half is refused by the walk's
 // own stop, as an unknown kind is, and a record whose version counter or
 // sequence number is the largest 64-bit value is refused by the scan's number
@@ -326,7 +326,7 @@ func TestScanSegmentRefusesTheWalksEpochStopAndTheLargestCounters(t *testing.T) 
 	}
 }
 
-// TestScanSegmentRefusesTheLargestNumbersOfEveryAsideKind holds R22 for the
+// TestScanSegmentRefusesTheLargestNumbersOfEveryAsideKind holds the number-range rule for the
 // kinds the scan only sets aside: a loss, hold, unhold, stamp or forget
 // whose sequence number is the largest 64-bit value fails the scan as a
 // content kind's does, and so does one whose version counter is — for the
