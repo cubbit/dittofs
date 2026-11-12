@@ -800,7 +800,9 @@ cannot build apart.
   `pkg/apiclient` on `pkg/node/apiv1`. Its epic 1 therefore overrides D5 for these methods.
 - `metrics.Registry` an alias of the branch's `Metrics` rather than RFC 25's registry (D10).
   Owner: RFC 25.
-- `vfs.Grace{Until}` (D26), named in RFC 17 by T1.9. Owner: RFC 17's plan, before E5's T5.5.
+- `vfs.Grace{Until}` (D26), named in RFC 17 by T1.9. Owner: RFC 17's plan, before RFC 22's
+  first row that bounds a hold by a grace's end; E5's T5.5b hands the error to `ErrorRow.Hold`
+  and does not wait for it.
 - `vfs.Shares.MoveTarget` (D16), named in RFC 17 by T1.9, in `pkg/vfs`, `*vfs.Filesystem`
   (so `memory.New`) and `vfstest.Null`. Owner: RFC 17's plan, before E4 calls it; until RFC
   15's topology exists it answers none.

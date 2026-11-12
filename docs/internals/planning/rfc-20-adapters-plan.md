@@ -433,7 +433,7 @@ internal/
     core/                     E1 types, E4 and E5 bodies
       protocol.go             E1: Protocol, Framer, Stages, stage interfaces, Header
       dispatch.go             E1 types, E5: OpTable, Op (with Role), Invocation, Bind, Needs, Range, Request
-      errors.go               E1 type, E5: ErrorTable, totality check
+      errors.go               E1 type, E5: ErrorTable
       server.go settings.go conn.go                               E4
       pipeline.go compound.go hold.go middleware.go metrics.go    E5
     adaptertest/              E2
@@ -648,6 +648,13 @@ snapshot, health, and the TCP options. Then the sidecar runner in `internal/side
 follows those states. Proven on `testproto` over loopback, its drain and cancellation tests on
 the real pipeline once E5's lands (§3.4), then end to end against `memory.New` at S3.
 
+E4 also owns its side of the seam with the pipeline, which the epic 5 document's D1 fixes:
+every field of `Conn`, the calls into the pipeline (`withDefaults`, `newShared`,
+`newPipeline` with the writer's enqueue as its `out`, `serve`, `drain`, `wait`, `close`),
+and `Conn.Close`'s body. It counts `adapter_connections`, `adapter_connection_closes_total`
+and `adapter_bytes_total` at accept, in the reader and in the writer (§6.2). None of this is
+priced in the estimate above: the epic's breakdown prices it.
+
 RFC sections: §3.1 (states, drain, abandon at the deadline, auxiliary listeners all or none),
 §3.2 (a connection's lifecycle; the session-keyed cleanup wait as a `core` mechanism), §3.5,
 §3.6, §3.7, §6.1, §6.2, §6.4, §6.5's close and drain halves, §6.7, §6.9's connection and registry
@@ -674,7 +681,9 @@ rows, A10, A11, A14, A19, A20.
   each refused request answered `ErrMoved` or `ErrDraining` as the service says of its share,
   through RFC 17's call (none until RFC 15's topology exists, §6.2);
   in-flight requests awaited up to the drain deadline, then their contexts cancelled and their
-  replies dropped; closing cancels each request's context and runs `OnClose`; cleanup keyed by
+  replies dropped; closing cancels each request's context and runs `OnClose`, in `Conn.Close`'s
+  body, whose order is the epic 5 document's D1's (the reader stopped, the context cancelled,
+  the pipeline's `close`, its `wait`, `OnClose`, the writer stopped); cleanup keyed by
   session before a reconnect of that session is served.
 - T4.6 `Reconfigure`: refuse the other protocol's settings or any other type, validate (the
   shape's `Validate`, also run by `New`), refuse a changed `Port` with a sentinel error, one
@@ -703,9 +712,10 @@ rows, A10, A11, A14, A19, A20.
 The request path in `core`: §4.1's stages in order with their defaults and refusals, the drain
 filter, operation tables and their precondition columns, the reply reservation, the compound
 runner, held requests and their re-drive, the middleware chain, the error-table mapping and
-totality check, the request context, and the observability of RFC 20 §10. Tested on `testproto`,
+request context, and the observability of RFC 20 §10 that the request path produces. Tested on `testproto`,
 its replies sent by E4's real `Conn` over loopback (§3.4), end to end at S3, against
-`memory.New` and `vfstest.Faults`.
+`memory.New` and `vfstest.Faults`. The epic's breakdown, `rfc-20-adapters-epic5.md`, splits
+T5.1, T5.2, T5.4 and T5.5 by letter and is the source for what each part holds.
 
 RFC sections: §3.1's drain filter, §4.1, §4.2, §4.3's runner and reply budget (the one-call rule
 is read from `memory.New`'s record of mutating calls, §7.2), §4.5, §4.6, §4.7's pipeline and middleware, §4.8's table selection, §6.3,
@@ -724,7 +734,7 @@ is read from `memory.New`'s record of mutating calls, §7.2), §4.5, §4.6, §4.
 - T5.3 Admission: the per-connection cap of 64 where `Flow` is nil; the reply-bound reservation
   before the call, its refusal as `ErrDelay` with `DelayResources`.
 - T5.4 The compound runner: stop at the first failure, a cap refused before any operation, the
-  reply budget checked before each operation; chains from one record, each member's header
+  reply of each operation reserved before it runs (a session's own reply budget: §6.2); chains from one record, each member's header
   decoded, unwrapped, admitted and looked up on its own, the related-request rule, the replies
   joined with `HeaderCodec.Chain`, a related member routed from the one before it; the drain
   decision per request through `Invocation.Role`, and a member the drain refuses stopping the
@@ -737,8 +747,8 @@ is read from `memory.New`'s record of mutating calls, §7.2), §4.5, §4.6, §4.
   `Recharge(to *Budget) error`: additive after S1, brought by this subtask with an RFC 24
   amendment): interim timer and `HoldCodec.Interim` (`after` 0 on every hold), the final reply under
   `HoldCodec.Final`, re-drive from `Resolve` with a fresh attempt deadline inside the hold bound,
-  `vfs.WithHold` added to `pkg/vfs` (RFC 17 §5.9) and passed on every call, asserted where it
-  is read, by the in-memory service's clone wait (RFC 17 plan piece 11's, V30),
+  `vfs.WithHold` added to `pkg/vfs` (RFC 17 §5.9) and passed on every call, asserted on what reaches the service; the test at its reader, the in-memory service's clone wait
+  (RFC 17 plan piece 11's, V30), is a ledger row (§6.2),
   the per-connection
   floor and the hold pool, the credits on `testproto`'s balance for each case §4.6 and
   `HoldCodec` name (past the ceiling; past the floor with the hold pool full; cancelled; a chain
@@ -758,15 +768,16 @@ is read from `memory.New`'s record of mutating calls, §7.2), §4.5, §4.6, §4.
 - T5.7 `ErrorTable`: mapping by error, operations and version, `NewOpTable` refusing an
   `ErrorRow.Hold` in a table that does not hold, and `NoReply` (`Map`'s reply flag,
   the reply reservation freed with no final reply, and on a table that holds an interim granting the request's credits); `ReplayCache`'s own copy; a kind named by a typed value under `errors.Is` (RFC 17 §4.3; `vfserr` matches by kind from #3869), most specific row first in §4.7's total order; an unmapped
-  error answered server fault and counted; the totality check against `vfs.Errors()` as a
-  helper each protocol's table will call.
+  error answered server fault and counted. The totality check against `vfs.Errors()`, and the
+  helper each protocol's table will call for it, are a ledger row (§6.2).
 - T5.8 Request context: the 30 s deadline; cancellation on close and drain.
-- T5.9 RFC 20 §10's metrics, spans and logs, all in `core`; series resolved at table build,
-  through the resolve-once call `metrics.Registry` gains here, its first consumer.
+- T5.9 RFC 20 §10's metrics, spans and logs, all in `core`, but the connection, close and
+  byte series, which E4 counts (§6.2); series resolved once per table, through the
+  resolve-once call `metrics.Registry` gains here, its first consumer.
 - T5.10 The pipeline micro-benchmark on `testproto` over `vfstest.Null`, its allocation ceiling
   checked in and registered in `unit/adapter-allocs`.
 - T5.11 Parked requests: RFC 20 §4.7's `Park` as its comment states it, on `testproto`'s parked
-  operation; `Conn.Close`; the cancel record's 5 s; §3.1's cancel at drain and §6.5.
+  operation; the pipeline's close that `Conn.Close` calls (the body is E4's); the cancel record's 5 s; §3.1's cancel at drain and §6.5.
 
 ### Epic 6 — Protocol scaffolds
 
@@ -931,6 +942,7 @@ decision to drop it (its issue closed as not planned).
 | the packages deleted in T1.1 for having no importer: `pkg/discovery/mdns` and `wsd`; `pkg/auth`, `pkg/auth/kerberos`, `pkg/identity/kerberos`, `internal/auth/kerberos`; `internal/mfsymlink` | nothing imports them once v1 is gone | discovery: cutover; Kerberos and `pkg/auth`: RFC 18's plan (#4058); `mfsymlink`: RFC 22 plan | each lifted from develop's history by its consumer |
 | `pkg/apiclient`'s adapter and netgroup methods, kept for the e2e helpers `lint-go` vets; their routes answer 404 | compiled tests still call them | RFC 23's plan (#4050): its epic 1 deletes `pkg/apiclient`'s v1 bodies, these included, since its rule 7 does not keep them, and fixes or removes the e2e code that calls them; its epic 6 rewrites `pkg/apiclient` on `pkg/node/apiv1` | its epic 1, which overrides D5 of `rfc-20-adapters-epic1.md` for these methods; its epic 6 |
 | `metrics.Registry` an alias of `pkg/metrics`' `Metrics` (T1.6), not RFC 25 §8.2's registry; T5.9 adds §8.2's `Spec`, `Counter`, `Gauge` and `Histogram` to it, unchecked | the rest of the registry (the checks of RFC 25 §2 on a `Spec`, `Collect`, the rename) is not built | RFC 25 | when the registry is built |
+| the test of `vfs.WithHold` at its reader: a call held by the in-memory service's clone wait for the time the adapter passed, and no longer (RFC 17's V30, seen from `core`) | the clone wait is not on the branch; E5's T5.5b asserts on what reaches the service | RFC 17 plan, piece 11 | with the clone wait |
 | `vfs.Grace{Until}`, the typed `ErrGrace` carrying the shard's grace end, which an `ErrorRow.Hold` reads to bound a hold (RFC 17 §4.3) | named in RFC 17 by T1.9; not yet in `pkg/vfs`, and no piece of the RFC 17 plan builds it | unowned: the type in `pkg/vfs`, returned by `*vfs.Filesystem` | RFC 22's first row that bounds a hold by a grace's end; E5's T5.5 hands the error to `ErrorRow.Hold` and reads no field of it |
 | `vfs.Shares.MoveTarget`, which says whether a draining request's share has a gateway to move to (`ErrMoved`) or none (`ErrDraining`), asked per request (RFC 20 §3.1) | named in RFC 17 by T1.9; not yet in `pkg/vfs`, and no piece of the RFC 17 plan builds it | unowned: the method in `pkg/vfs`, `*vfs.Filesystem` (so `memory.New`) and `vfstest.Null`, answering none | E4's T4.5 starts, which calls it; a real target once RFC 15's topology exists |
 
