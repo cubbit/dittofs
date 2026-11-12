@@ -3065,7 +3065,7 @@ package resources // pkg/resources (RFC 24 §2.8): shared by every component
 // Buf is one pooled buffer, shared by reference count. Its reservation is
 // released with its bytes, so budget and memory never disagree.
 type Buf struct {
-	B []byte // len is the record's or reply's; cap is the class size
+	B []byte // len is the record's or reply's; cap is the class's capacity (RFC 24 §3.1)
 	// unexported: its class, its reference count and its Reservation
 }
 

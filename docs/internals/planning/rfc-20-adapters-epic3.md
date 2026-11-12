@@ -212,8 +212,10 @@ called by E4's and E5's tests.
   `Retain` and `Release` pair on it, its last `Release` frees nothing, having no pool and no
   reservation, and one more panics (R17). A `Retain` after the last `Release` would bring
   the count back to zero and read as one holder of a buffer the pool may already have handed
-  out, so it panics as well, in tests and in production, as R17's release does. `decision:`
-  at the field. No prior art found.
+  out, so it panics as well, in tests and in production, as R17's release does. Both panics
+  hold only while the buffer sits released: once the pool hands it out again, a stale `Retain`
+  or `Release` cannot be told from the new holder's, and R16's poison read under the race
+  detector is what catches the stale holder. `decision:` at the field. No prior art found.
 
 ## 5. Target tree
 
