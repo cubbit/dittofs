@@ -53,8 +53,9 @@ type segmentScan struct {
 	// Size is the segment file's own size, as its storage reported.
 	Size int64
 
-	// Dropped holds the catalogued entries the tail's proof will judge;
-	// filled by the phase that owns them, never by the sources here.
+	// Dropped holds the catalogued entries the tail's classing will judge:
+	// the catalogue read fills it for each record it confines, the walk
+	// leaves it empty, and what it carries is the tail's to own.
 	Dropped []droppedRecord
 }
 
@@ -400,7 +401,9 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	// footer verifies as a named segment's.
 	named := make(map[core.SegmentID]bool, len(own))
 	for _, seg := range own {
-		if seg.Header.Predecessor != 0 {
+		// A segment naming itself as its own predecessor is damaged, and
+		// nothing is offered a catalogue off its own claim.
+		if seg.Header.Predecessor != 0 && seg.Header.Predecessor != seg.ID {
 			named[seg.Header.Predecessor] = true
 		}
 	}

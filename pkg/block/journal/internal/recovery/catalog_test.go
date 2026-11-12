@@ -378,9 +378,11 @@ func TestCatalogDemotesEveryNoFooterToAScan(t *testing.T) {
 			st, segs := open(t, row.mutate, false)
 			victim := segs[0]
 			// Intact, the plant catalogues every sealed segment a successor
-			// names: all but the newest. The broken one must not count.
+			// names: all but the newest. The broken one must not count —
+			// most rows demote it to the scan; the short file is refused at
+			// attach before the rebuild reaches it at all.
 			if got, want := st.Rebuilt.ByCatalog, len(segs)-2; got != want {
-				t.Fatalf("Run rebuilt %d segments by catalog, want %d: the broken footer's segment was not demoted to the scan", got, want)
+				t.Fatalf("Run rebuilt %d segments by catalog, want %d: the broken footer's segment was not kept out of the catalogues — neither demoted to the scan nor refused at attach", got, want)
 			}
 			if sc, ok := scanOf(st, victim); ok && sc.SealedByCatalog {
 				t.Errorf("Run: segment %d was rebuilt by catalog, want the scan: a footer that does not verify never feeds", victim)
@@ -443,7 +445,22 @@ func scanOf(st State, id core.SegmentID) (segmentScan, bool) {
 // and still rebuilds the same index.
 func TestCatalogReadsOnlySegmentsASuccessorNames(t *testing.T) {
 	steps := catalogSteps()
-	var chained map[string][]index.Entry
+
+	// chainedIndex builds the reference the unchained plant compares
+	// against: the index of the same workload planted chained, where every
+	// sealed segment is named and reads its catalogue — built per subtest,
+	// so one subtest's failure takes no other's reference with it.
+	chainedIndex := func(t *testing.T) map[string][]index.Entry {
+		t.Helper()
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSealed(steps, stepsPerSegment, true)
+		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+		if err != nil {
+			t.Fatalf("Run over the chained directory: %v", err)
+		}
+		return entriesOf(st.Rebuilt.Index)
+	}
 
 	t.Run("the newest is scanned whatever its trailer says", func(t *testing.T) {
 		r := newRig(t)
@@ -460,13 +477,15 @@ func TestCatalogReadsOnlySegmentsASuccessorNames(t *testing.T) {
 		if got, want := st.Rebuilt.ByCatalog, len(segs)-1; got != want {
 			t.Fatalf("Run rebuilt %d segments by catalog, want %d: the newest scans whatever its trailer says", got, want)
 		}
-		chained = entriesOf(st.Rebuilt.Index)
 	})
 
 	t.Run("no header names a predecessor anywhere", func(t *testing.T) {
 		r := newRig(t)
 		r.writeFormat()
 		segs, _ := r.plantSealed(steps, stepsPerSegment, false)
+		if len(segs) < 2 {
+			t.Fatalf("fixture: the workload planted %d segments, want a sealed one whose catalogue the chained plant reads", len(segs))
+		}
 		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
 		if err != nil {
 			t.Fatalf("Run over a directory where no header names a predecessor: %v", err)
@@ -474,8 +493,8 @@ func TestCatalogReadsOnlySegmentsASuccessorNames(t *testing.T) {
 		if got, want := st.Rebuilt.ByCatalog, 0; got != want {
 			t.Fatalf("Run rebuilt %d segments by catalog, want %d: nothing is named, so every segment scans", got, want)
 		}
-		if !sameEntries(chained, entriesOf(st.Rebuilt.Index)) {
-			t.Errorf("Run: the scan-only rebuild built a different index than the chained one that read its %d catalogues", len(segs)-1)
+		if !sameEntries(chainedIndex(t), entriesOf(st.Rebuilt.Index)) {
+			t.Errorf("Run: the scan-only rebuild built a different index than the chained one that read its catalogues")
 		}
 	})
 }
@@ -793,18 +812,99 @@ func TestCatalogRefusesTheLargestNumbersAnEntryCarries(t *testing.T) {
 	}
 }
 
-// TestCatalogScansARecycledSegmentsStaleTrailer holds the recycle rule
-// through the open: a recycled segment — its old life sealed with a
-// catalogue, the take returning it keeping the same id, so the take is the
-// stream's newest, named by no successor — is scanned whatever its trailer
-// says. The crash that dropped the recycle left the old life's marker,
-// footer and trailer bytes past the new records, still verifying for this
-// id, identity and offset: a stale catalogue of a dead life. The open
-// succeeds, no entry of the old life's footer lands in the index — the
-// honest plant, the take a completed recycle leaves, builds the same index —
-// ByCatalog counts the recycled segment nowhere, and a forced scan of the
-// same directory is identical, so the stale trailer fed nothing the walk
-// does not.
+// TestCatalogRefusesARecordHeaderOfUnknownKind holds the triage the two
+// sources share: a record whose header verifies at the place its entry
+// names but names a kind this format version does not define is a format
+// this binary does not read, refused by the open itself, never confined
+// as one record's own damage — and the header walk refuses the same bytes
+// the same way, so neither source steps over the record or serves it.
+func TestCatalogRefusesARecordHeaderOfUnknownKind(t *testing.T) {
+	// plant grows the chained workload and rebuilds the loss record of its
+	// second sealed segment through the raw encoder with kind 0 — its two
+	// checksums recomputed over the mutated bytes — so the header verifies
+	// at its place and only its kind refuses. It returns the rig and the
+	// planted ids.
+	plant := func(t *testing.T) (*rig, []core.SegmentID) {
+		t.Helper()
+		r := newRig(t)
+		r.writeFormat()
+		segs, ents := r.plantSealed(catalogSteps(), stepsPerSegment, true)
+		if len(segs) < 3 {
+			t.Fatalf("fixture: the workload planted %d segments, want a sealed one beside the newest", len(segs))
+		}
+		victim := segs[1] // holds the loss at its fourth entry
+		name := format.SegmentName(victim)
+		b := r.fileBytes(name)
+		e := ents[victim][3]
+		body := b[e.RecordOffset+format.RecordHeaderSize : e.RecordOffset+format.RecordHeaderSize+16]
+		unk := raw.Record{
+			Identity:     journalID,
+			Kind:         0, // a kind this format version does not define
+			Segment:      uint64(victim),
+			FileID:       e.File.Bytes(),
+			Offset:       uint64(e.Extent.Off),
+			Length:       uint64(e.Extent.Len),
+			Seq:          uint64(e.Seq),
+			Version:      raw.Version{Epoch: e.Version.Epoch, Counter: e.Version.Counter},
+			Tag:          uint32(e.Tag),
+			RecordOffset: uint32(e.RecordOffset),
+			Loss: &raw.LossBody{
+				Dropped: binary.LittleEndian.Uint64(body[0:8]),
+				Flags:   binary.LittleEndian.Uint64(body[8:16]),
+			},
+		}
+		got := unk.Bytes()
+		if next := ents[victim][4].RecordOffset; e.RecordOffset+int64(len(got)) > next {
+			t.Fatalf("fixture: the rebuilt record runs to %d, past its slot's end %d", e.RecordOffset+int64(len(got)), next)
+		}
+		copy(b[e.RecordOffset:], got)
+		r.rewrite(name, b)
+		return r, segs
+	}
+
+	r, segs := plant(t)
+	victim := segs[1]
+	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+	if err == nil {
+		t.Fatalf("Run over a catalogued segment whose record names an unknown kind returned no error, want the open to refuse")
+	}
+	if !errors.Is(err, core.ErrUnknownFormat) {
+		t.Errorf("Run: a record header of an unknown kind got err %v, want ErrUnknownFormat, the open's own refusal", err)
+	}
+	if got := err.Error(); !contains(got, fmt.Sprint(victim)) {
+		t.Errorf("Run: the refusal %q does not name the segment %d it refused", got, victim)
+	}
+
+	// The same bytes through the walk: the sources give one answer.
+	sr, _ := plant(t)
+	deps := sr.runDeps()
+	deps.rebuildForceScan = true
+	_, err = Run(context.Background(), deps, core.Version{}, journalID, nil)
+	if err == nil {
+		t.Fatalf("the forced scan over a record of an unknown kind returned no error, want the open to refuse")
+	}
+	if !errors.Is(err, core.ErrUnknownFormat) {
+		t.Errorf("the forced scan: a record header of an unknown kind got err %v, want ErrUnknownFormat as the catalogued read's", err)
+	}
+}
+
+// TestCatalogScansARecycledSegmentsStaleTrailer holds the successor-set rule
+// through the open. The take here returns its segment to the same id, a
+// deliberately impossible configuration — a recycle draws a fresh id above
+// every id the directory names, so the old life's marker, footer and
+// trailer name an id the take never holds, and the trailer's own seal
+// marker check refuses them there, as the fresh-id sibling test plants. The
+// same-id take is kept nonetheless, for it isolates the successor-set rule
+// on its own: the take is the stream's newest, named by no successor, so
+// the open never offers its trailer a read at all, and the stale catalogue
+// — the old life's marker, footer and trailer bytes left past the new
+// records by the crash that dropped the recycle's trailer zeroing, still
+// verifying for this id, identity and offset — is unread on that rule
+// alone. The open succeeds, no entry of the old life's footer lands in the
+// index — the honest plant, the take a completed recycle leaves, builds the
+// same index — ByCatalog counts the recycled segment nowhere, and a forced
+// scan of the same directory is identical, so the stale trailer fed nothing
+// the walk does not.
 func TestCatalogScansARecycledSegmentsStaleTrailer(t *testing.T) {
 	steps := catalogSteps()
 
@@ -916,6 +1016,132 @@ func TestCatalogScansARecycledSegmentsStaleTrailer(t *testing.T) {
 	// The stale trailer was never read as a catalogue: with every catalogue
 	// turned off the same directory builds the identical index.
 	forced, _ := open(t, "the forced scan of the recycled directory", true, true)
+	if !sameEntries(entriesOf(st.Rebuilt.Index), entriesOf(forced.Rebuilt.Index)) {
+		t.Errorf("Run: the forced scan of the recycled directory built a different index than the open over it, want one and the same")
+	}
+}
+
+// TestCatalogDemotesAFreshIdTakeWithAStaleTail holds the trailer's seal
+// marker name-check through the open, in the shape the recycle rule leaves:
+// the take draws a fresh id above every id the directory names, and the old
+// life it reclaims — its marker, footer and trailer — names the old id, so
+// none of it verifies for the fresh one. The take is sealed at a crash (a
+// marker of its own, no footer), the crash that dropped the recycle's
+// trailer zeroing keeps the old life's tail in place, and a successor names
+// the fresh id, so the open offers the take its catalogue: its trailer is
+// the old life's, honest as a trailer and naming the old life's footer, and
+// the one thing that keeps that footer from feeding as the take's
+// catalogue is the seal marker at the footer's own offset, which names the
+// old id. The open succeeds, the take is demoted to the scan, no entry of
+// the old life lands in the index — the honest plant, the take a completed
+// recycle leaves, builds the same index — and a forced scan of the same
+// directory is identical.
+func TestCatalogDemotesAFreshIdTakeWithAStaleTail(t *testing.T) {
+	steps := catalogSteps()
+
+	// The take's record: a file and extent the old life never touches, of a
+	// fresh notebook — under a fresh id, nothing of the old life carries
+	// over but the bytes.
+	notebook := &stepNotebook{}
+	take := step{kind: 1, file: workFiles[0], off: 256, n: 16, tag: tagOf(workFiles[0])}
+	take.seq = notebook.nextSeq()
+	take.version = notebook.nextVersion()
+	take.payload = make([]byte, take.n)
+	for i := range take.payload {
+		take.payload[i] = byte(i + 1)
+	}
+	take.mtime = 1
+
+	// plant grows the chained workload, seals its newest segment — the old
+	// life the recycle reclaims — and hands it to the take under a fresh id
+	// above every id the directory names, as the recycle rule draws it. The
+	// take's header and record overwrite the old life's head, and its own
+	// seal marker sits just past its record — sealed at a crash, so no
+	// footer of its own was written. stale true keeps the old life's marker,
+	// footer and trailer at their own offsets past the take: the recycle's
+	// trailer zeroing is the one write the crash dropped, and the old tail's
+	// marker, footer and trailer all name the old id. stale false plants the
+	// honest directory — the same take over a completed recycle, none of
+	// the old bytes in the file. A successor names the fresh id, so the open
+	// offers the take its catalogue.
+	plant := func(t *testing.T, stale bool) (*rig, []core.SegmentID, core.SegmentID) {
+		t.Helper()
+		r := newRig(t)
+		r.writeFormat()
+		// Five steps a segment, so the recycled one holds three records:
+		// room for the take and its own marker below the old life's tail.
+		segs, ents := r.plantSealed(steps, 5, true)
+		if len(segs) < 3 {
+			t.Fatalf("fixture: the workload planted %d segments, want the recycled one beside named neighbours", len(segs))
+		}
+		victim := segs[len(segs)-1] // the old life
+		r.sealSeg(victim, ents[victim])
+		old := r.fileBytes(format.SegmentName(victim))
+		oldMarkerOff := len(old) - raw.TrailerSize - raw.CatalogEntrySize*len(ents[victim]) - format.SealMarkerSize
+
+		fresh := victim + 1
+		b := raw.SegmentHeader{Identity: journalID, ID: uint64(fresh), Predecessor: uint64(victim - 1)}.Bytes()
+		b = appendStep(b, fresh, take)
+		markerOff := len(b)
+		b = append(b, raw.SealMarker{Identity: journalID, Segment: uint64(fresh), Offset: uint64(markerOff)}.Bytes()...)
+		if stale {
+			// The take's own marker, then the old life's tail at its own
+			// offsets: the old marker, footer and trailer name the old id.
+			if len(b) > oldMarkerOff {
+				t.Fatalf("fixture: the take runs to %d, past the old marker at %d", len(b), oldMarkerOff)
+			}
+			b = append(b, make([]byte, oldMarkerOff-len(b))...)
+			b = append(b, old[oldMarkerOff:]...)
+		}
+		// The recycle's rename, done the other way round so the seam never
+		// sees both names: the old name is gone, the fresh one holds the take.
+		if err := r.seam.Remove(format.SegmentName(victim)); err != nil {
+			t.Fatalf("fixture: remove %s: %v", format.SegmentName(victim), err)
+		}
+		r.plantSeg(fresh, b)
+		r.plantSeg(fresh+1, raw.SegmentHeader{Identity: journalID, ID: uint64(fresh + 1), Predecessor: uint64(fresh)}.Bytes())
+		return r, segs, fresh
+	}
+
+	open := func(t *testing.T, what string, stale, forceScan bool) (State, []core.SegmentID, core.SegmentID) {
+		t.Helper()
+		r, segs, fresh := plant(t, stale)
+		deps := r.runDeps()
+		deps.rebuildForceScan = forceScan
+		st, err := Run(context.Background(), deps, core.Version{}, journalID, nil)
+		if err != nil {
+			t.Fatalf("Run over %s: %v", what, err)
+		}
+		return st, segs, fresh
+	}
+
+	st, segs, fresh := open(t, "the recycled directory", true, false)
+
+	// The marker check demotes the take: its named neighbours kept their
+	// catalogues while its stale trailer, whose seal marker names the old
+	// id, fed nothing.
+	if got, want := st.Rebuilt.ByCatalog, len(segs)-1; got != want {
+		t.Fatalf("Run rebuilt %d segments by catalog, want %d: the fresh take's stale trailer was read as a catalogue", got, want)
+	}
+	sc, ok := scanOf(st, fresh)
+	if !ok {
+		t.Fatalf("Run: the scans name no segment %d, want the fresh take", fresh)
+	}
+	if sc.SealedByCatalog {
+		t.Errorf("Run: segment %d was rebuilt by catalog, want the scan: a trailer whose seal marker does not verify for this segment never feeds", fresh)
+	}
+
+	// No entry of the old life lands in the index: the take's rebuild is
+	// exactly the honest plant's — the old life's footer fed through a
+	// catalogue would attach its records under the fresh id and differ here.
+	honest, _, _ := open(t, "the honest plant without the old bytes", false, false)
+	if !sameEntries(entriesOf(honest.Rebuilt.Index), entriesOf(st.Rebuilt.Index)) {
+		t.Errorf("Run: the fresh take's rebuild differs from the plant without the old bytes: an entry of the old life's footer landed in the index")
+	}
+
+	// The stale tail fed nothing the walk does not: with every catalogue
+	// turned off the same directory builds the identical index.
+	forced, _, _ := open(t, "the forced scan of the recycled directory", true, true)
 	if !sameEntries(entriesOf(st.Rebuilt.Index), entriesOf(forced.Rebuilt.Index)) {
 		t.Errorf("Run: the forced scan of the recycled directory built a different index than the open over it, want one and the same")
 	}

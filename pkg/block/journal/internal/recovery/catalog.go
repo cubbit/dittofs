@@ -227,9 +227,10 @@ func readRecordHeaderAt(rd *reader, identity core.JournalID, segID core.SegmentI
 	switch {
 	case derr == nil:
 		return h, nil
-	case errors.Is(derr, format.ErrNonZeroEpoch):
-		// A version of a later epoch is a format this binary does not read,
-		// as a header carrying one is, not damage.
+	case errors.Is(derr, format.ErrNonZeroEpoch), errors.Is(derr, format.ErrUnknownKind):
+		// A version of a later epoch and a kind this format version does
+		// not define are formats this binary does not read, as a header
+		// carrying one is, not damage — the same triage the scan gives.
 		return format.RecordHeader{}, fmt.Errorf("%w: segment %d: the record at %d: %v",
 			core.ErrUnknownFormat, segID, off, derr)
 	default:
