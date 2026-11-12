@@ -13,7 +13,7 @@ stub bodies and a working `Bind`), `pkg/adapter`'s `Deps`, `pkg/resources`' `Bud
 this document's own pull request, in a commit ahead of it: RFC 20 §3.4, §3.5 and §4.7 amended, `adapter.Socket`, `Serving.Listeners map[Socket][]netip.AddrPort`,
 `Adapter.Addrs()`, `core.Listener.Services` and the `(*Server).Addrs()` stub, with both golden files (D19),
 and `settings.Adapter.Port` with its golden file and RFC 20 §3.6 amended (D20). T2.3 also
-needs `vfstest.Memory` (§9).
+needs `memory.New` (§9).
 **Blocks:** E3, which turns the budget and replay specifications green and registers `BufPool`'s
 gate in the allocation cell this epic creates; E4 and E5, whose tests run `core` on `testproto`
 over loopback, end with the leak check, and turn the end-to-end specification green; E6, whose
@@ -55,14 +55,14 @@ end-to-end test written here lands red.
 the import test and its seeds; the leak check and the profiler's move to `internal/prof`; the
 `unit/adapter-allocs` cell with `testproto`'s gate; the `adapter-conformance` suite with its
 `known.yaml` and four red specifications; deleting `core.Dispatcher`; moving two existing test
-files to `vfstest.Memory`.
+files to `memory.New`.
 
 ### 1.2 Out of scope
 
 - The `core` behaviours `testproto` makes expressible (drain, holds, parks, chains, cancels,
   kept state, the handshake deadline, slow clients): each is a test of E4 or E5, the epic that
   writes the body; T2.2's table names which.
-- `vfstest.Memory` and `vfstest.Faults`, and the fault that holds a call until the test releases
+- `memory.New` and `vfstest.Faults`, and the fault that holds a call until the test releases
   it: RFC 17's (§9). `testproto`'s service calls reach whatever `Deps.VFS` holds; their first run
   on `Memory` and `Faults` is E4's, and `Create`'s one-call rule is read there from `Memory`'s
   record (E5's T5.5).
@@ -178,7 +178,7 @@ names the epic that owns the rest.
   are not doubles at all" paragraph allows, so it needs no conformance suite. It is held honest
   three ways: its handlers are thin (decode, at most one service call, encode) and answer
   nothing in the service's place; every error, delay and hold a `core` test needs comes from
-  the service the test supplies, `vfstest.Faults` around `vfstest.Memory`, kinds 3 and 2; and its
+  the service the test supplies, `vfstest.Faults` around `memory.New`, kinds 3 and 2; and its
   codec and stages are verified against byte vectors written by hand and as state machines. A
   `decision:` marker on `Protocol` states this: withdraw it if a `core` test ever needs
   `testproto` to decide something the service would.
@@ -307,13 +307,12 @@ names the epic that owns the rest.
   `TestImportsOnlyTheStandardLibrary` stood in for this test until it landed; R7 now holds both
   rules, each with its seed, so they are deleted rather than kept as a second copy that can drift.
   `pkg/resources`' `TestImportsOnlyStdlibAndMetrics` stays: its rule is RFC 24 §2.8's.
-- **D15, two test files move to `vfstest.Memory`.** `pkg/adapter/nfs/nfs_test.go` and
+- **D15, two test files move to `memory.New`.** `pkg/adapter/nfs/nfs_test.go` and
   `pkg/adapter/smb/smb_test.go` import `internal/vfs` for a typed nil `*vfs.Filesystem`, which
-  R11 forbids. They take `vfstest.Memory(t)`, the service RFC 20 §7.2 gives adapter tests,
-  which landed as `memory.New(t)` in `pkg/vfs/vfstest/memory`;
+  R11 forbids. They take `memory.New(t)`, the service RFC 20 §7.2 gives adapter tests;
   `vfstest.Null` is not used, since RFC 20 §7 keeps it for the allocation gate and the
   benchmarks. So the import test starts green with no allowlist (R9), and T2.3 waits for
-  `Memory`.
+  `memory.New`.
 - **D16, the coverage check reads names.** T2.2's test that every §4.7 symbol is referenced
   matches `core.<Name>` selectors and, for `Conn`'s and `Request`'s methods, the method names,
   with `go/parser` alone, against an exemption list in the test naming each symbol a protocol
@@ -733,7 +732,7 @@ func (c *Client) Balance() int
 
 **Subtask T2.3 estimate: 2 man-days.**
 
-- **Track:** the team. **Depends on:** S1 and `vfstest.Memory` (D15). Runs beside T2.1.
+- **Track:** the team. **Depends on:** S1 and `memory.New` (D15). Runs beside T2.1.
 - **Covers:** R1–R13.
 - **Deliverables:**
   - `imports_test.go` in `package adaptertest`: `violations(t, root) []string`, a `go/parser`
@@ -771,7 +770,7 @@ func (c *Client) Balance() int
 flowchart TD
   S1(["S1 surface frozen"]):::sync --> T2_4["T2.4 leak check and red suite"]
   S1 --> T2_3["T2.3 import test"]
-  M(["vfstest.Memory, RFC 17"]):::sync --> T2_3
+  M(["memory.New, RFC 17"]):::sync --> T2_3
   T2_4 --> T2_1["T2.1 frames, header, client"] --> T2_2["T2.2 stages and stateful operations"]
   T2_1 --> C1(["after T2.1: E4 can write its accept and reader tests"]):::sync
   T2_2 & T2_3 --> S2(["S2 testproto and the import test in CI"]):::sync
@@ -788,14 +787,14 @@ green.
 | --- | --- | --- | --- | --- |
 | 1 | T2.4 | 1.75 | — | the profiler's move, the leak check and the red suite every later red test joins |
 | 2 | T2.1, T2.2 | 6.75 | PR 1 | `testproto` whole, so its coverage check runs on the protocol it covers |
-| 3 | T2.3 | 2 | — | the import test; open beside PR 1 and 2 once `vfstest.Memory` has landed |
+| 3 | T2.3 | 2 | — | the import test; open beside PR 1 and 2 once `memory.New` has landed |
 
 A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **`vfstest.Memory` and `vfstest.Faults` do not exist on the branch.** T2.3 needs `Memory` for
-  D15; `testproto`'s service calls first run on both in E4. Deferral-ledger row: `Memory`,
+- **`memory.New` and `vfstest.Faults` landed with RFC 17's piece 12.** T2.3 uses `memory.New`
+  for D15; `testproto`'s service calls first run on both in E4. Deferral-ledger row: `memory.New`,
   `Faults`, and `Faults`' fault that holds a call until the test releases it (an event, since a
   timed wait is forbidden), on which D5 and D6 rest; owner RFC 17's plan, piece 12, before T2.3,
   which names that fault. T2.3 stays in S2, since the
