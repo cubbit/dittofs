@@ -218,7 +218,12 @@ func (f *copyFixture) flipByte(t *testing.T, at index.RecordAt, off int64) {
 // segmentRaw reads a whole segment's bytes through the seam.
 func (f *copyFixture) segmentRaw(t *testing.T, seg core.SegmentID) []byte {
 	t.Helper()
-	name := format.SegmentName(seg)
+	return f.readNameBytes(t, format.SegmentName(seg))
+}
+
+// readNameBytes reads a whole file of the seam's directory.
+func (f *copyFixture) readNameBytes(t *testing.T, name string) []byte {
+	t.Helper()
 	file, err := f.seam.Open(name)
 	if err != nil {
 		t.Fatalf("Open %s: %v", name, err)
@@ -233,6 +238,39 @@ func (f *copyFixture) segmentRaw(t *testing.T, seg core.SegmentID) []byte {
 		t.Fatalf("reading %s: %v", name, err)
 	}
 	return raw
+}
+
+// countLossRecords walks every segment file the seam holds and counts the
+// loss records decodable in each: the check that no loss was recorded
+// anywhere, read from the bytes a loss record would sit in rather than a
+// counter beside them.
+func (f *copyFixture) countLossRecords(t *testing.T) int {
+	t.Helper()
+	names, err := f.seam.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	total := 0
+	for _, name := range names {
+		kind, id := format.ClassifyName(name)
+		if kind != format.NameSegment {
+			continue
+		}
+		raw := f.readNameBytes(t, name)
+		for off := 0; off+format.RecordHeaderSize <= len(raw); {
+			h, err := format.DecodeRecordHeader(raw[off:off+format.RecordHeaderSize], copyIdentity, id, int64(off))
+			if err != nil {
+				// The walk stops where the records end: the bytes past the
+				// last one hold a seal marker or a footer, no record.
+				break
+			}
+			if h.Kind == format.KindLoss {
+				total++
+			}
+			off += int(h.Size())
+		}
+	}
+	return total
 }
 
 // readBack reads whole the record at off the seam's bytes, verifies it and

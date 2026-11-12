@@ -114,8 +114,8 @@ type source struct {
 
 // read enumerates seg's live pieces from the in-memory state and then reads
 // and verifies each distinct source record whole, holding no append domain.
-// The closure Try runs per attempt acquires one segment ref, reads the
-// record's header and body through it, and releases it before answering.
+// Each record's bytes come through readSource, the same read a later access
+// of an unread record repeats.
 func (c *Copier) read(ctx context.Context, set *segment.Set, seg core.SegmentID) ([]source, error) {
 	// Phase one over the in-memory pieces alone, holding no domain: the
 	// files whose entries name a record of seg, and the distinct records
@@ -159,36 +159,7 @@ func (c *Copier) read(ctx context.Context, set *segment.Set, seg core.SegmentID)
 	for _, rec := range recs {
 		file := fileOf[rec]
 		identity := c.streams.For(file).Identity()
-		// The mark's length is the header's, the whole of the record the
-		// pass can name before it reads; the set holds the entry by its
-		// (segment, offset) identity.
-		b, err := c.un.Try(ctx, unread.Ref{
-			SegmentRange: core.SegmentRange{Segment: seg, Off: int64(rec.Offset), Len: format.RecordHeaderSize},
-			Kind:         unread.Content,
-			File:         file,
-		}, func() ([]byte, error) {
-			ref, err := c.streams.For(file).AcquireRead(seg)
-			if err != nil {
-				return nil, err
-			}
-			defer ref.Release()
-			head := make([]byte, format.RecordHeaderSize)
-			if _, err := ref.ReadAt(head, int64(rec.Offset)); err != nil {
-				return nil, err
-			}
-			h, err := format.DecodeRecordHeader(head, identity, seg, int64(rec.Offset))
-			if err != nil {
-				// The header's bytes were read and do not decode: the read
-				// itself failed nowhere, so Try marks nothing; the truncated
-				// answer below names the source corrupt.
-				return head, nil
-			}
-			body := make([]byte, h.BodySize())
-			if _, err := ref.ReadAt(body, int64(rec.Offset)+format.RecordHeaderSize); err != nil {
-				return nil, err
-			}
-			return append(head, body...), nil
-		})
+		b, err := c.readSource(ctx, seg, file, rec)
 		if err != nil {
 			return nil, fmt.Errorf("reclaim: the source of segment %d: %w", seg, err)
 		}
@@ -217,6 +188,43 @@ func (c *Copier) read(ctx context.Context, set *segment.Set, seg core.SegmentID)
 		out = append(out, src)
 	}
 	return out, nil
+}
+
+// readSource reads one record of seg whole through the unread set, the same
+// read the pass's first phase makes of every source: the closure Try runs
+// per attempt acquires one segment ref, reads one whole record through it,
+// and releases it before answering. The mark's length is the header's, the
+// whole of the record the pass can name before it reads; the set holds the
+// entry by its (segment, offset) identity.
+func (c *Copier) readSource(ctx context.Context, seg core.SegmentID, file core.FileID, rec index.RecordAt) ([]byte, error) {
+	identity := c.streams.For(file).Identity()
+	return c.un.Try(ctx, unread.Ref{
+		SegmentRange: core.SegmentRange{Segment: seg, Off: int64(rec.Offset), Len: format.RecordHeaderSize},
+		Kind:         unread.Content,
+		File:         file,
+	}, func() ([]byte, error) {
+		ref, err := c.streams.For(file).AcquireRead(seg)
+		if err != nil {
+			return nil, err
+		}
+		defer ref.Release()
+		head := make([]byte, format.RecordHeaderSize)
+		if _, err := ref.ReadAt(head, int64(rec.Offset)); err != nil {
+			return nil, err
+		}
+		h, err := format.DecodeRecordHeader(head, identity, seg, int64(rec.Offset))
+		if err != nil {
+			// The header's bytes were read and do not decode: the read
+			// itself failed nowhere, so Try marks nothing; the truncated
+			// answer names the source corrupt.
+			return head, nil
+		}
+		body := make([]byte, h.BodySize())
+		if _, err := ref.ReadAt(body, int64(rec.Offset)+format.RecordHeaderSize); err != nil {
+			return nil, err
+		}
+		return append(head, body...), nil
+	})
 }
 
 // append is the pass's second phase: one file at a time, at most one append
@@ -290,14 +298,22 @@ func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source
 					pieces = append(pieces, rt.Piece)
 				}
 			}
-			if len(pieces) > 0 {
-				bad.Seq, bad.Version = pieces[0].Seq, pieces[0].Version
-				lo, hi := pieces[0].Extent.Off, pieces[0].Extent.Off+pieces[0].Extent.Len
-				for _, p := range pieces[1:] {
-					lo, hi = min(lo, p.Extent.Off), max(hi, p.Extent.Off+p.Extent.Len)
-				}
-				bad.Extent = core.Extent{Off: lo, Len: hi - lo}
+			if len(pieces) == 0 {
+				// decision: a record the index holds no piece of any more
+				// is reported nowhere, corrupt and the result both silent:
+				// every piece was released or superseded, so the record's
+				// unverifiable bytes back nothing and an empty extent names
+				// no loss to record (RFC 28 §3.3). Overturned only if a
+				// caller is ruled to need the record acknowledged while
+				// nothing holds it.
+				continue
 			}
+			bad.Seq, bad.Version = pieces[0].Seq, pieces[0].Version
+			lo, hi := pieces[0].Extent.Off, pieces[0].Extent.Off+pieces[0].Extent.Len
+			for _, p := range pieces[1:] {
+				lo, hi = min(lo, p.Extent.Off), max(hi, p.Extent.Off+p.Extent.Len)
+			}
+			bad.Extent = core.Extent{Off: lo, Len: hi - lo}
 		}
 		if c.corrupt != nil {
 			if err := c.corrupt(ctx, bad); err != nil {
