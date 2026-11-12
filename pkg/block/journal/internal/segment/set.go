@@ -130,12 +130,18 @@ type Counters struct {
 // not the ledger itself, and fails only if the lock recorder of record ever
 // finds a plain lock held above it.
 type Set struct {
-	// decision: mu is the capacity domain and stays a leaf of it: it takes
-	// nothing while held. That is what makes the order the callers imply,
-	// segment append, then a stream's mu, then capacity, deadlock-free: the
-	// durability worker paths take this lock under a stream's mu, and the
-	// sinks take a stream's mu under the append lock. Overturned the day
-	// anything under mu takes another lock, a callback or a second mutex.
+	// decision: mu is the capacity domain and is Init'ed as a leaf: nothing
+	// is acquired while it is held, in order or out, and the recorder
+	// reports the first acquisition made under it — which the rank rules
+	// alone could not, for an in-order take under it names no violation.
+	// That is what makes the order the callers imply deadlock-free: the
+	// durability worker paths take this lock under a stream's leaf mutex,
+	// the sinks take that mutex under the segment append lock, so a
+	// capacity-under-append acquisition is in order by rank and turns into
+	// the cycle the leaf flag exists to catch only once some Set method
+	// takes another lock under mu. Overturned the day mu must hold across
+	// anything — a callback, a callback's locks, or a second mutex — and
+	// the leaf marker goes with it.
 	mu     lockorder.Mutex
 	cap    int64
 	log    *slog.Logger
@@ -293,13 +299,14 @@ func (s *Set) retireSeen(id core.SegmentID) {
 }
 
 // SetRecorder installs the lock-order recorder the ledger's mutex reports to,
-// with its capacity rank: the pool's mutex and the capacity admission's are
-// of the same domain, so no two of them are ever held at once and none of
-// them is taken while a stream's append lock is. It runs before the set is
-// shared — before any call the mutex serialises races another — and a nil
-// recorder leaves the mutex a plain one.
+// with its capacity rank and its leaf promise: the pool's mutex and the
+// capacity admission's are of the same domain, so no two of them are ever
+// held at once, and the ledger's callers come at it from every direction —
+// so its own marker, not a rank, is what keeps nothing under it. It runs
+// before the set is shared — before any call the mutex serialises races
+// another — and a nil recorder leaves the mutex a plain one.
 func (s *Set) SetRecorder(rec *lockorder.Recorder) {
-	s.mu.Init(lockorder.Capacity, rec)
+	s.mu.InitLeaf(lockorder.Capacity, rec)
 }
 
 // ownsLocked reports whether the id is already in the set or among the

@@ -26,12 +26,15 @@ var rankIdents = map[string]string{
 	"storage guard":  "StorageGuard",
 }
 
-// initsWired collects, per field name, the lockorder domains an Init or
-// InitLeaf call inside f wires on a field of that name. A ranked lock's rank
-// is installed only by such a call, so the scan asks this map to prove each
-// lock it accepts is wired in the same file.
-func initsWired(f *ast.File) map[string]map[string]bool {
-	out := map[string]map[string]bool{}
+// initsWired collects, per field name, the lockorder domains the Init and
+// InitLeaf calls inside f wire on a field of that name, and which of those
+// the InitLeaf calls wired. A ranked lock's rank is installed only by such a
+// call, so the scan asks this for proof each lock it accepts is wired in the
+// same file — and that a lock whose marker promises the leaf flag has the
+// call that installs it.
+func initsWired(f *ast.File) (ranks, leaf map[string]map[string]bool) {
+	ranks = map[string]map[string]bool{}
+	leaf = map[string]map[string]bool{}
 	argDomain := func(e ast.Expr) (string, bool) {
 		sel, isSel := e.(*ast.SelectorExpr)
 		if !isSel {
@@ -46,6 +49,12 @@ func initsWired(f *ast.File) map[string]map[string]bool {
 			}
 		}
 		return "", false
+	}
+	add := func(m map[string]map[string]bool, field, d string) {
+		if m[field] == nil {
+			m[field] = map[string]bool{}
+		}
+		m[field][d] = true
 	}
 	ast.Inspect(f, func(n ast.Node) bool {
 		call, isCall := n.(*ast.CallExpr)
@@ -64,28 +73,38 @@ func initsWired(f *ast.File) map[string]map[string]bool {
 		if !ok {
 			return true
 		}
-		if out[recv.Sel.Name] == nil {
-			out[recv.Sel.Name] = map[string]bool{}
+		add(ranks, recv.Sel.Name, d)
+		if fn.Sel.Name == "InitLeaf" {
+			add(leaf, recv.Sel.Name, d)
 		}
-		out[recv.Sel.Name][d] = true
 		return true
 	})
-	return out
+	return ranks, leaf
 }
+
+// leafPhrase marks a lockorder lock whose marker promises the leaf flag by
+// naming how it is Init'ed.
+var leafPromise = regexp.MustCompile(`\bInit'ed as a leaf\b`)
 
 // initWired returns what is wrong with a ranked lock whose field is named
 // name and whose marker text is text, or "" when it is right: at least one of
 // the domains its marker names must be wired by an Init call on a field of
 // that name in the file, so a lock whose rank is never installed fails here
-// rather than carrying a rank-0 marker through the recorder-blind runs.
-func initWired(name, text string, wired map[string]map[string]bool) string {
+// rather than carrying a rank-0 marker through the recorder-blind runs. A
+// marker that promises the leaf flag must be wired by the InitLeaf call that
+// installs it, so the promise cannot outlive the call.
+func initWired(name, text string, wired, leaf map[string]map[string]bool) string {
 	ranks, wiredAtAll := wired[name]
 	if !wiredAtAll {
 		return fmt.Sprintf("an Init(lockorder.<rank>) call wiring a field named %s in this file", name)
 	}
+	leafWanted := leafPromise.MatchString(text)
 	for _, d := range domainNames {
 		if strings.Contains(text, d) && ranks[d] {
-			return ""
+			if !leafWanted || leaf[name][d] {
+				return ""
+			}
+			return fmt.Sprintf("an InitLeaf call wiring a field named %s with the %s rank, for the marker's leaf promise", name, d)
 		}
 	}
 	return "a marker naming one of the domains an Init or InitLeaf call in this file wires"
@@ -216,7 +235,7 @@ func classify(kind, text string) string {
 // scanFile checks every lock declared in f, returning how many it saw and one
 // message per offender.
 func scanFile(fset *token.FileSet, f *ast.File) (locks int, offenders []string) {
-	wired := initsWired(f)
+	wired, leafWired := initsWired(f)
 	report := func(pos token.Pos, name, kind, text, want string) {
 		offenders = append(offenders, fmt.Sprintf("%s %s: got a %s lock with marker %q, want %s", fset.Position(pos), name, kind, strings.TrimSpace(text), want))
 	}
@@ -309,7 +328,7 @@ func scanFile(fset *token.FileSet, f *ast.File) (locks int, offenders []string) 
 				// this: it is invisible to the recorder by design, and
 				// its marker alone says how it orders.
 				if kind == "lockorder" {
-					if want := initWired(name, text, wired); want != "" {
+					if want := initWired(name, text, wired, leafWired); want != "" {
 						report(fld.Pos(), name, kind, text, want)
 					}
 				}
@@ -400,9 +419,10 @@ var marked sync.Mutex // decision: marked is a leaf.
 // different file of the same package, one Init'ed with a nil recorder — the
 // call matches statically while wiring nothing — or two same-named fields of
 // different ranks in one package, where either rank's Init satisfies both
-// markers. The recorded fixture's wiring probes are the net under all of
-// those; upgrade to a go/types pass if a lock lands unwired through any of
-// the shapes above.
+// markers. The leaf promise rides on the phrase "Init'ed as a leaf" alone,
+// so a marker reworded to drop the phrase loses its InitLeaf check. The
+// recorded fixture's wiring probes are the net under all of those; upgrade
+// to a go/types pass if a lock lands unwired through any of the shapes above.
 func TestEveryLockNamesItsDomain(t *testing.T) {
 	// Every internal package is scanned, so a lock added to a new one fails
 	// here rather than passing unseen. The recorder's own package is left
