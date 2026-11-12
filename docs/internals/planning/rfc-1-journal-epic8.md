@@ -352,7 +352,7 @@ sections found every one of them below, in §1.2, or in the closing note of this
 | --- | --- | --- | --- | --- |
 | R83 | `Reserve(n, writes)` takes at once, refused as above, everything `writes` writes of `n` record bytes in all need: the bytes against the share's limit and the journal's maximum, a 72-byte footer entry per piece against the maximum and an index entry per piece against `ExtentLimit`, `writes` versions below the version limit, and the spare segments the bytes roll into | MUST | RFC 1 §6 | T8.10 |
 | R84 | Pieces are counted as interleaved with the stream's other writes: `2 × writes` plus one per cap the `n` bytes can cross, spares one per cap they can cross plus one | invariant | RFC 1 §6 | T8.10 |
-| R85 | A reserved write that rolls takes a replacement spare from the pool ahead of every unreserved write, and an unreserved roll that would leave an open reservation short of its spares is refused `spare`. A reserved roll that follows a replacement before the pool has made it is refused `spare` and its holder retries; no unreserved write takes a reserved write's spare | invariant | RFC 1 §6 | T8.10 |
+| R85 | A reserved write that rolls takes a replacement spare from the pool ahead of every unreserved write, and an unreserved roll that would leave an open reservation short of its spares is refused `spare`. A reserved roll that finds no spare ready is refused `spare` at once, and its holder reserves again once the refill has caught up; no unreserved write takes a reserved write's spare | invariant | RFC 1 §6 | T8.10 |
 | R86 | `(*Reservation).WriteAt` draws a write's share of each held amount, and while the reservation holds enough, none of the limits nor the headroom's half rule refuses it. `Close` returns what is left | invariant | RFC 1 §6 | T8.10 |
 | R87 | A reservation is in memory: a restart drops it | invariant | RFC 1 §6 | T8.10 |
 
@@ -1090,8 +1090,11 @@ its counter (R75); `ReservedBytes` read at the
 - **Tests:** `TestRFC1B_ReserveAhead` in its three parts (R83, R85, R86); a count of the pieces a
   write of any size can make against the reservation's count (catches under-reserving footer
   entries, R84); a reservation held across `Close` (R87); a reserved write that rolls beside an
-  unreserved roll that would leave the reservation short (R85); a `-race` run of reserved and
-  plain writers (R86).
+  unreserved roll that would leave the reservation short (R85); a reserved roll with a
+  replacement still being made and no spare ready, refused `spare` at once and without waiting,
+  then a new reservation after the refill that succeeds (catches a roll that waits, R85); a
+  reserved write refused part-way, whose published pieces stay and whose version is spent
+  (R85); a `-race` run of reserved and plain writers (R86).
 
 ### T8.11 Lock domains and the lock-order recorder
 
