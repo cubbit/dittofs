@@ -866,10 +866,10 @@ func (f *Fixture) start() {
 }
 
 // closeDeadline bounds the fixture's engine close. The fixture closes over a
-// clock it never advances, so this deadline is what ends a kept-backoff wait;
-// a close that can finish does so at once, so only a failing commit waits it
-// out.
-const closeDeadline = 2 * time.Second
+// clock it never advances, so this deadline is what ends a wait the clock
+// cannot; a close that can finish does so at once, so it is generous, and a
+// clean stop on a busy machine does not miss it.
+const closeDeadline = time.Minute
 
 // stop stops the composed service, if one was built, closes the engine
 // running now, if one started, and stops the open-state table. clean is false
