@@ -211,7 +211,7 @@ func (l probeLifecycle) RaiseAtAttach(context.Context, entity.ShardID) (uint64, 
 // once through its view.
 var fencedCalls = map[string]func(ctx context.Context, p *probe) error{
 	"Existence.Commit": func(ctx context.Context, p *probe) error {
-		_, err := fencedExistence{probeExistence{probe: p}, p.f}.Commit(ctx, nil, nil)
+		_, err := fencedExistence{probeExistence{probe: p}, p.f}.Commit(ctx, nil, &kvstore.MarksWrite{Marks: []entity.SyncMark{{}}})
 		return err
 	},
 	"Existence.Remove": func(ctx context.Context, p *probe) error {

@@ -138,11 +138,10 @@ func (f *fence) committed() {
 // in Existence.Commit's map never reaches here, as that call committed. Every
 // other error is the store's, a deadline the engine's own bound cut included,
 // since an erroring store must fence as one that answers nothing does. A
-// file's own failure the store reports as an error of the whole call, not one
-// listed here, counts here as the store's; the group commit releases its
-// owner once another call of the batch committed, which narrows it to the
-// file (syncAndCommit), and the removal loop once a phase 2 run failed on a
-// record that does not decode (phase2).
+// record that does not decode, which the store reports as an error of the
+// whole call, counts here as the store's; the group commit releases its owner
+// once its split narrowed it to the file (syncAndCommit), and the removal
+// loop once a phase 2 run failed on it (phase2).
 func storeFailed(err error) bool {
 	return !errors.Is(err, kvstore.ErrConflict) &&
 		!errors.Is(err, context.Canceled) &&
@@ -266,6 +265,15 @@ type fencedExistence struct {
 }
 
 func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+	// decision: a marks write carrying no marks sets no key, and a store
+	// commits it without writing, so it is no write transaction: counted,
+	// it would restart the fence's clock on a store that refuses every write.
+	// Its failure is not counted either, as the files' calls of its batch
+	// report the store. Count it again if a marks write with no marks is ever
+	// seen to write.
+	if len(pending) == 0 && (marks == nil || len(marks.Marks) == 0) {
+		return x.Existence.Commit(ctx, pending, marks)
+	}
 	x.f.begin()
 	m, err := x.Existence.Commit(ctx, pending, marks)
 	x.f.end(ctx, err)

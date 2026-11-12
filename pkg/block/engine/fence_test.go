@@ -643,7 +643,11 @@ func TestSelfFenceCountsAConflictRetriedToSuccess(t *testing.T) {
 func TestSelfFenceGateUnderRace(t *testing.T) {
 	u := newFenceUnit(t)
 	a := u.create(t, "a")
-	ex, _, _ := u.e.StoreViews()
+	_, _, lc := u.e.StoreViews()
+	to, err := lc.VersionLimits(t.Context(), []entity.ShareID{u.share.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
 	second := enginetest.AddShare(t, u.fs.Store, "second", 1<<30)
 	u.fault(t, nextUpdate(sim.FaultAction{Delay: time.Hour}))
 	bound := make(chan error, 1)
@@ -671,7 +675,7 @@ func TestSelfFenceGateUnderRace(t *testing.T) {
 		})
 	}
 	for range 100 {
-		if _, err := ex.Commit(t.Context(), nil, nil); err != nil {
+		if err := lc.RaiseVersionLimits(t.Context(), to); err != nil {
 			t.Error(err)
 		}
 		u.clock.Advance(time.Second)
@@ -710,8 +714,8 @@ func (u *fenceUnit) corrupt(t *testing.T, file entity.FileID, sub byte) (repair 
 }
 
 // A file whose hole record does not decode fails each existence commit as an
-// error of the whole call, which the group commit narrows to it, as its marks
-// sent alone commit. With its retries held off for 31 s and nothing else
+// error of the whole call, which the group commit's split narrows to it.
+// With its retries held off for 31 s and nothing else
 // written, the node is not fenced: another file's write is acknowledged and
 // its existence commits, while the corrupt file stays named failing and its
 // stability point answers retry-later. Counting the narrowed error as the
@@ -840,36 +844,28 @@ func (u *fenceUnit) holdAfterBatch(t *testing.T) (wait func()) {
 	}
 }
 
-// A batch of two files whose marks fail: b's existence is good and a's hole
-// record does not decode, so the split commits b's half and fails a's, last.
-// With the loop held after that batch and 31 s passing, the node is not
-// fenced: b's half committing narrows a's error to a. Releasing the owner
-// only when the marks committed fences here.
-func TestSelfFenceNotWhenAnotherFilesHalfCommits(t *testing.T) {
+// A file whose hole record does not decode, with no marks beside it, as
+// marks stop once another open moved the journal's open generation: no
+// call of the batch commits, yet with the loop held after it and 31 s
+// passing the node is not fenced, and the file stays named failing. Counting
+// the file's undecodable record as the store's failure fences here.
+func TestSelfFenceNotOnAnUndecodableRecordWithMarksStopped(t *testing.T) {
 	u := newFenceUnit(t)
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
-		t.Fatal(err)
-	}
-	a, b, c := u.create(t, "a"), u.create(t, "b"), u.create(t, "c")
+	a, b := u.create(t, "a"), u.create(t, "b")
 	u.corrupt(t, a, keys.FH)
-	if _, err := u.tryWrite(b); err != nil {
-		t.Fatal(err)
-	}
-	u.clock.Advance(time.Millisecond) // b is the older, so it leads the batch
 	if _, err := u.tryWrite(a); err != nil {
 		t.Fatal(err)
 	}
-	u.fault(t, sim.Rule{Op: kvtest.OpGet, Key: "J‖*", Action: sim.FaultAction{Err: errInjected}})
-	u.holdAfterBatch(t)()
-	if n := len(u.e.Pending(b)); n != 0 {
-		t.Fatalf("b's pending operations after the batch: %d, want 0, its half committed", n)
-	}
+	u.fault(t, sim.Rule{Op: kvtest.OpGet, Key: "J‖*", Count: 1, Action: sim.FaultAction{Err: kvstore.ErrOpenGenMoved}})
+	wait := u.holdAfterBatch(t)
+	u.commitInBackground(t, a)
+	wait()
 	if !u.e.Failing(u.rec, a) {
 		t.Fatal("existence_commit_failing does not name the corrupt file after the batch")
 	}
 
 	u.clock.Advance(31 * time.Second)
-	if _, err := u.tryWrite(c); err != nil {
+	if _, err := u.tryWrite(b); err != nil {
 		t.Errorf("a write 31s after the batch: %v, want acknowledged", err)
 	}
 	if f, ok := u.nodeFenced(); ok {
@@ -878,10 +874,10 @@ func TestSelfFenceNotWhenAnotherFilesHalfCommits(t *testing.T) {
 }
 
 // A file whose existence commits hit the deadline while the marks sent alone
-// commit: a deadline is store-wide, so the marks committing does not narrow
-// it to the file. With the loop held after that batch, the node fences 31 s
-// on, naming the deadline. Releasing the owner whenever another call of the
-// batch committed fences nothing here.
+// commit: a deadline is the store's, whatever else of the batch committed.
+// With the loop held after that batch, the node fences 31 s on, naming the
+// deadline. Releasing the owner whenever another call of the batch
+// committed, or reading only the call's error, fences nothing here.
 func TestSelfFenceOnADeadlineBesideCommittedMarks(t *testing.T) {
 	u := newFenceUnit(t)
 	a, b := u.create(t, "a"), u.create(t, "b")
@@ -899,5 +895,60 @@ func TestSelfFenceOnADeadlineBesideCommittedMarks(t *testing.T) {
 	}
 	if f, ok := u.nodeFenced(); !ok || !errors.Is(f.Cause, context.DeadlineExceeded) {
 		t.Errorf("node_fenced %v naming %v, want the deadline", ok, f.Cause)
+	}
+}
+
+// A store that fails every write setting a key with an error of its own,
+// as a full device or a read-only remount does, while a marks write that
+// sets none commits, as one over the real journal, which reports no marks,
+// does: the node fences 30 s after the first failed attempt. Releasing the
+// owner once the marks sent alone commit fences nothing here.
+func TestSelfFenceOnAStoreRefusingWritesBesideEmptyMarks(t *testing.T) {
+	u := newFenceUnit(t)
+	u.rec.noMarks.Store(true)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, sim.Rule{Op: kvtest.OpSet, Key: "*", Action: sim.FaultAction{Err: syscall.ENOSPC}})
+	u.commitInBackground(t, a)
+	eventually(t, "existence_commit_failing names the file", func() bool { return u.e.Failing(u.rec, a) })
+
+	// In steps, so the group commit retries throughout, its marks committing.
+	u.advanceInSteps(29 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Fatalf("a write 29s into the failures: %v, want acknowledged", err)
+	}
+	u.advanceInSteps(2 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s into the failures: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if c, ok := u.nodeFenced(); !ok || !errors.Is(c.Cause, syscall.ENOSPC) {
+		t.Errorf("node_fenced %v naming %v, want the store's error", ok, c.Cause)
+	}
+}
+
+// A file whose hole record does not decode beside marks the store fails to
+// write: the marks' error is the store's, so the node fences 31 s after the
+// batch, with the loop held after it. Reading only the files' errors, all
+// their own, fences nothing here.
+func TestSelfFenceOnFailingMarksBesideAnUndecodableRecord(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	u.corrupt(t, a, keys.FH)
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, sim.Rule{Op: kvtest.OpGet, Key: "J‖*", Action: sim.FaultAction{Err: errInjected}})
+	wait := u.holdAfterBatch(t)
+	u.commitInBackground(t, a)
+	wait()
+
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s after the batch: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("node_fenced not raised 31s after the batch")
 	}
 }
