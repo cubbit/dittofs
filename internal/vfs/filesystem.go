@@ -115,15 +115,6 @@ var states = [...]string{built: "built", serving: "serving", draining: "draining
 
 func (s state) String() string { return states[s] }
 
-// errUnbuilt is the answer of every call the filesystem does not build yet.
-//
-// decision: an unbuilt call answers ErrUnavailable, which an adapter answers
-// as it answers a draining filesystem, rather than a new sentinel no adapter
-// maps. It is wrapped, so a test tells it from a drain's refusal. It holds
-// while no adapter calls the filesystem; every call must be built, and this
-// removed, before one does.
-var errUnbuilt = fmt.Errorf("vfs: call not built yet: %w", vfs.ErrUnavailable)
-
 // Filesystem is the filesystem service. It hands each event straight to the
 // sink, keeping no queue of its own, so an event is dropped, and counted, in
 // one place only: the sink.
@@ -433,18 +424,6 @@ func (fs *Filesystem) enter(ctx context.Context) (_ context.Context, done func()
 		fs.mu.Unlock()
 		fs.calls.Done()
 	}, nil
-}
-
-// unbuilt is the body of every call the filesystem does not build yet:
-// refused while the filesystem is not serving, as every call is, and
-// otherwise answered errUnbuilt.
-func (fs *Filesystem) unbuilt(ctx context.Context) error {
-	_, done, err := fs.enter(ctx)
-	if err != nil {
-		return err
-	}
-	done()
-	return errUnbuilt
 }
 
 // Admission takes file f's admission lock and returns its unlock: open
