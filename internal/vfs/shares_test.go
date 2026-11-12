@@ -79,11 +79,12 @@ func (s *shares) user(t *testing.T, name, uid string, share entity.ShareID, a en
 	return u
 }
 
-// addShare makes a share at path, answering its ID.
+// addShare makes a share at path, bound in the engine, answering its ID.
 func (s *shares) addShare(t *testing.T, name, path string) entity.ShareID {
 	t.Helper()
 	sh := entity.Share{ID: entity.NewShareID(), Name: name, Path: path, Root: entity.NewFileID()}
 	s.must(t, s.cp.PutShare(t.Context(), sh))
+	s.content.Bind(sh.ID)
 	return sh.ID
 }
 
@@ -1002,8 +1003,9 @@ func (f *failKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
 func TestAListingFailsWithTheStore(t *testing.T) {
 	db := &failKV{}
 	fx := kvstoretest.NewFS(t, func(tb testing.TB) kv.KV { db.KV = memKV(tb); return db })
-	tab, err := openstate.New(openstate.Deps{Records: fx.Store, Clock: sim.NewTestClock(time.Unix(0, 0)), Rand: rand.Reader})
-	s, err2 := New(Deps{Meta: fx.Store, Open: tab, Engine: newFakeContent()})
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	tab, err := openstate.New(openstate.Deps{Records: fx.Store, Clock: clock, Rand: rand.Reader})
+	s, err2 := New(Deps{Meta: fx.Store, Open: tab, Engine: contentOver(clock, fx.Store, fx.Share.ID)})
 	if err = errors.Join(err, err2); err != nil {
 		t.Fatal(err)
 	}

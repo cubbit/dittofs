@@ -209,3 +209,66 @@ func (cb *Callbacks) RecallAny(_ context.Context, keep int) error {
 	cb.keep(Callback{Method: "RecallAny", Args: []any{keep}})
 	return nil
 }
+
+// CallbackFaults is a client's callback path that fails on cue around Inner,
+// the client's real path. Each callback reaches Inner first, so Inner keeps
+// it as sent; Fail, when set, then answers in Inner's place, as a client that
+// got the callback and failed it, stalled until ctx ended, or whose answer
+// was lost. Fail sees the callback without the session Inner picked.
+// Refuse is LockWaitOver's answer that the client refused a grant. Both are
+// set before the path is registered.
+type CallbackFaults struct {
+	Inner  vfs.Callbacks
+	Fail   func(ctx context.Context, c Callback) error
+	Refuse bool
+}
+
+var _ vfs.Callbacks = (*CallbackFaults)(nil)
+
+// fail is Fail's answer to c, nil when Fail is not set.
+func (f *CallbackFaults) fail(ctx context.Context, method string, args ...any) error {
+	if f.Fail == nil {
+		return nil
+	}
+	return f.Fail(ctx, Callback{Method: method, Args: args})
+}
+
+// RecallGrant answers unsent when the fault fails it.
+func (f *CallbackFaults) RecallGrant(ctx context.Context, s vfs.SessionRef, openers []vfs.Principal, g vfs.CachingGrant, to vfs.GrantKind) (bool, error) {
+	sent, err := f.Inner.RecallGrant(ctx, s, openers, g, to)
+	if ferr := f.fail(ctx, "RecallGrant", s, openers, g, to); ferr != nil {
+		return false, ferr
+	}
+	return sent, err
+}
+
+func (f *CallbackFaults) Notify(ctx context.Context, w vfs.WatchID, changes []vfs.Change) error {
+	err := f.Inner.Notify(ctx, w, changes)
+	if ferr := f.fail(ctx, "Notify", w, changes); ferr != nil {
+		return ferr
+	}
+	return err
+}
+
+// Revoked has no answer to give, so Fail's error is dropped; a stall still
+// holds the call.
+func (f *CallbackFaults) Revoked(ctx context.Context, what vfs.Revocation) {
+	f.Inner.Revoked(ctx, what)
+	_ = f.fail(ctx, "Revoked", what)
+}
+
+func (f *CallbackFaults) LockWaitOver(ctx context.Context, w vfs.LockWaiter, granted bool) (bool, error) {
+	refused, err := f.Inner.LockWaitOver(ctx, w, granted)
+	if ferr := f.fail(ctx, "LockWaitOver", w, granted); ferr != nil {
+		return f.Refuse, ferr
+	}
+	return refused || f.Refuse, err
+}
+
+func (f *CallbackFaults) RecallAny(ctx context.Context, keep int) error {
+	err := f.Inner.RecallAny(ctx, keep)
+	if ferr := f.fail(ctx, "RecallAny", keep); ferr != nil {
+		return ferr
+	}
+	return err
+}

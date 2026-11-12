@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/vfs/contenttest"
+
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
@@ -17,9 +19,9 @@ import (
 )
 
 // changes is every change cb was notified of, in order.
-func changes(cb *vfstest.RecordingCallbacks) []vfs.Change {
+func changes(cb *vfstest.Callbacks) []vfs.Change {
 	var out []vfs.Change
-	for _, c := range cb.Calls() {
+	for _, c := range cb.Delivered() {
 		if c.Method == "Notify" {
 			out = append(out, c.Args[1].([]vfs.Change)...)
 		}
@@ -30,7 +32,7 @@ func changes(cb *vfstest.RecordingCallbacks) []vfs.Change {
 // notes waits for cb to have been notified of n changes, advancing the
 // clock a sweep at a time so a watch hands over what it holds, and answers
 // each change's name, a rename's as old>new.
-func notes(t *testing.T, s *shares, cb *vfstest.RecordingCallbacks, n int) []string {
+func notes(t *testing.T, s *shares, cb *vfstest.Callbacks, n int) []string {
 	t.Helper()
 	for range 50 {
 		if got := changes(cb); len(got) >= n {
@@ -181,7 +183,7 @@ func (s *attrs) touch(t *testing.T, dir vfs.Handle, name string) vfs.Handle {
 // heard waits for cb to have been notified of len(want) changes, waits
 // again for any more, and fails unless they are want, in order: a client's
 // deliveries reach it in the order they were raised.
-func heard(t *testing.T, s *attrs, cb *vfstest.RecordingCallbacks, want ...string) map[string]openstate.ChangeMask {
+func heard(t *testing.T, s *attrs, cb *vfstest.Callbacks, want ...string) map[string]openstate.ChangeMask {
 	t.Helper()
 	notes(t, s.shares, cb, len(want))
 	s.clock.Advance(10 * time.Second)
@@ -412,11 +414,11 @@ func TestAFailedChangeIsReportedNowhere(t *testing.T) {
 	if _, err := s.SetXattr(ctx, alice, vfs.Target{H: o.Handle, Open: &o}, x, vfs.XattrCreate); err == nil {
 		t.Fatal("an xattr created over an existing one was accepted")
 	}
-	s.engine.deallocErr = errors.New("deallocate refused")
+	s.fail(contenttest.OpDeallocate, errors.New("deallocate refused"))
 	if _, err := s.Deallocate(ctx, alice, o, 0, 1); err == nil {
 		t.Fatal("a refused deallocate answered nil")
 	}
-	s.engine.deallocErr = nil
+	s.fail(contenttest.OpDeallocate, nil)
 	s.touch(t, s.fs.Root, "g")
 	if got := notes(t, s.shares, cb, 1); got[0] != "g" {
 		t.Errorf("heard %q first, want the later create of g", got)
@@ -519,7 +521,7 @@ func TestAnExclusiveCreatesRetryIsNotReported(t *testing.T) {
 // slowNotify is a client slow to take a Notify of slow: it holds that one
 // back, unrecorded, until another reaches it or a while has passed.
 type slowNotify struct {
-	*vfstest.RecordingCallbacks
+	*vfstest.Callbacks
 	slow  string
 	other chan struct{}
 	once  sync.Once
@@ -534,7 +536,7 @@ func (c *slowNotify) Notify(ctx context.Context, w vfs.WatchID, ch []vfs.Change)
 	} else {
 		c.once.Do(func() { close(c.other) })
 	}
-	return c.RecordingCallbacks.Notify(ctx, w, ch)
+	return c.Callbacks.Notify(ctx, w, ch)
 }
 
 // A client hears its watches' changes in the order they were raised, the
@@ -542,7 +544,7 @@ func (c *slowNotify) Notify(ctx context.Context, w vfs.WatchID, ch []vfs.Change)
 func TestAClientHearsItsChangesInOrder(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
-	cb := &slowNotify{RecordingCallbacks: &vfstest.RecordingCallbacks{}, slow: "f", other: make(chan struct{})}
+	cb := &slowNotify{Callbacks: &vfstest.Callbacks{}, slow: "f", other: make(chan struct{})}
 	alice := signedIn(s.alice.Principal, 1)
 	info := smb("alice-pc", 1)
 	id, _, err := s.Connect(ctx, alice, info, cb)
@@ -552,7 +554,7 @@ func TestAClientHearsItsChangesInOrder(t *testing.T) {
 	s.must(t, err)
 	s.Notify(alice.Client, w, []vfs.Change{{What: openstate.ChangeAddEntry, Name: []byte("f")}})
 	s.Notify(alice.Client, w, []vfs.Change{{What: openstate.ChangeAddEntry, Name: []byte("g")}})
-	if got := notes(t, s.shares, cb.RecordingCallbacks, 2); !reflect.DeepEqual(got, []string{"f", "g"}) {
+	if got := notes(t, s.shares, cb.Callbacks, 2); !reflect.DeepEqual(got, []string{"f", "g"}) {
 		t.Errorf("the watch heard %q, want f then g", got)
 	}
 }

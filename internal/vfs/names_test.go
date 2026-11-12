@@ -7,8 +7,11 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/cubbit/dittofs/internal/vfs/contenttest"
 
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -209,12 +212,10 @@ func TestTheLastUnlinkReleasesOnlyAFileNoOpenHolds(t *testing.T) {
 		_, err := n.Unlink(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte(name))
 		n.must(t, err)
 	}
-	content.mu.Lock()
-	defer content.mu.Unlock()
-	if _, ok := content.files[held.File.ID]; !ok {
+	if !n.held(held.File.ID) {
 		t.Error("the content of a file an open holds was released at its unlink")
 	}
-	if _, ok := content.files[free.File.ID]; ok {
+	if n.held(free.File.ID) {
 		t.Error("the content of a file nothing holds was kept past its last unlink")
 	}
 }
@@ -683,7 +684,7 @@ func TestARefusedRenameRecallsNoLease(t *testing.T) {
 	src, err := n.Create(ctx, bob, tmp.Handle, []byte("src"), vfs.CreateArgs{Kind: vfs.CreateRegular, Attrs: entity.Attrs{}.WithMode(0o666)})
 	n.must(t, err)
 	n.create(t, n.admin, tmp.Handle, "target", vfs.CreateRegular)
-	cb := &vfstest.RecordingCallbacks{}
+	cb := &vfstest.Callbacks{}
 	holder, _, err := n.Connect(ctx, signedIn(n.fs.Admin.Principal, 1), smb("holder", 1), cb)
 	n.must(t, err)
 	leased(t, n.shares, holder, n.fs.Admin.Principal, 1, src.File.ID, 1)
@@ -746,7 +747,7 @@ func TestARenameToTheSameSpellingRecallsNoLease(t *testing.T) {
 	ctx := t.Context()
 	root := n.fs.Root
 	a := n.create(t, n.admin, root, "a", vfs.CreateRegular)
-	cb := &vfstest.RecordingCallbacks{}
+	cb := &vfstest.Callbacks{}
 	holder, _, err := n.Connect(ctx, signedIn(n.fs.Admin.Principal, 1), smb("holder", 1), cb)
 	n.must(t, err)
 	leased(t, n.shares, holder, n.fs.Admin.Principal, 1, a.File.ID, 1)
@@ -768,18 +769,14 @@ func TestARemovedNameSucceedsWhateverItsReleaseAnswers(t *testing.T) {
 	for _, f := range []vfs.File{a.File, c.File} {
 		n.stored(t, f.ID)
 	}
-	n.engine.mu.Lock()
-	n.engine.deleteErr = errors.New("the journal is read-only")
-	n.engine.mu.Unlock()
+	n.fail(contenttest.OpDelete, errors.New("the journal is read-only"))
 	if _, err := n.Unlink(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("a")); err != nil {
 		t.Errorf("an unlink whose release failed: %v, want success", err)
 	}
 	if _, err := n.Rename(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("b"), n.fs.Root, []byte("c"), false); err != nil {
 		t.Errorf("a rename over a file whose release failed: %v, want success", err)
 	}
-	n.engine.mu.Lock()
-	n.engine.deleteErr = nil
-	n.engine.mu.Unlock()
+	n.fail(contenttest.OpDelete, nil)
 	g := n.restart(t)
 	g.must(t, g.Start(ctx))
 	for _, f := range []vfs.File{a.File, c.File} {
@@ -789,20 +786,17 @@ func TestARemovedNameSucceedsWhateverItsReleaseAnswers(t *testing.T) {
 	}
 }
 
-// pendingRelease is n with the fake engine leaving the first release pending
-// on the channel it answers and committing every later one, a recording mark
-// in place of open state's, and a stored file unlinked, so that its release
-// is that first one. The unlink answers success with its release pending.
-func pendingRelease(t *testing.T) (*names, *failMark, chan error, entity.FileID) {
+// pendingRelease is n with the engine leaving the first release pending on
+// the channel it answers and committing every later one, the Deletes
+// reaching it counted, a recording mark in place of open state's, and a
+// stored file unlinked, so that its release is that first one. The unlink
+// answers success with its release pending.
+func pendingRelease(t *testing.T) (*names, *failMark, chan error, entity.FileID, *atomic.Int64) {
 	t.Helper()
 	n := newNames(t)
 	retry := make(chan error, 1)
-	var first sync.Once
-	n.engine.pending = func() <-chan error {
-		var r <-chan error
-		first.Do(func() { r = retry })
-		return r
-	}
+	n.engine.Pending(retry)
+	deletes := n.deletes()
 	m := &failMark{}
 	n.marks = m
 	f := n.create(t, n.admin, n.fs.Root, "f", vfs.CreateRegular).File
@@ -810,7 +804,7 @@ func pendingRelease(t *testing.T) (*names, *failMark, chan error, entity.FileID)
 	if _, err := n.Unlink(t.Context(), n.admin, vfs.Target{H: n.fs.Root}, []byte("f")); err != nil {
 		t.Fatalf("an unlink whose release is pending: %v, want success", err)
 	}
-	return n, m, retry, f.ID
+	return n, m, retry, f.ID, deletes
 }
 
 // ended is the outcomes m's done was called with, once they number want or a
@@ -848,7 +842,7 @@ func TestAPendingReleasesOutcomeDecidesItsMark(t *testing.T) {
 		{"ended by the engine", vfs.ErrUnavailable, nil, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			n, m, retry, f := pendingRelease(t)
+			n, m, retry, f, deletes := pendingRelease(t)
 			if got := m.ended(0); len(got) != 0 {
 				t.Fatalf("the mark ended %v while its release is pending, want kept", got)
 			}
@@ -861,7 +855,7 @@ func TestAPendingReleasesOutcomeDecidesItsMark(t *testing.T) {
 			if !slices.Equal(got, tc.marks) {
 				t.Errorf("the mark ended %v, want %v", got, tc.marks)
 			}
-			if d := n.engine.deleted(); d != tc.deletes {
+			if d := deletes.Load(); d != int64(tc.deletes) {
 				t.Errorf("%d Deletes, want %d", d, tc.deletes)
 			}
 			if tc.deletes == 2 && n.held(f) {
@@ -887,9 +881,7 @@ func TestAReleaseFailingWithinItsCallKeepsItsMark(t *testing.T) {
 			m := &failMark{}
 			n.marks = m
 			n.create(t, n.admin, n.fs.Root, "f", vfs.CreateRegular)
-			n.engine.mu.Lock()
-			n.engine.deleteErr = tc.err
-			n.engine.mu.Unlock()
+			n.fail(contenttest.OpDelete, tc.err)
 			if _, err := n.Unlink(t.Context(), n.admin, vfs.Target{H: n.fs.Root}, []byte("f")); err != nil {
 				t.Fatalf("an unlink whose release failed: %v, want success", err)
 			}
@@ -904,14 +896,14 @@ func TestAReleaseFailingWithinItsCallKeepsItsMark(t *testing.T) {
 // on one still pending without its done, leaving it to the next start, with
 // no goroutine of the filesystem's left.
 func TestADrainedFilesystemRunsNoReleaseAgain(t *testing.T) {
-	n, m, retry, _ := pendingRelease(t)
+	n, m, retry, _, deletes := pendingRelease(t)
 	n.must(t, n.Drain(t.Context()))
 	retry <- &vfs.Delay{Cause: vfs.DelayClone}
 	if got := m.ended(1); !slices.Equal(got, []bool{false}) {
 		t.Errorf("the mark ended %v after a clone's delay, want [false]", got)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if d := n.engine.deleted(); d != 1 {
+	if d := deletes.Load(); d != 1 {
 		t.Errorf("%d Deletes after Drain, want the release not run again", d)
 	}
 }
@@ -920,23 +912,23 @@ func TestADrainedFilesystemRunsNoReleaseAgain(t *testing.T) {
 // filesystem admits, so Drain joins it rather than returning while it waits
 // for the file's admission lock and only then reaches the engine.
 func TestDrainJoinsAReleaseRunAgain(t *testing.T) {
-	n, m, retry, f := pendingRelease(t)
+	n, m, retry, f, deletes := pendingRelease(t)
 	unlock := n.Admission(f)
 	retry <- &vfs.Delay{Cause: vfs.DelayClone}
 	if got := m.ended(1); !slices.Equal(got, []bool{false}) {
 		t.Fatalf("the mark ended %v after a clone's delay, want [false]", got)
 	}
 	time.Sleep(50 * time.Millisecond) // the re-run reaches the admission lock
-	drained := make(chan int, 1)
+	drained := make(chan int64, 1)
 	go func() {
 		n.must(t, n.Drain(t.Context()))
-		drained <- n.engine.deleted()
+		drained <- deletes.Load()
 	}()
 	time.Sleep(50 * time.Millisecond)
 	unlock()
 	atDrain := <-drained
 	time.Sleep(50 * time.Millisecond)
-	if d := n.engine.deleted(); d != atDrain {
+	if d := deletes.Load(); d != atDrain {
 		t.Errorf("%d Deletes when Drain returned, %d after, want none after", atDrain, d)
 	}
 }
@@ -953,12 +945,7 @@ func (m *gateMark) Releasing(context.Context, openstate.FileKey) (func(bool), bo
 func TestStopJoinsTheWaitOnAPendingRelease(t *testing.T) {
 	n := newNames(t)
 	retry := make(chan error, 1)
-	var first sync.Once
-	n.engine.pending = func() <-chan error {
-		var r <-chan error
-		first.Do(func() { r = retry })
-		return r
-	}
+	n.engine.Pending(retry)
 	m := &gateMark{entered: make(chan struct{}), gate: make(chan struct{})}
 	n.marks = m
 	f := n.create(t, n.admin, n.fs.Root, "f", vfs.CreateRegular).File
@@ -982,7 +969,7 @@ func TestStopJoinsTheWaitOnAPendingRelease(t *testing.T) {
 }
 
 func TestStopEndsTheWaitOnAPendingRelease(t *testing.T) {
-	n, m, _, _ := pendingRelease(t)
+	n, m, _, _, _ := pendingRelease(t)
 	n.must(t, n.Drain(t.Context()))
 	stopped := make(chan error, 1)
 	go func() { stopped <- n.Stop() }()
@@ -1010,9 +997,13 @@ func TestARemovedNamesReleaseEndsAtItsCallsDeadline(t *testing.T) {
 	f := n.create(t, n.admin, n.fs.Root, "f", vfs.CreateRegular).File
 	n.stored(t, f.ID)
 	free := make(chan struct{})
-	n.engine.mu.Lock()
-	n.engine.stall = free
-	n.engine.mu.Unlock()
+	n.engine.On(contenttest.OpDelete, func(ctx context.Context, _ contenttest.Call) error {
+		select {
+		case <-ctx.Done():
+		case <-free:
+		}
+		return ctx.Err()
+	})
 	call, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 	done := make(chan error, 1)

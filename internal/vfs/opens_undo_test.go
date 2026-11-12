@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/vfs/contenttest"
+
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
@@ -31,11 +33,11 @@ func TestAFailedUpgradeKeepsTheOwnersOpen(t *testing.T) {
 	owner := openstate.LockOwner{Client: c.Client, Name: []byte("open-owner")}
 	first, err := n.Open(ctx, c, vfs.OpenRequest{H: g, Disposition: vfs.OpenExisting, Access: entity.ReadData, Deny: entity.WriteData, Owner: owner})
 	n.must(t, err)
-	n.engine.overlayErr = errors.New("journal read failed")
+	n.fail(contenttest.OpOverlay, errors.New("journal read failed"))
 	if _, err := n.Open(ctx, c, vfs.OpenRequest{H: g, Disposition: vfs.OpenExisting, Access: entity.ReadData | entity.WriteData, Owner: owner}); err == nil {
 		t.Fatal("an open whose file cannot be read was answered")
 	}
-	n.engine.overlayErr = nil
+	n.fail(contenttest.OpOverlay, nil)
 	if _, err := n.Open(ctx, n.smbClient(t, "pc", n.fs.Admin.Principal), vfs.OpenRequest{H: g, Disposition: vfs.OpenExisting, Access: entity.WriteData}); !errors.Is(err, vfs.ErrShareViolation) {
 		t.Errorf("another client's write open after the failed upgrade: %v, want ErrShareViolation", err)
 	}
@@ -63,11 +65,11 @@ func TestAFailedDeleteOnCloseOpenMarksNothing(t *testing.T) {
 	n.must(t, err)
 	doc := byName(n.fs.Root, "f", vfs.OpenExisting, entity.ReadData|entity.Delete)
 	doc.DeleteOnClose, doc.Backup = true, true
-	n.engine.overlayErr = errors.New("journal read failed")
+	n.fail(contenttest.OpOverlay, errors.New("journal read failed"))
 	if _, err := n.Open(ctx, n.smbClient(t, "pc-b", n.fs.Admin.Principal), doc); err == nil {
 		t.Fatal("an open whose file cannot be read was answered")
 	}
-	n.engine.overlayErr = nil
+	n.fail(contenttest.OpOverlay, nil)
 	pc := n.smbClient(t, "pc-c", n.fs.Admin.Principal)
 	if r, err := n.Open(ctx, pc, vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}); err != nil {
 		t.Errorf("an open after the failed one: %v, want granted", err)
@@ -295,11 +297,11 @@ func TestAFailedReconnectClosesAsCloseDoes(t *testing.T) {
 	pc.Session = vfs.SessionRef{ID: 2}
 	p := &probingClose{Opens: n.opens, locks: &n.locks}
 	n.opens = p
-	n.engine.overlayErr = errors.New("journal read failed")
+	n.fail(contenttest.OpOverlay, errors.New("journal read failed"))
 	if _, err := n.Open(ctx, pc, vfs.OpenRequest{H: h, Reconnect: &r.Ref, CreateID: [16]byte{1}}); err == nil {
 		t.Fatal("a reconnect whose file cannot be read was answered")
 	}
-	n.engine.overlayErr = nil
+	n.fail(contenttest.OpOverlay, nil)
 	if len(p.free) != 1 || p.free[0] {
 		t.Errorf("the failed reconnect's closes, lock free at each: %v; want one, with the lock held", p.free)
 	}
@@ -326,12 +328,12 @@ func TestAFailedReclaimKeepsTheHeldOpen(t *testing.T) {
 	lock := openstate.LockReq{Owner: openstate.LockOwner{Client: c.Client, Name: []byte("lock-owner")}, Open: held.Ref, Ranges: []openstate.LockRange{{ByteRange: rg, Exclusive: true}}}
 	_, err = n.tab.Locks().Lock(ctx, who, keyOf(f), lock)
 	n.must(t, err)
-	n.engine.overlayErr = errors.New("journal read failed")
+	n.fail(contenttest.OpOverlay, errors.New("journal read failed"))
 	req.Reclaim = true
 	if _, err := n.Open(ctx, c, req); err == nil {
 		t.Fatal("a reclaim whose file cannot be read was answered")
 	}
-	n.engine.overlayErr = nil
+	n.fail(contenttest.OpOverlay, nil)
 	pc := n.smbClient(t, "pc", n.fs.Admin.Principal)
 	if _, err := n.Open(ctx, pc, vfs.OpenRequest{H: g, Disposition: vfs.OpenExisting, Access: entity.WriteData}); !errors.Is(err, vfs.ErrShareViolation) {
 		t.Errorf("another client's write open after the failed reclaim: %v, want ErrShareViolation", err)
@@ -365,12 +367,12 @@ func TestAFailedUpgradeLeavesTheOwnersModesAndReference(t *testing.T) {
 	ref := r.Ref
 	ref.State.Seq, err = n.ConfirmOpen(ctx, c, ref, seq(2))
 	n.must(t, err)
-	n.engine.overlayErr = errors.New("journal read failed")
+	n.fail(contenttest.OpOverlay, errors.New("journal read failed"))
 	up := vfs.OpenRequest{H: g, Disposition: vfs.OpenExisting, Access: entity.ReadData | entity.WriteData, Deny: entity.ReadData | entity.WriteData, Owner: owner, Seqs: seq(3)}
 	if _, err := n.Open(ctx, c, up); err == nil {
 		t.Fatal("an open whose file cannot be read was answered")
 	}
-	n.engine.overlayErr = nil
+	n.fail(contenttest.OpOverlay, nil)
 	if errs := n.TestState(ctx, c, c.Client, []vfs.StateRef{ref.State}); errs[0] != nil {
 		t.Errorf("the owner's stateid after the failed upgrade: %v, want valid", errs[0])
 	}
@@ -484,10 +486,10 @@ func TestAnUndoneOpensDeferredUnlinkRuns(t *testing.T) {
 	// Only that open's read of the file fails.
 	var hookErr error
 	var once sync.Once
-	n.engine.overlaying = func(entity.FileID) {
-		n.engine.overlayErr = nil
+	n.engine.On(contenttest.OpOverlay, func(context.Context, contenttest.Call) error {
+		var failed error
 		once.Do(func() {
-			n.engine.overlayErr = errors.New("journal read failed")
+			failed = errors.New("journal read failed")
 			yes := true
 			if hookErr = n.tab.Opens().Update(ctx, who, marker.ID, openstate.OpenUpdate{Delete: &yes}); hookErr != nil {
 				return
@@ -498,11 +500,12 @@ func TestAnUndoneOpensDeferredUnlinkRuns(t *testing.T) {
 				hookErr = errors.New("the marker's close was the file's last")
 			}
 		})
-	}
+		return failed
+	})
 	if _, err := n.Open(ctx, n.smbClient(t, "pc", n.fs.Admin.Principal), vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}); err == nil {
 		t.Fatal("an open whose file cannot be read was answered")
 	}
-	n.engine.overlayErr, n.engine.overlaying = nil, nil
+	n.engine.On(contenttest.OpOverlay, nil)
 	n.must(t, hookErr)
 	if _, _, err := n.Lookup(ctx, n.admin, d, []byte("f")); !errors.Is(err, vfs.ErrNotFound) {
 		t.Errorf("the name of a delete-pending file after its last open was undone: %v, want ErrNotFound", err)

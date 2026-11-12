@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/vfs/contenttest"
+
 	"github.com/cubbit/dittofs/internal/vfs/authz"
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -77,7 +79,7 @@ func TestATruncateClearsSetIDBeforeItIsStaged(t *testing.T) {
 	} {
 		h := s.file(t, c.name, s.alice.Principal, 0o6777)
 		staged := -1
-		s.engine.truncating = func(entity.FileID) { staged = int(s.record(t, h).Mode) }
+		s.on(contenttest.OpTruncate, func(entity.FileID) { staged = int(s.record(t, h).Mode) })
 		w, err := s.SetAttr(ctx, proven(c.who, inLab), vfs.Target{H: h}, c.ch)
 		s.must(t, err)
 		if staged != int(c.want) {
@@ -96,7 +98,7 @@ func TestATruncateClearsSetIDBeforeItIsStaged(t *testing.T) {
 func TestATruncateOfAnAppendOnlyFileClearsNothing(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
-	s.engine.truncating = func(entity.FileID) { t.Error("an append-only file's truncate was staged") }
+	s.on(contenttest.OpTruncate, func(entity.FileID) { t.Error("an append-only file's truncate was staged") })
 	for _, mode := range []uint32{0o4777, 0o0666} {
 		h := s.file(t, fmt.Sprintf("log%o", mode), s.alice.Principal, mode)
 		_, err := s.fs.Store.Files().SetAttrs(ctx, s.fs.Admin, h, entity.Attrs{}.WithFlags(entity.FlagAppendOnly))
@@ -115,28 +117,35 @@ func TestATruncateOfAnAppendOnlyFileClearsNothing(t *testing.T) {
 // back from the record's.
 func TestGetAttrJoinsTheOverlay(t *testing.T) {
 	s := newAttrs(t)
-	f := entity.NewFileID()
-	rec := vfs.File{ID: f, Share: entity.NewShareID(), Type: entity.Regular, Size: 1 << 20, Version: entity.VersionOf(100), Change: time.Unix(200, 0)}
+	ctx := t.Context()
+	share := entity.NewShareID()
+	s.content.Bind(share)
+	write := func(end int64) func(entity.FileID) error {
+		return func(f entity.FileID) error {
+			_, err := s.engine.Write(ctx, share, f, end-1, []byte{1}, WriteOpts{})
+			return err
+		}
+	}
 	for _, c := range []struct {
-		name string
-		o    Overlay
-		want int64
+		name  string
+		stage func(entity.FileID) error
+		want  int64
 	}{
-		{"writes past the record", Overlay{Size: 2 << 20}, 2 << 20},
-		{"writes within the record", Overlay{Size: 512 << 10}, 1 << 20},
-		{"a truncate", Overlay{Size: 512 << 10, SizeSet: true}, 512 << 10},
+		{"writes past the record", write(2 << 20), 2 << 20},
+		{"writes within the record", write(512 << 10), 1 << 20},
+		{"a truncate", func(f entity.FileID) error { return s.engine.Truncate(ctx, share, f, 512<<10) }, 512 << 10},
+		{"nothing pending", func(entity.FileID) error { return nil }, 1 << 20},
 	} {
-		c.o.Version, c.o.Ctime = entity.VersionOf(5), time.Unix(100, 0)
-		s.engine.overlays[f] = c.o
-		got, err := s.joined(t.Context(), rec)
+		// The record's version and change time are past the overlay's,
+		// drawn from the wall clock now.
+		f := entity.NewFileID()
+		s.must(t, c.stage(f))
+		rec := vfs.File{ID: f, Share: share, Type: entity.Regular, Size: 1 << 20, Version: entity.VersionOf(1 << 62), Change: time.Now().Add(time.Hour)}
+		got, err := s.joined(ctx, rec)
 		s.must(t, err)
 		if got.Size != c.want || got.Version != rec.Version || !got.Change.Equal(rec.Change) {
 			t.Errorf("%s: size %d version %v ctime %v; want %d, the record's", c.name, got.Size, got.Version, got.Change, c.want)
 		}
-	}
-	delete(s.engine.overlays, f)
-	if got, _ := s.joined(t.Context(), rec); got.Size != rec.Size {
-		t.Errorf("with nothing pending: size %d, want the record's", got.Size)
 	}
 }
 
@@ -548,7 +557,8 @@ func TestAGrowingSizeChangeMeetsTheLocksPastTheOldSize(t *testing.T) {
 	ctx := t.Context()
 	h := s.file(t, "f", s.alice.Principal, 0o666)
 	f := s.record(t, h)
-	s.engine.overlays[f.ID] = Overlay{Size: 100}
+	_, err := s.engine.Write(ctx, f.Share, f.ID, 99, []byte{1}, WriteOpts{})
+	s.must(t, err)
 	id, _, err := s.tab.Clients().Connect(ctx, openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}}}, nil)
 	s.must(t, err)
 	who := openstate.Caller{Client: id, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
