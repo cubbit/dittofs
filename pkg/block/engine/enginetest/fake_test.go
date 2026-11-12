@@ -164,6 +164,47 @@ func TestFakeLossRingAndGeneration(t *testing.T) {
 	}
 }
 
+// FailNextWindow loses every write since the window last closed, and only
+// those: the next Sync, whatever it names, drops them with one failed-window
+// event each and raises the generation once; each file that had a write in
+// the window answers its own next Sync with a SyncError, then syncs again.
+func TestFakeFailNextWindowLosesTheWindow(t *testing.T) {
+	j, h := fake(t, 0)
+	ctx := t.Context()
+	write(t, h, fileA, 0, "kept")
+	if _, err := h.Sync(ctx, fileA); err != nil {
+		t.Fatal(err)
+	}
+	va := write(t, h, fileA, 4, "lost")
+	vb := write(t, h, fileB, 0, "lost")
+	j.FailNextWindow()
+
+	var se *journal.SyncError
+	if _, err := h.Sync(ctx, fileB); !errors.As(err, &se) || !slices.Equal(se.Files, []journal.FileID{fileB}) {
+		t.Fatalf("the Sync closing the failed window = %v, want a SyncError naming file B alone", err)
+	}
+	s := j.Stats()
+	want := []journal.LossEvent{
+		{SeqNum: 1, Share: 1, File: fileA, Extent: ext(4, 4), Version: va, Reason: journal.LossFailedWindow},
+		{SeqNum: 2, Share: 1, File: fileB, Extent: ext(0, 4), Version: vb, Reason: journal.LossFailedWindow},
+	}
+	if s.LossGeneration != 1 || !slices.Equal(s.Losses, want) {
+		t.Errorf("after the failed window: generation %d, ring %+v; want generation 1, %+v", s.LossGeneration, s.Losses, want)
+	}
+	if _, missing, _, _, _ := h.ReadAt(ctx, fileA, 0, make([]byte, 8)); !slices.Equal(missing, []journal.Extent{ext(4, 4)}) {
+		t.Errorf("file A's missing extents after the failed window = %v, want only the write in it, %v", missing, ext(4, 4))
+	}
+	if j.Durable(fileA) {
+		t.Error("file A is durable before a Sync of it answered its failed window")
+	}
+	if _, err := h.Sync(ctx, fileA); !errors.As(err, &se) || !slices.Equal(se.Files, []journal.FileID{fileA}) {
+		t.Errorf("file A's first Sync after the failed window = %v, want a SyncError naming it", err)
+	}
+	if _, err := h.Sync(ctx, fileA, fileB); err != nil || !j.Durable(fileA) {
+		t.Errorf("the Sync after each file answered its failure = %v, durable %v; want nil, durable", err, j.Durable(fileA))
+	}
+}
+
 // Each refusal is the journal's named one.
 func TestFakeRefusals(t *testing.T) {
 	j, h := fake(t, 4)

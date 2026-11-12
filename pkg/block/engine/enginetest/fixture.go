@@ -187,9 +187,14 @@ func (f *Fixture) FailNextSync() {
 // segment in the journal's directory serve its durable image to a read, so
 // the window's read-back does not verify and the window fails with loss
 // records instead of being re-appended. The stale reads last for the
-// fixture's life; segments created after the call read as written.
+// fixture's life; segments created after the call read as written. Over the
+// fake journal it is the fake's FailNextWindow.
 func (f *Fixture) FailNextWindow() {
 	f.t.Helper()
+	if f.fake != nil {
+		f.fake.FailNextWindow()
+		return
+	}
 	f.FailNextSync()
 	names, err := f.Seam.List()
 	if err != nil {
@@ -200,6 +205,34 @@ func (f *Fixture) FailNextWindow() {
 			f.Seam.StaleReads(name)
 		}
 	}
+}
+
+// HoldFirstRepack holds the first repack pass mid-way, its segments selected
+// and none yet returned, until release; reached is closed once it is there.
+// Over the journal it holds the pass where it removes a segment it retired;
+// over the fake journal, after it selected. A test's cleanup releases it.
+func (f *Fixture) HoldFirstRepack() (reached <-chan struct{}, release func()) {
+	f.t.Helper()
+	if f.fake == nil {
+		h := f.Seam.HoldFirst(f.t, "remove", "*")
+		return h.Reached(), h.Release
+	}
+	in, out := make(chan struct{}), make(chan struct{})
+	var first, rel sync.Once
+	f.fake.AtRepackSelected(func(ctx context.Context) {
+		held := false
+		first.Do(func() { held = true; close(in) })
+		if !held {
+			return
+		}
+		select {
+		case <-out:
+		case <-ctx.Done():
+		}
+	})
+	release = func() { rel.Do(func() { close(out) }) }
+	f.t.Cleanup(release)
+	return in, release
 }
 
 // HoldBatches holds every removal batch the engine running now, and the
@@ -347,11 +380,14 @@ type Option func(*Fixture)
 // WithFakeJournal has every process start open one in-memory journal, kept
 // across Restart and Crash, in place of the journal in Dir: for a check of the
 // composition's own order of work that the journal's unbuilt parts would stop
-// first. The fake is held to the journal for Share alone
-// (TestShareAgreesWithTheJournal), so nothing else it answers here is checked
-// against the journal. The fixture's journal-side controls (FailNextSync,
-// FailNextWindow, Reinit, Crash's variants, HandleOf) act on the journal in
-// Dir, which nothing reads then, so each fails the test.
+// first. The fake runs its segment model, segments of fakeSegmentCap bytes
+// under a maximum of fakeMaxBytes, so repack has segments to free. It is held
+// to the journal for Share and Since alone (TestShareAgreesWithTheJournal,
+// TestSinceYieldsOverAsTheJournalDoes), so nothing else it answers here is
+// checked against the journal. FailNextWindow and HoldFirstRepack act on the
+// fake; the other journal-side controls (FailNextSync, Reinit, Crash's
+// variants, HandleOf) act on the journal in Dir, which nothing reads then, so
+// each fails the test.
 //
 // decision: a check run this way proves nothing about the journal, only what
 // the engine and the service above it do in what order; the fake stands in
@@ -360,8 +396,19 @@ type Option func(*Fixture)
 // over the journal alone, once a restart reopens a journal that holds
 // segments.
 func WithFakeJournal() Option {
-	return func(f *Fixture) { f.fake = NewFakeJournal() }
+	return func(f *Fixture) {
+		f.fake = NewFakeJournal()
+		f.fake.SegmentCap(fakeSegmentCap, fakeMaxBytes)
+	}
 }
+
+// The fake journal's segment model under WithFakeJournal: 1 MiB segments, so
+// a row's few MiB of overwrites span sealed segments repack can retire, under
+// a maximum well above the share's limit.
+const (
+	fakeSegmentCap = 1 << 20
+	fakeMaxBytes   = 64 << 20
+)
 
 // journalOnly fails a control that acts on the journal in Dir, which
 // WithFakeJournal leaves unread.
