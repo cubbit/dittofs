@@ -1,6 +1,10 @@
 package datapath
 
-import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+import (
+	"context"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+)
 
 // Draw issues the next content version and appends nothing: no record is
 // written, no segment byte is spent and no index entry is published, so a
@@ -23,7 +27,7 @@ import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 // IOPS rather than the last minute's, when a deployment reaches the burst
 // check's refusal rate.
 func (c *Core) Draw() (core.Version, error) {
-	return c.counters.Draw()
+	return c.cap.DrawVersion(context.Background())
 }
 
 // SetVersionLimit sets the version limit: versions are issued, by Draw and
