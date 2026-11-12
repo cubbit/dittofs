@@ -61,7 +61,7 @@ rfc1 / 9.4 / A / "loss raises the loss generation":
 rfc1 / 9.4 / A / "a recycled segment keeps its new records":
   tests: [TestRFC1A_RecycledSegmentKeepsNewRecords]
 rfc1 / 9.4 / A / "failed sync window":
-  tests: [TestRFC1A_FailedSyncWindow]
+  tests: [TestRFC1A_FailedSyncWindow, TestRFC1A_FailedWindowsCarryNoMarks]
 rfc1 / 9.4 / A / "offered bytes verified":
   tests: [TestRFC1A_OfferedBytesVerified]
 rfc1 / 9.4 / A / "repack verifies the whole source":
@@ -81,7 +81,7 @@ rfc1 / 9.4 / A / "loss by exact record":
 rfc1 / 9.4 / A / "a synced loss masks what it superseded":
   tests: [TestRFC1A_SyncedLossMasksSuperseded]
 rfc1 / 9.4 / A / "a failed window is reported once":
-  tests: [TestRFC1A_FailedWindowReportedOnce]
+  tests: [TestRFC1A_FailedWindowReportedOnce, TestRFC1A_FailedWindowsCarryNoMarks]
 rfc1 / 9.4 / A / "a re-append keeps its numbers":
   tests: [TestRFC1A_ReappendKeepsItsNumbers]
 rfc1 / 9.4 / A / "no pin on a segment under repack":
@@ -488,8 +488,9 @@ rfc28 / 4.2 / C / "a recovery seal holds no catalog of a range":
   owner: epic 7
   reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
 rfc28 / 4.2 / C / "a mark proves only up to `Through`":
-  owner: epic 7
-  reason: 'sync marks and the open''s use of them are not built yet'
+  tests: [TestRFC1A_SyncMarksNameTheRecordsTheyProve]
+  owner: '#4173'
+  reason: 'Sync names its marks now, and the test checks what each one claims: the stream, the segment, the record''s end and its sequence, read against the placed record''s own header. The rest of the row needs the journal-level Stats.SyncMarks and MarksRecorded the marks work still owes [#4173], so a group commit can record one, and the open''s use of a recorded mark -- cutting a scanned tail at `Through`, counting a lost tail, running the reconcile -- which is epic 7''s recovery.'
 rfc28 / 4.2 / C / "a counted range is not counted again":
   owner: epic 7
   reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
