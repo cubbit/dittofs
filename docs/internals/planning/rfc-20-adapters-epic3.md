@@ -224,7 +224,7 @@ pkg/resources/
 test/adapter/known.yaml  T3.1: 6 entries removed; T3.2: 1
 test/suites.yaml         T3.1: ./pkg/resources/ added to unit/adapter-allocs
 docs/internals/rfcs/rfc-24-resources.md   T3.1: §2.5's expired context (R7); T3.2: §3.1's header room (D5)
-docs/internals/rfcs/rfc-20-adapters.md    T3.2: §6.8's comment on cap (D5)
+docs/internals/rfcs/rfc-20-adapters.md    T3.1: §4.7's non-waiting reserve (R7); T3.2: §6.8's comment on cap (D5)
 ```
 
 No exported symbol changes: the bodies fill the signatures of RFC 24 §2.5 and RFC 20 §6.8 as
@@ -249,7 +249,8 @@ E1 froze them. The gates skip under the race detector and the poison read withou
   wake the next waiter. The markers of D1 to D4 and D7, and E1's comments on `WaitBudget`,
   `Reserve` and `Release` that say "fair per key", "its turn" and "its key's count" rewritten
   to arrival order. `Reserve`'s comment that it "tries once and refuses at once" under an
-  expired context rewritten as R7 reads, and RFC 24 §2.5's same sentence amended with it.
+  expired context rewritten as R7 reads, and the same sentence in RFC 24 §2.5 and RFC 20 §4.7
+  amended with it.
   `./pkg/resources/` added to `unit/adapter-allocs`' command in `test/suites.yaml`. Six
   entries removed from `test/adapter/known.yaml`: the four subtests of
   `TestConformanceBudgetsHeldNamesEachCharged` and the two of
