@@ -112,6 +112,11 @@ type coreOptions struct {
 	// takeHook is installed on the admission's decision section before any
 	// goroutine of the core starts; nil in production.
 	takeHook func()
+	// stopProbe is registered as a stop right before the pool's, so Close
+	// runs it in the reverse order once the pool has stopped and before the
+	// idle sealer and the retirer have; the stop it returns is what Close
+	// runs. Nil in production.
+	stopProbe func(*segment.Pool) func()
 	// extentLimit overrides the index's entry bound a test core builds with,
 	// keeping Deps at the figure the production wiring passes.
 	extentLimit int64
@@ -597,6 +602,25 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	})
 	state.Set.OnSeal(tr.SealObserved)
 
+	// The workers register their stops as they start, in the order their
+	// pieces were built: the retirer, then the reclaim worker, then the idle
+	// sealer, then the pool, then the durability layer. Close stops them in
+	// the reverse of this order — the durability layer, whose Stop wakes
+	// every durability waiter, first, then the pool, then the idle sealer,
+	// then the reclaim worker, then the retirer — so the pool is stopped
+	// before the retirer, the order the segment package's group close
+	// documents for the same parts it owns: the wake the retirer's queue drop
+	// sends must reach a pool that makes nothing, and a retirement still in
+	// flight must unlink its segment rather than reserve a slot in a live
+	// pool. The reclaim worker's stop registers right after the retirer's
+	// so reverse order stops the worker before the retirer it hands to —
+	// no candidate reaches a stopped executor — and it registers whether
+	// the freshSet guard started the worker, since Stop joins a worker
+	// that never started too. Stopping the pool before the idle sealer is
+	// safe for the same reason the drain makes all the stops safe: no
+	// data-path call is in flight when they run, and a stopped pool
+	// answers Take, Hold and Kick with ErrClosed or a no-op rather than
+	// waiting.
 	c.retirer.Start()
 	// decision: only a set this constructor built itself starts the
 	// retirement worker, whatever State the core continues from. A caller's
@@ -611,18 +635,6 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	if freshSet {
 		c.retiring.Start()
 	}
-
-	// The workers register their stops as they start, in the order their
-	// pieces were built: the retirer, then the reclaim worker, then the
-	// idle sealer, then the durability layer. Close stops them in the
-	// reverse of this order, so the durability layer — the one whose Stop
-	// wakes every durability waiter — is stopped first among the workers,
-	// and the tirer last. The reclaim worker's stop registers right after
-	// the retirer's so reverse order stops the worker before the retirer
-	// it hands to — the hand-off a group close kept the same way, stopping
-	// the worker no candidate could still reach a live executor through —
-	// and it registers whether the freshSet guard started the worker, since
-	// Stop joins a worker that never started too.
 	c.addStop(c.retirer.Stop)
 	c.addStop(c.retiring.Stop)
 
@@ -631,7 +643,11 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		c.sealer.Start()
 		c.addStop(c.sealer.Stop)
 	}
+	if o.stopProbe != nil {
+		c.addStop(o.stopProbe(c.pool))
+	}
 	c.pool.Start()
+	c.addStop(c.pool.Stop)
 	d.Start(c.streams)
 	c.addStop(d.Stop)
 

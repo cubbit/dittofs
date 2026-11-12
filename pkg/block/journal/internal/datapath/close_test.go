@@ -13,21 +13,33 @@ import (
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // TestCallsAfterCloseFailErrClosed checks the fence from every entry point of
-// the data path: once BeginClose ran — before the core itself is torn down —
-// every call, through a handle or on the journal's own surface, is refused
+// the data path the test names — the handle calls that write, read and
+// reserve (WriteAt, ReadAt, Fill, Reserve, WriteReserved, Delete, Since) and
+// the journal-level calls (Share, Draw, SetVersionLimit, Strand): once
+// BeginClose ran — before the core itself is torn down — each is refused
 // with nothing changed. A missing gate lets its call through and fails its
 // leg: the handle calls return their own results, the journal-level calls
-// succeed.
+// succeed. Truncate, Deallocate and CloneTarget take the same beginCall gate
+// Delete does and are left to it, and the bare-enter surface (Settle,
+// Extents, Files) is each to its own tests.
 func TestCallsAfterCloseFailErrClosed(t *testing.T) {
 	c, _ := newTestCore(t)
 	f1, f2 := testFile(1), testFile(2)
 	s1, s2 := mustShare(t, c, 1), mustShare(t, c, 2)
 	ctx := context.Background()
+
+	// The reservation is taken before the fence, so WriteReserved has one to
+	// draw on and only the fence can refuse it.
+	r, err := c.Reserve(ctx, s1, 4<<10, 1)
+	if err != nil {
+		t.Fatalf("the Reserve before the fence = %v, want nil", err)
+	}
 
 	c.BeginClose()
 
@@ -41,6 +53,23 @@ func TestCallsAfterCloseFailErrClosed(t *testing.T) {
 	if err := c.Fill(ctx, s2, f2, 0, []byte("late"), core.Version{}, core.Version{}); !errors.Is(err, core.ErrClosed) {
 		t.Fatalf("the Fill refused by the fence = %v, want ErrClosed", err)
 	}
+	if _, err := c.Reserve(ctx, s1, 4<<10, 1); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("the Reserve refused by the fence = %v, want ErrClosed", err)
+	}
+	if _, err := c.WriteReserved(ctx, s1, r, f1, 0, []byte("late"), 1); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("the WriteReserved refused by the fence = %v, want ErrClosed", err)
+	}
+	if _, err := c.Delete(ctx, s1, f1); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("the Delete refused by the fence = %v, want ErrClosed", err)
+	}
+	var sinceErr error
+	for _, err := range c.Since(ctx, s1, f1, core.Version{}) {
+		sinceErr = err
+		break
+	}
+	if !errors.Is(sinceErr, core.ErrClosed) {
+		t.Fatalf("the Since refused by the fence = %v, want ErrClosed", sinceErr)
+	}
 	if _, err := c.Share(3, 0, core.Version{}); !errors.Is(err, core.ErrClosed) {
 		t.Fatalf("the Share after the close began = %v, want ErrClosed", err)
 	}
@@ -49,6 +78,9 @@ func TestCallsAfterCloseFailErrClosed(t *testing.T) {
 	}
 	if err := c.SetVersionLimit(core.Version{Counter: limitCount}); !errors.Is(err, core.ErrClosed) {
 		t.Fatalf("the SetVersionLimit after the close began = %v, want ErrClosed", err)
+	}
+	if err := c.Strand(3); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("the Strand after the close began = %v, want ErrClosed", err)
 	}
 }
 
@@ -415,6 +447,39 @@ func TestSetClosesAfterLastStopReturns(t *testing.T) {
 	assertJoinedBeforeClose(t, log, c, map[string]core.FileID{"worker 1": f1, "worker 2": f2})
 }
 
+// TestPoolStopsBeforeRetirer pins the registry's order against the segment
+// group's own: the pool stops before the retirer, so the wake the retirer's
+// queue drop sends reaches a pool that makes nothing, and a retirement still
+// in flight unlinks its segment rather than reserving a slot in a live pool.
+// The probe registers between the pool's and the retirer's stop, so reverse
+// order runs it after the pool stopped and before the retirer stops, and it
+// reads the state the pool's Stop doc names: Take on a stopped pool answers
+// core.ErrClosed. A registry that left the pool to the group's close runs
+// the probe while the pool still serves takes, and the take nothing refused
+// fails the probe's assertion.
+func TestPoolStopsBeforeRetirer(t *testing.T) {
+	probeDone := make(chan error, 1)
+	c, _ := newTestCore(t, func(o *coreOptions) {
+		o.stopProbe = func(p *segment.Pool) func() {
+			return func() {
+				// Take is the stopped state the pool's Stop doc names; a
+				// stopped pool refuses it changing nothing, and a live one
+				// answers a real spare.
+				_, err := p.Take(segment.Content)
+				probeDone <- err
+			}
+		}
+	})
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close = %v, want nil", err)
+	}
+	got := within(t, probeDone, "the probe's stop, between the pool's and the retirer's")
+	if !errors.Is(got, core.ErrClosed) {
+		t.Fatalf("when the probe's stop ran, the pool still served a take: Take = %v, want ErrClosed", got)
+	}
+}
+
 // TestRemovalInWaitDurableIsWaited checks the drain against the removal that
 // is waiting for its record's durability: Close fences the share, refuses a
 // probe while the removal stays parked in its durability wait, and returns
@@ -504,14 +569,34 @@ func TestRemovalInWaitDurableIsWaited(t *testing.T) {
 }
 
 // TestNoGoroutineOutlivesClose covers the close's leak bound once, with a
-// fan: concurrent writes, reads, removals and Since scans over two shares,
-// both files and both streams, then Close. The profiler's watch — installed
+// close under load: a fan of concurrent writes, reads, removals and Since
+// scans over two shares, both files and both streams, and one fan write
+// parked at its append while Close runs, so the fence refuses the fan's
+// later arrivals and the drain waits the parked write out — the leak watch
+// then sees a close that really drained. The profiler's watch — installed
 // before the core is built, so its check runs after the core's cleanup closed
 // it — fails the test if any goroutine the fan or the core started is still
 // running when the test ends.
 func TestNoGoroutineOutlivesClose(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	c, _ := newTestCore(t)
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var armed atomic.Bool
+	var parkN atomic.Int32
+	c, _ := newTestCore(t, func(o *coreOptions) {
+		// One fan write parks before its first append, held for the close to
+		// arrive at; the warm-ups before the arm and every later fan arrival
+		// pass the seam through.
+		o.beforeAppend = func() {
+			if armed.Load() && parkN.Add(1) == 1 {
+				close(parked)
+				<-release
+			}
+		}
+	})
+	// A failure between the park and the release must not leave the write
+	// parked for the core's cleanup to wait on.
+	stopPark := releaser(t, release)
 	s1, s2 := mustShare(t, c, 1), mustShare(t, c, 2)
 	f1, f2 := testFile(1), testFile(2)
 	warm(t, c, s1, f1)
@@ -528,6 +613,16 @@ func TestNoGoroutineOutlivesClose(t *testing.T) {
 			}
 		}()
 	}
+	// One write is parked in flight before the close begins, so the drain has
+	// a call to wait for and the watcher sees it end.
+	heldDone := make(chan writeResult, 1)
+	armed.Store(true)
+	go func() {
+		v, err := c.WriteAt(ctx, s1, f1, int64(1<<20), []byte("held for the close"), 1)
+		heldDone <- writeResult{v, err}
+	}()
+	within(t, parked, "the fan's held write to park before its append")
+
 	p := make([]byte, 64)
 	run(50, func(i int) { _, _ = c.WriteAt(ctx, s1, f1, int64(i)*11, []byte("fan"), 1) })
 	run(50, func(i int) { _, _ = c.WriteAt(ctx, s2, f2, int64(i)*13, []byte("fan"), 1) })
@@ -547,15 +642,43 @@ func TestNoGoroutineOutlivesClose(t *testing.T) {
 			_ = ch
 		}
 	})
+
+	closed := make(chan error, 1)
+	go func() { closed <- c.Close() }()
+
+	// The bounded wait is the assertion, not a sleep before one: a close that
+	// returned while its held write was still in flight drained nothing.
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned %v while its fan's write was still in flight", err)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	stopPark()
+	got := within(t, heldDone, "the write held in flight at Close")
+	if got.err != nil {
+		t.Fatalf("the write held in flight at Close = %v, want its version", got.err)
+	}
+	if got.v == (core.Version{}) {
+		t.Fatal("the write held in flight at Close returned no version")
+	}
+	// The fan keeps calling until every step ran out; the calls the fence
+	// refuses answer ErrClosed at once, so none of them can hang.
 	fan.Wait()
 
-	if err := c.Close(); err != nil {
-		t.Fatalf("Close after the fan = %v, want nil", err)
+	if err := within(t, closed, "Close after the fan and its held write"); err != nil {
+		t.Fatalf("Close under the fan = %v, want nil", err)
 	}
 	if _, err := c.WriteAt(ctx, s1, f1, 0, []byte("late"), 1); !errors.Is(err, core.ErrClosed) {
 		t.Fatalf("the WriteAt after Close = %v, want ErrClosed", err)
 	}
 }
+
+// TestReadBegunAfterCloseFails checks the fence's reach before any state
+// change: a ReadAt begun after BeginClose is refused with ErrClosed before
+// it touches storage, so the seam's counts stay what they were — a read that
+// slipped past the fence would reach its records and count there, failing
+// the unchanged-counts assertion.
 func TestReadBegunAfterCloseFails(t *testing.T) {
 	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)

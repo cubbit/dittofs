@@ -19,6 +19,12 @@ type Journal struct {
 	// without closing the core again.
 	closed atomic.Bool
 
+	// closeDone is closed when the first Close returns, so a Close that lost
+	// the flag's race waits for the winner's shutdown to finish before it
+	// answers ErrClosed. It exists exactly when core does, which is the
+	// test-built zero Journal's own guard.
+	closeDone chan struct{}
+
 	// handlesMu guards handles. Share, the journal's Close and Handle.Close
 	// take it, and no lock domain is held when they do. Share holds it across
 	// the core's attach, which takes only the core's registry mutex and
@@ -47,7 +53,7 @@ type Journal struct {
 
 // newJournal returns the Journal that serves c.
 func newJournal(c *datapath.Core) *Journal {
-	return &Journal{core: c, handles: make(map[*datapath.Share]*Handle)}
+	return &Journal{core: c, handles: make(map[*datapath.Share]*Handle), closeDone: make(chan struct{})}
 }
 
 // Restamp rewrites the installation ID in the format file of the journal in
@@ -69,10 +75,23 @@ func Restamp(ctx context.Context, dir string, expect JournalID, install Installa
 // segments, is stopped and joined before any segment it touches is closed,
 // and no storage a reader may still hold is freed.
 //
-// Close returns once all of that has happened. Calling it again returns
-// ErrClosed.
+// Close returns once all of that has happened. Calling it again waits for
+// the close already in flight, if one is, and then returns ErrClosed: the
+// way Handle.Close does, whichever Close returns, the journal's calls have
+// ended.
 func (j *Journal) Close() error {
 	if !j.closed.CompareAndSwap(false, true) {
+		// decision: the loser waits for the winner's close to finish before it
+		// answers ErrClosed, because a caller with two owners reads ErrClosed
+		// as "already shut down" and may reopen or remove the directory while
+		// the winner is still draining. It must not call the core's Close
+		// itself: that would fence the core before the winner's releaseAll
+		// released the handles' reservations, which the decision in the body
+		// below orders first. Overturned by a contract that wants the second
+		// Close answered at once, which would have to name who waits instead.
+		if j.core != nil {
+			<-j.closeDone
+		}
 		return ErrClosed
 	}
 	if j.core == nil {
@@ -80,6 +99,7 @@ func (j *Journal) Close() error {
 		// closes, owns nothing to shut down.
 		return ErrClosed
 	}
+	defer close(j.closeDone)
 	j.handlesMu.Lock()
 	open := make([]*Handle, 0, len(j.handles))
 	for _, h := range j.handles {
