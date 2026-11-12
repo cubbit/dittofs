@@ -12,6 +12,13 @@ func (c *Core) Settle(s *Share, id core.FileID, v core.Version) {
 		return
 	}
 	defer exit()
+	// decision: a settled marker is not relayed to the liveness tracker —
+	// nothing in production fires the re-test events a registered record
+	// waits to be released by. The cost: a sealed segment holding a removal
+	// record is pinned until the process ends, and the drop ranges of a
+	// retired content-only segment stay until the file's next settle and
+	// re-test cycle or the process ends. Overturned by the settle relay, or
+	// the open registration, landing.
 	c.index.SettleFor(s.Tag, id, v)
 }
 

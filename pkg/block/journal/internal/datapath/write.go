@@ -304,8 +304,17 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		// writes. Upgrade to a scan from the end of each ledger, or one stream,
 		// inside Durable when a profile of small concurrent writes shows it.
 		if c.dur.Durable(pl.Loc) {
-			lh, _, _ := c.index.LiftSuperseded(id, v, core.Extent{Off: off + done, Len: pl.N})
+			lh, lifted, _ := c.index.LiftSuperseded(id, v, core.Extent{Off: off + done, Len: pl.N})
 			c.Account(lh)
+			// Every segment this publish's own lift emptied is offered with
+			// the causality record its retirement waits durable on — the
+			// same shaped report the removal path makes — so the offer needs
+			// no tick scan to find it.
+			for _, seg := range lifted {
+				if !c.liveness.Held(seg) {
+					c.retiring.Emptied(seg, pl.Loc)
+				}
+			}
 		}
 		done += pl.N
 	}

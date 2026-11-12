@@ -1,12 +1,14 @@
 package reclaim
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
@@ -28,6 +30,12 @@ type retireFixture struct {
 	// last is the largest segment id a Maker drew over the seam, so a later
 	// spare draws above it instead of over its name.
 	last core.SegmentID
+
+	// dur, streams and counters hold the real gate the rows that need a
+	// refusing gate build once through gate; nil until then.
+	dur      *durability.Durability
+	streams  *segment.Streams
+	counters *index.Counters
 }
 
 // newRetireFixture builds the periphery and starts the retirer's worker. The
@@ -119,53 +127,108 @@ func at64(seg core.SegmentID) segment.Location {
 	return segment.Location{Segment: seg, Off: 64, Len: 16}
 }
 
-// testGate is the tests' hand on the gate the worker asks: the knobs an
-// atomic setter flips while the worker runs, and a refusal channel the
-// methods report each "not yet" answer on. The knob is an input to the code
-// under test, set per test like an injected clock.
-type testGate struct {
-	// refuseAll answers not-yet-durable for every recorded location.
-	refuseAll atomic.Bool
-	// refuseOff answers not-yet-durable for exactly the location recorded
-	// at this offset, zero disabled.
-	refuseOff atomic.Int64
-	// window answers WindowOpen true while set.
-	window atomic.Bool
-	// blocked answers ReclaimBlocked true while set.
-	blocked atomic.Bool
-	// refusals receives one report per refused check, from the worker
-	// goroutine; the test drains what its assertions count.
-	refusals chan string
-}
+// rigDomains is a file append domain table that never blocks: the gate rig's
+// rows take no domain, nothing contending.
+type rigDomains struct{}
 
-func (g *testGate) Durable(loc segment.Location) bool {
-	if g.refuseAll.Load() || (g.refuseOff.Load() != 0 && g.refuseOff.Load() == loc.Off) {
-		g.refuse("durable")
-		return false
+func (rigDomains) Lock(core.FileID) func() { return func() {} }
+
+// gate builds the real retirement gate over the fixture: a durability layer
+// with one append stream of the fixture's own set, whose ledger answers the
+// worker's asks — a record not yet covered by a sync answers not durable,
+// and the record the row appends is made durable or not by the stream's real
+// sync, parked at the seam's hold like any call. Take every fabricated
+// segment the row needs before calling this: the rig's pool maker draws its
+// ids above the fixture's last only, so a segment taken later could share a
+// name with the spares the pool made.
+func (f *retireFixture) gate(t *testing.T) *durability.Durability {
+	t.Helper()
+	if f.dur != nil {
+		return f.dur
 	}
-	return true
-}
-
-func (g *testGate) WindowOpen(core.SegmentID) bool {
-	if g.window.Load() {
-		g.refuse("window")
-		return true
+	counters := &index.Counters{}
+	d, err := durability.New(durability.Config{
+		Clock:    kit.NewStopwatchClock(),
+		Domains:  rigDomains{},
+		Index:    f.ix,
+		Dir:      t.TempDir(),
+		Counters: counters,
+		MarkLoss: f.ix.Lose,
+	})
+	if err != nil {
+		t.Fatalf("durability.New: %v", err)
 	}
-	return false
-}
-
-func (g *testGate) ReclaimBlocked(core.SegmentID) bool {
-	if g.blocked.Load() {
-		g.refuse("blocked")
-		return true
+	maker := segment.NewMaker(f.seam.FS(), f.set, 1<<62, f.last, nil)
+	pool := segment.NewPool(maker, segment.Targets{Content: 1}, d.Admit, nil)
+	cache := segment.NewDescriptors(f.seam.FS(), format.SegmentName, core.NewDescriptorBudget(64))
+	// The cleanups run last in, first out: the worker under test stops
+	// before them, then the layer joins, the streams close, the pool stops
+	// and the descriptors shut down — the order the durability harness
+	// itself closes in.
+	t.Cleanup(func() {
+		if err := cache.Shutdown(); err != nil {
+			t.Errorf("the rig's cache Shutdown: %v", err)
+		}
+	})
+	t.Cleanup(pool.Stop)
+	streams := segment.NewStreams(1, core.JournalID{1}, f.set, pool, cache, d.Sink)
+	t.Cleanup(func() { _ = streams.Close() })
+	t.Cleanup(d.Stop)
+	pool.Start()
+	for deadline := time.Now().Add(10 * time.Second); pool.Counters().Spares < 1; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the rig's pool never readied a spare: %+v", pool.Counters())
+		}
 	}
-	return false
+	f.dur, f.streams, f.counters = d, streams, counters
+	d.Start(streams)
+	return d
 }
 
-func (g *testGate) refuse(what string) {
-	select {
-	case g.refusals <- what:
-	default:
+// appendRecord appends one content record of id through the rig's real
+// stream and returns where it landed: a true ledger entry whose durability
+// the gate answers by — not durable until a sync has covered it, which the
+// row leads and the seam's hold may park.
+func (f *retireFixture) appendRecord(t *testing.T, id core.FileID, v core.Version) segment.Location {
+	t.Helper()
+	seq, err := f.counters.NextSeq()
+	if err != nil {
+		t.Fatalf("NextSeq: %v", err)
+	}
+	pl, err := f.streams.Stream(0).Append(format.RecordHeader{
+		Kind: format.KindWrite, File: id, Extent: core.Extent{Off: 0, Len: 16},
+		Seq: seq, Version: v, Tag: 1,
+	}, format.RecordBody{Payload: make([]byte, 16), MTime: 1})
+	if err != nil {
+		t.Fatalf("the rig's append: %v", err)
+	}
+	return pl.Loc
+}
+
+// queuedEntry reports whether the worker's queue still holds seg's entry,
+// and whether that entry still carries recorded locations. The rows assert
+// requeue and drop with it: a requeue keeps the entry and its locations, a
+// drop empties the queue, and a tick scan's prompt-only re-offer fills it
+// again with none.
+func queuedEntry(w *Worker, seg core.SegmentID) (queued, located bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	e, ok := w.entries[seg]
+	return ok, ok && len(e.locs) != 0
+}
+
+// waitCond polls cond, with a short pause between polls, until it holds
+// inside the bounded window, failing the test when it never does.
+func waitCond(t *testing.T, d time.Duration, what string, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(d); ; time.Sleep(time.Millisecond) {
+		if cond() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never happened inside %v", what, d)
+			return
+		}
 	}
 }
 
@@ -236,50 +299,167 @@ func TestEmptiedRetiresANotHeldSealedSegment(t *testing.T) {
 	}
 }
 
-// TestANotYetDurableLocationRequeuesUntilTheGateOpens: a location the gate
-// answers not-yet-durable keeps its entry alive — the same location is asked
-// twice, which only a requeued entry can do (a requeue keeps the entry, and
-// a scan's prompt carries no location to ask about) — and no hand-over
-// reaches the executor while the gate refuses. Once the gate opens, the
-// re-offer retires the segment.
-func TestANotYetDurableLocationRequeuesUntilTheGateOpens(t *testing.T) {
+// TestANotYetDurableRecordRequeuesUntilItsSyncCoversIt: the mover's offer
+// names a record whose sync cannot complete — a real record of the rig's
+// real stream, its fsync parked at the seam — and the real ledger answers it
+// not durable, so the entry keeps requeueing and no hand-over reaches the
+// executor while the fsync stands. The requeue itself is read in process:
+// two passes ran over the candidate and the queue entry kept its recorded
+// location, which only a requeue does — a drop empties the entry, and the
+// tick scan's prompt-only re-offer fills it with none. The released fsync
+// covers the record, and the requeued offer retires the segment.
+func TestANotYetDurableRecordRequeuesUntilItsSyncCoversIt(t *testing.T) {
 	f := newRetireFixture(t)
-	gate := &testGate{refusals: make(chan string, 256)}
-	gate.refuseAll.Store(true)
+	seg := f.sealed(t)
+	d := f.gate(t)
 	exec := &recordedExec{next: f.retirer}
-	w := NewWorker(f.set, f.tr, gate, exec)
+	w := NewWorker(f.set, f.tr, d, exec)
 	w.tickEvery = 10 * time.Millisecond
 	t.Cleanup(w.Stop)
-	w.Start()
-	seg := f.sealed(t)
 
-	w.Emptied(seg, at64(seg))
-	for i := 1; i <= 2; i++ {
-		select {
-		case what := <-gate.refusals:
-			if what != "durable" {
-				t.Fatalf("the gate reported refusal %q, want a durable refusal", what)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("the %d. durable refusal never arrived, want the not-yet-durable offer to requeue and be asked again", i)
-		}
+	var passes atomic.Int32
+	w.afterClaim = func(core.SegmentID) { passes.Add(1) }
+	w.Start()
+
+	loc := f.appendRecord(t, fid(3), ver(1))
+	hold := f.seam.Hold(t, kit.OpSync, format.SegmentName(loc.Segment))
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- d.Sync(context.Background(), fid(3)) }()
+	select {
+	case <-hold.Reached():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the recorded record's sync was never issued: no fsync reached the seam's hold")
+	}
+	if d.Durable(loc) {
+		t.Fatal("the ledger answered the record durable while its fsync stood parked at the seam, want not durable")
+	}
+
+	w.Emptied(seg, loc)
+	waitCond(t, 5*time.Second, "two passes over the refused candidate", func() bool {
+		return passes.Load() >= 2
+	})
+	if queued, located := queuedEntry(w, seg); !queued || !located {
+		t.Fatalf("the refused candidate's queue entry is queued=%v located=%v, want the requeue to keep it with its recorded location", queued, located)
 	}
 	if got := exec.count(); got != 0 {
-		t.Fatalf("Enqueue called %d times while the gate refused, want 0", got)
+		t.Fatalf("Enqueue called %d times while the offer's record could not sync, want 0", got)
+	}
+	// Bounding window, not a truth: the fast ticks ran further passes inside
+	// it, and each must have been refused by the still-parked record.
+	select {
+	case id := <-f.retired:
+		t.Fatalf("retired segment %v while its offer's record could not sync, want none", id)
+	case <-time.After(300 * time.Millisecond):
 	}
 
-	gate.refuseAll.Store(false)
-	w.Emptied(seg, at64(seg))
+	hold.Release()
+	select {
+	case err := <-syncDone:
+		if err != nil {
+			t.Fatalf("Sync after its parked fsync was released: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Sync never returned once its parked fsync was released")
+	}
 	select {
 	case id := <-f.retired:
 		if id != seg {
-			t.Fatalf("after the gate opened, retired segment %v, want %v", id, seg)
+			t.Fatalf("after the record went durable, retired segment %v, want %v", id, seg)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatalf("after the gate opened, no retirement arrived, want segment %v", seg)
+		t.Fatalf("after the record went durable, no retirement arrived, want segment %v", seg)
 	}
 	if got, want := f.retirer.Counters().FreedBytes, uint64(segCap); got != want {
-		t.Fatalf("FreedBytes after the re-offer's retirement = %d, want %d", got, want)
+		t.Fatalf("FreedBytes after the requeued offer's retirement = %d, want %d", got, want)
+	}
+	if got := f.set.Counters().DoubleRetires; got != 0 {
+		t.Fatalf("DoubleRetires = %d, want 0", got)
+	}
+}
+
+// TestTheHandOverWaitsOnARecordAnotherMoverLeftUnsynced: an offer may name a
+// record that is already durable — one mover's crossing — while another
+// record of the same stream, appended after that sync was issued, still
+// cannot sync: the shape of a truncation whose cut emptied a segment behind
+// a record the offer names nowhere. The offer's own gate answers durable, so
+// only the hand-over's pending-record barrier stands between the segment and
+// an unlink that would lose the unsynced record; the release covers it and
+// exactly one retirement follows.
+func TestTheHandOverWaitsOnARecordAnotherMoverLeftUnsynced(t *testing.T) {
+	f := newRetireFixture(t)
+	seg := f.sealed(t)
+	d := f.gate(t)
+	exec := &recordedExec{next: f.retirer}
+	w := NewWorker(f.set, f.tr, d, exec)
+	w.tickEvery = 10 * time.Millisecond
+	t.Cleanup(w.Stop)
+	w.Start()
+
+	// The first mover's record, appended and made durable by its own sync:
+	// the record its offer is gated on.
+	first := f.appendRecord(t, fid(3), ver(1))
+	if err := d.Sync(context.Background(), fid(3)); err != nil {
+		t.Fatalf("the first record's sync: %v", err)
+	}
+	if !d.Durable(first) {
+		t.Fatal("the first record answered not durable after its own sync completed, want durable")
+	}
+
+	// The second mover's record, appended after that sync returned — beyond
+	// everything it captured — and parked at the seam: not durable.
+	second := f.appendRecord(t, fid(4), ver(1))
+	if second.Segment != first.Segment {
+		t.Fatalf("the two records landed in segments %v and %v, want the stream's one shared active segment", first.Segment, second.Segment)
+	}
+	hold := f.seam.Hold(t, kit.OpSync, format.SegmentName(second.Segment))
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- d.Sync(context.Background(), fid(4)) }()
+	select {
+	case <-hold.Reached():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second record's sync was never issued: no fsync reached the seam's hold")
+	}
+	if d.Durable(second) {
+		t.Fatal("the second record answered durable while its fsync stood parked at the seam, want not durable")
+	}
+
+	// The offer names the durable record alone. Bounding window, not a
+	// truth: full scan passes run inside it, and each must be held back by
+	// the pending record the gate adds.
+	w.Emptied(seg, first)
+	select {
+	case id := <-f.retired:
+		t.Fatalf("retired segment %v while the second record stood unsynced, want the hand-over held back", id)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if got := exec.count(); got != 0 {
+		t.Fatalf("Enqueue called %d times while the second record stood unsynced, want 0", got)
+	}
+
+	// The release covers the pending record, the barrier lifts and the
+	// handed-back candidate retires — once.
+	hold.Release()
+	select {
+	case err := <-syncDone:
+		if err != nil {
+			t.Fatalf("the second record's Sync after its parked fsync was released: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second record's Sync never returned once its parked fsync was released")
+	}
+	select {
+	case id := <-f.retired:
+		if id != seg {
+			t.Fatalf("after the pending record went durable, retired segment %v, want %v", id, seg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("after the pending record went durable, no retirement arrived, want segment %v", seg)
+	}
+	if got, want := f.retirer.Counters().FreedBytes, uint64(segCap); got != want {
+		t.Fatalf("FreedBytes after the held-back candidate's retirement = %d, want %d", got, want)
+	}
+	if got := f.set.Counters().DoubleRetires; got != 0 {
+		t.Fatalf("DoubleRetires = %d, want 0", got)
 	}
 }
 
@@ -397,54 +577,6 @@ func TestTheTickScanOffersWhatNothingHolds(t *testing.T) {
 	}
 }
 
-// TestAnEndedCandidateWaitsForTheWindowToClose: an ended candidate re-reads
-// the window and the reclaim block under the claim, and neither hand-over
-// nor the executor is reached while the window answers open; once it closes,
-// the segment is handed over as a ReasonEnded retirement — the executor
-// refuses a wrong reason, so the retirement arriving at all proves the
-// reason matched the Ended state.
-func TestAnEndedCandidateWaitsForTheWindowToClose(t *testing.T) {
-	f := newRetireFixture(t)
-	gate := &testGate{refusals: make(chan string, 256)}
-	gate.window.Store(true)
-	exec := &recordedExec{next: f.retirer}
-	w := f.worker(t, gate, exec)
-	seg := f.ended(t)
-
-	w.Prompt(seg)
-	select {
-	case what := <-gate.refusals:
-		if what != "window" {
-			t.Fatalf("the gate reported refusal %q, want a window refusal", what)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("the window was never asked, want the ended candidate to re-read it under the claim")
-	}
-	// Bounding window, not a truth: the window answers open and the worker
-	// ticks fast enough that several re-reads ran inside it.
-	select {
-	case id := <-f.retired:
-		t.Fatalf("retired segment %v while its window answered open, want no retirement", id)
-	case <-time.After(300 * time.Millisecond):
-	}
-	if got := exec.count(); got != 0 {
-		t.Fatalf("Enqueue called %d times while the window answered open, want 0", got)
-	}
-
-	gate.window.Store(false)
-	select {
-	case id := <-f.retired:
-		if id != seg {
-			t.Fatalf("retired segment %v once the window closed, want %v", id, seg)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("no retirement once the window closed, want segment %v", seg)
-	}
-	if got, want := f.retirer.Counters().FreedBytes, uint64(segCap); got != want {
-		t.Fatalf("FreedBytes after the ended segment's retirement = %d, want %d", got, want)
-	}
-}
-
 // TestTwoWorkersRetireOneSegmentOnce: two workers over one set, tracker and
 // executor, both offered the same segment, retire it exactly once: the
 // claim a hand-over takes refuses the other's, the executor's queue keeps
@@ -489,15 +621,15 @@ func TestTwoWorkersRetireOneSegmentOnce(t *testing.T) {
 }
 
 // TestARefusedClaimDropsTheEntryALaterPromptReoffers: a candidate whose
-// claim another holder refuses is dropped, its recorded location with it —
-// the gate keeps refusing that exact location, so a requeued entry would
-// never retire — and a later Prompt offers the segment again fresh, with no
-// location, and the retirement lands.
+// claim another holder refuses is dropped, its recorded location with it.
+// The drop is read in process: a pass claimed, was refused, and the queue
+// entry is gone — where a requeue would have kept it, location and all, and
+// every later pass would have found the claim still taken and re-refused.
+// A later Prompt offers the segment again fresh, with no location, and the
+// retirement lands.
 func TestARefusedClaimDropsTheEntryALaterPromptReoffers(t *testing.T) {
 	f := newRetireFixture(t)
-	gate := &testGate{refusals: make(chan string, 256)}
-	gate.refuseOff.Store(64) // the recorded location stays not-yet-durable forever
-	w := NewWorker(f.set, f.tr, gate, f.retirer)
+	w := NewWorker(f.set, f.tr, nil, f.retirer)
 	w.tickEvery = 10 * time.Millisecond
 	t.Cleanup(w.Stop)
 	seg := f.sealed(t)
@@ -517,10 +649,17 @@ func TestARefusedClaimDropsTheEntryALaterPromptReoffers(t *testing.T) {
 		t.Fatalf("the worker never ran its pass over the refused claim, want the pass to have claimed and been refused")
 	}
 
-	// The external claim gone, the later prompt re-offers the segment with
-	// no location of the still-refused kind; had the first entry been
-	// requeued instead of dropped, its location would keep the gate
-	// refusing for ever and no retirement would arrive.
+	// The pass refused the claim and dropped the entry; the bounded wait
+	// covers the drop landing on the worker's goroutine behind the claim
+	// the hook reports. A requeue would have kept the entry here for the
+	// external claim stands, so every later pass finds nothing new.
+	waitCond(t, 2*time.Second, "the refused claim to drop the candidate's entry", func() bool {
+		queued, _ := queuedEntry(w, seg)
+		return !queued
+	})
+
+	// The external claim gone, the later prompt re-offers the segment fresh
+	// and the retirement lands.
 	f.set.Release(seg)
 	w.Prompt(seg)
 	select {
@@ -533,6 +672,9 @@ func TestARefusedClaimDropsTheEntryALaterPromptReoffers(t *testing.T) {
 	}
 	if got := f.set.Counters().DoubleRetires; got != 0 {
 		t.Fatalf("DoubleRetires = %d, want 0", got)
+	}
+	if got, want := f.retirer.Counters().FreedBytes, uint64(segCap); got != want {
+		t.Fatalf("FreedBytes after the re-offer's retirement = %d, want %d", got, want)
 	}
 }
 

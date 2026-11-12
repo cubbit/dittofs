@@ -616,13 +616,15 @@ func (c *Core) WaitSpares(ctx context.Context) error { return c.pool.WaitSpares(
 // Close stops the durability layer, then the retirement worker, then closes
 // the streams, then stops the idle sealer, the pool and the retirer — every
 // background worker joined before the segments it touches are closed, the
-// gate provider (the durability layer, whose Durable, WindowOpen and
-// ReclaimBlocked the worker's pass asks) before the worker, the worker before
-// the retirer it hands to, so a pass never consults a dead gate nor hands to
-// a stopped executor; the pool before the retirer, as the segment package's
-// group close documents — and last shuts the descriptor cache, whose Shutdown
-// waits for every reader's reference and then closes every descriptor. It is
-// safe to call twice.
+// worker before the retirer it hands to so it hands to no stopped executor;
+// the pool before the retirer, as the segment package's group close
+// documents — and last shuts the descriptor cache, whose Shutdown waits for
+// every reader's reference and then closes every descriptor. A pass the
+// worker runs between the durability layer's Stop and its own consults the
+// stopped gate provider, and that is harmless: the layer joins its workers
+// but keeps its in-memory ledgers intact, so Durable, Pending, WindowOpen
+// and ReclaimBlocked answer a worker's pass as conservatively after the stop
+// as before it. It is safe to call twice.
 func (c *Core) Close() error {
 	c.closedFlag.Store(true)
 	c.closeOnce.Do(func() {

@@ -10,12 +10,15 @@ import (
 
 // Gate is what a candidate asks of the durability service: whether the
 // causality record of each location a mover recorded alongside its offer is
-// published — the offer stands once every record it names is durable — and
+// published — the offer stands once every record it names is durable — the
+// locations of every record appended but not yet known durable, whose
+// publication the hand-over waits on beside the offer's own records, and
 // whether an ended segment's window is open or its reclamation is blocked,
 // the two facts an ended candidate re-reads under its claim. It is the
 // interface this package declares and the durability service implements.
 type Gate interface {
 	Durable(segment.Location) bool
+	Pending() []segment.Location
 	WindowOpen(core.SegmentID) bool
 	ReclaimBlocked(core.SegmentID) bool
 }
@@ -35,13 +38,13 @@ type Executor interface {
 // single goroutine drains the queue, running one pass over it per wake.
 //
 // Per candidate, under the claim it takes from the segment set: the tracker's
-// Held is re-checked, the gate is asked for every recorded location, the
-// reason is read from the ledger's state — Sealed hands over as NotHeld,
-// Ended as ReasonEnded, anything else drops — an ended candidate re-reads
-// the window and the reclaim block, a prompt-only candidate waits out one
-// tick since it was first offered, and the claim is released before the
-// hand-over to the executor. A candidate a check sends back keeps its entry
-// and is re-offered by the tick.
+// Held is re-checked, the gate is asked for every recorded location and for
+// the pending records of every stream, the reason is read from the ledger's
+// state — Sealed hands over as NotHeld, Ended as ReasonEnded, anything else
+// drops — an ended candidate re-reads the window and the reclaim block, a
+// prompt-only candidate waits out one tick since it was first offered, and
+// the claim is released before the hand-over to the executor. A candidate a
+// check sends back keeps its entry and is re-offered by the tick.
 type Worker struct {
 	segs *segment.Set
 	tr   *Tracker
@@ -79,9 +82,9 @@ type offer struct {
 }
 
 // NewWorker returns a worker draining tr's candidates into exec. A nil gate
-// disables the location, window and block checks and exists for tests only;
-// production passes one. A nil set, tracker or executor is a caller bug and
-// panics.
+// disables the location, pending, window and block checks and exists for
+// tests only; production passes one. A nil set, tracker or executor is a
+// caller bug and panics.
 func NewWorker(segs *segment.Set, tr *Tracker, gate Gate, exec Executor) *Worker {
 	if segs == nil {
 		panic("reclaim: a worker needs its segment set")
@@ -269,10 +272,10 @@ func (w *Worker) pass() {
 // handle is one candidate's pass, on locs and first as the pass read them.
 // Its refusals in order: the claim (someone else won the segment), the
 // tracker's Held re-checked under the claim, the gate's answer for each
-// recorded location, the segment's state, the ended window and block
-// re-read, and the prompt-only tick wait. A refusal drops the entry or sends
-// it back; the hand-over releases the claim and hands the segment to the
-// executor.
+// recorded location and each pending record, the segment's state, the
+// ended window and block re-read, and the prompt-only tick wait. A refusal
+// drops the entry or sends it back; the hand-over releases the claim and
+// hands the segment to the executor.
 func (w *Worker) handle(id core.SegmentID, locs []segment.Location, first time.Time) {
 	claimed := w.segs.Claim(id)
 	if w.afterClaim != nil {
@@ -294,6 +297,18 @@ func (w *Worker) handle(id core.SegmentID, locs []segment.Location, first time.T
 	}
 
 	if w.gate != nil {
+		// The pending records of every stream join the offer's recorded
+		// locations: another mover's unsynced cut can have emptied the
+		// segment behind its own record — a record the offer names nowhere,
+		// since the cut left retained bytes answering held and published
+		// no crossing of its own — and retiring on the recorded locations
+		// alone would unlink the segment while that cut's record could
+		// still be lost. The pending set is snapshotted once under the
+		// claim: a record appended after the claim cannot touch a sealed
+		// or ended candidate, whose bytes are already zero and which
+		// records only ever leave, so a later tail names nothing this
+		// hand-over must wait on.
+		locs = append(locs, w.gate.Pending()...)
 		for _, at := range locs {
 			if !w.gate.Durable(at) {
 				w.segs.Release(id)
@@ -333,13 +348,14 @@ func (w *Worker) handle(id core.SegmentID, locs []segment.Location, first time.T
 
 	if len(locs) == 0 && time.Since(first) < w.tickEvery {
 		// decision: a prompt-only candidate waits until a full tick has
-		// passed since it was first offered, because a causality record of
-		// a bytes-move publishes before the crossing it names, and the
-		// sync bound covers every published record within one tick — and
-		// the wait exists because a mover's Emptied offer can race the
-		// tick scan that found the segment. Overturned by any path that
-		// empties a sealed segment without publishing a record the sync
-		// bound covers within one tick.
+		// passed since it was first offered. The wait is a liveness
+		// backstop, not part of the retirement's proof: every hand-over
+		// gates on the pending-record barrier beside the offered
+		// locations, which covers a causality record a mover published
+		// without reporting it, so no hand-over rides on the tick. It
+		// stays because a candidate whose emptier reported nothing still
+		// owes the worker one full scan pass of grace; dropping the wait
+		// would only retire such a candidate a tick sooner.
 		w.segs.Release(id)
 		w.requeue(id)
 		return

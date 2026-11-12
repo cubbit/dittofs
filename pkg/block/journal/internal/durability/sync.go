@@ -803,6 +803,38 @@ func (d *Durability) Durable(at segment.Location) bool {
 	return true
 }
 
+// Pending returns the locations of the records appended but not yet known
+// durable at the moment of the call: one per entry every stream's ledger
+// still holds that no sync has covered. A covered record is durable on disk
+// whether or not the worker has lifted what it superseded, so it is not
+// named. A record a failed window took out of the ledger is not named
+// either: its segment is ended and gated by its own window, and its
+// re-appended place is tracked and named like any other record's. A record
+// a failed window dropped is never named again — no retirement may wait on
+// a record that cannot sync.
+//
+// It is the pending-tail barrier a retirement hand-over asks: consulted
+// beside the locations a mover's offer recorded, it holds the hand-over back
+// while any stream's unsynced record could name content of a segment the
+// retirement would unlink.
+//
+// ponytail: it scans every stream's ledger, like Durable, once per candidate
+// per pass. Upgrade alongside Durable to a per-segment index when a profile
+// shows the scan.
+func (d *Durability) Pending() []segment.Location {
+	var out []segment.Location
+	for _, st := range d.snapshot() {
+		st.mu.Lock()
+		for i := range st.ledger {
+			if loc := st.ledger[i].w.Loc; !st.covered(loc) {
+				out = append(out, loc)
+			}
+		}
+		st.mu.Unlock()
+	}
+	return out
+}
+
 // SyncBound returns the longest a record waits for a sync.
 func (d *Durability) SyncBound() time.Duration { return core.SyncBound }
 

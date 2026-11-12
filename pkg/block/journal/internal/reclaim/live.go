@@ -245,11 +245,13 @@ func (t *Tracker) Held(seg core.SegmentID) bool {
 // with Unregister only for records the path unregisters by its own rules,
 // letting the registry own every re-test release instead: a caller's
 // Unregister of what a re-test already took answers nothing, by design.
-// The production paths that must register and currently do NOT: the loss
-// records the durability layer appends, the removals the datapath writes,
-// and the forget record. Until each of those lands, retirement wiring must
-// not be handed Held as its only gate — a segment holding an unregistered
-// record answers not held and would be retired under it.
+// The registration paths still missing: the forget record's append path,
+// and the registration of a rebuilt journal's records at open, which must
+// have run before the retirement worker starts — a rebuild that registered
+// nothing leaves its segments answering not held and hands them straight
+// to retirement. And no production path settles and re-tests yet, so a
+// registered removal or loss record stays counted for the process's life
+// unless its segment retires.
 func (t *Tracker) Register(rec Rec) {
 	t.count(rec)
 	t.rm.Lock()

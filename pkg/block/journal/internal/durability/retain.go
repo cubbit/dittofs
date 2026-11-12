@@ -57,15 +57,16 @@ func (d *Durability) lift(file core.FileID, v core.Version, e core.Extent, at se
 // deferred loss whose record another path owes, one whose append was
 // refused), or when no hook is set.
 //
-// decision: a mover can report Emptied for a segment whose retirement is
-// already in flight, so the worker that consumes the report may hand the
-// segment over gated only on an earlier causality location. The cover: the
-// move that emptied the segment is published to the index before this
-// report, and the per-stream sync bound covers every published record
-// within one tick, so an unlink racing ahead of the late record's sync would
-// need a mover that publishes without entering the sync bound's window,
-// which none does. Overturned by a mover reporting Emptied before its
-// record publishes, or from outside the sync-bound window.
+// decision: a mover can report Emptied for a segment whose retirement waits
+// on a record later than its own: another mover's unsynced cut can have
+// taken the segment's held bytes to zero before this report's crossing,
+// leaving the segment's own offer with nothing to name but the crossing it
+// observed. The hand-over that consumes the report gates on the pending-tail
+// barrier, which holds the retirement until every stream's unsynced record
+// is durable, so this report needs no timing premise of its own. The barrier
+// is exact while every record that empties a segment is appended before the
+// cut that empties it, which every mover does. Overturned by a mover
+// appending a record after its own cut.
 func (d *Durability) reportEmptied(segs []core.SegmentID, at segment.Location) {
 	if len(segs) == 0 || at == (segment.Location{}) || d.emptied == nil {
 		return

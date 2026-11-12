@@ -149,7 +149,7 @@ func TestOverwriteRetiresItsEmptiedSegmentOnlyAfterTheSync(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Sync never returned after its parked call was released")
 	}
-	waitIn(t, 600*time.Millisecond, "the overwritten segment to leave the set through the lift's own offer", func() bool {
+	waitIn(t, 900*time.Millisecond, "the overwritten segment to leave the set through the lift's own offer", func() bool {
 		return !inSet(c, seg)
 	})
 	if got, want := c.Retirer().Counters().FreedBytes, uint64(size); got != want {
@@ -157,6 +157,134 @@ func TestOverwriteRetiresItsEmptiedSegmentOnlyAfterTheSync(t *testing.T) {
 	}
 	if got := c.set.Counters().DoubleRetires; got != 0 {
 		t.Fatalf("DoubleRetires = %d, want 0: one offer, one retirement", got)
+	}
+}
+
+// TestALiftsOfferWaitsOnARemovalLeftUnsyncedByAnotherFile: two files share
+// one sealed segment; one file's overwrite supersedes its content — the old
+// content stays retained until the overwrite's sync covers it — and the
+// other file's truncation cuts the segment's held bytes to zero while the
+// retained bytes still answer held, so its own report names nothing. The
+// overwrite's sync then completes, and the lift the completion runs is the
+// offer that reaches the worker, gated on the overwrite's record alone —
+// already durable. Without the barrier that asks for every stream's pending
+// records, the hand-over would follow that offer now and unlink the segment
+// while the truncation's record, appended after the overwrite's sync, was
+// still unsynced; with it, exactly one retirement follows the release of
+// the truncation's own sync.
+func TestALiftsOfferWaitsOnARemovalLeftUnsyncedByAnotherFile(t *testing.T) {
+	ctx := context.Background()
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	g := sameStreamFile(c, f)
+
+	// Two files' content in one segment, made durable, then sealed early:
+	// every later write of the row lands past it.
+	const payload = 4 << 10
+	mustWrite(t, c, s, f, 0, make([]byte, payload))
+	mustWrite(t, c, s, g, 0, make([]byte, payload))
+	syncFiles(t, c, f, g)
+	if _, err := c.Streams().For(f).Seal(true); err != nil {
+		t.Fatalf("the early seal: %v", err)
+	}
+	seg := recordOf(t, c, f, 0).Record.Segment
+	if recordOf(t, c, g, 0).Record.Segment != seg {
+		t.Fatal("the two files' content landed in different segments, want one shared sealed segment")
+	}
+	size := setSize(t, c, seg)
+
+	// The overwrite of f: its publish retains the old content in the sealed
+	// segment, and the writer's own sync — the one that would make the
+	// overwrite durable — parks at the seam, captured ahead of everything the
+	// truncation below appends.
+	mustWrite(t, c, s, f, 0, make([]byte, payload))
+	active := recordOf(t, c, f, 0).Record.Segment
+	if active == seg {
+		t.Fatal("the overwrite landed in the sealed segment, want the stream's active segment past it")
+	}
+	leadSync := seam.Hold(t, kit.OpSync, format.SegmentName(active))
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- c.Durability().Sync(ctx, f) }()
+	select {
+	case <-leadSync.Reached():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the overwrite's sync was never issued: no fsync reached the seam's hold")
+	}
+
+	// The truncation of g, on the same stream: it appends its removal record
+	// beyond the parked sync's captured prefix and cuts the sealed segment's
+	// held bytes to zero — while the retained bytes of f's overwritten
+	// content keep the segment answering held, so the removal's own report
+	// offers nothing. The call then blocks behind the held sync of its
+	// record.
+	truncDone := make(chan error, 1)
+	go func() {
+		_, err := c.Truncate(ctx, s, g, 0)
+		truncDone <- err
+	}()
+	waitIn(t, 5*time.Second, "the truncation to cut g's content out of the index", func() bool {
+		ext, err := c.Extents(s, g)
+		return err == nil && len(ext) == 0
+	})
+	if !c.liveness.Held(seg) {
+		t.Fatal("the sealed segment answered not held while f's overwritten content kept it retained, want held")
+	}
+	select {
+	case err := <-truncDone:
+		t.Fatalf("Truncate returned (%v) while its record could not sync, want it to wait for durability", err)
+	default:
+	}
+
+	// The barrier the row plants: every sync of the active segment past the
+	// parked one parks here, so the truncation's record stays unsynced once
+	// the overwrite's own sync goes through.
+	tailSync := seam.Hold(t, kit.OpSync, format.SegmentName(active))
+
+	// The overwrite's sync completes: the lift empties the sealed segment and
+	// offers it gated on the overwrite's record — durable now — and the
+	// worker's Sync returns only once that lift has run, so the offer has
+	// reached its queue when it does.
+	leadSync.Release()
+	select {
+	case err := <-syncDone:
+		if err != nil {
+			t.Fatalf("the overwrite's Sync after its parked fsync was released: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the overwrite's Sync never returned once its parked fsync was released")
+	}
+
+	// Bounded window, not a truth: the offer stood — the sync's return says
+	// the lift finished — and the tick scans keep re-asking the gate inside
+	// the window, but no hand-over may reach the executor while the
+	// truncation's record is unsynced, whatever the offer's own location
+	// says.
+	notWithin(t, 2*time.Second, "a retirement of the segment while the truncation's record was still unsynced", func() bool {
+		return !inSet(c, seg) || c.Retirer().Counters().FreedBytes != 0
+	})
+
+	// The release: the truncation's sync covers its record, the call
+	// returns, and the candidate the barrier held back retires — exactly
+	// once, sized by the early seal's accounted size.
+	tailSync.Release()
+	select {
+	case err := <-truncDone:
+		if err != nil {
+			t.Fatalf("the truncation after its record's sync was released: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the truncation never returned once its record's sync was released")
+	}
+	gone(t, c, "the segment to retire once the truncation's record was durable", seg)
+	if got, want := c.Retirer().Counters().FreedBytes, uint64(size); got != want {
+		t.Fatalf("FreedBytes after the retirement = %d, want %d (the segment's accounted size %d)", got, want, size)
+	}
+	if got := c.set.Counters().DoubleRetires; got != 0 {
+		t.Fatalf("DoubleRetires = %d, want 0", got)
+	}
+	if !inSet(c, active) {
+		t.Fatal("the active segment left the set, want only the sealed one retired")
 	}
 }
 
@@ -367,7 +495,7 @@ func TestAnEndedSegmentRetiresOnlyAfterItsFailedWindowResolves(t *testing.T) {
 		return c.Durability().WindowOpen(seg)
 	})
 
-	// Bounded window, not a truth: the worker's ticks pass inside it, and
+	// Bounded window, not a truth: a full scan pass runs inside it, and
 	// the ended segment with an open window must stay.
 	notWithin(t, 2*time.Second, "a retirement of the ended segment while its window stood open", func() bool {
 		return !inSet(c, seg) || c.Retirer().Counters().FreedBytes != 0
@@ -405,8 +533,8 @@ func TestAClaimedSegmentStaysUntilTheClaimReleases(t *testing.T) {
 		t.Fatalf("Claim(%d) was refused on an unheld segment, want it to win", seg)
 	}
 
-	// Bounded window, not a truth: several of the worker's ticks pass inside
-	// it, each finding the segment offered by the scan and its claim
+	// Bounded window, not a truth: at least a full scan pass runs inside it,
+	// each finding the segment offered by the scan and its claim
 	// refused.
 	notWithin(t, 2*time.Second, "a retirement of the claimed segment", func() bool {
 		return !inSet(c, seg) || c.Retirer().Counters().FreedBytes != 0
@@ -577,7 +705,8 @@ func TestAnEndedSegmentOutlivesItsCopiesProof(t *testing.T) {
 		return !inSet(c, seg) || c.Retirer().Counters().FreedBytes != 0
 	})
 
-	// A mark short of the last copy proves nothing — the segment stays.
+	// A mark at the last copy, not past it, proves nothing — the segment
+	// stays.
 	c.liveness.MarksRecorded(copies, last)
 	if !inSet(c, seg) {
 		t.Fatal("the ended segment retired on a mark that did not pass its last copy, want the hold to stand")
@@ -632,9 +761,10 @@ func TestAnEndedSegmentOutlivesItsCopiesProof(t *testing.T) {
 // TestAnUndurableCandidateDoesNotWedgeTheWorker: a candidate whose causality
 // record cannot sync is sent back — the gate refuses it, the worker's queue
 // takes it again on the next tick — and a second segment emptied meanwhile
-// must still retire, on the same worker, behind the first one's back. The
-// row parks one file's sync at the seam while another file's truncation
-// flows.
+// keeps its place in the same queue beside it: with the hand-over's
+// pending-record barrier no retirement may pass the refused record on any
+// stream, so the two wait together, and the release retires both, which is
+// the proof the worker never wedged on the candidate it kept refusing.
 func TestAnUndurableCandidateDoesNotWedgeTheWorker(t *testing.T) {
 	ctx := context.Background()
 	c, seam := newTestCore(t)
@@ -664,8 +794,10 @@ func TestAnUndurableCandidateDoesNotWedgeTheWorker(t *testing.T) {
 	}
 
 	// An unrelated file on another stream empties its own segment, whose
-	// causality record syncs fine: its retirement must go through the same
-	// worker that keeps refusing the held-back candidate.
+	// causality record syncs fine: the barrier holds its retirement back too,
+	// side by side with the refused candidate, for no hand-over may pass any
+	// stream's unsynced record. Bounded window, not a truth: full scan passes
+	// run inside it, and both candidates must stay put behind the held sync.
 	g := otherStreamFile(c, f)
 	mustWrite(t, c, s, g, 0, make([]byte, 3*testSegmentCap/2))
 	syncFiles(t, c, g)
@@ -676,19 +808,13 @@ func TestAnUndurableCandidateDoesNotWedgeTheWorker(t *testing.T) {
 	if _, err := c.Truncate(ctx, s, g, 0); err != nil {
 		t.Fatalf("Truncate(%d, 0) of the unrelated file: %v", g, err)
 	}
-	gone(t, c, "the unrelated segment to retire behind the undurable candidate", other)
+	notWithin(t, 2*time.Second, "a retirement of either segment while f's record stood unsynced", func() bool {
+		return !inSet(c, seg) || !inSet(c, other) || c.Retirer().Counters().FreedBytes != 0
+	})
 
-	// The held-back candidate is in the worker's queue, not in its way: the
-	// unrelated segment retired, the refused one stayed.
-	if !inSet(c, seg) {
-		t.Fatalf("segment %d was retired while its causality record's sync was held, want no retirement", seg)
-	}
-	if got, want := c.Retirer().Counters().FreedBytes, uint64(testSegmentCap); got != want {
-		t.Fatalf("FreedBytes while the candidate was held back = %d, want %d (only the unrelated segment freed)", got, want)
-	}
-
-	// The release opens the gate and the refused candidate retires on its
-	// queued offer.
+	// The release opens the barrier for both candidates at once, and the
+	// worker takes them rather than wedging: the unrelated segment and the
+	// refused one both retire, one each, from the queue the refusals kept.
 	hold.Release()
 	select {
 	case err := <-done:
@@ -698,6 +824,7 @@ func TestAnUndurableCandidateDoesNotWedgeTheWorker(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the held file's Truncate never returned after its record's sync was released")
 	}
+	gone(t, c, "the unrelated segment to retire once the held record went durable", other)
 	gone(t, c, "the refused candidate to retire once its record went durable", seg)
 	if got, want := c.Retirer().Counters().FreedBytes, uint64(2*testSegmentCap); got != want {
 		t.Fatalf("FreedBytes after both retirements = %d, want %d", got, want)

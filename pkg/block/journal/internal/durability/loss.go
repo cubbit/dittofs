@@ -141,7 +141,11 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	// A window's own cut of its lost records named no causality record of
 	// theirs: the loss record this call has just placed is the one a
 	// retirement of their segment waits on. reportEmptied drops the report
-	// when nothing was appended, so a refusal names nothing.
+	// when nothing was appended, so a refusal names nothing. A record placed
+	// but unsyncable — its sync failing, its segment ending — is still
+	// reported, deliberately: the retirement waiting on that record then
+	// waits on a durability that never comes and keeps the segment, on the
+	// safe side; nothing is lost.
 	d.reportEmptied(moved, at)
 	// decision: a superseded loss leaves no marker even when synced. It
 	// reports no write lost, so Since does not yield it and it needs no
