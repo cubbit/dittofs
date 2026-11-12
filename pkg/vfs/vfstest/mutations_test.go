@@ -1,15 +1,48 @@
 package vfstest_test
 
 import (
+	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
+
+// Each Service method, called once in Op order, is recorded as its own op
+// exactly when that op may change state.
+func TestMutationsRecordsEveryMethodAsItsOp(t *testing.T) {
+	rec := vfstest.RecordMutations(vfstest.Null{})
+	v := reflect.ValueOf(rec)
+	var want []vfs.Op
+	for op := vfs.Op(1); op.String() != "Op(?)"; op++ {
+		m := v.MethodByName(op.String())
+		if !m.IsValid() {
+			t.Fatalf("Mutations has no method %s", op)
+		}
+		args := make([]reflect.Value, m.Type().NumIn())
+		for i := range args {
+			args[i] = reflect.Zero(m.Type().In(i))
+		}
+		args[0] = reflect.ValueOf(context.Background())
+		if m.Type().IsVariadic() {
+			m.CallSlice(args)
+		} else {
+			m.Call(args)
+		}
+		if vfs.Mutates(op) {
+			want = append(want, op)
+		}
+	}
+	if got := rec.Ops(); !slices.Equal(got, want) {
+		t.Errorf("Ops = %v, want %v", got, want)
+	}
+}
 
 // The wrapper records each call that may change state, a refused one
 // included, and none that cannot; every answer, and every change, is the

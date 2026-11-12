@@ -43,6 +43,7 @@ func TestCallbacksKeepsWhatWasDelivered(t *testing.T) {
 	ctx := context.Background()
 	alice, bob, stranger := entity.NewUser(), entity.NewUser(), entity.NewUser()
 	var cb vfstest.Callbacks
+	cb.SignIn(vfs.SessionRef{ID: 5}, alice)
 	cb.SignIn(vfs.SessionRef{ID: 3}, alice)
 	cb.SignIn(vfs.SessionRef{ID: 2}, alice)
 	cb.SignIn(vfs.SessionRef{ID: 1}, bob)
