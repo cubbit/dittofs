@@ -354,10 +354,17 @@ harness (`journaltest/prof`) wired to the fixture.
 8. **Real dependencies for properties of those dependencies.** No fake stands in for a
    check about what the real thing does: the real journal on a real directory, with its crash
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
-   commits and conflicts on. The in-memory journal is for the engine's pure logic only, and no
-   engine conformance row runs over it. It is held to the real journal by the journal's own
-   conformance suite, on the in-memory journal's rows that the
-   [journal plan's epic 3](rfc-1-journal-plan.md) names.
+   commits and conflicts on. The in-memory journal is for the engine's pure logic only. It is
+   held to the real journal by the journal's own conformance suite, on the in-memory
+   journal's rows that the [journal plan's epic 3](rfc-1-journal-plan.md) names. Until S4,
+   the journal's calls built, an engine conformance row may also run over the in-memory
+   journal, beside its run over the real one, which stays the run that counts and stays in
+   `known.yaml` until it turns green. The run over the in-memory journal is green and never
+   enters `known.yaml`. This is a temporary exception to RFC 29 §4.11, since the journal's
+   suite does not yet hold the in-memory journal, and it ends at S4: from then no engine
+   conformance row runs over the in-memory journal. A control the in-memory journal adds for
+   such a run (a failed sync window, a segment model, a repack hold) gets a test against the
+   real journal in the change that lands the journal call it models.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -1064,7 +1071,8 @@ follows the journal's, not this part's (§6 point 7).
 - T10.1 The burn-down: each remaining row green over the real journal, its entry removed;
   an adapted row leaves once the half this part runs passes, its other half named in the
   second part. At S3 the entries still red are re-pointed from their middle epic's issue to
-  epic 10's.
+  epic 10's. At S4 it drops the rows' runs over the in-memory journal that rule 8 allows until
+  then, T9.3's start order and T9.4's rows among them.
 - T10.2 A soak: crash and restart in a loop at the integration tier under fault schedules,
   asserting every acknowledged synced write reads back or reads **Lost**.
 - T10.3 B5, B7 and B9 at the service tier (B9 adapted: stable overwrites through `vfs.Service`
@@ -1200,9 +1208,10 @@ follows the journal's, not this part's (§6 point 7).
 - The journal sets the pace (§3.3): until its S3, no row is green over the real journal, and
   the in-memory journal is the only check of the engine's logic.
 - The in-memory journal can drift from the real one where the journal's conformance suite has no
-  row. Rule 8 bounds that: the in-memory journal passes the in-memory journal's rows the journal plan names, and no engine
-  conformance row runs over it, so a drift the suite misses shows as a row that is green on
-  unit tests and red in the suite.
+  row. Rule 8 bounds that: the in-memory journal passes the in-memory journal's rows the journal plan names, and an engine
+  conformance row that runs over it also runs over the real journal, whose run alone counts, so
+  a drift the suite misses shows as a row green over the in-memory journal and red over the
+  real one. From S4 no row runs over the in-memory journal.
 
 ### 6.1 Deferral ledger
 
