@@ -52,6 +52,12 @@ func runTails(t *testing.T, r *rig) State {
 
 func planted(st State) int { return len(st.Rebuilt.Index.FileEntries(tailFile())) }
 
+// A's payload rots under a header that verifies. The open reads no content
+// payload and verifies only past the synced-through, so no open phase
+// reports A: the read that would serve it catches it, through the corrupt
+// path that raises the loss event and drops the extent. That split between
+// the open's scan and the serving read is the format's own, so A stays
+// indexed and the segment intact.
 func TestSyncedDamageIsNotATornTailPayloadLeg(t *testing.T) {
 	endA := endAfter(tailRec(200, 0x4100))
 	endB := endAfter(tailRec(200, 0x4100), tailRec(201, 0x8100))

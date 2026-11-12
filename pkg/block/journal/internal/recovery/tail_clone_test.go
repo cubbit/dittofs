@@ -256,3 +256,85 @@ func TestAZeroGapThenACloneTargetWhoseBodyFailedIsOneTornTailFromTheLastVerifyin
 	wantDamaged(t, st)
 	wantNoCorrupt(t, st)
 }
+
+// appendClone appends a clone target whose synced-through is sync(its own
+// offset) to seg, its body rotted, and returns the grown segment and the
+// offset the target was written at.
+func appendClone(seg []byte, id core.SegmentID, sync func(at int64) int64) ([]byte, int64) {
+	at := int64(len(seg))
+	c := cloneRec()
+	c.Identity, c.Segment, c.RecordOffset = journalID, uint64(id), uint32(at)
+	c.SyncedThrough = uint64(sync(at))
+	seg = append(seg, c.Bytes()...)
+	seg[at+format.RecordHeaderSize] ^= 0xff // the body's bytes never verify
+	return seg, at
+}
+
+// TestARefusedRangeBelowARottedCloneTargetsSyncIsRefused holds that the record
+// proving a range synced may itself be a clone target whose body failed: the
+// proof stands, so the range is refused and never cut as a torn tail.
+func TestARefusedRangeBelowARottedCloneTargetsSyncIsRefused(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	seg := buildSeg(1, syncedRec(200, 0x4100, endA))
+	seg = append(seg, make([]byte, 16)...)
+	seg, _ = appendClone(seg, 1, func(at int64) int64 { return at })
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg)
+	wantRefused(t, r, 1, endA, endA+16)
+}
+
+// TestNoCutGoesBelowASyncedThroughARottedCloneTargetNames holds the cut's
+// floor: C1 is corrupt, C2's synced-through is C1's end, and the torn tail
+// starts there, not at the end of A where the last verifying record ends.
+func TestNoCutGoesBelowASyncedThroughARottedCloneTargetNames(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	seg := buildSeg(1, syncedRec(200, 0x4100, endA))
+	seg, c1 := appendClone(seg, 1, func(int64) int64 { return endA })
+	seg, c2 := appendClone(seg, 1, func(at int64) int64 { return at })
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg)
+	st := runUnchanged(t, r, 1)
+
+	if len(st.Tails.Corrupt) != 1 || st.Tails.Corrupt[0].Drop.Header.Offset != c1 {
+		t.Fatalf("Corrupt got %+v, want exactly C1 at %d", st.Tails.Corrupt, c1)
+	}
+	if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
+		t.Errorf("Damaged got %v, want [1]", st.Tails.Damaged)
+	}
+	wantFate(t, st, 1, fateTornTail, c2)
+}
+
+// TestARottedCloneTargetInASealedSegmentNothingNamesIsCorrupt holds that a seal
+// alone makes a dropped target corrupt: no crash tears bytes below a seal, and
+// the target's own synced-through proves nothing here.
+func TestARottedCloneTargetInASealedSegmentNothingNamesIsCorrupt(t *testing.T) {
+	b, _ := buildSealed(1, cloneRec(), tailRec(201, 0x8100))
+	b[format.SegmentHeaderSize+format.RecordHeaderSize] ^= 0xff // the clone target's spec
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, b)
+	st := runUnchanged(t, r, 1)
+
+	if len(st.Tails.Corrupt) != 1 || st.Tails.Corrupt[0].Drop.Header.Offset != format.SegmentHeaderSize {
+		t.Fatalf("Corrupt got %+v, want the clone target at %d", st.Tails.Corrupt, format.SegmentHeaderSize)
+	}
+	wantFate(t, st, 1, fateSealToProve, 0)
+}
+
+// TestACloneTargetDropAtTheSyncedThroughIsNotCorrupt holds the proof's edge:
+// a sync completed through offset n proves the bytes below n, so a target at n
+// is past it and, with nothing after it, a torn tail.
+func TestACloneTargetDropAtTheSyncedThroughIsNotCorrupt(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	seg, _ := appendClone(buildSeg(1, syncedRec(200, 0x4100, endA)), 1, func(int64) int64 { return 0 })
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg)
+	st := runUnchanged(t, r, 1)
+
+	wantNoCorrupt(t, st)
+	wantDamaged(t, st)
+	wantFate(t, st, 1, fateTornTail, endA)
+}

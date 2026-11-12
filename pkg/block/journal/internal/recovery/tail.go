@@ -38,9 +38,13 @@ func (k fateKind) String() string {
 	return "unknown"
 }
 
-// segmentFate is one segment's fate. Offset is the tail's start for
-// fateTornTail and fateEnded, the end of the last verifying record, and 0
-// for every other kind and for an ended segment with no tail to cut.
+// segmentFate is one segment's fate. Offset is the start of the torn tail to
+// cut for fateTornTail and fateEnded: the end of the last verifying record,
+// never below a synced-through a verifying header names. It is 0 for every
+// other kind and for an ended segment with no tail to cut, so 0 means nothing
+// to cut. The later phase that truncates must never truncate at 0: no record
+// sits below the first record slot, where a cut would begin, so 0 is never a
+// cut point and truncating there would empty the verified records.
 type segmentFate struct {
 	ID     core.SegmentID
 	Kind   fateKind
@@ -148,10 +152,13 @@ func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []se
 							core.ErrCorrupt, id, e.RecordOffset),
 					})
 				}
+			case r.Off < sc.SyncedThrough:
+				// A sync proved these bytes whole, whether or not the record
+				// that names it verified whole itself: a clone target whose
+				// body failed still counts its synced-through.
+				return tails{}, refuseRange(id, r)
 			case r.Off >= sc.VerifiedEnd:
 				tail = true // the torn tail, or a rotten seal marker nothing names
-			case r.Off < sc.SyncedThrough:
-				return tails{}, refuseRange(id, r) // a sync proved these bytes whole
 			default:
 				// A slot a crash tore before any proof reached it: it
 				// was never acknowledged, so it is never reported.
@@ -220,6 +227,13 @@ func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []se
 		// The cut never goes below a verifying record: VerifiedEnd is where
 		// the last one that verified whole ends, and it is the tail's start
 		// wherever one exists.
+		//
+		// Nor does it go below a synced-through a verifying header names: the
+		// bytes under it were proven whole, and the last verifying record may
+		// end below it when the records that named it are clone targets whose
+		// body failed. The synced-through is bytes off disk, so it is capped at
+		// the file's size: a cut past the file would fabricate a zero tail.
+		tailAt = min(max(tailAt, sc.SyncedThrough), sc.Size)
 		f := segmentFate{ID: id}
 		switch {
 		case named[id]:
