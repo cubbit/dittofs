@@ -130,7 +130,12 @@ type Counters struct {
 // not the ledger itself, and fails only if the lock recorder of record ever
 // finds a plain lock held above it.
 type Set struct {
-	// decision: mu is the capacity domain; it takes nothing while held.
+	// decision: mu is the capacity domain and stays a leaf of it: it takes
+	// nothing while held. That is what makes the order the callers imply,
+	// segment append, then a stream's mu, then capacity, deadlock-free: the
+	// durability worker paths take this lock under a stream's mu, and the
+	// sinks take a stream's mu under the append lock. Overturned the day
+	// anything under mu takes another lock, a callback or a second mutex.
 	mu     lockorder.Mutex
 	cap    int64
 	log    *slog.Logger
