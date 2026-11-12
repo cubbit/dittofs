@@ -107,9 +107,16 @@ func (m *Model) WriteAt(tag shareTag, id fileID, off int64, p []byte, mtime int6
 		return nil
 	case len(p) == 0 && (err == nil || errors.Is(err, journal.ErrZeroLength)):
 		// Accepted, a zero-length write appends nothing and draws no version,
-		// so no version its answer carries can be checked; refused with
-		// ErrZeroLength it changes nothing either. Both answers leave the file
-		// as it was.
+		// so nothing of its answer is applied; the version it carries may be
+		// anything at or below every version issued and the floor — the
+		// journal's own answers are the zero version and the file's change
+		// version — but a version above them is a mismatch: none is drawn for
+		// the empty write, so the answer burned a version number on a no-op.
+		// Refused with ErrZeroLength it changes nothing either, and its
+		// version is not checked, as no refused call's is.
+		if err == nil && v.Compare(maxVersion(m.maxSeen, m.floor)) > 0 {
+			return m.mismatch(op, id, "returned version %v for a zero-length write, above %v, every version issued and the floor: no version is drawn for it", v, maxVersion(m.maxSeen, m.floor))
+		}
 		return nil
 	case !proceed:
 		return unexpected(m, op, id, err)
