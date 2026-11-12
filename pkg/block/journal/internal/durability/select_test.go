@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/unread"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // candidatesOf is what a selector over the rig's segments, index and
