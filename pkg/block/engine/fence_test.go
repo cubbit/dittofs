@@ -775,7 +775,7 @@ func TestSelfFenceNotOnAFilesUndecodableRecord(t *testing.T) {
 	}
 }
 
-// A truncate whose phase 2 fails on an overwrite record of its file that does not
+// A truncate whose phase 2 fails on a ref record of its file that does not
 // decode is retried at its backoff and raises removal_stalled naming the
 // file, and with nothing else written for 31 s the node is not fenced:
 // another file's write is acknowledged and its existence commits. Once the
@@ -1014,5 +1014,41 @@ func TestSelfFenceNotOnAnUndecodableRecordAfterAStoreErrorCommitted(t *testing.T
 	}
 	if f, ok := u.nodeFenced(); ok {
 		t.Errorf("node_fenced %v, want none", f)
+	}
+}
+
+// Two truncates whose phase 2 runs fail in turn: x's at the store, its
+// writes refused with an error of the store's own, a's on a ref record that
+// does not decode. With nothing else written, the node fences 30 s after the
+// first failed run. Letting a's failure clear x's at the store, as the
+// removal loop is one owner for both, fences nothing here.
+func TestSelfFenceOnARemovalFailingAtTheStoreBesideAnUndecodableRecord(t *testing.T) {
+	u := newFenceUnit(t)
+	a, x, b := u.create(t, "a"), u.create(t, "x"), u.create(t, "b")
+	for _, f := range []entity.FileID{a, x} {
+		u.write(t, f, 0, fill(16, 'a'))
+		if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u.corrupt(t, a, keys.FRef)
+	refused := sim.FaultAction{Err: syscall.ENOSPC}
+	deletes := sim.Rule{Op: kvtest.OpDelete, Key: fileRecord(u.share.ID, x) + "‖*", Action: refused}
+	u.fault(t, deletes) // phase 1 deletes none of x's records; phase 2 does
+	for _, f := range []entity.FileID{a, x} {
+		if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
+			t.Fatalf("the truncate's phase 1: %v", err)
+		}
+	}
+	u.fault(t, deletes, sim.Rule{Op: kvtest.OpSet, Key: fileRecord(u.share.ID, x) + "‖*", Action: refused})
+	u.until(t, "both phase 2s removal_stalled", func() bool { return u.e.RemovalStalled(a) && u.e.RemovalStalled(x) })
+
+	// In steps, so both phase 2s retry throughout, each attempt failing.
+	u.advanceInSteps(31 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s into the removals' failures: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("node_fenced not raised 31s into the removals' failures")
 	}
 }
