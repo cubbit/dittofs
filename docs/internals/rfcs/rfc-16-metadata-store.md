@@ -688,6 +688,7 @@ type Setting struct {
 type Secret struct {
 	ID    SecretRef
 	Kind  SecretKind // password (slow hash), nt-hash (only with NTLM enabled), keytab, remote credential, key, node credential (RFC 15 §4.4)
+	Owner SecretOwner // the record or setting key whose field names it; a new version keeps both Kind and Owner, and a reference from another owner, or a read expecting another kind, is refused, so a reference cannot be pointed at another holder's secret (RFC 23 §5.2)
 	Version uint64   // raised by every rotation; the previous version stays resolvable until every node reports this one (RFC 13 §7)
 	KeyID string     // which wrapping key sealed it: one per role or secret kind
 	Value []byte     // sealed

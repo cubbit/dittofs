@@ -82,7 +82,8 @@ database or configuration refuses and names it. No migration tool.
   idempotency metadata and runs a function over a transaction that carries the view's writes; a
   sign-in counts each attempt in a `SignInFailures` record written the same way, before its password
   is checked. The view
-  also gains a setting's delete and the `Secret` reads and writes the RFC 13 plan builds on. This
+  also gains a setting's delete and the `Secret` reads and writes the RFC 13 plan builds on, and
+  the `Secret` record an owner beside its kind (the RFC 13 plan's D10). This
   touches RFC 16 §2.3, §3 and §4.2, and RFC 23 §4.3 cites it.
 - **A4. Only reconciled records carry a position.** RFC 23 §2.4 narrows "every control-plane record"
   to a setting, a share and a principal, as RFC 16 §3 has it; a grant, an export policy, a netgroup
@@ -517,7 +518,10 @@ and resource commands carry only their spec's fields.
 
 **D6. The bootstrap is the RFC 13 plan's** (its D7): the path `~/.config/dittofs/config.yaml`,
 `--config` and `DITTOFS_CONFIG`, the refused v1 keys and the node identity's `node-id` files, in
-`pkg/bootstrap`. This plan's epics read it through that package.
+`pkg/bootstrap`. This plan's epics read it through that package. The launchers are that plan's
+too: `docker-compose.yml`, `docker/` and `dfsbench` stop working from this plan's epic 1, which
+deletes the v1 server they start, until the RFC 13 plan's epic 6 starts each through `dfs init`.
+This is the user's decision.
 - **Prior art (from memory).** etcd and PostgreSQL keep a host file of the same scope.
 - **Applied by** epics 3 and 5, as consumers.
 
@@ -550,7 +554,9 @@ decision.
 
 **D10. Secrets are the RFC 13 plan's** (its D4 to D6): `pkg/secrets` seals each version as an
 envelope under its role's key through `pkg/keyprovider`, fills RFC 16's `Secret.KeyID`, and keeps
-`Secret.Version` the rotation counter. This plan's epics write and resolve secrets through it.
+`Secret.Version` the rotation counter. This plan's epics write and resolve secrets through it, and
+by its D10: every `Seal` here passes the secret's kind and its owner, the record or setting key
+whose field names it, and every `Resolve` the kind and role it expects, never the record's own.
 - **Prior art (from memory).** Vault's barrier seals with AES-GCM under a key-encryption key.
 - **Applied by** epics 3 to 5, as consumers.
 
@@ -828,7 +834,7 @@ func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sess := h.newSession(r.Context(), p) // its Write resets the account's count and takes back the source's raise
-	key := h.signingKey()                // the installation Secret, through pkg/secrets' Resolve (D10)
+	key := h.signingKey()                // the installation Secret: Resolve(ctx, storage role, kind key, ref), the kind this caller expects (D10)
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims(p, sess))
 	tok.Header["kid"] = key.Version // D3: rotation verifies older tokens by version
 	h.writeTokens(w, tok, key, sess)
@@ -1050,7 +1056,7 @@ error to a status.
   `rotate-machine-password` as operation kinds, and `identity.nt-hash-delete`, started in the
   write that sets `identity.ntlm` off, with the join's state on the installation's
   status. An offline join writes its password as a new version of the machine password's `Secret`
-  through `pkg/secrets`, in its own `Write` audited as a `set` of the reference, committed before
+  through `pkg/secrets`' `Seal`, with the kind and owner its first version recorded (D10), in its own `Write` audited as a `set` of the reference, committed before
   the operation, and keeps no idempotency record (RFC 23 §3.5, §4.5). The runner's steps for them
   are identity's, built by the RFC 18 plan's epic 7, and epic 2 for the NT hashes' deletion.
 - Operations (read, `?wait=`), nodes and their connections, and the audit read.
@@ -1104,7 +1110,8 @@ call against their current record.
 - The first password's must-change and the password change; a changed password hash's old version
   pruned at once, since nothing needs it (the RFC 13 plan's §4.3 rule: its rotation's owner
   prunes).
-- The signing key as an installation `Secret`, and its rotation steps for the runner, the last
+- The signing key as an installation `Secret`, sealed with its kind and owner and resolved with the
+  kind it expects (D10), and its rotation steps for the runner, the last
   pruning the old key once an access token's lifetime has passed (§4.3 above). RFC 13 §7's and RFC
   16's `SEC` row's exception to "pruned once every node reports the new version" names the signing
   key; #4058 makes that edit to both lines.
