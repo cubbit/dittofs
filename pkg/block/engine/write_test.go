@@ -122,33 +122,14 @@ func TestAWriteCutShortAnswersTheContextsError(t *testing.T) {
 	}
 }
 
-// A write the journal refuses for space is ErrDelay with DelayCapacity, no
-// journal type: it calls no Done and leaves no operation. One of a file
-// another share holds is ErrCorrupt.
-func TestARefusedWriteLeavesNothing(t *testing.T) {
+// A write of a file another share holds is ErrCorrupt, through the share that
+// does not hold it.
+func TestAWriteOfAnotherSharesFileIsCorrupt(t *testing.T) {
 	u := newUnit(t)
 	small := enginetest.AddShare(t, u.fs.Store, "small", 2)
 
 	if err := u.e.Bind(t.Context(), small); err != nil {
 		t.Fatal(err)
-	}
-
-	f := entity.NewFileID()
-	called := false
-	done := func() {
-		called = true
-	}
-	_, err := u.e.Write(t.Context(), small.ID, f, 0, []byte("abc"), engine.WriteOpts{Done: done})
-	var d *vfserr.Delay
-	if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity {
-		t.Errorf("a write past the share's limit: %v, want ErrDelay(DelayCapacity)", err)
-	}
-	var noSpace *journal.NoSpaceError
-	if errors.As(err, &noSpace) {
-		t.Errorf("the refusal carries the journal's %T", noSpace)
-	}
-	if called || len(u.e.Pending(f)) != 0 || u.e.HasEntry(f) {
-		t.Errorf("a refused write: Done called %v, operations %v", called, u.e.Pending(f))
 	}
 
 	g := entity.NewFileID()
@@ -240,11 +221,26 @@ func TestDrawIsTheJournalsNextVersion(t *testing.T) {
 	if err := u.j.SetVersionLimit(journal.Version{Counter: drawn.Counter + 2}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = u.e.Draw(t.Context(), u.share.ID, g)
+
+	base, cancel := context.WithCancel(t.Context())
+
+	defer cancel()
+
+	failIfWaits(t, u.e, cancel)
+
+	// With no deadline and no raise in flight the draw answers at once, without
+	// waiting: the call that a passed deadline below does not reach.
+	_, err = u.e.Draw(base, u.share.ID, g)
 	var delay *vfserr.Delay
 	var noSpace *journal.NoSpaceError
 	if !errors.As(err, &delay) || delay.Cause != vfserr.DelayCommit || errors.As(err, &noSpace) {
 		t.Errorf("a draw at the version limit: %v, want ErrDelay(DelayCommit) with no journal type", err)
+	}
+
+	ctx := clockCtx{Context: base, now: u.clock.Now()}
+	_, err = u.e.Draw(ctx, u.share.ID, g)
+	if !errors.As(err, &delay) || delay.Cause != vfserr.DelayCommit || errors.As(err, &noSpace) {
+		t.Errorf("a draw past its deadline at the version limit: %v, want ErrDelay(DelayCommit) with no journal type", err)
 	}
 }
 

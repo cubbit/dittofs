@@ -20,10 +20,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
 

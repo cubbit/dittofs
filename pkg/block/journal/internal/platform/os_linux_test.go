@@ -5,8 +5,8 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // closedAllocateOp is the Op of the error Allocate returns on a closed file:

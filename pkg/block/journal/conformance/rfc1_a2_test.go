@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -2127,4 +2128,57 @@ func TestRFC1A_ReappendKeepsItsNumbers(t *testing.T) {
 		r := read(t, f.Share(k), id, 0, size)
 		wantMissing(t, r, 0, []journal.Extent{ext(0, size)}, "the extent truncated after its write was re-appended")
 	}
+}
+
+// overOf returns, per write Since yields for file id above from, its version
+// and its Over runs, failing the test on an error or on anything but writes.
+func overOf(t *testing.T, h *journal.Handle, id journal.FileID, from journal.Version) map[journal.Version][]journal.Extent {
+	t.Helper()
+
+	out := map[journal.Version][]journal.Extent{}
+	for c, err := range h.Since(t.Context(), id, from) {
+		stub(t, "Since", err)
+		if err != nil {
+			t.Fatalf("since: %v", err)
+		}
+		if c.Kind != journal.ChangeWrite {
+			t.Fatalf("since yielded %+v, want writes only", c)
+		}
+		out[c.Version] = append(out[c.Version], c.Over...)
+	}
+	return out
+}
+
+// TestRFC1A_SinceYieldsOver checks that Since names the runs a write
+// superseded after the superseded write left the index: v3 is wholly covered
+// by v5, yet Since(F, 0) yields v5 with Over [0, 4) KiB, Since(F, 3) yields it
+// with Over empty, a crash before any Settle changes neither, and a Settle at
+// v5 leaves the write yielded with Over empty.
+func TestRFC1A_SinceYieldsOver(t *testing.T) {
+	f := journaltest.New(t)
+	h, id := f.Share(0), journaltest.File(0)
+
+	v3 := write(t, h, id, 0, distinct(1, 4<<10))
+	v5 := write(t, h, id, 0, distinct(2, 8<<10))
+
+	check := func(when string, settled bool) {
+		t.Helper()
+		want0 := map[journal.Version][]journal.Extent{v5: {ext(0, 4<<10)}}
+		if settled {
+			want0 = map[journal.Version][]journal.Extent{v5: nil}
+		}
+		if got := overOf(t, h, id, journal.Version{}); !maps.EqualFunc(got, want0, slices.Equal) {
+			t.Fatalf("%s: Since(F, 0) = %v, want %v", when, got, want0)
+		}
+		if got, want := overOf(t, h, id, v3), map[journal.Version][]journal.Extent{v5: nil}; !maps.EqualFunc(got, want, slices.Equal) {
+			t.Fatalf("%s: Since(F, v3) = %v, want %v", when, got, want)
+		}
+	}
+	check("before a crash", false)
+
+	f.Crash()
+	check("after a crash before any Settle", false)
+
+	h.Settle(id, v5)
+	check("after Settle(F, v5)", true)
 }

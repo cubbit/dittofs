@@ -20,3 +20,19 @@ const (
 	// reads as lost rather than as the file was before the write.
 	ChangeLoss
 )
+
+// Change is one thing Since reports about a file: a held extent, an unsettled
+// removal marker, or a synced loss.
+type Change struct {
+	Kind    ChangeKind
+	Extent  Extent  // the held extent, or the extent a removal marker covers
+	Version Version // the content version of the change
+	Mtime   int64   // a write's modification time as WriteAt was given it; 0 for every other kind
+	// Clone is the clone target's spec; nil for every other kind.
+	Clone *CloneSpec
+	// Over is, for a write, the runs inside Extent where it superseded
+	// another write of the file whose version is above the Since's from, in
+	// offset order, disjoint and not adjacent; nil for every other kind and
+	// for a write that superseded nothing above from.
+	Over []Extent
+}

@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // The clock the idle checks drive by hand is the shared double,

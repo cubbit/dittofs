@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // reappendTogether publishes a write of each file at offset 0, so the writes

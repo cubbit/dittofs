@@ -16,6 +16,7 @@ const (
 	modulePath  = "github.com/cubbit/dittofs"
 	journalPath = modulePath + "/pkg/block/journal"
 	clockPath   = modulePath + "/pkg/clock"
+	profPath    = modulePath + "/internal/prof"
 	simPath     = modulePath + "/pkg/sim"
 	xsysPath    = "golang.org/x/sys"
 )
@@ -33,6 +34,8 @@ const (
 //     all, so it stays an account of the bytes that shares no code with the
 //     codecs it checks;
 //   - golang.org/x/sys is allowed in internal/platform only;
+//   - the leak profiler is allowed in journaltest and in test files, never
+//     in the journal's own code;
 //   - the set's clock package is allowed in journaltest only, and its
 //     test-clock and fault package in journaltest and conformance, whose
 //     checks build fault rules; they reach the clock only through the
@@ -163,6 +166,11 @@ func forbidden(rel, kind, path string) string {
 			return ""
 		}
 		return "golang.org/x/sys is allowed in internal/platform only"
+	case within(path, profPath):
+		if within(rel, "journaltest") || strings.Contains(kind, "test import") {
+			return ""
+		}
+		return "the leak profiler is allowed in journaltest and in test files only"
 	case within(path, simPath):
 		if within(rel, "journaltest") || within(rel, "conformance") {
 			return ""
@@ -211,6 +219,28 @@ func TestImportRuleScopesSim(t *testing.T) {
 	} {
 		if got := forbidden(c.rel, "test import", c.path) == ""; got != c.allowed {
 			t.Errorf("%s importing %s: allowed %v, want %v", c.rel, c.path, got, c.allowed)
+		}
+	}
+}
+
+// TestImportRuleKeepsTheProfilerOutOfTheJournal pins where the leak profiler
+// may be imported: by the test components and by test files, never by the
+// journal's own code.
+func TestImportRuleKeepsTheProfilerOutOfTheJournal(t *testing.T) {
+	for _, c := range []struct {
+		rel, kind string
+		allowed   bool
+	}{
+		{"internal/core", "import", false},
+		{".", "import", false},
+		{"journaltest", "import", true},
+		{"internal/core", "test import", true},
+		{"conformance", "other-platform test import", true},
+		{"internal/platform", "other-platform import", false},
+		{"internal/core", "external test import", true},
+	} {
+		if got := forbidden(c.rel, c.kind, profPath) == ""; got != c.allowed {
+			t.Errorf("%s with a %s of the profiler: allowed %v, want %v", c.rel, c.kind, got, c.allowed)
 		}
 	}
 }

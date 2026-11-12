@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/platform/platformtest"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // TestRefusalMatchesErrUnsuitableStorage pins every rule's answer to the

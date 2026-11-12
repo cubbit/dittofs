@@ -44,6 +44,8 @@ type Stats struct {
 	SelfFences int64
 	// StabilityPoints is engine_stability_points_total.
 	StabilityPoints int64
+	// WriteRefusals is engine_write_refusals_total.
+	WriteRefusals int64
 	// PendingExistenceOps is engine_pending_existence_ops' sum: the
 	// operations the existence commits committed.
 	PendingExistenceOps int64

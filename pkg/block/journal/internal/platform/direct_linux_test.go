@@ -10,7 +10,7 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/internal/prof"
 	"golang.org/x/sys/unix"
 )
 

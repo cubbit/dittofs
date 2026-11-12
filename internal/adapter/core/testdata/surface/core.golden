@@ -21,15 +21,17 @@ func (c *Conn) Keep() (release func())
 
 func (c *Conn) Send(h Header, msg *resources.Buf, before uint64) error
 
-func (c *Conn) Settings() config.Settings
+func (c *Conn) Settings() settings.Settings
 
 func (r *Request) Park(cancel func()) (done func(err error), err error)
+
+func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort
 
 func (s *Server) Connections() iter.Seq[adapter.ConnInfo]
 
 func (s *Server) Health() adapter.Health
 
-func (s *Server) Reconfigure(ctx context.Context, next config.Settings) error
+func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error
 
 func (s *Server) Start(ctx context.Context) error
 
@@ -53,17 +55,11 @@ func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable
 
 func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
 
-func NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)
+func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, error)
 
 type Call func(ctx context.Context, r *Request) error
 
 type Conn struct{}
-
-type Dispatcher interface {
-	Dispatch(ctx context.Context, c *Conn, rec *resources.Buf)
-
-	Drain()
-}
 
 type ErrorRow struct {
 	Err      error
@@ -128,6 +124,7 @@ type Invocation struct {
 }
 
 type Listener struct {
+	Services []string
 	Network  string
 	Port     uint16
 	Protocol Protocol

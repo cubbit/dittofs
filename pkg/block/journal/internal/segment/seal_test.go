@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // sealAppended appends about five records through the stream and returns

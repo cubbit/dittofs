@@ -7,6 +7,7 @@ import (
 	"math"
 	"slices"
 	"syscall"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -41,32 +42,62 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 		}
 		return v, nil
 	}
-	now := e.d.Clock.Now() // one reading: the entry keeps the time the journal records
-	var mtime int64        // nanoseconds since the Unix epoch; 0 leaves the modification time alone
-	if o.Suspend&entity.TimeModify == 0 {
-		mtime = now.UnixNano()
-	}
-	// The write is admitted under the entry's lock, where a clone's
-	// registration is checked and installed, and stays counted until its
-	// operation is in the entry, so a registration waits for it.
+	var now time.Time // the last attempt's reading: the entry keeps the time the journal records
+	var mtime int64   // nanoseconds since the Unix epoch; 0 leaves the modification time alone
+	// Each attempt admits the write under the entry's lock, where a clone's
+	// registration is checked and installed, counts it until the journal has
+	// answered, and leaves, so a write waiting for the raise holds neither the
+	// lock nor a registration that a removal or a clone would wait on.
 	x := entity.Extent{Offset: off, Length: int64(len(p))}
-	fe, err := e.admitAfterStaging(ctx, f)
+
+	got, err := answeringRefusals(ctx, e, b, true, func() (admitted, error) {
+		// Read on each attempt, so a write that waited for the raise lands
+		// with the time the journal took it, not one older than a write that
+		// arrived after it and was served first.
+		now = e.d.Clock.Now()
+		mtime = 0
+
+		if o.Suspend&entity.TimeModify == 0 {
+			mtime = now.UnixNano()
+		}
+
+		fe, err := e.admitAfterStaging(ctx, f)
+		if err != nil {
+			return admitted{}, err
+		}
+
+		if err := fe.refuseWrite(x); err != nil {
+			e.files.unlock(f, fe)
+
+			return admitted{}, err
+		}
+
+		fe.writing = append(fe.writing, x)
+		e.files.unlock(f, fe)
+
+		ver, err := b.h.WriteAt(ctx, fileID(f), off, p, mtime)
+		fe = e.files.lockFor(f) // the admitted write keeps the entry alive
+		fe.leave(x)
+
+		if err != nil {
+			e.files.unlock(f, fe)
+
+			if _, refused := capacityRefusal(err); refused {
+				return admitted{}, err
+			}
+
+			return admitted{}, e.journalErr(err)
+		}
+
+		return admitted{ver: ver, fe: fe}, nil
+	})
 	if err != nil {
 		return vfserr.Verifier{}, err
 	}
-	if err := fe.refuseWrite(x); err != nil {
-		e.files.unlock(f, fe)
-		return vfserr.Verifier{}, err
-	}
-	fe.writing = append(fe.writing, x)
-	e.files.unlock(f, fe)
-	ver, err := b.h.WriteAt(ctx, fileID(f), off, p, mtime)
-	fe = e.files.lockFor(f) // the admitted write keeps the entry alive
-	fe.leave(x)
-	if err != nil {
-		e.files.unlock(f, fe)
-		return vfserr.Verifier{}, e.journalErr(err)
-	}
+
+	e.acceptedWrite(b)
+
+	ver, fe := got.ver, got.fe
 	// A loss drained since WriteAt answered found no pending write to apply
 	// to and was kept: one that drops its write (see drops) drops it, its
 	// Done run and nothing charged, any other inserts the write with the run
@@ -116,6 +147,13 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 	return v, nil
 }
 
+// admitted is a write the journal accepted: its version, and its file's entry,
+// locked.
+type admitted struct {
+	ver journal.Version
+	fe  *fileEntry
+}
+
 // admitAfterStaging is f's entry, locked, once no removal is waiting out the
 // writes admitted before it, so a write admitted now reaches the journal
 // after that removal. An entry that died during the wait is looked up again.
@@ -152,9 +190,10 @@ func (e *Engine) Draw(ctx context.Context, s entity.ShareID, f entity.FileID) (e
 	if err != nil {
 		return entity.JournalVersion{}, err
 	}
-	v, err := b.j.Draw()
+
+	v, err := refusing(ctx, e, b, true, b.j.Draw)
 	if err != nil {
-		return entity.JournalVersion{}, e.journalErr(err)
+		return entity.JournalVersion{}, err
 	}
 
 	e.issued(b.vl, v)
@@ -184,20 +223,16 @@ func fileID(f entity.FileID) journal.FileID { return journal.NewFileID(f) }
 // journalErr is the content methods' answer for an error the journal
 // returned, so no journal type crosses the content boundary.
 func (e *Engine) journalErr(err error) error {
-	var noSpace *journal.NoSpaceError
+	// A capacity refusal of a call that does not go through the refusal path
+	// (Forget at Drop is one) is answered by the table, uncounted and
+	// unlogged, as it answers no client write. A read-only journal is no
+	// capacity refusal, so its case below is unchanged.
+	if answer, ok := tableAnswer(err); ok {
+		return answer
+	}
+
 	var other *journal.OtherShareError
 	switch {
-	case errors.As(err, &noSpace):
-		// decision: every space refusal is answered as retry-later, never as
-		// a full disk, as the refusal table that tells a lasting shortage
-		// from a passing one is not built. The version limit is DelayCommit,
-		// as it is raised only once a metadata commit records a higher one;
-		// every other limit is DelayCapacity. Answer each limit as that table rules
-		// once it is.
-		if noSpace.Limit == journal.LimitVersion {
-			return &vfserr.Delay{Cause: vfserr.DelayCommit}
-		}
-		return &vfserr.Delay{Cause: vfserr.DelayCapacity}
 	case errors.As(err, &other):
 		return fmt.Errorf("engine: %v: %w", err, vfserr.ErrCorrupt)
 	case errors.Is(err, journal.ErrJournalReadOnly):

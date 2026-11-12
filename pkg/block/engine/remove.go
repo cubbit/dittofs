@@ -184,7 +184,8 @@ func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID
 		e.release(r, false)
 		return e.storeErr(err)
 	}
-	grow, err := e.stage(ctx, r, func(fe *fileEntry) (journal.Version, error) {
+
+	grow, err := e.stageAnswering(ctx, r, func(fe *fileEntry) (journal.Version, error) {
 		return b.h.Truncate(ctx, fileID(f), size)
 	}, opTruncate, journal.Extent{Off: size}, func(fe *fileEntry) bool {
 		return size >= replaySize(committed, fe.ops)
@@ -218,7 +219,7 @@ func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 		return err
 	}
 	x := journal.Extent{Off: off, Len: n}
-	if _, err := e.stage(ctx, r, func(*fileEntry) (journal.Version, error) {
+	if _, err := e.stageAnswering(ctx, r, func(*fileEntry) (journal.Version, error) {
 		return b.h.Deallocate(ctx, fileID(f), x)
 	}, opDeallocate, x, nil); err != nil {
 		e.release(r, false)
@@ -265,10 +266,13 @@ func (e *Engine) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) 
 	if err != nil {
 		return nil, err
 	}
-	v, err := b.h.Delete(ctx, fileID(f))
+
+	v, err := refusing(ctx, e, b, true, func() (journal.Version, error) {
+		return b.h.Delete(ctx, fileID(f))
+	})
 	if err != nil {
 		e.release(r, false)
-		return nil, e.journalErr(err)
+		return nil, err
 	}
 	r.v = v
 	e.issued(b.vl, v)
@@ -366,9 +370,27 @@ func (e *Engine) abort(r *removal) error {
 	return vfserr.ErrFileOpen
 }
 
+// stageAnswering is stage with a capacity refusal of the journal answered by
+// the table. Each attempt takes and releases the file's entry lock on its own,
+// so a call waiting for the raise holds the removal's guard but not the lock.
+func (e *Engine) stageAnswering(
+	ctx context.Context,
+	r *removal,
+	j func(*fileEntry) (journal.Version, error),
+	kind opKind,
+	x journal.Extent,
+	grow func(*fileEntry) bool,
+) (bool, error) {
+	return answeringRefusals(ctx, e, r.b, true, func() (bool, error) {
+		return e.stage(ctx, r, j, kind, x, grow)
+	})
+}
+
 // stage runs the journal's removal j under f's entry lock and inserts its
 // pending operation before the lock is released, answering whether grow,
-// asked under the same lock, made it a grow rather than a removal.
+// asked under the same lock, made it a grow rather than a removal. A capacity
+// refusal of the journal is returned raw, for stageAnswering to answer once
+// the lock is released.
 //
 // decision: the entry's lock is held across the journal's Truncate or
 // Deallocate and the insert of its operation, unlike a write's, as the
@@ -391,8 +413,13 @@ func (e *Engine) stage(ctx context.Context, r *removal, j func(*fileEntry) (jour
 		return false, err
 	}
 	g := grow != nil && grow(fe)
+
 	v, err := j(fe)
 	if err != nil {
+		if _, refusal := capacityRefusal(err); refusal {
+			return false, err // the caller answers it, outside this entry's lock
+		}
+
 		return false, e.journalErr(err)
 	}
 	r.v = v

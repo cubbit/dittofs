@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/internal/prof"
 )
 
 // call is one entry of a recorder's log.

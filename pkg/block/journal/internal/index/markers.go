@@ -331,6 +331,7 @@ func (f *file) fill(p Placed) {
 // and is not persisted.
 func (f *file) settleRemovals(v core.Version) {
 	f.markers = slices.Delete(f.markers, 0, f.firstAbove(v))
+	f.held.dropOver(v)
 }
 
 // settleRemovals settles id's markers at or below v. It claims nothing, and
@@ -338,10 +339,20 @@ func (f *file) settleRemovals(v core.Version) {
 // follows every metadata commit of a removal. A file that gains an entry
 // between the two steps is settled under its lock like any other.
 func (fs *files) settleRemovals(id core.FileID, v core.Version) {
+	fs.settleFor(id, v, nil)
+}
+
+// settleFor is settleRemovals made for share owner when owner is non-nil: the
+// tag check runs under the file's lock, so a file claimed by another share, or
+// rivalled, between a caller's earlier check and this call is left untouched.
+func (fs *files) settleFor(id core.FileID, v core.Version, owner *core.ShareTag) {
 	if !fs.view(id, func(*file) {}) {
 		return
 	}
 	_, _ = fs.update(id, func(f *file) error {
+		if owner != nil && f.check(*owner, id) != nil {
+			return nil
+		}
 		f.settleRemovals(v)
 		return nil
 	})

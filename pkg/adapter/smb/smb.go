@@ -7,12 +7,12 @@ import (
 	"strings"
 
 	"github.com/cubbit/dittofs/pkg/adapter"
-	"github.com/cubbit/dittofs/pkg/adapter/config"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 )
 
 // New builds the SMB adapter, configured: it validates s and refuses Deps
 // missing a required field, naming every one missing, and opens nothing.
-func New(d adapter.Deps, s config.SMB) (adapter.Adapter, error) {
+func New(d adapter.Deps, s settings.SMB) (adapter.Adapter, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}

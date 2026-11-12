@@ -18,7 +18,7 @@ var allowed = []string{
 	"github.com/cubbit/dittofs/pkg/vfs",
 	"github.com/cubbit/dittofs/pkg/metrics",
 	"github.com/cubbit/dittofs/pkg/resources",
-	"github.com/cubbit/dittofs/pkg/adapter/config",
+	"github.com/cubbit/dittofs/pkg/adapter/settings",
 	"go.opentelemetry.io/otel/trace",
 }
 

@@ -126,13 +126,13 @@ func TestAReadOutOfRangeIsInvalid(t *testing.T) {
 }
 
 // Every row of the resolution table, over a stub covering lookup of a file
-// the journal holds nothing of, at asOf zero: only a hole or a zero ref reads
-// as zeros, an uncarved run the journal answered for is lost, a carved one
-// unavailable, past the end a short read, and an uncarved run whose applied
-// or overwrite version is above asOf is asked again. Each read is counted
-// once, by its outcome.
+// the journal holds nothing of, read as of the attach floor: only a hole or a
+// zero ref reads as zeros, an uncarved run the journal answered for is lost,
+// a carved one unavailable, past the end a short read, and an uncarved run
+// whose applied or overwrite version is above asOf is asked again. Each read
+// is counted once, by its outcome.
 func TestReadResolutionTable(t *testing.T) {
-	above := entity.VersionOf(5)
+	above := entity.VersionOf(unitLimit - 1)
 	span := func(off, n int64, c entity.Class) entity.Span {
 		return entity.Span{Extent: entity.Extent{Offset: off, Length: n}, Class: c}
 	}
@@ -586,7 +586,7 @@ func TestAWindowAskedAgainCountsItsLastPass(t *testing.T) {
 				if call == 1 {
 					return []entity.Span{
 						{Extent: entity.Extent{Offset: 0, Length: 4 * kib}, Class: entity.Hole},
-						{Extent: entity.Extent{Offset: 4 * kib, Length: 4 * kib}, Class: entity.Uncarved, Applied: entity.VersionOf(5)},
+						{Extent: entity.Extent{Offset: 4 * kib, Length: 4 * kib}, Class: entity.Uncarved, Applied: entity.VersionOf(unitLimit - 1)},
 					}
 				}
 				spans := []entity.Span{{Extent: entity.Extent{Offset: off, Length: 2 * kib}, Class: entity.Hole}}
@@ -699,7 +699,7 @@ func TestAReadAskedAgainEndsAtItsDeadline(t *testing.T) {
 			cctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			st := &stubContent{cover: func(call int, off, n int64) []entity.Span {
-				s := entity.Span{Extent: entity.Extent{Offset: off, Length: n}, Class: entity.Uncarved, Applied: entity.VersionOf(5)}
+				s := entity.Span{Extent: entity.Extent{Offset: off, Length: n}, Class: entity.Uncarved, Applied: entity.VersionOf(unitLimit - 1)}
 				switch {
 				case call > 100:
 					s = entity.Span{Extent: s.Extent, Class: entity.Hole} // ends a read nothing else ends
@@ -750,7 +750,7 @@ func (h *failOnSecondRead) ReadAt(ctx context.Context, id journal.FileID, off in
 // answered as the context's own error, not a retry.
 func TestADeadlineInsideAReaskIsTheContextsOwn(t *testing.T) {
 	st := &stubContent{cover: func(_ int, off, n int64) []entity.Span {
-		return []entity.Span{{Extent: entity.Extent{Offset: off, Length: n}, Class: entity.Uncarved, Applied: entity.VersionOf(5)}}
+		return []entity.Span{{Extent: entity.Extent{Offset: off, Length: n}, Class: entity.Uncarved, Applied: entity.VersionOf(unitLimit - 1)}}
 	}}
 	ctx := &endingCtx{Context: t.Context(), done: make(chan struct{})}
 	u := newUnitWith(t, unitConfig{

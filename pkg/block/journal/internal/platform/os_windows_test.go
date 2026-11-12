@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // expectOpen fails t unless log is exactly one createFile of path, with read

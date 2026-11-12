@@ -30,7 +30,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path, offload, release, repack and recovery.'
   issue: '#3379'
-  message: 'stub: Extents'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1A_FillSafety
   status: fail
@@ -77,6 +77,14 @@
   fix: planned
   category: feature
   reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs recovery of removal markers.'
+  issue: '#3814'
+  message: 'holds segments; recovering them is not built'
+
+- test: TestRFC1A_SinceYieldsOver
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and Since yields Over; the check then reopens a journal that has run, which cannot be done until recovery lands. Needs recovery of removal markers.'
   issue: '#3814'
   message: 'holds segments; recovering them is not built'
 
@@ -140,7 +148,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Truncate, Deallocate, Delete, Since, Settle and recovery of removal markers.'
+  reason: 'The journal opens; the check fails on a stub call. Needs Sync and recovery of removal markers.'
   issue: '#3814'
   message: 'stub: Sync'
 
@@ -199,14 +207,6 @@
   reason: 'The journal opens; the check fails on a stub call. Needs release, retirement of segments left holding nothing and repack.'
   issue: '#3379'
   message: 'stub: Sync'
-
-- test: TestRFC1B_HandleClose
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs handles whose Close waits for calls in flight, and the data path.'
-  issue: '#3378'
-  message: 'stub: Extents'
 
 - test: TestRFC1B_HeadroomIsAllocated
   status: fail
@@ -1826,9 +1826,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Since to yield the removal marker.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the group commit that Sync waits on.'
   issue: '#3378'
-  message: 'stub: Since'
+  message: 'stub: Sync'
 
 - test: TestEdge_TruncateToZeroAndWriteAgain
   status: fail
@@ -1850,9 +1850,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Since to carry each removal marker.'
+  reason: 'The journal opens; the check fails on a stub call. Needs the group commit that Sync waits on.'
   issue: '#3378'
-  message: 'stub: Since'
+  message: 'stub: Sync'
 
 - test: TestEdge_ReservationExactFitShare
   status: fail
