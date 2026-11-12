@@ -96,8 +96,16 @@ func writeLatencies(t *testing.T, f *enginetest.Fixture, name string, n int) []t
 // bound, twice the baseline or the baseline plus a millisecond, whichever is
 // larger. The engine exposes no lock-wait series through Stats yet, so the
 // row checks latency alone.
+//
+// The journal's pool keeps a spare for each of the row's concurrent writers,
+// the loaders and the measured one, and one for each of its two streams'
+// first roll, so no write is refused for want of a spare whatever the pool's
+// refill timing: that refusal is a capacity answer, not the slowdown the row
+// measures.
 func TestRFC8B_NoCrossShareSlowdown(t *testing.T) {
-	f := enginetest.New(t)
+	const loaders = 4
+
+	f := enginetest.New(t, enginetest.WithSpares(loaders+1+2))
 	ctx := t.Context()
 
 	if err := f.E.Bind(ctx, f.Second); err != nil {
@@ -105,7 +113,7 @@ func TestRFC8B_NoCrossShareSlowdown(t *testing.T) {
 	}
 
 	base := p99(writeLatencies(t, f, "baseline", 200))
-	loads := make([]entity.FileID, 4)
+	loads := make([]entity.FileID, loaders)
 
 	for w := range loads {
 		loads[w] = secondFile(t, f, "load"+string(rune('a'+w)))

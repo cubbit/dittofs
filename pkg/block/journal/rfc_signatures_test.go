@@ -99,7 +99,7 @@ var (
 	_ = Stats{
 		MaxBytes: 0, UsedBytes: 0, ReservedBytes: 0, HeldBytes: 0, DirtyBytes: 0,
 		OldestDirty: time.Time{}, Files: 0, ExtentCount: 0, DropRanges: 0,
-		Segments: 0, Sealed: 0, UnreclaimedBytes: 0,
+		Segments: 0, Sealed: 0, Spares: 0, UnreclaimedBytes: 0,
 		HeadroomBytes: 0, RepackReserveBytes: 0, PinnedSegments: 0,
 		OpenDescriptors: 0, DescriptorLimit: 0, DamagedSegments: 0,
 		LastSyncError: (*SyncFailure)(nil), SyncDuration: Histogram{},

@@ -73,7 +73,9 @@ func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, o
 		}
 
 		fe.writing = append(fe.writing, x)
+		gone := fe.forgetOver(f, x) // a done clone over x is a retry's no more
 		e.files.unlock(f, fe)
+		e.unremember(gone...)
 
 		ver, err := b.h.WriteAt(ctx, fileID(f), off, p, mtime)
 		fe = e.files.lockFor(f) // the admitted write keeps the entry alive

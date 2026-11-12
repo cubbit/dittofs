@@ -20,27 +20,26 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// clonedUnit is a cloneUnit whose clones run to their done signal, past
-// the gate a served engine keeps, holding their sources in the real
+// clonedUnit is a cloneUnit whose clones hold their sources in the real
 // open-state table, behind a faultHolds that opts may set.
 func clonedUnit(t *testing.T, opts ...func(*engine.Deps)) *unit {
 	t.Helper()
 	return clonedUnitWith(t, unitConfig{deps: opts})
 }
 
-// clonedUnitWith is clonedUnit as c asks. An unbound unit composes open
-// state itself, with withOpenState, once its share is bound.
+// clonedUnitWith is clonedUnit as c asks. A faultHolds a dep sets with no
+// next answers through the unit's open-state table.
 func clonedUnitWith(t *testing.T, c unitConfig) *unit {
 	t.Helper()
-	var h *faultHolds
-	c.deps = append([]func(*engine.Deps){func(d *engine.Deps) { d.Holds = &faultHolds{} }}, c.deps...)
-	c.deps = append(c.deps, func(d *engine.Deps) { h, _ = d.Holds.(*faultHolds) })
-	u := cloneUnitWith(t, c)
-	u.e.FakeCloneDone()
-	if h != nil && !c.unbound {
-		u.withOpenState(t, h)
-	}
-	return u
+	c.openState = true
+	var table engine.CloneHold
+	c.deps = append([]func(*engine.Deps){func(d *engine.Deps) { table, d.Holds = d.Holds, &faultHolds{} }}, c.deps...)
+	c.deps = append(c.deps, func(d *engine.Deps) {
+		if h, ok := d.Holds.(*faultHolds); ok && h.next == nil {
+			h.next = table
+		}
+	})
+	return cloneUnitWith(t, c)
 }
 
 // committedFile creates a file holding p at 0, its existence committed.
@@ -947,20 +946,6 @@ func TestADroppedShareEndsItsCloneAndNotesNothing(t *testing.T) {
 	}
 	if u.e.Due(u.rec, dst) {
 		t.Error("the dropped share's destination was noted for a commit again")
-	}
-}
-
-// Until a clone's hold, phase 2 and done signal exist, a clone answers
-// ErrUnbuilt once registered and leaves nothing behind.
-func TestACloneWithoutItsDoneSignalIsUnbuilt(t *testing.T) {
-	u := cloneUnit(t)
-	src := u.committedFile(t, "src", fill(mib, 's'))
-	dst := u.create(t, "dst")
-	if err := u.e.Clone(t.Context(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: mib}); !errors.Is(err, engine.ErrUnbuilt) {
-		t.Errorf("a clone with no done signal: %v, want ErrUnbuilt", err)
-	}
-	if n := len(u.cloneMarkers(dst)); n != 0 || u.e.HasEntry(src) || u.e.HasEntry(dst) {
-		t.Errorf("an unbuilt clone left %d clone markers, entries %v %v", n, u.e.HasEntry(src), u.e.HasEntry(dst))
 	}
 }
 

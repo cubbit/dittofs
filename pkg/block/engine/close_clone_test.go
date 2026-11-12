@@ -126,7 +126,6 @@ func TestACloseBeforeTheLastBatchLeavesTheSourceHeldForTheRestart(t *testing.T) 
 	r.serve(t)
 	r.begin(t)
 	r.run()
-	r.e.FakeCloneDone()
 
 	src, dst := r.newFile2(t, "src"), r.newFile2(t, "dst")
 	want := fill(runLen, 's')

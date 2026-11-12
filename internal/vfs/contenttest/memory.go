@@ -41,6 +41,10 @@ type Memory struct {
 	shares  map[entity.ShareID]*journal
 	files   map[entity.FileID]*file
 	owners  map[entity.FileID]entity.ShareID // the share each file was first named with
+	// released holds each file whose release committed: a Read of a byte or
+	// an Allocation of it answers ErrStale, as the engine's do once phase 1
+	// has committed, rather than reading an empty file.
+	released map[entity.FileID]bool
 }
 
 var _ Content = (*Memory)(nil)
@@ -75,7 +79,7 @@ type op struct {
 
 // New is a Memory with no share bound, reading clock.
 func New(clock Clock) *Memory {
-	return &Memory{clock: clock, shares: map[entity.ShareID]*journal{}, files: map[entity.FileID]*file{}, owners: map[entity.FileID]entity.ShareID{}}
+	return &Memory{clock: clock, shares: map[entity.ShareID]*journal{}, files: map[entity.FileID]*file{}, owners: map[entity.FileID]entity.ShareID{}, released: map[entity.FileID]bool{}}
 }
 
 // NewOver is a Memory whose existence commits reach st's File records, as the
@@ -344,6 +348,9 @@ func (m *Memory) Read(ctx context.Context, s entity.ShareID, f entity.FileID, of
 	if _, err := m.bound(s, f); err != nil {
 		return 0, err
 	}
+	if m.released[f] && len(dst) > 0 {
+		return 0, vfs.ErrStale
+	}
 	b := m.file(f).b
 	if off >= int64(len(b)) {
 		return 0, nil
@@ -438,6 +445,7 @@ func (m *Memory) release(ctx context.Context, s entity.ShareID, f entity.FileID)
 	}
 	delete(m.files, f)
 	delete(m.owners, f)
+	m.released[f] = true
 	return ops, nil
 }
 
@@ -539,7 +547,8 @@ func (m *Memory) Overlay(ctx context.Context, s entity.ShareID, f entity.FileID)
 }
 
 // Allocation is the longest run from off that is all hole or all data, a
-// written zero byte being data; past the end of file the span is empty.
+// written zero byte being data; at or past the end of file the span is
+// empty. A released file answers ErrStale.
 func (m *Memory) Allocation(ctx context.Context, s entity.ShareID, f entity.FileID, off int64) (entity.Span, error) {
 	if off < 0 {
 		return entity.Span{}, vfs.ErrInvalid
@@ -548,6 +557,9 @@ func (m *Memory) Allocation(ctx context.Context, s entity.ShareID, f entity.File
 	defer m.mu.Unlock()
 	if _, err := m.bound(s, f); err != nil {
 		return entity.Span{}, err
+	}
+	if m.released[f] {
+		return entity.Span{}, vfs.ErrStale
 	}
 	data := m.file(f).data
 	if off >= int64(len(data)) {

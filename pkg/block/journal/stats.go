@@ -1,6 +1,10 @@
 package journal
 
-import "time"
+import (
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/datapath"
+)
 
 // Stats returns the journal's statistics: journal-wide, with a per-share
 // breakdown. It is served from counters the journal maintains: it neither
@@ -8,11 +12,54 @@ import "time"
 // safe to call concurrently with every other operation. After Close it
 // returns the zero Stats, since it has no error to return.
 //
-// decision: the stub returns the zero Stats because the signature has no
-// error to carry ErrNotImplemented. A zero Stats reads as an empty journal, so
-// no caller may depend on it until the counters land.
+// decision: fields whose source belongs to a later step (the offload, release
+// and repack counters, PinnedSegments, Recovery, RejectedSegments, TornTails,
+// ScanResyncs) read zero. A zero reads as nothing offered, nothing recovered;
+// no caller may rely on those until the sources land. UnreclaimedBytes is
+// served, from the set's record bytes and overhead and the index's held and
+// retained bytes, clamped at zero and off by at most one operation in flight.
 func (j *Journal) Stats() Stats {
-	return Stats{}
+	// closed is read first: a Close racing this call leaves the core's
+	// statistics readable, or this returns the zero Stats, and never both
+	// halves.
+	if j.closed.Load() || j.core == nil {
+		return Stats{}
+	}
+	return statsFrom(j.core.Stats())
+}
+
+// statsFrom converts the core's statistics to the public shape. Maps and
+// slices are copied, so the result is the caller's.
+func statsFrom(c datapath.Stats) Stats {
+	s := Stats{
+		MaxBytes: c.MaxBytes, UsedBytes: c.UsedBytes, ReservedBytes: c.ReservedBytes,
+		HeldBytes: c.HeldBytes, DirtyBytes: c.DirtyBytes, OldestDirty: c.OldestDirty,
+		Files: c.Files, ExtentCount: c.ExtentCount, DropRanges: c.DropRanges,
+		Segments: c.Segments, Sealed: c.Sealed, Spares: c.Spares, UnreclaimedBytes: c.UnreclaimedBytes,
+		HeadroomBytes: c.HeadroomBytes, RepackReserveBytes: c.RepackReserveBytes,
+		PinnedSegments: c.PinnedSegments, OpenDescriptors: c.OpenDescriptors, DescriptorLimit: c.DescriptorLimit,
+		DamagedSegments: c.DamagedSegments,
+		SyncDuration: Histogram{
+			Bounds: c.SyncDuration.Bounds, Counts: c.SyncDuration.Counts, Sum: c.SyncDuration.Sum,
+		},
+		RemovalMarkers: c.RemovalMarkers, VersionLimit: c.VersionLimit, VersionsLeft: c.VersionsLeft,
+		NextVersion: c.NextVersion, ExtentLimit: c.ExtentLimit,
+		Counters:       Counters(c.Counters),
+		Losses:         c.Losses,
+		LossGeneration: c.LossGeneration,
+		ReadOnly:       c.ReadOnly,
+	}
+	if c.LastSyncError != nil {
+		s.LastSyncError = &SyncFailure{Err: c.LastSyncError.Err, At: c.LastSyncError.At}
+	}
+	for _, t := range c.TagConflicts {
+		s.TagConflicts = append(s.TagConflicts, TagConflict{File: t.File, Tags: t.Tags})
+	}
+	s.Shares = make(map[ShareTag]ShareStats, len(c.Shares))
+	for t, ss := range c.Shares {
+		s.Shares[t] = ShareStats(ss)
+	}
+	return s
 }
 
 // Stats is the journal's statistics. It is not a consistent snapshot of the
@@ -32,6 +79,12 @@ func (j *Journal) Stats() Stats {
 //
 // Every map and slice in a Stats belongs to the caller: Stats returns copies
 // and never keeps them.
+//
+// decision: Stats carries no SuspectSegments, SyncMarks or HeadroomSparesShort,
+// and Counters no descriptor_overruns or descriptor_open_failures, though RFC 1
+// sections 3.7 and 3.9 list them: nothing maintains a source for any of them
+// yet. A zero would claim nothing is suspect or short, so each is left out
+// until its source lands, which overturns this for that field.
 type Stats struct {
 	// MaxBytes is the configured capacity. Kind: gauge.
 	MaxBytes int64
@@ -71,8 +124,20 @@ type Stats struct {
 	// them sealed. Both are gauges.
 	Segments, Sealed int
 
+	// Spares is the number of content spare segments the pool holds, made or
+	// recycled and taken by no stream yet, each counted in UsedBytes at the
+	// segment cap. The headroom, repack reserve and reconcile spares are not
+	// counted here. Kind: gauge.
+	Spares int
+
 	// UnreclaimedBytes is the storage in segments not yet unlinked that backs
 	// no held or retained extent and no live record: what repack can recover.
+	// It is the sum of the shares' figures, and a share's own is the bytes of
+	// its records in those segments less its held and retained payload and its
+	// records' non-payload bytes, never below zero. A release raises it by
+	// the bytes released, and a journal of clean held content reads zero. It
+	// leaves out segment headers, trailers and footers, and a dead record's
+	// header and padding count as backed until its segment is unlinked.
 	// Kind: gauge.
 	UnreclaimedBytes int64
 
@@ -173,7 +238,7 @@ type ShareStats struct {
 	DirtyBytes    int64
 
 	// UnreclaimedBytes is the unreclaimed storage counted to the share: that
-	// of its records.
+	// of its records, as the journal's UnreclaimedBytes defines it.
 	UnreclaimedBytes int64
 
 	// UnreclaimedEndedBytes is the part of UnreclaimedBytes in segments that
@@ -185,6 +250,9 @@ type ShareStats struct {
 // Counters are the journal's cumulative counts since open. Every field is a
 // counter: it only rises, and restarts at zero on open. Each answers something
 // only the journal knows.
+//
+// The descriptor counters of RFC 1 section 3.9 are left out for the reason
+// Stats gives.
 type Counters struct {
 	// WrittenBytes is the client bytes accepted by WriteAt.
 	WrittenBytes uint64

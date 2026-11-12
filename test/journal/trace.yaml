@@ -328,8 +328,7 @@ rfc1 / 9.7 / "index cost":
   owner: epic 4
   reason: 'the index''s comparison counters'
 rfc1 / 9.7 / "allocations per operation":
-  owner: epic 8
-  reason: 'needs a hot path; a threshold cannot be set against a stub'
+  tests: [TestCounted_AllocationsPerCall, TestCounted_AllocationsPerCallFailsWithOneAdded]
 rfc1 / 9.7 / "index memory":
   owner: epic 4
   reason: 'the index''s bytes per entry'
@@ -363,7 +362,7 @@ rfc28 / 4.4 / edit / "one old segment of this journal restored":
   tests: [TestRFC28C_StaleExtent]
 
 rfc1 / 9.1 / "Model-based":
-  tests: [TestModel]
+  tests: [TestModel, TestModel_DataPath, TestModelDataPathFindsPlantedSupersession]
 
 rfc0 / 1.4 / "clock bound":
   owner: epic 11

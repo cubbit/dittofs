@@ -213,3 +213,7 @@ func raise(a *atomic.Uint64, x uint64) {
 		}
 	}
 }
+
+// Limit returns the version limit: versions are issued only below it, and a
+// zero limit means none has been set.
+func (c *Counters) Limit() core.Version { return core.Version{Counter: c.limit.Load()} }

@@ -31,6 +31,15 @@ import (
 // are one record in two places. The pair alone would too — the journal
 // issues one pair once — but the file and the extent make the re-test
 // registries answer by key without reading the record back.
+//
+// Tag is the share the record's header names: part of the key of every
+// registry keyed by Rec — the registrations, the forget snapshots and the
+// loss marks alike — so a registration and its release must carry the same
+// one, or the registry entry the pair disagrees on sits undropped. A content
+// record's tag reads from its file; a forget record names no file, so its
+// tag is the one field its caller must spell out, and a forget registered
+// without its tag registers and releases like any other record but keys no
+// tag's snapshot (RegisterForget names the rule).
 type Rec struct {
 	Kind       format.Kind
 	File       core.FileID
@@ -39,6 +48,7 @@ type Rec struct {
 	Pair       index.Numbers
 	Seq        core.Seq
 	Named      core.Seq
+	Tag        core.ShareTag
 	Synced     bool
 	Superseded bool
 }
@@ -451,6 +461,21 @@ func (t *Tracker) entryIfLive(seg core.SegmentID) *segState {
 // the file append domain, or a re-append of a failed window naming the tag,
 // overturns it. The upgrade is a scan of the snapshot's segments for
 // records of the tag at each retirement.
+//
+// decision: the Rec handed here must name its tag: Tag is part of the key of
+// every registry this registration enters, so the registration and the
+// Unregister that releases it must carry the same one, or the entry sits.
+// The registration is the forget's liveness snapshot and nothing more — what
+// keeps the record's segment held until every segment that held the tag's
+// records below it leaves the set — since the forgetting mark the copy pass
+// consults is the share registry the Forget path writes before its barrier,
+// not this one. The Forget that appends the record and the open's rebuild
+// that reads it back build the Rec from the record's own header, which names
+// the tag; nothing else carries it, so the tag is the one field the caller
+// must not invent its own value for. The rule holds while a forget record
+// names exactly one tag; one that ever carries a second tag identity the
+// journal must distinguish overturns it, for the registry key would then
+// have to name both.
 func (t *Tracker) RegisterForget(rec Rec, segs []core.SegmentID) {
 	if len(segs) == 0 {
 		t.Register(rec)

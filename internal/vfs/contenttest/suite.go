@@ -262,7 +262,7 @@ func doneIsCalledOnceByTheExistenceCommit(t *testing.T, s Subject) {
 	var calls atomic.Int32
 	opts := engine.WriteOpts{Done: func() { calls.Add(1) }}
 	if _, err := s.Content.Write(t.Context(), s.Share, f, 0, []byte("abcd"), opts); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Write(0, \"abcd\") with a Done: %v", err)
 	}
 	if _, pending := s.overlay(t, f); pending && calls.Load() != 0 {
 		t.Errorf("Done called %d times while its write is pending", calls.Load())
@@ -336,30 +336,25 @@ func allocationReportsHolesAndData(t *testing.T, s Subject) {
 	s.wantRuns(t, f, run{0, 8, true}, run{3, 5, true}, run{8, 2, false})
 	s.write(t, f, 0, "\x00\x00")
 	s.wantRuns(t, f, run{0, 2, false}, run{2, 6, true}, run{9, 1, false})
-	// Past the end of file nothing is data.
-	//
-	// decision: RFC 8 does not say whether that is an empty span or a hole,
-	// so either passes. Tighten once RFC 8 rules it.
-	sp, err := s.Content.Allocation(t.Context(), s.Share, f, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sp.Class != entity.Hole && sp.Length > 0 {
-		t.Errorf("Allocation(10), at the end of file, = [%d, +%d) %v; want no data", sp.Offset, sp.Length, sp.Class)
+	// At or past the end of file the span is empty, whatever its class.
+	for _, off := range []int64{10, 20} {
+		sp, err := s.Content.Allocation(t.Context(), s.Share, f, off)
+		if err != nil {
+			t.Fatalf("Allocation(%d): %v", off, err)
+		}
+		if sp.Offset != off || sp.Length != 0 {
+			t.Errorf("Allocation(%d), at or past the end of file, = [%d, +%d); want [%d, +0)", off, sp.Offset, sp.Length, off)
+		}
 	}
 }
 
-// A release leaves nothing to read and nothing pending, and calls the Done of
-// each write it found pending.
-//
-// decision: what Read and Overlay answer for a released file is not in RFC 8
-// §12.1, so either nothing or ErrStale passes; the filesystem calls neither
-// on a file it released. Tighten once RFC 8 rules it.
+// A release leaves a file that reads and allocates as stale and has nothing
+// pending, and calls the Done of each write it found pending.
 func deleteLeavesNothing(t *testing.T, s Subject) {
 	f := s.File(t)
 	var calls atomic.Int32
 	if _, err := s.Content.Write(t.Context(), s.Share, f, 0, []byte("abcd"), engine.WriteOpts{Done: func() { calls.Add(1) }}); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Write(0, \"abcd\") with a Done: %v", err)
 	}
 	retry, err := s.Content.Delete(t.Context(), s.Share, f)
 	if err != nil {
@@ -379,11 +374,14 @@ func deleteLeavesNothing(t *testing.T, s Subject) {
 		t.Errorf("the released file's pending write had its Done called %d times, want 1", n)
 	}
 	p := make([]byte, 4)
-	if n, err := s.Content.Read(t.Context(), s.Share, f, 0, p); n != 0 || err != nil && !errors.Is(err, vfs.ErrStale) {
-		t.Errorf("Read of a released file = %q, %v; want nothing", p[:n], err)
+	if n, err := s.Content.Read(t.Context(), s.Share, f, 0, p); n != 0 || !errors.Is(err, vfs.ErrStale) {
+		t.Errorf("Read of a released file = %q, %v; want ErrStale", p[:n], err)
 	}
-	if _, pending, err := s.Content.Overlay(t.Context(), s.Share, f); pending || err != nil && !errors.Is(err, vfs.ErrStale) {
-		t.Errorf("Overlay of a released file: pending %v, %v; want nothing pending", pending, err)
+	if sp, err := s.Content.Allocation(t.Context(), s.Share, f, 0); !errors.Is(err, vfs.ErrStale) {
+		t.Errorf("Allocation(0) of a released file = [%d, +%d) %v, %v; want ErrStale", sp.Offset, sp.Length, sp.Class, err)
+	}
+	if _, pending, err := s.Content.Overlay(t.Context(), s.Share, f); pending || err != nil {
+		t.Errorf("Overlay of a released file: pending %v, %v; want not pending, no error", pending, err)
 	}
 }
 

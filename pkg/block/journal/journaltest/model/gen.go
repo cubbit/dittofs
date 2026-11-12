@@ -34,6 +34,12 @@ const (
 	DefaultSteps = 200
 )
 
+// DataPathOps is the operation set a data-path sequence draws from: every
+// call the caller of a share's handle drives itself, and none the offload
+// machinery, a repack or a restart does. Its fills carry their own bytes, so
+// no offload needs to report content first.
+var DataPathOps = []Op{OpWrite, OpRead, OpFill, OpStaleFill, OpTruncate, OpDeallocate, OpDelete, OpSettle}
+
 // Generate draws n steps from seed. The same seed draws the same steps.
 //
 // Extents are mostly small and near the start of the file, so writes overlap
@@ -41,10 +47,28 @@ const (
 // offset. A write or a deallocate is now and then zero-length, and one
 // truncate in four is to zero. One call in
 // ten goes through the share that does not have the file.
-func Generate(seed uint64, n int) []Step {
+func Generate(seed uint64, n int) []Step { return generate(seed, n, &weights) }
+
+// GenerateWithin draws n steps from seed, from the operations ops names only:
+// the weights of Generate restricted to them and renormalised over their
+// sum. The same seed and the same ops draw the same steps. A seed does not
+// draw over ops what Generate draws with it: the two draw from different
+// totals. ops must name only operations the weights table weighs, and at
+// least one.
+func GenerateWithin(seed uint64, n int, ops []Op) []Step {
+	var ws [opEnd]int
+	for _, op := range ops {
+		ws[op] = weights[op]
+	}
+	return generate(seed, n, &ws)
+}
+
+// generate is the drawing loop Generate and GenerateWithin share: ws is the
+// weight per operation, zero for the ones no sequence draws.
+func generate(seed uint64, n int, ws *[opEnd]int) []Step {
 	r := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
 	total := 0
-	for _, w := range weights {
+	for _, w := range ws {
 		total += w
 	}
 	steps := make([]Step, n)
@@ -55,10 +79,10 @@ func Generate(seed uint64, n int) []Step {
 			s.Share = 1 - s.Share
 		}
 		for w := r.IntN(total); ; s.Op++ {
-			if w < weights[s.Op] {
+			if w < ws[s.Op] {
 				break
 			}
-			w -= weights[s.Op]
+			w -= ws[s.Op]
 		}
 		s.Off, s.Len = extentFor(r)
 		if (s.Op == OpWrite || s.Op == OpDeallocate) && r.IntN(50) == 0 {

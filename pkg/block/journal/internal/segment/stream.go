@@ -438,6 +438,11 @@ type Roll struct {
 	// Repack marks a repack copy: its roll takes a repack-reserve spare,
 	// never a content one (R23).
 	Repack bool
+	// Whole marks a record that must land in one piece: when what remains
+	// of the active segment cannot hold it, the roll comes first and the
+	// record is placed whole in the next segment, never split. A payload
+	// larger than an empty segment's room is refused with ErrSegmentFull.
+	Whole bool
 }
 
 // ErrBadRoll is returned by AppendRoll for roll options that do not fit the
@@ -591,7 +596,8 @@ func (s *Stream) Append(h format.RecordHeader, body format.RecordBody) (Placed, 
 // lock. The roll takes the spare r names, seals the full segment, and writes
 // the new segment's header naming the sealed one as predecessor; the record
 // is then reserved in the new segment. A write or fill whose whole record
-// still does not fit is split at the cap: this call returns the largest piece
+// still does not fit is split at the cap, unless r.Whole asks for it to land
+// in one piece, in which case the roll comes first and it is placed whole: this call returns the largest piece
 // that fits and N below the payload's length, and the caller's next call
 // rolls. A record that fits nowhere at all — one whose payload it cannot
 // place a single byte of, or whose own size exceeds an empty segment's room,
@@ -739,7 +745,9 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		// which fits exactly when its size equals the room — anywhere in
 		// an empty segment, the largest room a stream hands out. A write or
 		// fill whose payload alone exceeds a segment is not refused but
-		// split, piece by piece, segment after segment (RFC 28 §2.2); the
+		// split, piece by piece, segment after segment (RFC 28 §2.2), except
+		// that a record that must land whole (r.Whole) and is larger than an
+		// empty segment's room is refused with ErrSegmentFull; the
 		// refusal is for the record whose own overhead leaves the room no
 		// piece at all, and reserve-side discovery, after a take, would
 		// consume one spare after another for a record that fits nowhere.
@@ -747,7 +755,7 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		// where it was.
 		emptyRoom := ((s.set.cap - format.SegmentHeaderSize - sealRoom(1)) &^ 7) -
 			(int64(format.RecordHeaderSize) + format.RecordHeader{Kind: h.Kind}.BodySize())
-		if emptyRoom < 0 || len(body.Payload) > 0 && emptyRoom < 1 {
+		if emptyRoom < 0 || len(body.Payload) > 0 && emptyRoom < 1 || r.Whole && int64(len(body.Payload)) > emptyRoom {
 			s.appendMu.Unlock()
 			return Placed{}, ErrSegmentFull
 		}
@@ -789,7 +797,7 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 				// modification time, and nothing for a fill.
 				overhead := int64(format.RecordHeaderSize) + format.RecordHeader{Kind: h.Kind}.BodySize()
 				fit := ((s.set.cap - s.next - sealRoom(s.count+1)) &^ 7) - overhead
-				if hasPayload && fit >= 1 {
+				if hasPayload && fit >= 1 && !r.Whole {
 					// The whole record does not fit, so the payload
 					// cannot either: the record's own padded size is a
 					// multiple of 8 no smaller than the room the fit was
@@ -803,7 +811,8 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 					size, placed = h.Size(), fit
 				} else {
 					// Not even one payload byte places, or the kind carries
-					// no payload and does not fit: the record has no piece
+					// no payload and does not fit, or the record must land
+					// whole (r.Whole): the record has no piece
 					// here, and the roll takes the next segment for it. A
 					// record no segment could hold at all was refused by
 					// the empty-room guard above, before anything rolled,
@@ -1008,8 +1017,10 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 
 		// The bytes are the share's once written (R55). The lock order puts
 		// capacity before segment append (RFC 1 §8.3), so this runs with no
-		// lock of the stream's held — never under appendMu.
-		if err := s.set.AddRecord(id, h.Tag, size); err != nil {
+		// lock of the stream's held — never under appendMu. Overhead is the
+		// record's whole size less its payload, the length the index counts held
+		// or retained for it; a kind with no payload placed 0.
+		if err := s.set.AddRecord(id, h.Tag, size, size-placed); err != nil {
 			return Placed{}, err
 		}
 		return Placed{Loc: Location{Segment: id, Off: off, Len: size}, N: placed, Rolled: rolled}, nil

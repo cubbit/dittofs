@@ -26,7 +26,11 @@ import (
 
 // fenceUnit is the unit over a fault-injecting kv.KV, its log recorded.
 // No real-time bound cuts a store call, so a stall lasts exactly as long as
-// the test clock says.
+// the test clock says. The store's clock stands still: a share added later
+// takes its floor from the store's version, and on the wall clock that floor
+// would run more than half a block of nanoseconds past the limit on a slow
+// host, so a second share's failed Bind would hand its raise to the version
+// limit's retrying raise, fencing the node and leaving it running.
 type fenceUnit struct {
 	*unit
 	faults *kvtest.FaultKV
@@ -36,7 +40,9 @@ type fenceUnit struct {
 func newFenceUnit(t *testing.T) *fenceUnit {
 	t.Helper()
 	fu := &fenceUnit{logs: newLogRecorder()}
+	frozen := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	fu.unit = newUnitWith(t, unitConfig{
+		storeClock: func() time.Time { return frozen },
 		kv: func(k kv.KV) kv.KV {
 			fu.faults = kvtest.NewFaultKV(k)
 			return fu.faults
@@ -292,10 +298,17 @@ func TestSelfFenceTimesAFirstTransactionFromItsStart(t *testing.T) {
 func TestSelfFenceNotAfterAFailedOneShot(t *testing.T) {
 	u := newFenceUnit(t)
 	a := u.create(t, "a")
+	headroom := u.limit - u.j.Stats().NextVersion.Counter
 	second := enginetest.AddShare(t, u.fs.Store, "second", 1<<30)
 	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
 	if err := u.e.Bind(t.Context(), second); err == nil {
 		t.Fatal("Bind over a failing store succeeded")
+	}
+	// A failed Bind whose floor spent half the headroom hands its raise to the
+	// retrying raise, which this test is not about.
+	if next := u.j.Stats().NextVersion.Counter; next > u.limit-headroom/2 {
+		t.Fatalf("the failed Bind moved the next version to %d, want at most %d, half the headroom below the limit %d",
+			next, u.limit-headroom/2, u.limit)
 	}
 	u.clock.Advance(time.Minute)
 	if _, err := u.tryWrite(a); err != nil {
