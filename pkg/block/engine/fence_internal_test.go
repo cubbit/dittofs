@@ -320,3 +320,64 @@ func TestFenceFailingIsPerOwner(t *testing.T) {
 		t.Errorf("%d owners failing once the failing owner stopped, want 0", n)
 	}
 }
+
+// endedBy are the ways a retrying owner's store call can end on its context:
+// its caller's cancel, its caller's deadline, and the conflict bound's cut.
+var endedBy = []struct {
+	name   string
+	ctx    func(context.Context) (context.Context, context.CancelFunc)
+	caller bool // the caller's own context ended it, not the bound
+}{
+	{"cancelled", func(ctx context.Context) (context.Context, context.CancelFunc) {
+		c, cancel := context.WithCancel(ctx)
+		cancel()
+		return c, cancel
+	}, true},
+	{"past its caller's deadline", func(ctx context.Context) (context.Context, context.CancelFunc) {
+		return context.WithDeadline(ctx, time.Time{})
+	}, true},
+	{"cut by the conflict bound", (&Engine{}).bounded, false}, // a bound of zero cuts at once
+}
+
+// A call its caller's own context ended fails nothing: an owner not failing
+// stays so. The conflict bound's cut is the store's and fails the owner.
+func TestFenceCallerEndedFailsNothing(t *testing.T) {
+	for _, tc := range endedBy {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := newClockFence()
+			ctx, cancel := tc.ctx(withRetryingOwner(context.Background()))
+			defer cancel()
+			<-ctx.Done()
+			f.begin()
+			f.end(ctx, ctx.Err(), entity.NewFileID())
+			if got, want := f.failing.Load() > 0, !tc.caller; got != want {
+				t.Errorf("owner failing after a call %s: %v, want %v", tc.name, got, want)
+			}
+		})
+	}
+}
+
+// A file failing at the store, then a retry of it its caller's own context
+// ended: the retry clears nothing, so the node fences fenceAfter after the
+// failure. Clearing the call's items on such a retry fences nothing here.
+func TestFenceCallerEndedRetryKeepsAFileFailing(t *testing.T) {
+	for _, tc := range endedBy {
+		t.Run(tc.name, func(t *testing.T) {
+			f, clock := newClockFence()
+			owner := withRetryingOwner(context.Background())
+			file := entity.NewFileID()
+			f.begin()
+			f.end(owner, errStoreDown, file)
+			clock.Advance(10 * time.Second)
+			ctx, cancel := tc.ctx(owner)
+			defer cancel()
+			<-ctx.Done()
+			f.begin()
+			f.end(ctx, ctx.Err(), file)
+			clock.Advance(fenceAfter - 10*time.Second)
+			if !f.holds() {
+				t.Errorf("a failing file retried %s: not fenced %v after the failure, want fenced", tc.name, fenceAfter)
+			}
+		})
+	}
+}
