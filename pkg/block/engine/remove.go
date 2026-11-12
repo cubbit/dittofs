@@ -63,7 +63,9 @@ func (e *Engine) guard(ctx context.Context, b *binding, f entity.FileID, kind en
 	fe.guardDone = make(chan struct{})
 	fe.guarded.Store(true)
 	fe.removing = &x
+	gone := fe.forgetOver(f, x) // a done clone over x is a retry's no more
 	e.files.unlock(f, fe)
+	e.unremember(gone...)
 	return &removal{b: b, f: f, x: x, kind: kind, at: e.d.Clock.Now()}, nil
 }
 

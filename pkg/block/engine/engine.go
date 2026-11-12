@@ -7,6 +7,7 @@
 package engine
 
 import (
+	"container/list"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -67,6 +68,12 @@ type Engine struct {
 
 	clonesMu sync.Mutex             // held for a lookup or change of clones only
 	clones   map[cloneKey]*cloneRun // the running clones past their step 1, live and rebuilt, by destination
+
+	// doneMu is held for a change of done only, never with an entry's lock
+	// or clonesMu held, nor taken while it is held.
+	doneMu  sync.Mutex
+	done    *list.List // the done clones remembered (doneClone), oldest first
+	doneCap int        // how many done holds at most: doneClones, a test's seam lowers it
 
 	gcMu            sync.Mutex
 	gcs             map[Journal]*groupCommit                        // each journal's group commit
@@ -158,6 +165,8 @@ func New(d Deps) (*Engine, error) {
 		d:        d,
 		files:    newFiles(d.Clock),
 		clones:   map[cloneKey]*cloneRun{},
+		done:     list.New(),
+		doneCap:  doneClones,
 		instance: instanceID(),
 		busy:     map[entity.ShareID]struct{}{},
 		raised:   map[entity.ShardID]struct{}{},

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -161,7 +162,9 @@ func (fe *fileEntry) drop(r *reg) {
 // extent a running clone holds (DelayClone). A call naming the source,
 // destination, offsets and length of a clone running into the destination
 // joins it (RFC 8 §9.1), starting no second clone; one naming another spec
-// meets the running clone's registrations, answering DelayClone. Otherwise it
+// meets the running clone's registrations, answering DelayClone. One naming
+// a done clone's spec, neither extent changed since, answers nil at once
+// (doneBefore). Otherwise it
 // registers the source extent and the destination extent, then runs step 1
 // on the call (prepare), whose refusal undoes both registrations and changes
 // nothing, then from the journal step on its own goroutine (runClone) and the
@@ -226,6 +229,9 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	if c := e.joinable(dstShare, dst, srcShare, src, x); c != nil {
 		return c.wait(ctx)
 	}
+	if e.doneBefore(srcShare, src, dstShare, dst, x) {
+		return nil
+	}
 	rs := &reg{Extent: entity.Extent{Offset: x.SrcOff, Length: x.Len}}
 	rd := &reg{Extent: entity.Extent{Offset: x.DstOff, Length: x.Len}, dst: true}
 	if err := e.register(ctx, src, rs); err != nil {
@@ -287,13 +293,7 @@ type cloneKey struct {
 // joinable is the clone running into dst of share dstShare when it is a
 // retry of this call, nil otherwise. A retry, as RFC 8 §9.1 calls it, names
 // the same source, destination, offsets and length; the destination is the
-// running clone's key.
-//
-// ponytail: a retry joins a clone only while it runs; one after it is done
-// runs the clone again rather than answering success at once, as no done
-// clone's spec is kept. Keep the spec in both files' entries until a write or
-// removal over either extent drops it, bounded node-wide, when a client's
-// retries are seen re-running clones that were done.
+// running clone's key. A retry of a clone done is answered by doneBefore.
 func (e *Engine) joinable(dstShare entity.ShareID, dst entity.FileID, srcShare entity.ShareID, src entity.FileID, x vfserr.Extent) *cloneRun {
 	e.clonesMu.Lock()
 	c := e.clones[cloneKey{dstShare, dst}]
@@ -835,7 +835,7 @@ func (e *Engine) endClone(c *cloneRun, err error) {
 
 // settleClone is endClone short of leaving the gates: its reservation, when
 // one is held, is given back, it leaves the running clones, both
-// registrations go, which a release answered
+// registrations go, a done clone's spec taking their place (remember), which a release answered
 // pending behind them sees at its next look, and its done signal is raised. A
 // clone settles with a nil err once its phase 2 is done, before its hold on
 // the source is released, and leaves the gates after that release
@@ -846,8 +846,149 @@ func (e *Engine) settleClone(c *cloneRun, err error) {
 		c.res = nil
 	}
 	e.dropClone(c)
-	e.unregister(c.dst, c.rd)
-	e.unregister(c.src, c.rs)
+	if err == nil {
+		e.remember(c)
+	} else {
+		e.unregister(c.dst, c.rd)
+		e.unregister(c.src, c.rs)
+	}
 	c.err = err
 	close(c.done)
+}
+
+// doneClones is how many done clones the node remembers at most (D7's FIFO).
+const doneClones = 1024
+
+// doneClone is a done clone's spec, remembered in both its files' entries,
+// which it keeps alive, and in the node's done list, until a write or
+// removal overlapping either extent, an Unbind of either share, or the list's
+// eviction of the oldest past doneCap drops it.
+type doneClone struct {
+	srcShare, dstShare entity.ShareID
+	src, dst           entity.FileID
+	x                  vfserr.Extent
+	gone               atomic.Bool   // dropped: whoever set it removes it from the entries and the list
+	el                 *list.Element // its place in the done list, under doneMu; nil when not in it
+}
+
+// on reports whether the clone's extent on file f, as source or destination
+// or both, overlaps x.
+func (d *doneClone) on(f entity.FileID, x entity.Extent) bool {
+	return d.src == f && x.Overlaps(entity.Extent{Offset: d.x.SrcOff, Length: d.x.Len}) ||
+		d.dst == f && x.Overlaps(entity.Extent{Offset: d.x.DstOff, Length: d.x.Len})
+}
+
+// doneBefore reports whether a clone with this spec is done and neither of
+// its extents changed since: a retry of it (RFC 8 §9.1), answered success at
+// once with no journal call. The destination's entry holds every remembered
+// clone into it.
+//
+// ponytail: the memory is lost at restart and after doneClones later clones,
+// so a retry then runs the clone again, which leaves the same content.
+// Persist it in the clone's Removal record, kept done until pruned, if
+// retries after a restart show in logs.
+func (e *Engine) doneBefore(srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, x vfserr.Extent) bool {
+	fe := e.files.lockOf(dst)
+	if fe == nil {
+		return false
+	}
+	defer e.files.unlock(dst, fe)
+	return slices.ContainsFunc(fe.done, func(d *doneClone) bool {
+		return !d.gone.Load() && d.srcShare == srcShare && d.src == src && d.dstShare == dstShare && d.dst == dst && d.x == x
+	})
+}
+
+// remember puts c's spec in both its files' entries in place of its
+// registrations, each swap under one lock so no write meets the extent
+// between them, then at the back of the done list, dropping the oldest past
+// doneCap. A clone within one file puts it in that file's entry once. A spec
+// dropped before it reaches an entry or the list is not put there.
+func (e *Engine) remember(c *cloneRun) {
+	d := &doneClone{srcShare: c.sb.share.ID, dstShare: c.db.share.ID, src: c.src, dst: c.dst,
+		x: vfserr.Extent{SrcOff: c.spec.SrcOff, DstOff: c.spec.DstOff, Len: c.spec.Len}}
+	for i, s := range []struct {
+		f entity.FileID
+		r *reg
+	}{{c.dst, c.rd}, {c.src, c.rs}} {
+		fe := e.files.lockFor(s.f)
+		fe.drop(s.r)
+		if !d.gone.Load() && (i == 0 || c.src != c.dst) {
+			fe.done = append(fe.done, d)
+		}
+		e.files.unlock(s.f, fe)
+	}
+	var old *doneClone
+	e.doneMu.Lock()
+	if !d.gone.Load() {
+		d.el = e.done.PushBack(d)
+		if e.done.Len() > e.doneCap {
+			old = e.done.Remove(e.done.Front()).(*doneClone)
+			old.el = nil
+		}
+	}
+	e.doneMu.Unlock()
+	if old != nil && old.gone.CompareAndSwap(false, true) {
+		e.unremember(old)
+	}
+}
+
+// forgetOver drops, from f's entry, every remembered clone whose extent on f
+// overlaps x, which a write or removal is about to change, and answers them
+// for unremember once the entry's lock is released. The caller holds it.
+func (fe *fileEntry) forgetOver(f entity.FileID, x entity.Extent) []*doneClone {
+	if len(fe.done) == 0 {
+		return nil
+	}
+	var gone []*doneClone
+	fe.done = slices.DeleteFunc(fe.done, func(d *doneClone) bool {
+		if !d.on(f, x) || !d.gone.CompareAndSwap(false, true) {
+			return d.gone.Load()
+		}
+		gone = append(gone, d)
+		return true
+	})
+	return gone
+}
+
+// unremember takes each of ds, already marked gone, out of both its files'
+// entries, releasing what it kept alive, then out of the done list: each
+// entry's lock is taken once, and doneMu once after them. The caller holds no
+// entry's lock.
+func (e *Engine) unremember(ds ...*doneClone) {
+	if len(ds) == 0 {
+		return
+	}
+	gone := make(map[*doneClone]bool, len(ds))
+	files := make(map[entity.FileID]bool)
+	for _, d := range ds {
+		gone[d], files[d.src], files[d.dst] = true, true, true
+	}
+	for f := range files {
+		if fe := e.files.lockOf(f); fe != nil {
+			fe.done = slices.DeleteFunc(fe.done, func(o *doneClone) bool { return gone[o] })
+			e.files.unlock(f, fe)
+		}
+	}
+	e.doneMu.Lock()
+	for _, d := range ds {
+		if d.el != nil {
+			e.done.Remove(d.el)
+			d.el = nil
+		}
+	}
+	e.doneMu.Unlock()
+}
+
+// forgetShare drops every remembered clone with share s on either side: once
+// unbound, its files may change where this node does not see it.
+func (e *Engine) forgetShare(s entity.ShareID) {
+	var gone []*doneClone
+	e.doneMu.Lock()
+	for el := e.done.Front(); el != nil; el = el.Next() {
+		if d := el.Value.(*doneClone); (d.srcShare == s || d.dstShare == s) && d.gone.CompareAndSwap(false, true) {
+			gone = append(gone, d)
+		}
+	}
+	e.doneMu.Unlock()
+	e.unremember(gone...)
 }

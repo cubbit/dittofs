@@ -885,3 +885,28 @@ func (e *Engine) AcceptedWriteForTest(s entity.ShareID) {
 func (e *Engine) HeadroomNamedForTest(s entity.ShareID) bool {
 	return e.table()[s].gc.cap.headroom.Load()
 }
+
+// SetDoneClones lowers how many done clones the node remembers, so a test
+// evicts one without running doneClones clones.
+func (e *Engine) SetDoneClones(n int) {
+	e.doneMu.Lock()
+	e.doneCap = n
+	e.doneMu.Unlock()
+}
+
+// DoneIn is the count of done clones f's entry holds, 0 with no entry.
+func (e *Engine) DoneIn(f entity.FileID) int {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return 0
+	}
+	defer e.files.unlock(f, fe)
+	return len(fe.done)
+}
+
+// DoneClones is the count of done clones the node remembers.
+func (e *Engine) DoneClones() int {
+	e.doneMu.Lock()
+	defer e.doneMu.Unlock()
+	return e.done.Len()
+}

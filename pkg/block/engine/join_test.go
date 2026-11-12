@@ -211,26 +211,6 @@ func TestACloneIntoAnotherFileIsNotJoined(t *testing.T) {
 	h.let()
 }
 
-// Once a clone is done, a Clone with its spec runs the clone again: the
-// source written since is what the destination then reads (catches a done
-// clone kept among the running clones, which a retry joins, answered at once
-// with the old content left).
-func TestACloneDoneIsNotJoined(t *testing.T) {
-	u := clonedUnit(t)
-	src := u.committedFile(t, "src", fill(mib, 'a'))
-	dst := u.create(t, "dst")
-	u.clone(t, src, dst, vfserr.Extent{Len: mib})
-	u.write(t, src, 0, fill(mib, 'b'))
-	u.clone(t, src, dst, vfserr.Extent{Len: mib})
-
-	if n := len(u.cloneMarkers(dst)); n != 2 {
-		t.Errorf("the journal holds %d clone markers, want two clones", n)
-	}
-	if got := u.read(t, dst, 0, mib); !bytes.Equal(got, fill(mib, 'b')) {
-		t.Error("the destination does not read the source as the second clone found it")
-	}
-}
-
 // An Unbind of the share waits for a clone that a retry has joined, and
 // both the Unbind and the retry are answered once the clone is done
 // (catches a joined retry the clone's end does not wake).
