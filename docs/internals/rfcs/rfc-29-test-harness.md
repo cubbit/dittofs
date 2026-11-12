@@ -1904,6 +1904,14 @@ a percentage.
   (#2999). A gate that trips again on the retry turns the nightly run red and posts, as
   `perf-gates.yml`'s run went red, and fails no PR. The aggregate random-write gate joins once it
   has a baseline: without one it passes whatever it measures.
+- **Comparison against a stored baseline:** after every merge, a step runs each benchmark of the
+  components that name one (RFC 17 §8, RFC 8 §15.4) for the iterations they set, writes the
+  benchmark lines to its `{out}` (§4.6), and compares them with the stored baseline of that
+  benchmark with `benchstat`. It reports a change beyond the noise band `benchstat` computes and
+  gates nothing: a regression is posted, never a failed run, as performance is tracked and not
+  gated. A baseline is replaced only through a pull request, with the commit and the box it was
+  measured on beside it (the RFC index's "Recording results"), and results from another box are
+  compared only with themselves.
 - **Comparisons** run on the dedicated host, as the `perf-night` suite, first in its nightly run:
   `bench/ditto/night.sh` measures DittoFS against Samba over SMB, point by point, and flags a
   point, an area or the night's figure that falls below its 7-day median by more than its noise
