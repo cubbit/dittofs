@@ -1044,6 +1044,11 @@ func TestSteadyWritesOnAnotherStreamDoNotStarveRetirement(t *testing.T) {
 	writeErr := make(chan error, 1)
 	stop := make(chan struct{})
 	stopped := make(chan struct{})
+	// A roll may find no spare ready yet — the maker readies one in the
+	// background, and the write the roll would carry is refused with the
+	// named retryable spare limit until it does. The writer rides that
+	// refusal within a bound and fails on any other error.
+	spareDeadline := time.Now().Add(5 * time.Second)
 	go func() {
 		defer close(stopped)
 		var off int64
@@ -1054,6 +1059,11 @@ func TestSteadyWritesOnAnotherStreamDoNotStarveRetirement(t *testing.T) {
 			default:
 			}
 			if _, err := c.WriteAt(ctx, s, g, off, make([]byte, 4<<10), 1); err != nil {
+				var ns *core.NoSpaceError
+				if errors.As(err, &ns) && ns.Limit == core.LimitSpare && time.Now().Before(spareDeadline) {
+					time.Sleep(time.Millisecond)
+					continue
+				}
 				select {
 				case writeErr <- err:
 				default:
