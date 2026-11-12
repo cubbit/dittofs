@@ -6,7 +6,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/internal/prof"
 )
 
 // TestSyscallTableIsReal pins every entry of the table NewOS uses to the

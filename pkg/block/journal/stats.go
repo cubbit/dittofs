@@ -76,6 +76,16 @@ type Stats struct {
 	// Kind: gauge.
 	UnreclaimedBytes int64
 
+	// UnreclaimedEndedBytes is the part of UnreclaimedBytes in segments that
+	// take no further append: sealed ones, and ones a failed sync or append
+	// ended, whether or not their window has resolved; a segment a running
+	// repack has selected counts until it is retired. Kind: gauge.
+	//
+	// ponytail: always 0 until Repack seals and the journal keeps this
+	// figure (RFC 1 §10 questions 5 and 6); the engine reads it as "nothing
+	// left to free". Upgrade to the maintained counter when Repack lands.
+	UnreclaimedEndedBytes int64
+
 	// HeadroomBytes is the reserved headroom for records without bytes, and
 	// RepackReserveBytes the repack reserve, each as allocated now. Both are
 	// gauges.
@@ -121,6 +131,10 @@ type Stats struct {
 	// gauge.
 	RejectedSegments int
 
+	// SuspectSegments is the number of segments holding a record no read could
+	// read. Kind: gauge.
+	SuspectSegments int
+
 	// Recovery is how the last open rebuilt the journal. Kind: value.
 	Recovery RecoveryStats
 
@@ -161,6 +175,11 @@ type ShareStats struct {
 	// UnreclaimedBytes is the unreclaimed storage counted to the share: that
 	// of its records.
 	UnreclaimedBytes int64
+
+	// UnreclaimedEndedBytes is the part of UnreclaimedBytes in segments that
+	// take no further append, counted to the share as UnreclaimedBytes is. It
+	// is 0 until Repack seals (see Stats.UnreclaimedEndedBytes).
+	UnreclaimedEndedBytes int64
 }
 
 // Counters are the journal's cumulative counts since open. Every field is a

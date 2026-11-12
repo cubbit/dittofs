@@ -120,7 +120,7 @@ func (e *Engine) rebuildMarker(ctx context.Context, o *opened, b *binding, f ent
 
 		copied := s.extent.Off >= dx.Off && opEnd(s.extent) <= opEnd(dx)
 		fe.insert(pendingOp{version: s.version, kind: opWrite, extent: s.extent, at: r.at,
-			setsMtime: true, lost: s.lost, copy: copied})
+			setsMtime: true, lost: s.lost, over: s.over, copy: copied})
 
 		if copied {
 			c.kept = append(c.kept, keptRuns(s, spec)...)

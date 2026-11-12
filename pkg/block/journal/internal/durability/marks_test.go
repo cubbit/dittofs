@@ -6,8 +6,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // failByTimer fails the next sync of seg and lets the sync bound issue it, so

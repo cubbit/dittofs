@@ -59,7 +59,9 @@ func recordBuf(bp *[]byte, n int64) []byte {
 // piece, then reads the body and verifies it against the header's payload
 // checksum. It returns the record's payload only when every check passed;
 // otherwise payload is nil and verdict says which check failed. h is the
-// decoded header, and zero when the header did not decode. payload aliases
+// decoded header, and zero when the header did not decode. mtime is the
+// modification time a write record carries: 0 for a fill, and whenever the
+// record does not verify. payload aliases
 // *bp: the caller copies it out before it hands *bp back to recordBufs.
 //
 // err is an I/O error, a short read, a closed stream or a cancelled ctx: it
@@ -71,13 +73,13 @@ func recordBuf(bp *[]byte, n int64) []byte {
 // it and releases it, so nothing is held when it returns: a retirement of the
 // segment that begins while the record is read waits for the reference, and
 // one that began before finds the read refused with segment.ErrSegmentGone.
-func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileID, at index.RecordAt, pieces []index.Placed, bp *[]byte) (payload []byte, h format.RecordHeader, verdict recordVerdict, err error) {
+func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileID, at index.RecordAt, pieces []index.Placed, bp *[]byte) (payload []byte, h format.RecordHeader, mtime int64, verdict recordVerdict, err error) {
 	if err = ctx.Err(); err != nil {
-		return nil, format.RecordHeader{}, 0, err
+		return nil, format.RecordHeader{}, 0, 0, err
 	}
 	ref, err := st.AcquireRead(at.Segment)
 	if err != nil {
-		return nil, format.RecordHeader{}, 0, fmt.Errorf("datapath: reading the record at segment %d offset %d: %w", at.Segment, at.Offset, err)
+		return nil, format.RecordHeader{}, 0, 0, fmt.Errorf("datapath: reading the record at segment %d offset %d: %w", at.Segment, at.Offset, err)
 	}
 	// The one reference is released before readRecord returns, so before the
 	// caller hands a record that fails a check to Corrupt, whose append domain
@@ -85,12 +87,12 @@ func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileI
 	defer ref.Release()
 	hb := recordBuf(bp, format.RecordHeaderSize)
 	if err = readFull(ref, at.Segment, hb, int64(at.Offset)); err != nil {
-		return nil, format.RecordHeader{}, 0, err
+		return nil, format.RecordHeader{}, 0, 0, err
 	}
 	identity := st.Identity()
 	h, derr := format.DecodeRecordHeader(hb, identity, at.Segment, int64(at.Offset))
 	if derr != nil {
-		return nil, format.RecordHeader{}, recordHeaderDamaged, nil
+		return nil, format.RecordHeader{}, 0, recordHeaderDamaged, nil
 	}
 	// The overrun check comes before the body is sized from the header: a
 	// record whose body the segment cannot hold is bad on its header alone,
@@ -103,10 +105,10 @@ func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileI
 	// refused as damaged. Overturned by a segment size that can change
 	// between opens, which would bound by the segment's own recorded size.
 	if int64(at.Offset)+h.Size() > c.set.Cap() {
-		return nil, format.RecordHeader{}, recordHeaderDamaged, nil
+		return nil, format.RecordHeader{}, 0, recordHeaderDamaged, nil
 	}
 	if !headerMatches(h, id, pieces) {
-		return nil, h, recordMismatch, nil
+		return nil, h, 0, recordMismatch, nil
 	}
 	// ponytail: the whole body is read and checked however few of its bytes
 	// the read asks for, because the one payload checksum covers the whole
@@ -116,13 +118,13 @@ func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileI
 	// rates over large records miss their target.
 	body := recordBuf(bp, h.BodySize())
 	if err = readFull(ref, at.Segment, body, int64(at.Offset)+format.RecordHeaderSize); err != nil {
-		return nil, format.RecordHeader{}, 0, err
+		return nil, format.RecordHeader{}, 0, 0, err
 	}
 	rb, verr := format.VerifyRecordBody(body, identity, h)
 	if verr != nil {
-		return nil, h, recordBodyBad, nil
+		return nil, h, 0, recordBodyBad, nil
 	}
-	return rb.Payload, h, recordVerifies, nil
+	return rb.Payload, h, rb.MTime, recordVerifies, nil
 }
 
 // headerMatches reports whether h is the record every piece of pieces names:

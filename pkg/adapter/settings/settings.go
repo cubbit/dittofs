@@ -1,4 +1,4 @@
-// Package config holds the adapters' settings shapes: what every adapter
+// Package settings holds the adapters' settings shapes: what every adapter
 // reads, and what only NFS or only SMB reads. It is a leaf, importing only the
 // standard library, so the node, the control plane and every adapter can take
 // it.
@@ -8,10 +8,17 @@
 // omitted field keeps its default, and Validate refuses a zero value where one
 // is required, never filling it.
 //
-// decision: every adapter setting is live, so there is no restart-only mark
-// and no comparison of two shapes. The first restart-only setting brings a
-// sentinel error and a one-field comparison in Reconfigure.
-package config
+// decision: every adapter setting is live but Port, so there is no
+// restart-only mark and no comparison of two shapes. The node applies a
+// changed Port by building a new adapter and never hands it to Reconfigure,
+// which refuses one with a sentinel error and a one-field comparison.
+//
+// decision: Port defaults to 12049 for NFS and 12445 for SMB, not the
+// well-known 2049 and 445, so dfs serves without root and the guides and test
+// fixtures that mount on those ports keep working. An operator who wants the
+// well-known port sets it. Withdraw it if dfs comes to run privileged by
+// default.
+package settings
 
 import (
 	"errors"
@@ -34,6 +41,11 @@ type Adapter struct {
 	// while serving. Withdraw it if a bind on a live adapter is found to
 	// disturb the connections already accepted.
 	Addrs []netip.Addr `json:"-"`
+
+	// Port is what each listener that would bind the protocol's well-known
+	// port binds instead, on every address; 0 lets the system pick, for tests. It
+	// is restart-class: the node applies a change by building a new adapter.
+	Port uint16 `json:"port"`
 
 	// DrainTimeout is the longest a draining adapter waits for requests
 	// already handed to the service; at least the break deadline plus the
@@ -104,8 +116,9 @@ type Settings interface {
 	Common() Adapter
 }
 
-func defaultAdapter() Adapter {
+func defaultAdapter(port uint16) Adapter {
 	return Adapter{
+		Port:             port,
 		DrainTimeout:     90 * time.Second,
 		IdleTimeout:      15 * time.Minute,
 		WriteTimeout:     60 * time.Second,
@@ -117,7 +130,7 @@ func defaultAdapter() Adapter {
 // DefaultNFS is every NFS setting's default.
 func DefaultNFS() NFS {
 	return NFS{
-		Adapter:  defaultAdapter(),
+		Adapter:  defaultAdapter(12049),
 		TLS:      TLS{Mode: "off"},
 		Versions: VersionRange{Min: "3", Max: "4.2"},
 	}
@@ -126,7 +139,7 @@ func DefaultNFS() NFS {
 // DefaultSMB is every SMB setting's default.
 func DefaultSMB() SMB {
 	return SMB{
-		Adapter:        defaultAdapter(),
+		Adapter:        defaultAdapter(12445),
 		Dialects:       VersionRange{Min: "2.1", Max: "3.1.1"},
 		PendingTimeout: 10 * time.Minute,
 		RecallTimeout:  60 * time.Second,
@@ -151,7 +164,7 @@ var (
 type refusals []error
 
 func (r *refusals) refuse(field, format string, args ...any) {
-	*r = append(*r, fmt.Errorf("config: %s: "+format, append([]any{field}, args...)...))
+	*r = append(*r, fmt.Errorf("settings: %s: "+format, append([]any{field}, args...)...))
 }
 
 // Validate checks every field against its rule, shapes and ranges only,

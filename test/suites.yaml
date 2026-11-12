@@ -15,6 +15,7 @@ groups:              # `dt run GROUP` runs every suite in it
   perf: [fio-verify, bench-smoke, perf-night]
   journal: [journal-conformance]
   engine: [engine-conformance]
+  adapters: [adapter-conformance]
 
 suites:
   # Lint. `job` keeps the check names the develop ruleset requires. Every command of a list
@@ -29,7 +30,7 @@ suites:
       - go vet ./...
       # Tagged tests compile in no other check, so one could stop compiling without anything
       # going red. None of these tags excludes another.
-      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,engine_conformance ./...
+      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,engine_conformance,adapter_conformance ./...
       # The adapters run on every platform a node does, and their socket code differs by
       # platform, so they are vetted for Windows and macOS beside the host's own.
       - { sh: 'for os in windows darwin; do GOOS=$os go vet ./pkg/adapter/... ./pkg/resources/... ./internal/adapter/... || exit 1; done' }
@@ -95,11 +96,14 @@ suites:
       # The journal index's allocation and memory checks and the profiler's heap checks, which
       # skip under -race.
       journal-index:
-        cmd: go test -timeout=5m ./pkg/block/journal/internal/index/ ./pkg/block/journal/journaltest/prof/
+        cmd: go test -timeout=5m ./pkg/block/journal/internal/index/ ./internal/prof/
       # The index built with a bug planted in its split, which the model fuzz must find. The
       # planted build breaks the package's other tests by design, so only this test runs.
       journal-plant:
         cmd: go test -tags=journal_plant_split -timeout=2m -run=^TestFuzzFindsPlantedSplit$ ./pkg/block/journal/internal/index/
+      # The adapters' allocation gates, which skip under -race.
+      adapter-allocs:
+        cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/
   # The journal's conformance checks, behind their own tag: they fail until the journal they
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:
@@ -113,6 +117,13 @@ suites:
     format: go-json
     cmd: go test -race -tags=engine_conformance -timeout=30m ./pkg/block/engine/conformance/... ./internal/vfs/integration/...
     known: test/engine/known.yaml
+    tier: pr
+  # The adapters' specifications that wait on a stub, behind their own tag: each fails until the
+  # epic that fills its stub, and each failure is a known one.
+  adapter-conformance:
+    format: go-json
+    cmd: go test -race -tags=adapter_conformance -run ^TestConformance ./internal/adapter/...
+    known: test/adapter/known.yaml
     tier: pr
   integration:
     job: Integration Tests (1.26.x)

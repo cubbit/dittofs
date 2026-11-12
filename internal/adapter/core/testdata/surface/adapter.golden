@@ -12,9 +12,11 @@ func (s State) String() string
 type Adapter interface {
 	Start(ctx context.Context) error
 
-	Reconfigure(ctx context.Context, s config.Settings) error
+	Reconfigure(ctx context.Context, s settings.Settings) error
 
 	Stop(ctx context.Context) error
+
+	Addrs() map[Socket][]netip.AddrPort
 
 	Health() Health
 
@@ -54,7 +56,7 @@ type Loop interface {
 
 type Serving struct {
 	Adapter   string
-	Listeners map[string]netip.AddrPort
+	Listeners map[Socket][]netip.AddrPort
 }
 
 type Sidecar interface {
@@ -62,6 +64,11 @@ type Sidecar interface {
 	Adapters() []string
 
 	Sync(ctx context.Context, serving []Serving) error
+}
+
+type Socket struct {
+	Service string
+	Network string
 }
 
 type State uint8
