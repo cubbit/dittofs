@@ -4,7 +4,8 @@ package enginetest
 // and Go does not accept a concrete result for a method whose interface
 // declares an interface result, so the fixture wraps those two calls to pass
 // the journal as the engine's Journal. It also stands in for the sync marks
-// the journal does not report yet. Every other method is the journal's own.
+// the engine cannot act on yet, and drops the ones the journal's Sync does
+// return. Every other method is the journal's own.
 
 import (
 	"context"
@@ -40,10 +41,15 @@ func (j *wrappedJournal) Share(tag journal.ShareTag, limit int64, floor journal.
 	return handle{h}, nil
 }
 
-// decision: the journal's Sync returns no marks and its Stats carries none
-// yet, so over the real journal the engine records none and no stability
-// point waits on one. Withdraw these three once the journal reports its
-// marks.
+// decision: the journal's Sync returns its per-stream marks now, but the
+// journal's Stats.SyncMarks and its own MarksRecorded -- what the group
+// commit reads and hands its recorded marks -- still do not exist, so over
+// the real journal the engine still records none and no stability point
+// waits on one. These two stubs and handle.Sync's drop of the marks stand in
+// for all of it and withdraw together with the journal's own reporting:
+// real marks reaching marksWait (commit.go) while g.marks.recorded comes
+// from this stub would wait on a mark nothing ever records, blocking the
+// stability point forever.
 func (j *wrappedJournal) SyncMarks() []entity.SyncMark    { return nil }
 func (j *wrappedJournal) MarksRecorded([]entity.SyncMark) {}
 
