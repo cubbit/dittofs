@@ -503,10 +503,12 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// group close documents for the same parts it owns: the wake the retirer's
 	// queue drop sends must reach a pool that makes nothing, and a retirement
 	// still in flight must unlink its segment rather than reserve a slot in a
-	// live pool. Stopping the pool before the idle sealer is safe for the
-	// same reason the drain makes all the stops safe: no data-path call is in
-	// flight when they run, and a stopped pool answers Take, Hold and Kick
-	// with ErrClosed or a no-op rather than waiting.
+	// live pool. Stopping the pool before the idle sealer is safe not
+	// because of the drain — the sealer is a background worker, not a
+	// data-path call — but because an idle seal never takes from the pool:
+	// it never rolls, and a roll in the seal's window belongs to the
+	// stream's appends, not the sealer, so a stopped pool cannot starve or
+	// deadlock a sealer in flight.
 	c.retirer.Start()
 	c.addStop(c.retirer.Stop)
 

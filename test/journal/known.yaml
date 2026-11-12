@@ -172,7 +172,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs repack, Close joining background work before closing segments, and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs repack and recovery; the close joins its background work before it closes every segment.'
   issue: '#3379'
   message: 'stub: Sync'
 
@@ -396,8 +396,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check''s legs fail each on the call or refusal still missing. Needs the data path checking the context before appending, a call held at the seam completing after its record is written, and failed syncs still reported after a cancelled one.'
+  reason: 'The journal opens; the check stops on the offload stub its first leg makes before the refused calls. Needs offload, release and forget, and failed syncs still reported after a cancelled one; the context checked before every refusal and a held call completing after its record are in.'
   issue: '#3379'
+  message: 'stub: Offload'
 
 - test: TestRFC1C_CloneTargetSurvivesCrash
   status: fail
