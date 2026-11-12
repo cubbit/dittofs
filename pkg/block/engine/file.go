@@ -54,6 +54,7 @@ type fileEntry struct {
 	writing   []entity.Extent // admitted writes not yet inserted, one per write
 	staging   bool            // a removal waits out the writes admitted before it: no other is admitted meanwhile
 	regs      []*reg          // the clones registered on the file
+	done      []*doneClone    // the done clones remembered with the file as source or destination
 	guarded   atomic.Bool     // a removal holds the file's guard: read without mu by a capture
 	guardDone chan struct{}   // non-nil while guarded, closed when the guard is released
 	removing  *entity.Extent  // the extent of the removal in flight, until its phase 1 ends
@@ -61,7 +62,7 @@ type fileEntry struct {
 
 // empty reports the entry holds nothing. The caller holds mu.
 func (fe *fileEntry) empty() bool {
-	return len(fe.ops) == 0 && !fe.inBatch && len(fe.writing) == 0 && len(fe.regs) == 0 && fe.guardDone == nil
+	return len(fe.ops) == 0 && !fe.inBatch && len(fe.writing) == 0 && len(fe.regs) == 0 && len(fe.done) == 0 && fe.guardDone == nil
 }
 
 // awaitWrites waits until busy, a test of the writes admitted to the file,

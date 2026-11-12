@@ -804,3 +804,18 @@ func (e *Engine) EnqueueKind(
 		end: end,
 	})
 }
+
+// SetDoneClones lowers how many done clones the node remembers, so a test
+// evicts one without running doneClones clones.
+func (e *Engine) SetDoneClones(n int) {
+	e.doneMu.Lock()
+	e.doneCap = n
+	e.doneMu.Unlock()
+}
+
+// DoneClones is the count of done clones the node remembers.
+func (e *Engine) DoneClones() int {
+	e.doneMu.Lock()
+	defer e.doneMu.Unlock()
+	return e.done.Len()
+}
