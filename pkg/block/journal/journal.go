@@ -19,10 +19,12 @@ type Journal struct {
 	// without closing the core again.
 	closed atomic.Bool
 
-	// handlesMu guards handles. Only Share and Handle.Close take it, and no
-	// lock domain is held when they do. Share holds it across the core's
-	// attach, which takes only the core's registry mutex and short, I/O-free
-	// locks of its own; Close takes it only after the core's Close returned.
+	// handlesMu guards handles. Share, the journal's Close and Handle.Close
+	// take it, and no lock domain is held when they do. Share holds it across
+	// the core's attach, which takes only the core's registry mutex and
+	// short, I/O-free locks of its own; the journal's Close takes it once at
+	// its start, only to snapshot the open handles, and releases it before
+	// the core's close begins.
 	//
 	// decision: handlesMu is unranked: it sits outside the six lock domains,
 	// so the lock-order recorder never sees it. It is not a leaf: Share

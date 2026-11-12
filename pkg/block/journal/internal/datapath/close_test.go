@@ -5,11 +5,15 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
@@ -178,9 +182,380 @@ func seamCounts(seam *kit.Seam) []int {
 	return counts
 }
 
-// TestReadBegunAfterCloseFails checks the acceptance the fence owes a read
-// begun after it: the call is refused with ErrClosed before it touches
-// storage, so no operation of the seam counts one more call.
+// opLog is the ordered event log of one core's storage calls and its close's
+// own steps: every event is one string, appended under a mutex so a reader
+// sees the order the events happened in.
+type opLog struct {
+	mu   sync.Mutex
+	evts []string
+}
+
+func (l *opLog) add(e string) {
+	l.mu.Lock()
+	l.evts = append(l.evts, e)
+	l.mu.Unlock()
+}
+
+// snapshot returns the events so far, in order.
+func (l *opLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.evts)
+}
+
+// closeLogFS is a pass-through wrapper over a real storage.FS: it records the
+// calls that can watch the segment set's close — each file it opens and each
+// file's close — and answers in the wrapped FS's place never, so every answer
+// the core sees is the real one and every count the seam keeps stays true.
+type closeLogFS struct {
+	log *opLog
+	fs  storage.FS
+}
+
+func (f closeLogFS) Create(name string) (storage.File, error) {
+	file, err := f.fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return closeLogFile{log: f.log, f: file}, nil
+}
+
+func (f closeLogFS) Open(name string) (storage.File, error) {
+	file, err := f.fs.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	f.log.add("open " + name)
+	return closeLogFile{log: f.log, f: file}, nil
+}
+
+func (f closeLogFS) Rename(oldName, newName string) error { return f.fs.Rename(oldName, newName) }
+
+func (f closeLogFS) Remove(name string) error {
+	f.log.add("remove " + name)
+	return f.fs.Remove(name)
+}
+
+func (f closeLogFS) List() ([]string, error) { return f.fs.List() }
+
+func (f closeLogFS) SyncDir() error { return f.fs.SyncDir() }
+
+// closeLogFile is closeLogFS's pass-through over one open file; it records
+// the file's close and answers in the wrapped file's place never.
+type closeLogFile struct {
+	log *opLog
+	f   storage.File
+}
+
+func (g closeLogFile) ReadAt(p []byte, off int64) (n int, err error) { return g.f.ReadAt(p, off) }
+
+func (g closeLogFile) ReadAtDirect(p []byte, off int64) (n int, err error) {
+	return g.f.ReadAtDirect(p, off)
+}
+
+func (g closeLogFile) WriteAt(p []byte, off int64) (n int, err error) { return g.f.WriteAt(p, off) }
+
+func (g closeLogFile) Allocate(off, n int64) error { return g.f.Allocate(off, n) }
+
+func (g closeLogFile) Sync() error { return g.f.Sync() }
+
+func (g closeLogFile) Truncate(size int64) error { return g.f.Truncate(size) }
+
+func (g closeLogFile) Size() (int64, error) { return g.f.Size() }
+
+func (g closeLogFile) Close() error {
+	g.log.add("file close " + g.f.Name())
+	return g.f.Close()
+}
+
+func (g closeLogFile) Name() string { return g.f.Name() }
+
+// registeredReader is the repack-like worker of a test's own: a real
+// goroutine that takes an open descriptor reference of the segment holding
+// the file's record, reads its first bytes, blocks until its stop signals,
+// then drops the reference and exits. addStop receives the stop: it signals
+// AND joins the worker, and logs name joined once the goroutine has exited.
+// The reference it holds keeps the descriptor open, so a set close that shut
+// the cache before the worker was joined would wait on it forever. It
+// returns the channel closed once the reader holds and has read the
+// reference.
+func registeredReader(t *testing.T, c *Core, log *opLog, f core.FileID, name string) <-chan struct{} {
+	t.Helper()
+	p, ok := c.Index().Lookup(f, 1<<20)
+	if !ok {
+		t.Fatalf("file %v holds no record for the reader to touch", f)
+	}
+	seg := format.SegmentName(p.Record.Segment)
+	release := make(chan struct{})
+	ready := make(chan struct{})
+	var joined sync.WaitGroup
+	joined.Add(1)
+	go func() {
+		defer joined.Done()
+		ref, err := c.cache.Acquire(p.Record.Segment)
+		if err != nil {
+			log.add(name + " could not open " + seg + ": " + err.Error())
+			return
+		}
+		buf := make([]byte, 16)
+		_, _ = ref.ReadAt(buf, 0)
+		log.add(name + " is reading " + seg)
+		close(ready)
+		<-release
+		ref.Release()
+	}()
+	c.addStop(func() {
+		close(release)
+		joined.Wait()
+		log.add(name + " joined")
+	})
+	return ready
+}
+
+// assertJoinedBeforeClose checks the close's order on the log: every worker
+// of names joined before the set closed, which the log shows as each joined
+// event preceding the close of its own segment file. A worker left unjoined
+// holds its descriptor's reference, so the set close would wait on it and
+// Close would not have returned.
+func assertJoinedBeforeClose(t *testing.T, log *opLog, c *Core, files map[string]core.FileID) {
+	t.Helper()
+	evts := log.snapshot()
+	for name, f := range files {
+		e, _ := c.Index().Lookup(f, 1<<20)
+		seg := format.SegmentName(e.Record.Segment)
+		joined, closedAt := -1, -1
+		for i, ev := range evts {
+			switch ev {
+			case name + " joined":
+				joined = i
+			case "file close " + seg:
+				if closedAt < 0 {
+					closedAt = i
+				}
+			}
+		}
+		if joined < 0 {
+			t.Fatalf("%s never joined before Close returned: events %v", name, evts)
+		}
+		if closedAt < 0 {
+			t.Fatalf("Close returned without closing %s's own segment %v: events %v", name, seg, evts)
+		}
+		if joined > closedAt {
+			t.Fatalf("%s joined at event %d, after its segment's close at %d: events %v", name, joined, closedAt, evts)
+		}
+	}
+}
+
+// TestRegisteredWorkerJoinsBeforeSetCloses checks the stop-function registry:
+// a worker the core has registered — a goroutine holding an open descriptor
+// reference and reading its segment — is signalled and joined by Close before
+// the segment set is closed, so the descriptor it holds is still open and
+// still valid while the worker is running. A close that shut the set first
+// would wait on the worker's reference forever and never return; a close that
+// stopped nothing leaves the goroutine running.
+func TestRegisteredWorkerJoinsBeforeSetCloses(t *testing.T) {
+	log := &opLog{}
+	c, seam := newTestCore(t, func(o *coreOptions) {
+		o.wrapFS = func(fs storage.FS) storage.FS { return closeLogFS{log: log, fs: fs} }
+	})
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	warm(t, c, s, f)
+
+	within(t, registeredReader(t, c, log, f, "the worker"), "the registered worker to hold its segment")
+
+	log.add("begin")
+	closed := make(chan error, 1)
+	go func() { closed <- c.Close() }()
+
+	if err := within(t, closed, "Close to join the registered worker then close the set"); err != nil {
+		t.Fatalf("Close = %v, want nil: the registered worker joined before the set closed", err)
+	}
+	assertJoinedBeforeClose(t, log, c, map[string]core.FileID{"the worker": f})
+
+	// Nothing reaches the storage after Close returned. The wait is bounded
+	// and the real condition is that the counts stay at what Close left them:
+	// any late goroutine reaching storage shows up as a changed count.
+	before := seamCounts(seam)
+	for deadline := time.Now().Add(250 * time.Millisecond); time.Now().Before(deadline); time.Sleep(2 * time.Millisecond) {
+		if cur := seamCounts(seam); !slices.Equal(cur, before) {
+			t.Fatalf("storage changed after Close returned: counts %v became %v, want unchanged", before, cur)
+		}
+	}
+}
+
+// TestSetClosesAfterLastStopReturns checks the registry's order: both of two
+// registered workers are joined — each records its own stop's completion in
+// the log — before the set's close observes its first storage call. A stop
+// sequence that closed the set before the last stop would wait on the last
+// worker's reference and never return.
+func TestSetClosesAfterLastStopReturns(t *testing.T) {
+	log := &opLog{}
+	c, _ := newTestCore(t, func(o *coreOptions) {
+		o.wrapFS = func(fs storage.FS) storage.FS { return closeLogFS{log: log, fs: fs} }
+	})
+	s := mustShare(t, c, 1)
+	f1, f2 := testFile(1), testFile(2)
+	warm(t, c, s, f1, f2)
+
+	w1 := registeredReader(t, c, log, f1, "worker 1")
+	w2 := registeredReader(t, c, log, f2, "worker 2")
+	within(t, w1, "the first registered worker to hold its segment")
+	within(t, w2, "the second registered worker to hold its segment")
+
+	log.add("begin")
+	closed := make(chan error, 1)
+	go func() { closed <- c.Close() }()
+
+	if err := within(t, closed, "Close to stop both workers then close the set"); err != nil {
+		t.Fatalf("Close = %v, want nil: both registered workers stopped before the set closed", err)
+	}
+	// The log carries each stop's own record of its completion, in the order
+	// its share of the close ran it; both must precede the set's closes.
+	assertJoinedBeforeClose(t, log, c, map[string]core.FileID{"worker 1": f1, "worker 2": f2})
+}
+
+// TestRemovalInWaitDurableIsWaited checks the drain against the removal that
+// is waiting for its record's durability: Close fences the share, refuses a
+// probe while the removal stays parked in its durability wait, and returns
+// nil only after the removal ended. The parked wait is released two ways: the
+// held sync completing, which returns the removal its version, and the held
+// sync failing, which answers the removal whatever its durability wait
+// yields — its own refusal, never the core's ErrClosed, never its context's
+// error — with Close still returning nil. The removal's context is cancelled
+// while it is parked in the failed-sync leg, so a wait that consulted it
+// would answer it and fail the leg.
+func TestRemovalInWaitDurableIsWaited(t *testing.T) {
+	parkRemoval := func(t *testing.T, fail bool) (chan writeResult, chan error, func()) {
+		t.Helper()
+		c, seam := newTestCore(t)
+		s := mustShare(t, c, 1)
+		f := testFile(1)
+		warm(t, c, s, f)
+		rec, _ := c.Index().Lookup(f, 1<<20)
+		seg := format.SegmentName(rec.Record.Segment)
+		hold := seam.HoldFirst(t, kit.OpSync, seg)
+		if fail {
+			if err := seam.Schedule(kit.Failing(kit.OpSync, seg, 1, errors.New("disk on fire"))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		removed := make(chan writeResult, 1)
+		go func() {
+			v, err := c.Delete(ctx, s, f)
+			removed <- writeResult{v, err}
+		}()
+		within(t, hold.Reached(), "the removal's segment sync to be parked")
+
+		closed := make(chan error, 1)
+		go func() { closed <- c.Close() }()
+
+		// The fence is observable once a probe write is refused; before it,
+		// the probe on a fresh file lands and its refusal never comes.
+		eventually(t, "a probe write to be refused once the fence went up", func() bool {
+			_, err := c.WriteAt(context.Background(), s, testFile(2), 0, []byte("probe"), 1)
+			return errors.Is(err, core.ErrClosed)
+		})
+		select {
+		case err := <-closed:
+			t.Fatalf("Close returned %v while its removal was parked in its durability wait", err)
+		case <-time.After(250 * time.Millisecond):
+		}
+
+		return removed, closed, func() {
+			cancel()
+			hold.Release()
+		}
+	}
+
+	t.Run("the held sync released", func(t *testing.T) {
+		removed, closed, end := parkRemoval(t, false)
+		end()
+		got := within(t, removed, "the removal in flight at Close")
+		if got.err != nil {
+			t.Fatalf("the removal in flight at Close = %v, want its version", got.err)
+		}
+		if got.v == (core.Version{}) {
+			t.Fatal("the removal in flight at Close returned no version")
+		}
+		if err := <-closed; err != nil {
+			t.Fatalf("Close = %v, want nil: it waited the removal out first", err)
+		}
+	})
+
+	t.Run("the held sync failed", func(t *testing.T) {
+		removed, closed, end := parkRemoval(t, true)
+		end()
+		got := within(t, removed, "the removal whose segment sync failed")
+		if errors.Is(got.err, core.ErrClosed) {
+			t.Fatalf("the removal answered the core's close: %v, want its own result", got.err)
+		}
+		if errors.Is(got.err, context.Canceled) || errors.Is(got.err, context.DeadlineExceeded) {
+			t.Fatalf("the removal answered its cancelled context: %v, want its own result", got.err)
+		}
+		if got.err == nil && got.v == (core.Version{}) {
+			t.Fatal("the removal completed but returned no version")
+		}
+		if err := <-closed; err != nil {
+			t.Fatalf("Close = %v, want nil after its removal was answered", err)
+		}
+	})
+}
+
+// TestNoGoroutineOutlivesClose covers the close's leak bound once, with a
+// fan: concurrent writes, reads, removals and Since scans over two shares,
+// both files and both streams, then Close. The profiler's watch — installed
+// before the core is built, so its check runs after the core's cleanup closed
+// it — fails the test if any goroutine the fan or the core started is still
+// running when the test ends.
+func TestNoGoroutineOutlivesClose(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	c, _ := newTestCore(t)
+	s1, s2 := mustShare(t, c, 1), mustShare(t, c, 2)
+	f1, f2 := testFile(1), testFile(2)
+	warm(t, c, s1, f1)
+	warm(t, c, s2, f2)
+
+	ctx := context.Background()
+	var fan sync.WaitGroup
+	run := func(n int, step func(i int)) {
+		fan.Add(1)
+		go func() {
+			defer fan.Done()
+			for i := 0; i < n; i++ {
+				step(i)
+			}
+		}()
+	}
+	p := make([]byte, 64)
+	run(50, func(i int) { _, _ = c.WriteAt(ctx, s1, f1, int64(i)*11, []byte("fan"), 1) })
+	run(50, func(i int) { _, _ = c.WriteAt(ctx, s2, f2, int64(i)*13, []byte("fan"), 1) })
+	run(20, func(i int) {
+		if i%5 == 4 {
+			_, _ = c.Delete(ctx, s2, f2)
+			return
+		}
+		_, _ = c.WriteAt(ctx, s2, f2, int64(1<<20), []byte("fan again"), 1)
+	})
+	run(20, func(i int) { _, _, _, _, _ = c.ReadAt(ctx, s1, f1, int64(i)*7, p) })
+	run(5, func(i int) {
+		for ch, err := range c.Since(ctx, s1, f1, core.Version{}) {
+			if err != nil {
+				break
+			}
+			_ = ch
+		}
+	})
+	fan.Wait()
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close after the fan = %v, want nil", err)
+	}
+	if _, err := c.WriteAt(ctx, s1, f1, 0, []byte("late"), 1); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("the WriteAt after Close = %v, want ErrClosed", err)
+	}
+}
 func TestReadBegunAfterCloseFails(t *testing.T) {
 	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
