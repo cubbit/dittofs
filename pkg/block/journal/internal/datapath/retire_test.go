@@ -69,6 +69,23 @@ func gone(t *testing.T, c *Core, what string, seg core.SegmentID) {
 	waitIn(t, 8*time.Second, what, func() bool { return !inSet(c, seg) })
 }
 
+// retiredTo waits until every named segment has left the set and the retirer
+// has counted at least want freed bytes: the retirer counts its freed bytes
+// a few steps after the segment leaves the set, on its own goroutine, so a
+// wait on the set alone can observe the half-finished retirement and read
+// the counter before it moves.
+func retiredTo(t *testing.T, c *Core, what string, want uint64, segs ...core.SegmentID) {
+	t.Helper()
+	waitIn(t, 8*time.Second, what, func() bool {
+		for _, s := range segs {
+			if inSet(c, s) {
+				return false
+			}
+		}
+		return c.Retirer().Counters().FreedBytes >= want
+	})
+}
+
 // notWithin is the other side of waitIn: it polls cond for the whole of a
 // bounded window and fails the test the moment cond holds. Where no clock can
 // be injected, the bounded wait is itself the assertion, so these windows
@@ -152,6 +169,7 @@ func TestOverwriteRetiresItsEmptiedSegmentOnlyAfterTheSync(t *testing.T) {
 	waitIn(t, 900*time.Millisecond, "the overwritten segment to leave the set through the lift's own offer", func() bool {
 		return !inSet(c, seg)
 	})
+	retiredTo(t, c, "the overwrite's retirement to count its freed bytes", uint64(size), seg)
 	if got, want := c.Retirer().Counters().FreedBytes, uint64(size); got != want {
 		t.Fatalf("FreedBytes after the overwrite's retirement = %d, want %d (the segment's accounted size %d)", got, want, size)
 	}
@@ -276,7 +294,7 @@ func TestALiftsOfferWaitsOnARemovalLeftUnsyncedByAnotherFile(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the truncation never returned once its record's sync was released")
 	}
-	gone(t, c, "the segment to retire once the truncation's record was durable", seg)
+	retiredTo(t, c, "the segment to retire once the truncation's record was durable", uint64(size), seg)
 	if got, want := c.Retirer().Counters().FreedBytes, uint64(size); got != want {
 		t.Fatalf("FreedBytes after the retirement = %d, want %d (the segment's accounted size %d)", got, want, size)
 	}
@@ -406,7 +424,7 @@ func TestALiftsOfferWaitsOnARemovalItsSegmentFailedToSync(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the truncation never returned once its record's window resolved")
 	}
-	gone(t, c, "the segment to retire once the removal's window resolved", seg)
+	retiredTo(t, c, "the segment to retire once the removal's window resolved", uint64(size), seg)
 	if got, want := c.Retirer().Counters().FreedBytes, uint64(size); got != want {
 		t.Fatalf("FreedBytes after the retirement = %d, want %d (the segment's accounted size %d)", got, want, size)
 	}
@@ -479,9 +497,7 @@ func TestARecycledRetirementKeepsTheOldID(t *testing.T) {
 	if _, err := c.Truncate(ctx, s, f, 0); err != nil {
 		t.Fatalf("Truncate(%d, 0): %v", f, err)
 	}
-	for _, seg := range sealed {
-		gone(t, c, "the recycled segment to leave the set", seg)
-	}
+	retiredTo(t, c, "the recycled segments to leave the set", uint64(len(sealed))*uint64(testSegmentCap), sealed...)
 
 	// A recycle's hooks: the footprint does not fall (the cap moved into the
 	// spare pool, it did not return to the filesystem), the pool is one
@@ -574,7 +590,7 @@ func TestTruncateRetiresItsEmptiedSegmentOnlyAfterTheRecordSynces(t *testing.T) 
 	case <-time.After(10 * time.Second):
 		t.Fatal("Truncate never returned after its record's sync was released")
 	}
-	gone(t, c, "the emptied segment to leave the set", seg)
+	retiredTo(t, c, "the emptied segment to leave the set", uint64(testSegmentCap), seg)
 	if got, want := c.Retirer().Counters().FreedBytes, uint64(testSegmentCap); got != want {
 		t.Fatalf("FreedBytes after the truncation's retirement = %d, want %d", got, want)
 	}
@@ -634,7 +650,7 @@ func TestAnEndedSegmentRetiresOnlyAfterItsFailedWindowResolves(t *testing.T) {
 	// The release lets the window's re-append run, the index leave the
 	// failed segment's places and the window close: the retirement follows.
 	writeHold.Release()
-	gone(t, c, "the ended segment to leave the set once its window closed", seg)
+	retiredTo(t, c, "the ended segment to leave the set once its window closed", uint64(testSegmentCap), seg)
 	if c.Durability().WindowOpen(seg) {
 		t.Fatal("the failed segment's window still answers open after its retirement, want it closed")
 	}
@@ -674,7 +690,7 @@ func TestAClaimedSegmentStaysUntilTheClaimReleases(t *testing.T) {
 	// refusal dropped the candidate, and the worker re-offers what the scan
 	// finds rather than wedging on the segment it lost.
 	c.set.Release(seg)
-	gone(t, c, "the segment to retire once the claim was released", seg)
+	retiredTo(t, c, "the segment to retire once the claim was released", uint64(testSegmentCap), seg)
 	if got, want := c.Retirer().Counters().FreedBytes, uint64(testSegmentCap); got != want {
 		t.Fatalf("FreedBytes after the claim's release = %d, want %d (the segment's accounted cap %d)", got, want, testSegmentCap)
 	}
@@ -729,7 +745,7 @@ func TestARacingReclaimPassCannotRetireTwice(t *testing.T) {
 	if _, err := c.Truncate(ctx, s, f, 0); err != nil {
 		t.Fatalf("Truncate(%d, 0): %v", f, err)
 	}
-	gone(t, c, "the racing pass and the worker to settle on one retirement", seg)
+	retiredTo(t, c, "the racing pass and the worker to settle on one retirement", uint64(testSegmentCap), seg)
 	close(stop)
 	<-done
 
@@ -766,7 +782,7 @@ func TestRetirementDecidesWithoutReadingTheSegment(t *testing.T) {
 		t.Fatalf("Truncate(%d, 0): %v", f, err)
 	}
 	syncFiles(t, c, f)
-	gone(t, c, "the emptied segment to leave the set", seg)
+	retiredTo(t, c, "the emptied segment to leave the set", uint64(testSegmentCap), seg)
 
 	if got, want := seam.Calls(kit.OpRead)+seam.Calls(kit.OpReadDirect)-reads, 0; got != want {
 		t.Fatalf("the retirement path read the segment %d times, want %d: liveness answers from counters, never from storage", got, want)
@@ -846,7 +862,7 @@ func TestAnEndedSegmentOutlivesItsCopiesProof(t *testing.T) {
 	// crossing offers the segment and the retirement follows.
 	c.liveness.MarksRecorded(copies, last+1)
 	waitIn(t, 5*time.Second, "the held-ended segment's crossing to fire", func() bool { return !c.liveness.Held(seg) })
-	gone(t, c, "the ended segment to leave the set once its copies were proven", seg)
+	retiredTo(t, c, "the ended segment to leave the set once its copies were proven", uint64(testSegmentCap), seg)
 	if got, want := c.Retirer().Counters().FreedBytes, uint64(testSegmentCap); got != want {
 		t.Fatalf("FreedBytes after the ended hold's release = %d, want %d", got, want)
 	}
@@ -954,8 +970,7 @@ func TestAnUndurableCandidateDoesNotWedgeTheWorker(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the held file's Truncate never returned after its record's sync was released")
 	}
-	gone(t, c, "the unrelated segment to retire once the held record went durable", other)
-	gone(t, c, "the refused candidate to retire once its record went durable", seg)
+	retiredTo(t, c, "both retirements once the held record went durable", uint64(2*testSegmentCap), seg, other)
 	if got, want := c.Retirer().Counters().FreedBytes, uint64(2*testSegmentCap); got != want {
 		t.Fatalf("FreedBytes after both retirements = %d, want %d", got, want)
 	}

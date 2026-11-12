@@ -97,16 +97,6 @@ func (f *retireFixture) sealed(t *testing.T) core.SegmentID {
 	return seg
 }
 
-// ended takes one fresh segment in and ends it: Ended, holding nothing.
-func (f *retireFixture) ended(t *testing.T) core.SegmentID {
-	t.Helper()
-	seg := f.takeIn(t)
-	if err := f.set.End(seg); err != nil {
-		t.Fatalf("End: %v", err)
-	}
-	return seg
-}
-
 // worker builds the worker under test over the fixture with a fast tick
 // (the retirer's own rhythm is one second; a test shortens it, as the
 // executor's comment allows) and starts it. gate may be nil, which the
