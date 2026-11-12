@@ -7,8 +7,13 @@ package datapath
 // calls already in flight are waited for by Close, through the drain
 // goroutine the fence starts for every share it fenced here. A share closed
 // some other way while the fence ran is left to that close's own wait. It is
-// safe to call twice: the second call finds the flag already up and the
-// registry already empty.
+// safe to call again once the first call has returned: the later call finds
+// the flag already up and the registry already empty. It is not safe to call
+// concurrently with Close's fence-and-wait, because a fence that landed
+// between Close's own fence and its drain Wait would Add to the drain after
+// Close was already waiting at zero — a WaitGroup misuse whose share nobody
+// waits for. No caller does this: the journal's Close, which its own flag
+// lets run once, is BeginClose's only caller and fences before it waits.
 //
 // decision: the fence sets the core's flag before it empties the registry,
 // and Core.Share refuses off the flag under the registry's own mutex, so an
@@ -54,12 +59,13 @@ func (c *Core) addStop(stop func()) {
 // anywhere from this moment — waits for every call that was in flight on a
 // share the fence collected, stops the registered workers in the reverse of
 // the order they registered — the durability layer first, whose Stop wakes
-// every durability waiter only after the drain ended, then the idle sealer,
-// then the retirer — and closes the segment set last, whose close joins the
-// streams' work, stops the idle sealer, the pool and the retirer, and shuts
-// the descriptor cache, whose Shutdown waits for every reader's reference and
-// then closes every descriptor. It is safe to call twice: a second Close
-// returns the first's result and neither fences nor waits again.
+// every durability waiter only after the drain ended, then the pool, then
+// the idle sealer, then the retirer — and closes the segment set last, whose
+// close joins the streams' work, stops the idle sealer, the pool and the
+// retirer, and shuts the descriptor cache, whose Shutdown waits for every
+// reader's reference and then closes every descriptor. It is safe to call
+// twice: a second Close returns the first's result and neither fences nor
+// waits again.
 //
 // decision: the wait below has no bound and no context, because Close takes
 // none by design, so each of the drain goroutines waits for its share's
@@ -68,13 +74,18 @@ func (c *Core) addStop(stop func()) {
 // through it. Overturned by a caller that does, or by a need for a bounded
 // drain, which would give this close a context or a deadline.
 //
-// decision: the idle sealer's and the retirer's Stops run twice, once through
-// the registry and once through the set's group close, because the registry
-// stops every worker the core starts and the group closes the set in the
-// order the segment package documents, which stops its own workers too.
-// Running each twice is safe because every one of them is a sync.Once no-op
-// the second time. Overturned by a Stop that is not idempotent, which would
-// have to be made so before either site drops it.
+// decision: the workers stop in the reverse of the order they registered —
+// the durability layer, then the pool, then the idle sealer, then the
+// retirer — so the pool is stopped before the retirer, the order the segment
+// package's group close documents for the same reason: the wake the retirer's
+// queue drop sends must reach a pool that makes nothing, and a retirement
+// still in flight must unlink its segment rather than reserve a slot in a
+// live pool. The stops the group close runs afterwards are sync.Once no-ops
+// by this point, so the registry and the group agree on the order and the
+// group stays free to change its own. Overturned by a worker whose Stop
+// must run beside a live pool, or by a group whose order inverts pool and
+// retirer, either of which would have to move the pool's registration with
+// it.
 func (c *Core) Close() error {
 	c.closeOnce.Do(func() {
 		c.BeginClose()

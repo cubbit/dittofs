@@ -133,3 +133,79 @@ func TestJournalCloseFencesThenDrains(t *testing.T) {
 		t.Fatalf("the Reserve after the journal closed = %v, want ErrClosed", err)
 	}
 }
+
+// TestSecondConcurrentCloseWaitsForFirst checks the second Close's promise
+// against the first's shutdown: two Closes issued while a write is held at
+// storage fence the journal between them once, and neither returns until the
+// held write has finished — the winner answers nil once the drain is over,
+// the loser waits for that and then answers ErrClosed. A loser that answered
+// at once would let its caller reopen or remove the directory while the
+// winner's calls were still draining, and fails the bounded wait below.
+func TestSecondConcurrentCloseWaitsForFirst(t *testing.T) {
+	f := journaltest.New(t)
+	h := f.Share(0)
+	file := journaltest.File(0)
+	other := journaltest.File(1)
+	ctx := context.Background()
+
+	hold := f.Seam.HoldFirst(t, kit.OpWrite, "*")
+	wrote := make(chan writeOutcome, 1)
+	go func() {
+		for {
+			// The retry a spare the pool has not readied yet asks for: the
+			// attempt drew nothing and appended nothing, so it is made again
+			// until one lands at the hold.
+			v, err := h.WriteAt(ctx, file, 0, []byte("in flight"), 1)
+			var ns *journal.NoSpaceError
+			if errors.As(err, &ns) && ns.Limit == journal.LimitSpare {
+				continue
+			}
+			wrote <- writeOutcome{v, err}
+			return
+		}
+	}()
+	<-hold.Reached()
+
+	first := make(chan error, 1)
+	go func() { first <- f.J.Close() }()
+	// The first Close must have begun — its fence observable as a refused
+	// write — before the second is issued, so the second is a loser by the
+	// test's construction, not by a scheduling race.
+	waitUntil(t, "the first Close to fence the journal", func() bool {
+		_, err := h.WriteAt(ctx, other, 0, []byte("probe"), 1)
+		return errors.Is(err, journal.ErrClosed)
+	})
+	second := make(chan error, 1)
+	go func() { second <- f.J.Close() }()
+
+	// The bounded wait is the assertion, not a sleep before one: whichever
+	// Close lost the flag's race must wait for the winner's drain, so a loser
+	// that answered ErrClosed before the write finished returns here and
+	// fails.
+	select {
+	case err := <-first:
+		t.Fatalf("the first Close returned %v while its write was still in flight", err)
+	case err := <-second:
+		t.Fatalf("the second Close returned %v while the first's write was still in flight", err)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	hold.Release()
+	got := <-wrote
+	if got.err != nil {
+		t.Fatalf("the write in flight at the first Close = %v, want its version", got.err)
+	}
+	if got.v == (journal.Version{}) {
+		t.Fatal("the write in flight at the first Close returned no version")
+	}
+	e1, e2 := <-first, <-second
+	switch {
+	case e1 == nil && errors.Is(e2, journal.ErrClosed):
+	case e2 == nil && errors.Is(e1, journal.ErrClosed):
+	default:
+		t.Fatalf("the two Closes answered (%v) and (%v), want one nil and one ErrClosed", e1, e2)
+	}
+	if err := f.J.Close(); !errors.Is(err, journal.ErrClosed) {
+		t.Fatalf("the Close after them = %v, want ErrClosed", err)
+	}
+}
