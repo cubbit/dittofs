@@ -156,9 +156,12 @@ gh issue create -R "$R" --title "<component> v2, epic <k>: <title>" \
 ```
 
 Then attach it under its roadmap epic as a sub-issue, and give it its `Estimate` and its
-blocked-by links (6.5). Its dependencies are the plan's (§2's Blocks column and §3), or,
-once its document has merged, the document's header **Depends on:** line; an epic named as
-"every earlier epic" is a link to each of them.
+blocked-by links (6.5). From the plan, it is blocked by every epic whose cell in §2's
+Blocks column names it: that column lists the epics a row blocks, so read it in reverse
+(epic 3's row saying `4, 8` makes epics 4 and 8 blocked by epic 3, never epic 3 blocked by
+them), and `everything` or `all` names every later epic; §3 gives the reasons. Once its
+document has merged, it is blocked by the epics the document's header **Depends on:** line
+names, where "every earlier epic" is a link to each of them.
 
 ### 6.4 One issue per subtask
 
