@@ -246,8 +246,11 @@ func readRecordHeaderAt(rd *reader, identity core.JournalID, segID core.SegmentI
 // put it, or it claims what the entry does not — is the record's own
 // corruption, and the caller drops that record and reads on, confined to
 // it. Any other error refuses the open exactly as the scan's own reads do:
-// a read the bound did not clear, a version of a later epoch, a number this
-// journal never issues.
+// a read the bound did not clear, a version of a later epoch. A number this
+// journal never issues never reaches the check below as a refusal: the
+// largest-value rule has already run over the entry at the loop top, and
+// entryMatchesHeader pins the record's numbers to the entry's, so the
+// checkNumbers call stands only as the backstop for a day that pinning ends.
 func recordHeaderFor(rd *reader, identity core.JournalID, segID core.SegmentID, e format.CatalogEntry) (format.RecordHeader, error) {
 	h, herr := readRecordHeaderAt(rd, identity, segID, e.RecordOffset)
 	if herr != nil {
