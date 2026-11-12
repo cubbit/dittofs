@@ -741,13 +741,25 @@ func TestARacingReclaimPassCannotRetireTwice(t *testing.T) {
 	}()
 
 	// The truncation offers the emptied segment while the pass races it, and
-	// the worker retires it somewhere between the pass's claims.
+	// the worker retires it somewhere between the pass's claims. The race
+	// runs for a bounded adversarial window: a real pass holds each claim
+	// across its own work, while this one spins claim-and-release, and
+	// demanding the worker WIN that spin inside a wall clock would test the
+	// machine, not the journal. What the window does pin is the ceiling:
+	// however the claims serialize, the journal never frees more than the
+	// one segment.
 	if _, err := c.Truncate(ctx, s, f, 0); err != nil {
 		t.Fatalf("Truncate(%d, 0): %v", f, err)
 	}
-	retiredTo(t, c, "the racing pass and the worker to settle on one retirement", uint64(testSegmentCap), seg)
+	notWithin(t, 3*time.Second, "a retirement beyond the one segment while the pass raced the worker", func() bool {
+		return c.Retirer().Counters().FreedBytes > uint64(testSegmentCap)
+	})
+
+	// The race stops, the one retirement settles to completion, and the
+	// footprint fell by the segment exactly once.
 	close(stop)
 	<-done
+	retiredTo(t, c, "the racing pass and the worker to settle on one retirement", uint64(testSegmentCap), seg)
 
 	if got, want := c.Retirer().Counters().FreedBytes, uint64(testSegmentCap); got != want {
 		t.Fatalf("FreedBytes after the race = %d, want %d: the segment is freed once", got, want)
