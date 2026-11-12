@@ -1,0 +1,60 @@
+# The adapters' specifications that fail today, one entry per test, never a pattern, each naming
+# the epic expected to turn it green. A test that starts to pass fails the run: remove its entry
+# in the change that turned it green. Each entry's message is the failure it is known by: a test
+# failing for any other reason is unexpected.
+- test: TestConformanceBudgetsHeldNamesEachCharged/Receive
+  message: 'resources: reserve'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 3: budgetsHeld names the Receive budget when it alone is charged. Budget.Reserve and WaitBudget.Reserve are stubs that refuse every reservation until epic 3 gives pkg/resources its bodies.'
+  issue: '#3964'
+- test: TestConformanceBudgetsHeldNamesEachCharged/Reply
+  message: 'resources: reserve'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 3: budgetsHeld names the Reply budget when it alone is charged. Budget.Reserve and WaitBudget.Reserve are stubs that refuse every reservation until epic 3 gives pkg/resources its bodies.'
+  issue: '#3964'
+- test: TestConformanceBudgetsHeldNamesEachCharged/Connection
+  message: 'resources: reserve'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 3: budgetsHeld names the Connection budget when it alone is charged. Budget.Reserve and WaitBudget.Reserve are stubs that refuse every reservation until epic 3 gives pkg/resources its bodies.'
+  issue: '#3964'
+- test: TestConformanceBudgetsHeldNamesEachCharged/Hold
+  message: 'resources: reserve'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 3: budgetsHeld names the Hold budget when it alone is charged. Budget.Reserve and WaitBudget.Reserve are stubs that refuse every reservation until epic 3 gives pkg/resources its bodies.'
+  issue: '#3964'
+- test: TestConformanceCheckLeaksReadsBudgets/Held
+  message: 'resources: reserve'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 3: CheckLeaks fails a test that ends with a reservation held, naming its budget. Budget.Reserve and WaitBudget.Reserve are stubs that refuse every reservation until epic 3 gives pkg/resources its bodies.'
+  issue: '#3964'
+- test: TestConformanceCheckLeaksReadsBudgets/Released
+  message: 'resources: reserve'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 3: CheckLeaks passes a test that released its reservation before its end. Budget.Reserve and WaitBudget.Reserve are stubs that refuse every reservation until epic 3 gives pkg/resources its bodies.'
+  issue: '#3964'
+- test: TestConformanceEchoEndToEnd
+  message: 'testproto: tables: not implemented'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epics 4 and 5: one Echo accepted over loopback by a core server on testproto is answered, and the server leaks nothing when it stops. It stops first at the tables, which NewOpTable and NewErrorTable build once epic 5 gives them bodies, then at NewServer and Start (core: new server), which are epic 4''s; whichever epic moves the first failure updates this message.'
+  issue: '#3966'
+- test: TestConformanceReplayLookupCopies
+  message: 'resources: get'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 3: the replay cache hands back a fresh clear copy of a stored reply, in a buffer reserved from the reply budget. BufPool.Get is a stub that refuses every buffer until epic 3 gives pkg/resources its bodies.'
+  issue: '#3964'

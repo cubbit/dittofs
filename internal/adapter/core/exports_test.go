@@ -25,7 +25,7 @@ var update = flag.Bool("update", false, "rewrite testdata/surface from the sourc
 var frozen = map[string]string{
 	"core":      ".",
 	"adapter":   "../../../pkg/adapter",
-	"config":    "../../../pkg/adapter/config",
+	"settings":  "../../../pkg/adapter/settings",
 	"resources": "../../../pkg/resources",
 	"nfs":       "../../../pkg/adapter/nfs",
 	"smb":       "../../../pkg/adapter/smb",

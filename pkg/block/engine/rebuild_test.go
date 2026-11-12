@@ -209,6 +209,22 @@ func TestACloneIsRebuiltFromItsMarkerAtEachCrashPoint(t *testing.T) {
 	}
 }
 
+// A write the rebuild re-applies above a clone's marker keeps the overwrite
+// record the journal's Since names for it: v2 covers all of v1, which Since no
+// longer yields, and the store still writes the record at v2 over v1's run.
+func TestARebuiltCloneKeepsTheOverOfAWriteAboveItsMarker(t *testing.T) {
+	m := newMarkerCrash(t, 2)
+	m.write(t, m.dst, 4*runLen, 4096, writeMtime)
+	v2 := m.write(t, m.dst, 4*runLen, 4096, otherMtime)
+	m.begin(t)
+	m.run()
+	m.cloneDone(t, m.src, m.dst)
+
+	m.wantOverwrites(t, m.dst, 4*runLen, 4096, []entity.Span{
+		{Extent: entity.Extent{Offset: 4 * runLen, Length: 4096}, Overwrite: jver(v2)},
+	})
+}
+
 // A rebuilt clone whose copies the destination's journal has no space for
 // waits, uncounted, the calls behind it answering DelayCapacity, and does not
 // hold up Start or any other file; it finishes once the journal reserves.

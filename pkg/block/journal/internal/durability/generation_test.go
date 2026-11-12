@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
+	"github.com/cubbit/dittofs/internal/prof"
 )
 
 // TestGenerationOutlivesADurabilityOnTheSameDirectory catches a reopen in one

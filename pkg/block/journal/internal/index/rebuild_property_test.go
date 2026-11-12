@@ -1,6 +1,7 @@
 package index
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -18,7 +19,9 @@ type fileSnap struct {
 	// entries is the file's read-out: its held pieces, retained pieces and
 	// markers as the inspection read-out reports them, which is what the
 	// snapshot now compares.
-	entries   []Entry
+	entries []Entry
+	// over is the file's per-extent Over runs, in a canonical order.
+	over      []overRun
 	change    core.Version
 	hasChange bool
 	tag       core.ShareTag
@@ -65,6 +68,7 @@ func snapshot(fs *files, withRanges bool) indexSnap {
 				}
 				fsnap.entries = f.appendEntries(nil)
 				sortEntries(fsnap.entries)
+				fsnap.over = sortedOver(f)
 				fsnap.change, fsnap.hasChange = f.changeVersion()
 				fsnap.tag, fsnap.tagged = f.owner()
 				fsnap.rival, fsnap.rivalled = f.rival, f.rivalled
@@ -124,6 +128,9 @@ func diffFile(name string, a, b fileSnap) string {
 	}
 	if !slices.EqualFunc(a.entries, b.entries, sameEntry) {
 		return fmt.Sprintf("%s: entries\n%v\n  against\n%v", name, fmtEntries(a.entries), fmtEntries(b.entries))
+	}
+	if !slices.Equal(a.over, b.over) {
+		return k("over runs", "%v and %v", a.over, b.over)
 	}
 	if a.change != b.change || a.hasChange != b.hasChange {
 		return k("change version", "%v and %v (has: %v %v)", a.change, b.change, a.hasChange, b.hasChange)
@@ -640,4 +647,14 @@ func TestRebuildDropRangesOrderFree(t *testing.T) {
 			}
 		}
 	}
+}
+
+// sortedOver returns f's Over runs in a canonical order, so two files that
+// derived the same runs in different orders compare equal.
+func sortedOver(f *file) []overRun {
+	rs := slices.Clone(f.held.over)
+	slices.SortFunc(rs, func(a, b overRun) int {
+		return cmp.Or(a.by.Compare(b.by), a.was.Compare(b.was), cmp.Compare(a.extent.Off, b.extent.Off), cmp.Compare(a.extent.Len, b.extent.Len))
+	})
+	return rs
 }

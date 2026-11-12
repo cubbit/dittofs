@@ -3,6 +3,7 @@ package journal
 import (
 	"context"
 	"iter"
+	"slices"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -21,17 +22,6 @@ import (
 type Handle struct {
 	j *Journal
 	s *datapath.Share
-}
-
-// Change is one thing Since reports about a file: a held extent, an unsettled
-// removal marker, or a synced loss.
-type Change struct {
-	Kind    ChangeKind
-	Extent  Extent  // the held extent, or the extent a removal marker covers
-	Version Version // the content version of the change
-	Mtime   int64   // a write's modification time as WriteAt was given it; 0 for every other kind
-	// Clone is the clone target's spec; nil for every other kind.
-	Clone *CloneSpec
 }
 
 // What a Change reports; see ChangeKind.
@@ -211,51 +201,71 @@ func (h *Handle) CloneTarget(ctx context.Context, id FileID, spec CloneSpec) (Ve
 
 // Since yields every held extent of file id, every unsettled removal marker
 // and every synced loss whose version is strictly above from, in version
+// order; of one version, markers come before extents, then extents in offset
 // order. It reads a consistent view of the file and blocks writes to it no
-// longer than a read does. An unsynced loss is not yielded, and neither is a
-// Forget.
+// longer than a read does: the view is copied under the file's lock and the
+// records are read after it is released. An unsynced loss is not yielded, and
+// neither is a Forget or a loss that reports a superseded write.
 //
-// decision: the stub yields one ErrNotImplemented rather than nothing. An
-// empty Since reads as "nothing changed since from", a silent wrong answer to
-// the caller rebuilding what metadata has not recorded.
+// A write carries the modification time its record holds, read from the
+// record and verified as a read verifies it, and the runs over which it
+// superseded another write above from. A record that does not verify goes to
+// the corruption rule: its extent is yielded when a copy serves it, and when
+// the record is dropped a synced one is yielded as a loss in its place. A
+// segment retired meanwhile, or a record found moved after it was dropped from
+// its old place, sends the read on to the record the index now names for each
+// piece of the extent, a bounded number of times, and leaves out a piece the
+// index no longer holds; a record that keeps moving ends the
+// iteration with an error rather than being skipped. A cancelled ctx ends the
+// iteration with its error; an I/O error ends it with that error.
+//
+// decision: Since has no unread-file state to refuse on: the journal records
+// none yet, so ErrUnreadable cannot be yielded, and a file whose records do
+// not verify is handled by the corruption rule above. Withdraw this once an
+// open can leave a file unread, which Since must then answer with
+// ErrUnreadable and nothing else.
 func (h *Handle) Since(ctx context.Context, id FileID, from Version) iter.Seq2[Change, error] {
-	return func(yield func(Change, error) bool) {
-		yield(Change{}, ErrNotImplemented)
-	}
+	return h.j.core.Since(ctx, h.s, id, from)
 }
 
-// Settle states that metadata has recorded every removal of file id at or
-// below v, and drops those removal markers. It appends nothing and is not
-// persisted: recovery rebuilds the markers, and the caller settles again.
-// Settling before the removal is recorded is the caller's error.
-func (h *Handle) Settle(id FileID, v Version) {}
+// Settle states that metadata has recorded every removal and every synced loss
+// of file id at or below v, and drops those markers and the superseded runs
+// kept for them, so a write's Over at or below v is dropped too. It never drops
+// a held extent, appends nothing and is not persisted: recovery rebuilds the
+// markers, and the caller settles again. Settling before the change is
+// recorded is the caller's error.
+func (h *Handle) Settle(id FileID, v Version) { h.j.core.Settle(h.s, id, v) }
 
 // Extents returns the extents of file id the journal holds, in offset order.
 // It says what the journal holds, not what exists: a caller answering where
 // data or holes lie combines it with metadata, or it reports evicted content
-// as a hole.
+// as a hole. Pieces of one record that differ only in their offloaded bit
+// come back as one extent.
 func (h *Handle) Extents(id FileID) ([]Extent, error) {
-	return nil, ErrNotImplemented
+	return h.j.core.Extents(h.s, id)
 }
 
 // Files yields the share's files that hold an extent, an unsettled removal
 // marker or an unsettled synced loss.
-//
-// decision: the stub yields nothing because the signature has no error to
-// carry ErrNotImplemented. An empty result reads as "no files", so no caller
-// may depend on it until the index lands.
 func (h *Handle) Files() iter.Seq[FileID] {
-	return func(func(FileID) bool) {}
+	return slices.Values(h.j.core.Files(h.s))
 }
 
 // DirtyFiles yields the share's files holding an extent whose offloaded bit is
 // unset, each with the write time of its oldest dirty byte. It is served from
 // a list the journal maintains, costs O(dirty files), and neither walks the
-// placement index nor reads a record.
+// placement index nor reads a record. The order is unspecified.
 //
-// decision: the stub yields nothing because the signature has no error to
-// carry ErrNotImplemented. An empty result reads as "no dirty files", so no
-// caller may depend on it until the index lands.
+// The iteration runs over a copy taken when DirtyFiles is called, so a caller
+// may write or release while ranging and sees none of it. A file whose write
+// time is not known, as after a rebuild, carries the zero time.
 func (h *Handle) DirtyFiles() iter.Seq2[FileID, time.Time] {
-	return func(func(FileID, time.Time) bool) {}
+	files := h.j.core.DirtyFiles(h.s)
+	return func(yield func(FileID, time.Time) bool) {
+		for _, f := range files {
+			if !yield(f.File, f.Oldest) {
+				return
+			}
+		}
+	}
 }

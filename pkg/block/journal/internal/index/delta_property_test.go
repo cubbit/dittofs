@@ -295,6 +295,16 @@ func (w *deltaWorld) check(f *deltaFile, d HeldDelta, err error, wantTag core.Sh
 	if want := (fileTotals{f.sum.held, f.sum.dirty, f.sum.retained, f.onList}); got != want {
 		w.fatalf(f, "the deltas sum to %+v, the read-out says %+v (last delta %+v)", want, got, d)
 	}
+	// The dirty-time table counts exactly the dirty bytes the two sets hold.
+	w.fs.view(f.id, func(x *file) {
+		var n int64
+		for _, e := range x.dirtyAt.vers {
+			n += e.bytes
+		}
+		if want := x.held.dirty + x.retained.dirty; n != want {
+			w.fatalf(f, "dirty-time table counts %d dirty bytes, the sets hold %d (last delta %+v)", n, want, d)
+		}
+	})
 }
 
 // TestDeltaSumMatchesCounters applies a random mutation sequence over four

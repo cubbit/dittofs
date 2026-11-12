@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
@@ -59,6 +59,8 @@ type starter struct {
 	gate    *gate // holds the next Open at it, once
 	fresh   bool  // each Open after the first answers a new fake journal
 	opened  bool  // Open answered a journal once
+
+	journalClosed bool // the test closed the journal itself, so the engine's Close reports it
 }
 
 // openCall is one call of Deps.Open.
@@ -555,6 +557,7 @@ type logJournal struct {
 	*enginetest.FakeJournal
 	fail      map[string]error
 	limitGate atomic.Pointer[gate]
+	held      atomic.Pointer[chan struct{}]          // while set, WriteAt, Truncate and Reserve wait on it
 	onStrand  func(journal.ShareTag)                 // a test's hook: run at each Strand call
 	onSync    atomic.Pointer[func([]journal.FileID)] // a test's hook: run at each Sync on a handle, before the journal's
 
@@ -583,6 +586,36 @@ func (j *logJournal) add(call string) error {
 	j.calls = append(j.calls, call)
 
 	return j.fail[call]
+}
+
+// hold has every WriteAt, Truncate and Reserve of the journal's handles wait,
+// from now on, until the returned release is called, which a test's end also
+// does. A call made before hold is not held.
+func (j *logJournal) hold(t *testing.T) (release func()) {
+	t.Helper()
+
+	c := make(chan struct{})
+	j.held.Store(&c)
+
+	var once sync.Once
+
+	release = func() {
+		once.Do(func() {
+			j.held.Store(nil)
+			close(c)
+		})
+	}
+
+	t.Cleanup(release)
+
+	return release
+}
+
+// waitHold waits while hold is in force.
+func (j *logJournal) waitHold() {
+	if c := j.held.Load(); c != nil {
+		<-*c
+	}
 }
 
 // log is every call logged so far.
@@ -708,11 +741,29 @@ func (h *logHandle) WriteAt(
 	p []byte,
 	mtime int64,
 ) (journal.Version, error) {
+	h.j.waitHold()
+
 	if err := h.j.add(fmt.Sprintf("write %d", h.tag)); err != nil {
 		return journal.Version{}, err
 	}
 
 	return h.Handle.WriteAt(ctx, id, off, p, mtime)
+}
+
+func (h *logHandle) Truncate(
+	ctx context.Context,
+	id journal.FileID,
+	size int64,
+) (journal.Version, error) {
+	h.j.waitHold()
+
+	return h.Handle.Truncate(ctx, id, size)
+}
+
+func (h *logHandle) Reserve(n int64, writes int) (engine.Reservation, error) {
+	h.j.waitHold()
+
+	return h.Handle.Reserve(n, writes)
 }
 
 func (h *logHandle) Close() error {

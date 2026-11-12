@@ -2,6 +2,7 @@ package enginetest
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
@@ -22,11 +23,12 @@ func TestRefusalAnswersNil(t *testing.T) {
 	}
 }
 
-// RFC 1 §9.4: the fake answers Share as the journal does. Tag 0 and a floor
-// of another epoch are refused and raise nothing. A Share of a tag whose
-// handle is open returns that handle, its limit replaced and the counter
-// raised above the new floor, so one Close closes it for both callers; a
-// Share after that Close makes a new handle.
+// RFC 1 §9.4: the fake answers Share as the journal does. Tag 0, a negative
+// limit and a floor of another epoch are refused and raise nothing. A Share
+// of a tag whose handle is open returns that handle, its limit replaced, the
+// counter raised above the new floor and a file it holds nothing of read as
+// of that floor (§3.4), so one Close closes it for both callers; a Share
+// after that Close makes a new handle.
 func TestShareAgreesWithTheJournal(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -79,6 +81,10 @@ func shareTwice(t *testing.T, j engine.Journal) {
 	if again != h {
 		t.Fatal("a second Share of an open tag returned a new handle")
 	}
+	none := journal.NewFileID([16]byte{'n'})
+	if _, _, _, asOf, err := h.ReadAt(ctx, none, 0, make([]byte, 1)); err != nil || asOf.Compare(journal.Version{Counter: floor}) != 0 {
+		t.Errorf("a read of a file the journal holds nothing of = %v, %v; want as of the second Share's floor %d", asOf, err, floor)
+	}
 	v, err := h.WriteAt(ctx, id, 0, p, 7)
 	if err != nil {
 		t.Fatalf("a write through the first caller's handle under the second Share's limit: %v", err)
@@ -105,3 +111,79 @@ func shareTwice(t *testing.T, j engine.Journal) {
 		t.Fatal(err)
 	}
 }
+
+// seen is what Since yields for one held piece of a write, without its
+// version, which the fake and the journal number differently.
+type seen struct {
+	e    journal.Extent
+	over []journal.Extent
+}
+
+func piecesOf(cs []journal.Change) []seen {
+	var out []seen
+	for _, c := range cs {
+		out = append(out, seen{c.Extent, c.Over})
+	}
+
+	return out
+}
+
+// RFC 1 §3.10: the fake yields the same pieces and Over as the journal for
+// the same writes, before and after a Settle, so the fake's own tests of Over
+// hold it to the journal. The journal cannot reopen on its segments yet, so
+// the reopen stays with the fake's own test.
+func TestSinceYieldsOverAsTheJournalDoes(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		open func(t *testing.T) engine.Handle
+	}{
+		{"fake", func(t *testing.T) engine.Handle {
+			_, h := fake(t, 0)
+
+			return h
+		}},
+		{"journal", func(t *testing.T) engine.Handle {
+			h, err := wrapJournal(journaltest.New(t).J, func(journal.ShareTag, engine.Handle) {}).
+				Share(1, 0, journal.Version{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			return h
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := c.open(t)
+			v1 := write(t, h, fileA, 0, "aaaaaaaa")
+			write(t, h, fileA, 4, "bbbbbbbb")
+			v3 := write(t, h, fileA, 2, "cccc")
+
+			// The runs are those of the fake's own test, for the same three writes.
+			all := []seen{
+				{ext(0, 2), nil},
+				{ext(6, 6), []journal.Extent{ext(6, 2)}},
+				{ext(2, 4), []journal.Extent{ext(2, 4)}},
+			}
+			if got := piecesOf(changes(t, h, fileA, journal.Version{})); !slices.EqualFunc(got, all, sameSeen) {
+				t.Errorf("Since(0) = %v, want %v", got, all)
+			}
+
+			after := []seen{{ext(6, 6), nil}, {ext(2, 4), []journal.Extent{ext(4, 2)}}}
+			if got := piecesOf(changes(t, h, fileA, v1)); !slices.EqualFunc(got, after, sameSeen) {
+				t.Errorf("Since(v1) = %v, want %v", got, after)
+			}
+
+			h.Settle(fileA, v3)
+
+			for i := range all {
+				all[i].over = nil
+			}
+
+			if got := piecesOf(changes(t, h, fileA, journal.Version{})); !slices.EqualFunc(got, all, sameSeen) {
+				t.Errorf("Since(0) after Settle = %v, want %v", got, all)
+			}
+		})
+	}
+}
+
+func sameSeen(a, b seen) bool { return a.e == b.e && slices.Equal(a.over, b.over) }

@@ -11,7 +11,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/adapter/config"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 )
 
 // Adapter is what the node moves through the adapter's states: configured,
@@ -31,9 +31,10 @@ type Adapter interface {
 
 	// Reconfigure adds and removes listeners and applies live settings to
 	// connections set up after it returns. s is the adapter's own protocol's
-	// shape, config.NFS or config.SMB; the other protocol's, or any other
-	// type, is refused with an error.
-	Reconfigure(ctx context.Context, s config.Settings) error
+	// shape, settings.NFS or settings.SMB; the other protocol's, or any other
+	// type, is refused with an error. Every setting is live but Port, which
+	// never reaches Reconfigure: the node builds a new adapter for it.
+	Reconfigure(ctx context.Context, s settings.Settings) error
 
 	// Stop moves serving to draining to stopped. ctx's deadline is the drain
 	// deadline; requests still running at it are abandoned. A request refused
@@ -42,6 +43,15 @@ type Adapter interface {
 	// asked per request. Stop is idempotent: a second call returns once the
 	// adapter is stopped.
 	Stop(ctx context.Context) error
+
+	// Addrs is every address each listener is bound on now, by service and
+	// network, in a fresh map the caller owns, slices included: each address
+	// as the settings name it, its port the one bound, so a port of 0 is
+	// resolved and a wildcard such as 0.0.0.0 is reported as itself, never as
+	// the [::] its socket reports; an address Reconfigure added included and
+	// one it removed gone. It is empty before Start and after Stop. The node
+	// builds each Serving from it.
+	Addrs() map[Socket][]netip.AddrPort
 
 	// Health is ready when serving with every listener bound; configured and
 	// draining report not ready.
@@ -115,6 +125,13 @@ type Sidecar interface {
 
 // Serving is one adapter as a sidecar sees it: what to advertise or answer.
 type Serving struct {
-	Adapter   string                    // "nfs"
-	Listeners map[string]netip.AddrPort // by service: "nfs", "mount", "nlm", "nsm"
+	Adapter   string // "nfs"
+	Listeners map[Socket][]netip.AddrPort
+}
+
+// Socket is one service on one network: the key its bound addresses share. A
+// service served over TCP and UDP, as NLM and NSM are, is two Sockets.
+type Socket struct {
+	Service string // "nfs", "mount", "nlm", "nsm", "smb"
+	Network string // "tcp" or "udp"
 }

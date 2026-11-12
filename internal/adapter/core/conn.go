@@ -1,11 +1,10 @@
 package core
 
 import (
-	"context"
 	"errors"
 	"fmt"
 
-	"github.com/cubbit/dittofs/pkg/adapter/config"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
 
@@ -37,7 +36,7 @@ func (c *Conn) Keep() (release func()) {
 
 // Settings is the settings snapshot this connection loaded at accept, the
 // protocol's whole shape; NewConn reads its own from it.
-func (c *Conn) Settings() config.Settings {
+func (c *Conn) Settings() settings.Settings {
 	panic("not implemented")
 }
 
@@ -48,14 +47,4 @@ func (c *Conn) Settings() config.Settings {
 // logged and counted.
 func (c *Conn) Close(err error) {
 	panic("not implemented")
-}
-
-// Dispatcher is what a connection hands each framed record to. The pipeline
-// is the one implementation; a connection's own tests supply a stub.
-type Dispatcher interface {
-	Dispatch(ctx context.Context, c *Conn, rec *resources.Buf)
-	// Drain switches to draining: from now on only the requests a drain
-	// serves run, and each other one gets ErrMoved or ErrDraining, decided
-	// per request by asking the service about the handle it names.
-	Drain()
 }

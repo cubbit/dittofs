@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/prof"
 )
 
 // noMax is the journal maximum a spare's reservation is checked against

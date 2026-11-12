@@ -32,6 +32,7 @@ type pendingOp struct {
 	at        time.Time       // the clock's time when staged: the file's change time
 	setsMtime bool            // the operation moves the file's modification time
 	grow      bool            // a truncate at or above the replayed size: committed by the group commit, no phase 1
+	over      []entity.Extent // the runs the journal named as superseded by the write, merged: a replay's, nil on the live path
 	lost      []entity.Extent // the runs of a write the journal dropped after its sync, merged: they commit lost, charging nothing
 	unsynced  []entity.Extent // the runs of lost that corrupt losses of records never synced named: see dropCovered
 	claimed   bool            // a batch claimed it: that batch's settle releases the claim

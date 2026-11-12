@@ -197,8 +197,42 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 	// A synced record lifted what it superseded when it completed, or the
 	// worker is about to; lifting now first keeps the drop below from holding
 	// it again, and leaves the worker's own lift nothing to do.
+	//
+	// The synced loss's marker is left here too, before the drop, under the
+	// file's domain: a Since that copies the file's changes sees the record,
+	// the marker or both, never neither, and the marker is visible by the time
+	// Corrupt returns, whoever dropped the record. The worker's loss record
+	// then leaves no second marker (Loss.Marked).
+	//
+	// decision: the marker is left before the drop is known to have applied,
+	// and two residuals are accepted. (a) If the index later refuses the
+	// drop (the post-commit apply error of FailWindow, close to unreachable)
+	// the marker stays while the record may still be held, so Since can report
+	// a loss for content that still reads; the same path already queued a
+	// worker loss for it, with Marked set only when every held extent has its
+	// marker, so it leaves no second marker and no extent is left without one.
+	// (b) If the lift fails and FailWindow puts the retained older content
+	// back into held after the marker, the marker cut only what was held when
+	// it was placed, so the last synced older version could be served for a
+	// synced-lost extent. Overturned by a failed-lift or refused-drop rate
+	// that matters.
+	marked := map[core.Extent]bool{}
 	if synced {
 		d.lift(c.File, c.Version, c.Extent)
+		for _, p := range held {
+			if marked[p.Extent] {
+				continue
+			}
+			delta, err := d.markLoss(c.File, p.Extent, c.Version)
+			if err != nil {
+				d.log.Error("a synced loss left no marker", "file", c.File, "err", err)
+				continue
+			}
+			marked[p.Extent] = true
+			if d.account != nil {
+				d.account(delta)
+			}
+		}
 	}
 	fw, hd, err := d.index.FailWindow(c.File, []index.WindowRecord{{Record: c.Record, Version: c.Version, Extent: c.Extent}})
 	if err != nil {
@@ -231,6 +265,7 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 		}
 		l := base
 		l.Extent, l.Offloaded = p.Extent, p.Offloaded
+		l.Marked = marked[p.Extent]
 		job.losses = append(job.losses, l)
 	}
 	if len(job.losses) == 0 && err != nil && len(held) > 0 {
@@ -239,6 +274,7 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 		// pieces had, which the raise above already followed.
 		l := base
 		l.Extent, l.Offloaded = c.Extent, !dirty
+		l.Marked = !slices.ContainsFunc(held, func(p index.Piece) bool { return !marked[p.Extent] })
 		job.losses = append(job.losses, l)
 	}
 	if len(job.losses) == 0 {

@@ -336,7 +336,7 @@ packages **MUST** import only:
 - the adapter's own codecs, session and connection code;
 - `core`, the shared adapter code of this RFC — listeners, connections, drain,
   pipeline, middleware (§2.5);
-- `pkg/adapter` and `pkg/adapter/config`, the contract, `Deps` and the
+- `pkg/adapter` and `pkg/adapter/settings`, the contract, `Deps` and the
   settings (§2.5, §3.4);
 - `pkg/resources`, RFC 24's budgets and pooled buffers, shared by every
   component (§6.8), and `pkg/metrics`, the registry `Deps` carries (§10);
@@ -484,8 +484,8 @@ flowchart TB
   specific is in `pkg/` but `pkg/adapter` below.
 - **`pkg/adapter/`** holds the adapter's public surface, as `pkg/vfs` holds
   the service's: the contract the node drives (`Adapter`, `State`, `Health`,
-  `ConnInfo`, `Sidecar`, `Serving`) and `Deps`, in `pkg/adapter`; the
-  settings shapes, in the leaf `pkg/adapter/config`; and one constructor per
+  `ConnInfo`, `Sidecar`, `Serving`, `Socket`) and `Deps`, in `pkg/adapter`; the
+  settings shapes, in the leaf `pkg/adapter/settings`; and one constructor per
   protocol, `pkg/adapter/nfs.New` and `pkg/adapter/smb.New`, each a call into
   its implementation. Both the node and `core` import the contract, and it
   imports nothing of the core but `pkg/vfs`, `pkg/metrics` and
@@ -497,7 +497,7 @@ flowchart TB
   `pkg/adapter/nfs` and `pkg/adapter/smb` import a protocol's implementation,
   and no other package under `pkg/` imports anything under
   `internal/adapter/`; the implementation imports `pkg/adapter` and
-  `pkg/adapter/config`, never a constructor package.
+  `pkg/adapter/settings`, never a constructor package.
 
 The import test of §7.1 checks both directions.
 
@@ -506,9 +506,9 @@ pkg/vfs/                    the service interface (RFC 17)
 pkg/vfs/vfstest/            the in-memory service, its fault wrapper, the null service
 pkg/resources/              RFC 24's budgets and pooled buffers, shared by every component (§6.8)
 pkg/adapter/                the public surface, as pkg/vfs is the service's:
-  adapter.go                the contract the node drives: Adapter, State, Health, ConnInfo, Sidecar, Serving, Loop (§3.4, §3.5)
+  adapter.go                the contract the node drives: Adapter, State, Health, ConnInfo, Sidecar, Serving, Socket, Loop (§3.4, §3.5)
   deps.go                   Deps (§3.4)
-  config/                   the settings shapes, their defaults and Settings (§3.6): a leaf
+  settings/                 the settings shapes, their defaults and Settings (§3.6): a leaf
   nfs/  smb/                New: one public constructor each, a call into the implementation
 internal/adapter/
   core/                     one package, a file per concern; imports no protocol:
@@ -883,9 +883,10 @@ type Adapter interface {
 
 	// Reconfigure adds and removes listeners and applies live settings to
 	// connections set up after it returns (§3.1). s is the adapter's own
-	// protocol's shape, config.NFS or config.SMB; the other protocol's is
-	// refused with an error (§3.6). Every adapter setting is live today.
-	Reconfigure(ctx context.Context, s config.Settings) error
+	// protocol's shape, settings.NFS or settings.SMB; the other protocol's is
+	// refused with an error (§3.6). Every adapter setting is live but `port`,
+	// which never reaches Reconfigure: the node builds a new adapter (§3.6).
+	Reconfigure(ctx context.Context, s settings.Settings) error
 
 	// Stop moves serving to draining to stopped. ctx's deadline is the drain
 	// deadline; requests still running at it are abandoned (§3.1). A request
@@ -895,6 +896,15 @@ type Adapter interface {
 	// MoveTarget per request (§3.1). Stop is idempotent: a second call
 	// returns once the adapter is stopped.
 	Stop(ctx context.Context) error
+
+	// Addrs is every address each listener is bound on now, by service and
+	// network, in a fresh map the caller owns, slices included: each address
+	// as the settings name it, its port the one bound, so a port of 0 is
+	// resolved and a wildcard such as 0.0.0.0 is reported as itself, never as
+	// the [::] its socket reports; an address Reconfigure added included and
+	// one it removed gone. It is empty before Start and after Stop. The node
+	// builds each Serving from it (§3.5).
+	Addrs() map[Socket][]netip.AddrPort
 
 	// Health is ready when serving with no condition raised; configured and
 	// draining report not ready (RFC 25 §3.6).
@@ -978,14 +988,14 @@ stages and operation tables, and opens nothing; it returns the contract, and
 the `*core.Server` behind it stays internal:
 
 ```go
-func nfs.New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) // pkg/adapter/nfs; configured
-func smb.New(d adapter.Deps, s config.SMB) (adapter.Adapter, error) // pkg/adapter/smb
+func nfs.New(d adapter.Deps, s settings.NFS) (adapter.Adapter, error) // pkg/adapter/nfs; configured
+func smb.New(d adapter.Deps, s settings.SMB) (adapter.Adapter, error) // pkg/adapter/smb
 ```
 
 `New` fails on a setting the adapter cannot apply, so the failure is at
 configured, not at the first request (§3.1). Settings arrive in exactly two
 places: `New`, which takes its protocol's shape, and `Reconfigure`, which takes
-`config.Settings`, which `config.NFS` and `config.SMB` implement (§3.6).
+`settings.Settings`, which `settings.NFS` and `settings.SMB` implement (§3.6).
 
 
 ### 3.5 Sidecars
@@ -1021,14 +1031,33 @@ type Sidecar interface {
 
 // Serving is one adapter as a sidecar sees it: what to advertise or answer.
 type Serving struct {
-	Adapter   string                    // "nfs"
-	Listeners map[string]netip.AddrPort // by service: "nfs", "mount", "nlm", "nsm"
+	Adapter   string                      // "nfs"
+	Listeners map[Socket][]netip.AddrPort
+}
+
+// Socket is one service on one network: the key its bound addresses share. A
+// service served over TCP and UDP, as NLM and NSM are, is two Sockets.
+type Socket struct {
+	Service string // "nfs", "mount", "nlm", "nsm", "smb"
+	Network string // "tcp" or "udp"
 }
 ```
 
-- **Order.** The node calls `Sync` after an adapter is serving and before it
-  starts draining, so nothing is advertised that cannot be reached, and an
-  advertisement is withdrawn while the adapter still answers.
+> decision: `Listeners` holds every bound address of each service and network,
+> because one key per service loses two things a sidecar must answer: a service
+> bound on several of `Addrs` (a taken-over address included), and NLM and NSM,
+> served over both TCP and UDP, which the port mapper answers per protocol.
+> rpcbind registers per program and netid, and DNS-SD advertises every address
+> of a host; withdraw the slice if a sidecar is found that can advertise only
+> one address per service. A listener that carries several services on one
+> port, as NFS's carries NFS, MOUNT, NLM and NSM, is one key per service (§4.7).
+
+- **Order.** The node builds each `Serving` from the adapter's `Addrs` (§3.4).
+  It calls `Sync` after the adapter is serving, before a `Reconfigure` that
+  removes an address (that address left out), again after every `Reconfigure`
+  returns, whatever it returned, and before the adapter starts draining. So
+  nothing is advertised that cannot be reached, and an advertisement is
+  withdrawn while the adapter still answers.
 - **A failing sidecar fails only itself.** It raises `sidecar_failed` naming it
   (§3.7); the adapters keep serving. A client that cannot find the server by
   discovery can still be given its address.
@@ -1077,6 +1106,9 @@ sequenceDiagram
   R->>M: reads the settings generation once a second
   R->>R: running vs desired: what changed, and is it live?
   alt live setting
+    opt it removes an address
+      R->>S: Sync(serving, without the removed addresses)
+    end
     R->>A: Reconfigure(ctx, settings at G)
   else restart-class setting
     R->>A: Stop (drain), New, Start — this adapter only
@@ -1092,7 +1124,7 @@ Four kinds of change, and only two reach the adapter:
 | share policy | its grants, read-only, netgroups | the next request | the service, which reads the share list by version per request ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); no adapter is touched |
 | share encryption requirement | encryption required | the next tree connect; a tree holds the flag it connected with for its life | the service, at `TreeConnect` |
 | live adapter setting | NFS version range, SMB dialect range, idle timeout | connections and sessions set up afterwards | `Reconfigure` |
-| restart-class adapter setting | none today: every adapter row of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table is live (below) | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
+| restart-class adapter setting | `port` alone; every other adapter row of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table is live (below) | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
 
 `connection_limit` is a node's, not an adapter's: the node hands each adapter
 its share of it (§6.4,
@@ -1106,13 +1138,19 @@ the node applies it by `Sync`, with the serving adapters or with none (§3.5,
 > policy on every message would put a service read on the request path. A
 > tree connected before the change keeps its flag until it disconnects.
 
-**Listen addresses are not adapter settings.** A host's listen addresses are
-bootstrap facts ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
+**Listen addresses are not adapter settings; the port is.** A host's listen
+addresses are bootstrap facts ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
+An adapter's port is its `port` setting, at installation scope with a node
+override, restart-class ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)):
+the protocol's `New` binds each listener it would put on its well-known port
+(2049, 445) on `port` instead, unprivileged 12049 and 12445 by default, and a
+change builds a new adapter
+([RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)).
 `Reconfigure` still adds and removes listeners, for two callers only: a
 namespace move's release of an address
 ([RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)),
 and a floating-address takeover, which adds the address the node took over.
-The node hands them to the adapter in `config.Adapter.Addrs`, from the host's
+The node hands them to the adapter in `settings.Adapter.Addrs`, from the host's
 bootstrap and the addresses it took over, never from the settings record, and
 the adapter binds each of its listeners on each of them (§4.7's `Listener`).
 
@@ -1127,12 +1165,13 @@ the adapter binds each of its listeners on each of them (§4.7's `Listener`).
 adapter reads:
 
 ```go
-package config // pkg/adapter/config: a leaf
+package settings // pkg/adapter/settings: a leaf
 
 // Adapter is what every adapter reads; core reads only this. Each adapter
 // record carries its own copy, under adapters.<protocol>.
 type Adapter struct {
 	Addrs              []netip.Addr  `json:"-"`                   // supplied by the node, live (below); a record naming it is refused as an unknown field
+	Port               uint16        `json:"port"`                // restart-class (above); 12049 for NFS, 12445 for SMB, and 0 lets the system pick, for tests
 	DrainTimeout       time.Duration `json:"drain_timeout"`       // 90 s; at least the break deadline plus the request deadline, 65 s
 	IdleTimeout        time.Duration `json:"idle_timeout"`        // 15 min
 	WriteTimeout       time.Duration `json:"write_timeout"`       // 60 s
@@ -1201,7 +1240,7 @@ type Settings interface {
   `adapters.nfs.tls.mode`, `adapters.smb.pending_timeout` — and the least
   configuration is `adapters: {nfs: {enabled: true}, smb: {enabled: true}}`.
 - **Defaults are code**, in `DefaultNFS` and `DefaultSMB`: the loader runs
-  `s := config.DefaultNFS(); decode(&s)`.
+  `s := settings.DefaultNFS(); decode(&s)`.
 - **`Validate` is the component's own**, run by `New`, by `Reconfigure` and by
   the control plane, which has none of its own
   ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)). It reads no file,
@@ -1214,21 +1253,22 @@ type Settings interface {
   `migration.freeze_timeout` plus the break deadline is the control plane's
   cross-component check (RFC 13 §6). The package stays a leaf, importing
   nothing under `internal/`.
-- **Every adapter setting is live**; RFC 13 Appendix B records each one's
-  class. The first restart-only setting brings a sentinel error and a
-  one-field comparison in `Reconfigure`, and nothing before it.
+- **Every adapter setting is live but `port`**; RFC 13 Appendix B records
+  each one's class. `Reconfigure` refuses a changed `port` with a sentinel
+  error, a one-field comparison, since the node applies it by building a new
+  adapter and never calls `Reconfigure` for it.
 
 **Inside the adapter, settings are one immutable snapshot.**
 
 ```go
 type Server struct {
-	settings atomic.Pointer[config.Settings] // the protocol's whole shape, as New or the last Reconfigure gave it
+	settings atomic.Pointer[settings.Settings] // the protocol's whole shape, as New or the last Reconfigure gave it
 	// …
 }
 
-func (s *Server) Reconfigure(ctx context.Context, next config.Settings) error {
+func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error {
 	if !sameProtocol(*s.settings.Load(), next) {
-		return errOtherProtocol // config.SMB handed to the NFS adapter, or the reverse
+		return errOtherProtocol // settings.SMB handed to the NFS adapter, or the reverse
 	}
 	if err := next.Validate(); err != nil {
 		return err // refused; what is running is unchanged
@@ -2242,7 +2282,7 @@ func (c *Conn) Keep() (release func())
 
 // Settings is the settings snapshot this connection loaded at accept, the
 // protocol's whole shape (§3.6); NewConn reads its own from it.
-func (c *Conn) Settings() config.Settings
+func (c *Conn) Settings() settings.Settings
 
 // Close ends the connection for a protocol violation the protocol finds: an
 // SMB message that fails decryption, a second NEGOTIATE (MS-SMB2 3.3.5.2.1.1,
@@ -2358,13 +2398,26 @@ func Errors() []error
 // NewServer returns the adapter New hands back: each listener bound on each
 // of the settings' Addrs, all or none at Start (§3.1); Reconfigure binds them
 // on an added address the same way (§3.6). s is the protocol's whole shape,
-// which New was given; core reads its Adapter.
-func NewServer(d adapter.Deps, s config.Settings, ls ...Listener) (*Server, error)
+// which New was given; core reads its Adapter. It refuses a listener naming
+// no service, an empty one or one twice, and two listeners naming the same
+// Socket or the same network and nonzero port.
+func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, error)
 
+// Listener is one protocol on one port, bound on each of the settings' Addrs.
+// Addrs reports it under one Socket per service it names, on its network,
+// each address at the port bound there.
+//
+// decision: a listener names its services rather than holding a Socket,
+// because one port carries several: NFS's carries NFS, MOUNT, NLM and NSM,
+// told apart by RPC program. So Network repeats Socket's field, and a field
+// added to Socket must be added here too, or Addrs builds incomplete keys.
+// Withdraw it, and give Listener a Socket, if each port comes to carry one
+// service, as it would were NFS's auxiliary programs given ports of their own.
 type Listener struct {
-	Network  string // "tcp" or "udp"
-	Port     uint16
-	Protocol      Protocol
+	Services []string // the names Addrs and a sidecar know it by: "nfs", "mount", "nlm", "nsm", "smb"
+	Network  string   // "tcp" or "udp"
+	Port     uint16   // 0: one the system picks, which Addrs reports
+	Protocol Protocol
 }
 ```
 
@@ -2454,7 +2507,7 @@ negotiated.
 
 ```go
 // nfs.go: New composes; it names no operation
-func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) {
+func New(d adapter.Deps, s settings.NFS) (adapter.Adapter, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
@@ -2465,7 +2518,11 @@ func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) {
 		NLM:   nlm.Table(&nlm.Handlers{VFS: d.VFS}),
 		NSM:   nsm.Table(&nsm.Handlers{VFS: d.VFS}),
 	}
-	return core.NewServer(d, s, core.Listener{Network: "tcp", Port: 2049, Protocol: protocol.New(t)})
+	// Addrs reports nfs, mount, nlm and nsm over TCP, and nlm and nsm over UDP, all at 2049.
+	return core.NewServer(d, s,
+		core.Listener{Services: []string{"nfs", "mount", "nlm", "nsm"}, Network: "tcp", Port: 2049, Protocol: protocol.New(t)},
+		core.Listener{Services: []string{"nlm", "nsm"}, Network: "udp", Port: 2049,
+			Protocol: protocol.New(protocol.Tables{NLM: t.NLM, NSM: t.NSM})})
 }
 
 // ops/v3/table.go: the row list, one line per operation; each row is built in its operation's own file
@@ -3142,7 +3199,7 @@ These boundary checks run per change:
 
 A test walks the import graph of every adapter package and fails, naming the
 package and the import, on anything §2.3 forbids: any core package but
-`pkg/vfs`, `pkg/adapter`, `pkg/adapter/config`, `pkg/resources`,
+`pkg/vfs`, `pkg/adapter`, `pkg/adapter/settings`, `pkg/resources`,
 `pkg/metrics` and `internal/tlsconfig`, both identity packages included — `pkg/identity` and
 `internal/identity` — since an adapter takes identity types only as `pkg/vfs`
 aliases. It is seeded with one
@@ -3158,8 +3215,11 @@ implementation package that imports a constructor. It starts with no
 allowlist: today's adapters are deleted rather than moved, so nothing is
 grandfathered in. The walk reads each package's own imports; its `_test.go`
 files may also import `pkg/vfs/vfstest` and `adaptertest`, whose in-memory
-service builds the real filesystem, and nothing else the list forbids, so no
-forbidden package reaches an adapter's build. The other direction, that the service imports no adapter,
+service builds the real filesystem, and `internal/prof`, a profiler importing
+only the standard library; `adaptertest`'s own files may import
+`pkg/vfs/vfstest` and `internal/prof`.
+Nothing else the list forbids is allowed, so no forbidden package reaches an
+adapter's build. The other direction, that the service imports no adapter,
 stays with the service's own architecture check
 ([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)).
 
@@ -3370,7 +3430,12 @@ tests, per change, without waiting for the nightly run.
 
 **Suites.** §7's codec, stage, core, handler, boundary and in-process layers,
 the translation tables and their fuzz seeds run in `unit`, and §6.10's codec and
-pipeline allocation gates per change in a non-race cell of their own. The conformance layer is
+pipeline allocation gates per change in a non-race cell of their own. A test of
+those layers that waits on a stub runs red in a suite of its own,
+`adapter-conformance`, under its own build tag, as a known failure
+([RFC 29 §4.7](rfc-29-test-harness.md#4.7%20Grading%3A%20known%20failures%2C%20expected%20skips%2C%20quarantine%2C%20retries)),
+until the change that fills the stub removes its entry; it fails on an
+assertion or an error, never a crash ([RFC 29 §4.6](rfc-29-test-harness.md#4.6%20Results)). The conformance layer is
 `pynfs`, `cthon04`, `nfstest`, `smbtorture`, `wpts` and `pjdfstest` on the
 production profile. §7.4 runs in-process in `unit`, on the composed node, as
 RFC 8's and RFC 18's rows on it do; §7.5 runs in `e2e`, its Kerberos mounts in
@@ -3514,6 +3579,9 @@ connection, not once per request
 3. **NLM and NSM over UDP.** Served today, and needed by clients that send lock
    requests only over UDP; [RFC 21 §2.2](rfc-21-nfs.md#2.2%20TCP%20only) forbids
    it. Parity keeps it until RFC 21 decides which clients lose locking.
+   MOUNT over UDP is not kept: RFC 21 §2.2 serves MOUNT over TCP only. A
+   client that defaults to UDP falls back to TCP when the port mapper offers
+   only TCP; one told `mountproto=udp` fails to mount.
 
 ## Appendix A — prior art
 

@@ -2,6 +2,7 @@ package model
 
 import (
 	"math"
+	"reflect"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -100,7 +101,7 @@ func equalChanges(t *testing.T, got, want []journal.Change) {
 		t.Fatalf("changes:\n got %s\nwant %s", fmtChanges(got), fmtChanges(want))
 	}
 	for i := range got {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Fatalf("change %d:\n got %s\nwant %s", i, fmtChange(got[i]), fmtChange(want[i]))
 		}
 	}
