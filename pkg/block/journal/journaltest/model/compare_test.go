@@ -280,6 +280,84 @@ func TestCompareReportsEachPlantedDivergence(t *testing.T) {
 	}
 }
 
+// noIndex hides a view's Index method, so it carries no index read-out: the
+// journal whose inspection is not wired yet, modeled by hiding the method
+// rather than by answering with an error, which says the call failed.
+type noIndex struct{ View }
+
+// Compare over a view with no index read-out still checks the bytes Since
+// serves, what ReadAt serves and what Extents names, and the file lists. It
+// skips only the offloaded bit and the index's markers, the two answers no
+// other call can make. The skip is scoped to what the view cannot tell: the
+// same divergence planted through a view that carries the index is caught.
+func TestCompareWithoutIndex(t *testing.T) {
+	cases := []struct {
+		name string
+		// plant changes one answer of an honest view.
+		plant func(h modelView) View
+		// caughtWithoutIndex is whether Compare reports the planted
+		// divergence through a view carrying no index.
+		caughtWithoutIndex bool
+	}{
+		{"served bytes", func(h modelView) View {
+			return planted{modelView: h, readAt: func(id journal.FileID, off int64, p []byte) (int, []journal.Extent, []journal.Held, journal.Version, error) {
+				n, mi, he, as, err := h.ReadAt(t.Context(), id, off, p)
+				if off <= 5 && 5 < off+int64(len(p)) {
+					p[5-off] ^= 0xff
+				}
+				return n, mi, he, as, err
+			}}
+		}, true},
+		{"a Since marker", func(h modelView) View {
+			return planted{modelView: h, since: func(id journal.FileID, from journal.Version) iter.Seq2[journal.Change, error] {
+				var cs []journal.Change
+				for c, err := range h.Since(t.Context(), id, from) {
+					if err != nil {
+						return failed(err)
+					}
+					if c.Kind == journal.ChangeWrite {
+						cs = append(cs, c)
+					}
+				}
+				return changes(cs)
+			}}
+		}, true},
+		{"the offloaded bit", func(h modelView) View {
+			return planted{modelView: h, index: func(id journal.FileID) ([]journal.IndexEntry, error) {
+				es, err := h.Index(id)
+				for i := range es {
+					es[i].Offloaded = true
+				}
+				return es, err
+			}}
+		}, false},
+		{"index markers", func(h modelView) View {
+			return planted{modelView: h, index: func(id journal.FileID) ([]journal.IndexEntry, error) {
+				es, err := h.Index(id)
+				var held []journal.IndexEntry
+				for _, e := range es {
+					if e.Kind == journal.EntryHeld {
+						held = append(held, e)
+					}
+				}
+				return held, err
+			}}
+		}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m, j := New(), New()
+			script(t, m, j)
+			h := modelView{j, shareA}
+			err := m.Compare(t.Context(), shareA, noIndex{c.plant(h)})
+			if got := err != nil; got != c.caughtWithoutIndex {
+				t.Fatalf("Compare through a view with no index: caught the divergence %t, want %t (err %v)", got, c.caughtWithoutIndex, err)
+			}
+			diverged(t, m.Compare(t.Context(), shareA, c.plant(h)))
+		})
+	}
+}
+
 // A marker of a truncate or a delete runs to the end of the file, and Since
 // and the index say so with Len = MaxInt64 - Off exactly: a length of zero, or
 // one past the largest offset, is not that form.

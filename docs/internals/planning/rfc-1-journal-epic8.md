@@ -1298,6 +1298,12 @@ and close, `Stats` and the counted checks. T8.8 also waits for T6.5, so a remova
 window is re-appended. T8.3 builds on T6.1's `Share(tag, limit, floor)`, T8.5 on T6.6's `Admit` and `Observe`, and
 T8.12 joins T6.1's `Durability.Stop`.
 
+### 6.1 Deferral ledger
+
+| Deferred | Why not here | Owner | Comes back when |
+| --- | --- | --- | --- |
+| R105's per-fixture check: a check, over every journal this epic's tests build, failing a test whose journal holds fewer than two files, two streams or two shares | the files and shares halves are asserted where the reach is driven — the model run's journals and the allocation rig — and reading which streams a journal's records sit on goes through the inspection read-out, a stub until recovery ([#4161](https://github.com/cubbit/dittofs/issues/4161)) | epic 7a | its read-out lands, with T7.6; `TestModel`'s reach assertions leave `known.yaml` with it |
+
 ```mermaid
 flowchart TD
   S2(["S2 red suite in CI"]):::sync --> T1["T8.1 Core and WriteAt"]

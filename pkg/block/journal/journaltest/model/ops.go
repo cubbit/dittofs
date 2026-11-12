@@ -93,7 +93,8 @@ func unexpected(m *Model, op string, id fileID, err error) error {
 // returned v and err.
 //
 // A zero-length write may be accepted or refused with ErrZeroLength; accepted,
-// it holds nothing and is not counted as a change of the file.
+// it holds nothing, is not counted as a change of the file and answers the
+// zero version.
 func (m *Model) WriteAt(tag shareTag, id fileID, off int64, p []byte, mtime int64, v version, err error) error {
 	const op = "write"
 	if cancelled(err) {
@@ -105,16 +106,23 @@ func (m *Model) WriteAt(tag shareTag, id fileID, off int64, p []byte, mtime int6
 		return mis
 	case errors.Is(err, journal.ErrOtherShare):
 		return nil
-	case len(p) == 0 && errors.Is(err, journal.ErrZeroLength):
+	case len(p) == 0 && (err == nil || errors.Is(err, journal.ErrZeroLength)):
+		// Accepted, a zero-length write appends nothing and draws no version,
+		// so nothing of its answer is applied; the journal returns exactly
+		// the zero version for it, and any other version is a mismatch: a
+		// caller might record it as this no-op's content version, so the
+		// answer drew a version for a write that changed nothing.
+		// Refused with ErrZeroLength it changes nothing either, and its
+		// version is not checked, as no refused call's is.
+		if err == nil && v.Compare(version{}) != 0 {
+			return m.mismatch(op, id, "returned version %v for a zero-length write, not the zero version: no version is drawn for it", v)
+		}
 		return nil
 	case !proceed:
 		return unexpected(m, op, id, err)
 	}
 	if err := m.issue(op, id, v); err != nil {
 		return err
-	}
-	if len(p) == 0 {
-		return nil
 	}
 	f = m.claim(f, tag, id)
 	m.append(f, &record{kind: kindWrite, ext: extent{Off: off, Len: int64(len(p))}, ver: v, data: slices.Clone(p), mtime: mtime})

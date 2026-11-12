@@ -19,7 +19,8 @@ type modelView struct {
 	tag journal.ShareTag
 }
 
-var _ View = modelView{}
+// The honest journal carries an index, as the wired journal's inspection does.
+var _ IndexedView = modelView{}
 
 func (v modelView) state(id journal.FileID) *fileState {
 	if f := v.m.files[id]; f == nil || f.tag != v.tag {

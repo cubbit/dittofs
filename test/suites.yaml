@@ -97,10 +97,21 @@ suites:
       # skip under -race.
       journal-index:
         cmd: go test -timeout=5m ./pkg/block/journal/internal/index/ ./internal/prof/
-      # The index built with a bug planted in its split, which the model fuzz must find. The
-      # planted build breaks the package's other tests by design, so only this test runs.
+      # The index built with a bug planted in its split, which the model fuzz and the model's
+      # data-path run must both find. The planted build breaks the package's other tests by
+      # design, so only these tests run.
       journal-plant:
-        cmd: go test -tags=journal_plant_split -timeout=2m -run=^TestFuzzFindsPlantedSplit$ ./pkg/block/journal/internal/index/
+        cmd:
+          - go test -tags=journal_plant_split -timeout=2m -run=^TestFuzzFindsPlantedSplit$ ./pkg/block/journal/internal/index/
+          - go test -tags=journal_plant_split,journal_conformance -timeout=10m -run=^TestModelDataPathFindsPlantedSupersession$ ./pkg/block/journal/conformance/
+      # The journal's allocation checks, which the race detector makes unmeasurable and the race
+      # leg of journal-conformance skips as known: the counted calls of RFC 1 §9.7, running
+      # without -race, where allocation counting works. TestRFC1D_StatsCostIsFlat joins this
+      # command once the index's heap growth sits under the profiler's slack; it fails the
+      # watchdog today on the 10^5 extents it builds.
+      journal-conformance-norace:
+        cmd: go test -timeout=5m -tags=journal_conformance -run=^TestCounted_AllocationsPerCall ./pkg/block/journal/conformance/
+        tier: pr
       # The adapters' allocation gates, which skip under -race.
       adapter-allocs:
         cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/
