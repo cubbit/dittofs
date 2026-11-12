@@ -284,7 +284,7 @@ names the epic that owns the rest.
   `unit/journal-index` has, and `adapter-conformance` an entry in that filter beside
   `engine-conformance`; once develop's `tests.yml`, which plans every cell, reaches the branch,
   the registry entries alone run both. E3's
-  T3.3 adds its package to the cell's command.
+  T3.1 adds its package to the cell's command.
 - **D13, the leak check is the journal's profiler, moved; goroutine IDs, the epic's owner chose this.**
   `pkg/block/journal/journaltest/prof` already fails a test that leaves goroutines (compared by ID
   from `runtime.Stack`, polled to a backstop), descriptors or live heap behind, and says to move
