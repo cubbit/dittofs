@@ -31,8 +31,12 @@ type Unit struct {
 	FS    *kvstoretest.FS
 	Clock *sim.TestClock
 	Share engine.Share     // the share as the engine binds it
-	Opens *openstate.Table // the engine's CloneHold, if UnitOptions.OpenState; serves Share's shard once Share is bound
-	Sink  *Sink            // Opens's sink, if Opens is set
+	// Opens is the real open-state table, if UnitOptions.OpenState. It is the
+	// engine's CloneHold unless a UnitOptions.Deps function replaces Holds, and
+	// it serves Share's shard once NewUnit binds Share; a test that sets
+	// Unbound binds the share itself and calls Recovery().ServeShard.
+	Opens *openstate.Table
+	Sink  *Sink // Opens's sink, if Opens is set
 }
 
 // UnitOptions is what a test asks of NewUnit.
