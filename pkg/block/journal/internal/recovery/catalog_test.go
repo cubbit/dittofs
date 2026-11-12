@@ -121,9 +121,23 @@ func appendSealed(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byt
 	markerOff := len(b)
 	ident := journalID
 	b = append(b, raw.SealMarker{Identity: ident, Segment: uint64(id), Offset: uint64(markerOff)}.Bytes()...)
-	var raws [][raw.CatalogEntrySize]byte
+	raws := rawEntries(ents)
+	// 1 is the catalog layout version this format writes. The entries come
+	// first — raw.Trailer checksums them but appends only its own 32 bytes.
+	var footer []byte
+	for _, e := range raws {
+		footer = append(footer, e[:]...)
+	}
+	return append(append(b, footer...), raw.Trailer(1, uint64(markerOff+raw.SealMarkerSize), raws...)...)
+}
+
+// rawEntries encodes catalogue entries the way the seal writer's footer
+// holds them, so a check that rebuilds a trailer names the same bytes the
+// plant wrote.
+func rawEntries(ents []format.CatalogEntry) [][raw.CatalogEntrySize]byte {
+	out := make([][raw.CatalogEntrySize]byte, 0, len(ents))
 	for _, e := range ents {
-		raws = append(raws, raw.Entry{
+		out = append(out, raw.Entry{
 			FileID:       e.File.Bytes(),
 			Offset:       uint64(e.Extent.Off),
 			RecordOffset: uint32(e.RecordOffset),
@@ -134,13 +148,7 @@ func appendSealed(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byt
 			Tag:          uint32(e.Tag),
 		}.Bytes())
 	}
-	// 1 is the catalog layout version this format writes. The entries come
-	// first — raw.Trailer checksums them but appends only its own 32 bytes.
-	var footer []byte
-	for _, e := range raws {
-		footer = append(footer, e[:]...)
-	}
-	return append(append(b, footer...), raw.Trailer(1, uint64(markerOff+raw.SealMarkerSize), raws...)...)
+	return out
 }
 
 // sealSeg appends the seal a segment's tail lacks — the marker, its footer
@@ -237,6 +245,174 @@ func TestCatalogAndScanBuildTheSameIndex(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCatalogDemotesEveryNoFooterToAScan breaks one sealed, named segment's
+// catalogue each way a writer or a crash can leave it unreadable — a file
+// cut past its trailer, a footer entry whose bytes differ from what the
+// trailer checksummed, a trailer of a layout this format does not read or
+// carrying flags none define, the seal marker the footer needs wiped, a
+// trailer naming more entries than fit before it, one naming fewer than the
+// segment holds, one naming none over records the segment does hold, and a
+// file too short to be a segment at all — and holds, per row, that the open
+// still succeeds, the segment is built by no catalogue, and the index the
+// demoted rebuild built is the one a forced scan of the same directory
+// builds: a footer that does not verify loses the open speed and nothing
+// else.
+func TestCatalogDemotesEveryNoFooterToAScan(t *testing.T) {
+	// footerOffset names where a sealed segment's entries start: the entries
+	// run to the trailer, the file's last 32 bytes.
+	footerOffset := func(b []byte, ents []format.CatalogEntry) int64 {
+		return int64(len(b)) - raw.TrailerSize - raw.CatalogEntrySize*int64(len(ents))
+	}
+	// replaceTrailer overwrites the file's last 32 bytes with the trailer tr.
+	replaceTrailer := func(b, tr []byte) {
+		copy(b[len(b)-raw.TrailerSize:], tr)
+	}
+
+	rows := []struct {
+		name   string
+		mutate func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte
+	}{
+		{"truncated file", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
+			// The cut takes the trailer and the last 8 bytes of the footer's
+			// entries, leaving the seal marker standing.
+			return b[:len(b)-40]
+		}},
+		{"flipped entry byte", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
+			b[footerOffset(b, ents)] ^= 0xff
+			return b
+		}},
+		{"trailer layout 2", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
+			tr := raw.Trailer(2, uint64(footerOffset(b, ents)), rawEntries(ents)...)
+			replaceTrailer(b, tr)
+			return b
+		}},
+		{"trailer flags nonzero", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
+			// Byte 6 opens the flags column, read as a version none define.
+			b[len(b)-raw.TrailerSize+6] ^= 1
+			return b
+		}},
+		{"no seal marker before the footer", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
+			off := footerOffset(b, ents) - format.SealMarkerSize
+			for i := range format.SealMarkerSize {
+				b[off+int64(i)] = 0xee // a pattern no slot is told by
+			}
+			return b
+		}},
+		{"entryCount past the trailer", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
+			es := rawEntries(ents)
+			tr := raw.Trailer(1, uint64(footerOffset(b, ents)), append(es, es[0])...)
+			replaceTrailer(b, tr)
+			return b
+		}},
+		{"footer names a subset", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
+			// One entry fewer than the segment holds: the last named record
+			// ends before the marker, so the footer is refused rather than
+			// answered with a silently truncated index.
+			es := rawEntries(ents)
+			tr := raw.Trailer(1, uint64(footerOffset(b, ents)), es[:len(es)-1]...)
+			replaceTrailer(b, tr)
+			return b
+		}},
+		{"zero entries", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
+			// The trailer honestly names no entries, but the segment holds
+			// records: the first record slot is not where the marker sits,
+			// so the footer is refused.
+			replaceTrailer(b, raw.Trailer(1, uint64(footerOffset(b, ents))))
+			return b
+		}},
+		{"short file", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
+			// 20 bytes hold neither a whole segment header nor a trailer: the
+			// attach pass classes the segment unverified and the rebuild never
+			// reaches it, let alone its catalogue.
+			return b[:20]
+		}},
+	}
+
+	// open plants the chained workload on a fresh rig, rewrites the
+	// first sealed segment's whole file with what mutate returns, and opens
+	// the journal. It returns the state and the planted ids, so each row's
+	// assertions name their own segment.
+	open := func(t *testing.T, mutate func([]byte, core.SegmentID, []format.CatalogEntry) []byte, forceScan bool) (State, []core.SegmentID) {
+		t.Helper()
+		r := newRig(t)
+		r.writeFormat()
+		segs, ents := r.plantSealed(catalogSteps(), stepsPerSegment, true)
+		if len(segs) < 3 {
+			t.Fatalf("fixture: the workload planted %d segments, want a sealed one to break with a sealed neighbour beside the newest", len(segs))
+		}
+		name := format.SegmentName(segs[0])
+		r.rewrite(name, mutate(r.fileBytes(name), segs[0], ents[segs[0]]))
+		deps := r.runDeps()
+		deps.rebuildForceScan = forceScan
+		st, err := Run(context.Background(), deps, core.Version{}, journalID, nil)
+		if err != nil {
+			t.Fatalf("Run over the directory of a segment whose footer does not verify: %v", err)
+		}
+		return st, segs
+	}
+
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			st, segs := open(t, row.mutate, false)
+			victim := segs[0]
+			// Intact, the plant catalogues every sealed segment a successor
+			// names: all but the newest. The broken one must not count.
+			if got, want := st.Rebuilt.ByCatalog, len(segs)-2; got != want {
+				t.Fatalf("Run rebuilt %d segments by catalog, want %d: the broken footer's segment was not demoted to the scan", got, want)
+			}
+			if sc, ok := scanOf(st, victim); ok && sc.SealedByCatalog {
+				t.Errorf("Run: segment %d was rebuilt by catalog, want the scan: a footer that does not verify never feeds", victim)
+			}
+			scanSt, _ := open(t, row.mutate, true)
+			if !sameEntries(entriesOf(st.Rebuilt.Index), entriesOf(scanSt.Rebuilt.Index)) {
+				t.Errorf("Run: the rebuild that demoted the broken footer built a different index than the forced scan of the same directory")
+			}
+		})
+	}
+
+	// A sealed segment holding no record, whose trailer honestly names none,
+	// has its marker at the first record slot: the footer verifies, so the
+	// catalogue reads it as an empty scan — the same emptiness the walk of
+	// the same bytes builds — and the segment is not demoted. It replaces a
+	// records-holding one, whose records are lost to both sources alike, so
+	// the equality of the two answers is what the row holds.
+	t.Run("zero entries over a record-less segment", func(t *testing.T) {
+		mutate := func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
+			out := raw.SegmentHeader{Identity: journalID, ID: uint64(id)}.Bytes()
+			markerOff := len(out)
+			out = append(out, raw.SealMarker{Identity: journalID, Segment: uint64(id), Offset: uint64(markerOff)}.Bytes()...)
+			return append(out, raw.Trailer(1, uint64(markerOff+raw.SealMarkerSize))...)
+		}
+		st, segs := open(t, mutate, false)
+		victim := segs[0]
+		if got, want := st.Rebuilt.ByCatalog, len(segs)-1; got != want {
+			t.Fatalf("Run rebuilt %d segments by catalog, want %d: an empty footer over an empty segment is a footer the catalogue reads", got, want)
+		}
+		sc, ok := scanOf(st, victim)
+		if !ok || !sc.SealedByCatalog {
+			t.Fatalf("Run: segment %d was not rebuilt by catalog, want its honestly empty footer read", victim)
+		}
+		if len(sc.Aside) != 0 {
+			t.Errorf("Run: the catalogued scan of a record-less segment holds %d aside records, want none", len(sc.Aside))
+		}
+		scanSt, _ := open(t, mutate, true)
+		if !sameEntries(entriesOf(st.Rebuilt.Index), entriesOf(scanSt.Rebuilt.Index)) {
+			t.Errorf("Run: the catalogued empty rebuild built a different index than the forced scan of the same directory")
+		}
+	})
+}
+
+// scanOf finds one own segment's scan in the rebuild's answer, reporting
+// whether the segment was attached at all.
+func scanOf(st State, id core.SegmentID) (segmentScan, bool) {
+	for _, sc := range st.Rebuilt.Scans {
+		if sc.ID == id {
+			return sc, true
+		}
+	}
+	return segmentScan{}, false
 }
 
 // TestCatalogReadsOnlySegmentsASuccessorNames holds the successor set rule
