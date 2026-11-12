@@ -362,6 +362,77 @@ func TestSyncReturnsNilMarksWhenNothingIsNamed(t *testing.T) {
 	}
 }
 
+// TestSyncMarksTheNewestNamedRecordOutsideASealedSegment covers the RFC's
+// applicability clause: a stream is marked for its newest named record
+// OUTSIDE a sealed segment, so a stream whose newest named record sits in a
+// sealed segment while an older named record sits in an unsealed one is
+// marked for the older record, never skipped. The unsealed older place is a
+// retired segment here: gone from the registry, Sealed answers for it the
+// safe direction, not sealed. The worker is parked before any completion, as
+// the sealed-segment test parks it, so both records are candidates the Sync
+// captures.
+func TestSyncMarksTheNewestNamedRecordOutsideASealedSegment(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	var set atomic.Pointer[segment.Set]
+	r := newRigConfigured(t, 1, func(c *Config) {
+		c.Sealed = func(id core.SegmentID) bool {
+			if s := set.Load(); s != nil {
+				if st, err := s.State(id); err == nil && st == segment.Sealed {
+					return true
+				}
+			}
+			return false
+		}
+	})
+	set.Store(r.set)
+	hook, reached, release := gate(t)
+	t.Cleanup(release)
+	var armed atomic.Bool
+	r.d.afterHolds = func() {
+		if armed.CompareAndSwap(true, false) {
+			hook()
+		}
+	}
+	r.d.Start(r.streams)
+
+	f, g := file(1), file(2)
+	a := r.appendKind(t, f, format.KindDelete, format.RecordBody{})
+	armed.Store(true)
+	r.d.made[0].wake()
+	awaitGate(t, "the worker's pause", reached)
+	if _, err := r.streams.For(f).Seal(false); err != nil {
+		t.Fatalf("Seal of the older record's segment: %v", err)
+	}
+	if st, _, err := r.set.ClaimRetirement(a.Segment); err != nil || st != segment.Sealed {
+		t.Fatalf("ClaimRetirement = %v, %v, want the sealed segment claimed", st, err)
+	}
+	if _, err := r.set.Retire(a.Segment); err != nil {
+		t.Fatalf("Retire of the older record's segment: %v", err)
+	}
+	r.d.Retired(a.Segment)
+	b := r.appendWrite(t, g, 0, "gggg")
+	if b.Segment == a.Segment {
+		t.Fatalf("the roll after the seal placed the newer record in the retired segment %d", a.Segment)
+	}
+	if _, err := r.streams.For(g).Seal(false); err != nil {
+		t.Fatalf("Seal of the newer record's segment: %v", err)
+	}
+
+	sync := r.syncMarksAsync(context.Background(), f, g)
+	release()
+	answered := mustSyncReturn(t, "Sync", sync)
+	if answered.err != nil {
+		t.Fatalf("Sync = %v, want nil", answered.err)
+	}
+	if len(answered.marks) != 1 {
+		t.Fatalf("Sync returned %d marks, want the one of the older, unsealed named record: %+v", len(answered.marks), answered.marks)
+	}
+	r.wantMark(t, "the mark of the older, unsealed named record", answered.marks[0], a)
+	if answered.marks[0].Segment == uint64(b.Segment) {
+		t.Errorf("the mark names the sealed segment %d that holds the newer named record", b.Segment)
+	}
+}
+
 // TestSyncReturnsNoMarkForARecordCorruptDropsMidWait covers: a record Corrupt
 // drops while a Sync waits on it leaves no mark, since the stream no longer
 // holds it; the Sync the corrupt read interrupted returns nil, its record's

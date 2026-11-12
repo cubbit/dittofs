@@ -1148,12 +1148,21 @@ func (st *stream) resolveCandsLocked(cs []cand) {
 }
 
 // marksOf builds the Sync's marks, one per stream that holds a named record
-// outside a sealed segment: the record's final place, which a re-append moved
-// it to, its synced-through offset, and its sequence number, ordered by stream
-// number. It runs once the wait ended in nil, so every candidate's record is
-// durable where the mark names it.
+// outside a sealed segment: the newest such record's final place, which a
+// re-append moved it to, its synced-through offset, and its sequence number,
+// ordered by stream number. The sealed verdict filters the candidates before
+// the choice, per the RFC's applicability clause, so a stream whose newest
+// named record sits in a sealed segment while an older one sits outside is
+// marked for the older record, never skipped. It runs once the wait ended in
+// nil, so every candidate's record is durable where the mark names it.
 func (d *Durability) marksOf(ws []work) []core.SyncMark {
 	var out []core.SyncMark
+	// decision: the sealed segments are asked outside any stream lock. Set's
+	// registry lock, taken inside a stream's leaf mutex, would add an edge to
+	// the journal's lock order, and nothing here needs the answer under it: a
+	// segment that seals after the check only makes the mark redundant --
+	// recovery reads the seal itself -- never a false proof.
+	isSealed := d.sealed
 	for _, w := range ws {
 		if len(w.cands) == 0 {
 			continue
@@ -1161,19 +1170,14 @@ func (d *Durability) marksOf(ws []work) []core.SyncMark {
 		var best cand
 		found := false
 		for _, c := range w.cands {
-			if !c.dropped && (!found || newer(c.final, best.final)) {
+			if c.dropped || (isSealed != nil && isSealed(c.final.Segment)) {
+				continue
+			}
+			if !found || newer(c.final, best.final) {
 				best, found = c, true
 			}
 		}
 		if !found {
-			continue
-		}
-		// decision: the sealed segment is asked outside any stream lock. Set's
-		// registry lock, taken inside a stream's leaf mutex, would add an edge
-		// to the journal's lock order, and nothing here needs the answer under
-		// it: a segment that seals after the check only makes the mark
-		// redundant -- recovery reads the seal itself -- never a false proof.
-		if d.sealed != nil && d.sealed(best.final.Segment) {
 			continue
 		}
 		out = append(out, core.SyncMark{
