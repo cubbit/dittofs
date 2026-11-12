@@ -3,7 +3,9 @@ package recovery_test
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"iter"
+	"math/rand/v2"
 	"slices"
 	"testing"
 	"time"
@@ -280,7 +282,7 @@ func (r *modelRig) plantWorkload(w *workload) {
 	}
 }
 
-// TestRunRebuildByScanMatchesTheModel drives the seeded workload — writes,
+// TestRunRebuildByScanMatchesTheModel drives a fixed workload — writes,
 // fills, releases, truncates, deallocates, deletes and a clone target, over
 // three files of two shares, across several segments — through the open's
 // rebuild, and every file the model holds must read back through the
@@ -293,9 +295,6 @@ func (r *modelRig) plantWorkload(w *workload) {
 // the journal's public package, which imports recovery, so an in-package
 // test could not import both.
 func TestRunRebuildByScanMatchesTheModel(t *testing.T) {
-	r := newModelRig(t)
-	r.writeFormat()
-
 	w := newWorkload()
 	a := w.file(1, 1)
 	b := w.file(2, 1)
@@ -314,6 +313,37 @@ func TestRunRebuildByScanMatchesTheModel(t *testing.T) {
 	w.fill(c, 32, pattern(16, 6))
 	w.truncate(b, 0) // a truncate of a deleted file: the marker stays
 
+	st := rebuildAndCompare(t, w)
+
+	// The clone target's marker, held against the read-out directly: its
+	// kind, extent, version and spec are what the rebuild must show.
+	entries := st.Rebuilt.Index.FileEntries(cFile(a))
+	var marker *index.Entry
+	for i := range entries {
+		e := &entries[i]
+		if e.Kind == index.EntryMarker && e.Removal == core.ChangeCloneTarget &&
+			e.Extent.Off == spec.DstOff && e.Extent.Len == spec.Len {
+			marker = e
+		}
+	}
+	if marker == nil {
+		t.Fatalf("Run: the rebuilt index holds no clone-target marker at [%d,+%d), want one", spec.DstOff, spec.Len)
+	}
+	if marker.Clone == nil || *marker.Clone != spec {
+		t.Errorf("Run: the clone-target marker's spec got %+v, want %+v", marker.Clone, spec)
+	}
+	if marker.Version != specV {
+		t.Errorf("Run: the clone-target marker's version got %v, want %v", marker.Version, specV)
+	}
+}
+
+// rebuildAndCompare plants the workload, runs the open's rebuild over it and
+// holds every file of both shares against the model's derivation of the same
+// operations, returning the state the rebuild gave.
+func rebuildAndCompare(t *testing.T, w *workload) recovery.State {
+	t.Helper()
+	r := newModelRig(t)
+	r.writeFormat()
 	r.plantWorkload(w)
 
 	st, err := recovery.Run(context.Background(), recovery.Deps{FS: r.seam.FS(), Clock: r.clk}, core.Version{}, modelID, nil)
@@ -340,26 +370,53 @@ func TestRunRebuildByScanMatchesTheModel(t *testing.T) {
 			t.Errorf("Run: the rebuild through share %d differs from the model: %v", tag, err)
 		}
 	}
+	return st
+}
 
-	// The clone target's marker, held against the read-out directly: its
-	// kind, extent, version and spec are what the rebuild must show.
-	entries := st.Rebuilt.Index.FileEntries(cFile(a))
-	var marker *index.Entry
-	for i := range entries {
-		e := &entries[i]
-		if e.Kind == index.EntryMarker && e.Removal == core.ChangeCloneTarget &&
-			e.Extent.Off == spec.DstOff && e.Extent.Len == spec.Len {
-			marker = e
-		}
-	}
-	if marker == nil {
-		t.Fatalf("Run: the rebuilt index holds no clone-target marker at [%d,+%d), want one", spec.DstOff, spec.Len)
-	}
-	if marker.Clone == nil || *marker.Clone != spec {
-		t.Errorf("Run: the clone-target marker's spec got %+v, want %+v", marker.Clone, spec)
-	}
-	if marker.Version != specV {
-		t.Errorf("Run: the clone-target marker's version got %v, want %v", marker.Version, specV)
+// TestRunRebuildByScanMatchesTheModelOverSeededWorkloads draws a workload
+// from each of a few fixed seeds — writes, fills, releases, truncates,
+// deallocates, deletes and clone targets over three files of two shares —
+// and holds the rebuild against the model for each.
+func TestRunRebuildByScanMatchesTheModelOverSeededWorkloads(t *testing.T) {
+	for _, seed := range []uint64{1, 2, 3, 5, 8} {
+		t.Run(fmt.Sprintf("seed %d", seed), func(t *testing.T) {
+			rng := rand.New(rand.NewPCG(seed, seed*2+1))
+			w := newWorkload()
+			files := []journal.FileID{w.file(1, 1), w.file(2, 1), w.file(3, 2)}
+			// Fills land in a region of their own, never over a write: the
+			// journal fills only what it does not hold, and the model refuses
+			// the rest.
+			const fillBase = 1 << 12
+			for i := range 60 {
+				f := files[rng.IntN(len(files))]
+				off := int64(rng.IntN(32)) * 8
+				n := 8 + int64(rng.IntN(8))*8
+				switch rng.IntN(7) {
+				case 0:
+					w.write(f, off, pattern(int(n), byte(i)))
+				case 1:
+					w.fill(f, fillBase+int64(i)*64, pattern(int(n), byte(i)))
+				case 2:
+					// The model releases only offloaded bytes, so the draw
+					// fills the extent and releases a part of it at once.
+					w.fill(f, fillBase+int64(i)*64, pattern(int(n), byte(i)))
+					w.release(f, fillBase+int64(i)*64, 8)
+				case 3:
+					w.truncate(f, off)
+				case 4:
+					w.deallocate(f, off, n)
+				case 5:
+					w.clone(f, off, n)
+				case 6:
+					if rng.IntN(4) == 0 { // a delete is rarer: it empties the file
+						w.delete(f)
+					} else {
+						w.write(f, off, pattern(int(n), byte(i)))
+					}
+				}
+			}
+			rebuildAndCompare(t, w)
+		})
 	}
 }
 
