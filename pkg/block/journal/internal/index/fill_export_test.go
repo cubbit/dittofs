@@ -20,7 +20,7 @@ func TestFillGapsNetOfHeldAndMarkers(t *testing.T) {
 		t.Fatalf("WriteRetain: %v", err)
 	}
 	// A loss above the fill's version leaves a marker over [30,40).
-	if _, err := ix.Lose(id, ext(30, 10), ver(5)); err != nil {
+	if _, _, err := ix.Lose(id, ext(30, 10), ver(5)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
 
@@ -186,7 +186,7 @@ func TestCheckFillIndexBoundTagFree(t *testing.T) {
 			t.Fatalf("WriteRetain: %v", err)
 		}
 	}
-	if _, err := ix.Lose(id, ext(20, 10), ver(5)); err != nil {
+	if _, _, err := ix.Lose(id, ext(20, 10), ver(5)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
 	if _, err := ix.CheckFillIndexBound(id, ext(0, 40)); err == nil {

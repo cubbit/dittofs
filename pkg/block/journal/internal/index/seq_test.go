@@ -79,7 +79,7 @@ func TestFillCarriesTheFillsSeq(t *testing.T) {
 func TestFillUnderAMarkerCarriesTheFillsSeq(t *testing.T) {
 	ix := New(1 << 20)
 	seqWrite(t, ix, write(400, 100, rec(1, 64), 1), 5)
-	if _, err := ix.Lose(testFile, ext(100, 100), ver(3)); err != nil {
+	if _, _, err := ix.Lose(testFile, ext(100, 100), ver(3)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
 	fp := Placed{Extent: ext(0, 300), Record: rec(2, 64), Version: ver(2)}

@@ -81,7 +81,7 @@ func TestMarkerSettled_AtOrBelow(t *testing.T) {
 	}
 
 	// A loss at version 5 leaves a marker over [0, 4KiB), unsettled at 5.
-	if _, err := ix.Lose(id, ext(0, 4096), ver(5)); err != nil {
+	if _, _, err := ix.Lose(id, ext(0, 4096), ver(5)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
 	if got := ix.MarkerSettled(id, ver(5)); got {
@@ -96,7 +96,7 @@ func TestMarkerSettled_AtOrBelow(t *testing.T) {
 
 	// A later loss at version 8 leaves the answer at 5 alone, and moves the
 	// one at 8.
-	if _, err := ix.Lose(id, ext(4096, 8), ver(8)); err != nil {
+	if _, _, err := ix.Lose(id, ext(4096, 8), ver(8)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
 	if got := ix.MarkerSettled(id, ver(5)); !got {
@@ -114,10 +114,10 @@ func TestMarkerSettled_AtOrBelow(t *testing.T) {
 	// answer below the second is false — one unsettled marker at or below
 	// v names a removal Settle has not covered — and above the second,
 	// after its settle, true again.
-	if _, err := ix.Lose(id, ext(8192, 8), ver(12)); err != nil {
+	if _, _, err := ix.Lose(id, ext(8192, 8), ver(12)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
-	if _, err := ix.Lose(id, ext(16384, 8), ver(16)); err != nil {
+	if _, _, err := ix.Lose(id, ext(16384, 8), ver(16)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
 	if got := ix.MarkerSettled(id, ver(12)); got {

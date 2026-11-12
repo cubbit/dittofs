@@ -304,7 +304,7 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		// writes. Upgrade to a scan from the end of each ledger, or one stream,
 		// inside Durable when a profile of small concurrent writes shows it.
 		if c.dur.Durable(pl.Loc) {
-			lh, _ := c.index.LiftSuperseded(id, v, core.Extent{Off: off + done, Len: pl.N})
+			lh, _, _ := c.index.LiftSuperseded(id, v, core.Extent{Off: off + done, Len: pl.N})
 			c.Account(lh)
 		}
 		done += pl.N

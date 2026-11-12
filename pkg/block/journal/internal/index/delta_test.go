@@ -501,7 +501,7 @@ func TestLoseDeltaIsExact(t *testing.T) {
 	t.Run("over held content", func(t *testing.T) {
 		fs, id := hold(t)
 		held0, dirty0 := counters(fs, id)
-		d, err := fs.lose(id, ext(1024, 1024), ver(5))
+		d, _, err := fs.lose(id, ext(1024, 1024), ver(5))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -520,7 +520,7 @@ func TestLoseDeltaIsExact(t *testing.T) {
 
 	t.Run("over the whole of the held content", func(t *testing.T) {
 		fs, id := hold(t)
-		d, err := fs.lose(id, ext(0, 4096), ver(5))
+		d, _, err := fs.lose(id, ext(0, 4096), ver(5))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -533,7 +533,7 @@ func TestLoseDeltaIsExact(t *testing.T) {
 	t.Run("over an extent holding nothing", func(t *testing.T) {
 		fs, id := hold(t)
 		held0, dirty0 := counters(fs, id)
-		d, err := fs.lose(id, ext(8192, 4096), ver(5))
+		d, _, err := fs.lose(id, ext(8192, 4096), ver(5))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -548,7 +548,7 @@ func TestLoseDeltaIsExact(t *testing.T) {
 
 	t.Run("zero length", func(t *testing.T) {
 		fs, id := hold(t)
-		d, err := fs.lose(id, ext(0, 0), ver(5))
+		d, _, err := fs.lose(id, ext(0, 0), ver(5))
 		if !errors.Is(err, core.ErrZeroLength) || d != (HeldDelta{}) {
 			t.Fatalf("lose = %+v, %v, want the zero delta and ErrZeroLength", d, err)
 		}

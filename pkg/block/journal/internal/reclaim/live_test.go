@@ -73,7 +73,7 @@ func (f *fixture) write(t *testing.T, id core.FileID, off, n int64, at uint32, v
 // extent, exactly as a settled truncate leaves it.
 func (f *fixture) remove(t *testing.T, id core.FileID, off, n int64, v uint64) {
 	t.Helper()
-	if _, err := f.ix.Lose(id, core.Extent{Off: off, Len: n}, ver(v)); err != nil {
+	if _, _, err := f.ix.Lose(id, core.Extent{Off: off, Len: n}, ver(v)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
 }

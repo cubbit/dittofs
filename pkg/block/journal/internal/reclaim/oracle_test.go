@@ -339,7 +339,7 @@ func (s *scenario) run(t *testing.T, step int, o op) {
 		// the removal rule of RFC 1 §7.2's planted case: a truncate
 		// kept by a record whose sequence is higher and whose version
 		// is lower.
-		if _, err := s.f.ix.Lose(oracleFiles[o.file], e, ver(o.v)); err != nil {
+		if _, _, err := s.f.ix.Lose(oracleFiles[o.file], e, ver(o.v)); err != nil {
 			t.Fatalf("step %d: Lose over bucket %d of file %d: %v", step, o.bucket, o.file, err)
 		}
 		s.o.markers[o.file] = append(s.o.markers[o.file], omarker{v: o.v})

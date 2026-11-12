@@ -286,7 +286,7 @@ func (c *Core) appendRemoval(ctx context.Context, s *Share, id core.FileID, spec
 	// keeps counted, and the next admitted operation sees it. Overturned by
 	// reserving the allowance before the append, which needs the entries a
 	// removal will add known ahead of the index change that decides them.
-	hd, err := c.index.ApplyRemoval(s.Tag, id, spec.change, spec.marker, v, seq, index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}, spec.spec)
+	hd, _, err := c.index.ApplyRemoval(s.Tag, id, spec.change, spec.marker, v, seq, index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}, spec.spec)
 	if err != nil {
 		// The claim's refusal is unreachable here, the tag having been
 		// checked under this same domain a moment ago; the record stays on

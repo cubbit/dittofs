@@ -537,14 +537,14 @@ func TestListByTag(t *testing.T) {
 	if _, err := ix.WriteRetain(testTag, held, write(0, 8, rec(1, 0), 1), 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ix.ApplyRemoval(testTag, marker, core.ChangeDeallocate, ext(0, 8), ver(2), 2, rec(1, 64), nil); err != nil {
+	if _, _, err := ix.ApplyRemoval(testTag, marker, core.ChangeDeallocate, ext(0, 8), ver(2), 2, rec(1, 64), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ix.WriteRetain(testTag, loss, write(0, 8, rec(1, 128), 3), 3); err != nil {
 		t.Fatal(err)
 	}
 	releaseAll(t, &ix.fs, loss)
-	if _, err := ix.Lose(loss, ext(0, 8), ver(4)); err != nil {
+	if _, _, err := ix.Lose(loss, ext(0, 8), ver(4)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ix.WriteRetain(testTag, released, write(0, 8, rec(1, 192), 5), 5); err != nil {
@@ -595,7 +595,7 @@ func TestSettleForLeavesOtherShareAlone(t *testing.T) {
 	ix := New(1 << 20)
 	const other = testTag + 1
 	id := fid(1)
-	if _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(0, 8), ver(2), 2, rec(1, 0), nil); err != nil {
+	if _, _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(0, 8), ver(2), 2, rec(1, 0), nil); err != nil {
 		t.Fatal(err)
 	}
 	ix.SettleFor(other, id, ver(9))
@@ -631,7 +631,7 @@ func TestListConcurrent(t *testing.T) {
 			defer wg.Done()
 			for i := range 50 {
 				id := fid(byte(w*50+i) + 1)
-				if _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(0, 8), ver(2), 2, rec(1, 0), nil); err != nil {
+				if _, _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(0, 8), ver(2), 2, rec(1, 0), nil); err != nil {
 					t.Error(err)
 					return
 				}

@@ -333,7 +333,7 @@ func TestDroppable_SyncedLoss(t *testing.T) {
 	p.finish(t)
 	// The loss's own marker over its extent, planted the way the journal
 	// leaves one: a synced loss the index applied.
-	if _, err := f.ix.Lose(id, core.Extent{Off: 0, Len: 4096}, ver(6)); err != nil {
+	if _, _, err := f.ix.Lose(id, core.Extent{Off: 0, Len: 4096}, ver(6)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
 	tr := New(f.ix, nil)
@@ -359,7 +359,7 @@ func TestDroppable_SyncedLoss(t *testing.T) {
 	p2 := newPlant(f2)
 	p2.write(t, id2, f2.seg, core.Extent{Off: 0, Len: 4096}, 0, 3, 2)
 	p2.finish(t)
-	if _, err := f2.ix.Lose(id2, core.Extent{Off: 0, Len: 4096}, ver(6)); err != nil {
+	if _, _, err := f2.ix.Lose(id2, core.Extent{Off: 0, Len: 4096}, ver(6)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
 	tr2 := New(f2.ix, nil)

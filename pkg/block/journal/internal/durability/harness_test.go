@@ -167,11 +167,11 @@ func (e *env) newDurabilityAt(dir string) *durability.Durability {
 		Dir:      dir,
 		Counters: e.counters,
 		Log:      e.log,
-		MarkLoss: func(f core.FileID, x core.Extent, v core.Version) (index.HeldDelta, error) {
+		MarkLoss: func(f core.FileID, x core.Extent, v core.Version) (index.HeldDelta, []core.SegmentID, error) {
 			e.mu.Lock()
 			defer e.mu.Unlock()
 			e.marks = append(e.marks, marked{f, x, v})
-			return e.delta, e.markErr
+			return e.delta, nil, e.markErr
 		},
 		Account: account,
 	})

@@ -2,6 +2,7 @@ package index
 
 import (
 	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -28,6 +29,31 @@ import (
 type SegmentBytes struct {
 	Held     int64
 	Retained int64
+}
+
+// touched collects, for one move, the ids of the segments whose per-segment
+// counters the move is lowering. The move's update owns it: its closure arms
+// the sets' touched fields before it changes anything and clears them before
+// it ends, both under the file's exclusive lock, so no two moves share one.
+// named returns the ids distinct and in ascending order, nil when the move
+// lowered no counter.
+//
+// ponytail: the list is materialised at the accounting edge the leaf already
+// visits, so collecting it costs nothing beyond the touches themselves,
+// O(segments touched) per move. Upgrade to the per-record backed-bytes hook
+// that would name the segment without one, when that hook ever lands, or
+// when these lists show in a profile.
+type touched struct{ ids []core.SegmentID }
+
+// note records that the move lowered seg's counters. Ordering and duplicates
+// are sorted out once, by named, since the leaf hands the ids in whatever
+// order its pieces come.
+func (m *touched) note(seg core.SegmentID) { m.ids = append(m.ids, seg) }
+
+// named returns the ids noted, distinct and ascending, nil when none were.
+func (m *touched) named() []core.SegmentID {
+	slices.Sort(m.ids)
+	return slices.Compact(m.ids)
 }
 
 // segCount is one segment's counters. They are signed so that a negative value —

@@ -326,7 +326,7 @@ func TestReadRacingSegmentRetirement(t *testing.T) {
 				t.Errorf("Draw: %v", err)
 				return
 			}
-			hd, err := c.Index().Lose(f, orig.Extent, v)
+			hd, _, err := c.Index().Lose(f, orig.Extent, v)
 			c.Account(hd)
 			if err != nil {
 				t.Errorf("Lose: %v", err)
@@ -533,7 +533,7 @@ func TestReadHoldsNoIndexLockDuringIO(t *testing.T) {
 	}
 	lost := make(chan error, 1)
 	go func() {
-		hd, err := c.Index().Lose(f, core.Extent{Off: 16 << 10, Len: 1}, lv)
+		hd, _, err := c.Index().Lose(f, core.Extent{Off: 16 << 10, Len: 1}, lv)
 		c.Account(hd)
 		lost <- err
 	}()

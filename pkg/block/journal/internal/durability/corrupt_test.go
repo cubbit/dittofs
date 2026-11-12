@@ -40,11 +40,11 @@ func newCorruptRig(t *testing.T, pre func(*corruptRig)) *corruptRig {
 	cr := &corruptRig{failRig: &failRig{resolved: make(chan core.SegmentID, 64)}}
 	cr.rig = newRigConfigured(t, 1, func(c *Config) {
 		c.Resolved = func(_ uint32, seg core.SegmentID) { cr.resolved <- seg }
-		c.MarkLoss = func(f core.FileID, x core.Extent, v core.Version) (index.HeldDelta, error) {
+		c.MarkLoss = func(f core.FileID, x core.Extent, v core.Version) (index.HeldDelta, []core.SegmentID, error) {
 			cr.mu.Lock()
 			defer cr.mu.Unlock()
 			cr.marked = append(cr.marked, marked{f, x, v})
-			return index.HeldDelta{}, nil
+			return index.HeldDelta{}, nil, nil
 		}
 	})
 	if pre != nil {

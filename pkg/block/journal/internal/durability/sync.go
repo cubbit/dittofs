@@ -43,9 +43,10 @@ type Config struct {
 	Counters *index.Counters
 
 	// MarkLoss leaves the index's loss marker for a synced loss, and returns
-	// the change to the file's held bytes that the marker made. It is
-	// required.
-	MarkLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error)
+	// the change to the file's held bytes that the marker made, with the
+	// ids of the segments whose held counters the marker's cut lowered. It
+	// is required.
+	MarkLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, []core.SegmentID, error)
 
 	// Account, when set, is handed every change the layer makes to the index
 	// as a held delta, so the byte counters kept above it see it: the delta
@@ -176,7 +177,7 @@ type Durability struct {
 
 	dir      *dirState
 	counters *index.Counters
-	markLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error)
+	markLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, []core.SegmentID, error)
 	account  func(index.HeldDelta)
 
 	// streams are the append streams a loss record is written through, bound

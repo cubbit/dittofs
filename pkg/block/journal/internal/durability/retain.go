@@ -28,7 +28,7 @@ func isContent(w segment.Written) bool {
 // good. Overturned by a publish that no longer follows the append under one
 // domain hold.
 func (d *Durability) lift(file core.FileID, v core.Version, e core.Extent) {
-	hd, err := d.index.LiftSuperseded(file, v, e)
+	hd, _, err := d.index.LiftSuperseded(file, v, e)
 	if err != nil {
 		d.log.Error("journal could not lift superseded content", "file", file, "version", v, "extent", e, "err", err)
 		return

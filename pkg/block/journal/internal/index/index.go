@@ -133,8 +133,10 @@ func (ix *Index) Refused() uint64 { return ix.fs.indexRefusals() }
 
 // Lose applies a synced loss of e at v to id under the file's lock, with no
 // admission, and returns the change to the file's held state. A zero-length e
-// is refused with core.ErrZeroLength and changes nothing.
-func (ix *Index) Lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta, error) {
+// is refused with core.ErrZeroLength and changes nothing. It also returns
+// the distinct, ascending ids of the segments whose held counters the loss's
+// cut lowered, nil when it lowered none.
+func (ix *Index) Lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta, []core.SegmentID, error) {
 	return ix.fs.lose(id, e, v)
 }
 
@@ -148,6 +150,8 @@ func (ix *Index) Lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta,
 // is the clone target's, kept by its marker, and nil for every other kind. A
 // zero-length deallocate or clone target is refused with ErrZeroLength as
 // those are, and a file another share owns with the claim's OtherShareError.
+// It also returns the distinct, ascending ids of the segments whose held
+// counters the removal lowered, nil when it lowered none.
 //
 // It is the only call into the index's removal operations: the journal checks
 // the allowance through CheckRemoval before it appends and applies the
@@ -164,7 +168,7 @@ func (ix *Index) Lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta,
 // and that is what the note is for. Overturned by a removal whose record never
 // outranks anything, which the drop query could then answer without its
 // segment.
-func (ix *Index) ApplyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec) (HeldDelta, error) {
+func (ix *Index) ApplyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec) (HeldDelta, []core.SegmentID, error) {
 	return ix.fs.applyRemoval(tag, id, k, e, v, seq, at, spec)
 }
 

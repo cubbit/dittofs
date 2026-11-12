@@ -223,7 +223,7 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 			if marked[p.Extent] {
 				continue
 			}
-			delta, err := d.markLoss(c.File, p.Extent, c.Version)
+			delta, _, err := d.markLoss(c.File, p.Extent, c.Version)
 			if err != nil {
 				d.log.Error("a synced loss left no marker", "file", c.File, "err", err)
 				continue
