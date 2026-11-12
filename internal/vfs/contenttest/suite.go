@@ -475,6 +475,10 @@ func theAdmittedHookRunsBeforeTheChange(t *testing.T, s Subject) {
 		t.Errorf("a clone whose hook admits it = %v, hook ran %d times; want nil, at least once", err, ran)
 	}
 	s.wantRead(t, dst, 0, 8, "abcd")
+	// A write over the done clone's extent drops the engine's memory of it,
+	// which otherwise holds the engine's Close for its whole stop bound.
+	// Drop it once Close no longer waits on a remembered clone.
+	s.write(t, dst, 0, "abcd")
 }
 
 // With nothing lost, every Write and Commit of the share answers one
