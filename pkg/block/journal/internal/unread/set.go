@@ -59,6 +59,8 @@ type Ref struct {
 // cleared the range since the read started, once a caller exists that
 // retires or races on one.
 type Set struct {
+	// decision: mu is a leaf: every critical section is map and counter
+	// work, and the read a Try makes runs with it released.
 	mu      sync.Mutex
 	entries map[core.SegmentID]map[int64]Ref
 	suspect int

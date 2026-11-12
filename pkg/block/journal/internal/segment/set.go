@@ -130,6 +130,7 @@ type Counters struct {
 // not the ledger itself, and fails only if the lock recorder of record ever
 // finds a plain lock held above it.
 type Set struct {
+	// decision: mu is the capacity domain; it takes nothing while held.
 	mu     lockorder.Mutex
 	cap    int64
 	log    *slog.Logger
@@ -166,9 +167,13 @@ type Set struct {
 	// that segment's seal callback has returned — the retire blocks until
 	// the seal's delivery is whole, state change and callback alike — and
 	// each callback sees the state change it names complete, every
-	// mutator's mu held nowhere across a callback. It is otherwise a leaf
-	// lock: no call takes it but the two fire sites and the two
-	// registrations, so it joins no cycle.
+	// mutator's mu held nowhere across a callback. No call takes it but the
+	// two fire sites and the two registrations, so it joins no cycle.
+	//
+	// decision: obs is unranked and not a leaf: it is held across mu and
+	// across the observers' callbacks. The lock-order recorder never sees
+	// it. Withdraw this if a callback ever calls a set mutator that
+	// delivers, which would wait on the delivery its own call holds.
 	obs sync.Mutex
 }
 
