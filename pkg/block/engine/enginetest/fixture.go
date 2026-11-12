@@ -98,6 +98,8 @@ type Fixture struct {
 
 	// cloneGate, once set by HoldNextClone, holds the next clone's phase 1.
 	cloneGate atomic.Pointer[gate]
+	// startGate, once set by HoldNextStart, holds the next engine start.
+	startGate atomic.Pointer[gate]
 	handles   sync.Map // journal.ShareTag → the handle the running engine opened on it
 
 	kv      *failingKV                // the store's kv.KV, failing Updates when a test asks
@@ -126,17 +128,46 @@ func (f *Fixture) Stall() { f.stalled.Store(true) }
 // its files registered, until release is called; entered is closed once it
 // arrives. A test's cleanup releases it.
 func (f *Fixture) HoldNextClone() (entered <-chan struct{}, release func()) {
+	return f.holdNext(&f.cloneGate)
+}
+
+// HoldNextStart holds the next raise of the shards' incarnations at the
+// store: the next engine start's, inside its start steps after its journal
+// is open, or a first attach's if one comes first. It holds until release is
+// called; entered is closed once it arrives. A test's cleanup releases it.
+func (f *Fixture) HoldNextStart() (entered <-chan struct{}, release func()) {
+	return f.holdNext(&f.startGate)
+}
+
+// holdNext sets a gate at p for the next store call that takes it.
+func (f *Fixture) holdNext(p *atomic.Pointer[gate]) (entered <-chan struct{}, release func()) {
 	g := &gate{entered: make(chan struct{}), release: make(chan struct{})}
 	var once sync.Once
 	release = func() { once.Do(func() { close(g.release) }) }
 	f.t.Cleanup(release)
-	f.cloneGate.Store(g)
+	p.Store(g)
 	return g.entered, release
 }
 
 // gate is a held store call: entered is closed when it arrives, and it waits
 // for release.
 type gate struct{ entered, release chan struct{} }
+
+// pass takes the gate set at p, if one is, and waits for its release or for
+// ctx to end.
+func pass(ctx context.Context, p *atomic.Pointer[gate]) error {
+	g := p.Swap(nil)
+	if g == nil {
+		return nil
+	}
+	close(g.entered)
+	select {
+	case <-g.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 // FailNextSync makes the journal's next fsync of a segment fail, so the sync
 // window it belongs to fails. A spare's sync as it is made is not one.
@@ -675,7 +706,7 @@ func (f *Fixture) start() {
 		},
 		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate},
 		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
-		Lifecycle: f.FS.Store.Lifecycle(),
+		Lifecycle: gatedLifecycle{Lifecycle: f.FS.Store.Lifecycle(), startGate: &f.startGate},
 		Holds:     Holds(f.Opens, f.FS.Store.Opens()),
 		Clock:     f.Clock,
 		Logger:    f.logger,
@@ -898,15 +929,24 @@ func (x fencedExistence) Clone(ctx context.Context, op kvstore.CloneOp, pending 
 	if x.crashed.Load() {
 		return errCrashed
 	}
-	if g := x.cloneGate.Swap(nil); g != nil {
-		close(g.entered)
-		select {
-		case <-g.release:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	if err := pass(ctx, x.cloneGate); err != nil {
+		return err
 	}
 	return x.Existence.Clone(ctx, op, pending)
+}
+
+// gatedLifecycle is the store's lifecycle view, holding the raise of the
+// shards' incarnations at start while HoldNextStart's gate is set.
+type gatedLifecycle struct {
+	engine.Lifecycle
+	startGate *atomic.Pointer[gate]
+}
+
+func (l gatedLifecycle) RaiseAtStart(ctx context.Context, shards []entity.ShardID) (map[entity.ShardID]uint64, error) {
+	if err := pass(ctx, l.startGate); err != nil {
+		return nil, err
+	}
+	return l.Lifecycle.RaiseAtStart(ctx, shards)
 }
 
 // fencedContent is the store's content view, refusing its changes once
