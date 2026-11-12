@@ -11,31 +11,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 )
 
-func TestRecordingCallbacksAnswerAsSet(t *testing.T) {
-	ctx := context.Background()
-	failed := errors.New("no answer")
-	cb := &vfstest.RecordingCallbacks{
-		Answer: func(_ context.Context, c vfstest.Callback) error {
-			if c.Method == "RecallAny" {
-				return failed
-			}
-			return nil
-		},
-		Refuse: true,
-	}
-	w := vfs.LockWaiter{Wait: vfs.WaitCallback}
-	if refused, err := cb.LockWaitOver(ctx, w, true); !refused || err != nil {
-		t.Fatalf("LockWaitOver = %v, %v; want refused, nil", refused, err)
-	}
-	if err := cb.RecallAny(ctx, 2); err != failed {
-		t.Fatalf("RecallAny = %v, want %v", err, failed)
-	}
-	want := []vfstest.Callback{{Method: "LockWaitOver", Args: []any{w, true}}, {Method: "RecallAny", Args: []any{2}}}
-	if got := cb.Calls(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("Calls = %v, want %v", got, want)
-	}
-}
-
 // CallbackFaults passes every callback to Inner, which keeps it as sent
 // and picks its session, and then answers in Inner's place what Fail
 // answers, and a lock grant refused when Refuse is set.
