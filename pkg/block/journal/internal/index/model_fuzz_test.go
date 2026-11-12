@@ -49,7 +49,12 @@ type indexView struct {
 	tag journal.ShareTag
 }
 
-var _ model.View = indexView{}
+// The second pin keeps the index comparison on: it type-asserts IndexedView,
+// so a signature drift here would silently drop it, not break the build.
+var (
+	_ model.View        = indexView{}
+	_ model.IndexedView = indexView{}
+)
 
 // ReadAt serves p from the harness' records: each piece the held set places
 // is read from the record that holds it, at the payload offset its skip

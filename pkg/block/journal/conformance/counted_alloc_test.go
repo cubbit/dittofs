@@ -10,7 +10,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
-// R101's allocations per operation: one warm WriteAt, one ReadAt of held
+// The allocations per operation of RFC 1 §9.7's counted row: one warm WriteAt, one ReadAt of held
 // bytes and one Stats, counted per call against a pinned bound, so an
 // operation that grows an allocation fails the check. None of it times
 // anything: allocations are the one cost a check can count without a

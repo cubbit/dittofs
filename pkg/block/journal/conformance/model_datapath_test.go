@@ -53,7 +53,8 @@ func TestModel_DataPath(t *testing.T) {
 		// decision: only the files and the shares are asserted, not the
 		// streams the records sit on. The fixture's journals append over
 		// two streams, and a file's stream is Streams.For's per-file hash,
-		// so the driven files sit on both by construction; reading which
+		// so the driven files are expected on both — a hash makes that
+		// overwhelmingly likely, not certain; reading which
 		// streams a finished sequence's records reached waits for the
 		// inspection read-out that recovery builds, and TestModel already
 		// carries that assertion, waiting there on the same read-out.
@@ -78,7 +79,10 @@ const (
 // step, its operation drawn from model.DataPathOps by the first byte's
 // remainder, and the eight that follow its share, over the journal's two,
 // its file, over the four, its pick, the byte its writes and fills are made
-// of, and the low 16 bits each of its offset and its length. An offset of
+// of, the low 16 bits of its offset, and its length: the low 16 bits taken
+// modulo 1025, so a decoded length lands in the generator's range of zero
+// to 1 KiB and the journal's own harness limits refuse nothing the
+// generator could have drawn. An offset of
 // 0xffff decodes as the region at the end of the largest file, which the
 // generated draws reach; any other offset beyond 16 bits has no encoding,
 // and none is drawn. A short input is a short sequence, never an error, and
@@ -94,7 +98,7 @@ func decodeDataPathSteps(data []byte) []model.Step {
 			Pick:  d[3],
 			Byte:  d[4],
 			Off:   int64(d[5]) | int64(d[6])<<8,
-			Len:   int64(d[7]) | int64(d[8])<<8,
+			Len:   (int64(d[7]) | int64(d[8])<<8) % 1025, // the length the generator draws
 		}
 		if s.Off == math.MaxUint16 {
 			s.Off = math.MaxInt64 - 64 - s.Len
