@@ -22,6 +22,11 @@ import (
 type SegmentInfo struct {
 	ID     core.SegmentID
 	Header format.SegmentHeader
+
+	// Unverified marks a segment whose header did not verify: Header is
+	// zero, and the segment is scanned by its records alone, never offered
+	// a catalogue.
+	Unverified bool
 }
 
 // Attached is what the attach pass found in the journal's directory.
