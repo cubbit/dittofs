@@ -998,7 +998,7 @@ func testBeforeOwnWrites(t *testing.T, s kv.KV) {
 // nothing a commit made after the snapshot.
 func testBeforeStoredHistory(t *testing.T, s kv.KV) {
 	set(t, s, "a/1", "x", "a/3", "y", "a/5", "z")
-	set(t, s, "a/3", "y2")
+	set(t, s, "a/3", "y2", "a/5", "z2")
 
 	check := func(step, want string) {
 		t.Helper()
@@ -1030,6 +1030,11 @@ func testBeforeStoredHistory(t *testing.T, s kv.KV) {
 	check("after deleting a/3 and a/1", "")
 
 	if err := s.View(ctx(t), func(r kv.Reader) error {
+		// A read pins the snapshot on a backend that takes it lazily.
+		if _, err := r.Get([]byte("a/5")); err != nil {
+			return err
+		}
+
 		set(t, s, "a/4", "later")
 
 		got, err := before(r, "a/", "a/5")
@@ -1043,6 +1048,25 @@ func testBeforeStoredHistory(t *testing.T, s kv.KV) {
 	}
 
 	check("after the set of a/4", "a/4=later")
+
+	// A key set then deleted between the prefix's range and the seek key must
+	// not hide the live record below.
+	set(t, s, "a~", "gone")
+
+	if err := s.Update(ctx(t), del("a~")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.View(ctx(t), func(r kv.Reader) error {
+		got, err := before(r, "a/", "b/0")
+		if err == nil && got != "a/5=z2" {
+			t.Errorf("past a deleted a~: Before = %q, want %q", got, "a/5=z2")
+		}
+
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testBeforeUntracked(t *testing.T, s kv.KV) {

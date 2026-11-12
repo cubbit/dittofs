@@ -391,25 +391,32 @@ func (r *reader) Before(prefix, key []byte) (kv.KeyValue, bool, error) {
 // only.
 type below struct {
 	it      *badger.Iterator
+	prefix  []byte
 	key     []byte
 	value   []byte
 	ok      bool
 	err     error
-	visited int // the versions the walk has read: its cost
+	visited int // versions read, for tests: the walk's cost
 }
 
 func newBelow(snap *badger.Txn, prefix, key []byte) *below {
 	opts := badger.DefaultIteratorOptions
-	opts.Prefix = prefix
 	opts.Reverse = true
 	opts.AllVersions = true
 	opts.PrefetchValues = false
 
-	c := &below{it: snap.NewIterator(opts)}
+	c := &below{it: snap.NewIterator(opts), prefix: prefix}
 
-	c.it.Seek(key)
+	// A key past the prefix's range seeks from the range's end, so the keys
+	// between them are never read. The end itself lies outside the range.
+	seek := key
+	if end := prefixEnd(prefix); end != nil && bytes.Compare(key, end) > 0 {
+		seek = end
+	}
 
-	for c.it.Valid() && bytes.Equal(c.it.Item().Key(), key) {
+	c.it.Seek(seek)
+
+	for c.it.Valid() && bytes.Equal(c.it.Item().Key(), seek) {
 		c.visited++
 		c.it.Next()
 	}
@@ -419,15 +426,26 @@ func newBelow(snap *badger.Txn, prefix, key []byte) *below {
 	return c
 }
 
+// prefixEnd is the first key past every key under prefix, nil if none.
+func prefixEnd(prefix []byte) []byte {
+	for i := len(prefix) - 1; i >= 0; i-- {
+		if prefix[i] != 0xFF {
+			return append(bytes.Clone(prefix[:i]), prefix[i]+1)
+		}
+	}
+
+	return nil
+}
+
 // Next moves to the next live key below. In reverse a key's versions come
 // oldest first, all at or below the snapshot, so its last one is what the
 // snapshot reads.
 func (c *below) Next() {
 	c.ok = false
 
-	for c.it.Valid() && c.err == nil {
-		var value []byte
+	var value []byte // reused for every version this call copies; the last live one stays
 
+	for c.it.Valid() && bytes.HasPrefix(c.it.Item().Key(), c.prefix) && c.err == nil {
 		key := c.it.Item().KeyCopy(nil)
 		live := false
 
@@ -438,7 +456,7 @@ func (c *below) Next() {
 
 			live = !item.IsDeletedOrExpired()
 			if live {
-				if value, c.err = item.ValueCopy(nil); c.err != nil {
+				if value, c.err = item.ValueCopy(value); c.err != nil {
 					return
 				}
 			}
