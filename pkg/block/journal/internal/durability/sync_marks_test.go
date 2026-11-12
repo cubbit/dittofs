@@ -179,6 +179,16 @@ func TestSyncReturnsNoMarkForASealedSegment(t *testing.T) {
 	set.Store(r.set)
 	hook, reached, release := gate(t)
 	t.Cleanup(release)
+	captured := make(chan struct{})
+	var capturedOnce sync.Once
+	r.d.beforeWait = func(ws []work) {
+		for _, w := range ws {
+			if len(w.cands) > 0 {
+				capturedOnce.Do(func() { close(captured) })
+				return
+			}
+		}
+	}
 	var armed atomic.Bool
 	// Installed before the workers start, as every test hook is, so the
 	// worker never races the field it reads each pass.
@@ -203,6 +213,14 @@ func TestSyncReturnsNoMarkForASealedSegment(t *testing.T) {
 	}
 
 	sync := r.syncMarksAsync(context.Background(), f)
+	// The parked worker is released only once the waiter holds its
+	// candidates, as the applicability test releases it, so the empty answer
+	// below can only come from the sealed check.
+	select {
+	case <-captured:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the Sync never parked on the candidate it captured")
+	}
 	release()
 	answered := mustSyncReturn(t, "Sync over the sealed segment", sync)
 	marks, err := answered.marks, answered.err
@@ -369,8 +387,12 @@ func TestSyncReturnsNilMarksWhenNothingIsNamed(t *testing.T) {
 // marked for the older record, never skipped. The unsealed older place is a
 // retired segment here: gone from the registry, Sealed answers for it the
 // safe direction, not sealed. The worker is parked before any completion, as
-// the sealed-segment test parks it, so both records are candidates the Sync
-// captures.
+// the sealed-segment test parks it, and the parked worker is released only
+// once the waiter holds its candidates: beforeWait runs after the waiter's
+// checks found something still pending, and the parked worker is the only
+// thing that can complete the records, so releasing before the capture ran
+// would let the worker empty the ledger under a Sync that then held no
+// candidate to build a mark from.
 func TestSyncMarksTheNewestNamedRecordOutsideASealedSegment(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	var set atomic.Pointer[segment.Set]
@@ -387,6 +409,16 @@ func TestSyncMarksTheNewestNamedRecordOutsideASealedSegment(t *testing.T) {
 	set.Store(r.set)
 	hook, reached, release := gate(t)
 	t.Cleanup(release)
+	captured := make(chan struct{})
+	var capturedOnce sync.Once
+	r.d.beforeWait = func(ws []work) {
+		for _, w := range ws {
+			if len(w.cands) > 0 {
+				capturedOnce.Do(func() { close(captured) })
+				return
+			}
+		}
+	}
 	var armed atomic.Bool
 	r.d.afterHolds = func() {
 		if armed.CompareAndSwap(true, false) {
@@ -419,6 +451,11 @@ func TestSyncMarksTheNewestNamedRecordOutsideASealedSegment(t *testing.T) {
 	}
 
 	sync := r.syncMarksAsync(context.Background(), f, g)
+	select {
+	case <-captured:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the Sync never parked on the candidates it captured")
+	}
 	release()
 	answered := mustSyncReturn(t, "Sync", sync)
 	if answered.err != nil {
