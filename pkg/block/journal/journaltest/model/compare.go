@@ -54,13 +54,14 @@ func (k markerKey) String() string {
 // observation is what the journal shows of one file, read once and compared
 // with every state the model allows.
 type observation struct {
-	held    map[int64]heldByte // held bytes inside the read windows
-	missing map[int64]bool     // missing bytes inside the read windows
-	extents map[int64]bool     // bytes Extents names
-	asOf    version
-	since   []sinceView         // what Since yields, from each version read
-	bits    map[int64]indexByte // the index's held bytes
-	idxMark []markerKey         // the index's markers, with no kind
+	held     map[int64]heldByte // held bytes inside the read windows
+	missing  map[int64]bool     // missing bytes inside the read windows
+	extents  map[int64]bool     // bytes Extents names
+	asOf     version
+	since    []sinceView         // what Since yields, from each version read
+	hasIndex bool                // whether the view served the index at all
+	bits     map[int64]indexByte // the index's held bytes
+	idxMark  []markerKey         // the index's markers, with no kind
 }
 
 // sinceView is what Since(id, from) yielded.
@@ -100,7 +101,8 @@ func sinceFroms(f *file) []version {
 // first way it differs from the model. It compares every file of the share:
 // the bytes held and their versions, the missing extents, exactly; the change
 // version a read reports; what Since yields; the offloaded bit and markers of
-// the index; and which files the share lists and which it lists as dirty.
+// the index, where the view carries one; and which files the share lists and
+// which it lists as dirty.
 //
 // Answers are compared byte by byte, never extent by extent, because where the
 // journal splits held content depends on its records, which the caller cannot
@@ -344,10 +346,18 @@ func observe(ctx context.Context, f *file, v View, froms []version) (*observatio
 		o.since = append(o.since, sv)
 	}
 
-	entries, err := v.Index(f.id)
+	// The index is read only where the view carries one: a view whose
+	// journal exposes no index read-out cannot answer it, so its bit and
+	// markers are compared by nobody below.
+	iv, indexed := v.(IndexedView)
+	if !indexed {
+		return o, nil
+	}
+	entries, err := iv.Index(f.id)
 	if err != nil {
 		return nil, fmt.Errorf("Index: %w", err)
 	}
+	o.hasIndex = true
 	for _, e := range entries {
 		switch e.Kind {
 		case journal.EntryHeld:
@@ -480,6 +490,12 @@ func differ(o *observation, st *fileState, ceiling version) string {
 		}
 	}
 
+	// No index was read: the offloaded bit and the index's markers are
+	// answers only the index gives, so over a view carrying none they are
+	// skipped rather than compared against nothing.
+	if !o.hasIndex {
+		return ""
+	}
 	var wantIdx []markerKey
 	for _, r := range st.markers {
 		wantIdx = append(wantIdx, markerKey{0, r.ext, r.ver})

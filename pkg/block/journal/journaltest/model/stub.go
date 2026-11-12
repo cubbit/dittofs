@@ -97,6 +97,34 @@ type stubView struct {
 	s *stubs
 }
 
+// stubIndexedView adds the index recording to a stubView of a view that
+// carries an index. It exists so the index call is recorded — as any other
+// call is — only while the view can answer it.
+type stubIndexedView struct {
+	stubView
+	indexed IndexedView
+}
+
+var _ IndexedView = stubIndexedView{}
+
+func (v stubIndexedView) Index(id journal.FileID) ([]journal.IndexEntry, error) {
+	es, err := v.indexed.Index(id)
+	v.s.seen("Inspect.File", err)
+	return es, err
+}
+
+// wrapView wraps v recording the first stub call of a step through it. The
+// index is wrapped — and its stub recorded — only while the view carries
+// one, so Compare over a view without it skips the index rather than
+// answering a stub with every step.
+func wrapView(v View, s *stubs) View {
+	w := stubView{v, s}
+	if iv, ok := v.(IndexedView); ok {
+		return stubIndexedView{w, iv}
+	}
+	return w
+}
+
 func (v stubView) ReadAt(ctx context.Context, id journal.FileID, off int64, p []byte) (int, []journal.Extent, []journal.Held, journal.Version, error) {
 	n, missing, held, asOf, err := v.View.ReadAt(ctx, id, off, p)
 	v.s.seen("ReadAt", err)
@@ -118,12 +146,6 @@ func (v stubView) Since(ctx context.Context, id journal.FileID, from journal.Ver
 			}
 		}
 	}
-}
-
-func (v stubView) Index(id journal.FileID) ([]journal.IndexEntry, error) {
-	es, err := v.View.Index(id)
-	v.s.seen("Inspect.File", err)
-	return es, err
 }
 
 // Files and DirtyFiles return no error, so a stub of either shows as an
