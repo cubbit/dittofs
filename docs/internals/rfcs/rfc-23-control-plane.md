@@ -647,7 +647,8 @@ The node holds two pictures: the **desired** one, read from records, and the
 | an adapter's restart-class setting | builds a new adapter through its factory with the new settings. `New` opens nothing, so a setting it refuses leaves the old adapter serving and the record refused. Only then the node drains and stops the old adapter and starts the new one; the others keep serving. If the new one fails to start, the node builds and starts one with the last settings that served, and reports the record refused (§2.4) |
 | a sidecar enabled or disabled | `Sync` with the serving adapters, or with none ([RFC 20 §3.5](rfc-20-adapters.md#3.5%20Sidecars)) |
 | a node-scoped or installation-scoped restart-class setting other than an adapter's (row above) | nothing until the process next starts; the node reports the record as restart-pending (§2.4) |
-| a principal, grant or export policy | `apply`, handing identity and `*vfs.Filesystem` the new generation; their generations and versions are in the identity and admission cache keys ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) |
+| a principal | `apply`, handing identity the new principals generation, which is in the identity cache's key ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) |
+| a grant or export policy | nothing: it raises no counter, and admission reads the share's grant-list version and `ExportPolicy.Version` on every call, which are in the admission cache's key (RFC 18 §7.2) |
 | a shard record | nothing: the gateway's `Router` reads shard records itself, and [RFC 11](rfc-11-ownership.md)'s epochs keep its routing correct |
 
 Every row is one of reconcile's three calls (§2.1): a share created or removed
@@ -970,10 +971,10 @@ them and decides nothing about identity:
 - **the domain join** is an operation the runner drives through identity:
   `join-domain` creates the computer account, or, offline, takes one an
   administrator created with its password, which the call writes as a new
-  version of the machine password's `Secret` in a transaction committed before
-  the operation's, so neither the operation nor its audit record holds more than
-  the reference; a crash between the two leaves a version no join uses, which
-  the next join or rotation supersedes. The call keeps no idempotency record
+  version of the machine password's `Secret` in a write of its own (§4.3),
+  audited as a `set` of that reference, committed before the operation's, so
+  no record holds more than the reference; a crash between the two leaves an
+  audited version no join uses, which the next join or rotation supersedes. The call keeps no idempotency record
   (§4.5);
   `leave-domain` removes it;
   `rotate-machine-password` changes the password at the domain controller,
@@ -1174,8 +1175,8 @@ state it expects.
 ### 4.5 Idempotency
 
 Every `POST` and every `DELETE` **MUST** carry an `Idempotency-Key`, a client
-value unique per intended action, except the credential calls below; one
-without is refused `428`. The server
+value unique per intended action and at most 255 bytes, except the credential
+calls below; one without is refused `428`, and a longer one `400`. The server
 keeps, per (account, key), the digest of the request — method, path, body — and
 the answer it gave, written in the request's own transaction:
 
@@ -1399,7 +1400,9 @@ second store.
   API verifies the signature and expiry and then reads the account — through
   `APISignIn.Account`, identity's cache keyed by the principals generation
   ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) — and refuses a disabled or deleted account, a
-  revoked session, or a token issued before the account's **not-before** time.
+  revoked session, or a token issued before the account's **not-before** time:
+  an access token by its issue time, and a refresh or an API token by its
+  session's or its own creation time, so a refresh cannot mint a token past it.
   So disabling an account, changing its role, changing its password or signing
   it out everywhere takes effect on every node within a second, not at token
   expiry.
@@ -1425,19 +1428,25 @@ second store.
   as the last, from 1 s up to 5 min, and one that comes sooner is answered
   `429` with `Retry-After`; the account's own count applies the same wait only
   from 100 failures, so guesses spread over many sources stay bounded
-  ([NIST SP 800-63B §5.2.2](https://pages.nist.gov/800-63-3/sp800-63b.html#throttle)).
+  ([NIST SP 800-63B-4 §3.2.2](https://pages.nist.gov/800-63-4/sp800-63b.html#throttle)).
+  A burst against one account from many sources can therefore pass up to 100
+  before the account's wait: that is NIST's ceiling, kept rather than lowered,
+  because an account-wide wait is also one any source can impose on the
+  account's owner, and the per-pair count already keeps the owner's own source
+  apart from the attacker's, as smart lockout does.
   The counts are kept in the store, so each bound holds installation-wide, not
   per node. An attempt is counted before its password is checked, in one
   transaction that reads the counts and raises them, so concurrent guesses
   cannot all pass at the same count; the wait is decided on the counts as
   read, so the fifth attempt is checked and the sixth waits; a write that fails
   refuses the attempt. An attempt answered `429` raises its pair's and its
-  source's counts, never the account's, and its password is never checked. A
+  source's counts, never the account's, since it tried no password, and its
+  password is never checked. A
   success resets the account's count and its pair's, and takes back its own
   raise of the source's; a failure is audited (§6). An account is keyed by its
   principal, so spellings of one name share it, and a name that resolves to no
   account counts against its source only. A pair's and a source's counts are
-  forgotten 24 h after their last failure.
+  forgotten 24 h after their last counted attempt.
 
   > decision: the fast wait is keyed by account and source together, as
   > identity providers' smart lockout separates familiar and unfamiliar
@@ -1470,7 +1479,7 @@ second store.
   must-change or not: a stolen first-sign-in token must not set a password on
   its own.
 - **Recovery.** Lost admin credentials are reset by an offline command of the
-  server binary on a node that is stopped, with the host's bootstrap. It sets a new generated password with must-change, clears
+  server binary on a node that is stopped, with the host's bootstrap. It sets a new generated password with must-change, which raises the account's not-before time as any password change does, clears
   the account's sign-in failure count (§5.3), writes an audit record naming the
   host and the command, and nothing else. It is the
   one change not made through the API.
@@ -1761,7 +1770,7 @@ builds a node any other way, and an architecture test fails on a caller of
 | §4.7 error table | For every error value in every closed set, provoke it through the API, or inject it at the seam where none can be provoked; assert each has a status and code, and `api_unmapped_errors_total` stays 0. | an error with no row |
 | §5.1 roles grant nothing | With the bootstrap admin and every role, mount every share over every flavour: assert every mount refused. Read the admin's record: no uid, gid, SID, Kerberos name or grant. | an API role leaking into file access ([RFC 18 §10](rfc-18-identity.md#10.%20Conformance)) |
 | §5.2 roles | Read the route list from the router and compare it with §4.1's resources and Actions table; a route in neither fails the check. For every route, call it as `viewer`, `operator` and `admin`; assert the table of §5.2, `404` where the caller may not read. As an operator, give yourself `admin`: refused. As an operator, write the password secret of an admin account, and the signing key, through every secret-bearing route: refused, and neither changed. Demote the last admin: `409` `last_admin`. | a route missing its check; privileged credentials replaced through a secret write |
-| §5.3 revocation | Sign in on two nodes; disable the account; assert every call on both is refused within 1 s, with the access token unexpired. Reuse an already-rotated refresh token: assert the session is revoked. | a token outliving its account |
+| §5.3 revocation | Sign in on two nodes; disable the account; assert every call on both is refused within 1 s, with the access token unexpired. Reuse an already-rotated refresh token: assert the session is revoked. Change an account's password, then refresh a session signed in before it and call with an API token created before it: assert both refused. Run the break-glass reset: assert a session signed in before it is refused. | a token outliving its account |
 | §5.3 throttling | Fail 5 sign-ins for one account from one address: assert the sixth from it answers `429`, a sign-in for that account from a second address is checked, and 5 concurrent attempts past the bound pass no more than the counts allow. Fail 100 across 25 addresses: assert the next from a new address waits. Sign in correctly: assert the account's and the pair's counts reset. | one count per account, so a guesser on one address locks out the owner on another |
 | §5.5 OpenID Connect | Against a test issuer, run `login --oidc` with no browser: assert a session whose tokens are the API's, and no ID token stored. Map a claim value to `operator` for an account whose own role is `viewer`: assert `operator` rights, and `viewer` only in a session whose token lacks the value. Set `api.password_sign_in` to `viewer`: assert an `operator`'s password sign-in refused `403`, and the last unlinked `admin` still signs in by password. As `operator`, write `api.oidc_role_map`: refused. | an ID token used as the session; a role carried in a token; an operator raising its own role |
 | §5.4 first password | Initialise without a password; assert it is printed by the step and appears in no log. Sign in: every call but the password change is `403`. Change it without the current password: refused. | a first-login token setting a password alone |

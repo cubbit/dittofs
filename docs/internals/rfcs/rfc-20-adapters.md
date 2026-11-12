@@ -1111,8 +1111,8 @@ the node applies it by `Sync`, with the serving adapters or with none (§3.5,
 addresses are bootstrap facts ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)).
 An adapter's port is its `port` setting, at installation scope with a node
 override, restart-class ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)):
-the protocol's `New` binds each listener it would put on its default port on
-`port` instead, and a change builds a new adapter
+the protocol's `New` configures each listener it would put on its default port
+on `port` instead, which `Start` binds (§3.1), and a change builds a new adapter
 ([RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)).
 `Reconfigure` still adds and removes listeners, for two callers only: a
 namespace move's release of an address

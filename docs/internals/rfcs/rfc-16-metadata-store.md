@@ -414,7 +414,7 @@ type User struct {
 	// own; an OpenID Connect sign-in may still give its session one from the
 	// issuer's role claim (RFC 23 §5.5), so no Role does not mean no API access.
 	Role       APIRole     // none, viewer, operator, admin
-	NotBefore  time.Time   // store time: an access or API token issued before it is refused; raised by a disable, a role or password change, or a sign-out everywhere
+	NotBefore  time.Time   // store time: an access token issued, a session signed in or an API token created before it is refused; raised by a disable, a role or password change, or a sign-out everywhere
 	MustChange bool        // set with a generated password: until it changes, a sign-in permits only the password change and sign-out
 	Generation uint64      // raised by every PutUser; the management API's entity tag (RFC 23 §4.4)
 }
@@ -729,6 +729,7 @@ type Session struct { // RFC 23 §5.3
 	ID        [16]byte
 	Account   Principal
 	Refresh   [32]byte  // hash of the current refresh token; never the token. It and every hash it replaced are keys under SS‖session‖h (§4.2)
+	Created   time.Time // store time of the sign-in; a refresh is refused once the account's NotBefore is past it
 	Expires   time.Time // api.session_lifetime after sign-in
 	Revoked   bool
 }
@@ -737,12 +738,13 @@ type APIToken struct { // RFC 23 §5.3
 	ID      [16]byte
 	Account Principal
 	Hash    [32]byte  // of the token; never the token
+	Created time.Time // store time of creation; every call is refused once the account's NotBefore is past it
 	Expires time.Time // no later than api.token_max_lifetime after creation
 }
 
 type SignInFailures struct { // RFC 23 §5.3: one per account and source address, one per source, one per account
 	Count uint32    // attempts counted since the last success, each before its password is checked; a 429 raises the pair's and the source's, never the account's; a success resets the account's and the pair's and takes back its own raise of the source's
-	Last  time.Time // store time of the last counted attempt; the next wait and a source's 24 h expiry count from it
+	Last  time.Time // store time of the last counted attempt; the next wait, and a source's and a pair's 24 h expiry, count from it
 }
 
 type AuditRecord struct { // RFC 23 §6: append-only; deleted only past audit.retention
@@ -1293,7 +1295,8 @@ type ControlPlane interface {
 	// with another digest returns ErrIdempotencyMismatch. Two requests that both
 	// miss the record conflict on its key, so the one that retries finds it. A
 	// transaction conflict retries the whole transaction, the key's read
-	// included, so fn holds no state between calls; an expect that does not
+	// included, bounded by the call's deadline with randomised backoff (RFC 0
+	// §9.2), so fn holds no state between calls; an expect that does not
 	// match returns ErrGenerationMismatch through fn, commits nothing and is
 	// not retried. A refusal RFC 23 §6 audits is recorded by a second Write
 	// whose meta carries the refusal's audit and no idempotency record, since
@@ -1836,9 +1839,9 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `OP‖opID` | Operation (§2.3), deleted 7 days after it ends (RFC 23 §4.6) |
 | | `OPR‖kind‖target` | running-operation index: one per target and operation kind → `opID`, written when the operation starts and deleted when it ends, so a second request for the same work finds it in one read and is refused (RFC 23 §4.6); `kind` the operation's kind as a string, `target` tagged |
 | | `IK‖account‖key` | IdempotencyRecord (§2.3), written in the request's own transaction (RFC 23 §4.5) |
-| | `XP‖expiry‖tagged` | expiry index for the management API's records that expire: one empty key per idempotency record (tag 0x01, account and key), finished operation (0x02, `opID`), session (0x03, session ID), source's sign-in failures (0x04, address) and API token (0x05, token ID), written and deleted with it, so the sweep is one ordered scan |
+| | `XP‖expiry‖tagged` | expiry index for the management API's records that expire: one empty key per idempotency record (tag 0x01, account and key), finished operation (0x02, `opID`), session (0x03, session ID), source's sign-in failures (0x04, address), API token (0x05, token ID) and an account-and-source pair's sign-in failures (0x06, principal then address), written and deleted with it, so the sweep is one ordered scan |
 | | `SS‖session`, `SSH‖hash`, `SS‖session‖h‖hash` | Session (§2.3); refresh-token index: a refresh token's hash → session ID, the current one and every one it replaced, until the session expires, so presenting an invalidated token finds the session it must revoke (RFC 23 §5.3); and its reverse, one empty key per hash the session has retained, written with its `SSH` row, so the expiry sweep (`XP`, tag 0x03) deletes the session's `SSH` rows by one range of its own, never a scan of `SSH` |
-| | `SF‖tagged` | SignInFailures (§2.3), keyed by the account (tag 0x01, principal; a name that resolves to no account has none), the source address (0x02), or the two together (0x03, principal then address), read and raised in the attempt's own transaction before its password is checked (RFC 23 §5.3); a source's and a pair's are deleted by the expiry sweep 24 h after their last failure (`XP`, tag 0x04) |
+| | `SF‖tagged` | SignInFailures (§2.3), keyed by the account (tag 0x01, principal; a name that resolves to no account has none), the source address (0x02), or the two together (0x03, principal then address), read and raised in the attempt's own transaction before its password is checked (RFC 23 §5.3); a source's and a pair's are deleted by the expiry sweep 24 h after their last counted attempt (`XP`, tags 0x04 and 0x06) |
 | | `AT‖tokenID`, `ATH‖hash`, `ATA‖principal‖tokenID` | APIToken (§2.3); token index: the hash → token ID; per-account index, for listing and for deleting an account's tokens with it; all three deleted by the expiry sweep once the token expires (`XP`, tag 0x05) |
 | | `AU‖time‖auditID` | AuditRecord (§2.3), in store-time order, so a time-range read and the retention sweep are one range; never rewritten (RFC 23 §6) |
 | | `AUX‖tagged‖time‖auditID` | audit index: one empty key per record for each of its actor (tag 0x01, principal), target (0x02, resource kind and ID) and taking node (0x03, `NodeID`), so the reads RFC 23 §6 filters by and the per-node export RFC 25 §4.3 reads are ranges |
@@ -1996,7 +1999,7 @@ are the prefix's. No separator byte is written.
 | `NS‖ns‖gc‖cursor` | walk: audit 0x01, block walk 0x02, index rebuild 0x03 |
 | `CLO` | `protocol.Kind`'s byte, one per protocol ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): NFSv3 0x01, which holds no client record, NFSv4 0x02, its minor versions one kind, NLM 0x03, SMB 0x04 |
 | `IDS` | kind: client 0x01, open 0x02, lock 0x03, uid 0x04, gid 0x05, RID 0x06, shard 0x07 |
-| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04, `oidc` 0x05; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03, default 0x04, its kind user 0x01 or group 0x02; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `XP` tag: idempotency 0x01, operation 0x02, session 0x03, source's sign-in failures 0x04, API token 0x05; `SF` tag: account 0x01, source 0x02; `AUX` tag: actor 0x01, target 0x02, node 0x03; resource `target` (`OPR`, `AUX`): the resource kind as a string, then its ID as a byte string; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
+| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04, `oidc` 0x05; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03, default 0x04, its kind user 0x01 or group 0x02; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `XP` tag: idempotency 0x01, operation 0x02, session 0x03, source's sign-in failures 0x04, API token 0x05, pair's sign-in failures 0x06; `SF` tag: account 0x01, source 0x02, account and source 0x03; `AUX` tag: actor 0x01, target 0x02, node 0x03; resource `target` (`OPR`, `AUX`): the resource kind as a string, then its ID as a byte string; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
 
 This encoding, both tables and every fold rule are part of the store format
 (§4.6): changing any of them is a format bump, and a code once assigned is never
