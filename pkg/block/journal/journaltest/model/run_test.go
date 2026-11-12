@@ -294,6 +294,53 @@ func TestThePlayedJournalKeepsATagUntilRepack(t *testing.T) {
 	}
 }
 
+// A data-path fill fills the bytes its own step draws, at its own extent, as
+// of the change version the last read of the file reported — the read before
+// it, for a stale fill — with no offload ever reporting content back. A fill
+// announced for a change version older than the file's is stale, which the
+// journal must refuse.
+func TestDataPathFillWithoutOffload(t *testing.T) {
+	steps, err := parseCorpus([]byte(`
+write len=8
+read len=8
+fill off=8 len=4
+fill off=16 len=4 b=7
+write off=2 len=2 b=9
+read len=8
+stalefill off=8 len=4
+fill off=24 len=4
+truncate off=4
+read len=8
+fill off=32 len=4
+`))
+	ok(t, err)
+	s := &spy{played: newPlayed(t)}
+	ran, n, rerr := runDataPath(t.Context(), s, steps)
+	ok(t, rerr)
+	if ran != len(steps) || n.fills != 0 {
+		t.Fatalf("ran %d of %d steps, %d fills did nothing; want all ran and 0 idled", ran, len(steps), n.fills)
+	}
+	// The last fill's own bytes are held by the journal it filled: bytes no
+	// write ever wrote reach it only through the fill's drawn payload.
+	st := s.j.current(fileOf(0))
+	p := payload(steps[10])
+	for i := range p {
+		c, held := st.held[steps[10].Off+int64(i)]
+		if !held || c.b != p[i] || c.rec.kind != kindFill {
+			t.Fatalf("byte %d held %v from a %s record, want byte %d from a fill record", steps[10].Off+int64(i), c.b, c.rec.kind, p[i])
+		}
+	}
+	stale := 0
+	for _, f := range s.filled {
+		if errors.Is(f.err, journal.ErrStaleFill) {
+			stale++
+		}
+	}
+	if stale != 1 {
+		t.Fatalf("%d of %d fills answered ErrStaleFill, want exactly the one announced as of the read before the last write", stale, len(s.filled))
+	}
+}
+
 // The sequence the model-based test runs by default runs every one of its
 // crashes and reopens: none is skipped for a file holding more settled
 // markers than a crash may leave in doubt. And its fills fill: a fill finds
