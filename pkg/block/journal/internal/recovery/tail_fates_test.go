@@ -72,27 +72,45 @@ func TestSyncedDamageIsNotATornTailPayloadLeg(t *testing.T) {
 	}
 }
 
-// slotRig plants A, a 16-byte zero slot and R whose synced-through is rSync
-// (a function of the slot's offset).
+// slotSeg is segment id holding A, a 16-byte zero slot and R whose
+// synced-through is rSync(slot), the slot's offset.
+func slotSeg(id core.SegmentID, rSync func(slot int64) int64) []byte {
+	endA := endAfter(tailRec(200, 0x4100))
+	seg := buildSeg(id, syncedRec(200, 0x4100, endA))
+	seg = append(seg, make([]byte, 16)...)
+	rr := syncedRec(201, 0x8100, rSync(endA))
+	rr.Identity, rr.Segment, rr.RecordOffset = journalID, uint64(id), uint32(len(seg))
+	return append(seg, rr.Bytes()...)
+}
+
+// slotRig plants slotSeg as segment 2 and runs, checking Run cut nothing.
 func slotRig(t *testing.T, rSync func(slot int64) int64) State {
 	t.Helper()
-	endA := endAfter(tailRec(200, 0x4100))
-	slot := endA
-	seg := buildSeg(2, syncedRec(200, 0x4100, endA))
-	seg = append(seg, make([]byte, 16)...)
-	rr := syncedRec(201, 0x8100, rSync(slot))
-	rr.Identity, rr.Segment, rr.RecordOffset = journalID, 2, uint32(len(seg))
-	seg = append(seg, rr.Bytes()...)
-
 	r := newRig(t)
 	r.writeFormat()
-	r.plantSeg(2, seg)
-	before := bytes.Clone(r.fileBytes(format.SegmentName(2)))
+	r.plantSeg(2, slotSeg(2, rSync))
+	return runUnchanged(t, r, 2)
+}
+
+// runUnchanged runs and checks the segment's bytes are as planted.
+func runUnchanged(t *testing.T, r *rig, id core.SegmentID) State {
+	t.Helper()
+	before := bytes.Clone(r.fileBytes(format.SegmentName(id)))
 	st := runTails(t, r)
-	if !bytes.Equal(before, r.fileBytes(format.SegmentName(2))) {
-		t.Errorf("Run changed the segment, want the directory unchanged")
+	if !bytes.Equal(before, r.fileBytes(format.SegmentName(id))) {
+		t.Errorf("Run changed segment %d, want the directory unchanged", id)
 	}
 	return st
+}
+
+func wantDamaged(t *testing.T, st State, want ...core.SegmentID) {
+	t.Helper()
+	if !slices.Equal(st.Tails.Damaged, want) && !(len(want) == 0 && len(st.Tails.Damaged) == 0) {
+		t.Errorf("Damaged got %v, want %v", st.Tails.Damaged, want)
+	}
+	if len(st.Tails.Corrupt) != 0 {
+		t.Errorf("Corrupt got %+v, want none: a refused range is not a dropped record", st.Tails.Corrupt)
+	}
 }
 
 func TestARecordAfterATornSlotIsAttached(t *testing.T) {
@@ -245,4 +263,76 @@ func TestTwoSuccessorsMayNameOnePredecessor(t *testing.T) {
 	wantFate(t, st, 1, fateSealed, 0)
 	wantFate(t, st, 2, fateIntact, 0)
 	wantFate(t, st, 3, fateIntact, 0)
+}
+
+func TestAZeroSlotAProofCoversIsDamage(t *testing.T) {
+	st := slotRig(t, func(slot int64) int64 { return slot + 1 })
+	wantDamaged(t, st, 2)
+	// Damage, not a tear: no torn slot and no tail, so nothing here cuts.
+	wantFate(t, st, 2, fateIntact, 0)
+}
+
+func TestARefusedRangeInANamedSegmentIsDamage(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	// R's synced-through is below the slot: unnamed, this slot is torn.
+	r.plantSeg(1, slotSeg(1, func(slot int64) int64 { return slot - 1 }))
+	r.plantSeg(2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
+	st := runUnchanged(t, r, 1)
+	wantDamaged(t, st, 1)
+	wantFate(t, st, 1, fateSealed, 0)
+}
+
+func TestARefusedRangeInASealedSegmentIsDamage(t *testing.T) {
+	seg := slotSeg(1, func(slot int64) int64 { return slot - 1 })
+	seg = append(seg, raw.SealMarker{Identity: journalID, Segment: 1, Offset: uint64(len(seg))}.Bytes()...)
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg)
+	st := runUnchanged(t, r, 1)
+	wantDamaged(t, st, 1)
+	wantFate(t, st, 1, fateSealToProve, 0)
+}
+
+func TestATornSlotAndATailRangeEndAtTheLastRecord(t *testing.T) {
+	seg := slotSeg(1, func(slot int64) int64 { return slot - 1 })
+	end := int64(len(seg))
+	seg = append(seg, bytes.Repeat([]byte{0xff}, 16)...)
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg)
+	st := runUnchanged(t, r, 1)
+	wantDamaged(t, st)
+	wantFate(t, st, 1, fateEnded, end)
+}
+
+// TestACataloguedDropIsCorruptAndItsSegmentDamaged confines one record by an
+// clone-target entry whose seq its header contradicts: the drop carries into Tails.Corrupt as
+// synced and the segment is damaged, though the open succeeds.
+func TestACataloguedDropIsCorruptAndItsSegmentDamaged(t *testing.T) {
+	clone := rec(7, func(r *raw.Record) {
+		r.Clone = &raw.CloneBody{Share: srcShare(), File: srcFile(), Off: 0x101, AsOf: raw.Version{Counter: 9}}
+	})
+	b, ents := buildSealed(1, clone, tailRec(201, 0x8100))
+	es := slices.Clone(ents)
+	es[0].Seq++
+	markerOff := len(b) - raw.TrailerSize - raw.CatalogEntrySize*len(es) - format.SealMarkerSize
+	b = appendSealed(b[:markerOff], 1, es)
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, b)
+	r.plantSeg(2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
+	st := runTails(t, r)
+
+	if len(st.Tails.Corrupt) != 1 {
+		t.Fatalf("Corrupt got %+v, want the one confined record", st.Tails.Corrupt)
+	}
+	c := st.Tails.Corrupt[0]
+	if c.Segment != 1 || !c.Drop.Synced || c.Drop.Entry != es[0] {
+		t.Errorf("Corrupt[0] got segment %d synced %v entry %+v, want segment 1 synced true entry %+v", c.Segment, c.Drop.Synced, c.Drop.Entry, es[0])
+	}
+	if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
+		t.Errorf("Damaged got %v, want [1]", st.Tails.Damaged)
+	}
 }
