@@ -114,7 +114,13 @@ type recordedEnv struct {
 // recordedStreams builds the recordedEnv: the refill worker starts only once
 // the ranks are Init'ed, so every acquisition the run makes is one the
 // recorder saw. The cache's Shutdown is registered before the pool's Stop so
-// the shutdown runs after the join that held descriptors through it.
+// the shutdown runs after the join that held descriptors through it, and the
+// streams' close is registered last of the three so it runs first: each
+// stream holds its active segment's reference until its close, and a
+// shutdown that ran with one outstanding would wait on it forever — burying a
+// failed assertion's report under the run's own timeout. A close is a no-op
+// the second time, so a test that closed the streams itself closes nothing
+// again in the cleanup.
 func recordedStreams(t *testing.T) *recordedEnv {
 	t.Helper()
 
@@ -136,6 +142,7 @@ func recordedStreams(t *testing.T) *recordedEnv {
 	})
 	pool.Start()
 	t.Cleanup(func() { pool.Stop() })
+	t.Cleanup(func() { _ = ss.Close() })
 	return &recordedEnv{seam: seam, ss: ss, set: set, m: m, pool: pool, cache: cache, rec: rec}
 }
 
