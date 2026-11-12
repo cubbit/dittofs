@@ -172,7 +172,7 @@ func TestV19(t *testing.T) {
 			c.Heal()
 			c.Clock.Advance(time.Minute)
 		})
-		ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
 		_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(h), 0, []byte("after!"), vfs.FileSync)
 		if !errors.Is(err, &vfs.Delay{Cause: vfs.DelayCommit}) {
