@@ -304,16 +304,19 @@ func (r *runner) step(s Step) error {
 // dataPathFill fills what its own step draws: the extent [s.Off, s.Off+s.Len)
 // of its step's file, the bytes payload(s) makes, as of the change version
 // the last read of the file reported — the read before it, for a stale fill
-// — at the version the journal issues next, as the caller of the data path
-// makes a fill from the bytes it fetched. No offload reports content back, so
-// the step's own extent and bytes are all a fill has to go on, and it never
+// — at the highest version already issued, standing in for the version of
+// the ref the bytes were fetched from, as the caller of the data path makes
+// a fill from the bytes it fetched. No offload reports content back, so the
+// step's own extent and bytes are all a fill has to go on, and it never
 // idles: whatever the journal answers, the call was made.
 //
-// decision: a data-path fill never carries a version below a release or a
-// settled removal over its bytes, because it is made at the version the
-// journal would issue next, above every version the model has seen, so
-// droppableAbove's rule never refuses to decide it. Overturned when a caller
-// needs fills from a ref older than what it released.
+// decision: a data-path fill carries an already-issued version, standing in
+// for the ref's version a real caller fetches: a fill carries the version of
+// the ref it was fetched from, never a freshly-minted one, and the journal's
+// version counter rightly does not advance past a fill's record — the two
+// would collide, the counter issuing again a version already on disk. A
+// fill above every issued version is out of the run; overturn this if the
+// journal ever refuses or counts a fabricated fill version.
 func (r *runner) dataPathFill(s Step) error {
 	ctx, m := r.ctx, r.m
 	h, tag, id := r.share(s.Share), tagOf(s.Share), fileOf(s.File)
@@ -321,7 +324,7 @@ func (r *runner) dataPathFill(s Step) error {
 	if s.Op == OpStaleFill {
 		asOf = r.asOf[s.File][1]
 	}
-	v := journal.Version{Counter: maxVersion(maxVersion(m.issued, m.onDisk()), m.floor).Counter + 1}
+	v := m.maxSeen
 	p := payload(s)
 	err := h.Fill(ctx, id, s.Off, p, asOf, v)
 	return m.Fill(tag, id, s.Off, p, asOf, v, err)

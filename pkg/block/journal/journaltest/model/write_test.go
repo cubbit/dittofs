@@ -97,3 +97,15 @@ func TestAnEmptiedFileMayBeClaimedByAnotherShare(t *testing.T) {
 	ok(t, m.WriteAt(shareB, fid(1), 0, fill('B', 4), 0, ver(3), nil))
 	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 4, 3, false}})
 }
+
+// A zero-length write is accepted, doing nothing: nothing is appended and no
+// version is drawn, so the answer carries the zero version and the model
+// holds nothing from it. Both answers settle: the journal refusing with
+// ErrZeroLength changes nothing either.
+func TestAZeroLengthWriteIsAcceptedDoingNothing(t *testing.T) {
+	m := New()
+	ok(t, m.WriteAt(shareA, fid(1), 0, fill('A', 4), 0, ver(1), nil))
+	ok(t, m.WriteAt(shareA, fid(1), 0, nil, 0, journal.Version{}, nil))
+	ok(t, m.WriteAt(shareA, fid(1), 8, nil, 0, journal.Version{}, journal.ErrZeroLength))
+	equalSpans(t, heldSpans(t, m, fid(1)), []span{{0, 4, 1, false}})
+}

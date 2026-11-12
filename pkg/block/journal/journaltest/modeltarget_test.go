@@ -66,19 +66,11 @@ func TestAttemptCleanupsRunWhenTheSequenceEnds(t *testing.T) {
 
 // A generated data-path sequence runs over a DataPathTargets journal, and the
 // sequence reaches several files through both shares, which Reach counts.
-//
-// decision: the seed is one whose fills never take effect ahead of a write,
-// truncate, deallocate or delete. The runner's data-path fill carries the
-// next version the journal would issue, and the journal's counter does not
-// count a fill's record while it runs, so such a pair has the journal assign
-// a version already on disk, which the model refuses. Draw any seed once the
-// counter accounts for a fill's record; most seeds diverge today.
 func TestDataPathReached(t *testing.T) {
 	open, reached := DataPathTargets(t)
-	const seed = 2
-	steps := model.GenerateWithin(seed, 60, model.DataPathOps)
-	model.CheckDataPath(t, "data-path-seed-2.txt", steps, open,
-		fmt.Sprintf("drawn from seed %d, %d steps", seed, len(steps)))
+	steps := model.GenerateWithin(model.DefaultSeed, model.DefaultSteps, model.DataPathOps)
+	model.CheckDataPath(t, fmt.Sprintf("data-path-seed-%d.txt", model.DefaultSeed), steps, open,
+		fmt.Sprintf("drawn from seed %d, %d steps", model.DefaultSeed, model.DefaultSteps))
 	if r := reached(); r.Files < 2 || r.Shares < 2 {
 		t.Fatalf("the sequence reached %d file(s) through %d share(s), want at least 2 of each", r.Files, r.Shares)
 	}

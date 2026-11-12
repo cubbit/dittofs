@@ -105,16 +105,17 @@ func (m *Model) WriteAt(tag shareTag, id fileID, off int64, p []byte, mtime int6
 		return mis
 	case errors.Is(err, journal.ErrOtherShare):
 		return nil
-	case len(p) == 0 && errors.Is(err, journal.ErrZeroLength):
+	case len(p) == 0 && (err == nil || errors.Is(err, journal.ErrZeroLength)):
+		// Accepted, a zero-length write appends nothing and draws no version,
+		// so no version its answer carries can be checked; refused with
+		// ErrZeroLength it changes nothing either. Both answers leave the file
+		// as it was.
 		return nil
 	case !proceed:
 		return unexpected(m, op, id, err)
 	}
 	if err := m.issue(op, id, v); err != nil {
 		return err
-	}
-	if len(p) == 0 {
-		return nil
 	}
 	f = m.claim(f, tag, id)
 	m.append(f, &record{kind: kindWrite, ext: extent{Off: off, Len: int64(len(p))}, ver: v, data: slices.Clone(p), mtime: mtime})
