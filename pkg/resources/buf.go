@@ -58,7 +58,8 @@ func classOf(n int) int {
 }
 
 // Buf is one pooled buffer, shared by reference count. Its reservation is
-// released with its bytes, so budget and memory never disagree.
+// released with its bytes, at its last Release, so no byte a holder has is
+// uncharged. An idle free list holds bytes no budget counts: see BufPool.
 type Buf struct {
 	// B has the record's or reply's length. Its capacity is its class's: the
 	// class size plus, on every class but the small one, 4 KiB of header room.
@@ -78,8 +79,10 @@ type Buf struct {
 	// The last Release leaves it at -1, where one more Release and any Retain
 	// panic, in tests and in production. That holds only while the buffer
 	// sits released: once the pool hands it out again, a stale Retain or
-	// Release cannot be told from the new holder's, and what catches the
-	// stale holder is the poison it reads under the race detector.
+	// Release cannot be told from the new holder's. Under the race detector
+	// a stale holder that reads sees the poison; a stale Release is not
+	// caught where it happens: it returns the new holder's bytes and
+	// reservation, and the panic falls on the new holder's own Release.
 	borrowers atomic.Int32
 }
 
@@ -88,9 +91,11 @@ type Buf struct {
 // allocator.
 //
 // ponytail: a sync.Pool per class behind the reservation counter, so
-// collection scans and frees idle pooled buffers. Replace it with a
-// fixed-size slab per class, allocated once at start, when a profile shows
-// collection time from transfer-class buffers limiting throughput.
+// collection scans and frees idle pooled buffers, and until it does a free
+// list keeps bytes no budget counts: resident memory can pass the ceiling by
+// about each class's recent peak. Replace it with a fixed-size slab per
+// class, allocated once at start, when a profile shows collection time from
+// transfer-class buffers limiting throughput.
 type BufPool struct {
 	budget *WaitBudget
 	free   [len(classes)]sync.Pool // of *Buf
@@ -134,10 +139,18 @@ func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) 
 	b := p.free[class].Get().(*Buf)
 	b.borrowers.Store(0)
 	b.res = res
-	// decision: B is handed out at the length asked, as make([]byte, n) would
-	// be, so a reader fills it as it is; a caller that appends cuts it to
-	// B[:0] first.
+	// decision: B is handed out at the length asked and zeroed, as
+	// make([]byte, n) would be, so a reader fills it as it is and a holder
+	// that sends it short of what it wrote sends zeros, never the last
+	// holder's bytes; a caller that appends cuts it to B[:0] first, and stays
+	// within cap(B): an append past it allocates bytes no budget is charged.
+	//
+	// ponytail: the n bytes are cleared on every Get, also where the caller
+	// overwrites all of them. Hand them out as they are to a caller that
+	// says it fills B whole, when a profile shows the clear in the cost of a
+	// transfer-class request.
 	b.B = b.mem[:n]
+	clear(b.B)
 	return b, nil
 }
 

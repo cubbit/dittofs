@@ -199,8 +199,11 @@ called by E4's and E5's tests.
   log: it stands in for RFC 24 §10's counter, which replaces it. No prior art sought: the
   question is who owns the registration.
 - **D8, `Get` returns `B` at the length asked.** RFC 20 §6.8 has `len` "the record's or
-  reply's", and `Get` is told that length: `len(B) == n`. A caller that fills by appending
-  cuts to `B[:0]` first, as `testproto`'s replay stage does. E4's reader and E5's encoders
+  reply's", and `Get` is told that length: `len(B) == n`, zeroed, so a holder that sends
+  `B` short of what it wrote sends zeros and never its last holder's bytes (`ponytail:` at
+  the clear: hand the bytes out as they are to a caller that fills `B` whole, when a profile
+  shows the clear). A caller that fills by appending cuts to `B[:0]` first, as `testproto`'s
+  replay stage does. E4's reader and E5's encoders
   build on this. `decision:` at the cut. Prior art: `make([]byte, n)`; a pool that returned
   zero length would make every reader cut it up to n.
 - **D9, the pool keeps its own slice of a buffer's bytes.** A holder may cut or reassign `B`,

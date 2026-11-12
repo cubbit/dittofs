@@ -573,8 +573,8 @@ class, which carries headers only. That is a class's capacity:
 | large | 8 MiB | SMB `READ` and `WRITE` past 1 MiB, up to SMB's largest ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)) |
 
 A request draws the smallest class whose capacity holds it. A buffer larger
-than the largest class its protocol uses is not pooled, and is charged its
-exact size.
+than the largest class's capacity is not pooled, and is charged its exact
+size.
 
 > ponytail: the header room is 4 KiB, fixed, the same for every protocol, and
 > charged. It is a cost figure, not a limit: a record past its class's size
@@ -720,7 +720,7 @@ are what bound how many large requests a node runs:
 | NFS `WRITE` of 1 MiB | receive: transfer class and overhead, about 1 MiB | about 500 node-wide |
 | NFS `READ` of 1 MiB | reply: transfer class; receive: small | about 500 node-wide |
 | SMB `WRITE` of 8 MiB | receive: large class, about 8 MiB | about 64 node-wide |
-| SMB `WRITE` of 64 KiB, one credit | receive: directory class and overhead, about 72 KiB | about 7,000 node-wide |
+| SMB `WRITE` of 64 KiB, one credit | receive: directory class and overhead, 76 KiB | about 7,000 node-wide |
 | `GETATTR`, `QUERY_INFO` | small class and overhead, about 12 KiB | about 43,000 node-wide |
 
 Raising a transfer size raises every large request's charge with it, so fewer

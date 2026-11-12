@@ -141,6 +141,27 @@ func TestGetReservesBeforeItTakesABuffer(t *testing.T) {
 	})
 }
 
+// A buffer taken from the free list comes zeroed over the length asked,
+// whatever its last holder left in it.
+func TestGetHandsOutZeroedBytes(t *testing.T) {
+	if prof.RaceEnabled {
+		t.Skip("under the race detector sync.Pool drops some of what it is given")
+	}
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	p := NewBufPool(NewWaitBudget("reply", mib))
+	first := mustGet(t, p, 3)
+	copy(first.B, "abc")
+	first.Release()
+	again := mustGet(t, p, 3)
+	defer again.Release()
+	if again != first {
+		t.Fatal("the released buffer was not handed out again, so the test saw no reuse")
+	}
+	if string(again.B) != "\x00\x00\x00" {
+		t.Errorf("a reused buffer reads %q, want zeros", again.B)
+	}
+}
+
 // A retained buffer keeps its bytes and its reservation until its last
 // borrower releases it.
 func TestBufReturnsAtItsLastRelease(t *testing.T) {
@@ -223,7 +244,7 @@ func TestRefusedRetainLeavesTheNextHolderItsCount(t *testing.T) {
 				// A Retain that lands while a holder has the buffer is a
 				// borrower like any other, and pairs with its Release.
 				if !panics(func() { stale.Retain() }) {
-					stale.Release()
+					_ = panics(stale.Release)
 				}
 			}
 		})
