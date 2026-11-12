@@ -2,6 +2,8 @@ package core
 
 import (
 	"errors"
+	"fmt"
+	"slices"
 	"time"
 )
 
@@ -14,7 +16,10 @@ type Status uint32
 // one whose Err is a sentinel; then, among those, a row naming Ops and
 // Versions, Ops alone, Versions alone, neither. NewErrorTable refuses two rows
 // equal in that order that can match the same error, operation and version.
-type ErrorTable struct{}
+type ErrorTable struct {
+	fault Status
+	rows  []ErrorRow // most specific first
+}
 
 // ErrorRow is one mapping of an ErrorTable.
 type ErrorRow struct {
@@ -38,13 +43,99 @@ type ErrorRow struct {
 
 // NewErrorTable builds a table answering an error no row matches with fault,
 // the protocol's server-fault status.
+//
+// decision: a table that fails its check panics, naming both rows, since a
+// table is program text and NewErrorTable returns no error; the first
+// request a protocol serves builds it, so a test of the protocol finds it.
+// Overturned if a table is ever built from configuration.
 func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable {
-	panic("not implemented")
+	t := &ErrorTable{fault: fault, rows: slices.Clone(rows)}
+	// decision: a typed row is one whose Err has an Is method, as the
+	// service's typed values do, matching their sentinel and their own kind;
+	// a sentinel is a plain value. The rows are ranked once here and Map
+	// scans them in order: an error is the slow path, so no index is kept.
+	slices.SortStableFunc(t.rows, func(a, b ErrorRow) int { return rank(a) - rank(b) })
+	for i, a := range t.rows {
+		for _, b := range t.rows[i+1:] {
+			if rank(a) == rank(b) && overlap(a, b) {
+				panic(fmt.Sprintf("core: error table: rows %s and %s can both match one error, operation and version", describe(a), describe(b)))
+			}
+		}
+	}
+	return t
 }
 
 // Map is err's status for op at v; reply false is a NoReply row.
 func (t *ErrorTable) Map(err error, op *Op, v Version) (s Status, reply bool) {
-	panic("not implemented")
+	s, reply, _ = t.mapped(err, op, v)
+	return s, reply
+}
+
+// mapped is Map, and whether a row matched: an error no row matches is
+// answered the fault status, with a reply.
+func (t *ErrorTable) mapped(err error, op *Op, v Version) (s Status, reply, matched bool) {
+	for _, r := range t.rows {
+		if r.matches(err, op, v) {
+			return r.Status, !r.NoReply, true
+		}
+	}
+	return t.fault, true, false
+}
+
+// matches reports whether r maps err for op at v. A nil op matches only a
+// row naming no operation.
+func (r ErrorRow) matches(err error, op *Op, v Version) bool {
+	if r.Ops != nil && (op == nil || !slices.Contains(r.Ops, op.Code)) {
+		return false
+	}
+	if r.Versions != nil && (v < r.Versions.First || v > r.Versions.Last) {
+		return false
+	}
+	return errors.Is(err, r.Err)
+}
+
+// rank is r's place in Map's order, lowest first: a typed row before a
+// sentinel's, then Ops and Versions, Ops, Versions, neither.
+func rank(r ErrorRow) int {
+	n := 0
+	if _, typed := r.Err.(interface{ Is(error) bool }); !typed {
+		n = 4
+	}
+	switch {
+	case r.Ops != nil && r.Versions != nil:
+	case r.Ops != nil:
+		n++
+	case r.Versions != nil:
+		n += 2
+	default:
+		n += 3
+	}
+	return n
+}
+
+// overlap reports whether two rows of one rank can match one error,
+// operation and version: either's Err matches the other's, and their
+// operations and versions meet.
+func overlap(a, b ErrorRow) bool {
+	if !errors.Is(a.Err, b.Err) && !errors.Is(b.Err, a.Err) {
+		return false
+	}
+	if a.Ops != nil && !slices.ContainsFunc(a.Ops, func(c uint32) bool { return slices.Contains(b.Ops, c) }) {
+		return false
+	}
+	return a.Versions == nil || (a.Versions.First <= b.Versions.Last && b.Versions.First <= a.Versions.Last)
+}
+
+// describe names r in a build's panic.
+func describe(r ErrorRow) string {
+	s := fmt.Sprintf("{%v", r.Err)
+	if r.Ops != nil {
+		s += fmt.Sprintf(" ops %v", r.Ops)
+	}
+	if r.Versions != nil {
+		s += fmt.Sprintf(" versions %d-%d", r.Versions.First, r.Versions.Last)
+	}
+	return s + "}"
 }
 
 // core's own refusals. Each table maps every one, and the tables' totality

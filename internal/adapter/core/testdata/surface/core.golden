@@ -72,7 +72,8 @@ type ErrorRow struct {
 	Status Status
 }
 
-type ErrorTable struct{}
+type ErrorTable struct {
+}
 
 type FlowControl interface {
 	Admit(ctx context.Context, h Header) (release func(), err error)
