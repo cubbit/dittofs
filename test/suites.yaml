@@ -13,7 +13,7 @@ groups:              # `dt run GROUP` runs every suite in it
   go: [unit, integration, e2e, operator]
   conformance: [pjdfstest, pynfs, wpts, smbtorture]
   perf: [fio-verify, bench-smoke, perf-night]
-  journal: [journal-conformance]
+  journal: [journal-conformance, journal-conformance-norace]
   engine: [engine-conformance]
   adapters: [adapter-conformance]
 
@@ -110,6 +110,13 @@ suites:
     format: go-json
     cmd: go test -race -tags=journal_conformance -timeout=30m -artifacts -outputdir={out} ./pkg/block/journal/conformance/...
     known: test/journal/known.yaml
+    tier: pr
+  # The journal's allocation checks, which the race detector makes unmeasurable and the race leg
+  # skips as known: the counted calls of RFC 1 §9.7, running without -race, where allocation
+  # counting works. TestRFC1D_StatsCostIsFlat joins this command once the index's heap growth
+  # sits under the profiler's slack; it fails the watchdog today on the 10^5 extents it builds.
+  journal-conformance-norace:
+    cmd: go test -timeout=5m -tags=journal_conformance -run=^TestCounted_AllocationsPerCall ./pkg/block/journal/conformance/
     tier: pr
   # The engine's conformance checks, behind their own tag for the same reason: they run
   # against the real journal and fail until the engine and the journal calls they need land.

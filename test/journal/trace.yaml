@@ -328,8 +328,7 @@ rfc1 / 9.7 / "index cost":
   owner: epic 4
   reason: 'the index''s comparison counters'
 rfc1 / 9.7 / "allocations per operation":
-  owner: epic 8
-  reason: 'needs a hot path; a threshold cannot be set against a stub'
+  tests: [TestCounted_AllocationsPerCall, TestCounted_AllocationsPerCallFailsWithOneAdded]
 rfc1 / 9.7 / "index memory":
   owner: epic 4
   reason: 'the index''s bytes per entry'

@@ -1943,6 +1943,22 @@
   issue: '#3379'
   message: 'stub: Sync'
 
+- test: TestCounted_AllocationsPerCall
+  status: skip
+  fix: planned
+  category: env
+  reason: 'Counts allocations, which the race detector changes, so it skips in the race leg. Runs once a leg without the race detector does.'
+  issue: '#3764'
+  message: 'the race detector changes allocation counts'
+
+- test: TestCounted_AllocationsPerCallFailsWithOneAdded
+  status: skip
+  fix: planned
+  category: env
+  reason: 'Counts allocations, which the race detector changes, so it skips in the race leg. Runs once a leg without the race detector does.'
+  issue: '#3764'
+  message: 'the race detector changes allocation counts'
+
 - test: TestCounted_MixedDurability
   status: fail
   fix: planned
