@@ -15,6 +15,82 @@ import (
 
 var domainNames = []string{"file append", "capacity", "file index", "file map", "segment append", "storage guard"}
 
+// rankIdents maps each domain to the lockorder constant's name an Init (or
+// InitLeaf) call wires it with.
+var rankIdents = map[string]string{
+	"file append":    "FileAppend",
+	"capacity":       "Capacity",
+	"file index":     "FileIndex",
+	"file map":       "FileMap",
+	"segment append": "SegmentAppend",
+	"storage guard":  "StorageGuard",
+}
+
+// initsWired collects, per field name, the lockorder domains an Init or
+// InitLeaf call inside f wires on a field of that name. A ranked lock's rank
+// is installed only by such a call, so the scan asks this map to prove each
+// lock it accepts is wired in the same file.
+func initsWired(f *ast.File) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	argDomain := func(e ast.Expr) (string, bool) {
+		sel, isSel := e.(*ast.SelectorExpr)
+		if !isSel {
+			return "", false
+		}
+		if x, isIdent := sel.X.(*ast.Ident); !isIdent || x.Name != "lockorder" {
+			return "", false
+		}
+		for d, id := range rankIdents {
+			if sel.Sel.Name == id {
+				return d, true
+			}
+		}
+		return "", false
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, isCall := n.(*ast.CallExpr)
+		if !isCall || len(call.Args) == 0 {
+			return true
+		}
+		fn, isSel := call.Fun.(*ast.SelectorExpr)
+		if !isSel || (fn.Sel.Name != "Init" && fn.Sel.Name != "InitLeaf") {
+			return true
+		}
+		recv, isField := fn.X.(*ast.SelectorExpr)
+		if !isField {
+			return true
+		}
+		d, ok := argDomain(call.Args[0])
+		if !ok {
+			return true
+		}
+		if out[recv.Sel.Name] == nil {
+			out[recv.Sel.Name] = map[string]bool{}
+		}
+		out[recv.Sel.Name][d] = true
+		return true
+	})
+	return out
+}
+
+// initWired returns what is wrong with a ranked lock whose field is named
+// name and whose marker text is text, or "" when it is right: at least one of
+// the domains its marker names must be wired by an Init call on a field of
+// that name in the file, so a lock whose rank is never installed fails here
+// rather than carrying a rank-0 marker through the recorder-blind runs.
+func initWired(name, text string, wired map[string]map[string]bool) string {
+	ranks, wiredAtAll := wired[name]
+	if !wiredAtAll {
+		return fmt.Sprintf("an Init(lockorder.<rank>) call wiring a field named %s in this file", name)
+	}
+	for _, d := range domainNames {
+		if strings.Contains(text, d) && ranks[d] {
+			return ""
+		}
+	}
+	return "a marker naming one of the domains an Init or InitLeaf call in this file wires"
+}
+
 // lockKind classifies a type expression: whether it is (a pointer to, an
 // array, slice or map of) a plain or a ranked lock. ok is false when the
 // expression mentions a lock type in a shape the scan does not understand.
@@ -140,6 +216,7 @@ func classify(kind, text string) string {
 // scanFile checks every lock declared in f, returning how many it saw and one
 // message per offender.
 func scanFile(fset *token.FileSet, f *ast.File) (locks int, offenders []string) {
+	wired := initsWired(f)
 	report := func(pos token.Pos, name, kind, text, want string) {
 		offenders = append(offenders, fmt.Sprintf("%s %s: got a %s lock with marker %q, want %s", fset.Position(pos), name, kind, strings.TrimSpace(text), want))
 	}
@@ -224,6 +301,17 @@ func scanFile(fset *token.FileSet, f *ast.File) (locks int, offenders []string) 
 				text := markerText([]*ast.CommentGroup{fld.Doc, fld.Comment}, e.docs, e.locks)
 				if want := classify(kind, text); want != "" {
 					report(fld.Pos(), name, kind, text, want)
+					break
+				}
+				// A charge the recorder can see exists only once Init
+				// installs the rank, so a ranked field must also be one
+				// a matching Init in this file wires. A sync lock skips
+				// this: it is invisible to the recorder by design, and
+				// its marker alone says how it orders.
+				if kind == "lockorder" {
+					if want := initWired(name, text, wired); want != "" {
+						report(fld.Pos(), name, kind, text, want)
+					}
 				}
 			}
 		}
@@ -277,6 +365,9 @@ type each struct {
 	// decision: b is a leaf.
 	b sync.Mutex
 }
+
+var bare sync.Mutex
+var marked sync.Mutex // decision: marked is a leaf.
 `
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "p.go", src, parser.ParseComments)
@@ -284,11 +375,19 @@ type each struct {
 		t.Fatal(err)
 	}
 	locks, offenders := scanFile(fset, f)
-	if locks != 5 {
-		t.Errorf("scanned %d locks, want 5", locks)
+	if locks != 7 {
+		t.Errorf("scanned %d locks, want 7", locks)
 	}
-	if len(offenders) != 2 || !strings.Contains(offenders[0], "p.go:7:2") || !strings.Contains(offenders[1], "p.go:8:2") {
-		t.Errorf("offenders = %q, want exactly the two locks of the struct whose one doc marker cannot cover both (p.go:7:2 and p.go:8:2)", offenders)
+	// The declaration pass reports the package-level var first, then the
+	// struct walk reports the fields.
+	want := []string{"p.go:23:5 bare", "p.go:7:2 a", "p.go:8:2 b"}
+	if len(offenders) != len(want) {
+		t.Fatalf("offenders = %q, want %d: the unmarked var, and the two locks of the struct whose one doc marker cannot cover both", offenders, len(want))
+	}
+	for i, w := range want {
+		if !strings.Contains(offenders[i], w) {
+			t.Errorf("offender %d = %q, want it to name %q", i, offenders[i], w)
+		}
 	}
 }
 
@@ -296,12 +395,23 @@ type each struct {
 // outside the six domains and is not checked. It does not see a lock declared
 // as `var mu = sync.Mutex{}` with no type, `new(sync.Mutex)`, `type X
 // sync.Mutex`, `type X = lockorder.Mutex`, through an import alias, or in a
-// function-local variable. Upgrade to a go/types check if a domain starts
-// being named on atomics or any of those forms appears.
+// function-local variable. The Init rule matches by field name inside the
+// file: it cannot see a lock Init'ed from a package-level var, an Init in a
+// different file of the same package, one Init'ed with a nil recorder — the
+// call matches statically while wiring nothing — or two same-named fields of
+// different ranks in one package, where either rank's Init satisfies both
+// markers. The recorded fixture's wiring probes are the net under all of
+// those; upgrade to a go/types pass if a lock lands unwired through any of
+// the shapes above.
 func TestEveryLockNamesItsDomain(t *testing.T) {
 	// Every internal package is scanned, so a lock added to a new one fails
 	// here rather than passing unseen. The recorder's own package is left
-	// out: its mutex is deliberately unranked.
+	// out: its mutex is deliberately unranked. The journal package's own
+	// production files are scanned too: they sit one level up from every
+	// internal package, and only their non-test files at that level are
+	// read — the packages below them that are test-support (journaltest and
+	// the conformance kit) hold locks exercised only by tests and are not
+	// walked.
 	pkgs, err := os.ReadDir("..")
 	if err != nil {
 		t.Fatalf("reading the internal packages: %v", err)
@@ -312,6 +422,16 @@ func TestEveryLockNamesItsDomain(t *testing.T) {
 			continue
 		}
 		dirs = append(dirs, filepath.Join("..", p.Name()))
+	}
+	const parent = "../.."
+	scanOne := func(fset *token.FileSet, path string, offenders *[]string) (int, error) {
+		f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return 0, fmt.Errorf("parsing %s: %w", path, err)
+		}
+		n, bad := scanFile(fset, f)
+		*offenders = append(*offenders, bad...)
+		return n, nil
 	}
 	fset := token.NewFileSet()
 	var offenders []string
@@ -331,28 +451,45 @@ func TestEveryLockNamesItsDomain(t *testing.T) {
 			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
-			f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+			n, err := scanOne(fset, path, &offenders)
 			if err != nil {
-				return fmt.Errorf("parsing %s: %w", path, err)
+				return err
 			}
-			n, bad := scanFile(fset, f)
 			scanned[dir] += n
 			total += n
-			offenders = append(offenders, bad...)
 			return nil
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
+	parentFiles, err := filepath.Glob(filepath.Join(parent, "*.go"))
+	if err != nil {
+		t.Fatalf("reading the journal package's files: %v", err)
+	}
+	for _, path := range parentFiles {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		n, err := scanOne(fset, path, &offenders)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scanned[parent] += n
+		total += n
+	}
 	if total == 0 {
 		t.Error("scanned no locks; the scan is not looking at the code")
 	}
-	// The packages that hold locks today must still be reached.
+	// The packages that hold locks today must still be reached, the journal
+	// package's own files among them.
 	for _, name := range []string{"index", "segment", "capacity", "datapath", "durability"} {
 		if scanned[filepath.Join("..", name)] == 0 {
 			t.Errorf("%s: scanned no locks; the scan is not looking at the code", name)
 		}
+	}
+	if scanned[parent] == 0 {
+		t.Error("the journal package's own files: scanned no locks; the scan is not looking at the code")
 	}
 	sort.Strings(offenders)
 	for _, o := range offenders {
