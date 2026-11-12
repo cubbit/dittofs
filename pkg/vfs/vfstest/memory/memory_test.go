@@ -81,6 +81,32 @@ func TestAnExistenceCommitReachesTheStore(t *testing.T) {
 	}
 }
 
+// A write moves the file's modification time past its creation's, while
+// pending and once its existence commit reaches the store, so a handler's
+// pre- and post-operation attributes differ.
+func TestAWriteMovesTheModificationTime(t *testing.T) {
+	s := memory.New(t)
+	ctx, admin := t.Context(), s.Admin()
+	h, f := s.Store.Create(t, s.Store.Admin, s.Store.Root, "f", kvstore.Regular(0o644))
+	before, err := s.GetAttr(ctx, admin, h)
+	if err != nil {
+		t.Fatalf("GetAttr before the write: %v", err)
+	}
+	if _, err := s.Write(ctx, admin, vfs.Anonymous(h), 0, []byte("01234"), vfs.Unstable); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got, err := s.GetAttr(ctx, admin, h); err != nil || !got.Modify.After(before.Modify) {
+		t.Errorf("GetAttr after the write: mtime %v, %v; want later than %v", got.Modify, err, before.Modify)
+	}
+	chown := vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(f.Owner)}
+	if _, err := s.SetAttr(ctx, admin, vfs.Target{H: h}, chown); err != nil {
+		t.Fatalf("SetAttr of the owner: %v", err)
+	}
+	if got, err := s.Store.Store.Files().Get(ctx, s.Store.Admin, h); err != nil || !got.Modify.After(before.Modify) {
+		t.Errorf("the store's record after the existence commit: mtime %v, %v; want later than %v", got.Modify, err, before.Modify)
+	}
+}
+
 // An unlink of a file's last name, with no open left, releases it in the
 // store too: its handle goes stale, and its owner's usage counts it no more.
 func TestAReleaseReachesTheStore(t *testing.T) {

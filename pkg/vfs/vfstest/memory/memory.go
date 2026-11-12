@@ -36,9 +36,11 @@ type Service struct {
 	Content *contenttest.Memory // the share's content, bound
 }
 
-// New is a serving filesystem over memory, its open state and Content
-// reading a test clock at the Unix epoch, with the null event sink, drained
-// and stopped when the test ends.
+// New is a serving filesystem over memory, with the null event sink, drained
+// and stopped when the test ends. Its open state reads a test clock nothing
+// advances, so no lease expires; its Content stamps the wall clock, as the
+// store does, so a write's times are later than the file's creation and move
+// them.
 func New(t *testing.T) *Service {
 	t.Helper()
 	clock := sim.NewTestClock(time.Unix(0, 0))
@@ -49,7 +51,7 @@ func New(t *testing.T) *Service {
 	must(t, fs.Store.ControlPlane().PutUser(t.Context(), admin))
 	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Clock: clock, Rand: rand.Reader})
 	must(t, err)
-	content := contenttest.NewOver(clock, fs.Store)
+	content := contenttest.NewOver(wallClock{}, fs.Store)
 	content.Bind(fs.Share.ID)
 	f, err := ivfs.New(ivfs.Deps{Meta: fs.Store, Open: tab, Engine: content})
 	must(t, err)
@@ -71,6 +73,11 @@ func (s *Service) Admin() vfs.Call {
 		Evidence: vfs.Evidence{Principal: s.Store.Admin.Principal}, Client: netip.AddrFrom4([4]byte{127, 0, 0, 1}),
 	}}
 }
+
+// wallClock is the time the store stamps its records with.
+type wallClock struct{}
+
+func (wallClock) Now() time.Time { return time.Now() }
 
 func memKV(tb testing.TB) kv.KV {
 	db, err := badgerkv.Open(badgerkv.Options{})
