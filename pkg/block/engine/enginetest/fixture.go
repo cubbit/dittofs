@@ -797,7 +797,12 @@ func (f *Fixture) stop(clean bool) {
 	f.t.Helper()
 	f.stopService(clean)
 	if f.E != nil {
-		if err := f.E.Close(context.Background()); err != nil {
+		// A frozen test clock can hold the engine's own stop waits off
+		// forever, so the close runs under a deadline: ended by it, the
+		// close reports its stuck step, logged on the crash path.
+		ctx, cancel := context.WithTimeout(f.t.Context(), time.Minute)
+		defer cancel()
+		if err := f.E.Close(ctx); err != nil {
 			if clean {
 				f.t.Errorf("fixture: engine close: %v", err)
 			} else {
