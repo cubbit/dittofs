@@ -89,7 +89,7 @@ cited by number and title, and how it applies here or why it does not.
 | rule 4, leaks and allocations | T3.1, T3.2 | every test ends with its budgets at zero; T3.1 adds the reservation gate and T3.2 the `BufPool.Get` and `Release` gate, each at 0, to `unit/adapter-allocs`, whose command T3.1 extends with `./pkg/resources/` |
 | rule 5, v2 ignores v1 | T3.2 | nothing is lifted from v1's buffer pool, which RFC 20 Appendix B does not mark keep |
 | rule 6, nothing deferred is lost | T3.1 | the ledger rows named in §1.2 |
-| rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments)) | T3.1, T3.2 | the `ponytail:` markers of D1, D3 and D5 and the `decision:` markers of D2, D4, D6, D8, D9 and D10 at their code sites; RFC 24 §3.1's `ponytail:` at the 8 KiB overhead; the package's `ponytail:` for what is absent and `BufPool`'s for `sync.Pool` per class kept; E1's comments that promise turns or a per-key count rewritten to what the bodies do |
+| rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments)) | T3.1, T3.2 | the `ponytail:` markers of D1, D3, D5 and D7 and the `decision:` markers of D2, D4, D6, D8, D9 and D10 at their code sites; RFC 24 §3.1's `ponytail:` at the 8 KiB overhead; the package's `ponytail:` for what is absent and `BufPool`'s for `sync.Pool` per class kept; E1's comments that promise turns or a per-key count rewritten to what the bodies do |
 | rule 8, a test must be able to fail ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests)) | all | each test names the change that fails it (§6); the seven specifications fail today on the stubs and pass only on the bodies |
 | rule 9, a symbol is exported only if RFC 20's interface uses it | all | no exported symbol is added, renamed or removed: the bodies fill E1's signatures |
 | rule 10, each subtask creates only what it declares | all | no per-key count, no metric and no `Reclaim` lands without its reader (D3, D7); the two poison files land with `Buf.Release`, which calls them |
@@ -104,7 +104,7 @@ cited by number and title, and how it applies here or why it does not.
 | R2 | `Reserved` is the bytes reserved now on either kind of budget: the sum of the reservations taken and not yet released | MUST | RFC 24 §2.5 | T3.1 |
 | R3 | A `Reservation` is a value from either kind of budget, so taking one allocates nothing: a `Reserve` and `Release` pair on a `WaitBudget` with no waiter allocates nothing, the part of B1 no later work is needed for | bound | RFC 24 §2.5, §8 (B1) | T3.1 |
 | R4 | `Release` returns the reservation's bytes to its budget, then zeroes the `Reservation`, so a second `Release` does nothing, on either kind | MUST | RFC 24 §2.5; RFC 20 §4.7 | T3.1 |
-| R5 | A release past zero panics in tests and clamps to zero in production, on either kind (that it is also counted in production is D7's) | MUST | RFC 24 §2.7 | T3.1 |
+| R5 | A release past zero panics in tests and clamps to zero in production, on either kind; in production the clamp is logged at Error with the budget's name, at most once per budget (D7, which also says where the count of them comes from) | MUST | RFC 24 §2.7; D7 | T3.1 |
 | R6 | A `WaitBudget`'s `Reserve` charges n bytes for key; when they do not fit under the ceiling it waits within `ctx`, holding nothing. A release grants the next waiter on the releasing goroutine: the waiter's bytes are charged before `Release` returns, and no budget starts a goroutine | MUST | RFC 24 §2.5, §2.3, §2.7 | T3.1 |
 | R7 | Under a `ctx` already past its deadline, `Reserve` tries once and refuses at once | MUST | RFC 24 §2.5; RFC 20 §4.7 | T3.1 |
 | R8 | Every reservation is released on every path: a `Reserve` whose `ctx` ends while it waits is refused and leaves nothing reserved (the path through a panic is the caller's, §1.2) | MUST | RFC 24 §2.5 | T3.1 |
@@ -160,32 +160,42 @@ called by E4's and E5's tests.
   double release through one `Reservation` cannot get there (R4); a copy released twice can,
   and is found only once the count would go negative. `decision:` at the clamp. Prior art: the
   standard library added `testing.Testing` for this use.
-- **D5, header room. Pending the owner's answer (§9).** RFC 24 §3.1 gives each class "its size
-  plus the protocol's headers" without a figure, RFC 20 §6.8 says `cap` "is the class size",
-  and NFS's largest record is 1 MiB of data plus its headers, which RFC 24 §9's R6 charges the
-  transfer class. Written in place, the recommended answer: **the directory, transfer and large
-  classes, which carry a payload, are their size plus 4 KiB of header room, and are charged it;
-  the small class, which carries headers only, has none.** So a 1 MiB `WRITE` with its headers
-  draws the transfer class and is charged 1 MiB plus 4 KiB plus the 8 KiB overhead, a charge
-  exact for its buffer as RFC 24 §2.5 asks, and a small request is still charged RFC 24 §3.1's
-  12 KiB. `ponytail:` at the constant: 4 KiB, fixed, the same for every protocol; make it the
-  protocol's own figure when a protocol's headers before a payload are shown to pass it. Prior
-  art: the Linux kernel's RPC server sizes its largest message as the payload plus one page
-  (from memory). T3.2 amends RFC 24 §3.1 and RFC 20 §6.8's comment with the figure once it is
-  agreed.
+- **D5, header room.** RFC 24 §3.1 gives each class "its size plus the protocol's headers"
+  without a figure, RFC 20 §6.8 says `cap` "is the class size", and NFS's largest record is
+  1 MiB of data plus its headers, which RFC 24 §9's R6 charges the transfer class. **The
+  directory, transfer and large classes, which carry a payload, are their size plus 4 KiB of
+  header room, and are charged it; the small class, which carries headers only, has none.** So
+  a 1 MiB `WRITE` with its headers draws the transfer class and is charged 1 MiB plus 4 KiB
+  plus the 8 KiB overhead, a charge exact for its buffer as RFC 24 §2.5 asks, and a small
+  request is still charged RFC 24 §3.1's 12 KiB. Room inside the 8 KiB overhead would
+  under-charge every buffer by 4 KiB. The headers before a payload fit with room to spare: an
+  NFSv4 `WRITE` compound (`SEQUENCE`, `PUTFH` with a 128-byte handle, `WRITE`, `GETATTR`) or
+  an SMB2 `WRITE` with a transform header is a few hundred bytes. `ponytail:` at the constant:
+  4 KiB, fixed, the same for every protocol, and a cost figure, not a limit. `Get` draws the
+  smallest class that holds the record, so a record past a class's size plus 4 KiB, such as a
+  `READ` reply with a large `GETATTR`, draws the next class and costs more; it never fails.
+  Make it the protocol's own figure when a protocol's records are shown to pass it often
+  enough to matter. Prior art: the Linux kernel's RPC server sizes its largest message as the
+  payload plus one page (from memory). T3.2 amends RFC 24 §3.1 and RFC 20 §6.8's comment with
+  the figure.
 - **D6, past the largest class.** A `Get` for more than the large class's capacity reserves
   exactly n plus the overhead, allocates exactly n, and its last `Release` drops the bytes
   rather than pooling them. `decision:` at the branch: RFC 24 §3.1's rule, read against the
   pool's own largest class, since `NewBufPool` is told no protocol. No prior art found for a
   pool that charges what it does not keep.
-- **D7, no series is exported here. Pending the owner's answer (§9).** `NewBudget` and
+- **D7, no series is exported here; a release past zero is logged.** `NewBudget` and
   `NewWaitBudget` take a name and a ceiling and no registry, and nothing on the branch builds
-  the budgets but tests. Written in place, the recommended answer: **this epic exports no
-  metric; the node, which builds the budgets and knows their names and ceilings, registers
-  the two gauges over `Reserved` in E7; the wait histogram, the refusal counter and the count
-  of releases past zero come with the RFC 24 plan**, which settles how a budget reaches a
-  registry. Nothing built here changes when they arrive. No marker: the series are absent,
-  nothing is simplified. No prior art sought: the question is who owns the registration.
+  the budgets but tests. **This epic exports no metric; the node, which builds the budgets and
+  is the only place that knows each one's name and ceiling, registers the two gauges over
+  `Reserved` in E7**, which fits RFC 24 §10's pool label; **the wait histogram, the refusal
+  counter and the count of releases past zero come with the RFC 24 plan**, which settles how
+  a budget reaches a registry. Neither an exported function RFC 24 does not name nor a change
+  to the frozen `NewBudget` is worth its cost for gauges nothing reads before E7. Until the
+  counter exists, a release past zero in production would clamp with no trace and hide an
+  accounting bug, so **the clamp logs at Error with the budget's name, at most once per
+  budget**, through `slog`'s default logger, since a budget is given none. `ponytail:` at the
+  log: it stands in for RFC 24 §10's counter, which replaces it. No prior art sought: the
+  question is who owns the registration.
 - **D8, `Get` returns `B` at the length asked.** RFC 20 §6.8 has `len` "the record's or
   reply's", and `Get` is told that length: `len(B) == n`. A caller that fills by appending
   cuts to `B[:0]` first, as `testproto`'s replay stage does. E4's reader and E5's encoders
@@ -232,10 +242,11 @@ E1 froze them. The gates skip under the race detector and the poison read withou
 - **Deliverables:** in `budget.go`, the bodies of `Budget.Reserve`, `WaitBudget.Reserve`, both
   `Reserved` and `Reservation.Release`: each budget's count under its one mutex; on a
   `WaitBudget` the queue of waiters and the grant made by the releasing goroutine (D1), the
-  check for a charge past the ceiling (D2), the key kept (D3); the switch and the clamp of D4.
+  check for a charge past the ceiling (D2), the key kept (D3); the switch and the clamp of D4,
+  and the clamp's log, once per budget (D7).
   A `Reserve` whose context ends takes the lock, and either leaves the queue with nothing
   reserved or, where a release granted it first, returns that grant to the budget, which may
-  wake the next waiter. The markers of D1 to D4, and E1's comments on `WaitBudget`, `Reserve`
+  wake the next waiter. The markers of D1 to D4 and D7, and E1's comments on `WaitBudget`, `Reserve`
   and `Release` that say "fair per key", "its turn" and "its key's count" rewritten to arrival
   order. `./pkg/resources/` added to `unit/adapter-allocs`' command in `test/suites.yaml`. Six
   entries removed from `test/adapter/known.yaml`: the four subtests of
@@ -252,7 +263,9 @@ E1 froze them. The gates skip under the race detector and the poison read withou
     `Release`, and a `Release` of the zero `Reservation`, change nothing.
   - On either kind, a copy of a `Reservation` released after its original, with nothing else
     reserved, panics in the test binary and leaves `Reserved` at zero; with D4's switch off it
-    returns and leaves `Reserved` at zero.
+    returns, leaves `Reserved` at zero and logs one Error record that names the budget; a
+    second release past zero on the same budget logs nothing, and the first on another budget
+    logs its own.
   - On a `WaitBudget` with room and no waiter, `Reserve` returns at once and allocates
     nothing. With waiters queued, a `Reserve` that would fit still queues behind them.
   - A waiting `Reserve` is granted in arrival order; one release that frees room for several
@@ -268,7 +281,10 @@ E1 froze them. The gates skip under the race detector and the poison read withou
   it. The ceiling's edge on a `Budget` (catches an off-by-one, and a refusal that still
   charges). The double release and the zero value, on both kinds (catch a `Release` that does
   not zero). The copy released twice, on both kinds, with the switch on and off (catches a
-  count left below zero, and a clamp that is missing in production). Grant order and one
+  count left below zero, and a clamp that is missing in production); with it off, the records
+  read through a `slog` handler the test installs (catches a clamp with no log, a log that
+  names no budget, one record per release, and one budget's log silencing another's). Grant
+  order and one
   release granting several, in a `synctest` bubble that waits until every `Reserve` is blocked
   before it releases (catches a grant out of order, one that passes the head, and a release
   that wakes only one waiter). `Reserved` read on the line after `Release`, equal to the
@@ -356,17 +372,6 @@ A suggestion only: the two could ship as one pull request as well.
 
 ## 9. Open points
 
-- **Decision needed, D5: which classes carry header room, how much, and whether it is charged.**
-  The other readings: no room, so NFS's largest record draws the large class and is charged
-  8 MiB, against RFC 24 §9's R6; room inside the 8 KiB overhead, which keeps every charge as
-  RFC 24 §3.1 writes it and under-charges 4 KiB a buffer; or each protocol takes its headers
-  out of its transfer size, against RFC 21 §2.3's 1 MiB of data. E4's reader and E6's caps
-  build on the answer, so it is asked before T3.2 starts.
-- **Decision needed, D7: where RFC 24 §10's series are registered.** The other reading keeps
-  the epic's first description, "reserved-bytes gauges through `pkg/metrics`", which needs
-  either an exported function RFC 24 does not name (an amendment first, by rule 9) or a
-  registry argument on `NewBudget`, a change to S1's frozen surface; it would add a subtask of
-  about 0.75 man-days.
 - **Against the epic's first description, and where T3.3's work went.** That description had
   three subtasks at 5.5 man-days: budgets, buffers, and a T3.3 holding the gauges, the model
   test, the allocation gate, the cell's command and the specifications. Here each subtask
