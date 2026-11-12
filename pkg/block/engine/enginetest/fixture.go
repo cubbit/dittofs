@@ -52,6 +52,30 @@ var fixtureInstall = journal.InstallationID{'e', 'n', 'g', 'i', 'n', 'e'}
 // headroom, 1 reserve) instead of the defaults' 18 of 256 MiB each.
 var fixtureSettings = journal.Settings{Streams: 2, SpareTarget: 2}
 
+// sparesBackstop bounds the wait for a journal's first spares.
+const sparesBackstop = 10 * time.Second
+
+// awaitSpares returns once j's pool holds the content spares fixtureSettings
+// asks for: Open returns while the pool is still making them, and a write that
+// needs one before it lands is refused for want of a spare. It polls the real
+// condition, since the pool works in real time and no clock can be injected
+// there, and fails once the backstop passes.
+func awaitSpares(ctx context.Context, j *journal.Journal) error {
+	ctx, cancel := context.WithTimeout(ctx, sparesBackstop)
+	defer cancel()
+
+	for j.Stats().Spares < fixtureSettings.SpareTarget {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("fixture: the journal's pool made %d of %d spares: %w",
+				j.Stats().Spares, fixtureSettings.SpareTarget, ctx.Err())
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	return nil
+}
+
 // fixtureNode is the node the fixture's engine runs as.
 var fixtureNode = entity.NodeID{'n', 'o', 'd', 'e'}
 
@@ -789,6 +813,10 @@ func (f *Fixture) start() {
 				journal.WithClock(f.Clock), journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS()),
 				journal.WithSettings(fixtureSettings))
 			if err != nil {
+				return nil, err
+			}
+			if err := awaitSpares(ctx, j); err != nil {
+				_ = j.Close()
 				return nil, err
 			}
 			return wrapJournal(j, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
