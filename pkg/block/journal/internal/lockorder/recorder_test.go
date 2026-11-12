@@ -357,6 +357,24 @@ func TestRecorder_Reports(t *testing.T) {
 				}
 			},
 		},
+		{
+			// A leaf-Init'ed lock reports any acquisition made while it is
+			// held, in order or not: the segment append rank sits above
+			// capacity, so the rank rules report nothing for this shape,
+			// and without the leaf flag a caller taking a higher lock
+			// under the flagged one deadlocks green — the three-lock cycle
+			// a sink, a worker and one method under the leaf make.
+			name: "segment append acquired under a leaf-Init'ed capacity lock",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var leaf, seg lockorder.Mutex
+				leaf.InitLeaf(lockorder.Capacity, rec)
+				seg.Init(lockorder.SegmentAppend, rec)
+				leaf.Lock()
+				seg.Lock()
+			},
+			wantKinds: []lockorder.Kind{lockorder.AcquiredUnderLeaf},
+			wantRank:  lockorder.SegmentAppend,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -375,6 +393,42 @@ func TestRecorder_Reports(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLeafInitReportsAnyAcquisitionUnderIt runs the shape the leaf flag
+// exists for: the capacity lock the callers come at from every direction,
+// Init'ed as a leaf, held, then the segment append lock taken under it — a
+// higher rank, so every rank rule is silent and the deadlock the same take
+// implies would stay green without the leaf report. Once the holds are
+// released, each lock on its own records nothing more: the rule binds the
+// take under the leaf, not either lock alone.
+func TestLeafInitReportsAnyAcquisitionUnderIt(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	var capacity, appendLock lockorder.Mutex
+	capacity.InitLeaf(lockorder.Capacity, rec)
+	appendLock.Init(lockorder.SegmentAppend, rec)
+
+	capacity.Lock()
+	appendLock.Lock()
+	vs := rec.Violations()
+	appendLock.Unlock()
+	capacity.Unlock()
+	if len(vs) != 1 || vs[0].Kind != lockorder.AcquiredUnderLeaf || vs[0].Rank != lockorder.SegmentAppend {
+		t.Fatalf("an under-the-leaf acquisition recorded %+v, want one acquired-under-leaf of segment append", vs)
+	}
+	if got := rec.Held(); len(got) != 0 {
+		t.Errorf("Held() after both unlocks = %v, want none: the leaf hold released like any other", got)
+	}
+	capacity.Lock()
+	if got := rec.Held(); len(got) != 1 {
+		t.Errorf("Held() while the leaf lock alone is held = %v, want its one rank", got)
+	}
+	capacity.Unlock()
+	appendLock.Lock()
+	if got, want := len(rec.Violations()), 1; got != want {
+		t.Errorf("violations with the append lock alone held = %d, want %d: neither lock on its own breaks a rule", got, want)
+	}
+	appendLock.Unlock()
 }
 
 func TestRecorder_PerGoroutine(t *testing.T) {

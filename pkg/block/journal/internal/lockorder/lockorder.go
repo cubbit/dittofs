@@ -53,6 +53,9 @@ func (r Rank) String() string {
 type Mutex struct {
 	mu   sync.Mutex
 	rank Rank
+	// leaf marks a lock Init'ed by InitLeaf: its holds record the leaf
+	// flag, and any acquisition made under one reports, in order or not.
+	leaf bool
 	rec  atomic.Pointer[Recorder]
 }
 
@@ -73,6 +76,18 @@ func (m *Mutex) Init(rank Rank, rec *Recorder) {
 	m.rec.Store(rec)
 }
 
+// InitLeaf is Init with the lock marked a leaf of its domain: the recorder
+// reports any acquisition made while this lock is held, in order or not.
+// A lock whose callers order themselves around it — coming at it last, from
+// every direction at once — has no rank that places it in the order, so
+// this marker is what the first caller to take another lock under it fails
+// the recorded run with, rather than a cycle the ranks alone cannot see.
+// The Init contract applies.
+func (m *Mutex) InitLeaf(rank Rank, rec *Recorder) {
+	m.leaf = true
+	m.Init(rank, rec)
+}
+
 func (m *Mutex) Lock() {
 	// ponytail: a load on every lock, and on every Unlock a load plus, with
 	// a recorder installed, a deferred Release call that keeps Unlock out of
@@ -80,7 +95,7 @@ func (m *Mutex) Lock() {
 	// out of production, once a profile of the 64-file benchmark shows the
 	// load or the call.
 	if r := m.rec.Load(); r != nil {
-		r.Acquire(m.rank, m)
+		r.acquire(m.rank, m, m.leaf)
 	}
 	m.mu.Lock()
 }
@@ -102,7 +117,7 @@ func (m *Mutex) TryLock() bool {
 		return false
 	}
 	if r := m.rec.Load(); r != nil {
-		r.Acquire(m.rank, m)
+		r.acquire(m.rank, m, m.leaf)
 	}
 	return true
 }

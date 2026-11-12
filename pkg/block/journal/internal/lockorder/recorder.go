@@ -41,6 +41,12 @@ const (
 	// HeldAtWait is a rank still held at a wait that must not be made
 	// under it.
 	HeldAtWait
+	// AcquiredUnderLeaf is a lock acquired while a lock Init'ed as a leaf
+	// is held: the leaf's callers come at it from every direction, so its
+	// hold promises that nothing — in order or not — is taken under it, and
+	// the first caller to take anything is the cycle the ranks alone
+	// cannot name.
+	AcquiredUnderLeaf
 )
 
 var kindNames = [...]string{
@@ -53,6 +59,7 @@ var kindNames = [...]string{
 	IOUnderMap:         "io under map",
 	HeldAtCallback:     "held at callback",
 	HeldAtWait:         "held at wait",
+	AcquiredUnderLeaf:  "acquired under leaf",
 }
 
 func (k Kind) String() string {
@@ -79,10 +86,13 @@ type Violation struct {
 }
 
 // heldLock is one lock a goroutine holds. id is the lock's identity: the
-// lock's pointer, so two locks of one domain stay told apart.
+// lock's pointer, so two locks of one domain stay told apart. leaf says the
+// hold is of a lock Init'ed by InitLeaf, whose promise is that nothing is
+// taken under it.
 type heldLock struct {
 	rank Rank
 	id   any
+	leaf bool
 }
 
 // Recorder watches ranked acquisitions and records every rule they break.
@@ -133,6 +143,15 @@ func NewRecorder() *Recorder {
 // recursive read-lock case sync.RWMutex documents. Withdraw the report if
 // a lock whose readers never wait on a writer is ever given this type.
 func (r *Recorder) Acquire(rank Rank, id any) {
+	r.acquire(rank, id, false)
+}
+
+// acquire is Acquire with the hold's leaf flag, which only the ranked mutex
+// itself can know: Mutex.Lock and TryLock pass their own, so a hold of a
+// leaf-Init'ed lock carries the promise the recorded rules read there.
+// Hand-held probes acquire leaf false: a probe promises nothing. A rank of 0
+// is never recorded, and a nil recorder records nothing.
+func (r *Recorder) acquire(rank Rank, id any, leaf bool) {
 	if r == nil || rank == 0 {
 		return
 	}
@@ -143,7 +162,7 @@ func (r *Recorder) Acquire(rank Rank, id any) {
 	heldNow := r.byGoroutine[gid]
 	r.recordAcquisition(heldNow, rank, false)
 
-	r.byGoroutine[gid] = append(heldNow, heldLock{rank: rank, id: id})
+	r.byGoroutine[gid] = append(heldNow, heldLock{rank: rank, id: id, leaf: leaf})
 	holders := r.holder[id]
 	if holders == nil {
 		holders = make(map[uint64]int)
@@ -227,6 +246,18 @@ func (r *Recorder) recordAcquisition(heldNow []heldLock, rank Rank, isRef bool) 
 		for _, h := range heldNow {
 			if h.rank > rank {
 				kind = OutOfOrder
+				break
+			}
+		}
+	}
+	// The leaf promise comes last, as the catch-all it is: an order the
+	// rank rules can already see keeps the report they name, and the one
+	// no rank difference reports — an in-order acquisition under a lock
+	// whose callers must never take anything under it — lands here.
+	if kind == 0 {
+		for _, h := range heldNow {
+			if h.leaf {
+				kind = AcquiredUnderLeaf
 				break
 			}
 		}
