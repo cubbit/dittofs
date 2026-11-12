@@ -274,6 +274,24 @@ func TestRecordedCoreFixture(t *testing.T) {
 	if len(vs) != 1 || vs[0].Kind != lockorder.GuardUnderIndex || vs[0].Rank != lockorder.StorageGuard {
 		t.Fatalf("cache wiring: violations for a reference granted under the file index = %+v, want exactly one guard under index of storage guard", vs)
 	}
+
+	// The probe list above is hand-written, so it must cover the whole
+	// order: every one of the six domains appears among the violations the
+	// probes produced, so a domain a probe never drove — a lock this
+	// fixture wired no recorder into, whose acquisitions report nothing —
+	// fails here rather than passing unseen with rank 0.
+	saw := map[lockorder.Rank]bool{}
+	for _, v := range rec.Violations() {
+		saw[v.Rank] = true
+	}
+	for _, rank := range []lockorder.Rank{
+		lockorder.FileAppend, lockorder.Capacity, lockorder.FileIndex,
+		lockorder.FileMap, lockorder.SegmentAppend, lockorder.StorageGuard,
+	} {
+		if !saw[rank] {
+			t.Errorf("no probe violation ranks %s: the fixture's probes never drove a lock of that domain, so a lock of it can stay unwired and unchecked", rank)
+		}
+	}
 }
 
 // expectOutOfOrder drives one component's probe: it holds the rank held by
