@@ -34,45 +34,24 @@ type Service struct {
 	*vfstest.Mutations
 	Store   *kvstoretest.FS     // the store, with one share, its administrator and its root
 	Content *contenttest.Memory // the share's content, bound
-	Clock   *sim.TestClock      // the clock open state and Content read
 }
 
-// Option sets one input of New.
-type Option func(*options)
-
-type options struct {
-	clock  *sim.TestClock
-	events vfs.Events
-}
-
-// WithClock has open state and Content read c; without it they read a test
-// clock at the Unix epoch.
-func WithClock(c *sim.TestClock) Option { return func(o *options) { o.clock = c } }
-
-// WithEvents is the filesystem's event sink; without it, the null sink.
-func WithEvents(e vfs.Events) Option { return func(o *options) { o.events = e } }
-
-// New is a serving filesystem over memory, drained and stopped when the test
-// ends.
-func New(t *testing.T, opts ...Option) *Service {
+// New is a serving filesystem over memory, its open state and Content
+// reading a test clock at the Unix epoch, with the null event sink, drained
+// and stopped when the test ends.
+func New(t *testing.T) *Service {
 	t.Helper()
-	o := options{}
-	for _, opt := range opts {
-		opt(&o)
-	}
-	if o.clock == nil {
-		o.clock = sim.NewTestClock(time.Unix(0, 0))
-	}
+	clock := sim.NewTestClock(time.Unix(0, 0))
 	fs := kvstoretest.NewFS(t, memKV)
 	// The administrator holds a uid, so that it signs in as itself rather
 	// than as the share's anonymous principal.
 	admin := entity.User{Principal: fs.Admin.Principal, Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}}}
 	must(t, fs.Store.ControlPlane().PutUser(t.Context(), admin))
-	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Clock: o.clock, Rand: rand.Reader})
+	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Clock: clock, Rand: rand.Reader})
 	must(t, err)
-	content := contenttest.NewOver(o.clock, fs.Store)
+	content := contenttest.NewOver(clock, fs.Store)
 	content.Bind(fs.Share.ID)
-	f, err := ivfs.New(ivfs.Deps{Meta: fs.Store, Open: tab, Engine: content, Events: o.events})
+	f, err := ivfs.New(ivfs.Deps{Meta: fs.Store, Open: tab, Engine: content})
 	must(t, err)
 	must(t, tab.Start(t.Context(), f, f.Admission))
 	t.Cleanup(tab.Stop)
@@ -81,7 +60,7 @@ func New(t *testing.T, opts ...Option) *Service {
 		_ = f.Drain(context.Background())
 		_ = f.Stop()
 	})
-	return &Service{Mutations: vfstest.RecordMutations(f), Store: fs, Content: content, Clock: o.clock}
+	return &Service{Mutations: vfstest.RecordMutations(f), Store: fs, Content: content}
 }
 
 // Admin is a call by the share's administrator, proven by a ticket under
