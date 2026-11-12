@@ -81,7 +81,7 @@ type tails struct {
 // the attach answer and the scans, plus the open's reader for the one
 // probe it makes, and fails the open when a range names no record it can
 // class: see refuseRange and refuseMissingEnd.
-func classifyTails(rd *reader, att Attached, scans []segmentScan) (tails, error) {
+func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []segmentScan) (tails, error) {
 	// A segment a verified header names as predecessor was sealed before
 	// its successor was made; a segment no header names could have been
 	// open at a crash. An id naming itself names nothing, and a name with
@@ -106,7 +106,10 @@ func classifyTails(rd *reader, att Attached, scans []segmentScan) (tails, error)
 	for _, sc := range scans {
 		id := sc.ID
 		damaged, tornSlot, tail := false, false, false
-		tailAt := sc.RecordsEnd // where a torn tail starts: before any torn drop at it
+		tailAt := sc.VerifiedEnd // where a torn tail starts: before any torn drop at it
+		var footer format.Footer
+		footerRead, footerOK := false, false
+		var err error
 		for _, r := range sc.Ranges {
 			switch {
 			case named[id] && !sc.Sealed && r.Off >= sc.RecordsEnd:
@@ -114,9 +117,38 @@ func classifyTails(rd *reader, att Attached, scans []segmentScan) (tails, error)
 			case named[id] || sc.Sealed:
 				// A segment already sealed holds no torn slot: a crash
 				// cannot tear bytes below a seal, so a refused range in
-				// it is corruption.
-				return tails{}, refuseRange(id, r)
-			case r.Off >= sc.RecordsEnd:
+				// it is corruption. One no successor names was never offered
+				// its catalog, so its footer is read here: the entries inside
+				// the range are the records it held, each confined as a
+				// corrupt drop. A range with no entry in it names no record.
+				var confined []format.CatalogEntry
+				if !named[id] {
+					if !footerRead {
+						footer, footerOK, err = readFooter(rd, identity, sc)
+						if err != nil {
+							return tails{}, err
+						}
+						footerRead = true
+					}
+					if footerOK {
+						for _, e := range footer.Entries {
+							if e.RecordOffset >= r.Off && e.RecordOffset < r.End {
+								confined = append(confined, e)
+							}
+						}
+					}
+				}
+				if len(confined) == 0 {
+					return tails{}, refuseRange(id, r)
+				}
+				for _, e := range confined {
+					sc.Dropped = append(sc.Dropped, droppedRecord{
+						Entry: e, Header: headerFromEntry(id, e), Synced: true,
+						Err: fmt.Errorf("%w: segment %d: a record at %d the footer names has a refused header",
+							core.ErrCorrupt, id, e.RecordOffset),
+					})
+				}
+			case r.Off >= sc.VerifiedEnd:
 				tail = true // the torn tail, or a rotten seal marker nothing names
 			case r.Off < sc.SyncedThrough:
 				return tails{}, refuseRange(id, r) // a sync proved these bytes whole
@@ -140,7 +172,7 @@ func classifyTails(rd *reader, att Attached, scans []segmentScan) (tails, error)
 		// names them now. Overturned when the reconcile work gives the open a
 		// verdict for content nothing names, or when the format rules bounds
 		// for a truncation below the first record slot.
-		if named[id] && !sc.Sealed && !sc.SealedByCatalog && sc.Size >= format.SegmentHeaderSize {
+		if named[id] && !sc.Sealed && sc.Size >= format.SegmentHeaderSize {
 			exempt, err := markerAloneRotted(rd, sc)
 			if err != nil {
 				return tails{}, err
@@ -185,8 +217,9 @@ func classifyTails(rd *reader, att Attached, scans []segmentScan) (tails, error)
 			out.Damaged = append(out.Damaged, id)
 		}
 
-		// The cut never goes below a verifying record: RecordsEnd is where
-		// the last one ends, and it is the tail's start wherever one exists.
+		// The cut never goes below a verifying record: VerifiedEnd is where
+		// the last one that verified whole ends, and it is the tail's start
+		// wherever one exists.
 		f := segmentFate{ID: id}
 		switch {
 		case named[id]:
@@ -206,7 +239,6 @@ func classifyTails(rd *reader, att Attached, scans []segmentScan) (tails, error)
 		out.Fates = append(out.Fates, f)
 	}
 
-	slices.SortFunc(out.Fates, func(a, b segmentFate) int { return cmp.Compare(a.ID, b.ID) })
 	slices.Sort(out.Damaged)
 	slices.SortStableFunc(out.Corrupt, func(a, b corruptRecord) int {
 		return cmp.Or(cmp.Compare(a.Segment, b.Segment), cmp.Compare(a.at(), b.at()))
@@ -257,4 +289,24 @@ func markerAloneRotted(rd *reader, sc segmentScan) (bool, error) {
 		return false, &core.UnreadableRangesError{Ranges: ranges}
 	}
 	return false, err
+}
+
+// readFooter reads the footer of a sealed segment no successor names: the
+// footer and true when it verifies, false when it does not. A read the bound
+// did not clear refuses the open on the range it collected, never as "no
+// footer", exactly as markerAloneRotted's.
+func readFooter(rd *reader, identity core.JournalID, sc segmentScan) (format.Footer, bool, error) {
+	footer, err := format.ReadFooter(readerAt{rd: rd, name: format.SegmentName(sc.ID)}, sc.Size, identity, sc.ID)
+	switch {
+	case err == nil:
+		return footer, true, nil
+	case errors.Is(err, format.ErrNoFooter):
+		return format.Footer{}, false, nil
+	case isContextErr(err):
+		return format.Footer{}, false, err
+	}
+	if ranges := rd.Unreadable(); len(ranges) > 0 {
+		return format.Footer{}, false, &core.UnreadableRangesError{Ranges: ranges}
+	}
+	return format.Footer{}, false, err
 }

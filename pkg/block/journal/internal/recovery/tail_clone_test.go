@@ -152,7 +152,13 @@ func TestClassifyTailsVisitsTheScansByAscendingID(t *testing.T) {
 		return segmentScan{ID: id, Sealed: true, RecordsEnd: 200, Size: 300,
 			Ranges: []format.ScanRange{{Off: 120, End: 140}}}
 	}
-	_, err := classifyTails(nil, Attached{}, []segmentScan{scan(9), scan(4), scan(7)})
+	// Each segment is named by a successor, so no footer is read.
+	var named Attached
+	for i, pred := range []core.SegmentID{9, 4, 7} {
+		named.Own = append(named.Own, SegmentInfo{ID: core.SegmentID(20 + i),
+			Header: format.SegmentHeader{Predecessor: pred}})
+	}
+	_, err := classifyTails(nil, journalID, named, []segmentScan{scan(9), scan(4), scan(7)})
 	if !errors.Is(err, core.ErrNotImplemented) {
 		t.Fatalf("classifyTails got err %v, want one wrapping core.ErrNotImplemented", err)
 	}
@@ -201,7 +207,7 @@ func TestTwoCorruptCloneTargetDropsComeInAscendingRecordOffset(t *testing.T) {
 		t.Fatalf("the scan holds %d drops, want 2", len(sc.Dropped))
 	}
 	slices.Reverse(sc.Dropped)
-	got, err := classifyTails(nil, Attached{}, []segmentScan{sc})
+	got, err := classifyTails(nil, journalID, Attached{}, []segmentScan{sc})
 	if err != nil {
 		t.Fatalf("classifyTails: %v", err)
 	}
@@ -225,6 +231,28 @@ func TestATornSlotDropDoesNotMoveTheTailStart(t *testing.T) {
 	st := runUnchanged(t, r, 1)
 
 	wantFate(t, st, 1, fateEnded, end)
+	wantDamaged(t, st)
+	wantNoCorrupt(t, st)
+}
+
+// TestAZeroGapThenACloneTargetWhoseBodyFailedIsOneTornTailFromTheLastVerifyingRecord
+// plants A, a zero gap, then a clone target whose header verifies and body
+// does not, to the file's end: the target is not a verifying record, so the
+// tail runs from the end of A.
+func TestAZeroGapThenACloneTargetWhoseBodyFailedIsOneTornTailFromTheLastVerifyingRecord(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	seg := buildSeg(1, tailRec(200, 0x4100))
+	seg = append(seg, make([]byte, 16)...)
+	c := cloneRec()
+	c.Identity, c.Segment, c.RecordOffset = journalID, 1, uint32(len(seg))
+	at := len(seg)
+	seg = append(seg, c.Bytes()...)
+	seg[at+format.RecordHeaderSize] ^= 0xff // the body's bytes never verify
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg)
+	st := runUnchanged(t, r, 1)
+	wantFate(t, st, 1, fateTornTail, endA)
 	wantDamaged(t, st)
 	wantNoCorrupt(t, st)
 }

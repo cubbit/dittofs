@@ -278,3 +278,41 @@ func TestAVerifyingTrailerNamingAFooterElsewhereIsNotTheExemption(t *testing.T) 
 	r.plantSeg(2, namingSeg(2, 1))
 	wantRefused(t, r, 1, markerOff, int64(len(b)))
 }
+
+// TestARottedRecordHeaderInAnUnnamedSealedSegmentIsConfinedByItsFooter plants
+// a sealed segment no successor names, record B's header rotted. The footer
+// verifying, the range holds the record the footer names: one synced corrupt
+// drop. The footer's checksum broken, nothing names it and the open refuses.
+func TestARottedRecordHeaderInAnUnnamedSealedSegmentIsConfinedByItsFooter(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	endB := endAfter(tailRec(200, 0x4100), tailRec(201, 0x8100))
+	plant := func() ([]byte, *rig) {
+		b, _ := buildSealed(1, tailRec(200, 0x4100), tailRec(201, 0x8100), tailRec(202, 0xc100))
+		b[endA] ^= 0xff // B's record header
+		r := newRig(t)
+		r.writeFormat()
+		return b, r
+	}
+	t.Run("the footer verifies", func(t *testing.T) {
+		b, r := plant()
+		r.plantSeg(1, b)
+		st := runTails(t, r)
+		if len(st.Tails.Corrupt) != 1 {
+			t.Fatalf("Corrupt got %+v, want exactly B", st.Tails.Corrupt)
+		}
+		c := st.Tails.Corrupt[0]
+		if c.Segment != 1 || !c.Drop.Synced || c.at() != endA || !errors.Is(c.Drop.Err, core.ErrCorrupt) {
+			t.Errorf("Corrupt[0] got segment %d synced %v at %d err %v, want segment 1, synced, at %d, ErrCorrupt",
+				c.Segment, c.Drop.Synced, c.at(), c.Drop.Err, endA)
+		}
+		if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
+			t.Errorf("Damaged got %v, want [1]", st.Tails.Damaged)
+		}
+	})
+	t.Run("the footer's checksum is broken", func(t *testing.T) {
+		b, r := plant()
+		b[len(b)-raw.TrailerSize-1] ^= 0xff // the last entry's byte: the footer checksum fails
+		r.plantSeg(1, b)
+		wantRefused(t, r, 1, endA, endB)
+	})
+}

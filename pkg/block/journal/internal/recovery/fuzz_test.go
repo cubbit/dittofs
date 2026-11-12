@@ -74,10 +74,10 @@ func FuzzOpen(f *testing.F) {
 	for _, at := range []int{
 		20,                   // a segment-header byte
 		valid.recOff[0] + 40, // a record-header byte
-		valid.recOff[1] + raw.RecordHeaderSize + 3, // a record-payload byte
-		valid.markerOff + 10,                       // a seal-marker byte
-		valid.footerOff + 5,                        // a footer-entry byte
-		len(valid.b) - 5,                           // a trailer byte
+		valid.recOff[1] + raw.RecordHeaderSize + 8 + 3, // a write body's payload byte
+		valid.markerOff + 10,                           // a seal-marker byte
+		valid.footerOff + 5,                            // a footer-entry byte
+		len(valid.b) - 5,                               // a trailer byte
 	} {
 		b := append([]byte(nil), valid.b...)
 		b[at] ^= 0x01
@@ -101,6 +101,14 @@ func FuzzOpen(f *testing.F) {
 		size := map[core.SegmentID]int64{}
 		for _, sc := range st.Rebuilt.Scans {
 			size[sc.ID] = sc.Size
+		}
+		if len(st.Tails.Fates) != len(st.Rebuilt.Scans) {
+			t.Fatalf("Fates %+v, want one per scanned segment (%d)", st.Tails.Fates, len(st.Rebuilt.Scans))
+		}
+		for _, f := range st.Tails.Fates {
+			if sz := size[f.ID]; f.Offset != 0 && (f.Offset < format.SegmentHeaderSize || f.Offset > sz) {
+				t.Fatalf("fate %+v: offset outside [%d,%d]", f, format.SegmentHeaderSize, sz)
+			}
 		}
 		for _, tag := range []core.ShareTag{1, 7} {
 			for _, id := range st.Rebuilt.Index.Files(tag) {
